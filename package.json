@@ -1,0 +1,34 @@
+{
+  "name": "houkago_tea_time_bot",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "dev:tsc": "tsc --watch --preserveWatchOutput",
+    "dev:node": "node --enable-source-maps --watch dist/index.js --inspect-brk",
+    "dev": "pnpm run \"/dev:/\"",
+    "tsx": "tsx ./src/index.ts"
+  },
+  "keywords": [],
+  "author": "ddc",
+  "license": "ISC",
+  "packageManager": "pnpm@9.4.0+sha512.f549b8a52c9d2b8536762f99c0722205efc5af913e77835dbccc3b0b0b2ca9e7dc8022b78062c17291c48e88749c70ce88eb5a74f1fa8c4bf5e18bb46c8bd83a",
+  "devDependencies": {
+    "@types/node": "^20.14.10",
+    "@types/sqlite3": "^3.1.11",
+    "tsx": "^4.16.2",
+    "typescript": "^5.5.3"
+  },
+  "dependencies": {
+    "@sequelize/core": "7.0.0-alpha.37",
+    "@sequelize/sqlite3": "7.0.0-alpha.41",
+    "dotenv": "^16.4.5",
+    "openai": "^4.52.7",
+    "sequelize": "7.0.0-alpha.9",
+    "sqlite3": "^5.1.7",
+    "telegraf": "^4.16.3"
+  }
+}
