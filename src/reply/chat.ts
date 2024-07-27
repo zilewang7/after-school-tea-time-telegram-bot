@@ -2,7 +2,7 @@ import dotenv from 'dotenv'
 import { Context, NarrowedContext, Telegraf } from "telegraf";
 import { message } from "telegraf/filters";
 import { Stream } from "openai/streaming.mjs";
-import { checkIfMentioned, checkIfNeedRecentContext, getRepliesHistory } from "../util";
+import { checkIfMentioned, checkIfNeedRecentContext, getRepliesHistory, isPhotoContext, PhotoContext, StickerContext, TextContext, UnionContextType, isStickerContext, isTextContext } from "../util";
 import { ChatCompletionChunk, ChatCompletionContentPart, ChatCompletionContentPartText, ChatCompletionMessageParam } from "openai/resources/index.mjs";
 import { getMessage, saveMessage } from "../db";
 import { sendMsgToOpenAI } from "../openai";
@@ -13,12 +13,10 @@ dotenv.config();
 const botUserId = Number(process.env.BOT_USER_ID)
 const botUserName = process.env.BOT_USER_NAME
 
-type ReplyCTX = NarrowedContext<Context<Update>, Update.MessageUpdate<Record<"text" | "photo" | "sticker", {}> & Message.TextMessage & Message.PhotoMessage & Message.StickerMessage>>;
-
-const generalContext = async (ctx: ReplyCTX): Promise<Array<ChatCompletionMessageParam>> => {
+const generalContext = async (ctx: UnionContextType): Promise<Array<ChatCompletionMessageParam>> => {
     const chatContents: Array<ChatCompletionMessageParam> = []
 
-    const needRecentContext = checkIfNeedRecentContext(ctx.text);
+    const needRecentContext = checkIfNeedRecentContext(ctx.text ?? '');
     const historyReplies = await getRepliesHistory(ctx.chat.id, ctx.message.message_id, { needRecentContext });
 
     for (const repledMsg of historyReplies) {
@@ -62,19 +60,26 @@ const generalContext = async (ctx: ReplyCTX): Promise<Array<ChatCompletionMessag
         type: 'text' as const,
         text: `${ctx.message.from.first_name}`
             + `${ctx.message.reply_to_message ? `(repling to ${ctx.message.reply_to_message.from?.first_name || 'last message'})` : ''}: `
-            + (ctx.text || ctx.update.message.sticker?.emoji || '')
+            + (ctx.text ||  (isStickerContext(ctx) && ctx.update.message.sticker?.emoji) || '')
     })
 
-    const tgFile = ctx.update?.message?.photo?.[ctx.update?.message?.photo.length - 1] || ctx.update?.message.sticker;
+    const tgFile = (() => {
+        if (isPhotoContext(ctx)) {
+            return ctx.update?.message?.photo?.[ctx.update?.message?.photo.length - 1]
+        } else if (isStickerContext(ctx)) {
+            return ctx.update?.message?.sticker
+        }
+    })()
+
     if (tgFile) {
-        if (ctx.update?.message?.sticker?.is_video || ctx.update?.message?.sticker?.is_animated) {
+        if ((isStickerContext(ctx) && ctx.update?.message?.sticker?.is_video) || (isStickerContext(ctx) && ctx.update?.message?.sticker?.is_animated)) {
             (msgContent[0] as ChatCompletionContentPartText).text += ' ([syetem] can not get video sticker) (I send a sticker)';
         } else {
-            const replyIsMediaGroup = !!ctx.update?.message?.media_group_id;
+            const replyIsMediaGroup = !!(isPhotoContext(ctx) && ctx.update?.message?.media_group_id);
 
             (msgContent[0] as ChatCompletionContentPartText).text
                 += ('(I send ' + (replyIsMediaGroup ? 'some ' : 'a ')
-                    + (ctx.update.message.sticker ? 'sticker' : 'picture')
+                    + (isStickerContext(ctx) ? 'sticker' : 'picture')
                     + (replyIsMediaGroup ? 's' : '') + ')')
 
             // 当 global.asynchronousFileSaveMsgIdList 有值时，表示正在保存文件，等待列表清空
@@ -174,15 +179,15 @@ async function sendMsgToOpenAIWithRetry(chatContents: ChatCompletionMessageParam
         }
     }
 }
-
-
 export const replyChat = (bot: Telegraf) => {
     bot.on([message('text'), message('photo'), message('sticker')], async (ctx) => {
+
         // 如果没有被提及，不需要回复
         if (!checkIfMentioned(ctx)) { return; }
     
         // 如果是图片组，后面的图片不需要重复回复
         if (
+            isPhotoContext(ctx) &&
             global.mediaGroupIdTemp.chatId === ctx.chat.id &&
             global.mediaGroupIdTemp.messageId !== ctx.message.message_id &&
             global.mediaGroupIdTemp.mediaGroupId === ctx.update?.message?.media_group_id
@@ -262,8 +267,6 @@ export const replyChat = (bot: Telegraf) => {
                 message: errorMsg,
                 replyToId: ctx.message.message_id,
             });
-        } finally {
-    
         }
     })
 }

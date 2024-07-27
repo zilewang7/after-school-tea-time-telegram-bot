@@ -24,7 +24,34 @@ export function removeSpecificText(message: string, textToRemove?: string) {
     return cleanedMessage;
 }
 
-export function checkIfMentioned<T extends NarrowedContext<Context<Update>, Update.MessageUpdate<Record<"text", {}> & Message.TextMessage>>>(ctx: T) {
+export type AddOptionalKeys<K extends string | number | symbol> = { readonly [P in K]?: never }
+export type TextContext = NarrowedContext<Context<Update>, Update.MessageUpdate<Record<"text", {}> & Message.TextMessage & AddOptionalKeys<never>>>
+export type PhotoContext =  NarrowedContext<Context<Update>, Update.MessageUpdate<Record<"photo", {}> & Message.PhotoMessage & AddOptionalKeys<never>>>
+export type StickerContext = NarrowedContext<Context<Update>, Update.MessageUpdate<Record<"sticker", {}> & Message.StickerMessage & AddOptionalKeys<never>>>
+export type UnionContextType = TextContext | PhotoContext | StickerContext
+
+export function isPhotoContext(ctx: UnionContextType): ctx is PhotoContext {
+    if ((ctx as PhotoContext).update?.message?.photo !== undefined) {
+        return true
+    }
+    return false
+}
+
+export function isStickerContext(ctx: UnionContextType): ctx is StickerContext {
+    if ((ctx as StickerContext).update?.message?.sticker !== undefined) {
+        return true
+    }
+    return false
+}
+
+export function isTextContext(ctx: UnionContextType): ctx is TextContext {
+    if ((ctx as TextContext).update?.message?.text !== undefined) {
+        return true
+    }
+    return false
+}
+
+export function checkIfMentioned(ctx: TextContext | PhotoContext | StickerContext) {
     const text = ctx.text;
 
     const replyUserId = ctx.message.reply_to_message?.from?.id;
