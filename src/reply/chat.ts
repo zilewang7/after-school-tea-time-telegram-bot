@@ -56,11 +56,31 @@ const generalContext = async (ctx: UnionContextType): Promise<Array<ChatCompleti
     // 当前消息
     const msgContent: Array<ChatCompletionContentPart> = []
 
+    const replyText = await (async () => {
+        if (ctx.message.reply_to_message) {
+            let text = '([syetem]repling to ['
+            const msgText = (await getMessage(ctx.chat.id, ctx.message.reply_to_message.message_id))?.text
+
+            if (msgText) {
+                text += `${msgText.length > 20 ? (msgText.slice(0, 20) + '...') : msgText}]`
+            } else {
+                text += 'last message]'
+            }
+
+            if (ctx.message?.quote?.text) {
+                text += `[quote: ${ctx.message.quote.text}]`
+            }
+            return text;
+        } else {
+            return ''
+        }
+    })()
+
     msgContent.push({
         type: 'text' as const,
         text: `${ctx.message.from.first_name}`
-            + `${ctx.message.reply_to_message ? `(repling to ${ctx.message.reply_to_message.from?.first_name || 'last message'})` : ''}: `
-            + (ctx.text ||  (isStickerContext(ctx) && ctx.update.message.sticker?.emoji) || '')
+            + replyText
+            + (ctx.text || (isStickerContext(ctx) && ctx.update.message.sticker?.emoji) || '')
     })
 
     const tgFile = (() => {
@@ -89,7 +109,7 @@ const generalContext = async (ctx: UnionContextType): Promise<Array<ChatCompleti
 
             const firstMsg = await getMessage(ctx.chat.id, ctx.message.message_id);
 
-            if (firstMsg?.file && replyIsMediaGroup) {
+            if (firstMsg?.file) {
                 const fileList = [firstMsg.file];
 
                 for (const replyId of (JSON.parse(firstMsg.replies))) {
@@ -184,7 +204,7 @@ export const replyChat = (bot: Telegraf) => {
 
         // 如果没有被提及，不需要回复
         if (!checkIfMentioned(ctx)) { return; }
-    
+
         // 如果是图片组，后面的图片不需要重复回复
         if (
             isPhotoContext(ctx) &&
@@ -194,9 +214,9 @@ export const replyChat = (bot: Telegraf) => {
         ) {
             return;
         }
-    
+
         ctx.telegram.sendChatAction(ctx.chat.id, 'typing');
-    
+
         const currentReply = await ctx.reply('Processing...', {
             reply_parameters: {
                 message_id: ctx.message.message_id
@@ -206,28 +226,28 @@ export const replyChat = (bot: Telegraf) => {
         const chatId = currentReply.chat.id;
         const replyDate = new Date(currentReply.date);
         let currentMsg = currentReply.text;
-    
+
         // 追加内容
         const addReply = async (content: string) => {
             const lastMsg = currentMsg.slice(0, -14);
             const msg = lastMsg + content + '\nProcessing...';
-    
+
             await ctx.telegram.editMessageText(chatId, messageId, undefined, msg);
             currentMsg = msg;
         }
-    
+
         const chatContents = await generalContext(ctx);
-    
+
         try {
             const stream: Stream<ChatCompletionChunk> = await sendMsgToOpenAIWithRetry(chatContents);
-    
+
             let buffer = '';
-    
+
             for await (const chunk of stream) {
                 const content = chunk.choices[0]?.delta?.content;
                 if (content) {
                     buffer += content;
-    
+
                     // 每当缓冲区长度达到一定阈值时，批量追加回复
                     if (buffer.length >= 75) {
                         await addReply(buffer);
@@ -235,14 +255,14 @@ export const replyChat = (bot: Telegraf) => {
                     }
                 }
             }
-    
+
             // 如果缓冲区中仍有内容，最后一次性追加
             if (buffer.length > 0) {
                 await addReply(buffer);
             }
-    
+
             const finalMsg = currentMsg === 'Processing...' ? '寄了' : currentMsg.slice(0, -14)
-    
+
             ctx.telegram.editMessageText(chatId, messageId, undefined, finalMsg, {
                 parse_mode: 'Markdown'
             });
