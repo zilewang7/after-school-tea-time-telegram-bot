@@ -78,7 +78,7 @@ const generalContext = async (ctx: UnionContextType): Promise<Array<ChatCompleti
 
     msgContent.push({
         type: 'text' as const,
-        text: `${ctx.message.from.first_name}`
+        text: `${ctx.message.from.first_name}: `
             + replyText
             + (ctx.text || (isStickerContext(ctx) && ctx.update.message.sticker?.emoji) || '')
     })
