@@ -165,7 +165,7 @@ async function sendMsgToOpenAIWithRetry(chatContents: ChatCompletionMessageParam
         console.log(chatContent.role, ...transContents)
     })
 
-    const timeout = 15000; // 15 seconds timeout
+    const timeout = 85000; // 85 seconds timeout
 
     async function attempt(): Promise<Stream<ChatCompletionChunk>> {
         return new Promise<Stream<ChatCompletionChunk>>((resolve, reject) => {
@@ -185,8 +185,8 @@ async function sendMsgToOpenAIWithRetry(chatContents: ChatCompletionMessageParam
         });
     }
 
-    // 最多请求 4 次
-    let retries = 4;
+    // 最多请求 3 次
+    let retries = 3;
     while (retries--) {
         try {
             const stream = await attempt();
