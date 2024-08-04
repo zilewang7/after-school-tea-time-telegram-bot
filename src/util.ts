@@ -79,7 +79,7 @@ export const getRepliesHistory = async (
         const messages = await DBMessage.findAll({
             where: { chatId, messageId: { [Op.lt]: messageId } },
             order: [['messageId', 'DESC']],
-            limit: 10
+            limit: 50
         });
 
         return messages;
