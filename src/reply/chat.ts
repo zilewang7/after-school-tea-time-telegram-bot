@@ -1,23 +1,24 @@
 import dotenv from 'dotenv'
-import { Context, NarrowedContext, Telegraf } from "telegraf";
-import { message } from "telegraf/filters";
+import { Bot, Context } from "grammy";
 import { Stream } from "openai/streaming.mjs";
-import { checkIfMentioned, checkIfNeedRecentContext, getRepliesHistory, isPhotoContext, PhotoContext, StickerContext, TextContext, UnionContextType, isStickerContext, isTextContext } from "../util";
+import { checkIfMentioned, checkIfNeedRecentContext, getRepliesHistory } from "../util";
 import { ChatCompletionChunk, ChatCompletionContentPart, ChatCompletionContentPartText, ChatCompletionMessageParam } from "openai/resources/index.mjs";
 import { getMessage, saveMessage } from "../db";
 import { sendMsgToOpenAI } from "../openai";
-import { Update, Message } from "telegraf/types";
+import { Update } from 'grammy/types';
 
 dotenv.config();
 
 const botUserId = Number(process.env.BOT_USER_ID)
 const botUserName = process.env.BOT_USER_NAME
 
-const generalContext = async (ctx: UnionContextType): Promise<Array<ChatCompletionMessageParam>> => {
+const generalContext = async (ctx: Context): Promise<Array<ChatCompletionMessageParam>> => {
+    if (!ctx.message) { return []; }
+
     const chatContents: Array<ChatCompletionMessageParam> = []
 
-    const needRecentContext = checkIfNeedRecentContext(ctx.text ?? '');
-    const historyReplies = await getRepliesHistory(ctx.chat.id, ctx.message.message_id, { needRecentContext });
+    const needRecentContext = checkIfNeedRecentContext(ctx.message.text ?? '');
+    const historyReplies = await getRepliesHistory(ctx.message.chat.id, ctx.message.message_id, { needRecentContext });
 
     for (const repledMsg of historyReplies) {
         if (repledMsg?.userId === botUserId) {
@@ -57,9 +58,9 @@ const generalContext = async (ctx: UnionContextType): Promise<Array<ChatCompleti
     const msgContent: Array<ChatCompletionContentPart> = []
 
     const replyText = await (async () => {
-        if (ctx.message.reply_to_message) {
+        if (ctx.message?.reply_to_message) {
             let text = '([syetem]repling to ['
-            const msgText = (await getMessage(ctx.chat.id, ctx.message.reply_to_message.message_id))?.text
+            const msgText = (await getMessage(ctx.message.chat.id, ctx.message.reply_to_message.message_id))?.text
 
             if (msgText) {
                 text += `${msgText.length > 20 ? (msgText.slice(0, 20) + '...') : msgText}]`
@@ -70,6 +71,8 @@ const generalContext = async (ctx: UnionContextType): Promise<Array<ChatCompleti
             if (ctx.message?.quote?.text) {
                 text += `[quote: ${ctx.message.quote.text}]`
             }
+
+            text += '): '
             return text;
         } else {
             return ''
@@ -78,28 +81,28 @@ const generalContext = async (ctx: UnionContextType): Promise<Array<ChatCompleti
 
     msgContent.push({
         type: 'text' as const,
-        text: `${ctx.message.from.first_name}: `
+        text: `${ctx.message.from.first_name}`
             + replyText
-            + (ctx.text || (isStickerContext(ctx) && ctx.update.message.sticker?.emoji) || '')
+            + (ctx.message.text || ctx.message.sticker?.emoji || '')
     })
 
     const tgFile = (() => {
-        if (isPhotoContext(ctx)) {
-            return ctx.update?.message?.photo?.[ctx.update?.message?.photo.length - 1]
-        } else if (isStickerContext(ctx)) {
-            return ctx.update?.message?.sticker
+        if (ctx.message.photo) {
+            return ctx.message.photo?.at(-1);
+        } else {
+            return ctx.message.sticker
         }
     })()
 
     if (tgFile) {
-        if ((isStickerContext(ctx) && ctx.update?.message?.sticker?.is_video) || (isStickerContext(ctx) && ctx.update?.message?.sticker?.is_animated)) {
+        if (ctx.message?.sticker?.is_video || ctx.message?.sticker?.is_animated) {
             (msgContent[0] as ChatCompletionContentPartText).text += ' ([syetem] can not get video sticker) (I send a sticker)';
         } else {
-            const replyIsMediaGroup = !!(isPhotoContext(ctx) && ctx.update?.message?.media_group_id);
+            const replyIsMediaGroup = !!(ctx.message.photo && ctx.message?.media_group_id);
 
             (msgContent[0] as ChatCompletionContentPartText).text
                 += ('(I send ' + (replyIsMediaGroup ? 'some ' : 'a ')
-                    + (isStickerContext(ctx) ? 'sticker' : 'picture')
+                    + (ctx.message.photo ? 'sticker' : 'picture')
                     + (replyIsMediaGroup ? 's' : '') + ')')
 
             // 当 global.asynchronousFileSaveMsgIdList 有值时，表示正在保存文件，等待列表清空
@@ -107,13 +110,13 @@ const generalContext = async (ctx: UnionContextType): Promise<Array<ChatCompleti
                 await new Promise(resolve => setTimeout(resolve, 100));
             }
 
-            const firstMsg = await getMessage(ctx.chat.id, ctx.message.message_id);
+            const firstMsg = await getMessage(ctx.message.chat.id, ctx.message.message_id);
 
             if (firstMsg?.file) {
                 const fileList = [firstMsg.file];
 
                 for (const replyId of (JSON.parse(firstMsg.replies))) {
-                    const msg = await getMessage(ctx.chat.id, replyId);
+                    const msg = await getMessage(ctx.message.chat.id, replyId);
                     if (msg?.file) {
                         fileList.push(msg.file);
                     }
@@ -203,15 +206,16 @@ async function sendMsgToOpenAIWithRetry(chatContents: ChatCompletionMessageParam
 
     throw new Error('Maximum retries exceeded');
 }
-export const replyChat = (bot: Telegraf) => {
-    bot.on([message('text'), message('photo'), message('sticker')], async (ctx) => {
+export const replyChat = (bot: Bot) => {
+    bot.on(['msg:text', 'msg:photo', 'msg:sticker'], async (ctx) => {
+        if (!ctx.message) { return; }
 
         // 如果没有被提及，不需要回复
         if (!checkIfMentioned(ctx)) { return; }
 
         // 如果是图片组，后面的图片不需要重复回复
         if (
-            isPhotoContext(ctx) &&
+            ctx.message.photo &&
             global.mediaGroupIdTemp.chatId === ctx.chat.id &&
             global.mediaGroupIdTemp.messageId !== ctx.message.message_id &&
             global.mediaGroupIdTemp.mediaGroupId === ctx.update?.message?.media_group_id
@@ -219,7 +223,7 @@ export const replyChat = (bot: Telegraf) => {
             return;
         }
 
-        ctx.telegram.sendChatAction(ctx.chat.id, 'typing');
+        ctx.api.sendChatAction(ctx.chat.id, 'typing');
 
         const currentReply = await ctx.reply('Processing...', {
             reply_parameters: {
@@ -236,9 +240,10 @@ export const replyChat = (bot: Telegraf) => {
             const lastMsg = currentMsg.slice(0, -14);
             const msg = lastMsg + content + '\nProcessing...';
 
-            await ctx.telegram.editMessageText(chatId, messageId, undefined, msg);
+            await ctx.api.editMessageText(chatId, messageId, msg);
             currentMsg = msg;
         }
+        Object.assign(ctx, { update_id: ctx.update.update_id });
 
         const chatContents = await generalContext(ctx);
 
@@ -254,6 +259,7 @@ export const replyChat = (bot: Telegraf) => {
 
                     // 每当缓冲区长度达到一定阈值时，批量追加回复
                     if (buffer.length >= 75) {
+                        await ctx.api.sendChatAction(ctx.chat.id, 'typing');
                         await addReply(buffer);
                         buffer = '';  // 清空缓冲区
                     }
@@ -267,7 +273,7 @@ export const replyChat = (bot: Telegraf) => {
 
             const finalMsg = currentMsg === 'Processing...' ? '寄了' : currentMsg.slice(0, -14)
 
-            ctx.telegram.editMessageText(chatId, messageId, undefined, finalMsg, {
+            ctx.api.editMessageText(chatId, messageId, finalMsg, {
                 parse_mode: 'Markdown'
             });
             saveMessage({
@@ -281,7 +287,7 @@ export const replyChat = (bot: Telegraf) => {
             });
         } catch (error) {
             const errorMsg = currentMsg + '\n' + (error instanceof Error ? error.message : 'Unknown error');
-            ctx.telegram.editMessageText(chatId, messageId, undefined, errorMsg)
+            ctx.api.editMessageText(chatId, messageId, errorMsg)
             saveMessage({
                 chatId,
                 messageId,

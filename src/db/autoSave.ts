@@ -1,36 +1,40 @@
-import { Telegraf } from "telegraf";
+import { Bot } from "grammy";
 import { saveMessage } from ".";
 import { Message } from "./messageDTO";
 import { Op } from "@sequelize/core";
 
 // 自动保存消息到数据库
-export const autoSave = (bot: Telegraf) => {
+export const autoSave = (bot: Bot) => {
     // 使用中间件
     bot.use(async (ctx, next) => {
-        if (ctx?.chat?.id && ctx.message?.message_id && ctx?.from?.id) {
+        if (ctx.chat?.id && ctx.message?.message_id && ctx.from?.id) {
             let fileLink;
             let isVideo = false;
-            let replyToId = (ctx.message as any)?.reply_to_message?.message_id;
+            let replyToId = ctx.message.reply_to_message?.message_id;
 
-            if ((ctx.update as any)?.message?.media_group_id) {
-                if (global.mediaGroupIdTemp.chatId === ctx.chat.id && global.mediaGroupIdTemp.mediaGroupId === (ctx.update as any).message.media_group_id) {
+            if (ctx.update.message?.media_group_id) {
+                if (global.mediaGroupIdTemp.chatId === ctx.chat.id && global.mediaGroupIdTemp.mediaGroupId === ctx.message.media_group_id) {
                     replyToId = global.mediaGroupIdTemp.messageId;
                 } else {
                     global.mediaGroupIdTemp = {
                         chatId: ctx.chat.id,
                         messageId: ctx.message.message_id,
-                        mediaGroupId: (ctx.update as any).message.media_group_id
+                        mediaGroupId: ctx.update.message.media_group_id
                     }
                 }
             }
 
-            const tgFile = (ctx.update as any)?.message?.photo?.[(ctx.update as any)?.message?.photo?.length - 1] || (ctx.update as any)?.message?.sticker;
-            if (tgFile) {
-                if ((ctx.update as any)?.message?.sticker?.is_video || (ctx.update as any)?.message?.sticker?.is_animated) {
+            const photoFile = ctx.update.message?.photo?.at(-1);
+            const stickerFile = ctx.update.message?.sticker;
+            const fileId = photoFile?.file_id || stickerFile?.file_id;
+
+
+            if (fileId) {
+                if (ctx.update.message?.sticker?.is_video || ctx.update.message?.sticker?.is_animated) {
                     isVideo = true;
                 } else {
-                    fileLink = (await bot.telegram.getFileLink(tgFile)).toString();
-                    global.asynchronousFileSaveMsgIdList.push(ctx.message.message_id)
+                    fileLink = `https://api.telegram.org/file/bot${process.env.BOT_TOKEN}/${(await bot.api.getFile(fileId)).file_path}`;
+                    global.asynchronousFileSaveMsgIdList.push(ctx.message.message_id);
                 }
             }
 
@@ -42,7 +46,7 @@ export const autoSave = (bot: Telegraf) => {
                         userId: ctx.from.id,
                         date: new Date(ctx.message?.date * 1000),
                         userName: ctx.from.first_name,
-                        message: ctx?.text || (isVideo ? `${tgFile?.emoji} ([syetem] can not get video sticker)` : tgFile?.emoji),
+                        message: ctx.message?.caption || (isVideo ? `${stickerFile?.emoji} ([syetem] can not get video sticker)` : stickerFile?.emoji),
                         fileLink,
                         replyToId,
                     }

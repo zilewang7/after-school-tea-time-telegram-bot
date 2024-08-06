@@ -1,12 +1,12 @@
-import { Telegraf } from "telegraf";
+import { Bot } from "grammy";
 import { replyChat } from "./chat";
 
-export const replyLoad = (bot: Telegraf) => {
+export const replyLoad = (bot: Bot) => {
     bot.hears('hi', (ctx) => ctx.reply('Hey there'))
-    bot.hears('图图', (ctx) => ctx.sendPhoto('https://img.heimao.icu/gpt-icon.png'))
+    bot.hears('图图', (ctx) => ctx.replyWithPhoto('https://img.heimao.icu/gpt-icon.png'))
 
-    bot.hears('RickRoll', async (ctx) => ctx.sendVideo("https://img.heimao.icu/RickRoll"));
-    bot.hears('炎忍', async (ctx) => ctx.reply("https://img.heimao.icu/yarn"));
+    bot.hears('RickRoll', async (ctx) => ctx.replyWithVideo("https://img.heimao.icu/RickRoll"));
+    bot.hears('炎忍', async (ctx) => ctx.replyWithVideo("https://img.heimao.icu/yarn"));
     bot.hears('K-ON', ctx => ctx.react('🏆'))
 
     replyChat(bot);

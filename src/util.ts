@@ -1,9 +1,9 @@
 import dotenv from 'dotenv'
-import { Context, NarrowedContext } from "telegraf";
-import { Message, Update } from "telegraf/types";
 import { Message as DBMessage } from "./db/messageDTO";
 import { getMessage } from './db';
 import { Op } from '@sequelize/core';
+import { ReactionTypeEmoji } from 'grammy/types';
+import { Context, Middleware, ReactionMiddleware } from 'grammy';
 
 dotenv.config();
 
@@ -12,10 +12,11 @@ export const getBlob = async (url: string): Promise<Blob> => {
     return await res.blob();
 }
 
-export function matchFirstEmoji(message: string) {
+export function matchFirstEmoji(message: string | undefined): ReactionTypeEmoji['emoji'] | null {
+    if (!message) return null;
     const regex = /👍|👎|❤|🔥|🥰|👏|😁|🤔|🤯|😱|🤬|😢|🎉|🤩|🤮|💩|🙏|👌|🕊|🤡|🥱|🥴|😍|🐳|❤‍🔥|🌚|🌭|💯|🤣|⚡|🍌|🏆|💔|🤨|😐|🍓|🍾|💋|🖕|😈|😴|😭|🤓|👻|👨‍💻|👀|🎃|🙈|😇|😨|🤝|✍|🤗|🫡|🎅|🎄|☃|💅|🤪|🗿|🆒|💘|🙉|🦄|😘|💊|🙊|😎|👾|🤷‍♂|🤷|🤷‍♀|😡/;
     const match = message.match(regex);
-    return match ? match[0] : null;
+    return match ? (match[0] as ReactionTypeEmoji['emoji']) : null;
 }
 
 export function removeSpecificText(message: string, textToRemove?: string) {
@@ -24,37 +25,11 @@ export function removeSpecificText(message: string, textToRemove?: string) {
     return cleanedMessage;
 }
 
-export type AddOptionalKeys<K extends string | number | symbol> = { readonly [P in K]?: never }
-export type TextContext = NarrowedContext<Context<Update>, Update.MessageUpdate<Record<"text", {}> & Message.TextMessage & AddOptionalKeys<never>>>
-export type PhotoContext =  NarrowedContext<Context<Update>, Update.MessageUpdate<Record<"photo", {}> & Message.PhotoMessage & AddOptionalKeys<never>>>
-export type StickerContext = NarrowedContext<Context<Update>, Update.MessageUpdate<Record<"sticker", {}> & Message.StickerMessage & AddOptionalKeys<never>>>
-export type UnionContextType = TextContext | PhotoContext | StickerContext
 
-export function isPhotoContext(ctx: UnionContextType): ctx is PhotoContext {
-    if ((ctx as PhotoContext).update?.message?.photo !== undefined) {
-        return true
-    }
-    return false
-}
+export function checkIfMentioned(ctx: Context) {
+    const text = ctx.message?.text;
 
-export function isStickerContext(ctx: UnionContextType): ctx is StickerContext {
-    if ((ctx as StickerContext).update?.message?.sticker !== undefined) {
-        return true
-    }
-    return false
-}
-
-export function isTextContext(ctx: UnionContextType): ctx is TextContext {
-    if ((ctx as TextContext).update?.message?.text !== undefined) {
-        return true
-    }
-    return false
-}
-
-export function checkIfMentioned(ctx: TextContext | PhotoContext | StickerContext) {
-    const text = ctx.text;
-
-    const replyUserId = ctx.message.reply_to_message?.from?.id;
+    const replyUserId = ctx.message?.reply_to_message?.from?.id;
 
     return text?.includes('@AfterSchoolTeatimeBot') || replyUserId === Number(process.env.BOT_USER_ID) || ctx?.chat?.type === 'private';
 }
@@ -146,10 +121,10 @@ export const getRepliesHistory = async (
     // 去重
     messageList = messageList.reduce((acc, curr) => {
         if (!acc.find(obj => obj.messageId === curr.messageId)) {
-          acc.push(curr);
+            acc.push(curr);
         }
         return acc;
-      }, [] as DBMessage[]);
+    }, [] as DBMessage[]);
     // 排序
     messageList.sort((a, b) => a.messageId - b.messageId);
 
@@ -160,7 +135,7 @@ export const getRepliesHistory = async (
     return messageList
 }
 
-export const checkIfNeedRecentContext = (text: string) => {  
+export const checkIfNeedRecentContext = (text: string) => {
     const regex = /^(上面|@AfterSchoolTeatimeBot 上面|.*: 上面|.*: @AfterSchoolTeatimeBot 上面)/;
     return regex.test(text)
 }

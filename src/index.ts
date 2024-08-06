@@ -1,5 +1,5 @@
 import dotenv from 'dotenv'
-import { Telegraf } from "telegraf";
+import { Bot } from "grammy";
 import { cmdLoad } from './cmd';
 import { replyLoad } from './reply';
 import { autoClear, autoSave } from './db/autoSave';
@@ -12,7 +12,7 @@ if (!process.env.BOT_TOKEN) {
 }
 
 // 波特实例
-const bot = new Telegraf(process.env.BOT_TOKEN)
+const bot = new Bot(process.env.BOT_TOKEN)
 
 
 declare global {
@@ -42,8 +42,4 @@ replyLoad(bot);
 
 
 // 启动
-bot.launch()
-
-// Enable graceful stop
-process.once('SIGINT', () => bot.stop('SIGINT'))
-process.once('SIGTERM', () => bot.stop('SIGTERM'))
+bot.start()
