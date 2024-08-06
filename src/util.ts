@@ -27,7 +27,7 @@ export function removeSpecificText(message: string, textToRemove?: string) {
 
 
 export function checkIfMentioned(ctx: Context) {
-    const text = ctx.message?.text;
+    const text = ctx.message?.text || ctx.message?.caption;
 
     const replyUserId = ctx.message?.reply_to_message?.from?.id;
 

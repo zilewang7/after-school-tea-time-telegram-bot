@@ -5,7 +5,6 @@ import { checkIfMentioned, checkIfNeedRecentContext, getRepliesHistory } from ".
 import { ChatCompletionChunk, ChatCompletionContentPart, ChatCompletionContentPartText, ChatCompletionMessageParam } from "openai/resources/index.mjs";
 import { getMessage, saveMessage } from "../db";
 import { sendMsgToOpenAI } from "../openai";
-import { Update } from 'grammy/types';
 
 dotenv.config();
 
@@ -102,7 +101,7 @@ const generalContext = async (ctx: Context): Promise<Array<ChatCompletionMessage
 
             (msgContent[0] as ChatCompletionContentPartText).text
                 += ('(I send ' + (replyIsMediaGroup ? 'some ' : 'a ')
-                    + (ctx.message.photo ? 'sticker' : 'picture')
+                    + (ctx.message.photo ? 'picture' : 'sticker')
                     + (replyIsMediaGroup ? 's' : '') + ')')
 
             // 当 global.asynchronousFileSaveMsgIdList 有值时，表示正在保存文件，等待列表清空
