@@ -20,7 +20,7 @@ const generalContext = async (ctx: Context): Promise<Array<ChatCompletionMessage
     const historyReplies = await getRepliesHistory(ctx.message.chat.id, ctx.message.message_id, { needRecentContext });
 
     for (const repledMsg of historyReplies) {
-        if (repledMsg?.userId === botUserId) {
+        if (repledMsg?.fromBotSelf) {
             chatContents.push({
                 role: 'assistant',
                 content: repledMsg.text,

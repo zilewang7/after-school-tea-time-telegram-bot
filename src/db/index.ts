@@ -19,6 +19,8 @@ const saveMessage = async (
 ) => {
     const { chatId, messageId, userId, date = new Date(), userName = '佚名', message, fileLink, replyToId } = info;
 
+    const fromBotSelf =  userId === Number(process.env.BOT_USER_ID);
+
     if (await Message.findOne({ where: { chatId, messageId } })) {
         await Message.update({ text: message, date }, { where: { chatId, messageId } });
         return;
@@ -38,7 +40,7 @@ const saveMessage = async (
     await Message.create({
         chatId,
         messageId,
-        userId,
+        fromBotSelf,
         text: message,
         date,
         userName,

@@ -9,7 +9,7 @@ import { sequelize } from './config';
 export class Message extends Model<InferAttributes<Message>, InferCreationAttributes<Message>> {
   declare chatId: number;
   declare messageId: number;
-  declare userId: number;
+  declare fromBotSelf: boolean;
   declare date: Date;
   declare userName: string;
   declare text: string | null;
@@ -27,9 +27,8 @@ Message.init({
     type: DataTypes.INTEGER,
     allowNull: false,
   },
-  userId: {
-    type: DataTypes.INTEGER,
-    allowNull: false,
+  fromBotSelf: {
+    type: DataTypes.BOOLEAN
   },
   date: {
     type: DataTypes.DATE,
