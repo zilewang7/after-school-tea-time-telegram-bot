@@ -1,4 +1,6 @@
-export const generateImageByPrompt = async (ctx: any, model: string, msg: string) => {
+import { Context, InputFile } from "grammy";
+
+export const generateImageByPrompt = async (ctx: Context, model: string, msg: string) => {
     try {
         const res = await fetch("https://sd-cf.nloli.xyz/pic?key=114514", {
             headers: {
@@ -20,7 +22,7 @@ export const generateImageByPrompt = async (ctx: any, model: string, msg: string
 
         const buffer = Buffer.from(await res.arrayBuffer());
 
-        await ctx.sendPhoto({ source: buffer });
+        await ctx.replyWithPhoto(new InputFile(buffer));
     } catch (error) {
         console.error('Error fetching and sending photo:', error);
         ctx.reply('无法获取图片，请稍后再试。');
