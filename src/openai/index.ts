@@ -21,7 +21,7 @@ Username([system]repling to xxx):或者Username:前缀的消息是发给你的�
 export const sendMsgToOpenAI = async (contents: Array<ChatCompletionMessageParam>) => {
     const res = await openai.chat.completions.create(
         {
-            model: 'gpt-4o-2024-05-13',
+            model: 'gpt-4o-2024-08-06',
             messages: [
                 {
                     role: 'system',
