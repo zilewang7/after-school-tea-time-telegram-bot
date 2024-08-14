@@ -23,6 +23,7 @@
     "typescript": "^5.5.3"
   },
   "dependencies": {
+    "@google/generative-ai": "^0.17.0",
     "@sequelize/core": "7.0.0-alpha.37",
     "@sequelize/sqlite3": "7.0.0-alpha.41",
     "dotenv": "^16.4.5",

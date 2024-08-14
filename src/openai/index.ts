@@ -1,36 +1,83 @@
 import OpenAI from "openai";
 import dotenv from 'dotenv'
-import { ChatCompletionMessageParam } from "openai/resources/index.mjs";
+import { ChatCompletionContentPart } from "openai/resources/index.mjs";
+import { Content, GoogleGenerativeAI } from "@google/generative-ai";
+import { safetySettings } from './constants';
 
 dotenv.config();
 
-export const openai = new OpenAI({
+const openai = new OpenAI({
     baseURL: process.env.OPENAI_API_URL,
     apiKey: process.env.OPENAI_API_KEY,
 })
 
 
-const prompt = 
-`你是一个telegram bot,你的id是@AfterSchoolTeatimeBot,你的用户名是K-ON
-你正在回复telegram群聊中的消息
-你喜欢使用 emoji
-Username([system]repling to xxx):或者Username:前缀的消息是发给你的消息，你需要回复这条消息
-除非用户有要求请用中文回复
-带有 [system] 的是系统信息`
+const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY,);
 
-export const sendMsgToOpenAI = async (contents: Array<ChatCompletionMessageParam>) => {
-    const res = await openai.chat.completions.create(
-        {
-            model: 'gpt-4o-2024-08-06',
-            messages: [
-                {
-                    role: 'system',
-                    content: prompt
-                },
-                ...contents,
-            ],
-            stream: true,
-        },
-    );
-    return res;
+interface UserMessageContent {
+    role: 'user'
+    content: Array<ChatCompletionContentPart>
+}
+
+interface AssistantMessageContent {
+    role: 'assistant'
+    content: string
+}
+
+export type MessageContent = UserMessageContent | AssistantMessageContent
+
+export const sendMsgToOpenAI = async (contents: Array<MessageContent>) => {
+    if (global.currentModel.startsWith('gemini')) {
+        const model = genAI.getGenerativeModel({
+            model: global.currentModel,
+            safetySettings,
+            systemInstruction: process.env.SYSTEM_PROMPT
+        });
+
+        const geminiContent: Content[] = contents.map(({ role, content }) => {
+            if (role === 'user') {
+                return {
+                    role,
+                    parts: content.map((part) => {
+                        if (part.type === 'text') {
+                            return {
+                                text: part.text
+                            }
+                        } else {
+                            return {
+                                inlineData: {
+                                    mimeType: 'image/jpeg',
+                                    data: part.image_url.url
+                                }
+                            }
+                        }
+                    })
+                }
+            } else {
+                return {
+                    role: 'model',
+                    parts: [{ text: content }]
+                }
+            }
+        })
+
+        return model.generateContentStream({
+            contents: geminiContent
+        });
+    } else {
+        const res = await openai.chat.completions.create(
+            {
+                model: global.currentModel,
+                messages: [
+                    {
+                        role: 'system',
+                        content: process.env.SYSTEM_PROMPT
+                    },
+                    ...contents,
+                ],
+                stream: true,
+            },
+        );
+        return res;
+    }
 }

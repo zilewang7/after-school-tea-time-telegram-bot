@@ -5,16 +5,18 @@ import { checkIfMentioned, checkIfNeedRecentContext, getRepliesHistory } from ".
 import { ChatCompletionChunk, ChatCompletionContentPart, ChatCompletionContentPartText, ChatCompletionMessageParam } from "openai/resources/index.mjs";
 import { getMessage, saveMessage } from "../db";
 import { sendMsgToOpenAI } from "../openai";
+import { MessageContent } from '../openai/index';
+import { GenerateContentStreamResult } from '@google/generative-ai';
 
 dotenv.config();
 
 const botUserId = Number(process.env.BOT_USER_ID)
 const botUserName = process.env.BOT_USER_NAME
 
-const generalContext = async (ctx: Context): Promise<Array<ChatCompletionMessageParam>> => {
+const generalContext = async (ctx: Context): Promise<Array<MessageContent>> => {
     if (!ctx.message) { return []; }
 
-    const chatContents: Array<ChatCompletionMessageParam> = []
+    const chatContents: Array<MessageContent> = []
 
     const needRecentContext = checkIfNeedRecentContext(ctx.message.text ?? '');
     const historyReplies = await getRepliesHistory(ctx.message.chat.id, ctx.message.message_id, { needRecentContext });
@@ -23,7 +25,7 @@ const generalContext = async (ctx: Context): Promise<Array<ChatCompletionMessage
         if (repledMsg?.fromBotSelf) {
             chatContents.push({
                 role: 'assistant',
-                content: repledMsg.text,
+                content: repledMsg.text || '[syetem] message lost',
             })
         } else {
             const replyContent: Array<ChatCompletionContentPart> = [];
@@ -74,7 +76,7 @@ const generalContext = async (ctx: Context): Promise<Array<ChatCompletionMessage
             text += '): '
             return text;
         } else {
-            return ''
+            return ': '
         }
     })()
 
@@ -141,7 +143,7 @@ const generalContext = async (ctx: Context): Promise<Array<ChatCompletionMessage
     return chatContents;
 }
 
-async function sendMsgToOpenAIWithRetry(chatContents: ChatCompletionMessageParam[]): Promise<Stream<ChatCompletionChunk>> {
+async function sendMsgToOpenAIWithRetry(chatContents: MessageContent[]): Promise<Stream<ChatCompletionChunk> | GenerateContentStreamResult> {
     // log
     chatContents.map(chatContent => {
         const transContents = []
@@ -169,8 +171,8 @@ async function sendMsgToOpenAIWithRetry(chatContents: ChatCompletionMessageParam
 
     const timeout = 85000; // 85 seconds timeout
 
-    async function attempt(): Promise<Stream<ChatCompletionChunk>> {
-        return new Promise<Stream<ChatCompletionChunk>>((resolve, reject) => {
+    async function attempt(): Promise<Stream<ChatCompletionChunk> | GenerateContentStreamResult> {
+        return new Promise<Stream<ChatCompletionChunk> | GenerateContentStreamResult>((resolve, reject) => {
             const timeoutId = setTimeout(() => {
                 reject(new Error('Timeout'));
             }, timeout);
@@ -247,34 +249,53 @@ export const replyChat = (bot: Bot) => {
         const chatContents = await generalContext(ctx);
 
         try {
-            const stream: Stream<ChatCompletionChunk> = await sendMsgToOpenAIWithRetry(chatContents);
+            const stream: Stream<ChatCompletionChunk> | GenerateContentStreamResult = await sendMsgToOpenAIWithRetry(chatContents);
 
             let buffer = '';
 
-            for await (const chunk of stream) {
-                const content = chunk.choices[0]?.delta?.content;
-                if (content) {
-                    buffer += content;
+            const isOpenAIStream = stream instanceof Stream;
 
-                    // 每当缓冲区长度达到一定阈值时，批量追加回复
-                    if (buffer.length >= 75) {
-                        await ctx.api.sendChatAction(ctx.chat.id, 'typing');
-                        await addReply(buffer);
-                        buffer = '';  // 清空缓冲区
+
+            let timeTemp = Date.now();
+
+            const handleBuffer = async () => {
+                // 每 500ms 更新一次
+                if (buffer.length && Date.now() - timeTemp > 500) {
+                    timeTemp = Date.now();
+                    await ctx.api.sendChatAction(ctx.chat.id, 'typing');
+                    await addReply(buffer);
+                    buffer = '';  // 清空缓冲区
+                }
+            }
+
+            if (isOpenAIStream) {
+                for await (const chunk of stream) {
+                    const content = chunk.choices[0]?.delta?.content;
+                    if (content) {
+                        buffer += content;
+
+                        await handleBuffer();
                     }
+                }
+            } else {
+                for await (const chunk of stream.stream) {
+                    const chunkText = chunk.text();
+
+                    if (chunkText) {
+                        buffer += chunkText;
+                    }
+
+                    await handleBuffer();
                 }
             }
 
             // 如果缓冲区中仍有内容，最后一次性追加
-            if (buffer.length > 0) {
+            if (buffer.length) {
                 await addReply(buffer);
             }
 
             const finalMsg = currentMsg === 'Processing...' ? '寄了' : currentMsg.slice(0, -14)
 
-            ctx.api.editMessageText(chatId, messageId, finalMsg, {
-                parse_mode: 'Markdown'
-            });
             saveMessage({
                 chatId,
                 messageId,
@@ -284,18 +305,37 @@ export const replyChat = (bot: Bot) => {
                 message: finalMsg,
                 replyToId: ctx.message.message_id,
             });
+
+            await ctx.api.editMessageText(chatId, messageId, finalMsg, {
+                parse_mode: 'Markdown'
+            });
         } catch (error) {
-            const errorMsg = currentMsg + '\n' + (error instanceof Error ? error.message : 'Unknown error');
-            ctx.api.editMessageText(chatId, messageId, errorMsg)
+            console.error("chat 出错:", error);
+
             saveMessage({
                 chatId,
                 messageId,
                 userId: botUserId,
                 date: replyDate,
                 userName: botUserName,
-                message: errorMsg,
+                message: currentMsg,
                 replyToId: ctx.message.message_id,
             });
+
+            const errorMsg = currentMsg + '\n' + (error instanceof Error ? error.message : 'Unknown error');
+            const msg = errorMsg.length > 1000 ? (errorMsg.slice(0, 1000) + '...') : errorMsg
+            try {
+                await ctx.api.editMessageText(chatId, messageId, msg)
+            } catch (error) {
+                console.error("尝试更新错误信息失败：", error);
+                setTimeout(async () => {
+                    try {
+                        await ctx.api.editMessageText(chatId, messageId, msg)
+                    } catch (error) {
+                        console.error("尝试等待 15s 更新错误信息失败：", error);
+                    }
+                }, 15000);
+            }
         }
     })
 }

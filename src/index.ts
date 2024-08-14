@@ -11,20 +11,11 @@ if (!process.env.BOT_TOKEN) {
     throw new Error('BOT_TOKEN must be provided')
 }
 
+global.currentModel = process.env.DEFAULT_MODEL || "gpt-4o-2024-08-06";
+
 // 波特实例
 const bot = new Bot(process.env.BOT_TOKEN)
 
-
-declare global {
-    // 文件组标识
-    var mediaGroupIdTemp: {
-        chatId: number;
-        messageId: number;
-        mediaGroupId: string;
-    };
-    // 正在保存中的文件 id
-    var asynchronousFileSaveMsgIdList: number[];
-}
 
 Object.assign(global, { mediaGroupIdTemp: {}, asynchronousFileSaveMsgIdList: [] });
 
