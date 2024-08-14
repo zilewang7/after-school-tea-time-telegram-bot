@@ -46,12 +46,13 @@ export const autoSave = (bot: Bot) => {
                         userId: ctx.from.id,
                         date: new Date(ctx.message?.date * 1000),
                         userName: ctx.from.first_name,
-                        message:  ctx.message?.text || ctx.message?.caption || (isVideo ? `${stickerFile?.emoji} ([syetem] can not get video sticker)` : stickerFile?.emoji),
+                        message: ctx.message?.text || ctx.message?.caption || (isVideo ? `${stickerFile?.emoji} ([syetem] can not get video sticker)` : stickerFile?.emoji),
                         fileLink,
                         replyToId,
                     }
                 );
-            } catch {
+            } catch (error) {
+                console.error("保存消息失败", error);
                 global.asynchronousFileSaveMsgIdList = global.asynchronousFileSaveMsgIdList.filter(id => id !== ctx.message?.message_id);
             }
         }
