@@ -1,9 +1,10 @@
-import { Bot } from "grammy";
+import { Bot, Context } from "grammy";
 import { changeModel, matchFirstEmoji, removeSpecificText, sendModelMsg } from "../util";
 import { generateImageByPrompt } from "../openai/image-generate";
+import { Menus } from "./menu";
 
-export const cmdLoad = async (bot: Bot) => {
-    await bot.api.setMyCommands([
+export const cmdLoad = async (bot: Bot, menus: Menus) => {
+    bot.api.setMyCommands([
         { command: "start", description: "开始" },
         { command: "help", description: "没有帮助" },
         { command: "react", description: "给消息添加表情" },
@@ -68,9 +69,9 @@ export const cmdLoad = async (bot: Bot) => {
         const match = ctx.match;
 
         if (match) {
-            await changeModel(ctx, bot, match);
+            await changeModel(ctx, match, menus.checkModelMenu);
         } else {
-            await sendModelMsg(ctx, bot);
+            await sendModelMsg(ctx, menus.checkModelMenu);
         }
     });
 }

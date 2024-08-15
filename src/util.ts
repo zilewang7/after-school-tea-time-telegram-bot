@@ -4,7 +4,7 @@ import { getMessage } from './db';
 import { Op } from '@sequelize/core';
 import { ReactionTypeEmoji } from 'grammy/types';
 import { Bot, Context } from 'grammy';
-import { useCheckModelMenu } from './cmd/menu';
+import { Menu } from '@grammyjs/menu';
 
 dotenv.config();
 
@@ -141,15 +141,15 @@ export const checkIfNeedRecentContext = (text: string) => {
     return regex.test(text)
 }
 
-export const sendModelMsg = async (ctx: Context, bot: Bot) => {
-    const menu = useCheckModelMenu(bot);
+export const sendModelMsg = async (ctx: Context, checkModelMenu: Menu<Context>) => {
+    const menu = checkModelMenu;
     await ctx.reply(
         '当前模型：' + global.currentModel + '\n\n点击下方按钮快速切换或使用 `/model [模型名]` 手动指定',
         { reply_markup: menu, parse_mode: 'Markdown' }
     );
 }
 
-export const changeModel = async (ctx: Context, bot: Bot, model: string) => {
+export const changeModel = async (ctx: Context, model: string, checkModelMenu: Menu<Context>) => {
     global.currentModel = model;
-    await sendModelMsg(ctx, bot);
+    await sendModelMsg(ctx, checkModelMenu);
 }

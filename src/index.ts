@@ -3,6 +3,7 @@ import { Bot } from "grammy";
 import { cmdLoad } from './cmd';
 import { replyLoad } from './reply';
 import { autoClear, autoSave } from './db/autoSave';
+import { menuLoad } from './cmd/menu';
 
 dotenv.config();
 
@@ -26,8 +27,10 @@ autoClear();
 
 
 
+// 加载菜单
+const menus = menuLoad(bot);
 // 使用命令
-cmdLoad(bot);
+cmdLoad(bot, menus);
 // 使用回复
 replyLoad(bot);
 

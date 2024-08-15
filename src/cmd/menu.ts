@@ -1,16 +1,19 @@
 import { Menu } from "@grammyjs/menu";
-import { Bot } from "grammy";
+import { Bot, Context } from "grammy";
 import { changeModel } from "../util";
 
+export type Menus = Record<'checkModelMenu', Menu<Context>>
 
-export const useCheckModelMenu = (bot: Bot) => {
-    const menu = new Menu("checkModelMenu")
-    .text("gpt-4o-2024-08-06", async (ctx) => await changeModel(ctx, bot, "gpt-4o-2024-08-06"))
-    .text("gpt-4-turbo-2024-04-09", async (ctx) => await changeModel(ctx, bot, "gpt-4-turbo-2024-04-09")).row()
-    .text("gemini-1.5-flash", async (ctx) => await changeModel(ctx, bot, "gemini-1.5-flash"))
-    .text("gemini-1.5-pro", async (ctx) => await changeModel(ctx, bot, "gemini-1.5-pro")).row()
+export const menuLoad = (bot: Bot): Menus => {
+    const checkModelMenu = new Menu("checkModelMenu")
+        .text("gpt-4o-2024-08-06", async (ctx): Promise<void> => await changeModel(ctx, "gpt-4o-2024-08-06", checkModelMenu))
+        .text("gpt-4-turbo-2024-04-09", async (ctx): Promise<void> => await changeModel(ctx, "gpt-4-turbo-2024-04-09", checkModelMenu)).row()
+        .text("gemini-1.5-flash", async (ctx): Promise<void> => await changeModel(ctx, "gemini-1.5-flash", checkModelMenu))
+        .text("gemini-1.5-pro", async (ctx): Promise<void> => await changeModel(ctx, "gemini-1.5-pro", checkModelMenu)).row()
 
-    bot.use(menu);
+    bot.use(checkModelMenu);
 
-    return menu;
+    return {
+        checkModelMenu,
+    }
 }

@@ -253,9 +253,6 @@ export const replyChat = (bot: Bot) => {
 
             let buffer = '';
 
-            const isOpenAIStream = stream instanceof Stream;
-
-
             let timeTemp = Date.now();
 
             const handleBuffer = async () => {
@@ -268,8 +265,8 @@ export const replyChat = (bot: Bot) => {
                 }
             }
 
-            if (isOpenAIStream) {
-                for await (const chunk of stream) {
+            if (!global.currentModel.startsWith('gemini') || !process.env.GEMINI_API_KEY) {
+                for await (const chunk of (stream as Stream<ChatCompletionChunk>)) {
                     const content = chunk.choices[0]?.delta?.content;
                     if (content) {
                         buffer += content;
@@ -278,7 +275,7 @@ export const replyChat = (bot: Bot) => {
                     }
                 }
             } else {
-                for await (const chunk of stream.stream) {
+                for await (const chunk of (stream as GenerateContentStreamResult).stream) {
                     const chunkText = chunk.text();
 
                     if (chunkText) {
