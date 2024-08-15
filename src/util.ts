@@ -3,7 +3,8 @@ import { Message as DBMessage } from "./db/messageDTO";
 import { getMessage } from './db';
 import { Op } from '@sequelize/core';
 import { ReactionTypeEmoji } from 'grammy/types';
-import { Context, Middleware, ReactionMiddleware } from 'grammy';
+import { Bot, Context } from 'grammy';
+import { useCheckModelMenu } from './cmd/menu';
 
 dotenv.config();
 
@@ -20,7 +21,7 @@ export function matchFirstEmoji(message: string | undefined): ReactionTypeEmoji[
 }
 
 export function removeSpecificText(message: string, textToRemove?: string) {
-    const regex = new RegExp(`${textToRemove ? textToRemove + '|' : ''}@AfterSchoolTeatimeBot`, 'g');
+    const regex = new RegExp(`${textToRemove ? textToRemove + '|' : ''}@${process.env.BOT_USER_NAME}`, 'g');
     const cleanedMessage = message.replace(regex, '');
     return cleanedMessage;
 }
@@ -31,7 +32,7 @@ export function checkIfMentioned(ctx: Context) {
 
     const replyUserId = ctx.message?.reply_to_message?.from?.id;
 
-    return text?.includes('@AfterSchoolTeatimeBot') || replyUserId === Number(process.env.BOT_USER_ID) || ctx?.chat?.type === 'private';
+    return text?.includes(`@${process.env.BOT_USER_NAME}`) || replyUserId === Number(process.env.BOT_USER_ID) || ctx?.chat?.type === 'private';
 }
 
 export async function convertBlobToBase64(blob: Blob): Promise<string> {
@@ -136,6 +137,19 @@ export const getRepliesHistory = async (
 }
 
 export const checkIfNeedRecentContext = (text: string) => {
-    const regex = /^(上面|@AfterSchoolTeatimeBot 上面|.*: 上面|.*: @AfterSchoolTeatimeBot 上面)/;
+    const regex = new RegExp(`/^(上面|@${process.env.BOT_USER_NAME}: 上面|.*: 上面|.*: @${process.env.BOT_USER_NAME}: 上面)/`, 'g');
     return regex.test(text)
+}
+
+export const sendModelMsg = async (ctx: Context, bot: Bot) => {
+    const menu = useCheckModelMenu(bot);
+    await ctx.reply(
+        '当前模型：' + global.currentModel + '\n\n点击下方按钮快速切换或使用 `/model [模型名]` 手动指定',
+        { reply_markup: menu, parse_mode: 'Markdown' }
+    );
+}
+
+export const changeModel = async (ctx: Context, bot: Bot, model: string) => {
+    global.currentModel = model;
+    await sendModelMsg(ctx, bot);
 }

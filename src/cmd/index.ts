@@ -1,8 +1,19 @@
 import { Bot } from "grammy";
-import { matchFirstEmoji, removeSpecificText } from "../util";
+import { changeModel, matchFirstEmoji, removeSpecificText, sendModelMsg } from "../util";
 import { generateImageByPrompt } from "../openai/image-generate";
 
-export const cmdLoad = (bot: Bot) => {
+export const cmdLoad = async (bot: Bot) => {
+    await bot.api.setMyCommands([
+        { command: "start", description: "开始" },
+        { command: "help", description: "没有帮助" },
+        { command: "react", description: "给消息添加表情" },
+        { command: "pic", description: "使用英文提示词生成图片-快速" },
+        { command: "pic1", description: "使用英文提示词生成图片-均衡" },
+        { command: "pic2", description: "使用英文提示词生成图片-粗糙" },
+        { command: "model", description: "查看/切换大语言模型" },
+    ]);
+
+
     bot.command('start', (ctx) => ctx.reply('Welcome'));
 
     bot.command('help', (ctx) => ctx.reply('Send me a sticker'));
@@ -43,7 +54,23 @@ export const cmdLoad = (bot: Bot) => {
             return
         }
 
+        const model = {
+            'pic': '0',
+            'pic1': '1',
+            'pic2': '2',
+        }[command] || '1';
+
         const msg = removeSpecificText(ctx.message.text, command);
-        await generateImageByPrompt(ctx, command, msg);
+        await generateImageByPrompt(ctx, model, msg);
+    });
+
+    bot.command('model', async (ctx) => {
+        const match = ctx.match;
+
+        if (match) {
+            await changeModel(ctx, bot, match);
+        } else {
+            await sendModelMsg(ctx, bot);
+        }
     });
 }

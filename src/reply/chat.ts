@@ -11,7 +11,7 @@ import { GenerateContentStreamResult } from '@google/generative-ai';
 dotenv.config();
 
 const botUserId = Number(process.env.BOT_USER_ID)
-const botUserName = process.env.BOT_USER_NAME
+const botUserName = process.env.BOT_NAME
 
 const generalContext = async (ctx: Context): Promise<Array<MessageContent>> => {
     if (!ctx.message) { return []; }

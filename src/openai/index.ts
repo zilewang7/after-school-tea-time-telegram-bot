@@ -12,7 +12,7 @@ const openai = new OpenAI({
 })
 
 
-const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY,);
+const genAI = process.env.GEMINI_API_KEY ? new GoogleGenerativeAI(process.env.GEMINI_API_KEY) : undefined;
 
 interface UserMessageContent {
     role: 'user'
@@ -27,7 +27,7 @@ interface AssistantMessageContent {
 export type MessageContent = UserMessageContent | AssistantMessageContent
 
 export const sendMsgToOpenAI = async (contents: Array<MessageContent>) => {
-    if (global.currentModel.startsWith('gemini')) {
+    if (global.currentModel.startsWith('gemini') && genAI) {
         const model = genAI.getGenerativeModel({
             model: global.currentModel,
             safetySettings,
