@@ -27,7 +27,9 @@ interface AssistantMessageContent {
 export type MessageContent = UserMessageContent | AssistantMessageContent
 
 export const sendMsgToOpenAI = async (contents: Array<MessageContent>) => {
+    console.log('模型信息: ', global.currentModel);
     if (global.currentModel.startsWith('gemini') && genAI) {
+        console.log('使用谷歌 SDK');
         const model = genAI.getGenerativeModel({
             model: global.currentModel,
             safetySettings,
@@ -65,6 +67,7 @@ export const sendMsgToOpenAI = async (contents: Array<MessageContent>) => {
             contents: geminiContent
         });
     } else {
+        console.log('使用 OpenAI SDK');
         const res = await openai.chat.completions.create(
             {
                 model: global.currentModel,
