@@ -255,21 +255,13 @@ export const replyChat = (bot: Bot) => {
 
             let timeTemp = Date.now();
 
-            let lock = false;
-
             const handleBuffer = async () => {
-                try {
-                    // 每 500ms 更新一次
-                    if (buffer.length > 10 && Date.now() - timeTemp > 500 && !lock) {
-                        lock = true;
-                        timeTemp = Date.now();
-                        await ctx.api.sendChatAction(ctx.chat.id, 'typing');
-                        await addReply(buffer);
-                        buffer = '';  // 清空缓冲区
-                        lock = false;
-                    }
-                } catch (error) {
-                    console.error('handleBuffer error: ', error);
+                // 每 500ms 更新一次
+                if (buffer.length && Date.now() - timeTemp > 500) {
+                    await ctx.api.sendChatAction(ctx.chat.id, 'typing');
+                    await addReply(buffer);
+                    buffer = '';  // 清空缓冲区
+                    timeTemp = Date.now();
                 }
             }
 
@@ -279,7 +271,7 @@ export const replyChat = (bot: Bot) => {
                     if (content) {
                         buffer += content;
 
-                        handleBuffer();
+                        await handleBuffer();
                     }
                 }
             } else {
@@ -290,7 +282,7 @@ export const replyChat = (bot: Bot) => {
                         buffer += chunkText;
                     }
 
-                    handleBuffer();
+                    await handleBuffer();
                 }
             }
 
