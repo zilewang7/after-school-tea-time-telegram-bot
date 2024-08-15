@@ -260,7 +260,7 @@ export const replyChat = (bot: Bot) => {
             const handleBuffer = async () => {
                 try {
                     // 每 500ms 更新一次
-                    if (buffer.length && Date.now() - timeTemp > 500 && !lock) {
+                    if (buffer.length > 10 && Date.now() - timeTemp > 500 && !lock) {
                         lock = true;
                         timeTemp = Date.now();
                         await ctx.api.sendChatAction(ctx.chat.id, 'typing');
