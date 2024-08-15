@@ -2,6 +2,11 @@ import { Context, InputFile } from "grammy";
 
 export const generateImageByPrompt = async (ctx: Context, model: string, msg: string) => {
     try {
+        if (!ctx.match) {
+            await ctx.reply("No input found");
+            return;
+        }
+
         const res = await fetch("https://sd-cf.nloli.xyz/pic?key=114514", {
             headers: {
                 accept: "*/*",
