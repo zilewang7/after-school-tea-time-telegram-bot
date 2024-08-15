@@ -56,9 +56,9 @@ export const cmdLoad = async (bot: Bot, menus: Menus) => {
         }
 
         const model = {
-            'pic': '0',
-            'pic1': '1',
-            'pic2': '2',
+            '/pic': '0',
+            '/pic1': '1',
+            '/pic2': '2',
         }[command] || '1';
 
         const msg = removeSpecificText(ctx.message.text, command);
