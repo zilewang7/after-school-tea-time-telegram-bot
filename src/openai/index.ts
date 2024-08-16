@@ -48,8 +48,8 @@ export const sendMsgToOpenAI = async (contents: Array<MessageContent>) => {
                         } else {
                             return {
                                 inlineData: {
-                                    mimeType: 'image/jpeg',
-                                    data: part.image_url.url
+                                    mimeType: 'image/png',
+                                    data: part.image_url.url.slice(22)
                                 }
                             }
                         }
