@@ -12,33 +12,33 @@ export const autoSave = (bot: Bot) => {
             let isVideo = false;
             let replyToId = ctx.message.reply_to_message?.message_id;
 
-            if (ctx.update.message?.media_group_id) {
-                if (global.mediaGroupIdTemp.chatId === ctx.chat.id && global.mediaGroupIdTemp.mediaGroupId === ctx.message.media_group_id) {
-                    replyToId = global.mediaGroupIdTemp.messageId;
-                } else {
-                    global.mediaGroupIdTemp = {
-                        chatId: ctx.chat.id,
-                        messageId: ctx.message.message_id,
-                        mediaGroupId: ctx.update.message.media_group_id
+            try {
+                if (ctx.update.message?.media_group_id) {
+                    if (global.mediaGroupIdTemp.chatId === ctx.chat.id && global.mediaGroupIdTemp.mediaGroupId === ctx.message.media_group_id) {
+                        replyToId = global.mediaGroupIdTemp.messageId;
+                    } else {
+                        global.mediaGroupIdTemp = {
+                            chatId: ctx.chat.id,
+                            messageId: ctx.message.message_id,
+                            mediaGroupId: ctx.update.message.media_group_id
+                        }
                     }
                 }
-            }
 
-            const photoFile = ctx.update.message?.photo?.at(-1);
-            const stickerFile = ctx.update.message?.sticker;
-            const fileId = photoFile?.file_id || stickerFile?.file_id;
+                const photoFile = ctx.update.message?.photo?.at(-1);
+                const stickerFile = ctx.update.message?.sticker;
+                const fileId = photoFile?.file_id || stickerFile?.file_id;
 
 
-            if (fileId) {
-                if (ctx.update.message?.sticker?.is_video || ctx.update.message?.sticker?.is_animated) {
-                    isVideo = true;
-                } else {
-                    fileLink = `https://api.telegram.org/file/bot${process.env.BOT_TOKEN}/${(await bot.api.getFile(fileId)).file_path}`;
-                    global.asynchronousFileSaveMsgIdList.push(ctx.message.message_id);
+                if (fileId) {
+                    if (ctx.update.message?.sticker?.is_video || ctx.update.message?.sticker?.is_animated) {
+                        isVideo = true;
+                    } else {
+                        fileLink = `https://api.telegram.org/file/bot${process.env.BOT_TOKEN}/${(await bot.api.getFile(fileId)).file_path}`;
+                        global.asynchronousFileSaveMsgIdList.push(ctx.message.message_id);
+                    }
                 }
-            }
 
-            try {
                 saveMessage(
                     {
                         chatId: ctx.chat.id,
