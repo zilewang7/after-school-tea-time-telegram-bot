@@ -34,6 +34,11 @@ cmdLoad(bot, menus);
 // 使用回复
 replyLoad(bot);
 
+// catch error
+bot.catch((error) => {
+    console.log(error)
+})
+
 
 // 启动
 bot.start()
