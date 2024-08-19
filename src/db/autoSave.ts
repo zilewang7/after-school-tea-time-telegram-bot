@@ -46,7 +46,7 @@ export const autoSave = (bot: Bot) => {
                         userId: ctx.from.id,
                         date: new Date(ctx.message?.date * 1000),
                         userName: ctx.from.first_name,
-                        message: ctx.message?.text || ctx.message?.caption || (isVideo ? `${stickerFile?.emoji} ([syetem] can not get video sticker)` : stickerFile?.emoji),
+                        message: ctx.message?.text || ctx.message?.caption || (isVideo ? `${stickerFile?.emoji} ([system] can not get video sticker)` : stickerFile?.emoji),
                         fileLink,
                         replyToId,
                     }

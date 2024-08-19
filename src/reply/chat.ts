@@ -25,7 +25,7 @@ const generalContext = async (ctx: Context): Promise<Array<MessageContent>> => {
         if (repledMsg?.fromBotSelf) {
             chatContents.push({
                 role: 'assistant',
-                content: repledMsg.text || '[syetem] message lost',
+                content: repledMsg.text || '[system] message lost',
             })
         } else {
             const replyContent: Array<ChatCompletionContentPart> = [];
@@ -60,7 +60,7 @@ const generalContext = async (ctx: Context): Promise<Array<MessageContent>> => {
 
     const replyText = await (async () => {
         if (ctx.message?.reply_to_message) {
-            let text = '([syetem]repling to ['
+            let text = '([system]repling to ['
             const msgText = (await getMessage(ctx.message.chat.id, ctx.message.reply_to_message.message_id))?.text
 
             if (msgText) {
@@ -97,7 +97,7 @@ const generalContext = async (ctx: Context): Promise<Array<MessageContent>> => {
 
     if (tgFile) {
         if (ctx.message?.sticker?.is_video || ctx.message?.sticker?.is_animated) {
-            (msgContent[0] as ChatCompletionContentPartText).text += ' ([syetem] can not get video sticker) (I send a sticker)';
+            (msgContent[0] as ChatCompletionContentPartText).text += ' ([system] can not get video sticker) (I send a sticker)';
         } else {
             const replyIsMediaGroup = !!(ctx.message.photo && ctx.message?.media_group_id);
 
