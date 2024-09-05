@@ -84,7 +84,7 @@ const generalContext = async (ctx: Context): Promise<Array<MessageContent>> => {
         type: 'text' as const,
         text: `${ctx.message.from.first_name}`
             + replyText
-            + (ctx.message.text || ctx.message.sticker?.emoji || '')
+            + (ctx.message.text || ctx.message.caption || ctx.message.sticker?.emoji || '')
     })
 
     const tgFile = (() => {
