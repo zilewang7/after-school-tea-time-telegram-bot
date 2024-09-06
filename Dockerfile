@@ -15,8 +15,7 @@ RUN npm install -g corepack \
 
 WORKDIR /app/k-on-bot
 
-# 复制脚本和环境文件
-COPY build.sh .
+# 复制环境文件
 COPY .env .
 
 # 给脚本添加执行权限
