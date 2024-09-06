@@ -1,0 +1,13 @@
+services:
+  k-on-bot:
+    restart: always
+    build:
+      context: .
+      args:
+        - GIT_REPO=https://github.com/zilewang7/after-school-tea-time-telegram-bot.git
+    environment:
+      - GIT_REPO=https://github.com/zilewang7/after-school-tea-time-telegram-bot.git
+    volumes:
+      - ./database.sqlite:/app/k-on-bot/database.sqlite
+    command: /app/k-on-bot/build.sh
+    working_dir: /app/k-on-bot
