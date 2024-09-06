@@ -32,7 +32,7 @@ const menus = menuLoad(bot);
 // 使用命令
 cmdLoad(bot, menus);
 // 使用回复
-replyLoad(bot);
+replyLoad(bot, menus);
 
 // catch error
 bot.catch((error) => {

@@ -1,8 +1,8 @@
 import { Menu } from "@grammyjs/menu";
 import { Bot, Context } from "grammy";
-import { changeModel } from "../util";
+import { changeModel, retry } from "../util";
 
-export type Menus = Record<'checkModelMenu', Menu<Context>>
+export type Menus = Record<'checkModelMenu' | 'retryMenu', Menu<Context>>
 
 export const menuLoad = (bot: Bot): Menus => {
     const checkModelMenu = new Menu("checkModelMenu")
@@ -11,9 +11,14 @@ export const menuLoad = (bot: Bot): Menus => {
         .text("gemini-1.5-flash", async (ctx): Promise<void> => await changeModel(ctx, "gemini-1.5-flash", checkModelMenu))
         .text("gemini-1.5-pro", async (ctx): Promise<void> => await changeModel(ctx, "gemini-1.5-pro", checkModelMenu)).row()
 
-    bot.use(checkModelMenu);
+
+    const retryMenu = new Menu("retryMenu")
+        .text("重试", async (ctx): Promise<void> => await retry(ctx, retryMenu));
+
+    bot.use(checkModelMenu, retryMenu);
 
     return {
         checkModelMenu,
+        retryMenu
     }
 }

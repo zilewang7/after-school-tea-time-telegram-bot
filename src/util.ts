@@ -5,6 +5,7 @@ import { Op } from '@sequelize/core';
 import { ReactionTypeEmoji } from 'grammy/types';
 import { Bot, Context } from 'grammy';
 import { Menu } from '@grammyjs/menu';
+import { reply } from './reply/chat';
 
 dotenv.config();
 
@@ -152,4 +153,8 @@ export const sendModelMsg = async (ctx: Context, checkModelMenu: Menu<Context>) 
 export const changeModel = async (ctx: Context, model: string, checkModelMenu: Menu<Context>) => {
     global.currentModel = model;
     await sendModelMsg(ctx, checkModelMenu);
+}
+
+export const retry = async (ctx: Context, retryMenu: Menu<Context>) => {
+    reply(ctx, retryMenu);
 }
