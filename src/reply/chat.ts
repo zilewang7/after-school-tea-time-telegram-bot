@@ -210,11 +210,13 @@ async function sendMsgToOpenAIWithRetry(chatContents: MessageContent[]): Promise
     throw new Error('Maximum retries exceeded');
 }
 
-export const reply = async (ctx: Context, retryMenu: Menu<Context>) => {
+export const reply = async (ctx: Context, retryMenu: Menu<Context>, options?: {
+    mention?: boolean
+}) => {
     if (!ctx.message || !ctx.chat) { return; }
 
     // 如果没有被提及，不需要回复
-    if (!checkIfMentioned(ctx)) { return; }
+    if (!(checkIfMentioned(ctx) || options?.mention)) { return; }
 
     // 如果是图片组，后面的图片不需要重复回复
     if (

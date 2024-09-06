@@ -2,8 +2,8 @@ import dotenv from 'dotenv'
 import { Message as DBMessage } from "./db/messageDTO";
 import { getMessage } from './db';
 import { Op } from '@sequelize/core';
-import { ReactionTypeEmoji } from 'grammy/types';
-import { Bot, Context } from 'grammy';
+import { ReactionTypeEmoji, Update } from 'grammy/types';
+import { Context } from 'grammy';
 import { Menu } from '@grammyjs/menu';
 import { reply } from './reply/chat';
 
@@ -156,5 +156,24 @@ export const changeModel = async (ctx: Context, model: string, checkModelMenu: M
 }
 
 export const retry = async (ctx: Context, retryMenu: Menu<Context>) => {
-    reply(ctx, retryMenu);
+    const message = ctx.update.callback_query?.message?.reply_to_message;
+    const chatId = message?.chat.id;
+    const messageId = message?.message_id;
+
+    if (!chatId || !messageId) {
+        return;
+    }
+
+    const update = {
+        ...ctx.update,
+        ...message,
+        message: message,
+        reply_to_message: {
+            message_id: (await getMessage(chatId, messageId))?.replyToId
+        }
+    } as Update
+
+    const newCtx = new Context(update, ctx.api, ctx.me)
+
+    reply(newCtx, retryMenu, { mention: true });
 }
