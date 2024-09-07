@@ -138,7 +138,7 @@ export const getRepliesHistory = async (
 }
 
 export const checkIfNeedRecentContext = (text: string) => {
-    const regex = new RegExp(`^(.*: 上面|.*: @${process.env.BOT_USER_NAME} 上面)`, 'g');
+    const regex = new RegExp(`^(.*: 上面|.*: @${process.env.BOT_USER_NAME} 上面|上面|@${process.env.BOT_USER_NAME} 上面)`, 'g');
     return regex.test(text)
 }
 
