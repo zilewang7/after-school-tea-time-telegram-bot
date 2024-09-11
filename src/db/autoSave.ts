@@ -33,6 +33,11 @@ export const autoSave = (bot: Bot) => {
                 if (fileId) {
                     if (ctx.update.message?.sticker?.is_video || ctx.update.message?.sticker?.is_animated) {
                         isVideo = true;
+                        const previewImageId = ctx.update.message.sticker.thumbnail?.file_id;
+                        if (previewImageId) {
+                            fileLink = `https://api.telegram.org/file/bot${process.env.BOT_TOKEN}/${(await bot.api.getFile(previewImageId)).file_path}`;
+                            global.asynchronousFileSaveMsgIdList.push(ctx.message.message_id);
+                        }
                     } else {
                         fileLink = `https://api.telegram.org/file/bot${process.env.BOT_TOKEN}/${(await bot.api.getFile(fileId)).file_path}`;
                         global.asynchronousFileSaveMsgIdList.push(ctx.message.message_id);
@@ -46,7 +51,7 @@ export const autoSave = (bot: Bot) => {
                         userId: ctx.from.id,
                         date: new Date(ctx.message?.date * 1000),
                         userName: ctx.from.first_name,
-                        message: ctx.message?.text || ctx.message?.caption || (isVideo ? `${stickerFile?.emoji} ([system] can not get video sticker)` : stickerFile?.emoji),
+                        message: ctx.message?.text || ctx.message?.caption || (isVideo ? `${stickerFile?.emoji} ([system] can not get video sticker, only thumbnail image)` : stickerFile?.emoji),
                         fileLink,
                         replyToId,
                     }
