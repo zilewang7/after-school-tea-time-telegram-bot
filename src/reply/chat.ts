@@ -98,41 +98,41 @@ const generalContext = async (ctx: Context): Promise<Array<MessageContent>> => {
     })()
 
     if (tgFile) {
+        const replyIsMediaGroup = !!(ctx.message.photo && ctx.message?.media_group_id);
         if (ctx.message?.sticker?.is_video || ctx.message?.sticker?.is_animated) {
-            (msgContent[0] as ChatCompletionContentPartText).text += ' ([system] can not get video sticker) (I send a sticker)';
+            (msgContent[0] as ChatCompletionContentPartText).text += ' ([system] can not get video sticker, only thumbnail image) (I send a sticker)';
         } else {
-            const replyIsMediaGroup = !!(ctx.message.photo && ctx.message?.media_group_id);
-
             (msgContent[0] as ChatCompletionContentPartText).text
                 += ('(I send ' + (replyIsMediaGroup ? 'some ' : 'a ')
                     + (ctx.message.photo ? 'picture' : 'sticker')
                     + (replyIsMediaGroup ? 's' : '') + ')')
+        }
 
-            // 当 global.asynchronousFileSaveMsgIdList 有值时，表示正在保存文件，等待列表清空
-            while (global.asynchronousFileSaveMsgIdList.length) {
-                await new Promise(resolve => setTimeout(resolve, 100));
+
+        // 当 global.asynchronousFileSaveMsgIdList 有值时，表示正在保存文件，等待列表清空
+        while (global.asynchronousFileSaveMsgIdList.length) {
+            await new Promise(resolve => setTimeout(resolve, 100));
+        }
+
+        const firstMsg = await getMessage(ctx.message.chat.id, ctx.message.message_id);
+
+        if (firstMsg?.file) {
+            const fileList = [firstMsg.file];
+
+            for (const replyId of (JSON.parse(firstMsg.replies))) {
+                const msg = await getMessage(ctx.message.chat.id, replyId);
+                if (msg?.file) {
+                    fileList.push(msg.file);
+                }
             }
 
-            const firstMsg = await getMessage(ctx.message.chat.id, ctx.message.message_id);
-
-            if (firstMsg?.file) {
-                const fileList = [firstMsg.file];
-
-                for (const replyId of (JSON.parse(firstMsg.replies))) {
-                    const msg = await getMessage(ctx.message.chat.id, replyId);
-                    if (msg?.file) {
-                        fileList.push(msg.file);
+            for (const file of fileList) {
+                msgContent.push({
+                    type: 'image_url',
+                    image_url: {
+                        url: `data:image/png;base64,${file.toString('base64')}`
                     }
-                }
-
-                for (const file of fileList) {
-                    msgContent.push({
-                        type: 'image_url',
-                        image_url: {
-                            url: `data:image/png;base64,${file.toString('base64')}`
-                        }
-                    })
-                }
+                })
             }
         }
     }
