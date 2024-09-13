@@ -1,6 +1,6 @@
 import OpenAI from "openai";
 import dotenv from 'dotenv'
-import { ChatCompletionContentPart } from "openai/resources/index.mjs";
+import { ChatCompletionContentPart, ChatCompletionMessageParam } from "openai/resources/index.mjs";
 import { Content, GoogleGenerativeAI } from "@google/generative-ai";
 import { safetySettings } from './constants';
 
@@ -68,14 +68,20 @@ export const sendMsgToOpenAI = async (contents: Array<MessageContent>) => {
         });
     } else {
         console.log('使用 OpenAI SDK');
+
+        const extraContents: Array<ChatCompletionMessageParam> =
+            ['o1-preview', 'o1-mini'].includes(global.currentModel) ? [] : [
+                {
+                    role: 'system',
+                    content: process.env.SYSTEM_PROMPT
+                },
+            ]
+
         const res = await openai.chat.completions.create(
             {
                 model: global.currentModel,
                 messages: [
-                    {
-                        role: 'system',
-                        content: process.env.SYSTEM_PROMPT
-                    },
+                    ...extraContents,
                     ...contents,
                 ],
                 stream: true,
