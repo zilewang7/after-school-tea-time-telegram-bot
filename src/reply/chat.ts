@@ -2,7 +2,7 @@ import dotenv from 'dotenv'
 import { Bot, Context } from "grammy";
 import { Stream } from "openai/streaming.mjs";
 import { checkIfMentioned, checkIfNeedRecentContext, getRepliesHistory } from "../util";
-import { ChatCompletion, ChatCompletionChunk, ChatCompletionContentPart, ChatCompletionContentPartText, ChatCompletionMessageParam } from "openai/resources/index.mjs";
+import { ChatCompletion, ChatCompletionChunk, ChatCompletionContentPart, ChatCompletionContentPartText } from "openai/resources/index.mjs";
 import { getMessage, saveMessage } from "../db";
 import { sendMsgToOpenAI } from "../openai";
 import { MessageContent } from '../openai/index';
@@ -270,7 +270,7 @@ export const reply = async (ctx: Context, retryMenu: Menu<Context>, options?: {
         }
 
         if (!global.currentModel.startsWith('gemini') || !process.env.GEMINI_API_KEY) {
-            if (stream instanceof Stream) {
+            if ((stream as Stream<ChatCompletionChunk>)?.controller) {
                 for await (const chunk of (stream as Stream<ChatCompletionChunk>)) {
                     const content = chunk.choices[0]?.delta?.content;
                     if (content) {
