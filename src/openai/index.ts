@@ -69,13 +69,14 @@ export const sendMsgToOpenAI = async (contents: Array<MessageContent>) => {
     } else {
         console.log('使用 OpenAI SDK');
 
-        const extraContents: Array<ChatCompletionMessageParam> =
-            ['o1-preview', 'o1-mini'].includes(global.currentModel) ? [] : [
-                {
-                    role: 'system',
-                    content: process.env.SYSTEM_PROMPT
-                },
-            ]
+        const isO1 = global.currentModel.startsWith('o1');
+
+        const extraContents: Array<ChatCompletionMessageParam> = isO1 ? [] : [
+            {
+                role: 'system',
+                content: process.env.SYSTEM_PROMPT
+            },
+        ]
 
         const res = await openai.chat.completions.create(
             {
@@ -84,7 +85,7 @@ export const sendMsgToOpenAI = async (contents: Array<MessageContent>) => {
                     ...extraContents,
                     ...contents,
                 ],
-                stream: true,
+                stream: !isO1,
             },
         );
         return res;
