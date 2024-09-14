@@ -11,11 +11,13 @@ export const autoSave = (bot: Bot) => {
             let fileLink;
             let isVideo = false;
             let replyToId = ctx.message.reply_to_message?.message_id;
+            let isSubImage = false;
 
             try {
                 if (ctx.update.message?.media_group_id) {
                     if (global.mediaGroupIdTemp.chatId === ctx.chat.id && global.mediaGroupIdTemp.mediaGroupId === ctx.message.media_group_id) {
                         replyToId = global.mediaGroupIdTemp.messageId;
+                        isSubImage = true;
                     } else {
                         global.mediaGroupIdTemp = {
                             chatId: ctx.chat.id,
@@ -42,7 +44,28 @@ export const autoSave = (bot: Bot) => {
                         fileLink = `https://api.telegram.org/file/bot${process.env.BOT_TOKEN}/${(await bot.api.getFile(fileId)).file_path}`;
                         global.asynchronousFileSaveMsgIdList.push(ctx.message.message_id);
                     }
+
+                    // 最多花费 10s 来保存文件
+                    setTimeout(() => {
+                        global.asynchronousFileSaveMsgIdList = global.asynchronousFileSaveMsgIdList.filter(id => id !== ctx.message?.message_id);
+                    }, 10000);
                 }
+
+                const message = isSubImage ? `sub image of [${replyToId}]` :
+                    (ctx.message?.text || ctx.message?.caption || stickerFile?.emoji || '')
+                    + (
+                        fileId ?
+                            (
+                                `(I send `
+                                + (
+                                    ctx.update.message?.photo?.length ?
+                                        (isVideo ? 'a video sticker ([system] can not get video sticker, only thumbnail image)' : 'a sticker')
+                                        : (ctx.update.message?.media_group_id ? 'some pictures' : 'a picture')
+                                )
+                                + ')'
+                            )
+                            : ''
+                    )
 
                 saveMessage(
                     {
@@ -51,7 +74,8 @@ export const autoSave = (bot: Bot) => {
                         userId: ctx.from.id,
                         date: new Date(ctx.message?.date * 1000),
                         userName: ctx.from.first_name,
-                        message: ctx.message?.text || ctx.message?.caption || (isVideo ? `${stickerFile?.emoji} ([system] can not get video sticker, only thumbnail image)` : stickerFile?.emoji),
+                        message,
+                        quoteText: ctx.message?.quote?.text,
                         fileLink,
                         replyToId,
                     }

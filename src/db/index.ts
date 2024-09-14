@@ -3,7 +3,7 @@ import { Message } from "./messageDTO";
 import { getBlob } from "../util";
 
 // 同步数据库
-sequelize.sync();
+sequelize.sync({ alter: true });
 
 const saveMessage = async (
     info: {
@@ -13,11 +13,12 @@ const saveMessage = async (
         date: Date,
         userName?: string,
         message?: string,
+        quoteText?: string,
         fileLink?: string,
         replyToId?: number
     }
 ) => {
-    const { chatId, messageId, userId, date = new Date(), userName = '佚名', message, fileLink, replyToId } = info;
+    const { chatId, messageId, userId, date = new Date(), userName = '佚名', message, quoteText, fileLink, replyToId } = info;
 
     const fromBotSelf = userId === Number(process.env.BOT_USER_ID);
 
@@ -43,7 +44,7 @@ const saveMessage = async (
     }
 
     if (await Message.findOne({ where: { chatId, messageId } })) {
-        await Message.update({ text: message, date }, { where: { chatId, messageId } });
+        await Message.update({ text: message, date, quoteText }, { where: { chatId, messageId } });
 
         if (fileLink) {
             saveFile(fileLink);
@@ -68,6 +69,7 @@ const saveMessage = async (
         messageId,
         fromBotSelf,
         text: message,
+        quoteText,
         date,
         userName,
         replyToId,

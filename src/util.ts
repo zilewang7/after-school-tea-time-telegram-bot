@@ -1,11 +1,9 @@
 import dotenv from 'dotenv'
-import { Message as DBMessage } from "./db/messageDTO";
-import { getMessage } from './db';
-import { Op } from '@sequelize/core';
-import { ReactionTypeEmoji, Update } from 'grammy/types';
 import { Context } from 'grammy';
+import { ReactionTypeEmoji, Update } from 'grammy/types';
 import { Menu } from '@grammyjs/menu';
 import { reply } from './reply/chat';
+import { getMessage } from './db';
 
 dotenv.config();
 
@@ -43,103 +41,6 @@ export async function convertBlobToBase64(blob: Blob): Promise<string> {
 
     // a URL of the image or the base64 encoded image data
     return `data:image/png;base64,${base64}`
-}
-
-export const getRepliesHistory = async (
-    chatId: number,
-    messageId: number,
-    options: { withoutLast?: boolean, needRecentContext?: boolean } = {}
-): Promise<DBMessage[]> => {
-    const { withoutLast = true, needRecentContext = false } = options || {};
-
-    const getRecentMessages = async (messageId: number) => {
-        const messages = await DBMessage.findAll({
-            where: { chatId, messageId: { [Op.lt]: messageId } },
-            order: [['messageId', 'DESC']],
-            limit: 50
-        });
-
-        return messages;
-    }
-
-    let messageList: DBMessage[] = [];
-
-    if (needRecentContext) {
-        const messages = await getRecentMessages(messageId);
-        messageList = messages;
-    }
-
-
-
-    let headerMessageTemp: DBMessage;
-    const findHeaderMsg = async (messageId: number) => {
-        const msg = await getMessage(chatId, messageId);
-
-        if (msg?.replyToId) {
-            headerMessageTemp = msg;
-            return await findHeaderMsg(msg?.replyToId);
-        } else {
-            return msg ? msg : headerMessageTemp;
-        }
-    }
-
-    const headerMsg = await findHeaderMsg(messageId);
-
-    if (!headerMsg) {
-        return [];
-    }
-
-    messageList.push(headerMsg);
-    if (headerMsg.text && checkIfNeedRecentContext(headerMsg.text)) {
-        const recentMessages = await getRecentMessages(headerMsg.messageId);
-        messageList.push(...recentMessages);
-    }
-
-    const searchAllReplies = async (message: DBMessage) => {
-        const repliesIds = JSON.parse(message.replies);
-
-        if (!repliesIds.length) {
-            return;
-        }
-
-        for (const replyId of repliesIds) {
-            try {
-                const msg = await getMessage(chatId, replyId);
-                if (msg) {
-                    messageList.push(msg);
-                    if (msg.text && checkIfNeedRecentContext(msg.text)) {
-                        const recentMessages = await getRecentMessages(msg.messageId);
-                        messageList.push(...recentMessages);
-                    }
-                    await searchAllReplies(msg);
-                }
-            } catch (error) {
-                console.error(error);
-            }
-        }
-    }
-    await searchAllReplies(headerMsg);
-
-    // 去重
-    messageList = messageList.reduce((acc, curr) => {
-        if (!acc.find(obj => obj.messageId === curr.messageId)) {
-            acc.push(curr);
-        }
-        return acc;
-    }, [] as DBMessage[]);
-    // 排序
-    messageList.sort((a, b) => a.messageId - b.messageId);
-
-    if (withoutLast) {
-        messageList.pop();
-    }
-
-    return messageList
-}
-
-export const checkIfNeedRecentContext = (text: string) => {
-    const regex = new RegExp(`^(.*: 上面|.*: @${process.env.BOT_USER_NAME} 上面|上面|@${process.env.BOT_USER_NAME} 上面)`, 'g');
-    return regex.test(text)
 }
 
 export const sendModelMsg = async (ctx: Context, checkModelMenu: Menu<Context>) => {

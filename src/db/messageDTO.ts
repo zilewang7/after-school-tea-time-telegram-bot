@@ -13,6 +13,7 @@ export class Message extends Model<InferAttributes<Message>, InferCreationAttrib
   declare date: Date;
   declare userName: string;
   declare text: string | null;
+  declare quoteText: string | null;
   declare file: Buffer | null;
   declare replyToId: number | null;
   declare replies: string;
@@ -40,6 +41,10 @@ Message.init({
     allowNull: true,
   },
   text: {
+    type: DataTypes.TEXT,
+    allowNull: true,
+  },
+  quoteText: {
     type: DataTypes.TEXT,
     allowNull: true,
   },

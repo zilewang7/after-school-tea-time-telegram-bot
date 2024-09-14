@@ -1,149 +1,21 @@
 import dotenv from 'dotenv'
 import { Bot, Context } from "grammy";
+import { Menu } from '@grammyjs/menu';
 import { Stream } from "openai/streaming.mjs";
-import { checkIfMentioned, checkIfNeedRecentContext, getRepliesHistory } from "../util";
-import { ChatCompletion, ChatCompletionChunk, ChatCompletionContentPart, ChatCompletionContentPartText } from "openai/resources/index.mjs";
+import { ChatCompletion, ChatCompletionChunk } from "openai/resources/index.mjs";
+import { GenerateContentStreamResult } from '@google/generative-ai';
+import { MessageContent } from '../openai/index';
+import { Menus } from '../cmd/menu';
+import { checkIfMentioned } from "../util";
 import { getMessage, saveMessage } from "../db";
 import { sendMsgToOpenAI } from "../openai";
-import { MessageContent } from '../openai/index';
-import { GenerateContentStreamResult } from '@google/generative-ai';
-import { Menus } from '../cmd/menu';
-import { Menu } from '@grammyjs/menu';
+import { generalContext } from './general-context';
 
 dotenv.config();
 
 const botUserId = Number(process.env.BOT_USER_ID)
 const botUserName = process.env.BOT_NAME
 
-const generalContext = async (ctx: Context): Promise<Array<MessageContent>> => {
-    if (!ctx.message) { return []; }
-
-    const chatContents: Array<MessageContent> = []
-
-    const needRecentContext = checkIfNeedRecentContext(ctx.message.text ?? '');
-    const historyReplies = await getRepliesHistory(ctx.message.chat.id, ctx.message.message_id, { needRecentContext });
-
-    for (const repledMsg of historyReplies) {
-        if (repledMsg?.fromBotSelf) {
-            chatContents.push({
-                role: 'assistant',
-                content: repledMsg.text || '[system] message lost',
-            })
-        } else {
-            const replyContent: Array<ChatCompletionContentPart> = [];
-
-            const msgContent = {
-                type: 'text' as const,
-                text: `${repledMsg.userName}: `
-                    + (repledMsg?.text || '')
-            }
-
-            replyContent.push(msgContent);
-
-            if (repledMsg.file) {
-                (replyContent[0] as ChatCompletionContentPartText).text += '(I send a picture/sticker)';
-                replyContent.push({
-                    type: 'image_url',
-                    image_url: {
-                        url: `data:image/png;base64,${repledMsg.file.toString('base64')}`
-                    }
-                })
-            }
-
-            chatContents.push({
-                role: 'user',
-                content: replyContent
-            })
-        }
-    }
-
-    // 当前消息
-    const msgContent: Array<ChatCompletionContentPart> = []
-
-    const replyText = await (async () => {
-        if (ctx.message?.reply_to_message) {
-            let text = '([system]repling to ['
-            const msgText = (await getMessage(ctx.message.chat.id, ctx.message.reply_to_message.message_id))?.text
-
-            if (msgText) {
-                text += `${msgText.length > 20 ? (msgText.slice(0, 20) + '...') : msgText}]`
-            } else {
-                text += 'last message]'
-            }
-
-            if (ctx.message?.quote?.text) {
-                text += `[quote: ${ctx.message.quote.text}]`
-            }
-
-            text += '): '
-            return text;
-        } else {
-            return ': '
-        }
-    })()
-
-    msgContent.push({
-        type: 'text' as const,
-        text: `${ctx.message.from.first_name}`
-            + replyText
-            + (ctx.message.text || ctx.message.caption || ctx.message.sticker?.emoji || '')
-    })
-
-    const tgFile = (() => {
-        if (ctx.message.photo) {
-            return ctx.message.photo?.at(-1);
-        } else {
-            return ctx.message.sticker
-        }
-    })()
-
-    if (tgFile) {
-        const replyIsMediaGroup = !!(ctx.message.photo && ctx.message?.media_group_id);
-        if (ctx.message?.sticker?.is_video || ctx.message?.sticker?.is_animated) {
-            (msgContent[0] as ChatCompletionContentPartText).text += ' ([system] can not get video sticker, only thumbnail image) (I send a sticker)';
-        } else {
-            (msgContent[0] as ChatCompletionContentPartText).text
-                += ('(I send ' + (replyIsMediaGroup ? 'some ' : 'a ')
-                    + (ctx.message.photo ? 'picture' : 'sticker')
-                    + (replyIsMediaGroup ? 's' : '') + ')')
-        }
-
-
-        // 当 global.asynchronousFileSaveMsgIdList 有值时，表示正在保存文件，等待列表清空
-        while (global.asynchronousFileSaveMsgIdList.length) {
-            await new Promise(resolve => setTimeout(resolve, 100));
-        }
-
-        const firstMsg = await getMessage(ctx.message.chat.id, ctx.message.message_id);
-
-        if (firstMsg?.file) {
-            const fileList = [firstMsg.file];
-
-            for (const replyId of (JSON.parse(firstMsg.replies))) {
-                const msg = await getMessage(ctx.message.chat.id, replyId);
-                if (msg?.file) {
-                    fileList.push(msg.file);
-                }
-            }
-
-            for (const file of fileList) {
-                msgContent.push({
-                    type: 'image_url',
-                    image_url: {
-                        url: `data:image/png;base64,${file.toString('base64')}`
-                    }
-                })
-            }
-        }
-    }
-
-    chatContents.push({
-        role: 'user' as const,
-        content: msgContent
-    })
-
-    return chatContents;
-}
 
 async function sendMsgToOpenAIWithRetry(chatContents: MessageContent[]): Promise<Stream<ChatCompletionChunk> | ChatCompletion | GenerateContentStreamResult> {
     // log
@@ -250,7 +122,11 @@ export const reply = async (ctx: Context, retryMenu: Menu<Context>, options?: {
     }
     Object.assign(ctx, { update_id: ctx.update.update_id });
 
-    const chatContents = await generalContext(ctx);
+    const msg = await getMessage(ctx.chat.id, ctx.message.message_id);
+    if (!msg) {
+        throw new Error('读取消息失败');
+    }
+    const chatContents = await generalContext(msg);
 
     try {
         const stream: Stream<ChatCompletionChunk> | ChatCompletion | GenerateContentStreamResult = await sendMsgToOpenAIWithRetry(chatContents);
