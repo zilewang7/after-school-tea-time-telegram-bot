@@ -122,10 +122,6 @@ export const reply = async (ctx: Context, retryMenu: Menu<Context>, options?: {
     }
     Object.assign(ctx, { update_id: ctx.update.update_id });
 
-    // 当 global.asynchronousFileSaveMsgIdList 有值时，表示正在保存文件，等待列表清空
-    while (global.asynchronousFileSaveMsgIdList.length) {
-        await new Promise(resolve => setTimeout(resolve, 100));
-    }
 
     const msg = await getMessage(ctx.chat.id, ctx.message.message_id);
     if (!msg) {
@@ -232,5 +228,17 @@ export const reply = async (ctx: Context, retryMenu: Menu<Context>, options?: {
 }
 
 export const replyChat = (bot: Bot, menus: Menus) => {
-    bot.on(['msg:text', 'msg:photo', 'msg:sticker'], (ctx) => reply(ctx, menus.retryMenu));
+    bot.on(['msg:text', 'msg:photo', 'msg:sticker'], async (ctx, next) => {
+        next();
+
+        setTimeout(async () => {
+            // 当 global.asynchronousFileSaveMsgIdList 有值时，表示正在保存文件，等待列表清空
+            while (global.asynchronousFileSaveMsgIdList.length) {
+                await new Promise(resolve => setTimeout(resolve, 100));
+            }
+
+            reply(ctx, menus.retryMenu)
+        });
+
+    });
 }

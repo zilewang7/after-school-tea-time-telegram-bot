@@ -71,7 +71,7 @@ export const getRepliesHistory = async (
 
 export const getFileContentsOfMessage = async (chatId: number, messageId: number): Promise<ChatCompletionContentPartImage[]> => {
     const message = await getMessage(chatId, messageId);
-    if (!message || !(message.file && JSON.parse(message.replies)?.length)) {
+    if (!message || !(message.file || JSON.parse(message.replies)?.length)) {
         return [];
     }
 

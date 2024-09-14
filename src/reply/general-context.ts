@@ -6,9 +6,12 @@ import { getFileContentsOfMessage, getRepliesHistory } from "./helper";
 
 export const generalContext = async (msg: Message): Promise<Array<MessageContent>> => {
     const { chatId, messageId, userName, text, quoteText, file, replyToId } = msg;
-
+    
+    /** 上下文汇总 */ 
     const chatContents: Array<MessageContent> = []
 
+
+    // 历史消息
     const historyReplies = await getRepliesHistory(chatId, messageId, { excludeSelf: true });
     for (const repledMsg of historyReplies) {
         if (repledMsg?.fromBotSelf) {
@@ -40,7 +43,9 @@ export const generalContext = async (msg: Message): Promise<Array<MessageContent
     }
 
     // 当前消息
-    const msgContent: Array<ChatCompletionContentPart> = []
+    const fildContents = file ?
+        await getFileContentsOfMessage(chatId, messageId)
+        : [];
 
     const replyText = await (async () => {
         if (replyToId) {
@@ -64,19 +69,14 @@ export const generalContext = async (msg: Message): Promise<Array<MessageContent
         }
     })()
 
-    msgContent.push({
-        type: 'text' as const,
-        text: `${userName}`
-            + replyText
-            + (text || '')
-    })
-
-    const fildContents = file ?
-        await getFileContentsOfMessage(chatId, messageId)
-        : [];
-
-    msgContent.push(...fildContents);
-
+    const msgContent: Array<ChatCompletionContentPart> = [
+        ...fildContents,
+        {
+            type: 'text' as const,
+            text: `${replyText}`
+                + (text || '')
+        }
+    ]
 
     chatContents.push({
         role: 'user' as const,
