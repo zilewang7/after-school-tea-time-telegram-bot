@@ -51,7 +51,7 @@ export const autoSave = (bot: Bot) => {
                     + (
                         fileId ?
                             (
-                                `(I send `
+                                ` (I send `
                                 + (
                                     ctx.update.message?.photo?.length ?
                                         (ctx.update.message?.media_group_id ? 'some pictures' : 'a picture')

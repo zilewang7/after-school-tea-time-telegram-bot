@@ -73,7 +73,8 @@ export const generalContext = async (msg: Message): Promise<Array<MessageContent
         ...fildContents,
         {
             type: 'text' as const,
-            text: `${replyText}`
+            text: userName
+                + `${replyText}`
                 + (text || '')
         }
     ]
