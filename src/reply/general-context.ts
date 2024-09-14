@@ -50,10 +50,11 @@ export const generalContext = async (msg: Message): Promise<Array<MessageContent
     const replyText = await (async () => {
         if (replyToId) {
             let text = '([system]repling to '
-            const msgText = (await getMessage(chatId, replyToId))?.text
+            const { text: msgText, userName } = (await getMessage(chatId, replyToId)) || {}
 
             if (msgText) {
-                text += `[${msgText.length > 20 ? (msgText.slice(0, 20) + '...') : msgText}]`
+                text += `[${userName}:`;
+                text += `${msgText.length > 20 ? (msgText.slice(0, 20) + '...') : msgText}]`
             } else {
                 text += '[last message]'
             }

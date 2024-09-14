@@ -12,6 +12,7 @@ export const cmdLoad = async (bot: Bot, menus: Menus) => {
         { command: "pic1", description: "使用英文提示词生成图片-均衡" },
         { command: "pic2", description: "使用英文提示词生成图片-粗糙" },
         { command: "model", description: "查看/切换大语言模型" },
+        { command: "chat", description: "为消息添加上下文关联再进行对话，回复消息时输入 /chat [数量] [筛选条件]" },
     ]);
 
 

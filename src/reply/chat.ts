@@ -10,6 +10,7 @@ import { checkIfMentioned } from "../util";
 import { getMessage, saveMessage } from "../db";
 import { sendMsgToOpenAI } from "../openai";
 import { generalContext } from './general-context';
+import { dealChatCommand } from './helper';
 
 dotenv.config();
 
@@ -237,8 +238,11 @@ export const replyChat = (bot: Bot, menus: Menus) => {
                 await new Promise(resolve => setTimeout(resolve, 100));
             }
 
-            reply(ctx, menus.retryMenu)
-        });
+            const useChatCommand = await dealChatCommand(ctx);
 
+            reply(ctx, menus.retryMenu, {
+                mention: useChatCommand
+            })
+        });
     });
 }

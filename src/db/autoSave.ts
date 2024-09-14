@@ -44,10 +44,21 @@ export const autoSave = (bot: Bot) => {
                         fileLink = `https://api.telegram.org/file/bot${process.env.BOT_TOKEN}/${(await bot.api.getFile(fileId)).file_path}`;
                         global.asynchronousFileSaveMsgIdList.push(ctx.message.message_id);
                     }
+
+                    // 最多花费 10s 来保存文件
+                    setTimeout(() => {
+                        global.asynchronousFileSaveMsgIdList = global.asynchronousFileSaveMsgIdList.filter(id => id !== ctx.message?.message_id);
+                    }, 10000);
                 }
 
                 const message = isSubImage ? `sub image of [${replyToId}]` :
-                    (ctx.message?.text || ctx.message?.caption || stickerFile?.emoji || '')
+                    (
+                        (/^\/chat\s+([0-9a]+)\s*(-(\S+))?\s*(.+)?$/.test(ctx.message?.text || '')
+                            ? (ctx.message?.text?.match(/^\/chat\s+([0-9a]+)\s*(-(\S+))?\s*(.+)?$/)?.[4] || ' ')
+                            : ''
+                        )
+                        || ctx.message?.text || ctx.message?.caption || stickerFile?.emoji || ''
+                    )
                     + (
                         fileId ?
                             (
