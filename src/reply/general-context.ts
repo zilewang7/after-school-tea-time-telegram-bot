@@ -5,11 +5,6 @@ import { Message } from "../db/messageDTO";
 import { getFileContentsOfMessage, getRepliesHistory } from "./helper";
 
 export const generalContext = async (msg: Message): Promise<Array<MessageContent>> => {
-    // 当 global.asynchronousFileSaveMsgIdList 有值时，表示正在保存文件，等待列表清空
-    while (global.asynchronousFileSaveMsgIdList.length) {
-        await new Promise(resolve => setTimeout(resolve, 100));
-    }
-
     const { chatId, messageId, userName, text, quoteText, file, replyToId } = msg;
 
     const chatContents: Array<MessageContent> = []
