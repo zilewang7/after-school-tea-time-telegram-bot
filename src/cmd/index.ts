@@ -36,8 +36,8 @@ export const cmdLoad = async (bot: Bot, menus: Menus) => {
         }
 
         ctx.api.setMessageReaction(
-            replyId,
             chatId,
+            replyId,
             [{
                 type: 'emoji',
                 emoji: firstEmoji
