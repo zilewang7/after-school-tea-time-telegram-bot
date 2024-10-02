@@ -25,9 +25,17 @@ export const generateImageByPrompt = async (ctx: Context, model: string, msg: st
             method: "POST",
         });
 
-        const buffer = Buffer.from(await res.arrayBuffer());
+        if (model === '3') {
+            const json = await res.json();
+            
+            const buffer = Buffer.from(json.image, 'base64');
 
-        await ctx.replyWithPhoto(new InputFile(buffer));
+            await ctx.replyWithPhoto(new InputFile(buffer));
+        } else {
+            const buffer = Buffer.from(await res.arrayBuffer());
+
+            await ctx.replyWithPhoto(new InputFile(buffer));
+        }
     } catch (error) {
         console.error('Error fetching and sending photo:', error);
         ctx.reply('无法获取图片，请稍后再试。');

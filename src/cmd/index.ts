@@ -11,8 +11,10 @@ export const cmdLoad = async (bot: Bot, menus: Menus) => {
         { command: "pic", description: "使用英文提示词生成图片-快速" },
         { command: "pic1", description: "使用英文提示词生成图片-均衡" },
         { command: "pic2", description: "使用英文提示词生成图片-粗糙" },
+        { command: "pic3", description: "使用英文提示词生成图片-推荐" },
         { command: "model", description: "查看/切换大语言模型" },
         { command: "chat", description: "为消息添加上下文关联再进行对话，回复消息时输入 /chat [数量] [筛选条件]" },
+        // { command: "context", description: "查看当前上下文结构" },
     ]);
 
 
@@ -45,7 +47,7 @@ export const cmdLoad = async (bot: Bot, menus: Menus) => {
         )
     })
 
-    bot.command(['pic', 'pic1', 'pic2'], async (ctx) => {
+    bot.command(['pic', 'pic1', 'pic2', 'pic3'], async (ctx) => {
         if (!ctx.message?.text) {
             return
         }
@@ -56,11 +58,7 @@ export const cmdLoad = async (bot: Bot, menus: Menus) => {
             return
         }
 
-        const model = {
-            '/pic': '0',
-            '/pic1': '1',
-            '/pic2': '2',
-        }[command] || '1';
+        const model = command.replace('/pic', '') || '1';
 
         const msg = removeSpecificText(ctx.message.text, command);
         await generateImageByPrompt(ctx, model, msg);
