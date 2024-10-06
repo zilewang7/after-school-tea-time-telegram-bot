@@ -1,13 +1,22 @@
+import dotenv from 'dotenv'
 import { Bot } from "grammy";
 import { saveMessage } from ".";
 import { Message } from "./messageDTO";
 import { Op } from "@sequelize/core";
 
+dotenv.config();
+
 // 自动保存消息到数据库
 export const autoSave = (bot: Bot) => {
     // 使用中间件
     bot.use(async (ctx, next) => {
-        if (ctx.chat?.id && ctx.message?.message_id && ctx.from?.id) {
+        const excludeList = ['/context'];
+        
+        excludeList.forEach((item) => {
+            excludeList.push(item + `@${process.env.BOT_USER_NAME}`);
+        })
+
+        if (ctx.chat?.id && ctx.message?.message_id && ctx.from?.id && !excludeList.includes(ctx.message.text || '')) {
             let fileLink;
             let isVideo = false;
             let replyToId = ctx.message.reply_to_message?.message_id;
