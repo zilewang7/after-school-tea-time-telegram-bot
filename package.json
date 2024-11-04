@@ -23,7 +23,7 @@
     "typescript": "^5.5.3"
   },
   "dependencies": {
-    "@google/generative-ai": "^0.17.0",
+    "@google/generative-ai": "^0.21.0",
     "@grammyjs/menu": "^1.2.2",
     "@sequelize/core": "7.0.0-alpha.37",
     "@sequelize/sqlite3": "7.0.0-alpha.41",

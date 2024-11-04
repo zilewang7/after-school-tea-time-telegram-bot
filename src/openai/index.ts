@@ -1,7 +1,7 @@
 import OpenAI from "openai";
 import dotenv from 'dotenv'
 import { ChatCompletionContentPart, ChatCompletionMessageParam } from "openai/resources/index.mjs";
-import { Content, GoogleGenerativeAI } from "@google/generative-ai";
+import { Content, DynamicRetrievalMode, GoogleGenerativeAI } from "@google/generative-ai";
 import { safetySettings } from './constants';
 
 dotenv.config();
@@ -33,7 +33,17 @@ export const sendMsgToOpenAI = async (contents: Array<MessageContent>) => {
         const model = genAI.getGenerativeModel({
             model: global.currentModel,
             safetySettings,
-            systemInstruction: process.env.SYSTEM_PROMPT
+            systemInstruction: process.env.SYSTEM_PROMPT,
+            tools: [
+              {
+                googleSearchRetrieval: {
+                  dynamicRetrievalConfig: {
+                    mode: DynamicRetrievalMode.MODE_DYNAMIC,
+                    dynamicThreshold: 0.65,
+                  },
+                },
+              },
+            ],
         });
 
         const geminiContent: Content[] = contents.map(({ role, content }) => {
