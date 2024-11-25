@@ -96,17 +96,19 @@ export const cmdLoad = async (bot: Bot, menus: Menus) => {
                     + "\n\n**";
 
                 originalMessages.forEach((msg, index) => {
-                    const shortMsg = (msg.text || '').length > 12 ? ((msg.text || '').slice(0, 10) + '...') : (msg.text || '');
+                    let shortMsg = msg.text || '';
+                    if (shortMsg.length > 12) {
+                        shortMsg = Array.from(shortMsg).slice(0, 10).join('') + '...';  // 使用 Array.from() 处理 emoji
+                    }
 
                     const chatId = isSupergroup ? String(msg.chatId).slice(4) : msg.chatId;
 
-                    replyText += ">" + `\\>\`${msg.userName}:${(shortMsg)}\`` + (isSupergroup ? `[前往](https://t.me/c/${chatId}/${msg.messageId})` : "");
+                    replyText += ">" + `\\>\`${msg.userName}:${shortMsg}\`` + (isSupergroup ? `[前往](https://t.me/c/${chatId}/${msg.messageId})` : "");
 
                     if (index < originalMessages.length - 1) {
                         replyText += '\n';
                     }
                 })
-
 
                 replyText += "||"
 
