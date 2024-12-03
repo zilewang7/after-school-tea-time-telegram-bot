@@ -108,11 +108,23 @@ export const autoSave = (bot: Bot) => {
 
 // 自动清除一周前的消息
 export const autoClear = () => {
-    setInterval(() => {
-        const now = new Date();
-        const oneWeekAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
-        Message.destroy({ where: { date: { [Op.lt]: oneWeekAgo } } });
+    setInterval(async () => {
+        try {
+            const now = new Date();
+            const oneWeekAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+            
+            // 使用 UTC 时间，确保一致性
+            const result = await Message.destroy({ 
+                where: { 
+                    date: { 
+                        [Op.lt]: oneWeekAgo.toISOString() 
+                    } 
+                } 
+            });
 
-        console.log('clear message before ' + oneWeekAgo);
-    }, 1000 * 60 * 60);
+            console.log(`Cleared ${result} messages before ${oneWeekAgo.toISOString()}`);
+        } catch (error) {
+            console.error('Error during message cleanup:', error);
+        }
+    }, 1000 * 60 * 60); // 每小时运行一次
 }
