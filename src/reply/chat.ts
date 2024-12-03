@@ -208,7 +208,7 @@ export const reply = async (ctx: Context, retryMenu: Menu<Context>, options?: {
         });
 
         const errorMsg = currentMsg + '\n' + (error instanceof Error ? error.message : 'Unknown error');
-        const msg = errorMsg.length > 1000 ? (errorMsg.slice(0, 1000) + '...') : errorMsg
+        const msg = errorMsg.length > 4000 ? (errorMsg.slice(0, 4000) + '...') : errorMsg
         try {
             await ctx.api.editMessageText(chatId, messageId, msg, {
                 reply_markup: retryMenu
