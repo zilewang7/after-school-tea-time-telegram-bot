@@ -12,7 +12,7 @@ if (!process.env.BOT_TOKEN) {
     throw new Error('BOT_TOKEN must be provided')
 }
 
-global.currentModel = process.env.DEFAULT_MODEL || "gpt-4o-2024-08-06";
+global.currentModel = process.env.DEFAULT_MODEL || "gpt-4o-2024-11-20";
 
 // 波特实例
 const bot = new Bot(process.env.BOT_TOKEN)
