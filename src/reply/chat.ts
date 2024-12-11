@@ -110,7 +110,7 @@ export const reply = async (ctx: Context, retryMenu: Menu<Context>, options?: {
     });
     const messageId = currentReply.message_id;
     const chatId = currentReply.chat.id;
-    const replyDate = new Date(currentReply.date);
+    const replyDate = new Date(currentReply.date * 1000);
     let currentMsg = currentReply.text;
 
     // 追加内容
