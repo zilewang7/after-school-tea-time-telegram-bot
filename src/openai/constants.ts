@@ -17,4 +17,8 @@ export const safetySettings: SafetySetting[] = [
       category: HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT,
       threshold: HarmBlockThreshold.BLOCK_NONE,
     },
+    {
+      category: "HARM_CATEGORY_CIVIC_INTEGRITY" as HarmCategory,
+      threshold: HarmBlockThreshold.BLOCK_NONE,
+    },
   ];
