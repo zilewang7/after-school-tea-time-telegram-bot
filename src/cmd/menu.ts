@@ -8,8 +8,8 @@ export const menuLoad = (bot: Bot): Menus => {
     const checkModelMenu = new Menu("checkModelMenu")
         .text("gpt-4o-2024-11-20", async (ctx): Promise<void> => await changeModel(ctx, "gpt-4o-2024-11-20", checkModelMenu))
         .text("o1-preview-2024-09-12", async (ctx): Promise<void> => await changeModel(ctx, "o1-preview-2024-09-12", checkModelMenu)).row()
-        .text("gemini-1.5-flash", async (ctx): Promise<void> => await changeModel(ctx, "gemini-1.5-flash", checkModelMenu))
-        .text("gemini-exp-1206", async (ctx): Promise<void> => await changeModel(ctx, "gemini-exp-1206", checkModelMenu)).row()
+        .text("gemini-2.0-flash-exp", async (ctx): Promise<void> => await changeModel(ctx, "gemini-2.0-flash-exp", checkModelMenu))
+        .text("gemini-2.0-flash-thinking-exp", async (ctx): Promise<void> => await changeModel(ctx, "gemini-2.0-flash-thinking-exp", checkModelMenu)).row()
         .text("claude-3-5-sonnet-20241022", async (ctx): Promise<void> => await changeModel(ctx, "claude-3-5-sonnet-20241022", checkModelMenu))
         .text("claude-3-5-sonnet-20240620", async (ctx): Promise<void> => await changeModel(ctx, "claude-3-5-sonnet-20240620", checkModelMenu)).row()
 
