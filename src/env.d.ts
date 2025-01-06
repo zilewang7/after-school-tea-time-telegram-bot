@@ -9,6 +9,8 @@ declare global {
             SYSTEM_PROMPT: string
             GEMINI_API_KEY?: string
             DEFAULT_MODEL?: string
+            DEEPSEEK_API_URL?: string
+            DEEPSEEK_API_KEY?: string
         }
     }
 }

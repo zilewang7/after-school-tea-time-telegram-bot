@@ -1,7 +1,7 @@
 import OpenAI from "openai";
 import dotenv from 'dotenv'
-import { ChatCompletionContentPart, ChatCompletionMessageParam } from "openai/resources/index.mjs";
-import { Content, DynamicRetrievalMode, GoogleGenerativeAI, Tool } from "@google/generative-ai";
+import { ChatCompletionContentPart, ChatCompletionContentPartInputAudio, ChatCompletionMessageParam } from "openai/resources/index.mjs";
+import { Content, GoogleGenerativeAI, Tool } from "@google/generative-ai";
 import { safetySettings } from './constants';
 
 dotenv.config();
@@ -12,11 +12,18 @@ const openai = new OpenAI({
 })
 
 
+const deepseekBaseURL = process.env.DEEPSEEK_API_URL || 'https://api.deepseek.com/v1'
+const deepseek = process.env.DEEPSEEK_API_KEY ? (new OpenAI({
+    baseURL: deepseekBaseURL,
+    apiKey: process.env.DEEPSEEK_API_KEY,
+})) : openai;
+
+
 const genAI = process.env.GEMINI_API_KEY ? new GoogleGenerativeAI(process.env.GEMINI_API_KEY) : undefined;
 
 interface UserMessageContent {
     role: 'user'
-    content: Array<ChatCompletionContentPart>
+    content: Array<Exclude<ChatCompletionContentPart, ChatCompletionContentPartInputAudio>>
 }
 
 interface AssistantMessageContent {
@@ -76,15 +83,19 @@ export const sendMsgToOpenAI = async (contents: Array<MessageContent>) => {
         console.log('使用 OpenAI SDK');
 
         const isO1 = global.currentModel.startsWith('o1');
-
         const extraContents: Array<ChatCompletionMessageParam> = isO1 ? [] : [
             {
                 role: 'system',
                 content: process.env.SYSTEM_PROMPT
             },
         ]
+        isO1 && console.log('当前为 o1, 不支持系统提示词');
 
-        const res = await openai.chat.completions.create(
+        const isDeepseek = global.currentModel.startsWith('deepseek');
+        const platform = isDeepseek ? deepseek : openai;
+        isDeepseek && console.log('当前为 deepseek, 使用 ' + process.env.DEEPSEEK_API_URL || 'https://api.deepseek.com/v1');
+
+        const res = await platform.chat.completions.create(
             {
                 model: global.currentModel,
                 messages: [
