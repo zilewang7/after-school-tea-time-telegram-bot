@@ -4,6 +4,7 @@ import { Menu } from '@grammyjs/menu';
 import { Stream } from "openai/streaming.mjs";
 import { ChatCompletion, ChatCompletionChunk } from "openai/resources/index.mjs";
 import { GenerateContentStreamResult } from '@google/generative-ai';
+import telegramifyMarkdown from 'telegramify-markdown';
 import { MessageContent } from '../openai/index';
 import { Menus } from '../cmd/menu';
 import { checkIfMentioned } from "../util";
@@ -191,8 +192,10 @@ export const reply = async (ctx: Context, retryMenu: Menu<Context>, options?: {
             replyToId: ctx.message.message_id,
         });
 
-        await ctx.api.editMessageText(chatId, messageId, finalMsg, {
-            parse_mode: 'Markdown'
+        const transText = telegramifyMarkdown(finalMsg, 'escape').replace(/(?<!\\)([-|])/g, '\\$1');
+
+        await ctx.api.editMessageText(chatId, messageId, transText, {
+            parse_mode: 'MarkdownV2'
         });
     } catch (error) {
         console.error("chat 出错:", error);
@@ -203,7 +206,7 @@ export const reply = async (ctx: Context, retryMenu: Menu<Context>, options?: {
             userId: botUserId,
             date: replyDate,
             userName: botUserName,
-            message: currentMsg,
+            message: currentMsg.length > 14 ? currentMsg.slice(0, -14) : currentMsg,
             replyToId: ctx.message.message_id,
         });
 
