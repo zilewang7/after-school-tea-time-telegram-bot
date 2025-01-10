@@ -3,7 +3,7 @@ import { Bot, Context } from "grammy";
 import { Menu } from '@grammyjs/menu';
 import { Stream } from "openai/streaming.mjs";
 import { ChatCompletion, ChatCompletionChunk } from "openai/resources/index.mjs";
-import { GenerateContentStreamResult } from '@google/generative-ai';
+import { EnhancedGenerateContentResponse, GenerateContentStreamResult, GroundingMetadata } from '@google/generative-ai';
 import telegramifyMarkdown from 'telegramify-markdown';
 import { MessageContent } from '../openai/index';
 import { Menus } from '../cmd/menu';
@@ -148,6 +148,9 @@ export const reply = async (ctx: Context, retryMenu: Menu<Context>, options?: {
             }
         }
 
+        let finalResponse: EnhancedGenerateContentResponse | undefined;
+        let groundingMetadatas: GroundingMetadata[] = [];
+
         if (!global.currentModel.startsWith('gemini') || !process.env.GEMINI_API_KEY) {
             if ((stream as Stream<ChatCompletionChunk>)?.controller) {
                 for await (const chunk of (stream as Stream<ChatCompletionChunk>)) {
@@ -173,6 +176,8 @@ export const reply = async (ctx: Context, retryMenu: Menu<Context>, options?: {
 
                 await handleBuffer();
             }
+
+            finalResponse = await (stream as GenerateContentStreamResult).response;
         }
 
         // 如果缓冲区中仍有内容，最后一次性追加
@@ -192,9 +197,32 @@ export const reply = async (ctx: Context, retryMenu: Menu<Context>, options?: {
             replyToId: ctx.message.message_id,
         });
 
-        const transText = telegramifyMarkdown(finalMsg, 'escape').replace(/(?<!\\)([-|])/g, '\\$1');
+        let tgMsg = telegramifyMarkdown(finalMsg, 'escape').replace(/(?<!\\)([-|])/g, '\\$1');
 
-        await ctx.api.editMessageText(chatId, messageId, transText, {
+        finalResponse?.candidates?.forEach(candidate => {
+            candidate.groundingMetadata && groundingMetadatas.push(candidate.groundingMetadata);
+        })
+        // @ts-ignore
+        finalResponse?.candidates?.[undefined]?.groundingMetadata.webSearchQueries && groundingMetadatas.push(finalResponse.candidates[undefined].groundingMetadata); // 谷歌你的 gemini api tmd 返回的什么玩意
+
+        if (groundingMetadatas.length) {
+            console.log('groundingMetadatas:', JSON.stringify(groundingMetadatas));
+        }
+        groundingMetadatas.forEach((groundingMetadata, index) => {
+            tgMsg += '\n*GoogleSearch*\n**';
+
+            const url = groundingMetadata.searchEntryPoint?.renderedContent?.match(/href="([^"]+)"/)?.[1];
+            tgMsg += `>[${groundingMetadata.webSearchQueries.join('、')}](${url})`;
+            // @ts-ignore 谷歌你定义的 groundingChuncks，返回的 groundingChunks，你是这个👍
+            groundingMetadata.groundingChunks?.forEach(({ web }, index) => {
+                tgMsg += `\n>\\[${index + 1}\\] [${web?.title.replace(/(?<!\\)([_*[\]()~`>#+-=|{}.!])/g, '\\$1')}](${web?.uri})`;
+            });
+            (groundingMetadatas.length === (index + 1)) && (tgMsg += '||');
+        })
+
+        console.log('tgMsg:', tgMsg);
+
+        await ctx.api.editMessageText(chatId, messageId, tgMsg, {
             parse_mode: 'MarkdownV2'
         });
     } catch (error) {
