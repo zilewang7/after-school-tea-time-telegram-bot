@@ -203,16 +203,27 @@ export const reply = async (ctx: Context, retryMenu: Menu<Context>, options?: {
             candidate.groundingMetadata && groundingMetadatas.push(candidate.groundingMetadata);
         })
         // @ts-ignore
-        finalResponse?.candidates?.[undefined]?.groundingMetadata.webSearchQueries && groundingMetadatas.push(finalResponse.candidates[undefined].groundingMetadata); // 谷歌你的 gemini api tmd 返回的什么玩意
+        finalResponse?.candidates?.[undefined]?.groundingMetadata?.webSearchQueries && groundingMetadatas.push(finalResponse.candidates[undefined].groundingMetadata); // 谷歌你的 gemini api tmd 返回的什么玩意
+
+        const extractUrls = (content?: string): string[] => {
+            if (!content) return [];
+
+            // 使用单个正则表达式匹配所有 href 属性
+            const hrefRegex = /href=["'](.*?)["']/g;
+            const matches = [...content.matchAll(hrefRegex)];
+
+            return matches.map(match => match[1]).filter(url => url !== undefined);
+        };
 
         if (groundingMetadatas.length) {
             console.log('groundingMetadatas:', JSON.stringify(groundingMetadatas));
         }
         groundingMetadatas.forEach((groundingMetadata, index) => {
-            tgMsg += '\n*GoogleSearch*\n**';
+            tgMsg += '\n*GoogleSearch*\n**>';
 
-            const url = groundingMetadata.searchEntryPoint?.renderedContent?.match(/href="([^"]+)"/)?.[1];
-            tgMsg += `>[${groundingMetadata.webSearchQueries.join('、')}](${url})`;
+            const urls = extractUrls(groundingMetadata.searchEntryPoint?.renderedContent);
+
+            tgMsg += groundingMetadata.webSearchQueries.map((text, index) => `[${text.replace(/(?<!\\)([_*[\]()~`>#+-=|{}.!])/g, '\\$1')}](${urls[index]})`).join(' \\| ');
             // @ts-ignore 谷歌你定义的 groundingChuncks，返回的 groundingChunks，你是这个👍
             groundingMetadata.groundingChunks?.forEach(({ web }, index) => {
                 tgMsg += `\n>\\[${index + 1}\\] [${web?.title.replace(/(?<!\\)([_*[\]()~`>#+-=|{}.!])/g, '\\$1')}](${web?.uri})`;
