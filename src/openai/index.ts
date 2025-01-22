@@ -21,9 +21,11 @@ const deepseek = process.env.DEEPSEEK_API_KEY ? (new OpenAI({
 
 const genAI = process.env.GEMINI_API_KEY ? new GoogleGenerativeAI(process.env.GEMINI_API_KEY) : undefined;
 
+export type ChatContentPart =  Exclude<ChatCompletionContentPart, ChatCompletionContentPartInputAudio>
+
 interface UserMessageContent {
     role: 'user'
-    content: Array<Exclude<ChatCompletionContentPart, ChatCompletionContentPartInputAudio>>
+    content: Array<ChatContentPart>
 }
 
 interface AssistantMessageContent {

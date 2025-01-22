@@ -239,15 +239,17 @@ export const reply = async (ctx: Context, retryMenu: Menu<Context>, options?: {
     } catch (error) {
         console.error("chat 出错:", error);
 
-        saveMessage({
-            chatId,
-            messageId,
-            userId: botUserId,
-            date: replyDate,
-            userName: botUserName,
-            message: currentMsg.length > 14 ? currentMsg.slice(0, -14) : currentMsg,
-            replyToId: ctx.message.message_id,
-        });
+        if (currentMsg !== 'Processing...') {
+            saveMessage({
+                chatId,
+                messageId,
+                userId: botUserId,
+                date: replyDate,
+                userName: botUserName,
+                message: currentMsg.length > 14 ? currentMsg.slice(0, -14) : currentMsg,
+                replyToId: ctx.message.message_id,
+            });
+        }
 
         const errorMsg = currentMsg + '\n' + (error instanceof Error ? error.message : 'Unknown error');
         const msg = errorMsg.length > 4000 ? (errorMsg.slice(0, 4000) + '...') : errorMsg

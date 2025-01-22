@@ -1,6 +1,6 @@
 import { ChatCompletionContentPart } from "openai/resources/index.mjs";
 import { getMessage } from "../db";
-import { MessageContent } from '../openai/index';
+import { MessageContent, ChatContentPart } from '../openai/index';
 import { Message } from "../db/messageDTO";
 import { getFileContentsOfMessage, getRepliesHistory } from "./helper";
 
@@ -8,7 +8,7 @@ export const generalContext = async (msg: Message): Promise<Array<MessageContent
     const { chatId, messageId, userName, text, quoteText, file, replyToId } = msg;
     
     /** 上下文汇总 */ 
-    const chatContents: Array<MessageContent> = []
+    let chatContents: Array<MessageContent> = []
 
 
     // 历史消息
@@ -30,7 +30,7 @@ export const generalContext = async (msg: Message): Promise<Array<MessageContent
                 await getFileContentsOfMessage(repledMsg.chatId, repledMsg.messageId)
                 : [];
 
-            const replyContent: Array<ChatCompletionContentPart> = [
+            const replyContent: Array<ChatContentPart> = [
                 ...fildContents,
                 msgContent
             ];
@@ -70,7 +70,7 @@ export const generalContext = async (msg: Message): Promise<Array<MessageContent
         }
     })()
 
-    const msgContent: Array<ChatCompletionContentPart> = [
+    const msgContent: Array<ChatContentPart> = [
         ...fildContents,
         {
             type: 'text' as const,
@@ -84,6 +84,51 @@ export const generalContext = async (msg: Message): Promise<Array<MessageContent
         role: 'user' as const,
         content: msgContent
     })
+
+    // deepseek-r1 does not support successive user or assistant messages (messages[1] and messages[2] in your input). You should interleave the user/assistant messages in the message sequence.
+    // 将连续的用户消息合并成一条
+    if (global.currentModel === 'deepseek-reasoner') {
+        const newChatContents: Array<MessageContent> = [];
+        // 目前只有用户消息进行合并
+        let lastContent: Array<ChatContentPart> = [];
+
+        const updateContent = () => {
+            if (lastContent.length > 0) {
+                newChatContents.push({
+                    role: 'user',
+                    content: lastContent
+                })
+                lastContent = [];
+            }
+        }
+        
+        for (const content of chatContents) {
+            if (content.role === 'user') {
+                lastContent = lastContent.concat(content.content);
+            } else {
+                updateContent();
+                newChatContents.push(content)
+            }
+        }
+
+        updateContent();
+
+        chatContents = newChatContents;
+    }
+
+    // 不支持图片的模型需要过滤图片
+    if (global.currentModel.startsWith('deepseek-') || global.currentModel.startsWith('o1-')) {
+        chatContents = chatContents.map(content => {
+            if (content.role === 'user') {
+                return {
+                    role: 'user',
+                    content: content.content.filter(part => part.type === 'text')
+                }
+            } else {
+                return content;
+            }
+        })
+    }
 
     return chatContents;
 }
