@@ -78,3 +78,9 @@ export const retry = async (ctx: Context, retryMenu: Menu<Context>) => {
 
     reply(newCtx, retryMenu, { mention: true });
 }
+
+export const safeTextV2 = (text: string) => {
+    if (!text) return '';
+
+    return text.replace(/(?<!\\)([_*[\]()~`>#+-=|{}.!])/g, '\\$1');
+}

@@ -7,7 +7,7 @@ import { EnhancedGenerateContentResponse, GenerateContentStreamResult, Grounding
 import telegramifyMarkdown from 'telegramify-markdown';
 import { MessageContent } from '../openai/index';
 import { Menus } from '../cmd/menu';
-import { checkIfMentioned } from "../util";
+import { checkIfMentioned, safeTextV2 } from "../util";
 import { getMessage, saveMessage } from "../db";
 import { sendMsgToOpenAI } from "../openai";
 import { generalContext } from './general-context';
@@ -113,13 +113,26 @@ export const reply = async (ctx: Context, retryMenu: Menu<Context>, options?: {
     const chatId = currentReply.chat.id;
     const replyDate = new Date(currentReply.date * 1000);
     let currentMsg = currentReply.text;
+    let tinkingMsg = "";
 
     // 追加内容
     const addReply = async (content: string) => {
         const lastMsg = currentMsg.slice(0, -14);
         const msg = lastMsg + content + '\nProcessing...';
 
-        await ctx.api.editMessageText(chatId, messageId, msg);
+
+        if (tinkingMsg) {
+            let msgWithTingking = '>'
+                + tinkingMsg.split('\n').map(text => safeTextV2(text)).join('\n>')
+                + '\n' + safeTextV2(msg);
+
+            await ctx.api.editMessageText(chatId, messageId, msgWithTingking, {
+                parse_mode: 'MarkdownV2'
+            });
+        } else {
+            await ctx.api.editMessageText(chatId, messageId, msg);
+        }
+
         currentMsg = msg;
     }
     Object.assign(ctx, { update_id: ctx.update.update_id });
@@ -135,15 +148,17 @@ export const reply = async (ctx: Context, retryMenu: Menu<Context>, options?: {
         const stream: Stream<ChatCompletionChunk> | ChatCompletion | GenerateContentStreamResult = await sendMsgToOpenAIWithRetry(chatContents);
 
         let buffer = '';
+        let thinkingBuffer = '';
 
         let timeTemp = Date.now();
 
         const handleBuffer = async () => {
             // 每 500ms 更新一次
-            if (buffer.length && Date.now() - timeTemp > 500) {
+            if ((buffer.length || thinkingBuffer.length) && Date.now() - timeTemp > 500) {
                 await ctx.api.sendChatAction(chatId, 'typing');
                 await addReply(buffer);
                 buffer = '';  // 清空缓冲区
+                thinkingBuffer = '';  // 清空思考缓冲区
                 timeTemp = Date.now();
             }
         }
@@ -155,6 +170,16 @@ export const reply = async (ctx: Context, retryMenu: Menu<Context>, options?: {
             if ((stream as Stream<ChatCompletionChunk>)?.controller) {
                 for await (const chunk of (stream as Stream<ChatCompletionChunk>)) {
                     const content = chunk.choices[0]?.delta?.content;
+                    // @ts-ignore
+                    const reasoning_content = chunk.choices[0]?.delta?.reasoning_content;
+                    if (reasoning_content) {
+                        thinkingBuffer += reasoning_content;
+                        tinkingMsg += reasoning_content;
+
+                        await handleBuffer();
+                    }
+
+
                     if (content) {
                         buffer += content;
 
@@ -215,6 +240,14 @@ export const reply = async (ctx: Context, retryMenu: Menu<Context>, options?: {
             return matches.map(match => match[1]).filter(url => url !== undefined);
         };
 
+        // thinking 信息
+        if (tinkingMsg.length) {
+            tgMsg = '**>'
+                + tinkingMsg.split('\n').map(text => safeTextV2(text)).join('\n>')
+                + '||' + '\n' + tgMsg;
+        }
+
+        // 谷歌搜索接地信息
         if (groundingMetadatas.length) {
             console.log('groundingMetadatas:', JSON.stringify(groundingMetadatas));
         }
@@ -223,10 +256,10 @@ export const reply = async (ctx: Context, retryMenu: Menu<Context>, options?: {
 
             const urls = extractUrls(groundingMetadata.searchEntryPoint?.renderedContent);
 
-            tgMsg += groundingMetadata.webSearchQueries.map((text, index) => `[${text.replace(/(?<!\\)([_*[\]()~`>#+-=|{}.!])/g, '\\$1')}](${urls[index]})`).join(' \\| ');
+            tgMsg += groundingMetadata.webSearchQueries.map((text, index) => `[${safeTextV2(text)}](${urls[index]})`).join(' \\| ');
             // @ts-ignore 谷歌你定义的 groundingChuncks，返回的 groundingChunks，你是这个👍
             groundingMetadata.groundingChunks?.forEach(({ web }, index) => {
-                tgMsg += `\n>\\[${index + 1}\\] [${web?.title.replace(/(?<!\\)([_*[\]()~`>#+-=|{}.!])/g, '\\$1')}](${web?.uri})`;
+                tgMsg += `\n>\\[${index + 1}\\] [${safeTextV2(web?.title)}](${web?.uri})`;
             });
             (groundingMetadatas.length === (index + 1)) && (tgMsg += '||');
         })
