@@ -102,7 +102,16 @@ export const reply = async (ctx: Context, retryMenu: Menu<Context>, options?: {
         return;
     }
 
-    ctx.api.sendChatAction(ctx.chat.id, 'typing');
+    // 设置一个定时器每5秒发送一次 typing 状态
+    let typingInterval: NodeJS.Timeout | undefined;
+    const startTyping = (chatId: number) => {
+        ctx.api.sendChatAction(chatId, 'typing');
+        typingInterval = setInterval(() => {
+            ctx.api.sendChatAction(chatId, 'typing');
+        }, 5000);
+    };
+
+    startTyping(ctx.chat.id);
 
     const currentReply = await ctx.reply('Processing...', {
         reply_parameters: {
@@ -153,9 +162,8 @@ export const reply = async (ctx: Context, retryMenu: Menu<Context>, options?: {
         let timeTemp = Date.now();
 
         const handleBuffer = async () => {
-            // 每 500ms 更新一次
-            if ((buffer.length || thinkingBuffer.length) && Date.now() - timeTemp > 500) {
-                await ctx.api.sendChatAction(chatId, 'typing');
+            // 每 750ms 更新一次
+            if ((buffer.length || thinkingBuffer.length) && Date.now() - timeTemp > 750) {
                 await addReply(buffer);
                 buffer = '';  // 清空缓冲区
                 thinkingBuffer = '';  // 清空思考缓冲区
@@ -266,10 +274,15 @@ export const reply = async (ctx: Context, retryMenu: Menu<Context>, options?: {
 
         console.log('tgMsg:', tgMsg);
 
+        // 清除 typing 状态的定时器
+        clearInterval(typingInterval);
+
         await ctx.api.editMessageText(chatId, messageId, tgMsg, {
             parse_mode: 'MarkdownV2'
         });
     } catch (error) {
+        // 发生错误时也要清除定时器
+        clearInterval(typingInterval);
         console.error("chat 出错:", error);
 
         if (currentMsg !== 'Processing...') {
