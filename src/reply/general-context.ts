@@ -96,7 +96,7 @@ export const generalContext = async (msg: Message): Promise<Array<MessageContent
         let assistantContent: string = '';
 
         const updateContent = () => {
-            if (lastContent.length > 0) {
+            if (lastContent.length > 0 || assistantContent.length > 0) {
                 if (currentRole === 'user') {
                     newChatContents.push({
                         role: 'user',
