@@ -9,4 +9,12 @@ declare global {
     var asynchronousFileSaveMsgIdList: number[];
     // 当前的模型
     var currentModel: string;
+    // 消息编辑接口调用限流
+    var editRateLimiter: {
+        [chatId: number]: {
+            count: number;
+            startTimestamp: number;
+            lastEditTimestamp: number;
+        }
+    };
 }

@@ -84,6 +84,42 @@ async function sendMsgToOpenAIWithRetry(chatContents: MessageContent[]): Promise
     throw new Error('Maximum retries exceeded');
 }
 
+// 按 chatId 进行限流的编辑消息
+async function rateLimitedEdit(api: any, chatId: number, messageId: number, text: string, extraOptions?: any) {
+    const now = Date.now();
+    if (!global.editRateLimiter) {
+        global.editRateLimiter = {};
+    }
+    if (!global.editRateLimiter[chatId]) {
+        global.editRateLimiter[chatId] = { count: 0, startTimestamp: now, lastEditTimestamp: now };
+    }
+    const limiter = global.editRateLimiter[chatId];
+    // 每分钟重置
+    if (now - limiter.startTimestamp >= 60000) {
+        limiter.count = 0;
+        limiter.startTimestamp = now;
+        limiter.lastEditTimestamp = now;
+    }
+    let delay = 0;
+    if (limiter.count < 10) {
+        const nextTime = limiter.lastEditTimestamp + 500;
+        delay = Math.max(0, nextTime - now);
+    } else {
+        const remainingQuota = 20 - limiter.count || 1;
+        const remainingTime = 60000 - (now - limiter.startTimestamp);
+        const dynamicDelay = remainingTime / remainingQuota;
+        const nextTime = limiter.lastEditTimestamp + dynamicDelay;
+        delay = Math.max(0, nextTime - now);
+    }
+    if (delay) {
+        await new Promise(resolve => setTimeout(resolve, delay));
+    }
+    const result = await api.editMessageText(chatId, messageId, text, extraOptions);
+    limiter.count++;
+    limiter.lastEditTimestamp = Date.now();
+    return result;
+}
+
 export const reply = async (ctx: Context, retryMenu: Menu<Context>, options?: {
     mention?: boolean
 }) => {
@@ -135,11 +171,11 @@ export const reply = async (ctx: Context, retryMenu: Menu<Context>, options?: {
                 + tinkingMsg.split('\n').map(text => safeTextV2(text)).join('\n>')
                 + '\n' + safeTextV2(msg);
 
-            await ctx.api.editMessageText(chatId, messageId, msgWithTingking, {
+            await rateLimitedEdit(ctx.api, chatId, messageId, msgWithTingking, {
                 parse_mode: 'MarkdownV2'
             });
         } else {
-            await ctx.api.editMessageText(chatId, messageId, msg);
+            await rateLimitedEdit(ctx.api, chatId, messageId, msg);
         }
 
         currentMsg = msg;
@@ -162,8 +198,8 @@ export const reply = async (ctx: Context, retryMenu: Menu<Context>, options?: {
         let timeTemp = Date.now();
 
         const handleBuffer = async () => {
-            // 每 750ms 更新一次
-            if ((buffer.length || thinkingBuffer.length) && Date.now() - timeTemp > 750) {
+            // 每 500ms 更新一次
+            if ((buffer.length || thinkingBuffer.length) && Date.now() - timeTemp > 500) {
                 await addReply(buffer);
                 buffer = '';  // 清空缓冲区
                 thinkingBuffer = '';  // 清空思考缓冲区
@@ -277,7 +313,7 @@ export const reply = async (ctx: Context, retryMenu: Menu<Context>, options?: {
         // 清除 typing 状态的定时器
         clearInterval(typingInterval);
 
-        await ctx.api.editMessageText(chatId, messageId, tgMsg, {
+        await rateLimitedEdit(ctx.api, chatId, messageId, tgMsg, {
             parse_mode: 'MarkdownV2'
         });
     } catch (error) {
@@ -300,14 +336,14 @@ export const reply = async (ctx: Context, retryMenu: Menu<Context>, options?: {
         const errorMsg = currentMsg + '\n' + (error instanceof Error ? error.message : 'Unknown error');
         const msg = errorMsg.length > 4000 ? (errorMsg.slice(0, 4000) + '...') : errorMsg
         try {
-            await ctx.api.editMessageText(chatId, messageId, msg, {
+            await rateLimitedEdit(ctx.api, chatId, messageId, msg, {
                 reply_markup: retryMenu
             })
         } catch (error) {
             console.error("尝试更新错误信息失败：", error);
             setTimeout(async () => {
                 try {
-                    await ctx.api.editMessageText(chatId, messageId, msg, {
+                    await rateLimitedEdit(ctx.api, chatId, messageId, msg, {
                         reply_markup: retryMenu
                     })
                 } catch (error) {
