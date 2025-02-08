@@ -11,7 +11,7 @@ declare global {
     var currentModel: string;
     // 消息编辑接口调用限流
     var editRateLimiter: {
-        [chatId: number]: {
+        [chatId: number | string]: {
             count: number;
             startTimestamp: number;
             lastEditTimestamp: number;

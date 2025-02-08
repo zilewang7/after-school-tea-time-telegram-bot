@@ -1,5 +1,5 @@
 import dotenv from 'dotenv'
-import { Bot, Context } from "grammy";
+import { Api, Bot, Context } from "grammy";
 import { Menu } from '@grammyjs/menu';
 import { Stream } from "openai/streaming.mjs";
 import { ChatCompletion, ChatCompletionChunk } from "openai/resources/index.mjs";
@@ -85,7 +85,9 @@ async function sendMsgToOpenAIWithRetry(chatContents: MessageContent[]): Promise
 }
 
 // 按 chatId 进行限流的编辑消息
-async function rateLimitedEdit(api: any, chatId: number, messageId: number, text: string, extraOptions?: any) {
+async function rateLimitedEdit(api: Api, ...args: Parameters<Api["editMessageText"]>) {
+    const [chatId, ...rest] = args;
+
     const now = Date.now();
     if (!global.editRateLimiter) {
         global.editRateLimiter = {};
@@ -114,7 +116,7 @@ async function rateLimitedEdit(api: any, chatId: number, messageId: number, text
     if (delay) {
         await new Promise(resolve => setTimeout(resolve, delay));
     }
-    const result = await api.editMessageText(chatId, messageId, text, extraOptions);
+    const result = await api.editMessageText(chatId, ...rest);
     limiter.count++;
     limiter.lastEditTimestamp = Date.now();
     return result;
