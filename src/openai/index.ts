@@ -95,7 +95,7 @@ export const sendMsgToOpenAI = async (contents: Array<MessageContent>) => {
 
         const isDeepseek = global.currentModel.startsWith('deepseek');
         const platform = isDeepseek ? deepseek : openai;
-        isDeepseek && console.log('当前为 deepseek, 使用 ' + process.env.DEEPSEEK_API_URL || 'https://api.deepseek.com/v1');
+        isDeepseek && console.log('当前为 deepseek, 使用 ' + deepseekBaseURL);
 
         const res = await platform.chat.completions.create(
             {

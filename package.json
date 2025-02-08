@@ -29,7 +29,7 @@
     "@sequelize/sqlite3": "7.0.0-alpha.41",
     "dotenv": "^16.4.5",
     "grammy": "^1.28.0",
-    "openai": "^4.77.3",
+    "openai": "^4.83.0",
     "sequelize": "7.0.0-alpha.9",
     "sqlite3": "^5.1.7",
     "telegramify-markdown": "^1.2.2"
