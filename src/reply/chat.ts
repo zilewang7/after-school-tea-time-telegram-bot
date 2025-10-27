@@ -128,7 +128,7 @@ export const reply = async (ctx: Context, retryMenu: Menu<Context>, options?: {
     if (!ctx.message || !ctx.chat) { return; }
 
     // 如果没有被提及，不需要回复
-    if (!(checkIfMentioned(ctx) || options?.mention)) { return; }
+    if (!checkIfMentioned(ctx, options?.mention)) { return; }
 
     // 如果是图片组，后面的图片不需要重复回复
     if (
@@ -268,7 +268,7 @@ export const reply = async (ctx: Context, retryMenu: Menu<Context>, options?: {
             replyToId: ctx.message.message_id,
         });
 
-        let tgMsg = telegramifyMarkdown(finalMsg, 'escape').replace(/(?<!\\)([-|])/g, '\\$1');
+        let tgMsg = telegramifyMarkdown(finalMsg, 'escape');
 
         finalResponse?.candidates?.forEach(candidate => {
             candidate.groundingMetadata && groundingMetadatas.push(candidate.groundingMetadata);
@@ -298,6 +298,8 @@ export const reply = async (ctx: Context, retryMenu: Menu<Context>, options?: {
             console.log('groundingMetadatas:', JSON.stringify(groundingMetadatas));
         }
         groundingMetadatas.forEach((groundingMetadata, index) => {
+            if (!groundingMetadata.webSearchQueries) return;
+            
             tgMsg += '\n*GoogleSearch*\n**>';
 
             const urls = extractUrls(groundingMetadata.searchEntryPoint?.renderedContent);

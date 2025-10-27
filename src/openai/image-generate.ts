@@ -1,9 +1,26 @@
 import { Context, InputFile } from "grammy";
+import { grokAgent } from ".";
 
 export const generateImageByPrompt = async (ctx: Context, model: string, msg: string) => {
     try {
         if (!ctx.match) {
             await ctx.reply("No input found");
+            return;
+        }
+
+
+        if (model === 'grok') {
+            const response = await grokAgent.images.generate({
+                model: "grok-2-image-1212",
+                prompt: msg,
+            });
+
+            if (!response.data[0]?.url) {
+                throw new Error("No image URL found in response");
+            }
+
+            await ctx.replyWithPhoto(response.data[0].url);
+
             return;
         }
 
@@ -26,13 +43,13 @@ export const generateImageByPrompt = async (ctx: Context, model: string, msg: st
         });
 
         if (model === '3') {
-            const json = await res.json();
-            
-            const buffer = Buffer.from(json.image, 'base64');
+            const json = await res.json() as { image: string };
+
+            const buffer = Buffer.from(json.image, 'base64') as any;
 
             await ctx.replyWithPhoto(new InputFile(buffer));
         } else {
-            const buffer = Buffer.from(await res.arrayBuffer());
+            const buffer = Buffer.from(await res.arrayBuffer()) as any;
 
             await ctx.replyWithPhoto(new InputFile(buffer));
         }

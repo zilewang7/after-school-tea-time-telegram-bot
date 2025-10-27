@@ -39,6 +39,15 @@ bot.catch((error) => {
     console.log(error)
 })
 
+// 设置简介
+bot.api.setMyShortDescription("A large language model chatbot optimized for group chat\nhttps://github.com/zilewang7/after-school-tea-time-telegram-bot");
+bot.api.setMyShortDescription("为群组内聊天优化的大语言模型聊天机器人\nhttps://github.com/zilewang7/after-school-tea-time-telegram-bot", {
+    language_code: "zh"
+});
+bot.api.setMyDescription("Directly send a message to start a context conversation, reply to the bot's message to continue in the current context conversation");
+bot.api.setMyDescription("直接发送消息以开启一个上下文会话，回复机器人的消息以继续在当前上下文会话, /help 以查看更多帮助", {
+    language_code: "zh"
+});
 
 // 启动
 bot.start()

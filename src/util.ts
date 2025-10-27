@@ -26,12 +26,16 @@ export function removeSpecificText(message: string, textToRemove?: string) {
 }
 
 
-export function checkIfMentioned(ctx: Context) {
+export function checkIfMentioned(ctx: Context, mention: boolean | undefined) {
+    if (mention === false) {
+        return false;
+    }
+
     const text = ctx.message?.text || ctx.message?.caption;
 
     const replyUserId = ctx.message?.reply_to_message?.from?.id;
 
-    return text?.includes(`@${process.env.BOT_USER_NAME}`) || replyUserId === Number(process.env.BOT_USER_ID) || ctx?.chat?.type === 'private';
+    return text?.includes(`@${process.env.BOT_USER_NAME}`) || replyUserId === Number(process.env.BOT_USER_ID) || ctx?.chat?.type === 'private' || mention;
 }
 
 export async function convertBlobToBase64(blob: Blob): Promise<string> {
@@ -46,7 +50,7 @@ export async function convertBlobToBase64(blob: Blob): Promise<string> {
 export const sendModelMsg = async (ctx: Context, checkModelMenu: Menu<Context>) => {
     const menu = checkModelMenu;
     await ctx.reply(
-        '当前模型：' + global.currentModel + '\n\n点击下方按钮快速切换或使用 `/model [模型名]` 手动指定',
+        '当前模型：`' + global.currentModel + '`\n\n点击下方按钮快速切换或使用 `/model `+模型名 手动指定',
         { reply_markup: menu, parse_mode: 'Markdown' }
     );
 }

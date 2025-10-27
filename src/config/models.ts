@@ -5,12 +5,14 @@ export interface ModelConfig {
 }
 
 export const modelConfigs: ModelConfig[] = [
-    { id: "gpt-4o-2024-11-20", name: "gpt-4o-2024-11-20" },
-    { id: "o1-preview-2024-09-12", name: "o1-preview-2024-09-12" },
-    { id: "gemini-2.0-flash-exp", name: "gemini-2.0-flash-exp" },
-    { id: "gemini-2.0-flash-thinking-exp", name: "gemini-2.0-flash-thinking-exp" },
-    { id: "claude-3-5-sonnet-20241022", name: "claude-3-5-sonnet-20241022" },
-    { id: "claude-3-5-sonnet-20240620", name: "claude-3-5-sonnet-20240620" },
+    { id: "gpt-5-chat-latest", name: "gpt-5" },
+    { id: "gpt-5-thinking", name: "gpt-5-thinking" },
+    { id: "claude-sonnet-4-5-20250929", name: "claude-sonnet-4.5" },
+    { id: "claude-sonnet-4-5-20250929-thinking-64k", name: "claude-sonnet-4.5-thinking" },
+    { id: "gemini-2.5-flash-preview-09-2025", name: "gemini-2.5-flash" },
+    { id: "gemini-2.5-pro", name: "gemini-2.5-pro" },
     { id: "deepseek-chat", name: "deepseek-v3" },
     { id: "deepseek-reasoner", name: "deepseek-r1" },
+    { id: "grok-3", name: "grok-3" },
+    { id: "grok-3-mini", name: "grok-3-mini" },
 ];

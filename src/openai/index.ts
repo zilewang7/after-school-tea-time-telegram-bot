@@ -18,10 +18,14 @@ const deepseek = process.env.DEEPSEEK_API_KEY ? (new OpenAI({
     apiKey: process.env.DEEPSEEK_API_KEY,
 })) : openai;
 
+export const grokAgent = new OpenAI({
+    baseURL: process.env.GROK_API_URL,
+    apiKey: process.env.GROK_API_KEY,
+})
 
 const genAI = process.env.GEMINI_API_KEY ? new GoogleGenerativeAI(process.env.GEMINI_API_KEY) : undefined;
 
-export type ChatContentPart =  Exclude<ChatCompletionContentPart, ChatCompletionContentPartInputAudio>
+export type ChatContentPart = Exclude<ChatCompletionContentPart, ChatCompletionContentPartInputAudio>
 
 interface UserMessageContent {
     role: 'user'
@@ -44,7 +48,7 @@ export const sendMsgToOpenAI = async (contents: Array<MessageContent>) => {
             safetySettings,
             systemInstruction: process.env.SYSTEM_PROMPT,
             tools: [
-                ...(global.currentModel === 'gemini-2.0-flash-exp' ? [{
+                ...(global.currentModel.startsWith('gemini-2') ? [{
                     ["google_search" as keyof Tool]: {
                     }
                 }] : []),
@@ -94,7 +98,17 @@ export const sendMsgToOpenAI = async (contents: Array<MessageContent>) => {
         isO1 && console.log('当前为 o1, 不支持系统提示词');
 
         const isDeepseek = global.currentModel.startsWith('deepseek');
-        const platform = isDeepseek ? deepseek : openai;
+        const isGrok = global.currentModel.startsWith('grok-');
+
+        let platform: OpenAI;
+        if (isDeepseek) {
+            platform = deepseek;
+        } else if (isGrok) {
+            platform = grokAgent;
+        } else {
+            platform = openai;
+        }
+
         isDeepseek && console.log('当前为 deepseek, 使用 ' + deepseekBaseURL);
 
         const res = await platform.chat.completions.create(

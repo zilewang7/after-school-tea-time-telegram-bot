@@ -11,6 +11,8 @@ declare global {
             DEFAULT_MODEL?: string
             DEEPSEEK_API_URL?: string
             DEEPSEEK_API_KEY?: string
+            GROK_API_KEY?: string
+            GROK_API_URL?: string
         }
     }
 }

@@ -134,7 +134,7 @@ export const dealChatCommand = async (ctx: Context) => {
             }
         );
 
-        return;
+        return false;
     }
 
     const msgCount = count === 'a' ? Infinity : Number(count);
