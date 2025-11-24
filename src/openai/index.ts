@@ -1,6 +1,6 @@
 import OpenAI from "openai";
 import dotenv from 'dotenv'
-import { ChatCompletionContentPart, ChatCompletionContentPartInputAudio, ChatCompletionMessageParam } from "openai/resources/index.mjs";
+import { ChatCompletionContentPart, ChatCompletionContentPartInputAudio, ChatCompletionMessageParam } from "openai/resources";
 import { Content, GoogleGenerativeAI, Tool } from "@google/generative-ai";
 import { safetySettings } from './constants';
 
@@ -25,7 +25,7 @@ export const grokAgent = new OpenAI({
 
 const genAI = process.env.GEMINI_API_KEY ? new GoogleGenerativeAI(process.env.GEMINI_API_KEY) : undefined;
 
-export type ChatContentPart = Exclude<ChatCompletionContentPart, ChatCompletionContentPartInputAudio>
+export type ChatContentPart = Exclude<ChatCompletionContentPart, { type: 'input_audio' | 'file' }>
 
 interface UserMessageContent {
     role: 'user'

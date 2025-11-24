@@ -15,7 +15,7 @@ export const generateImageByPrompt = async (ctx: Context, model: string, msg: st
                 prompt: msg,
             });
 
-            if (!response.data[0]?.url) {
+            if (!response.data?.[0]?.url) {
                 throw new Error("No image URL found in response");
             }
 

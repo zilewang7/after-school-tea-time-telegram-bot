@@ -1,6 +1,6 @@
-import { ChatCompletionContentPart } from "openai/resources/index.mjs";
+import { ChatCompletionContentPart } from "openai/resources";
 import { getMessage } from "../db";
-import { MessageContent, ChatContentPart } from '../openai/index';
+import { MessageContent, ChatContentPart } from '../openai';
 import { Message } from "../db/messageDTO";
 import { getFileContentsOfMessage, getRepliesHistory } from "./helper";
 
@@ -54,7 +54,9 @@ export const generalContext = async (msg: Message): Promise<Array<MessageContent
 
             if (msgText) {
                 text += `[${userName}:`;
-                text += `${msgText.length > 20 ? (msgText.slice(0, 20) + '...') : msgText}]`
+                // use Array.from to slice by unicode codepoints (avoid breaking emoji)
+                const msgChars = Array.from(msgText);
+                text += `${msgChars.length > 20 ? (msgChars.slice(0, 20).join('') + '...') : msgChars.join('')}]`
             } else {
                 text += '[last message]'
             }

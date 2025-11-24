@@ -1,11 +1,11 @@
 import dotenv from 'dotenv'
 import { Api, Bot, Context } from "grammy";
 import { Menu } from '@grammyjs/menu';
-import { Stream } from "openai/streaming.mjs";
-import { ChatCompletion, ChatCompletionChunk } from "openai/resources/index.mjs";
+import { Stream } from "openai/streaming";
+import { ChatCompletion, ChatCompletionChunk } from "openai/resources";
 import { EnhancedGenerateContentResponse, GenerateContentStreamResult, GroundingMetadata } from '@google/generative-ai';
 import telegramifyMarkdown from 'telegramify-markdown';
-import { MessageContent } from '../openai/index';
+import { MessageContent } from '../openai';
 import { Menus } from '../cmd/menu';
 import { checkIfMentioned, safeTextV2 } from "../util";
 import { getMessage, saveMessage } from "../db";
@@ -19,7 +19,7 @@ const botUserId = Number(process.env.BOT_USER_ID)
 const botUserName = process.env.BOT_NAME
 
 
-async function sendMsgToOpenAIWithRetry(chatContents: MessageContent[]): Promise<Stream<ChatCompletionChunk> | ChatCompletion | GenerateContentStreamResult> {
+async function sendMsgToOpenAIWithRetry(chatContents: MessageContent[]): Promise<Awaited<ReturnType<typeof sendMsgToOpenAI>>> {
     // log
     chatContents.map(chatContent => {
         const transContents = []
@@ -47,8 +47,8 @@ async function sendMsgToOpenAIWithRetry(chatContents: MessageContent[]): Promise
 
     const timeout = 85000; // 85 seconds timeout
 
-    async function attempt(): Promise<Stream<ChatCompletionChunk> | ChatCompletion | GenerateContentStreamResult> {
-        return new Promise<Stream<ChatCompletionChunk> | ChatCompletion | GenerateContentStreamResult>((resolve, reject) => {
+    async function attempt(): Promise<Awaited<ReturnType<typeof sendMsgToOpenAI>>> {
+        return new Promise<Awaited<ReturnType<typeof sendMsgToOpenAI>>>((resolve, reject) => {
             const timeoutId = setTimeout(() => {
                 reject(new Error('Timeout'));
             }, timeout);
@@ -192,7 +192,7 @@ export const reply = async (ctx: Context, retryMenu: Menu<Context>, options?: {
     const chatContents = await generalContext(msg);
 
     try {
-        const stream: Stream<ChatCompletionChunk> | ChatCompletion | GenerateContentStreamResult = await sendMsgToOpenAIWithRetry(chatContents);
+        const stream: Awaited<ReturnType<typeof sendMsgToOpenAI>> = await sendMsgToOpenAIWithRetry(chatContents);
 
         let buffer = '';
         let thinkingBuffer = '';
@@ -213,8 +213,8 @@ export const reply = async (ctx: Context, retryMenu: Menu<Context>, options?: {
         let groundingMetadatas: GroundingMetadata[] = [];
 
         if (!global.currentModel.startsWith('gemini') || !process.env.GEMINI_API_KEY) {
-            if ((stream as Stream<ChatCompletionChunk>)?.controller) {
-                for await (const chunk of (stream as Stream<ChatCompletionChunk>)) {
+            if ((stream as unknown as Stream<ChatCompletionChunk>)?.controller) {
+                for await (const chunk of (stream as unknown as Stream<ChatCompletionChunk>)) {
                     const content = chunk.choices[0]?.delta?.content;
                     // @ts-ignore
                     const reasoning_content = chunk.choices[0]?.delta?.reasoning_content;

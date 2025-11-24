@@ -1,7 +1,7 @@
 import dotenv from 'dotenv';
 import { Op } from '@sequelize/core';
 import { Context } from "grammy";
-import { ChatCompletionContentPartImage } from "openai/resources/index.mjs";
+import { ChatCompletionContentPartImage } from "openai/resources";
 import { Message } from "../db/messageDTO";
 import { getMessage } from '../db';
 
