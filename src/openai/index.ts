@@ -48,10 +48,9 @@ export const sendMsgToOpenAI = async (contents: Array<MessageContent>) => {
             safetySettings,
             systemInstruction: process.env.SYSTEM_PROMPT,
             tools: [
-                ...(global.currentModel.startsWith('gemini-2') ? [{
-                    ["google_search" as keyof Tool]: {
-                    }
-                }] : []),
+                {
+                    ["google_search" as keyof Tool]: {}
+                }
             ]
         });
 

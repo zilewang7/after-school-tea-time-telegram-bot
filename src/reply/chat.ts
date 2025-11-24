@@ -276,22 +276,27 @@ export const reply = async (ctx: Context, retryMenu: Menu<Context>, options?: {
         // @ts-ignore
         finalResponse?.candidates?.[undefined]?.groundingMetadata?.webSearchQueries && groundingMetadatas.push(finalResponse.candidates[undefined].groundingMetadata); // 谷歌你的 gemini api tmd 返回的什么玩意
 
-        const extractUrls = (content?: string): string[] => {
-            if (!content) return [];
-
-            // 使用单个正则表达式匹配所有 href 属性
-            const hrefRegex = /href=["'](.*?)["']/g;
-            const matches = [...content.matchAll(hrefRegex)];
-
-            return matches.map(match => match[1]).filter(url => url !== undefined);
-        };
-
         // thinking 信息
         if (tinkingMsg.length) {
             tgMsg = '**>'
                 + tinkingMsg.split('\n').map(text => safeTextV2(text)).join('\n>')
                 + '||' + '\n' + tgMsg;
         }
+        
+        type Anchor = { href: string; text: string };
+        const stripTags = (html?: string) => {
+            if (!html) return '';
+            return html.replace(/<[^>]*>/g, '').replace(/\s+/g, ' ').trim();
+        }
+        const extractAnchors = (content?: string): Anchor[] => {
+            if (!content) return [];
+
+            // 提取 a 标签的 href 与 innerText
+            // 支持带有嵌套标签的 anchor（innerHTML 里可能有 svg 等）
+            const anchorRegex = /<a[^>]*\bhref=["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/g;
+            const matches = [...content.matchAll(anchorRegex)];
+            return matches.map(match => ({ href: (match?.[1] ?? ''), text: stripTags(match?.[2] ?? '') }));
+        };
 
         // 谷歌搜索接地信息
         if (groundingMetadatas.length) {
@@ -299,12 +304,60 @@ export const reply = async (ctx: Context, retryMenu: Menu<Context>, options?: {
         }
         groundingMetadatas.forEach((groundingMetadata, index) => {
             if (!groundingMetadata.webSearchQueries) return;
-            
+
+            // 过滤掉空 query
+            const queries = (groundingMetadata.webSearchQueries || []).filter(q => q && q.toString().trim().length > 0).map(q => q.toString());
+            if (!queries.length) return;
+
             tgMsg += '\n*GoogleSearch*\n**>';
 
-            const urls = extractUrls(groundingMetadata.searchEntryPoint?.renderedContent);
+            const anchors = extractAnchors(groundingMetadata.searchEntryPoint?.renderedContent);
 
-            tgMsg += groundingMetadata.webSearchQueries.map((text, index) => `[${safeTextV2(text)}](${urls[index]})`).join(' \\| ');
+            // 匹配策略（优先匹配 anchor text，其次尝试 href 包含 query，再以未使用的 anchor 作为回退）
+            const used = new Set<number>();
+            const matchedAnchors: (Anchor | undefined)[] = queries.map((q) => {
+                const normQ = q.trim().toLowerCase();
+                // match by anchor text
+                for (let i = 0; i < anchors.length; i++) {
+                    if (used.has(i)) continue;
+                    const aText = (anchors[i]?.text ?? '').toLowerCase();
+                    if (!aText) continue;
+                    if (aText.includes(normQ) || normQ.includes(aText)) {
+                        used.add(i);
+                        return anchors[i];
+                    }
+                }
+
+                // try match by href
+                for (let i = 0; i < anchors.length; i++) {
+                    if (used.has(i)) continue;
+                    const href = (anchors[i]?.href ?? '').toLowerCase();
+                    // check several variants: raw query, spaces replaced
+                    if (href.includes(normQ) || href.includes(encodeURIComponent(normQ)) || href.includes(normQ.replace(/\s+/g, '+'))) {
+                        used.add(i);
+                        return anchors[i];
+                    }
+                }
+
+                // fallback: pick first unused anchor
+                for (let i = 0; i < anchors.length; i++) {
+                    if (!used.has(i)) {
+                        used.add(i);
+                        return anchors[i];
+                    }
+                }
+
+                return undefined;
+            });
+
+            tgMsg += queries.map((text, idx) => {
+                const anchor = matchedAnchors[idx];
+                if (anchor && anchor.href) {
+                    return `[${safeTextV2(text)}](${anchor.href})`;
+                }
+                // 没有找到对应的链接时只显示纯文本（避免拼接 undefined 链接导致错误）
+                return safeTextV2(text);
+            }).join(' \\| ');
             // @ts-ignore 谷歌你定义的 groundingChuncks，返回的 groundingChunks，你是这个👍
             groundingMetadata.groundingChunks?.forEach(({ web }, index) => {
                 tgMsg += `\n>\\[${index + 1}\\] [${safeTextV2(web?.title)}](${web?.uri})`;
