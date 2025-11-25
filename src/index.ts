@@ -1,24 +1,22 @@
-import dotenv from 'dotenv'
+import dotenv from 'dotenv';
 import { Bot } from "grammy";
 import { cmdLoad } from './cmd';
 import { replyLoad } from './reply';
 import { autoClear, autoSave } from './db/autoSave';
 import { menuLoad } from './cmd/menu';
+import { getAppState } from './state';
 
 dotenv.config();
 
-
 if (!process.env.BOT_TOKEN) {
-    throw new Error('BOT_TOKEN must be provided')
+    throw new Error('BOT_TOKEN must be provided');
 }
 
-global.currentModel = process.env.DEFAULT_MODEL || "gpt-4o-2024-11-20";
+// initialize app state
+const appState = getAppState();
+console.log(`Initial model: ${appState.currentModel}`);
 
-// 波特实例
-const bot = new Bot(process.env.BOT_TOKEN)
-
-
-Object.assign(global, { mediaGroupIdTemp: {}, asynchronousFileSaveMsgIdList: [] });
+const bot = new Bot(process.env.BOT_TOKEN);
 
 // 保存消息
 autoSave(bot);

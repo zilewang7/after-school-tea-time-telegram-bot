@@ -1,4 +1,3 @@
-import dotenv from 'dotenv'
 import { Api, Bot, Context } from "grammy";
 import { Menu } from '@grammyjs/menu';
 import { Stream } from "openai/streaming";
@@ -12,37 +11,44 @@ import { getMessage, saveMessage } from "../db";
 import { sendMsgToOpenAI } from "../openai";
 import { generalContext } from './general-context';
 import { dealChatCommand } from './helper';
-
-dotenv.config();
+import {
+    getCurrentModel,
+    getMediaGroupIdTemp,
+    getRateLimiterEntry,
+    setRateLimiterEntry,
+    getAsyncFileSaveMsgIdList,
+} from '../state';
+import { DeepSeekChatCompletionChunk, ExtendedGroundingMetadata } from '../types';
 
 const botUserId = Number(process.env.BOT_USER_ID)
 const botUserName = process.env.BOT_NAME
 
 
 async function sendMsgToOpenAIWithRetry(chatContents: MessageContent[]): Promise<Awaited<ReturnType<typeof sendMsgToOpenAI>>> {
-    // log
+    // log message contents (truncate image URLs for readability)
+    type LogContent = { type: 'text'; text: string } | { type: 'image_url'; urlLength: number };
     chatContents.map(chatContent => {
-        const transContents = []
+        const transContents: Array<{ role: string; content: LogContent[] } | MessageContent> = [];
         if (chatContent.role === 'user' && chatContent.content instanceof Array) {
-            const transContent: any[] = [];
+            const transContent: LogContent[] = [];
             chatContent.content.forEach((content) => {
                 if (content.type === 'image_url') {
                     transContent.push({
                         type: 'image_url',
                         urlLength: content.image_url.url.length
-                    })
+                    });
                 } else {
-                    transContent.push(content)
+                    transContent.push(content);
                 }
-            })
+            });
             transContents.push({
                 role: 'user',
                 content: transContent
-            })
+            });
         } else {
-            transContents.push(chatContent)
+            transContents.push(chatContent);
         }
-        console.log(chatContent.role, ...transContents)
+        console.log(chatContent.role, ...transContents);
     })
 
     const timeout = 85000; // 85 seconds timeout
@@ -84,19 +90,17 @@ async function sendMsgToOpenAIWithRetry(chatContents: MessageContent[]): Promise
     throw new Error('Maximum retries exceeded');
 }
 
-// 按 chatId 进行限流的编辑消息
+// rate-limited edit message per chatId
 async function rateLimitedEdit(api: Api, ...args: Parameters<Api["editMessageText"]>) {
     const [chatId, ...rest] = args;
 
     const now = Date.now();
-    if (!global.editRateLimiter) {
-        global.editRateLimiter = {};
+    let limiter = getRateLimiterEntry(chatId);
+    if (!limiter) {
+        limiter = { count: 0, startTimestamp: now, lastEditTimestamp: now };
+        setRateLimiterEntry(chatId, limiter);
     }
-    if (!global.editRateLimiter[chatId]) {
-        global.editRateLimiter[chatId] = { count: 0, startTimestamp: now, lastEditTimestamp: now };
-    }
-    const limiter = global.editRateLimiter[chatId];
-    // 每分钟重置
+    // reset every minute
     if (now - limiter.startTimestamp >= 60000) {
         limiter.count = 0;
         limiter.startTimestamp = now;
@@ -130,12 +134,13 @@ export const reply = async (ctx: Context, retryMenu: Menu<Context>, options?: {
     // 如果没有被提及，不需要回复
     if (!checkIfMentioned(ctx, options?.mention)) { return; }
 
-    // 如果是图片组，后面的图片不需要重复回复
+    // skip duplicate replies for media groups
+    const mediaGroupTemp = getMediaGroupIdTemp();
     if (
         ctx.message.photo &&
-        global.mediaGroupIdTemp.chatId === ctx.chat.id &&
-        global.mediaGroupIdTemp.messageId !== ctx.message.message_id &&
-        global.mediaGroupIdTemp.mediaGroupId === ctx.update?.message?.media_group_id
+        mediaGroupTemp.chatId === ctx.chat.id &&
+        mediaGroupTemp.messageId !== ctx.message.message_id &&
+        mediaGroupTemp.mediaGroupId === ctx.update?.message?.media_group_id
     ) {
         return;
     }
@@ -211,12 +216,12 @@ export const reply = async (ctx: Context, retryMenu: Menu<Context>, options?: {
 
         let finalResponse: EnhancedGenerateContentResponse | undefined;
         let groundingMetadatas: GroundingMetadata[] = [];
+        const currentModel = getCurrentModel();
 
-        if (!global.currentModel.startsWith('gemini') || !process.env.GEMINI_API_KEY) {
+        if (!currentModel.startsWith('gemini') || !process.env.GEMINI_API_KEY) {
             if ((stream as unknown as Stream<ChatCompletionChunk>)?.controller) {
-                for await (const chunk of (stream as unknown as Stream<ChatCompletionChunk>)) {
+                for await (const chunk of (stream as unknown as Stream<DeepSeekChatCompletionChunk>)) {
                     const content = chunk.choices[0]?.delta?.content;
-                    // @ts-ignore
                     const reasoning_content = chunk.choices[0]?.delta?.reasoning_content;
                     if (reasoning_content) {
                         thinkingBuffer += reasoning_content;
@@ -272,9 +277,13 @@ export const reply = async (ctx: Context, retryMenu: Menu<Context>, options?: {
 
         finalResponse?.candidates?.forEach(candidate => {
             candidate.groundingMetadata && groundingMetadatas.push(candidate.groundingMetadata);
-        })
-        // @ts-ignore
-        finalResponse?.candidates?.[undefined]?.groundingMetadata?.webSearchQueries && groundingMetadatas.push(finalResponse.candidates[undefined].groundingMetadata); // 谷歌你的 gemini api tmd 返回的什么玩意
+        });
+        // Handle Google API bug where candidates has 'undefined' as key
+        const candidatesRecord = finalResponse?.candidates as unknown as Record<string, { groundingMetadata?: GroundingMetadata }> | undefined;
+        const undefinedCandidate = candidatesRecord?.['undefined'];
+        if (undefinedCandidate?.groundingMetadata?.webSearchQueries) {
+            groundingMetadatas.push(undefinedCandidate.groundingMetadata);
+        }
 
         // thinking 信息
         if (tinkingMsg.length) {
@@ -358,9 +367,10 @@ export const reply = async (ctx: Context, retryMenu: Menu<Context>, options?: {
                 // 没有找到对应的链接时只显示纯文本（避免拼接 undefined 链接导致错误）
                 return safeTextV2(text);
             }).join(' \\| ');
-            // @ts-ignore 谷歌你定义的 groundingChuncks，返回的 groundingChunks，你是这个👍
-            groundingMetadata.groundingChunks?.forEach(({ web }, index) => {
-                tgMsg += `\n>\\[${index + 1}\\] [${safeTextV2(web?.title)}](${web?.uri})`;
+            // Handle Google SDK typo: type defines groundingChuncks but API returns groundingChunks
+            const extendedMetadata = groundingMetadata as ExtendedGroundingMetadata;
+            extendedMetadata.groundingChunks?.forEach(({ web }, chunkIndex) => {
+                tgMsg += `\n>\\[${chunkIndex + 1}\\] [${safeTextV2(web?.title ?? '')}](${web?.uri ?? ''})`;
             });
             (groundingMetadatas.length === (index + 1)) && (tgMsg += '||');
         })
@@ -416,8 +426,8 @@ export const replyChat = (bot: Bot, menus: Menus) => {
         next();
 
         setTimeout(async () => {
-            // 当 global.asynchronousFileSaveMsgIdList 有值时，表示正在保存文件，等待列表清空
-            while (global.asynchronousFileSaveMsgIdList.length) {
+            // wait for async file saving to complete
+            while (getAsyncFileSaveMsgIdList().length) {
                 await new Promise(resolve => setTimeout(resolve, 100));
             }
 
@@ -425,7 +435,7 @@ export const replyChat = (bot: Bot, menus: Menus) => {
 
             reply(ctx, menus.retryMenu, {
                 mention: useChatCommand
-            })
+            });
         });
     });
 }

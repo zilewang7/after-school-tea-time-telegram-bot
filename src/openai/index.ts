@@ -1,10 +1,8 @@
 import OpenAI from "openai";
-import dotenv from 'dotenv'
-import { ChatCompletionContentPart, ChatCompletionContentPartInputAudio, ChatCompletionMessageParam } from "openai/resources";
+import { ChatCompletionContentPart, ChatCompletionMessageParam } from "openai/resources";
 import { Content, GoogleGenerativeAI, Tool } from "@google/generative-ai";
 import { safetySettings } from './constants';
-
-dotenv.config();
+import { getCurrentModel } from '../state';
 
 const openai = new OpenAI({
     baseURL: process.env.OPENAI_API_URL,
@@ -40,11 +38,12 @@ interface AssistantMessageContent {
 export type MessageContent = UserMessageContent | AssistantMessageContent
 
 export const sendMsgToOpenAI = async (contents: Array<MessageContent>) => {
-    console.log('模型信息: ', global.currentModel);
-    if (global.currentModel.startsWith('gemini') && genAI) {
+    const currentModel = getCurrentModel();
+    console.log('模型信息: ', currentModel);
+    if (currentModel.startsWith('gemini') && genAI) {
         console.log('使用谷歌 SDK');
         const model = genAI.getGenerativeModel({
-            model: global.currentModel,
+            model: currentModel,
             safetySettings,
             systemInstruction: process.env.SYSTEM_PROMPT,
             tools: [
@@ -87,7 +86,7 @@ export const sendMsgToOpenAI = async (contents: Array<MessageContent>) => {
     } else {
         console.log('使用 OpenAI SDK');
 
-        const isO1 = global.currentModel.startsWith('o1');
+        const isO1 = currentModel.startsWith('o1');
         const extraContents: Array<ChatCompletionMessageParam> = isO1 ? [] : [
             {
                 role: 'system',
@@ -96,8 +95,8 @@ export const sendMsgToOpenAI = async (contents: Array<MessageContent>) => {
         ]
         isO1 && console.log('当前为 o1, 不支持系统提示词');
 
-        const isDeepseek = global.currentModel.startsWith('deepseek');
-        const isGrok = global.currentModel.startsWith('grok-');
+        const isDeepseek = currentModel.startsWith('deepseek');
+        const isGrok = currentModel.startsWith('grok-');
 
         let platform: OpenAI;
         if (isDeepseek) {
@@ -112,7 +111,7 @@ export const sendMsgToOpenAI = async (contents: Array<MessageContent>) => {
 
         const res = await platform.chat.completions.create(
             {
-                model: global.currentModel,
+                model: currentModel,
                 messages: [
                     ...extraContents,
                     ...contents,

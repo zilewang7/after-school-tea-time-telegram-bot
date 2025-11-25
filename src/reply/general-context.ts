@@ -1,8 +1,8 @@
-import { ChatCompletionContentPart } from "openai/resources";
 import { getMessage } from "../db";
 import { MessageContent, ChatContentPart } from '../openai';
 import { Message } from "../db/messageDTO";
 import { getFileContentsOfMessage, getRepliesHistory } from "./helper";
+import { getCurrentModel } from '../state';
 
 export const generalContext = async (msg: Message): Promise<Array<MessageContent>> => {
     const { chatId, messageId, userName, text, quoteText, file, replyToId } = msg;
@@ -88,8 +88,9 @@ export const generalContext = async (msg: Message): Promise<Array<MessageContent
     })
 
     // deepseek-r1 does not support successive user or assistant messages (messages[1] and messages[2] in your input). You should interleave the user/assistant messages in the message sequence.
-    // 将连续的消息合并成一条
-    if (global.currentModel === 'deepseek-reasoner') {
+    // merge consecutive messages into one
+    const currentModel = getCurrentModel();
+    if (currentModel === 'deepseek-reasoner') {
         const newChatContents: Array<MessageContent> = [];
         let currentRole: 'user' | 'assistant' = 'user';
         // 目前只有用户消息进行合并
@@ -139,8 +140,8 @@ export const generalContext = async (msg: Message): Promise<Array<MessageContent
         chatContents = newChatContents;
     }
 
-    // 不支持图片的模型需要过滤图片
-    if (global.currentModel.startsWith('deepseek-') || global.currentModel.startsWith('o1-')) {
+    // filter images for models that don't support them
+    if (currentModel.startsWith('deepseek-') || currentModel.startsWith('o1-')) {
         chatContents = chatContents.map(content => {
             if (content.role === 'user') {
                 return {

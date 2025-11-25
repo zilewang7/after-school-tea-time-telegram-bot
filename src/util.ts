@@ -1,11 +1,9 @@
-import dotenv from 'dotenv'
 import { Context } from 'grammy';
 import { ReactionTypeEmoji, Update } from 'grammy/types';
 import { Menu } from '@grammyjs/menu';
 import { reply } from './reply/chat';
 import { getMessage } from './db';
-
-dotenv.config();
+import { getCurrentModel, setCurrentModel } from './state';
 
 export const getBlob = async (url: string): Promise<Blob> => {
     const res = await fetch(url);
@@ -50,15 +48,15 @@ export async function convertBlobToBase64(blob: Blob): Promise<string> {
 export const sendModelMsg = async (ctx: Context, checkModelMenu: Menu<Context>) => {
     const menu = checkModelMenu;
     await ctx.reply(
-        '当前模型：`' + global.currentModel + '`\n\n点击下方按钮快速切换或使用 `/model `+模型名 手动指定',
+        '当前模型：`' + getCurrentModel() + '`\n\n点击下方按钮快速切换或使用 `/model `+模型名 手动指定',
         { reply_markup: menu, parse_mode: 'Markdown' }
     );
-}
+};
 
 export const changeModel = async (ctx: Context, model: string, checkModelMenu: Menu<Context>) => {
-    global.currentModel = model;
+    setCurrentModel(model);
     await sendModelMsg(ctx, checkModelMenu);
-}
+};
 
 export const retry = async (ctx: Context, retryMenu: Menu<Context>) => {
     const message = ctx.update.callback_query?.message?.reply_to_message;

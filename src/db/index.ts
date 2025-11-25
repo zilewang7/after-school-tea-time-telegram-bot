@@ -1,8 +1,9 @@
 import { sequelize } from "./config";
 import { Message } from "./messageDTO";
 import { getBlob } from "../util";
+import { removeAsyncFileSaveMsgId } from '../state';
 
-// 同步数据库
+// sync database
 sequelize.sync({ alter: true });
 
 const saveMessage = async (
@@ -22,11 +23,11 @@ const saveMessage = async (
 
     const fromBotSelf = userId === Number(process.env.BOT_USER_ID);
 
-    //  异步保存文件
+    // async file save
     const saveFile = async (fileLink: string) => {
         try {
             const blob = await getBlob(fileLink);
-            const fileBuffer = blob ? Buffer.from(await blob.arrayBuffer()) : undefined
+            const fileBuffer = blob ? Buffer.from(await blob.arrayBuffer()) : undefined;
 
             if (fileBuffer) {
                 const message = await Message.findOne({ where: { chatId, messageId } });
@@ -39,9 +40,9 @@ const saveMessage = async (
         } catch (error) {
             console.error("保存文件失败", error);
         } finally {
-            global.asynchronousFileSaveMsgIdList = global.asynchronousFileSaveMsgIdList.filter(id => id !== messageId);
+            removeAsyncFileSaveMsgId(messageId);
         }
-    }
+    };
 
     if (await Message.findOne({ where: { chatId, messageId } })) {
         await Message.update({ text: message, date, quoteText }, { where: { chatId, messageId } });

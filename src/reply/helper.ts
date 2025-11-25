@@ -1,11 +1,8 @@
-import dotenv from 'dotenv';
 import { Op } from '@sequelize/core';
 import { Context } from "grammy";
 import { ChatCompletionContentPartImage } from "openai/resources";
 import { Message } from "../db/messageDTO";
 import { getMessage } from '../db';
-
-dotenv.config();
 
 export const getRepliesHistory = async (
     chatId: number,
@@ -111,7 +108,7 @@ export const dealChatCommand = async (ctx: Context) => {
 
     const [, count, , optional = 'Infinity'] = text.match(regex) || [];
 
-    if (!messageId || text === '/chat@AfterSchoolTeatimeBot' || text === '/chat' || !count) {
+    if (!messageId || text === `/chat@${process.env.BOT_USER_NAME}` || text === '/chat' || !count) {
         ctx.reply(
             `\`/chat\` 仅在需要添加上下文时使用，如无此需求请直接回复或者 @${process.env.BOT_USER_NAME} 发送消息
 
@@ -142,7 +139,7 @@ export const dealChatCommand = async (ctx: Context) => {
     let userList: string[] | undefined;
 
     if (/^\d+$/.test(optional)) {
-        userCount = Number(count)
+        userCount = Number(optional)
     } else if (optional === 's') {
         userCount = 1
     } else if (optional === 'Infinity') {

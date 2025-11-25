@@ -1,10 +1,13 @@
-import dotenv from 'dotenv'
 import { Bot } from "grammy";
 import { saveMessage } from ".";
 import { Message } from "./messageDTO";
 import { Op } from "@sequelize/core";
-
-dotenv.config();
+import {
+    getMediaGroupIdTemp,
+    setMediaGroupIdTemp,
+    addAsyncFileSaveMsgId,
+    removeAsyncFileSaveMsgId,
+} from '../state';
 
 // 自动保存消息到数据库
 export const autoSave = (bot: Bot) => {
@@ -24,15 +27,16 @@ export const autoSave = (bot: Bot) => {
 
             try {
                 if (ctx.update.message?.media_group_id) {
-                    if (global.mediaGroupIdTemp.chatId === ctx.chat.id && global.mediaGroupIdTemp.mediaGroupId === ctx.message.media_group_id) {
-                        replyToId = global.mediaGroupIdTemp.messageId;
+                    const mediaGroupTemp = getMediaGroupIdTemp();
+                    if (mediaGroupTemp.chatId === ctx.chat.id && mediaGroupTemp.mediaGroupId === ctx.message.media_group_id) {
+                        replyToId = mediaGroupTemp.messageId;
                         isSubImage = true;
                     } else {
-                        global.mediaGroupIdTemp = {
+                        setMediaGroupIdTemp({
                             chatId: ctx.chat.id,
                             messageId: ctx.message.message_id,
                             mediaGroupId: ctx.update.message.media_group_id
-                        }
+                        });
                     }
                 }
 
@@ -47,16 +51,18 @@ export const autoSave = (bot: Bot) => {
                         const previewImageId = ctx.update.message.sticker.thumbnail?.file_id;
                         if (previewImageId) {
                             fileLink = `https://api.telegram.org/file/bot${process.env.BOT_TOKEN}/${(await bot.api.getFile(previewImageId)).file_path}`;
-                            global.asynchronousFileSaveMsgIdList.push(ctx.message.message_id);
+                            addAsyncFileSaveMsgId(ctx.message.message_id);
                         }
                     } else {
                         fileLink = `https://api.telegram.org/file/bot${process.env.BOT_TOKEN}/${(await bot.api.getFile(fileId)).file_path}`;
-                        global.asynchronousFileSaveMsgIdList.push(ctx.message.message_id);
+                        addAsyncFileSaveMsgId(ctx.message.message_id);
                     }
 
-                    // 最多花费 10s 来保存文件
+                    // max 10s for file saving
                     setTimeout(() => {
-                        global.asynchronousFileSaveMsgIdList = global.asynchronousFileSaveMsgIdList.filter(id => id !== ctx.message?.message_id);
+                        if (ctx.message?.message_id) {
+                            removeAsyncFileSaveMsgId(ctx.message.message_id);
+                        }
                     }, 10000);
                 }
 
@@ -98,7 +104,9 @@ export const autoSave = (bot: Bot) => {
                 );
             } catch (error) {
                 console.error("保存消息失败", error);
-                global.asynchronousFileSaveMsgIdList = global.asynchronousFileSaveMsgIdList.filter(id => id !== ctx.message?.message_id);
+                if (ctx.message?.message_id) {
+                    removeAsyncFileSaveMsgId(ctx.message.message_id);
+                }
             }
         }
 
