@@ -10,14 +10,37 @@ export const generalContext = async (msg: Message): Promise<Array<MessageContent
     /** 上下文汇总 */
     let chatContents: Array<MessageContent> = []
 
-
     // 历史消息
     const historyReplies = await getRepliesHistory(chatId, messageId, { excludeSelf: true });
     for (const repledMsg of historyReplies) {
+        const modelParts = (() => {
+            try {
+                return repledMsg.modelParts ? JSON.parse(JSON.stringify(repledMsg.modelParts)) : undefined;
+            } catch {
+                return undefined;
+            }
+        })();
+
+        const fildContents = repledMsg.file ?
+            await getFileContentsOfMessage(repledMsg.chatId, repledMsg.messageId)
+            : [];
+
         if (repledMsg?.fromBotSelf) {
+            const assistantParts: Array<ChatContentPart> = [];
+            if (fildContents.length) {
+                assistantParts.push(...fildContents);
+            }
+            if (repledMsg.text) {
+                assistantParts.push({
+                    type: 'text',
+                    text: repledMsg.text
+                });
+            }
+
             chatContents.push({
                 role: 'assistant',
-                content: repledMsg.text || '[system] message lost',
+                content: assistantParts.length ? assistantParts : (repledMsg.text || '[system] message lost'),
+                modelParts: modelParts && Array.isArray(modelParts) ? modelParts : undefined,
             })
         } else {
             const msgContent = {
@@ -25,10 +48,6 @@ export const generalContext = async (msg: Message): Promise<Array<MessageContent
                 text: `${repledMsg.userName}: `
                     + (repledMsg?.text || '')
             }
-
-            const fildContents = repledMsg.file ?
-                await getFileContentsOfMessage(repledMsg.chatId, repledMsg.messageId)
-                : [];
 
             const replyContent: Array<ChatContentPart> = [
                 ...fildContents,
@@ -141,12 +160,20 @@ export const generalContext = async (msg: Message): Promise<Array<MessageContent
     }
 
     // filter images for models that don't support them
-    if (currentModel.startsWith('deepseek-') || currentModel.startsWith('o1-')) {
+    const lowerModel = currentModel.toLowerCase();
+    const supportImages = lowerModel.startsWith('gemini') || lowerModel.includes('image') || lowerModel.includes('vision') || lowerModel.includes('gpt-4o');
+    if (!supportImages) {
         chatContents = chatContents.map(content => {
             if (content.role === 'user') {
                 return {
                     role: 'user',
                     content: content.content.filter(part => part.type === 'text')
+                }
+            } else if (Array.isArray(content.content)) {
+                return {
+                    role: 'assistant',
+                    content: content.content.filter(part => part.type === 'text'),
+                    modelParts: undefined
                 }
             } else {
                 return content;

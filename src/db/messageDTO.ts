@@ -17,6 +17,7 @@ export class Message extends Model<InferAttributes<Message>, InferCreationAttrib
   declare file: Buffer | null;
   declare replyToId: number | null;
   declare replies: string;
+  declare modelParts: string | null;
 }
 
 Message.init({
@@ -60,6 +61,11 @@ Message.init({
     type: DataTypes.JSON,
     defaultValue: '[]',
     allowNull: false,
+  },
+  modelParts: {
+    type: DataTypes.JSON,
+    allowNull: true,
+    defaultValue: null,
   },
 }, {
   sequelize,

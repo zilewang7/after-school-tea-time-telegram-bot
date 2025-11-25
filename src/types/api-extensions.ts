@@ -3,7 +3,7 @@
  */
 
 import { ChatCompletionChunk } from "openai/resources";
-import { GroundingMetadata } from "@google/generative-ai";
+import { GroundingMetadata } from "@google/genai";
 
 // DeepSeek extends OpenAI API with reasoning_content for reasoner models
 export interface DeepSeekDelta {

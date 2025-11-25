@@ -15,4 +15,5 @@ export const modelConfigs: ModelConfig[] = [
     { id: "deepseek-reasoner", name: "deepseek-v3.2" },
     { id: "grok-4-1-fast-non-reasoning", name: "grok-4.1" },
     { id: "grok-4-1-fast-reasoning", name: "grok-4.1-thinking" },
+    { id: "gemini-3-pro-image-preview", name: "gemini-3-pro-image" },
 ];

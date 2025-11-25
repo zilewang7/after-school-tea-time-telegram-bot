@@ -16,10 +16,12 @@ const saveMessage = async (
         message?: string,
         quoteText?: string,
         fileLink?: string,
-        replyToId?: number
+        fileBuffer?: Buffer,
+        replyToId?: number,
+        modelParts?: any
     }
 ) => {
-    const { chatId, messageId, userId, date = new Date(), userName = '佚名', message, quoteText, fileLink, replyToId } = info;
+    const { chatId, messageId, userId, date = new Date(), userName = '佚名', message, quoteText, fileLink, fileBuffer, replyToId, modelParts } = info;
 
     const fromBotSelf = userId === Number(process.env.BOT_USER_ID);
 
@@ -44,8 +46,22 @@ const saveMessage = async (
         }
     };
 
-    if (await Message.findOne({ where: { chatId, messageId } })) {
-        await Message.update({ text: message, date, quoteText }, { where: { chatId, messageId } });
+    const existingMessage = await Message.findOne({ where: { chatId, messageId } });
+    if (existingMessage) {
+        existingMessage.text = message ?? existingMessage.text;
+        existingMessage.date = date;
+        existingMessage.quoteText = quoteText ?? existingMessage.quoteText;
+        if (modelParts !== undefined) {
+            existingMessage.modelParts = modelParts;
+        }
+
+        if (fileBuffer) {
+            existingMessage.file = fileBuffer;
+            await existingMessage.save();
+            return;
+        }
+
+        await existingMessage.save();
 
         if (fileLink) {
             saveFile(fileLink);
@@ -73,11 +89,13 @@ const saveMessage = async (
         quoteText,
         date,
         userName,
+        file: fileBuffer,
         replyToId,
         replies: '[]',
+        modelParts: modelParts ?? null,
     });
 
-    if (fileLink) {
+    if (fileLink && !fileBuffer) {
         saveFile(fileLink);
     }
 }

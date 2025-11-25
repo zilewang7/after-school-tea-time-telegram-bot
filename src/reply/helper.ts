@@ -200,3 +200,100 @@ export const dealChatCommand = async (ctx: Context) => {
         return true;
     }
 }
+
+// 处理 /picbanana 命令（不通过 bot.command 注册，自己识别）
+export const dealPicbananaCommand = async (ctx: Context): Promise<{ prompt: string; referenceImages: string[] } | null> => {
+    if (!ctx.message || !ctx.chat) { return null; }
+
+    // 获取文本或 caption
+    const text = ctx.message.text || ('caption' in ctx.message ? ctx.message.caption : undefined);
+    if (!text) { return null; }
+
+    // 检查是否是 /picbanana 命令
+    const commandRegex = /^\/picbanana(@\S+)?\s*([\s\S]*)?$/;
+    const match = text.match(commandRegex);
+
+    if (!match) { return null; }
+
+    const prompt = match[2]?.trim() || '';
+
+    if (!prompt) {
+        await ctx.reply('请提供图片描述');
+        return null;
+    }
+
+    const referenceImages = new Set<string>();
+    const chatId = ctx.chat.id;
+    const currentMessageId = ctx.message.message_id;
+
+    const appendImagesFromMessage = async (targetChatId: number, targetMessageId: number) => {
+        const images = await getFileContentsOfMessage(targetChatId, targetMessageId);
+        images.forEach(({ image_url }) => {
+            const url = image_url.url;
+            const base64 = url.includes(',') ? url.split(',')[1] : url;
+            if (base64) {
+                referenceImages.add(base64);
+            }
+        });
+    };
+
+    await appendImagesFromMessage(chatId, currentMessageId);
+
+    if (ctx.message.media_group_id) {
+        for (let i = 0; i < 3; i++) {
+            const previousSize = referenceImages.size;
+            await new Promise(resolve => setTimeout(resolve, 200));
+            await appendImagesFromMessage(chatId, currentMessageId);
+            if (referenceImages.size === previousSize) {
+                break;
+            }
+        }
+    }
+
+    // 检查是否有回复的图片作为参考
+    if (ctx.message.reply_to_message) {
+        const replyMsg = ctx.message.reply_to_message;
+
+        await appendImagesFromMessage(chatId, replyMsg.message_id);
+
+        if (referenceImages.size === 0) {
+            let fileId: string | undefined;
+
+            if ('photo' in replyMsg && replyMsg.photo && replyMsg.photo.length > 0) {
+                fileId = replyMsg.photo[replyMsg.photo.length - 1]?.file_id;
+            } else if ('document' in replyMsg && replyMsg.document?.mime_type?.startsWith('image/')) {
+                fileId = replyMsg.document.file_id;
+            }
+
+            if (fileId) {
+                try {
+                    const file = await ctx.api.getFile(fileId);
+                    const fileUrl = `https://api.telegram.org/file/bot${process.env.BOT_TOKEN}/${file.file_path}`;
+                    const response = await fetch(fileUrl);
+                    const arrayBuffer = await response.arrayBuffer();
+                    referenceImages.add(Buffer.from(arrayBuffer).toString('base64'));
+                } catch (error) {
+                    console.error('Failed to fetch reference image from reply:', error);
+                }
+            }
+        }
+    }
+
+    // 消息中的图片（兜底，避免数据库未就绪）
+    if (referenceImages.size === 0 && 'photo' in ctx.message && ctx.message.photo && ctx.message.photo.length > 0) {
+        const fileId = ctx.message.photo[ctx.message.photo.length - 1]?.file_id;
+        if (fileId) {
+            try {
+                const file = await ctx.api.getFile(fileId);
+                const fileUrl = `https://api.telegram.org/file/bot${process.env.BOT_TOKEN}/${file.file_path}`;
+                const response = await fetch(fileUrl);
+                const arrayBuffer = await response.arrayBuffer();
+                referenceImages.add(Buffer.from(arrayBuffer).toString('base64'));
+            } catch (error) {
+                console.error('Failed to fetch reference image:', error);
+            }
+        }
+    }
+
+    return { prompt, referenceImages: Array.from(referenceImages) };
+}
