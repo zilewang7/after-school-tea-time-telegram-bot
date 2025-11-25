@@ -1,12 +1,10 @@
-import dotenv from 'dotenv';
+import 'dotenv/config';
 import { Bot } from "grammy";
 import { cmdLoad } from './cmd';
 import { replyLoad } from './reply';
 import { autoClear, autoSave } from './db/autoSave';
 import { menuLoad } from './cmd/menu';
 import { getAppState } from './state';
-
-dotenv.config();
 
 if (!process.env.BOT_TOKEN) {
     throw new Error('BOT_TOKEN must be provided');
