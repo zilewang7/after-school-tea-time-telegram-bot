@@ -1,7 +1,8 @@
 import { Context } from 'grammy';
 import { ReactionTypeEmoji, Update } from 'grammy/types';
 import { Menu } from '@grammyjs/menu';
-import { reply } from './reply/chat';
+import { reply, handlePicbananaCommand } from './reply/chat';
+import { dealPicbananaCommand } from './reply/helper';
 import { getMessage } from './db';
 import { getCurrentModel, setCurrentModel } from './state';
 
@@ -78,6 +79,14 @@ export const retry = async (ctx: Context, retryMenu: Menu<Context>) => {
 
     const newCtx = new Context(update, ctx.api, ctx.me)
 
+    // Check if this is a /picbanana command
+    const picbananaCommand = await dealPicbananaCommand(newCtx);
+    if (picbananaCommand) {
+        await handlePicbananaCommand(newCtx, picbananaCommand, retryMenu);
+        return;
+    }
+
+    // Otherwise, use normal reply
     reply(newCtx, retryMenu, { mention: true });
 }
 

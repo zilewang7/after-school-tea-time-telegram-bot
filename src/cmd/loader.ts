@@ -14,11 +14,8 @@ export const cmdLoad = async (bot: Bot, menus: Menus) => {
         { command: "start", description: "开始" },
         { command: "help", description: "没有帮助" },
         { command: "react", description: "给消息添加表情" },
-        { command: "pic", description: "使用英文提示词生成图片-快速" },
-        { command: "pic1", description: "使用英文提示词生成图片-均衡" },
-        { command: "pic2", description: "使用英文提示词生成图片-粗糙" },
-        { command: "pic3", description: "使用英文提示词生成图片-推荐" },
         { command: "picgrok", description: "使用 Grok 模型根据提示词生成图片" },
+        { command: "picbanana", description: "使用 Gemini Nano Banana Pro 🍌 根据提示词生成图片" },
         { command: "model", description: "查看/切换大语言模型" },
         {
             command: "chat",
