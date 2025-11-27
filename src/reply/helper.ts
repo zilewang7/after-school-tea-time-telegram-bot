@@ -239,17 +239,6 @@ export const dealPicbananaCommand = async (ctx: Context): Promise<{ prompt: stri
 
     await appendImagesFromMessage(chatId, currentMessageId);
 
-    if (ctx.message.media_group_id) {
-        for (let i = 0; i < 3; i++) {
-            const previousSize = referenceImages.size;
-            await new Promise(resolve => setTimeout(resolve, 200));
-            await appendImagesFromMessage(chatId, currentMessageId);
-            if (referenceImages.size === previousSize) {
-                break;
-            }
-        }
-    }
-
     // 检查是否有回复的图片作为参考
     if (ctx.message.reply_to_message) {
         const replyMsg = ctx.message.reply_to_message;
@@ -275,6 +264,17 @@ export const dealPicbananaCommand = async (ctx: Context): Promise<{ prompt: stri
                 } catch (error) {
                     console.error('Failed to fetch reference image from reply:', error);
                 }
+            }
+        }
+    }
+
+    if (ctx.message.media_group_id) {
+        for (let i = 0; i < 3; i++) {
+            const previousSize = referenceImages.size;
+            await new Promise(resolve => setTimeout(resolve, 200));
+            await appendImagesFromMessage(chatId, currentMessageId);
+            if (referenceImages.size === previousSize) {
+                break;
             }
         }
     }
