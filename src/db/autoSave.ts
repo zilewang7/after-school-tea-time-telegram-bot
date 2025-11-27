@@ -42,7 +42,7 @@ export const autoSave = (bot: Bot) => {
 
                 const photoFile = ctx.update.message?.photo?.at(-1);
                 const stickerFile = ctx.update.message?.sticker;
-                const documentFile = ctx.update.message?.document?.mime_type?.startsWith('image') ? ctx.update.message?.document : undefined;
+                const documentFile = ctx.update.message?.document?.mime_type?.startsWith('image/') ? ctx.update.message?.document : undefined;
                 const fileId = photoFile?.file_id || stickerFile?.file_id || documentFile?.file_id;
 
 

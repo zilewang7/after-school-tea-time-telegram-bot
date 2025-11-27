@@ -237,63 +237,13 @@ export const dealPicbananaCommand = async (ctx: Context): Promise<{ prompt: stri
         });
     };
 
-    await appendImagesFromMessage(chatId, currentMessageId);
-
     // 检查是否有回复的图片作为参考
-    if (ctx.message.reply_to_message) {
-        const replyMsg = ctx.message.reply_to_message;
-
+    const replyMsg = ctx.message.reply_to_message;
+    if (replyMsg) {
         await appendImagesFromMessage(chatId, replyMsg.message_id);
-
-        if (referenceImages.size === 0) {
-            let fileId: string | undefined;
-
-            if ('photo' in replyMsg && replyMsg.photo && replyMsg.photo.length > 0) {
-                fileId = replyMsg.photo[replyMsg.photo.length - 1]?.file_id;
-            } else if ('document' in replyMsg && replyMsg.document?.mime_type?.startsWith('image/')) {
-                fileId = replyMsg.document.file_id;
-            }
-
-            if (fileId) {
-                try {
-                    const file = await ctx.api.getFile(fileId);
-                    const fileUrl = `https://api.telegram.org/file/bot${process.env.BOT_TOKEN}/${file.file_path}`;
-                    const response = await fetch(fileUrl);
-                    const arrayBuffer = await response.arrayBuffer();
-                    referenceImages.add(Buffer.from(arrayBuffer).toString('base64'));
-                } catch (error) {
-                    console.error('Failed to fetch reference image from reply:', error);
-                }
-            }
-        }
     }
-
-    if (ctx.message.media_group_id) {
-        for (let i = 0; i < 3; i++) {
-            const previousSize = referenceImages.size;
-            await new Promise(resolve => setTimeout(resolve, 200));
-            await appendImagesFromMessage(chatId, currentMessageId);
-            if (referenceImages.size === previousSize) {
-                break;
-            }
-        }
-    }
-
-    // 消息中的图片（兜底，避免数据库未就绪）
-    if (referenceImages.size === 0 && 'photo' in ctx.message && ctx.message.photo && ctx.message.photo.length > 0) {
-        const fileId = ctx.message.photo[ctx.message.photo.length - 1]?.file_id;
-        if (fileId) {
-            try {
-                const file = await ctx.api.getFile(fileId);
-                const fileUrl = `https://api.telegram.org/file/bot${process.env.BOT_TOKEN}/${file.file_path}`;
-                const response = await fetch(fileUrl);
-                const arrayBuffer = await response.arrayBuffer();
-                referenceImages.add(Buffer.from(arrayBuffer).toString('base64'));
-            } catch (error) {
-                console.error('Failed to fetch reference image:', error);
-            }
-        }
-    }
+    
+    await appendImagesFromMessage(chatId, currentMessageId);
 
     return { prompt, referenceImages: Array.from(referenceImages) };
 }
