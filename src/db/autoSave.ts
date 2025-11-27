@@ -80,7 +80,7 @@ export const autoSave = (bot: Bot) => {
                             (
                                 ` (I send `
                                 + (
-                                    ctx.update.message?.photo?.length ?
+                                    !!(ctx.update.message?.photo?.length || documentFile?.file_id) ?
                                         (ctx.update.message?.media_group_id ? 'some pictures' : 'a picture')
                                         : (isVideo ? 'a video sticker ([system] can not get video sticker, only thumbnail image)' : 'a sticker image')
                                 )
