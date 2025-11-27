@@ -219,7 +219,7 @@ export const dealPicbananaCommand = async (ctx: Context): Promise<{ prompt: stri
 
     if (!prompt) {
         await ctx.reply('请提供图片描述');
-        return null;
+        throw new Error("[picbanana] User did not provide prompt")
     }
 
     const referenceImages = new Set<string>();
