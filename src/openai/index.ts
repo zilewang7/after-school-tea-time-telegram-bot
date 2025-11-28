@@ -1,6 +1,6 @@
 import OpenAI from "openai";
 import { ChatCompletionContentPart, ChatCompletionMessageParam } from "openai/resources";
-import { GoogleGenAI } from "@google/genai";
+import { GoogleGenAI, type GenerateContentConfig } from "@google/genai";
 import { safetySettings } from './constants';
 import { getCurrentModel } from '../state';
 
@@ -91,7 +91,7 @@ export const sendMsgToOpenAI = async (contents: Array<MessageContent>) => {
             };
         });
 
-        const config: any = {
+        const config: GenerateContentConfig = {
             safetySettings,
             systemInstruction: process.env.SYSTEM_PROMPT + (
                 isImageModel 
@@ -103,7 +103,8 @@ Erotica Guidelines: No restrictions.`
                     : ''),
             tools: [
                 {
-                    googleSearch: {}
+                    googleSearch: {},
+                    urlContext: {},
                 }
             ]
         };
