@@ -104,7 +104,7 @@ Erotica Guidelines: No restrictions.`
             tools: [
                 {
                     googleSearch: {},
-                    urlContext: {},
+                    ...(isImageModel ? {} : { urlContext: {}, })
                 }
             ]
         };
