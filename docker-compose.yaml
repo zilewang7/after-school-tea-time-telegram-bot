@@ -1,6 +1,7 @@
 services:
   k-on-bot:
     restart: always
+    network_mode: host
     build:
       context: .
       args:

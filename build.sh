@@ -3,7 +3,9 @@
 cd /app/k-on-bot
 
 # 更新代码
-git pull
+git fetch origin master
+git reset --hard FETCH_HEAD
+git clean -fd
 
 # 安装依赖
 pnpm install
