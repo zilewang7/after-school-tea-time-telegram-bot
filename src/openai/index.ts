@@ -56,14 +56,14 @@ const buildGeminiParts = (
         }
         const dataUrl: string = String(part.image_url?.url || '');
         const base64: string = dataUrl.includes(',') ? (dataUrl.split(',')[1] || '') : dataUrl;
-        const inlineData: { mimeType: string; data: string; thoughtSignature?: string } = {
+        const inlineData: { mimeType: string; data: string } = {
             mimeType: 'image/png',
-            data: base64
+            data: base64,
         };
-        if (options?.forceSkipThoughtSignature) {
-            inlineData.thoughtSignature = 'skip_thought_signature_validator';
-        }
-        return { inlineData };
+        return { 
+            inlineData,
+            ...(options?.forceSkipThoughtSignature ? { thoughtSignature: 'skip_thought_signature_validator' } : {})
+        };
     });
 };
 
@@ -78,13 +78,13 @@ export const sendMsgToOpenAI = async (contents: Array<MessageContent>) => {
         const geminiContent = contents.map((message) => {
             const { role, content } = message;
             const modelParts = (message as AssistantMessageContent).modelParts;
-            const forceSkip = isImageModel && !(role === 'assistant' && modelParts);
             if (role === 'assistant' && modelParts && Array.isArray(modelParts)) {
                 return {
                     role: 'model',
                     parts: modelParts
                 };
             }
+            const forceSkip = isImageModel && role === 'assistant';
             return {
                 role: role === 'assistant' ? 'model' : role,
                 parts: buildGeminiParts(content, { forceSkipThoughtSignature: forceSkip })
