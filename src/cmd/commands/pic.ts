@@ -7,21 +7,30 @@ const botUserId = Number(process.env.BOT_USER_ID);
 const botUserName = process.env.BOT_NAME;
 const PICZIT_ENDPOINT = process.env.PICZIT_ENDPOINT;
 
-// Handle /piczit command
-async function handlePiczitCommand(ctx: Context, prompt: string, spoiler = true) {
+// Health check with 2s timeout
+async function checkPiczitHealth(): Promise<boolean> {
+    try {
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 2000);
+
+        const response = await fetch(`${PICZIT_ENDPOINT}/health`, {
+            signal: controller.signal,
+        });
+
+        clearTimeout(timeoutId);
+        return response.ok;
+    } catch (error) {
+        console.log('[piczit] health check failed:', error instanceof Error ? error.message : String(error));
+        return false;
+    }
+}
+
+// Async image generation (runs in background)
+async function generatePiczitImage(ctx: Context, processingReplyId: number, prompt: string, spoiler: boolean) {
     if (!ctx.message || !ctx.chat) return;
 
     const chatId = ctx.chat.id;
     const userMessageId = ctx.message.message_id;
-
-    // Send typing action
-    await ctx.api.sendChatAction(chatId, 'typing');
-
-    const processingReply = await ctx.reply('Processing...', {
-        reply_parameters: {
-            message_id: userMessageId
-        }
-    });
 
     try {
         console.log('[piczit] generating image', {
@@ -52,7 +61,7 @@ async function handlePiczitCommand(ctx: Context, prompt: string, spoiler = true)
 
         // Delete processing message
         try {
-            await ctx.api.deleteMessage(chatId, processingReply.message_id);
+            await ctx.api.deleteMessage(chatId, processingReplyId);
         } catch (error) {
             console.error('Failed to delete processing message:', error);
         }
@@ -75,34 +84,53 @@ async function handlePiczitCommand(ctx: Context, prompt: string, spoiler = true)
             fileBuffer: buffer,
         });
     } catch (error) {
-        console.error('Error in handlePiczitCommand:', error);
+        console.error('Error in generatePiczitImage:', error);
 
-        // Check if it's a connection error
-        const isConnectionError = error instanceof Error && (
-            error.message.includes('fetch failed') ||
-            error.message.includes('ECONNREFUSED') ||
-            error.message.includes('ETIMEDOUT')
-        );
-
-        const errorMsg = isConnectionError
-            ? '生图服务未启动'
-            : '生成图片失败：' + (error instanceof Error ? error.message : String(error));
+        const errorMsg = '生成图片失败：' + (error instanceof Error ? error.message : String(error));
 
         try {
-            await ctx.api.editMessageText(chatId, processingReply.message_id, errorMsg);
+            await ctx.api.editMessageText(chatId, processingReplyId, errorMsg);
         } catch (editError) {
             console.error('Failed to edit error message:', editError);
             // Fallback: delete processing message and send new error message
             try {
-                await ctx.api.deleteMessage(chatId, processingReply.message_id);
+                await ctx.api.deleteMessage(chatId, processingReplyId);
             } catch (delError) {
                 console.error('Failed to delete processing message:', delError);
             }
-            await ctx.reply(errorMsg, {
+            await ctx.api.sendMessage(chatId, errorMsg, {
                 reply_parameters: { message_id: userMessageId }
             });
         }
     }
+}
+
+// Handle /piczit command
+async function handlePiczitCommand(ctx: Context, prompt: string, spoiler = true) {
+    if (!ctx.message || !ctx.chat) return;
+
+    const chatId = ctx.chat.id;
+    const userMessageId = ctx.message.message_id;
+
+    // Check health first
+    const isHealthy = await checkPiczitHealth();
+
+    if (!isHealthy) {
+        await ctx.reply('生图服务未启动', {
+            reply_parameters: { message_id: userMessageId }
+        });
+        return;
+    }
+
+    // Send "generating" message
+    const processingReply = await ctx.reply('Processing...', {
+        reply_parameters: { message_id: userMessageId }
+    });
+
+    // Start async generation
+    generatePiczitImage(ctx, processingReply.message_id, prompt, spoiler).catch(error => {
+        console.error('Unhandled error in generatePiczitImage:', error);
+    });
 }
 
 // Handle /picgrok command
