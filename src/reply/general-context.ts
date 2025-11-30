@@ -161,8 +161,9 @@ export const generalContext = async (msg: Message): Promise<Array<MessageContent
 
     // filter images for models that don't support them
     const lowerModel = currentModel.toLowerCase();
-    const supportImages = lowerModel.startsWith('gemini') || lowerModel.includes('image') || lowerModel.includes('vision') || lowerModel.includes('gpt-4o');
-    if (!supportImages) {
+    const imageBlockingList = ['deepseek', 'grok-3', 'grok-code'];
+    const imageUnsupported = imageBlockingList.some(prefix => lowerModel.startsWith(prefix));
+    if (imageUnsupported) {
         chatContents = chatContents.map(content => {
             if (content.role === 'user') {
                 return {
