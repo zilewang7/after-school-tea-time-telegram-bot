@@ -33,9 +33,40 @@ async function generatePiczitImage(ctx: Context, processingReplyId: number, prom
     const userMessageId = ctx.message.message_id;
 
     try {
+        // Parse negative prompt
+        let mainPrompt = prompt;
+        let negativePrompt: string | undefined;
+        let negativePromptOverride = false;
+
+        if (prompt.includes('-!:')) {
+            const parts = prompt.split('-!:');
+            mainPrompt = (parts[0] || '').trim();
+            negativePrompt = parts.slice(1).join('-!:').trim();
+            negativePromptOverride = true;
+        } else if (prompt.includes('-:')) {
+            const parts = prompt.split('-:');
+            mainPrompt = (parts[0] || '').trim();
+            negativePrompt = parts.slice(1).join('-:').trim();
+        }
+
         console.log('[piczit] generating image', {
-            promptLength: prompt.length,
+            promptLength: mainPrompt.length,
+            hasNegativePrompt: !!negativePrompt,
+            negativePromptOverride,
         });
+
+        // Build request body
+        const requestBody: {
+            prompt: string;
+            negative_prompt?: string;
+            negative_prompt_override?: boolean;
+        } = { prompt: mainPrompt };
+        if (negativePrompt) {
+            requestBody.negative_prompt = negativePrompt;
+            if (negativePromptOverride) {
+                requestBody.negative_prompt_override = true;
+            }
+        }
 
         // Call the ComfyUI API
         const response = await fetch(`${PICZIT_ENDPOINT}/generate`, {
@@ -43,7 +74,7 @@ async function generatePiczitImage(ctx: Context, processingReplyId: number, prom
             headers: {
                 'Content-Type': 'application/json',
             },
-            body: JSON.stringify({ prompt }),
+            body: JSON.stringify(requestBody),
         });
 
         if (!response.ok) {
