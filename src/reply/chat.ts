@@ -370,14 +370,21 @@ async function sendMsgToOpenAIWithRetry(
             const stream = await attempt(timeout);
             return stream; // If attempt is successful, return the stream
         } catch (error) {
-            const shouldRetry =
-                (error instanceof Error && error.message === 'Timeout') ||
-                (error instanceof Error && error.message.includes('429')) ||
-                (error instanceof Error && error.message.toLowerCase().includes('rate limit'));
+            const errorMsg = error instanceof Error ? error.message : String(error);
+            const errorStr = errorMsg.toLowerCase();
+
+            // Check if this is a retryable error
+            const isTimeout = errorMsg === 'Timeout';
+            const isRateLimit =
+                errorStr.includes('429') ||
+                errorStr.includes('rate limit') ||
+                errorStr.includes('exhausted');
+
+            const shouldRetry = isTimeout || isRateLimit;
 
             if (shouldRetry && retries > 0) {
-                const waitTime = error instanceof Error && error.message.includes('429') ? 5000 : 1000;
-                console.log(`Retrying due to ${error instanceof Error ? error.message : 'error'}... (${retries} retries left, waiting ${waitTime}ms)`);
+                const waitTime = isRateLimit ? 5000 : 1000;
+                console.log(`Retrying due to ${errorMsg.substring(0, 100)}... (${retries} retries left, waiting ${waitTime}ms)`);
                 await new Promise(resolve => setTimeout(resolve, waitTime));
             } else {
                 throw error;
