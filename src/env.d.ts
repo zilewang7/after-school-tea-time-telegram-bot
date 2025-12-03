@@ -7,6 +7,9 @@ declare global {
             OPENAI_API_KEY: string
             OPENAI_API_URL: string
             SYSTEM_PROMPT: string
+            GOOGLE_CLOUD_LOCATION?: string
+            GOOGLE_CLOUD_PROJECT?: string
+            GOOGLE_GENAI_USE_VERTEXAI?: string
             GEMINI_API_KEY?: string
             DEFAULT_MODEL?: string
             DEEPSEEK_API_URL?: string
