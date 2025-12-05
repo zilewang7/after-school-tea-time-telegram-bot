@@ -1,30 +1,54 @@
-import { Menu } from "@grammyjs/menu";
-import { Bot, Context } from "grammy";
-import { changeModel, retry } from "../util";
-import { modelConfigs } from "../config/models";
+/**
+ * Bot menus - model selection and retry buttons
+ */
+import { Menu } from '@grammyjs/menu';
+import type { Bot, Context } from 'grammy';
+import { changeModel, retry } from '../util';
+import { modelConfigs } from '../config/models';
 
-export type Menus = Record<"checkModelMenu" | "retryMenu", Menu<Context>>;
+export type Menus = Record<'checkModelMenu' | 'retryMenu', Menu<Context>>;
 
-export const menuLoad = (bot: Bot): Menus => {
-    const checkModelMenu = new Menu("checkModelMenu");
+const BUTTONS_PER_ROW = 2;
 
-    // 每行显示2个按钮
-    const BUTTONS_PER_ROW = 2;
+/**
+ * Create model selection menu
+ */
+const createModelMenu = (): Menu<Context> => {
+    const menu = new Menu<Context>('checkModelMenu');
+
     modelConfigs.forEach((model, index) => {
-        checkModelMenu.text(
-            model.name,
-            async (ctx) => await changeModel(ctx, model.id, checkModelMenu)
-        );
+        menu.text(model.name, async (ctx) => {
+            await changeModel(ctx, model.id, menu);
+        });
 
+        // Add row break after every BUTTONS_PER_ROW buttons
         if ((index + 1) % BUTTONS_PER_ROW === 0) {
-            checkModelMenu.row();
+            menu.row();
         }
     });
 
-    const retryMenu = new Menu("retryMenu").text(
-        "重试",
-        async (ctx): Promise<void> => await retry(ctx, retryMenu)
-    );
+    return menu;
+};
+
+/**
+ * Create retry menu
+ */
+const createRetryMenu = (): Menu<Context> => {
+    const menu = new Menu<Context>('retryMenu');
+
+    menu.text('重试', async (ctx) => {
+        await retry(ctx, menu);
+    });
+
+    return menu;
+};
+
+/**
+ * Load menus on bot
+ */
+export const menuLoad = (bot: Bot): Menus => {
+    const checkModelMenu = createModelMenu();
+    const retryMenu = createRetryMenu();
 
     bot.use(checkModelMenu, retryMenu);
 

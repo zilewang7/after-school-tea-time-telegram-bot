@@ -1,11 +1,20 @@
-import { Bot } from "grammy";
-import { Menus } from "../cmd/menu";
-import { replyChat } from "./chat";
+/**
+ * Reply module loader
+ */
+import type { Bot } from 'grammy';
+import type { Menus } from '../cmd/menu';
+import { registerChatHandler } from './chat-handler';
 
-export const replyLoad = (bot: Bot, menus: Menus) => {
-    // easter eggs
-    bot.hears('RickRoll', async (ctx) => ctx.replyWithVideo("https://img.heimao.icu/RickRoll"));
-    bot.hears('K-ON', ctx => ctx.react('🏆'));
+/**
+ * Load reply handlers on bot
+ */
+export const replyLoad = (bot: Bot, menus: Menus): void => {
+    // Easter eggs
+    bot.hears('RickRoll', async (ctx) =>
+        ctx.replyWithVideo('https://img.heimao.icu/RickRoll')
+    );
+    bot.hears('K-ON', (ctx) => ctx.react('🏆'));
 
-    replyChat(bot, menus);
+    // Register main chat handler
+    registerChatHandler(bot, menus.retryMenu);
 };
