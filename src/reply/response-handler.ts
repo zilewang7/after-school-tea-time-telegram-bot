@@ -179,7 +179,7 @@ const finalizeCurrentMessage = async (
         userId: botUserId,
         date: new Date(),
         userName: botUserName,
-        message: state.textBuffer || state.thinkingBuffer ? '[Thinking]' : '',
+        message: state.textBuffer || (state.thinkingBuffer ? '[Thinking]' : ''),
         replyToId: userMessageId,
     });
 };
@@ -462,7 +462,7 @@ export const sendFinalResponse = async (
             userId: botUserId,
             date: new Date(),
             userName: botUserName,
-            message: response.text || response.thinkingText ? '[Thinking]' : '寄了',
+            message: response.text || (response.thinkingText ? '[Thinking]' : '寄了'),
             replyToId: userMessageId,
             modelParts: response.modelParts,
         });

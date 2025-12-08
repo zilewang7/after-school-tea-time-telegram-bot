@@ -6,7 +6,7 @@ export interface ModelConfig {
 
 export const modelConfigs: ModelConfig[] = [
     { id: "gpt-5-chat-latest", name: "gpt-5" },
-    { id: "gpt-5-thinking", name: "gpt-5-thinking" },
+    { id: "o4-mini-high", name: "o4-mini-high" },
     { id: "claude-sonnet-4-5-20250929", name: "claude-sonnet-4.5" },
     { id: "claude-sonnet-4-5-20250929-thinking", name: "claude-sonnet-4.5-thinking" },
     { id: "gemini-2.5-pro", name: "gemini-2.5-pro" },

@@ -36,14 +36,11 @@ export class OpenAIPlatform extends BasePlatform {
         );
     }
 
-    getModelCapabilities(model: string): ModelCapabilities {
-        const lowerModel = model.toLowerCase();
-        const isO1 = lowerModel.startsWith('o1');
-
+    getModelCapabilities(_model: string): ModelCapabilities {
         return {
             supportsImageInput: true,
             supportsImageOutput: false,
-            supportsSystemPrompt: !isO1,
+            supportsSystemPrompt: true,
             requiresMessageMerge: false,
             supportsThinking: false,
             supportsGrounding: false,

@@ -30,7 +30,7 @@
     "await-to-js": "^3.0.0",
     "dotenv": "^16.4.5",
     "grammy": "^1.38.4",
-    "openai": "^6.9.1",
+    "openai": "^6.10.0",
     "sequelize": "7.0.0-alpha.9",
     "sqlite3": "^5.1.7",
     "telegramify-markdown": "^1.3.0",
