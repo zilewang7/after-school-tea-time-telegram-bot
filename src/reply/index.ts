@@ -8,13 +8,6 @@ export { replyLoad } from './loader';
 // Chat handler
 export { handleReply, reply, registerChatHandler } from './chat-handler';
 
-// Picbanana handler
-export {
-    handlePicbananaCommand,
-    checkPicbananaCommand,
-    type PicbananaCommandData,
-} from './picbanana-handler';
-
 // Context builder
 export { buildContext, buildSimpleContext, buildContextFromParts } from './context-builder';
 
@@ -29,6 +22,13 @@ export {
 
 // Commands
 export { dealChatCommand } from './commands/chat-command';
+
+// Picbanana handler
+export {
+    handlePicbananaCommand,
+    checkPicbananaCommand,
+    type PicbananaCommandData,
+} from './commands/picbanana-handler';
 
 // Re-export for backward compatibility with old imports
 export { getRepliesHistory, getFileContentsOfMessage } from '../db/queries/context-queries';

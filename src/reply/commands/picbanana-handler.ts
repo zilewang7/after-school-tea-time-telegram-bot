@@ -4,17 +4,17 @@
  */
 import type { Context } from 'grammy';
 import type { Menu } from '@grammyjs/menu';
-import { to, isErr } from '../shared/result';
-import { getFileContentsOfMessage } from '../db/queries/context-queries';
-import { sendMessage, getSystemPrompt } from '../ai';
-import { buildContextFromParts } from './context-builder';
+import { to, isErr } from '../../shared/result';
+import { getFileContentsOfMessage } from '../../db/queries/context-queries';
+import { sendMessage } from '../../ai';
+import { buildContextFromParts } from './../context-builder';
 import {
     createChatContext,
     processStream,
     sendFinalResponse,
     handleResponseError,
-} from './response-handler';
-import type { UnifiedContentPart } from '../ai/types';
+} from './../response-handler';
+import type { UnifiedContentPart } from '../../ai/types';
 
 /**
  * Picbanana command data
@@ -29,25 +29,25 @@ export interface PicbananaCommandData {
  */
 export const checkPicbananaCommand = async (
     ctx: Context
-): Promise<PicbananaCommandData | null> => {
-    if (!ctx.message || !ctx.chat) return null;
+): Promise<[mention?: boolean, PicbananaCommandData?]> => {
+    if (!ctx.message || !ctx.chat) return [undefined];
 
     // Get text from message or caption
     const text =
         ctx.message.text ||
         ('caption' in ctx.message ? ctx.message.caption : undefined);
-    if (!text) return null;
+    if (!text) return [undefined];
 
     // Check command pattern
     const commandRegex = /^\/picbanana(@\S+)?\s*([\s\S]*)?$/;
     const matchResult = text.match(commandRegex);
-    if (!matchResult) return null;
+    if (!matchResult) return [undefined];
 
     const prompt = matchResult[2]?.trim() || '';
 
     if (!prompt) {
         await ctx.reply('请提供图片描述');
-        return null;
+        return [false];
     }
 
     const chatId = ctx.chat.id;
@@ -76,10 +76,13 @@ export const checkPicbananaCommand = async (
     // Check current message for images
     await appendImagesFromMessage(chatId, currentMessageId);
 
-    return {
-        prompt,
-        referenceImages: Array.from(referenceImages),
-    };
+    return [
+        true,
+        {
+            prompt,
+            referenceImages: Array.from(referenceImages),
+        }
+    ];
 };
 
 /**
@@ -120,7 +123,6 @@ export const handlePicbananaCommand = async (
     const streamResult = await to(
         sendMessage(messages, {
             model: 'gemini-3-pro-image-preview',
-            systemPrompt: getSystemPrompt(),
         })
     );
 

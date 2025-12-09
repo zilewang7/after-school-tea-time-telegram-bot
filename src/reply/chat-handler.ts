@@ -4,6 +4,7 @@
  */
 import type { Bot, Context } from 'grammy';
 import type { Menu } from '@grammyjs/menu';
+import { match, P } from 'ts-pattern';
 import { to, isErr } from '../shared/result';
 import { getMessage } from '../db';
 import { sendMessage, getSystemPrompt, getModelCapabilities } from '../ai';
@@ -16,7 +17,7 @@ import {
     sendFinalResponse,
     handleResponseError,
 } from './response-handler';
-import { handlePicbananaCommand, checkPicbananaCommand } from './picbanana-handler';
+import { handlePicbananaCommand, checkPicbananaCommand } from './commands/picbanana-handler';
 import { dealChatCommand } from './commands/chat-command';
 
 /**
@@ -146,19 +147,23 @@ export const registerChatHandler = (
             await waitForFileSave();
 
             // Check for /picbanana command
-            const picbananaData = await checkPicbananaCommand(ctx);
+            const [mentionInPicbanana, picbananaData] = await checkPicbananaCommand(ctx);
             if (picbananaData) {
                 await handlePicbananaCommand(ctx, picbananaData, retryMenu);
                 return;
             }
 
             // Check for /chat command (adds context)
-            const useChatCommand = await dealChatCommand(ctx);
+            const mentionInChat = await dealChatCommand(ctx);
+
+            const mention = match([mentionInPicbanana, mentionInChat])
+                .with([P.boolean, P.boolean], ([a, b]) => a || b)
+                .with([P.boolean, undefined], ([a, _]) => a)
+                .with([undefined, P.boolean], ([_, b]) => b)
+                .otherwise(() => undefined);
 
             // Handle normal reply
-            await handleReply(ctx, retryMenu, {
-                mention: useChatCommand,
-            });
+            await handleReply(ctx, retryMenu, { mention });
         });
     });
 };

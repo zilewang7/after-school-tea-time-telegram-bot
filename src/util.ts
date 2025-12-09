@@ -82,8 +82,8 @@ export const sendModelMsg = async (
 ): Promise<void> => {
     await ctx.reply(
         '当前模型：`' +
-            getCurrentModel() +
-            '`\n\n点击下方按钮快速切换或使用 `/model `+模型名 手动指定',
+        getCurrentModel() +
+        '`\n\n点击下方按钮快速切换或使用 `/model `+模型名 手动指定',
         { reply_markup: checkModelMenu, parse_mode: 'Markdown' }
     );
 };
@@ -120,16 +120,23 @@ export const retry = async (
     const update = {
         ...ctx.update,
         ...message,
-        message: message,
-        reply_to_message: {
-            message_id: dbMessage?.replyToId,
+        message: {
+            ...message,
+            ...(dbMessage ? {
+                reply_to_message: {
+                    date: dbMessage.date.valueOf() / 1000,
+                    chat: ctx.chat,
+                    message_id: dbMessage?.replyToId,
+                    reply_to_message: undefined,
+                },
+            } : {})
         },
     } as Update;
 
     const newCtx = new Context(update, ctx.api, ctx.me);
 
     // Check if this is a /picbanana command
-    const picbananaCommand = await checkPicbananaCommand(newCtx);
+    const [, picbananaCommand] = await checkPicbananaCommand(newCtx);
     if (picbananaCommand) {
         await handlePicbananaCommand(newCtx, picbananaCommand, retryMenu);
         return;
