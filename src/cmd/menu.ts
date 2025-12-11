@@ -36,8 +36,8 @@ const createModelMenu = (): Menu<Context> => {
 const createRetryMenu = (): Menu<Context> => {
     const menu = new Menu<Context>('retryMenu');
 
-    menu.text('重试', async (ctx) => {
-        await retry(ctx, menu);
+    menu.text('重试', (ctx) => {
+        retry(ctx, menu);
     });
 
     return menu;
