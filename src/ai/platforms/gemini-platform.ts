@@ -76,7 +76,11 @@ export class GeminiPlatform extends BasePlatform {
         messages: UnifiedMessage[],
         config: PlatformConfig
     ): Promise<AsyncIterable<StreamChunk>> {
-        const { model, systemPrompt, timeout = 85000, maxRetries = 3, isImageModel } = config;
+        let { model, systemPrompt, timeout = 85000, maxRetries = 3, isImageModel } = config;
+
+        if (isImageModel) {
+            maxRetries = 50;
+        }
 
         this.logMessageContents(messages);
         console.log(`[gemini] Using model: ${model}, isImageModel: ${isImageModel}`);
