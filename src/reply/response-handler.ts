@@ -568,5 +568,7 @@ export const handleResponseError = async (
         setTimeout(async () => {
             await editor.edit(truncatedMessage, { replyMarkup: retryMenu });
         }, 15000);
+    } else {
+        console.error('[response-handler]', error);
     }
 };
