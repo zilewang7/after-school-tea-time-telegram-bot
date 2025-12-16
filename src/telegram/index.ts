@@ -11,5 +11,8 @@ export * from './typing-indicator';
 // Message editor
 export * from './message-editor';
 
+// Status text
+export * from './status-text';
+
 // Formatters
 export * from './formatters';

@@ -12,8 +12,11 @@ import { saveMessage } from '../db';
 import {
     createTypingIndicator,
     createMessageEditor,
+    createStatusController,
+    getStatusText,
     type MessageEditor,
     type TypingIndicator,
+    type StatusController,
 } from '../telegram';
 import {
     escapeMarkdownV2,
@@ -44,8 +47,11 @@ export interface ChatContext {
     userMessageId: number;
     editor: MessageEditor;
     typing: TypingIndicator;
+    statusController: StatusController;
     retryMenu: Menu<Context>;
     messageHistory: number[];  // All message IDs created for this response
+    /** Current response state for idle updates */
+    currentState?: ResponseState;
 }
 
 /**
@@ -64,9 +70,10 @@ export const createChatContext = async (
     const typing = createTypingIndicator(ctx.api, chatId);
     typing.start();
 
-    // Create processing message
+    // Create processing message with initial status
+    const initialStatus = getStatusText();
     const processingResult = await to(
-        ctx.reply('Processing...', {
+        ctx.reply(initialStatus, {
             reply_parameters: { message_id: userMessageId },
         })
     );
@@ -80,15 +87,38 @@ export const createChatContext = async (
 
     const editor = createMessageEditor(ctx.api, chatId, processingMsg.message_id);
 
-    return {
+    // Create chat context first (statusController needs reference to it)
+    const chatContext: ChatContext = {
         ctx,
         chatId,
         userMessageId,
         editor,
         typing,
+        statusController: null as any, // Will be set below
         retryMenu,
         messageHistory: [processingMsg.message_id],
+        currentState: undefined,
     };
+
+    // Create status controller that triggers idle updates
+    const statusController = createStatusController(2500, async () => {
+        // Idle update: edit message with new status text
+        const state = chatContext.currentState;
+        const statusText = chatContext.statusController.getText();
+
+        if (state && (state.textBuffer || state.thinkingBuffer)) {
+            // Has content, append status
+            const displayText = formatStateForDisplay(state, true, statusText);
+            await chatContext.editor.edit(displayText, { parseMode: 'MarkdownV2' });
+        } else {
+            // No content yet, just show status
+            await chatContext.editor.edit(statusText);
+        }
+    });
+
+    chatContext.statusController = statusController;
+
+    return chatContext;
 };
 
 /**
@@ -128,6 +158,7 @@ const processChunk = (chunk: StreamChunk, state: ResponseState): ResponseState =
 const formatStateForDisplay = (
     state: ResponseState,
     isProcessing: boolean,
+    statusText?: string,
 ): string => {
     let display = '';
 
@@ -150,10 +181,11 @@ const formatStateForDisplay = (
     }
 
     if (isProcessing && display) {
-        display += '\nProcessing\\.\\.\\.';
+        const escapedStatus = statusText?.replace(/\./g, '\\.') ?? 'Processing\\.\\.\\.';
+        display += '\n' + escapedStatus;
     }
 
-    return display || 'Processing...';
+    return display || (statusText ?? 'Processing...');
 };
 
 /**
@@ -190,11 +222,14 @@ const finalizeCurrentMessage = async (
 const createContinuationMessage = async (
     chatContext: ChatContext
 ): Promise<MessageEditor | null> => {
-    const { ctx, chatId, userMessageId } = chatContext;
+    const { ctx, chatId, userMessageId, statusController } = chatContext;
+
+    // Get current status text escaped for MarkdownV2
+    const statusText = statusController.getTextEscaped();
 
     // Create new processing message
     const sendResult = await to(
-        ctx.api.sendMessage(chatId, '_\\(continued\\)_\nProcessing\\.\\.\\.', {
+        ctx.api.sendMessage(chatId, `_\\(continued\\)_\n${statusText}`, {
             parse_mode: 'MarkdownV2',
             reply_parameters: { message_id: userMessageId },
         })
@@ -233,8 +268,12 @@ export const processStream = async (
     for await (const chunk of stream) {
         state = processChunk(chunk, state);
 
-        // Format current display
-        const displayText = formatStateForDisplay(state, true);
+        // Update current state for idle updates
+        chatContext.currentState = state;
+
+        // Format current display with dynamic status text
+        const statusText = chatContext.statusController.getText();
+        const displayText = formatStateForDisplay(state, true, statusText);
 
         // Check if we need to switch to a new message
         if (displayText.length >= MESSAGE_LENGTH_LIMIT) {
@@ -312,6 +351,7 @@ export const processStream = async (
 
         if (shouldUpdate) {
             await chatContext.editor.edit(displayText, { parseMode: 'MarkdownV2' });
+            chatContext.statusController.notifyEdit();
             lastUpdateTime = Date.now();
         }
     }
@@ -333,10 +373,11 @@ export const sendFinalResponse = async (
     chatContext: ChatContext,
     response: AIResponse
 ): Promise<void> => {
-    const { ctx, chatId, userMessageId, editor, typing, retryMenu } = chatContext;
+    const { ctx, chatId, userMessageId, editor, typing, statusController, retryMenu } = chatContext;
     const { messageId } = editor.getIds();
 
     typing.stop();
+    statusController.stop();
 
     let finalMessage = formatResponse(response.text, response.thinkingText)
 
@@ -490,10 +531,11 @@ export const handleResponseError = async (
     error: Error,
     partialText?: string
 ): Promise<void> => {
-    const { chatId, userMessageId, editor, typing, retryMenu } = chatContext;
+    const { chatId, userMessageId, editor, typing, statusController, retryMenu } = chatContext;
     const { messageId } = editor.getIds();
 
     typing.stop();
+    statusController.stop();
 
     // Save partial content if any
     if (partialText) {

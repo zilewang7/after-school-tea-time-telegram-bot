@@ -8,6 +8,7 @@ import OpenAI from 'openai';
 import { to, isErr } from '../../shared/result';
 import { removeSpecificText } from '../../util';
 import { saveMessage } from '../../db';
+import { getStatusText } from '../../telegram/status-text';
 
 const botUserId = Number(process.env.BOT_USER_ID);
 const botUserName = process.env.BOT_NAME;
@@ -196,9 +197,9 @@ const handlePiczitCommand = async (
         return;
     }
 
-    // Send processing message
+    // Send processing message with dynamic status
     const replyResult = await to(
-        ctx.reply('Processing...', {
+        ctx.reply(getStatusText(), {
             reply_parameters: { message_id: userMessageId },
         })
     );
@@ -242,9 +243,9 @@ const handlePicgrokCommand = async (ctx: Context, prompt: string): Promise<void>
     // Send typing action
     await ctx.api.sendChatAction(chatId, 'typing');
 
-    // Send processing message
+    // Send processing message with dynamic status
     const replyResult = await to(
-        ctx.reply('Processing...', {
+        ctx.reply(getStatusText(), {
             reply_parameters: { message_id: userMessageId },
         })
     );
