@@ -13,6 +13,8 @@ import {
 } from '../services';
 import { buildResponseButtons } from '../cmd/menus';
 import { ButtonState, type CommandType } from '../db';
+import { isImageModel } from '../ai';
+import { getCurrentModel } from '../state';
 import {
     createTypingIndicator,
     createStreamingEditor,
@@ -481,6 +483,18 @@ export const sendFinalResponse = async (
     const hasText = Boolean(finalMessage);
     const hasImages = response.images.length > 0;
 
+    // Check if this is an image generation context (picbanana command OR image model)
+    const currentModel = getCurrentModel();
+    const isImageGenerationContext = isImageModel(currentModel);
+    const noImageInResponse = isImageGenerationContext && !hasImages && !wasStoppedByUser;
+
+    // Add [no image in response] marker for image generation without images
+    if (noImageInResponse) {
+        finalMessage = finalMessage
+            ? `${finalMessage}\n\n\\[no image in response\\]`
+            : '\\[no image in response\\]';
+    }
+
     console.log('[response-handler] Final response:', {
         hasText,
         hasImages,
@@ -489,6 +503,8 @@ export const sendFinalResponse = async (
         thinkingLength: response.thinkingText.length,
         messageCount: chatContext.messageHistory.length,
         wasStoppedByUser,
+        isImageGenerationContext,
+        noImageInResponse,
     });
 
     if (hasImages) {
@@ -556,7 +572,11 @@ export const sendFinalResponse = async (
             return getBotResponse(chatId, session.firstMessageId);
         };
         const botResponse = await getBotResponseForButtons();
-        const finalButtonState = botResponse?.buttonState ?? ButtonState.NONE;
+        // For image generation without images: ensure at least RETRY_ONLY, but keep HAS_VERSIONS if already set
+        const dbButtonState = botResponse?.buttonState ?? ButtonState.NONE;
+        const finalButtonState = noImageInResponse && dbButtonState === ButtonState.NONE
+            ? ButtonState.RETRY_ONLY
+            : dbButtonState;
         const finalButtons = finalButtonState !== ButtonState.NONE
             ? buildResponseButtons(
                 finalButtonState,
@@ -565,9 +585,9 @@ export const sendFinalResponse = async (
             )
             : undefined;
 
-        if (hasText || wasStoppedByUser) {
-            // Text response or stopped with no content
-            const displayMessage = hasText ? finalMessage : '\\[stopped\\]';
+        if (hasText || wasStoppedByUser || noImageInResponse) {
+            // Text response, stopped, or no image in image generation context
+            const displayMessage = finalMessage || '\\[stopped\\]';
             await editor.updateContent(displayMessage, {
                 parseMode: 'MarkdownV2',
                 replyMarkup: finalButtons,
