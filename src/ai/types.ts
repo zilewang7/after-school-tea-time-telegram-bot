@@ -62,6 +62,8 @@ export interface PlatformConfig {
     timeout?: number;
     maxRetries?: number;
     isImageModel?: boolean;
+    /** AbortSignal for cancelling the request */
+    signal?: AbortSignal;
 }
 
 // Model capabilities
@@ -99,8 +101,14 @@ export interface IAIPlatform {
 
 // Response state for stream processing
 export interface ResponseState {
+    /** Current message display buffer (may be reset on split) */
     textBuffer: string;
+    /** Current message thinking buffer (may be reset on split) */
     thinkingBuffer: string;
+    /** Complete accumulated text (never reset) */
+    fullText: string;
+    /** Complete accumulated thinking (never reset) */
+    fullThinking: string;
     images: Buffer[];
     groundingData: GroundingData[];
     modelParts?: unknown[];
@@ -112,6 +120,8 @@ export interface SendOptions {
     timeout: number;
     maxRetries: number;
     onRetry?: (attempt: number, error: Error) => void;
+    /** AbortSignal for cancelling the request */
+    signal?: AbortSignal;
 }
 
 // Default send options

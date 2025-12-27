@@ -1,10 +1,95 @@
 /**
  * Context-related database queries
- * Migrated from reply/helper.ts
+ * Handles both Message table (user messages) and BotResponse table (bot messages)
  */
-import { getMessage } from '../index';
-import { Message } from '../messageDTO';
+import { getMessage, getBotResponse, findBotResponseByMessageId } from '../index';
 import type { UnifiedContentPart } from '../../ai/types';
+
+const botUserName = process.env.BOT_NAME || 'Bot';
+
+/**
+ * Unified message interface for context building
+ */
+export interface ContextMessage {
+    chatId: number;
+    messageId: number;
+    fromBotSelf: boolean;
+    date: Date;
+    userName: string;
+    text: string | null;
+    quoteText: string | null;
+    file: Buffer | null;
+    replyToId: number | null;
+    replies: string;
+    modelParts: string | null;
+}
+
+/**
+ * Get a message from either Message table or BotResponse table
+ * This allows context to include bot responses
+ */
+const getContextMessage = async (
+    chatId: number,
+    messageId: number
+): Promise<ContextMessage | null> => {
+    // First try Message table
+    const msg = await getMessage(chatId, messageId);
+    if (msg) {
+        return {
+            chatId: msg.chatId,
+            messageId: msg.messageId,
+            fromBotSelf: msg.fromBotSelf,
+            date: msg.date,
+            userName: msg.userName,
+            text: msg.text,
+            quoteText: msg.quoteText,
+            file: msg.file,
+            replyToId: msg.replyToId,
+            replies: msg.replies,
+            modelParts: msg.modelParts,
+        };
+    }
+
+    // Try BotResponse table
+    const botResponse = await getBotResponse(chatId, messageId);
+    if (botResponse) {
+        const currentVersion = botResponse.getCurrentVersion();
+        return {
+            chatId: botResponse.chatId,
+            messageId: botResponse.messageId,
+            fromBotSelf: true,
+            date: new Date(currentVersion?.createdAt || Date.now()),
+            userName: botUserName,
+            text: currentVersion?.text || null,
+            quoteText: null,
+            file: null,
+            replyToId: botResponse.userMessageId,
+            replies: '[]', // Bot responses don't track replies the same way
+            modelParts: currentVersion?.modelParts ? JSON.stringify(currentVersion.modelParts) : null,
+        };
+    }
+
+    // Also search by message ID in case it's a continuation message
+    const foundResponse = await findBotResponseByMessageId(chatId, messageId);
+    if (foundResponse) {
+        const currentVersion = foundResponse.getCurrentVersion();
+        return {
+            chatId: foundResponse.chatId,
+            messageId: foundResponse.messageId,
+            fromBotSelf: true,
+            date: new Date(currentVersion?.createdAt || Date.now()),
+            userName: botUserName,
+            text: currentVersion?.text || null,
+            quoteText: null,
+            file: null,
+            replyToId: foundResponse.userMessageId,
+            replies: '[]',
+            modelParts: currentVersion?.modelParts ? JSON.stringify(currentVersion.modelParts) : null,
+        };
+    }
+
+    return null;
+};
 
 /**
  * Find the root message of a reply chain
@@ -12,11 +97,11 @@ import type { UnifiedContentPart } from '../../ai/types';
 const findRootMessage = async (
     chatId: number,
     messageId: number
-): Promise<Message | null> => {
-    let currentMessage: Message | null = null;
+): Promise<ContextMessage | null> => {
+    let currentMessage: ContextMessage | null = null;
 
-    const findRoot = async (msgId: number): Promise<Message | null> => {
-        const msg = await getMessage(chatId, msgId);
+    const findRoot = async (msgId: number): Promise<ContextMessage | null> => {
+        const msg = await getContextMessage(chatId, msgId);
 
         if (msg?.replyToId) {
             currentMessage = msg;
@@ -34,8 +119,8 @@ const findRootMessage = async (
  */
 const collectReplies = async (
     chatId: number,
-    message: Message,
-    collected: Message[]
+    message: ContextMessage,
+    collected: ContextMessage[]
 ): Promise<void> => {
     const repliesIds: number[] = JSON.parse(message.replies);
 
@@ -43,7 +128,7 @@ const collectReplies = async (
 
     for (const replyId of repliesIds) {
         try {
-            const msg = await getMessage(chatId, replyId);
+            const msg = await getContextMessage(chatId, replyId);
             if (msg) {
                 collected.push(msg);
                 await collectReplies(chatId, msg, collected);
@@ -62,9 +147,9 @@ export const getRepliesHistory = async (
     chatId: number,
     messageId: number,
     options: { excludeSelf?: boolean } = {}
-): Promise<Message[]> => {
+): Promise<ContextMessage[]> => {
     const { excludeSelf } = options;
-    const messageList: Message[] = [];
+    const messageList: ContextMessage[] = [];
 
     // Find the root message
     const rootMessage = await findRootMessage(chatId, messageId);

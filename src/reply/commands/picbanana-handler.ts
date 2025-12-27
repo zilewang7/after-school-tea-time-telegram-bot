@@ -3,7 +3,6 @@
  * Handles /picbanana image generation command
  */
 import type { Context } from 'grammy';
-import type { Menu } from '@grammyjs/menu';
 import { to, isErr } from '../../shared/result';
 import { getFileContentsOfMessage } from '../../db/queries/context-queries';
 import { sendMessage } from '../../ai';
@@ -90,8 +89,7 @@ export const checkPicbananaCommand = async (
  */
 export const handlePicbananaCommand = async (
     ctx: Context,
-    commandData: PicbananaCommandData,
-    retryMenu: Menu<Context>
+    commandData: PicbananaCommandData
 ): Promise<void> => {
     if (!ctx.message || !ctx.chat) return;
 
@@ -100,8 +98,8 @@ export const handlePicbananaCommand = async (
         referenceImageCount: commandData.referenceImages.length,
     });
 
-    // Create chat context
-    const chatContext = await createChatContext(ctx, retryMenu);
+    // Create chat context with picbanana command type
+    const chatContext = await createChatContext(ctx, { commandType: 'picbanana' });
     if (!chatContext) {
         console.error('[picbanana] Failed to create chat context');
         return;
@@ -123,6 +121,7 @@ export const handlePicbananaCommand = async (
     const streamResult = await to(
         sendMessage(messages, {
             model: 'gemini-3-pro-image-preview',
+            signal: chatContext.session.streamController.signal,
         })
     );
 

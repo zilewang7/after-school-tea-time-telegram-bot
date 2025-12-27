@@ -79,14 +79,13 @@ export const recordEdit = (chatId: number | string): void => {
 };
 
 /**
- * Wait for rate limit delay and record edit
+ * Wait for rate limit delay (does NOT record edit - caller should call recordEdit after successful API call)
  */
 export const waitForRateLimit = async (chatId: number | string): Promise<void> => {
     const delay = calculateEditDelay(chatId);
     if (delay > 0) {
         await new Promise((resolve) => setTimeout(resolve, delay));
     }
-    recordEdit(chatId);
 };
 
 /**

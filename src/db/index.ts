@@ -1,5 +1,6 @@
 import { sequelize } from "./config";
 import { Message } from "./messageDTO";
+import { BotResponse, ButtonState, type ResponseVersion, type ResponseMetadata, type CommandType } from "./botResponseDTO";
 import { getBlob } from "../util";
 import { removeAsyncFileSaveMsgId } from '../state';
 
@@ -105,4 +106,82 @@ const getMessage = async (chatId: number, messageId: number) => {
     return message;
 }
 
-export { saveMessage, getMessage }
+/**
+ * Get a bot response by its first message ID
+ */
+const getBotResponse = async (chatId: number, messageId: number): Promise<BotResponse | null> => {
+    return BotResponse.findOne({ where: { chatId, messageId } });
+};
+
+/**
+ * Find a bot response by any of its message IDs (searches through all versions)
+ */
+const findBotResponseByMessageId = async (chatId: number, messageId: number): Promise<BotResponse | null> => {
+    // First try direct lookup
+    const direct = await getBotResponse(chatId, messageId);
+    if (direct) return direct;
+
+    // Otherwise search through all responses in this chat
+    const allResponses = await BotResponse.findAll({ where: { chatId } });
+
+    for (const response of allResponses) {
+        const versions = response.getVersions();
+        for (const version of versions) {
+            if (version.messageIds.includes(messageId)) {
+                return response;
+            }
+        }
+    }
+
+    return null;
+};
+
+/**
+ * Create a new bot response record
+ */
+const createBotResponse = async (
+    chatId: number,
+    messageId: number,
+    userMessageId: number,
+    metadata: ResponseMetadata
+): Promise<BotResponse> => {
+    return BotResponse.create({
+        messageId,
+        chatId,
+        userMessageId,
+        currentVersionIndex: 0,
+        versions: '[]',
+        buttonState: ButtonState.PROCESSING,
+        metadata: JSON.stringify(metadata),
+    });
+};
+
+/**
+ * Update bot response button state
+ */
+const updateBotResponseButtonState = async (
+    chatId: number,
+    messageId: number,
+    buttonState: ButtonState
+): Promise<boolean> => {
+    const response = await getBotResponse(chatId, messageId);
+    if (!response) return false;
+
+    response.buttonState = buttonState;
+    await response.save();
+    return true;
+};
+
+export {
+    saveMessage,
+    getMessage,
+    getBotResponse,
+    findBotResponseByMessageId,
+    createBotResponse,
+    updateBotResponseButtonState,
+    BotResponse,
+    ButtonState,
+    type ResponseVersion,
+    type ResponseMetadata,
+    type CommandType,
+}

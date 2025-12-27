@@ -1,5 +1,5 @@
 import { Bot } from "grammy";
-import { getRepliesHistory } from "../../reply/helper";
+import { getRepliesHistory } from "../../reply";
 
 export const registerContextCommand = (bot: Bot) => {
     bot.command("context", async (ctx) => {

@@ -2,7 +2,7 @@ import 'dotenv/config';
 import { Bot } from "grammy";
 import { cmdLoad } from './cmd';
 import { replyLoad } from './reply';
-import { autoClear, autoSave } from './db/autoSave';
+import { autoClear, autoSave, autoUpdate } from './db/autoSave';
 import { menuLoad } from './cmd/menu';
 import { getAppState } from './state';
 
@@ -18,6 +18,8 @@ const bot = new Bot(process.env.BOT_TOKEN);
 
 // 保存消息
 autoSave(bot);
+// 更新编辑的消息
+autoUpdate(bot);
 // 自动清除一周前的消息
 autoClear();
 
@@ -28,7 +30,7 @@ const menus = menuLoad(bot);
 // 使用命令
 cmdLoad(bot, menus);
 // 使用回复
-replyLoad(bot, menus);
+replyLoad(bot);
 
 // catch error
 bot.catch((error) => {

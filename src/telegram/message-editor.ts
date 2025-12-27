@@ -2,7 +2,7 @@
  * Rate-limited message editor for Telegram
  */
 import type { Api } from 'grammy';
-import { waitForRateLimit } from './rate-limiter';
+import { waitForRateLimit, recordEdit } from './rate-limiter';
 import { to, isErr } from '../shared/result';
 
 export interface EditOptions {
@@ -36,33 +36,45 @@ export const createMessageEditor = (
     chatId: number,
     messageId: number
 ): MessageEditor => {
-    return {
-        edit: async (text: string, options?: EditOptions): Promise<boolean> => {
-            await waitForRateLimit(chatId);
+    const doEdit = async (text: string, options?: EditOptions): Promise<boolean> => {
+        await waitForRateLimit(chatId);
 
-            const editResult = await to(
-                api.editMessageText(chatId, messageId, text, {
-                    parse_mode: options?.parseMode,
-                    reply_markup: options?.replyMarkup,
-                    link_preview_options: options?.disableWebPagePreview
-                        ? { is_disabled: true }
-                        : undefined,
-                })
-            );
+        const editResult = await to(
+            api.editMessageText(chatId, messageId, text, {
+                parse_mode: options?.parseMode,
+                reply_markup: options?.replyMarkup,
+                link_preview_options: options?.disableWebPagePreview
+                    ? { is_disabled: true }
+                    : undefined,
+            })
+        );
 
-            if (isErr(editResult)) {
-                const err = editResult[0];
+        if (isErr(editResult)) {
+            const err = editResult[0];
+            const errMsg = err.message || '';
 
-                // Ignore "message is not modified" error
-                if (err.message?.includes('message is not modified')) {
-                    return true;
-                }
-
-                console.error('[message-editor] Edit failed:', err.message);
-                return false;
+            // Ignore "message is not modified" error
+            if (errMsg.includes('message is not modified')) {
+                return true;
             }
 
-            return true;
+            // Log parse errors specifically
+            if (errMsg.includes("can't parse entities")) {
+                console.warn('[message-editor] Markdown parse error:', errMsg);
+            }
+
+            console.error('[message-editor] Edit failed:', errMsg);
+            return false;
+        }
+
+        // Record successful edit for rate limiting
+        recordEdit(chatId);
+        return true;
+    };
+
+    return {
+        edit: (text: string, options?: EditOptions): Promise<boolean> => {
+            return doEdit(text, options);
         },
 
         delete: async (): Promise<boolean> => {
@@ -78,42 +90,4 @@ export const createMessageEditor = (
 
         getIds: () => ({ chatId, messageId }),
     };
-};
-
-/**
- * Edit message text with rate limiting (standalone function)
- */
-export const rateLimitedEdit = async (
-    api: Api,
-    chatId: number,
-    messageId: number,
-    text: string,
-    options?: EditOptions
-): Promise<boolean> => {
-    const editor = createMessageEditor(api, chatId, messageId);
-    return editor.edit(text, options);
-};
-
-/**
- * Create a processing message and return its editor
- */
-export const createProcessingMessage = async (
-    api: Api,
-    chatId: number,
-    replyToMessageId: number,
-    initialText: string = 'Processing...'
-): Promise<MessageEditor | null> => {
-    const sendResult = await to(
-        api.sendMessage(chatId, initialText, {
-            reply_parameters: { message_id: replyToMessageId },
-        })
-    );
-
-    if (isErr(sendResult)) {
-        console.error('[message-editor] Failed to create processing message:', sendResult[0].message);
-        return null;
-    }
-
-    const message = sendResult[1];
-    return createMessageEditor(api, chatId, message.message_id);
 };

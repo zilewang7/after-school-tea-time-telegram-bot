@@ -91,7 +91,6 @@ const matchQueriesToAnchors = (
  */
 const formatSingleGrounding = (
     metadata: GroundingData,
-    isLast: boolean
 ): string => {
     const queries = metadata.searchQueries.filter(
         (q) => q && q.trim().length > 0
@@ -118,16 +117,13 @@ const formatSingleGrounding = (
     // Add grounding chunks (source citations)
     metadata.groundingChunks?.forEach((chunk, idx) => {
         if (chunk.web) {
-            const title = escapeMarkdownV2(chunk.web.title ?? '');
-            const uri = chunk.web.uri ?? '';
+            const title = escapeMarkdownV2(chunk.web.title ?? 'no title');
+            const uri = chunk.web.uri ?? 'https://example.com';
             result += `\n>\\[${idx + 1}\\] [${title}](${uri})`;
         }
     });
 
-    // Close the quote block if this is the last entry
-    if (isLast) {
-        result += '||';
-    }
+    result += '||';
 
     return result;
 };
@@ -141,9 +137,7 @@ export const formatGroundingMetadata = (
     if (!metadataList.length) return '';
 
     return metadataList
-        .map((metadata, idx) =>
-            formatSingleGrounding(metadata, idx === metadataList.length - 1)
-        )
+        .map((metadata) => formatSingleGrounding(metadata))
         .join('');
 };
 

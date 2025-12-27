@@ -3,7 +3,6 @@
  * Handles incoming messages and coordinates AI responses
  */
 import type { Bot, Context } from 'grammy';
-import type { Menu } from '@grammyjs/menu';
 import { match, P } from 'ts-pattern';
 import { to, isErr } from '../shared/result';
 import { getMessage } from '../db';
@@ -48,7 +47,6 @@ const shouldSkipMessage = (ctx: Context): boolean => {
  */
 export const handleReply = async (
     ctx: Context,
-    retryMenu: Menu<Context>,
     options?: { mention?: boolean }
 ): Promise<void> => {
     if (!ctx.message || !ctx.chat) return;
@@ -64,7 +62,7 @@ export const handleReply = async (
     const model = getCurrentModel();
 
     // Create chat context (includes processing message and typing indicator)
-    const chatContext = await createChatContext(ctx, retryMenu);
+    const chatContext = await createChatContext(ctx);
     if (!chatContext) {
         console.error('[chat-handler] Failed to create chat context');
         return;
@@ -102,6 +100,7 @@ export const handleReply = async (
         sendMessage(chatContents, {
             model,
             systemPrompt: getSystemPrompt(),
+            signal: chatContext.session.streamController.signal,
         })
     );
     if (isErr(streamResult)) {
@@ -134,8 +133,7 @@ export const handleReply = async (
  * Register chat handler on bot
  */
 export const registerChatHandler = (
-    bot: Bot,
-    retryMenu: Menu<Context>
+    bot: Bot
 ): void => {
     bot.on(['msg:text', 'msg:photo', 'msg:sticker'], async (ctx, next) => {
         // Call next middleware first
@@ -149,7 +147,7 @@ export const registerChatHandler = (
             // Check for /picbanana command
             const [mentionInPicbanana, picbananaData] = await checkPicbananaCommand(ctx);
             if (picbananaData) {
-                await handlePicbananaCommand(ctx, picbananaData, retryMenu);
+                await handlePicbananaCommand(ctx, picbananaData);
                 return;
             }
 
@@ -163,7 +161,7 @@ export const registerChatHandler = (
                 .otherwise(() => undefined);
 
             // Handle normal reply
-            await handleReply(ctx, retryMenu, { mention });
+            await handleReply(ctx, { mention });
         });
     });
 };

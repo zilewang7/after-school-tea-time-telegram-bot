@@ -33,14 +33,19 @@ export abstract class BasePlatform implements IAIPlatform {
         operation: () => Promise<T>,
         options: SendOptions = { timeout: 85000, maxRetries: 3 }
     ): Promise<T> {
-        const { timeout, maxRetries, onRetry } = options;
+        const { timeout, maxRetries, onRetry, signal } = options;
         const timeoutIncrement = 30000;
 
         for (let attempt = 1; attempt <= maxRetries; attempt++) {
+            // Check if aborted before each attempt
+            if (signal?.aborted) {
+                throw new Error('Aborted');
+            }
+
             const currentTimeout = timeout + (attempt - 1) * timeoutIncrement;
 
             const opResult = await to(
-                this.withTimeout(operation(), currentTimeout)
+                this.withTimeout(operation(), currentTimeout, signal)
             );
 
             if (!isErr(opResult)) {
@@ -48,6 +53,12 @@ export abstract class BasePlatform implements IAIPlatform {
             }
 
             const err = opResult[0];
+
+            // Don't retry if aborted
+            if (signal?.aborted || err.message === 'Aborted') {
+                throw new Error('Aborted');
+            }
+
             const shouldRetry = isRetryableError(err) && attempt < maxRetries;
 
             if (shouldRetry) {
@@ -58,7 +69,7 @@ export abstract class BasePlatform implements IAIPlatform {
                 );
 
                 onRetry?.(attempt, err);
-                await this.sleep(waitTime);
+                await this.sleep(waitTime, signal);
             } else {
                 throw err;
             }
@@ -68,31 +79,59 @@ export abstract class BasePlatform implements IAIPlatform {
     }
 
     /**
-     * Wrap promise with timeout
+     * Wrap promise with timeout and abort signal
      */
-    protected withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
+    protected withTimeout<T>(promise: Promise<T>, ms: number, signal?: AbortSignal): Promise<T> {
         return new Promise((resolve, reject) => {
+            // Check if already aborted
+            if (signal?.aborted) {
+                reject(new Error('Aborted'));
+                return;
+            }
+
             const timeoutId = setTimeout(() => {
                 reject(new Error('Timeout'));
             }, ms);
 
+            // Listen for abort
+            const abortHandler = () => {
+                clearTimeout(timeoutId);
+                reject(new Error('Aborted'));
+            };
+            signal?.addEventListener('abort', abortHandler, { once: true });
+
             promise
                 .then((result) => {
                     clearTimeout(timeoutId);
+                    signal?.removeEventListener('abort', abortHandler);
                     resolve(result);
                 })
                 .catch((error) => {
                     clearTimeout(timeoutId);
+                    signal?.removeEventListener('abort', abortHandler);
                     reject(error);
                 });
         });
     }
 
     /**
-     * Sleep for specified milliseconds
+     * Sleep for specified milliseconds (interruptible by abort signal)
      */
-    protected sleep(ms: number): Promise<void> {
-        return new Promise((resolve) => setTimeout(resolve, ms));
+    protected sleep(ms: number, signal?: AbortSignal): Promise<void> {
+        return new Promise((resolve, reject) => {
+            if (signal?.aborted) {
+                reject(new Error('Aborted'));
+                return;
+            }
+
+            const timeoutId = setTimeout(resolve, ms);
+
+            const abortHandler = () => {
+                clearTimeout(timeoutId);
+                reject(new Error('Aborted'));
+            };
+            signal?.addEventListener('abort', abortHandler, { once: true });
+        });
     }
 
     /**

@@ -2,10 +2,8 @@
  * Utility functions
  */
 import { Context } from 'grammy';
-import type { ReactionTypeEmoji, Update } from 'grammy/types';
+import type { ReactionTypeEmoji } from 'grammy/types';
 import type { Menu } from '@grammyjs/menu';
-import { handleReply, handlePicbananaCommand, checkPicbananaCommand } from './reply';
-import { getMessage } from './db';
 import { getCurrentModel, setCurrentModel } from './state';
 
 /**
@@ -98,59 +96,4 @@ export const changeModel = async (
 ): Promise<void> => {
     setCurrentModel(model);
     await sendModelMsg(ctx, checkModelMenu);
-};
-
-/**
- * Retry last AI response
- */
-export const retry = async (
-    ctx: Context,
-    retryMenu: Menu<Context>
-): Promise<void> => {
-    const message = ctx.update.callback_query?.message?.reply_to_message;
-    const chatId = message?.chat.id;
-    const messageId = message?.message_id;
-
-    if (!chatId || !messageId) {
-        return;
-    }
-
-    const dbMessage = await getMessage(chatId, messageId);
-
-    const update = {
-        ...ctx.update,
-        ...message,
-        message: {
-            ...message,
-            ...(dbMessage ? {
-                reply_to_message: {
-                    date: dbMessage.date.valueOf() / 1000,
-                    chat: ctx.chat,
-                    message_id: dbMessage?.replyToId,
-                    reply_to_message: undefined,
-                },
-            } : {})
-        },
-    } as Update;
-
-    const newCtx = new Context(update, ctx.api, ctx.me);
-
-    // Check if this is a /picbanana command
-    const [, picbananaCommand] = await checkPicbananaCommand(newCtx);
-    if (picbananaCommand) {
-        await handlePicbananaCommand(newCtx, picbananaCommand, retryMenu);
-        return;
-    }
-
-    // Otherwise, use normal reply
-    await handleReply(newCtx, retryMenu, { mention: true });
-};
-
-/**
- * Escape text for Telegram MarkdownV2
- * @deprecated Use escapeMarkdownV2 from telegram/formatters instead
- */
-export const safeTextV2 = (text: string): string => {
-    if (!text) return '';
-    return text.replace(/(?<!\\)([_*[\]()~`>#+-=|{}.!])/g, '\\$1');
 };

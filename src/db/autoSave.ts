@@ -1,6 +1,7 @@
 import { Bot } from "grammy";
-import { saveMessage } from ".";
+import { saveMessage, getMessage, findBotResponseByMessageId } from ".";
 import { Message } from "./messageDTO";
+import { BotResponse } from "./botResponseDTO";
 import { Op } from "@sequelize/core";
 import {
     getMediaGroupIdTemp,
@@ -9,12 +10,45 @@ import {
     removeAsyncFileSaveMsgId,
 } from '../state';
 
+// 监听编辑消息并更新数据库
+export const autoUpdate = (bot: Bot) => {
+    bot.on('edited_message', async (ctx) => {
+        const editedMsg = ctx.editedMessage;
+        if (!editedMsg || !ctx.chat?.id) return;
+
+        const chatId = ctx.chat.id;
+        const messageId = editedMsg.message_id;
+
+        // 检查消息是否已存在于数据库
+        const existingMessage = await getMessage(chatId, messageId);
+        if (!existingMessage) {
+            // 没有存过的消息不需要更新
+            return;
+        }
+
+        try {
+            // 获取新的文本内容
+            const newText = editedMsg.text || editedMsg.caption || '';
+
+            if (newText) {
+                existingMessage.text = newText + "<<EOF\n";
+                existingMessage.date = new Date(editedMsg.edit_date! * 1000);
+                await existingMessage.save();
+
+                console.log(`[autoUpdate] Updated message ${messageId} in chat ${chatId}`);
+            }
+        } catch (error) {
+            console.error("[autoUpdate] 更新消息失败", error);
+        }
+    });
+};
+
 // 自动保存消息到数据库
 export const autoSave = (bot: Bot) => {
     // 使用中间件
     bot.use(async (ctx, next) => {
         const excludeList = ['/context'];
-        
+
         excludeList.forEach((item) => {
             excludeList.push(item + `@${process.env.BOT_USER_NAME}`);
         })
@@ -24,6 +58,15 @@ export const autoSave = (bot: Bot) => {
             let isVideo = false;
             let replyToId = ctx.message.reply_to_message?.message_id;
             let isSubImage = false;
+
+            // If replying to a bot message, resolve to firstMessageId
+            // This ensures context building works correctly even after version switching
+            if (replyToId) {
+                const botResponse = await findBotResponseByMessageId(ctx.chat.id, replyToId);
+                if (botResponse) {
+                    replyToId = botResponse.messageId; // Use firstMessageId
+                }
+            }
 
             try {
                 if (ctx.update.message?.media_group_id) {
@@ -122,17 +165,26 @@ export const autoClear = () => {
         try {
             const now = new Date();
             const oneWeekAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
-            
+
             // 使用 UTC 时间，确保一致性
-            const result = await Message.destroy({ 
-                where: { 
-                    date: { 
-                        [Op.lt]: oneWeekAgo.toISOString() 
-                    } 
-                } 
+            const messageResult = await Message.destroy({
+                where: {
+                    date: {
+                        [Op.lt]: oneWeekAgo.toISOString()
+                    }
+                }
             });
 
-            console.log(`Cleared ${result} messages before ${oneWeekAgo.toISOString()}`);
+            // 清理 BotResponse 表
+            const botResponseResult = await BotResponse.destroy({
+                where: {
+                    createdAt: {
+                        [Op.lt]: oneWeekAgo
+                    }
+                }
+            });
+
+            console.log(`Cleared ${messageResult} messages, ${botResponseResult} bot responses before ${oneWeekAgo.toISOString()}`);
         } catch (error) {
             console.error('Error during message cleanup:', error);
         }

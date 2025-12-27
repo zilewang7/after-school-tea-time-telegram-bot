@@ -4,7 +4,7 @@
  */
 import { getMessage } from '../db';
 import { Message } from '../db/messageDTO';
-import { getRepliesHistory, getFileContentsOfMessage } from '../db/queries/context-queries';
+import { getRepliesHistory, getFileContentsOfMessage, type ContextMessage } from '../db/queries/context-queries';
 import { applyModelCapabilities } from '../ai/message-transformer';
 import { getCurrentModel } from '../state';
 import { getModelCapabilities } from '../ai/platform-factory';
@@ -14,7 +14,7 @@ import type { UnifiedMessage, UnifiedContentPart, ModelCapabilities } from '../a
  * Build context from a single message
  */
 const buildMessageContent = async (
-    msg: Message,
+    msg: ContextMessage,
 ): Promise<UnifiedMessage> => {
     // Get file contents if message has a file
     const fileContents = msg.file
@@ -118,17 +118,32 @@ const buildCurrentMessageContent = async (msg: Message): Promise<UnifiedMessage>
 };
 
 /**
+ * Options for building context
+ */
+export interface BuildContextOptions {
+    /** Model capabilities for filtering */
+    capabilities?: ModelCapabilities;
+    /** Message IDs to exclude from context (e.g., current bot response when retrying) */
+    excludeMessageIds?: number[];
+}
+
+/**
  * Build complete chat context from a message
  * This is the main entry point for building AI request context
  */
 export const buildContext = async (
     msg: Message,
-    capabilities?: ModelCapabilities
+    options?: BuildContextOptions | ModelCapabilities
 ): Promise<UnifiedMessage[]> => {
     const { chatId, messageId } = msg;
 
+    // Handle both old signature (capabilities) and new signature (options)
+    const opts: BuildContextOptions = options && 'excludeMessageIds' in options
+        ? options
+        : { capabilities: options as ModelCapabilities | undefined };
+
     // Get capabilities for current model if not provided
-    const modelCapabilities = capabilities ?? getModelCapabilities(getCurrentModel());
+    const modelCapabilities = opts.capabilities ?? getModelCapabilities(getCurrentModel());
 
     // Build context array
     const chatContents: UnifiedMessage[] = [];
@@ -138,8 +153,11 @@ export const buildContext = async (
         excludeSelf: true,
     });
 
-    // Add history messages
+    // Add history messages (excluding specified IDs)
     for (const historyMsg of historyMessages) {
+        if (opts.excludeMessageIds?.includes(historyMsg.messageId)) {
+            continue;
+        }
         const content = await buildMessageContent(historyMsg);
         chatContents.push(content);
     }

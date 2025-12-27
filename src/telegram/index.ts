@@ -11,8 +11,8 @@ export * from './typing-indicator';
 // Message editor
 export * from './message-editor';
 
-// Status text
-export * from './status-text';
+// Streaming editor (unified editor with status management)
+export * from './streaming-editor';
 
 // Formatters
 export * from './formatters';

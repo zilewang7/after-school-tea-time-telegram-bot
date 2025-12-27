@@ -4,23 +4,25 @@
  */
 import { match } from 'ts-pattern';
 import type { Context } from 'grammy';
-import type { Menu } from '@grammyjs/menu';
 import { InputFile } from 'grammy';
 import { to, isErr } from '../shared/result';
 import { formatErrorForUser } from '../shared/errors';
-import { saveMessage } from '../db';
+import {
+    createSession,
+    type BotMessageSession,
+} from '../services';
+import { buildResponseButtons } from '../cmd/menus';
+import { ButtonState, type CommandType } from '../db';
 import {
     createTypingIndicator,
-    createMessageEditor,
-    createStatusController,
-    getStatusText,
-    type MessageEditor,
+    createStreamingEditor,
+    type StreamingEditor,
     type TypingIndicator,
-    type StatusController,
 } from '../telegram';
 import {
     escapeMarkdownV2,
     formatResponse,
+    toTelegramMarkdown,
     truncateForTelegram,
     formatThinkingContent,
 } from '../telegram/formatters/markdown-formatter';
@@ -32,9 +34,6 @@ import type {
     ResponseState,
 } from '../ai/types';
 
-const botUserId = Number(process.env.BOT_USER_ID);
-const botUserName = process.env.BOT_NAME;
-
 // Message length limits for dynamic splitting
 const MESSAGE_LENGTH_LIMIT = 3900;
 
@@ -45,13 +44,25 @@ export interface ChatContext {
     ctx: Context;
     chatId: number;
     userMessageId: number;
-    editor: MessageEditor;
+    editor: StreamingEditor;
     typing: TypingIndicator;
-    statusController: StatusController;
-    retryMenu: Menu<Context>;
     messageHistory: number[];  // All message IDs created for this response
     /** Current response state for idle updates */
     currentState?: ResponseState;
+    /** Bot message session for lifecycle management */
+    session: BotMessageSession;
+    /** Current button state for maintaining buttons during edits */
+    currentButtonState: ButtonState;
+    /** Flag to prevent idle updates after finalization */
+    isFinalized: boolean;
+}
+
+/**
+ * Options for creating chat context
+ */
+export interface CreateChatContextOptions {
+    /** Command type for retry routing */
+    commandType?: CommandType;
 }
 
 /**
@@ -59,7 +70,7 @@ export interface ChatContext {
  */
 export const createChatContext = async (
     ctx: Context,
-    retryMenu: Menu<Context>
+    options?: CreateChatContextOptions
 ): Promise<ChatContext | null> => {
     if (!ctx.message || !ctx.chat) return null;
 
@@ -70,53 +81,47 @@ export const createChatContext = async (
     const typing = createTypingIndicator(ctx.api, chatId);
     typing.start();
 
-    // Create processing message with initial status
-    const initialStatus = getStatusText();
-    const processingResult = await to(
-        ctx.reply(initialStatus, {
-            reply_parameters: { message_id: userMessageId },
-        })
-    );
-
-    if (isErr(processingResult)) {
+    // Create bot message session (handles processing message creation)
+    const session = await createSession(ctx, userMessageId, {
+        commandType: options?.commandType,
+    });
+    if (!session) {
         typing.stop();
-        console.error('[response-handler] Failed to create processing message:', processingResult[0]);
+        console.error('[response-handler] Failed to create bot message session');
         return null;
     }
-    const processingMsg = processingResult[1];
 
-    const editor = createMessageEditor(ctx.api, chatId, processingMsg.message_id);
-
-    // Create chat context first (statusController needs reference to it)
+    // Create chat context
     const chatContext: ChatContext = {
         ctx,
         chatId,
         userMessageId,
-        editor,
+        editor: null as any, // Will be set below
         typing,
-        statusController: null as any, // Will be set below
-        retryMenu,
-        messageHistory: [processingMsg.message_id],
+        messageHistory: session.messageIds,
         currentState: undefined,
+        session,
+        currentButtonState: ButtonState.PROCESSING,
+        isFinalized: false,
     };
 
-    // Create status controller that triggers idle updates
-    const statusController = createStatusController(2500, async () => {
-        // Idle update: edit message with new status text
-        const state = chatContext.currentState;
-        const statusText = chatContext.statusController.getText();
-
-        if (state && (state.textBuffer || state.thinkingBuffer)) {
-            // Has content, append status
-            const displayText = formatStateForDisplay(state, true, statusText);
-            await chatContext.editor.edit(displayText, { parseMode: 'MarkdownV2' });
-        } else {
-            // No content yet, just show status
-            await chatContext.editor.edit(statusText);
-        }
+    // Create StreamingEditor with idle update callback
+    const editor = createStreamingEditor({
+        api: ctx.api,
+        chatId,
+        messageId: session.currentMessageId,
+        idleInterval: 2500,
+        initialContent: '✽ Thinking\\.\\.\\.', // Initial message content to avoid duplicate edits
+        getButtons: () => {
+            // Stop idle updates when finalized or stream aborted (stop button)
+            if (chatContext.isFinalized || session.streamController.isAborted()) {
+                return undefined;
+            }
+            return buildResponseButtons(chatContext.currentButtonState);
+        },
     });
 
-    chatContext.statusController = statusController;
+    chatContext.editor = editor;
 
     return chatContext;
 };
@@ -129,10 +134,12 @@ const processChunk = (chunk: StreamChunk, state: ResponseState): ResponseState =
         .with({ type: 'text' }, ({ content }) => ({
             ...state,
             textBuffer: state.textBuffer + (content ?? ''),
+            fullText: state.fullText + (content ?? ''),
         }))
         .with({ type: 'thinking' }, ({ content }) => ({
             ...state,
             thinkingBuffer: state.thinkingBuffer + (content ?? ''),
+            fullThinking: state.fullThinking + (content ?? ''),
         }))
         .with({ type: 'image' }, ({ imageData }) => ({
             ...state,
@@ -153,12 +160,11 @@ const processChunk = (chunk: StreamChunk, state: ResponseState): ResponseState =
 };
 
 /**
- * Format current state for display
+ * Format current state for display (without status text - handled by StreamingEditor)
  */
 const formatStateForDisplay = (
     state: ResponseState,
     isProcessing: boolean,
-    statusText?: string,
 ): string => {
     let display = '';
 
@@ -177,61 +183,58 @@ const formatStateForDisplay = (
     }
 
     if (state.textBuffer) {
-        display += escapeMarkdownV2(state.textBuffer);
+        if (!isProcessing) {
+            display += toTelegramMarkdown(state.textBuffer)
+        } else {
+            display += escapeMarkdownV2(state.textBuffer);
+        }
     }
 
-    if (isProcessing && display) {
-        const escapedStatus = statusText?.replace(/\./g, '\\.') ?? 'Processing\\.\\.\\.';
-        display += '\n' + escapedStatus;
-    }
-
-    return display || (statusText ?? 'Processing...');
+    return display;
 };
 
 /**
- * Finalize current message and save to database
+ * Finalize current message during streaming (before switching to continuation)
+ * Note: Database save is handled by session.finalize() at the end
  */
 const finalizeCurrentMessage = async (
     chatContext: ChatContext,
     state: ResponseState,
 ): Promise<void> => {
-    const { chatId, userMessageId, editor } = chatContext;
-    const { messageId } = editor.getIds();
+    const { editor } = chatContext;
+
+    // Stop the editor first to prevent any race conditions with idle updates
+    editor.stop();
 
     // Format final content (with collapse if needed)
     const finalContent = formatStateForDisplay(state, false);
 
-    // Update message with final content
-    await editor.edit(finalContent, { parseMode: 'MarkdownV2' });
-
-    // Save to database
-    await saveMessage({
-        chatId,
-        messageId,
-        userId: botUserId,
-        date: new Date(),
-        userName: botUserName,
-        message: state.textBuffer || (state.thinkingBuffer ? '[Thinking]' : ''),
-        replyToId: userMessageId,
+    // Update message with final content (no status text - isFinal)
+    await editor.updateContent(finalContent, {
+        parseMode: 'MarkdownV2',
+        isFinal: true,
     });
 };
 
 /**
  * Create continuation message for long responses
+ * Returns the new message ID
  */
 const createContinuationMessage = async (
     chatContext: ChatContext
-): Promise<MessageEditor | null> => {
-    const { ctx, chatId, userMessageId, statusController } = chatContext;
+): Promise<number | null> => {
+    const { ctx, chatId, userMessageId, session } = chatContext;
 
-    // Get current status text escaped for MarkdownV2
-    const statusText = statusController.getTextEscaped();
+    // Build processing button for continuation
+    const buttons = buildResponseButtons(chatContext.currentButtonState);
 
-    // Create new processing message
+    // Create new processing message with button
+    // Use a simple status placeholder - StreamingEditor will manage actual status
     const sendResult = await to(
-        ctx.api.sendMessage(chatId, `_\\(continued\\)_\n${statusText}`, {
+        ctx.api.sendMessage(chatId, 'continued', {
             parse_mode: 'MarkdownV2',
             reply_parameters: { message_id: userMessageId },
+            reply_markup: buttons,
         })
     );
 
@@ -243,7 +246,26 @@ const createContinuationMessage = async (
     const newMessage = sendResult[1];
     chatContext.messageHistory.push(newMessage.message_id);
 
-    return createMessageEditor(ctx.api, chatId, newMessage.message_id);
+    // Create new StreamingEditor for the continuation message
+    const newEditor = createStreamingEditor({
+        api: ctx.api,
+        chatId,
+        messageId: newMessage.message_id,
+        idleInterval: 2500,
+        initialContent: 'continued',
+        getButtons: () => {
+            // Stop idle updates when finalized or stream aborted (stop button)
+            if (chatContext.isFinalized || session.streamController.isAborted()) {
+                return undefined;
+            }
+            return buildResponseButtons(chatContext.currentButtonState);
+        },
+    });
+
+    // Replace the editor in context
+    chatContext.editor = newEditor;
+
+    return newMessage.message_id;
 };
 
 /**
@@ -254,9 +276,13 @@ export const processStream = async (
     chatContext: ChatContext,
     updateInterval: number = 500
 ): Promise<AIResponse> => {
+    const { session } = chatContext;
+
     let state: ResponseState = {
         textBuffer: '',
         thinkingBuffer: '',
+        fullText: '',
+        fullThinking: '',
         images: [],
         groundingData: [],
         modelParts: undefined,
@@ -266,17 +292,29 @@ export const processStream = async (
     let lastUpdateTime = Date.now();
 
     for await (const chunk of stream) {
+        // Check if stream was aborted (user clicked stop)
+        if (session.streamController.isAborted()) {
+            console.log('[response-handler] Stream aborted by user');
+            break;
+        }
+
         state = processChunk(chunk, state);
+
+        // Sync complete text to session buffers (not the display buffers)
+        session.textBuffer = state.fullText;
+        session.thinkingBuffer = state.fullThinking;
+        session.images = state.images;
+        session.groundingData = state.groundingData;
 
         // Update current state for idle updates
         chatContext.currentState = state;
 
-        // Format current display with dynamic status text
-        const statusText = chatContext.statusController.getText();
-        const displayText = formatStateForDisplay(state, true, statusText);
+        // Format current display (without status - StreamingEditor handles it)
+        const displayText = formatStateForDisplay(state, true);
 
         // Check if we need to switch to a new message
-        if (displayText.length >= MESSAGE_LENGTH_LIMIT) {
+        // Add some buffer for status text that will be appended
+        if (displayText.length >= MESSAGE_LENGTH_LIMIT - 50) {
             console.log('[response-handler] Message length exceeded, switching to continuation...');
 
             let thinkingToSend = state.thinkingBuffer;
@@ -290,12 +328,12 @@ export const processStream = async (
                 : '';
 
             // Case 1: Thinking itself is too long
-            if (thinkingFormatted.length >= MESSAGE_LENGTH_LIMIT - 20) {
+            if (thinkingFormatted.length >= MESSAGE_LENGTH_LIMIT - 100) {
                 console.log('[response-handler] Thinking itself exceeds limit, splitting thinking...');
                 // Need to split thinking at newline
                 const { currentPart, remaining } = smartSplit(
                     state.thinkingBuffer,
-                    Math.floor((MESSAGE_LENGTH_LIMIT - 20) / 1.2) // Conservative estimate for escaped length
+                    Math.floor((MESSAGE_LENGTH_LIMIT - 100) / 1.2) // Conservative estimate for escaped length
                 );
                 thinkingToSend = currentPart;
                 remainingThinking = remaining;
@@ -304,7 +342,7 @@ export const processStream = async (
             } else {
                 // Case 2: Thinking fits, but thinking + text is too long
                 const newlineSpace = state.thinkingBuffer ? 1 : 0; // Newline between thinking and text
-                const availableSpace = MESSAGE_LENGTH_LIMIT - thinkingFormatted.length - newlineSpace - 20;
+                const availableSpace = MESSAGE_LENGTH_LIMIT - thinkingFormatted.length - newlineSpace - 100;
 
                 if (state.textBuffer) {
                     const escapedText = escapeMarkdownV2(state.textBuffer);
@@ -327,15 +365,14 @@ export const processStream = async (
                 textBuffer: textToSend,
             });
 
-            // Create continuation message
-            const newEditor = await createContinuationMessage(chatContext);
-            if (!newEditor) {
+            // Create continuation message (also switches editor to new message)
+            const newMessageId = await createContinuationMessage(chatContext);
+            if (!newMessageId) {
                 console.error('[response-handler] Failed to create continuation message, stopping stream');
                 break;
             }
 
-            // Switch to new editor and update state with remaining content
-            chatContext.editor = newEditor;
+            // Update state with remaining content
             state.thinkingBuffer = remainingThinking; // May have remaining thinking
             state.textBuffer = remainingText; // Keep remaining text
 
@@ -350,8 +387,11 @@ export const processStream = async (
             Date.now() - lastUpdateTime > updateInterval;
 
         if (shouldUpdate) {
-            await chatContext.editor.edit(displayText, { parseMode: 'MarkdownV2' });
-            chatContext.statusController.notifyEdit();
+            const buttons = buildResponseButtons(chatContext.currentButtonState);
+            await chatContext.editor.updateContent(displayText, {
+                parseMode: 'MarkdownV2',
+                replyMarkup: buttons,
+            });
             lastUpdateTime = Date.now();
         }
     }
@@ -373,13 +413,25 @@ export const sendFinalResponse = async (
     chatContext: ChatContext,
     response: AIResponse
 ): Promise<void> => {
-    const { ctx, chatId, userMessageId, editor, typing, statusController, retryMenu } = chatContext;
-    const { messageId } = editor.getIds();
+    // Immediately mark as finalized to prevent race conditions with idle updates
+    chatContext.isFinalized = true;
+
+    const { ctx, chatId, userMessageId, editor, typing, session } = chatContext;
 
     typing.stop();
-    statusController.stop();
+    editor.stop();
+
+    // Check if stopped by user
+    const wasStoppedByUser = session.streamController.isAborted();
 
     let finalMessage = formatResponse(response.text, response.thinkingText)
+
+    // Add [stopped] marker if stopped by user (after formatting)
+    if (wasStoppedByUser) {
+        finalMessage = finalMessage
+            ? `${finalMessage}\n\n\\[stopped\\]`
+            : '\\[stopped\\]';
+    }
 
     // Append grounding metadata if present
     if (response.groundingData?.length) {
@@ -387,24 +439,22 @@ export const sendFinalResponse = async (
         console.log('[response-handler] Grounding metadata:', JSON.stringify(response.groundingData));
     }
 
+    // Set raw parts for fallback formatting on parse error
+    editor.setRawParts({
+        text: response.text,
+        thinking: response.thinkingText,
+        groundingData: response.groundingData,
+    });
+
     // Check if final message (with grounding) exceeds limit
     if (needsSplit(finalMessage)) {
         console.log('[response-handler] Final message with grounding exceeds limit, splitting...');
 
         const { currentPart, remaining } = smartSplit(finalMessage);
 
-        // Send current part first
-        await editor.edit(currentPart, { parseMode: 'MarkdownV2' });
-        await saveMessage({
-            chatId,
-            messageId,
-            userId: botUserId,
-            date: new Date(),
-            userName: botUserName,
-            message: response.text || response.thinkingText || '寄了',
-            replyToId: userMessageId,
-            modelParts: response.modelParts,
-        });
+        // Send current part first (no buttons on split messages)
+        // Note: rawParts won't help here since message is already split
+        await editor.updateContent(currentPart, { parseMode: 'MarkdownV2', isFinal: true });
 
         // Send remaining as continuation
         if (remaining) {
@@ -418,20 +468,13 @@ export const sendFinalResponse = async (
             if (!isErr(continuationResult)) {
                 const contMsg = continuationResult[1];
                 chatContext.messageHistory.push(contMsg.message_id);
-                await saveMessage({
-                    chatId,
-                    messageId: contMsg.message_id,
-                    userId: botUserId,
-                    date: new Date(),
-                    userName: botUserName,
-                    message: '[Continued]',
-                    replyToId: userMessageId,
-                    modelParts: response.modelParts,
-                });
+                session.messageIds.push(contMsg.message_id);
+                session.currentMessageId = contMsg.message_id;
             }
         }
 
-        typing.stop();
+        // Finalize session (saves to both Message and BotResponse tables)
+        await session.finalize({ modelParts: response.modelParts, wasStoppedByUser });
         return;
     }
 
@@ -445,10 +488,20 @@ export const sendFinalResponse = async (
         textLength: response.text.length,
         thinkingLength: response.thinkingText.length,
         messageCount: chatContext.messageHistory.length,
+        wasStoppedByUser,
     });
 
     if (hasImages) {
-        // Send image
+        // Update text message first (no buttons - intermediate message)
+        if (hasText) {
+            await editor.updateContent(finalMessage, { parseMode: 'MarkdownV2', isFinal: true });
+        } else {
+            // No text, delete the processing message
+            await editor.delete();
+            session.messageIds = session.messageIds.filter(id => id !== session.firstMessageId);
+        }
+
+        // Send image as last message (buttons will be added after finalize)
         const photoBuffer = response.images[0];
         if (photoBuffer) {
             const sendResult = await to(
@@ -460,66 +513,71 @@ export const sendFinalResponse = async (
             if (!isErr(sendResult)) {
                 const sentMsg = sendResult[1];
                 chatContext.messageHistory.push(sentMsg.message_id);
-                // Save image message to database
-                await saveMessage({
-                    chatId,
-                    messageId: sentMsg.message_id,
-                    userId: botUserId,
-                    date: new Date(),
-                    userName: botUserName,
-                    message: response.text || '[IMAGE]',
-                    replyToId: userMessageId,
-                    fileBuffer: photoBuffer,
-                    modelParts: response.modelParts,
-                });
+                session.messageIds.push(sentMsg.message_id);
+                session.currentMessageId = sentMsg.message_id;
             }
         }
 
-        // Update or delete processing message
-        if (hasText) {
-            await editor.edit(finalMessage, { parseMode: 'MarkdownV2' });
+        // Finalize session AFTER sending all messages (so image message ID is included)
+        await session.finalize({ modelParts: response.modelParts, wasStoppedByUser });
 
-            // Save current message to database
-            await saveMessage({
-                chatId,
-                messageId,
-                userId: botUserId,
-                date: new Date(),
-                userName: botUserName,
-                message: response.text || response.thinkingText,
-                replyToId: userMessageId,
+        // Get the correct button state after finalization and update the last message
+        const getBotResponseForButtons = async () => {
+            const { getBotResponse } = await import('../db');
+            return getBotResponse(chatId, session.firstMessageId);
+        };
+        const botResponse = await getBotResponseForButtons();
+        const finalButtonState = botResponse?.buttonState ?? ButtonState.NONE;
+
+        if (finalButtonState !== ButtonState.NONE) {
+            const finalButtons = buildResponseButtons(
+                finalButtonState,
+                botResponse?.currentVersionIndex ?? 0,
+                botResponse?.getVersions().length ?? 1
+            );
+
+            // Edit the last message (image) to add buttons
+            const [editErr] = await to(
+                ctx.api.editMessageReplyMarkup(chatId, session.currentMessageId, {
+                    reply_markup: finalButtons,
+                })
+            );
+            if (editErr) {
+                console.error('[response-handler] Failed to add buttons to image:', editErr);
+            }
+        }
+    } else {
+        // Finalize session first to determine button state (no image case)
+        await session.finalize({ modelParts: response.modelParts, wasStoppedByUser });
+
+        // Get the correct button state after finalization
+        const getBotResponseForButtons = async () => {
+            const { getBotResponse } = await import('../db');
+            return getBotResponse(chatId, session.firstMessageId);
+        };
+        const botResponse = await getBotResponseForButtons();
+        const finalButtonState = botResponse?.buttonState ?? ButtonState.NONE;
+        const finalButtons = finalButtonState !== ButtonState.NONE
+            ? buildResponseButtons(
+                finalButtonState,
+                botResponse?.currentVersionIndex ?? 0,
+                botResponse?.getVersions().length ?? 1
+            )
+            : undefined;
+
+        if (hasText || wasStoppedByUser) {
+            // Text response or stopped with no content
+            const displayMessage = hasText ? finalMessage : '\\[stopped\\]';
+            await editor.updateContent(displayMessage, {
+                parseMode: 'MarkdownV2',
+                replyMarkup: finalButtons,
+                isFinal: true,
             });
         } else {
-            await editor.delete();
+            // No content and not stopped - show error
+            const fallbackMessage = '寄了';
+            await editor.updateContent(fallbackMessage, { replyMarkup: finalButtons, isFinal: true });
         }
-    } else if (hasText) {
-        // Text only response
-        await editor.edit(finalMessage, { parseMode: 'MarkdownV2' });
-
-        // Save current message to database
-        await saveMessage({
-            chatId,
-            messageId,
-            userId: botUserId,
-            date: new Date(),
-            userName: botUserName,
-            message: response.text || (response.thinkingText ? '[Thinking]' : '寄了'),
-            replyToId: userMessageId,
-            modelParts: response.modelParts,
-        });
-    } else {
-        // No content - show error
-        const fallbackMessage = '寄了';
-        await editor.edit(fallbackMessage, { replyMarkup: retryMenu });
-        await saveMessage({
-            chatId,
-            messageId,
-            userId: botUserId,
-            date: new Date(),
-            userName: botUserName,
-            message: fallbackMessage,
-            replyToId: userMessageId,
-        });
     }
 };
 
@@ -531,24 +589,35 @@ export const handleResponseError = async (
     error: Error,
     partialText?: string
 ): Promise<void> => {
-    const { chatId, userMessageId, editor, typing, statusController, retryMenu } = chatContext;
-    const { messageId } = editor.getIds();
+    // Check if this is an abort (user clicked stop)
+    const isAborted = error.message === 'Aborted' || chatContext.session.streamController.isAborted();
+
+    if (isAborted) {
+        // Treat abort as normal stop, not error
+        // Build response from current state
+        const response = {
+            text: chatContext.currentState?.textBuffer || '',
+            thinkingText: chatContext.currentState?.thinkingBuffer || '',
+            images: chatContext.currentState?.images || [],
+            groundingData: chatContext.currentState?.groundingData || [],
+            modelParts: chatContext.currentState?.modelParts,
+        };
+
+        // Use normal final response flow with stopped flag
+        await sendFinalResponse(chatContext, response);
+        return;
+    }
+
+    // Immediately mark as finalized to prevent race conditions with idle updates
+    chatContext.isFinalized = true;
+
+    const { chatId, editor, typing, session } = chatContext;
 
     typing.stop();
-    statusController.stop();
+    editor.stop();
 
-    // Save partial content if any
-    if (partialText) {
-        await saveMessage({
-            chatId,
-            messageId,
-            userId: botUserId,
-            date: new Date(),
-            userName: botUserName,
-            message: partialText,
-            replyToId: userMessageId,
-        });
-    }
+    // Finalize session with error first to set buttonState
+    await session.handleError(error);
 
     // Format and display error
     const errorMessage = formatErrorForUser(error, partialText ? undefined : '错误');
@@ -558,17 +627,83 @@ export const handleResponseError = async (
 
     const truncatedMessage = truncateForTelegram(displayMessage);
 
+    // Get the correct button state after finalization (may be HAS_VERSIONS for retry errors)
+    const getBotResponseForButtons = async () => {
+        const { getBotResponse } = await import('../db');
+        return getBotResponse(chatId, session.firstMessageId);
+    };
+    const botResponse = await getBotResponseForButtons();
+    // Always show at least RETRY_ONLY for errors
+    const finalButtonState = botResponse?.buttonState === ButtonState.NONE
+        ? ButtonState.RETRY_ONLY
+        : (botResponse?.buttonState ?? ButtonState.RETRY_ONLY);
+    const errorButtons = buildResponseButtons(
+        finalButtonState,
+        botResponse?.currentVersionIndex ?? 0,
+        botResponse?.getVersions().length ?? 1
+    );
+
+    // Edit with retry button
     const editResult = await to(
-        editor.edit(truncatedMessage, { replyMarkup: retryMenu })
+        editor.updateContent(truncatedMessage, { replyMarkup: errorButtons, isFinal: true })
     );
 
     if (isErr(editResult)) {
         console.error('[response-handler] Failed to edit error message:', editResult[0]);
         // Retry after delay
         setTimeout(async () => {
-            await editor.edit(truncatedMessage, { replyMarkup: retryMenu });
+            await editor.updateContent(truncatedMessage, { replyMarkup: errorButtons, isFinal: true });
         }, 15000);
     } else {
         console.error('[response-handler]', error);
     }
+};
+
+/**
+ * Create chat context for retry from existing session
+ * Reuses the same processStream and sendFinalResponse as normal flow
+ */
+export const createChatContextForRetry = (
+    ctx: Context,
+    session: BotMessageSession
+): ChatContext => {
+    const chatId = session.chatId;
+
+    // Create typing indicator
+    const typing = createTypingIndicator(ctx.api, chatId);
+    typing.start();
+
+    // Create chat context
+    const chatContext: ChatContext = {
+        ctx,
+        chatId,
+        userMessageId: session.userMessageId,
+        editor: null as any, // Will be set below
+        typing,
+        messageHistory: session.messageIds,
+        currentState: undefined,
+        session,
+        currentButtonState: ButtonState.PROCESSING,
+        isFinalized: false,
+    };
+
+    // Create StreamingEditor with idle update callback
+    const editor = createStreamingEditor({
+        api: ctx.api,
+        chatId,
+        messageId: session.currentMessageId,
+        idleInterval: 2500,
+        initialContent: '✽ Thinking\\.\\.\\.', // Initial message content to avoid duplicate edits
+        getButtons: () => {
+            // Stop idle updates when finalized or stream aborted (stop button)
+            if (chatContext.isFinalized || session.streamController.isAborted()) {
+                return undefined;
+            }
+            return buildResponseButtons(chatContext.currentButtonState);
+        },
+    });
+
+    chatContext.editor = editor;
+
+    return chatContext;
 };

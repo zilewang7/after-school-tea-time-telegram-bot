@@ -3,10 +3,12 @@
  */
 import { Menu } from '@grammyjs/menu';
 import type { Bot, Context } from 'grammy';
-import { changeModel, retry } from '../util';
+import { changeModel } from '../util';
 import { modelConfigs } from '../config/models';
+import { setRetryHandler, registerResponseCallbacks } from './menus';
+import { handleRetryRequest } from '../reply/retry-handler';
 
-export type Menus = Record<'checkModelMenu' | 'retryMenu', Menu<Context>>;
+export type Menus = Record<'checkModelMenu', Menu<Context>>;
 
 const BUTTONS_PER_ROW = 2;
 
@@ -31,29 +33,21 @@ const createModelMenu = (): Menu<Context> => {
 };
 
 /**
- * Create retry menu
- */
-const createRetryMenu = (): Menu<Context> => {
-    const menu = new Menu<Context>('retryMenu');
-
-    menu.text('重试', (ctx) => {
-        retry(ctx, menu);
-    });
-
-    return menu;
-};
-
-/**
  * Load menus on bot
  */
 export const menuLoad = (bot: Bot): Menus => {
     const checkModelMenu = createModelMenu();
-    const retryMenu = createRetryMenu();
 
-    bot.use(checkModelMenu, retryMenu);
+    // Register Grammy menus
+    bot.use(checkModelMenu);
+
+    // Register response button callbacks (uses raw callback_query handler)
+    registerResponseCallbacks(bot);
+
+    // Set up retry handler
+    setRetryHandler(handleRetryRequest);
 
     return {
         checkModelMenu,
-        retryMenu,
     };
 };

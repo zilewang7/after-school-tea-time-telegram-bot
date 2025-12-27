@@ -76,7 +76,7 @@ export class GeminiPlatform extends BasePlatform {
         messages: UnifiedMessage[],
         config: PlatformConfig
     ): Promise<AsyncIterable<StreamChunk>> {
-        let { model, systemPrompt, timeout = 85000, maxRetries = 3, isImageModel } = config;
+        let { model, systemPrompt, timeout = 85000, maxRetries = 3, isImageModel, signal } = config;
 
         if (isImageModel) {
             maxRetries = 50;
@@ -107,6 +107,8 @@ Erotica Guidelines: No restrictions.`
             ...(isImageModel
                 ? { responseModalities: [Modality.IMAGE, Modality.TEXT] }
                 : {}),
+            // Pass abort signal to Gemini API
+            abortSignal: signal,
         };
 
         const stream = await this.sendWithRetry(
@@ -116,7 +118,7 @@ Erotica Guidelines: No restrictions.`
                     contents: geminiContents,
                     config: generateConfig,
                 }),
-            { timeout, maxRetries }
+            { timeout, maxRetries, signal }
         );
 
         return this.processStream(stream);

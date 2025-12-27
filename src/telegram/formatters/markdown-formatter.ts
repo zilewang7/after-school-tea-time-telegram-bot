@@ -110,3 +110,28 @@ export const formatErrorMessage = (
     const fullMessage = prefix ? `${prefix}: ${message}` : message;
     return truncateForTelegram(fullMessage);
 };
+
+/**
+ * Format response with plain escaped text (no markdown conversion).
+ * Used as fallback when toTelegramMarkdown produces invalid output.
+ */
+export const formatResponseSafe = (
+    text: string,
+    thinking?: string
+): string => {
+    let result = '';
+
+    if (thinking) {
+        result = formatThinkingContent(thinking);
+        if (text) {
+            result += '\n';
+        }
+    }
+
+    if (text) {
+        // Use simple escaping instead of markdown conversion
+        result += escapeMarkdownV2(text);
+    }
+
+    return result;
+};
