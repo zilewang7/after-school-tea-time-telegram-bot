@@ -5,6 +5,7 @@
 import { Op } from '@sequelize/core';
 import type { Context } from 'grammy';
 import { Message } from '../../db/messageDTO';
+import { findBotResponseByMessageId } from '../../db';
 
 /**
  * Handle /chat command
@@ -88,21 +89,6 @@ export const dealChatCommand = async (ctx: Context): Promise<boolean | undefined
         order: [['messageId', 'ASC']],
         limit: msgCount === Infinity ? undefined : msgCount,
     }))
-        // Remove Image Generator Prompts
-        .filter(msg => {
-            try {
-                if (msg.modelParts && Array.isArray(msg.modelParts)) {
-                    for (const part of msg.modelParts) {
-                        if (part?.functionResponse?.name === 'create_image_task') {
-                            return false;
-                        }
-                    }
-                }
-                return true;
-            } catch {
-                return true;
-            }
-        });
 
     // Filter by user count
     let finalMessageIds: number[] = [];
@@ -131,7 +117,20 @@ export const dealChatCommand = async (ctx: Context): Promise<boolean | undefined
     }
 
     // Update message replies in database
-    const originalMsg = await Message.findOne({ where: { chatId, messageId } });
+    // First try Message table, then check if it's a bot continuation message
+    let targetMessageId = messageId;
+    let originalMsg = await Message.findOne({ where: { chatId, messageId } });
+
+    if (!originalMsg) {
+        // Check if this is a bot continuation message (not firstMessageId)
+        const botResponse = await findBotResponseByMessageId(chatId, messageId);
+        if (botResponse) {
+            // Use the firstMessageId which is stored in Message table
+            targetMessageId = botResponse.messageId;
+            originalMsg = await Message.findOne({ where: { chatId, messageId: targetMessageId } });
+        }
+    }
+
     if (originalMsg) {
         const existingReplies = new Set<number>(JSON.parse(originalMsg.replies));
         finalMessageIds.forEach((id) => existingReplies.add(id));
