@@ -22,6 +22,8 @@ export enum ButtonState {
     RETRY_ONLY = 'retry_only',
     /** Has multiple versions, show [< retry >] */
     HAS_VERSIONS = 'has_versions',
+    /** User edited message, show retry with special text */
+    EDIT_DETECTED = 'edit_detected',
 }
 
 /**

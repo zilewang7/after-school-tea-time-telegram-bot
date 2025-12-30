@@ -2,7 +2,7 @@ import 'dotenv/config';
 import { Bot } from "grammy";
 import { cmdLoad } from './cmd';
 import { replyLoad } from './reply';
-import { autoClear, autoSave, autoUpdate } from './db/autoSave';
+import { autoClear, autoSave, autoUpdate, startEditMonitor } from './db/autoSave';
 import { menuLoad } from './cmd/menu';
 import { getAppState } from './state';
 
@@ -22,6 +22,8 @@ autoSave(bot);
 autoUpdate(bot);
 // 自动清除一周前的消息
 autoClear();
+// 监测用户编辑消息，为 bot 消息添加重试按钮
+startEditMonitor(bot);
 
 
 

@@ -197,6 +197,9 @@ export const buildResponseButtons = (
         .with(ButtonState.RETRY_ONLY, () =>
             new InlineKeyboard().text('重试', `${CALLBACK_PREFIX}retry`)
         )
+        .with(ButtonState.EDIT_DETECTED, () =>
+            new InlineKeyboard().text('检测到用户编辑，是否重试', `${CALLBACK_PREFIX}retry`)
+        )
         .with(ButtonState.HAS_VERSIONS, () => {
             const kb = new InlineKeyboard();
 

@@ -354,6 +354,12 @@ const finalizeSession = async (
         }
 
         await response.save();
+
+        // Add to edit monitor if no buttons (normal completion)
+        if (response.buttonState === ButtonState.NONE) {
+            const { addEditMonitorEntry } = await import('../state');
+            addEditMonitorEntry(session.chatId, session.userMessageId, session.firstMessageId);
+        }
     }
 
     // Also save to Message table for context building

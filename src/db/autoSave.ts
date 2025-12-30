@@ -1,14 +1,19 @@
 import { Bot } from "grammy";
-import { saveMessage, getMessage, findBotResponseByMessageId } from ".";
+import { saveMessage, getMessage, findBotResponseByMessageId, BotResponse, ButtonState } from ".";
 import { Message } from "./messageDTO";
-import { BotResponse } from "./botResponseDTO";
 import { Op } from "@sequelize/core";
 import {
     getMediaGroupIdTemp,
     setMediaGroupIdTemp,
     addAsyncFileSaveMsgId,
     removeAsyncFileSaveMsgId,
+    setEditMonitorBot,
+    getEditMonitorBot,
+    getEditMonitorEntry,
+    removeEditMonitorEntry,
 } from '../state';
+import { buildResponseButtons } from '../cmd/menus';
+import to from 'await-to-js';
 
 // 监听编辑消息并更新数据库
 export const autoUpdate = (bot: Bot) => {
@@ -36,11 +41,58 @@ export const autoUpdate = (bot: Bot) => {
                 await existingMessage.save();
 
                 console.log(`[autoUpdate] Updated message ${messageId} in chat ${chatId}`);
+
+                // Check if this message is in the monitored list
+                const entry = getEditMonitorEntry(chatId, messageId);
+                const monitorBot = getEditMonitorBot();
+                if (entry && monitorBot) {
+                    await addEditDetectedButton(monitorBot, chatId, entry.firstMessageId);
+                    removeEditMonitorEntry(chatId, messageId);
+                }
             }
         } catch (error) {
             console.error("[autoUpdate] 更新消息失败", error);
         }
     });
+};
+
+/**
+ * Initialize edit monitor with bot instance
+ */
+export const startEditMonitor = (bot: Bot) => {
+    setEditMonitorBot(bot);
+    console.log('[editMonitor] Initialized');
+};
+
+const addEditDetectedButton = async (bot: Bot, chatId: number, firstMessageId: number): Promise<void> => {
+    const response = await BotResponse.findOne({
+        where: { chatId, messageId: firstMessageId },
+    });
+
+    if (!response || response.buttonState !== ButtonState.NONE) return;
+
+    const currentVersion = response.getCurrentVersion();
+    if (!currentVersion) return;
+
+    // Update button state
+    response.buttonState = ButtonState.EDIT_DETECTED;
+    await response.save();
+
+    // Add retry button to the bot message
+    const lastMessageId = currentVersion.currentMessageId;
+    const buttons = buildResponseButtons(ButtonState.EDIT_DETECTED);
+
+    const [err] = await to(
+        bot.api.editMessageReplyMarkup(chatId, lastMessageId, {
+            reply_markup: buttons,
+        })
+    );
+
+    if (err) {
+        console.error(`[editMonitor] Failed to add retry button to message ${lastMessageId}:`, err);
+    } else {
+        console.log(`[editMonitor] Added edit-detected retry button to message ${lastMessageId}`);
+    }
 };
 
 // 自动保存消息到数据库
