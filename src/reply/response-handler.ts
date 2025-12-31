@@ -475,6 +475,26 @@ export const sendFinalResponse = async (
             }
         }
 
+        // Send image if present (after text split)
+        const hasImages = response.images.length > 0;
+        if (hasImages) {
+            const photoBuffer = response.images[0];
+            if (photoBuffer) {
+                const sendResult = await to(
+                    ctx.api.sendPhoto(chatId, new InputFile(photoBuffer as unknown as ConstructorParameters<typeof InputFile>[0]), {
+                        reply_parameters: { message_id: userMessageId },
+                    })
+                );
+
+                if (!isErr(sendResult)) {
+                    const sentMsg = sendResult[1];
+                    chatContext.messageHistory.push(sentMsg.message_id);
+                    session.messageIds.push(sentMsg.message_id);
+                    session.currentMessageId = sentMsg.message_id;
+                }
+            }
+        }
+
         // Finalize session (saves to both Message and BotResponse tables)
         await session.finalize({ modelParts: response.modelParts, wasStoppedByUser });
 
