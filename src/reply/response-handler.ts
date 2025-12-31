@@ -477,6 +477,31 @@ export const sendFinalResponse = async (
 
         // Finalize session (saves to both Message and BotResponse tables)
         await session.finalize({ modelParts: response.modelParts, wasStoppedByUser });
+
+        // Add buttons to the last message after finalization
+        const getBotResponseForButtons = async () => {
+            const { getBotResponse } = await import('../db');
+            return getBotResponse(chatId, session.firstMessageId);
+        };
+        const botResponse = await getBotResponseForButtons();
+        const finalButtonState = botResponse?.buttonState ?? ButtonState.NONE;
+
+        if (finalButtonState !== ButtonState.NONE) {
+            const finalButtons = buildResponseButtons(
+                finalButtonState,
+                botResponse?.currentVersionIndex ?? 0,
+                botResponse?.getVersions().length ?? 1
+            );
+
+            const [editErr] = await to(
+                ctx.api.editMessageReplyMarkup(chatId, session.currentMessageId, {
+                    reply_markup: finalButtons,
+                })
+            );
+            if (editErr) {
+                console.error('[response-handler] Failed to add buttons to split message:', editErr);
+            }
+        }
         return;
     }
 
