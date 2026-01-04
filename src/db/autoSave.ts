@@ -79,7 +79,7 @@ const addEditDetectedButton = async (bot: Bot, chatId: number, firstMessageId: n
     await response.save();
 
     // Add retry button to the bot message
-    const lastMessageId = currentVersion.currentMessageId;
+    const lastMessageId = currentVersion.messageIds.at(-1) || currentVersion.currentMessageId;
     const buttons = buildResponseButtons(ButtonState.EDIT_DETECTED);
 
     const [err] = await to(
