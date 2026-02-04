@@ -1,5 +1,6 @@
 import 'dotenv/config';
 import { Bot } from "grammy";
+import { SocksProxyAgent } from "socks-proxy-agent";
 import { cmdLoad } from './cmd';
 import { replyLoad } from './reply';
 import { autoClear, autoSave, autoUpdate, startEditMonitor } from './db/autoSave';
@@ -10,11 +11,24 @@ if (!process.env.BOT_TOKEN) {
     throw new Error('BOT_TOKEN must be provided');
 }
 
+const proxyUrl = process.env.BOT_PROXY;
+
+const botConfig = proxyUrl 
+  ? {
+      client: {
+        baseFetchConfig: {
+          agent: new SocksProxyAgent(proxyUrl),
+          compress: true,
+        },
+      },
+    }
+  : undefined;
+
 // initialize app state
 const appState = getAppState();
 console.log(`Initial model: ${appState.currentModel}`);
 
-const bot = new Bot(process.env.BOT_TOKEN);
+const bot = new Bot(process.env.BOT_TOKEN, botConfig);
 
 // 保存消息
 autoSave(bot);

@@ -17,6 +17,7 @@ declare global {
             GROK_API_KEY?: string
             GROK_API_URL?: string
             PICZIT_ENDPOINT?: string
+            BOT_PROXY?: string
         }
     }
 }
