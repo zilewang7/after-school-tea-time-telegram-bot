@@ -18,12 +18,12 @@ import {
     createMessageEditor,
     type MessageEditor,
 } from '../telegram';
-import { formatResponse, formatResponseSafe } from '../telegram/formatters/markdown-formatter';
-import { appendGroundingToMessage } from '../telegram/formatters/grounding-formatter';
-import { smartSplit, needsSplit } from '../telegram/formatters/smart-splitter';
+import { buildFinalMessage, buildFinalMessageChunks } from '../telegram/formatters/final-message-builder';
+import { formatResponse } from '../telegram/formatters/markdown-formatter';
 import { buildResponseButtons } from '../cmd/menus';
 import { to, isErr } from '../shared/result';
 import { getCurrentModel } from '../state';
+import type { AgentStats } from '../ai/types';
 
 /**
  * Stream controller for aborting streams
@@ -56,6 +56,7 @@ export interface ResponseContent {
     text: string;
     thinkingText?: string;
     groundingData?: any[];
+    agentStats?: AgentStats;
     images?: Buffer[];
     errorMessage?: string;
     modelParts?: any;
@@ -89,6 +90,7 @@ export interface BotMessageSession {
     thinkingBuffer: string;
     images: Buffer[];
     groundingData: any[];
+    agentStats?: AgentStats;
 
     // Stream control
     streamController: StreamController;
@@ -217,6 +219,7 @@ export const createSession = async (
         thinkingBuffer: '',
         images: [],
         groundingData: [],
+        agentStats: undefined,
         streamController,
         isRetry: options?.isRetry ?? false,
         versionCount,
@@ -327,6 +330,7 @@ const finalizeSession = async (
         text: session.textBuffer,
         thinkingText: session.thinkingBuffer || undefined,
         groundingData: session.groundingData.length ? session.groundingData : undefined,
+        agentStats: session.agentStats,
         errorMessage: options?.errorMessage,
         modelParts: options?.modelParts,
         wasStoppedByUser: options?.wasStoppedByUser ?? false,
@@ -531,19 +535,14 @@ export const switchVersion = async (
     }
 
     // Format content using formatters
-    let content = formatResponse(newVersion.text || '', newVersion.thinkingText);
-
-    // Append grounding if present
-    if (newVersion.groundingData?.length) {
-        content = appendGroundingToMessage(content, newVersion.groundingData);
-    }
-
-    // Append stopped marker if applicable
-    if (newVersion.wasStoppedByUser) {
-        content = content
-            ? `${content}\n\n\\[stopped\\]`
-            : '\\[stopped\\]';
-    }
+    const contentChunks = buildFinalMessageChunks({
+        text: newVersion.text || '',
+        thinking: newVersion.thinkingText,
+        agentStats: newVersion.agentStats,
+        groundingData: newVersion.groundingData,
+        wasStoppedByUser: newVersion.wasStoppedByUser,
+    });
+    let content = contentChunks[0] ?? '';
 
     // Handle empty response case
     if (!content && !newVersion.imageBase64) {
@@ -580,7 +579,6 @@ export const switchVersion = async (
 
     // Handle content splitting if needed
     const hasImage = imageBuffer !== null;
-    const needsTextSplit = needsSplit(content);
 
     /**
      * Helper to edit message with fallback on Markdown parse error
@@ -596,13 +594,14 @@ export const switchVersion = async (
             // If Markdown parse error, try with safe formatting
             if (errMsg.includes("can't parse entities")) {
                 console.warn('[bot-message-service] Markdown parse error, retrying with safe formatting');
-                let safeContent = formatResponseSafe(newVersion.text || '', newVersion.thinkingText);
-                if (newVersion.groundingData?.length) {
-                    safeContent = appendGroundingToMessage(safeContent, newVersion.groundingData);
-                }
-                if (newVersion.wasStoppedByUser) {
-                    safeContent = safeContent ? `${safeContent}\n\n\\[stopped\\]` : '\\[stopped\\]';
-                }
+                let safeContent = buildFinalMessage({
+                    text: newVersion.text || '',
+                    thinking: newVersion.thinkingText,
+                    agentStats: newVersion.agentStats,
+                    groundingData: newVersion.groundingData,
+                    wasStoppedByUser: newVersion.wasStoppedByUser,
+                    safe: true,
+                });
                 if (!safeContent && !newVersion.imageBase64) {
                     safeContent = '\\[Empty response\\]';
                 }
@@ -619,24 +618,21 @@ export const switchVersion = async (
         return true;
     };
 
-    if (needsTextSplit) {
-        const { currentPart, remaining } = smartSplit(content);
-
+    if (contentChunks.length > 1) {
         // Edit first message with first part (no buttons - intermediate)
         const editor = createMessageEditor(ctx.api, chatId, firstMessageId);
-        const success = await editWithFallback(editor, currentPart, { parseMode: 'MarkdownV2' });
+        const success = await editWithFallback(editor, contentChunks[0] ?? '', { parseMode: 'MarkdownV2' });
         if (!success) {
             return false;
         }
 
         // Send remaining parts as continuation messages
-        let remainingContent = remaining;
-        while (remainingContent) {
-            const split = smartSplit(remainingContent);
-            const isLast = !split.remaining && !hasImage;
-
+        const remainingChunks = contentChunks.slice(1);
+        for (let index = 0; index < remainingChunks.length; index++) {
+            const chunk = remainingChunks[index] ?? '';
+            const isLast = index === remainingChunks.length - 1 && !hasImage;
             const [sendErr, sentMsg] = await to(
-                ctx.api.sendMessage(chatId, split.currentPart, {
+                ctx.api.sendMessage(chatId, chunk, {
                     parse_mode: 'MarkdownV2',
                     reply_parameters: { message_id: response.userMessageId },
                     // Only add buttons to the last message (if no image)
@@ -651,7 +647,6 @@ export const switchVersion = async (
 
             newMessageIds.push(sentMsg.message_id);
             currentMessageId = sentMsg.message_id;
-            remainingContent = split.remaining;
         }
     } else {
         // Single text message - edit (no buttons if there's an image coming)

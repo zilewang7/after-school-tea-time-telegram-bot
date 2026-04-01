@@ -11,8 +11,9 @@ import { Api, RawApi } from 'grammy';
 import { to } from '../shared/result';
 import { waitForRateLimit, recordEdit } from './rate-limiter';
 import { formatResponseSafe } from './formatters/markdown-formatter';
+import { appendAgentStatsToMessage } from './formatters/agent-stats-formatter';
 import { appendGroundingToMessage } from './formatters/grounding-formatter';
-import type { GroundingData } from '../ai/types';
+import type { AgentStats, GroundingData } from '../ai/types';
 
 /**
  * Status text entries for cycling display
@@ -59,6 +60,7 @@ export interface RawMessageParts {
     text?: string;
     thinking?: string;
     groundingData?: GroundingData[];
+    agentStats?: AgentStats;
 }
 
 /**
@@ -241,8 +243,10 @@ export const createStreamingEditor = (options: StreamingEditorOptions): Streamin
                 if (state.rawParts) {
                     console.warn('[streaming-editor] Markdown parse error, retrying with safe formatting');
 
-                    const { text: rawText, thinking, groundingData } = state.rawParts;
+                    const { text: rawText, thinking, groundingData, agentStats } = state.rawParts;
                     let safeMessage = formatResponseSafe(rawText || '', thinking);
+
+                    safeMessage = appendAgentStatsToMessage(safeMessage, agentStats);
 
                     if (groundingData?.length) {
                         safeMessage = appendGroundingToMessage(safeMessage, groundingData);

@@ -23,13 +23,12 @@ import {
 } from '../telegram';
 import {
     escapeMarkdownV2,
-    formatResponse,
     toTelegramMarkdown,
     truncateForTelegram,
     formatThinkingContent,
 } from '../telegram/formatters/markdown-formatter';
-import { appendGroundingToMessage } from '../telegram/formatters/grounding-formatter';
-import { smartSplit, needsSplit } from '../telegram/formatters/smart-splitter';
+import { buildFinalMessageChunks } from '../telegram/formatters/final-message-builder';
+import { getTelegramVisibleLength, smartSplit } from '../telegram/formatters/smart-splitter';
 import type {
     StreamChunk,
     AIResponse,
@@ -153,11 +152,21 @@ const processChunk = (chunk: StreamChunk, state: ResponseState): ResponseState =
                 ? [...state.groundingData, groundingMetadata]
                 : state.groundingData,
         }))
-        .with({ type: 'done' }, ({ rawResponse }) => ({
-            ...state,
-            isDone: true,
-            modelParts: (rawResponse as any)?.candidates?.[0]?.content?.parts,
-        }))
+        .with({ type: 'done' }, ({ rawResponse, agentStats }) => {
+            const finalOutputText = (rawResponse as any)?.output_text;
+            const canSafelyReplaceBufferedText =
+                typeof finalOutputText === 'string' && state.fullText === state.textBuffer;
+
+            return {
+                ...state,
+                agentStats: agentStats ?? state.agentStats,
+                textBuffer: canSafelyReplaceBufferedText ? finalOutputText : state.textBuffer,
+                fullText: canSafelyReplaceBufferedText ? finalOutputText : state.fullText,
+                isDone: true,
+                modelParts: (rawResponse as any)?.candidates?.[0]?.content?.parts,
+                rawResponse,
+            };
+        })
         .exhaustive();
 };
 
@@ -287,7 +296,9 @@ export const processStream = async (
         fullThinking: '',
         images: [],
         groundingData: [],
+        agentStats: undefined,
         modelParts: undefined,
+        rawResponse: undefined,
         isDone: false,
     };
 
@@ -307,6 +318,7 @@ export const processStream = async (
         session.thinkingBuffer = state.fullThinking;
         session.images = state.images;
         session.groundingData = state.groundingData;
+        session.agentStats = state.agentStats;
 
         // Update current state for idle updates
         chatContext.currentState = state;
@@ -316,7 +328,7 @@ export const processStream = async (
 
         // Check if we need to switch to a new message
         // Add some buffer for status text that will be appended
-        if (displayText.length >= MESSAGE_LENGTH_LIMIT - 50) {
+        if (getTelegramVisibleLength(displayText) >= MESSAGE_LENGTH_LIMIT - 50) {
             console.log('[response-handler] Message length exceeded, switching to continuation...');
 
             let thinkingToSend = state.thinkingBuffer;
@@ -330,7 +342,7 @@ export const processStream = async (
                 : '';
 
             // Case 1: Thinking itself is too long
-            if (thinkingFormatted.length >= MESSAGE_LENGTH_LIMIT - 100) {
+            if (getTelegramVisibleLength(thinkingFormatted) >= MESSAGE_LENGTH_LIMIT - 100) {
                 console.log('[response-handler] Thinking itself exceeds limit, splitting thinking...');
                 // Need to split thinking at newline
                 const { currentPart, remaining } = smartSplit(
@@ -348,7 +360,7 @@ export const processStream = async (
 
                 if (state.textBuffer) {
                     const escapedText = escapeMarkdownV2(state.textBuffer);
-                    if (escapedText.length > availableSpace) {
+                    if (getTelegramVisibleLength(escapedText) > availableSpace) {
                         // Need to split text at newline
                         const { currentPart, remaining } = smartSplit(
                             state.textBuffer,
@@ -403,7 +415,9 @@ export const processStream = async (
         thinkingText: state.thinkingBuffer,
         images: state.images,
         groundingData: state.groundingData,
+        agentStats: state.agentStats,
         modelParts: state.modelParts,
+        rawResponse: state.rawResponse,
     };
 };
 
@@ -426,18 +440,16 @@ export const sendFinalResponse = async (
     // Check if stopped by user
     const wasStoppedByUser = session.streamController.isAborted();
 
-    let finalMessage = formatResponse(response.text, response.thinkingText)
+    const finalChunks = buildFinalMessageChunks({
+        text: response.text,
+        thinking: response.thinkingText,
+        agentStats: response.agentStats,
+        wasStoppedByUser,
+        groundingData: response.groundingData,
+    });
+    let finalMessage = finalChunks[0] ?? '';
 
-    // Add [stopped] marker if stopped by user (after formatting)
-    if (wasStoppedByUser) {
-        finalMessage = finalMessage
-            ? `${finalMessage}\n\n\\[stopped\\]`
-            : '\\[stopped\\]';
-    }
-
-    // Append grounding metadata if present
     if (response.groundingData?.length) {
-        finalMessage = appendGroundingToMessage(finalMessage, response.groundingData);
         console.log('[response-handler] Grounding metadata:', JSON.stringify(response.groundingData));
     }
 
@@ -445,34 +457,34 @@ export const sendFinalResponse = async (
     editor.setRawParts({
         text: response.text,
         thinking: response.thinkingText,
+        agentStats: response.agentStats,
         groundingData: response.groundingData,
     });
 
-    // Check if final message (with grounding) exceeds limit
-    if (needsSplit(finalMessage)) {
-        console.log('[response-handler] Final message with grounding exceeds limit, splitting...');
-
-        const { currentPart, remaining } = smartSplit(finalMessage);
+    // Check if final message needs multi-message output
+    if (finalChunks.length > 1) {
+        console.log('[response-handler] Final message exceeds limit, splitting by sections...');
 
         // Send current part first (no buttons on split messages)
-        // Note: rawParts won't help here since message is already split
-        await editor.updateContent(currentPart, { parseMode: 'MarkdownV2', isFinal: true });
+        await editor.updateContent(finalChunks[0] ?? '', { parseMode: 'MarkdownV2', isFinal: true });
 
-        // Send remaining as continuation
-        if (remaining) {
+        for (const chunk of finalChunks.slice(1)) {
             const continuationResult = await to(
-                ctx.api.sendMessage(chatId, remaining, {
+                ctx.api.sendMessage(chatId, chunk, {
                     parse_mode: 'MarkdownV2',
                     reply_parameters: { message_id: userMessageId },
                 })
             );
 
-            if (!isErr(continuationResult)) {
-                const contMsg = continuationResult[1];
-                chatContext.messageHistory.push(contMsg.message_id);
-                session.messageIds.push(contMsg.message_id);
-                session.currentMessageId = contMsg.message_id;
+            if (isErr(continuationResult)) {
+                console.error('[response-handler] Failed to send continuation:', continuationResult[0]);
+                break;
             }
+
+            const contMsg = continuationResult[1];
+            chatContext.messageHistory.push(contMsg.message_id);
+            session.messageIds.push(contMsg.message_id);
+            session.currentMessageId = contMsg.message_id;
         }
 
         // Send image if present (after text split)
@@ -665,7 +677,9 @@ export const handleResponseError = async (
             thinkingText: chatContext.currentState?.thinkingBuffer || '',
             images: chatContext.currentState?.images || [],
             groundingData: chatContext.currentState?.groundingData || [],
+            agentStats: chatContext.currentState?.agentStats,
             modelParts: chatContext.currentState?.modelParts,
+            rawResponse: chatContext.currentState?.rawResponse,
         };
 
         // Use normal final response flow with stopped flag

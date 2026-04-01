@@ -232,6 +232,64 @@ const handlePiczitCommand = async (
 /**
  * Handle /picgrok command
  */
+const generatePicgrokImage = async (
+    ctx: Context,
+    processingReplyId: number,
+    prompt: string
+): Promise<void> => {
+    if (!ctx.message || !ctx.chat) return;
+
+    const chatId = ctx.chat.id;
+    const userMessageId = ctx.message.message_id;
+
+    console.log('[picgrok] generating image', { promptLength: prompt.length });
+
+    // Generate image
+    const genResult = await to(
+        grokAgent.images.generate({
+            model: 'grok-imagine-image-pro',
+            prompt,
+        })
+    );
+
+    if (isErr(genResult)) {
+        console.error('[picgrok] Error:', genResult[0]);
+        const errorMsg = '生成图片失败：' + genResult[0].message;
+
+        const editResult = await to(
+            ctx.api.editMessageText(chatId, processingReplyId, errorMsg)
+        );
+
+        if (isErr(editResult)) {
+            await to(ctx.api.deleteMessage(chatId, processingReplyId));
+            await ctx.reply(errorMsg, {
+                reply_parameters: { message_id: userMessageId },
+            });
+        }
+        return;
+    }
+
+    const response = genResult[1];
+
+    const imageUrl = response.data?.[0]?.url;
+    if (!imageUrl) {
+        const errorMsg = '生成图片失败：No image URL in response';
+        await ctx.api.editMessageText(chatId, processingReplyId, errorMsg);
+        return;
+    }
+
+    console.log('[picgrok] image generated', {
+        promptLength: prompt.length,
+        imageUrl,
+    });
+
+    // Delete processing message and send image
+    await to(ctx.api.deleteMessage(chatId, processingReplyId));
+    await ctx.api.sendPhoto(chatId, imageUrl, {
+        reply_parameters: { message_id: userMessageId },
+    });
+};
+
 const handlePicgrokCommand = async (ctx: Context, prompt: string): Promise<void> => {
     if (!ctx.message || !ctx.chat) return;
 
@@ -254,19 +312,9 @@ const handlePicgrokCommand = async (ctx: Context, prompt: string): Promise<void>
 
     const processingReply = replyResult[1];
 
-    console.log('[picgrok] generating image', { promptLength: prompt.length });
-
-    // Generate image
-    const genResult = await to(
-        grokAgent.images.generate({
-            model: 'grok-imagine-image-pro',
-            prompt,
-        })
-    );
-
-    if (isErr(genResult)) {
-        console.error('[picgrok] Error:', genResult[0]);
-        const errorMsg = '生成图片失败：' + genResult[0].message;
+    generatePicgrokImage(ctx, processingReply.message_id, prompt).catch(async (error) => {
+        console.error('[picgrok] Error:', error);
+        const errorMsg = '生成图片失败：' + (error instanceof Error ? error.message : String(error));
 
         const editResult = await to(
             ctx.api.editMessageText(chatId, processingReply.message_id, errorMsg)
@@ -278,27 +326,6 @@ const handlePicgrokCommand = async (ctx: Context, prompt: string): Promise<void>
                 reply_parameters: { message_id: userMessageId },
             });
         }
-        return;
-    }
-
-    const response = genResult[1];
-
-    const imageUrl = response.data?.[0]?.url;
-    if (!imageUrl) {
-        const errorMsg = '生成图片失败：No image URL in response';
-        await ctx.api.editMessageText(chatId, processingReply.message_id, errorMsg);
-        return;
-    }
-
-    console.log('[picgrok] image generated', {
-        promptLength: prompt.length,
-        imageUrl,
-    });
-
-    // Delete processing message and send image
-    await to(ctx.api.deleteMessage(chatId, processingReply.message_id));
-    await ctx.api.sendPhoto(chatId, imageUrl, {
-        reply_parameters: { message_id: userMessageId },
     });
 };
 

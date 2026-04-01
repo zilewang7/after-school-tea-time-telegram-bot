@@ -10,7 +10,7 @@ export const modelConfigs: ModelConfig[] = [
     { id: "claude-sonnet-4-5-20250929", name: "claude-sonnet-4.5" },
     { id: "claude-sonnet-4-5-20250929-thinking", name: "claude-sonnet-4.5-thinking" },
     { id: "gemini-3-flash-preview", name: "gemini-3-flash" },
-    { id: "gemini-3-pro-preview", name: "gemini-3-pro" },
+    { id: "gemini-3.1-pro-preview", name: "gemini-3.1-pro" },
     { id: "deepseek-chat", name: "deepseek-v3.2" },
     { id: "deepseek-reasoner", name: "deepseek-v3.2-thinking" },
     { id: "grok-4.20-0309-reasoning", name: "grok-4.20" },

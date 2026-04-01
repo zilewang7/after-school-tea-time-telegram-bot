@@ -2,12 +2,27 @@
  * Google Search grounding result formatter for Telegram
  */
 import { escapeMarkdownV2 } from './markdown-formatter';
+import { getTelegramVisibleLength, TELEGRAM_MAX_LENGTH } from './smart-splitter';
 import type { GroundingData } from '../../ai/types';
 
 interface Anchor {
     href: string;
     text: string;
 }
+
+const getCitationDisplayTitle = (uri: string, title?: string): string => {
+    const safeTitle = title?.trim();
+    if (safeTitle && !/^\d+$/.test(safeTitle)) {
+        return safeTitle;
+    }
+
+    try {
+        const url = new URL(uri);
+        return url.hostname.replace(/^www\./, '') || uri;
+    } catch {
+        return uri;
+    }
+};
 
 /**
  * Strip HTML tags from string
@@ -89,9 +104,52 @@ const matchQueriesToAnchors = (
 /**
  * Format single grounding metadata entry
  */
+const formatXaiGroundingSections = (metadata: GroundingData): string[] => {
+    if (metadata.provider === 'xai' || metadata.citations?.length) {
+        const citations = metadata.citations?.filter((citation) => citation.uri) ?? [];
+        if (!citations.length) return [];
+
+        const sections: string[] = [];
+        let currentEntries = '';
+
+        citations.forEach((citation, idx) => {
+            const title = escapeMarkdownV2(
+                getCitationDisplayTitle(citation.uri, citation.title)
+            );
+            const entry = `${currentEntries ? '\n>' : ''}\\[${idx + 1}\\] [${title}](${citation.uri})`;
+            const nextEntries = currentEntries + entry;
+            const nextSection = `\n*Sources*\n**>${nextEntries}||`;
+
+            if (
+                currentEntries &&
+                getTelegramVisibleLength(nextSection) > TELEGRAM_MAX_LENGTH
+            ) {
+                sections.push(`\n*Sources*\n**>${currentEntries}||`);
+                currentEntries = `\\[${idx + 1}\\] [${title}](${citation.uri})`;
+                return;
+            }
+
+            currentEntries = nextEntries;
+        });
+
+        if (currentEntries) {
+            sections.push(`\n*Sources*\n**>${currentEntries}||`);
+        }
+
+        return sections;
+    }
+
+    return [];
+};
+
 const formatSingleGrounding = (
     metadata: GroundingData,
 ): string => {
+    const xaiSections = formatXaiGroundingSections(metadata);
+    if (xaiSections.length) {
+        return xaiSections.join('');
+    }
+
     const queries = metadata.searchQueries.filter(
         (q) => q && q.trim().length > 0
     );
@@ -136,9 +194,23 @@ export const formatGroundingMetadata = (
 ): string => {
     if (!metadataList.length) return '';
 
-    return metadataList
-        .map((metadata) => formatSingleGrounding(metadata))
-        .join('');
+    return formatGroundingSections(metadataList).join('');
+};
+
+export const formatGroundingSections = (
+    metadataList: GroundingData[]
+): string[] => {
+    if (!metadataList.length) return [];
+
+    return metadataList.flatMap((metadata) => {
+        const xaiSections = formatXaiGroundingSections(metadata);
+        if (xaiSections.length) {
+            return xaiSections;
+        }
+
+        const section = formatSingleGrounding(metadata);
+        return section ? [section] : [];
+    });
 };
 
 /**

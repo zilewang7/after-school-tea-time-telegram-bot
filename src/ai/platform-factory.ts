@@ -49,11 +49,11 @@ export const isImageModel = (model: string): boolean => {
  */
 export const getDefaultModel = (platformType: string): string => {
     return match(platformType)
-        .with('gemini', () => 'gemini-2.5-pro')
-        .with('openai', () => 'gpt-5-chat-latest')
-        .with('deepseek', () => 'deepseek-chat')
-        .with('grok', () => 'grok-4-1-fast-non-reasoning')
-        .otherwise(() => process.env.DEFAULT_MODEL || 'gpt-5-chat-latest');
+        .with('gemini', () => 'gemini-3.1-pro-preview')
+        .with('openai', () => 'gpt-5.4')
+        .with('deepseek', () => 'deepseek-reasoning')
+        .with('grok', () => 'grok-4.20-0309-reasoning')
+        .otherwise(() => process.env.DEFAULT_MODEL || 'gpt-5.4');
 };
 
 /**

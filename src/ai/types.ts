@@ -19,8 +19,26 @@ export interface UnifiedMessage {
     modelParts?: unknown[]; // Platform-specific parts (e.g., Gemini's parts)
 }
 
-// Google Search grounding data
+export interface GroundingCitation {
+    uri: string;
+    title?: string;
+}
+
+export interface AgentToolUsage {
+    name: string;
+    count: number;
+}
+
+export interface AgentStats {
+    mode?: string;
+    reasoningTokens?: number;
+    toolUsage?: AgentToolUsage[];
+    codeInterpreterSummary?: string[];
+}
+
+// Search / grounding data
 export interface GroundingData {
+    provider?: 'google' | 'xai';
     searchQueries: string[];
     searchEntryPoint?: {
         renderedContent?: string;
@@ -31,6 +49,7 @@ export interface GroundingData {
             title?: string;
         };
     }>;
+    citations?: GroundingCitation[];
 }
 
 // Stream chunk types
@@ -42,6 +61,7 @@ export interface StreamChunk {
     content?: string;
     imageData?: Buffer;
     groundingMetadata?: GroundingData;
+    agentStats?: AgentStats;
     rawResponse?: unknown;
 }
 
@@ -51,6 +71,7 @@ export interface AIResponse {
     thinkingText: string;
     images: Buffer[];
     groundingData?: GroundingData[];
+    agentStats?: AgentStats;
     modelParts?: unknown[];
     rawResponse?: unknown;
 }
@@ -111,7 +132,9 @@ export interface ResponseState {
     fullThinking: string;
     images: Buffer[];
     groundingData: GroundingData[];
+    agentStats?: AgentStats;
     modelParts?: unknown[];
+    rawResponse?: unknown;
     isDone: boolean;
 }
 

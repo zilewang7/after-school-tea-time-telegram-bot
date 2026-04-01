@@ -44,6 +44,8 @@ export interface ResponseVersion {
     thinkingText?: string;
     /** Grounding/search data */
     groundingData?: any[];
+    /** Agent stats / tool usage summary */
+    agentStats?: any;
     /** Error message if any */
     errorMessage?: string;
     /** AI model raw response parts */
