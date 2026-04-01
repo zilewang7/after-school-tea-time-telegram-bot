@@ -1,14 +1,21 @@
 services:
   k-on-bot:
+    container_name: k-on-bot
     restart: always
-    network_mode: host
     build:
       context: .
       args:
         - GIT_REPO=https://github.com/zilewang7/after-school-tea-time-telegram-bot.git
     environment:
       - GIT_REPO=https://github.com/zilewang7/after-school-tea-time-telegram-bot.git
+      - BOT_PROXY=socks5h://warp:1080 
     volumes:
       - ./database.sqlite:/app/k-on-bot/database.sqlite
     command: ["/bin/bash", "/app/k-on-bot/build.sh"]
     working_dir: /app/k-on-bot
+    networks:
+      - traefik-net
+
+networks:
+  traefik-net:
+    external: true

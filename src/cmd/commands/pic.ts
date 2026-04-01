@@ -259,7 +259,7 @@ const handlePicgrokCommand = async (ctx: Context, prompt: string): Promise<void>
     // Generate image
     const genResult = await to(
         grokAgent.images.generate({
-            model: 'grok-2-image-1212',
+            model: 'grok-imagine-image-pro',
             prompt,
         })
     );
