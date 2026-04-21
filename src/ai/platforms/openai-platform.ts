@@ -1,6 +1,20 @@
 /**
  * OpenAI platform implementation
  */
+
+// Polyfill globalThis.File for Node.js < 20 (required by OpenAI SDK file uploads)
+if (typeof globalThis.File === 'undefined') {
+    (globalThis as any).File = class NodeFile extends Blob {
+        name: string;
+        lastModified: number;
+        constructor(fileBits: any[], fileName: string, options?: { type?: string; lastModified?: number }) {
+            super(fileBits, options);
+            this.name = fileName;
+            this.lastModified = options?.lastModified ?? Date.now();
+        }
+    };
+}
+
 import OpenAI, { toFile } from 'openai';
 import type { Stream } from 'openai/streaming';
 import type {
@@ -421,6 +435,7 @@ export class OpenAIPlatform extends BasePlatform {
 
         if (hasFunctionCall && functionCallName === 'generate_image') {
             let toolOutput = 'Image generation failed.';
+            let toolSuccess = false;
             try {
                 const args = JSON.parse(functionCallArgs) as {
                     prompt: string;
@@ -441,6 +456,7 @@ export class OpenAIPlatform extends BasePlatform {
                 const imageBuffer = await this.executeImageGeneration(imageModel, args.prompt, selectedImages, signal);
                 yield { type: 'image', imageData: imageBuffer };
                 toolOutput = 'Image generated and sent to the user successfully.';
+                toolSuccess = true;
             } catch (error) {
                 console.error('[openai] Image generation tool failed:', error);
                 const errorMsg = error instanceof Error ? error.message : String(error);
@@ -459,7 +475,9 @@ export class OpenAIPlatform extends BasePlatform {
                     },
                     {
                         role: 'developer',
-                        content: `The generate_image tool has been executed. ${toolOutput} The image is already delivered to the user alongside your message. You may now briefly comment on the result if appropriate.`,
+                        content: toolSuccess
+                            ? `The generate_image tool succeeded. ${toolOutput} The image is already delivered to the user alongside your message. You may now briefly comment on the result if appropriate.`
+                            : `The generate_image tool failed. ${toolOutput} Inform the user about the failure and suggest they try again.`,
                     },
                 ];
                 const continueRequest: ResponseCreateParamsStreaming = {
