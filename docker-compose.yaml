@@ -6,11 +6,14 @@ services:
       context: .
       args:
         - GIT_REPO=https://github.com/zilewang7/after-school-tea-time-telegram-bot.git
+    env_file:
+      - ./.env
     environment:
       - GIT_REPO=https://github.com/zilewang7/after-school-tea-time-telegram-bot.git
-      - BOT_PROXY=socks5h://warp:1080 
+      - BOT_PROXY=socks5h://warp:1080
     volumes:
       - ./database.sqlite:/app/k-on-bot/database.sqlite
+      - ./.env:/app/k-on-bot/.env:ro
     command: ["/bin/bash", "/app/k-on-bot/build.sh"]
     working_dir: /app/k-on-bot
     networks:
