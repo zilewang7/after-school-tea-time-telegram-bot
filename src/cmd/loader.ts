@@ -18,6 +18,7 @@ export const cmdLoad = async (bot: Bot, menus: Menus) => {
         { command: "piczit", description: "使用 z-image-turbo 根据提示词生成图片" },
         { command: "piczitunsafe", description: "[图片不带遮罩]使用 z-image-turbo 根据提示词生成图片" },
         { command: "picbanana", description: "使用 🍌 Gemini Nano Banana Pro 根据提示词生成图片(支持图生图)" },
+        { command: "picgpt", description: "使用 OpenAI gpt-image-2 根据提示词生成图片(支持图生图)" },
         { command: "model", description: "查看/切换大语言模型" },
         {
             command: "chat",

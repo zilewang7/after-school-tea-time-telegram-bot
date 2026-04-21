@@ -44,10 +44,11 @@ export class OpenAIPlatform extends BasePlatform {
 
     getModelCapabilities(_model: string): ModelCapabilities {
         const supportsThinking = this.isReasoningModel(_model);
+        const isImageModel = this.isImageGenerationModel(_model);
 
         return {
             supportsImageInput: true,
-            supportsImageOutput: false,
+            supportsImageOutput: isImageModel,
             supportsSystemPrompt: true,
             requiresMessageMerge: false,
             supportsThinking,
@@ -61,6 +62,11 @@ export class OpenAIPlatform extends BasePlatform {
     ): Promise<AsyncIterable<StreamChunk>> {
         const { model, systemPrompt, timeout = 85000, maxRetries = 3, signal } = config;
         const capabilities = this.getModelCapabilities(model);
+
+        // Handle image generation models separately
+        if (capabilities.supportsImageOutput) {
+            return this.generateImage(messages, config);
+        }
 
         this.logMessageContents(messages);
         console.log(`[openai] Using model: ${model}, supportsThinking: ${capabilities.supportsThinking}`);
@@ -107,6 +113,11 @@ export class OpenAIPlatform extends BasePlatform {
             lowerModel.startsWith('o3') ||
             lowerModel.startsWith('o4')
         );
+    }
+
+    private isImageGenerationModel(model: string): boolean {
+        const lowerModel = model.toLowerCase();
+        return lowerModel.includes('image') || lowerModel.startsWith('dall-e');
     }
 
     private transformToResponsesInput(messages: UnifiedMessage[]): EasyInputMessage[] {
@@ -245,6 +256,111 @@ export class OpenAIPlatform extends BasePlatform {
         yield {
             type: 'done',
             rawResponse: completedResponse,
+        };
+    }
+
+    private async *generateImage(
+        messages: UnifiedMessage[],
+        config: PlatformConfig
+    ): AsyncIterable<StreamChunk> {
+        const { model, timeout = 120000, maxRetries = 50, signal } = config;
+
+        console.log('[openai] Generating image with model:', model);
+
+        // Extract prompt and reference images from messages
+        let prompt = '';
+        const referenceImages: string[] = [];
+
+        for (const message of messages) {
+            for (const part of message.content) {
+                if (part.type === 'text') {
+                    prompt += part.text ?? '';
+                } else if (part.type === 'image' && part.imageData) {
+                    referenceImages.push(part.imageData);
+                }
+            }
+        }
+
+        if (!prompt) {
+            throw new Error('No prompt provided for image generation');
+        }
+
+        console.log('[openai] Image generation:', {
+            promptLength: prompt.length,
+            referenceImageCount: referenceImages.length,
+        });
+
+        // Generate image using OpenAI Images API
+        const generateFn = async () => {
+            // If we have reference images, use edit or variation
+            if (referenceImages.length > 0 && referenceImages[0]) {
+                // For now, use the first reference image for variation
+                // Note: OpenAI's edit API requires a mask, so we use createVariation instead
+                const imageBuffer = Buffer.from(referenceImages[0], 'base64');
+                const uint8Array = new Uint8Array(imageBuffer);
+                const imageBlob = new Blob([uint8Array], { type: 'image/png' });
+                const imageFile = new File([imageBlob], 'image.png', { type: 'image/png' });
+
+                // If we have a prompt, we can't use variation (it doesn't support prompts)
+                // So we'll just do text-to-image and ignore the reference
+                if (prompt) {
+                    console.log('[openai] Reference image provided but using text-to-image (variation API does not support prompts)');
+                    const response = await this.client.images.generate({
+                        model,
+                        prompt,
+                        n: 1,
+                        response_format: 'b64_json',
+                        size: '1024x1024',
+                    });
+
+                    return response;
+                } else {
+                    // No prompt, use variation
+                    const response = await this.client.images.createVariation({
+                        model,
+                        image: imageFile,
+                        n: 1,
+                        response_format: 'b64_json',
+                        size: '1024x1024',
+                    });
+
+                    return response;
+                }
+            } else {
+                // Text-to-image generation
+                const response = await this.client.images.generate({
+                    model,
+                    prompt,
+                    n: 1,
+                    response_format: 'b64_json',
+                    size: '1024x1024',
+                });
+
+                return response;
+            }
+        };
+
+        // Use retry logic from base platform
+        const response = await this.sendWithRetry(generateFn, { timeout, maxRetries, signal });
+
+        // Convert response to stream chunks
+        if (response.data && response.data.length > 0 && response.data[0]) {
+            const imageData = response.data[0].b64_json;
+            if (imageData) {
+                yield {
+                    type: 'image',
+                    imageData: Buffer.from(imageData, 'base64'),
+                };
+            } else {
+                throw new Error('No image data in response');
+            }
+        } else {
+            throw new Error('No image generated');
+        }
+
+        yield {
+            type: 'done',
+            rawResponse: response,
         };
     }
 }

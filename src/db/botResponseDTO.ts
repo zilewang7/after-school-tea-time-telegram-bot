@@ -59,7 +59,7 @@ export interface ResponseVersion {
 /**
  * Command type for bot responses
  */
-export type CommandType = 'chat' | 'picbanana';
+export type CommandType = 'chat' | 'picbanana' | 'picgpt';
 
 /**
  * Response metadata

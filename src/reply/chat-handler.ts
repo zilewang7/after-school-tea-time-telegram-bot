@@ -3,7 +3,6 @@
  * Handles incoming messages and coordinates AI responses
  */
 import type { Bot, Context } from 'grammy';
-import { match, P } from 'ts-pattern';
 import { to, isErr } from '../shared/result';
 import { getMessage } from '../db';
 import { sendMessage, getSystemPrompt, getModelCapabilities } from '../ai';
@@ -17,6 +16,7 @@ import {
     handleResponseError,
 } from './response-handler';
 import { handlePicbananaCommand, checkPicbananaCommand } from './commands/picbanana-handler';
+import { handlePicgptCommand, checkPicgptCommand } from './commands/picgpt-handler';
 import { dealChatCommand } from './commands/chat-command';
 
 /**
@@ -151,14 +151,18 @@ export const registerChatHandler = (
                 return;
             }
 
+            // Check for /picgpt command
+            const [mentionInPicgpt, picgptData] = await checkPicgptCommand(ctx);
+            if (picgptData) {
+                await handlePicgptCommand(ctx, picgptData);
+                return;
+            }
+
             // Check for /chat command (adds context)
             const mentionInChat = await dealChatCommand(ctx);
 
-            const mention = match([mentionInPicbanana, mentionInChat])
-                .with([P.boolean, P.boolean], ([a, b]) => a || b)
-                .with([P.boolean, undefined], ([a, _]) => a)
-                .with([undefined, P.boolean], ([_, b]) => b)
-                .otherwise(() => undefined);
+            // Combine all mention flags (any truthy value means mentioned)
+            const mention = mentionInPicbanana || mentionInPicgpt || mentionInChat;
 
             // Handle normal reply
             await handleReply(ctx, { mention });
