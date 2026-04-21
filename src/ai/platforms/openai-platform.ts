@@ -1,7 +1,7 @@
 /**
  * OpenAI platform implementation
  */
-import OpenAI from 'openai';
+import OpenAI, { toFile } from 'openai';
 import type { Stream } from 'openai/streaming';
 import type {
     EasyInputMessage,
@@ -532,10 +532,12 @@ export class OpenAIPlatform extends BasePlatform {
         referenceImages: string[],
         signal?: AbortSignal
     ): Promise<Buffer> {
-        const imageFiles = referenceImages.map((img, i) => {
-            const buffer = Buffer.from(img, 'base64');
-            return new File([new Uint8Array(buffer)], `reference_${i}.png`, { type: 'image/png' });
-        });
+        const imageFiles = await Promise.all(
+            referenceImages.map((img, i) => {
+                const buffer = Buffer.from(img, 'base64');
+                return toFile(buffer, `reference_${i}.png`, { type: 'image/png' });
+            })
+        );
 
         const generateFn = async () => {
             if (imageFiles.length > 0) {
