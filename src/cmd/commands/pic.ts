@@ -99,7 +99,7 @@ const generatePiczitImage = async (
         parsePromptWithNegative(prompt);
 
     console.log('[piczit] generating image', {
-        promptLength: mainPrompt.length,
+        prompt: mainPrompt,
         hasNegativePrompt: Boolean(negativePrompt),
         negativePromptOverride,
     });
@@ -242,7 +242,7 @@ const generatePicgrokImage = async (
     const chatId = ctx.chat.id;
     const userMessageId = ctx.message.message_id;
 
-    console.log('[picgrok] generating image', { promptLength: prompt.length });
+    console.log('[picgrok] generating image', { prompt });
 
     // Generate image
     const genResult = await to(

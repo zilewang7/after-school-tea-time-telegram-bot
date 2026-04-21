@@ -42,9 +42,9 @@ startEditMonitor(bot);
 
 
 // 加载菜单
-const menus = menuLoad(bot);
+menuLoad(bot);
 // 使用命令
-cmdLoad(bot, menus);
+cmdLoad(bot);
 // 使用回复
 replyLoad(bot);
 

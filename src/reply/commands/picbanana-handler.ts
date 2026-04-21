@@ -94,7 +94,7 @@ export const handlePicbananaCommand = async (
     if (!ctx.message || !ctx.chat) return;
 
     console.log('[picbanana] Processing command:', {
-        promptLength: commandData.prompt.length,
+        prompt: commandData.prompt,
         referenceImageCount: commandData.referenceImages.length,
     });
 

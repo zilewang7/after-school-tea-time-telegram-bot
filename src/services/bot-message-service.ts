@@ -9,7 +9,6 @@ import {
     createBotResponse,
     getBotResponse,
     findBotResponseByMessageId,
-    getMessage,
     type ResponseVersion,
     type ResponseMetadata,
     type CommandType,
@@ -18,7 +17,7 @@ import {
     createMessageEditor,
     type MessageEditor,
 } from '../telegram';
-import { buildFinalMessage, buildFinalMessageChunks } from '../telegram/formatters/final-message-builder';
+import { buildFinalMessageChunks } from '../telegram/formatters/final-message-builder';
 import { formatResponse } from '../telegram/formatters/markdown-formatter';
 import { buildResponseButtons } from '../cmd/menus';
 import { to, isErr } from '../shared/result';
@@ -121,6 +120,9 @@ export interface BotMessageSession {
 export interface CreateSessionOptions {
     isRetry?: boolean;
     existingFirstMessageId?: number;
+    /** DB anchor ID — the BotResponse primary key. When set, session.firstMessageId uses this
+     *  but a NEW processing message is sent instead of editing the existing one. */
+    dbAnchorMessageId?: number;
     /** Command type for retry routing */
     commandType?: CommandType;
 }
@@ -159,7 +161,7 @@ export const createSession = async (
     const api = ctx.api;
 
     // For retry, we reuse the existing first message
-    let firstMessageId = options?.existingFirstMessageId;
+    let firstMessageId = options?.dbAnchorMessageId ?? options?.existingFirstMessageId;
     let processingMsgId: number;
 
     // Initial status text (matches first entry in streaming-editor statusData)
@@ -168,10 +170,10 @@ export const createSession = async (
     // Build stop button for processing state
     const stopButton = buildResponseButtons(ButtonState.PROCESSING);
 
-    if (options?.isRetry && firstMessageId) {
+    if (options?.isRetry && options.existingFirstMessageId) {
         // Edit existing first message with stop button
-        processingMsgId = firstMessageId;
-        const editor = createMessageEditor(api, chatId, firstMessageId);
+        processingMsgId = options.existingFirstMessageId;
+        const editor = createMessageEditor(api, chatId, processingMsgId);
         await editor.edit(initialStatus, {
             parseMode: 'MarkdownV2',
             replyMarkup: stopButton,
@@ -192,7 +194,9 @@ export const createSession = async (
         }
 
         processingMsgId = sendResult[1].message_id;
-        firstMessageId = processingMsgId;
+        if (!firstMessageId) {
+            firstMessageId = processingMsgId;
+        }
     }
 
     const streamController = createStreamController();
@@ -200,18 +204,22 @@ export const createSession = async (
 
     // Get existing version count if retry
     let versionCount = 0;
-    if (options?.isRetry && options.existingFirstMessageId) {
-        const existing = await getBotResponse(chatId, options.existingFirstMessageId);
+    const dbLookupId = options?.dbAnchorMessageId ?? options?.existingFirstMessageId;
+    if (options?.isRetry && dbLookupId) {
+        const existing = await getBotResponse(chatId, dbLookupId);
         if (existing) {
             versionCount = existing.getVersions().length;
         }
     }
 
+    // At this point firstMessageId is always set (either from options or new message)
+    const resolvedFirstMessageId = firstMessageId ?? processingMsgId;
+
     // Create session object
     const session: BotMessageSession = {
         chatId,
         userMessageId,
-        firstMessageId,
+        firstMessageId: resolvedFirstMessageId,
         messageIds: [processingMsgId],
         currentMessageId: processingMsgId,
         editor,
@@ -257,7 +265,7 @@ export const createSession = async (
     };
 
     // Store in active sessions
-    const sessionKey = getSessionKey(chatId, firstMessageId);
+    const sessionKey = getSessionKey(chatId, resolvedFirstMessageId);
     activeSessions.set(sessionKey, session);
 
     // Initialize database record for new response (not retry)
@@ -267,10 +275,10 @@ export const createSession = async (
             hasImage: false,
             commandType: options?.commandType,
         };
-        await createBotResponse(chatId, firstMessageId, userMessageId, metadata);
+        await createBotResponse(chatId, resolvedFirstMessageId, userMessageId, metadata);
     } else {
         // Update button state to processing for retry
-        const response = await getBotResponse(chatId, firstMessageId);
+        const response = await getBotResponse(chatId, resolvedFirstMessageId);
         if (response) {
             response.buttonState = ButtonState.PROCESSING;
             await response.save();
@@ -480,7 +488,23 @@ export const startRetry = async (
         return null;
     }
 
-    // Delete extra messages (keep first)
+    // Check if current version is image-only (first message is a photo, can't be edited to text)
+    const isCurrentImageOnly = Boolean(!currentVersion.text && currentVersion.imageBase64);
+
+    if (isCurrentImageOnly) {
+        // Delete all messages (they're all photos, can't edit to text)
+        for (const msgId of currentVersion.messageIds) {
+            if (msgId === undefined) continue;
+            await to(ctx.api.deleteMessage(chatId, msgId));
+        }
+        // Send a fresh processing message, but keep DB anchor to original firstMessageId
+        return createSession(ctx, response.userMessageId, {
+            isRetry: true,
+            dbAnchorMessageId: firstMessageId,
+        });
+    }
+
+    // Delete extra messages (keep first — it's a text message we can edit)
     for (let i = 1; i < currentVersion.messageIds.length; i++) {
         const msgId = currentVersion.messageIds[i];
         if (msgId === undefined) continue;
@@ -490,7 +514,7 @@ export const startRetry = async (
         }
     }
 
-    // Create new session with retry flag
+    // Reuse the existing first text message
     return createSession(ctx, response.userMessageId, {
         isRetry: true,
         existingFirstMessageId: firstMessageId,
@@ -526,14 +550,6 @@ export const switchVersion = async (
 
     if (!oldVersion || !newVersion) return false;
 
-    // Delete old version's extra messages (keep first)
-    for (let i = 1; i < oldVersion.messageIds.length; i++) {
-        const msgId = oldVersion.messageIds[i];
-        if (msgId === undefined) continue;
-        // Message may already be deleted, ignore errors
-        await to(ctx.api.deleteMessage(chatId, msgId));
-    }
-
     // Format content using formatters
     const contentChunks = buildFinalMessageChunks({
         text: newVersion.text || '',
@@ -544,44 +560,42 @@ export const switchVersion = async (
     });
     let content = contentChunks[0] ?? '';
 
-    // Handle empty response case
     if (!content && !newVersion.imageBase64) {
         content = '\\[Empty response\\]';
     }
 
-    // Build version buttons for the last message
     const versionButtons = buildResponseButtons(
         ButtonState.HAS_VERSIONS,
         newIndex,
         versions.length
     );
 
-    // Track new message IDs
-    const newMessageIds: number[] = [firstMessageId];
-    let currentMessageId = firstMessageId;
-
-    // Get image from version's imageBase64 (preferred) or fallback to Message table
     let imageBuffer: Buffer | null = null;
     if (newVersion.imageBase64) {
         imageBuffer = Buffer.from(newVersion.imageBase64, 'base64');
-    } else {
-        // Fallback: try to load image from database for each extra message ID
-        for (let i = 1; i < newVersion.messageIds.length; i++) {
-            const msgId = newVersion.messageIds[i];
-            if (msgId === undefined) continue;
-            const msg = await getMessage(chatId, msgId);
-            if (msg?.file) {
-                imageBuffer = msg.file;
-                break; // Only handle first image for now
-            }
-        }
     }
 
-    // Handle content splitting if needed
     const hasImage = imageBuffer !== null;
+    const hasContent = Boolean(content);
+    const newIsImageOnly = hasImage && !hasContent;
+    const oldIsImageOnly = Boolean(!oldVersion.text && oldVersion.imageBase64);
+
+    // Determine if first message type changes (text <-> image-only)
+    const firstMessageTypeChanged = newIsImageOnly !== oldIsImageOnly;
+
+    // Delete old version's extra messages (keep first unless type changed)
+    for (let i = 1; i < oldVersion.messageIds.length; i++) {
+        const msgId = oldVersion.messageIds[i];
+        if (msgId === undefined) continue;
+        await to(ctx.api.deleteMessage(chatId, msgId));
+    }
+
+    const oldFirstMsgId = oldVersion.messageIds[0] ?? firstMessageId;
+    const newMessageIds: number[] = [];
+    let currentMessageId = firstMessageId;
 
     /**
-     * Helper to edit message with fallback on Markdown parse error
+     * Helper to edit a text message with Markdown parse error fallback
      */
     const editWithFallback = async (
         editor: MessageEditor,
@@ -589,96 +603,153 @@ export const switchVersion = async (
         options?: { parseMode?: 'MarkdownV2'; replyMarkup?: any }
     ): Promise<boolean> => {
         const [editErr] = await to(editor.edit(text, options));
-        if (editErr) {
-            const errMsg = editErr.message || '';
-            // If Markdown parse error, try with safe formatting
-            if (errMsg.includes("can't parse entities")) {
-                console.warn('[bot-message-service] Markdown parse error, retrying with safe formatting');
-                let safeContent = buildFinalMessage({
-                    text: newVersion.text || '',
-                    thinking: newVersion.thinkingText,
-                    agentStats: newVersion.agentStats,
-                    groundingData: newVersion.groundingData,
-                    wasStoppedByUser: newVersion.wasStoppedByUser,
-                    safe: true,
-                });
-                if (!safeContent && !newVersion.imageBase64) {
-                    safeContent = '\\[Empty response\\]';
-                }
-                const [retryErr] = await to(editor.edit(safeContent, options));
-                if (retryErr) {
-                    console.error('[bot-message-service] Safe formatting also failed:', retryErr);
-                    return false;
-                }
-                return true;
-            }
+        if (!editErr) return true;
+        const errMsg = editErr.message || '';
+        if (errMsg.includes("can't parse entities")) {
+            console.warn('[bot-message-service] Markdown parse error, retrying with escaped text');
+            const escaped = text.replace(/([_*\[\]()~`>#+\-=|{}.!\\])/g, '\\$1');
+            const [retryErr] = await to(editor.edit(escaped, options));
+            if (!retryErr) return true;
+            console.error('[bot-message-service] Escaped text also failed:', retryErr);
+        } else {
             console.error('[bot-message-service] Failed to edit message:', editErr);
-            return false;
         }
-        return true;
+        return false;
     };
 
-    if (contentChunks.length > 1) {
-        // Edit first message with first part (no buttons - intermediate)
-        const editor = createMessageEditor(ctx.api, chatId, firstMessageId);
-        const success = await editWithFallback(editor, contentChunks[0] ?? '', { parseMode: 'MarkdownV2' });
-        if (!success) {
-            return false;
-        }
+    if (firstMessageTypeChanged) {
+        // Type mismatch: delete old first message, send new one
+        await to(ctx.api.deleteMessage(chatId, oldFirstMsgId));
 
-        // Send remaining parts as continuation messages
-        const remainingChunks = contentChunks.slice(1);
-        for (let index = 0; index < remainingChunks.length; index++) {
-            const chunk = remainingChunks[index] ?? '';
-            const isLast = index === remainingChunks.length - 1 && !hasImage;
+        if (newIsImageOnly) {
+            // Old was text → new is image-only
+            const { InputFile } = await import('grammy');
             const [sendErr, sentMsg] = await to(
-                ctx.api.sendMessage(chatId, chunk, {
-                    parse_mode: 'MarkdownV2',
+                ctx.api.sendPhoto(chatId, new InputFile(imageBuffer as unknown as ConstructorParameters<typeof InputFile>[0], 'image.png'), {
                     reply_parameters: { message_id: response.userMessageId },
-                    // Only add buttons to the last message (if no image)
-                    reply_markup: isLast ? versionButtons : undefined,
+                    reply_markup: versionButtons,
                 })
             );
-
-            if (sendErr) {
-                console.error('[bot-message-service] Failed to send continuation:', sendErr);
-                break;
+            if (!sendErr) {
+                newMessageIds.push(sentMsg.message_id);
+                currentMessageId = sentMsg.message_id;
+            } else {
+                console.error('[bot-message-service] Failed to send image:', sendErr);
+                return false;
             }
-
+        } else {
+            // Old was image-only → new has text: send text message
+            const [sendErr, sentMsg] = await to(
+                ctx.api.sendMessage(chatId, content || '\\[Empty response\\]', {
+                    parse_mode: 'MarkdownV2',
+                    reply_parameters: { message_id: response.userMessageId },
+                    reply_markup: hasImage ? undefined : versionButtons,
+                })
+            );
+            if (sendErr) {
+                console.error('[bot-message-service] Failed to send text:', sendErr);
+                return false;
+            }
             newMessageIds.push(sentMsg.message_id);
             currentMessageId = sentMsg.message_id;
-        }
-    } else {
-        // Single text message - edit (no buttons if there's an image coming)
-        const editor = createMessageEditor(ctx.api, chatId, firstMessageId);
-        const success = await editWithFallback(
-            editor,
-            content || '\\[Empty response\\]',
-            {
-                parseMode: 'MarkdownV2',
-                replyMarkup: hasImage ? undefined : versionButtons,
-            }
-        );
-        if (!success) {
-            return false;
-        }
-    }
 
-    // Send image if present (as last message with buttons)
-    if (hasImage && imageBuffer) {
+            // Send remaining chunks if multi-chunk
+            for (let i = 1; i < contentChunks.length; i++) {
+                const chunk = contentChunks[i] ?? '';
+                const isLast = i === contentChunks.length - 1 && !hasImage;
+                const [chunkErr, chunkMsg] = await to(
+                    ctx.api.sendMessage(chatId, chunk, {
+                        parse_mode: 'MarkdownV2',
+                        reply_parameters: { message_id: response.userMessageId },
+                        reply_markup: isLast ? versionButtons : undefined,
+                    })
+                );
+                if (chunkErr) break;
+                newMessageIds.push(chunkMsg.message_id);
+                currentMessageId = chunkMsg.message_id;
+            }
+
+            // Send image after text if present
+            if (hasImage && imageBuffer) {
+                const { InputFile } = await import('grammy');
+                const [imgErr, imgMsg] = await to(
+                    ctx.api.sendPhoto(chatId, new InputFile(imageBuffer as unknown as ConstructorParameters<typeof InputFile>[0], 'image.png'), {
+                        reply_parameters: { message_id: response.userMessageId },
+                        reply_markup: versionButtons,
+                    })
+                );
+                if (!imgErr) {
+                    newMessageIds.push(imgMsg.message_id);
+                    currentMessageId = imgMsg.message_id;
+                }
+            }
+        }
+    } else if (newIsImageOnly) {
+        // Both old and new are image-only: delete old image, send new image
+        await to(ctx.api.deleteMessage(chatId, oldFirstMsgId));
+
         const { InputFile } = await import('grammy');
         const [sendErr, sentMsg] = await to(
-            ctx.api.sendPhoto(chatId, new InputFile(imageBuffer as any), {
+            ctx.api.sendPhoto(chatId, new InputFile(imageBuffer as unknown as ConstructorParameters<typeof InputFile>[0], 'image.png'), {
                 reply_parameters: { message_id: response.userMessageId },
                 reply_markup: versionButtons,
             })
         );
-
         if (!sendErr) {
             newMessageIds.push(sentMsg.message_id);
             currentMessageId = sentMsg.message_id;
         } else {
             console.error('[bot-message-service] Failed to send image:', sendErr);
+            return false;
+        }
+    } else {
+        // Both old and new have text: edit first message in place
+        newMessageIds.push(oldFirstMsgId);
+        currentMessageId = oldFirstMsgId;
+
+        if (contentChunks.length > 1) {
+            const editor = createMessageEditor(ctx.api, chatId, oldFirstMsgId);
+            await editWithFallback(editor, contentChunks[0] ?? '', { parseMode: 'MarkdownV2' });
+
+            for (let i = 1; i < contentChunks.length; i++) {
+                const chunk = contentChunks[i] ?? '';
+                const isLast = i === contentChunks.length - 1 && !hasImage;
+                const [sendErr, sentMsg] = await to(
+                    ctx.api.sendMessage(chatId, chunk, {
+                        parse_mode: 'MarkdownV2',
+                        reply_parameters: { message_id: response.userMessageId },
+                        reply_markup: isLast ? versionButtons : undefined,
+                    })
+                );
+                if (sendErr) break;
+                newMessageIds.push(sentMsg.message_id);
+                currentMessageId = sentMsg.message_id;
+            }
+        } else {
+            const editor = createMessageEditor(ctx.api, chatId, oldFirstMsgId);
+            await editWithFallback(
+                editor,
+                content || '\\[Empty response\\]',
+                {
+                    parseMode: 'MarkdownV2',
+                    replyMarkup: hasImage ? undefined : versionButtons,
+                }
+            );
+        }
+
+        // Send image after text if present
+        if (hasImage && imageBuffer) {
+            const { InputFile } = await import('grammy');
+            const [sendErr, sentMsg] = await to(
+                ctx.api.sendPhoto(chatId, new InputFile(imageBuffer as unknown as ConstructorParameters<typeof InputFile>[0], 'image.png'), {
+                    reply_parameters: { message_id: response.userMessageId },
+                    reply_markup: versionButtons,
+                })
+            );
+            if (!sendErr) {
+                newMessageIds.push(sentMsg.message_id);
+                currentMessageId = sentMsg.message_id;
+            }
         }
     }
 

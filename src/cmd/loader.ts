@@ -1,5 +1,4 @@
 import { Bot } from "grammy";
-import { Menus } from "./menu";
 import {
     registerStartCommand,
     registerHelpCommand,
@@ -9,7 +8,7 @@ import {
     registerContextCommand,
 } from "./commands";
 
-export const cmdLoad = async (bot: Bot, menus: Menus) => {
+export const cmdLoad = async (bot: Bot) => {
     bot.api.setMyCommands([
         { command: "start", description: "开始" },
         { command: "help", description: "没有帮助" },
@@ -32,6 +31,6 @@ export const cmdLoad = async (bot: Bot, menus: Menus) => {
     registerHelpCommand(bot);
     registerReactCommand(bot);
     registerPicCommands(bot);
-    registerModelCommand(bot, menus);
+    registerModelCommand(bot);
     registerContextCommand(bot);
 };

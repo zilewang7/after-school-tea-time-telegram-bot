@@ -13,8 +13,7 @@ import {
 } from '../services';
 import { buildResponseButtons } from '../cmd/menus';
 import { ButtonState, type CommandType } from '../db';
-import { isImageModel } from '../ai';
-import { getCurrentModel } from '../state';
+
 import {
     createTypingIndicator,
     createStreamingEditor,
@@ -56,6 +55,8 @@ export interface ChatContext {
     currentButtonState: ButtonState;
     /** Flag to prevent idle updates after finalization */
     isFinalized: boolean;
+    /** Command type for image generation context detection and retry routing */
+    commandType: CommandType;
 }
 
 /**
@@ -104,6 +105,7 @@ export const createChatContext = async (
         session,
         currentButtonState: ButtonState.PROCESSING,
         isFinalized: false,
+        commandType: options?.commandType ?? 'chat',
     };
 
     // Create StreamingEditor with idle update callback
@@ -492,8 +494,9 @@ export const sendFinalResponse = async (
         if (hasImages) {
             const photoBuffer = response.images[0];
             if (photoBuffer) {
+                console.log('[response-handler] Sending photo (split path):', { bufferSize: photoBuffer.length, chatId });
                 const sendResult = await to(
-                    ctx.api.sendPhoto(chatId, new InputFile(photoBuffer as unknown as ConstructorParameters<typeof InputFile>[0]), {
+                    ctx.api.sendPhoto(chatId, new InputFile(photoBuffer as unknown as ConstructorParameters<typeof InputFile>[0], 'image.png'), {
                         reply_parameters: { message_id: userMessageId },
                     })
                 );
@@ -503,6 +506,22 @@ export const sendFinalResponse = async (
                     chatContext.messageHistory.push(sentMsg.message_id);
                     session.messageIds.push(sentMsg.message_id);
                     session.currentMessageId = sentMsg.message_id;
+                } else {
+                    console.error('[response-handler] sendPhoto failed (split path):', sendResult[0].message);
+                    const docFile = new InputFile(photoBuffer as unknown as ConstructorParameters<typeof InputFile>[0], 'image.png');
+                    const docResult = await to(
+                        ctx.api.sendDocument(chatId, docFile, {
+                            reply_parameters: { message_id: userMessageId },
+                        })
+                    );
+                    if (!isErr(docResult)) {
+                        const sentMsg = docResult[1];
+                        chatContext.messageHistory.push(sentMsg.message_id);
+                        session.messageIds.push(sentMsg.message_id);
+                        session.currentMessageId = sentMsg.message_id;
+                    } else {
+                        console.error('[response-handler] sendDocument also failed (split path):', docResult[0]);
+                    }
                 }
             }
         }
@@ -540,9 +559,9 @@ export const sendFinalResponse = async (
     const hasText = Boolean(finalMessage);
     const hasImages = response.images.length > 0;
 
-    // Check if this is an image generation context (picbanana command OR image model)
-    const currentModel = getCurrentModel();
-    const isImageGenerationContext = isImageModel(currentModel);
+    // Check if this is an image generation context
+    const isImageGenerationContext = chatContext.commandType === 'picbanana'
+        || chatContext.commandType === 'picgpt';
     const noImageInResponse = isImageGenerationContext && !hasImages && !wasStoppedByUser;
 
     // Add [no image in response] marker for image generation without images
@@ -577,8 +596,12 @@ export const sendFinalResponse = async (
         // Send image as last message (buttons will be added after finalize)
         const photoBuffer = response.images[0];
         if (photoBuffer) {
+            console.log('[response-handler] Sending photo:', { bufferSize: photoBuffer.length, chatId, replyTo: userMessageId });
+            const inputFile = new InputFile(photoBuffer as unknown as ConstructorParameters<typeof InputFile>[0], 'image.png');
+
+            // Try sendPhoto first, fallback to sendDocument if Telegram rejects the format
             const sendResult = await to(
-                ctx.api.sendPhoto(chatId, new InputFile(photoBuffer as any), {
+                ctx.api.sendPhoto(chatId, inputFile, {
                     reply_parameters: { message_id: userMessageId },
                 })
             );
@@ -588,6 +611,22 @@ export const sendFinalResponse = async (
                 chatContext.messageHistory.push(sentMsg.message_id);
                 session.messageIds.push(sentMsg.message_id);
                 session.currentMessageId = sentMsg.message_id;
+            } else {
+                console.warn('[response-handler] sendPhoto failed, fallback to sendDocument:', sendResult[0].message);
+                const docFile = new InputFile(photoBuffer as unknown as ConstructorParameters<typeof InputFile>[0], 'image.png');
+                const docResult = await to(
+                    ctx.api.sendDocument(chatId, docFile, {
+                        reply_parameters: { message_id: userMessageId },
+                    })
+                );
+                if (!isErr(docResult)) {
+                    const sentMsg = docResult[1];
+                    chatContext.messageHistory.push(sentMsg.message_id);
+                    session.messageIds.push(sentMsg.message_id);
+                    session.currentMessageId = sentMsg.message_id;
+                } else {
+                    console.error('[response-handler] sendDocument also failed:', docResult[0]);
+                }
             }
         }
 
@@ -744,7 +783,8 @@ export const handleResponseError = async (
  */
 export const createChatContextForRetry = (
     ctx: Context,
-    session: BotMessageSession
+    session: BotMessageSession,
+    commandType: CommandType = 'chat'
 ): ChatContext => {
     const chatId = session.chatId;
 
@@ -764,6 +804,7 @@ export const createChatContextForRetry = (
         session,
         currentButtonState: ButtonState.PROCESSING,
         isFinalized: false,
+        commandType,
     };
 
     // Create StreamingEditor with idle update callback

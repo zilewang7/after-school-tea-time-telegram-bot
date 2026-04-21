@@ -3,8 +3,6 @@
  */
 import { Context } from 'grammy';
 import type { ReactionTypeEmoji } from 'grammy/types';
-import type { Menu } from '@grammyjs/menu';
-import { getCurrentModel, setCurrentModel } from './state';
 
 /**
  * Fetch a URL and return as Blob
@@ -71,29 +69,3 @@ export const convertBlobToBase64 = async (blob: Blob): Promise<string> => {
     return `data:image/png;base64,${base64}`;
 };
 
-/**
- * Send model info message with menu
- */
-export const sendModelMsg = async (
-    ctx: Context,
-    checkModelMenu: Menu<Context>
-): Promise<void> => {
-    await ctx.reply(
-        '当前模型：`' +
-        getCurrentModel() +
-        '`\n\n点击下方按钮快速切换或使用 `/model `+模型名 手动指定',
-        { reply_markup: checkModelMenu, parse_mode: 'Markdown' }
-    );
-};
-
-/**
- * Change current model and show model menu
- */
-export const changeModel = async (
-    ctx: Context,
-    model: string,
-    checkModelMenu: Menu<Context>
-): Promise<void> => {
-    setCurrentModel(model);
-    await sendModelMsg(ctx, checkModelMenu);
-};

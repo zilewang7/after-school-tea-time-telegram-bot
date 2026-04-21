@@ -4,7 +4,9 @@
  * Reuses the same processStream and sendFinalResponse as normal flow
  */
 import type { Context } from 'grammy';
+import { match } from 'ts-pattern';
 import { getMessage, getBotResponse } from '../db';
+import type { CommandType } from '../db';
 import { getFileContentsOfMessage } from '../db/queries/context-queries';
 import { startRetry } from '../services';
 import { sendMessage, getSystemPrompt, getModelCapabilities } from '../ai';
@@ -41,14 +43,13 @@ export const handleRetryRequest = async (
 
     // Check command type for routing
     const metadata = botResponse.getMetadata();
-    const commandType = metadata.commandType || 'chat';
+    const commandType: CommandType = metadata.commandType || 'chat';
 
-    if (commandType === 'picbanana') {
-        return handlePicbananaRetry(ctx, botResponse);
-    }
-
-    // Default: handle as chat retry
-    return handleChatRetry(ctx, botResponse);
+    return match(commandType)
+        .with('picbanana', () => handlePicbananaRetry(ctx, botResponse))
+        .with('picgpt', () => handlePicgptRetry(ctx, botResponse))
+        .with('chat', () => handleChatRetry(ctx, botResponse))
+        .exhaustive();
 };
 
 /**
@@ -70,7 +71,7 @@ const handlePicbananaRetry = async (
     }
 
     // Create chat context for retry
-    const chatContext = createChatContextForRetry(ctx, session);
+    const chatContext = createChatContextForRetry(ctx, session, 'picbanana');
 
     // Get original user message to extract prompt and images
     const [msgErr, userMessage] = await to(getMessage(chatId, botResponse.userMessageId));
@@ -145,6 +146,103 @@ const handlePicbananaRetry = async (
     const [sendErr] = await to(sendFinalResponse(chatContext, response));
     if (sendErr) {
         console.error('[retry-handler] Failed to send picbanana final response:', sendErr);
+    }
+};
+
+/**
+ * Handle retry for picgpt command
+ */
+const handlePicgptRetry = async (
+    ctx: Context,
+    botResponse: Awaited<ReturnType<typeof getBotResponse>>
+): Promise<void> => {
+    if (!botResponse || !ctx.chat) return;
+
+    const chatId = ctx.chat.id;
+
+    // Start retry session
+    const session = await startRetry(ctx, botResponse.messageId);
+    if (!session) {
+        console.error('[retry-handler] Failed to create retry session for picgpt');
+        return;
+    }
+
+    // Create chat context for retry
+    const chatContext = createChatContextForRetry(ctx, session, 'picgpt');
+
+    // Get original user message to extract prompt and images
+    const [msgErr, userMessage] = await to(getMessage(chatId, botResponse.userMessageId));
+    if (msgErr || !userMessage) {
+        console.error('[retry-handler] Failed to get user message:', msgErr);
+        await handleResponseError(chatContext, msgErr ?? new Error('Original user message not found'));
+        return;
+    }
+
+    // Extract prompt from original message (strip /picgpt command prefix, EOF suffix, and "(I send ...)" suffix)
+    const originalText = userMessage.text
+        ?.replace(/<<EOF\s*$/, '')
+        ?.replace(/\s*\(I send [^)]+\)\s*$/, '')
+        || '';
+    const commandMatch = originalText.match(/^\/picgpt(@\S+)?\s*([\s\S]*)?$/);
+    const prompt = commandMatch?.[2]?.trim() || originalText;
+
+    // Collect reference images
+    const referenceImages = new Set<string>();
+
+    const appendImagesFromMessage = async (targetMessageId: number): Promise<void> => {
+        const images = await getFileContentsOfMessage(chatId, targetMessageId);
+        images.forEach((part) => {
+            if (part.type === 'image' && part.imageData) {
+                referenceImages.add(part.imageData);
+            }
+        });
+    };
+
+    // Check reply message for reference images
+    if (userMessage.replyToId) {
+        await appendImagesFromMessage(userMessage.replyToId);
+    }
+
+    // Check current message for images
+    await appendImagesFromMessage(botResponse.userMessageId);
+
+    // Build content parts
+    const contentParts: UnifiedContentPart[] = [
+        { type: 'text', text: prompt },
+    ];
+
+    referenceImages.forEach((imageData) => {
+        contentParts.push({ type: 'image', imageData });
+    });
+
+    // Build context from parts
+    const messages = buildContextFromParts(contentParts);
+
+    // Send to OpenAI image model
+    const [streamErr, stream] = await to(
+        sendMessage(messages, {
+            model: 'gpt-image-2-dev',
+            signal: session.streamController.signal,
+        })
+    );
+    if (streamErr) {
+        console.error('[retry-handler] Failed to send picgpt message:', streamErr);
+        await handleResponseError(chatContext, streamErr);
+        return;
+    }
+
+    // Process stream (same as normal flow)
+    const [processErr, response] = await to(processStream(stream, chatContext));
+    if (processErr) {
+        console.error('[retry-handler] Failed to process picgpt stream:', processErr);
+        await handleResponseError(chatContext, processErr);
+        return;
+    }
+
+    // Send final response (same as normal flow)
+    const [sendErr] = await to(sendFinalResponse(chatContext, response));
+    if (sendErr) {
+        console.error('[retry-handler] Failed to send picgpt final response:', sendErr);
     }
 };
 

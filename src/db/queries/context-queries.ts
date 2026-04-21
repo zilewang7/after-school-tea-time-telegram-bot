@@ -198,15 +198,21 @@ export const getFileContentsOfMessage = async (
         files.push(message.file);
     }
 
-    // Add sub-image files
+    // Collect sub-image files, sorted by messageId to ensure correct order
+    // (Telegram media group updates may arrive out of order)
+    const subImages: { messageId: number; file: Buffer }[] = [];
     for (const replyId of repliesIds) {
         const msg = await getMessage(chatId, replyId);
         if (
             msg?.file &&
             msg.text?.match(/sub image of \[(\w+)\]/)?.[1] === String(messageId)
         ) {
-            files.push(msg.file);
+            subImages.push({ messageId: replyId, file: msg.file });
         }
+    }
+    subImages.sort((a, b) => a.messageId - b.messageId);
+    for (const sub of subImages) {
+        files.push(sub.file);
     }
 
     // Convert to UnifiedContentPart format

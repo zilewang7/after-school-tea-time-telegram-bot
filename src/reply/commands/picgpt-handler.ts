@@ -94,7 +94,7 @@ export const handlePicgptCommand = async (
     if (!ctx.message || !ctx.chat) return;
 
     console.log('[picgpt] Processing command:', {
-        promptLength: commandData.prompt.length,
+        prompt: commandData.prompt,
         referenceImageCount: commandData.referenceImages.length,
     });
 
@@ -120,7 +120,7 @@ export const handlePicgptCommand = async (
     // Send to OpenAI image model
     const streamResult = await to(
         sendMessage(messages, {
-            model: 'gpt-image-2',
+            model: 'gpt-image-2-dev',
             signal: chatContext.session.streamController.signal,
         })
     );

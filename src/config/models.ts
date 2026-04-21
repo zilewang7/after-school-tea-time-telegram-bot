@@ -16,5 +16,5 @@ export const modelConfigs: ModelConfig[] = [
     { id: "grok-4.20-0309-reasoning", name: "grok-4.20" },
     { id: "grok-4.20-multi-agent-0309", name: "grok-4.20-multi-agent" },
     { id: "gemini-3-pro-image-preview", name: "gemini-3-pro-image" },
-    { id: "gpt-image-2", name: "gpt-image-2" },
+    { id: "gpt-image-2-dev", name: "gpt-image-2" },
 ];
