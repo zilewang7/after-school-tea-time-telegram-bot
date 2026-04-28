@@ -8,7 +8,7 @@ import {
     InferAttributes,
     InferCreationAttributes,
 } from '@sequelize/core';
-import { sequelize } from './config';
+import { sequelize } from './config.js';
 
 /**
  * Button state for bot responses

@@ -12,17 +12,17 @@ import {
     type ResponseVersion,
     type ResponseMetadata,
     type CommandType,
-} from '../db';
+} from '../db/index.js';
 import {
     createMessageEditor,
     type MessageEditor,
-} from '../telegram';
-import { buildFinalMessageChunks } from '../telegram/formatters/final-message-builder';
-import { formatResponse } from '../telegram/formatters/markdown-formatter';
-import { buildResponseButtons } from '../cmd/menus';
-import { to, isErr } from '../shared/result';
-import { getCurrentModel } from '../state';
-import type { AgentStats } from '../ai/types';
+} from '../telegram/index.js';
+import { buildFinalMessageChunks } from '../telegram/formatters/final-message-builder.js';
+import { formatResponse } from '../telegram/formatters/markdown-formatter.js';
+import { buildResponseButtons } from '../cmd/menus/index.js';
+import { to, isErr } from '../shared/result.js';
+import { getCurrentModel } from '../state.js';
+import type { AgentStats } from '../ai/types.js';
 
 /**
  * Stream controller for aborting streams
@@ -369,7 +369,7 @@ const finalizeSession = async (
 
         // Add to edit monitor if no buttons (normal completion)
         if (response.buttonState === ButtonState.NONE) {
-            const { addEditMonitorEntry } = await import('../state');
+            const { addEditMonitorEntry } = await import('../state.js');
             addEditMonitorEntry(session.chatId, session.userMessageId, session.firstMessageId);
         }
     }
@@ -386,7 +386,7 @@ const finalizeSession = async (
         messageText = '[Empty response]';
     }
 
-    const { saveMessage } = await import('../db');
+    const { saveMessage } = await import('../db/index.js');
     await saveMessage({
         chatId: session.chatId,
         messageId: session.firstMessageId,
@@ -774,7 +774,7 @@ export const switchVersion = async (
         messageText = '[Empty response]';
     }
 
-    const { saveMessage } = await import('../db');
+    const { saveMessage } = await import('../db/index.js');
     await saveMessage({
         chatId,
         messageId: firstMessageId,

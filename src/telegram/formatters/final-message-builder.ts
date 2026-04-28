@@ -1,8 +1,8 @@
-import type { AgentStats, GroundingData } from '../../ai/types';
-import { formatResponse, formatResponseSafe } from './markdown-formatter';
-import { formatAgentStatsSections } from './agent-stats-formatter';
-import { formatGroundingSections } from './grounding-formatter';
-import { getTelegramVisibleLength, smartSplit } from './smart-splitter';
+import type { AgentStats, GroundingData } from '../../ai/types.js';
+import { formatResponse, formatResponseSafe } from './markdown-formatter.js';
+import { formatAgentStatsSections } from './agent-stats-formatter.js';
+import { formatGroundingSections } from './grounding-formatter.js';
+import { getTelegramVisibleLength, smartSplit } from './smart-splitter.js';
 
 const TELEGRAM_MAX_LENGTH = 4000;
 

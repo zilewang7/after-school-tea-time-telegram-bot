@@ -2,13 +2,13 @@
  * Context builder for AI chat
  * Builds unified message context from database messages
  */
-import { getMessage } from '../db';
-import { Message } from '../db/messageDTO';
-import { getRepliesHistory, getFileContentsOfMessage, type ContextMessage } from '../db/queries/context-queries';
-import { applyModelCapabilities } from '../ai/message-transformer';
-import { getCurrentModel } from '../state';
-import { getModelCapabilities } from '../ai/platform-factory';
-import type { UnifiedMessage, UnifiedContentPart, ModelCapabilities } from '../ai/types';
+import { getMessage } from '../db/index.js';
+import { Message } from '../db/messageDTO.js';
+import { getRepliesHistory, getFileContentsOfMessage, type ContextMessage } from '../db/queries/context-queries.js';
+import { applyModelCapabilities } from '../ai/message-transformer.js';
+import { getCurrentModel } from '../state.js';
+import { getModelCapabilities } from '../ai/platform-factory.js';
+import type { UnifiedMessage, UnifiedContentPart, ModelCapabilities } from '../ai/types.js';
 
 /**
  * Build context from a single message

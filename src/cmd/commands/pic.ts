@@ -5,9 +5,9 @@ import { match } from 'ts-pattern';
 import type { Bot, Context } from 'grammy';
 import { InputFile } from 'grammy';
 import OpenAI from 'openai';
-import { to, isErr } from '../../shared/result';
-import { removeSpecificText } from '../../util';
-import { saveMessage } from '../../db';
+import { to, isErr } from '../../shared/result.js';
+import { removeSpecificText } from '../../util.js';
+import { saveMessage } from '../../db/index.js';
 
 const botUserId = Number(process.env.BOT_USER_ID);
 const botUserName = process.env.BOT_NAME;

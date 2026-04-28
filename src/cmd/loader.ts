@@ -6,7 +6,7 @@ import {
     registerPicCommands,
     registerModelCommand,
     registerContextCommand,
-} from "./commands";
+} from "./commands/index.js";
 
 export const cmdLoad = async (bot: Bot) => {
     bot.api.setMyCommands([

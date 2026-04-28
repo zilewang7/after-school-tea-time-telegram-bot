@@ -15,6 +15,8 @@ export const modelConfigs: ModelConfig[] = [
     { id: "deepseek-reasoner", name: "deepseek-v3.2-thinking" },
     { id: "grok-4.20-0309-reasoning", name: "grok-4.20" },
     { id: "grok-4.20-multi-agent-0309", name: "grok-4.20-multi-agent" },
+    { id: "mimo-v2.5", name: "mimo-v2.5" },
+    { id: "mimo-v2.5-pro", name: "mimo-v2.5-pro" },
     { id: "gemini-3-pro-image-preview", name: "gemini-3-pro-image" },
     { id: "gpt-image-2-dev", name: "gpt-image-2" },
 ];

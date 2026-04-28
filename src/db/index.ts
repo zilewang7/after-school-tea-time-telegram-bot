@@ -1,8 +1,8 @@
-import { sequelize } from "./config";
-import { Message } from "./messageDTO";
-import { BotResponse, ButtonState, type ResponseVersion, type ResponseMetadata, type CommandType } from "./botResponseDTO";
-import { getBlob } from "../util";
-import { removeAsyncFileSaveMsgId } from '../state';
+import { sequelize } from "./config.js";
+import { Message } from "./messageDTO.js";
+import { BotResponse, ButtonState, type ResponseVersion, type ResponseMetadata, type CommandType } from "./botResponseDTO.js";
+import { getBlob } from "../util.js";
+import { removeAsyncFileSaveMsgId } from '../state.js';
 
 // sync database
 sequelize.sync({ alter: true });

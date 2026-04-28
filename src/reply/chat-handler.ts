@@ -3,21 +3,21 @@
  * Handles incoming messages and coordinates AI responses
  */
 import type { Bot, Context } from 'grammy';
-import { to, isErr } from '../shared/result';
-import { getMessage } from '../db';
-import { sendMessage, getSystemPrompt, getModelCapabilities } from '../ai';
-import { getCurrentModel, getMediaGroupIdTemp, getAsyncFileSaveMsgIdList } from '../state';
-import { checkIfMentioned } from '../util';
-import { buildContext } from './context-builder';
+import { to, isErr } from '../shared/result.js';
+import { getMessage } from '../db/index.js';
+import { sendMessage, getSystemPrompt, getModelCapabilities } from '../ai/index.js';
+import { getCurrentModel, getMediaGroupIdTemp, getAsyncFileSaveMsgIdList } from '../state.js';
+import { checkIfMentioned } from '../util.js';
+import { buildContext } from './context-builder.js';
 import {
     createChatContext,
     processStream,
     sendFinalResponse,
     handleResponseError,
-} from './response-handler';
-import { handlePicbananaCommand, checkPicbananaCommand } from './commands/picbanana-handler';
-import { handlePicgptCommand, checkPicgptCommand } from './commands/picgpt-handler';
-import { dealChatCommand } from './commands/chat-command';
+} from './response-handler.js';
+import { handlePicbananaCommand, checkPicbananaCommand } from './commands/picbanana-handler.js';
+import { handlePicgptCommand, checkPicgptCommand } from './commands/picgpt-handler.js';
+import { dealChatCommand } from './commands/chat-command.js';
 
 /**
  * Wait for async file save operations to complete

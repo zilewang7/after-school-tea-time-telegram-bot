@@ -1,4 +1,4 @@
 /**
  * Database queries module exports
  */
-export * from './context-queries';
+export * from './context-queries.js';

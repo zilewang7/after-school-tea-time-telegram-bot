@@ -4,7 +4,7 @@ import {
   InferAttributes,
   InferCreationAttributes,
 } from '@sequelize/core';
-import { sequelize } from './config';
+import { sequelize } from './config.js';
 
 export class Message extends Model<InferAttributes<Message>, InferCreationAttributes<Message>> {
   declare chatId: number;

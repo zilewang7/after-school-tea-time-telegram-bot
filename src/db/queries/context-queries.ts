@@ -2,8 +2,8 @@
  * Context-related database queries
  * Handles both Message table (user messages) and BotResponse table (bot messages)
  */
-import { getMessage, getBotResponse, findBotResponseByMessageId } from '../index';
-import type { UnifiedContentPart } from '../../ai/types';
+import { getMessage, getBotResponse, findBotResponseByMessageId } from '../index.js';
+import type { UnifiedContentPart } from '../../ai/types.js';
 
 const botUserName = process.env.BOT_NAME || 'Bot';
 

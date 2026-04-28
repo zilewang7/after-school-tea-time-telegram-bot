@@ -2,18 +2,20 @@
  * AI Platform factory - creates platform instances based on model name
  */
 import { match } from 'ts-pattern';
-import type { IAIPlatform, ModelCapabilities, PlatformConfig, UnifiedMessage, StreamChunk } from './types';
-import { GeminiPlatform } from './platforms/gemini-platform';
-import { OpenAIPlatform } from './platforms/openai-platform';
-import { DeepSeekPlatform } from './platforms/deepseek-platform';
-import { GrokPlatform } from './platforms/grok-platform';
-import { applyModelCapabilities } from './message-transformer';
+import type { IAIPlatform, ModelCapabilities, PlatformConfig, UnifiedMessage, StreamChunk } from './types.js';
+import { GeminiPlatform } from './platforms/gemini-platform.js';
+import { OpenAIPlatform } from './platforms/openai-platform.js';
+import { DeepSeekPlatform } from './platforms/deepseek-platform.js';
+import { GrokPlatform } from './platforms/grok-platform.js';
+import { MimoPlatform } from './platforms/mimo-platform.js';
+import { applyModelCapabilities } from './message-transformer.js';
 
 // Singleton platform instances - initialized once at module load
 const geminiPlatform = new GeminiPlatform();
 const openaiPlatform = new OpenAIPlatform();
 const deepseekPlatform = new DeepSeekPlatform();
 const grokPlatform = new GrokPlatform();
+const mimoPlatform = new MimoPlatform();
 
 /**
  * Get platform instance based on model name
@@ -24,6 +26,7 @@ export const getPlatform = (model: string): IAIPlatform => {
         .when((m) => m.startsWith('gemini'), () => geminiPlatform)
         .when((m) => m.startsWith('deepseek'), () => deepseekPlatform)
         .when((m) => m.startsWith('grok-'), () => grokPlatform)
+        .when((m) => m.startsWith('mimo'), () => mimoPlatform)
         .otherwise(() => openaiPlatform);
 };
 
@@ -53,6 +56,7 @@ export const getDefaultModel = (platformType: string): string => {
         .with('openai', () => 'gpt-5.4')
         .with('deepseek', () => 'deepseek-reasoning')
         .with('grok', () => 'grok-4.20-0309-reasoning')
+        .with('mimo', () => 'mimo-v2.5-pro')
         .otherwise(() => process.env.DEFAULT_MODEL || 'gpt-5.4');
 };
 

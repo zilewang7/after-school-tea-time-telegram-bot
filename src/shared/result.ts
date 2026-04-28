@@ -1,7 +1,7 @@
 /**
  * Result utilities for flattened error handling using await-to-js
  */
-import to from 'await-to-js';
+import { to } from 'await-to-js';
 
 // Re-export to function
 export { to };

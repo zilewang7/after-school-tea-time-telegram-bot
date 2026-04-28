@@ -3,10 +3,10 @@
  */
 import { InlineKeyboard } from 'grammy';
 import type { Bot, Context } from 'grammy';
-import { modelConfigs } from '../config/models';
-import { getCurrentModel, setCurrentModel } from '../state';
-import { setRetryHandler, registerResponseCallbacks } from './menus';
-import { handleRetryRequest } from '../reply/retry-handler';
+import { modelConfigs } from '../config/models.js';
+import { getCurrentModel, setCurrentModel } from '../state.js';
+import { setRetryHandler, registerResponseCallbacks } from './menus/index.js';
+import { handleRetryRequest } from '../reply/retry-handler.js';
 
 const MODEL_PREFIX = 'mdl:';
 const BUTTONS_PER_ROW = 2;

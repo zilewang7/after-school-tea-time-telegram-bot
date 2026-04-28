@@ -5,34 +5,34 @@
 import { match } from 'ts-pattern';
 import type { Context } from 'grammy';
 import { InputFile } from 'grammy';
-import { to, isErr } from '../shared/result';
-import { formatErrorForUser } from '../shared/errors';
+import { to, isErr } from '../shared/result.js';
+import { formatErrorForUser } from '../shared/errors.js';
 import {
     createSession,
     type BotMessageSession,
-} from '../services';
-import { buildResponseButtons } from '../cmd/menus';
-import { ButtonState, type CommandType } from '../db';
+} from '../services/index.js';
+import { buildResponseButtons } from '../cmd/menus/index.js';
+import { ButtonState, type CommandType } from '../db/index.js';
 
 import {
     createTypingIndicator,
     createStreamingEditor,
     type StreamingEditor,
     type TypingIndicator,
-} from '../telegram';
+} from '../telegram/index.js';
 import {
     escapeMarkdownV2,
     toTelegramMarkdown,
     truncateForTelegram,
     formatThinkingContent,
-} from '../telegram/formatters/markdown-formatter';
-import { buildFinalMessageChunks } from '../telegram/formatters/final-message-builder';
-import { getTelegramVisibleLength, smartSplit } from '../telegram/formatters/smart-splitter';
+} from '../telegram/formatters/markdown-formatter.js';
+import { buildFinalMessageChunks } from '../telegram/formatters/final-message-builder.js';
+import { getTelegramVisibleLength, smartSplit } from '../telegram/formatters/smart-splitter.js';
 import type {
     StreamChunk,
     AIResponse,
     ResponseState,
-} from '../ai/types';
+} from '../ai/types.js';
 
 // Message length limits for dynamic splitting
 const MESSAGE_LENGTH_LIMIT = 3900;
@@ -531,7 +531,7 @@ export const sendFinalResponse = async (
 
         // Add buttons to the last message after finalization
         const getBotResponseForButtons = async () => {
-            const { getBotResponse } = await import('../db');
+            const { getBotResponse } = await import('../db/index.js');
             return getBotResponse(chatId, session.firstMessageId);
         };
         const botResponse = await getBotResponseForButtons();
@@ -635,7 +635,7 @@ export const sendFinalResponse = async (
 
         // Get the correct button state after finalization and update the last message
         const getBotResponseForButtons = async () => {
-            const { getBotResponse } = await import('../db');
+            const { getBotResponse } = await import('../db/index.js');
             return getBotResponse(chatId, session.firstMessageId);
         };
         const botResponse = await getBotResponseForButtons();
@@ -664,7 +664,7 @@ export const sendFinalResponse = async (
 
         // Get the correct button state after finalization
         const getBotResponseForButtons = async () => {
-            const { getBotResponse } = await import('../db');
+            const { getBotResponse } = await import('../db/index.js');
             return getBotResponse(chatId, session.firstMessageId);
         };
         const botResponse = await getBotResponseForButtons();
@@ -747,7 +747,7 @@ export const handleResponseError = async (
 
     // Get the correct button state after finalization (may be HAS_VERSIONS for retry errors)
     const getBotResponseForButtons = async () => {
-        const { getBotResponse } = await import('../db');
+        const { getBotResponse } = await import('../db/index.js');
         return getBotResponse(chatId, session.firstMessageId);
     };
     const botResponse = await getBotResponseForButtons();

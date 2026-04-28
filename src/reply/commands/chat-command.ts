@@ -4,8 +4,8 @@
  */
 import { Op } from '@sequelize/core';
 import type { Context } from 'grammy';
-import { Message } from '../../db/messageDTO';
-import { findBotResponseByMessageId } from '../../db';
+import { Message } from '../../db/messageDTO.js';
+import { findBotResponseByMessageId } from '../../db/index.js';
 
 /**
  * Handle /chat command

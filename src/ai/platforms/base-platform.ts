@@ -2,8 +2,8 @@
  * Base platform class with retry logic
  */
 import { match } from 'ts-pattern';
-import { to, isErr } from '../../shared/result';
-import { isRetryableError, getRetryWaitTime } from '../../shared/errors';
+import { to, isErr } from '../../shared/result.js';
+import { isRetryableError, getRetryWaitTime } from '../../shared/errors.js';
 import type {
     IAIPlatform,
     PlatformType,
@@ -12,7 +12,7 @@ import type {
     StreamChunk,
     ModelCapabilities,
     SendOptions,
-} from '../types';
+} from '../types.js';
 
 export abstract class BasePlatform implements IAIPlatform {
     abstract readonly type: PlatformType;

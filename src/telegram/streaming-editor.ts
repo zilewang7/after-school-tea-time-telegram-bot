@@ -8,12 +8,12 @@
  * - Markdown error fallback (retry with escaped text)
  */
 import { Api, RawApi } from 'grammy';
-import { to } from '../shared/result';
-import { waitForRateLimit, recordEdit } from './rate-limiter';
-import { formatResponseSafe } from './formatters/markdown-formatter';
-import { appendAgentStatsToMessage } from './formatters/agent-stats-formatter';
-import { appendGroundingToMessage } from './formatters/grounding-formatter';
-import type { AgentStats, GroundingData } from '../ai/types';
+import { to } from '../shared/result.js';
+import { waitForRateLimit, recordEdit } from './rate-limiter.js';
+import { formatResponseSafe } from './formatters/markdown-formatter.js';
+import { appendAgentStatsToMessage } from './formatters/agent-stats-formatter.js';
+import { appendGroundingToMessage } from './formatters/grounding-formatter.js';
+import type { AgentStats, GroundingData } from '../ai/types.js';
 
 /**
  * Status text entries for cycling display

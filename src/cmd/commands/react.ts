@@ -1,5 +1,5 @@
 import { Bot } from "grammy";
-import { matchFirstEmoji } from "../../util";
+import { matchFirstEmoji } from "../../util.js";
 
 export const registerReactCommand = (bot: Bot) => {
     bot.command("react", (ctx) => {

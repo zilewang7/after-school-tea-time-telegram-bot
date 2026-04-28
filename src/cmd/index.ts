@@ -1,2 +1,2 @@
-export { cmdLoad } from "./loader";
-export { menuLoad } from "./menu";
+export { cmdLoad } from "./loader.js";
+export { menuLoad } from "./menu.js";

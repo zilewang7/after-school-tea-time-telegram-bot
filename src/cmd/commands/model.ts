@@ -1,5 +1,5 @@
 import { Bot } from "grammy";
-import { changeModel, sendModelMsg } from "../menu";
+import { changeModel, sendModelMsg } from "../menu.js";
 
 export const registerModelCommand = (bot: Bot) => {
     bot.command("model", async (ctx) => {

@@ -10,7 +10,7 @@ import type {
     ResponseInputMessageContentList,
     ResponseStreamEvent,
 } from 'openai/resources/responses/responses';
-import { BasePlatform } from './base-platform';
+import { BasePlatform } from './base-platform.js';
 import type {
     AgentStats,
     PlatformType,
@@ -20,7 +20,7 @@ import type {
     StreamChunk,
     ModelCapabilities,
     GroundingData,
-} from '../types';
+} from '../types.js';
 
 type GrokWebSearchTool = {
     type: 'web_search';

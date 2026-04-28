@@ -1,5 +1,5 @@
-import type { AgentStats } from '../../ai/types';
-import { escapeMarkdownV2 } from './markdown-formatter';
+import type { AgentStats } from '../../ai/types.js';
+import { escapeMarkdownV2 } from './markdown-formatter.js';
 
 const truncate = (text: string, maxLength: number = 120): string => {
     if (text.length <= maxLength) return text;

@@ -24,7 +24,8 @@ import type {
     ResponseInputMessageContentList,
     ResponseStreamEvent,
 } from 'openai/resources/responses/responses';
-import { BasePlatform } from './base-platform';
+import { BasePlatform } from './base-platform.js';
+import { getMcpTools, executeMcpTool } from '../mcp/index.js';
 import type {
     PlatformType,
     UnifiedMessage,
@@ -32,9 +33,11 @@ import type {
     PlatformConfig,
     StreamChunk,
     ModelCapabilities,
-} from '../types';
+    AgentToolUsage,
+} from '../types.js';
 
 const IMAGE_PROXY_MODEL = 'gpt-5.4';
+const MAX_MCP_ROUNDS = 5;
 
 const IMAGE_GENERATION_TOOL = {
     type: 'function' as const,
@@ -75,7 +78,8 @@ export class OpenAIPlatform extends BasePlatform {
         return (
             !lowerModel.startsWith('gemini') &&
             !lowerModel.startsWith('deepseek') &&
-            !lowerModel.startsWith('grok-')
+            !lowerModel.startsWith('grok-') &&
+            !lowerModel.startsWith('mimo')
         );
     }
 
@@ -107,6 +111,12 @@ export class OpenAIPlatform extends BasePlatform {
             }
             // Direct image generation (/picgpt command)
             return this.generateImage(messages, config);
+        }
+
+        // MCP tool-enabled flow
+        const mcpTools = getMcpTools();
+        if (mcpTools.length > 0) {
+            return this.sendMessageWithMcpTools(messages, config, mcpTools);
         }
 
         this.logMessageContents(messages);
@@ -207,6 +217,213 @@ export class OpenAIPlatform extends BasePlatform {
             detail: 'auto',
             image_url: `data:image/png;base64,${part.imageData ?? ''}`,
         };
+    }
+
+    /**
+     * MCP tool-enabled message flow using Responses API with function tools
+     */
+    private async *sendMessageWithMcpTools(
+        messages: UnifiedMessage[],
+        config: PlatformConfig,
+        mcpTools: ReturnType<typeof getMcpTools>
+    ): AsyncIterable<StreamChunk> {
+        const { model, systemPrompt, timeout = 85000, maxRetries = 3, signal } = config;
+
+        this.logMessageContents(messages);
+        console.log(`[openai] Using model: ${model} with ${mcpTools.length} MCP tool(s)`);
+
+        const input = this.transformToResponsesInput(messages);
+        const mcpToolsForApi = mcpTools.map(tool => ({
+            type: 'function' as const,
+            name: tool.name,
+            description: tool.description ?? '',
+            parameters: tool.inputSchema,
+        }));
+
+        const toolUsage: AgentToolUsage[] = [];
+        let currentInput = input;
+        let currentInstructions = systemPrompt ?? '';
+
+        for (let round = 0; round < MAX_MCP_ROUNDS; round++) {
+            if (signal?.aborted) break;
+
+            const request: ResponseCreateParamsStreaming = {
+                model,
+                input: currentInput,
+                instructions: currentInstructions || null,
+                stream: true,
+                tools: mcpToolsForApi as any,
+            };
+
+            const stream = await this.sendWithRetry(
+                () => this.createResponseStream(request, signal),
+                { timeout, maxRetries, signal }
+            );
+
+            // Collect the stream, capturing function calls
+            const { textChunks, functionCalls, completedResponse } = await this.collectStreamWithFunctionCalls(stream);
+
+            // Yield text and thinking chunks
+            for (const chunk of textChunks) {
+                yield chunk;
+            }
+
+            // If no function calls, we're done
+            if (functionCalls.length === 0) {
+                // Extract images if any
+                if (completedResponse?.output) {
+                    for (const item of completedResponse.output) {
+                        const imageData = await this.extractImageFromOutput(item);
+                        if (imageData) {
+                            yield { type: 'image', imageData };
+                        }
+                    }
+                }
+
+                yield {
+                    type: 'done',
+                    rawResponse: completedResponse,
+                    ...(toolUsage.length > 0 ? { agentStats: { toolUsage } } : {}),
+                };
+                return;
+            }
+
+            // Build continuation input with tool results
+            const toolResultMessages: EasyInputMessage[] = [];
+
+            // Add assistant message with function call info
+            const assistantMsg: EasyInputMessage = {
+                type: 'message',
+                role: 'assistant',
+                content: '[Called MCP tools]',
+            };
+            toolResultMessages.push(assistantMsg);
+
+            // Execute each tool and add results
+            for (const fc of functionCalls) {
+                const usage = toolUsage.find(u => u.name === fc.name);
+                if (usage) {
+                    usage.count++;
+                } else {
+                    toolUsage.push({ name: fc.name, count: 1 });
+                }
+
+                let resultContent: string;
+                try {
+                    console.log(`[openai] MCP tool call: ${fc.name}`);
+                    const result = await executeMcpTool(fc.name, fc.arguments);
+                    resultContent = result.content;
+                } catch (error) {
+                    const errorMsg = error instanceof Error ? error.message : String(error);
+                    console.error(`[openai] MCP tool ${fc.name} failed:`, errorMsg);
+                    resultContent = `Error: ${errorMsg}`;
+                }
+
+                toolResultMessages.push({
+                    type: 'message',
+                    role: 'developer',
+                    content: `Tool "${fc.name}" result:\n${resultContent}`,
+                });
+            }
+
+            // Continue conversation with tool results
+            currentInput = [...currentInput, ...toolResultMessages];
+        }
+
+        yield { type: 'done', agentStats: { toolUsage } };
+    }
+
+    /**
+     * Collect stream events, yielding text/thinking chunks and capturing function calls
+     */
+    private async collectStreamWithFunctionCalls(
+        stream: Stream<ResponseStreamEvent>
+    ): Promise<{
+        textChunks: StreamChunk[];
+        functionCalls: Array<{ name: string; arguments: string }>;
+        completedResponse: Response | null;
+    }> {
+        const textChunks: StreamChunk[] = [];
+        const functionCallsMap = new Map<number, { name: string; arguments: string }>();
+        let completedResponse: Response | null = null;
+
+        for await (const event of stream) {
+            if (event.type === 'response.output_text.delta' && event.delta) {
+                textChunks.push({ type: 'text', content: event.delta });
+                continue;
+            }
+
+            if (
+                (event.type === 'response.reasoning_text.delta' ||
+                    event.type === 'response.reasoning_summary_text.delta') &&
+                event.delta
+            ) {
+                textChunks.push({ type: 'thinking', content: event.delta });
+                continue;
+            }
+
+            if (event.type === 'response.function_call_arguments.delta') {
+                const deltaEvent = event as Record<string, any>;
+                const idx = deltaEvent._meta?.index ?? 0;
+                if (!functionCallsMap.has(idx)) {
+                    functionCallsMap.set(idx, { name: '', arguments: '' });
+                }
+                const fc = functionCallsMap.get(idx)!;
+                fc.arguments += deltaEvent.delta ?? '';
+                continue;
+            }
+
+            if (event.type === 'response.function_call_arguments.done') {
+                const doneEvent = event as Record<string, any>;
+                const idx = doneEvent._meta?.index ?? 0;
+                if (!functionCallsMap.has(idx)) {
+                    functionCallsMap.set(idx, { name: '', arguments: '' });
+                }
+                const fc = functionCallsMap.get(idx)!;
+                fc.name = doneEvent.name ?? fc.name;
+                fc.arguments = doneEvent.arguments ?? fc.arguments;
+                continue;
+            }
+
+            if (event.type === 'response.output_item.done') {
+                const item = (event as Record<string, any>).item;
+                if (item?.type === 'function_call') {
+                    // Find or create by matching name
+                    let found = false;
+                    for (const [, fc] of functionCallsMap) {
+                        if (!fc.name && item.name) {
+                            fc.name = item.name;
+                            fc.arguments = item.arguments ?? fc.arguments;
+                            found = true;
+                            break;
+                        }
+                    }
+                    if (!found && item.name) {
+                        functionCallsMap.set(functionCallsMap.size, {
+                            name: item.name,
+                            arguments: item.arguments ?? '',
+                        });
+                    }
+                }
+                continue;
+            }
+
+            if (event.type === 'response.completed') {
+                completedResponse = event.response;
+                continue;
+            }
+
+            if (event.type === 'response.failed') {
+                throw new Error(event.response.error?.message ?? 'OpenAI response failed');
+            }
+
+            if (event.type === 'error') {
+                throw new Error(event.message || 'OpenAI stream error');
+            }
+        }
+
+        const functionCalls = Array.from(functionCallsMap.values()).filter(fc => fc.name);
+        return { textChunks, functionCalls, completedResponse };
     }
 
     private async createResponseStream(

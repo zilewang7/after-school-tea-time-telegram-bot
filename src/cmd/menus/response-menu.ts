@@ -8,15 +8,15 @@
 import { InlineKeyboard } from 'grammy';
 import type { Bot, Context } from 'grammy';
 import { match } from 'ts-pattern';
-import { to } from '../../shared/result';
+import { to } from '../../shared/result.js';
 import {
     findBotResponseByMessageId,
     ButtonState,
-} from '../../db';
+} from '../../db/index.js';
 import {
     stopResponse,
     switchVersion,
-} from '../../services';
+} from '../../services/index.js';
 
 // Callback data prefix for our buttons
 const CALLBACK_PREFIX = 'resp:';

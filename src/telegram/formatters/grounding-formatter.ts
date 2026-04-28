@@ -1,9 +1,9 @@
 /**
  * Google Search grounding result formatter for Telegram
  */
-import { escapeMarkdownV2 } from './markdown-formatter';
-import { getTelegramVisibleLength, TELEGRAM_MAX_LENGTH } from './smart-splitter';
-import type { GroundingData } from '../../ai/types';
+import { escapeMarkdownV2 } from './markdown-formatter.js';
+import { getTelegramVisibleLength, TELEGRAM_MAX_LENGTH } from './smart-splitter.js';
+import type { GroundingData } from '../../ai/types.js';
 
 interface Anchor {
     href: string;
@@ -187,6 +187,35 @@ const formatSingleGrounding = (
 };
 
 /**
+ * Format MCP tool call grounding data
+ */
+const formatMcpGrounding = (metadata: GroundingData): string => {
+    const sections: string[] = [];
+
+    // Show search queries (tool names + keywords)
+    if (metadata.searchQueries.length > 0) {
+        const queries = metadata.searchQueries.map(q => escapeMarkdownV2(q)).join(' \\| ');
+        sections.push(`\n*MCPTools*\n**>${queries}||`);
+    }
+
+    // Show citation URLs
+    const citations = metadata.citations?.filter(c => c.uri) ?? [];
+    if (citations.length > 0) {
+        let entries = '';
+        citations.forEach((citation, idx) => {
+            const title = escapeMarkdownV2(
+                getCitationDisplayTitle(citation.uri, citation.title)
+            );
+            const entry = `${entries ? '\n>' : ''}\\[${idx + 1}\\] [${title}](${citation.uri})`;
+            entries += entry;
+        });
+        sections.push(`\n*Sources*\n**>${entries}||`);
+    }
+
+    return sections.join('');
+};
+
+/**
  * Format grounding metadata array for Telegram
  */
 export const formatGroundingMetadata = (
@@ -203,6 +232,11 @@ export const formatGroundingSections = (
     if (!metadataList.length) return [];
 
     return metadataList.flatMap((metadata) => {
+        if (metadata.provider === 'mcp') {
+            const section = formatMcpGrounding(metadata);
+            return section ? [section] : [];
+        }
+
         const xaiSections = formatXaiGroundingSections(metadata);
         if (xaiSections.length) {
             return xaiSections;

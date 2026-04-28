@@ -1,6 +1,6 @@
 /**
  * Reply commands module exports
  */
-export { dealChatCommand } from './chat-command';
-export { checkPicbananaCommand, handlePicbananaCommand } from './picbanana-handler';
-export { checkPicgptCommand, handlePicgptCommand } from './picgpt-handler';
+export { dealChatCommand } from './chat-command.js';
+export { checkPicbananaCommand, handlePicbananaCommand } from './picbanana-handler.js';
+export { checkPicgptCommand, handlePicgptCommand } from './picgpt-handler.js';

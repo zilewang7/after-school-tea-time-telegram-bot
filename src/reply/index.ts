@@ -3,13 +3,13 @@
  */
 
 // Main loader
-export { replyLoad } from './loader';
+export { replyLoad } from './loader.js';
 
 // Chat handler
-export { handleReply, reply, registerChatHandler } from './chat-handler';
+export { handleReply, reply, registerChatHandler } from './chat-handler.js';
 
 // Context builder
-export { buildContext, buildSimpleContext, buildContextFromParts } from './context-builder';
+export { buildContext, buildSimpleContext, buildContextFromParts } from './context-builder.js';
 
 // Response handler
 export {
@@ -18,17 +18,17 @@ export {
     sendFinalResponse,
     handleResponseError,
     type ChatContext,
-} from './response-handler';
+} from './response-handler.js';
 
 // Commands
-export { dealChatCommand } from './commands/chat-command';
+export { dealChatCommand } from './commands/chat-command.js';
 
 // Picbanana handler
 export {
     handlePicbananaCommand,
     checkPicbananaCommand,
     type PicbananaCommandData,
-} from './commands/picbanana-handler';
+} from './commands/picbanana-handler.js';
 
 // Re-export for backward compatibility with old imports
-export { getRepliesHistory, getFileContentsOfMessage } from '../db/queries/context-queries';
+export { getRepliesHistory, getFileContentsOfMessage } from '../db/queries/context-queries.js';

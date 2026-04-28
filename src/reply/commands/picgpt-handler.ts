@@ -3,17 +3,17 @@
  * Handles /picgpt image generation command using OpenAI gpt-image-2
  */
 import type { Context } from 'grammy';
-import { to, isErr } from '../../shared/result';
-import { getFileContentsOfMessage } from '../../db/queries/context-queries';
-import { sendMessage } from '../../ai';
-import { buildContextFromParts } from './../context-builder';
+import { to, isErr } from '../../shared/result.js';
+import { getFileContentsOfMessage } from '../../db/queries/context-queries.js';
+import { sendMessage } from '../../ai/index.js';
+import { buildContextFromParts } from './../context-builder.js';
 import {
     createChatContext,
     processStream,
     sendFinalResponse,
     handleResponseError,
-} from './../response-handler';
-import type { UnifiedContentPart } from '../../ai/types';
+} from './../response-handler.js';
+import type { UnifiedContentPart } from '../../ai/types.js';
 
 /**
  * Picgpt command data

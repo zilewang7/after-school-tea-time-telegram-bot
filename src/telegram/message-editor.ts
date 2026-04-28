@@ -2,8 +2,8 @@
  * Rate-limited message editor for Telegram
  */
 import type { Api } from 'grammy';
-import { waitForRateLimit, recordEdit } from './rate-limiter';
-import { to, isErr } from '../shared/result';
+import { waitForRateLimit, recordEdit } from './rate-limiter.js';
+import { to, isErr } from '../shared/result.js';
 
 export interface EditOptions {
     parseMode?: 'MarkdownV2' | 'HTML' | 'Markdown';

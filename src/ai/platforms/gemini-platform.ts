@@ -10,8 +10,8 @@ import {
     HarmBlockThreshold,
     type SafetySetting,
 } from '@google/genai';
-import { BasePlatform } from './base-platform';
-import { transformToGemini } from '../message-transformer';
+import { BasePlatform } from './base-platform.js';
+import { transformToGemini } from '../message-transformer.js';
 import type {
     PlatformType,
     UnifiedMessage,
@@ -19,7 +19,7 @@ import type {
     StreamChunk,
     ModelCapabilities,
     GroundingData,
-} from '../types';
+} from '../types.js';
 
 // Gemini safety settings - disable all filters
 const safetySettings: SafetySetting[] = [

@@ -3,4 +3,4 @@ export type {
   DeepSeekChatCompletionChunk,
   GroundingChunk,
   ExtendedGroundingMetadata,
-} from "./api-extensions";
+} from "./api-extensions.js";

@@ -5,21 +5,21 @@
  */
 import type { Context } from 'grammy';
 import { match } from 'ts-pattern';
-import { getMessage, getBotResponse } from '../db';
-import type { CommandType } from '../db';
-import { getFileContentsOfMessage } from '../db/queries/context-queries';
-import { startRetry } from '../services';
-import { sendMessage, getSystemPrompt, getModelCapabilities } from '../ai';
-import { buildContext, buildContextFromParts } from './context-builder';
-import { getCurrentModel } from '../state';
-import { to } from '../shared/result';
+import { getMessage, getBotResponse } from '../db/index.js';
+import type { CommandType } from '../db/index.js';
+import { getFileContentsOfMessage } from '../db/queries/context-queries.js';
+import { startRetry } from '../services/index.js';
+import { sendMessage, getSystemPrompt, getModelCapabilities } from '../ai/index.js';
+import { buildContext, buildContextFromParts } from './context-builder.js';
+import { getCurrentModel } from '../state.js';
+import { to } from '../shared/result.js';
 import {
     createChatContextForRetry,
     processStream,
     sendFinalResponse,
     handleResponseError,
-} from './response-handler';
-import type { UnifiedContentPart } from '../ai/types';
+} from './response-handler.js';
+import type { UnifiedContentPart } from '../ai/types.js';
 
 /**
  * Handle retry for a bot response

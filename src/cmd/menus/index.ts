@@ -1,4 +1,4 @@
 /**
  * Menus module
  */
-export * from './response-menu';
+export * from './response-menu.js';

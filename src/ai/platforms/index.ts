@@ -1,8 +1,8 @@
 /**
  * AI Platforms module exports
  */
-export { BasePlatform } from './base-platform';
-export { GeminiPlatform } from './gemini-platform';
-export { OpenAIPlatform } from './openai-platform';
-export { DeepSeekPlatform } from './deepseek-platform';
-export { GrokPlatform } from './grok-platform';
+export { BasePlatform } from './base-platform.js';
+export { GeminiPlatform } from './gemini-platform.js';
+export { OpenAIPlatform } from './openai-platform.js';
+export { DeepSeekPlatform } from './deepseek-platform.js';
+export { GrokPlatform } from './grok-platform.js';

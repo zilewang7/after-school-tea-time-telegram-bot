@@ -1,11 +1,12 @@
 import 'dotenv/config';
 import { Bot } from "grammy";
 import { SocksProxyAgent } from "socks-proxy-agent";
-import { cmdLoad } from './cmd';
-import { replyLoad } from './reply';
-import { autoClear, autoSave, autoUpdate, startEditMonitor } from './db/autoSave';
-import { menuLoad } from './cmd/menu';
-import { getAppState } from './state';
+import { cmdLoad } from './cmd/index.js';
+import { replyLoad } from './reply/index.js';
+import { autoClear, autoSave, autoUpdate, startEditMonitor } from './db/autoSave.js';
+import { menuLoad } from './cmd/menu.js';
+import { getAppState } from './state.js';
+import { initMcpClients } from './ai/mcp/index.js';
 
 if (!process.env.BOT_TOKEN) {
     throw new Error('BOT_TOKEN must be provided');
@@ -64,4 +65,12 @@ bot.api.setMyDescription("直接发送消息以开启一个上下文会话，回
 });
 
 // 启动
-bot.start()
+async function main() {
+    await initMcpClients();
+    console.log('[mcp] Initialization complete');
+    bot.start()
+        .then(() => console.log('Bot started'))
+        .catch(console.error);
+}
+
+main().catch(console.error);

@@ -1,6 +1,6 @@
 import { Bot } from "grammy";
-import { saveMessage, getMessage, findBotResponseByMessageId, BotResponse, ButtonState } from ".";
-import { Message } from "./messageDTO";
+import { saveMessage, getMessage, findBotResponseByMessageId, BotResponse, ButtonState } from "./index.js";
+import { Message } from "./messageDTO.js";
 import { Op } from "@sequelize/core";
 import {
     getMediaGroupIdTemp,
@@ -11,9 +11,9 @@ import {
     getEditMonitorBot,
     getEditMonitorEntry,
     removeEditMonitorEntry,
-} from '../state';
-import { buildResponseButtons } from '../cmd/menus';
-import to from 'await-to-js';
+} from '../state.js';
+import { buildResponseButtons } from '../cmd/menus/index.js';
+import { to } from 'await-to-js';
 
 // 监听编辑消息并更新数据库
 export const autoUpdate = (bot: Bot) => {

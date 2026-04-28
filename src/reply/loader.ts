@@ -2,7 +2,7 @@
  * Reply module loader
  */
 import type { Bot } from 'grammy';
-import { registerChatHandler } from './chat-handler';
+import { registerChatHandler } from './chat-handler.js';
 
 /**
  * Load reply handlers on bot

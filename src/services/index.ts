@@ -1,4 +1,4 @@
 /**
  * Services module
  */
-export * from './bot-message-service';
+export * from './bot-message-service.js';

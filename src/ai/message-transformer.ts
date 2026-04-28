@@ -3,7 +3,7 @@
  */
 import { match, P } from 'ts-pattern';
 import type { ChatCompletionMessageParam, ChatCompletionContentPart } from 'openai/resources';
-import type { UnifiedMessage, UnifiedContentPart, ModelCapabilities } from './types';
+import type { UnifiedMessage, UnifiedContentPart, ModelCapabilities } from './types.js';
 
 // Gemini content types
 export interface GeminiPart {

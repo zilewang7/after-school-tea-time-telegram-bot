@@ -5,7 +5,7 @@
 import {
     getRateLimiterEntry,
     setRateLimiterEntry,
-} from '../state';
+} from '../state.js';
 
 interface RateLimitConfig {
     /** Max edits per minute */

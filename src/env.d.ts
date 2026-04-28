@@ -16,6 +16,9 @@ declare global {
             DEEPSEEK_API_KEY?: string
             GROK_API_KEY?: string
             GROK_API_URL?: string
+            MIMO_API_URL?: string
+            MIMO_API_KEY?: string
+            MCP_SERVERS?: string
             PICZIT_ENDPOINT?: string
             BOT_PROXY?: string
         }
