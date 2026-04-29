@@ -47,8 +47,12 @@ export const sendModelMsg = async (ctx: Context): Promise<void> => {
 };
 
 export const changeModel = async (ctx: Context, model: string): Promise<void> => {
+    const previousModel = getCurrentModel();
     setCurrentModel(model);
-    await sendModelMsg(ctx);
+    await ctx.reply(buildModelMessageText(previousModel), {
+        reply_markup: buildCollapsedModelKeyboard(),
+        parse_mode: 'Markdown',
+    });
 };
 
 const registerModelCallbacks = (bot: Bot): void => {
