@@ -26,8 +26,17 @@ const buildExpandedModelKeyboard = (): InlineKeyboard => {
     return keyboard;
 };
 
-const buildModelMessageText = (): string => {
-    return '当前模型：`' + getCurrentModel() + '`\n\n点击下方按钮快速切换或使用 `/model `\\+模型名 手动指定';
+const buildModelMessageText = (previousModel?: string): string => {
+    const current = getCurrentModel();
+
+    let modleInfo: string;
+
+    if (previousModel) {
+        modleInfo = '切换为：`' + current + '`\n上一个模型：`' + previousModel + '`';
+    } else {
+        modleInfo = '当前模型：`' + current + '`'
+    }
+    return modleInfo + '\n\n点击下方按钮快速切换或使用 `/model `\\+模型名 手动指定';
 };
 
 export const sendModelMsg = async (ctx: Context): Promise<void> => {
@@ -58,8 +67,9 @@ const registerModelCallbacks = (bot: Bot): void => {
             return;
         }
 
+        const previousModel = getCurrentModel();
         setCurrentModel(action);
-        await ctx.editMessageText(buildModelMessageText(), {
+        await ctx.editMessageText(buildModelMessageText(previousModel), {
             parse_mode: 'Markdown',
             reply_markup: buildCollapsedModelKeyboard(),
         });

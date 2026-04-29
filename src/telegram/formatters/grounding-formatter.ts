@@ -25,6 +25,15 @@ const getCitationDisplayTitle = (uri: string, title?: string): string => {
 };
 
 /**
+ * Escape characters in URLs for Telegram MarkdownV2 links.
+ * Per Telegram Bot API: inside [text](url) links, only ')' and '\' need escaping.
+ * We URL-encode ')' to avoid breaking the link syntax.
+ */
+const escapeUrlForTelegram = (url: string): string => {
+    return url.replace(/\\/g, '%5C').replace(/\)/g, '%29');
+};
+
+/**
  * Strip HTML tags from string
  */
 const stripTags = (html?: string): string => {
@@ -116,7 +125,8 @@ const formatXaiGroundingSections = (metadata: GroundingData): string[] => {
             const title = escapeMarkdownV2(
                 getCitationDisplayTitle(citation.uri, citation.title)
             );
-            const entry = `${currentEntries ? '\n>' : ''}\\[${idx + 1}\\] [${title}](${citation.uri})`;
+            const safeUrl = escapeUrlForTelegram(citation.uri);
+            const entry = `${currentEntries ? '\n>' : ''}\\[${idx + 1}\\] [${title}](${safeUrl})`;
             const nextEntries = currentEntries + entry;
             const nextSection = `\n*Sources*\n**>${nextEntries}||`;
 
@@ -125,7 +135,7 @@ const formatXaiGroundingSections = (metadata: GroundingData): string[] => {
                 getTelegramVisibleLength(nextSection) > TELEGRAM_MAX_LENGTH
             ) {
                 sections.push(`\n*Sources*\n**>${currentEntries}||`);
-                currentEntries = `\\[${idx + 1}\\] [${title}](${citation.uri})`;
+                currentEntries = `\\[${idx + 1}\\] [${title}](${safeUrl})`;
                 return;
             }
 
@@ -165,7 +175,7 @@ const formatSingleGrounding = (
     const formattedQueries = queries.map((query, idx) => {
         const anchor = matchedAnchors[idx];
         if (anchor?.href) {
-            return `[${escapeMarkdownV2(query)}](${anchor.href})`;
+            return `[${escapeMarkdownV2(query)}](${escapeUrlForTelegram(anchor.href)})`;
         }
         return escapeMarkdownV2(query);
     });
@@ -177,7 +187,7 @@ const formatSingleGrounding = (
         if (chunk.web) {
             const title = escapeMarkdownV2(chunk.web.title ?? 'no title');
             const uri = chunk.web.uri ?? 'https://example.com';
-            result += `\n>\\[${idx + 1}\\] [${title}](${uri})`;
+            result += `\n>\\[${idx + 1}\\] [${title}](${escapeUrlForTelegram(uri)})`;
         }
     });
 
@@ -206,7 +216,8 @@ const formatMcpGrounding = (metadata: GroundingData): string => {
             const title = escapeMarkdownV2(
                 getCitationDisplayTitle(citation.uri, citation.title)
             );
-            const entry = `${entries ? '\n>' : ''}\\[${idx + 1}\\] [${title}](${citation.uri})`;
+            const safeUrl = escapeUrlForTelegram(citation.uri);
+            const entry = `${entries ? '\n>' : ''}\\[${idx + 1}\\] [${title}](${safeUrl})`;
             entries += entry;
         });
         sections.push(`\n*Sources*\n**>${entries}||`);
