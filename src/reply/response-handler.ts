@@ -36,13 +36,8 @@ import type {
     ResponseState,
 } from '../ai/types.js';
 
-// Message length limits for dynamic splitting
 const MESSAGE_LENGTH_LIMIT = 3900;
-// When thinking buffer exceeds this size during streaming, replace display with a
-// short placeholder to avoid flooding Telegram edit API with huge payloads.
-// The full thinking content is still preserved in state and rendered in the final
-// message via buildFinalMessageChunks (which splits into multiple messages safely).
-const THINKING_STREAMING_DISPLAY_LIMIT = 10000;
+const THINKING_BUFFER_LIMIT = 10000;
 
 /**
  * Chat context for response handling
@@ -146,11 +141,26 @@ const processChunk = (chunk: StreamChunk, state: ResponseState): ResponseState =
             textBuffer: state.textBuffer + (content ?? ''),
             fullText: state.fullText + (content ?? ''),
         }))
-        .with({ type: 'thinking' }, ({ content }) => ({
-            ...state,
-            thinkingBuffer: state.thinkingBuffer + (content ?? ''),
-            fullThinking: state.fullThinking + (content ?? ''),
-        }))
+        .with({ type: 'thinking' }, ({ content }) => {
+            const appended = content ?? '';
+            let newThinkingBuffer = state.thinkingBuffer + appended;
+            let newFullThinking = state.fullThinking + appended;
+            let truncatedChars = state.thinkingTruncatedChars;
+
+            if (newThinkingBuffer.length > THINKING_BUFFER_LIMIT) {
+                truncatedChars += newThinkingBuffer.length;
+                const placeholder = `[reasoning truncated, ${truncatedChars} chars omitted to avoid telegram flood]\n`;
+                newThinkingBuffer = placeholder;
+                newFullThinking = placeholder;
+            }
+
+            return {
+                ...state,
+                thinkingBuffer: newThinkingBuffer,
+                fullThinking: newFullThinking,
+                thinkingTruncatedChars: truncatedChars,
+            };
+        })
         .with({ type: 'image' }, ({ imageData }) => ({
             ...state,
             images: imageData ? [...state.images, imageData] : state.images,
@@ -191,14 +201,7 @@ const formatStateForDisplay = (
     if (state.thinkingBuffer) {
         if (!isProcessing) {
             display = formatThinkingContent(state.thinkingBuffer);
-        } else if (state.thinkingBuffer.length > THINKING_STREAMING_DISPLAY_LIMIT) {
-            // Avoid flooding edit API with huge thinking payloads during streaming.
-            // Full thinking is still preserved in state and rendered in the final message.
-            const omitted = state.thinkingBuffer.length;
-            const placeholder = `[reasoning streaming, ${omitted} chars hidden until done to avoid flood]`;
-            display = '>' + escapeMarkdownV2(placeholder);
         } else {
-            // Non-collapsed inline blockquote during streaming (becomes expandable in final message)
             display = '>' + state.thinkingBuffer.split('\n').map(escapeMarkdownV2).join('\n>');
         }
 
@@ -313,6 +316,7 @@ export const processStream = async (
         thinkingBuffer: '',
         fullText: '',
         fullThinking: '',
+        thinkingTruncatedChars: 0,
         images: [],
         groundingData: [],
         agentStats: undefined,
@@ -488,6 +492,8 @@ export const sendFinalResponse = async (
         await editor.updateContent(finalChunks[0] ?? '', { parseMode: 'MarkdownV2', isFinal: true });
 
         for (const chunk of finalChunks.slice(1)) {
+            await waitForRateLimit(chatId);
+
             const continuationResult = await to(
                 ctx.api.sendMessage(chatId, chunk, {
                     parse_mode: 'MarkdownV2',
@@ -499,6 +505,8 @@ export const sendFinalResponse = async (
                 console.error('[response-handler] Failed to send continuation:', continuationResult[0]);
                 break;
             }
+
+            recordEdit(chatId);
 
             const contMsg = continuationResult[1];
             chatContext.messageHistory.push(contMsg.message_id);

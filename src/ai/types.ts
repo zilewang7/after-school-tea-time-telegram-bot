@@ -130,6 +130,8 @@ export interface ResponseState {
     fullText: string;
     /** Complete accumulated thinking (never reset) */
     fullThinking: string;
+    /** Total chars truncated from thinking to avoid telegram flood */
+    thinkingTruncatedChars: number;
     images: Buffer[];
     groundingData: GroundingData[];
     agentStats?: AgentStats;
