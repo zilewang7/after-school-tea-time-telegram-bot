@@ -11,6 +11,7 @@ services:
     environment:
       - GIT_REPO=https://github.com/zilewang7/after-school-tea-time-telegram-bot.git
       - BOT_PROXY=socks5h://warp:1080
+      - TZ=Asia/Shanghai
     volumes:
       - ./database.sqlite:/app/k-on-bot/database.sqlite
       - ./.env:/app/k-on-bot/.env:ro

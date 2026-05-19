@@ -20,6 +20,8 @@ import {
     type StreamingEditor,
     type TypingIndicator,
 } from '../telegram/index.js';
+import { waitForRateLimit, recordEdit } from '../telegram/rate-limiter.js';
+import { registerContinuation } from '../state.js';
 import {
     escapeMarkdownV2,
     toTelegramMarkdown,
@@ -36,6 +38,11 @@ import type {
 
 // Message length limits for dynamic splitting
 const MESSAGE_LENGTH_LIMIT = 3900;
+// When thinking buffer exceeds this size during streaming, replace display with a
+// short placeholder to avoid flooding Telegram edit API with huge payloads.
+// The full thinking content is still preserved in state and rendered in the final
+// message via buildFinalMessageChunks (which splits into multiple messages safely).
+const THINKING_STREAMING_DISPLAY_LIMIT = 10000;
 
 /**
  * Chat context for response handling
@@ -183,10 +190,15 @@ const formatStateForDisplay = (
 
     if (state.thinkingBuffer) {
         if (!isProcessing) {
-            // Use collapsed format for thinking
             display = formatThinkingContent(state.thinkingBuffer);
+        } else if (state.thinkingBuffer.length > THINKING_STREAMING_DISPLAY_LIMIT) {
+            // Avoid flooding edit API with huge thinking payloads during streaming.
+            // Full thinking is still preserved in state and rendered in the final message.
+            const omitted = state.thinkingBuffer.length;
+            const placeholder = `[reasoning streaming, ${omitted} chars hidden until done to avoid flood]`;
+            display = '>' + escapeMarkdownV2(placeholder);
         } else {
-            // Normal inline format
+            // Non-collapsed inline blockquote during streaming (becomes expandable in final message)
             display = '>' + state.thinkingBuffer.split('\n').map(escapeMarkdownV2).join('\n>');
         }
 
@@ -241,6 +253,8 @@ const createContinuationMessage = async (
     // Build processing button for continuation
     const buttons = buildResponseButtons(chatContext.currentButtonState);
 
+    await waitForRateLimit(chatId);
+
     // Create new processing message with button
     // Use a simple status placeholder - StreamingEditor will manage actual status
     const sendResult = await to(
@@ -256,8 +270,11 @@ const createContinuationMessage = async (
         return null;
     }
 
+    recordEdit(chatId);
+
     const newMessage = sendResult[1];
     chatContext.messageHistory.push(newMessage.message_id);
+    registerContinuation(chatId, newMessage.message_id, session.firstMessageId);
 
     // Create new StreamingEditor for the continuation message
     const newEditor = createStreamingEditor({

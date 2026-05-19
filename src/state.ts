@@ -35,6 +35,8 @@ interface AppStateType {
     editMonitorMap: Map<string, EditMonitorEntry>;
     // bot instance for edit monitor
     editMonitorBot: Bot | null;
+    // continuation message registry: "chatId:continuationMsgId" -> firstMessageId
+    continuationRegistry: Map<string, number>;
 }
 
 const createInitialState = (): AppStateType => ({
@@ -48,6 +50,7 @@ const createInitialState = (): AppStateType => ({
     editRateLimiter: {},
     editMonitorMap: new Map(),
     editMonitorBot: null,
+    continuationRegistry: new Map(),
 });
 
 // singleton instance
@@ -135,4 +138,20 @@ export const addEditMonitorEntry = (chatId: number, userMessageId: number, first
 export const removeEditMonitorEntry = (chatId: number, userMessageId: number): void => {
     const key = `${chatId}:${userMessageId}`;
     getAppState().editMonitorMap.delete(key);
+};
+
+// Continuation registry accessors
+export const registerContinuation = (chatId: number, continuationMsgId: number, firstMessageId: number): void => {
+    const key = `${chatId}:${continuationMsgId}`;
+    getAppState().continuationRegistry.set(key, firstMessageId);
+};
+
+export const unregisterContinuation = (chatId: number, continuationMsgId: number): void => {
+    const key = `${chatId}:${continuationMsgId}`;
+    getAppState().continuationRegistry.delete(key);
+};
+
+export const findFirstMessageIdByContinuation = (chatId: number, continuationMsgId: number): number | undefined => {
+    const key = `${chatId}:${continuationMsgId}`;
+    return getAppState().continuationRegistry.get(key);
 };

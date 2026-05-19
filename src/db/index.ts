@@ -2,7 +2,7 @@ import { sequelize } from "./config.js";
 import { Message } from "./messageDTO.js";
 import { BotResponse, ButtonState, type ResponseVersion, type ResponseMetadata, type CommandType } from "./botResponseDTO.js";
 import { getBlob } from "../util.js";
-import { removeAsyncFileSaveMsgId } from '../state.js';
+import { removeAsyncFileSaveMsgId, findFirstMessageIdByContinuation } from '../state.js';
 
 // sync database
 sequelize.sync({ alter: true });
@@ -120,6 +120,14 @@ const findBotResponseByMessageId = async (chatId: number, messageId: number): Pr
     // First try direct lookup
     const direct = await getBotResponse(chatId, messageId);
     if (direct) return direct;
+
+    // Try in-memory continuation registry (for active streaming sessions
+    // where continuation message_id hasn't been persisted to versions yet)
+    const firstId = findFirstMessageIdByContinuation(chatId, messageId);
+    if (firstId !== undefined) {
+        const fromRegistry = await getBotResponse(chatId, firstId);
+        if (fromRegistry) return fromRegistry;
+    }
 
     // Otherwise search through all responses in this chat
     const allResponses = await BotResponse.findAll({ where: { chatId } });

@@ -12,6 +12,7 @@ import { to } from '../../shared/result.js';
 import {
     findBotResponseByMessageId,
     ButtonState,
+    type BotResponse,
 } from '../../db/index.js';
 import {
     stopResponse,
@@ -31,6 +32,30 @@ export const setRetryHandler = (
     handler: (ctx: Context, firstMessageId: number) => Promise<void>
 ): void => {
     retryHandler = handler;
+};
+
+/**
+ * Refresh the buttons on a message to match the current BotResponse state.
+ * Used as a self-correction mechanism when a callback finds stale buttons.
+ */
+const refreshButtonsToCurrent = async (
+    ctx: Context,
+    response: BotResponse,
+    messageId: number
+): Promise<void> => {
+    const versions = response.getVersions();
+    const currentIndex = response.currentVersionIndex;
+    const buttonState = response.buttonState;
+
+    const buttons = buildResponseButtons(buttonState, currentIndex, versions.length);
+    const [err] = await to(
+        ctx.api.editMessageReplyMarkup(ctx.callbackQuery!.message!.chat.id, messageId, {
+            reply_markup: buttons,
+        })
+    );
+    if (err) {
+        console.warn('[response-menu] Failed to refresh buttons:', err.message);
+    }
 };
 
 /**
@@ -73,6 +98,14 @@ const handleStop = async (ctx: Context): Promise<void> => {
         return;
     }
 
+    // Self-correction: if the response is no longer in PROCESSING state,
+    // the stream already ended — refresh buttons to current state instead of stopping.
+    if (response.buttonState !== ButtonState.PROCESSING) {
+        await ctx.answerCallbackQuery({ text: '已结束，已刷新按钮' });
+        await refreshButtonsToCurrent(ctx, response, msg.message_id);
+        return;
+    }
+
     // Answer callback immediately
     await ctx.answerCallbackQuery({ text: '停止中...' });
 
@@ -98,6 +131,13 @@ const handleRetry = async (ctx: Context): Promise<void> => {
     const [err, response] = await to(findBotResponseByMessageId(msg.chat.id, msg.message_id));
     if (err || !response) {
         await ctx.answerCallbackQuery({ text: '找不到消息记录' });
+        return;
+    }
+
+    // Self-correction: if still processing, refuse retry and refresh buttons
+    if (response.buttonState === ButtonState.PROCESSING) {
+        await ctx.answerCallbackQuery({ text: '还在生成中' });
+        await refreshButtonsToCurrent(ctx, response, msg.message_id);
         return;
     }
 
@@ -138,6 +178,13 @@ const handlePrev = async (ctx: Context): Promise<void> => {
     const versions = response.getVersions();
     const currentIndex = response.currentVersionIndex;
 
+    // Self-correction: if can't go prev, refresh buttons
+    if (currentIndex <= 0) {
+        await ctx.answerCallbackQuery({ text: '已是第一个版本' });
+        await refreshButtonsToCurrent(ctx, response, msg.message_id);
+        return;
+    }
+
     // Answer callback immediately with version info
     await ctx.answerCallbackQuery({ text: `切换到版本 ${currentIndex}/${versions.length}` });
 
@@ -168,6 +215,13 @@ const handleNext = async (ctx: Context): Promise<void> => {
 
     const versions = response.getVersions();
     const currentIndex = response.currentVersionIndex;
+
+    // Self-correction: if can't go next, refresh buttons
+    if (currentIndex >= versions.length - 1) {
+        await ctx.answerCallbackQuery({ text: '已是最新版本' });
+        await refreshButtonsToCurrent(ctx, response, msg.message_id);
+        return;
+    }
 
     // Answer callback immediately with version info
     await ctx.answerCallbackQuery({ text: `切换到版本 ${currentIndex + 2}/${versions.length}` });

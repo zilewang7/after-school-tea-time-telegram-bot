@@ -21,7 +21,12 @@ import { buildFinalMessageChunks } from '../telegram/formatters/final-message-bu
 import { formatResponse } from '../telegram/formatters/markdown-formatter.js';
 import { buildResponseButtons } from '../cmd/menus/index.js';
 import { to, isErr } from '../shared/result.js';
-import { getCurrentModel } from '../state.js';
+import {
+    getCurrentModel,
+    registerContinuation,
+    unregisterContinuation,
+} from '../state.js';
+import { waitForRateLimit, recordEdit } from '../telegram/rate-limiter.js';
 import type { AgentStats } from '../ai/types.js';
 
 /**
@@ -293,6 +298,8 @@ export const createSession = async (
  */
 const createContinuation = async (session: BotMessageSession): Promise<MessageEditor | null> => {
 
+    await waitForRateLimit(session.chatId);
+
     const sendResult = await to(
         session.api.sendMessage(session.chatId, `continued`, {
             parse_mode: 'MarkdownV2',
@@ -305,10 +312,14 @@ const createContinuation = async (session: BotMessageSession): Promise<MessageEd
         return null;
     }
 
+    recordEdit(session.chatId);
+
     const newMessageId = sendResult[1].message_id;
     session.messageIds.push(newMessageId);
     session.currentMessageId = newMessageId;
     session.editor = createMessageEditor(session.api, session.chatId, newMessageId);
+
+    registerContinuation(session.chatId, newMessageId, session.firstMessageId);
 
     return session.editor;
 };
@@ -401,6 +412,12 @@ const finalizeSession = async (
 
     // Remove from active sessions
     activeSessions.delete(sessionKey);
+
+    for (const msgId of session.messageIds) {
+        if (msgId !== session.firstMessageId) {
+            unregisterContinuation(session.chatId, msgId);
+        }
+    }
 };
 
 /**

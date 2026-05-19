@@ -23,16 +23,26 @@ const buildExpandedModelKeyboard = (): InlineKeyboard => {
             keyboard.row();
         }
     });
+    keyboard.row().text('收起', `${MODEL_PREFIX}collapse`);
     return keyboard;
 };
 
-const buildModelMessageText = (previousModel?: string): string => {
+const formatActionTime = (date: Date = new Date()): string => {
+    const time = date.toLocaleTimeString('zh-CN', { hour12: false });
+    const tz = process.env.TZ || 'UTC';
+    return `${time} ${tz}`;
+};
+
+const buildModelMessageText = (previousModel?: string, actionTime?: string): string => {
     const current = getCurrentModel();
 
     let modleInfo: string;
 
     if (previousModel) {
         modleInfo = '切换为：`' + current + '`\n上一个模型：`' + previousModel + '`';
+        if (actionTime) {
+            modleInfo += '\n操作时间：`' + actionTime + '`';
+        }
     } else {
         modleInfo = '当前模型：`' + current + '`'
     }
@@ -49,7 +59,8 @@ export const sendModelMsg = async (ctx: Context): Promise<void> => {
 export const changeModel = async (ctx: Context, model: string): Promise<void> => {
     const previousModel = getCurrentModel();
     setCurrentModel(model);
-    await ctx.reply(buildModelMessageText(previousModel), {
+    const actionTime = formatActionTime();
+    await ctx.reply(buildModelMessageText(previousModel, actionTime), {
         reply_markup: buildCollapsedModelKeyboard(),
         parse_mode: 'Markdown',
     });
@@ -71,9 +82,16 @@ const registerModelCallbacks = (bot: Bot): void => {
             return;
         }
 
+        if (action === 'collapse') {
+            await ctx.editMessageReplyMarkup({ reply_markup: buildCollapsedModelKeyboard() });
+            await ctx.answerCallbackQuery();
+            return;
+        }
+
         const previousModel = getCurrentModel();
         setCurrentModel(action);
-        await ctx.editMessageText(buildModelMessageText(previousModel), {
+        const actionTime = formatActionTime();
+        await ctx.editMessageText(buildModelMessageText(previousModel, actionTime), {
             parse_mode: 'Markdown',
             reply_markup: buildCollapsedModelKeyboard(),
         });
