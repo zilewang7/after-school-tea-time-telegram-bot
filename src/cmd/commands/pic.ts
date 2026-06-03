@@ -247,7 +247,7 @@ const generatePicgrokImage = async (
     // Generate image
     const genResult = await to(
         grokAgent.images.generate({
-            model: 'grok-imagine-image-pro',
+            model: 'grok-imagine-image-quality',
             prompt,
         })
     );

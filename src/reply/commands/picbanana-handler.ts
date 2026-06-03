@@ -120,7 +120,7 @@ export const handlePicbananaCommand = async (
     // Send to Gemini image model
     const streamResult = await to(
         sendMessage(messages, {
-            model: 'gemini-3-pro-image-preview',
+            model: 'gemini-3-pro-image',
             signal: chatContext.session.streamController.signal,
         })
     );

@@ -124,7 +124,7 @@ const handlePicbananaRetry = async (
     // Send to Gemini image model
     const [streamErr, stream] = await to(
         sendMessage(messages, {
-            model: 'gemini-3-pro-image-preview',
+            model: 'gemini-3-pro-image',
             signal: session.streamController.signal,
         })
     );
