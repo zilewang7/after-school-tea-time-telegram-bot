@@ -1,10 +1,11 @@
 import { sequelize } from "./config.js";
 import { Message } from "./messageDTO.js";
 import { BotResponse, ButtonState, type ResponseVersion, type ResponseMetadata, type CommandType } from "./botResponseDTO.js";
+import { MediaCache } from "./mediaCacheDTO.js";
 import { getBlob } from "../util.js";
 import { removeAsyncFileSaveMsgId, findFirstMessageIdByContinuation } from '../state.js';
 
-// sync database
+// sync database (import MediaCache above ensures the table is registered before sync)
 sequelize.sync({ alter: true });
 
 const saveMessage = async (
@@ -18,11 +19,13 @@ const saveMessage = async (
         quoteText?: string,
         fileLink?: string,
         fileBuffer?: Buffer,
+        fileMime?: string,
+        fileUniqueId?: string,
         replyToId?: number,
         modelParts?: any
     }
 ) => {
-    const { chatId, messageId, userId, date = new Date(), userName = '佚名', message, quoteText, fileLink, fileBuffer, replyToId, modelParts } = info;
+    const { chatId, messageId, userId, date = new Date(), userName = '佚名', message, quoteText, fileLink, fileBuffer, fileMime, fileUniqueId, replyToId, modelParts } = info;
 
     const fromBotSelf = userId === Number(process.env.BOT_USER_ID);
 
@@ -36,6 +39,9 @@ const saveMessage = async (
                 const message = await Message.findOne({ where: { chatId, messageId } });
                 if (message) {
                     message.file = fileBuffer;
+                    if (fileMime !== undefined) {
+                        message.fileMime = fileMime;
+                    }
                     await message.save();
                 }
             }
@@ -55,9 +61,15 @@ const saveMessage = async (
         if (modelParts !== undefined) {
             existingMessage.modelParts = modelParts;
         }
+        if (fileUniqueId !== undefined) {
+            existingMessage.fileUniqueId = fileUniqueId;
+        }
 
         if (fileBuffer) {
             existingMessage.file = fileBuffer;
+            if (fileMime !== undefined) {
+                existingMessage.fileMime = fileMime;
+            }
             await existingMessage.save();
             return;
         }
@@ -91,6 +103,8 @@ const saveMessage = async (
         date,
         userName,
         file: fileBuffer,
+        fileMime: fileMime ?? null,
+        fileUniqueId: fileUniqueId ?? null,
         replyToId,
         replies: '[]',
         modelParts: modelParts ?? null,
@@ -145,7 +159,10 @@ const findBotResponseByMessageId = async (chatId: number, messageId: number): Pr
 };
 
 /**
- * Create a new bot response record
+ * Create a new bot response record.
+ * Telegram message ids can repeat across long time spans in some setups, so a
+ * stale BotResponse row may already exist for this messageId. Replace it rather
+ * than throwing a unique-constraint error (which would crash the reply flow).
  */
 const createBotResponse = async (
     chatId: number,
@@ -153,7 +170,9 @@ const createBotResponse = async (
     userMessageId: number,
     metadata: ResponseMetadata
 ): Promise<BotResponse> => {
-    return BotResponse.create({
+    // Atomic upsert (INSERT ... ON CONFLICT DO UPDATE) so concurrent triggers or
+    // a stale row with a reused messageId can't cause a unique-constraint crash.
+    const [response] = await BotResponse.upsert({
         messageId,
         chatId,
         userMessageId,
@@ -162,6 +181,7 @@ const createBotResponse = async (
         buttonState: ButtonState.PROCESSING,
         metadata: JSON.stringify(metadata),
     });
+    return response;
 };
 
 /**
@@ -188,6 +208,7 @@ export {
     createBotResponse,
     updateBotResponseButtonState,
     BotResponse,
+    MediaCache,
     ButtonState,
     type ResponseVersion,
     type ResponseMetadata,

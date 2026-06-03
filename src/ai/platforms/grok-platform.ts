@@ -82,6 +82,7 @@ export class GrokPlatform extends BasePlatform {
             requiresMessageMerge: false,
             supportsThinking,
             supportsGrounding: true,
+            supportsMediaInput: false,
         };
     }
 
@@ -205,6 +206,14 @@ export class GrokPlatform extends BasePlatform {
             return {
                 type: 'input_text',
                 text: part.text ?? '',
+            };
+        }
+
+        if (part.type === 'media') {
+            // Grok Responses input can't carry inline audio/video; use text placeholder
+            return {
+                type: 'input_text',
+                text: `[media: ${part.mimeType ?? 'file'}]`,
             };
         }
 

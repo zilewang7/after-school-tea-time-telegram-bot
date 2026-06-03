@@ -12,11 +12,25 @@ services:
       - GIT_REPO=https://github.com/zilewang7/after-school-tea-time-telegram-bot.git
       - BOT_PROXY=socks5h://warp:1080
       - TZ=Asia/Shanghai
+      - TGS_CONVERTER_URL=http://tgs-converter:8080
     volumes:
       - ./database.sqlite:/app/k-on-bot/database.sqlite
       - ./.env:/app/k-on-bot/.env:ro
     command: ["/bin/bash", "/app/k-on-bot/build.sh"]
     working_dir: /app/k-on-bot
+    depends_on:
+      - tgs-converter
+    networks:
+      - traefik-net
+
+  # Converts Telegram .tgs animated stickers to .webm for multimodal models
+  tgs-converter:
+    container_name: tgs-converter
+    restart: always
+    build:
+      context: ./tgs-converter
+    environment:
+      - TZ=Asia/Shanghai
     networks:
       - traefik-net
 

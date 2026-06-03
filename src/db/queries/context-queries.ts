@@ -3,6 +3,8 @@
  * Handles both Message table (user messages) and BotResponse table (bot messages)
  */
 import { getMessage, getBotResponse, findBotResponseByMessageId } from '../index.js';
+import { getCachedMedia } from '../../services/media-cache-service.js';
+import type { Message } from '../messageDTO.js';
 import type { UnifiedContentPart } from '../../ai/types.js';
 
 const botUserName = process.env.BOT_NAME || 'Bot';
@@ -19,6 +21,8 @@ export interface ContextMessage {
     text: string | null;
     quoteText: string | null;
     file: Buffer | null;
+    fileMime: string | null;
+    fileUniqueId: string | null;
     replyToId: number | null;
     replies: string;
     modelParts: string | null;
@@ -44,6 +48,8 @@ const getContextMessage = async (
             text: msg.text,
             quoteText: msg.quoteText,
             file: msg.file,
+            fileMime: msg.fileMime,
+            fileUniqueId: msg.fileUniqueId,
             replyToId: msg.replyToId,
             replies: msg.replies,
             modelParts: msg.modelParts,
@@ -63,6 +69,8 @@ const getContextMessage = async (
             text: currentVersion?.text || null,
             quoteText: null,
             file: null,
+            fileMime: null,
+            fileUniqueId: null,
             replyToId: botResponse.userMessageId,
             replies: '[]', // Bot responses don't track replies the same way
             modelParts: currentVersion?.modelParts ? JSON.stringify(currentVersion.modelParts) : null,
@@ -82,6 +90,8 @@ const getContextMessage = async (
             text: currentVersion?.text || null,
             quoteText: null,
             file: null,
+            fileMime: null,
+            fileUniqueId: null,
             replyToId: foundResponse.userMessageId,
             replies: '[]',
             modelParts: currentVersion?.modelParts ? JSON.stringify(currentVersion.modelParts) : null,
@@ -179,7 +189,31 @@ export const getRepliesHistory = async (
 };
 
 /**
- * Get file contents (images) from a message and its sub-images
+ * Resolve the bytes + MIME for a message's file.
+ * Prefers the content-addressed MediaCache (via fileUniqueId); falls back to
+ * the legacy per-message `file` BLOB for older data / cache misses.
+ * Returns null when the message carries no file.
+ */
+const resolveFileBytes = async (
+    msg: Message
+): Promise<{ bytes: Buffer; mime: string | null; kind: string | null } | null> => {
+    if (msg.fileUniqueId) {
+        const cached = await getCachedMedia(msg.fileUniqueId);
+        if (cached) {
+            return { bytes: cached.data, mime: cached.mime, kind: cached.kind };
+        }
+    }
+    if (msg.file) {
+        return { bytes: msg.file, mime: msg.fileMime, kind: null };
+    }
+    return null;
+};
+
+/** True if the message references a file (cached or legacy BLOB) */
+const hasFileRef = (msg: Message): boolean => Boolean(msg.file || msg.fileUniqueId);
+
+/**
+ * Get file contents (images/audio/video) from a message and its sub-images
  */
 export const getFileContentsOfMessage = async (
     chatId: number,
@@ -189,37 +223,56 @@ export const getFileContentsOfMessage = async (
     if (!message) return [];
 
     const repliesIds: number[] = JSON.parse(message.replies);
-    if (!message.file && !repliesIds.length) return [];
+    if (!hasFileRef(message) && !repliesIds.length) return [];
 
-    const files: Buffer[] = [];
+    const files: { bytes: Buffer; mime: string | null; kind: string | null }[] = [];
 
     // Add main message file
-    if (message.file) {
-        files.push(message.file);
+    const mainFile = await resolveFileBytes(message);
+    if (mainFile) {
+        files.push(mainFile);
     }
 
     // Collect sub-image files, sorted by messageId to ensure correct order
     // (Telegram media group updates may arrive out of order)
-    const subImages: { messageId: number; file: Buffer }[] = [];
+    const subImages: { messageId: number; bytes: Buffer; mime: string | null; kind: string | null }[] = [];
     for (const replyId of repliesIds) {
         const msg = await getMessage(chatId, replyId);
         if (
-            msg?.file &&
+            msg &&
+            hasFileRef(msg) &&
             msg.text?.match(/sub image of \[(\w+)\]/)?.[1] === String(messageId)
         ) {
-            subImages.push({ messageId: replyId, file: msg.file });
+            const resolved = await resolveFileBytes(msg);
+            if (resolved) {
+                subImages.push({ messageId: replyId, bytes: resolved.bytes, mime: resolved.mime, kind: resolved.kind });
+            }
         }
     }
     subImages.sort((a, b) => a.messageId - b.messageId);
     for (const sub of subImages) {
-        files.push(sub.file);
+        files.push({ bytes: sub.bytes, mime: sub.mime, kind: sub.kind });
     }
 
-    // Convert to UnifiedContentPart format
-    return files.map((file) => ({
-        type: 'image' as const,
-        imageData: file.toString('base64'),
-    }));
+    // Convert to UnifiedContentPart format.
+    // Images (or legacy entries with null mime) become image parts; everything
+    // else (audio/video/other) becomes a media part carrying its real MIME + kind.
+    return files.map(({ bytes, mime, kind }) => {
+        const base64 = bytes.toString('base64');
+        if (mime === null || mime.startsWith('image/')) {
+            return {
+                type: 'image' as const,
+                imageData: base64,
+                mimeType: mime ?? 'image/png',
+            };
+        }
+        return {
+            type: 'media' as const,
+            mediaData: base64,
+            mimeType: mime,
+            mediaKind: kind ?? undefined,
+        };
+    });
 };
 
 /**
@@ -232,13 +285,14 @@ export const messageHasFiles = async (
     const message = await getMessage(chatId, messageId);
     if (!message) return false;
 
-    if (message.file) return true;
+    if (hasFileRef(message)) return true;
 
     const repliesIds: number[] = JSON.parse(message.replies);
     for (const replyId of repliesIds) {
         const msg = await getMessage(chatId, replyId);
         if (
-            msg?.file &&
+            msg &&
+            hasFileRef(msg) &&
             msg.text?.match(/sub image of \[(\w+)\]/)?.[1] === String(messageId)
         ) {
             return true;

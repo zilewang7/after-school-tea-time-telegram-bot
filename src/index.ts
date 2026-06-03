@@ -54,6 +54,14 @@ bot.catch((error) => {
     console.log(error)
 })
 
+// Last-resort guards: never let a single detached async error crash the bot process.
+process.on('unhandledRejection', (reason) => {
+    console.error('[process] Unhandled promise rejection:', reason);
+});
+process.on('uncaughtException', (error) => {
+    console.error('[process] Uncaught exception:', error);
+});
+
 // 设置简介
 bot.api.setMyShortDescription("A large language model chatbot optimized for group chat\nhttps://github.com/zilewang7/after-school-tea-time-telegram-bot");
 bot.api.setMyShortDescription("为群组内聊天优化的大语言模型聊天机器人\nhttps://github.com/zilewang7/after-school-tea-time-telegram-bot", {

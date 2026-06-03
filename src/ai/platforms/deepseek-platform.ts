@@ -74,6 +74,7 @@ export class DeepSeekPlatform extends BasePlatform {
             requiresMessageMerge: isReasoner,
             supportsThinking: isReasoner,
             supportsGrounding: false,
+            supportsMediaInput: false,
         };
     }
 

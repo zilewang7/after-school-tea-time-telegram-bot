@@ -149,6 +149,11 @@ export abstract class BasePlatform implements IAIPlatform {
                         type: 'text',
                         text: p.text?.substring(0, 100) + (p.text && p.text.length > 100 ? '...' : ''),
                     }))
+                    .with({ type: 'media' }, (p) => ({
+                        type: 'media',
+                        mime: p.mimeType,
+                        dataLength: p.mediaData?.length ?? 0,
+                    }))
                     .exhaustive()
             );
 
@@ -167,6 +172,7 @@ export abstract class BasePlatform implements IAIPlatform {
             requiresMessageMerge: false,
             supportsThinking: false,
             supportsGrounding: false,
+            supportsMediaInput: false,
         };
     }
 }

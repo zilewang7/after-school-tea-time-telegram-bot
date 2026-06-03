@@ -15,6 +15,8 @@ export class Message extends Model<InferAttributes<Message>, InferCreationAttrib
   declare text: string | null;
   declare quoteText: string | null;
   declare file: Buffer | null;
+  declare fileMime: string | null;
+  declare fileUniqueId: string | null;
   declare replyToId: number | null;
   declare replies: string;
   declare modelParts: string | null;
@@ -52,6 +54,16 @@ Message.init({
   file: {
     type: DataTypes.BLOB,
     allowNull: true,
+  },
+  fileMime: {
+    type: DataTypes.STRING,
+    allowNull: true,
+    defaultValue: null,
+  },
+  fileUniqueId: {
+    type: DataTypes.STRING,
+    allowNull: true,
+    defaultValue: null,
   },
   replyToId: {
     type: DataTypes.INTEGER,

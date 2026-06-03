@@ -51,7 +51,13 @@ export class GeminiPlatform extends BasePlatform {
 
     constructor() {
         super();
-        this.genAI = new GoogleGenAI({});
+        // Use Vertex AI Express Mode: pass the API key explicitly so it takes
+        // precedence over env GOOGLE_CLOUD_PROJECT/LOCATION (which would otherwise
+        // trigger ADC and fail with "Could not load the default credentials" in SDK 2.x).
+        this.genAI = new GoogleGenAI({
+            vertexai: true,
+            apiKey: process.env.GEMINI_API_KEY,
+        });
     }
 
     supportsModel(model: string): boolean {
@@ -69,6 +75,8 @@ export class GeminiPlatform extends BasePlatform {
             requiresMessageMerge: false,
             supportsThinking: true,
             supportsGrounding: true,
+            // Full-modal text models accept audio/video; the image-output model does not
+            supportsMediaInput: !isImageModel,
         };
     }
 

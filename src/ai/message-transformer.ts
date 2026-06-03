@@ -12,9 +12,18 @@ export interface GeminiPart {
         mimeType: string;
         data: string;
     };
+    videoMetadata?: {
+        fps?: number;
+    };
     thought?: boolean;
     thoughtSignature?: string;
 }
+
+// Short sticker clips (video/animated) are sampled above Gemini's default 1.0 fps
+// so the model sees the whole animation, not just the first frame. Regular video
+// files keep the default sampling rate.
+const STICKER_SAMPLING_FPS = 5;
+const STICKER_MEDIA_KINDS = new Set(['video_sticker', 'animated_sticker']);
 
 export interface GeminiContent {
     role: 'user' | 'model';
@@ -40,7 +49,7 @@ const transformToGeminiParts = (
             .with({ type: 'image' }, (p) => {
                 const imagePart: GeminiPart = {
                     inlineData: {
-                        mimeType: 'image/png',
+                        mimeType: p.mimeType ?? 'image/png',
                         data: p.imageData ?? '',
                     },
                 };
@@ -48,6 +57,24 @@ const transformToGeminiParts = (
                     imagePart.thoughtSignature = 'skip_thought_signature_validator';
                 }
                 return imagePart;
+            })
+            .with({ type: 'media' }, (p) => {
+                const mimeType = p.mimeType ?? 'application/octet-stream';
+                const mediaPart: GeminiPart = {
+                    inlineData: {
+                        mimeType,
+                        data: p.mediaData ?? '',
+                    },
+                };
+                // Sample short sticker clips at a higher rate so the whole animation
+                // is seen; regular video files keep Gemini's default 1.0 fps.
+                if (mimeType.startsWith('video/') && p.mediaKind && STICKER_MEDIA_KINDS.has(p.mediaKind)) {
+                    mediaPart.videoMetadata = { fps: STICKER_SAMPLING_FPS };
+                }
+                if (options?.forceSkipThoughtSignature) {
+                    mediaPart.thoughtSignature = 'skip_thought_signature_validator';
+                }
+                return mediaPart;
             })
             .exhaustive()
     );
@@ -101,6 +128,11 @@ const transformToOpenAIParts = (parts: UnifiedContentPart[]): ChatCompletionCont
                     url: `data:image/png;base64,${p.imageData ?? ''}`,
                 },
             }))
+            .with({ type: 'media' }, (p) => ({
+                // OpenAI chat parts can't carry inline audio/video; use a text placeholder
+                type: 'text' as const,
+                text: `[media: ${p.mimeType ?? 'file'}]`,
+            }))
             .exhaustive()
     );
 };
@@ -137,6 +169,7 @@ export const transformToOpenAI = (
                         match(part)
                             .with({ type: 'text' }, (p) => p.text ?? '')
                             .with({ type: 'image' }, () => '[assistant image]')
+                            .with({ type: 'media' }, () => '[assistant media]')
                             .exhaustive()
                     )
                     .join('\n');
@@ -216,6 +249,17 @@ export const filterImageContent = (messages: UnifiedMessage[]): UnifiedMessage[]
 };
 
 /**
+ * Filter out media (audio/video/other) content for models that don't support it.
+ * Keeps text and image parts intact.
+ */
+export const filterMediaContent = (messages: UnifiedMessage[]): UnifiedMessage[] => {
+    return messages.map((msg) => ({
+        ...msg,
+        content: msg.content.filter((part) => part.type !== 'media'),
+    }));
+};
+
+/**
  * Apply model capabilities to messages
  */
 export const applyModelCapabilities = (
@@ -223,6 +267,11 @@ export const applyModelCapabilities = (
     capabilities: ModelCapabilities
 ): UnifiedMessage[] => {
     let result = messages;
+
+    // Strip media (audio/video) first if not supported
+    if (!capabilities.supportsMediaInput) {
+        result = filterMediaContent(result);
+    }
 
     // Filter images if not supported
     if (!capabilities.supportsImageInput) {
@@ -279,6 +328,10 @@ export const toLegacyContentPart = (part: UnifiedContentPart): {
             image_url: {
                 url: `data:image/png;base64,${p.imageData ?? ''}`,
             },
+        }))
+        .with({ type: 'media' }, (p) => ({
+            type: 'text' as const,
+            text: `[media: ${p.mimeType ?? 'file'}]`,
         }))
         .exhaustive();
 };

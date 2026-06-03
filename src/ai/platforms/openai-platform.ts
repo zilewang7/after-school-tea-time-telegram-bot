@@ -94,6 +94,7 @@ export class OpenAIPlatform extends BasePlatform {
             requiresMessageMerge: false,
             supportsThinking,
             supportsGrounding: false,
+            supportsMediaInput: false,
         };
     }
 
@@ -209,6 +210,14 @@ export class OpenAIPlatform extends BasePlatform {
             return {
                 type: 'input_text',
                 text: part.text ?? '',
+            };
+        }
+
+        if (part.type === 'media') {
+            // OpenAI Responses input can't carry inline audio/video; use text placeholder
+            return {
+                type: 'input_text',
+                text: `[media: ${part.mimeType ?? 'file'}]`,
             };
         }
 

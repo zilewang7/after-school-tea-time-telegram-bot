@@ -135,37 +135,43 @@ export const handleReply = async (
 export const registerChatHandler = (
     bot: Bot
 ): void => {
-    bot.on(['msg:text', 'msg:photo', 'msg:sticker'], async (ctx, next) => {
+    bot.on(['msg:text', 'msg:photo', 'msg:sticker', 'msg:voice', 'msg:audio', 'msg:video', 'msg:video_note', 'msg:document'], async (ctx, next) => {
         // Call next middleware first
         next();
 
-        // Process message after middleware chain
+        // Process message after middleware chain.
+        // NOTE: this runs detached from grammy's middleware chain, so errors here
+        // do NOT reach bot.catch — they must be caught here or they crash the process.
         setTimeout(async () => {
-            // Wait for async file save operations
-            await waitForFileSave();
+            try {
+                // Wait for async file save operations
+                await waitForFileSave();
 
-            // Check for /picbanana command
-            const [mentionInPicbanana, picbananaData] = await checkPicbananaCommand(ctx);
-            if (picbananaData) {
-                await handlePicbananaCommand(ctx, picbananaData);
-                return;
+                // Check for /picbanana command
+                const [mentionInPicbanana, picbananaData] = await checkPicbananaCommand(ctx);
+                if (picbananaData) {
+                    await handlePicbananaCommand(ctx, picbananaData);
+                    return;
+                }
+
+                // Check for /picgpt command
+                const [mentionInPicgpt, picgptData] = await checkPicgptCommand(ctx);
+                if (picgptData) {
+                    await handlePicgptCommand(ctx, picgptData);
+                    return;
+                }
+
+                // Check for /chat command (adds context)
+                const mentionInChat = await dealChatCommand(ctx);
+
+                // Combine all mention flags (any truthy value means mentioned)
+                const mention = mentionInPicbanana || mentionInPicgpt || mentionInChat;
+
+                // Handle normal reply
+                await handleReply(ctx, { mention });
+            } catch (error) {
+                console.error('[chat-handler] Unhandled error in deferred reply processing:', error);
             }
-
-            // Check for /picgpt command
-            const [mentionInPicgpt, picgptData] = await checkPicgptCommand(ctx);
-            if (picgptData) {
-                await handlePicgptCommand(ctx, picgptData);
-                return;
-            }
-
-            // Check for /chat command (adds context)
-            const mentionInChat = await dealChatCommand(ctx);
-
-            // Combine all mention flags (any truthy value means mentioned)
-            const mention = mentionInPicbanana || mentionInPicgpt || mentionInChat;
-
-            // Handle normal reply
-            await handleReply(ctx, { mention });
         });
     });
 };

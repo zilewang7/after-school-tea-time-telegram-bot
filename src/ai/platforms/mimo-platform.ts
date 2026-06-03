@@ -48,6 +48,7 @@ export class MimoPlatform extends BasePlatform {
             requiresMessageMerge: false,
             supportsThinking: true,
             supportsGrounding: false,
+            supportsMediaInput: false,
         };
     }
 

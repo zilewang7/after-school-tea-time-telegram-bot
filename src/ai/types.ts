@@ -7,9 +7,12 @@ export type PlatformType = 'openai' | 'gemini' | 'deepseek' | 'grok' | 'mimo';
 
 // Unified content part (compatible with existing ChatContentPart)
 export interface UnifiedContentPart {
-    type: 'text' | 'image';
+    type: 'text' | 'image' | 'media';
     text?: string;
     imageData?: string; // base64 encoded image data
+    mediaData?: string; // base64 encoded media data (audio/video/other)
+    mimeType?: string; // real MIME type for media (and optionally image)
+    mediaKind?: string; // source kind (e.g. video_sticker, animated_sticker, video) for sampling hints
 }
 
 // Unified message format
@@ -95,6 +98,8 @@ export interface ModelCapabilities {
     requiresMessageMerge: boolean;
     supportsThinking: boolean;
     supportsGrounding: boolean;
+    /** Audio/video/other non-image inline input (full-modal models) */
+    supportsMediaInput: boolean;
 }
 
 // AI Platform interface

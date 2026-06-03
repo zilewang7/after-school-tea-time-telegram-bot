@@ -16,8 +16,8 @@ import type { UnifiedMessage, UnifiedContentPart, ModelCapabilities } from '../a
 const buildMessageContent = async (
     msg: ContextMessage,
 ): Promise<UnifiedMessage> => {
-    // Get file contents if message has a file
-    const fileContents = msg.file
+    // Get file contents if message references a file (legacy BLOB or cached media)
+    const fileContents = (msg.file || msg.fileUniqueId)
         ? await getFileContentsOfMessage(msg.chatId, msg.messageId)
         : [];
 
@@ -97,7 +97,7 @@ const buildReplyContext = async (
  * Build the current message content with reply context
  */
 const buildCurrentMessageContent = async (msg: Message): Promise<UnifiedMessage> => {
-    const fileContents = msg.file
+    const fileContents = (msg.file || msg.fileUniqueId)
         ? await getFileContentsOfMessage(msg.chatId, msg.messageId)
         : [];
 
