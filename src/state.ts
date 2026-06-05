@@ -37,6 +37,8 @@ interface AppStateType {
     editMonitorBot: Bot | null;
     // continuation message registry: "chatId:continuationMsgId" -> firstMessageId
     continuationRegistry: Map<string, number>;
+    // idempotency guard: "chatId:userMessageId" -> handled-at timestamp (ms)
+    handledUserMessages: Map<string, number>;
 }
 
 const createInitialState = (): AppStateType => ({
@@ -51,6 +53,7 @@ const createInitialState = (): AppStateType => ({
     editMonitorMap: new Map(),
     editMonitorBot: null,
     continuationRegistry: new Map(),
+    handledUserMessages: new Map(),
 });
 
 // singleton instance
@@ -154,4 +157,47 @@ export const unregisterContinuation = (chatId: number, continuationMsgId: number
 export const findFirstMessageIdByContinuation = (chatId: number, continuationMsgId: number): number | undefined => {
     const key = `${chatId}:${continuationMsgId}`;
     return getAppState().continuationRegistry.get(key);
+};
+
+// Idempotency guard accessors
+const HANDLED_USER_MESSAGE_TTL_MS = 5 * 60 * 1000; // covers Telegram update re-delivery window
+const MAX_HANDLED_USER_MESSAGES = 200;
+
+/**
+ * Try to claim handling rights for a user message.
+ * Returns true when the caller wins the claim (should proceed), false when the
+ * message is already being handled or was handled within the TTL (should skip).
+ * Guards against Telegram update re-delivery and detached-handler re-entry.
+ */
+export const tryMarkUserMessageHandling = (chatId: number, userMessageId: number): boolean => {
+    const state = getAppState();
+    const now = Date.now();
+
+    // Drop expired entries so the TTL window slides forward
+    for (const [key, handledAt] of state.handledUserMessages) {
+        if (now - handledAt > HANDLED_USER_MESSAGE_TTL_MS) {
+            state.handledUserMessages.delete(key);
+        }
+    }
+
+    const entryKey = `${chatId}:${userMessageId}`;
+    if (state.handledUserMessages.has(entryKey)) {
+        return false;
+    }
+
+    // Enforce max size by evicting the oldest entry
+    if (state.handledUserMessages.size >= MAX_HANDLED_USER_MESSAGES) {
+        let oldestKey: string | null = null;
+        let oldestTime = Infinity;
+        for (const [key, handledAt] of state.handledUserMessages) {
+            if (handledAt < oldestTime) {
+                oldestTime = handledAt;
+                oldestKey = key;
+            }
+        }
+        if (oldestKey) state.handledUserMessages.delete(oldestKey);
+    }
+
+    state.handledUserMessages.set(entryKey, now);
+    return true;
 };

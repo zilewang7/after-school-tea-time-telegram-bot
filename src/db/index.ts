@@ -160,9 +160,11 @@ const findBotResponseByMessageId = async (chatId: number, messageId: number): Pr
 
 /**
  * Create a new bot response record.
- * Telegram message ids can repeat across long time spans in some setups, so a
- * stale BotResponse row may already exist for this messageId. Replace it rather
- * than throwing a unique-constraint error (which would crash the reply flow).
+ * The same messageId can be inserted twice when one reply gets processed twice
+ * (Telegram update re-delivery, or re-entry of the detached setTimeout handler).
+ * Idempotency is enforced upstream by tryMarkUserMessageHandling; this upsert is
+ * the last-resort guard so a duplicate can't crash the reply flow on the unique
+ * constraint.
  */
 const createBotResponse = async (
     chatId: number,
@@ -170,8 +172,8 @@ const createBotResponse = async (
     userMessageId: number,
     metadata: ResponseMetadata
 ): Promise<BotResponse> => {
-    // Atomic upsert (INSERT ... ON CONFLICT DO UPDATE) so concurrent triggers or
-    // a stale row with a reused messageId can't cause a unique-constraint crash.
+    // Idempotent upsert (INSERT ... ON CONFLICT DO UPDATE): a duplicate trigger
+    // for the same messageId updates the row instead of throwing a unique violation.
     const [response] = await BotResponse.upsert({
         messageId,
         chatId,

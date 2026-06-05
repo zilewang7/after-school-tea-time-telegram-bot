@@ -6,7 +6,7 @@ import type { Bot, Context } from 'grammy';
 import { to, isErr } from '../shared/result.js';
 import { getMessage } from '../db/index.js';
 import { sendMessage, getSystemPrompt, getModelCapabilities } from '../ai/index.js';
-import { getCurrentModel, getMediaGroupIdTemp, getAsyncFileSaveMsgIdList } from '../state.js';
+import { getCurrentModel, getMediaGroupIdTemp, getAsyncFileSaveMsgIdList, tryMarkUserMessageHandling } from '../state.js';
 import { checkIfMentioned } from '../util.js';
 import { buildContext } from './context-builder.js';
 import {
@@ -32,13 +32,17 @@ const waitForFileSave = async (): Promise<void> => {
  * Check if message should be skipped (duplicate media group)
  */
 const shouldSkipMessage = (ctx: Context): boolean => {
+    // Any media-group member (photo / video / document / ...) other than the
+    // first one should be skipped — the first member carries the whole group.
+    const mediaGroupId = ctx.update?.message?.media_group_id;
+    if (!mediaGroupId) return false;
+
     const mediaGroupTemp = getMediaGroupIdTemp();
 
-    return Boolean(
-        ctx.message?.photo &&
+    return (
         mediaGroupTemp.chatId === ctx.chat?.id &&
-        mediaGroupTemp.messageId !== ctx.message?.message_id &&
-        mediaGroupTemp.mediaGroupId === ctx.update?.message?.media_group_id
+        mediaGroupTemp.mediaGroupId === mediaGroupId &&
+        mediaGroupTemp.messageId !== ctx.message?.message_id
     );
 };
 
@@ -54,8 +58,13 @@ export const handleReply = async (
     // Check if bot was mentioned
     if (!checkIfMentioned(ctx, options?.mention)) return;
 
-    // Skip duplicate media group messages
+    // Skip duplicate media group messages (any media type, not just photos)
     if (shouldSkipMessage(ctx)) return;
+
+    // Idempotency: skip if this user message is already being handled or was
+    // just handled. Guards against Telegram update re-delivery and re-entry of
+    // the detached (setTimeout) handler.
+    if (!tryMarkUserMessageHandling(ctx.chat.id, ctx.message.message_id)) return;
 
     const chatId = ctx.chat.id;
     const userMessageId = ctx.message.message_id;
