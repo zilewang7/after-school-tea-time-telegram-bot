@@ -17,6 +17,9 @@ import { buildResponseButtons } from '../cmd/menus/index.js';
 import { getCachedMedia, putCachedMedia } from '../services/media-cache-service.js';
 import { convertTgsToWebm } from '../services/tgs-client.js';
 import { to } from 'await-to-js';
+import { SocksProxyAgent } from 'socks-proxy-agent';
+import https from 'node:https';
+import { buffer as readStreamToBuffer } from 'node:stream/consumers';
 import type { Message as TgMessage } from 'grammy/types';
 
 // Telegram's getFile download limit is 20MB; larger files cannot be downloaded
@@ -223,18 +226,41 @@ const acquireMediaBytes = async (
 
 const DOWNLOAD_TIMEOUT_MS = 30000;
 
+// File downloads must use the same SOCKS proxy as the Bot API (BOT_PROXY).
+// The global fetch() (undici) can't speak SOCKS, so downloads go through
+// node:https with a SocksProxyAgent instead. Without this a configured proxy is
+// bypassed and the direct connection can stall all the way to the timeout.
+const downloadProxyAgent = process.env.BOT_PROXY
+    ? new SocksProxyAgent(process.env.BOT_PROXY)
+    : undefined;
+
 /**
  * Download a Telegram file by file_id and return its bytes.
- * Bounded by a timeout so a network stall can't hang the async save flow.
+ * Uses the Bot API proxy (if any) and is bounded by a timeout so a network
+ * stall can't hang the async save flow.
  */
 const downloadTelegramFile = async (bot: Bot, fileId: string): Promise<Buffer> => {
     const file = await bot.api.getFile(fileId);
     const url = `https://api.telegram.org/file/bot${process.env.BOT_TOKEN}/${file.file_path}`;
-    const res = await fetch(url, { signal: AbortSignal.timeout(DOWNLOAD_TIMEOUT_MS) });
-    if (!res.ok) {
-        throw new Error(`file download HTTP ${res.status}`);
-    }
-    return Buffer.from(await res.arrayBuffer());
+
+    return new Promise<Buffer>((resolve, reject) => {
+        const request = https.get(
+            url,
+            { agent: downloadProxyAgent, timeout: DOWNLOAD_TIMEOUT_MS },
+            (res) => {
+                if (res.statusCode !== 200) {
+                    res.resume(); // drain so the socket can be released
+                    reject(new Error(`file download HTTP ${res.statusCode}`));
+                    return;
+                }
+                // Read the whole response into a Buffer (avoids Buffer.concat's
+                // Uint8Array<ArrayBuffer> typing friction under newer @types/node).
+                readStreamToBuffer(res).then(resolve, reject);
+            }
+        );
+        request.on('timeout', () => request.destroy(new Error('file download timed out')));
+        request.on('error', reject);
+    });
 };
 
 // 监听编辑消息并更新数据库

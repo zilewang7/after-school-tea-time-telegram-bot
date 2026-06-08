@@ -127,6 +127,14 @@ export interface BuildContextOptions {
     excludeMessageIds?: number[];
 }
 
+/** Distinguish the options object from a bare ModelCapabilities argument. */
+const isBuildContextOptions = (
+    value: BuildContextOptions | ModelCapabilities | undefined
+): value is BuildContextOptions =>
+    typeof value === 'object' &&
+    value !== null &&
+    ('capabilities' in value || 'excludeMessageIds' in value);
+
 /**
  * Build complete chat context from a message
  * This is the main entry point for building AI request context
@@ -138,9 +146,9 @@ export const buildContext = async (
     const { chatId, messageId } = msg;
 
     // Handle both old signature (capabilities) and new signature (options)
-    const opts: BuildContextOptions = options && 'excludeMessageIds' in options
+    const opts: BuildContextOptions = isBuildContextOptions(options)
         ? options
-        : { capabilities: options as ModelCapabilities | undefined };
+        : { capabilities: options };
 
     // Get capabilities for current model if not provided
     const modelCapabilities = opts.capabilities ?? getModelCapabilities(getCurrentModel());
@@ -148,7 +156,9 @@ export const buildContext = async (
     // Build context array
     const chatContents: UnifiedMessage[] = [];
 
-    // Get history messages (excluding current message)
+    // Get history messages (excluding current message). Resolved fresh here (not
+    // reused from a caller snapshot) so any media that finished downloading
+    // during an upstream wait is reflected — fileUniqueId is read up to date.
     const historyMessages = await getRepliesHistory(chatId, messageId, {
         excludeSelf: true,
     });
