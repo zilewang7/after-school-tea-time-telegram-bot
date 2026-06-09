@@ -10,6 +10,19 @@ import { getCurrentModel } from '../state.js';
 import { getModelCapabilities } from '../ai/platform-factory.js';
 import type { UnifiedMessage, UnifiedContentPart, ModelCapabilities } from '../ai/types.js';
 
+// Models tend to reply from the surrounding text and skip attached video/audio.
+// This nudge (appended to messages that carry such media) tells them to actually
+// perceive it and describe its real content.
+const AUDIO_VISUAL_NUDGE =
+    '[system] An audio/visual file is attached in this message. You can fully perceive it — actually watch/listen to it and weave a concrete description of its real content into your reply; do not respond from the surrounding text alone.';
+
+const hasAudioVisualMedia = (parts: UnifiedContentPart[]): boolean =>
+    parts.some(
+        (part) =>
+            part.type === 'media' &&
+            (Boolean(part.mimeType?.startsWith('video/')) || Boolean(part.mimeType?.startsWith('audio/')))
+    );
+
 /**
  * Build context from a single message
  */
@@ -55,6 +68,11 @@ const buildMessageContent = async (
 
         const textContent = `${msg.userName}: ${msg.text || ''}`;
         parts.push({ type: 'text', text: textContent });
+
+        // Nudge the model to actually watch/listen to attached video/audio.
+        if (hasAudioVisualMedia(fileContents)) {
+            parts.push({ type: 'text', text: AUDIO_VISUAL_NUDGE });
+        }
 
         return {
             role: 'user',
@@ -110,6 +128,11 @@ const buildCurrentMessageContent = async (msg: Message): Promise<UnifiedMessage>
             text: msg.userName + replyContext + (msg.text || ''),
         },
     ];
+
+    // Nudge the model to actually watch/listen to attached video/audio.
+    if (hasAudioVisualMedia(fileContents)) {
+        parts.push({ type: 'text', text: AUDIO_VISUAL_NUDGE });
+    }
 
     return {
         role: 'user',
