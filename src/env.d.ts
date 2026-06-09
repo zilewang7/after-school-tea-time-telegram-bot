@@ -21,6 +21,10 @@ declare global {
             MCP_SERVERS?: string
             PICZIT_ENDPOINT?: string
             BOT_PROXY?: string
+            TGS_CONVERTER_URL?: string
+            TG_LOCAL_API_ROOT?: string
+            GCS_BUCKET?: string
+            GOOGLE_APPLICATION_CREDENTIALS?: string
         }
     }
 }

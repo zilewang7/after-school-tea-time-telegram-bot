@@ -18,7 +18,10 @@ export class MediaCache extends Model<
 > {
   declare fileUniqueId: string;
   declare mime: string;
-  declare data: Buffer;
+  // Inline bytes for small media. Null when bytes live in GCS instead (see fileUri).
+  declare data: Buffer | null;
+  // GCS gs:// reference for large media (> INLINE_MAX_BYTES). Null for inline.
+  declare fileUri: CreationOptional<string | null>;
   declare kind: string;
   declare createdAt: CreationOptional<Date>;
   declare lastUsedAt: Date;
@@ -36,7 +39,12 @@ MediaCache.init({
   },
   data: {
     type: DataTypes.BLOB,
-    allowNull: false,
+    allowNull: true,
+  },
+  fileUri: {
+    type: DataTypes.STRING,
+    allowNull: true,
+    defaultValue: null,
   },
   kind: {
     type: DataTypes.STRING,

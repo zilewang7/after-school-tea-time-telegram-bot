@@ -15,16 +15,23 @@ import {
 } from '../state.js';
 import { buildResponseButtons } from '../cmd/menus/index.js';
 import { getCachedMedia, putCachedMedia } from '../services/media-cache-service.js';
+import { uploadFileToGcs, uploadBytesToGcs, deleteGcsObject, isGcsEnabled } from '../services/gcs-service.js';
 import { convertTgsToWebm } from '../services/tgs-client.js';
 import { to } from 'await-to-js';
 import { SocksProxyAgent } from 'socks-proxy-agent';
 import https from 'node:https';
+import { readFile, stat, unlink } from 'node:fs/promises';
 import { buffer as readStreamToBuffer } from 'node:stream/consumers';
 import type { Message as TgMessage } from 'grammy/types';
 
-// Telegram's getFile download limit is 20MB; larger files cannot be downloaded
-// by the bot at all, so we skip the download and keep only a text hint.
-const MAX_MEDIA_BYTES = 20 * 1024 * 1024;
+// Hard cap on what we even attempt to fetch. Cloud getFile tops out at 20MB; a
+// self-hosted local Bot API server (TG_LOCAL_API_ROOT) raises it to 200MB.
+const MAX_MEDIA_BYTES = process.env.TG_LOCAL_API_ROOT ? 200 * 1024 * 1024 : 20 * 1024 * 1024;
+
+// Above this, bytes go to GCS and Gemini gets a gs:// reference instead of inline
+// base64 (keeps large files out of SQLite and the request body); at or below,
+// media is inlined as a BLOB as before. Matches the cloud getFile boundary.
+const INLINE_MAX_BYTES = 20 * 1024 * 1024;
 
 type MediaKind =
     | 'photo' | 'sticker' | 'video_sticker' | 'animated_sticker'
@@ -198,52 +205,121 @@ const acquireMediaBytes = async (
         return { status: 'cached', fileUniqueId: media.fileUniqueId, mime: cached.mime };
     }
 
-    // Oversized: Telegram won't let us download it
+    // Oversized: beyond what we'll even fetch
     if (media.sizeBytes !== undefined && media.sizeBytes > MAX_MEDIA_BYTES) {
         return { status: 'too_large' };
     }
 
-    // Download raw bytes via getFile (may fail with "file is too big" for unknown sizes)
-    const [downloadErr, rawBytes] = await to(downloadTelegramFile(bot, media.fileId));
-    if (downloadErr || !rawBytes) {
-        console.error(`[autoSave] download failed for ${media.kind}:`, downloadErr?.message || 'no bytes');
-        return { status: 'download_failed' };
-    }
-
-    // Animated stickers (.tgs) must be rendered to webm before models can read them
+    // Animated stickers (.tgs) need the raw bytes to render to webm (the result
+    // is small), so always materialize bytes and inline the converted clip.
     if (media.needsTgsConversion) {
+        const [bytesErr, rawBytes] = await to(downloadTelegramFileBytes(bot, media.fileId));
+        if (bytesErr || !rawBytes) {
+            console.error(`[autoSave] download failed for ${media.kind}:`, bytesErr?.message || 'no bytes');
+            return { status: 'download_failed' };
+        }
         const converted = await convertTgsToWebm(rawBytes);
         if (!converted) {
             return { status: 'convert_failed' };
         }
-        await putCachedMedia(media.fileUniqueId, converted.data, converted.mime, media.kind);
+        await putCachedMedia({ fileUniqueId: media.fileUniqueId, data: converted.data, mime: converted.mime, kind: media.kind });
         return { status: 'cached', fileUniqueId: media.fileUniqueId, mime: converted.mime };
     }
 
-    await putCachedMedia(media.fileUniqueId, rawBytes, media.mime, media.kind);
+    // Resolve the file: local Bot API yields an on-disk path (so large files can
+    // be streamed to GCS without loading them into memory); cloud yields bytes.
+    const [resolveErr, resolved] = await to(resolveTelegramFile(bot, media.fileId));
+    if (resolveErr || !resolved) {
+        console.error(`[autoSave] resolve failed for ${media.kind}:`, resolveErr?.message || 'no file');
+        return { status: 'download_failed' };
+    }
+
+    const size = resolved.kind === 'path' ? resolved.size : resolved.bytes.length;
+
+    // Large file → GCS (gs:// reference), kept out of SQLite. Without GCS
+    // configured we don't take it (inlining would bloat SQLite / blow limits).
+    if (size > INLINE_MAX_BYTES) {
+        if (!isGcsEnabled()) {
+            return { status: 'too_large' };
+        }
+        const [uploadErr, fileUri] = await to(
+            resolved.kind === 'path'
+                ? uploadFileToGcs(resolved.path, media.fileUniqueId, media.mime)
+                : uploadBytesToGcs(resolved.bytes, media.fileUniqueId, media.mime)
+        );
+        if (resolved.kind === 'path') {
+            await to(unlink(resolved.path)); // drop the local copy regardless
+        }
+        if (uploadErr || !fileUri) {
+            console.error('[autoSave] GCS upload failed:', uploadErr?.message);
+            return { status: 'download_failed' };
+        }
+        await putCachedMedia({ fileUniqueId: media.fileUniqueId, fileUri, mime: media.mime, kind: media.kind });
+        return { status: 'cached', fileUniqueId: media.fileUniqueId, mime: media.mime };
+    }
+
+    // Small file → inline BLOB (existing behavior)
+    const inlineBytes = resolved.kind === 'path' ? await readFile(resolved.path) : resolved.bytes;
+    if (resolved.kind === 'path') {
+        await to(unlink(resolved.path));
+    }
+    await putCachedMedia({ fileUniqueId: media.fileUniqueId, data: inlineBytes, mime: media.mime, kind: media.kind });
     return { status: 'cached', fileUniqueId: media.fileUniqueId, mime: media.mime };
 };
 
 const DOWNLOAD_TIMEOUT_MS = 30000;
 
-// File downloads must use the same SOCKS proxy as the Bot API (BOT_PROXY).
-// The global fetch() (undici) can't speak SOCKS, so downloads go through
-// node:https with a SocksProxyAgent instead. Without this a configured proxy is
-// bypassed and the direct connection can stall all the way to the timeout.
-const downloadProxyAgent = process.env.BOT_PROXY
+const localApiRoot = process.env.TG_LOCAL_API_ROOT;
+
+// Cloud file downloads go through the SOCKS proxy (BOT_PROXY) — the global
+// fetch() (undici) can't speak SOCKS, so we use node:https with a SocksProxyAgent.
+// The local Bot API is reached over plain in-cluster HTTP, so no proxy there.
+const downloadProxyAgent = (!localApiRoot && process.env.BOT_PROXY)
     ? new SocksProxyAgent(process.env.BOT_PROXY)
     : undefined;
 
-/**
- * Download a Telegram file by file_id and return its bytes.
- * Uses the Bot API proxy (if any) and is bounded by a timeout so a network
- * stall can't hang the async save flow.
- */
-const downloadTelegramFile = async (bot: Bot, fileId: string): Promise<Buffer> => {
-    const file = await bot.api.getFile(fileId);
-    const url = `https://api.telegram.org/file/bot${process.env.BOT_TOKEN}/${file.file_path}`;
+const fileBaseUrl = localApiRoot
+    ? `${localApiRoot}/file/bot${process.env.BOT_TOKEN}`
+    : `https://api.telegram.org/file/bot${process.env.BOT_TOKEN}`;
 
-    return new Promise<Buffer>((resolve, reject) => {
+/** A resolved Telegram file: an on-disk path (local Bot API) or downloaded bytes. */
+type ResolvedFile =
+    | { kind: 'path'; path: string; size: number }
+    | { kind: 'buffer'; bytes: Buffer };
+
+/**
+ * Resolve a Telegram file by file_id.
+ * - Local Bot API (--local): getFile returns an absolute on-disk path; we stat it
+ *   and hand back the path so large files can be streamed to GCS, not buffered.
+ * - Cloud Bot API: download the bytes over HTTPS (through the SOCKS proxy).
+ */
+const resolveTelegramFile = async (bot: Bot, fileId: string): Promise<ResolvedFile> => {
+    const file = await bot.api.getFile(fileId);
+    const filePath = file.file_path;
+    if (!filePath) throw new Error('getFile returned no file_path');
+
+    if (filePath.startsWith('/')) {
+        const info = await stat(filePath);
+        return { kind: 'path', path: filePath, size: info.size };
+    }
+
+    const url = `${fileBaseUrl}/${filePath}`;
+    const bytes = await httpGetBuffer(url);
+    return { kind: 'buffer', bytes };
+};
+
+/** Always return the file's bytes (reads the local file when on the local server). */
+const downloadTelegramFileBytes = async (bot: Bot, fileId: string): Promise<Buffer> => {
+    const resolved = await resolveTelegramFile(bot, fileId);
+    return resolved.kind === 'path' ? readFile(resolved.path) : resolved.bytes;
+};
+
+/**
+ * GET a URL into a Buffer, via the proxy, bounded by a timeout. Used only for the
+ * cloud path (https); the local server returns on-disk paths, read directly.
+ */
+const httpGetBuffer = (url: string): Promise<Buffer> =>
+    new Promise<Buffer>((resolve, reject) => {
         const request = https.get(
             url,
             { agent: downloadProxyAgent, timeout: DOWNLOAD_TIMEOUT_MS },
@@ -261,7 +337,6 @@ const downloadTelegramFile = async (bot: Bot, fileId: string): Promise<Buffer> =
         request.on('timeout', () => request.destroy(new Error('file download timed out')));
         request.on('error', reject);
     });
-};
 
 // 监听编辑消息并更新数据库
 export const autoUpdate = (bot: Bot) => {
@@ -509,6 +584,19 @@ export const autoClear = () => {
                 }
             );
 
+            // GCS 大文件引用超 1 天：删 GCS 对象 + 删缓存行（对齐媒体字节 1 天清空）
+            const staleGcsRows = await MediaCache.findAll({
+                where: { fileUri: { [Op.ne]: null }, createdAt: { [Op.lt]: oneDayAgo } },
+            });
+            for (const row of staleGcsRows) {
+                if (row.fileUri) await deleteGcsObject(row.fileUri);
+            }
+            if (staleGcsRows.length) {
+                await MediaCache.destroy({
+                    where: { fileUri: { [Op.ne]: null }, createdAt: { [Op.lt]: oneDayAgo } },
+                });
+            }
+
             // 共享媒体缓存按 LRU 清理：超 7 天未被命中续期的删除
             const mediaCacheResult = await MediaCache.destroy({
                 where: {
@@ -516,7 +604,7 @@ export const autoClear = () => {
                 },
             });
 
-            console.log(`Cleared ${messageResult} messages, ${botResponseResult} bot responses before ${oneWeekAgo.toISOString()}; cleared media bytes of ${mediaClearedCount} messages before ${oneDayAgo.toISOString()}; evicted ${mediaCacheResult} media cache entries`);
+            console.log(`Cleared ${messageResult} messages, ${botResponseResult} bot responses before ${oneWeekAgo.toISOString()}; cleared media bytes of ${mediaClearedCount} messages before ${oneDayAgo.toISOString()}; deleted ${staleGcsRows.length} GCS refs; evicted ${mediaCacheResult} media cache entries`);
         } catch (error) {
             console.error('Error during message cleanup:', error);
         }

@@ -194,13 +194,33 @@ export const getRepliesHistory = async (
  * the legacy per-message `file` BLOB for older data / cache misses.
  * Returns null when the message carries no file.
  */
-const resolveFileBytes = async (
-    msg: Message
-): Promise<{ bytes: Buffer; mime: string | null; kind: string | null } | null> => {
+const MEDIA_URI_TTL_MS = 24 * 60 * 60 * 1000; // 1 day — matches autoClear + bucket lifecycle
+
+/** Resolved media: inline bytes, a gs:// reference, or an expired GCS object. */
+interface ResolvedMedia {
+    bytes?: Buffer;
+    fileUri?: string;
+    expired?: boolean;
+    mime: string | null;
+    kind: string | null;
+}
+
+const resolveFileBytes = async (msg: Message): Promise<ResolvedMedia | null> => {
     if (msg.fileUniqueId) {
         const cached = await getCachedMedia(msg.fileUniqueId);
         if (cached) {
-            return { bytes: cached.data, mime: cached.mime, kind: cached.kind };
+            if (cached.fileUri) {
+                // Large media in GCS. Past the TTL the bucket lifecycle has (or soon
+                // will) delete it, so mark expired rather than feed a dead gs://.
+                const ageMs = Date.now() - new Date(cached.createdAt).getTime();
+                if (ageMs > MEDIA_URI_TTL_MS) {
+                    return { expired: true, mime: cached.mime, kind: cached.kind };
+                }
+                return { fileUri: cached.fileUri, mime: cached.mime, kind: cached.kind };
+            }
+            if (cached.data) {
+                return { bytes: cached.data, mime: cached.mime, kind: cached.kind };
+            }
         }
     }
     if (msg.file) {
@@ -225,7 +245,7 @@ export const getFileContentsOfMessage = async (
     const repliesIds: number[] = JSON.parse(message.replies);
     if (!hasFileRef(message) && !repliesIds.length) return [];
 
-    const files: { bytes: Buffer; mime: string | null; kind: string | null }[] = [];
+    const files: ResolvedMedia[] = [];
 
     // Add main message file
     const mainFile = await resolveFileBytes(message);
@@ -235,7 +255,7 @@ export const getFileContentsOfMessage = async (
 
     // Collect sub-image files, sorted by messageId to ensure correct order
     // (Telegram media group updates may arrive out of order)
-    const subImages: { messageId: number; bytes: Buffer; mime: string | null; kind: string | null }[] = [];
+    const subImages: (ResolvedMedia & { messageId: number })[] = [];
     for (const replyId of repliesIds) {
         const msg = await getMessage(chatId, replyId);
         if (
@@ -245,29 +265,42 @@ export const getFileContentsOfMessage = async (
         ) {
             const resolved = await resolveFileBytes(msg);
             if (resolved) {
-                subImages.push({ messageId: replyId, bytes: resolved.bytes, mime: resolved.mime, kind: resolved.kind });
+                subImages.push({ messageId: replyId, ...resolved });
             }
         }
     }
     subImages.sort((a, b) => a.messageId - b.messageId);
     for (const sub of subImages) {
-        files.push({ bytes: sub.bytes, mime: sub.mime, kind: sub.kind });
+        files.push(sub);
     }
 
     // Convert to UnifiedContentPart format.
-    // Images (or legacy entries with null mime) become image parts; everything
-    // else (audio/video/other) becomes a media part carrying its real MIME + kind.
-    return files.map(({ bytes, mime, kind }) => {
-        const base64 = bytes.toString('base64');
+    // - expired GCS media → short text note (won't be fed to the model)
+    // - gs:// reference → media part with fileUri (large media)
+    // - inline bytes → image part (images / legacy null-mime) or media part
+    return files.map((f): UnifiedContentPart => {
+        if (f.expired) {
+            return { type: 'text', text: '[system] media expired (older than 1 day), not available' };
+        }
+        if (f.fileUri) {
+            return {
+                type: 'media',
+                fileUri: f.fileUri,
+                mimeType: f.mime ?? 'application/octet-stream',
+                mediaKind: f.kind ?? undefined,
+            };
+        }
+        const { mime, kind } = f;
+        const base64 = (f.bytes ?? Buffer.alloc(0)).toString('base64');
         if (mime === null || mime.startsWith('image/')) {
             return {
-                type: 'image' as const,
+                type: 'image',
                 imageData: base64,
                 mimeType: mime ?? 'image/png',
             };
         }
         return {
-            type: 'media' as const,
+            type: 'media',
             mediaData: base64,
             mimeType: mime,
             mediaKind: kind ?? undefined,

@@ -11,6 +11,7 @@ export interface UnifiedContentPart {
     text?: string;
     imageData?: string; // base64 encoded image data
     mediaData?: string; // base64 encoded media data (audio/video/other)
+    fileUri?: string; // GCS gs:// reference for large media (used instead of inline base64)
     mimeType?: string; // real MIME type for media (and optionally image)
     mediaKind?: string; // source kind (e.g. video_sticker, animated_sticker, video) for sampling hints
 }

@@ -2,13 +2,19 @@
  * Media cache service.
  * Content-addressed by Telegram file_unique_id so duplicate media (especially
  * re-sent stickers) is downloaded/rendered only once.
+ *
+ * Two storage backends, chosen by size at write time:
+ * - small media: inline bytes in `data` (SQLite BLOB)
+ * - large media (> INLINE_MAX_BYTES): bytes live in GCS, only `fileUri` is kept
  */
 import { MediaCache } from '../db/mediaCacheDTO.js';
 
 export interface CachedMedia {
     mime: string;
-    data: Buffer;
+    data: Buffer | null;
+    fileUri: string | null;
     kind: string;
+    createdAt: Date;
 }
 
 /**
@@ -25,24 +31,35 @@ export const getCachedMedia = async (fileUniqueId: string): Promise<CachedMedia 
         console.error('[media-cache] Failed to refresh lastUsedAt:', error);
     });
 
-    return { mime: row.mime, data: row.data, kind: row.kind };
+    return {
+        mime: row.mime,
+        data: row.data,
+        fileUri: row.fileUri,
+        kind: row.kind,
+        createdAt: row.createdAt,
+    };
 };
+
+/** What to store: either inline `data` (small) or a `fileUri` (large, in GCS). */
+export interface PutMediaInput {
+    fileUniqueId: string;
+    mime: string;
+    kind: string;
+    data?: Buffer | null;
+    fileUri?: string | null;
+}
 
 /**
  * Store (or replace) a media entry in the cache.
  */
-export const putCachedMedia = async (
-    fileUniqueId: string,
-    data: Buffer,
-    mime: string,
-    kind: string
-): Promise<void> => {
+export const putCachedMedia = async (input: PutMediaInput): Promise<void> => {
     const now = new Date();
     await MediaCache.upsert({
-        fileUniqueId,
-        data,
-        mime,
-        kind,
+        fileUniqueId: input.fileUniqueId,
+        data: input.data ?? null,
+        fileUri: input.fileUri ?? null,
+        mime: input.mime,
+        kind: input.kind,
         lastUsedAt: now,
     });
 };

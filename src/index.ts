@@ -13,17 +13,25 @@ if (!process.env.BOT_TOKEN) {
 }
 
 const proxyUrl = process.env.BOT_PROXY;
+const localApiRoot = process.env.TG_LOCAL_API_ROOT;
 
-const botConfig = proxyUrl 
+// Local Bot API: talk to the in-cluster server over plain HTTP (no proxy needed,
+// and it raises the getFile limit to 200MB). Otherwise use the cloud API through
+// the SOCKS proxy (undici fetch can't speak SOCKS).
+const botConfig = localApiRoot
   ? {
-      client: {
-        baseFetchConfig: {
-          agent: new SocksProxyAgent(proxyUrl),
-          compress: true,
-        },
-      },
+      client: { apiRoot: localApiRoot },
     }
-  : undefined;
+  : proxyUrl
+    ? {
+        client: {
+          baseFetchConfig: {
+            agent: new SocksProxyAgent(proxyUrl),
+            compress: true,
+          },
+        },
+      }
+    : undefined;
 
 // initialize app state
 const appState = getAppState();

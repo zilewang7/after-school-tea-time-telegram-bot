@@ -12,6 +12,10 @@ export interface GeminiPart {
         mimeType: string;
         data: string;
     };
+    fileData?: {
+        mimeType: string;
+        fileUri: string;
+    };
     videoMetadata?: {
         fps?: number;
     };
@@ -60,12 +64,11 @@ const transformToGeminiParts = (
             })
             .with({ type: 'media' }, (p) => {
                 const mimeType = p.mimeType ?? 'application/octet-stream';
-                const mediaPart: GeminiPart = {
-                    inlineData: {
-                        mimeType,
-                        data: p.mediaData ?? '',
-                    },
-                };
+                // Large media is referenced by gs:// URI (fileData); small media
+                // is inlined as base64 (inlineData).
+                const mediaPart: GeminiPart = p.fileUri
+                    ? { fileData: { mimeType, fileUri: p.fileUri } }
+                    : { inlineData: { mimeType, data: p.mediaData ?? '' } };
                 // Sample short sticker clips at a higher rate so the whole animation
                 // is seen; regular video files keep Gemini's default 1.0 fps.
                 if (mimeType.startsWith('video/') && p.mediaKind && STICKER_MEDIA_KINDS.has(p.mediaKind)) {

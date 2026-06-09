@@ -10,6 +10,7 @@ import {
     HarmBlockThreshold,
     type SafetySetting,
 } from '@google/genai';
+import { existsSync, statSync } from 'node:fs';
 import { BasePlatform } from './base-platform.js';
 import { transformToGemini } from '../message-transformer.js';
 import type {
@@ -51,13 +52,27 @@ export class GeminiPlatform extends BasePlatform {
 
     constructor() {
         super();
-        // Use Vertex AI Express Mode: pass the API key explicitly so it takes
-        // precedence over env GOOGLE_CLOUD_PROJECT/LOCATION (which would otherwise
-        // trigger ADC and fail with "Could not load the default credentials" in SDK 2.x).
-        this.genAI = new GoogleGenAI({
-            vertexai: true,
-            apiKey: process.env.GEMINI_API_KEY,
-        });
+        // Use full Vertex (ADC via the mounted service account JSON) ONLY when a
+        // real SA credentials file is present — this lets the SA read its own
+        // private GCS bucket for gs:// large media and raises quotas vs express.
+        // Otherwise use express (apiKey). A bare GOOGLE_CLOUD_PROJECT env (which may
+        // already be set) must NOT trigger ADC: it would fail with "Could not load
+        // the default credentials".
+        const project = process.env.GOOGLE_CLOUD_PROJECT;
+        const credsPath = process.env.GOOGLE_APPLICATION_CREDENTIALS;
+        const hasServiceAccount = Boolean(
+            credsPath && existsSync(credsPath) && statSync(credsPath).size > 0
+        );
+        this.genAI = (project && hasServiceAccount)
+            ? new GoogleGenAI({
+                  vertexai: true,
+                  project,
+                  location: process.env.GOOGLE_CLOUD_LOCATION || 'global',
+              })
+            : new GoogleGenAI({
+                  vertexai: true,
+                  apiKey: process.env.GEMINI_API_KEY,
+              });
     }
 
     supportsModel(model: string): boolean {
