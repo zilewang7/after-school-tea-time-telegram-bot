@@ -46,6 +46,10 @@ const safetySettings: SafetySetting[] = [
     },
 ];
 
+// Large media (gs:// fileData) needs much longer before the first token: Gemini
+// fetches and processes the file first. Avoids retrying a slow-but-fine request.
+const LARGE_MEDIA_TIMEOUT_MS = 300000;
+
 export class GeminiPlatform extends BasePlatform {
     readonly type: PlatformType = 'gemini';
     private genAI: GoogleGenAI;
@@ -109,6 +113,15 @@ export class GeminiPlatform extends BasePlatform {
         console.log(`[gemini] Using model: ${model}, isImageModel: ${isImageModel}`);
 
         const geminiContents = transformToGemini(messages, { isImageModel });
+
+        // Large media (gs:// fileData) is slow to first token — extend the timeout
+        // so a slow-but-healthy request isn't retried early.
+        const hasLargeMedia = geminiContents.some((content) =>
+            content.parts.some((part) => part.fileData)
+        );
+        if (hasLargeMedia) {
+            timeout = Math.max(timeout, LARGE_MEDIA_TIMEOUT_MS);
+        }
 
         const generateConfig: GenerateContentConfig = {
             thinkingConfig: {

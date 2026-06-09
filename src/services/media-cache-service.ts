@@ -13,6 +13,7 @@ export interface CachedMedia {
     mime: string;
     data: Buffer | null;
     fileUri: string | null;
+    sizeBytes: number | null;
     kind: string;
     createdAt: Date;
 }
@@ -35,6 +36,7 @@ export const getCachedMedia = async (fileUniqueId: string): Promise<CachedMedia 
         mime: row.mime,
         data: row.data,
         fileUri: row.fileUri,
+        sizeBytes: row.sizeBytes,
         kind: row.kind,
         createdAt: row.createdAt,
     };
@@ -47,6 +49,7 @@ export interface PutMediaInput {
     kind: string;
     data?: Buffer | null;
     fileUri?: string | null;
+    sizeBytes?: number | null;
 }
 
 /**
@@ -58,6 +61,7 @@ export const putCachedMedia = async (input: PutMediaInput): Promise<void> => {
         fileUniqueId: input.fileUniqueId,
         data: input.data ?? null,
         fileUri: input.fileUri ?? null,
+        sizeBytes: input.sizeBytes ?? null,
         mime: input.mime,
         kind: input.kind,
         lastUsedAt: now,

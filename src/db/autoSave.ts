@@ -222,7 +222,7 @@ const acquireMediaBytes = async (
         if (!converted) {
             return { status: 'convert_failed' };
         }
-        await putCachedMedia({ fileUniqueId: media.fileUniqueId, data: converted.data, mime: converted.mime, kind: media.kind });
+        await putCachedMedia({ fileUniqueId: media.fileUniqueId, data: converted.data, sizeBytes: converted.data.length, mime: converted.mime, kind: media.kind });
         return { status: 'cached', fileUniqueId: media.fileUniqueId, mime: converted.mime };
     }
 
@@ -254,7 +254,7 @@ const acquireMediaBytes = async (
             console.error('[autoSave] GCS upload failed:', uploadErr?.message);
             return { status: 'download_failed' };
         }
-        await putCachedMedia({ fileUniqueId: media.fileUniqueId, fileUri, mime: media.mime, kind: media.kind });
+        await putCachedMedia({ fileUniqueId: media.fileUniqueId, fileUri, sizeBytes: size, mime: media.mime, kind: media.kind });
         return { status: 'cached', fileUniqueId: media.fileUniqueId, mime: media.mime };
     }
 
@@ -263,7 +263,7 @@ const acquireMediaBytes = async (
     if (resolved.kind === 'path') {
         await to(unlink(resolved.path));
     }
-    await putCachedMedia({ fileUniqueId: media.fileUniqueId, data: inlineBytes, mime: media.mime, kind: media.kind });
+    await putCachedMedia({ fileUniqueId: media.fileUniqueId, data: inlineBytes, sizeBytes: inlineBytes.length, mime: media.mime, kind: media.kind });
     return { status: 'cached', fileUniqueId: media.fileUniqueId, mime: media.mime };
 };
 

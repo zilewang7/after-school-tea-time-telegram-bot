@@ -14,6 +14,13 @@ import type {
     SendOptions,
 } from '../types.js';
 
+/** Human-readable byte size, e.g. 104.8MB. */
+const formatBytes = (n: number): string => {
+    if (n < 1024) return `${n}B`;
+    if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)}KB`;
+    return `${(n / 1024 / 1024).toFixed(1)}MB`;
+};
+
 export abstract class BasePlatform implements IAIPlatform {
     abstract readonly type: PlatformType;
 
@@ -143,7 +150,7 @@ export abstract class BasePlatform implements IAIPlatform {
                 match(part)
                     .with({ type: 'image' }, (p) => ({
                         type: 'image',
-                        dataLength: p.imageData?.length ?? 0,
+                        size: formatBytes(p.sizeBytes ?? (p.imageData?.length ?? 0)),
                     }))
                     .with({ type: 'text' }, (p) => ({
                         type: 'text',
@@ -152,7 +159,8 @@ export abstract class BasePlatform implements IAIPlatform {
                     .with({ type: 'media' }, (p) => ({
                         type: 'media',
                         mime: p.mimeType,
-                        dataLength: p.mediaData?.length ?? 0,
+                        size: formatBytes(p.sizeBytes ?? Math.floor((p.mediaData?.length ?? 0) * 3 / 4)),
+                        ...(p.fileUri ? { fileUri: p.fileUri } : {}),
                     }))
                     .exhaustive()
             );

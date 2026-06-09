@@ -201,6 +201,7 @@ interface ResolvedMedia {
     bytes?: Buffer;
     fileUri?: string;
     expired?: boolean;
+    sizeBytes?: number | null;
     mime: string | null;
     kind: string | null;
 }
@@ -214,17 +215,17 @@ const resolveFileBytes = async (msg: Message): Promise<ResolvedMedia | null> => 
                 // will) delete it, so mark expired rather than feed a dead gs://.
                 const ageMs = Date.now() - new Date(cached.createdAt).getTime();
                 if (ageMs > MEDIA_URI_TTL_MS) {
-                    return { expired: true, mime: cached.mime, kind: cached.kind };
+                    return { expired: true, sizeBytes: cached.sizeBytes, mime: cached.mime, kind: cached.kind };
                 }
-                return { fileUri: cached.fileUri, mime: cached.mime, kind: cached.kind };
+                return { fileUri: cached.fileUri, sizeBytes: cached.sizeBytes, mime: cached.mime, kind: cached.kind };
             }
             if (cached.data) {
-                return { bytes: cached.data, mime: cached.mime, kind: cached.kind };
+                return { bytes: cached.data, sizeBytes: cached.sizeBytes ?? cached.data.length, mime: cached.mime, kind: cached.kind };
             }
         }
     }
     if (msg.file) {
-        return { bytes: msg.file, mime: msg.fileMime, kind: null };
+        return { bytes: msg.file, sizeBytes: msg.file.length, mime: msg.fileMime, kind: null };
     }
     return null;
 };
@@ -286,22 +287,26 @@ export const getFileContentsOfMessage = async (
             return {
                 type: 'media',
                 fileUri: f.fileUri,
+                sizeBytes: f.sizeBytes ?? undefined,
                 mimeType: f.mime ?? 'application/octet-stream',
                 mediaKind: f.kind ?? undefined,
             };
         }
         const { mime, kind } = f;
-        const base64 = (f.bytes ?? Buffer.alloc(0)).toString('base64');
+        const bytes = f.bytes ?? Buffer.alloc(0);
+        const base64 = bytes.toString('base64');
         if (mime === null || mime.startsWith('image/')) {
             return {
                 type: 'image',
                 imageData: base64,
+                sizeBytes: f.sizeBytes ?? bytes.length,
                 mimeType: mime ?? 'image/png',
             };
         }
         return {
             type: 'media',
             mediaData: base64,
+            sizeBytes: f.sizeBytes ?? bytes.length,
             mimeType: mime,
             mediaKind: kind ?? undefined,
         };
