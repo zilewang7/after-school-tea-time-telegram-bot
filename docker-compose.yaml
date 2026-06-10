@@ -22,6 +22,8 @@ services:
       - GOOGLE_CLOUD_LOCATION=${GOOGLE_CLOUD_LOCATION:-global}
       - GCS_BUCKET=${GCS_BUCKET:-}
       - GOOGLE_APPLICATION_CREDENTIALS=/app/k-on-bot/gcp-sa.json
+      # Link previews via luoxu's MTProto client (empty → feature off).
+      - LUOXU_PREVIEW_URL=${LUOXU_PREVIEW_URL:-}
     volumes:
       - ./database.sqlite:/app/k-on-bot/database.sqlite
       - ./.env:/app/k-on-bot/.env:ro

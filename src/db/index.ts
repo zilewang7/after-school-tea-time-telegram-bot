@@ -2,6 +2,7 @@ import { sequelize } from "./config.js";
 import { Message } from "./messageDTO.js";
 import { BotResponse, ButtonState, type ResponseVersion, type ResponseMetadata, type CommandType } from "./botResponseDTO.js";
 import { MediaCache } from "./mediaCacheDTO.js";
+import { LinkPreviewCache } from "./linkPreviewCacheDTO.js";
 import { getBlob } from "../util.js";
 import { removeAsyncFileSaveMsgId, findFirstMessageIdByContinuation } from '../state.js';
 
@@ -211,6 +212,7 @@ export {
     updateBotResponseButtonState,
     BotResponse,
     MediaCache,
+    LinkPreviewCache,
     ButtonState,
     type ResponseVersion,
     type ResponseMetadata,

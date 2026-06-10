@@ -1,6 +1,6 @@
 import { Bot } from "grammy";
 import { match } from "ts-pattern";
-import { saveMessage, getMessage, findBotResponseByMessageId, BotResponse, MediaCache, ButtonState } from "./index.js";
+import { saveMessage, getMessage, findBotResponseByMessageId, BotResponse, MediaCache, LinkPreviewCache, ButtonState } from "./index.js";
 import { Message } from "./messageDTO.js";
 import { Op } from "@sequelize/core";
 import {
@@ -8,6 +8,8 @@ import {
     setMediaGroupIdTemp,
     addAsyncFileSaveMsgId,
     removeAsyncFileSaveMsgId,
+    addAsyncPreviewMsgId,
+    removeAsyncPreviewMsgId,
     setEditMonitorBot,
     getEditMonitorBot,
     getEditMonitorEntry,
@@ -16,13 +18,14 @@ import {
 import { buildResponseButtons } from '../cmd/menus/index.js';
 import { getCachedMedia, putCachedMedia } from '../services/media-cache-service.js';
 import { uploadFileToGcs, uploadBytesToGcs, deleteGcsObject, isGcsEnabled } from '../services/gcs-service.js';
+import { acquireLinkPreview, extractFirstUrl, isLuoxuPreviewEnabled } from '../services/luoxu-preview-service.js';
 import { convertTgsToWebm } from '../services/tgs-client.js';
 import { to } from 'await-to-js';
 import { SocksProxyAgent } from 'socks-proxy-agent';
 import https from 'node:https';
 import { readFile, stat, unlink } from 'node:fs/promises';
 import { buffer as readStreamToBuffer } from 'node:stream/consumers';
-import type { Message as TgMessage } from 'grammy/types';
+import type { Message as TgMessage, MessageEntity } from 'grammy/types';
 
 // Hard cap on what we even attempt to fetch. Cloud getFile tops out at 20MB; a
 // self-hosted local Bot API server (TG_LOCAL_API_ROOT) raises it to 200MB.
@@ -181,6 +184,41 @@ const resolveCapturedMedia = (msg: TgMessage | undefined): CapturedMedia | undef
     }
 
     return undefined;
+};
+
+/**
+ * Re-embed information that Telegram moves out of the text into entities:
+ * text_link labels regain their hidden URL as markdown [label](url). All other
+ * entity kinds (bold/italic/code/...) lose no characters, so the text already
+ * equals the original — only text_link needs restoring.
+ */
+const renderTextWithEntities = (
+    text: string | undefined,
+    entities: MessageEntity[] | undefined
+): string | undefined => {
+    if (!text || !entities?.length) return text;
+
+    const links: { offset: number; length: number; url: string }[] = [];
+    for (const entity of entities) {
+        if (entity.type === 'text_link') {
+            links.push({ offset: entity.offset, length: entity.length, url: entity.url });
+        }
+    }
+    if (!links.length) return text;
+    links.sort((a, b) => a.offset - b.offset);
+
+    // Entity offsets are UTF-16 code units — exactly JS string indices.
+    let rendered = '';
+    let cursor = 0;
+    for (const link of links) {
+        if (link.offset < cursor) continue; // defensive: skip overlapping entities
+        rendered += text.slice(cursor, link.offset);
+        const label = text.slice(link.offset, link.offset + link.length);
+        rendered += `[${label}](${link.url})`;
+        cursor = link.offset + link.length;
+    }
+    rendered += text.slice(cursor);
+    return rendered;
 };
 
 /** Outcome of trying to acquire media bytes into the cache */
@@ -355,8 +393,10 @@ export const autoUpdate = (bot: Bot) => {
         }
 
         try {
-            // 获取新的文本内容
-            const newText = editedMsg.text || editedMsg.caption || '';
+            // 获取新的文本内容（同样还原 text_link 实体中隐藏的链接）
+            const newText = renderTextWithEntities(editedMsg.text, editedMsg.entities)
+                || renderTextWithEntities(editedMsg.caption, editedMsg.caption_entities)
+                || '';
 
             if (newText) {
                 existingMessage.text = newText + "<<EOF\n";
@@ -458,16 +498,22 @@ export const autoSave = (bot: Bot) => {
 
                 const media = resolveCapturedMedia(ctx.update.message);
 
+                // Restore URLs hidden in text_link entities before storing, so the
+                // saved text carries the full original information (and link-preview
+                // extraction sees the same string at save and build time).
+                const messageText = renderTextWithEntities(ctx.message?.text, ctx.message?.entities);
+                const messageCaption = renderTextWithEntities(ctx.message?.caption, ctx.message?.caption_entities);
+
                 // Build the base text + an optimistic media hint. This is saved
                 // immediately so the message always lands in context, even if the
                 // media download/conversion later fails (fixes the big-file bug).
                 const baseText = isSubImage ? `sub image of [${replyToId}]` :
                     (
-                        (/^\/chat\s+([0-9a]+)\s*(-(\S+))?\s*(.+)?$/.test(ctx.message?.text || '')
-                            ? (ctx.message?.text?.match(/^\/chat\s+([0-9a]+)\s*(-(\S+))?\s*(.+)?$/)?.[4] || ' ')
+                        (/^\/chat\s+([0-9a]+)\s*(-(\S+))?\s*(.+)?$/.test(messageText || '')
+                            ? (messageText?.match(/^\/chat\s+([0-9a]+)\s*(-(\S+))?\s*(.+)?$/)?.[4] || ' ')
                             : ''
                         )
-                        || ctx.message?.text || ctx.message?.caption || ctx.update.message?.sticker?.emoji || ''
+                        || messageText || messageCaption || ctx.update.message?.sticker?.emoji || ''
                     );
 
                 const chatId = ctx.chat.id;
@@ -534,10 +580,31 @@ export const autoSave = (bot: Bot) => {
                         removeAsyncFileSaveMsgId(messageId);
                     })();
                 }
+
+                // Link preview: messages carrying a URL get their Telegram-side
+                // preview (text + preview media) fetched live via luoxu and cached
+                // by URL. Extracted from baseText — the exact string that gets
+                // stored — so save-time and build-time extraction always agree.
+                // The flag below only gates how long a reply waits; the
+                // acquisition itself polls until Telegram confirms ready/none.
+                const previewUrl = isLuoxuPreviewEnabled() ? extractFirstUrl(baseText) : null;
+                if (previewUrl) {
+                    addAsyncPreviewMsgId(messageId);
+                    const previewBackstop = setTimeout(() => removeAsyncPreviewMsgId(messageId), 70000);
+                    void (async () => {
+                        const [previewErr] = await to(acquireLinkPreview(chatId, messageId, previewUrl));
+                        if (previewErr) {
+                            console.error('[autoSave] link preview acquire failed:', previewErr.message);
+                        }
+                        clearTimeout(previewBackstop);
+                        removeAsyncPreviewMsgId(messageId);
+                    })();
+                }
             } catch (error) {
                 console.error("保存消息失败", error);
                 if (ctx.message?.message_id) {
                     removeAsyncFileSaveMsgId(ctx.message.message_id);
+                    removeAsyncPreviewMsgId(ctx.message.message_id);
                 }
             }
         }
@@ -604,7 +671,14 @@ export const autoClear = () => {
                 },
             });
 
-            console.log(`Cleared ${messageResult} messages, ${botResponseResult} bot responses before ${oneWeekAgo.toISOString()}; cleared media bytes of ${mediaClearedCount} messages before ${oneDayAgo.toISOString()}; deleted ${staleGcsRows.length} GCS refs; evicted ${mediaCacheResult} media cache entries`);
+            // 链接预览缓存同节奏 LRU 清理（其媒体行已由上面的 MediaCache 清理覆盖）
+            const linkPreviewResult = await LinkPreviewCache.destroy({
+                where: {
+                    lastUsedAt: { [Op.lt]: oneWeekAgo },
+                },
+            });
+
+            console.log(`Cleared ${messageResult} messages, ${botResponseResult} bot responses before ${oneWeekAgo.toISOString()}; cleared media bytes of ${mediaClearedCount} messages before ${oneDayAgo.toISOString()}; deleted ${staleGcsRows.length} GCS refs; evicted ${mediaCacheResult} media cache entries, ${linkPreviewResult} link previews`);
         } catch (error) {
             console.error('Error during message cleanup:', error);
         }

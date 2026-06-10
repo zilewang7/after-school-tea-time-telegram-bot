@@ -29,6 +29,9 @@ interface AppStateType {
     mediaGroupIdTemp: MediaGroupIdTemp;
     // file saving queue
     asynchronousFileSaveMsgIdList: number[];
+    // link-preview fetching queue (kept separate from the media list: ids are
+    // removed by filtering, so sharing one list would release the other waiter)
+    asynchronousPreviewMsgIdList: number[];
     // rate limiter for message editing
     editRateLimiter: Record<number | string, RateLimiterEntry>;
     // edit monitor: "chatId:userMessageId" -> entry
@@ -49,6 +52,7 @@ const createInitialState = (): AppStateType => ({
         mediaGroupId: "",
     },
     asynchronousFileSaveMsgIdList: [],
+    asynchronousPreviewMsgIdList: [],
     editRateLimiter: {},
     editMonitorMap: new Map(),
     editMonitorBot: null,
@@ -84,6 +88,17 @@ export const addAsyncFileSaveMsgId = (id: number): void => {
 export const removeAsyncFileSaveMsgId = (id: number): void => {
     const state = getAppState();
     state.asynchronousFileSaveMsgIdList = state.asynchronousFileSaveMsgIdList.filter(
+        (msgId) => msgId !== id
+    );
+};
+
+export const getAsyncPreviewMsgIdList = (): number[] => getAppState().asynchronousPreviewMsgIdList;
+export const addAsyncPreviewMsgId = (id: number): void => {
+    getAppState().asynchronousPreviewMsgIdList.push(id);
+};
+export const removeAsyncPreviewMsgId = (id: number): void => {
+    const state = getAppState();
+    state.asynchronousPreviewMsgIdList = state.asynchronousPreviewMsgIdList.filter(
         (msgId) => msgId !== id
     );
 };

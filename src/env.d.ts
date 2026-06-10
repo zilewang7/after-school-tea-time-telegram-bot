@@ -25,6 +25,7 @@ declare global {
             TG_LOCAL_API_ROOT?: string
             GCS_BUCKET?: string
             GOOGLE_APPLICATION_CREDENTIALS?: string
+            LUOXU_PREVIEW_URL?: string
         }
     }
 }

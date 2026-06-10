@@ -7,7 +7,7 @@ import { to, isErr } from '../shared/result.js';
 import { getMessage } from '../db/index.js';
 import { getRepliesHistory, type ContextMessage } from '../db/queries/context-queries.js';
 import { sendMessage, getSystemPrompt, getModelCapabilities } from '../ai/index.js';
-import { getCurrentModel, getMediaGroupIdTemp, getAsyncFileSaveMsgIdList, tryMarkUserMessageHandling } from '../state.js';
+import { getCurrentModel, getMediaGroupIdTemp, getAsyncFileSaveMsgIdList, getAsyncPreviewMsgIdList, tryMarkUserMessageHandling } from '../state.js';
 import { checkIfMentioned } from '../util.js';
 import { buildContext } from './context-builder.js';
 import {
@@ -69,12 +69,14 @@ const awaitMediaWithFeedback = async (ctx: Context, ids: number[]): Promise<void
     if (!ctx.message || !ctx.chat) return;
 
     const pending = ids.filter((id) => getAsyncFileSaveMsgIdList().includes(id));
-    if (pending.length === 0) return; // nothing downloading → no notice, just continue
+    const pendingPreview = ids.filter((id) => getAsyncPreviewMsgIdList().includes(id));
+    if (pending.length === 0 && pendingPreview.length === 0) return; // nothing in flight → no notice, just continue
 
     const chatId = ctx.chat.id;
 
     const allSettled = (): boolean =>
-        pending.every((id) => !getAsyncFileSaveMsgIdList().includes(id));
+        pending.every((id) => !getAsyncFileSaveMsgIdList().includes(id)) &&
+        pendingPreview.every((id) => !getAsyncPreviewMsgIdList().includes(id));
 
     const waitLoop = async (): Promise<void> => {
         const start = Date.now();
@@ -85,8 +87,13 @@ const awaitMediaWithFeedback = async (ctx: Context, ids: number[]): Promise<void
     };
 
     // Post the notice; if it can't be sent, degrade to a silent wait.
+    // Preview-only failures are silent (an enhancement, not core content), so
+    // the notice text just reflects what is being waited on.
+    const noticeText = pending.length
+        ? '⏳ 正在获取消息中的媒体，请稍候…'
+        : '⏳ 正在获取链接预览，请稍候…';
     const noticeResult = await to(
-        ctx.reply('⏳ 正在获取消息中的媒体，请稍候…', {
+        ctx.reply(noticeText, {
             reply_parameters: { message_id: ctx.message.message_id },
         })
     );

@@ -5,6 +5,7 @@
 import { getMessage } from '../db/index.js';
 import { Message } from '../db/messageDTO.js';
 import { getRepliesHistory, getFileContentsOfMessage, type ContextMessage } from '../db/queries/context-queries.js';
+import { getLinkPreviewParts } from '../services/luoxu-preview-service.js';
 import { applyModelCapabilities } from '../ai/message-transformer.js';
 import { getCurrentModel } from '../state.js';
 import { getModelCapabilities } from '../ai/platform-factory.js';
@@ -69,8 +70,13 @@ const buildMessageContent = async (
         const textContent = `${msg.userName}: ${msg.text || ''}`;
         parts.push({ type: 'text', text: textContent });
 
+        // Link preview (text + media) for the first URL, served from the
+        // URL-addressed cache filled by autoSave via luoxu.
+        const previewParts = await getLinkPreviewParts(msg.text);
+        parts.push(...previewParts);
+
         // Nudge the model to actually watch/listen to attached video/audio.
-        if (hasAudioVisualMedia(fileContents)) {
+        if (hasAudioVisualMedia([...fileContents, ...previewParts])) {
             parts.push({ type: 'text', text: AUDIO_VISUAL_NUDGE });
         }
 
@@ -129,8 +135,12 @@ const buildCurrentMessageContent = async (msg: Message): Promise<UnifiedMessage>
         },
     ];
 
+    // Link preview (text + media) for the first URL in the current message.
+    const previewParts = await getLinkPreviewParts(msg.text);
+    parts.push(...previewParts);
+
     // Nudge the model to actually watch/listen to attached video/audio.
-    if (hasAudioVisualMedia(fileContents)) {
+    if (hasAudioVisualMedia([...fileContents, ...previewParts])) {
         parts.push({ type: 'text', text: AUDIO_VISUAL_NUDGE });
     }
 
