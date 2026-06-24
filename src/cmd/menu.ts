@@ -46,7 +46,7 @@ const buildModelMessageText = (previousModel?: string, actionTime?: string): str
     } else {
         modleInfo = '当前模型：`' + current + '`'
     }
-    return modleInfo + '\n\n点击下方按钮快速切换或使用 `/model `\\+模型名 手动指定';
+    return modleInfo + '\n\n点击下方按钮快速切换或使用 `/model `+模型名 手动指定';
 };
 
 export const sendModelMsg = async (ctx: Context): Promise<void> => {
