@@ -17,6 +17,7 @@ import {
 } from '../state.js';
 import { buildResponseButtons } from '../cmd/menus/index.js';
 import { getCachedMedia, putCachedMedia } from '../services/media-cache-service.js';
+import { isGeminiSupportedMimeType } from '../ai/supported-mime.js';
 import { uploadFileToGcs, uploadBytesToGcs, deleteGcsObject, isGcsEnabled } from '../services/gcs-service.js';
 import { acquireLinkPreview, extractFirstUrl, isLuoxuPreviewEnabled } from '../services/luoxu-preview-service.js';
 import { convertTgsToWebm } from '../services/tgs-client.js';
@@ -225,6 +226,7 @@ const renderTextWithEntities = (
 type AcquireResult =
     | { status: 'cached'; fileUniqueId: string; mime: string }
     | { status: 'too_large' }
+    | { status: 'unsupported' }
     | { status: 'download_failed' }
     | { status: 'convert_failed' };
 
@@ -237,6 +239,14 @@ const acquireMediaBytes = async (
     bot: Bot,
     media: CapturedMedia
 ): Promise<AcquireResult> => {
+    // Gemini can't ingest this type (e.g. a .zip / arbitrary binary). Don't waste
+    // a download/upload on bytes the model would only reject — the text hint alone
+    // tells the model a file was shared. (media.mime is the final stored MIME;
+    // animated stickers are already video/webm here, so they pass.)
+    if (!isGeminiSupportedMimeType(media.mime)) {
+        return { status: 'unsupported' };
+    }
+
     // Cache hit: nothing to download/convert
     const cached = await getCachedMedia(media.fileUniqueId);
     if (cached) {
@@ -557,6 +567,7 @@ export const autoSave = (bot: Bot) => {
                         const finalHint = match(outcome)
                             .with({ status: 'cached' }, () => media.hint)
                             .with({ status: 'too_large' }, () => `${media.hint}, [system] too large to process`)
+                            .with({ status: 'unsupported' }, () => `${media.hint}, [system] file type not supported, can not be read`)
                             .with({ status: 'download_failed' }, () => `${media.hint}, [system] failed to download`)
                             .with({ status: 'convert_failed' }, () => `${media.hint}, [system] failed to render, can not view`)
                             .exhaustive();

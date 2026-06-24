@@ -4,6 +4,7 @@
 import { match, P } from 'ts-pattern';
 import type { ChatCompletionMessageParam, ChatCompletionContentPart } from 'openai/resources';
 import type { UnifiedMessage, UnifiedContentPart, ModelCapabilities } from './types.js';
+import { isGeminiSupportedMimeType, normalizeMimeType } from './supported-mime.js';
 
 // Gemini content types
 export interface GeminiPart {
@@ -35,13 +36,34 @@ export interface GeminiContent {
 }
 
 /**
+ * True if a part can be sent to Gemini. Text is always fine; image/media carry
+ * binary that Gemini must natively support — an unsupported MIME (e.g.
+ * application/zip) would make Vertex reject the entire request.
+ */
+const isGeminiFeedablePart = (part: UnifiedContentPart): boolean => {
+    if (part.type === 'text') return true;
+    // Inline images default to image/png (legacy null-mime); media has its real MIME.
+    const mime = part.type === 'image' ? (part.mimeType ?? 'image/png') : part.mimeType;
+    return isGeminiSupportedMimeType(mime);
+};
+
+/**
  * Transform unified content parts to Gemini parts
  */
 const transformToGeminiParts = (
     parts: UnifiedContentPart[],
     options?: { forceSkipThoughtSignature?: boolean }
 ): GeminiPart[] => {
-    return parts.map((part) =>
+    // Drop parts Gemini can't ingest before building the request — keeps a single
+    // unsupported attachment from 400-ing the whole context chain. The message's
+    // text hint already tells the model a file was shared.
+    const feedableParts = parts.filter((part) => {
+        if (isGeminiFeedablePart(part)) return true;
+        console.warn(`[gemini] dropping unsupported part (mime=${part.mimeType ?? 'unknown'})`);
+        return false;
+    });
+
+    return feedableParts.map((part) =>
         match(part)
             .with({ type: 'text' }, (p) => {
                 const textPart: GeminiPart = { text: p.text ?? '' };
@@ -53,7 +75,7 @@ const transformToGeminiParts = (
             .with({ type: 'image' }, (p) => {
                 const imagePart: GeminiPart = {
                     inlineData: {
-                        mimeType: p.mimeType ?? 'image/png',
+                        mimeType: normalizeMimeType(p.mimeType ?? 'image/png'),
                         data: p.imageData ?? '',
                     },
                 };
@@ -63,7 +85,7 @@ const transformToGeminiParts = (
                 return imagePart;
             })
             .with({ type: 'media' }, (p) => {
-                const mimeType = p.mimeType ?? 'application/octet-stream';
+                const mimeType = normalizeMimeType(p.mimeType ?? 'application/octet-stream');
                 // Large media is referenced by gs:// URI (fileData); small media
                 // is inlined as base64 (inlineData).
                 const mediaPart: GeminiPart = p.fileUri
