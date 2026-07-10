@@ -1,19 +1,22 @@
 /**
- * Rate-limited message editor for Telegram
+ * One-shot message editor for Telegram, routed through the edit coordinator
+ * (shared per-chat budget, 429 backoff, sticky delivery)
  */
 import type { Api } from 'grammy';
-import { waitForRateLimit, recordEdit } from './rate-limiter.js';
 import { to, isErr } from '../shared/result.js';
+import { submitEdit, dropMessageState, runApiCall } from './edit-coordinator.js';
 
 export interface EditOptions {
     parseMode?: 'MarkdownV2' | 'HTML' | 'Markdown';
     replyMarkup?: any;
     disableWebPagePreview?: boolean;
+    /** Safe replacement text used when Telegram rejects the Markdown */
+    fallbackText?: string;
 }
 
 export interface MessageEditor {
     /**
-     * Edit message text with rate limiting
+     * Edit message text; resolves true once delivered (retried on 429)
      */
     edit: (text: string, options?: EditOptions) => Promise<boolean>;
 
@@ -36,49 +39,24 @@ export const createMessageEditor = (
     chatId: number,
     messageId: number
 ): MessageEditor => {
-    const doEdit = async (text: string, options?: EditOptions): Promise<boolean> => {
-        await waitForRateLimit(chatId);
-
-        const editResult = await to(
-            api.editMessageText(chatId, messageId, text, {
-                parse_mode: options?.parseMode,
-                reply_markup: options?.replyMarkup,
-                link_preview_options: options?.disableWebPagePreview
-                    ? { is_disabled: true }
-                    : undefined,
-            })
-        );
-
-        if (isErr(editResult)) {
-            const err = editResult[0];
-            const errMsg = err.message || '';
-
-            // Ignore "message is not modified" error
-            if (errMsg.includes('message is not modified')) {
-                return true;
-            }
-
-            // Log parse errors specifically
-            if (errMsg.includes("can't parse entities")) {
-                console.warn('[message-editor] Markdown parse error:', errMsg);
-            }
-
-            console.error('[message-editor] Edit failed:', errMsg);
-            return false;
-        }
-
-        // Record successful edit for rate limiting
-        recordEdit(chatId);
-        return true;
-    };
-
     return {
         edit: (text: string, options?: EditOptions): Promise<boolean> => {
-            return doEdit(text, options);
+            return submitEdit(api, chatId, messageId, text, {
+                parseMode: options?.parseMode,
+                replyMarkup: options?.replyMarkup,
+                linkPreviewDisabled: options?.disableWebPagePreview,
+                isFinal: true,
+                buildFallbackText: options?.fallbackText !== undefined
+                    ? () => options.fallbackText ?? null
+                    : undefined,
+            });
         },
 
         delete: async (): Promise<boolean> => {
-            const deleteResult = await to(api.deleteMessage(chatId, messageId));
+            dropMessageState(chatId, messageId);
+            const deleteResult = await to(
+                runApiCall(chatId, () => api.deleteMessage(chatId, messageId))
+            );
 
             if (isErr(deleteResult)) {
                 console.error('[message-editor] Delete failed:', deleteResult[0].message);

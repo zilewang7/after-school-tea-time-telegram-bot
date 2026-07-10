@@ -20,7 +20,7 @@ import {
     type StreamingEditor,
     type TypingIndicator,
 } from '../telegram/index.js';
-import { waitForRateLimit, recordEdit } from '../telegram/rate-limiter.js';
+import { runApiCall } from '../telegram/edit-coordinator.js';
 import { registerContinuation } from '../state.js';
 import {
     escapeMarkdownV2,
@@ -29,7 +29,7 @@ import {
     formatThinkingContent,
 } from '../telegram/formatters/markdown-formatter.js';
 import { buildFinalMessageChunks } from '../telegram/formatters/final-message-builder.js';
-import { getTelegramVisibleLength, smartSplit } from '../telegram/formatters/smart-splitter.js';
+import { getTelegramVisibleLength, splitRawByFormattedLength } from '../telegram/formatters/smart-splitter.js';
 import type {
     StreamChunk,
     AIResponse,
@@ -256,24 +256,22 @@ const createContinuationMessage = async (
     // Build processing button for continuation
     const buttons = buildResponseButtons(chatContext.currentButtonState);
 
-    await waitForRateLimit(chatId);
-
     // Create new processing message with button
     // Use a simple status placeholder - StreamingEditor will manage actual status
     const sendResult = await to(
-        ctx.api.sendMessage(chatId, 'continued', {
-            parse_mode: 'MarkdownV2',
-            reply_parameters: { message_id: userMessageId },
-            reply_markup: buttons,
-        })
+        runApiCall(chatId, () =>
+            ctx.api.sendMessage(chatId, 'continued', {
+                parse_mode: 'MarkdownV2',
+                reply_parameters: { message_id: userMessageId },
+                reply_markup: buttons,
+            })
+        )
     );
 
     if (isErr(sendResult)) {
         console.error('[response-handler] Failed to create continuation message:', sendResult[0]);
         return null;
     }
-
-    recordEdit(chatId);
 
     const newMessage = sendResult[1];
     chatContext.messageHistory.push(newMessage.message_id);
@@ -359,18 +357,23 @@ export const processStream = async (
             let textToSend = state.textBuffer;
             let remainingText = '';
 
-            // Calculate thinking formatted length
+            // Formatter used for thinking in the streaming (processing) view
+            const formatThinkingForStreaming = (thinking: string): string =>
+                '>' + thinking.split('\n').map(escapeMarkdownV2).join('\n>');
+
             const thinkingFormatted = state.thinkingBuffer
-                ? '>' + state.thinkingBuffer.split('\n').map(escapeMarkdownV2).join('\n>')
+                ? formatThinkingForStreaming(state.thinkingBuffer)
                 : '';
+            const thinkingVisibleLength = getTelegramVisibleLength(thinkingFormatted);
 
             // Case 1: Thinking itself is too long
-            if (getTelegramVisibleLength(thinkingFormatted) >= MESSAGE_LENGTH_LIMIT - 100) {
+            if (thinkingVisibleLength >= MESSAGE_LENGTH_LIMIT - 100) {
                 console.log('[response-handler] Thinking itself exceeds limit, splitting thinking...');
-                // Need to split thinking at newline
-                const { currentPart, remaining } = smartSplit(
+                // Exact-measure split: keeps everything already displayed
+                const { currentPart, remaining } = splitRawByFormattedLength(
                     state.thinkingBuffer,
-                    Math.floor((MESSAGE_LENGTH_LIMIT - 100) / 1.2) // Conservative estimate for escaped length
+                    formatThinkingForStreaming,
+                    MESSAGE_LENGTH_LIMIT - 100
                 );
                 thinkingToSend = currentPart;
                 remainingThinking = remaining;
@@ -379,15 +382,16 @@ export const processStream = async (
             } else {
                 // Case 2: Thinking fits, but thinking + text is too long
                 const newlineSpace = state.thinkingBuffer ? 1 : 0; // Newline between thinking and text
-                const availableSpace = MESSAGE_LENGTH_LIMIT - thinkingFormatted.length - newlineSpace - 100;
+                const availableSpace = MESSAGE_LENGTH_LIMIT - thinkingVisibleLength - newlineSpace - 100;
 
                 if (state.textBuffer) {
                     const escapedText = escapeMarkdownV2(state.textBuffer);
                     if (getTelegramVisibleLength(escapedText) > availableSpace) {
-                        // Need to split text at newline
-                        const { currentPart, remaining } = smartSplit(
+                        // Exact-measure split, preferring paragraph/newline boundaries
+                        const { currentPart, remaining } = splitRawByFormattedLength(
                             state.textBuffer,
-                            Math.floor(availableSpace / 1.5) // Conservative estimate
+                            escapeMarkdownV2,
+                            availableSpace
                         );
                         textToSend = currentPart;
                         remainingText = remaining;
@@ -492,21 +496,19 @@ export const sendFinalResponse = async (
         await editor.updateContent(finalChunks[0] ?? '', { parseMode: 'MarkdownV2', isFinal: true });
 
         for (const chunk of finalChunks.slice(1)) {
-            await waitForRateLimit(chatId);
-
             const continuationResult = await to(
-                ctx.api.sendMessage(chatId, chunk, {
-                    parse_mode: 'MarkdownV2',
-                    reply_parameters: { message_id: userMessageId },
-                })
+                runApiCall(chatId, () =>
+                    ctx.api.sendMessage(chatId, chunk, {
+                        parse_mode: 'MarkdownV2',
+                        reply_parameters: { message_id: userMessageId },
+                    })
+                )
             );
 
             if (isErr(continuationResult)) {
                 console.error('[response-handler] Failed to send continuation:', continuationResult[0]);
                 break;
             }
-
-            recordEdit(chatId);
 
             const contMsg = continuationResult[1];
             chatContext.messageHistory.push(contMsg.message_id);
@@ -521,9 +523,11 @@ export const sendFinalResponse = async (
             if (photoBuffer) {
                 console.log('[response-handler] Sending photo (split path):', { bufferSize: photoBuffer.length, chatId });
                 const sendResult = await to(
-                    ctx.api.sendPhoto(chatId, new InputFile(photoBuffer as unknown as ConstructorParameters<typeof InputFile>[0], 'image.png'), {
-                        reply_parameters: { message_id: userMessageId },
-                    })
+                    runApiCall(chatId, () =>
+                        ctx.api.sendPhoto(chatId, new InputFile(photoBuffer as unknown as ConstructorParameters<typeof InputFile>[0], 'image.png'), {
+                            reply_parameters: { message_id: userMessageId },
+                        })
+                    )
                 );
 
                 if (!isErr(sendResult)) {
@@ -535,9 +539,11 @@ export const sendFinalResponse = async (
                     console.error('[response-handler] sendPhoto failed (split path):', sendResult[0].message);
                     const docFile = new InputFile(photoBuffer as unknown as ConstructorParameters<typeof InputFile>[0], 'image.png');
                     const docResult = await to(
-                        ctx.api.sendDocument(chatId, docFile, {
-                            reply_parameters: { message_id: userMessageId },
-                        })
+                        runApiCall(chatId, () =>
+                            ctx.api.sendDocument(chatId, docFile, {
+                                reply_parameters: { message_id: userMessageId },
+                            })
+                        )
                     );
                     if (!isErr(docResult)) {
                         const sentMsg = docResult[1];
@@ -570,9 +576,11 @@ export const sendFinalResponse = async (
             );
 
             const [editErr] = await to(
-                ctx.api.editMessageReplyMarkup(chatId, session.currentMessageId, {
-                    reply_markup: finalButtons,
-                })
+                runApiCall(chatId, () =>
+                    ctx.api.editMessageReplyMarkup(chatId, session.currentMessageId, {
+                        reply_markup: finalButtons,
+                    })
+                )
             );
             if (editErr) {
                 console.error('[response-handler] Failed to add buttons to split message:', editErr);
@@ -626,9 +634,11 @@ export const sendFinalResponse = async (
 
             // Try sendPhoto first, fallback to sendDocument if Telegram rejects the format
             const sendResult = await to(
-                ctx.api.sendPhoto(chatId, inputFile, {
-                    reply_parameters: { message_id: userMessageId },
-                })
+                runApiCall(chatId, () =>
+                    ctx.api.sendPhoto(chatId, inputFile, {
+                        reply_parameters: { message_id: userMessageId },
+                    })
+                )
             );
 
             if (!isErr(sendResult)) {
@@ -640,9 +650,11 @@ export const sendFinalResponse = async (
                 console.warn('[response-handler] sendPhoto failed, fallback to sendDocument:', sendResult[0].message);
                 const docFile = new InputFile(photoBuffer as unknown as ConstructorParameters<typeof InputFile>[0], 'image.png');
                 const docResult = await to(
-                    ctx.api.sendDocument(chatId, docFile, {
-                        reply_parameters: { message_id: userMessageId },
-                    })
+                    runApiCall(chatId, () =>
+                        ctx.api.sendDocument(chatId, docFile, {
+                            reply_parameters: { message_id: userMessageId },
+                        })
+                    )
                 );
                 if (!isErr(docResult)) {
                     const sentMsg = docResult[1];
@@ -675,9 +687,11 @@ export const sendFinalResponse = async (
 
             // Edit the last message (image) to add buttons
             const [editErr] = await to(
-                ctx.api.editMessageReplyMarkup(chatId, session.currentMessageId, {
-                    reply_markup: finalButtons,
-                })
+                runApiCall(chatId, () =>
+                    ctx.api.editMessageReplyMarkup(chatId, session.currentMessageId, {
+                        reply_markup: finalButtons,
+                    })
+                )
             );
             if (editErr) {
                 console.error('[response-handler] Failed to add buttons to image:', editErr);
@@ -786,20 +800,15 @@ export const handleResponseError = async (
         botResponse?.getVersions().length ?? 1
     );
 
-    // Edit with retry button
-    const editResult = await to(
-        editor.updateContent(truncatedMessage, { replyMarkup: errorButtons, isFinal: true })
-    );
-
-    if (isErr(editResult)) {
-        console.error('[response-handler] Failed to edit error message:', editResult[0]);
-        // Retry after delay
-        setTimeout(async () => {
-            await editor.updateContent(truncatedMessage, { replyMarkup: errorButtons, isFinal: true });
-        }, 15000);
-    } else {
-        console.error('[response-handler]', error);
+    // Edit with retry button (delivery retries handled by the edit coordinator)
+    const delivered = await editor.updateContent(truncatedMessage, {
+        replyMarkup: errorButtons,
+        isFinal: true,
+    });
+    if (!delivered) {
+        console.error('[response-handler] Failed to edit error message');
     }
+    console.error('[response-handler]', error);
 };
 
 /**

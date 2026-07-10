@@ -26,7 +26,7 @@ import {
     registerContinuation,
     unregisterContinuation,
 } from '../state.js';
-import { waitForRateLimit, recordEdit } from '../telegram/rate-limiter.js';
+import { runApiCall, submitEdit } from '../telegram/edit-coordinator.js';
 import type { AgentStats } from '../ai/types.js';
 
 /**
@@ -297,22 +297,19 @@ export const createSession = async (
  * Create continuation message for long responses
  */
 const createContinuation = async (session: BotMessageSession): Promise<MessageEditor | null> => {
-
-    await waitForRateLimit(session.chatId);
-
     const sendResult = await to(
-        session.api.sendMessage(session.chatId, `continued`, {
-            parse_mode: 'MarkdownV2',
-            reply_parameters: { message_id: session.userMessageId },
-        })
+        runApiCall(session.chatId, () =>
+            session.api.sendMessage(session.chatId, `continued`, {
+                parse_mode: 'MarkdownV2',
+                reply_parameters: { message_id: session.userMessageId },
+            })
+        )
     );
 
     if (isErr(sendResult)) {
         console.error('[bot-message-service] Failed to create continuation:', sendResult[0]);
         return null;
     }
-
-    recordEdit(session.chatId);
 
     const newMessageId = sendResult[1].message_id;
     session.messageIds.push(newMessageId);
@@ -613,25 +610,19 @@ export const switchVersion = async (
 
     /**
      * Helper to edit a text message with Markdown parse error fallback
+     * (the coordinator applies fallbackText when Telegram rejects the Markdown)
      */
     const editWithFallback = async (
         editor: MessageEditor,
         text: string,
         options?: { parseMode?: 'MarkdownV2'; replyMarkup?: any }
     ): Promise<boolean> => {
-        const [editErr] = await to(editor.edit(text, options));
-        if (!editErr) return true;
-        const errMsg = editErr.message || '';
-        if (errMsg.includes("can't parse entities")) {
-            console.warn('[bot-message-service] Markdown parse error, retrying with escaped text');
-            const escaped = text.replace(/([_*\[\]()~`>#+\-=|{}.!\\])/g, '\\$1');
-            const [retryErr] = await to(editor.edit(escaped, options));
-            if (!retryErr) return true;
-            console.error('[bot-message-service] Escaped text also failed:', retryErr);
-        } else {
-            console.error('[bot-message-service] Failed to edit message:', editErr);
+        const escaped = text.replace(/([_*\[\]()~`>#+\-=|{}.!\\])/g, '\\$1');
+        const delivered = await editor.edit(text, { ...options, fallbackText: escaped });
+        if (!delivered) {
+            console.error('[bot-message-service] Failed to edit message');
         }
-        return false;
+        return delivered;
     };
 
     if (firstMessageTypeChanged) {
@@ -805,6 +796,118 @@ export const switchVersion = async (
     });
 
     return true;
+};
+
+/**
+ * Refresh a response's messages to the final state saved in the database.
+ * Self-correction for messages stuck in an intermediate state (e.g. the final
+ * edit was lost to a 429): rebuilds the final text and re-edits, including
+ * button state. Returns false when there is nothing to restore.
+ */
+export const refreshToFinalState = async (
+    api: Api,
+    chatId: number,
+    firstMessageId: number
+): Promise<boolean> => {
+    const response = await getBotResponse(chatId, firstMessageId);
+    if (!response) return false;
+
+    const versions = response.getVersions();
+    const version = versions[response.currentVersionIndex];
+    if (!version) return false;
+
+    const chunks = buildFinalMessageChunks({
+        text: version.text || '',
+        thinking: version.thinkingText,
+        agentStats: version.agentStats,
+        groundingData: version.groundingData,
+        wasStoppedByUser: version.wasStoppedByUser,
+    });
+    if (chunks.length === 0) {
+        chunks.push('\\[Empty response\\]');
+    }
+
+    const buttons = buildResponseButtons(
+        response.buttonState,
+        response.currentVersionIndex,
+        versions.length
+    );
+
+    // Photo messages can't be edited to text: pair chunks with text messages only.
+    // When an image exists it is the last message (currentMessageId) and carries the buttons.
+    const hasImage = Boolean(version.imageBase64);
+    const textMessageIds = hasImage
+        ? version.messageIds.filter((id) => id !== version.currentMessageId)
+        : version.messageIds;
+
+    let allDelivered = true;
+    const editableCount = Math.min(chunks.length, textMessageIds.length);
+
+    for (let i = 0; i < editableCount; i++) {
+        const messageId = textMessageIds[i];
+        const chunk = chunks[i];
+        if (messageId === undefined || chunk === undefined) continue;
+
+        const carriesButtons = !hasImage && i === chunks.length - 1;
+        const delivered = await submitEdit(api, chatId, messageId, chunk, {
+            parseMode: 'MarkdownV2',
+            replyMarkup: carriesButtons ? buttons : undefined,
+            isFinal: true,
+        });
+        if (!delivered) allDelivered = false;
+    }
+
+    // Final content needs more messages than exist (stream died before a
+    // continuation was created): append the overflow chunks as new messages
+    if (chunks.length > textMessageIds.length) {
+        let messageIdsChanged = false;
+        for (let i = textMessageIds.length; i < chunks.length; i++) {
+            const chunk = chunks[i];
+            if (chunk === undefined) continue;
+            const carriesButtons = !hasImage && i === chunks.length - 1;
+            const [sendErr, sentMsg] = await to(
+                runApiCall(chatId, () =>
+                    api.sendMessage(chatId, chunk, {
+                        parse_mode: 'MarkdownV2',
+                        reply_parameters: { message_id: response.userMessageId },
+                        reply_markup: carriesButtons ? buttons : undefined,
+                    })
+                )
+            );
+            if (sendErr) {
+                console.error('[bot-message-service] Refresh: failed to send overflow chunk:', sendErr);
+                allDelivered = false;
+                break;
+            }
+            version.messageIds.push(sentMsg.message_id);
+            if (!hasImage) {
+                version.currentMessageId = sentMsg.message_id;
+            }
+            registerContinuation(chatId, sentMsg.message_id, firstMessageId);
+            messageIdsChanged = true;
+        }
+        if (messageIdsChanged) {
+            response.setVersions(versions);
+            await response.save();
+        }
+    }
+
+    // Image carries the buttons: refresh its markup separately
+    if (hasImage && buttons) {
+        const [markupErr] = await to(
+            runApiCall(chatId, () =>
+                api.editMessageReplyMarkup(chatId, version.currentMessageId, {
+                    reply_markup: buttons,
+                })
+            )
+        );
+        if (markupErr && !markupErr.message.includes('message is not modified')) {
+            console.warn('[bot-message-service] Refresh: markup update failed:', markupErr.message);
+            allDelivered = false;
+        }
+    }
+
+    return allDelivered;
 };
 
 /**

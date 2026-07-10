@@ -120,11 +120,22 @@ export const getTelegramVisibleLength = (text: string): number => {
     return visibleLength;
 };
 
+/** Sentence-ending characters usable as split boundaries */
+const SENTENCE_ENDINGS = new Set(['。', '！', '？', '；', '!', '?', ';', '.']);
+
+/** Only accept a boundary in the last quarter before the limit */
+const BOUNDARY_WINDOW_RATIO = 0.75;
+
 const findSplitPos = (text: string, maxLength: number): number => {
     let index = 0;
     let visibleLength = 0;
-    let lastPreferredBoundary = 0;
     let lastSafeBoundary = 0;
+    let newlinePos = 0;
+    let newlineVisible = 0;
+    let sentencePos = 0;
+    let sentenceVisible = 0;
+    let spacePos = 0;
+    let spaceVisible = 0;
 
     while (index < text.length) {
         if (index >= TELEGRAM_RAW_HARD_LIMIT) {
@@ -140,21 +151,28 @@ const findSplitPos = (text: string, maxLength: number): number => {
         index = unit.nextIndex;
         lastSafeBoundary = index;
 
-        if (unit.visibleText === '\n' || unit.visibleText === ' ') {
-            lastPreferredBoundary = index;
-        } else if (
-            unit.visibleText &&
-            !unit.visibleText.includes('\n') &&
-            !unit.visibleText.includes(' ')
-        ) {
-            const previousChar = text[index - 1];
-            if (previousChar === ')' || previousChar === '|' || previousChar === ']') {
-                lastPreferredBoundary = index;
-            }
+        if (unit.visibleText === '\n') {
+            newlinePos = index;
+            newlineVisible = visibleLength;
+        } else if (unit.visibleText && SENTENCE_ENDINGS.has(unit.visibleText)) {
+            sentencePos = index;
+            sentenceVisible = visibleLength;
+        } else if (unit.visibleText === ' ') {
+            spacePos = index;
+            spaceVisible = visibleLength;
         }
     }
 
-    return lastPreferredBoundary || lastSafeBoundary || Math.min(text.length, TELEGRAM_RAW_HARD_LIMIT);
+    // Boundary priority: newline > sentence ending > space, but only when the
+    // boundary is near the limit (avoid discarding too much content for it)
+    const threshold = Math.floor(Math.min(maxLength, visibleLength) * BOUNDARY_WINDOW_RATIO);
+    if (newlinePos && newlineVisible >= threshold) return newlinePos;
+    if (sentencePos && sentenceVisible >= threshold) return sentencePos;
+    if (spacePos && spaceVisible >= threshold) return spacePos;
+
+    // No boundary near the limit: fall back to the best boundary seen anywhere
+    return newlinePos || sentencePos || spacePos || lastSafeBoundary
+        || Math.min(text.length, TELEGRAM_RAW_HARD_LIMIT);
 };
 
 /**
@@ -188,4 +206,86 @@ export const needsSplit = (text: string, maxLength: number = TELEGRAM_MAX_LENGTH
         getTelegramVisibleLength(text) > maxLength ||
         text.length > TELEGRAM_RAW_HARD_LIMIT
     );
+};
+
+/**
+ * Find a natural boundary in RAW (unformatted) text, searching backwards from
+ * maxPos. Priority: paragraph break > newline > sentence ending > space.
+ * Returns the index right after the boundary, or maxPos when none is found.
+ */
+const findRawBoundary = (raw: string, maxPos: number, minPos: number): number => {
+    const window = raw.slice(minPos, maxPos);
+
+    const paragraphBreak = window.lastIndexOf('\n\n');
+    if (paragraphBreak >= 0) return minPos + paragraphBreak + 2;
+
+    const newline = window.lastIndexOf('\n');
+    if (newline >= 0) return minPos + newline + 1;
+
+    for (let i = maxPos - 1; i >= minPos; i--) {
+        const char = raw[i];
+        if (char !== undefined && SENTENCE_ENDINGS.has(char)) return i + 1;
+    }
+
+    const space = window.lastIndexOf(' ');
+    if (space >= 0) return minPos + space + 1;
+
+    return maxPos;
+};
+
+/**
+ * Split RAW text so that the formatted first part fits maxVisible.
+ *
+ * Measures the actual formatted output (no expansion-factor guessing), so the
+ * first part keeps everything already displayed on screen. The cut prefers a
+ * paragraph/newline/sentence boundary within the last quarter before the limit.
+ */
+export const splitRawByFormattedLength = (
+    raw: string,
+    format: (text: string) => string,
+    maxVisible: number
+): SplitResult => {
+    if (maxVisible <= 0) {
+        return { currentPart: '', remaining: raw };
+    }
+
+    const fits = (length: number): boolean => {
+        const formatted = format(raw.slice(0, length));
+        return (
+            getTelegramVisibleLength(formatted) <= maxVisible &&
+            formatted.length <= TELEGRAM_RAW_HARD_LIMIT
+        );
+    };
+
+    if (fits(raw.length)) {
+        return { currentPart: raw, remaining: '' };
+    }
+
+    // Binary search the largest raw prefix whose formatted output fits
+    // (formatted visible length is monotonic in the raw prefix length)
+    let low = 0;
+    let high = raw.length;
+    while (low + 1 < high) {
+        const mid = (low + high) >> 1;
+        if (fits(mid)) {
+            low = mid;
+        } else {
+            high = mid;
+        }
+    }
+
+    const cutPos = low;
+    const minPos = Math.floor(cutPos * BOUNDARY_WINDOW_RATIO);
+    let splitPos = findRawBoundary(raw, cutPos, minPos);
+
+    // Never split inside a surrogate pair (e.g. emoji)
+    const charBefore = raw.charCodeAt(splitPos - 1);
+    if (charBefore >= 0xd800 && charBefore <= 0xdbff) {
+        splitPos -= 1;
+    }
+
+    return {
+        currentPart: raw.slice(0, splitPos),
+        remaining: raw.slice(splitPos),
+    };
 };

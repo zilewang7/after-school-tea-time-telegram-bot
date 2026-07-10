@@ -2,8 +2,8 @@
  * Telegram module - utilities for Telegram bot interactions
  */
 
-// Rate limiter
-export * from './rate-limiter.js';
+// Edit coordinator (per-chat budget, coalescing, 429 backoff)
+export * from './edit-coordinator.js';
 
 // Typing indicator
 export * from './typing-indicator.js';

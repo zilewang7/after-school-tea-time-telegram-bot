@@ -17,6 +17,7 @@ import {
 import {
     stopResponse,
     switchVersion,
+    refreshToFinalState,
 } from '../../services/index.js';
 
 // Callback data prefix for our buttons
@@ -98,11 +99,22 @@ const handleStop = async (ctx: Context): Promise<void> => {
         return;
     }
 
-    // Self-correction: if the response is no longer in PROCESSING state,
-    // the stream already ended — refresh buttons to current state instead of stopping.
+    // Self-correction: if the response is no longer in PROCESSING state, the
+    // stream already ended — the message may be stuck in an intermediate state
+    // (e.g. the final edit was lost to a 429). Refresh text AND buttons to the
+    // final state saved in the database.
     if (response.buttonState !== ButtonState.PROCESSING) {
-        await ctx.answerCallbackQuery({ text: '已结束，已刷新按钮' });
-        await refreshButtonsToCurrent(ctx, response, msg.message_id);
+        await ctx.answerCallbackQuery({ text: '已结束，刷新到最新状态' });
+        setImmediate(async () => {
+            const [refreshErr, refreshed] = await to(
+                refreshToFinalState(ctx.api, msg.chat.id, response.messageId)
+            );
+            if (refreshErr || !refreshed) {
+                console.error('[response-menu] Refresh to final state failed:', refreshErr);
+                // Fall back to at least fixing the buttons
+                await refreshButtonsToCurrent(ctx, response, msg.message_id);
+            }
+        });
         return;
     }
 
@@ -111,9 +123,17 @@ const handleStop = async (ctx: Context): Promise<void> => {
 
     // Execute stop asynchronously
     setImmediate(async () => {
-        const [stopErr] = await to(stopResponse(msg.chat.id, response.messageId));
+        const [stopErr, stopped] = await to(stopResponse(msg.chat.id, response.messageId));
         if (stopErr) {
             console.error('[response-menu] Stop failed:', stopErr);
+            return;
+        }
+        if (!stopped) {
+            // PROCESSING in DB but no active session (e.g. bot restarted
+            // mid-stream): mark retryable and refresh the buttons
+            response.buttonState = ButtonState.RETRY_ONLY;
+            await to(response.save());
+            await refreshButtonsToCurrent(ctx, response, msg.message_id);
         }
     });
 };

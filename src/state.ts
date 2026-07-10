@@ -11,12 +11,6 @@ interface MediaGroupIdTemp {
     mediaGroupId: string;
 }
 
-interface RateLimiterEntry {
-    count: number;
-    startTimestamp: number;
-    lastEditTimestamp: number;
-}
-
 interface EditMonitorEntry {
     firstMessageId: number;
     createdAt: number;
@@ -32,8 +26,6 @@ interface AppStateType {
     // link-preview fetching queue (kept separate from the media list: ids are
     // removed by filtering, so sharing one list would release the other waiter)
     asynchronousPreviewMsgIdList: number[];
-    // rate limiter for message editing
-    editRateLimiter: Record<number | string, RateLimiterEntry>;
     // edit monitor: "chatId:userMessageId" -> entry
     editMonitorMap: Map<string, EditMonitorEntry>;
     // bot instance for edit monitor
@@ -53,7 +45,6 @@ const createInitialState = (): AppStateType => ({
     },
     asynchronousFileSaveMsgIdList: [],
     asynchronousPreviewMsgIdList: [],
-    editRateLimiter: {},
     editMonitorMap: new Map(),
     editMonitorBot: null,
     continuationRegistry: new Map(),
@@ -101,14 +92,6 @@ export const removeAsyncPreviewMsgId = (id: number): void => {
     state.asynchronousPreviewMsgIdList = state.asynchronousPreviewMsgIdList.filter(
         (msgId) => msgId !== id
     );
-};
-
-export const getEditRateLimiter = (): Record<number | string, RateLimiterEntry> =>
-    getAppState().editRateLimiter;
-export const getRateLimiterEntry = (chatId: number | string): RateLimiterEntry | undefined =>
-    getAppState().editRateLimiter[chatId];
-export const setRateLimiterEntry = (chatId: number | string, entry: RateLimiterEntry): void => {
-    getAppState().editRateLimiter[chatId] = entry;
 };
 
 // Edit monitor accessors
