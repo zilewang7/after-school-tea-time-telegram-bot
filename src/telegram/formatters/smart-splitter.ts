@@ -208,27 +208,51 @@ export const needsSplit = (text: string, maxLength: number = TELEGRAM_MAX_LENGTH
     );
 };
 
+/** Weak boundaries: better than a mid-word cut, worse than a sentence end */
+const WEAK_BOUNDARIES = new Set([' ', '，', ',', '、']);
+
 /**
- * Find a natural boundary in RAW (unformatted) text, searching backwards from
- * maxPos. Priority: paragraph break > newline > sentence ending > space.
- * Returns the index right after the boundary, or maxPos when none is found.
+ * Search [from, to) backwards for the best boundary.
+ * Priority: paragraph break > newline > sentence ending > comma/space.
+ * Returns the index right after the boundary, or -1 when none exists.
  */
-const findRawBoundary = (raw: string, maxPos: number, minPos: number): number => {
-    const window = raw.slice(minPos, maxPos);
+const findBoundaryIn = (raw: string, from: number, to: number): number => {
+    const window = raw.slice(from, to);
 
     const paragraphBreak = window.lastIndexOf('\n\n');
-    if (paragraphBreak >= 0) return minPos + paragraphBreak + 2;
+    if (paragraphBreak >= 0) return from + paragraphBreak + 2;
 
     const newline = window.lastIndexOf('\n');
-    if (newline >= 0) return minPos + newline + 1;
+    if (newline >= 0) return from + newline + 1;
 
-    for (let i = maxPos - 1; i >= minPos; i--) {
+    for (let i = to - 1; i >= from; i--) {
         const char = raw[i];
         if (char !== undefined && SENTENCE_ENDINGS.has(char)) return i + 1;
     }
 
-    const space = window.lastIndexOf(' ');
-    if (space >= 0) return minPos + space + 1;
+    for (let i = to - 1; i >= from; i--) {
+        const char = raw[i];
+        if (char !== undefined && WEAK_BOUNDARIES.has(char)) return i + 1;
+    }
+
+    return -1;
+};
+
+/**
+ * Find a natural boundary in RAW (unformatted) text, searching backwards from
+ * maxPos. Prefers a boundary in the window right before maxPos; when the
+ * window has none, widens to the whole prefix (down to 25% of maxPos) before
+ * giving up with a hard cut at maxPos.
+ */
+const findRawBoundary = (raw: string, maxPos: number, minPos: number): number => {
+    const inWindow = findBoundaryIn(raw, minPos, maxPos);
+    if (inWindow >= 0) return inWindow;
+
+    const floor = Math.floor(maxPos * 0.25);
+    if (floor < minPos) {
+        const widened = findBoundaryIn(raw, floor, minPos);
+        if (widened >= 0) return widened;
+    }
 
     return maxPos;
 };

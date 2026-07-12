@@ -38,6 +38,9 @@ import type {
 
 const MESSAGE_LENGTH_LIMIT = 3900;
 const THINKING_BUFFER_LIMIT = 10000;
+/** Below this remaining budget, move the whole text to the continuation
+ *  instead of squeezing a tiny tail that would be chopped mid-sentence */
+const MIN_TAIL_TEXT_BUDGET = 500;
 
 /**
  * Chat context for response handling
@@ -366,14 +369,14 @@ export const processStream = async (
                 : '';
             const thinkingVisibleLength = getTelegramVisibleLength(thinkingFormatted);
 
-            // Case 1: Thinking itself is too long
-            if (thinkingVisibleLength >= MESSAGE_LENGTH_LIMIT - 100) {
+            // Case 1: Thinking alone can't fit in one message
+            if (thinkingVisibleLength >= MESSAGE_LENGTH_LIMIT) {
                 console.log('[response-handler] Thinking itself exceeds limit, splitting thinking...');
                 // Exact-measure split: keeps everything already displayed
                 const { currentPart, remaining } = splitRawByFormattedLength(
                     state.thinkingBuffer,
                     formatThinkingForStreaming,
-                    MESSAGE_LENGTH_LIMIT - 100
+                    MESSAGE_LENGTH_LIMIT
                 );
                 thinkingToSend = currentPart;
                 remainingThinking = remaining;
@@ -382,19 +385,26 @@ export const processStream = async (
             } else {
                 // Case 2: Thinking fits, but thinking + text is too long
                 const newlineSpace = state.thinkingBuffer ? 1 : 0; // Newline between thinking and text
-                const availableSpace = MESSAGE_LENGTH_LIMIT - thinkingVisibleLength - newlineSpace - 100;
+                const availableSpace = MESSAGE_LENGTH_LIMIT - thinkingVisibleLength - newlineSpace;
 
                 if (state.textBuffer) {
                     const escapedText = escapeMarkdownV2(state.textBuffer);
                     if (getTelegramVisibleLength(escapedText) > availableSpace) {
-                        // Exact-measure split, preferring paragraph/newline boundaries
-                        const { currentPart, remaining } = splitRawByFormattedLength(
-                            state.textBuffer,
-                            escapeMarkdownV2,
-                            availableSpace
-                        );
-                        textToSend = currentPart;
-                        remainingText = remaining;
+                        if (availableSpace < MIN_TAIL_TEXT_BUDGET) {
+                            // Thinking ate the budget: don't squeeze a tiny text
+                            // tail here, start the text cleanly in the next message
+                            textToSend = '';
+                            remainingText = state.textBuffer;
+                        } else {
+                            // Exact-measure split, preferring paragraph/newline boundaries
+                            const { currentPart, remaining } = splitRawByFormattedLength(
+                                state.textBuffer,
+                                escapeMarkdownV2,
+                                availableSpace
+                            );
+                            textToSend = currentPart;
+                            remainingText = remaining;
+                        }
                     }
                 }
             }
