@@ -242,7 +242,27 @@ const storePreviewMedia = async (
  * generating the preview; returns null on hard failures (luoxu unreachable,
  * chat not addressable) without throwing.
  */
-export const acquireLinkPreview = async (
+/** In-flight acquisitions by URL, so concurrent triggers share one fetch */
+const inflightAcquisitions = new Map<string, Promise<CachedLinkPreview | null>>();
+
+export const acquireLinkPreview = (
+    chatId: number,
+    messageId: number,
+    url: string
+): Promise<CachedLinkPreview | null> => {
+    const inflight = inflightAcquisitions.get(url);
+    if (inflight) return inflight;
+
+    const acquisition = doAcquireLinkPreview(chatId, messageId, url);
+    inflightAcquisitions.set(url, acquisition);
+    void acquisition.then(
+        () => inflightAcquisitions.delete(url),
+        () => inflightAcquisitions.delete(url)
+    );
+    return acquisition;
+};
+
+const doAcquireLinkPreview = async (
     chatId: number,
     messageId: number,
     url: string

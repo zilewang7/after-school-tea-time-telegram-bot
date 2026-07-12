@@ -415,6 +415,23 @@ export const autoUpdate = (bot: Bot) => {
 
                 console.log(`[autoUpdate] Updated message ${messageId} in chat ${chatId}`);
 
+                // The edit may have introduced or changed a URL: (re-)acquire
+                // its link preview and flag it pending so replies wait for it.
+                // Cache hits and in-flight duplicates return immediately.
+                const previewUrl = isLuoxuPreviewEnabled() ? extractFirstUrl(newText) : null;
+                if (previewUrl) {
+                    addAsyncPreviewMsgId(messageId);
+                    const previewBackstop = setTimeout(() => removeAsyncPreviewMsgId(messageId), 70000);
+                    void (async () => {
+                        const [previewErr] = await to(acquireLinkPreview(chatId, messageId, previewUrl));
+                        if (previewErr) {
+                            console.error('[autoUpdate] link preview acquire failed:', previewErr.message);
+                        }
+                        clearTimeout(previewBackstop);
+                        removeAsyncPreviewMsgId(messageId);
+                    })();
+                }
+
                 // Check if this message is in the monitored list
                 const entry = getEditMonitorEntry(chatId, messageId);
                 const monitorBot = getEditMonitorBot();

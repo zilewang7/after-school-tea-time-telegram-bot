@@ -20,7 +20,9 @@ import { handlePicbananaCommand, checkPicbananaCommand } from './commands/picban
 import { handlePicgptCommand, checkPicgptCommand } from './commands/picgpt-handler.js';
 import { dealChatCommand } from './commands/chat-command.js';
 
-const MEDIA_WAIT_TIMEOUT_MS = 30000;
+// Slightly under the 70s acquisition backstop in autoSave: fresh link
+// previews (Telegram-side embed generation) regularly take 30-60s
+const MEDIA_WAIT_TIMEOUT_MS = 65000;
 
 /**
  * Whether the bot will actually reply to this message — used to gate the
