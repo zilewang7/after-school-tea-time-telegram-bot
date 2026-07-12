@@ -29,7 +29,7 @@ import {
     formatThinkingContent,
 } from '../telegram/formatters/markdown-formatter.js';
 import { buildFinalMessageChunks } from '../telegram/formatters/final-message-builder.js';
-import { getTelegramVisibleLength, splitRawByFormattedLength } from '../telegram/formatters/smart-splitter.js';
+import { getTelegramVisibleLength, splitRawByFormattedLength, smartSplit } from '../telegram/formatters/smart-splitter.js';
 import type {
     StreamChunk,
     AIResponse,
@@ -506,14 +506,27 @@ export const sendFinalResponse = async (
         await editor.updateContent(finalChunks[0] ?? '', { parseMode: 'MarkdownV2', isFinal: true });
 
         for (const chunk of finalChunks.slice(1)) {
-            const continuationResult = await to(
-                runApiCall(chatId, () =>
-                    ctx.api.sendMessage(chatId, chunk, {
-                        parse_mode: 'MarkdownV2',
-                        reply_parameters: { message_id: userMessageId },
-                    })
-                )
-            );
+            const sendChunk = (text: string) =>
+                to(
+                    runApiCall(chatId, () =>
+                        ctx.api.sendMessage(chatId, text, {
+                            parse_mode: 'MarkdownV2',
+                            reply_parameters: { message_id: userMessageId },
+                        })
+                    )
+                );
+
+            let continuationResult = await sendChunk(chunk);
+
+            // Parse error on a continuation chunk: retry with the chunk source
+            // escaped verbatim rather than dropping the rest of the reply
+            if (
+                isErr(continuationResult) &&
+                continuationResult[0].message.includes("can't parse entities")
+            ) {
+                console.warn('[response-handler] Continuation parse error, retrying with safe formatting');
+                continuationResult = await sendChunk(smartSplit(escapeMarkdownV2(chunk), 4000).currentPart);
+            }
 
             if (isErr(continuationResult)) {
                 console.error('[response-handler] Failed to send continuation:', continuationResult[0]);

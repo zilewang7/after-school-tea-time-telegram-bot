@@ -16,6 +16,7 @@ import {
     runApiCall,
 } from './edit-coordinator.js';
 import { formatResponseSafe } from './formatters/markdown-formatter.js';
+import { smartSplit } from './formatters/smart-splitter.js';
 import { appendAgentStatsToMessage } from './formatters/agent-stats-formatter.js';
 import { appendGroundingToMessage } from './formatters/grounding-formatter.js';
 import type { AgentStats, GroundingData } from '../ai/types.js';
@@ -180,7 +181,10 @@ export const createStreamingEditor = (options: StreamingEditorOptions): Streamin
         if (groundingData?.length) {
             safeMessage = appendGroundingToMessage(safeMessage, groundingData);
         }
-        return safeMessage;
+        // rawParts hold the FULL response while this message may be just the
+        // first chunk of a split reply — cap the replacement so a parse-error
+        // fallback can never trip MESSAGE_TOO_LONG
+        return smartSplit(safeMessage, 4000).currentPart;
     };
 
     const stopSpinner = (): void => {

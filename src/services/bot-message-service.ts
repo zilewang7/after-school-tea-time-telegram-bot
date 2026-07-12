@@ -18,7 +18,8 @@ import {
     type MessageEditor,
 } from '../telegram/index.js';
 import { buildFinalMessageChunks } from '../telegram/formatters/final-message-builder.js';
-import { formatResponse } from '../telegram/formatters/markdown-formatter.js';
+import { formatResponse, escapeMarkdownV2 } from '../telegram/formatters/markdown-formatter.js';
+import { smartSplit } from '../telegram/formatters/smart-splitter.js';
 import { buildResponseButtons } from '../cmd/menus/index.js';
 import { to, isErr } from '../shared/result.js';
 import {
@@ -617,7 +618,9 @@ export const switchVersion = async (
         text: string,
         options?: { parseMode?: 'MarkdownV2'; replyMarkup?: any }
     ): Promise<boolean> => {
-        const escaped = text.replace(/([_*\[\]()~`>#+\-=|{}.!\\])/g, '\\$1');
+        // Escaping doubles visible length of markup chars, so cap the fallback
+        // to keep it under Telegram's limit (tail loss only in pathological cases)
+        const escaped = smartSplit(escapeMarkdownV2(text), 4000).currentPart;
         const delivered = await editor.edit(text, { ...options, fallbackText: escaped });
         if (!delivered) {
             console.error('[bot-message-service] Failed to edit message');

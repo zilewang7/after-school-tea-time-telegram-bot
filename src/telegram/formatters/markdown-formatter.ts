@@ -5,11 +5,13 @@ import telegramifyMarkdown from 'telegramify-markdown';
 
 /**
  * Escape special characters for MarkdownV2
- * Characters that need escaping: _ * [ ] ( ) ~ ` > # + - = | { } . !
+ * Characters that need escaping: \ _ * [ ] ( ) ~ ` > # + - = | { } . !
+ * Backslash is included so literal backslashes in source text survive
+ * Telegram's parsing (an unescaped `\x` renders as bare `x`).
  */
 export const escapeMarkdownV2 = (text: string): string => {
     if (!text) return '';
-    return text.replace(/(?<!\\)([_*[\]()~`>#+-=|{}.!])/g, '\\$1');
+    return text.replace(/([_*[\]()~`>#+\-=|{}.!\\])/g, '\\$1');
 };
 
 /**
