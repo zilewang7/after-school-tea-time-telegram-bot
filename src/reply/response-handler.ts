@@ -29,7 +29,7 @@ import {
     formatThinkingContent,
 } from '../telegram/formatters/markdown-formatter.js';
 import { buildFinalMessageChunks } from '../telegram/formatters/final-message-builder.js';
-import { getTelegramVisibleLength, splitRawByFormattedLength, smartSplit } from '../telegram/formatters/smart-splitter.js';
+import { getTelegramVisibleLength, splitRawByFormattedLength, smartSplit, splitAtLastNewline } from '../telegram/formatters/smart-splitter.js';
 import type {
     StreamChunk,
     AIResponse,
@@ -388,23 +388,46 @@ export const processStream = async (
                 const availableSpace = MESSAGE_LENGTH_LIMIT - thinkingVisibleLength - newlineSpace;
 
                 if (state.textBuffer) {
-                    const escapedText = escapeMarkdownV2(state.textBuffer);
-                    if (getTelegramVisibleLength(escapedText) > availableSpace) {
-                        if (availableSpace < MIN_TAIL_TEXT_BUDGET) {
-                            // Thinking ate the budget: don't squeeze a tiny text
-                            // tail here, start the text cleanly in the next message
-                            textToSend = '';
-                            remainingText = state.textBuffer;
-                        } else {
-                            // Exact-measure split, preferring paragraph/newline boundaries
-                            const { currentPart, remaining } = splitRawByFormattedLength(
-                                state.textBuffer,
-                                escapeMarkdownV2,
-                                availableSpace
-                            );
+                    if (availableSpace < MIN_TAIL_TEXT_BUDGET) {
+                        // Thinking ate the budget: don't close this message with
+                        // a tiny text tail (even one that currently fits) —
+                        // start the text cleanly in the next message
+                        textToSend = '';
+                        remainingText = state.textBuffer;
+                    } else if (getTelegramVisibleLength(escapeMarkdownV2(state.textBuffer)) > availableSpace) {
+                        // Exact-measure split, preferring paragraph/newline boundaries
+                        const { currentPart, remaining } = splitRawByFormattedLength(
+                            state.textBuffer,
+                            escapeMarkdownV2,
+                            availableSpace
+                        );
+                        textToSend = currentPart;
+                        remainingText = remaining;
+                    } else {
+                        // Text fits, but the message is closing mid-stream: end
+                        // it at a paragraph/newline instead of wherever the last
+                        // stream chunk happened to land
+                        const { currentPart, remaining } = splitAtLastNewline(
+                            state.textBuffer,
+                            Math.floor(state.textBuffer.length / 4)
+                        );
+                        // Without thinking to carry the message, keep everything
+                        // rather than finalizing a near-empty message
+                        if (currentPart || state.thinkingBuffer) {
                             textToSend = currentPart;
                             remainingText = remaining;
                         }
+                    }
+                } else if (state.thinkingBuffer) {
+                    // Thinking-only message closing mid-stream: same rule, end
+                    // at a line boundary (keep whole when none qualifies)
+                    const { currentPart, remaining } = splitAtLastNewline(
+                        state.thinkingBuffer,
+                        Math.floor(state.thinkingBuffer.length / 4)
+                    );
+                    if (currentPart) {
+                        thinkingToSend = currentPart;
+                        remainingThinking = remaining;
                     }
                 }
             }

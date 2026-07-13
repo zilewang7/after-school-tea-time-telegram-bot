@@ -123,19 +123,26 @@ export const getTelegramVisibleLength = (text: string): number => {
 /** Sentence-ending characters usable as split boundaries */
 const SENTENCE_ENDINGS = new Set(['。', '！', '？', '；', '!', '?', ';', '.']);
 
-/** Only accept a boundary in the last quarter before the limit */
+/** Sentence/weak boundaries are only accepted in the last quarter before the limit */
 const BOUNDARY_WINDOW_RATIO = 0.75;
+
+/** Paragraph/newline boundaries are accepted anywhere past this ratio —
+ *  boundary quality beats proximity: a clean line break is worth sending less */
+const NEWLINE_FLOOR_RATIO = 0.25;
 
 const findSplitPos = (text: string, maxLength: number): number => {
     let index = 0;
     let visibleLength = 0;
     let lastSafeBoundary = 0;
+    let paragraphPos = 0;
+    let paragraphVisible = 0;
     let newlinePos = 0;
     let newlineVisible = 0;
     let sentencePos = 0;
     let sentenceVisible = 0;
     let spacePos = 0;
     let spaceVisible = 0;
+    let prevVisibleChar = '';
 
     while (index < text.length) {
         if (index >= TELEGRAM_RAW_HARD_LIMIT) {
@@ -152,6 +159,10 @@ const findSplitPos = (text: string, maxLength: number): number => {
         lastSafeBoundary = index;
 
         if (unit.visibleText === '\n') {
+            if (prevVisibleChar === '\n') {
+                paragraphPos = index;
+                paragraphVisible = visibleLength;
+            }
             newlinePos = index;
             newlineVisible = visibleLength;
         } else if (unit.visibleText && SENTENCE_ENDINGS.has(unit.visibleText)) {
@@ -161,12 +172,18 @@ const findSplitPos = (text: string, maxLength: number): number => {
             spacePos = index;
             spaceVisible = visibleLength;
         }
+        if (unit.visibleLength > 0 && unit.visibleText) {
+            prevVisibleChar = unit.visibleText[unit.visibleText.length - 1] ?? '';
+        }
     }
 
-    // Boundary priority: newline > sentence ending > space, but only when the
-    // boundary is near the limit (avoid discarding too much content for it)
-    const threshold = Math.floor(Math.min(maxLength, visibleLength) * BOUNDARY_WINDOW_RATIO);
-    if (newlinePos && newlineVisible >= threshold) return newlinePos;
+    // Paragraph break / newline anywhere past the floor wins over
+    // sentence/space boundaries that are merely closer to the limit
+    const visibleCap = Math.min(maxLength, visibleLength);
+    const threshold = Math.floor(visibleCap * BOUNDARY_WINDOW_RATIO);
+    const floor = Math.floor(visibleCap * NEWLINE_FLOOR_RATIO);
+    if (paragraphPos && paragraphVisible >= floor) return paragraphPos;
+    if (newlinePos && newlineVisible >= floor) return newlinePos;
     if (sentencePos && sentenceVisible >= threshold) return sentencePos;
     if (spacePos && spaceVisible >= threshold) return spacePos;
 
@@ -212,11 +229,10 @@ export const needsSplit = (text: string, maxLength: number = TELEGRAM_MAX_LENGTH
 const WEAK_BOUNDARIES = new Set([' ', '，', ',', '、']);
 
 /**
- * Search [from, to) backwards for the best boundary.
- * Priority: paragraph break > newline > sentence ending > comma/space.
+ * Search [from, to) backwards for a paragraph break, then a newline.
  * Returns the index right after the boundary, or -1 when none exists.
  */
-const findBoundaryIn = (raw: string, from: number, to: number): number => {
+const findNewlineBoundaryIn = (raw: string, from: number, to: number): number => {
     const window = raw.slice(from, to);
 
     const paragraphBreak = window.lastIndexOf('\n\n');
@@ -225,6 +241,14 @@ const findBoundaryIn = (raw: string, from: number, to: number): number => {
     const newline = window.lastIndexOf('\n');
     if (newline >= 0) return from + newline + 1;
 
+    return -1;
+};
+
+/**
+ * Search [from, to) backwards for a sentence ending, then a comma/space.
+ * Returns the index right after the boundary, or -1 when none exists.
+ */
+const findWeakerBoundaryIn = (raw: string, from: number, to: number): number => {
     for (let i = to - 1; i >= from; i--) {
         const char = raw[i];
         if (char !== undefined && SENTENCE_ENDINGS.has(char)) return i + 1;
@@ -240,21 +264,52 @@ const findBoundaryIn = (raw: string, from: number, to: number): number => {
 
 /**
  * Find a natural boundary in RAW (unformatted) text, searching backwards from
- * maxPos. Prefers a boundary in the window right before maxPos; when the
- * window has none, widens to the whole prefix (down to 25% of maxPos) before
- * giving up with a hard cut at maxPos.
+ * maxPos. Boundary quality beats proximity: a paragraph break / newline
+ * anywhere down to 25% of maxPos wins over sentence/comma boundaries in the
+ * near window [minPos, maxPos). Hard cut at maxPos only when nothing exists.
  */
 const findRawBoundary = (raw: string, maxPos: number, minPos: number): number => {
-    const inWindow = findBoundaryIn(raw, minPos, maxPos);
-    if (inWindow >= 0) return inWindow;
+    const floor = Math.floor(maxPos * NEWLINE_FLOOR_RATIO);
 
-    const floor = Math.floor(maxPos * 0.25);
+    const newlineCut = findNewlineBoundaryIn(raw, floor, maxPos);
+    if (newlineCut >= 0) return newlineCut;
+
+    const weakCut = findWeakerBoundaryIn(raw, minPos, maxPos);
+    if (weakCut >= 0) return weakCut;
+
     if (floor < minPos) {
-        const widened = findBoundaryIn(raw, floor, minPos);
+        const widened = findWeakerBoundaryIn(raw, floor, minPos);
         if (widened >= 0) return widened;
     }
 
     return maxPos;
+};
+
+/**
+ * Cut RAW text right after its last paragraph break (falling back to the last
+ * newline) at or past minPos. Used when a streaming message is being closed
+ * for a continuation: the cut should land on a line boundary, not wherever
+ * the last stream chunk happened to end. currentPart is empty when no
+ * boundary qualifies — callers decide whether to move everything or keep all.
+ */
+export const splitAtLastNewline = (raw: string, minPos: number = 0): SplitResult => {
+    const paragraphBreak = raw.lastIndexOf('\n\n');
+    if (paragraphBreak >= minPos) {
+        return {
+            currentPart: raw.slice(0, paragraphBreak),
+            remaining: raw.slice(paragraphBreak + 2),
+        };
+    }
+
+    const newline = raw.lastIndexOf('\n');
+    if (newline >= minPos) {
+        return {
+            currentPart: raw.slice(0, newline),
+            remaining: raw.slice(newline + 1),
+        };
+    }
+
+    return { currentPart: '', remaining: raw };
 };
 
 /**
