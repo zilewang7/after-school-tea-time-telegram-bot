@@ -3,15 +3,15 @@
  * (shared per-chat budget, 429 backoff, sticky delivery)
  */
 import type { Api } from 'grammy';
+import type { MessageEntity as RenderedEntity } from 'telegram-md-entities';
 import { to, isErr } from '../shared/result.js';
 import { submitEdit, dropMessageState, runApiCall } from './edit-coordinator.js';
 
 export interface EditOptions {
-    parseMode?: 'MarkdownV2' | 'HTML' | 'Markdown';
+    /** Pre-rendered entities for the text */
+    entities?: readonly RenderedEntity[];
     replyMarkup?: any;
     disableWebPagePreview?: boolean;
-    /** Safe replacement text used when Telegram rejects the Markdown */
-    fallbackText?: string;
 }
 
 export interface MessageEditor {
@@ -42,13 +42,10 @@ export const createMessageEditor = (
     return {
         edit: (text: string, options?: EditOptions): Promise<boolean> => {
             return submitEdit(api, chatId, messageId, text, {
-                parseMode: options?.parseMode,
+                entities: options?.entities,
                 replyMarkup: options?.replyMarkup,
                 linkPreviewDisabled: options?.disableWebPagePreview,
                 isFinal: true,
-                buildFallbackText: options?.fallbackText !== undefined
-                    ? () => options.fallbackText ?? null
-                    : undefined,
             });
         },
 

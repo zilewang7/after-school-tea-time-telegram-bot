@@ -21,15 +21,17 @@ import {
     type TypingIndicator,
 } from '../telegram/index.js';
 import { runApiCall } from '../telegram/edit-coordinator.js';
+import { toApiEntities } from '../telegram/api-entities.js';
 import { registerContinuation } from '../state.js';
 import {
-    escapeMarkdownV2,
-    toTelegramMarkdown,
-    truncateForTelegram,
-    formatThinkingContent,
-} from '../telegram/formatters/markdown-formatter.js';
-import { buildFinalMessageChunks } from '../telegram/formatters/final-message-builder.js';
-import { getTelegramVisibleLength, splitRawByFormattedLength, smartSplit, splitAtLastNewline } from '../telegram/formatters/smart-splitter.js';
+    concatMessages,
+    renderMarkdown,
+    wrapInBlockquote,
+} from 'telegram-md-entities';
+import type { RenderedMessage } from 'telegram-md-entities';
+import { truncateForTelegram } from '../telegram/formatters/text-utils.js';
+import { buildFinalMessages } from '../telegram/formatters/final-message-builder.js';
+import { splitRawByFits, splitAtLastNewline } from '../telegram/formatters/smart-splitter.js';
 import type {
     StreamChunk,
     AIResponse,
@@ -37,6 +39,9 @@ import type {
 } from '../ai/types.js';
 
 const MESSAGE_LENGTH_LIMIT = 3900;
+/** Per-message entity budget during streaming (server cap is ~100; the
+ *  final pass re-renders per message so a little headroom is enough) */
+const MESSAGE_ENTITY_LIMIT = 85;
 const THINKING_BUFFER_LIMIT = 10000;
 /** Below this remaining budget, move the whole text to the continuation
  *  instead of squeezing a tiny tail that would be chopped mid-sentence */
@@ -119,7 +124,7 @@ export const createChatContext = async (
         chatId,
         messageId: session.currentMessageId,
         idleInterval: 2500,
-        initialContent: '✽ Thinking\\.\\.\\.', // Initial message content to avoid duplicate edits
+        initialContent: '✽ Thinking...', // Initial message content to avoid duplicate edits
         getButtons: () => {
             // Stop idle updates when finalized or stream aborted (stop button)
             if (chatContext.isFinalized || session.streamController.isAborted()) {
@@ -193,35 +198,34 @@ const processChunk = (chunk: StreamChunk, state: ResponseState): ResponseState =
 };
 
 /**
- * Format current state for display (without status text - handled by StreamingEditor)
+ * Format current state for display (without status text - handled by
+ * StreamingEditor). While processing, markdown renders in streaming mode
+ * (unclosed constructs show as their intended formatting) and thinking is a
+ * plain blockquote; the final pass renders strict and collapses thinking.
  */
 const formatStateForDisplay = (
     state: ResponseState,
     isProcessing: boolean,
-): string => {
-    let display = '';
+): RenderedMessage => {
+    const parts: (RenderedMessage | string)[] = [];
 
     if (state.thinkingBuffer) {
-        if (!isProcessing) {
-            display = formatThinkingContent(state.thinkingBuffer);
-        } else {
-            display = '>' + state.thinkingBuffer.split('\n').map(escapeMarkdownV2).join('\n>');
-        }
-
+        parts.push(
+            wrapInBlockquote(
+                renderMarkdown(state.thinkingBuffer, { streaming: isProcessing }),
+                !isProcessing
+            )
+        );
         if (state.textBuffer) {
-            display += '\n';
+            parts.push('\n');
         }
     }
 
     if (state.textBuffer) {
-        if (!isProcessing) {
-            display += toTelegramMarkdown(state.textBuffer)
-        } else {
-            display += escapeMarkdownV2(state.textBuffer);
-        }
+        parts.push(renderMarkdown(state.textBuffer, { streaming: isProcessing }));
     }
 
-    return display;
+    return concatMessages(...parts);
 };
 
 /**
@@ -241,8 +245,8 @@ const finalizeCurrentMessage = async (
     const finalContent = formatStateForDisplay(state, false);
 
     // Update message with final content (no status text - isFinal)
-    await editor.updateContent(finalContent, {
-        parseMode: 'MarkdownV2',
+    await editor.updateContent(finalContent.text, {
+        entities: finalContent.entities,
         isFinal: true,
     });
 };
@@ -264,7 +268,6 @@ const createContinuationMessage = async (
     const sendResult = await to(
         runApiCall(chatId, () =>
             ctx.api.sendMessage(chatId, 'continued', {
-                parse_mode: 'MarkdownV2',
                 reply_parameters: { message_id: userMessageId },
                 reply_markup: buttons,
             })
@@ -348,35 +351,45 @@ export const processStream = async (
         chatContext.currentState = state;
 
         // Format current display (without status - StreamingEditor handles it)
-        const displayText = formatStateForDisplay(state, true);
+        const rendered = formatStateForDisplay(state, true);
 
-        // Check if we need to switch to a new message
-        // Add some buffer for status text that will be appended
-        if (getTelegramVisibleLength(displayText) >= MESSAGE_LENGTH_LIMIT - 50) {
-            console.log('[response-handler] Message length exceeded, switching to continuation...');
+        // Check if we need to switch to a new message: both budgets matter —
+        // some buffer for the status text; entities past ~100 are dropped
+        if (
+            rendered.text.length >= MESSAGE_LENGTH_LIMIT - 50 ||
+            rendered.entities.length >= MESSAGE_ENTITY_LIMIT
+        ) {
+            console.log('[response-handler] Message budget exceeded, switching to continuation...');
 
             let thinkingToSend = state.thinkingBuffer;
             let remainingThinking = '';
             let textToSend = state.textBuffer;
             let remainingText = '';
 
-            // Formatter used for thinking in the streaming (processing) view
-            const formatThinkingForStreaming = (thinking: string): string =>
-                '>' + thinking.split('\n').map(escapeMarkdownV2).join('\n>');
+            // Renderer used for thinking in the streaming (processing) view
+            const renderThinkingForStreaming = (thinking: string): RenderedMessage =>
+                wrapInBlockquote(renderMarkdown(thinking, { streaming: true }), false);
 
-            const thinkingFormatted = state.thinkingBuffer
-                ? formatThinkingForStreaming(state.thinkingBuffer)
-                : '';
-            const thinkingVisibleLength = getTelegramVisibleLength(thinkingFormatted);
+            const thinkingRendered = state.thinkingBuffer
+                ? renderThinkingForStreaming(state.thinkingBuffer)
+                : concatMessages();
 
             // Case 1: Thinking alone can't fit in one message
-            if (thinkingVisibleLength >= MESSAGE_LENGTH_LIMIT) {
+            if (
+                thinkingRendered.text.length >= MESSAGE_LENGTH_LIMIT ||
+                thinkingRendered.entities.length >= MESSAGE_ENTITY_LIMIT
+            ) {
                 console.log('[response-handler] Thinking itself exceeds limit, splitting thinking...');
                 // Exact-measure split: keeps everything already displayed
-                const { currentPart, remaining } = splitRawByFormattedLength(
+                const { currentPart, remaining } = splitRawByFits(
                     state.thinkingBuffer,
-                    formatThinkingForStreaming,
-                    MESSAGE_LENGTH_LIMIT
+                    (prefix) => {
+                        const measured = renderThinkingForStreaming(prefix);
+                        return (
+                            measured.text.length <= MESSAGE_LENGTH_LIMIT &&
+                            measured.entities.length <= MESSAGE_ENTITY_LIMIT
+                        );
+                    }
                 );
                 thinkingToSend = currentPart;
                 remainingThinking = remaining;
@@ -385,7 +398,15 @@ export const processStream = async (
             } else {
                 // Case 2: Thinking fits, but thinking + text is too long
                 const newlineSpace = state.thinkingBuffer ? 1 : 0; // Newline between thinking and text
-                const availableSpace = MESSAGE_LENGTH_LIMIT - thinkingVisibleLength - newlineSpace;
+                const availableSpace = MESSAGE_LENGTH_LIMIT - thinkingRendered.text.length - newlineSpace;
+                const availableEntities = MESSAGE_ENTITY_LIMIT - thinkingRendered.entities.length;
+                const textFits = (prefix: string): boolean => {
+                    const measured = renderMarkdown(prefix, { streaming: true });
+                    return (
+                        measured.text.length <= availableSpace &&
+                        measured.entities.length <= availableEntities
+                    );
+                };
 
                 if (state.textBuffer) {
                     if (availableSpace < MIN_TAIL_TEXT_BUDGET) {
@@ -394,12 +415,11 @@ export const processStream = async (
                         // start the text cleanly in the next message
                         textToSend = '';
                         remainingText = state.textBuffer;
-                    } else if (getTelegramVisibleLength(escapeMarkdownV2(state.textBuffer)) > availableSpace) {
+                    } else if (!textFits(state.textBuffer)) {
                         // Exact-measure split, preferring paragraph/newline boundaries
-                        const { currentPart, remaining } = splitRawByFormattedLength(
+                        const { currentPart, remaining } = splitRawByFits(
                             state.textBuffer,
-                            escapeMarkdownV2,
-                            availableSpace
+                            textFits
                         );
                         textToSend = currentPart;
                         remainingText = remaining;
@@ -462,8 +482,8 @@ export const processStream = async (
 
         if (shouldUpdate) {
             const buttons = buildResponseButtons(chatContext.currentButtonState);
-            await chatContext.editor.updateContent(displayText, {
-                parseMode: 'MarkdownV2',
+            await chatContext.editor.updateContent(rendered.text, {
+                entities: rendered.entities,
                 replyMarkup: buttons,
             });
             lastUpdateTime = Date.now();
@@ -500,56 +520,38 @@ export const sendFinalResponse = async (
     // Check if stopped by user
     const wasStoppedByUser = session.streamController.isAborted();
 
-    const finalChunks = buildFinalMessageChunks({
+    const finalChunks = buildFinalMessages({
         text: response.text,
         thinking: response.thinkingText,
         agentStats: response.agentStats,
         wasStoppedByUser,
         groundingData: response.groundingData,
     });
-    let finalMessage = finalChunks[0] ?? '';
+    let finalMessage: RenderedMessage = finalChunks[0] ?? { text: '', entities: [] };
 
     if (response.groundingData?.length) {
         console.log('[response-handler] Grounding metadata:', JSON.stringify(response.groundingData));
     }
-
-    // Set raw parts for fallback formatting on parse error
-    editor.setRawParts({
-        text: response.text,
-        thinking: response.thinkingText,
-        agentStats: response.agentStats,
-        groundingData: response.groundingData,
-    });
 
     // Check if final message needs multi-message output
     if (finalChunks.length > 1) {
         console.log('[response-handler] Final message exceeds limit, splitting by sections...');
 
         // Send current part first (no buttons on split messages)
-        await editor.updateContent(finalChunks[0] ?? '', { parseMode: 'MarkdownV2', isFinal: true });
+        await editor.updateContent(finalMessage.text, {
+            entities: finalMessage.entities,
+            isFinal: true,
+        });
 
         for (const chunk of finalChunks.slice(1)) {
-            const sendChunk = (text: string) =>
-                to(
-                    runApiCall(chatId, () =>
-                        ctx.api.sendMessage(chatId, text, {
-                            parse_mode: 'MarkdownV2',
-                            reply_parameters: { message_id: userMessageId },
-                        })
-                    )
-                );
-
-            let continuationResult = await sendChunk(chunk);
-
-            // Parse error on a continuation chunk: retry with the chunk source
-            // escaped verbatim rather than dropping the rest of the reply
-            if (
-                isErr(continuationResult) &&
-                continuationResult[0].message.includes("can't parse entities")
-            ) {
-                console.warn('[response-handler] Continuation parse error, retrying with safe formatting');
-                continuationResult = await sendChunk(smartSplit(escapeMarkdownV2(chunk), 4000).currentPart);
-            }
+            const continuationResult = await to(
+                runApiCall(chatId, () =>
+                    ctx.api.sendMessage(chatId, chunk.text, {
+                        entities: toApiEntities(chunk.entities),
+                        reply_parameters: { message_id: userMessageId },
+                    })
+                )
+            );
 
             if (isErr(continuationResult)) {
                 console.error('[response-handler] Failed to send continuation:', continuationResult[0]);
@@ -635,7 +637,7 @@ export const sendFinalResponse = async (
         return;
     }
 
-    const hasText = Boolean(finalMessage);
+    const hasText = Boolean(finalMessage.text);
     const hasImages = response.images.length > 0;
 
     // Check if this is an image generation context
@@ -645,9 +647,10 @@ export const sendFinalResponse = async (
 
     // Add [no image in response] marker for image generation without images
     if (noImageInResponse) {
-        finalMessage = finalMessage
-            ? `${finalMessage}\n\n\\[no image in response\\]`
-            : '\\[no image in response\\]';
+        finalMessage = concatMessages(
+            finalMessage,
+            finalMessage.text ? '\n\n[no image in response]' : '[no image in response]'
+        );
     }
 
     console.log('[response-handler] Final response:', {
@@ -665,7 +668,10 @@ export const sendFinalResponse = async (
     if (hasImages) {
         // Update text message first (no buttons - intermediate message)
         if (hasText) {
-            await editor.updateContent(finalMessage, { parseMode: 'MarkdownV2', isFinal: true });
+            await editor.updateContent(finalMessage.text, {
+                entities: finalMessage.entities,
+                isFinal: true,
+            });
         } else {
             // No text, delete the processing message
             await editor.delete();
@@ -768,9 +774,11 @@ export const sendFinalResponse = async (
 
         if (hasText || wasStoppedByUser || noImageInResponse) {
             // Text response, stopped, or no image in image generation context
-            const displayMessage = finalMessage || '\\[stopped\\]';
-            await editor.updateContent(displayMessage, {
-                parseMode: 'MarkdownV2',
+            const displayMessage: RenderedMessage = finalMessage.text
+                ? finalMessage
+                : { text: '[stopped]', entities: [] };
+            await editor.updateContent(displayMessage.text, {
+                entities: displayMessage.entities,
                 replyMarkup: finalButtons,
                 isFinal: true,
             });
@@ -828,7 +836,9 @@ export const handleResponseError = async (
         ? `${partialText}\n\n${errorMessage}`
         : errorMessage;
 
-    const truncatedMessage = truncateForTelegram(displayMessage);
+    // Lenient markdown render: partial text keeps its formatting, and error
+    // text can never produce a parse failure on the entities path
+    const errorRendered = renderMarkdown(truncateForTelegram(displayMessage));
 
     // Get the correct button state after finalization (may be HAS_VERSIONS for retry errors)
     const getBotResponseForButtons = async () => {
@@ -847,7 +857,8 @@ export const handleResponseError = async (
     );
 
     // Edit with retry button (delivery retries handled by the edit coordinator)
-    const delivered = await editor.updateContent(truncatedMessage, {
+    const delivered = await editor.updateContent(errorRendered.text, {
+        entities: errorRendered.entities,
         replyMarkup: errorButtons,
         isFinal: true,
     });
@@ -893,7 +904,7 @@ export const createChatContextForRetry = (
         chatId,
         messageId: session.currentMessageId,
         idleInterval: 2500,
-        initialContent: '✽ Thinking\\.\\.\\.', // Initial message content to avoid duplicate edits
+        initialContent: '✽ Thinking...', // Initial message content to avoid duplicate edits
         getButtons: () => {
             // Stop idle updates when finalized or stream aborted (stop button)
             if (chatContext.isFinalized || session.streamController.isAborted()) {

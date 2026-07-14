@@ -15,11 +15,16 @@
  */
 import { GrammyError } from 'grammy';
 import type { Api } from 'grammy';
+import type { MessageEntity as RenderedEntity } from 'telegram-md-entities';
 import { to } from '../shared/result.js';
+import { toApiEntities } from './api-entities.js';
 
 export type EditPriority = 'final' | 'content' | 'spinner';
 
 export interface SubmitEditOptions {
+    /** Pre-rendered entities for the text (mutually exclusive with parseMode) */
+    entities?: readonly RenderedEntity[];
+    /** Server-side parsing, only for hand-written static UI text */
     parseMode?: 'MarkdownV2' | 'HTML' | 'Markdown';
     replyMarkup?: any;
     priority?: EditPriority;
@@ -27,8 +32,6 @@ export interface SubmitEditOptions {
     isFinal?: boolean;
     /** Disable link preview for this edit */
     linkPreviewDisabled?: boolean;
-    /** Build a safe replacement text when Telegram rejects the Markdown */
-    buildFallbackText?: () => string | null;
 }
 
 interface CoordinatorConfig {
@@ -60,13 +63,15 @@ const config: CoordinatorConfig = {
 
 interface DesiredState {
     text: string;
+    entities?: readonly RenderedEntity[];
+    /** Serialized entities ('[]' when none) for cheap dedup comparison */
+    entitiesJson: string;
     parseMode?: 'MarkdownV2' | 'HTML' | 'Markdown';
     replyMarkup?: any;
     replyMarkupJson?: string;
     linkPreviewDisabled?: boolean;
     priority: EditPriority;
     isFinal: boolean;
-    buildFallbackText?: () => string | null;
 }
 
 interface MessageEntry {
@@ -75,6 +80,7 @@ interface MessageEntry {
     desired: DesiredState | null;
     /** Last state successfully sent to Telegram */
     sentText?: string;
+    sentEntitiesJson?: string;
     sentMarkupJson?: string;
     /** Flush attempts for the current desired state (reset on new submit) */
     attempts: number;
@@ -218,6 +224,13 @@ const resolveWaiters = (entry: MessageEntry, delivered: boolean): void => {
 
 const matchesSentState = (entry: MessageEntry, state: DesiredState): boolean => {
     if (entry.sentText !== state.text) return false;
+    // Same text but different entities is still a real change
+    if (
+        entry.sentEntitiesJson !== undefined &&
+        entry.sentEntitiesJson !== state.entitiesJson
+    ) {
+        return false;
+    }
     // Unknown sent markup (e.g. primed state) only compares text
     if (entry.sentMarkupJson === undefined) return true;
     return entry.sentMarkupJson === state.replyMarkupJson;
@@ -232,6 +245,7 @@ const settleDelivered = (
     state: DesiredState
 ): void => {
     entry.sentText = state.text;
+    entry.sentEntitiesJson = state.entitiesJson;
     entry.sentMarkupJson = state.replyMarkupJson;
     if (entry.desired === state) {
         entry.desired = null;
@@ -290,16 +304,18 @@ const handleEditError = (
     }
 
     if (
-        message.includes("can't parse entities") &&
-        state.parseMode === 'MarkdownV2'
+        error instanceof GrammyError &&
+        error.error_code === 400 &&
+        state.entities?.length
     ) {
-        const fallbackText = state.buildFallbackText?.() ?? null;
-        if (fallbackText !== null && fallbackText !== state.text && entry.desired === state) {
-            console.warn('[edit-coordinator] Markdown parse error, retrying with safe formatting');
-            entry.desired = { ...state, text: fallbackText, buildFallbackText: undefined };
+        // Dead-man switch: offline validation should make rejected entities
+        // impossible, but if the server refuses them, deliver the plain text
+        // over delivering nothing.
+        console.error('[edit-coordinator] Edit with entities rejected, degrading to plain text:', message);
+        if (entry.desired === state) {
+            entry.desired = { ...state, entities: undefined, entitiesJson: '[]' };
             return;
         }
-        console.error('[edit-coordinator] Edit failed (parse error):', message);
         settleFailed(coordinator, entry, state);
         return;
     }
@@ -379,6 +395,9 @@ const flushEntry = async (
         recordCall(coordinator);
         const [error] = await to(
             api.editMessageText(coordinator.chatId, entry.messageId, state.text, {
+                entities: state.entities?.length
+                    ? toApiEntities(state.entities)
+                    : undefined,
                 parse_mode: state.parseMode,
                 reply_markup: state.replyMarkup,
                 link_preview_options: state.linkPreviewDisabled
@@ -458,8 +477,11 @@ export const submitEdit = (
     if (entry.desired) {
         resolveWaiters(entry, true);
     }
+    const entities = options?.entities?.length ? options.entities : undefined;
     const state: DesiredState = {
         text,
+        entities,
+        entitiesJson: entities ? JSON.stringify(entities) : '[]',
         parseMode: options?.parseMode,
         replyMarkup: options?.replyMarkup,
         replyMarkupJson:
@@ -469,7 +491,6 @@ export const submitEdit = (
         linkPreviewDisabled: options?.linkPreviewDisabled,
         priority: isFinal ? 'final' : options?.priority ?? 'content',
         isFinal,
-        buildFallbackText: options?.buildFallbackText,
     };
 
     if (matchesSentState(entry, state)) {
@@ -513,6 +534,9 @@ export const primeSentState = (
         coordinator.entries.set(messageId, entry);
     }
     entry.sentText = text;
+    // Primed content is always plain text; an entity-carrying submit with the
+    // same text must still be treated as a change
+    entry.sentEntitiesJson = '[]';
     entry.sentMarkupJson = undefined;
 };
 

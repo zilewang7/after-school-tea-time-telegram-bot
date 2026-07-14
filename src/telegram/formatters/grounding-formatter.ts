@@ -1,9 +1,12 @@
 /**
- * Google Search grounding result formatter for Telegram
+ * Grounding (search / citation) sections for Telegram, built directly as
+ * entities: bold title + expandable blockquote of labeled links. No markdown
+ * round-trip, so titles and URLs never need escaping.
  */
-import { escapeMarkdownV2 } from './markdown-formatter.js';
-import { getTelegramVisibleLength, TELEGRAM_MAX_LENGTH } from './smart-splitter.js';
+import { concatMessages, wrapInBlockquote } from 'telegram-md-entities';
+import type { RenderedMessage } from 'telegram-md-entities';
 import type { GroundingData } from '../../ai/types.js';
+import { boldText, linkText, plainText } from './entity-text.js';
 
 interface Anchor {
     href: string;
@@ -22,15 +25,6 @@ const getCitationDisplayTitle = (uri: string, title?: string): string => {
     } catch {
         return uri;
     }
-};
-
-/**
- * Escape characters in URLs for Telegram MarkdownV2 links.
- * Per Telegram Bot API: inside [text](url) links, only ')' and '\' need escaping.
- * We URL-encode ')' to avoid breaking the link syntax.
- */
-const escapeUrlForTelegram = (url: string): string => {
-    return url.replace(/\\/g, '%5C').replace(/\)/g, '%29');
 };
 
 /**
@@ -110,163 +104,103 @@ const matchQueriesToAnchors = (
     });
 };
 
+/** `[n] title` link line */
+const citationLine = (index: number, title: string, url: string): RenderedMessage =>
+    concatMessages(`[${index}] `, linkText(title, url));
+
+/** Bold title + expandable blockquote body */
+const buildSection = (title: string, body: RenderedMessage): RenderedMessage =>
+    concatMessages(boldText(title), '\n', wrapInBlockquote(body, true));
+
+const buildCitationsSection = (
+    title: string,
+    citations: { uri: string; title?: string }[]
+): RenderedMessage[] => {
+    if (!citations.length) return [];
+
+    const lines = citations.map((citation, idx) =>
+        citationLine(idx + 1, getCitationDisplayTitle(citation.uri, citation.title), citation.uri)
+    );
+    const body = concatMessages(
+        ...lines.flatMap((line, idx) => (idx > 0 ? ['\n', line] : [line]))
+    );
+    return [buildSection(title, body)];
+};
+
 /**
- * Format single grounding metadata entry
+ * xai / citation-based grounding → Sources section
  */
-const formatXaiGroundingSections = (metadata: GroundingData): string[] => {
+const buildXaiGroundingSections = (metadata: GroundingData): RenderedMessage[] => {
     if (metadata.provider === 'xai' || metadata.citations?.length) {
         const citations = metadata.citations?.filter((citation) => citation.uri) ?? [];
-        if (!citations.length) return [];
-
-        const sections: string[] = [];
-        let currentEntries = '';
-
-        citations.forEach((citation, idx) => {
-            const title = escapeMarkdownV2(
-                getCitationDisplayTitle(citation.uri, citation.title)
-            );
-            const safeUrl = escapeUrlForTelegram(citation.uri);
-            const entry = `${currentEntries ? '\n>' : ''}\\[${idx + 1}\\] [${title}](${safeUrl})`;
-            const nextEntries = currentEntries + entry;
-            const nextSection = `\n*Sources*\n**>${nextEntries}||`;
-
-            if (
-                currentEntries &&
-                getTelegramVisibleLength(nextSection) > TELEGRAM_MAX_LENGTH
-            ) {
-                sections.push(`\n*Sources*\n**>${currentEntries}||`);
-                currentEntries = `\\[${idx + 1}\\] [${title}](${safeUrl})`;
-                return;
-            }
-
-            currentEntries = nextEntries;
-        });
-
-        if (currentEntries) {
-            sections.push(`\n*Sources*\n**>${currentEntries}||`);
-        }
-
-        return sections;
+        return buildCitationsSection('Sources', citations);
     }
-
     return [];
 };
 
-const formatSingleGrounding = (
-    metadata: GroundingData,
-): string => {
-    const xaiSections = formatXaiGroundingSections(metadata);
-    if (xaiSections.length) {
-        return xaiSections.join('');
-    }
-
-    const queries = metadata.searchQueries.filter(
-        (q) => q && q.trim().length > 0
-    );
-
-    if (!queries.length) return '';
-
-    let result = '\n*GoogleSearch*\n**>';
+/**
+ * Google Search grounding → GoogleSearch section (queries as links + sources)
+ */
+const buildSearchGroundingSection = (metadata: GroundingData): RenderedMessage[] => {
+    const queries = metadata.searchQueries.filter((q) => q && q.trim().length > 0);
+    if (!queries.length) return [];
 
     const anchors = extractAnchors(metadata.searchEntryPoint?.renderedContent);
     const matchedAnchors = matchQueriesToAnchors(queries, anchors);
 
-    // Format queries with links
-    const formattedQueries = queries.map((query, idx) => {
+    const queryParts = queries.flatMap((query, idx) => {
         const anchor = matchedAnchors[idx];
-        if (anchor?.href) {
-            return `[${escapeMarkdownV2(query)}](${escapeUrlForTelegram(anchor.href)})`;
-        }
-        return escapeMarkdownV2(query);
+        const part = anchor?.href ? linkText(query, anchor.href) : plainText(query);
+        return idx > 0 ? [' | ', part] : [part];
     });
 
-    result += formattedQueries.join(' \\| ');
-
-    // Add grounding chunks (source citations)
-    metadata.groundingChunks?.forEach((chunk, idx) => {
-        if (chunk.web) {
-            const title = escapeMarkdownV2(chunk.web.title ?? 'no title');
-            const uri = chunk.web.uri ?? 'https://example.com';
-            result += `\n>\\[${idx + 1}\\] [${title}](${escapeUrlForTelegram(uri)})`;
-        }
+    const chunkLines = (metadata.groundingChunks ?? []).flatMap((chunk, idx) => {
+        if (!chunk.web) return [];
+        const title = chunk.web.title ?? 'no title';
+        const uri = chunk.web.uri ?? 'https://example.com';
+        return ['\n', citationLine(idx + 1, title, uri)];
     });
 
-    result += '||';
-
-    return result;
+    const body = concatMessages(...queryParts, ...chunkLines);
+    return [buildSection('GoogleSearch', body)];
 };
 
 /**
- * Format MCP tool call grounding data
+ * MCP tool call grounding → MCPTools (+ Sources) sections
  */
-const formatMcpGrounding = (metadata: GroundingData): string => {
-    const sections: string[] = [];
+const buildMcpGroundingSections = (metadata: GroundingData): RenderedMessage[] => {
+    const sections: RenderedMessage[] = [];
 
-    // Show search queries (tool names + keywords)
     if (metadata.searchQueries.length > 0) {
-        const queries = metadata.searchQueries.map(q => escapeMarkdownV2(q)).join(' \\| ');
-        sections.push(`\n*MCPTools*\n**>${queries}||`);
+        sections.push(
+            buildSection('MCPTools', plainText(metadata.searchQueries.join(' | ')))
+        );
     }
 
-    // Show citation URLs
-    const citations = metadata.citations?.filter(c => c.uri) ?? [];
-    if (citations.length > 0) {
-        let entries = '';
-        citations.forEach((citation, idx) => {
-            const title = escapeMarkdownV2(
-                getCitationDisplayTitle(citation.uri, citation.title)
-            );
-            const safeUrl = escapeUrlForTelegram(citation.uri);
-            const entry = `${entries ? '\n>' : ''}\\[${idx + 1}\\] [${title}](${safeUrl})`;
-            entries += entry;
-        });
-        sections.push(`\n*Sources*\n**>${entries}||`);
-    }
+    const citations = metadata.citations?.filter((c) => c.uri) ?? [];
+    sections.push(...buildCitationsSection('Sources', citations));
 
-    return sections.join('');
+    return sections;
 };
 
 /**
- * Format grounding metadata array for Telegram
+ * Build all grounding sections for a response
  */
-export const formatGroundingMetadata = (
+export const buildGroundingSections = (
     metadataList: GroundingData[]
-): string => {
-    if (!metadataList.length) return '';
-
-    return formatGroundingSections(metadataList).join('');
-};
-
-export const formatGroundingSections = (
-    metadataList: GroundingData[]
-): string[] => {
+): RenderedMessage[] => {
     if (!metadataList.length) return [];
 
     return metadataList.flatMap((metadata) => {
         if (metadata.provider === 'mcp') {
-            const section = formatMcpGrounding(metadata);
-            return section ? [section] : [];
+            return buildMcpGroundingSections(metadata);
         }
 
-        const xaiSections = formatXaiGroundingSections(metadata);
+        const xaiSections = buildXaiGroundingSections(metadata);
         if (xaiSections.length) {
             return xaiSections;
         }
 
-        const section = formatSingleGrounding(metadata);
-        return section ? [section] : [];
+        return buildSearchGroundingSection(metadata);
     });
-};
-
-/**
- * Append grounding metadata to existing message
- */
-export const appendGroundingToMessage = (
-    message: string,
-    metadataList: GroundingData[]
-): string => {
-    if (!message || !metadataList.length) return message;
-
-    const groundingSection = formatGroundingMetadata(metadataList);
-    return message + groundingSection;
 };

@@ -17,9 +17,16 @@ import {
     createMessageEditor,
     type MessageEditor,
 } from '../telegram/index.js';
-import { buildFinalMessageChunks } from '../telegram/formatters/final-message-builder.js';
-import { formatResponse, escapeMarkdownV2 } from '../telegram/formatters/markdown-formatter.js';
-import { smartSplit } from '../telegram/formatters/smart-splitter.js';
+import {
+    concatMessages,
+    renderMarkdown,
+    wrapInBlockquote,
+} from 'telegram-md-entities';
+import type { RenderedMessage } from 'telegram-md-entities';
+import { buildFinalMessages } from '../telegram/formatters/final-message-builder.js';
+import { italicText, plainText } from '../telegram/formatters/entity-text.js';
+import { truncateForTelegram } from '../telegram/formatters/text-utils.js';
+import { toApiEntities } from '../telegram/api-entities.js';
 import { buildResponseButtons } from '../cmd/menus/index.js';
 import { to, isErr } from '../shared/result.js';
 import {
@@ -171,7 +178,7 @@ export const createSession = async (
     let processingMsgId: number;
 
     // Initial status text (matches first entry in streaming-editor statusData)
-    const initialStatus = '✽ Thinking\\.\\.\\.';
+    const initialStatus = '✽ Thinking...';
 
     // Build stop button for processing state
     const stopButton = buildResponseButtons(ButtonState.PROCESSING);
@@ -181,14 +188,12 @@ export const createSession = async (
         processingMsgId = options.existingFirstMessageId;
         const editor = createMessageEditor(api, chatId, processingMsgId);
         await editor.edit(initialStatus, {
-            parseMode: 'MarkdownV2',
             replyMarkup: stopButton,
         });
     } else {
         // Send new processing message with stop button
         const sendResult = await to(
             ctx.reply(initialStatus, {
-                parse_mode: 'MarkdownV2',
                 reply_parameters: { message_id: userMessageId },
                 reply_markup: stopButton,
             })
@@ -300,8 +305,7 @@ export const createSession = async (
 const createContinuation = async (session: BotMessageSession): Promise<MessageEditor | null> => {
     const sendResult = await to(
         runApiCall(session.chatId, () =>
-            session.api.sendMessage(session.chatId, `continued`, {
-                parse_mode: 'MarkdownV2',
+            session.api.sendMessage(session.chatId, 'continued', {
                 reply_parameters: { message_id: session.userMessageId },
             })
         )
@@ -429,14 +433,23 @@ const handleSessionError = async (session: BotMessageSession, error: Error): Pro
     });
 
     // Update message with error content and retry button
-    const errorContent = session.textBuffer
-        ? `${formatResponse(session.textBuffer, session.thinkingBuffer)}\n\n_Error: ${error.message.replace(/[_*[\]()~`>#+\-=|{}.!]/g, '\\$&')}_`
-        : `_Error: ${error.message.replace(/[_*[\]()~`>#+\-=|{}.!]/g, '\\$&')}_`;
+    const parts: (RenderedMessage | string)[] = [];
+    if (session.textBuffer) {
+        if (session.thinkingBuffer) {
+            parts.push(
+                wrapInBlockquote(renderMarkdown(session.thinkingBuffer), true),
+                '\n'
+            );
+        }
+        parts.push(renderMarkdown(session.textBuffer), '\n\n');
+    }
+    parts.push(italicText(`Error: ${truncateForTelegram(error.message, 500)}`));
+    const errorContent = concatMessages(...parts);
 
     const retryButtons = buildResponseButtons(ButtonState.RETRY_ONLY);
 
-    const [err] = await to(session.editor.edit(errorContent, {
-        parseMode: 'MarkdownV2',
+    const [err] = await to(session.editor.edit(errorContent.text, {
+        entities: errorContent.entities,
         replyMarkup: retryButtons,
     }));
 
@@ -566,17 +579,17 @@ export const switchVersion = async (
     if (!oldVersion || !newVersion) return false;
 
     // Format content using formatters
-    const contentChunks = buildFinalMessageChunks({
+    const contentChunks = buildFinalMessages({
         text: newVersion.text || '',
         thinking: newVersion.thinkingText,
         agentStats: newVersion.agentStats,
         groundingData: newVersion.groundingData,
         wasStoppedByUser: newVersion.wasStoppedByUser,
     });
-    let content = contentChunks[0] ?? '';
+    let content = contentChunks[0] ?? plainText('');
 
-    if (!content && !newVersion.imageBase64) {
-        content = '\\[Empty response\\]';
+    if (!content.text && !newVersion.imageBase64) {
+        content = plainText('[Empty response]');
     }
 
     const versionButtons = buildResponseButtons(
@@ -591,7 +604,7 @@ export const switchVersion = async (
     }
 
     const hasImage = imageBuffer !== null;
-    const hasContent = Boolean(content);
+    const hasContent = Boolean(content.text);
     const newIsImageOnly = hasImage && !hasContent;
     const oldIsImageOnly = Boolean(!oldVersion.text && oldVersion.imageBase64);
 
@@ -609,19 +622,15 @@ export const switchVersion = async (
     const newMessageIds: number[] = [];
     let currentMessageId = firstMessageId;
 
-    /**
-     * Helper to edit a text message with Markdown parse error fallback
-     * (the coordinator applies fallbackText when Telegram rejects the Markdown)
-     */
-    const editWithFallback = async (
+    const editMessage = async (
         editor: MessageEditor,
-        text: string,
-        options?: { parseMode?: 'MarkdownV2'; replyMarkup?: any }
+        message: RenderedMessage,
+        replyMarkup?: any
     ): Promise<boolean> => {
-        // Escaping doubles visible length of markup chars, so cap the fallback
-        // to keep it under Telegram's limit (tail loss only in pathological cases)
-        const escaped = smartSplit(escapeMarkdownV2(text), 4000).currentPart;
-        const delivered = await editor.edit(text, { ...options, fallbackText: escaped });
+        const delivered = await editor.edit(message.text, {
+            entities: message.entities,
+            replyMarkup,
+        });
         if (!delivered) {
             console.error('[bot-message-service] Failed to edit message');
         }
@@ -650,9 +659,10 @@ export const switchVersion = async (
             }
         } else {
             // Old was image-only → new has text: send text message
+            const firstText = content.text ? content : plainText('[Empty response]');
             const [sendErr, sentMsg] = await to(
-                ctx.api.sendMessage(chatId, content || '\\[Empty response\\]', {
-                    parse_mode: 'MarkdownV2',
+                ctx.api.sendMessage(chatId, firstText.text, {
+                    entities: toApiEntities(firstText.entities),
                     reply_parameters: { message_id: response.userMessageId },
                     reply_markup: hasImage ? undefined : versionButtons,
                 })
@@ -666,11 +676,12 @@ export const switchVersion = async (
 
             // Send remaining chunks if multi-chunk
             for (let i = 1; i < contentChunks.length; i++) {
-                const chunk = contentChunks[i] ?? '';
+                const chunk = contentChunks[i];
+                if (!chunk) continue;
                 const isLast = i === contentChunks.length - 1 && !hasImage;
                 const [chunkErr, chunkMsg] = await to(
-                    ctx.api.sendMessage(chatId, chunk, {
-                        parse_mode: 'MarkdownV2',
+                    ctx.api.sendMessage(chatId, chunk.text, {
+                        entities: toApiEntities(chunk.entities),
                         reply_parameters: { message_id: response.userMessageId },
                         reply_markup: isLast ? versionButtons : undefined,
                     })
@@ -720,14 +731,15 @@ export const switchVersion = async (
 
         if (contentChunks.length > 1) {
             const editor = createMessageEditor(ctx.api, chatId, oldFirstMsgId);
-            await editWithFallback(editor, contentChunks[0] ?? '', { parseMode: 'MarkdownV2' });
+            await editMessage(editor, content);
 
             for (let i = 1; i < contentChunks.length; i++) {
-                const chunk = contentChunks[i] ?? '';
+                const chunk = contentChunks[i];
+                if (!chunk) continue;
                 const isLast = i === contentChunks.length - 1 && !hasImage;
                 const [sendErr, sentMsg] = await to(
-                    ctx.api.sendMessage(chatId, chunk, {
-                        parse_mode: 'MarkdownV2',
+                    ctx.api.sendMessage(chatId, chunk.text, {
+                        entities: toApiEntities(chunk.entities),
                         reply_parameters: { message_id: response.userMessageId },
                         reply_markup: isLast ? versionButtons : undefined,
                     })
@@ -738,13 +750,10 @@ export const switchVersion = async (
             }
         } else {
             const editor = createMessageEditor(ctx.api, chatId, oldFirstMsgId);
-            await editWithFallback(
+            await editMessage(
                 editor,
-                content || '\\[Empty response\\]',
-                {
-                    parseMode: 'MarkdownV2',
-                    replyMarkup: hasImage ? undefined : versionButtons,
-                }
+                content.text ? content : plainText('[Empty response]'),
+                hasImage ? undefined : versionButtons
             );
         }
 
@@ -819,7 +828,7 @@ export const refreshToFinalState = async (
     const version = versions[response.currentVersionIndex];
     if (!version) return false;
 
-    const chunks = buildFinalMessageChunks({
+    const chunks = buildFinalMessages({
         text: version.text || '',
         thinking: version.thinkingText,
         agentStats: version.agentStats,
@@ -827,7 +836,7 @@ export const refreshToFinalState = async (
         wasStoppedByUser: version.wasStoppedByUser,
     });
     if (chunks.length === 0) {
-        chunks.push('\\[Empty response\\]');
+        chunks.push(plainText('[Empty response]'));
     }
 
     const buttons = buildResponseButtons(
@@ -852,8 +861,8 @@ export const refreshToFinalState = async (
         if (messageId === undefined || chunk === undefined) continue;
 
         const carriesButtons = !hasImage && i === chunks.length - 1;
-        const delivered = await submitEdit(api, chatId, messageId, chunk, {
-            parseMode: 'MarkdownV2',
+        const delivered = await submitEdit(api, chatId, messageId, chunk.text, {
+            entities: chunk.entities,
             replyMarkup: carriesButtons ? buttons : undefined,
             isFinal: true,
         });
@@ -870,8 +879,8 @@ export const refreshToFinalState = async (
             const carriesButtons = !hasImage && i === chunks.length - 1;
             const [sendErr, sentMsg] = await to(
                 runApiCall(chatId, () =>
-                    api.sendMessage(chatId, chunk, {
-                        parse_mode: 'MarkdownV2',
+                    api.sendMessage(chatId, chunk.text, {
+                        entities: toApiEntities(chunk.entities),
                         reply_parameters: { message_id: response.userMessageId },
                         reply_markup: carriesButtons ? buttons : undefined,
                     })

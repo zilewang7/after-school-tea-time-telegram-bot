@@ -2,11 +2,13 @@
  * StreamingEditor - Manages real-time message editing with status updates
  *
  * Thin layer over the per-chat edit coordinator: every update submits the
- * latest desired state of the message. Pacing, coalescing, 429 backoff and
- * final-state retries are all handled by the coordinator, so this module only
- * tracks the current content and rotates the status line.
+ * latest desired state of the message (plain text + pre-rendered entities).
+ * Pacing, coalescing, 429 backoff and final-state retries are all handled by
+ * the coordinator, so this module only tracks the current content and rotates
+ * the status line.
  */
 import type { Api, RawApi } from 'grammy';
+import type { MessageEntity as RenderedEntity } from 'telegram-md-entities';
 import { to } from '../shared/result.js';
 import {
     submitEdit,
@@ -15,11 +17,6 @@ import {
     dropMessageState,
     runApiCall,
 } from './edit-coordinator.js';
-import { formatResponseSafe } from './formatters/markdown-formatter.js';
-import { smartSplit } from './formatters/smart-splitter.js';
-import { appendAgentStatsToMessage } from './formatters/agent-stats-formatter.js';
-import { appendGroundingToMessage } from './formatters/grounding-formatter.js';
-import type { AgentStats, GroundingData } from '../ai/types.js';
 
 /**
  * Status text entries for cycling display
@@ -63,20 +60,11 @@ export interface StreamingEditorOptions {
 }
 
 /**
- * Raw parts for reconstructing message on parse error
- */
-export interface RawMessageParts {
-    text?: string;
-    thinking?: string;
-    groundingData?: GroundingData[];
-    agentStats?: AgentStats;
-}
-
-/**
  * Options for updateContent
  */
 export interface UpdateContentOptions {
-    parseMode?: 'MarkdownV2' | 'HTML';
+    /** Entities matching the content (offsets stay valid: status is appended after) */
+    entities?: readonly RenderedEntity[];
     replyMarkup?: any;
     /** If true, don't append status text (for final messages) */
     isFinal?: boolean;
@@ -117,12 +105,6 @@ export interface StreamingEditor {
      * Get chat and message IDs
      */
     getIds: () => { chatId: number; messageId: number };
-
-    /**
-     * Set raw parts for fallback formatting on parse error
-     * Should be called before sending final response
-     */
-    setRawParts: (parts: RawMessageParts) => void;
 }
 
 /**
@@ -134,8 +116,8 @@ interface EditorState {
     lastStatusRotateTime: number;
     /** Latest submitted content, without the status line */
     currentContent: string | null;
+    currentEntities: readonly RenderedEntity[] | undefined;
     spinnerTimer: ReturnType<typeof setInterval> | null;
-    rawParts?: RawMessageParts;
 }
 
 /**
@@ -149,6 +131,7 @@ export const createStreamingEditor = (options: StreamingEditorOptions): Streamin
         statusIndex: 0,
         lastStatusRotateTime: Date.now(),
         currentContent: null,
+        currentEntities: undefined,
         spinnerTimer: null,
     };
 
@@ -157,34 +140,16 @@ export const createStreamingEditor = (options: StreamingEditorOptions): Streamin
     }
 
     /**
-     * Get status text escaped for MarkdownV2, rotating when due
+     * Get the plain status line, rotating when due
      */
-    const getStatusTextEscaped = (): string => {
+    const getStatusText = (): string => {
         const now = Date.now();
         if (now - state.lastStatusRotateTime >= STATUS_ROTATE_MS) {
             state.statusIndex = (state.statusIndex + 1) % statusData.length;
             state.lastStatusRotateTime = now;
         }
         const entry = statusData[state.statusIndex] ?? statusData[0]!;
-        return `${entry.symbol} ${entry.message.replace(/\./g, '\\.')}`;
-    };
-
-    /**
-     * Build safe replacement text from raw parts on Markdown parse error
-     */
-    const buildFallbackText = (): string | null => {
-        if (!state.rawParts) return null;
-
-        const { text, thinking, groundingData, agentStats } = state.rawParts;
-        let safeMessage = formatResponseSafe(text || '', thinking);
-        safeMessage = appendAgentStatsToMessage(safeMessage, agentStats);
-        if (groundingData?.length) {
-            safeMessage = appendGroundingToMessage(safeMessage, groundingData);
-        }
-        // rawParts hold the FULL response while this message may be just the
-        // first chunk of a split reply — cap the replacement so a parse-error
-        // fallback can never trip MESSAGE_TOO_LONG
-        return smartSplit(safeMessage, 4000).currentPart;
+        return `${entry.symbol} ${entry.message}`;
     };
 
     const stopSpinner = (): void => {
@@ -213,13 +178,13 @@ export const createStreamingEditor = (options: StreamingEditorOptions): Streamin
             return;
         }
 
-        const statusText = getStatusTextEscaped();
+        const statusText = getStatusText();
         const text = state.currentContent
             ? `${state.currentContent}\n${statusText}`
             : statusText;
 
         void submitEdit(api, chatId, messageId, text, {
-            parseMode: 'MarkdownV2',
+            entities: state.currentEntities,
             replyMarkup: buttons,
             priority: 'spinner',
         });
@@ -231,28 +196,25 @@ export const createStreamingEditor = (options: StreamingEditorOptions): Streamin
         updateContent: async (content: string, opts?: UpdateContentOptions): Promise<boolean> => {
             if (state.stopped && !opts?.isFinal) return false;
 
-            const parseMode = opts?.parseMode ?? 'MarkdownV2';
-
             if (opts?.isFinal) {
                 stopSpinner();
                 // Final: await actual delivery (sticky-retried by coordinator)
                 return submitEdit(api, chatId, messageId, content, {
-                    parseMode,
+                    entities: opts.entities,
                     replyMarkup: opts.replyMarkup,
                     isFinal: true,
-                    buildFallbackText,
                 });
             }
 
             state.currentContent = content;
-            const text = `${content}\n${getStatusTextEscaped()}`;
+            state.currentEntities = opts?.entities;
+            const text = `${content}\n${getStatusText()}`;
 
             // Fire-and-forget: the coordinator always flushes the newest state
             void submitEdit(api, chatId, messageId, text, {
-                parseMode,
+                entities: opts?.entities,
                 replyMarkup: opts?.replyMarkup,
                 priority: 'content',
-                buildFallbackText,
             });
             return true;
         },
@@ -260,8 +222,7 @@ export const createStreamingEditor = (options: StreamingEditorOptions): Streamin
         updateStatusOnly: async (opts?: { replyMarkup?: any }): Promise<boolean> => {
             if (state.stopped) return false;
 
-            void submitEdit(api, chatId, messageId, getStatusTextEscaped(), {
-                parseMode: 'MarkdownV2',
+            void submitEdit(api, chatId, messageId, getStatusText(), {
                 replyMarkup: opts?.replyMarkup,
                 priority: 'spinner',
             });
@@ -293,9 +254,5 @@ export const createStreamingEditor = (options: StreamingEditorOptions): Streamin
         },
 
         getIds: () => ({ chatId, messageId }),
-
-        setRawParts: (parts: RawMessageParts): void => {
-            state.rawParts = parts;
-        },
     };
 };
