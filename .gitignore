@@ -1,5 +1,8 @@
 node_modules
 dist
 .env
+.env.*
 *.sqlite
+*.sqlite-journal
 gcp-sa.json
+tmp/

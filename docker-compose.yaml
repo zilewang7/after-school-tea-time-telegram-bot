@@ -36,6 +36,36 @@ services:
     networks:
       - traefik-net
 
+  # Dev/test instance (@WatchFirstBot): runs the LOCAL working tree (no git
+  # clone), its own node_modules volume (musl vs host glibc), its own sqlite
+  # DB and .env.test. Start with: docker compose --profile test up -d k-on-bot-test
+  k-on-bot-test:
+    container_name: k-on-bot-test
+    profiles: ["test"]
+    image: node:18-alpine
+    env_file:
+      - ./.env.test
+    environment:
+      - BOT_PROXY=socks5h://warp:1080
+      - TZ=Asia/Shanghai
+      - TGS_CONVERTER_URL=http://tgs-converter:8080
+      - GOOGLE_APPLICATION_CREDENTIALS=/app/k-on-bot/gcp-sa.json
+      - DB_PATH=database.test.sqlite
+    volumes:
+      - .:/app/k-on-bot
+      - k-on-bot-test-node-modules:/app/k-on-bot/node_modules
+      # matches the package.json "link:../../projects/telegram-md-entities"
+      - /home/ubuntu/projects/telegram-md-entities:/projects/telegram-md-entities:ro
+    command:
+      [
+        "/bin/sh",
+        "-c",
+        "npm install -g corepack && corepack prepare pnpm@9.4.0 --activate && pnpm install && pnpm build && node dist/index.js",
+      ]
+    working_dir: /app/k-on-bot
+    networks:
+      - traefik-net
+
   # Converts Telegram .tgs animated stickers to .webm for multimodal models.
   # Opt-in via COMPOSE_PROFILES (default includes 'tgs' in .env.example).
   tgs-converter:
@@ -74,3 +104,4 @@ networks:
 
 volumes:
   telegram-bot-api-data:
+  k-on-bot-test-node-modules:
