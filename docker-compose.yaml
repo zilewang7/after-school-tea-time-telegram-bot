@@ -42,7 +42,7 @@ services:
   k-on-bot-test:
     container_name: k-on-bot-test
     profiles: ["test"]
-    image: node:18-alpine
+    image: node:22-alpine
     env_file:
       - ./.env.test
     environment:

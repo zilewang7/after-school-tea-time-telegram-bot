@@ -571,39 +571,31 @@ export const dropMessageState = (
 
 /**
  * Run a raw API call (sendMessage/sendPhoto/deleteMessage/...) under the same
- * per-chat budget and 429 penalty as edits. Retries 429s up to maxAttempts;
- * other errors are rethrown.
+ * per-chat budget as edits. Flood-wait (429) retries are handled globally by
+ * the @grammyjs/auto-retry transformer; if one still escapes it, record the
+ * penalty so subsequent calls in this chat pace down, then rethrow.
  */
 export const runApiCall = async <T>(
     chatId: number | string,
-    apiCall: () => Promise<T>,
-    options?: { maxAttempts?: number }
+    apiCall: () => Promise<T>
 ): Promise<T> => {
     const coordinator = getCoordinator(chatId);
-    const maxAttempts = options?.maxAttempts ?? 3;
-    let lastError: unknown;
-
-    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-        const release = await acquireCallSlot(coordinator);
-        try {
-            await sleepUntilAllowed(coordinator);
-            recordCall(coordinator);
-            return await apiCall();
-        } catch (error) {
-            lastError = error;
-            if (!is429(error)) {
-                throw error;
-            }
+    const release = await acquireCallSlot(coordinator);
+    try {
+        await sleepUntilAllowed(coordinator);
+        recordCall(coordinator);
+        return await apiCall();
+    } catch (error) {
+        if (is429(error)) {
             const penaltyMs = getRetryPenaltyMs(error);
             applyPenalty(coordinator, penaltyMs);
             console.warn(
-                `[edit-coordinator] 429 on api call (chat ${chatId}), ` +
-                `backing off ${Math.round(penaltyMs / 1000)}s, attempt ${attempt}/${maxAttempts}`
+                `[edit-coordinator] 429 escaped auto-retry (chat ${chatId}), ` +
+                `pacing down ${Math.round(penaltyMs / 1000)}s`
             );
-        } finally {
-            release();
         }
+        throw error;
+    } finally {
+        release();
     }
-
-    throw lastError;
 };

@@ -227,7 +227,7 @@ export const handleReply = async (
     // Process stream and update message
     const processResult = await to(processStream(stream, chatContext));
     if (isErr(processResult)) {
-        await handleResponseError(chatContext, processResult[0], undefined);
+        await handleResponseError(chatContext, processResult[0]);
         return;
     }
     const response = processResult[1];

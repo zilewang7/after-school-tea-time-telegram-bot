@@ -1,5 +1,6 @@
 import 'dotenv/config';
 import { Bot } from "grammy";
+import { autoRetry } from "@grammyjs/auto-retry";
 import { SocksProxyAgent } from "socks-proxy-agent";
 import { cmdLoad } from './cmd/index.js';
 import { replyLoad } from './reply/index.js';
@@ -7,6 +8,7 @@ import { autoClear, autoSave, autoUpdate, startEditMonitor } from './db/autoSave
 import { menuLoad } from './cmd/menu.js';
 import { getAppState } from './state.js';
 import { initMcpClients } from './ai/mcp/index.js';
+import { isTestInstance, getAllowedChatIds, isChatAllowed } from './config/instance.js';
 
 if (!process.env.BOT_TOKEN) {
     throw new Error('BOT_TOKEN must be provided');
@@ -39,6 +41,18 @@ console.log(`Initial model: ${appState.currentModel}`);
 
 const bot = new Bot(process.env.BOT_TOKEN, botConfig);
 
+// Flood-wait safety net: retry any API call on 429 per retry_after.
+// Pacing (edit coalescing, per-chat budget) stays in edit-coordinator.
+bot.api.config.use(autoRetry({ maxRetryAttempts: 3, maxDelaySeconds: 60 }));
+
+// Chat gating: when ALLOWED_CHAT_IDS is set, ignore every update from other
+// chats entirely (no reply, no DB write). Keeps the test instance silent in
+// the shared production group.
+bot.use(async (ctx, next) => {
+    if (!isChatAllowed(ctx.chat?.id)) return;
+    return next();
+});
+
 // 保存消息
 autoSave(bot);
 // 更新编辑的消息
@@ -70,21 +84,48 @@ process.on('uncaughtException', (error) => {
     console.error('[process] Uncaught exception:', error);
 });
 
-// 设置简介
-bot.api.setMyShortDescription("A large language model chatbot optimized for group chat\nhttps://github.com/zilewang7/after-school-tea-time-telegram-bot");
-bot.api.setMyShortDescription("为群组内聊天优化的大语言模型聊天机器人\nhttps://github.com/zilewang7/after-school-tea-time-telegram-bot", {
-    language_code: "zh"
-});
-bot.api.setMyDescription("Directly send a message to start a context conversation, reply to the bot's message to continue in the current context conversation");
-bot.api.setMyDescription("直接发送消息以开启一个上下文会话，回复机器人的消息以继续在当前上下文会话, /help 以查看更多帮助", {
-    language_code: "zh"
-});
+// 设置简介(测试实例跳过,避免测试 bot 顶着正式简介出现在主群)
+if (!isTestInstance()) {
+    bot.api.setMyShortDescription("A large language model chatbot optimized for group chat\nhttps://github.com/zilewang7/after-school-tea-time-telegram-bot");
+    bot.api.setMyShortDescription("为群组内聊天优化的大语言模型聊天机器人\nhttps://github.com/zilewang7/after-school-tea-time-telegram-bot", {
+        language_code: "zh"
+    });
+    bot.api.setMyDescription("Directly send a message to start a context conversation, reply to the bot's message to continue in the current context conversation");
+    bot.api.setMyDescription("直接发送消息以开启一个上下文会话，回复机器人的消息以继续在当前上下文会话, /help 以查看更多帮助", {
+        language_code: "zh"
+    });
+}
+
+// Graceful shutdown: the test instance clears its server-side command list so
+// members of shared groups never see stale test-bot commands after it exits.
+let shuttingDown = false;
+const shutdown = async (signal: string): Promise<void> => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    console.log(`[process] ${signal} received, shutting down...`);
+    if (isTestInstance()) {
+        const allowed = getAllowedChatIds();
+        await bot.api.deleteMyCommands().catch(() => undefined);
+        for (const chatId of allowed ?? []) {
+            await bot.api
+                .deleteMyCommands({ scope: { type: 'chat', chat_id: chatId } })
+                .catch(() => undefined);
+        }
+        console.log('[process] Test-instance command cleanup done');
+    }
+    await bot.stop().catch(() => undefined);
+    process.exit(0);
+};
+process.once('SIGTERM', () => void shutdown('SIGTERM'));
+process.once('SIGINT', () => void shutdown('SIGINT'));
 
 // 启动
 async function main() {
     await initMcpClients();
     console.log('[mcp] Initialization complete');
-    bot.start()
+    // Test instance: never react to updates queued while it was offline
+    // (it shares a group with the production bot)
+    bot.start({ drop_pending_updates: isTestInstance() })
         .then(() => console.log('Bot started'))
         .catch(console.error);
 }

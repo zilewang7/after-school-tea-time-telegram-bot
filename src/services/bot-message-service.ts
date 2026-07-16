@@ -17,15 +17,11 @@ import {
     createMessageEditor,
     type MessageEditor,
 } from '../telegram/index.js';
-import {
-    concatMessages,
-    renderMarkdown,
-    wrapInBlockquote,
-} from 'telegram-md-entities';
 import type { RenderedMessage } from 'telegram-md-entities';
 import { buildFinalMessages } from '../telegram/formatters/final-message-builder.js';
-import { italicText, plainText } from '../telegram/formatters/entity-text.js';
-import { truncateForTelegram } from '../telegram/formatters/text-utils.js';
+import { plainText } from '../telegram/formatters/entity-text.js';
+import { appendErrorLine } from '../telegram/formatters/error-display.js';
+import { formatErrorForUser } from '../shared/errors.js';
 import { toApiEntities } from '../telegram/api-entities.js';
 import { buildResponseButtons } from '../cmd/menus/index.js';
 import { to, isErr } from '../shared/result.js';
@@ -423,7 +419,11 @@ const finalizeSession = async (
 };
 
 /**
- * Handle session error - update message with error and retry button
+ * Handle session error — persistence only. The partial text is saved as the
+ * version/message content and the error string goes into the separate
+ * version.errorMessage field. The visible "partial + error line" edit is
+ * owned by response-handler's handleResponseError (single owner: avoids the
+ * old double-edit where two different messages got conflicting error text).
  */
 const handleSessionError = async (session: BotMessageSession, error: Error): Promise<void> => {
     console.error('[bot-message-service] Session error:', error);
@@ -431,31 +431,6 @@ const handleSessionError = async (session: BotMessageSession, error: Error): Pro
     await finalizeSession(session, {
         errorMessage: error.message,
     });
-
-    // Update message with error content and retry button
-    const parts: (RenderedMessage | string)[] = [];
-    if (session.textBuffer) {
-        if (session.thinkingBuffer) {
-            parts.push(
-                wrapInBlockquote(renderMarkdown(session.thinkingBuffer), true),
-                '\n'
-            );
-        }
-        parts.push(renderMarkdown(session.textBuffer), '\n\n');
-    }
-    parts.push(italicText(`Error: ${truncateForTelegram(error.message, 500)}`));
-    const errorContent = concatMessages(...parts);
-
-    const retryButtons = buildResponseButtons(ButtonState.RETRY_ONLY);
-
-    const [err] = await to(session.editor.edit(errorContent.text, {
-        entities: errorContent.entities,
-        replyMarkup: retryButtons,
-    }));
-
-    if (err) {
-        console.error('[bot-message-service] Failed to update error message:', err);
-    }
 };
 
 /**
@@ -586,6 +561,14 @@ export const switchVersion = async (
         groundingData: newVersion.groundingData,
         wasStoppedByUser: newVersion.wasStoppedByUser,
     });
+    // Errored versions re-show their error line (display-only, never stored)
+    if (newVersion.errorMessage) {
+        const lastIndex = Math.max(0, contentChunks.length - 1);
+        contentChunks[lastIndex] = appendErrorLine(
+            contentChunks[lastIndex] ?? plainText(''),
+            formatErrorForUser({ message: newVersion.errorMessage })
+        );
+    }
     let content = contentChunks[0] ?? plainText('');
 
     if (!content.text && !newVersion.imageBase64) {
@@ -835,6 +818,14 @@ export const refreshToFinalState = async (
         groundingData: version.groundingData,
         wasStoppedByUser: version.wasStoppedByUser,
     });
+    // Errored versions keep their error line across refreshes (display-only)
+    if (version.errorMessage) {
+        const lastIndex = Math.max(0, chunks.length - 1);
+        chunks[lastIndex] = appendErrorLine(
+            chunks[lastIndex] ?? plainText(''),
+            formatErrorForUser({ message: version.errorMessage })
+        );
+    }
     if (chunks.length === 0) {
         chunks.push(plainText('[Empty response]'));
     }

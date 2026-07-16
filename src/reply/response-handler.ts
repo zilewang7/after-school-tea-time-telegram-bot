@@ -29,7 +29,7 @@ import {
     wrapInBlockquote,
 } from 'telegram-md-entities';
 import type { RenderedMessage } from 'telegram-md-entities';
-import { truncateForTelegram } from '../telegram/formatters/text-utils.js';
+import { buildErrorDisplay } from '../telegram/formatters/error-display.js';
 import { buildFinalMessages } from '../telegram/formatters/final-message-builder.js';
 import { splitRawByFits, splitAtLastNewline } from '../telegram/formatters/smart-splitter.js';
 import type {
@@ -791,12 +791,18 @@ export const sendFinalResponse = async (
 };
 
 /**
- * Handle error during response processing
+ * Handle error during response processing.
+ *
+ * Already-streamed partial content stays visible; the error is appended as a
+ * display-only italic line (never persisted into message/version text). The
+ * partial is read from the session buffers, which processStream syncs on
+ * every chunk — pre-stream failures simply have empty buffers and degrade to
+ * an error-only message. This is the single owner of the visible error edit;
+ * session.handleError only persists.
  */
 export const handleResponseError = async (
     chatContext: ChatContext,
-    error: Error,
-    partialText?: string
+    error: Error
 ): Promise<void> => {
     // Check if this is an abort (user clicked stop)
     const isAborted = error.message === 'Aborted' || chatContext.session.streamController.isAborted();
@@ -827,18 +833,21 @@ export const handleResponseError = async (
     typing.stop();
     editor.stop();
 
-    // Finalize session with error first to set buttonState
+    // Finalize session with error first: persists partial text as the version
+    // content and the error string in the separate errorMessage field
     await session.handleError(error);
 
-    // Format and display error
-    const errorMessage = formatErrorForUser(error, partialText ? undefined : '错误');
-    const displayMessage = partialText
-        ? `${partialText}\n\n${errorMessage}`
-        : errorMessage;
+    // Partial content shown to the user: the display buffers of the message
+    // this editor owns (continuations reset them), falling back to session
+    // buffers for callers that never entered processStream
+    const partialText = chatContext.currentState?.textBuffer ?? session.textBuffer;
+    const partialThinking = chatContext.currentState?.thinkingBuffer ?? session.thinkingBuffer;
 
-    // Lenient markdown render: partial text keeps its formatting, and error
-    // text can never produce a parse failure on the entities path
-    const errorRendered = renderMarkdown(truncateForTelegram(displayMessage));
+    const errorRendered = buildErrorDisplay({
+        text: partialText,
+        thinking: partialThinking,
+        errorMessage: formatErrorForUser(error),
+    });
 
     // Get the correct button state after finalization (may be HAS_VERSIONS for retry errors)
     const getBotResponseForButtons = async () => {
