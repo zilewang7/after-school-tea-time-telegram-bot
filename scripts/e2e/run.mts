@@ -16,6 +16,7 @@ import {
     sleep,
     waitForBotResponse,
     waitForButtonState,
+    waitForStoredMessage,
 } from './harness.mts';
 
 interface CaseResult {
@@ -97,6 +98,26 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
             expect(
                 entityTypes.some((t) => t.includes('Bold')),
                 `bold entity present (got: ${entityTypes.join(',') || 'none'})`
+            );
+        },
+    },
+    {
+        name: 'formatted user message is stored as markdown',
+        body: async () => {
+            // telethon's default parse_mode is markdown: **…** arrives as a
+            // bold entity, `…` as code — exactly what a formatted user
+            // message looks like to the bot
+            const messageId = await sendAsUser(
+                '格式落库测试 **加粗内容** 和 `code_span` 结束'
+            );
+            const stored = await waitForStoredMessage(messageId);
+            expect(
+                stored.includes('**加粗内容**'),
+                `bold entity stored as **markdown** (got: ${stored.slice(0, 80)})`
+            );
+            expect(
+                stored.includes('`code_span`'),
+                'code entity stored as `markdown`'
             );
         },
     },

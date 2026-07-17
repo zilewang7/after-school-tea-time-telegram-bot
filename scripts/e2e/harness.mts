@@ -163,6 +163,24 @@ export const waitForButtonState = async (
     throw new Error(`Timed out waiting for buttonState=${buttonState} on msg ${userMessageId}`);
 };
 
+/** Poll until autoSave persists our user message; returns the stored text
+ *  (markdown since 0.3.x — formatting entities survive into the DB). */
+export const waitForStoredMessage = async (
+    messageId: number,
+    timeoutMs = 20_000
+): Promise<string> => {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+        const row = await queryOne<{ text: string }>(
+            'SELECT text FROM telegram_messages WHERE chatId = ? AND messageId = ?',
+            [TEST_CHAT_ID, messageId]
+        );
+        if (row) return row.text;
+        await new Promise((resolve) => setTimeout(resolve, 1000));
+    }
+    throw new Error(`Timed out waiting for stored message ${messageId}`);
+};
+
 /** Simple assertion helper that keeps going readable in the case runner */
 export const expect = (condition: boolean, description: string): void => {
     if (!condition) throw new Error(`Assertion failed: ${description}`);

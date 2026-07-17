@@ -24,8 +24,8 @@ import { SocksProxyAgent } from 'socks-proxy-agent';
 import https from 'node:https';
 import { readFile, stat, unlink } from 'node:fs/promises';
 import { buffer as readStreamToBuffer } from 'node:stream/consumers';
-import type { Message as TgMessage, MessageEntity } from 'grammy/types';
-import { extractRichMessagePlainText } from '../telegram/formatters/rich-message-text.js';
+import type { Message as TgMessage, MessageEntity, RichMessage } from 'grammy/types';
+import { entitiesToMarkdown, richBlocksToMarkdown } from 'telegram-md-entities';
 
 // Hard cap on what we even attempt to fetch. Cloud getFile tops out at 20MB; a
 // self-hosted local Bot API server (TG_LOCAL_API_ROOT) raises it to 200MB.
@@ -187,38 +187,25 @@ const resolveCapturedMedia = (msg: TgMessage | undefined): CapturedMedia | undef
 };
 
 /**
- * Re-embed information that Telegram moves out of the text into entities:
- * text_link labels regain their hidden URL as markdown [label](url). All other
- * entity kinds (bold/italic/code/...) lose no characters, so the text already
- * equals the original — only text_link needs restoring.
+ * Store user messages as markdown: formatting entities (bold/italic/spoiler/
+ * code/links/quotes/...) survive into the DB and the LLM context instead of
+ * being flattened to plain text. Server auto-detections (bare urls, hashtags,
+ * mentions) pass through as plain text unchanged.
  */
 const renderTextWithEntities = (
     text: string | undefined,
     entities: MessageEntity[] | undefined
 ): string | undefined => {
-    if (!text || !entities?.length) return text;
+    if (!text) return text;
+    if (!entities?.length) return text;
+    return entitiesToMarkdown({ text, entities });
+};
 
-    const links: { offset: number; length: number; url: string }[] = [];
-    for (const entity of entities) {
-        if (entity.type === 'text_link') {
-            links.push({ offset: entity.offset, length: entity.length, url: entity.url });
-        }
-    }
-    if (!links.length) return text;
-    links.sort((a, b) => a.offset - b.offset);
-
-    // Entity offsets are UTF-16 code units — exactly JS string indices.
-    let rendered = '';
-    let cursor = 0;
-    for (const link of links) {
-        if (link.offset < cursor) continue; // defensive: skip overlapping entities
-        rendered += text.slice(cursor, link.offset);
-        const label = text.slice(link.offset, link.offset + link.length);
-        rendered += `[${label}](${link.url})`;
-        cursor = link.offset + link.length;
-    }
-    rendered += text.slice(cursor);
-    return rendered;
+/** Rich messages (Premium rich text editor, Bot API 10.1+) → markdown */
+const renderRichMessage = (richMessage: RichMessage | undefined): string | undefined => {
+    if (!richMessage) return undefined;
+    const markdown = richBlocksToMarkdown(richMessage.blocks).trim();
+    return markdown.length > 0 ? markdown : undefined;
 };
 
 /** Outcome of trying to acquire media bytes into the cache */
@@ -405,7 +392,7 @@ export const autoUpdate = (bot: Bot) => {
             // 获取新的文本内容（同样还原 text_link 实体中隐藏的链接）
             const newText = renderTextWithEntities(editedMsg.text, editedMsg.entities)
                 || renderTextWithEntities(editedMsg.caption, editedMsg.caption_entities)
-                || extractRichMessagePlainText(editedMsg.rich_message)
+                || renderRichMessage(editedMsg.rich_message)
                 || '';
 
             if (newText) {
@@ -538,7 +525,7 @@ export const autoSave = (bot: Bot) => {
                             : ''
                         )
                         || messageText || messageCaption
-                        || extractRichMessagePlainText(ctx.message?.rich_message)
+                        || renderRichMessage(ctx.message?.rich_message)
                         || ctx.update.message?.sticker?.emoji || ''
                     );
 
@@ -547,7 +534,10 @@ export const autoSave = (bot: Bot) => {
                 const userId = ctx.from.id;
                 const date = new Date(ctx.message?.date * 1000);
                 const userName = ctx.from.first_name;
-                const quoteText = ctx.message?.quote?.text;
+                const quoteText = renderTextWithEntities(
+                    ctx.message?.quote?.text,
+                    ctx.message?.quote?.entities
+                );
 
                 // Mark the async file save BEFORE any await, so a rapid follow-up
                 // reply that triggers waitForFileSave() will block until this
