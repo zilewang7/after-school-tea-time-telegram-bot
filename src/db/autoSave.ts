@@ -24,7 +24,7 @@ import { SocksProxyAgent } from 'socks-proxy-agent';
 import https from 'node:https';
 import { readFile, stat, unlink } from 'node:fs/promises';
 import { buffer as readStreamToBuffer } from 'node:stream/consumers';
-import type { Message as TgMessage, MessageEntity, RichBlock, RichMessage } from 'grammy/types';
+import type { Message as TgMessage, MessageEntity, MessageOrigin, RichBlock, RichMessage } from 'grammy/types';
 import { entitiesToMarkdown, richBlocksToMarkdown } from 'telegram-md-entities';
 
 // Hard cap on what we even attempt to fetch. Cloud getFile tops out at 20MB; a
@@ -289,6 +289,20 @@ const resolveRichMessageMedia = (richMessage: RichMessage | undefined): Captured
         };
     }
     return picked;
+};
+
+/** Forwarded messages: tell the model who originally said it */
+const renderForwardOrigin = (origin: MessageOrigin | undefined): string => {
+    if (!origin) return '';
+    const from = match(origin)
+        .with({ type: 'user' }, (o) =>
+            `user ${o.sender_user.first_name}${o.sender_user.last_name ? ` ${o.sender_user.last_name}` : ''}`)
+        .with({ type: 'hidden_user' }, (o) => `user ${o.sender_user_name}`)
+        .with({ type: 'chat' }, (o) =>
+            `chat ${'title' in o.sender_chat ? o.sender_chat.title : o.sender_chat.first_name}`)
+        .with({ type: 'channel' }, (o) => `channel ${o.chat.title}`)
+        .exhaustive();
+    return ` (forwarded from ${from})`;
 };
 
 /**
@@ -660,7 +674,7 @@ export const autoSave = (bot: Bot) => {
                         || messageText || messageCaption
                         || renderRichMessage(ctx.message?.rich_message)
                         || ctx.update.message?.sticker?.emoji || ''
-                    );
+                    ) + renderForwardOrigin(ctx.message?.forward_origin);
 
                 const chatId = ctx.chat.id;
                 const messageId = ctx.message.message_id;
