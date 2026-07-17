@@ -24,6 +24,7 @@ declare global {
             BOT_PROXY?: string
             TGS_CONVERTER_URL?: string
             TG_LOCAL_API_ROOT?: string
+            MAX_MEDIA_BYTES?: string
             GCS_BUCKET?: string
             GOOGLE_APPLICATION_CREDENTIALS?: string
             LUOXU_PREVIEW_URL?: string

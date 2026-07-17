@@ -27,9 +27,20 @@ import { buffer as readStreamToBuffer } from 'node:stream/consumers';
 import type { Message as TgMessage, MessageEntity, MessageOrigin, RichBlock, RichMessage } from 'grammy/types';
 import { entitiesToMarkdown, richBlocksToMarkdown } from 'telegram-md-entities';
 
-// Hard cap on what we even attempt to fetch. Cloud getFile tops out at 20MB; a
-// self-hosted local Bot API server (TG_LOCAL_API_ROOT) raises it to 200MB.
-const MAX_MEDIA_BYTES = process.env.TG_LOCAL_API_ROOT ? 200 * 1024 * 1024 : 20 * 1024 * 1024;
+// Parse sizes like "300M", "1G", "500K", "12345" (bare bytes); undefined on bad input
+const parseByteSize = (raw: string | undefined): number | undefined => {
+    if (!raw) return undefined;
+    const matched = /^(\d+)\s*([KMG]?)B?$/i.exec(raw.trim());
+    if (!matched || !matched[1]) return undefined;
+    const multipliers: Record<string, number> = { '': 1, K: 1024, M: 1024 * 1024, G: 1024 * 1024 * 1024 };
+    return Number(matched[1]) * (multipliers[(matched[2] ?? '').toUpperCase()] ?? 1);
+};
+
+// Hard cap on what we even attempt to fetch, overridable via MAX_MEDIA_BYTES in
+// .env (e.g. "300M"). Defaults: cloud getFile tops out at 20MB; a self-hosted
+// local Bot API server (TG_LOCAL_API_ROOT) raises it (local mode allows up to 2GB).
+const MAX_MEDIA_BYTES = parseByteSize(process.env.MAX_MEDIA_BYTES)
+    ?? (process.env.TG_LOCAL_API_ROOT ? 200 * 1024 * 1024 : 20 * 1024 * 1024);
 
 // Above this, bytes go to GCS and Gemini gets a gs:// reference instead of inline
 // base64 (keeps large files out of SQLite and the request body); at or below,
