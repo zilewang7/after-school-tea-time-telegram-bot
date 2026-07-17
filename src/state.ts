@@ -3,17 +3,10 @@
  * Replaces global variables with a typed state object
  */
 
-import type { Bot } from 'grammy';
-
 interface MediaGroupIdTemp {
     chatId: number;
     messageId: number;
     mediaGroupId: string;
-}
-
-interface EditMonitorEntry {
-    firstMessageId: number;
-    createdAt: number;
 }
 
 interface AppStateType {
@@ -26,10 +19,9 @@ interface AppStateType {
     // link-preview fetching queue (kept separate from the media list: ids are
     // removed by filtering, so sharing one list would release the other waiter)
     asynchronousPreviewMsgIdList: number[];
-    // edit monitor: "chatId:userMessageId" -> entry
-    editMonitorMap: Map<string, EditMonitorEntry>;
-    // bot instance for edit monitor
-    editMonitorBot: Bot | null;
+    // user messages edited while their response was still generating:
+    // "chatId:userMessageId" (consumed at finalize to set EDIT_DETECTED)
+    pendingEditsWhileProcessing: Set<string>;
     // continuation message registry: "chatId:continuationMsgId" -> firstMessageId
     continuationRegistry: Map<string, number>;
     // idempotency guard: "chatId:userMessageId" -> handled-at timestamp (ms)
@@ -45,8 +37,7 @@ const createInitialState = (): AppStateType => ({
     },
     asynchronousFileSaveMsgIdList: [],
     asynchronousPreviewMsgIdList: [],
-    editMonitorMap: new Map(),
-    editMonitorBot: null,
+    pendingEditsWhileProcessing: new Set(),
     continuationRegistry: new Map(),
     handledUserMessages: new Map(),
 });
@@ -95,50 +86,20 @@ export const removeAsyncPreviewMsgId = (id: number): void => {
 };
 
 // Edit monitor accessors
-const ONE_HOUR_MS = 60 * 60 * 1000;
-const MAX_MONITORED = 20;
+const MAX_PENDING_EDITS = 200;
 
-export const getEditMonitorBot = (): Bot | null => getAppState().editMonitorBot;
-export const setEditMonitorBot = (bot: Bot): void => {
-    getAppState().editMonitorBot = bot;
-};
-
-export const getEditMonitorEntry = (chatId: number, userMessageId: number): EditMonitorEntry | undefined => {
-    const key = `${chatId}:${userMessageId}`;
-    return getAppState().editMonitorMap.get(key);
-};
-
-export const addEditMonitorEntry = (chatId: number, userMessageId: number, firstMessageId: number): void => {
-    const state = getAppState();
-    const now = Date.now();
-
-    // Clean up expired entries
-    for (const [key, entry] of state.editMonitorMap) {
-        if (now - entry.createdAt > ONE_HOUR_MS) {
-            state.editMonitorMap.delete(key);
-        }
+export const markPendingEditWhileProcessing = (chatId: number, userMessageId: number): void => {
+    const pending = getAppState().pendingEditsWhileProcessing;
+    // Backstop against leaks from sessions that never finalize
+    if (pending.size >= MAX_PENDING_EDITS) {
+        const oldest = pending.values().next().value;
+        if (oldest !== undefined) pending.delete(oldest);
     }
-
-    // Enforce max limit by removing oldest
-    if (state.editMonitorMap.size >= MAX_MONITORED) {
-        let oldestKey: string | null = null;
-        let oldestTime = Infinity;
-        for (const [key, entry] of state.editMonitorMap) {
-            if (entry.createdAt < oldestTime) {
-                oldestTime = entry.createdAt;
-                oldestKey = key;
-            }
-        }
-        if (oldestKey) state.editMonitorMap.delete(oldestKey);
-    }
-
-    const key = `${chatId}:${userMessageId}`;
-    state.editMonitorMap.set(key, { firstMessageId, createdAt: now });
+    pending.add(`${chatId}:${userMessageId}`);
 };
 
-export const removeEditMonitorEntry = (chatId: number, userMessageId: number): void => {
-    const key = `${chatId}:${userMessageId}`;
-    getAppState().editMonitorMap.delete(key);
+export const consumePendingEditWhileProcessing = (chatId: number, userMessageId: number): boolean => {
+    return getAppState().pendingEditsWhileProcessing.delete(`${chatId}:${userMessageId}`);
 };
 
 // Continuation registry accessors

@@ -56,6 +56,16 @@ export const sendAsUser = async (text: string, replyTo?: number): Promise<number
     return payload.message_id;
 };
 
+/** Edit a previously sent userbot message (triggers edit-detected retry) */
+export const editAsUser = async (messageId: number, text: string): Promise<void> => {
+    const res = await fetch(`${LUOXU_BASE}/test/edit`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ g: TEST_GROUP, message_id: messageId, text }),
+    });
+    if (!res.ok) throw new Error(`/test/edit HTTP ${res.status}`);
+};
+
 /** Read messages from the test group (ascending), newer than minId */
 export const readGroupMessages = async (minId: number, limit = 50): Promise<DriverMessage[]> => {
     const res = await fetch(
@@ -133,6 +143,24 @@ export const waitForBotResponse = async (
         await new Promise((resolve) => setTimeout(resolve, 2000));
     }
     throw new Error(`Timed out waiting for bot response to msg ${userMessageId}`);
+};
+
+/** Poll until the response row reaches the given buttonState. Throws on timeout. */
+export const waitForButtonState = async (
+    userMessageId: number,
+    buttonState: string,
+    timeoutMs = 30_000
+): Promise<void> => {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+        const row = await queryOne<BotResponseRow>(
+            'SELECT buttonState FROM bot_responses WHERE chatId = ? AND userMessageId = ?',
+            [TEST_CHAT_ID, userMessageId]
+        );
+        if (row && row.buttonState === buttonState) return;
+        await new Promise((resolve) => setTimeout(resolve, 1500));
+    }
+    throw new Error(`Timed out waiting for buttonState=${buttonState} on msg ${userMessageId}`);
 };
 
 /** Simple assertion helper that keeps going readable in the case runner */

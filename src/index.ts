@@ -4,7 +4,7 @@ import { autoRetry } from "@grammyjs/auto-retry";
 import { SocksProxyAgent } from "socks-proxy-agent";
 import { cmdLoad } from './cmd/index.js';
 import { replyLoad } from './reply/index.js';
-import { autoClear, autoSave, autoUpdate, startEditMonitor } from './db/autoSave.js';
+import { autoClear, autoSave, autoUpdate } from './db/autoSave.js';
 import { menuLoad } from './cmd/menu.js';
 import { getAppState } from './state.js';
 import { initMcpClients } from './ai/mcp/index.js';
@@ -60,7 +60,6 @@ autoUpdate(bot);
 // 自动清除一周前的消息
 autoClear();
 // 监测用户编辑消息，为 bot 消息添加重试按钮
-startEditMonitor(bot);
 
 
 

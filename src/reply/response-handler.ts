@@ -502,6 +502,29 @@ export const processStream = async (
 };
 
 /**
+ * A user edit can flip buttonState to EDIT_DETECTED while the final edits are
+ * still in flight; the final edit (sent without markup) then wipes the retry
+ * button autoUpdate just added. Re-check after delivery and re-apply it.
+ */
+const healEditDetectedButtons = async (chatContext: ChatContext): Promise<void> => {
+    const { ctx, chatId, session } = chatContext;
+    const { getBotResponse } = await import('../db/index.js');
+    const response = await getBotResponse(chatId, session.firstMessageId);
+    if (response?.buttonState !== ButtonState.EDIT_DETECTED) return;
+    const buttons = buildResponseButtons(ButtonState.EDIT_DETECTED);
+    const [err] = await to(
+        runApiCall(chatId, () =>
+            ctx.api.editMessageReplyMarkup(chatId, session.currentMessageId, {
+                reply_markup: buttons,
+            })
+        )
+    );
+    if (!err) {
+        console.log('[editMonitor] Re-applied edit-detected button after final edit');
+    }
+};
+
+/**
  * Send final response (text and/or images)
  * Handles the last message in the chain (may be first or continuation)
  */
@@ -633,6 +656,8 @@ export const sendFinalResponse = async (
             if (editErr) {
                 console.error('[response-handler] Failed to add buttons to split message:', editErr);
             }
+        } else {
+            await healEditDetectedButtons(chatContext);
         }
         return;
     }
@@ -748,6 +773,8 @@ export const sendFinalResponse = async (
             if (editErr) {
                 console.error('[response-handler] Failed to add buttons to image:', editErr);
             }
+        } else {
+            await healEditDetectedButtons(chatContext);
         }
     } else {
         // Finalize session first to determine button state (no image case)
@@ -786,6 +813,10 @@ export const sendFinalResponse = async (
             // No content and not stopped - show error
             const fallbackMessage = '寄了';
             await editor.updateContent(fallbackMessage, { replyMarkup: finalButtons, isFinal: true });
+        }
+
+        if (finalButtonState === ButtonState.NONE) {
+            await healEditDetectedButtons(chatContext);
         }
     }
 };

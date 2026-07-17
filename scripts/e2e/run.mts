@@ -9,11 +9,13 @@
 import {
     BOT_USER_ID,
     BOT_USERNAME,
+    editAsUser,
     expect,
     readGroupMessages,
     sendAsUser,
     sleep,
     waitForBotResponse,
+    waitForButtonState,
 } from './harness.mts';
 
 interface CaseResult {
@@ -101,6 +103,54 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
                 );
             }
             expect(found, 'bot answered /model with current-model info');
+        },
+    },
+    {
+        name: 'edit after completion adds retry button',
+        body: async () => {
+            const trigger = await sendAsUser(
+                `@${BOT_USERNAME} 请只回复两个字:好的`
+            );
+            const response = await waitForBotResponse(trigger);
+            expect(response.buttonState === 'none', 'response finished without buttons');
+            await editAsUser(trigger, `@${BOT_USERNAME} 请只回复两个字:改了`);
+            await waitForButtonState(trigger, 'edit_detected');
+            console.log('    ✓ buttonState reached edit_detected');
+            const visible = await readGroupMessages(trigger);
+            const lastBotMsg = visible
+                .filter((m) => m.sender_id === BOT_USER_ID)
+                .at(-1);
+            expect(
+                Boolean(lastBotMsg?.has_buttons),
+                'retry button visible on the bot message'
+            );
+        },
+    },
+    {
+        name: 'edit during generation adds retry button on the final edit',
+        body: async () => {
+            const trigger = await sendAsUser(
+                `@${BOT_USERNAME} 请写一段 200 字左右的轻音部日常小故事`
+            );
+            // Edit while the bot is still streaming
+            await sleep(3000);
+            await editAsUser(
+                trigger,
+                `@${BOT_USERNAME} 请写一段 200 字左右的轻音部日常小故事(要有梓喵)`
+            );
+            const response = await waitForBotResponse(trigger);
+            expect(
+                response.buttonState === 'edit_detected',
+                `final buttonState is edit_detected (got: ${response.buttonState})`
+            );
+            const visible = await readGroupMessages(trigger);
+            const lastBotMsg = visible
+                .filter((m) => m.sender_id === BOT_USER_ID)
+                .at(-1);
+            expect(
+                Boolean(lastBotMsg?.has_buttons),
+                'retry button visible on the bot message'
+            );
         },
     },
 ];

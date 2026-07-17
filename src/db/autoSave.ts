@@ -1,4 +1,5 @@
 import { Bot } from "grammy";
+import type { Api } from "grammy";
 import { match } from "ts-pattern";
 import { saveMessage, getMessage, findBotResponseByMessageId, BotResponse, MediaCache, LinkPreviewCache, ButtonState } from "./index.js";
 import { Message } from "./messageDTO.js";
@@ -10,10 +11,7 @@ import {
     removeAsyncFileSaveMsgId,
     addAsyncPreviewMsgId,
     removeAsyncPreviewMsgId,
-    setEditMonitorBot,
-    getEditMonitorBot,
-    getEditMonitorEntry,
-    removeEditMonitorEntry,
+    markPendingEditWhileProcessing,
 } from '../state.js';
 import { buildResponseButtons } from '../cmd/menus/index.js';
 import { getCachedMedia, putCachedMedia } from '../services/media-cache-service.js';
@@ -432,12 +430,21 @@ export const autoUpdate = (bot: Bot) => {
                     })();
                 }
 
-                // Check if this message is in the monitored list
-                const entry = getEditMonitorEntry(chatId, messageId);
-                const monitorBot = getEditMonitorBot();
-                if (entry && monitorBot) {
-                    await addEditDetectedButton(monitorBot, chatId, entry.firstMessageId);
-                    removeEditMonitorEntry(chatId, messageId);
+                // Edit-detected retry: DB-driven so it survives restarts.
+                // PROCESSING responses can't take the button yet (the final
+                // edit would wipe it) — mark pending; finalize consumes it.
+                const ownResponse = await BotResponse.findOne({
+                    where: { chatId, userMessageId: messageId },
+                });
+                if (ownResponse) {
+                    if (ownResponse.buttonState === ButtonState.PROCESSING) {
+                        markPendingEditWhileProcessing(chatId, messageId);
+                    } else if (
+                        ownResponse.buttonState === ButtonState.NONE &&
+                        Date.now() - new Date(ownResponse.updatedAt ?? 0).getTime() < EDIT_RETRY_WINDOW_MS
+                    ) {
+                        await addEditDetectedButton(ctx.api, chatId, ownResponse);
+                    }
                 }
             }
         } catch (error) {
@@ -446,21 +453,10 @@ export const autoUpdate = (bot: Bot) => {
     });
 };
 
-/**
- * Initialize edit monitor with bot instance
- */
-export const startEditMonitor = (bot: Bot) => {
-    setEditMonitorBot(bot);
-    console.log('[editMonitor] Initialized');
-};
+// Only offer edit-detected retry for responses finished within this window
+const EDIT_RETRY_WINDOW_MS = 60 * 60 * 1000;
 
-const addEditDetectedButton = async (bot: Bot, chatId: number, firstMessageId: number): Promise<void> => {
-    const response = await BotResponse.findOne({
-        where: { chatId, messageId: firstMessageId },
-    });
-
-    if (!response || response.buttonState !== ButtonState.NONE) return;
-
+const addEditDetectedButton = async (api: Api, chatId: number, response: BotResponse): Promise<void> => {
     const currentVersion = response.getCurrentVersion();
     if (!currentVersion) return;
 
@@ -473,7 +469,7 @@ const addEditDetectedButton = async (bot: Bot, chatId: number, firstMessageId: n
     const buttons = buildResponseButtons(ButtonState.EDIT_DETECTED);
 
     const [err] = await to(
-        bot.api.editMessageReplyMarkup(chatId, lastMessageId, {
+        api.editMessageReplyMarkup(chatId, lastMessageId, {
             reply_markup: buttons,
         })
     );

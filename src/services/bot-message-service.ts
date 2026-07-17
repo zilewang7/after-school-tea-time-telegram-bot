@@ -359,13 +359,22 @@ const finalizeSession = async (
     if (response) {
         response.addVersion(version);
 
-        // Determine button state
+        // Determine button state; a user edit that arrived while we were
+        // still generating means the retry offer should ship with the final
+        // edit itself (adding it afterwards would race the final edit)
+        const { consumePendingEditWhileProcessing } = await import('../state.js');
+        const editedWhileProcessing = consumePendingEditWhileProcessing(
+            session.chatId,
+            session.userMessageId
+        );
         const hasMultipleVersions = response.getVersions().length > 1;
         const hasError = options?.wasStoppedByUser || options?.errorMessage;
         response.buttonState = match({ hasMultipleVersions, hasError })
             .with({ hasMultipleVersions: true }, () => ButtonState.HAS_VERSIONS)
             .with({ hasError: true }, () => ButtonState.RETRY_ONLY)
-            .otherwise(() => ButtonState.NONE);
+            .otherwise(() =>
+                editedWhileProcessing ? ButtonState.EDIT_DETECTED : ButtonState.NONE
+            );
 
         // Update metadata if has images
         if (session.images.length > 0) {
@@ -375,12 +384,6 @@ const finalizeSession = async (
         }
 
         await response.save();
-
-        // Add to edit monitor if no buttons (normal completion)
-        if (response.buttonState === ButtonState.NONE) {
-            const { addEditMonitorEntry } = await import('../state.js');
-            addEditMonitorEntry(session.chatId, session.userMessageId, session.firstMessageId);
-        }
     }
 
     // Also save to Message table for context building
