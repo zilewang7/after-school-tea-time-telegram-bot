@@ -34,7 +34,7 @@
     "@sequelize/sqlite3": "7.0.0-alpha.48",
     "await-to-js": "^3.0.0",
     "dotenv": "^17.4.2",
-    "grammy": "^1.44.0",
+    "grammy": "^1.45.0",
     "openai": "^6.47.0",
     "sequelize": "7.0.0-alpha.9",
     "socks-proxy-agent": "^10.1.0",

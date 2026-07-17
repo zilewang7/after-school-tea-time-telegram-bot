@@ -85,7 +85,9 @@ services:
   # Requires TG_API_ID / TG_API_HASH in .env (reuse luoxu's api_id/api_hash).
   telegram-bot-api:
     container_name: telegram-bot-api
-    image: aiogram/telegram-bot-api:latest
+    # Pin the Bot API version: 'latest' proved stale (a June image predating
+    # Bot API 10.1 silently dropped incoming rich messages).
+    image: aiogram/telegram-bot-api:10.2
     restart: always
     profiles: ["bigfile"]
     environment:

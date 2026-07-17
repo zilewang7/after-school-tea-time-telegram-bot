@@ -25,6 +25,7 @@ import https from 'node:https';
 import { readFile, stat, unlink } from 'node:fs/promises';
 import { buffer as readStreamToBuffer } from 'node:stream/consumers';
 import type { Message as TgMessage, MessageEntity } from 'grammy/types';
+import { extractRichMessagePlainText } from '../telegram/formatters/rich-message-text.js';
 
 // Hard cap on what we even attempt to fetch. Cloud getFile tops out at 20MB; a
 // self-hosted local Bot API server (TG_LOCAL_API_ROOT) raises it to 200MB.
@@ -404,6 +405,7 @@ export const autoUpdate = (bot: Bot) => {
             // 获取新的文本内容（同样还原 text_link 实体中隐藏的链接）
             const newText = renderTextWithEntities(editedMsg.text, editedMsg.entities)
                 || renderTextWithEntities(editedMsg.caption, editedMsg.caption_entities)
+                || extractRichMessagePlainText(editedMsg.rich_message)
                 || '';
 
             if (newText) {
@@ -535,7 +537,9 @@ export const autoSave = (bot: Bot) => {
                             ? (messageText?.match(/^\/chat\s+([0-9a]+)\s*(-(\S+))?\s*(.+)?$/)?.[4] || ' ')
                             : ''
                         )
-                        || messageText || messageCaption || ctx.update.message?.sticker?.emoji || ''
+                        || messageText || messageCaption
+                        || extractRichMessagePlainText(ctx.message?.rich_message)
+                        || ctx.update.message?.sticker?.emoji || ''
                     );
 
                 const chatId = ctx.chat.id;
