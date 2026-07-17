@@ -24,7 +24,7 @@ import { SocksProxyAgent } from 'socks-proxy-agent';
 import https from 'node:https';
 import { readFile, stat, unlink } from 'node:fs/promises';
 import { buffer as readStreamToBuffer } from 'node:stream/consumers';
-import type { Message as TgMessage, MessageEntity, RichMessage } from 'grammy/types';
+import type { Message as TgMessage, MessageEntity, RichBlock, RichMessage } from 'grammy/types';
 import { entitiesToMarkdown, richBlocksToMarkdown } from 'telegram-md-entities';
 
 // Hard cap on what we even attempt to fetch. Cloud getFile tops out at 20MB; a
@@ -184,6 +184,111 @@ const resolveCapturedMedia = (msg: TgMessage | undefined): CapturedMedia | undef
     }
 
     return undefined;
+};
+
+/**
+ * Collect downloadable media carried inside rich message blocks. Media blocks
+ * hold ordinary file_ids (RichBlockPhoto.photo is a plain PhotoSize[]), so the
+ * normal getFile pipeline applies. Container blocks nest, hence the recursion.
+ */
+const collectRichBlockMedia = (blocks: RichBlock[], found: CapturedMedia[]): void => {
+    for (const block of blocks) {
+        switch (block.type) {
+            case 'photo': {
+                const size = block.photo.at(-1);
+                if (size) {
+                    found.push({
+                        fileId: size.file_id,
+                        fileUniqueId: size.file_unique_id,
+                        mime: 'image/jpeg',
+                        kind: 'photo',
+                        sizeBytes: size.file_size,
+                        hint: 'a picture',
+                        needsTgsConversion: false,
+                    });
+                }
+                break;
+            }
+            case 'video':
+                found.push({
+                    fileId: block.video.file_id,
+                    fileUniqueId: block.video.file_unique_id,
+                    mime: block.video.mime_type ?? 'video/mp4',
+                    kind: 'video',
+                    sizeBytes: block.video.file_size,
+                    hint: 'a video',
+                    needsTgsConversion: false,
+                });
+                break;
+            case 'animation':
+                found.push({
+                    fileId: block.animation.file_id,
+                    fileUniqueId: block.animation.file_unique_id,
+                    mime: block.animation.mime_type ?? 'video/mp4',
+                    kind: 'video',
+                    sizeBytes: block.animation.file_size,
+                    hint: 'an animation',
+                    needsTgsConversion: false,
+                });
+                break;
+            case 'audio':
+                found.push({
+                    fileId: block.audio.file_id,
+                    fileUniqueId: block.audio.file_unique_id,
+                    mime: block.audio.mime_type ?? 'audio/mpeg',
+                    kind: 'audio',
+                    sizeBytes: block.audio.file_size,
+                    hint: `an audio file${block.audio.file_name ? `: ${block.audio.file_name}` : ''}`,
+                    needsTgsConversion: false,
+                });
+                break;
+            case 'voice_note':
+                found.push({
+                    fileId: block.voice_note.file_id,
+                    fileUniqueId: block.voice_note.file_unique_id,
+                    mime: block.voice_note.mime_type ?? 'audio/ogg',
+                    kind: 'voice',
+                    sizeBytes: block.voice_note.file_size,
+                    hint: `a voice message${block.voice_note.duration ? `, ${block.voice_note.duration}s` : ''}`,
+                    needsTgsConversion: false,
+                });
+                break;
+            case 'blockquote':
+            case 'details':
+            case 'collage':
+            case 'slideshow':
+                collectRichBlockMedia(block.blocks, found);
+                break;
+            case 'list':
+                for (const item of block.items) {
+                    collectRichBlockMedia(item.blocks, found);
+                }
+                break;
+            default:
+                break;
+        }
+    }
+};
+
+/**
+ * Pick the media file to attach for a rich message. The messages table has a
+ * single file slot per row, so only one media is downloaded: the first photo
+ * block, or the first media block of any kind when there is no photo. The hint
+ * discloses how many media the message actually carries.
+ */
+const resolveRichMessageMedia = (richMessage: RichMessage | undefined): CapturedMedia | undefined => {
+    if (!richMessage) return undefined;
+    const found: CapturedMedia[] = [];
+    collectRichBlockMedia(richMessage.blocks, found);
+    const picked = found.find((m) => m.kind === 'photo') ?? found[0];
+    if (!picked) return undefined;
+    if (found.length > 1) {
+        return {
+            ...picked,
+            hint: `${picked.hint} (this rich message carries ${found.length} media files, only this one is attached)`,
+        };
+    }
+    return picked;
 };
 
 /**
@@ -395,10 +500,37 @@ export const autoUpdate = (bot: Bot) => {
                 || renderRichMessage(editedMsg.rich_message)
                 || '';
 
+            // A rich-message edit may introduce media the original save missed
+            // (e.g. an image added to the block tree). One file slot per row:
+            // only acquire when the row has none yet.
+            const richMedia = existingMessage.fileUniqueId
+                ? undefined
+                : resolveRichMessageMedia(editedMsg.rich_message);
+
             if (newText) {
-                existingMessage.text = newText + "<<EOF\n";
+                existingMessage.text = newText
+                    + (richMedia ? ` (I send ${richMedia.hint})` : '')
+                    + "<<EOF\n";
                 existingMessage.date = new Date(editedMsg.edit_date! * 1000);
                 await existingMessage.save();
+
+                if (richMedia) {
+                    addAsyncFileSaveMsgId(messageId);
+                    const fileBackstop = setTimeout(() => removeAsyncFileSaveMsgId(messageId), 70000);
+                    void (async () => {
+                        const [acquireErr, result] = await to(acquireMediaBytes(bot, richMedia));
+                        if (!acquireErr && result?.status === 'cached') {
+                            existingMessage.fileMime = result.mime;
+                            existingMessage.fileUniqueId = result.fileUniqueId;
+                            const [saveErr] = await to(existingMessage.save());
+                            if (saveErr) {
+                                console.error('[autoUpdate] Failed to attach rich media:', saveErr);
+                            }
+                        }
+                        clearTimeout(fileBackstop);
+                        removeAsyncFileSaveMsgId(messageId);
+                    })();
+                }
 
                 console.log(`[autoUpdate] Updated message ${messageId} in chat ${chatId}`);
 
@@ -507,7 +639,8 @@ export const autoSave = (bot: Bot) => {
                     }
                 }
 
-                const media = resolveCapturedMedia(ctx.update.message);
+                const media = resolveCapturedMedia(ctx.update.message)
+                    ?? resolveRichMessageMedia(ctx.update.message?.rich_message);
 
                 // Restore URLs hidden in text_link entities before storing, so the
                 // saved text carries the full original information (and link-preview

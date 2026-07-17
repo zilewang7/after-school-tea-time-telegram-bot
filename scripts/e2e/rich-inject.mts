@@ -4,7 +4,7 @@
  * produce one — instead we inject a hand-built update into bot.handleUpdate
  * and assert the DB row contains the markdown conversion.
  *
- * Run: DB_PATH=/tmp/rich-inject.sqlite BOT_TOKEN=dummy:token pnpm tsx scripts/e2e/rich-inject.mts
+ * Run: DB_PATH=/tmp/rich-inject.sqlite BOT_TOKEN=dummy:token pnpm exec tsx scripts/e2e/rich-inject.mts
  */
 import { Bot } from 'grammy';
 import type { Update, UserFromGetMe } from 'grammy/types';
@@ -62,7 +62,26 @@ const update: Update = {
                     ],
                 },
                 { type: 'pre', text: 'console.log(1)', language: 'js' },
-                { type: 'photo', caption: { text: '插图' } },
+                {
+                    type: 'photo',
+                    photo: [
+                        {
+                            file_id: 'FAKE_FILE_ID_SMALL',
+                            file_unique_id: 'FAKE_UNIQUE_SMALL',
+                            width: 90,
+                            height: 90,
+                            file_size: 1024,
+                        },
+                        {
+                            file_id: 'FAKE_FILE_ID_BIG',
+                            file_unique_id: 'FAKE_UNIQUE_BIG',
+                            width: 1280,
+                            height: 720,
+                            file_size: 123456,
+                        },
+                    ],
+                    caption: { text: '插图' },
+                },
             ],
         },
     },
@@ -89,6 +108,9 @@ const main = async (): Promise<void> => {
         ['GFM table', text.includes('| 项目 | 状态 |')],
         ['fenced code with language', text.includes('```js')],
         ['media placeholder with caption', text.includes('[图片] 插图')],
+        // The photo block's largest PhotoSize must be picked up as the
+        // message's attached media (download itself fails here: fake file_id)
+        ['media hint for rich photo block', text.includes('(I send a picture')],
     ];
     let failed = 0;
     for (const [name, ok] of checks) {
