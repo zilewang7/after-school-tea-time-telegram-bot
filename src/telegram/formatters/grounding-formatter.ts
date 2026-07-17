@@ -27,12 +27,31 @@ const getCitationDisplayTitle = (uri: string, title?: string): string => {
     }
 };
 
+const HTML_ENTITIES: Record<string, string> = {
+    '&quot;': '"',
+    '&#34;': '"',
+    '&#39;': "'",
+    '&apos;': "'",
+    '&lt;': '<',
+    '&gt;': '>',
+    '&amp;': '&',
+};
+
+/** Decode the named/numeric entities Google uses in anchor text */
+const decodeHtmlEntities = (text: string): string =>
+    text.replace(
+        /&(?:quot|#34|#39|apos|lt|gt|amp);/g,
+        (entity) => HTML_ENTITIES[entity] ?? entity
+    );
+
 /**
- * Strip HTML tags from string
+ * Strip HTML tags from string and decode entities
  */
 const stripTags = (html?: string): string => {
     if (!html) return '';
-    return html.replace(/<[^>]*>/g, '').replace(/\s+/g, ' ').trim();
+    return decodeHtmlEntities(
+        html.replace(/<[^>]*>/g, '').replace(/\s+/g, ' ').trim()
+    );
 };
 
 /**
@@ -59,7 +78,23 @@ const matchQueriesToAnchors = (
 ): (Anchor | null)[] => {
     const used = new Set<number>();
 
-    return queries.map((query) => {
+    // Pass 1: exact text match, so short queries can't steal
+    // another query's anchor via substring matching below
+    const exactMatches = queries.map((query) => {
+        const normQuery = query.trim().toLowerCase();
+        const index = anchors.findIndex(
+            (a, i) => !used.has(i) && a.text.trim().toLowerCase() === normQuery
+        );
+        if (index >= 0) used.add(index);
+        return index;
+    });
+
+    return queries.map((query, queryIndex) => {
+        const exactIndex = exactMatches[queryIndex] ?? -1;
+        if (exactIndex >= 0) {
+            return anchors[exactIndex] ?? null;
+        }
+
         const normQuery = query.trim().toLowerCase();
 
         // Strategy 1: Match by anchor text
@@ -92,14 +127,7 @@ const matchQueriesToAnchors = (
             return anchors[hrefMatch] ?? null;
         }
 
-        // Strategy 3: Fallback to first unused anchor
-        const fallbackMatch = anchors.findIndex((_, i) => !used.has(i));
-
-        if (fallbackMatch >= 0) {
-            used.add(fallbackMatch);
-            return anchors[fallbackMatch] ?? null;
-        }
-
+        // No positional fallback: a wrong link is worse than no link
         return null;
     });
 };
