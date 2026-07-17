@@ -440,8 +440,10 @@ export const autoUpdate = (bot: Bot) => {
                     if (ownResponse.buttonState === ButtonState.PROCESSING) {
                         markPendingEditWhileProcessing(chatId, messageId);
                     } else if (
-                        ownResponse.buttonState === ButtonState.NONE &&
-                        Date.now() - new Date(ownResponse.updatedAt ?? 0).getTime() < EDIT_RETRY_WINDOW_MS
+                        ownResponse.buttonState === ButtonState.NONE ||
+                        // EDIT_DETECTED again: re-apply — heals buttons that a
+                        // final-edit race wiped before this self-heal existed
+                        ownResponse.buttonState === ButtonState.EDIT_DETECTED
                     ) {
                         await addEditDetectedButton(ctx.api, chatId, ownResponse);
                     }
@@ -452,9 +454,6 @@ export const autoUpdate = (bot: Bot) => {
         }
     });
 };
-
-// Only offer edit-detected retry for responses finished within this window
-const EDIT_RETRY_WINDOW_MS = 60 * 60 * 1000;
 
 const addEditDetectedButton = async (api: Api, chatId: number, response: BotResponse): Promise<void> => {
     const currentVersion = response.getCurrentVersion();
@@ -474,7 +473,7 @@ const addEditDetectedButton = async (api: Api, chatId: number, response: BotResp
         })
     );
 
-    if (err) {
+    if (err && !err.message.includes('message is not modified')) {
         console.error(`[editMonitor] Failed to add retry button to message ${lastMessageId}:`, err);
     } else {
         console.log(`[editMonitor] Added edit-detected retry button to message ${lastMessageId}`);

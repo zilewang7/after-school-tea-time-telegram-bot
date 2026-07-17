@@ -27,6 +27,18 @@ interface CaseResult {
 
 const CASE_GAP_MS = 4000; // pace userbot sends, keep the account flood-safe
 
+/** Poll until the newest bot message (after minId) carries buttons */
+const waitForVisibleButtons = async (minId: number, timeoutMs = 15_000): Promise<boolean> => {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+        const visible = await readGroupMessages(minId);
+        const lastBotMsg = visible.filter((m) => m.sender_id === BOT_USER_ID).at(-1);
+        if (lastBotMsg?.has_buttons) return true;
+        await sleep(2000);
+    }
+    return false;
+};
+
 const runCase = async (
     name: string,
     body: () => Promise<void>
@@ -116,13 +128,16 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
             await editAsUser(trigger, `@${BOT_USERNAME} 请只回复两个字:改了`);
             await waitForButtonState(trigger, 'edit_detected');
             console.log('    ✓ buttonState reached edit_detected');
-            const visible = await readGroupMessages(trigger);
-            const lastBotMsg = visible
-                .filter((m) => m.sender_id === BOT_USER_ID)
-                .at(-1);
             expect(
-                Boolean(lastBotMsg?.has_buttons),
+                await waitForVisibleButtons(trigger),
                 'retry button visible on the bot message'
+            );
+            // Editing again while already EDIT_DETECTED re-applies (self-heal)
+            await editAsUser(trigger, `@${BOT_USERNAME} 请只回复两个字:又改`);
+            await sleep(4000);
+            expect(
+                await waitForVisibleButtons(trigger),
+                'retry button still present after a second edit'
             );
         },
     },
@@ -143,12 +158,8 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
                 response.buttonState === 'edit_detected',
                 `final buttonState is edit_detected (got: ${response.buttonState})`
             );
-            const visible = await readGroupMessages(trigger);
-            const lastBotMsg = visible
-                .filter((m) => m.sender_id === BOT_USER_ID)
-                .at(-1);
             expect(
-                Boolean(lastBotMsg?.has_buttons),
+                await waitForVisibleButtons(trigger),
                 'retry button visible on the bot message'
             );
         },
