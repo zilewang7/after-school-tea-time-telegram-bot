@@ -6,7 +6,8 @@ declare global {
             BOT_USER_NAME: string
             OPENAI_API_KEY: string
             OPENAI_API_URL: string
-            SYSTEM_PROMPT: string
+            SYSTEM_PROMPT?: string
+            SYSTEM_PROMPT_FILE?: string
             GOOGLE_CLOUD_LOCATION?: string
             GOOGLE_CLOUD_PROJECT?: string
             GOOGLE_GENAI_USE_VERTEXAI?: string

@@ -108,16 +108,16 @@ const awaitMediaWithFeedback = async (ctx: Context, ids: number[]): Promise<void
     await waitLoop();
 
     // Classify each media: failure if still pending (timeout), or saved with a
-    // [system] failure marker, or without a cached file id.
+    // failure suffix in mediaHint, or without a cached file id.
     const failures: string[] = [];
     for (const id of pending) {
         const stuck = getAsyncFileSaveMsgIdList().includes(id);
         const message = await getMessage(chatId, id);
         if (stuck || !message?.fileUniqueId) {
-            const name = message?.text?.match(/I send (a[^,()]*)/)?.[1]?.trim() ?? '媒体';
-            const reason = stuck
-                ? '下载超时'
-                : (message?.text?.match(/\[system\]\s*([^)\n]*)/)?.[1]?.trim() || '获取失败');
+            // mediaHint: "a picture" or "a video — failed to download, you cannot see it"
+            const [hintName, hintReason] = (message?.mediaHint ?? '').split(' — ');
+            const name = hintName?.trim() || '媒体';
+            const reason = stuck ? '下载超时' : (hintReason?.trim() || '获取失败');
             failures.push(`${name}：${reason}`);
         }
     }

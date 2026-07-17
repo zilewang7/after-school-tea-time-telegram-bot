@@ -26,6 +26,8 @@ export interface ContextMessage {
     replyToId: number | null;
     replies: string;
     modelParts: string | null;
+    mediaHint: string | null;
+    forwardOrigin: string | null;
 }
 
 /**
@@ -53,6 +55,8 @@ const getContextMessage = async (
             replyToId: msg.replyToId,
             replies: msg.replies,
             modelParts: msg.modelParts,
+            mediaHint: msg.mediaHint,
+            forwardOrigin: msg.forwardOrigin,
         };
     }
 
@@ -74,6 +78,8 @@ const getContextMessage = async (
             replyToId: botResponse.userMessageId,
             replies: '[]', // Bot responses don't track replies the same way
             modelParts: currentVersion?.modelParts ? JSON.stringify(currentVersion.modelParts) : null,
+            mediaHint: null,
+            forwardOrigin: null,
         };
     }
 
@@ -95,6 +101,8 @@ const getContextMessage = async (
             replyToId: foundResponse.userMessageId,
             replies: '[]',
             modelParts: currentVersion?.modelParts ? JSON.stringify(currentVersion.modelParts) : null,
+            mediaHint: null,
+            forwardOrigin: null,
         };
     }
 

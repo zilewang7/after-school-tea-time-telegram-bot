@@ -291,10 +291,10 @@ const resolveRichMessageMedia = (richMessage: RichMessage | undefined): Captured
     return picked;
 };
 
-/** Forwarded messages: tell the model who originally said it */
-const renderForwardOrigin = (origin: MessageOrigin | undefined): string => {
-    if (!origin) return '';
-    const from = match(origin)
+/** Forward origin as stored in the forwardOrigin column, e.g. "user 张三" */
+const resolveForwardOrigin = (origin: MessageOrigin | undefined): string | undefined => {
+    if (!origin) return undefined;
+    return match(origin)
         .with({ type: 'user' }, (o) =>
             `user ${o.sender_user.first_name}${o.sender_user.last_name ? ` ${o.sender_user.last_name}` : ''}`)
         .with({ type: 'hidden_user' }, (o) => `user ${o.sender_user_name}`)
@@ -302,7 +302,6 @@ const renderForwardOrigin = (origin: MessageOrigin | undefined): string => {
             `chat ${'title' in o.sender_chat ? o.sender_chat.title : o.sender_chat.first_name}`)
         .with({ type: 'channel' }, (o) => `channel ${o.chat.title}`)
         .exhaustive();
-    return ` (forwarded from ${from})`;
 };
 
 /**
@@ -522,9 +521,10 @@ export const autoUpdate = (bot: Bot) => {
                 : resolveRichMessageMedia(editedMsg.rich_message);
 
             if (newText) {
-                existingMessage.text = newText
-                    + (richMedia ? ` (I send ${richMedia.hint})` : '')
-                    + "<<EOF\n";
+                existingMessage.text = newText;
+                if (richMedia) {
+                    existingMessage.mediaHint = richMedia.hint;
+                }
                 existingMessage.date = new Date(editedMsg.edit_date! * 1000);
                 await existingMessage.save();
 
@@ -674,7 +674,8 @@ export const autoSave = (bot: Bot) => {
                         || messageText || messageCaption
                         || renderRichMessage(ctx.message?.rich_message)
                         || ctx.update.message?.sticker?.emoji || ''
-                    ) + renderForwardOrigin(ctx.message?.forward_origin);
+                    );
+                const forwardOrigin = resolveForwardOrigin(ctx.message?.forward_origin);
 
                 const chatId = ctx.chat.id;
                 const messageId = ctx.message.message_id;
@@ -693,16 +694,20 @@ export const autoSave = (bot: Bot) => {
                     addAsyncFileSaveMsgId(messageId);
                 }
 
-                // Save text first (no media bytes yet)
+                // Save text first (no media bytes yet). Text is pure content;
+                // media/forward metadata live in their own columns and are
+                // rendered into the model-facing format at context-build time.
                 await saveMessage({
                     chatId,
                     messageId,
                     userId,
                     date,
                     userName,
-                    message: baseText + (media ? ` (I send ${media.hint})` : '') + '<<EOF\n',
+                    message: baseText,
                     quoteText,
                     replyToId,
+                    mediaHint: media ? media.hint : undefined,
+                    forwardOrigin,
                 });
 
                 // Acquire media bytes asynchronously (download + optional .tgs->webm),
@@ -719,10 +724,10 @@ export const autoSave = (bot: Bot) => {
 
                         const finalHint = match(outcome)
                             .with({ status: 'cached' }, () => media.hint)
-                            .with({ status: 'too_large' }, () => `${media.hint}, [system] too large to process`)
-                            .with({ status: 'unsupported' }, () => `${media.hint}, [system] file type not supported, can not be read`)
-                            .with({ status: 'download_failed' }, () => `${media.hint}, [system] failed to download`)
-                            .with({ status: 'convert_failed' }, () => `${media.hint}, [system] failed to render, can not view`)
+                            .with({ status: 'too_large' }, () => `${media.hint} — too large to process, you cannot see it`)
+                            .with({ status: 'unsupported' }, () => `${media.hint} — file type not supported, you cannot see it`)
+                            .with({ status: 'download_failed' }, () => `${media.hint} — failed to download, you cannot see it`)
+                            .with({ status: 'convert_failed' }, () => `${media.hint} — failed to render, you cannot see it`)
                             .exhaustive();
 
                         const [saveErr] = await to(saveMessage({
@@ -731,11 +736,13 @@ export const autoSave = (bot: Bot) => {
                             userId,
                             date,
                             userName,
-                            message: baseText + ` (I send ${finalHint})` + '<<EOF\n',
+                            message: baseText,
                             quoteText,
                             fileMime: outcome.status === 'cached' ? outcome.mime : undefined,
                             fileUniqueId: outcome.status === 'cached' ? outcome.fileUniqueId : undefined,
                             replyToId,
+                            mediaHint: finalHint,
+                            forwardOrigin,
                         }));
                         if (saveErr) {
                             console.error('[autoSave] Failed to update message with media:', saveErr);

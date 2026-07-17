@@ -27,6 +27,8 @@ services:
     volumes:
       - ./database.sqlite:/app/k-on-bot/database.sqlite
       - ./.env:/app/k-on-bot/.env:ro
+      # Multi-line system prompt, referenced by SYSTEM_PROMPT_FILE in .env
+      - ./system-prompt.md:/app/k-on-bot/system-prompt.md:ro
       # Service account JSON for Vertex/GCS (an empty placeholder is fine until used).
       - ./gcp-sa.json:/app/k-on-bot/gcp-sa.json:ro
       # Shared with telegram-bot-api so k-on-bot can read files downloaded to disk.

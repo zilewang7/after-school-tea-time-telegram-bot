@@ -11,24 +11,75 @@ import { getCurrentModel } from '../state.js';
 import { getModelCapabilities } from '../ai/platform-factory.js';
 import type { UnifiedMessage, UnifiedContentPart, ModelCapabilities } from '../ai/types.js';
 
-// Models tend to reply from the surrounding text and skip attached video/audio.
-// This nudge (appended to messages that carry such media) tells them to actually
-// perceive it and describe its real content.
-const AUDIO_VISUAL_NUDGE =
-    '[system] An audio/visual file is attached in this message. You can fully perceive it — actually watch/listen to it and weave a concrete description of its real content into your reply; do not respond from the surrounding text alone.';
+/** Audio/visual media kinds present in the parts, for a type-specific nudge */
+const audioVisualKinds = (parts: UnifiedContentPart[]): Array<'video' | 'audio'> => {
+    const kinds = new Set<'video' | 'audio'>();
+    for (const part of parts) {
+        if (part.type !== 'media') continue;
+        if (part.mimeType?.startsWith('video/')) kinds.add('video');
+        if (part.mimeType?.startsWith('audio/')) kinds.add('audio');
+    }
+    return [...kinds];
+};
 
-const hasAudioVisualMedia = (parts: UnifiedContentPart[]): boolean =>
-    parts.some(
-        (part) =>
-            part.type === 'media' &&
-            (Boolean(part.mimeType?.startsWith('video/')) || Boolean(part.mimeType?.startsWith('audio/')))
+// Models tend to reply from the surrounding text and skip attached video/audio.
+// Only emitted when the model can actually ingest such media
+// (supportsMediaInput), and named after what is really attached.
+const buildMediaNudge = (kinds: Array<'video' | 'audio'>): string => {
+    const noun = kinds.join(' and ');
+    const verb = kinds.map((kind) => (kind === 'video' ? 'watch' : 'listen to')).join(' / ');
+    return `[system] A ${noun} file is attached in this message. You can fully perceive it — actually ${verb} it and weave a concrete description of its real content into your reply; do not respond from the surrounding text alone.`;
+};
+
+/** Whether every attached media part survives the model's capability filter */
+const mediaVisibleToModel = (
+    mediaParts: UnifiedContentPart[],
+    capabilities: ModelCapabilities
+): boolean =>
+    mediaParts.length > 0 &&
+    mediaParts.every((part) =>
+        part.type === 'image' ? capabilities.supportsImageInput : capabilities.supportsMediaInput
     );
+
+/**
+ * Render the model-facing header: `用户名 [annotation…]: `.
+ * All metadata (forward origin, reply context, attached media) becomes
+ * square-bracket annotations between the name and the colon.
+ */
+const renderMessageHeader = (
+    msg: Pick<ContextMessage, 'userName' | 'forwardOrigin' | 'mediaHint'>,
+    replyAnnotations: string[],
+    mediaVisible: boolean
+): string => {
+    const annotations: string[] = [];
+    if (msg.forwardOrigin) {
+        annotations.push(`[forwarded from ${msg.forwardOrigin}]`);
+    }
+    annotations.push(...replyAnnotations);
+    if (msg.mediaHint) {
+        // failure hints already end with "you cannot see it" — don't double up
+        const invisible = !mediaVisible && !msg.mediaHint.includes('you cannot see it');
+        annotations.push(`[sent ${msg.mediaHint}${invisible ? ' — not visible to you' : ''}]`);
+    }
+    return `${msg.userName}${annotations.length ? ' ' + annotations.join(' ') : ''}: `;
+};
+
+/**
+ * Assemble the text part of a user message: header + content + EOF marker.
+ * Legacy rows (<= 7 days old) already carry `<<EOF` inside the stored text;
+ * those pass through unchanged.
+ */
+const renderUserText = (header: string, text: string | null): string => {
+    const content = text || '';
+    return content.includes('<<EOF') ? header + content : `${header}${content}\n<<EOF\n`;
+};
 
 /**
  * Build context from a single message
  */
 const buildMessageContent = async (
     msg: ContextMessage,
+    capabilities: ModelCapabilities,
 ): Promise<UnifiedMessage> => {
     // Get file contents if message references a file (legacy BLOB or cached media)
     const fileContents = (msg.file || msg.fileUniqueId)
@@ -65,89 +116,94 @@ const buildMessageContent = async (
         };
     } else {
         // User message
-        const parts: UnifiedContentPart[] = [...fileContents];
-
-        const textContent = `${msg.userName}: ${msg.text || ''}`;
-        parts.push({ type: 'text', text: textContent });
-
-        // Link preview (text + media) for the first URL, served from the
-        // URL-addressed cache filled by autoSave via luoxu.
-        const previewParts = await getLinkPreviewParts(msg.text);
-        parts.push(...previewParts);
-
-        // Nudge the model to actually watch/listen to attached video/audio.
-        if (hasAudioVisualMedia([...fileContents, ...previewParts])) {
-            parts.push({ type: 'text', text: AUDIO_VISUAL_NUDGE });
-        }
-
-        return {
-            role: 'user',
-            content: parts,
-        };
+        return buildUserMessage(msg, capabilities, []);
     }
 };
 
 /**
- * Build reply context text (e.g., "[replying to ...]")
+ * Build reply annotations for the current message,
+ * e.g. `[replying to 某某: "开头摘要"]` and `[quote: "引文"]`.
  */
-const buildReplyContext = async (
+const buildReplyAnnotations = async (
     chatId: number,
     replyToId: number | null,
     quoteText: string | null
-): Promise<string> => {
-    if (!replyToId) return ': ';
+): Promise<string[]> => {
+    const annotations: string[] = [];
 
-    let text = '([system]replying to ';
-    const replyMsg = await getMessage(chatId, replyToId);
-
-    if (replyMsg?.text) {
-        text += `[${replyMsg.userName}:`;
-        // Use Array.from to slice by unicode codepoints (avoid breaking emoji)
-        const msgChars = Array.from(replyMsg.text);
-        text += `${msgChars.length > 20 ? msgChars.slice(0, 20).join('') + '...' : msgChars.join('')}]`;
-    } else {
-        text += '[last message]';
+    if (replyToId) {
+        const replyMsg = await getMessage(chatId, replyToId);
+        const replyText = replyMsg?.text?.replace(/<<EOF\s*$/, '').trim();
+        if (replyMsg && replyText) {
+            // Slice by unicode codepoints (avoid breaking emoji)
+            const chars = Array.from(replyText);
+            const excerpt = chars.length > 20 ? chars.slice(0, 20).join('') + '…' : replyText;
+            annotations.push(`[replying to ${replyMsg.userName}: "${excerpt}"]`);
+        } else {
+            annotations.push('[replying to the last message]');
+        }
     }
 
     if (quoteText) {
-        text += `[quote: ${quoteText}]`;
+        annotations.push(`[quote: "${quoteText}"]`);
     }
 
-    text += '): ';
-    return text;
+    return annotations;
 };
 
 /**
- * Build the current message content with reply context
+ * Shared user-message assembly: media parts + rendered header/text + link
+ * preview + capability-aware media nudge.
  */
-const buildCurrentMessageContent = async (msg: Message): Promise<UnifiedMessage> => {
+const buildUserMessage = async (
+    msg: Pick<ContextMessage, 'chatId' | 'messageId' | 'userName' | 'text' | 'file' | 'fileUniqueId' | 'mediaHint' | 'forwardOrigin'>,
+    capabilities: ModelCapabilities,
+    replyAnnotations: string[],
+): Promise<UnifiedMessage> => {
     const fileContents = (msg.file || msg.fileUniqueId)
         ? await getFileContentsOfMessage(msg.chatId, msg.messageId)
         : [];
 
-    const replyContext = await buildReplyContext(msg.chatId, msg.replyToId, msg.quoteText);
+    const header = renderMessageHeader(
+        msg,
+        replyAnnotations,
+        mediaVisibleToModel(fileContents, capabilities)
+    );
 
     const parts: UnifiedContentPart[] = [
         ...fileContents,
-        {
-            type: 'text',
-            text: msg.userName + replyContext + (msg.text || ''),
-        },
+        { type: 'text', text: renderUserText(header, msg.text) },
     ];
 
-    // Link preview (text + media) for the first URL in the current message.
+    // Link preview (text + media) for the first URL, served from the
+    // URL-addressed cache filled by autoSave via luoxu.
     const previewParts = await getLinkPreviewParts(msg.text);
     parts.push(...previewParts);
 
-    // Nudge the model to actually watch/listen to attached video/audio.
-    if (hasAudioVisualMedia([...fileContents, ...previewParts])) {
-        parts.push({ type: 'text', text: AUDIO_VISUAL_NUDGE });
+    // Nudge the model to actually watch/listen to attached video/audio — only
+    // when the model can ingest that media at all, named after what's attached.
+    if (capabilities.supportsMediaInput) {
+        const kinds = audioVisualKinds([...fileContents, ...previewParts]);
+        if (kinds.length) {
+            parts.push({ type: 'text', text: buildMediaNudge(kinds) });
+        }
     }
 
     return {
         role: 'user',
         content: parts,
     };
+};
+
+/**
+ * Build the current message content with reply context
+ */
+const buildCurrentMessageContent = async (
+    msg: Message,
+    capabilities: ModelCapabilities,
+): Promise<UnifiedMessage> => {
+    const replyAnnotations = await buildReplyAnnotations(msg.chatId, msg.replyToId, msg.quoteText);
+    return buildUserMessage(msg, capabilities, replyAnnotations);
 };
 
 /**
@@ -201,12 +257,12 @@ export const buildContext = async (
         if (opts.excludeMessageIds?.includes(historyMsg.messageId)) {
             continue;
         }
-        const content = await buildMessageContent(historyMsg);
+        const content = await buildMessageContent(historyMsg, modelCapabilities);
         chatContents.push(content);
     }
 
     // Add current message with reply context
-    const currentContent = await buildCurrentMessageContent(msg);
+    const currentContent = await buildCurrentMessageContent(msg, modelCapabilities);
     chatContents.push(currentContent);
 
     // Apply model capabilities (filter images, merge messages if needed)

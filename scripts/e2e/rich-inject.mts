@@ -6,11 +6,16 @@
  *
  * Run: DB_PATH=/tmp/rich-inject.sqlite BOT_TOKEN=dummy:token pnpm exec tsx scripts/e2e/rich-inject.mts
  */
+// context-builder transitively constructs the AI platform singletons, which
+// need real credentials — load .env (explicit BOT_TOKEN/DB_PATH still win).
+import 'dotenv/config';
 import { Bot } from 'grammy';
 import type { Update, UserFromGetMe } from 'grammy/types';
 import { autoSave } from '../../src/db/autoSave.js';
 import { getMessage } from '../../src/db/index.js';
 import { sequelize } from '../../src/db/config.js';
+import { buildContext } from '../../src/reply/context-builder.js';
+import type { ModelCapabilities } from '../../src/ai/types.js';
 
 const CHAT_ID = -100999000111;
 const MESSAGE_ID = 424242;
@@ -34,6 +39,12 @@ const update: Update = {
         date: Math.floor(1_800_000_000),
         chat: { id: CHAT_ID, type: 'supergroup', title: 'inject' },
         from: { id: 111, is_bot: false, first_name: '测试用户' },
+        forward_origin: {
+            type: 'channel',
+            date: 1_784_000_000,
+            chat: { id: -1002000000000, type: 'channel', title: '测试频道' },
+            message_id: 99,
+        },
         rich_message: {
             blocks: [
                 { type: 'heading', size: 2, text: '周报' },
@@ -101,6 +112,26 @@ const main = async (): Promise<void> => {
     console.log('--- stored text ---');
     console.log(text);
 
+    // Render the model-facing format (fixed capabilities: image-only model,
+    // so the undownloadable photo must be annotated as not visible)
+    const imageOnlyCapabilities: ModelCapabilities = {
+        supportsImageInput: true,
+        supportsImageOutput: false,
+        supportsSystemPrompt: true,
+        requiresMessageMerge: false,
+        supportsThinking: false,
+        supportsGrounding: false,
+        supportsMediaInput: false,
+    };
+    const context = await buildContext(stored, { capabilities: imageOnlyCapabilities });
+    const lastMessage = context.at(-1);
+    const renderedText = (lastMessage?.content ?? [])
+        .filter((part) => part.type === 'text')
+        .map((part) => part.text)
+        .join('\n');
+    console.log('--- rendered context text ---');
+    console.log(renderedText);
+
     const checks: Array<[string, boolean]> = [
         ['heading as ##', text.includes('## 周报')],
         ['bold inline', text.includes('**重点**')],
@@ -108,9 +139,15 @@ const main = async (): Promise<void> => {
         ['GFM table', text.includes('| 项目 | 状态 |')],
         ['fenced code with language', text.includes('```js')],
         ['media placeholder with caption', text.includes('[图片] 插图')],
-        // The photo block's largest PhotoSize must be picked up as the
-        // message's attached media (download itself fails here: fake file_id)
-        ['media hint for rich photo block', text.includes('(I send a picture')],
+        // Metadata lives in columns now, stored text stays pure content
+        ['stored text has no inline hint/EOF', !text.includes('(I send') && !text.includes('<<EOF')],
+        ['mediaHint column set', stored.mediaHint === 'a picture'],
+        ['forwardOrigin column set', stored.forwardOrigin === 'channel 测试频道'],
+        // Context rendering: unified square-bracket annotations + EOF marker
+        ['rendered forward annotation', renderedText.includes('[forwarded from channel 测试频道]')],
+        ['rendered media annotation (not visible)', renderedText.includes('[sent a picture — not visible to you]')],
+        ['rendered EOF marker', renderedText.includes('\n<<EOF')],
+        ['no audio/visual nudge for image-only model', !renderedText.includes('[system] A ')],
     ];
     let failed = 0;
     for (const [name, ok] of checks) {

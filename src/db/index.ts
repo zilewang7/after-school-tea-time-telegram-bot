@@ -23,10 +23,12 @@ const saveMessage = async (
         fileMime?: string,
         fileUniqueId?: string,
         replyToId?: number,
-        modelParts?: any
+        modelParts?: any,
+        mediaHint?: string | null,
+        forwardOrigin?: string | null
     }
 ) => {
-    const { chatId, messageId, userId, date = new Date(), userName = '佚名', message, quoteText, fileLink, fileBuffer, fileMime, fileUniqueId, replyToId, modelParts } = info;
+    const { chatId, messageId, userId, date = new Date(), userName = '佚名', message, quoteText, fileLink, fileBuffer, fileMime, fileUniqueId, replyToId, modelParts, mediaHint, forwardOrigin } = info;
 
     const fromBotSelf = userId === Number(process.env.BOT_USER_ID);
 
@@ -64,6 +66,12 @@ const saveMessage = async (
         }
         if (fileUniqueId !== undefined) {
             existingMessage.fileUniqueId = fileUniqueId;
+        }
+        if (mediaHint !== undefined) {
+            existingMessage.mediaHint = mediaHint;
+        }
+        if (forwardOrigin !== undefined) {
+            existingMessage.forwardOrigin = forwardOrigin;
         }
 
         if (fileBuffer) {
@@ -109,6 +117,8 @@ const saveMessage = async (
         replyToId,
         replies: '[]',
         modelParts: modelParts ?? null,
+        mediaHint: mediaHint ?? null,
+        forwardOrigin: forwardOrigin ?? null,
     });
 
     if (fileLink && !fileBuffer) {

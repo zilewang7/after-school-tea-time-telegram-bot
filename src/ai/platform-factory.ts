@@ -1,6 +1,7 @@
 /**
  * AI Platform factory - creates platform instances based on model name
  */
+import { readFileSync } from 'node:fs';
 import { match } from 'ts-pattern';
 import type { IAIPlatform, ModelCapabilities, PlatformConfig, UnifiedMessage, StreamChunk } from './types.js';
 import { GeminiPlatform } from './platforms/gemini-platform.js';
@@ -84,8 +85,25 @@ export const sendMessage = async (
 };
 
 /**
- * Get system prompt from environment
+ * System prompt source: SYSTEM_PROMPT_FILE (multi-line markdown file, read
+ * once at first use) preferred; SYSTEM_PROMPT env var as fallback for setups
+ * where mounting a file is inconvenient.
  */
+let cachedSystemPrompt: string | undefined;
+
 export const getSystemPrompt = (): string => {
-    return process.env.SYSTEM_PROMPT || '';
+    if (cachedSystemPrompt !== undefined) return cachedSystemPrompt;
+
+    const promptFile = process.env.SYSTEM_PROMPT_FILE;
+    if (promptFile) {
+        try {
+            cachedSystemPrompt = readFileSync(promptFile, 'utf-8').trim();
+            return cachedSystemPrompt;
+        } catch (error) {
+            console.error(`[system-prompt] failed to read ${promptFile}, falling back to SYSTEM_PROMPT env:`, error);
+        }
+    }
+
+    cachedSystemPrompt = process.env.SYSTEM_PROMPT || '';
+    return cachedSystemPrompt;
 };

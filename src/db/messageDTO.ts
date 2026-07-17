@@ -20,6 +20,10 @@ export class Message extends Model<InferAttributes<Message>, InferCreationAttrib
   declare replyToId: number | null;
   declare replies: string;
   declare modelParts: string | null;
+  /** Human-readable attached-media hint, e.g. "a picture" (+ failure status) */
+  declare mediaHint: string | null;
+  /** Forward origin, e.g. "user 张三" / "channel 某频道" */
+  declare forwardOrigin: string | null;
 }
 
 Message.init({
@@ -76,6 +80,16 @@ Message.init({
   },
   modelParts: {
     type: DataTypes.JSON,
+    allowNull: true,
+    defaultValue: null,
+  },
+  mediaHint: {
+    type: DataTypes.STRING,
+    allowNull: true,
+    defaultValue: null,
+  },
+  forwardOrigin: {
+    type: DataTypes.STRING,
     allowNull: true,
     defaultValue: null,
   },

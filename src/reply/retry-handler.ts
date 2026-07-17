@@ -81,7 +81,9 @@ const handlePicbananaRetry = async (
         return;
     }
 
-    // Extract prompt from original message (strip /picbanana command prefix, EOF suffix, and "(I send ...)" suffix)
+    // Extract prompt from original message (strip /picbanana command prefix).
+    // Stored text is pure content now; the EOF / "(I send ...)" strips only
+    // cover legacy rows and can be dropped after 2026-07-24 (7-day retention).
     const originalText = userMessage.text
         ?.replace(/<<EOF\s*$/, '')
         ?.replace(/\s*\(I send [^)]+\)\s*$/, '')
@@ -178,7 +180,7 @@ const handlePicgptRetry = async (
         return;
     }
 
-    // Extract prompt from original message (strip /picgpt command prefix, EOF suffix, and "(I send ...)" suffix)
+    // Extract prompt from original message (strip /picgpt command prefix; legacy strips as above)
     const originalText = userMessage.text
         ?.replace(/<<EOF\s*$/, '')
         ?.replace(/\s*\(I send [^)]+\)\s*$/, '')
