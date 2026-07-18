@@ -39,7 +39,7 @@
     "sequelize": "7.0.0-alpha.9",
     "socks-proxy-agent": "^10.1.0",
     "sqlite3": "^6.0.1",
-    "telegram-md-entities": "^0.3.1",
+    "telegram-md-entities": "^0.4.0",
     "ts-pattern": "^5.9.0"
   }
 }
