@@ -8,3 +8,4 @@ gcp-sa.json
 tmp/
 .pnpm-store/
 system-prompt.md
+docs/
