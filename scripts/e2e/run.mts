@@ -4,7 +4,8 @@
  *   - test container up: docker compose --profile test up -d k-on-bot-test
  *     (and ~/dockers/watch-first-bot NOT running — same token)
  *
- * Run: pnpm test:e2e:bot
+ * Run: pnpm test:e2e:bot         — quick suite (reply/markdown/store//model)
+ *      pnpm test:e2e:bot:full    — quick + slow edit-flow cases
  */
 import {
     BOT_USER_ID,
@@ -56,12 +57,14 @@ const runCase = async (
     }
 };
 
-const cases: Array<{ name: string; body: () => Promise<void> }> = [
+const cases: Array<{ name: string; full?: boolean; body: () => Promise<void> }> = [
     {
-        name: 'plain chat reply',
+        // One LLM call covers both the basic reply pipeline and the
+        // markdown → entities rendering (previously two separate cases)
+        name: 'chat reply renders markdown as entities',
         body: async () => {
             const trigger = await sendAsUser(
-                `@${BOT_USERNAME} 请只回复两个字:收到`
+                `@${BOT_USERNAME} 请原样输出下面这段 markdown(不要加代码块包裹):\n**加粗** 和 \`行内代码\` 和一个列表:\n- 第一项\n- 第二项`
             );
             const response = await waitForBotResponse(trigger);
             expect(response.text.length > 0, 'bot produced non-empty text');
@@ -71,24 +74,6 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
                 (m) => m.sender_id === BOT_USER_ID && m.id === response.firstMessageId
             );
             expect(Boolean(botMsg), 'reply visible in group via MTProto read-back');
-            expect(
-                Boolean(botMsg && botMsg.text.includes('收到')),
-                'visible text contains the requested content'
-            );
-        },
-    },
-    {
-        name: 'markdown renders as entities (no raw markers visible)',
-        body: async () => {
-            const trigger = await sendAsUser(
-                `@${BOT_USERNAME} 请原样输出下面这段 markdown(不要加代码块包裹):\n**加粗** 和 \`行内代码\` 和一个列表:\n- 第一项\n- 第二项`
-            );
-            const response = await waitForBotResponse(trigger);
-            const visible = await readGroupMessages(trigger);
-            const botMsg = visible.find(
-                (m) => m.sender_id === BOT_USER_ID && m.id === response.firstMessageId
-            );
-            expect(Boolean(botMsg), 'reply visible in group');
             if (!botMsg) return;
             expect(
                 !botMsg.text.includes('**') && !botMsg.text.includes('`'),
@@ -140,6 +125,7 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
     },
     {
         name: 'edit after completion adds retry button',
+        full: true,
         body: async () => {
             const trigger = await sendAsUser(
                 `@${BOT_USERNAME} 请只回复两个字:好的`
@@ -164,6 +150,7 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
     },
     {
         name: 'edit during generation adds retry button on the final edit',
+        full: true,
         body: async () => {
             const trigger = await sendAsUser(
                 `@${BOT_USERNAME} 请写一段 200 字左右的轻音部日常小故事`
@@ -188,8 +175,12 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
 ];
 
 const main = async (): Promise<void> => {
+    const runFull = process.argv.includes('--full');
+    const selected = cases.filter((testCase) => runFull || !testCase.full);
+    console.log(`Running ${runFull ? 'FULL' : 'QUICK'} suite: ${selected.length}/${cases.length} cases`);
+
     const results: CaseResult[] = [];
-    for (const testCase of cases) {
+    for (const testCase of selected) {
         results.push(await runCase(testCase.name, testCase.body));
         await sleep(CASE_GAP_MS);
     }

@@ -12,7 +12,8 @@
     "dev:node": "node --enable-source-maps --watch dist/index.js --inspect-brk",
     "dev": "pnpm run \"/dev:/\"",
     "tsx": "tsx ./src/index.ts",
-    "test:e2e:bot": "tsx scripts/e2e/run.mts"
+    "test:e2e:bot": "tsx scripts/e2e/run.mts",
+    "test:e2e:bot:full": "tsx scripts/e2e/run.mts --full"
   },
   "keywords": [],
   "author": "ddc",
@@ -39,7 +40,7 @@
     "sequelize": "7.0.0-alpha.9",
     "socks-proxy-agent": "^10.1.0",
     "sqlite3": "^6.0.1",
-    "telegram-md-entities": "^0.4.1",
+    "telegram-md-entities": "^0.4.2",
     "ts-pattern": "^5.9.0"
   }
 }
