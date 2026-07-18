@@ -51,8 +51,8 @@ importers:
         specifier: ^6.0.1
         version: 6.0.1
       telegram-md-entities:
-        specifier: ^0.4.0
-        version: 0.4.0(micromark-util-types@2.0.2)(micromark@4.0.2)
+        specifier: ^0.4.1
+        version: 0.4.1(micromark-util-types@2.0.2)(micromark@4.0.2)
       ts-pattern:
         specifier: ^5.9.0
         version: 5.9.0
@@ -1764,8 +1764,8 @@ packages:
     resolution: {integrity: sha512-resvxdc6Mgb7YEThw6G6bExlXKkv6+YbuzGg9xuXxSgxJF7Ozs+o8Y9+2R3sArdWdW8nOokoQb1yrpFB0pQK2g==}
     engines: {node: '>=14'}
 
-  telegram-md-entities@0.4.0:
-    resolution: {integrity: sha512-fnZnMLLHP6rdV0qYI8F109nVHJu1VDohYmwxI7KYpido/GRZXQRxjmnslPwi/uQ6Cg6Ht3GM9mZNoudMscoo2w==}
+  telegram-md-entities@0.4.1:
+    resolution: {integrity: sha512-9iNdezHMlpMwJNdPJBBGvjWbnGm4TXEouRFPJttlfYV7z4rCa2RLrvrdj7N6i8a6Mu+MilRYT8tQYziiEpVosg==}
     engines: {node: '>=18'}
 
   tinyglobby@0.2.17:
@@ -3942,7 +3942,7 @@ snapshots:
       - encoding
       - supports-color
 
-  telegram-md-entities@0.4.0(micromark-util-types@2.0.2)(micromark@4.0.2):
+  telegram-md-entities@0.4.1(micromark-util-types@2.0.2)(micromark@4.0.2):
     dependencies:
       mdast-util-from-markdown: 2.0.3
       mdast-util-gfm: 3.1.0
