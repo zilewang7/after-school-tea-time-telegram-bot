@@ -96,4 +96,10 @@ Message.init({
 }, {
   sequelize,
   tableName: 'telegram_messages',
+  // Every context build looks messages up by (chatId, messageId) dozens of
+  // times; without this the lookup is a full table scan over rows that carry
+  // multi-MB media blobs.
+  indexes: [
+    { fields: ['chatId', 'messageId'] },
+  ],
 });

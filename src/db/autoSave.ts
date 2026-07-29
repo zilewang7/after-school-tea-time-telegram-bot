@@ -90,6 +90,11 @@ const resolveCapturedMedia = (msg: TgMessage | undefined): CapturedMedia | undef
 
     const sticker = msg.sticker;
     if (sticker) {
+        // The pack emoji is loose metadata (Telegram often assigns one that has
+        // nothing to do with the artwork), so it is surfaced as a labelled hint
+        // only — never as the message text. What the emoji is worth is spelled
+        // out for the model by the sticker nudges in the context builder.
+        const emojiNote = sticker.emoji ? `, pack emoji: ${sticker.emoji}` : '';
         // Video sticker (.webm, VP9): download the real animation, Gemini can read it
         if (sticker.is_video) {
             return {
@@ -98,8 +103,7 @@ const resolveCapturedMedia = (msg: TgMessage | undefined): CapturedMedia | undef
                 mime: 'video/webm',
                 kind: 'video_sticker',
                 sizeBytes: sticker.file_size,
-                // The full animated clip is attached; tell the model it can watch the whole thing
-                hint: 'an animated sticker (the full short video clip is attached, you can watch the entire animation, not just one frame)',
+                hint: `an animated sticker (a short video clip${emojiNote})`,
                 needsTgsConversion: false,
             };
         }
@@ -111,7 +115,7 @@ const resolveCapturedMedia = (msg: TgMessage | undefined): CapturedMedia | undef
                 mime: 'video/webm', // after conversion
                 kind: 'animated_sticker',
                 sizeBytes: sticker.file_size,
-                hint: 'an animated sticker (the full short video clip is attached, you can watch the entire animation, not just one frame)',
+                hint: `an animated sticker (a short video clip${emojiNote})`,
                 needsTgsConversion: true,
             };
         }
@@ -121,7 +125,7 @@ const resolveCapturedMedia = (msg: TgMessage | undefined): CapturedMedia | undef
             mime: 'image/webp',
             kind: 'sticker',
             sizeBytes: sticker.file_size,
-            hint: 'a sticker image',
+            hint: sticker.emoji ? `a sticker image (pack emoji: ${sticker.emoji})` : 'a sticker image',
             needsTgsConversion: false,
         };
     }
@@ -531,8 +535,16 @@ export const autoUpdate = (bot: Bot) => {
                 ? undefined
                 : resolveRichMessageMedia(editedMsg.rich_message);
 
+            // The edit carries the reply quote again; keep the stored one in sync
+            // (absent quote leaves the previous value alone).
+            const newQuoteText = renderTextWithEntities(
+                editedMsg.quote?.text,
+                editedMsg.quote?.entities
+            );
+
             if (newText) {
                 existingMessage.text = newText;
+                existingMessage.quoteText = newQuoteText ?? existingMessage.quoteText;
                 if (richMedia) {
                     existingMessage.mediaHint = richMedia.hint;
                 }
@@ -682,9 +694,12 @@ export const autoSave = (bot: Bot) => {
                             ? (messageText?.match(/^\/chat\s+([0-9a]+)\s*(-(\S+))?\s*(.+)?$/)?.[4] || ' ')
                             : ''
                         )
+                        // A sticker-only message has no text: its pack emoji lives in
+                        // the media hint, so the model reads the artwork instead of
+                        // treating the emoji as something the user typed.
                         || messageText || messageCaption
                         || renderRichMessage(ctx.message?.rich_message)
-                        || ctx.update.message?.sticker?.emoji || ''
+                        || ''
                     );
                 const forwardOrigin = resolveForwardOrigin(ctx.message?.forward_origin);
 

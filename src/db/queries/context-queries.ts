@@ -31,33 +31,38 @@ export interface ContextMessage {
 }
 
 /**
+ * Project a stored message row onto the context-building shape
+ */
+export const toContextMessage = (msg: Message): ContextMessage => ({
+    chatId: msg.chatId,
+    messageId: msg.messageId,
+    fromBotSelf: msg.fromBotSelf,
+    date: msg.date,
+    userName: msg.userName,
+    text: msg.text,
+    quoteText: msg.quoteText,
+    file: msg.file,
+    fileMime: msg.fileMime,
+    fileUniqueId: msg.fileUniqueId,
+    replyToId: msg.replyToId,
+    replies: msg.replies,
+    modelParts: msg.modelParts,
+    mediaHint: msg.mediaHint,
+    forwardOrigin: msg.forwardOrigin,
+});
+
+/**
  * Get a message from either Message table or BotResponse table
  * This allows context to include bot responses
  */
-const getContextMessage = async (
+export const getContextMessage = async (
     chatId: number,
     messageId: number
 ): Promise<ContextMessage | null> => {
     // First try Message table
     const msg = await getMessage(chatId, messageId);
     if (msg) {
-        return {
-            chatId: msg.chatId,
-            messageId: msg.messageId,
-            fromBotSelf: msg.fromBotSelf,
-            date: msg.date,
-            userName: msg.userName,
-            text: msg.text,
-            quoteText: msg.quoteText,
-            file: msg.file,
-            fileMime: msg.fileMime,
-            fileUniqueId: msg.fileUniqueId,
-            replyToId: msg.replyToId,
-            replies: msg.replies,
-            modelParts: msg.modelParts,
-            mediaHint: msg.mediaHint,
-            forwardOrigin: msg.forwardOrigin,
-        };
+        return toContextMessage(msg);
     }
 
     // Try BotResponse table
@@ -309,6 +314,9 @@ export const getFileContentsOfMessage = async (
                 imageData: base64,
                 sizeBytes: f.sizeBytes ?? bytes.length,
                 mimeType: mime ?? 'image/png',
+                // Kept on images too: a static sticker is an image, and the
+                // context builder needs the kind to nudge about its pack emoji
+                mediaKind: f.kind ?? undefined,
             };
         }
         return {
