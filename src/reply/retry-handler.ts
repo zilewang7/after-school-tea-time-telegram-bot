@@ -7,7 +7,7 @@ import type { Context } from 'grammy';
 import { match } from 'ts-pattern';
 import { getMessage, getBotResponse } from '../db/index.js';
 import type { CommandType } from '../db/index.js';
-import { getFileContentsOfMessage } from '../db/queries/context-queries.js';
+import { collectReferenceImages } from './commands/reference-images.js';
 import { startRetry } from '../services/index.js';
 import { sendMessage, getSystemPrompt, getModelCapabilities } from '../ai/index.js';
 import { buildContext, buildContextFromParts } from './context-builder.js';
@@ -91,25 +91,11 @@ const handlePicbananaRetry = async (
     const commandMatch = originalText.match(/^\/picbanana(@\S+)?\s*([\s\S]*)?$/);
     const prompt = commandMatch?.[2]?.trim() || originalText;
 
-    // Collect reference images (same logic as picbanana-handler)
-    const referenceImages = new Set<string>();
-
-    const appendImagesFromMessage = async (targetMessageId: number): Promise<void> => {
-        const images = await getFileContentsOfMessage(chatId, targetMessageId);
-        images.forEach((part) => {
-            if (part.type === 'image' && part.imageData) {
-                referenceImages.add(part.imageData);
-            }
-        });
-    };
-
-    // Check reply message for reference images
-    if (userMessage.replyToId) {
-        await appendImagesFromMessage(userMessage.replyToId);
-    }
-
-    // Check current message for images
-    await appendImagesFromMessage(botResponse.userMessageId);
+    // Collect reference images (same helper as the live command)
+    const referenceImages = await collectReferenceImages(chatId, [
+        userMessage.replyToId,
+        botResponse.userMessageId,
+    ]);
 
     // Build content parts
     const contentParts: UnifiedContentPart[] = [
@@ -188,25 +174,11 @@ const handlePicgptRetry = async (
     const commandMatch = originalText.match(/^\/picgpt(@\S+)?\s*([\s\S]*)?$/);
     const prompt = commandMatch?.[2]?.trim() || originalText;
 
-    // Collect reference images
-    const referenceImages = new Set<string>();
-
-    const appendImagesFromMessage = async (targetMessageId: number): Promise<void> => {
-        const images = await getFileContentsOfMessage(chatId, targetMessageId);
-        images.forEach((part) => {
-            if (part.type === 'image' && part.imageData) {
-                referenceImages.add(part.imageData);
-            }
-        });
-    };
-
-    // Check reply message for reference images
-    if (userMessage.replyToId) {
-        await appendImagesFromMessage(userMessage.replyToId);
-    }
-
-    // Check current message for images
-    await appendImagesFromMessage(botResponse.userMessageId);
+    // Collect reference images (same helper as the live command)
+    const referenceImages = await collectReferenceImages(chatId, [
+        userMessage.replyToId,
+        botResponse.userMessageId,
+    ]);
 
     // Build content parts
     const contentParts: UnifiedContentPart[] = [

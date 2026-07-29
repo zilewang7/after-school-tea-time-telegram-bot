@@ -4,7 +4,7 @@
  */
 import type { Context } from 'grammy';
 import { to, isErr } from '../../shared/result.js';
-import { getFileContentsOfMessage } from '../../db/queries/context-queries.js';
+import { collectReferenceImages } from './reference-images.js';
 import { sendMessage } from '../../ai/index.js';
 import { buildContextFromParts } from './../context-builder.js';
 import {
@@ -49,37 +49,18 @@ export const checkPicbananaCommand = async (
         return [false];
     }
 
-    const chatId = ctx.chat.id;
-    const currentMessageId = ctx.message.message_id;
-    const referenceImages = new Set<string>();
-
-    // Helper to append images from a message
-    const appendImagesFromMessage = async (
-        targetChatId: number,
-        targetMessageId: number
-    ): Promise<void> => {
-        const images = await getFileContentsOfMessage(targetChatId, targetMessageId);
-        images.forEach((part) => {
-            if (part.type === 'image' && part.imageData) {
-                referenceImages.add(part.imageData);
-            }
-        });
-    };
-
-    // Check reply message for reference images
-    const replyMsg = ctx.message.reply_to_message;
-    if (replyMsg) {
-        await appendImagesFromMessage(chatId, replyMsg.message_id);
-    }
-
-    // Check current message for images
-    await appendImagesFromMessage(chatId, currentMessageId);
+    // Reference images: the replied-to message (bot-generated pictures included)
+    // and the command message itself
+    const referenceImages = await collectReferenceImages(ctx.chat.id, [
+        ctx.message.reply_to_message?.message_id,
+        ctx.message.message_id,
+    ]);
 
     return [
         true,
         {
             prompt,
-            referenceImages: Array.from(referenceImages),
+            referenceImages,
         }
     ];
 };
