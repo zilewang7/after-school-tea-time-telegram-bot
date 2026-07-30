@@ -14,5 +14,8 @@ export * from './message-editor.js';
 // Streaming editor (unified editor with status management)
 export * from './streaming-editor.js';
 
+// Context-number → message link resolver
+export * from './message-link.js';
+
 // Formatters
 export * from './formatters/index.js';

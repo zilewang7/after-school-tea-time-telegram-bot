@@ -13,7 +13,7 @@ import {
 } from '../db/queries/context-queries.js';
 import { getLinkPreviewParts } from '../services/luoxu-preview-service.js';
 import { applyModelCapabilities } from '../ai/message-transformer.js';
-import { getCurrentModel } from '../state.js';
+import { getCurrentModel, setContextNumbering } from '../state.js';
 import { getModelCapabilities } from '../ai/platform-factory.js';
 import type { UnifiedMessage, UnifiedContentPart, ModelCapabilities } from '../ai/types.js';
 
@@ -154,6 +154,23 @@ const buildContextIndex = (messages: ContextMessage[]): ContextIndex => {
     }
 
     return { numberOf, byId };
+};
+
+/**
+ * Publish `#N → messageId` for the display layer, which turns the `#N` the
+ * model writes back into clickable message links. Display-only: the reply that
+ * gets persisted keeps the plain numbers.
+ */
+const publishContextNumbering = (
+    chatId: number,
+    userMessageId: number,
+    index: ContextIndex
+): void => {
+    const messageIdOf = new Map<number, number>();
+    for (const [messageId, contextNumber] of index.numberOf) {
+        messageIdOf.set(contextNumber, messageId);
+    }
+    setContextNumbering(chatId, userMessageId, messageIdOf);
 };
 
 /**
@@ -437,6 +454,7 @@ export const buildContext = async (
 
     const contextMessages = await withMissingReplyTargets(chatId, assembled, excludeMessageIds);
     const index = buildContextIndex(contextMessages);
+    publishContextNumbering(chatId, messageId, index);
 
     const chatContents: UnifiedMessage[] = [];
     for (const contextMsg of contextMessages) {

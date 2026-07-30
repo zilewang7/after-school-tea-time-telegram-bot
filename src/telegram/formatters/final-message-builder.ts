@@ -16,6 +16,7 @@ import type { AgentStats, GroundingData } from '../../ai/types.js';
 import { buildAgentStatsSections } from './agent-stats-formatter.js';
 import { buildGroundingSections } from './grounding-formatter.js';
 import { plainText } from './entity-text.js';
+import { linkifyContextNumbers, type ContextLinkResolver } from './context-links.js';
 
 /** Safe per-message length budget (below Telegram's 4096 hard limit) */
 const TELEGRAM_MAX_LENGTH = 4000;
@@ -29,6 +30,8 @@ export interface FinalMessageBuildOptions {
     agentStats?: AgentStats;
     wasStoppedByUser?: boolean;
     maxLength?: number;
+    /** Makes the `#N` context references clickable (display-only) */
+    resolveContextLink?: ContextLinkResolver;
 }
 
 export const buildFinalMessages = (
@@ -41,6 +44,7 @@ export const buildFinalMessages = (
         agentStats,
         wasStoppedByUser,
         maxLength = TELEGRAM_MAX_LENGTH,
+        resolveContextLink,
     } = options;
 
     const parts: (RenderedMessage | string)[] = [];
@@ -68,7 +72,8 @@ export const buildFinalMessages = (
 
     if (!parts.length) return [];
 
-    const combined = concatMessages(...parts);
+    // Before the split, so the added link entities count against its budget
+    const combined = linkifyContextNumbers(concatMessages(...parts), resolveContextLink);
     if (!combined.text.trim()) return [];
 
     return splitMessage(combined, {

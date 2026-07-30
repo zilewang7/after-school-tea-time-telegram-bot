@@ -10,6 +10,7 @@
 import {
     BOT_USER_ID,
     BOT_USERNAME,
+    TEST_GROUP,
     editAsUser,
     expect,
     readGroupMessages,
@@ -83,6 +84,40 @@ const cases: Array<{ name: string; full?: boolean; body: () => Promise<void> }> 
             expect(
                 entityTypes.some((t) => t.includes('Bold')),
                 `bold entity present (got: ${entityTypes.join(',') || 'none'})`
+            );
+        },
+    },
+    {
+        // The `#N` context numbers the model writes must become clickable
+        // links in the visible message while the stored text stays plain
+        name: 'context number in the reply becomes a clickable link',
+        body: async () => {
+            const target = await sendAsUser('编号链接测试：这一条是被引用的消息');
+            const trigger = await sendAsUser(
+                `@${BOT_USERNAME} 请原样输出这一行,不要加任何别的内容:参见 #1 的说明`,
+                target
+            );
+            const response = await waitForBotResponse(trigger);
+            expect(response.text.includes('#1'), `stored text keeps the plain number (got: ${response.text.slice(0, 80)})`);
+            expect(
+                !response.text.includes('t.me'),
+                'stored text carries no link (context stays clean for the next turn)'
+            );
+
+            const visible = await readGroupMessages(trigger);
+            const botMsg = visible.find(
+                (m) => m.sender_id === BOT_USER_ID && m.id === response.firstMessageId
+            );
+            expect(Boolean(botMsg), 'reply visible in group via MTProto read-back');
+            if (!botMsg) return;
+            expect(botMsg.text.includes('#1'), 'visible text still reads "#1"');
+            const expectedUrl = `https://t.me/c/${TEST_GROUP}/${target}`;
+            const urls = botMsg.entities
+                .map((entity) => entity['url'])
+                .filter((url): url is string => typeof url === 'string');
+            expect(
+                urls.includes(expectedUrl),
+                `"#1" links to the referenced message (want ${expectedUrl}, got: ${urls.join(',') || 'none'})`
             );
         },
     },

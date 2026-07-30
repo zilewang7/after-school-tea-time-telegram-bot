@@ -22,6 +22,11 @@ import {
 } from '../telegram/index.js';
 import { runApiCall } from '../telegram/edit-coordinator.js';
 import { toApiEntities } from '../telegram/api-entities.js';
+import { buildMessageLinkResolver } from '../telegram/message-link.js';
+import {
+    linkifyContextNumbers,
+    type ContextLinkResolver,
+} from '../telegram/formatters/context-links.js';
 import { registerContinuation } from '../state.js';
 import {
     concatMessages,
@@ -198,6 +203,16 @@ const processChunk = (chunk: StreamChunk, state: ResponseState): ResponseState =
 };
 
 /**
+ * Resolver that makes the `#N` context references in this reply clickable.
+ * Built per render, not cached on the chat context: the numbering is published
+ * by buildContext, which runs after the chat context already exists.
+ */
+const contextLinkResolverFor = (
+    chatContext: ChatContext
+): ContextLinkResolver | undefined =>
+    buildMessageLinkResolver(chatContext.chatId, chatContext.userMessageId);
+
+/**
  * Format current state for display (without status text - handled by
  * StreamingEditor). While processing, markdown renders in streaming mode
  * (unclosed constructs show as their intended formatting) and thinking is a
@@ -206,6 +221,7 @@ const processChunk = (chunk: StreamChunk, state: ResponseState): ResponseState =
 const formatStateForDisplay = (
     state: ResponseState,
     isProcessing: boolean,
+    resolveContextLink?: ContextLinkResolver,
 ): RenderedMessage => {
     const parts: (RenderedMessage | string)[] = [];
 
@@ -225,7 +241,9 @@ const formatStateForDisplay = (
         parts.push(renderMarkdown(state.textBuffer, { streaming: isProcessing }));
     }
 
-    return concatMessages(...parts);
+    // Linkified here, before the caller measures length/entities, so the
+    // continuation split sees the same entity count the message will carry
+    return linkifyContextNumbers(concatMessages(...parts), resolveContextLink);
 };
 
 /**
@@ -242,7 +260,11 @@ const finalizeCurrentMessage = async (
     editor.stop();
 
     // Format final content (with collapse if needed)
-    const finalContent = formatStateForDisplay(state, false);
+    const finalContent = formatStateForDisplay(
+        state,
+        false,
+        contextLinkResolverFor(chatContext)
+    );
 
     // Update message with final content (no status text - isFinal)
     await editor.updateContent(finalContent.text, {
@@ -331,6 +353,9 @@ export const processStream = async (
 
     let lastUpdateTime = Date.now();
 
+    // The numbering is already published (buildContext ran before the stream)
+    const resolveContextLink = contextLinkResolverFor(chatContext);
+
     for await (const chunk of stream) {
         // Check if stream was aborted (user clicked stop)
         if (session.streamController.isAborted()) {
@@ -351,7 +376,7 @@ export const processStream = async (
         chatContext.currentState = state;
 
         // Format current display (without status - StreamingEditor handles it)
-        const rendered = formatStateForDisplay(state, true);
+        const rendered = formatStateForDisplay(state, true, resolveContextLink);
 
         // Check if we need to switch to a new message: both budgets matter —
         // some buffer for the status text; entities past ~100 are dropped
@@ -366,9 +391,14 @@ export const processStream = async (
             let textToSend = state.textBuffer;
             let remainingText = '';
 
-            // Renderer used for thinking in the streaming (processing) view
+            // Renderer used for thinking in the streaming (processing) view.
+            // Linkified like the real display, so the measurements below match
+            // the entity count the message actually carries.
             const renderThinkingForStreaming = (thinking: string): RenderedMessage =>
-                wrapInBlockquote(renderMarkdown(thinking, { streaming: true }), false);
+                linkifyContextNumbers(
+                    wrapInBlockquote(renderMarkdown(thinking, { streaming: true }), false),
+                    resolveContextLink
+                );
 
             const thinkingRendered = state.thinkingBuffer
                 ? renderThinkingForStreaming(state.thinkingBuffer)
@@ -401,7 +431,10 @@ export const processStream = async (
                 const availableSpace = MESSAGE_LENGTH_LIMIT - thinkingRendered.text.length - newlineSpace;
                 const availableEntities = MESSAGE_ENTITY_LIMIT - thinkingRendered.entities.length;
                 const textFits = (prefix: string): boolean => {
-                    const measured = renderMarkdown(prefix, { streaming: true });
+                    const measured = linkifyContextNumbers(
+                        renderMarkdown(prefix, { streaming: true }),
+                        resolveContextLink
+                    );
                     return (
                         measured.text.length <= availableSpace &&
                         measured.entities.length <= availableEntities
@@ -549,6 +582,7 @@ export const sendFinalResponse = async (
         agentStats: response.agentStats,
         wasStoppedByUser,
         groundingData: response.groundingData,
+        resolveContextLink: contextLinkResolverFor(chatContext),
     });
     let finalMessage: RenderedMessage = finalChunks[0] ?? { text: '', entities: [] };
 
@@ -878,6 +912,7 @@ export const handleResponseError = async (
         text: partialText,
         thinking: partialThinking,
         errorMessage: formatErrorForUser(error),
+        resolveContextLink: contextLinkResolverFor(chatContext),
     });
 
     // Get the correct button state after finalization (may be HAS_VERSIONS for retry errors)

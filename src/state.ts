@@ -26,6 +26,9 @@ interface AppStateType {
     continuationRegistry: Map<string, number>;
     // idempotency guard: "chatId:userMessageId" -> handled-at timestamp (ms)
     handledUserMessages: Map<string, number>;
+    // context numbering of one assembled context, for turning the `#N` the model
+    // writes into message links: "chatId:userMessageId" -> (#N -> messageId)
+    contextNumbering: Map<string, Map<number, number>>;
 }
 
 const createInitialState = (): AppStateType => ({
@@ -40,6 +43,7 @@ const createInitialState = (): AppStateType => ({
     pendingEditsWhileProcessing: new Set(),
     continuationRegistry: new Map(),
     handledUserMessages: new Map(),
+    contextNumbering: new Map(),
 });
 
 // singleton instance
@@ -160,3 +164,36 @@ export const tryMarkUserMessageHandling = (chatId: number, userMessageId: number
     state.handledUserMessages.set(entryKey, now);
     return true;
 };
+
+// Context numbering accessors
+const MAX_CONTEXT_NUMBERINGS = 200;
+
+/**
+ * Record the numbering of one assembled context. Retries overwrite the same
+ * key; since bot responses are never numbered, the numbers stay stable across
+ * them, so an older version's links keep pointing at the right messages.
+ */
+export const setContextNumbering = (
+    chatId: number,
+    userMessageId: number,
+    numbering: Map<number, number>
+): void => {
+    const registry = getAppState().contextNumbering;
+    const key = `${chatId}:${userMessageId}`;
+
+    // Re-inserting at the end keeps eviction in insertion order
+    registry.delete(key);
+    if (registry.size >= MAX_CONTEXT_NUMBERINGS) {
+        const oldest = registry.keys().next().value;
+        if (oldest !== undefined) registry.delete(oldest);
+    }
+
+    registry.set(key, numbering);
+};
+
+/** Numbering of the given reply's context, or undefined once evicted */
+export const getContextNumbering = (
+    chatId: number,
+    userMessageId: number
+): Map<number, number> | undefined =>
+    getAppState().contextNumbering.get(`${chatId}:${userMessageId}`);

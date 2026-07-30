@@ -19,6 +19,7 @@ import {
 } from '../telegram/index.js';
 import type { RenderedMessage } from 'telegram-md-entities';
 import { buildFinalMessages } from '../telegram/formatters/final-message-builder.js';
+import { buildMessageLinkResolver } from '../telegram/message-link.js';
 import { plainText } from '../telegram/formatters/entity-text.js';
 import { appendErrorLine } from '../telegram/formatters/error-display.js';
 import { formatErrorForUser } from '../shared/errors.js';
@@ -563,6 +564,7 @@ export const switchVersion = async (
         agentStats: newVersion.agentStats,
         groundingData: newVersion.groundingData,
         wasStoppedByUser: newVersion.wasStoppedByUser,
+        resolveContextLink: buildMessageLinkResolver(chatId, response.userMessageId),
     });
     // Errored versions re-show their error line (display-only, never stored)
     if (newVersion.errorMessage) {
@@ -820,6 +822,7 @@ export const refreshToFinalState = async (
         agentStats: version.agentStats,
         groundingData: version.groundingData,
         wasStoppedByUser: version.wasStoppedByUser,
+        resolveContextLink: buildMessageLinkResolver(chatId, response.userMessageId),
     });
     // Errored versions keep their error line across refreshes (display-only)
     if (version.errorMessage) {

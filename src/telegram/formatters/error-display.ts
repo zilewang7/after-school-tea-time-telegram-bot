@@ -16,6 +16,7 @@ import {
 import type { RenderedMessage } from 'telegram-md-entities';
 import { italicText } from './entity-text.js';
 import { truncateForTelegram } from './text-utils.js';
+import { linkifyContextNumbers, type ContextLinkResolver } from './context-links.js';
 
 const ERROR_TEXT_LIMIT = 500;
 /** Keep partial + error line safely inside Telegram's 4096 limit */
@@ -28,6 +29,8 @@ export interface ErrorDisplayInput {
     thinking?: string;
     /** User-facing error description (already localized) */
     errorMessage: string;
+    /** Makes the `#N` context references clickable (display-only) */
+    resolveContextLink?: ContextLinkResolver;
 }
 
 /** Italic one-liner appended below whatever content survived. */
@@ -56,7 +59,9 @@ export const buildErrorDisplay = (input: ErrorDisplayInput): RenderedMessage => 
         parts.push(renderMarkdown(input.text));
     }
 
-    const partial = clampToBudget(concatMessages(...parts));
+    const partial = clampToBudget(
+        linkifyContextNumbers(concatMessages(...parts), input.resolveContextLink)
+    );
     return concatMessages(
         partial,
         partial.text ? '\n\n' : '',
