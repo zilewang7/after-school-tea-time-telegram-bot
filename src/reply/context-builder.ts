@@ -126,21 +126,20 @@ const oneLineExcerpt = (text: string, maxChars: number): string => {
 };
 
 /**
- * Numbering of one assembled context: `#N` labels for user messages plus a
+ * Numbering of one assembled context: a `#N` label for every message plus a
  * lookup of everything in the context, so a reply can point at a number instead
  * of a truncated excerpt.
  */
 interface ContextIndex {
-    /** messageId → display number; bot replies are not numbered */
+    /** messageId → display number; every message in the context has one */
     numberOf: Map<number, number>;
     /** Every message in the assembled context, by message id */
     byId: Map<number, ContextMessage>;
 }
 
 /**
- * Number the user messages in context order. Bot replies stay unnumbered: their
- * text is replayed verbatim as the assistant turn (Gemini even replays raw
- * modelParts), so there is nowhere to render a label.
+ * Number every message in context order, the bot's own replies included, so it
+ * can point at what it said itself (`我在 #5 说过`) instead of describing it.
  */
 const buildContextIndex = (messages: ContextMessage[]): ContextIndex => {
     const numberOf = new Map<number, number>();
@@ -148,9 +147,7 @@ const buildContextIndex = (messages: ContextMessage[]): ContextIndex => {
 
     for (const message of messages) {
         byId.set(message.messageId, message);
-        if (!message.fromBotSelf) {
-            numberOf.set(message.messageId, numberOf.size + 1);
-        }
+        numberOf.set(message.messageId, numberOf.size + 1);
     }
 
     return { numberOf, byId };
@@ -160,6 +157,10 @@ const buildContextIndex = (messages: ContextMessage[]): ContextIndex => {
  * Publish `#N → messageId` for the display layer, which turns the `#N` the
  * model writes back into clickable message links. Display-only: the reply that
  * gets persisted keeps the plain numbers.
+ *
+ * A bot reply split across several Telegram messages is stored under its
+ * firstMessageId alone (see session.finalize), so the number maps to the first
+ * message of the reply — which is exactly where the link should land.
  */
 const publishContextNumbering = (
     chatId: number,
@@ -225,18 +226,11 @@ const renderReplyTarget = async (
 ): Promise<string> => {
     const target = index.byId.get(replyToId);
 
-    if (target && !target.fromBotSelf) {
-        return `[replying to #${index.numberOf.get(replyToId)} ${target.userName}]`;
-    }
-
     if (target) {
-        // Bot replies carry no number — point at the user message they answered
-        const answeredNumber = target.replyToId === null
-            ? undefined
-            : index.numberOf.get(target.replyToId);
-        return answeredNumber
-            ? `[replying to your reply to #${answeredNumber}]`
-            : '[replying to your earlier reply]';
+        const targetNumber = index.numberOf.get(replyToId);
+        return target.fromBotSelf
+            ? `[replying to your reply #${targetNumber}]`
+            : `[replying to #${targetNumber} ${target.userName}]`;
     }
 
     const replyMsg = await getContextMessage(chatId, replyToId);
@@ -307,9 +301,16 @@ const renderUserText = (header: string, text: string | null): string => {
 };
 
 /**
- * Build the assistant turn for one of the bot's own messages
+ * Build the assistant turn for one of the bot's own messages.
+ *
+ * The context number is prefixed as `[#5]` on its own line — deliberately a
+ * different shape from the `#5 用户名:` header of user messages, so the model is
+ * less tempted to imitate it (the system prompt also forbids it outright).
  */
-const buildAssistantMessage = async (msg: ContextMessage): Promise<UnifiedMessage> => {
+const buildAssistantMessage = async (
+    msg: ContextMessage,
+    index: ContextIndex
+): Promise<UnifiedMessage> => {
     const fileContents = (msg.file || msg.fileUniqueId)
         ? await getFileContentsOfMessage(msg.chatId, msg.messageId)
         : [];
@@ -325,19 +326,20 @@ const buildAssistantMessage = async (msg: ContextMessage): Promise<UnifiedMessag
         }
     })();
 
-    const parts: UnifiedContentPart[] = [];
+    const contextNumber = index.numberOf.get(msg.messageId);
+    const numberLabel = contextNumber === undefined ? '' : `[#${contextNumber}]\n`;
 
-    if (fileContents.length) {
-        parts.push(...fileContents);
-    }
+    const parts: UnifiedContentPart[] = [...fileContents];
 
-    if (msg.text) {
-        parts.push({ type: 'text', text: msg.text });
+    // An image-only reply still needs the label, so the model can refer to it
+    const body = msg.text || (fileContents.length ? '' : '[system] message lost');
+    if (numberLabel || body) {
+        parts.push({ type: 'text', text: `${numberLabel}${body}` });
     }
 
     return {
         role: 'assistant',
-        content: parts.length ? parts : [{ type: 'text', text: msg.text || '[system] message lost' }],
+        content: parts,
         modelParts: modelParts && Array.isArray(modelParts) ? modelParts : undefined,
     };
 };
@@ -398,7 +400,7 @@ const buildMessageContent = async (
     index: ContextIndex
 ): Promise<UnifiedMessage> =>
     msg.fromBotSelf
-        ? buildAssistantMessage(msg)
+        ? buildAssistantMessage(msg, index)
         : buildUserMessage(msg, capabilities, index);
 
 /**

@@ -19,6 +19,7 @@ import {
     waitForBotResponse,
     waitForButtonState,
     waitForStoredMessage,
+    type DriverMessage,
 } from './harness.mts';
 
 interface CaseResult {
@@ -29,6 +30,35 @@ interface CaseResult {
 }
 
 const CASE_GAP_MS = 4000; // pace userbot sends, keep the account flood-safe
+
+/**
+ * Poll a bot message until it satisfies the predicate. session.finalize marks
+ * the DB final BEFORE the last edit is delivered, so a read right after
+ * waitForBotResponse can still see an intermediate render.
+ */
+const waitForVisibleMessage = async (
+    minId: number,
+    messageId: number,
+    predicate: (message: DriverMessage) => boolean,
+    timeoutMs = 20_000
+): Promise<DriverMessage | undefined> => {
+    const deadline = Date.now() + timeoutMs;
+    let latest: DriverMessage | undefined;
+    while (Date.now() < deadline) {
+        const visible = await readGroupMessages(minId);
+        latest = visible.find((m) => m.sender_id === BOT_USER_ID && m.id === messageId);
+        if (latest && predicate(latest)) return latest;
+        await sleep(1500);
+    }
+    return latest;
+};
+
+/** Message links the bot rendered for its `#N` context references */
+const contextLinksOf = (message: DriverMessage): string[] =>
+    message.entities
+        .map((entity) => entity['url'])
+        .filter((url): url is string => typeof url === 'string')
+        .filter((url) => url.startsWith(`https://t.me/c/${TEST_GROUP}/`));
 
 /** Poll until the newest bot message (after minId) carries buttons */
 const waitForVisibleButtons = async (minId: number, timeoutMs = 15_000): Promise<boolean> => {
@@ -104,20 +134,66 @@ const cases: Array<{ name: string; full?: boolean; body: () => Promise<void> }> 
                 'stored text carries no link (context stays clean for the next turn)'
             );
 
-            const visible = await readGroupMessages(trigger);
-            const botMsg = visible.find(
-                (m) => m.sender_id === BOT_USER_ID && m.id === response.firstMessageId
+            const expectedUrl = `https://t.me/c/${TEST_GROUP}/${target}`;
+            const botMsg = await waitForVisibleMessage(
+                trigger,
+                response.firstMessageId,
+                (message) => contextLinksOf(message).includes(expectedUrl)
             );
             expect(Boolean(botMsg), 'reply visible in group via MTProto read-back');
             if (!botMsg) return;
             expect(botMsg.text.includes('#1'), 'visible text still reads "#1"');
-            const expectedUrl = `https://t.me/c/${TEST_GROUP}/${target}`;
-            const urls = botMsg.entities
-                .map((entity) => entity['url'])
-                .filter((url): url is string => typeof url === 'string');
+            const urls = contextLinksOf(botMsg);
             expect(
                 urls.includes(expectedUrl),
                 `"#1" links to the referenced message (want ${expectedUrl}, got: ${urls.join(',') || 'none'})`
+            );
+        },
+    },
+    {
+        // Regression guard for the Gemini replay: modelParts is only the last
+        // streamed chunk, so using it as the whole model turn replayed every
+        // past reply as empty. The secret lives ONLY in the bot's own reply, so
+        // repeating it proves the reply text really reaches the model.
+        name: 'bot can read its own past reply and cite its number',
+        body: async () => {
+            const first = await sendAsUser(
+                `@${BOT_USERNAME} 请只回复这一句,不要加别的内容:暗号是 XYZ123`
+            );
+            const firstResponse = await waitForBotResponse(first);
+            expect(
+                firstResponse.text.includes('XYZ123'),
+                `bot echoed the secret (got: ${firstResponse.text.slice(0, 60)})`
+            );
+            expect(
+                !firstResponse.text.trimStart().startsWith('[#'),
+                `bot did not imitate the [#N] label (got: ${firstResponse.text.slice(0, 30)})`
+            );
+
+            const followUp = await sendAsUser(
+                `@${BOT_USERNAME} 你之前说的暗号是什么?请回答暗号本身,并用 #编号 指出你是在哪条消息里说的`,
+                firstResponse.firstMessageId
+            );
+            const second = await waitForBotResponse(followUp);
+            expect(!second.errorMessage, `no error on the follow-up turn (got: ${second.errorMessage ?? ''})`);
+            expect(
+                second.text.includes('XYZ123'),
+                `bot recalled the secret from its own reply (got: ${second.text.slice(0, 120)})`
+            );
+            expect(/#\d+/.test(second.text), `bot cited a context number (got: ${second.text.slice(0, 120)})`);
+
+            const expectedUrl = `https://t.me/c/${TEST_GROUP}/${firstResponse.firstMessageId}`;
+            const botMsg = await waitForVisibleMessage(
+                followUp,
+                second.firstMessageId,
+                (message) => contextLinksOf(message).length > 0
+            );
+            expect(Boolean(botMsg), 'follow-up reply visible in group');
+            if (!botMsg) return;
+            const urls = contextLinksOf(botMsg);
+            expect(
+                urls.includes(expectedUrl),
+                `the cited number links to the bot's own reply, i.e. its first message (want ${expectedUrl}, got: ${urls.join(',') || 'none'})`
             );
         },
     },

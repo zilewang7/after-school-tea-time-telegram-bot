@@ -1,7 +1,7 @@
 /**
  * Message format transformer between unified format and platform-specific formats
  */
-import { match, P } from 'ts-pattern';
+import { match } from 'ts-pattern';
 import type { ChatCompletionMessageParam, ChatCompletionContentPart } from 'openai/resources';
 import type { UnifiedMessage, UnifiedContentPart, ModelCapabilities } from './types.js';
 import { isGeminiSupportedMimeType, normalizeMimeType } from './supported-mime.js';
@@ -106,6 +106,28 @@ const transformToGeminiParts = (
 };
 
 /**
+ * The bot's own turn: its actual reply text (and images) plus whatever the
+ * stored modelParts carry.
+ *
+ * modelParts is NOT the reply — it is the last streamed chunk's parts, so in
+ * practice a single `{ text: '', thoughtSignature }`. Using it alone (as this
+ * did) replayed every past reply as empty, leaving the model blind to what it
+ * had said. It is appended verbatim, purely to carry the thought signature
+ * back: rewriting a signed part is what would risk rejection, sitting next to
+ * one does not.
+ */
+const buildGeminiModelParts = (
+    message: UnifiedMessage,
+    options?: { isImageModel?: boolean }
+): GeminiPart[] => {
+    const contentParts = transformToGeminiParts(message.content, {
+        forceSkipThoughtSignature: options?.isImageModel,
+    });
+    const storedParts = (message.modelParts ?? []) as GeminiPart[];
+    return [...contentParts, ...storedParts];
+};
+
+/**
  * Transform unified messages to Gemini format
  */
 export const transformToGemini = (
@@ -120,15 +142,9 @@ export const transformToGemini = (
                     role: 'user' as const,
                     parts: transformToGeminiParts(m.content),
                 }))
-                .with({ role: 'assistant', modelParts: P.not(P.nullish) }, (m) => ({
-                    role: 'model' as const,
-                    parts: m.modelParts as GeminiPart[],
-                }))
                 .with({ role: 'assistant' }, (m) => ({
                     role: 'model' as const,
-                    parts: transformToGeminiParts(m.content, {
-                        forceSkipThoughtSignature: options?.isImageModel,
-                    }),
+                    parts: buildGeminiModelParts(m, options),
                 }))
                 .otherwise(() => ({
                     role: 'user' as const,
