@@ -12,8 +12,10 @@
     "dev:node": "node --enable-source-maps --watch dist/index.js --inspect-brk",
     "dev": "pnpm run \"/dev:/\"",
     "tsx": "tsx ./src/index.ts",
+    "test:offline": "tsx scripts/offline/run.mts",
     "test:e2e:bot": "tsx scripts/e2e/run.mts",
-    "test:e2e:bot:full": "tsx scripts/e2e/run.mts --full"
+    "test:e2e:bot:full": "tsx scripts/e2e/run.mts --full",
+    "test:e2e:ocr": "tsx scripts/e2e/ocr-fallback.mts"
   },
   "keywords": [],
   "author": "ddc",

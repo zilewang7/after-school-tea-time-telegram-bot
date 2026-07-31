@@ -7,7 +7,12 @@ import { getBlob } from "../util.js";
 import { removeAsyncFileSaveMsgId, findFirstMessageIdByContinuation } from '../state.js';
 
 // sync database (import MediaCache above ensures the table is registered before sync)
-sequelize.sync({ alter: true });
+// Exported so callers can await schema readiness instead of racing the migration;
+// the attached catch also keeps a failed sync from becoming an unhandled rejection.
+export const dbReady = sequelize.sync({ alter: true });
+dbReady.catch((error: unknown) => {
+    console.error('[db] schema sync failed:', error);
+});
 
 const saveMessage = async (
     info: {
@@ -92,17 +97,11 @@ const saveMessage = async (
         return;
     }
 
-    if (replyToId) {
-        Message.findOne({ where: { chatId, messageId: replyToId } }).then((msg) => {
-            if (msg) {
-                const replies = JSON.parse(msg.replies);
-                replies.push(messageId);
-                msg.replies = JSON.stringify(replies);
-                msg.save();
-            }
-        });
-    }
-
+    // No back-reference is written into the parent's `replies`: the reply tree is
+    // walked by reverse lookup on replyToId (see findReplyChildIds). The old
+    // append was an unsynchronized read-modify-write that raced with /chat and
+    // silently dropped messages, and dropped them outright when the parent row
+    // did not exist yet (a reply arriving while the bot was still streaming).
     await Message.create({
         chatId,
         messageId,

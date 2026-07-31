@@ -16,6 +16,7 @@ import { createHash } from 'node:crypto';
 import { LinkPreviewCache } from '../db/linkPreviewCacheDTO.js';
 import { getCachedMedia, putCachedMedia } from './media-cache-service.js';
 import { uploadBytesToGcs, isGcsEnabled } from './gcs-service.js';
+import { buildOcrFallbackPart } from './luoxu-ocr-service.js';
 import type { UnifiedContentPart } from '../ai/types.js';
 
 const luoxuBaseUrl = process.env.LUOXU_PREVIEW_URL;
@@ -106,6 +107,8 @@ export interface CachedLinkPreview {
     embedUrl: string | null;
     fullText: string | null;
     mediaItems: PreviewMediaDescriptor[];
+    /** Text recognized in the preview / Instant-View images, filled by luoxu-ocr */
+    ocrText: string | null;
 }
 
 const parseMediaItems = (serialized: string | null): PreviewMediaDescriptor[] => {
@@ -129,6 +132,7 @@ const rowToPreview = (row: LinkPreviewCache): CachedLinkPreview => ({
     embedUrl: row.embedUrl,
     fullText: row.fullText,
     mediaItems: parseMediaItems(row.mediaItems),
+    ocrText: row.ocrText,
 });
 
 /** Cache lookup by URL; refreshes lastUsedAt on hit (fire-and-forget). */
@@ -344,8 +348,14 @@ const buildPreviewText = (preview: CachedLinkPreview): string => {
  * Build the context parts (text + media) for the first URL found in a message
  * text, reading only from the cache — acquisition happens in autoSave. Returns
  * [] when disabled, no URL, cache miss, or status 'none'.
+ *
+ * `includeOcrFallback` adds the text recognized in the preview images, for
+ * models that would otherwise receive nothing at all about them.
  */
-export const getLinkPreviewParts = async (text: string | null | undefined): Promise<UnifiedContentPart[]> => {
+export const getLinkPreviewParts = async (
+    text: string | null | undefined,
+    options: { includeOcrFallback?: boolean } = {}
+): Promise<UnifiedContentPart[]> => {
     if (!isLuoxuPreviewEnabled()) return [];
     const url = extractFirstUrl(text);
     if (!url) return [];
@@ -354,6 +364,10 @@ export const getLinkPreviewParts = async (text: string | null | undefined): Prom
     if (!preview || preview.status !== 'ready') return [];
 
     const parts: UnifiedContentPart[] = [{ type: 'text', text: buildPreviewText(preview) }];
+
+    if (options.includeOcrFallback && preview.ocrText) {
+        parts.push({ type: 'text', text: buildOcrFallbackPart(preview.ocrText) });
+    }
 
     for (const item of preview.mediaItems) {
         const cached = await getCachedMedia(item.mediaKey);

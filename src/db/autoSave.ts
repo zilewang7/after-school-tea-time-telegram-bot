@@ -11,6 +11,8 @@ import {
     removeAsyncFileSaveMsgId,
     addAsyncPreviewMsgId,
     removeAsyncPreviewMsgId,
+    addAsyncOcrMsgId,
+    removeAsyncOcrMsgId,
     markPendingEditWhileProcessing,
 } from '../state.js';
 import { buildResponseButtons } from '../cmd/menus/index.js';
@@ -18,6 +20,7 @@ import { getCachedMedia, putCachedMedia } from '../services/media-cache-service.
 import { isGeminiSupportedMimeType } from '../ai/supported-mime.js';
 import { uploadFileToGcs, uploadBytesToGcs, deleteGcsObject, isGcsEnabled } from '../services/gcs-service.js';
 import { acquireLinkPreview, extractFirstUrl, isLuoxuPreviewEnabled } from '../services/luoxu-preview-service.js';
+import { acquireOcr, isLuoxuOcrEnabled } from '../services/luoxu-ocr-service.js';
 import { convertTgsToWebm } from '../services/tgs-client.js';
 import { to } from 'await-to-js';
 import { SocksProxyAgent } from 'socks-proxy-agent';
@@ -575,16 +578,33 @@ export const autoUpdate = (bot: Bot) => {
                 // its link preview and flag it pending so replies wait for it.
                 // Cache hits and in-flight duplicates return immediately.
                 const previewUrl = isLuoxuPreviewEnabled() ? extractFirstUrl(newText) : null;
+                let previewAcquisition: Promise<unknown> | undefined;
                 if (previewUrl) {
                     addAsyncPreviewMsgId(messageId);
                     const previewBackstop = setTimeout(() => removeAsyncPreviewMsgId(messageId), 70000);
-                    void (async () => {
+                    previewAcquisition = (async () => {
                         const [previewErr] = await to(acquireLinkPreview(chatId, messageId, previewUrl));
                         if (previewErr) {
                             console.error('[autoUpdate] link preview acquire failed:', previewErr.message);
                         }
                         clearTimeout(previewBackstop);
                         removeAsyncPreviewMsgId(messageId);
+                    })();
+                }
+
+                // The edit may have introduced an image or a new link: redo OCR
+                // (luoxu's own cache makes an unchanged image free)
+                if (isLuoxuOcrEnabled() && (richMedia || existingMessage.fileUniqueId || previewUrl)) {
+                    addAsyncOcrMsgId(messageId);
+                    const ocrBackstop = setTimeout(() => removeAsyncOcrMsgId(messageId), 70000);
+                    void (async () => {
+                        if (previewAcquisition) await to(previewAcquisition);
+                        const [ocrErr] = await to(acquireOcr(chatId, messageId, previewUrl));
+                        if (ocrErr) {
+                            console.error('[autoUpdate] ocr acquire failed:', ocrErr.message);
+                        }
+                        clearTimeout(ocrBackstop);
+                        removeAsyncOcrMsgId(messageId);
                     })();
                 }
 
@@ -785,16 +805,37 @@ export const autoSave = (bot: Bot) => {
                 // The flag below only gates how long a reply waits; the
                 // acquisition itself polls until Telegram confirms ready/none.
                 const previewUrl = isLuoxuPreviewEnabled() ? extractFirstUrl(baseText) : null;
+                let previewAcquisition: Promise<unknown> | undefined;
                 if (previewUrl) {
                     addAsyncPreviewMsgId(messageId);
                     const previewBackstop = setTimeout(() => removeAsyncPreviewMsgId(messageId), 70000);
-                    void (async () => {
+                    previewAcquisition = (async () => {
                         const [previewErr] = await to(acquireLinkPreview(chatId, messageId, previewUrl));
                         if (previewErr) {
                             console.error('[autoSave] link preview acquire failed:', previewErr.message);
                         }
                         clearTimeout(previewBackstop);
                         removeAsyncPreviewMsgId(messageId);
+                    })();
+                }
+
+                // OCR: recognize the text inside this message's images (its own,
+                // plus the preview/IV images of its link) so models that cannot
+                // see pictures still get their content. Fire-and-forget — only a
+                // reply that actually needs it waits (see chat-handler).
+                if (isLuoxuOcrEnabled() && (media || previewUrl)) {
+                    addAsyncOcrMsgId(messageId);
+                    const ocrBackstop = setTimeout(() => removeAsyncOcrMsgId(messageId), 70000);
+                    void (async () => {
+                        // A preview image's text is stored on the preview row, so
+                        // that row has to exist first
+                        if (previewAcquisition) await to(previewAcquisition);
+                        const [ocrErr] = await to(acquireOcr(chatId, messageId, previewUrl));
+                        if (ocrErr) {
+                            console.error('[autoSave] ocr acquire failed:', ocrErr.message);
+                        }
+                        clearTimeout(ocrBackstop);
+                        removeAsyncOcrMsgId(messageId);
                     })();
                 }
             } catch (error) {

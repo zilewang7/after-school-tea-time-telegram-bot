@@ -19,6 +19,8 @@ interface AppStateType {
     // link-preview fetching queue (kept separate from the media list: ids are
     // removed by filtering, so sharing one list would release the other waiter)
     asynchronousPreviewMsgIdList: number[];
+    // OCR queue; only waited on when the current model cannot see images
+    asynchronousOcrMsgIdList: number[];
     // user messages edited while their response was still generating:
     // "chatId:userMessageId" (consumed at finalize to set EDIT_DETECTED)
     pendingEditsWhileProcessing: Set<string>;
@@ -40,6 +42,7 @@ const createInitialState = (): AppStateType => ({
     },
     asynchronousFileSaveMsgIdList: [],
     asynchronousPreviewMsgIdList: [],
+    asynchronousOcrMsgIdList: [],
     pendingEditsWhileProcessing: new Set(),
     continuationRegistry: new Map(),
     handledUserMessages: new Map(),
@@ -85,6 +88,17 @@ export const addAsyncPreviewMsgId = (id: number): void => {
 export const removeAsyncPreviewMsgId = (id: number): void => {
     const state = getAppState();
     state.asynchronousPreviewMsgIdList = state.asynchronousPreviewMsgIdList.filter(
+        (msgId) => msgId !== id
+    );
+};
+
+export const getAsyncOcrMsgIdList = (): number[] => getAppState().asynchronousOcrMsgIdList;
+export const addAsyncOcrMsgId = (id: number): void => {
+    getAppState().asynchronousOcrMsgIdList.push(id);
+};
+export const removeAsyncOcrMsgId = (id: number): void => {
+    const state = getAppState();
+    state.asynchronousOcrMsgIdList = state.asynchronousOcrMsgIdList.filter(
         (msgId) => msgId !== id
     );
 };
@@ -169,9 +183,9 @@ export const tryMarkUserMessageHandling = (chatId: number, userMessageId: number
 const MAX_CONTEXT_NUMBERINGS = 200;
 
 /**
- * Record the numbering of one assembled context. Retries overwrite the same
- * key; since bot responses are never numbered, the numbers stay stable across
- * them, so an older version's links keep pointing at the right messages.
+ * Record the numbering of one assembled context, keyed by the user message the
+ * reply answers. Retries and version switches overwrite the same key, so the
+ * links rendered for a response always match the context it was built from.
  */
 export const setContextNumbering = (
     chatId: number,

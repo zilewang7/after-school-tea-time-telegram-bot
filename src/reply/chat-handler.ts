@@ -5,9 +5,14 @@
 import type { Bot, Context } from 'grammy';
 import { to, isErr } from '../shared/result.js';
 import { getMessage } from '../db/index.js';
-import { getRepliesHistory, type ContextMessage } from '../db/queries/context-queries.js';
+import {
+    getRepliesHistory,
+    findReplyChildIds,
+    parseStoredReplyIds,
+    type ContextMessage,
+} from '../db/queries/context-queries.js';
 import { sendMessage, getSystemPrompt, getModelCapabilities } from '../ai/index.js';
-import { getCurrentModel, getMediaGroupIdTemp, getAsyncFileSaveMsgIdList, getAsyncPreviewMsgIdList, tryMarkUserMessageHandling } from '../state.js';
+import { getCurrentModel, getMediaGroupIdTemp, getAsyncFileSaveMsgIdList, getAsyncPreviewMsgIdList, getAsyncOcrMsgIdList, tryMarkUserMessageHandling } from '../state.js';
 import { checkIfMentioned } from '../util.js';
 import { buildContext } from './context-builder.js';
 import {
@@ -35,21 +40,23 @@ const willReply = (ctx: Context): boolean => {
 };
 
 /**
- * Collect the message ids whose media this reply depends on, from the already
- * resolved context tree (reply chain + /chat-added messages, plus each message's
- * media-group sub-images recorded in `replies`).
+ * Collect the message ids whose media this reply depends on: the resolved
+ * context tree (reply chain + /chat-added messages) plus every context
+ * message's children. The children matter because media-group sub-images are
+ * filtered out of the tree while their media still rides on it.
  */
-const collectContextMessageIds = (history: ContextMessage[], selfId: number): number[] => {
-    const ids = new Set<number>([selfId]);
+const collectContextMessageIds = async (
+    chatId: number,
+    history: ContextMessage[],
+    selfId: number
+): Promise<number[]> => {
+    const ids = new Set<number>([selfId, ...history.map((message) => message.messageId)]);
     for (const message of history) {
-        ids.add(message.messageId);
-        try {
-            const replyIds: number[] = JSON.parse(message.replies);
-            replyIds.forEach((id) => ids.add(id));
-        } catch {
-            // ignore malformed replies json
-        }
+        parseStoredReplyIds(message.replies).forEach((id) => ids.add(id));
     }
+    // One bulk reverse lookup instead of one query per node
+    const children = await findReplyChildIds(chatId, [...ids]);
+    children.forEach((id) => ids.add(id));
     return [...ids];
 };
 
@@ -67,18 +74,29 @@ const collectImmediateMediaIds = (ctx: Context): number[] => {
  * normal processing placeholder takes over seamlessly; on timeout/failure edit
  * it into a report of which media failed (and won't be in context).
  */
-const awaitMediaWithFeedback = async (ctx: Context, ids: number[]): Promise<void> => {
+const awaitMediaWithFeedback = async (
+    ctx: Context,
+    ids: number[],
+    options: { awaitOcr?: boolean } = {}
+): Promise<void> => {
     if (!ctx.message || !ctx.chat) return;
 
     const pending = ids.filter((id) => getAsyncFileSaveMsgIdList().includes(id));
     const pendingPreview = ids.filter((id) => getAsyncPreviewMsgIdList().includes(id));
-    if (pending.length === 0 && pendingPreview.length === 0) return; // nothing in flight → no notice, just continue
+    // OCR is a fallback for models that can't see images; nobody else waits for it
+    const pendingOcr = options.awaitOcr
+        ? ids.filter((id) => getAsyncOcrMsgIdList().includes(id))
+        : [];
+    if (pending.length === 0 && pendingPreview.length === 0 && pendingOcr.length === 0) {
+        return; // nothing in flight → no notice, just continue
+    }
 
     const chatId = ctx.chat.id;
 
     const allSettled = (): boolean =>
         pending.every((id) => !getAsyncFileSaveMsgIdList().includes(id)) &&
-        pendingPreview.every((id) => !getAsyncPreviewMsgIdList().includes(id));
+        pendingPreview.every((id) => !getAsyncPreviewMsgIdList().includes(id)) &&
+        pendingOcr.every((id) => !getAsyncOcrMsgIdList().includes(id));
 
     const waitLoop = async (): Promise<void> => {
         const start = Date.now();
@@ -93,7 +111,9 @@ const awaitMediaWithFeedback = async (ctx: Context, ids: number[]): Promise<void
     // the notice text just reflects what is being waited on.
     const noticeText = pending.length
         ? '⏳ 正在获取消息中的媒体，请稍候…'
-        : '⏳ 正在获取链接预览，请稍候…';
+        : pendingPreview.length
+            ? '⏳ 正在获取链接预览，请稍候…'
+            : '⏳ 正在识别图片中的文字，请稍候…';
     const noticeResult = await to(
         ctx.reply(noticeText, {
             reply_parameters: { message_id: ctx.message.message_id },
@@ -173,13 +193,19 @@ export const handleReply = async (
     const chatId = ctx.chat.id;
     const userMessageId = ctx.message.message_id;
     const model = getCurrentModel();
+    const capabilities = getModelCapabilities(model);
 
     // Resolve the context tree (reply chain + any messages /chat added to
     // `replies`) to learn which media this reply depends on, then wait for any
     // still downloading — with feedback — before the placeholder. buildContext
     // re-walks the tree AFTER this wait so freshly-downloaded files are read.
     const contextTree = await getRepliesHistory(chatId, userMessageId, { excludeSelf: false });
-    await awaitMediaWithFeedback(ctx, collectContextMessageIds(contextTree, userMessageId));
+    await awaitMediaWithFeedback(
+        ctx,
+        await collectContextMessageIds(chatId, contextTree, userMessageId),
+        // Only a model that can't see images has anything to gain from the OCR
+        { awaitOcr: !capabilities.supportsImageInput }
+    );
 
     // Create chat context (includes processing message and typing indicator)
     const chatContext = await createChatContext(ctx);
@@ -202,7 +228,6 @@ export const handleReply = async (
 
     // Build AI context (buildContext walks the reply tree itself, post-wait, so
     // media downloaded during the wait is now included).
-    const capabilities = getModelCapabilities(model);
     const ctxResult = await to(buildContext(msg, capabilities));
     if (isErr(ctxResult)) {
         await handleResponseError(chatContext, ctxResult[0]);

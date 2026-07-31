@@ -24,6 +24,8 @@ export class Message extends Model<InferAttributes<Message>, InferCreationAttrib
   declare mediaHint: string | null;
   /** Forward origin, e.g. "user 张三" / "channel 某频道" */
   declare forwardOrigin: string | null;
+  /** Text recognized in this message's images, for models that can't see them */
+  declare ocrText: string | null;
 }
 
 Message.init({
@@ -93,13 +95,20 @@ Message.init({
     allowNull: true,
     defaultValue: null,
   },
+  ocrText: {
+    type: DataTypes.TEXT,
+    allowNull: true,
+    defaultValue: null,
+  },
 }, {
   sequelize,
   tableName: 'telegram_messages',
   // Every context build looks messages up by (chatId, messageId) dozens of
   // times; without this the lookup is a full table scan over rows that carry
-  // multi-MB media blobs.
+  // multi-MB media blobs. The reply tree is walked by reverse lookup on
+  // replyToId, once per node, so that pair needs an index just as much.
   indexes: [
     { fields: ['chatId', 'messageId'] },
+    { fields: ['chatId', 'replyToId'] },
   ],
 });

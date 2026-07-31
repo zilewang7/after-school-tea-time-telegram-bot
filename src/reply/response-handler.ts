@@ -23,6 +23,7 @@ import {
 import { runApiCall } from '../telegram/edit-coordinator.js';
 import { toApiEntities } from '../telegram/api-entities.js';
 import { buildMessageLinkResolver } from '../telegram/message-link.js';
+import { createContextLabelStripper, stripContextLabel } from './context-label.js';
 import {
     linkifyContextNumbers,
     type ContextLinkResolver,
@@ -145,15 +146,25 @@ export const createChatContext = async (
 };
 
 /**
- * Process stream chunk and update state
+ * Process stream chunk and update state.
+ * Exported for the offline tests, which pin the label stripping to this seam.
  */
-const processChunk = (chunk: StreamChunk, state: ResponseState): ResponseState => {
+export const processChunk = (
+    chunk: StreamChunk,
+    state: ResponseState,
+    stripLeadingLabel: (chunk: string) => string
+): ResponseState => {
     return match(chunk)
-        .with({ type: 'text' }, ({ content }) => ({
-            ...state,
-            textBuffer: state.textBuffer + (content ?? ''),
-            fullText: state.fullText + (content ?? ''),
-        }))
+        .with({ type: 'text' }, ({ content }) => {
+            // Drops a `[#N]` label the model copied from its own history; a
+            // no-op for every reply that doesn't start with one
+            const appended = stripLeadingLabel(content ?? '');
+            return {
+                ...state,
+                textBuffer: state.textBuffer + appended,
+                fullText: state.fullText + appended,
+            };
+        })
         .with({ type: 'thinking' }, ({ content }) => {
             const appended = content ?? '';
             let newThinkingBuffer = state.thinkingBuffer + appended;
@@ -185,7 +196,10 @@ const processChunk = (chunk: StreamChunk, state: ResponseState): ResponseState =
                 : state.groundingData,
         }))
         .with({ type: 'done' }, ({ rawResponse, agentStats }) => {
-            const finalOutputText = (rawResponse as any)?.output_text;
+            const rawFinalText = (rawResponse as any)?.output_text;
+            // This text bypassed the streaming stripper, so clean it here too
+            const finalOutputText =
+                typeof rawFinalText === 'string' ? stripContextLabel(rawFinalText) : rawFinalText;
             const canSafelyReplaceBufferedText =
                 typeof finalOutputText === 'string' && state.fullText === state.textBuffer;
 
@@ -355,6 +369,8 @@ export const processStream = async (
 
     // The numbering is already published (buildContext ran before the stream)
     const resolveContextLink = contextLinkResolverFor(chatContext);
+    // Per-stream, because the label can arrive split across the first chunks
+    const stripLeadingLabel = createContextLabelStripper();
 
     for await (const chunk of stream) {
         // Check if stream was aborted (user clicked stop)
@@ -363,7 +379,7 @@ export const processStream = async (
             break;
         }
 
-        state = processChunk(chunk, state);
+        state = processChunk(chunk, state, stripLeadingLabel);
 
         // Sync complete text to session buffers (not the display buffers)
         session.textBuffer = state.fullText;

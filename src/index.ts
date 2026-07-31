@@ -5,10 +5,12 @@ import { SocksProxyAgent } from "socks-proxy-agent";
 import { cmdLoad } from './cmd/index.js';
 import { replyLoad } from './reply/index.js';
 import { autoClear, autoSave, autoUpdate } from './db/autoSave.js';
+import { dbReady } from './db/index.js';
 import { menuLoad } from './cmd/menu.js';
 import { getAppState } from './state.js';
 import { initMcpClients } from './ai/mcp/index.js';
 import { isTestInstance, getAllowedChatIds, isChatAllowed } from './config/instance.js';
+import { registerSenderGate } from './config/sender-gate.js';
 
 if (!process.env.BOT_TOKEN) {
     throw new Error('BOT_TOKEN must be provided');
@@ -61,7 +63,8 @@ autoUpdate(bot);
 autoClear();
 // 监测用户编辑消息，为 bot 消息添加重试按钮
 
-
+// 其他 bot 的消息到此为止：上面已经落库(仍可作为上下文)，下面的响应路径一概不走
+registerSenderGate(bot);
 
 // 加载菜单
 menuLoad(bot);
@@ -120,6 +123,11 @@ process.once('SIGINT', () => void shutdown('SIGINT'));
 
 // 启动
 async function main() {
+    // Wait for the schema migration before taking updates. On a multi-GB
+    // database `sync({ alter: true })` runs for a while, and writes racing it
+    // used to fail with SQLITE_BUSY for the whole restart window.
+    await dbReady;
+    console.log('[db] Schema ready');
     await initMcpClients();
     console.log('[mcp] Initialization complete');
     // Test instance: never react to updates queued while it was offline

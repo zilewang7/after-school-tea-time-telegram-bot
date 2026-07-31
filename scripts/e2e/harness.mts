@@ -56,6 +56,32 @@ export const sendAsUser = async (text: string, replyTo?: number): Promise<number
     return payload.message_id;
 };
 
+/**
+ * Post a real photo into the test group as the userbot; returns its message id.
+ * The bot side cannot be driven to send as a user, so this goes through the
+ * MTProto test driver with a fixture from scripts/e2e/fixtures.
+ */
+export const sendPhotoAsUser = async (
+    fixtureName: string,
+    options: { caption?: string; replyTo?: number } = {}
+): Promise<number> => {
+    const bytes = readFileSync(join(repoRoot, 'scripts/e2e/fixtures', fixtureName));
+    const res = await fetch(`${LUOXU_BASE}/test/send-media`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+            g: TEST_GROUP,
+            data: bytes.toString('base64'),
+            name: fixtureName,
+            caption: options.caption,
+            reply_to: options.replyTo,
+        }),
+    });
+    if (!res.ok) throw new Error(`/test/send-media HTTP ${res.status}`);
+    const payload = (await res.json()) as { message_id: number };
+    return payload.message_id;
+};
+
 /** Edit a previously sent userbot message (triggers edit-detected retry) */
 export const editAsUser = async (messageId: number, text: string): Promise<void> => {
     const res = await fetch(`${LUOXU_BASE}/test/edit`, {
@@ -179,6 +205,38 @@ export const waitForStoredMessage = async (
         await new Promise((resolve) => setTimeout(resolve, 1000));
     }
     throw new Error(`Timed out waiting for stored message ${messageId}`);
+};
+
+/** Poll until autoSave stores OCR text for a message; returns it. Throws on timeout. */
+export const waitForStoredOcrText = async (
+    messageId: number,
+    timeoutMs = 90_000
+): Promise<string> => {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+        const row = await queryOne<{ ocrText: string | null }>(
+            'SELECT ocrText FROM telegram_messages WHERE chatId = ? AND messageId = ?',
+            [TEST_CHAT_ID, messageId]
+        );
+        if (row?.ocrText) return row.ocrText;
+        await new Promise((resolve) => setTimeout(resolve, 2000));
+    }
+    throw new Error(`Timed out waiting for OCR text of message ${messageId}`);
+};
+
+/**
+ * The ids `/chat` attached to a message (its `replies` column). Stored as JSON
+ * text holding a JSON string, like the DTO layer writes it.
+ */
+export const readAttachedMessageIds = async (messageId: number): Promise<number[]> => {
+    const row = await queryOne<{ replies: string | null }>(
+        'SELECT replies FROM telegram_messages WHERE chatId = ? AND messageId = ?',
+        [TEST_CHAT_ID, messageId]
+    );
+    if (!row?.replies) return [];
+    const decoded: unknown = JSON.parse(row.replies);
+    const parsed: unknown = typeof decoded === 'string' ? JSON.parse(decoded) : decoded;
+    return Array.isArray(parsed) ? parsed.filter((id): id is number => typeof id === 'number') : [];
 };
 
 /** Simple assertion helper that keeps going readable in the case runner */

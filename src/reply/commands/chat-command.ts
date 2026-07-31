@@ -6,6 +6,15 @@ import { Op } from '@sequelize/core';
 import type { Context } from 'grammy';
 import { Message } from '../../db/messageDTO.js';
 import { findBotResponseByMessageId } from '../../db/index.js';
+import { parseStoredReplyIds } from '../../db/queries/context-queries.js';
+import { createKeyedLock } from '../../shared/keyed-lock.js';
+
+/**
+ * `/chat` is the only writer of the `replies` column, but two commands run
+ * against the same target message would still lose one merge, so the
+ * read-modify-write runs one at a time per (chat, message).
+ */
+const repliesLock = createKeyedLock();
 
 /**
  * Handle /chat command
@@ -116,27 +125,26 @@ export const dealChatCommand = async (ctx: Context): Promise<boolean | undefined
         return false;
     }
 
-    // Update message replies in database
-    // First try Message table, then check if it's a bot continuation message
+    // Attach the found messages to the target message. Re-read inside the lock:
+    // a concurrent merge may have written since, and the row must not be stale.
     let targetMessageId = messageId;
-    let originalMsg = await Message.findOne({ where: { chatId, messageId } });
-
-    if (!originalMsg) {
-        // Check if this is a bot continuation message (not firstMessageId)
+    if (!(await Message.findOne({ where: { chatId, messageId }, attributes: ['messageId'] }))) {
+        // Bot continuation message: its context lives on the firstMessageId row
         const botResponse = await findBotResponseByMessageId(chatId, messageId);
         if (botResponse) {
-            // Use the firstMessageId which is stored in Message table
             targetMessageId = botResponse.messageId;
-            originalMsg = await Message.findOne({ where: { chatId, messageId: targetMessageId } });
         }
     }
 
-    if (originalMsg) {
-        const existingReplies = new Set<number>(JSON.parse(originalMsg.replies));
+    await repliesLock.runExclusive(`${chatId}:${targetMessageId}`, async () => {
+        const originalMsg = await Message.findOne({ where: { chatId, messageId: targetMessageId } });
+        if (!originalMsg) return;
+
+        const existingReplies = new Set<number>(parseStoredReplyIds(originalMsg.replies));
         finalMessageIds.forEach((id) => existingReplies.add(id));
-        originalMsg.replies = JSON.stringify(Array.from(existingReplies));
+        originalMsg.replies = JSON.stringify([...existingReplies].sort((a, b) => a - b));
         await originalMsg.save();
-    }
+    });
 
     return true;
 };

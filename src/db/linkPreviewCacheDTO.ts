@@ -32,6 +32,9 @@ export class LinkPreviewCache extends Model<
   // JSON array of preview media descriptors:
   // [{ which, kind, mime, mediaKey, sizeBytes }] — mediaKey points into MediaCache.
   declare mediaItems: CreationOptional<string | null>;
+  // Text recognized in the preview thumbnail / Instant-View images, so a model
+  // that cannot see them still gets what they say.
+  declare ocrText: CreationOptional<string | null>;
   declare createdAt: CreationOptional<Date>;
   declare lastUsedAt: Date;
 }
@@ -82,6 +85,11 @@ LinkPreviewCache.init({
     defaultValue: null,
   },
   mediaItems: {
+    type: DataTypes.TEXT,
+    allowNull: true,
+    defaultValue: null,
+  },
+  ocrText: {
     type: DataTypes.TEXT,
     allowNull: true,
     defaultValue: null,

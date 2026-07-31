@@ -12,6 +12,7 @@ import {
     type ContextMessage,
 } from '../db/queries/context-queries.js';
 import { getLinkPreviewParts } from '../services/luoxu-preview-service.js';
+import { buildOcrFallbackPart } from '../services/luoxu-ocr-service.js';
 import { applyModelCapabilities } from '../ai/message-transformer.js';
 import { getCurrentModel, setContextNumbering } from '../state.js';
 import { getModelCapabilities } from '../ai/platform-factory.js';
@@ -358,12 +359,13 @@ const buildUserMessage = async (
         : [];
 
     const replyAnnotations = await buildReplyAnnotations(msg, index);
+    const mediaVisible = mediaVisibleToModel(fileContents, capabilities);
 
     const header = renderMessageHeader(
         msg,
         index.numberOf.get(msg.messageId),
         replyAnnotations,
-        mediaVisibleToModel(fileContents, capabilities)
+        mediaVisible
     );
 
     const parts: UnifiedContentPart[] = [
@@ -371,9 +373,17 @@ const buildUserMessage = async (
         { type: 'text', text: renderUserText(header, msg.text) },
     ];
 
+    // Images the model can't see are dropped downstream, so their recognized
+    // text is all it will ever get about them.
+    if (msg.ocrText && !mediaVisible) {
+        parts.push({ type: 'text', text: buildOcrFallbackPart(msg.ocrText) });
+    }
+
     // Link preview (text + media) for the first URL, served from the
     // URL-addressed cache filled by autoSave via luoxu.
-    const previewParts = await getLinkPreviewParts(msg.text);
+    const previewParts = await getLinkPreviewParts(msg.text, {
+        includeOcrFallback: !capabilities.supportsImageInput,
+    });
     parts.push(...previewParts);
 
     // Nudges about the attachments the model can really see (watch/listen,

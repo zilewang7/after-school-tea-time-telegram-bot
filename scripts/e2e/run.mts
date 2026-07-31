@@ -13,14 +13,21 @@ import {
     TEST_GROUP,
     editAsUser,
     expect,
+    readAttachedMessageIds,
     readGroupMessages,
     sendAsUser,
+    sendPhotoAsUser,
     sleep,
     waitForBotResponse,
     waitForButtonState,
     waitForStoredMessage,
+    waitForStoredOcrText,
     type DriverMessage,
 } from './harness.mts';
+
+/** Fixture image whose only content is this exact string */
+const OCR_FIXTURE = 'ocr-sample.png';
+const OCR_FIXTURE_TEXT = 'OCR-TEST-XYZ789';
 
 interface CaseResult {
     name: string;
@@ -194,6 +201,49 @@ const cases: Array<{ name: string; full?: boolean; body: () => Promise<void> }> 
             expect(
                 urls.includes(expectedUrl),
                 `the cited number links to the bot's own reply, i.e. its first message (want ${expectedUrl}, got: ${urls.join(',') || 'none'})`
+            );
+        },
+    },
+    {
+        // /chat attaches bystander messages to the reply target. Those ids used
+        // to be lost to a write race, and a picture among them simply never
+        // reached the model ("完全没有看到图片的影子呀").
+        name: '/chat pulls a bystander picture into the context',
+        full: true,
+        body: async () => {
+            const target = await sendAsUser('上下文测试：这条是引用起点');
+            const picture = await sendPhotoAsUser(OCR_FIXTURE);
+            await waitForStoredMessage(picture);
+
+            const trigger = await sendAsUser(
+                '/chat a 图片里写的那串字符是什么?只回答那串字符本身',
+                target
+            );
+            const response = await waitForBotResponse(trigger);
+            expect(!response.errorMessage, `no error (got: ${response.errorMessage ?? ''})`);
+            expect(
+                response.text.includes(OCR_FIXTURE_TEXT),
+                `the picture reached the model (got: ${response.text.slice(0, 120)})`
+            );
+
+            const attached = await readAttachedMessageIds(target);
+            expect(
+                attached.includes(picture),
+                `the picture is attached to the target (got ${JSON.stringify(attached)})`
+            );
+        },
+    },
+    {
+        // Text recognized in an image is stored so models that cannot see
+        // pictures still get its content.
+        name: 'image text is recognized and stored for text-only models',
+        full: true,
+        body: async () => {
+            const picture = await sendPhotoAsUser(OCR_FIXTURE);
+            const ocrText = await waitForStoredOcrText(picture);
+            expect(
+                ocrText.includes(OCR_FIXTURE_TEXT),
+                `OCR stored on the message row (got: ${ocrText.slice(0, 80)})`
             );
         },
     },
