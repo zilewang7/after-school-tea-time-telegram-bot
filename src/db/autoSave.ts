@@ -1,7 +1,8 @@
 import { Bot } from "grammy";
 import type { Api } from "grammy";
 import { match } from "ts-pattern";
-import { saveMessage, getMessage, findBotResponseByMessageId, BotResponse, MediaCache, LinkPreviewCache, ButtonState } from "./index.js";
+import { saveMessage, getMessage, findBotResponseByMessageId, BotResponse, MediaCache, LinkPreviewCache, MessageLink, ButtonState } from "./index.js";
+import { parseChatCommand, serializeChatCommand } from "../reply/commands/chat-command-parser.js";
 import { Message } from "./messageDTO.js";
 import { Op } from "@sequelize/core";
 import {
@@ -705,21 +706,29 @@ export const autoSave = (bot: Bot) => {
                 const messageText = renderTextWithEntities(ctx.message?.text, ctx.message?.entities);
                 const messageCaption = renderTextWithEntities(ctx.message?.caption, ctx.message?.caption_entities);
 
+                // A /chat command's own syntax is not content: only what the user
+                // wrote after the parameters is stored as the message text, and the
+                // parsed parameters go into the chatCommand column — that column is
+                // what marks the message as a /chat summon at context-build time,
+                // including for `/chat 1`, which attaches nothing at all.
+                const chatCommand = parseChatCommand(messageText || messageCaption);
+                const chatCommandSpec =
+                    !isSubImage && chatCommand.type === 'valid' ? chatCommand.spec : null;
+
                 // Build the base text + an optimistic media hint. This is saved
                 // immediately so the message always lands in context, even if the
                 // media download/conversion later fails (fixes the big-file bug).
                 const baseText = isSubImage ? `sub image of [${replyToId}]` :
                     (
-                        (/^\/chat\s+([0-9a]+)\s*(-(\S+))?\s*(.+)?$/.test(messageText || '')
-                            ? (messageText?.match(/^\/chat\s+([0-9a]+)\s*(-(\S+))?\s*(.+)?$/)?.[4] || ' ')
-                            : ''
+                        (chatCommandSpec
+                            ? chatCommandSpec.prompt ?? ''
+                            // A sticker-only message has no text: its pack emoji lives
+                            // in the media hint, so the model reads the artwork instead
+                            // of treating the emoji as something the user typed.
+                            : messageText || messageCaption
+                                || renderRichMessage(ctx.message?.rich_message)
+                                || ''
                         )
-                        // A sticker-only message has no text: its pack emoji lives in
-                        // the media hint, so the model reads the artwork instead of
-                        // treating the emoji as something the user typed.
-                        || messageText || messageCaption
-                        || renderRichMessage(ctx.message?.rich_message)
-                        || ''
                     );
                 const forwardOrigin = resolveForwardOrigin(ctx.message?.forward_origin);
 
@@ -752,6 +761,7 @@ export const autoSave = (bot: Bot) => {
                     message: baseText,
                     quoteText,
                     replyToId,
+                    chatCommand: chatCommandSpec ? serializeChatCommand(chatCommandSpec) : null,
                     mediaHint: media ? media.hint : undefined,
                     forwardOrigin,
                 });
@@ -784,6 +794,7 @@ export const autoSave = (bot: Bot) => {
                             userName,
                             message: baseText,
                             quoteText,
+                            chatCommand: chatCommandSpec ? serializeChatCommand(chatCommandSpec) : null,
                             fileMime: outcome.status === 'cached' ? outcome.mime : undefined,
                             fileUniqueId: outcome.status === 'cached' ? outcome.fileUniqueId : undefined,
                             replyToId,
@@ -869,6 +880,13 @@ export const autoClear = () => {
                 }
             });
 
+            // /chat 拉进上下文的边：消息本体都删了，边没有意义
+            const messageLinkResult = await MessageLink.destroy({
+                where: {
+                    createdAt: { [Op.lt]: oneWeekAgo }
+                }
+            });
+
             // 清理 BotResponse 表
             const botResponseResult = await BotResponse.destroy({
                 where: {
@@ -916,7 +934,7 @@ export const autoClear = () => {
                 },
             });
 
-            console.log(`Cleared ${messageResult} messages, ${botResponseResult} bot responses before ${oneWeekAgo.toISOString()}; cleared media bytes of ${mediaClearedCount} messages before ${oneDayAgo.toISOString()}; deleted ${staleGcsRows.length} GCS refs; evicted ${mediaCacheResult} media cache entries, ${linkPreviewResult} link previews`);
+            console.log(`Cleared ${messageResult} messages, ${messageLinkResult} message links, ${botResponseResult} bot responses before ${oneWeekAgo.toISOString()}; cleared media bytes of ${mediaClearedCount} messages before ${oneDayAgo.toISOString()}; deleted ${staleGcsRows.length} GCS refs; evicted ${mediaCacheResult} media cache entries, ${linkPreviewResult} link previews`);
         } catch (error) {
             console.error('Error during message cleanup:', error);
         }

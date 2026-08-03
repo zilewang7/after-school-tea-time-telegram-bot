@@ -4,8 +4,8 @@
  * Run: pnpm test:offline
  *
  * Covers the invariants that the e2e suite cannot pin down deterministically:
- * reply-tree assembly (which used to lose messages to a write race) and the
- * per-key lock that serializes read-modify-write on `replies`.
+ * `/chat` parsing, reply-tree assembly (which used to lose messages to a write
+ * race) and how the assembled context is rendered for the model.
  */
 import {
     OFFLINE_CHAT_ID,
@@ -17,7 +17,6 @@ import {
     type CaseResult,
     type OfflineDb,
 } from './harness.mts';
-import { createKeyedLock } from '../../src/shared/keyed-lock.js';
 import type { User } from 'grammy/types';
 import type { ResponseState } from '../../src/ai/types.js';
 
@@ -31,8 +30,10 @@ const { Message, queries } = db;
 interface SeedOptions {
     messageId?: number;
     replyToId?: number | null;
-    /** Stored the way the app stores it: JSON text holding a JSON string */
-    replies?: number[];
+    /** Messages this one pulled into the context with /chat (message_links rows) */
+    links?: number[];
+    /** Serialized /chat spec, i.e. "this message is a /chat summon" */
+    chatCommand?: string | null;
     text?: string | null;
     userName?: string;
     fileUniqueId?: string | null;
@@ -49,20 +50,39 @@ const seedMessage = async (options: SeedOptions = {}): Promise<number> => {
         fromBotSelf: options.fromBotSelf ?? false,
         date: new Date(messageId * 1000),
         userName: options.userName ?? 'tester',
-        text: options.text ?? `message ${messageId}`,
+        // `text: null` must stay null — a /chat summon with no words of its own
+        text: 'text' in options ? options.text ?? null : `message ${messageId}`,
         quoteText: null,
         file: null,
         fileMime: null,
         fileUniqueId: options.fileUniqueId ?? null,
         replyToId: options.replyToId ?? null,
-        replies: JSON.stringify(JSON.stringify(options.replies ?? [])),
+        chatCommand: options.chatCommand ?? null,
         modelParts: null,
         mediaHint: null,
         forwardOrigin: null,
         ocrText: options.ocrText ?? null,
     });
+    if (options.links?.length) {
+        await queries.saveMessageLinks(OFFLINE_CHAT_ID, messageId, options.links);
+    }
     return messageId;
 };
+
+/** A /chat summon: replies to `target`, pulls `links` in, optional own words */
+const seedChatCommand = async (options: {
+    target: number;
+    links?: number[];
+    text?: string | null;
+    userName?: string;
+}): Promise<number> =>
+    seedMessage({
+        replyToId: options.target,
+        links: options.links,
+        chatCommand: JSON.stringify({ messageCount: 'a', userScope: { type: 'anyone', limit: 'a' } }),
+        text: options.text ?? null,
+        userName: options.userName,
+    });
 
 const idsOf = (messages: Array<{ messageId: number }>): number[] =>
     messages.map((message) => message.messageId);
@@ -96,28 +116,82 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
         },
     },
     {
-        name: 'parseStoredReplyIds accepts every stored shape',
+        // One parser for all three call sites (autoSave, the handler, the reply
+        // gate). Every case below used to be mis-parsed by at least one of them.
+        name: '/chat parameters are parsed by the documented syntax',
         body: async () => {
-            const { parseStoredReplyIds } = queries;
-            expect(
-                JSON.stringify(parseStoredReplyIds(JSON.stringify('[1,2]'))) === '[1,2]',
-                'double-encoded JSON string parses'
+            const { parseChatCommand } = await import(
+                '../../src/reply/commands/chat-command-parser.js'
             );
-            expect(JSON.stringify(parseStoredReplyIds('[3,4]')) === '[3,4]', 'plain array parses');
-            expect(parseStoredReplyIds(null).length === 0, 'null yields empty');
-            expect(parseStoredReplyIds('not json').length === 0, 'garbage yields empty');
-            expect(parseStoredReplyIds('"[]"').length === 0, 'empty stored array yields empty');
+            const parse = (text: string) => parseChatCommand(text, '张三');
+
+            expect(parse('随便一句话').type === 'none', 'ordinary text is not a command');
+            expect(parse('/chatting about this').type === 'none', 'a longer word is not /chat');
+            expect(parse('/chat').type === 'invalid', 'bare /chat asks for the help');
+            expect(parse('/chat@AfterSchoolTeatimeBot').type === 'invalid', '…and so does the @form');
+            expect(parse('/chat 5a 问题').type === 'invalid', 'a malformed count asks for the help');
+            expect(parse('/chat 0 问题').type === 'invalid', 'zero messages asks for the help');
+
+            const plain = parse('/chat 5 他们在说什么');
+            expect(
+                plain.type === 'valid' &&
+                    plain.spec.messageCount === 5 &&
+                    plain.spec.prompt === '他们在说什么' &&
+                    plain.spec.userScope.type === 'anyone' &&
+                    plain.spec.userScope.limit === Infinity,
+                'count + prompt, everybody included'
+            );
+
+            // Telegram inserts @BotName in groups; this form used to hit the help
+            const mentioned = parse('/chat@AfterSchoolTeatimeBot a');
+            expect(
+                mentioned.type === 'valid' &&
+                    mentioned.spec.messageCount === Infinity &&
+                    mentioned.spec.prompt === null,
+                'the @BotName form parses, with no prompt of its own'
+            );
+
+            const single = parse('/chat 3 -s 解答一下');
+            expect(
+                single.type === 'valid' &&
+                    single.spec.userScope.type === 'named' &&
+                    JSON.stringify(single.spec.userScope.names) === '["张三"]' &&
+                    single.spec.prompt === '解答一下',
+                '-s scopes to the replied-to person, not the sender'
+            );
+
+            const counted = parse('/chat 8 -3 他们三个人是什么关系');
+            expect(
+                counted.type === 'valid' &&
+                    counted.spec.userScope.type === 'anyone' &&
+                    counted.spec.userScope.limit === 3,
+                '-3 is a people limit'
+            );
+
+            const named = parse('/chat 5 -李四/王五 张三是不是大哥');
+            expect(
+                named.type === 'valid' &&
+                    named.spec.userScope.type === 'named' &&
+                    JSON.stringify(named.spec.userScope.names) === '["李四","王五","张三"]',
+                'a name list always includes the replied-to person'
+            );
+
+            const summon = parse('/chat 1');
+            expect(
+                summon.type === 'valid' && summon.spec.messageCount === 1 && summon.spec.prompt === null,
+                '/chat 1 is a valid pure summon'
+            );
         },
     },
     {
-        // Regression: the parent's `replies` used to be appended to by an
-        // unawaited read-modify-write, which dropped the child entirely when the
-        // parent row did not exist yet (a reply arriving mid-stream).
+        // Regression: a `replies` column on the parent used to be appended to by
+        // an unawaited read-modify-write, which dropped the child entirely when
+        // the parent row did not exist yet (a reply arriving mid-stream).
         name: 'a reply is in the tree even when the parent records nothing',
         body: async () => {
             const parent = await seedMessage({ text: 'question' });
             const child = await seedMessage({ replyToId: parent, text: 'answer' });
-            // parent.replies stays '[]' on purpose — nothing wrote back to it
+            // nothing is recorded on the parent side, on purpose
 
             const history = await queries.getRepliesHistory(OFFLINE_CHAT_ID, child, {
                 excludeSelf: false,
@@ -129,28 +203,28 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
         },
     },
     {
-        // Regression: /chat's merge and the append raced, and the loser's ids
-        // vanished. Reply children now come from replyToId, /chat additions from
-        // `replies`; the union must contain both, in chronological order.
-        name: 'reply children and /chat additions are merged chronologically',
+        // The bystanders /chat pulls in have no reply relation to derive from, so
+        // they come from message_links — owned by the /chat message itself, which
+        // is what makes the write independent of the target row existing.
+        name: 'reply children and /chat links are merged chronologically',
         body: async () => {
             const target = await seedMessage({ text: 'target' });
             const bystanderA = await seedMessage({ text: 'bystander with a picture' });
             const bystanderB = await seedMessage({ text: 'another bystander' });
-            // /chat attaches the bystanders (they reply to nothing)
-            await Message.update(
-                { replies: JSON.stringify(JSON.stringify([bystanderA, bystanderB])) },
-                { where: { chatId: OFFLINE_CHAT_ID, messageId: target } }
-            );
-            const command = await seedMessage({ replyToId: target, text: ' ' });
-
-            const childIds = await queries.getChildMessageIds(OFFLINE_CHAT_ID, {
-                messageId: target,
-                replies: JSON.stringify(JSON.stringify([bystanderA, bystanderB])),
+            const command = await seedChatCommand({
+                target,
+                links: [bystanderA, bystanderB],
             });
+
             expect(
-                JSON.stringify(childIds) === JSON.stringify([bystanderA, bystanderB, command]),
-                `children are the bystanders plus the command (got ${JSON.stringify(childIds)})`
+                JSON.stringify(await queries.getChildMessageIds(OFFLINE_CHAT_ID, target)) ===
+                    JSON.stringify([command]),
+                'the target only owns the reply, not the bystanders'
+            );
+            expect(
+                JSON.stringify(await queries.getChildMessageIds(OFFLINE_CHAT_ID, command)) ===
+                    JSON.stringify([bystanderA, bystanderB]),
+                'the /chat message owns the messages it pulled in'
             );
 
             const history = await queries.getRepliesHistory(OFFLINE_CHAT_ID, command, {
@@ -164,17 +238,40 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
         },
     },
     {
-        // /chat can attach an ancestor to its own descendant; without a visited
-        // set the reverse lookup would recurse until the stack blew up.
+        // Writing links is a plain insert, so it needs neither a lock nor the
+        // target row — a /chat aimed at a reply the bot is still streaming used
+        // to lose every message it pulled in.
+        name: '/chat links survive a target row that does not exist yet',
+        body: async () => {
+            const missingTarget = takeMessageId();
+            const bystander = await seedMessage({ text: 'bystander' });
+            const command = await seedChatCommand({ target: missingTarget, links: [bystander] });
+
+            // Written twice: a re-triggered command must not double the rows
+            await queries.saveMessageLinks(OFFLINE_CHAT_ID, command, [bystander]);
+
+            const linked = await queries.getLinkedMessageIds(OFFLINE_CHAT_ID, [command]);
+            expect(
+                JSON.stringify(linked.get(command)) === JSON.stringify([bystander]),
+                `the link is recorded exactly once (got ${JSON.stringify(linked.get(command))})`
+            );
+
+            const history = await queries.getRepliesHistory(OFFLINE_CHAT_ID, command, {
+                excludeSelf: false,
+            });
+            expect(
+                JSON.stringify(idsOf(history)) === JSON.stringify([bystander, command]),
+                `the bystander is in the tree anyway (got ${JSON.stringify(idsOf(history))})`
+            );
+        },
+    },
+    {
+        // /chat can link an ancestor onto its own descendant; without a visited
+        // set the walk would loop forever.
         name: 'a cycle introduced by /chat does not hang the tree walk',
         body: async () => {
             const root = await seedMessage({ text: 'root' });
-            const child = await seedMessage({ replyToId: root, text: 'child' });
-            // Attach the root back onto its own child
-            await Message.update(
-                { replies: JSON.stringify(JSON.stringify([root])) },
-                { where: { chatId: OFFLINE_CHAT_ID, messageId: child } }
-            );
+            const child = await seedChatCommand({ target: root, links: [root] });
 
             const history = await queries.getRepliesHistory(OFFLINE_CHAT_ID, child, {
                 excludeSelf: false,
@@ -188,7 +285,7 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
     {
         // Media-group sub-images are filtered out of the tree, but their media
         // must still be attached to the group's first message.
-        name: "media-group sub-images are found without the parent's replies",
+        name: 'media-group sub-images are found through the reverse reply lookup',
         body: async () => {
             const firstUniqueId = `offline-first-${takeMessageId()}`;
             const subUniqueId = `offline-sub-${takeMessageId()}`;
@@ -318,6 +415,146 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
         },
     },
     {
+        // Every rule the help text promises, on the pure selector. Each one used
+        // to be broken by the inline version this replaced.
+        name: '/chat attaches the messages the help text promises',
+        body: async () => {
+            const { selectAttachedMessageIds } = await import(
+                '../../src/reply/commands/chat-command-selection.js'
+            );
+            const { parseChatCommand } = await import(
+                '../../src/reply/commands/chat-command-parser.js'
+            );
+            const specOf = (text: string) => {
+                const parsed = parseChatCommand(text, 'ZHANG');
+                if (parsed.type !== 'valid') throw new Error(`not a valid command: ${text}`);
+                return parsed.spec;
+            };
+
+            const rows = [
+                { messageId: 11, userName: 'ZHANG', text: 'one' },
+                { messageId: 12, userName: 'LI', text: 'two' },
+                { messageId: 13, userName: 'ZHANG', text: 'sub image of [11]' },
+                { messageId: 14, userName: 'WANG', text: 'three' },
+                { messageId: 15, userName: 'ZHAO', text: 'four' },
+                { messageId: 16, userName: 'LI', text: 'five' },
+                { messageId: 99, userName: 'ZHANG', text: null }, // the /chat message itself
+            ];
+
+            expect(
+                JSON.stringify(selectAttachedMessageIds(rows, specOf('/chat 3 what'), 99)) ===
+                    JSON.stringify([11, 12, 14]),
+                'the sub-image and the command itself never spend a slot'
+            );
+            expect(
+                JSON.stringify(selectAttachedMessageIds(rows, specOf('/chat a'), 99)) ===
+                    JSON.stringify([11, 12, 14, 15, 16]),
+                'a takes everything that carries content'
+            );
+            expect(
+                JSON.stringify(selectAttachedMessageIds(rows, specOf('/chat 4 -2 who'), 99)) ===
+                    JSON.stringify([11, 12, 16]),
+                '-2 admits exactly two people, and the count applies after filtering'
+            );
+            expect(
+                JSON.stringify(selectAttachedMessageIds(rows, specOf('/chat 1 hi'), 99)) ===
+                    JSON.stringify([11]),
+                'a count of 1 takes one message'
+            );
+        },
+    },
+    {
+        // The point of the rendering: a summon that carries no words of its own
+        // must never reach the model as an empty user turn it has to guess at.
+        name: 'a /chat summon renders as what the user did, never as a blank message',
+        body: async () => {
+            const { buildContext } = await import('../../src/reply/context-builder.js');
+
+            const contextOf = async (messageId: number) => {
+                const row = await Message.findOne({
+                    where: { chatId: OFFLINE_CHAT_ID, messageId },
+                });
+                if (!row) throw new Error(`seeded message ${messageId} not found`);
+                const turns = await buildContext(row);
+                const textOfTurn = (turn: (typeof turns)[number]): string =>
+                    turn.content.map((part) => part.text ?? '').join('\n');
+                return {
+                    whole: turns.map(textOfTurn).join('\n'),
+                    /** Just the trigger's own turn, which closes the context */
+                    last: textOfTurn(turns[turns.length - 1]!),
+                };
+            };
+
+            // The target starts the context (#1): "after #1" would describe the
+            // whole context, so a wordless summon is just a summon
+            const root = await seedMessage({ text: 'the starting point', userName: 'Kuro' });
+            const bystander = await seedMessage({ text: 'a bystander line', userName: 'Enren' });
+            const atRoot = await seedChatCommand({
+                target: root,
+                links: [bystander],
+                userName: 'Kuro',
+            });
+            const atRootContext = await contextOf(atRoot);
+            expect(
+                atRootContext.last.includes('[summons you to reply based on the current context]'),
+                `a summon on #1 says just that (got ${JSON.stringify(atRootContext.last)})`
+            );
+            expect(!atRootContext.last.includes('[replying to'), 'and is not rendered as a reply');
+            expect(
+                !atRootContext.whole.includes(': \n<<EOF'),
+                'no message in the context trails off after an empty colon'
+            );
+            expect(
+                atRootContext.whole.includes('a bystander line'),
+                'the pulled-in bystander is in the context'
+            );
+
+            // The target sits mid-context: #N tells the model which stretch of
+            // the context the user pulled in by hand
+            await seedMessage({
+                replyToId: root,
+                text: 'the answer',
+                userName: 'K-ON',
+                fromBotSelf: true,
+            });
+            const answer = await Message.findOne({
+                where: { chatId: OFFLINE_CHAT_ID, replyToId: root, fromBotSelf: true },
+            });
+            if (!answer) throw new Error('seeded bot answer not found');
+            const later = await seedMessage({ text: 'later chatter', userName: 'Enren' });
+            const midChain = await seedChatCommand({
+                target: answer.messageId,
+                links: [later],
+                userName: 'Kuro',
+            });
+            const midContext = await contextOf(midChain);
+            expect(
+                /\[added the messages after #\d+ to the context, and summons you to reply\]/.test(
+                    midContext.last
+                ),
+                `a summon mid-chain points at its target (got ${JSON.stringify(midContext.last)})`
+            );
+            expect(!midContext.last.includes('[replying to'), 'still never rendered as a reply');
+
+            // With words of its own, a summon on #1 is an ordinary message
+            const withWords = await seedChatCommand({
+                target: root,
+                links: [bystander],
+                text: 'what are they talking about',
+                userName: 'Kuro',
+            });
+            const withWordsContext = await contextOf(withWords);
+            expect(
+                withWordsContext.last.includes('Kuro: what are they talking about'),
+                `it reads like any other message (got ${JSON.stringify(withWordsContext.last)})`
+            );
+            expect(
+                !withWordsContext.last.includes('['),
+                'and carries no annotation it does not need'
+            );
+        },
+    },
+    {
         // A model that cannot see images gets the OCR text instead; one that can
         // must not get it, or it would pay for the same content twice.
         name: 'OCR text is offered only to models that cannot see images',
@@ -381,55 +618,6 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
             expect(
                 !seeingParts.some((part) => (part.text ?? '').includes('OCR-TEST-XYZ789')),
                 'and is not sent the OCR text on top of it'
-            );
-        },
-    },
-    {
-        // The lock is what keeps two /chat merges on the same target from
-        // clobbering each other the way the old append did.
-        name: 'keyed lock serializes read-modify-write on one key',
-        body: async () => {
-            const lock = createKeyedLock();
-            const store = new Map<string, number[]>([
-                ['a', []],
-                ['b', []],
-            ]);
-
-            // Without the lock this read-await-write loses all but one update
-            const merge = (key: string, value: number): Promise<void> =>
-                lock.runExclusive(key, async () => {
-                    const current = [...(store.get(key) ?? [])];
-                    await new Promise((resolve) => setTimeout(resolve, 5));
-                    store.set(key, [...current, value]);
-                });
-
-            await Promise.all([
-                merge('a', 1),
-                merge('a', 2),
-                merge('a', 3),
-                merge('b', 9),
-            ]);
-
-            expect(
-                JSON.stringify(store.get('a')) === JSON.stringify([1, 2, 3]),
-                `all three updates survived (got ${JSON.stringify(store.get('a'))})`
-            );
-            expect(
-                JSON.stringify(store.get('b')) === JSON.stringify([9]),
-                'a different key is unaffected'
-            );
-
-            // A rejecting task must not poison later holders of the same key
-            const failure = lock
-                .runExclusive('a', async () => {
-                    throw new Error('boom');
-                })
-                .catch((error: unknown) => (error instanceof Error ? error.message : 'unknown'));
-            expect((await failure) === 'boom', 'the failure reaches its own caller');
-            await merge('a', 4);
-            expect(
-                JSON.stringify(store.get('a')) === JSON.stringify([1, 2, 3, 4]),
-                'the key still works after a rejection'
             );
         },
     },

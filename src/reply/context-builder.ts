@@ -246,6 +246,37 @@ const renderReplyTarget = async (
 };
 
 /**
+ * Render the annotation of a `/chat` summon, which replaces `[replying to …]`:
+ * the reply was only how the user picked a starting point, not something they
+ * were answering.
+ *
+ * When the target sits mid-context, `#N` is the useful part — it tells the model
+ * which stretch of the context the user pulled in by hand. When the target *is*
+ * the start of the context (`#1`, by far the common case), "the messages after
+ * #1" describes the whole context and says nothing, so it collapses to a plain
+ * summon.
+ */
+const renderChatCommandAnnotation = (
+    msg: ContextMessage,
+    index: ContextIndex
+): string | null => {
+    const targetNumber = msg.replyToId === null ? undefined : index.numberOf.get(msg.replyToId);
+    const pulledInPart = targetNumber !== undefined && targetNumber > 1;
+    const hasWords = Boolean(msg.text?.trim());
+
+    if (pulledInPart) {
+        // Without words of their own the annotation is the whole message, so it
+        // has to say what the user wants, not just what they did
+        const summons = hasWords ? '' : ', and summons you to reply';
+        return `[added the messages after #${targetNumber} to the context${summons}]`;
+    }
+
+    // The target starts the context: nothing to point at. A summon with words of
+    // its own is then indistinguishable from an ordinary message — say nothing.
+    return hasWords ? null : '[summons you to reply based on the current context]';
+};
+
+/**
  * Build reply annotations for one message,
  * e.g. `[replying to #2 某某]` and `[quote: "引文"]`.
  */
@@ -255,7 +286,11 @@ const buildReplyAnnotations = async (
 ): Promise<string[]> => {
     const annotations: string[] = [];
 
-    if (msg.replyToId) {
+    if (msg.chatCommand) {
+        // A /chat summon describes itself; it is never "replying to" its target
+        const annotation = renderChatCommandAnnotation(msg, index);
+        if (annotation) annotations.push(annotation);
+    } else if (msg.replyToId) {
         annotations.push(await renderReplyTarget(msg.chatId, msg.replyToId, index));
     }
 
@@ -267,9 +302,10 @@ const buildReplyAnnotations = async (
 };
 
 /**
- * Render the model-facing header: `#N 用户名 [annotation…]: `.
+ * Render the model-facing header: `#N 用户名 [annotation…]`, without the colon.
  * All metadata (context number, forward origin, reply context, attached media)
- * becomes a prefix / square-bracket annotations between the name and the colon.
+ * becomes a prefix / square-bracket annotations after the name. The colon is
+ * added by renderUserText, and only when there is a body to follow it.
  */
 const renderMessageHeader = (
     msg: ContextMessage,
@@ -288,17 +324,24 @@ const renderMessageHeader = (
         annotations.push(`[sent ${msg.mediaHint}${invisible ? ' — not visible to you' : ''}]`);
     }
     const numberPrefix = contextNumber === undefined ? '' : `#${contextNumber} `;
-    return `${numberPrefix}${msg.userName}${annotations.length ? ' ' + annotations.join(' ') : ''}: `;
+    return `${numberPrefix}${msg.userName}${annotations.length ? ' ' + annotations.join(' ') : ''}`;
 };
 
 /**
  * Assemble the text part of a user message: header + content + EOF marker.
+ *
+ * The colon appears only when a body follows it, so a message that carries no
+ * text of its own (a sticker, or a `/chat` summon whose annotation *is* its
+ * content) reads as a complete line instead of trailing off after `用户名: `.
  * Legacy rows (<= 7 days old) already carry `<<EOF` inside the stored text;
- * those pass through unchanged.
+ * those keep their body verbatim.
  */
 const renderUserText = (header: string, text: string | null): string => {
-    const content = text || '';
-    return content.includes('<<EOF') ? header + content : `${header}${content}\n<<EOF\n`;
+    // Whitespace-only is empty: rows stored before this change kept a single
+    // space as the body of a `/chat` that carried no words of its own
+    const content = text?.trim() ? text : '';
+    if (content.includes('<<EOF')) return `${header}: ${content}`;
+    return content ? `${header}: ${content}\n<<EOF\n` : `${header}\n<<EOF\n`;
 };
 
 /**

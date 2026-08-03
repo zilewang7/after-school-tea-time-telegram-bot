@@ -7,8 +7,7 @@ import { to, isErr } from '../shared/result.js';
 import { getMessage } from '../db/index.js';
 import {
     getRepliesHistory,
-    findReplyChildIds,
-    parseStoredReplyIds,
+    findChildMessageIds,
     type ContextMessage,
 } from '../db/queries/context-queries.js';
 import { sendMessage, getSystemPrompt, getModelCapabilities } from '../ai/index.js';
@@ -24,6 +23,7 @@ import {
 import { handlePicbananaCommand, checkPicbananaCommand } from './commands/picbanana-handler.js';
 import { handlePicgptCommand, checkPicgptCommand } from './commands/picgpt-handler.js';
 import { dealChatCommand } from './commands/chat-command.js';
+import { isChatCommandText } from './commands/chat-command-parser.js';
 
 // Slightly under the 70s acquisition backstop in autoSave: fresh link
 // previews (Telegram-side embed generation) regularly take 30-60s
@@ -35,7 +35,8 @@ const MEDIA_WAIT_TIMEOUT_MS = 65000;
  */
 const willReply = (ctx: Context): boolean => {
     const text = ctx.message?.text ?? ctx.message?.caption ?? '';
-    if (/^\/(picbanana|picgpt|chat)(@\S+)?(\s|$)/.test(text)) return true;
+    if (/^\/(picbanana|picgpt)(@\S+)?(\s|$)/.test(text)) return true;
+    if (isChatCommandText(text)) return true;
     return checkIfMentioned(ctx, undefined);
 };
 
@@ -51,11 +52,8 @@ const collectContextMessageIds = async (
     selfId: number
 ): Promise<number[]> => {
     const ids = new Set<number>([selfId, ...history.map((message) => message.messageId)]);
-    for (const message of history) {
-        parseStoredReplyIds(message.replies).forEach((id) => ids.add(id));
-    }
-    // One bulk reverse lookup instead of one query per node
-    const children = await findReplyChildIds(chatId, [...ids]);
+    // Two bulk lookups (reply children + /chat links) instead of one query per node
+    const children = await findChildMessageIds(chatId, [...ids]);
     children.forEach((id) => ids.add(id));
     return [...ids];
 };
@@ -195,8 +193,8 @@ export const handleReply = async (
     const model = getCurrentModel();
     const capabilities = getModelCapabilities(model);
 
-    // Resolve the context tree (reply chain + any messages /chat added to
-    // `replies`) to learn which media this reply depends on, then wait for any
+    // Resolve the context tree (reply chain + any messages /chat pulled in)
+    // to learn which media this reply depends on, then wait for any
     // still downloading — with feedback — before the placeholder. buildContext
     // re-walks the tree AFTER this wait so freshly-downloaded files are read.
     const contextTree = await getRepliesHistory(chatId, userMessageId, { excludeSelf: false });
@@ -308,11 +306,15 @@ export const registerChatHandler = (bot: Bot): void => {
                     return;
                 }
 
-                // /chat mutates the context tree (writes into `replies`); run it
+                // /chat extends the context tree (writes message_links); run it
                 // BEFORE the wait (which happens inside handleReply, before
                 // buildContext) so the wait covers the messages /chat pulls in.
-                const mentionInChat = await dealChatCommand(ctx);
-                await handleReply(ctx, { mention: mentionInChat });
+                const outcome = await dealChatCommand(ctx);
+                if (outcome.type === 'help-shown' || outcome.type === 'too-many') return;
+                await handleReply(ctx, {
+                    // A /chat summon is a request to reply even without an @mention
+                    mention: outcome.type === 'ready' ? true : undefined,
+                });
             } catch (error) {
                 console.error('[chat-handler] Unhandled error in deferred reply processing:', error);
             }

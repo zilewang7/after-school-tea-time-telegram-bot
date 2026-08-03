@@ -3,10 +3,11 @@ import { Message } from "./messageDTO.js";
 import { BotResponse, ButtonState, type ResponseVersion, type ResponseMetadata, type CommandType } from "./botResponseDTO.js";
 import { MediaCache } from "./mediaCacheDTO.js";
 import { LinkPreviewCache } from "./linkPreviewCacheDTO.js";
+import { MessageLink } from "./messageLinkDTO.js";
 import { getBlob } from "../util.js";
 import { removeAsyncFileSaveMsgId, findFirstMessageIdByContinuation } from '../state.js';
 
-// sync database (import MediaCache above ensures the table is registered before sync)
+// sync database (the imports above ensure every table is registered before sync)
 // Exported so callers can await schema readiness instead of racing the migration;
 // the attached catch also keeps a failed sync from becoming an unhandled rejection.
 export const dbReady = sequelize.sync({ alter: true });
@@ -30,10 +31,12 @@ const saveMessage = async (
         replyToId?: number,
         modelParts?: any,
         mediaHint?: string | null,
-        forwardOrigin?: string | null
+        forwardOrigin?: string | null,
+        /** Serialized `/chat` parameters when this message is a `/chat` summon */
+        chatCommand?: string | null
     }
 ) => {
-    const { chatId, messageId, userId, date = new Date(), userName = '佚名', message, quoteText, fileLink, fileBuffer, fileMime, fileUniqueId, replyToId, modelParts, mediaHint, forwardOrigin } = info;
+    const { chatId, messageId, userId, date = new Date(), userName = '佚名', message, quoteText, fileLink, fileBuffer, fileMime, fileUniqueId, replyToId, modelParts, mediaHint, forwardOrigin, chatCommand } = info;
 
     const fromBotSelf = userId === Number(process.env.BOT_USER_ID);
 
@@ -78,6 +81,9 @@ const saveMessage = async (
         if (forwardOrigin !== undefined) {
             existingMessage.forwardOrigin = forwardOrigin;
         }
+        if (chatCommand !== undefined) {
+            existingMessage.chatCommand = chatCommand;
+        }
 
         if (fileBuffer) {
             existingMessage.file = fileBuffer;
@@ -97,11 +103,12 @@ const saveMessage = async (
         return;
     }
 
-    // No back-reference is written into the parent's `replies`: the reply tree is
-    // walked by reverse lookup on replyToId (see findReplyChildIds). The old
-    // append was an unsynchronized read-modify-write that raced with /chat and
-    // silently dropped messages, and dropped them outright when the parent row
-    // did not exist yet (a reply arriving while the bot was still streaming).
+    // No back-reference is written onto the parent: the reply tree is walked by
+    // reverse lookup on replyToId (see findReplyChildIds), and the bystanders
+    // /chat pulls in are rows in message_links owned by the /chat message. The
+    // old `replies` append was an unsynchronized read-modify-write that raced
+    // with /chat and silently dropped messages, and dropped them outright when
+    // the parent row did not exist yet (a reply arriving mid-stream).
     await Message.create({
         chatId,
         messageId,
@@ -114,7 +121,7 @@ const saveMessage = async (
         fileMime: fileMime ?? null,
         fileUniqueId: fileUniqueId ?? null,
         replyToId,
-        replies: '[]',
+        chatCommand: chatCommand ?? null,
         modelParts: modelParts ?? null,
         mediaHint: mediaHint ?? null,
         forwardOrigin: forwardOrigin ?? null,
@@ -222,6 +229,7 @@ export {
     BotResponse,
     MediaCache,
     LinkPreviewCache,
+    MessageLink,
     ButtonState,
     type ResponseVersion,
     type ResponseMetadata,

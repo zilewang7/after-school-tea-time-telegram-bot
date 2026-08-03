@@ -13,7 +13,7 @@ import {
     TEST_GROUP,
     editAsUser,
     expect,
-    readAttachedMessageIds,
+    readLinkedMessageIds,
     readGroupMessages,
     sendAsUser,
     sendPhotoAsUser,
@@ -205,9 +205,10 @@ const cases: Array<{ name: string; full?: boolean; body: () => Promise<void> }> 
         },
     },
     {
-        // /chat attaches bystander messages to the reply target. Those ids used
-        // to be lost to a write race, and a picture among them simply never
-        // reached the model ("完全没有看到图片的影子呀").
+        // /chat records the bystanders it pulled in as its own message_links.
+        // Those ids used to be merged into the target's `replies` column by a
+        // read-modify-write, where a picture among them could be lost outright
+        // ("完全没有看到图片的影子呀").
         name: '/chat pulls a bystander picture into the context',
         full: true,
         body: async () => {
@@ -226,10 +227,41 @@ const cases: Array<{ name: string; full?: boolean; body: () => Promise<void> }> 
                 `the picture reached the model (got: ${response.text.slice(0, 120)})`
             );
 
-            const attached = await readAttachedMessageIds(target);
+            const linked = await readLinkedMessageIds(trigger);
             expect(
-                attached.includes(picture),
-                `the picture is attached to the target (got ${JSON.stringify(attached)})`
+                linked.includes(picture),
+                `the picture is linked to the /chat message (got ${JSON.stringify(linked)})`
+            );
+        },
+    },
+    {
+        // The @BotName form Telegram inserts in groups used to miss the command
+        // regex and answer with the help text instead of a reply. And a summon
+        // that carries no words of its own must still produce a real answer —
+        // it used to reach the model as an empty user turn.
+        name: '/chat@BotName with no words of its own still answers',
+        full: true,
+        body: async () => {
+            const target = await sendAsUser('上下文测试：召唤起点，桌上有三只猫');
+            const bystander = await sendAsUser('上下文测试：其中一只是三花');
+            await waitForStoredMessage(bystander);
+
+            const trigger = await sendAsUser(
+                `/chat@${process.env.BOT_USER_NAME} a`,
+                target
+            );
+            const response = await waitForBotResponse(trigger);
+            expect(!response.errorMessage, `no error (got: ${response.errorMessage ?? ''})`);
+            expect(response.text.length > 0, 'the bot answered instead of printing the help');
+            expect(
+                !response.text.includes('仅在需要添加上下文时使用'),
+                'the help text was not printed'
+            );
+
+            const linked = await readLinkedMessageIds(trigger);
+            expect(
+                linked.includes(bystander),
+                `the bystander is linked (got ${JSON.stringify(linked)})`
             );
         },
     },

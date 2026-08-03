@@ -6,6 +6,7 @@ import { Op } from '@sequelize/core';
 import { getMessage, getBotResponse, findBotResponseByMessageId } from '../index.js';
 import { getCachedMedia } from '../../services/media-cache-service.js';
 import { Message } from '../messageDTO.js';
+import { MessageLink } from '../messageLinkDTO.js';
 import type { UnifiedContentPart } from '../../ai/types.js';
 
 const botUserName = process.env.BOT_NAME || 'Bot';
@@ -25,7 +26,8 @@ export interface ContextMessage {
     fileMime: string | null;
     fileUniqueId: string | null;
     replyToId: number | null;
-    replies: string;
+    /** Serialized `/chat` parameters when this message is a `/chat` summon */
+    chatCommand: string | null;
     modelParts: string | null;
     mediaHint: string | null;
     forwardOrigin: string | null;
@@ -48,43 +50,21 @@ export const toContextMessage = (msg: Message): ContextMessage => ({
     fileMime: msg.fileMime,
     fileUniqueId: msg.fileUniqueId,
     replyToId: msg.replyToId,
-    replies: msg.replies,
+    chatCommand: msg.chatCommand,
     modelParts: msg.modelParts,
     mediaHint: msg.mediaHint,
     forwardOrigin: msg.forwardOrigin,
     ocrText: msg.ocrText,
 });
 
-/** Anything that can act as a parent when looking up child messages */
-interface ChildLookupParent {
-    messageId: number;
-    replies: string;
-}
-
-/**
- * Parse the `replies` column. Stored as JSON-typed text holding a JSON string,
- * so the value read back is `'[1,2]'`; tolerant of both that and a plain array.
- */
-export const parseStoredReplyIds = (replies: string | null): number[] => {
-    if (!replies) return [];
-    try {
-        const parsed: unknown = JSON.parse(replies);
-        if (Array.isArray(parsed)) return parsed.filter((id): id is number => typeof id === 'number');
-        if (typeof parsed === 'string') return parseStoredReplyIds(parsed);
-        return [];
-    } catch {
-        return [];
-    }
-};
-
 /**
  * Ids of the messages that reply to any of `parentIds`.
  *
  * `replyToId` is the source of truth for the reply tree: the child writes it
  * itself, in the same INSERT that creates the row, so it can never be lost or
- * clobbered. (The `replies` column used to be maintained by a separate
- * read-modify-write on the parent, which raced with /chat and silently dropped
- * messages — see the reply-tree section of docs/2026-0731-1718.)
+ * clobbered. (A `replies` column on the parent used to mirror this, maintained
+ * by a read-modify-write that raced with /chat and silently dropped messages —
+ * see the reply-tree section of docs/2026-0731-1718.)
  */
 export const findReplyChildIds = async (
     chatId: number,
@@ -100,19 +80,79 @@ export const findReplyChildIds = async (
 };
 
 /**
- * All children of one message, chronologically: its replies (derived from their
- * own `replyToId`) plus the messages `/chat` attached to it. The latter still
- * need the `replies` column — they are bystander messages with no reply
- * relation to derive from.
+ * The messages each of `sourceMessageIds` pulled into the context with `/chat`,
+ * in one query. Sources with no links are absent from the map.
  */
-export const getChildMessageIds = async (
+export const getLinkedMessageIds = async (
     chatId: number,
-    parent: ChildLookupParent
+    sourceMessageIds: number[]
+): Promise<Map<number, number[]>> => {
+    const bySource = new Map<number, number[]>();
+    if (!sourceMessageIds.length) return bySource;
+
+    const links = await MessageLink.findAll({
+        where: { chatId, sourceMessageId: { [Op.in]: sourceMessageIds } },
+        attributes: ['sourceMessageId', 'linkedMessageId'],
+        order: [['linkedMessageId', 'ASC']],
+    });
+
+    for (const link of links) {
+        const linked = bySource.get(link.sourceMessageId);
+        if (linked) {
+            linked.push(link.linkedMessageId);
+        } else {
+            bySource.set(link.sourceMessageId, [link.linkedMessageId]);
+        }
+    }
+    return bySource;
+};
+
+/**
+ * Record the messages a `/chat` command pulled into the context.
+ *
+ * Insert-only and idempotent: a repeated trigger for the same command hits the
+ * unique index and is ignored, so no lock and no read-modify-write is involved,
+ * and the target row does not even have to exist yet.
+ */
+export const saveMessageLinks = async (
+    chatId: number,
+    sourceMessageId: number,
+    linkedMessageIds: number[]
+): Promise<void> => {
+    if (!linkedMessageIds.length) return;
+    await MessageLink.bulkCreate(
+        [...new Set(linkedMessageIds)].map((linkedMessageId) => ({
+            chatId,
+            sourceMessageId,
+            linkedMessageId,
+        })),
+        { ignoreDuplicates: true }
+    );
+};
+
+/**
+ * All children of the given messages, chronologically: their replies (derived
+ * from the children's own `replyToId`) plus everything `/chat` pulled in. Both
+ * halves are one query each, so a whole tree level costs two queries.
+ */
+export const findChildMessageIds = async (
+    chatId: number,
+    parentIds: number[]
 ): Promise<number[]> => {
-    const replyChildren = await findReplyChildIds(chatId, [parent.messageId]);
-    const merged = new Set<number>([...replyChildren, ...parseStoredReplyIds(parent.replies)]);
+    if (!parentIds.length) return [];
+    const [replyChildren, linked] = await Promise.all([
+        findReplyChildIds(chatId, parentIds),
+        getLinkedMessageIds(chatId, parentIds),
+    ]);
+    const merged = new Set<number>([...replyChildren, ...[...linked.values()].flat()]);
     return [...merged].sort((a, b) => a - b);
 };
+
+/** Children of a single message (see findChildMessageIds) */
+export const getChildMessageIds = async (
+    chatId: number,
+    messageId: number
+): Promise<number[]> => findChildMessageIds(chatId, [messageId]);
 
 /**
  * Get a message from either Message table or BotResponse table
@@ -144,7 +184,7 @@ export const getContextMessage = async (
             fileMime: null,
             fileUniqueId: null,
             replyToId: botResponse.userMessageId,
-            replies: '[]', // Bot responses don't track replies the same way
+            chatCommand: null, // the bot never issues /chat
             modelParts: currentVersion?.modelParts ? JSON.stringify(currentVersion.modelParts) : null,
             mediaHint: null,
             forwardOrigin: null,
@@ -168,7 +208,7 @@ export const getContextMessage = async (
             fileMime: null,
             fileUniqueId: null,
             replyToId: foundResponse.userMessageId,
-            replies: '[]',
+            chatCommand: null,
             modelParts: currentVersion?.modelParts ? JSON.stringify(currentVersion.modelParts) : null,
             mediaHint: null,
             forwardOrigin: null,
@@ -203,32 +243,42 @@ const findRootMessage = async (
 };
 
 /**
- * Recursively collect all replies to a message.
+ * Collect everything hanging off a message: its replies, their replies, and the
+ * bystanders `/chat` pulled in along the way.
  *
- * `visited` guards against cycles: reply relations always point backwards in
- * time, but /chat can attach an ancestor to its own descendant, which would
- * otherwise recurse forever.
+ * Walked level by level so one whole level costs two queries (reverse reply
+ * lookup + links) instead of two per node. `visited` guards against cycles:
+ * reply relations always point backwards in time, but /chat can attach an
+ * ancestor to its own descendant, which would otherwise loop forever.
  */
-const collectReplies = async (
+const collectDescendants = async (
     chatId: number,
-    message: ContextMessage,
+    rootId: number,
     collected: ContextMessage[],
     visited: Set<number>
 ): Promise<void> => {
-    const childIds = await getChildMessageIds(chatId, message);
+    let level = [rootId];
 
-    for (const childId of childIds) {
-        if (visited.has(childId)) continue;
-        visited.add(childId);
-        try {
-            const msg = await getContextMessage(chatId, childId);
-            if (msg) {
-                collected.push(msg);
-                await collectReplies(chatId, msg, collected, visited);
+    while (level.length) {
+        const childIds = (await findChildMessageIds(chatId, level)).filter(
+            (childId) => !visited.has(childId)
+        );
+        const nextLevel: number[] = [];
+
+        for (const childId of childIds) {
+            visited.add(childId);
+            try {
+                const msg = await getContextMessage(chatId, childId);
+                if (msg) {
+                    collected.push(msg);
+                    nextLevel.push(childId);
+                }
+            } catch (error) {
+                console.error('[context-queries] Error collecting reply:', error);
             }
-        } catch (error) {
-            console.error('[context-queries] Error collecting reply:', error);
         }
+
+        level = nextLevel;
     }
 };
 
@@ -251,7 +301,12 @@ export const getRepliesHistory = async (
     messageList.push(rootMessage);
 
     // Collect all replies
-    await collectReplies(chatId, rootMessage, messageList, new Set([rootMessage.messageId]));
+    await collectDescendants(
+        chatId,
+        rootMessage.messageId,
+        messageList,
+        new Set([rootMessage.messageId])
+    );
 
     // Deduplicate and filter
     const seen = new Set<number>();
@@ -326,7 +381,7 @@ export const getFileContentsOfMessage = async (
     const message = await getMessage(chatId, messageId);
     if (!message) return [];
 
-    const childIds = await getChildMessageIds(chatId, message);
+    const childIds = await getChildMessageIds(chatId, messageId);
     if (!hasFileRef(message) && !childIds.length) return [];
 
     const files: ResolvedMedia[] = [];
@@ -411,7 +466,7 @@ export const messageHasFiles = async (
 
     if (hasFileRef(message)) return true;
 
-    const childIds = await getChildMessageIds(chatId, message);
+    const childIds = await getChildMessageIds(chatId, messageId);
     for (const replyId of childIds) {
         const msg = await getMessage(chatId, replyId);
         if (

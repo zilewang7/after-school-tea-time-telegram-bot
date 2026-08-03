@@ -32,7 +32,11 @@ export const registerContextCommand = (bot: Bot) => {
                     "\n\n**";
 
                 originalMessages.forEach((msg, index) => {
-                    let shortMsg = msg.text || "";
+                    // A /chat summon and a media-only message carry no text of
+                    // their own; show what they are instead of a blank line
+                    let shortMsg =
+                        msg.text?.trim() ||
+                        (msg.chatCommand ? "[/chat]" : msg.mediaHint ? `[${msg.mediaHint}]` : "");
                     if (shortMsg.length > 12) {
                         shortMsg = Array.from(shortMsg).slice(0, 10).join("") + "...";
                     }

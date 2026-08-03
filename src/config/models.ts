@@ -5,15 +5,15 @@ export interface ModelConfig {
 }
 
 export const modelConfigs: ModelConfig[] = [
-    { id: "gpt-5.4-mini", name: "gpt-5.4-mini" },
-    { id: "gpt-5.5", name: "gpt-5.5" },
-    { id: "claude-sonnet-4-6", name: "claude-sonnet-4-6" },
-    { id: "claude-opus-4-8", name: "claude-opus-4-8" },
-    { id: "gemini-3.5-flash", name: "gemini-3.5-flash" },
+    { id: "gpt-5.6-luna", name: "gpt-5.6-luna" },
+    { id: "gpt-5.6-sol", name: "gpt-5.6-sol" },
+    { id: "claude-sonnet-5", name: "claude-sonnet-5" },
+    { id: "claude-opus-5", name: "claude-opus-5" },
+    { id: "gemini-3.6-flash", name: "gemini-3.6-flash" },
     { id: "gemini-3.1-pro-preview", name: "gemini-3.1-pro" },
     { id: "deepseek-v4-flash", name: "deepseek-v4-flash" },
     { id: "deepseek-v4-pro", name: "deepseek-v4-pro" },
-    { id: "grok-4.3", name: "grok-4.3" },
+    { id: "grok-4.5", name: "grok-4.5" },
     { id: "grok-4.20-multi-agent-0309", name: "grok-4.20-multi-agent" },
     { id: "mimo-v2.5", name: "mimo-v2.5" },
     { id: "mimo-v2.5-pro", name: "mimo-v2.5-pro" },

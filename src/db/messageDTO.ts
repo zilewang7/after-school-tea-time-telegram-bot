@@ -18,7 +18,15 @@ export class Message extends Model<InferAttributes<Message>, InferCreationAttrib
   declare fileMime: string | null;
   declare fileUniqueId: string | null;
   declare replyToId: number | null;
-  declare replies: string;
+  /**
+   * Parsed `/chat` parameters when this message is a `/chat` summon, else null.
+   * Written in the same INSERT as the row (autoSave already parses the command
+   * to strip its prefix off the text), so "is this a /chat?" never depends on
+   * the command handler having run. The messages it pulled in live in
+   * `message_links`; a `/chat 1` has none, which is exactly why the marker
+   * cannot be derived from those rows.
+   */
+  declare chatCommand: string | null;
   declare modelParts: string | null;
   /** Human-readable attached-media hint, e.g. "a picture" (+ failure status) */
   declare mediaHint: string | null;
@@ -75,10 +83,10 @@ Message.init({
     type: DataTypes.INTEGER,
     allowNull: true,
   },
-  replies: {
-    type: DataTypes.JSON,
-    defaultValue: '[]',
-    allowNull: false,
+  chatCommand: {
+    type: DataTypes.TEXT,
+    allowNull: true,
+    defaultValue: null,
   },
   modelParts: {
     type: DataTypes.JSON,
@@ -106,7 +114,7 @@ Message.init({
   // Every context build looks messages up by (chatId, messageId) dozens of
   // times; without this the lookup is a full table scan over rows that carry
   // multi-MB media blobs. The reply tree is walked by reverse lookup on
-  // replyToId, once per node, so that pair needs an index just as much.
+  // replyToId, level by level, so that pair needs an index just as much.
   indexes: [
     { fields: ['chatId', 'messageId'] },
     { fields: ['chatId', 'replyToId'] },

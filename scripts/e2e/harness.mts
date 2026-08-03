@@ -121,6 +121,18 @@ const queryOne = <T>(sql: string, params: unknown[]): Promise<T | undefined> =>
         });
     });
 
+const queryAll = <T>(sql: string, params: unknown[]): Promise<T[]> =>
+    new Promise((resolve, reject) => {
+        const db = new sqlite3.Database(TEST_DB_PATH, sqlite3.OPEN_READONLY, (openErr) => {
+            if (openErr) return reject(openErr);
+            db.all(sql, params, (err, rows) => {
+                db.close();
+                if (err) reject(err);
+                else resolve(rows as T[]);
+            });
+        });
+    });
+
 export interface FinalBotResponse {
     firstMessageId: number;
     buttonState: string;
@@ -224,19 +236,15 @@ export const waitForStoredOcrText = async (
     throw new Error(`Timed out waiting for OCR text of message ${messageId}`);
 };
 
-/**
- * The ids `/chat` attached to a message (its `replies` column). Stored as JSON
- * text holding a JSON string, like the DTO layer writes it.
- */
-export const readAttachedMessageIds = async (messageId: number): Promise<number[]> => {
-    const row = await queryOne<{ replies: string | null }>(
-        'SELECT replies FROM telegram_messages WHERE chatId = ? AND messageId = ?',
-        [TEST_CHAT_ID, messageId]
+/** The ids a `/chat` message pulled into the context (its message_links rows) */
+export const readLinkedMessageIds = async (
+    commandMessageId: number
+): Promise<number[]> => {
+    const rows = await queryAll<{ linkedMessageId: number }>(
+        'SELECT linkedMessageId FROM message_links WHERE chatId = ? AND sourceMessageId = ? ORDER BY linkedMessageId',
+        [TEST_CHAT_ID, commandMessageId]
     );
-    if (!row?.replies) return [];
-    const decoded: unknown = JSON.parse(row.replies);
-    const parsed: unknown = typeof decoded === 'string' ? JSON.parse(decoded) : decoded;
-    return Array.isArray(parsed) ? parsed.filter((id): id is number => typeof id === 'number') : [];
+    return rows.map((row) => row.linkedMessageId);
 };
 
 /** Simple assertion helper that keeps going readable in the case runner */
