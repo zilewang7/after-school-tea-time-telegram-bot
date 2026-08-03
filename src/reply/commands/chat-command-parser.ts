@@ -17,7 +17,7 @@ export type UserScope =
     | { type: 'named'; names: string[] };
 
 export interface ChatCommandSpec {
-    /** Upper bound on how many messages to pull in; Infinity for `a` */
+    /** Upper bound on how many messages to pull in; Infinity for `a` / `all` */
     messageCount: number;
     userScope: UserScope;
     /** What the user wrote for the model after the parameters; null if nothing */
@@ -43,10 +43,10 @@ const COMMAND_PATTERN =
 export const isChatCommandText = (rawText: string | undefined): boolean =>
     Boolean(rawText && COMMAND_PATTERN.test(rawText));
 
-/** `a` → every message after the target; otherwise a positive integer */
+/** `a` / `all` → every message after the target; otherwise a positive integer */
 const parseMessageCount = (token: string | undefined): number | null =>
-    match(token)
-        .with('a', () => Infinity)
+    match(token?.toLowerCase())
+        .with('a', 'all', () => Infinity)
         .with(P.string.regex(/^[1-9]\d*$/), (digits) => Number(digits))
         .otherwise(() => null);
 

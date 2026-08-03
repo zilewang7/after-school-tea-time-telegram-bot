@@ -176,6 +176,21 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
                 'a name list always includes the replied-to person'
             );
 
+            const spelledOut = parse('/chat all 总结一下');
+            expect(
+                spelledOut.type === 'valid' &&
+                    spelledOut.spec.messageCount === Infinity &&
+                    spelledOut.spec.prompt === '总结一下',
+                '`all` is spelled-out `a`'
+            );
+            expect(
+                (() => {
+                    const upper = parse('/chat ALL');
+                    return upper.type === 'valid' && upper.spec.messageCount === Infinity;
+                })(),
+                'and case does not matter for it'
+            );
+
             const summon = parse('/chat 1');
             expect(
                 summon.type === 'valid' && summon.spec.messageCount === 1 && summon.spec.prompt === null,
@@ -551,6 +566,40 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
             expect(
                 !withWordsContext.last.includes('['),
                 'and carries no annotation it does not need'
+            );
+        },
+    },
+    {
+        // The same prompt file is mounted into the production and the test
+        // instance, which are different bots; a hardcoded handle made the test
+        // bot introduce itself as the production one.
+        name: 'the system prompt takes the bot identity from the env',
+        body: async () => {
+            const { writeFileSync, rmSync } = await import('node:fs');
+            const promptPath = '/tmp/offline-system-prompt.md';
+            writeFileSync(
+                promptPath,
+                '你的 id 是 @{{BOT_USER_NAME}}，你的用户名是 {{BOT_NAME}}。{{UNKNOWN_VAR}}'
+            );
+            process.env.SYSTEM_PROMPT_FILE = promptPath;
+            process.env.BOT_USER_NAME = 'WatchFirstBot';
+            process.env.BOT_NAME = 'Test-KON';
+
+            const { getSystemPrompt } = await import('../../src/ai/platform-factory.js');
+            const prompt = getSystemPrompt();
+            rmSync(promptPath, { force: true });
+
+            expect(
+                prompt.includes('@WatchFirstBot') && prompt.includes('你的用户名是 Test-KON'),
+                `the running bot's own identity is substituted (got ${JSON.stringify(prompt)})`
+            );
+            expect(
+                !prompt.includes('{{BOT_USER_NAME}}') && !prompt.includes('{{BOT_NAME}}'),
+                'no placeholder is left behind'
+            );
+            expect(
+                prompt.includes('{{UNKNOWN_VAR}}'),
+                'a variable outside the allowlist is left verbatim rather than silently dropped'
             );
         },
     },
