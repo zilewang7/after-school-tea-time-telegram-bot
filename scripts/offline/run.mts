@@ -458,6 +458,16 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
 
             expect(
                 JSON.stringify(selectAttachedMessageIds(rows, specOf('/chat 3 what'), 99)) ===
+                    JSON.stringify([11, 12]),
+                'the count includes the reply target, so 3 attaches 2 more'
+            );
+            expect(
+                JSON.stringify(selectAttachedMessageIds(rows, specOf('/chat 2 what'), 99)) ===
+                    JSON.stringify([11]),
+                'a count of 2 stops at the first message after the target'
+            );
+            expect(
+                JSON.stringify(selectAttachedMessageIds(rows, specOf('/chat 4 what'), 99)) ===
                     JSON.stringify([11, 12, 14]),
                 'the sub-image and the command itself never spend a slot'
             );
@@ -473,8 +483,8 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
             );
             expect(
                 JSON.stringify(selectAttachedMessageIds(rows, specOf('/chat 1 hi'), 99)) ===
-                    JSON.stringify([11]),
-                'a count of 1 takes one message'
+                    JSON.stringify([]),
+                'a count of 1 is a pure summon that attaches nothing'
             );
         },
     },

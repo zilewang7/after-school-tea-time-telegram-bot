@@ -56,19 +56,22 @@ const HELP_TEXT = `\`/chat\` 仅在需要添加上下文时使用，如无此需
 \`/chat a -s 总结一下他说的\` 将被回复消息的回复人的下面所有消息添加到上下文中`;
 
 /**
- * Rows that may be attached: everything after the target. `Op.gt` because the
- * target itself reaches the context through this command's `replyToId`, so it
- * must not spend a slot.
+ * Rows that may be attached: what sits between the target and the command.
+ * `Op.gt` because the target itself reaches the context through this command's
+ * `replyToId`, so it must not spend a slot; `Op.lt` because anything past the
+ * command is not what the user was pointing at — without it a message arriving
+ * while this query runs could still be swept in.
  */
 const findCandidates = async (
     chatId: number,
     targetMessageId: number,
+    commandMessageId: number,
     userScope: UserScope
 ): Promise<CandidateMessage[]> => {
     const rows = await Message.findAll({
         where: {
             chatId,
-            messageId: { [Op.gt]: targetMessageId },
+            messageId: { [Op.gt]: targetMessageId, [Op.lt]: commandMessageId },
             // Named scopes filter in SQL; a people *count* has to be applied in
             // order, so that one is filtered below.
             ...(userScope.type === 'named' ? { userName: { [Op.in]: userScope.names } } : {}),
@@ -110,7 +113,12 @@ export const dealChatCommand = async (ctx: Context): Promise<ChatCommandOutcome>
     const chatId = ctx.chat.id;
     const commandMessageId = ctx.message.message_id;
 
-    const candidates = await findCandidates(chatId, targetMessageId, parsed.spec.userScope);
+    const candidates = await findCandidates(
+        chatId,
+        targetMessageId,
+        commandMessageId,
+        parsed.spec.userScope
+    );
     const selected = selectAttachedMessageIds(candidates, parsed.spec, commandMessageId);
 
     if (selected.length > MAX_ATTACHED_MESSAGES) {

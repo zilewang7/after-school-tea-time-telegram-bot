@@ -52,8 +52,12 @@ export const selectAttachedMessageIds = (
             ? withinPeopleLimit(contentful, spec.userScope.limit)
             : contentful;
 
+    // The requested count includes the reply target ("`/chat 5` 将被回复的消息及
+    // 后面的 4 条消息"), and the target reaches the context through the command's
+    // own replyToId, so only count - 1 rows may be attached here. `/chat 1` is
+    // therefore a pure summon that attaches nothing.
+    const budget = spec.messageCount === Infinity ? undefined : spec.messageCount - 1;
+
     // Count last: "筛选后不会影响要添加的消息条数"
-    return scoped
-        .slice(0, spec.messageCount === Infinity ? undefined : spec.messageCount)
-        .map((row) => row.messageId);
+    return scoped.slice(0, budget).map((row) => row.messageId);
 };
