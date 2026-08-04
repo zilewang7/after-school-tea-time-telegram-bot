@@ -22,6 +22,14 @@ import type { ResponseState } from '../../src/ai/types.js';
 
 // Set before importing the gate: it snapshots the env at module load
 process.env.IGNORED_SENDER_IDS = '424242';
+
+// Same deal for the backfill service, which snapshots its base URL. The stub
+// server below plays luoxu's /messages endpoint.
+const BACKFILL_PORT = 9137;
+
+// The /chat parser decides whether `/chat@Name` is addressed to us
+process.env.BOT_USER_NAME = 'AfterSchoolTeatimeBot';
+process.env.LUOXU_PREVIEW_URL = `http://127.0.0.1:${BACKFILL_PORT}`;
 const { shouldIgnoreSender } = await import('../../src/config/sender-gate.js');
 
 const db: OfflineDb = await setupOfflineDb();
@@ -140,6 +148,11 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
                     plain.spec.userScope.type === 'anyone' &&
                     plain.spec.userScope.limit === Infinity,
                 'count + prompt, everybody included'
+            );
+
+            expect(
+                parse('/chat@SomeOtherBot 5 问题').type === 'none',
+                'a command addressed to another bot is not ours to answer'
             );
 
             // Telegram inserts @BotName in groups; this form used to hit the help
@@ -720,6 +733,84 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
                 threw && unrelatedAttempts === 1,
                 'an unrelated error is thrown straight through, not retried'
             );
+        },
+    },
+    {
+        // The hole this repairs is exactly the one that made a reply to 1074051
+        // arrive with no context at all.
+        name: 'a reply target that was never stored is recovered from history',
+        body: async () => {
+            const { createServer } = await import('node:http');
+
+            const requestedIds: string[] = [];
+            const lostMessageId = takeMessageId();
+            const server = createServer((request, response) => {
+                const query = new URL(request.url ?? '', 'http://localhost').searchParams;
+                const ids = query.get('ids') ?? '';
+                requestedIds.push(ids);
+                const messages = ids.split(',').includes(String(lostMessageId))
+                    ? [{
+                        id: lostMessageId,
+                        sender_id: 777,
+                        sender_name: 'ghost writer',
+                        sender_is_bot: false,
+                        text: 'the message that fell out of the database',
+                        entities: [{ type: 'bold', offset: 4, length: 7 }],
+                        reply_to: null,
+                        date: lostMessageId,
+                        media: { type: 'photo', mime: 'image/jpeg' },
+                    }]
+                    : [];
+                response.writeHead(200, { 'Content-Type': 'application/json' });
+                response.end(JSON.stringify({ messages }));
+            });
+            await new Promise<void>((ready) => server.listen(BACKFILL_PORT, '127.0.0.1', ready));
+
+            try {
+                // A reply whose target has no row — the pre-backfill dead end
+                const replyId = await seedMessage({ replyToId: lostMessageId, text: 'what is this' });
+
+                const history = await queries.getRepliesHistory(OFFLINE_CHAT_ID, replyId);
+                const historyIds = history.map((message) => message.messageId);
+                expect(
+                    historyIds.includes(lostMessageId),
+                    `the lost message is back in the context (got ${JSON.stringify(historyIds)})`
+                );
+
+                const recovered = await Message.findOne({
+                    where: { chatId: OFFLINE_CHAT_ID, messageId: lostMessageId },
+                });
+                expect(recovered !== null, 'and it is stored, not just returned once');
+                expect(
+                    recovered?.text === 'the **message** that fell out of the database',
+                    `its formatting entities became markdown (got ${JSON.stringify(recovered?.text)})`
+                );
+                expect(
+                    (recovered?.mediaHint ?? '').includes('no longer available'),
+                    `the model is told the picture itself is gone (got ${JSON.stringify(recovered?.mediaHint)})`
+                );
+                expect(recovered?.userName === 'ghost writer', 'the original sender is preserved');
+
+                const callsAfterRecovery = requestedIds.length;
+                await queries.getRepliesHistory(OFFLINE_CHAT_ID, replyId);
+                expect(
+                    requestedIds.length === callsAfterRecovery,
+                    'a second context build does not ask again for a message it now has'
+                );
+
+                // A permanently deleted target: asked once, then negative-cached
+                const deletedId = takeMessageId();
+                const orphanId = await seedMessage({ replyToId: deletedId });
+                await queries.getRepliesHistory(OFFLINE_CHAT_ID, orphanId);
+                const callsAfterFirstMiss = requestedIds.length;
+                await queries.getRepliesHistory(OFFLINE_CHAT_ID, orphanId);
+                expect(
+                    requestedIds.length === callsAfterFirstMiss,
+                    'an id that history no longer has is not asked for twice'
+                );
+            } finally {
+                await new Promise<void>((closed) => server.close(() => closed()));
+            }
         },
     },
     {

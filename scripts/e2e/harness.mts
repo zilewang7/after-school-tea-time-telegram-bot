@@ -133,6 +133,39 @@ const queryAll = <T>(sql: string, params: unknown[]): Promise<T[]> =>
         });
     });
 
+/**
+ * Press an inline-keyboard button on a bot message, by its callback data. Lets
+ * the suite drive what only exists behind buttons (the model switcher).
+ */
+export const clickButton = async (messageId: number, data: string): Promise<void> => {
+    const res = await fetch(`${LUOXU_BASE}/test/click`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ g: TEST_GROUP, message_id: messageId, data }),
+    });
+    if (!res.ok) throw new Error(`/test/click HTTP ${res.status}`);
+};
+
+/**
+ * Delete a stored message row, simulating an ingest write that was lost. Used to
+ * prove the history backfill puts it back.
+ */
+export const deleteStoredMessage = (messageId: number): Promise<void> =>
+    new Promise((resolve, reject) => {
+        const db = new sqlite3.Database(TEST_DB_PATH, sqlite3.OPEN_READWRITE, (openErr) => {
+            if (openErr) return reject(openErr);
+            db.run(
+                'DELETE FROM telegram_messages WHERE chatId = ? AND messageId = ?',
+                [TEST_CHAT_ID, messageId],
+                (err) => {
+                    db.close();
+                    if (err) reject(err);
+                    else resolve();
+                }
+            );
+        });
+    });
+
 export interface FinalBotResponse {
     firstMessageId: number;
     buttonState: string;

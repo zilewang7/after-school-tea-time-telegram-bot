@@ -5,6 +5,7 @@
 import { Op } from '@sequelize/core';
 import { getMessage, getBotResponse, findBotResponseByMessageId } from '../index.js';
 import { getCachedMedia } from '../../services/media-cache-service.js';
+import { backfillMessages, isMessageBackfillEnabled } from '../../services/message-backfill-service.js';
 import { Message } from '../messageDTO.js';
 import { MessageLink } from '../messageLinkDTO.js';
 import type { UnifiedContentPart } from '../../ai/types.js';
@@ -220,6 +221,23 @@ export const getContextMessage = async (
 };
 
 /**
+ * Read a message, and if its row is missing, try to recover it from Telegram
+ * first. A hole here truncates the whole chain above it, which is how a reply to
+ * a message we failed to store ends up with no context at all.
+ */
+const getContextMessageOrRecover = async (
+    chatId: number,
+    messageId: number
+): Promise<ContextMessage | null> => {
+    const stored = await getContextMessage(chatId, messageId);
+    if (stored || !isMessageBackfillEnabled()) return stored;
+
+    const recovered = await backfillMessages(chatId, [messageId]);
+    if (recovered.length === 0) return null;
+    return getContextMessage(chatId, messageId);
+};
+
+/**
  * Find the root message of a reply chain
  */
 const findRootMessage = async (
@@ -229,7 +247,11 @@ const findRootMessage = async (
     let currentMessage: ContextMessage | null = null;
 
     const findRoot = async (msgId: number): Promise<ContextMessage | null> => {
-        const msg = await getContextMessage(chatId, msgId);
+        // Only the ids the chain points at are recovered: a reply target is
+        // known to exist, so a missing row is a hole worth repairing.
+        const msg = msgId === messageId
+            ? await getContextMessage(chatId, msgId)
+            : await getContextMessageOrRecover(chatId, msgId);
 
         if (msg?.replyToId) {
             currentMessage = msg;
@@ -268,7 +290,10 @@ const collectDescendants = async (
         for (const childId of childIds) {
             visited.add(childId);
             try {
-                const msg = await getContextMessage(chatId, childId);
+                // A child id comes either from a reply row (which exists by
+                // definition) or from a /chat link, whose target may have been
+                // lost — recover that one too.
+                const msg = await getContextMessageOrRecover(chatId, childId);
                 if (msg) {
                     collected.push(msg);
                     nextLevel.push(childId);

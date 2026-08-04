@@ -32,16 +32,28 @@ export type ChatCommandParse =
     | { type: 'valid'; spec: ChatCommandSpec };
 
 /**
- * `/chat` or `/chat@BotName`, then the parameters. Kept deliberately loose: any
- * first token is captured here and validated below, so `/chat 5a` shows the help
- * instead of silently becoming `NaN`.
+ * `/chat`, optionally addressed as `/chat@BotName`, then the parameters. Kept
+ * deliberately loose: any first token is captured here and validated below, so
+ * `/chat 5a` shows the help instead of silently becoming `NaN`.
  */
 const COMMAND_PATTERN =
-    /^\/chat(?:@\S+)?(?=\s|$)(?:\s+(\S+))?(?:\s+(-\S+))?\s*([\s\S]*)$/;
+    /^\/chat(?:@(\S+))?(?=\s|$)(?:\s+(\S+))?(?:\s+(-\S+))?\s*([\s\S]*)$/;
+
+/**
+ * A command explicitly addressed to another bot is not ours to answer — with
+ * privacy mode off we receive those too, and we used to treat any `@whatever`
+ * as our own.
+ */
+const isAddressedToUs = (mention: string | undefined): boolean => {
+    if (!mention) return true;
+    const ownUserName = process.env.BOT_USER_NAME;
+    if (!ownUserName) return true; // unconfigured: keep answering as before
+    return mention.toLowerCase() === ownUserName.toLowerCase();
+};
 
 /** Bare `/chat` prefix test, for callers that only need "is this the command?" */
 export const isChatCommandText = (rawText: string | undefined): boolean =>
-    Boolean(rawText && COMMAND_PATTERN.test(rawText));
+    parseChatCommand(rawText).type !== 'none';
 
 /** `a` / `all` → every message after the target; otherwise a positive integer */
 const parseMessageCount = (token: string | undefined): number | null =>
@@ -83,7 +95,8 @@ export const parseChatCommand = (
     const matched = rawText?.match(COMMAND_PATTERN);
     if (!matched) return { type: 'none' };
 
-    const [, countToken, scopeToken, trailing = ''] = matched;
+    const [, mention, countToken, scopeToken, trailing = ''] = matched;
+    if (!isAddressedToUs(mention)) return { type: 'none' };
 
     const messageCount = parseMessageCount(countToken);
     if (messageCount === null) return { type: 'invalid' };
