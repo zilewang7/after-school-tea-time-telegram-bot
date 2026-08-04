@@ -3,6 +3,7 @@ import type { Api } from "grammy";
 import { match } from "ts-pattern";
 import { saveMessage, getMessage, findBotResponseByMessageId, BotResponse, MediaCache, LinkPreviewCache, MessageLink, ButtonState } from "./index.js";
 import { parseChatCommand, serializeChatCommand } from "../reply/commands/chat-command-parser.js";
+import { withBusyRetry } from "./busy-retry.js";
 import { Message } from "./messageDTO.js";
 import { Op } from "@sequelize/core";
 import {
@@ -752,7 +753,9 @@ export const autoSave = (bot: Bot) => {
                 // Save text first (no media bytes yet). Text is pure content;
                 // media/forward metadata live in their own columns and are
                 // rendered into the model-facing format at context-build time.
-                await saveMessage({
+                // Retried on a locked database: this row is the only record that
+                // the message ever existed.
+                await withBusyRetry(() => saveMessage({
                     chatId,
                     messageId,
                     userId,
@@ -764,7 +767,7 @@ export const autoSave = (bot: Bot) => {
                     chatCommand: chatCommandSpec ? serializeChatCommand(chatCommandSpec) : null,
                     mediaHint: media ? media.hint : undefined,
                     forwardOrigin,
-                });
+                }), `ingest ${chatId}/${messageId}`);
 
                 // Acquire media bytes asynchronously (download + optional .tgs->webm),
                 // then update the saved message with the cache key or a corrected hint.
@@ -786,7 +789,7 @@ export const autoSave = (bot: Bot) => {
                             .with({ status: 'convert_failed' }, () => `${media.hint} — failed to render, you cannot see it`)
                             .exhaustive();
 
-                        const [saveErr] = await to(saveMessage({
+                        const [saveErr] = await to(withBusyRetry(() => saveMessage({
                             chatId,
                             messageId,
                             userId,
@@ -800,7 +803,7 @@ export const autoSave = (bot: Bot) => {
                             replyToId,
                             mediaHint: finalHint,
                             forwardOrigin,
-                        }));
+                        }), `media update ${chatId}/${messageId}`));
                         if (saveErr) {
                             console.error('[autoSave] Failed to update message with media:', saveErr);
                         }
@@ -850,7 +853,12 @@ export const autoSave = (bot: Bot) => {
                     })();
                 }
             } catch (error) {
-                console.error("保存消息失败", error);
+                // Loud and grep-able: this message is now missing from the
+                // context tree, and only the backfill can bring it back.
+                console.error(
+                    `[autoSave] DROPPED message ${ctx.chat.id}/${ctx.message.message_id} from ${ctx.from.first_name}:`,
+                    error
+                );
                 if (ctx.message?.message_id) {
                     removeAsyncFileSaveMsgId(ctx.message.message_id);
                     removeAsyncPreviewMsgId(ctx.message.message_id);
@@ -863,80 +871,145 @@ export const autoSave = (bot: Bot) => {
 }
 
 
+/**
+ * Rows per delete/update statement. One big statement over blob-carrying tables
+ * held the write lock for tens of seconds, and messages arriving in that window
+ * were dropped (see docs/2026-0804-1858). Small statements let ingest interleave.
+ */
+const CLEANUP_BATCH_SIZE = 50;
+
+/** Cleanup slower than this means the lock was contended — worth a look */
+const CLEANUP_SLOW_MS = 2000;
+
+/**
+ * A message's key. The model has no declared surrogate id, and (chatId,
+ * messageId) is indexed anyway.
+ */
+type MessageKey = { chatId: number; messageId: number };
+
+const messageKeyOf = (row: Message): MessageKey => ({
+    chatId: row.chatId,
+    messageId: row.messageId,
+});
+
+/**
+ * Apply `mutateChunk` to the keys in small batches, yielding to the event loop
+ * between them so a pending write gets its turn at the lock.
+ */
+const mutateInChunks = async <T>(
+    ids: T[],
+    mutateChunk: (chunk: T[]) => Promise<unknown>
+): Promise<number> => {
+    for (let start = 0; start < ids.length; start += CLEANUP_BATCH_SIZE) {
+        await mutateChunk(ids.slice(start, start + CLEANUP_BATCH_SIZE));
+        await new Promise((resolve) => setImmediate(resolve));
+    }
+    return ids.length;
+};
+
+/**
+ * One cleanup pass. Exported so the offline suite can run it directly instead of
+ * waiting an hour for the timer.
+ */
+export const clearExpiredData = async (): Promise<void> => {
+    const startedAt = Date.now();
+    try {
+        const now = new Date();
+        const oneWeekAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+        const oneDayAgo = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+
+        // 每一处都是「先按索引选 id（只读），再按主键分批删」，避免一条语句长时间独占写锁
+        // 使用 UTC 时间，确保一致性
+        const staleMessages = await Message.findAll({
+            where: { date: { [Op.lt]: oneWeekAgo.toISOString() } },
+            attributes: ['chatId', 'messageId'],
+        });
+        const messageResult = await mutateInChunks(
+            staleMessages.map(messageKeyOf),
+            (chunk) => Message.destroy({ where: { [Op.or]: chunk } })
+        );
+
+        // /chat 拉进上下文的边：消息本体都删了，边没有意义
+        const staleLinks = await MessageLink.findAll({
+            where: { createdAt: { [Op.lt]: oneWeekAgo } },
+            attributes: ['id'],
+        });
+        const messageLinkResult = await mutateInChunks(
+            staleLinks.map((row) => row.id),
+            (chunk) => MessageLink.destroy({ where: { id: { [Op.in]: chunk } } })
+        );
+
+        // 清理 BotResponse 表
+        const staleResponses = await BotResponse.findAll({
+            where: { createdAt: { [Op.lt]: oneWeekAgo } },
+            attributes: ['messageId'],
+        });
+        const botResponseResult = await mutateInChunks(
+            staleResponses.map((row) => row.messageId),
+            (chunk) => BotResponse.destroy({ where: { messageId: { [Op.in]: chunk } } })
+        );
+
+        // 媒体字节超过 1 天即清空，保留文字上下文（回复树仍按 id 引用旧消息）
+        const messagesWithStaleBytes = await Message.findAll({
+            where: {
+                date: { [Op.lt]: oneDayAgo.toISOString() },
+                file: { [Op.ne]: null },
+            },
+            attributes: ['chatId', 'messageId'],
+        });
+        const mediaClearedCount = await mutateInChunks(
+            messagesWithStaleBytes.map(messageKeyOf),
+            (chunk) => Message.update(
+                { file: null, fileMime: null },
+                { where: { [Op.or]: chunk } }
+            )
+        );
+
+        // GCS 大文件引用超 1 天：删 GCS 对象 + 删缓存行（对齐媒体字节 1 天清空）
+        const staleGcsRows = await MediaCache.findAll({
+            where: { fileUri: { [Op.ne]: null }, createdAt: { [Op.lt]: oneDayAgo } },
+        });
+        for (const row of staleGcsRows) {
+            if (row.fileUri) await deleteGcsObject(row.fileUri);
+        }
+        await mutateInChunks(
+            staleGcsRows.map((row) => row.fileUniqueId),
+            (chunk) => MediaCache.destroy({ where: { fileUniqueId: { [Op.in]: chunk } } })
+        );
+
+        // 共享媒体缓存按 LRU 清理：超 7 天未被命中续期的删除
+        const staleMediaCache = await MediaCache.findAll({
+            where: { lastUsedAt: { [Op.lt]: oneWeekAgo } },
+            attributes: ['fileUniqueId'],
+        });
+        const mediaCacheResult = await mutateInChunks(
+            staleMediaCache.map((row) => row.fileUniqueId),
+            (chunk) => MediaCache.destroy({ where: { fileUniqueId: { [Op.in]: chunk } } })
+        );
+
+        // 链接预览缓存同节奏 LRU 清理（其媒体行已由上面的 MediaCache 清理覆盖）
+        const stalePreviews = await LinkPreviewCache.findAll({
+            where: { lastUsedAt: { [Op.lt]: oneWeekAgo } },
+            attributes: ['url'],
+        });
+        const linkPreviewResult = await mutateInChunks(
+            stalePreviews.map((row) => row.url),
+            (chunk) => LinkPreviewCache.destroy({ where: { url: { [Op.in]: chunk } } })
+        );
+
+        const elapsedMs = Date.now() - startedAt;
+        const summary = `Cleared ${messageResult} messages, ${messageLinkResult} message links, ${botResponseResult} bot responses before ${oneWeekAgo.toISOString()}; cleared media bytes of ${mediaClearedCount} messages before ${oneDayAgo.toISOString()}; deleted ${staleGcsRows.length} GCS refs; evicted ${mediaCacheResult} media cache entries, ${linkPreviewResult} link previews (${elapsedMs}ms)`;
+        if (elapsedMs > CLEANUP_SLOW_MS) {
+            console.warn(`[autoClear] slow cleanup — ${summary}`);
+        } else {
+            console.log(summary);
+        }
+    } catch (error) {
+        console.error('Error during message cleanup:', error);
+    }
+};
+
 // 自动清除一周前的消息
 export const autoClear = () => {
-    setInterval(async () => {
-        try {
-            const now = new Date();
-            const oneWeekAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
-            const oneDayAgo = new Date(now.getTime() - 24 * 60 * 60 * 1000);
-
-            // 使用 UTC 时间，确保一致性
-            const messageResult = await Message.destroy({
-                where: {
-                    date: {
-                        [Op.lt]: oneWeekAgo.toISOString()
-                    }
-                }
-            });
-
-            // /chat 拉进上下文的边：消息本体都删了，边没有意义
-            const messageLinkResult = await MessageLink.destroy({
-                where: {
-                    createdAt: { [Op.lt]: oneWeekAgo }
-                }
-            });
-
-            // 清理 BotResponse 表
-            const botResponseResult = await BotResponse.destroy({
-                where: {
-                    createdAt: {
-                        [Op.lt]: oneWeekAgo
-                    }
-                }
-            });
-
-            // 媒体字节超过 1 天即清空，保留文字上下文（回复树仍按 id 引用旧消息）
-            const [mediaClearedCount] = await Message.update(
-                { file: null, fileMime: null },
-                {
-                    where: {
-                        date: { [Op.lt]: oneDayAgo.toISOString() },
-                        file: { [Op.ne]: null },
-                    },
-                }
-            );
-
-            // GCS 大文件引用超 1 天：删 GCS 对象 + 删缓存行（对齐媒体字节 1 天清空）
-            const staleGcsRows = await MediaCache.findAll({
-                where: { fileUri: { [Op.ne]: null }, createdAt: { [Op.lt]: oneDayAgo } },
-            });
-            for (const row of staleGcsRows) {
-                if (row.fileUri) await deleteGcsObject(row.fileUri);
-            }
-            if (staleGcsRows.length) {
-                await MediaCache.destroy({
-                    where: { fileUri: { [Op.ne]: null }, createdAt: { [Op.lt]: oneDayAgo } },
-                });
-            }
-
-            // 共享媒体缓存按 LRU 清理：超 7 天未被命中续期的删除
-            const mediaCacheResult = await MediaCache.destroy({
-                where: {
-                    lastUsedAt: { [Op.lt]: oneWeekAgo },
-                },
-            });
-
-            // 链接预览缓存同节奏 LRU 清理（其媒体行已由上面的 MediaCache 清理覆盖）
-            const linkPreviewResult = await LinkPreviewCache.destroy({
-                where: {
-                    lastUsedAt: { [Op.lt]: oneWeekAgo },
-                },
-            });
-
-            console.log(`Cleared ${messageResult} messages, ${messageLinkResult} message links, ${botResponseResult} bot responses before ${oneWeekAgo.toISOString()}; cleared media bytes of ${mediaClearedCount} messages before ${oneDayAgo.toISOString()}; deleted ${staleGcsRows.length} GCS refs; evicted ${mediaCacheResult} media cache entries, ${linkPreviewResult} link previews`);
-        } catch (error) {
-            console.error('Error during message cleanup:', error);
-        }
-    }, 1000 * 60 * 60); // 每小时运行一次
+    setInterval(() => void clearExpiredData(), 1000 * 60 * 60); // 每小时运行一次
 }

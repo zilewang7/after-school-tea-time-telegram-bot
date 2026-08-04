@@ -680,6 +680,94 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
             );
         },
     },
+    {
+        // A dropped ingest write is unrecoverable — the row is the only record
+        // that the message ever existed — so the write is retried on a lock.
+        name: 'a write that lost the lock race is retried instead of dropped',
+        body: async () => {
+            const { withBusyRetry } = await import('../../src/db/busy-retry.js');
+
+            let attempts = 0;
+            const outcome = await withBusyRetry(async () => {
+                attempts += 1;
+                if (attempts < 3) throw new Error('SQLITE_BUSY: database is locked');
+                return 'stored';
+            }, 'offline probe');
+            expect(
+                outcome === 'stored' && attempts === 3,
+                `a busy write is retried until it lands (attempts: ${attempts})`
+            );
+
+            // What sequelize actually throws: a TimeoutError wrapping the cause
+            let wrappedAttempts = 0;
+            await withBusyRetry(async () => {
+                wrappedAttempts += 1;
+                if (wrappedAttempts < 2) {
+                    throw new Error('SequelizeTimeoutError', {
+                        cause: new Error('SQLITE_BUSY: database is locked'),
+                    });
+                }
+                return null;
+            }, 'offline probe');
+            expect(wrappedAttempts === 2, 'SQLITE_BUSY wrapped as a cause is recognized too');
+
+            let unrelatedAttempts = 0;
+            const threw = await withBusyRetry(async () => {
+                unrelatedAttempts += 1;
+                throw new Error('NOT NULL constraint failed');
+            }, 'offline probe').then(() => false, () => true);
+            expect(
+                threw && unrelatedAttempts === 1,
+                'an unrelated error is thrown straight through, not retried'
+            );
+        },
+    },
+    {
+        // Deletes everything seeded above (the seeds carry 1970-era dates), so
+        // this case has to stay last.
+        name: 'the hourly cleanup deletes expired rows in batches and spares fresh ones',
+        body: async () => {
+            const { clearExpiredData } = await import('../../src/db/autoSave.js');
+
+            // More than one batch worth (CLEANUP_BATCH_SIZE is 50)
+            const expiredIds: number[] = [];
+            for (let index = 0; index < 120; index += 1) {
+                expiredIds.push(await seedMessage());
+            }
+            const freshId = takeMessageId();
+            await Message.create({
+                chatId: OFFLINE_CHAT_ID,
+                messageId: freshId,
+                fromBotSelf: false,
+                date: new Date(),
+                userName: 'tester',
+                text: 'still within the retention window',
+                quoteText: null,
+                file: null,
+                fileMime: null,
+                fileUniqueId: null,
+                replyToId: null,
+                chatCommand: null,
+                modelParts: null,
+                mediaHint: null,
+                forwardOrigin: null,
+                ocrText: null,
+            });
+
+            await clearExpiredData();
+
+            const survivors = await Message.findAll({ where: { chatId: OFFLINE_CHAT_ID } });
+            const survivingIds = survivors.map((row) => row.messageId);
+            expect(
+                survivingIds.includes(freshId),
+                'a message inside the retention window is kept'
+            );
+            expect(
+                !expiredIds.some((id) => survivingIds.includes(id)),
+                `all ${expiredIds.length} expired messages are gone, batching and all`
+            );
+        },
+    },
 ];
 
 const results: CaseResult[] = [];

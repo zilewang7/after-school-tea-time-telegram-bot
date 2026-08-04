@@ -241,6 +241,8 @@ BotResponse.init(
         indexes: [
             { fields: ['chatId', 'userMessageId'] },
             { fields: ['chatId', 'messageId'] },
+            // Expiry sweep in the hourly cleanup
+            { fields: ['createdAt'] },
         ],
     }
 );

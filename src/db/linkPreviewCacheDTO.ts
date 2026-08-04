@@ -108,4 +108,8 @@ LinkPreviewCache.init({
   sequelize,
   tableName: 'link_preview_cache',
   timestamps: false,
+  // LRU eviction in the hourly cleanup selects by lastUsedAt
+  indexes: [
+    { fields: ['lastUsedAt'] },
+  ],
 });

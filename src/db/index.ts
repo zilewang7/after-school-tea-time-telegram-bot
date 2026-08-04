@@ -1,4 +1,4 @@
-import { sequelize } from "./config.js";
+import { sequelize, enableWriteAheadLog } from "./config.js";
 import { Message } from "./messageDTO.js";
 import { BotResponse, ButtonState, type ResponseVersion, type ResponseMetadata, type CommandType } from "./botResponseDTO.js";
 import { MediaCache } from "./mediaCacheDTO.js";
@@ -10,7 +10,9 @@ import { removeAsyncFileSaveMsgId, findFirstMessageIdByContinuation } from '../s
 // sync database (the imports above ensure every table is registered before sync)
 // Exported so callers can await schema readiness instead of racing the migration;
 // the attached catch also keeps a failed sync from becoming an unhandled rejection.
-export const dbReady = sequelize.sync({ alter: true });
+// WAL goes first: the sync itself is a long writer, and it is what a restart
+// races against.
+export const dbReady = enableWriteAheadLog().then(() => sequelize.sync({ alter: true }));
 dbReady.catch((error: unknown) => {
     console.error('[db] schema sync failed:', error);
 });

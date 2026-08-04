@@ -68,5 +68,7 @@ MessageLink.init({
     { fields: ['chatId', 'sourceMessageId'] },
     // Makes a repeated /chat trigger an ignorable duplicate instead of a second row
     { fields: ['chatId', 'sourceMessageId', 'linkedMessageId'], unique: true },
+    // Expiry sweep in the hourly cleanup
+    { fields: ['createdAt'] },
   ],
 });

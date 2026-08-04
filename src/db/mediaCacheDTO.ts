@@ -71,4 +71,11 @@ MediaCache.init({
   sequelize,
   tableName: 'media_cache',
   timestamps: false,
+  // Both indexes serve the hourly cleanup: LRU eviction by lastUsedAt and the
+  // stale-GCS-reference sweep. Unindexed they scan a table holding hundreds of
+  // MB of blobs.
+  indexes: [
+    { fields: ['lastUsedAt'] },
+    { fields: ['fileUri', 'createdAt'] },
+  ],
 });

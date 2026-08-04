@@ -115,8 +115,11 @@ Message.init({
   // times; without this the lookup is a full table scan over rows that carry
   // multi-MB media blobs. The reply tree is walked by reverse lookup on
   // replyToId, level by level, so that pair needs an index just as much.
+  // The hourly cleanup selects by date alone; unindexed that is a full scan of
+  // a table whose rows carry media blobs, and it runs while messages come in.
   indexes: [
     { fields: ['chatId', 'messageId'] },
     { fields: ['chatId', 'replyToId'] },
+    { fields: ['date'] },
   ],
 });
