@@ -32,15 +32,19 @@ export const isComfyConfigured = (): boolean => Boolean(baseUrl);
 // resolves to both an IPv4 and an IPv6 address and the first connection from a
 // process measured ~4s (warm ones ~300ms), so a 2s budget reported a perfectly
 // healthy service as down.
-const HEALTH_TIMEOUT_MS = 8000;
-const SUBMIT_TIMEOUT_MS = 30_000;
-const POLL_TIMEOUT_MS = 10_000;
+const envTimeout = (name: string, fallback: number): number => {
+    const raw = Number(process.env[name]);
+    return Number.isFinite(raw) && raw > 0 ? raw : fallback;
+};
+const HEALTH_TIMEOUT_MS = envTimeout('COMFY_HEALTH_TIMEOUT_MS', 20_000);
+const SUBMIT_TIMEOUT_MS = envTimeout('COMFY_SUBMIT_TIMEOUT_MS', 150_000);
+const POLL_TIMEOUT_MS = envTimeout('COMFY_POLL_TIMEOUT_MS', 15_000);
 // The uplink measured ~66 KB/s, so a 1.3 MB FLUX.2 output needs ~20s and 60s
 // was losing pictures that had already been generated. But a connection to
 // this host also just hangs sometimes (the name has an IPv6 address nothing
 // here can reach), and a long budget turns that into a long dead wait — so the
 // budget is generous rather than huge, and the retries above do the rest.
-const DOWNLOAD_TIMEOUT_MS = 120_000;
+const DOWNLOAD_TIMEOUT_MS = envTimeout('COMFY_DOWNLOAD_TIMEOUT_MS', 300_000);
 
 /** How long a cached workflow list stays fresh */
 const WORKFLOWS_TTL_MS = 5 * 60 * 1000;
