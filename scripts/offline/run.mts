@@ -27,9 +27,13 @@ process.env.IGNORED_SENDER_IDS = '424242';
 // server below plays luoxu's /messages endpoint.
 const BACKFILL_PORT = 9137;
 
-// The /chat parser decides whether `/chat@Name` is addressed to us
+/** The comfy-forward stub the /pic cases run against */
+const COMFY_PORT = 9138;
+
+// The /chat and /pic parsers decide whether `/cmd@Name` is addressed to us
 process.env.BOT_USER_NAME = 'AfterSchoolTeatimeBot';
 process.env.LUOXU_PREVIEW_URL = `http://127.0.0.1:${BACKFILL_PORT}`;
+process.env.COMFY_FORWARD_URL = `http://127.0.0.1:${COMFY_PORT}`;
 const { shouldIgnoreSender } = await import('../../src/config/sender-gate.js');
 
 const db: OfflineDb = await setupOfflineDb();
@@ -605,12 +609,16 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
                 '你的 id 是 @{{BOT_USER_NAME}}，你的用户名是 {{BOT_NAME}}。{{UNKNOWN_VAR}}'
             );
             process.env.SYSTEM_PROMPT_FILE = promptPath;
+            // Restored below: the command parsers read this to decide whether
+            // `/cmd@Name` is addressed to us, so leaking it breaks later cases
+            const ownUserName = process.env.BOT_USER_NAME;
             process.env.BOT_USER_NAME = 'WatchFirstBot';
             process.env.BOT_NAME = 'Test-KON';
 
             const { getSystemPrompt } = await import('../../src/ai/platform-factory.js');
             const prompt = getSystemPrompt();
             rmSync(promptPath, { force: true });
+            process.env.BOT_USER_NAME = ownUserName;
 
             expect(
                 prompt.includes('@WatchFirstBot') && prompt.includes('你的用户名是 Test-KON'),
@@ -810,6 +818,356 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
                 );
             } finally {
                 await new Promise<void>((closed) => server.close(() => closed()));
+            }
+        },
+    },
+    {
+        name: '/pic parameters are parsed by the documented syntax',
+        body: async () => {
+            const { parsePicCommand } = await import(
+                '../../src/reply/commands/pic-command-parser.js'
+            );
+            const parse = parsePicCommand;
+            /** The spec, or a marker so a failed parse reads clearly in the message */
+            const specOf = (text: string) => {
+                const result = parse(text);
+                return result.type === 'valid' ? result.spec : null;
+            };
+
+            expect(parse('随便一句话').type === 'none', 'ordinary text is not a pic command');
+            expect(parse('/picture of a cat').type === 'none', 'a longer word is not /pic');
+            expect(
+                parse('/picbanana 一只猫').type === 'none' && parse('/picgpt 一只猫').type === 'none',
+                'the LLM image commands are not swallowed by /pic'
+            );
+            expect(
+                parse('/pic@AfterSchoolTeatimeBot 猫').type === 'valid',
+                'the @form addressed to us is ours'
+            );
+            expect(
+                parse('/pic@SomeOtherBot 猫').type === 'none',
+                'a command addressed to another bot is left alone'
+            );
+
+            expect(specOf('/pic 一只猫')?.spoiler === true, '/pic masks the result');
+            expect(specOf('/picunsafe 一只猫')?.spoiler === false, '/picunsafe does not');
+            expect(
+                specOf('/picunsafe 一只猫')?.prompt === '一只猫',
+                'and both read the same prompt'
+            );
+            expect(specOf('/pic')?.prompt === '', 'a bare /pic parses with an empty prompt');
+
+            const withFlags = specOf('/pic -steps=20 -seed=42 -size=1344x768 屋顶上的猫');
+            expect(
+                withFlags?.options.steps === 20 && withFlags.options.seed === 42,
+                `leading flags become options (got ${JSON.stringify(withFlags?.options)})`
+            );
+            expect(
+                withFlags?.options.width === 1344 && withFlags.options.height === 768,
+                '-size= splits into width and height'
+            );
+            expect(withFlags?.prompt === '屋顶上的猫', 'and the rest is the prompt');
+
+            expect(specOf('/pic -w=flux2 猫')?.workflowQuery === 'flux2', '-w= is kept aside');
+            expect(
+                specOf('/pic -w=flux2 猫')?.options.w === undefined,
+                'and does not leak into the options'
+            );
+
+            // A prompt is free text: hyphens in it must not be read as flags
+            expect(
+                specOf('/pic 一只 anime-style 的猫')?.prompt === '一只 anime-style 的猫',
+                'a hyphen inside the prompt is left alone'
+            );
+            expect(
+                specOf('/pic -这不是参数 猫')?.prompt === '-这不是参数 猫',
+                'parsing stops at the first token that is not -key=value'
+            );
+
+            const negative = specOf('/pic 一只猫 -: 模糊, 多手指');
+            expect(
+                negative?.prompt === '一只猫' && negative.negativePrompt === '模糊, 多手指',
+                `-: splits off the negative prompt (got ${JSON.stringify(negative)})`
+            );
+            expect(negative?.negativePromptOverride === false, 'and -: does not override');
+            expect(
+                specOf('/pic 一只猫 -!: 模糊')?.negativePromptOverride === true,
+                'while -!: does'
+            );
+
+            for (const bad of ['/pic -steps=abc 猫', '/pic -n=9 猫', '/pic -size=10x10 猫', '/pic -ar=tall 猫', '/pic -zzz=1 猫']) {
+                const result = parse(bad);
+                expect(result.type === 'invalid', `\`${bad}\` is rejected with a reason`);
+            }
+        },
+    },
+    {
+        name: 'the pic workflow follows the reference image',
+        body: async () => {
+            const { buildGenerationRequest } = await import(
+                '../../src/reply/commands/pic-request-builder.js'
+            );
+            const { parsePicCommand } = await import(
+                '../../src/reply/commands/pic-command-parser.js'
+            );
+
+            const workflows = [
+                {
+                    id: 'z-image-turbo',
+                    name: 'Z-Image Turbo 文生图',
+                    kind: 'text-to-image',
+                    input_image_required: false,
+                    default_options: {},
+                },
+                {
+                    id: 'flux2-klein-9b-base-edit',
+                    name: 'FLUX.2 Klein 9B',
+                    kind: 'image-edit',
+                    input_image_required: true,
+                    default_options: {},
+                },
+            ];
+
+            const build = (text: string, referenceImages: string[] = []) => {
+                const parsed = parsePicCommand(text);
+                if (parsed.type !== 'valid') throw new Error(`\`${text}\` did not parse`);
+                return buildGenerationRequest({ spec: parsed.spec, workflows, referenceImages });
+            };
+
+            const plain = build('/pic 一只猫');
+            expect(
+                plain.ok && plain.request.workflow === 'z-image-turbo',
+                'no reference image → the text-to-image workflow'
+            );
+            expect(
+                plain.ok && plain.request.input_image === undefined,
+                'and nothing is sent as input_image'
+            );
+            expect(
+                plain.ok && typeof plain.request.options?.seed === 'number',
+                'a seed is always sent, so the caption is reproducible'
+            );
+
+            const edited = build('/pic 改成夜景', ['QUJD']);
+            expect(
+                edited.ok && edited.request.workflow === 'flux2-klein-9b-base-edit',
+                'a reference image → the image-edit workflow, no command change needed'
+            );
+            expect(
+                edited.ok && edited.request.input_image?.data === 'QUJD',
+                'and it rides along as input_image'
+            );
+
+            const twoImages = build('/pic 改成夜景', ['QUJD', 'RUZH']);
+            expect(
+                twoImages.ok && twoImages.extraReferenceImages === 1,
+                'the caller is told when extra images were ignored (the API takes one)'
+            );
+
+            const forced = build('/pic -w=z-image 一只猫', ['QUJD']);
+            expect(
+                forced.ok && forced.request.workflow === 'z-image-turbo',
+                '-w= overrides the automatic choice, by unique id prefix'
+            );
+
+            const missingImage = build('/pic -w=flux2 一只猫');
+            expect(
+                !missingImage.ok && missingImage.reason.includes('参考图'),
+                'an image-edit workflow without an image is refused before any request'
+            );
+
+            const unknown = build('/pic -w=nope 一只猫');
+            expect(
+                !unknown.ok && unknown.reason.includes('nope'),
+                'an unknown -w= names what is actually available'
+            );
+
+            const noPrompt = build('/pic -steps=20');
+            expect(!noPrompt.ok, 'an empty prompt is refused (the API requires one)');
+
+            // 20 MiB decoded is the documented cap; 4 base64 chars = 3 bytes
+            const oversized = build('/pic 改成夜景', ['A'.repeat(28 * 1024 * 1024)]);
+            expect(
+                !oversized.ok && oversized.reason.includes('20 MiB'),
+                'an oversized reference image is refused locally, not by a 413'
+            );
+
+            const negative = build('/pic 一只猫 -!: 模糊');
+            expect(
+                negative.ok && negative.request.negative_prompt_override === true,
+                '-!: reaches the request as negative_prompt_override'
+            );
+        },
+    },
+    {
+        // The whole async path the old synchronous /generate could not survive.
+        name: 'a pic job is submitted, polled and delivered',
+        body: async () => {
+            const { createServer } = await import('node:http');
+            const { forgetWorkflows } = await import('../../src/services/comfy-forward-service.js');
+            const { runGeneration } = await import(
+                '../../src/reply/commands/pic-generation-runner.js'
+            );
+            const { forgetAllJobs } = await import('../../src/reply/commands/pic-job-store.js');
+
+            const PNG_BYTES = Buffer.from('89504e470d0a1a0a', 'hex');
+            const pollPaths: string[] = [];
+            let submittedBody: Record<string, unknown> = {};
+            /** Statuses handed out in order, so the poller sees a real transition */
+            let statuses = ['running', 'succeeded'];
+
+            const server = createServer((request, response) => {
+                const path = request.url ?? '';
+                const json = (body: unknown, status = 200): void => {
+                    response.writeHead(status, { 'Content-Type': 'application/json' });
+                    response.end(JSON.stringify(body));
+                };
+
+                if (path === '/health') {
+                    json({ status: 'ok', comfyui: 'available', queue: { running: 0, pending: 0 } });
+                    return;
+                }
+                if (path === '/v1/workflows') {
+                    json({
+                        success: true,
+                        workflows: [{
+                            id: 'z-image-turbo',
+                            name: 'Z-Image Turbo 文生图',
+                            kind: 'text-to-image',
+                            input_image_required: false,
+                            default_options: {},
+                        }],
+                    });
+                    return;
+                }
+                if (path === '/v1/generations' && request.method === 'POST') {
+                    const chunks: Buffer[] = [];
+                    request.on('data', (chunk: Buffer) => chunks.push(chunk));
+                    request.on('end', () => {
+                        submittedBody = JSON.parse(Buffer.concat(chunks).toString());
+                        json({ success: true, id: 'job-1', status: 'queued' }, 202);
+                    });
+                    return;
+                }
+                if (path === '/v1/generations/job-1/images/0') {
+                    response.writeHead(200, { 'Content-Type': 'image/png' });
+                    response.end(PNG_BYTES);
+                    return;
+                }
+                if (path === '/v1/generations/job-1') {
+                    pollPaths.push(path);
+                    const status = statuses.shift() ?? 'succeeded';
+                    json({
+                        success: true,
+                        id: 'job-1',
+                        status,
+                        images: status === 'succeeded'
+                            ? [{ index: 0, filename: 'out.png', url: '/v1/generations/job-1/images/0' }]
+                            : [],
+                        error: status === 'failed' ? 'CUDA out of memory' : undefined,
+                    });
+                    return;
+                }
+                json({ error: 'not found' }, 404);
+            });
+            await new Promise<void>((ready) => server.listen(COMFY_PORT, '127.0.0.1', ready));
+
+            // The runner only touches these methods; a real grammy Api needs a
+            // bot token and a network, so a stub stands in for it.
+            interface SentPhoto { spoiler: boolean; caption: string; hasButton: boolean }
+            const sentPhotos: SentPhoto[] = [];
+            const editedTexts: string[] = [];
+            const deletedIds: number[] = [];
+            let photoMessageId = 0;
+
+            const makeApi = () => ({
+                sendMessage: async () => ({ message_id: takeMessageId() }),
+                editMessageText: async (_chatId: number, _messageId: number, text: string) => {
+                    editedTexts.push(text);
+                    return true;
+                },
+                editMessageReplyMarkup: async () => true,
+                deleteMessage: async (_chatId: number, messageId: number) => {
+                    deletedIds.push(messageId);
+                    return true;
+                },
+                sendPhoto: async (
+                    _chatId: number,
+                    _photo: unknown,
+                    other: { has_spoiler?: boolean; caption?: string; reply_markup?: unknown }
+                ) => {
+                    sentPhotos.push({
+                        spoiler: Boolean(other.has_spoiler),
+                        caption: other.caption ?? '',
+                        hasButton: Boolean(other.reply_markup),
+                    });
+                    photoMessageId = takeMessageId();
+                    return { message_id: photoMessageId };
+                },
+            });
+
+            try {
+                forgetWorkflows();
+                forgetAllJobs();
+                const userMessageId = await seedMessage({ text: '/pic 一只猫' });
+
+                await runGeneration({
+                    api: makeApi() as unknown as Parameters<typeof runGeneration>[0]['api'],
+                    chatId: OFFLINE_CHAT_ID,
+                    userMessageId,
+                    request: {
+                        workflow: 'z-image-turbo',
+                        prompt: '一只猫',
+                        options: { seed: 4242 },
+                    },
+                    spoiler: true,
+                    workflowName: 'Z-Image Turbo 文生图',
+                });
+
+                expect(
+                    submittedBody.workflow === 'z-image-turbo' && submittedBody.prompt === '一只猫',
+                    `the job is submitted with the request body (got ${JSON.stringify(submittedBody)})`
+                );
+                expect(pollPaths.length >= 2, `the job is polled until it settles (${pollPaths.length} polls)`);
+                expect(
+                    editedTexts.some((text) => text.includes('生成中')),
+                    `the placeholder reports progress (got ${JSON.stringify(editedTexts)})`
+                );
+                expect(sentPhotos.length === 1, 'one picture is sent');
+                expect(sentPhotos[0]?.spoiler === true, 'and /pic masked it');
+                expect(
+                    sentPhotos[0]?.caption.includes('seed 4242'),
+                    `the caption carries the seed (got ${JSON.stringify(sentPhotos[0]?.caption)})`
+                );
+                expect(sentPhotos[0]?.hasButton === true, 'with a 🎲 reroll button on it');
+                expect(deletedIds.length === 1, 'and the placeholder is cleaned up');
+
+                const stored = await Message.findOne({
+                    where: { chatId: OFFLINE_CHAT_ID, messageId: photoMessageId },
+                });
+                expect(
+                    stored?.file?.equals(PNG_BYTES) === true,
+                    'the picture is stored, so the next /pic can use it as a reference'
+                );
+
+                // A backend failure has to reach the user, not just the log
+                statuses = ['failed'];
+                editedTexts.length = 0;
+                await runGeneration({
+                    api: makeApi() as unknown as Parameters<typeof runGeneration>[0]['api'],
+                    chatId: OFFLINE_CHAT_ID,
+                    userMessageId,
+                    request: { workflow: 'z-image-turbo', prompt: '一只猫', options: {} },
+                    spoiler: true,
+                    workflowName: 'Z-Image Turbo 文生图',
+                });
+                expect(
+                    editedTexts.some((text) => text.includes('CUDA out of memory')),
+                    `a failed job reports why (got ${JSON.stringify(editedTexts)})`
+                );
+            } finally {
+                await new Promise<void>((closed) => server.close(() => closed()));
+                forgetWorkflows();
             }
         },
     },

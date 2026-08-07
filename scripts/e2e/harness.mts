@@ -30,8 +30,18 @@ const readEnvValue = (key: string): string => {
     return line.slice(key.length + 1).trim();
 };
 
+const readOptionalEnvValue = (key: string): string | undefined => {
+    try {
+        return readEnvValue(key);
+    } catch {
+        return undefined;
+    }
+};
+
 export const BOT_USERNAME = readEnvValue('BOT_USER_NAME');
 export const BOT_USER_ID = Number(readEnvValue('BOT_USER_ID'));
+/** The /pic backend. Absent (or offline) makes the pic case skip, not fail. */
+export const COMFY_FORWARD_URL = readOptionalEnvValue('COMFY_FORWARD_URL');
 
 export interface DriverMessage {
     id: number;
@@ -267,6 +277,28 @@ export const waitForStoredOcrText = async (
         await new Promise((resolve) => setTimeout(resolve, 2000));
     }
     throw new Error(`Timed out waiting for OCR text of message ${messageId}`);
+};
+
+/**
+ * Poll until the bot has stored a picture of its own replying to `replyToId`.
+ * That row is the real deliverable of /pic: it is what lets the next command
+ * use the result as a reference image. Returns its message id.
+ */
+export const waitForStoredImageReply = async (
+    replyToId: number,
+    timeoutMs = 180_000
+): Promise<number> => {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+        const row = await queryOne<{ messageId: number; bytes: number }>(
+            `SELECT messageId, length(file) AS bytes FROM telegram_messages
+             WHERE chatId = ? AND replyToId = ? AND fromBotSelf = 1 AND file IS NOT NULL`,
+            [TEST_CHAT_ID, replyToId]
+        );
+        if (row && row.bytes > 0) return row.messageId;
+        await new Promise((resolve) => setTimeout(resolve, 3000));
+    }
+    throw new Error(`Timed out waiting for a generated picture replying to ${replyToId}`);
 };
 
 /** The ids a `/chat` message pulled into the context (its message_links rows) */

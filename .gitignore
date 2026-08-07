@@ -4,6 +4,8 @@ dist
 .env.*
 *.sqlite
 *.sqlite-journal
+*.sqlite-wal
+*.sqlite-shm
 gcp-sa.json
 tmp/
 .pnpm-store/

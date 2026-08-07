@@ -10,6 +10,7 @@
 import {
     BOT_USER_ID,
     BOT_USERNAME,
+    COMFY_FORWARD_URL,
     TEST_GROUP,
     clickButton,
     deleteStoredMessage,
@@ -22,6 +23,7 @@ import {
     sleep,
     waitForBotResponse,
     waitForButtonState,
+    waitForStoredImageReply,
     waitForStoredMessage,
     waitForStoredOcrText,
     type DriverMessage,
@@ -34,9 +36,22 @@ const OCR_FIXTURE_TEXT = 'OCR-TEST-XYZ789';
 interface CaseResult {
     name: string;
     ok: boolean;
+    /** Not run because a dependency this suite doesn't own was unavailable */
+    skipped?: boolean;
     error?: string;
     ms: number;
 }
+
+/**
+ * Bail out of a case without failing the suite. For dependencies that legitimately
+ * come and go — the /pic backend runs on a home machine that isn't always on, and
+ * a red suite nobody trusts is worse than a case that says it didn't run.
+ */
+class SkippedCase extends Error {}
+
+const skip = (reason: string): never => {
+    throw new SkippedCase(reason);
+};
 
 const CASE_GAP_MS = 4000; // pace userbot sends, keep the account flood-safe
 
@@ -91,6 +106,25 @@ const waitForVisibleButtons = async (minId: number, timeoutMs = 15_000): Promise
     return false;
 };
 
+/** Whether the /pic backend is up right now (it lives on a home machine) */
+const comfyIsReachable = async (): Promise<boolean> => {
+    if (!COMFY_FORWARD_URL) return false;
+    try {
+        const response = await fetch(`${COMFY_FORWARD_URL}/health`, {
+            signal: AbortSignal.timeout(5000),
+        });
+        if (!response.ok) return false;
+        const payload: unknown = await response.json();
+        return (
+            typeof payload === 'object' &&
+            payload !== null &&
+            Reflect.get(payload, 'comfyui') === 'available'
+        );
+    } catch {
+        return false;
+    }
+};
+
 const runCase = async (
     name: string,
     body: () => Promise<void>
@@ -102,6 +136,10 @@ const runCase = async (
         return { name, ok: true, ms: Date.now() - start };
     } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
+        if (error instanceof SkippedCase) {
+            console.log(`    ↷ ${message}`);
+            return { name, ok: true, skipped: true, error: message, ms: Date.now() - start };
+        }
         console.error(`    ✗ ${message}`);
         return { name, ok: false, error: message, ms: Date.now() - start };
     }
@@ -386,6 +424,42 @@ const cases: Array<{ name: string; full?: boolean; body: () => Promise<void> }> 
         },
     },
     {
+        // The comfy-forward box is a home machine, so this case checks first
+        // and skips rather than reddening the suite when it is off.
+        name: '/pic generates a picture and stores it',
+        full: true,
+        body: async () => {
+            if (!(await comfyIsReachable())) {
+                skip('生图服务不在线（pc.home 非常开），本条跳过');
+            }
+
+            const before = await readGroupMessages(0, 1);
+            const lastId = before[before.length - 1]?.id ?? 0;
+
+            // Small and few steps: this is a plumbing check, not an art contest
+            const trigger = await sendAsUser(
+                `/pic@${BOT_USERNAME} -steps=6 -size=768x768 a red apple on a white table`
+            );
+
+            // The placeholder is deliberately NOT asserted: z-image-turbo can
+            // finish inside one poll interval, and the runner deletes it on
+            // success, so it may never be observable. The picture is the
+            // deliverable — and its stored row is what a later /pic reuses.
+            const pictureId = await waitForStoredImageReply(trigger).catch(async (error: unknown) => {
+                const lastBotText = (await readGroupMessages(lastId))
+                    .filter((m) => m.sender_id === BOT_USER_ID)
+                    .at(-1)?.text;
+                throw new Error(
+                    `${error instanceof Error ? error.message : String(error)} — last bot message: ${JSON.stringify(lastBotText)}`
+                );
+            });
+            expect(
+                pictureId > trigger,
+                `a generated picture came back and was stored (message ${pictureId})`
+            );
+        },
+    },
+    {
         name: 'formatted user message is stored as markdown',
         body: async () => {
             // telethon's default parse_mode is markdown: **…** arrives as a
@@ -469,8 +543,9 @@ const main = async (): Promise<void> => {
 
     console.log('\n==== e2e summary ====');
     for (const result of results) {
-        const mark = result.ok ? 'PASS' : 'FAIL';
-        console.log(`${mark}  ${result.name} (${(result.ms / 1000).toFixed(1)}s)`);
+        const mark = result.skipped ? 'SKIP' : result.ok ? 'PASS' : 'FAIL';
+        const note = result.skipped ? ` — ${result.error}` : '';
+        console.log(`${mark}  ${result.name} (${(result.ms / 1000).toFixed(1)}s)${note}`);
     }
     if (results.some((r) => !r.ok)) process.exit(1);
 };
