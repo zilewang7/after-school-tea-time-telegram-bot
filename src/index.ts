@@ -132,9 +132,14 @@ async function main() {
     console.log('[mcp] Initialization complete');
     // Test instance: never react to updates queued while it was offline
     // (it shares a group with the production bot)
-    bot.start({ drop_pending_updates: isTestInstance() })
-        .then(() => console.log('Bot started'))
-        .catch(console.error);
+    // onStart fires when long polling actually begins; the promise bot.start()
+    // returns only settles when the bot STOPS, so the old `.then()` here logged
+    // "Bot started" on shutdown — and anything waiting for that line (the e2e
+    // wrapper) waited forever.
+    bot.start({
+        drop_pending_updates: isTestInstance(),
+        onStart: (me) => console.log(`Bot started as @${me.username}`),
+    }).catch(console.error);
 }
 
 main().catch(console.error);

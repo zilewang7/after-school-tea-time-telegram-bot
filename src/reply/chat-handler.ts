@@ -22,6 +22,8 @@ import {
 } from './response-handler.js';
 import { handlePicbananaCommand, checkPicbananaCommand } from './commands/picbanana-handler.js';
 import { handlePicgptCommand, checkPicgptCommand } from './commands/picgpt-handler.js';
+import { handlePicCommand } from './commands/pic-command.js';
+import { isPicCommandText } from './commands/pic-command-parser.js';
 import { dealChatCommand } from './commands/chat-command.js';
 import { isChatCommandText } from './commands/chat-command-parser.js';
 
@@ -36,6 +38,7 @@ const MEDIA_WAIT_TIMEOUT_MS = 65000;
 const willReply = (ctx: Context): boolean => {
     const text = ctx.message?.text ?? ctx.message?.caption ?? '';
     if (/^\/(picbanana|picgpt)(@\S+)?(\s|$)/.test(text)) return true;
+    if (isPicCommandText(text)) return true;
     if (isChatCommandText(text)) return true;
     return checkIfMentioned(ctx, undefined);
 };
@@ -286,12 +289,18 @@ export const registerChatHandler = (bot: Bot): void => {
                 if (!tryMarkUserMessageHandling(ctx.chat.id, ctx.message.message_id)) return;
 
                 const text = ctx.message.text ?? ctx.message.caption ?? '';
-                const isPicCommand = /^\/(picbanana|picgpt)(@\S+)?(\s|$)/.test(text);
+                const isPicCommand =
+                    /^\/(picbanana|picgpt)(@\S+)?(\s|$)/.test(text) || isPicCommandText(text);
 
                 if (isPicCommand) {
                     // Pic commands read reference images during the check, so wait
                     // for the current + reply target media first (with feedback).
                     await awaitMediaWithFeedback(ctx, collectImmediateMediaIds(ctx));
+
+                    if (isPicCommandText(text)) {
+                        await handlePicCommand(ctx);
+                        return;
+                    }
 
                     const [, picbananaData] = await checkPicbananaCommand(ctx);
                     if (picbananaData) {

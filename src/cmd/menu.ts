@@ -5,7 +5,7 @@ import { InlineKeyboard } from 'grammy';
 import type { Bot, Context } from 'grammy';
 import { modelConfigs } from '../config/models.js';
 import { getCurrentModel, setCurrentModel } from '../state.js';
-import { setRetryHandler, registerResponseCallbacks } from './menus/index.js';
+import { setRetryHandler, registerResponseCallbacks, registerPicCallbacks } from './menus/index.js';
 import { handleRetryRequest } from '../reply/retry-handler.js';
 
 const MODEL_PREFIX = 'mdl:';
@@ -104,6 +104,7 @@ const registerModelCallbacks = (bot: Bot): void => {
  */
 export const menuLoad = (bot: Bot): void => {
     registerModelCallbacks(bot);
+    registerPicCallbacks(bot);
     registerResponseCallbacks(bot);
     setRetryHandler(handleRetryRequest);
 };

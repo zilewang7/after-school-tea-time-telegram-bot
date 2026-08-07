@@ -20,6 +20,11 @@ declare global {
             MIMO_API_URL?: string
             MIMO_API_KEY?: string
             MCP_SERVERS?: string
+            /** comfy-forward base URL for /pic; replaces PICZIT_ENDPOINT */
+            COMFY_FORWARD_URL?: string
+            /** How long to keep polling one generation job (default 15min) */
+            COMFY_JOB_TIMEOUT_MS?: string
+            /** @deprecated legacy name for COMFY_FORWARD_URL */
             PICZIT_ENDPOINT?: string
             BOT_PROXY?: string
             TGS_CONVERTER_URL?: string
