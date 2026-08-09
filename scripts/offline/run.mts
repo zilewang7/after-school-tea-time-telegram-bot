@@ -27,13 +27,18 @@ process.env.IGNORED_SENDER_IDS = '424242';
 // server below plays luoxu's /messages endpoint.
 const BACKFILL_PORT = 9137;
 
-/** The comfy-forward stub the /pic cases run against */
+/** The comfy-forward stub the /pic and /vid cases run against */
 const COMFY_PORT = 9138;
+
+/** The xAI-shaped stub the storyboard case runs against */
+const GROK_PORT = 9139;
 
 // The /chat and /pic parsers decide whether `/cmd@Name` is addressed to us
 process.env.BOT_USER_NAME = 'AfterSchoolTeatimeBot';
 process.env.LUOXU_PREVIEW_URL = `http://127.0.0.1:${BACKFILL_PORT}`;
 process.env.COMFY_FORWARD_URL = `http://127.0.0.1:${COMFY_PORT}`;
+process.env.GROK_API_URL = `http://127.0.0.1:${GROK_PORT}/v1`;
+process.env.GROK_API_KEY = 'offline-stub';
 const { shouldIgnoreSender } = await import('../../src/config/sender-gate.js');
 
 const db: OfflineDb = await setupOfflineDb();
@@ -926,6 +931,14 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
                     input_image_required: true,
                     default_options: {},
                 },
+                // The same list carries video workflows since 2.3.0
+                {
+                    id: 'minimax-h3-turbo',
+                    name: 'MiniMax H3 Turbo 文生视频',
+                    kind: 'text-to-video',
+                    input_image_required: false,
+                    default_options: {},
+                },
             ];
 
             const build = (text: string, referenceImages: string[] = []) => {
@@ -976,6 +989,12 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
                 'an image-edit workflow without an image is refused before any request'
             );
 
+            const videoWorkflow = build('/pic -w=minimax 一只猫');
+            expect(
+                !videoWorkflow.ok && videoWorkflow.reason.includes('/vid'),
+                `pointing -w= at a video workflow says which command to use (got ${videoWorkflow.ok ? 'ok' : videoWorkflow.reason})`
+            );
+
             const unknown = build('/pic -w=nope 一只猫');
             expect(
                 !unknown.ok && unknown.reason.includes('nope'),
@@ -1006,9 +1025,9 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
             const { createServer } = await import('node:http');
             const { forgetWorkflows } = await import('../../src/services/comfy-forward-service.js');
             const { runGeneration } = await import(
-                '../../src/reply/commands/pic-generation-runner.js'
+                '../../src/reply/commands/generation-runner.js'
             );
-            const { forgetAllJobs } = await import('../../src/reply/commands/pic-job-store.js');
+            const { forgetAllJobs } = await import('../../src/reply/commands/generation-job-store.js');
 
             const PNG_BYTES = Buffer.from('89504e470d0a1a0a', 'hex');
             const pollPaths: string[] = [];
@@ -1115,6 +1134,7 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
                     api: makeApi() as unknown as Parameters<typeof runGeneration>[0]['api'],
                     chatId: OFFLINE_CHAT_ID,
                     userMessageId,
+                    kind: 'image',
                     request: {
                         workflow: 'z-image-turbo',
                         prompt: '一只猫',
@@ -1157,6 +1177,7 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
                     api: makeApi() as unknown as Parameters<typeof runGeneration>[0]['api'],
                     chatId: OFFLINE_CHAT_ID,
                     userMessageId,
+                    kind: 'image',
                     request: { workflow: 'z-image-turbo', prompt: '一只猫', options: {} },
                     spoiler: true,
                     workflowName: 'Z-Image Turbo 文生图',
@@ -1164,6 +1185,600 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
                 expect(
                     editedTexts.some((text) => text.includes('CUDA out of memory')),
                     `a failed job reports why (got ${JSON.stringify(editedTexts)})`
+                );
+            } finally {
+                await new Promise<void>((closed) => server.close(() => closed()));
+                forgetWorkflows();
+            }
+        },
+    },
+    {
+        name: '/vid parameters are parsed by the documented syntax',
+        body: async () => {
+            const { parseVidCommand } = await import(
+                '../../src/reply/commands/vid-command-parser.js'
+            );
+            const parse = parseVidCommand;
+            const specOf = (text: string) => {
+                const parsed = parse(text);
+                return parsed.type === 'valid' ? parsed.spec : null;
+            };
+
+            expect(parse('随便一句话').type === 'none', 'ordinary text is not a vid command');
+            expect(parse('/video of a cat').type === 'none', 'a longer word is not /vid');
+            expect(
+                parse('/vid@AfterSchoolTeatimeBot 猫').type === 'valid',
+                'the @BotName form is ours'
+            );
+            expect(
+                parse('/vid@SomeOtherBot 猫').type === 'none',
+                'a command addressed to another bot is not ours to answer'
+            );
+
+            expect(specOf('/vid 一只猫')?.spoiler === true, '/vid masks the result');
+            expect(specOf('/vidunsafe 一只猫')?.spoiler === false, '/vidunsafe does not');
+            expect(specOf('/vid')?.brief === '', 'a bare /vid parses with an empty brief');
+
+            const flagged = specOf('/vid -d=8 -ar=9:16 -seed=7 -ref=max 雨夜的电车');
+            expect(
+                flagged?.options.duration_seconds === 8 &&
+                    flagged?.options.aspect_ratio === '9:16' &&
+                    flagged?.options.seed === 7 &&
+                    flagged?.options.ref_image_size === 'max',
+                `the H3 flags land in options (got ${JSON.stringify(flagged?.options)})`
+            );
+            expect(flagged?.brief === '雨夜的电车', 'and everything after them is the brief');
+
+            const steering = specOf('/vid -w=h3 -mode=i2va -shots=3 -raw=1 已经写好的分镜');
+            expect(
+                steering?.workflowQuery === 'h3' &&
+                    steering?.mode === 'i2va' &&
+                    steering?.shots === 3 &&
+                    steering?.raw === true,
+                `the steering flags stay out of options (got ${JSON.stringify(steering)})`
+            );
+            expect(
+                Object.keys(steering?.options ?? {}).length === 0,
+                'none of them are sent to the API'
+            );
+
+            expect(
+                specOf('/vid -size=608x352 街景')?.options.width === 608,
+                '-size= splits into width/height'
+            );
+            expect(
+                specOf('/vid -lowvram=1 街景')?.options.low_vram === true,
+                '-lowvram= is a boolean option'
+            );
+
+            // H3 takes no negative prompt, but /pic habits die hard
+            const negative = specOf('/vid 一只猫 -: 模糊');
+            expect(
+                negative?.negativeIgnored === true && negative?.brief === '一只猫',
+                `-: is stripped off the brief and flagged (got ${JSON.stringify(negative)})`
+            );
+
+            for (const bad of [
+                '/vid -d=99 猫',
+                '/vid -ar=16x9 猫',
+                '/vid -size=600x352 猫',
+                '/vid -mode=nope 猫',
+                '/vid -shots=9 猫',
+                '/vid -ref=huge 猫',
+                '/vid -zzz=1 猫',
+            ]) {
+                expect(parse(bad).type === 'invalid', `${bad} is rejected with an explanation`);
+            }
+        },
+    },
+    {
+        name: 'the video plan picks the workflow and the H3 input mode',
+        body: async () => {
+            const { planVideoGeneration, buildVideoRequest, resolveVidMode } = await import(
+                '../../src/reply/commands/vid-request-builder.js'
+            );
+            const { parseVidCommand } = await import(
+                '../../src/reply/commands/vid-command-parser.js'
+            );
+
+            // The 2.3.0 workflow list, verbatim in the parts that matter
+            const workflows = [
+                {
+                    id: 'z-image-turbo',
+                    name: '文生图',
+                    kind: 'text-to-image',
+                    input_image_required: false,
+                    accepted_inputs: [],
+                    default_options: {},
+                },
+                {
+                    id: 'minimax-h3-turbo',
+                    name: 'MiniMax H3 Turbo 文生视频 / 单图参考',
+                    kind: 'text-to-video',
+                    input_image_required: false,
+                    accepted_inputs: ['input_image'],
+                    default_options: { steps: 6, lora_strength: 1 },
+                },
+                {
+                    id: 'minimax-h3-i2v',
+                    name: 'MiniMax H3 Turbo 首尾帧图生视频',
+                    kind: 'image-to-video',
+                    input_image_required: true,
+                    accepted_inputs: ['first_frame', 'last_frame', 'input_image'],
+                    default_options: { steps: 6, lora_strength: 1 },
+                },
+                {
+                    id: 'minimax-h3-ref2v',
+                    name: 'MiniMax H3 Turbo 多素材参考视频',
+                    kind: 'reference-to-video',
+                    input_image_required: false,
+                    accepted_inputs: [
+                        'input_image', 'reference_images', 'reference_videos', 'reference_audios',
+                    ],
+                    default_options: { steps: 6, lora_strength: 1 },
+                },
+                {
+                    id: 'minimax-h3-base',
+                    name: 'MiniMax H3 Base 24 步质量模式',
+                    kind: 'text-to-video',
+                    input_image_required: false,
+                    accepted_inputs: [
+                        'input_image', 'first_frame', 'last_frame',
+                        'reference_images', 'reference_videos', 'reference_audios',
+                    ],
+                    default_options: { steps: 24, sampler_name: 'res_multistep' },
+                },
+            ];
+            const workflowById = (id: string) =>
+                workflows.find((workflow) => workflow.id === id)!;
+
+            const plan = (text: string, referenceImages: string[] = []) => {
+                const parsed = parseVidCommand(text);
+                if (parsed.type !== 'valid') throw new Error(`unparsable: ${text}`);
+                return {
+                    spec: parsed.spec,
+                    result: planVideoGeneration({ spec: parsed.spec, workflows, referenceImages }),
+                };
+            };
+
+            const plain = plan('/vid 雨夜的电车');
+            expect(
+                plain.result.ok && plain.result.plan.workflow.id === 'minimax-h3-turbo',
+                'without -w= the Turbo workflow wins over the 24-step quality one'
+            );
+            expect(
+                plain.result.ok && plain.result.plan.mode === 't2va',
+                'no reference image means text-to-video'
+            );
+            expect(
+                plain.result.ok &&
+                    plain.result.plan.durationSeconds === 5 &&
+                    plain.result.plan.aspectRatio === '16:9',
+                'and the documented defaults are made explicit'
+            );
+
+            const referenced = plan('/vid 让她转过身来', ['QUJD']);
+            expect(
+                referenced.result.ok && referenced.result.plan.mode === 'ref2va',
+                'one image on the Turbo workflow is a reference, not a first frame'
+            );
+            expect(
+                referenced.result.ok && referenced.result.plan.workflow.id === 'minimax-h3-turbo',
+                'and one image does not need the multi-asset workflow'
+            );
+
+            expect(
+                resolveVidMode('auto', workflowById('minimax-h3-i2v'), 1) === 'i2va' &&
+                    resolveVidMode('auto', workflowById('minimax-h3-i2v'), 2) === 'fl2va' &&
+                    resolveVidMode('t2va', workflowById('minimax-h3-i2v'), 1) === 't2va',
+                'a frame-anchoring workflow means i2va/fl2va, and -mode= always wins'
+            );
+            expect(
+                resolveVidMode('auto', workflowById('minimax-h3-base'), 2) === 'ref2va',
+                'a workflow that does both defaults to referencing, never to locking frames'
+            );
+
+            // -mode= is the conditioning axis: asking for it picks the workflow
+            // that can do it, without the user naming one
+            const anchored = plan('/vid -mode=i2va 镜头缓缓推进', ['QUJD']);
+            expect(
+                anchored.result.ok && anchored.result.plan.workflow.id === 'minimax-h3-i2v',
+                `-mode=i2va selects the frame-anchoring workflow (got ${anchored.result.ok ? anchored.result.plan.workflow.id : anchored.result.reason})`
+            );
+
+            const twoImages = plan('/vid 动起来', ['QUJD', 'RUZH']);
+            expect(
+                twoImages.result.ok && twoImages.result.plan.workflow.id === 'minimax-h3-ref2v',
+                'more images than input_image can carry escalates to the multi-asset workflow'
+            );
+            expect(
+                twoImages.result.ok && twoImages.result.plan.extraReferenceImages === 0,
+                'and both of them are used'
+            );
+
+            const quality = plan('/vid -w=base -steps=24 慢工出细活');
+            expect(
+                quality.result.ok && quality.result.plan.workflow.id === 'minimax-h3-base',
+                '-w= substring-matches the quality workflow, where 24 steps is the baseline'
+            );
+
+            const tooManySteps = plan('/vid -steps=24 猫');
+            expect(
+                !tooManySteps.result.ok && tooManySteps.result.reason.includes('4-8'),
+                'the same 24 steps on Turbo is caught locally, before a round trip'
+            );
+
+            const wrongCommand = plan('/vid -w=z-image 猫');
+            expect(
+                !wrongCommand.result.ok && wrongCommand.result.reason.includes('/pic'),
+                'pointing -w= at a picture workflow says which command to use'
+            );
+
+            const oneImageAnchored = plan('/vid -mode=i2va 推进', ['QUJD', 'RUZH']);
+            expect(
+                oneImageAnchored.result.ok &&
+                    oneImageAnchored.result.plan.referenceImages.length === 1,
+                'i2va uses one image only — the second would become a frame lock nobody asked for'
+            );
+
+            const halfAnchored = plan('/vid -mode=fl2va 变天', ['QUJD']);
+            expect(
+                !halfAnchored.result.ok && halfAnchored.result.reason.includes('两张图'),
+                'fl2va with one image is refused rather than promising a <Picture 2> that is not there'
+            );
+
+            const unanchorable = plan('/vid -w=minimax-h3-turbo -mode=i2va 猫', ['QUJD']);
+            expect(
+                !unanchorable.result.ok && unanchorable.result.reason.includes('首帧'),
+                'asking a workflow for frames it cannot lock says so instead of silently referencing'
+            );
+
+            const oversized = plan('/vid 改成夜景', ['A'.repeat(28 * 1024 * 1024)]);
+            expect(
+                !oversized.result.ok && oversized.result.reason.includes('20 MiB'),
+                'an oversized reference is rejected before it is uploaded'
+            );
+
+            const tenImages = plan('/vid 群像', Array.from({ length: 10 }, (_, i) => `IMG${i}`));
+            expect(
+                tenImages.result.ok && tenImages.result.plan.referenceImages.length === 9,
+                'the 9-image cap is respected'
+            );
+            expect(
+                tenImages.result.ok && tenImages.result.plan.extraReferenceImages === 1,
+                'and the leftovers are counted so the user can be told'
+            );
+
+            // The request body: the storyboard is the prompt, never the brief
+            const planOf = (result: ReturnType<typeof planVideoGeneration>) => {
+                if (!result.ok) throw new Error(`unplanned: ${result.reason}`);
+                return result.plan;
+            };
+
+            const built = buildVideoRequest(
+                planOf(referenced.result),
+                referenced.spec,
+                'integrated_multimodal_description: [Shot 1] ...'
+            );
+            expect(
+                built.prompt.startsWith('integrated_multimodal_description:'),
+                'the storyboard is what gets submitted'
+            );
+            expect(
+                typeof built.options?.seed === 'number' &&
+                    built.options?.duration_seconds === 5 &&
+                    built.options?.aspect_ratio === '16:9',
+                `a seed is always sent, alongside the planned duration and ratio (got ${JSON.stringify(built.options)})`
+            );
+            expect(
+                built.input_image?.data === 'QUJD' && built.reference_images === undefined,
+                'a single Ref2VA image rides on input_image'
+            );
+            expect(built.negative_prompt === undefined, 'H3 never gets a negative prompt');
+
+            const multiRequest = buildVideoRequest(
+                planOf(twoImages.result),
+                twoImages.spec,
+                'prompt'
+            );
+            expect(
+                multiRequest.reference_images?.length === 2 && multiRequest.input_image === undefined,
+                `several images go to reference_images (got ${JSON.stringify(Object.keys(multiRequest))})`
+            );
+
+            const anchoredRequest = buildVideoRequest(
+                planOf(anchored.result),
+                anchored.spec,
+                'prompt'
+            );
+            expect(
+                anchoredRequest.first_frame?.data === 'QUJD' &&
+                    anchoredRequest.input_image === undefined,
+                'a frame anchor goes to first_frame, not input_image'
+            );
+            expect(
+                anchoredRequest.options?.aspect_ratio === undefined,
+                'and no ratio is sent, so the output follows that frame'
+            );
+
+            const anchoredWithRatio = plan('/vid -mode=i2va -ar=1:1 方的', ['QUJD']);
+            expect(
+                buildVideoRequest(planOf(anchoredWithRatio.result), anchoredWithRatio.spec, 'p')
+                    .options?.aspect_ratio === '1:1',
+                'unless the user asked for one explicitly'
+            );
+
+            const sized = plan('/vid -size=608x352 街景');
+            const sizedRequest = buildVideoRequest(planOf(sized.result), sized.spec, 'prompt');
+            expect(
+                sizedRequest.options?.width === 608 && sizedRequest.options?.aspect_ratio === undefined,
+                'an explicit -size= drops the ratio the server would have ignored anyway'
+            );
+        },
+    },
+    {
+        name: 'the storyboard is written by grok, cleaned, and degrades on failure',
+        body: async () => {
+            const { createServer } = await import('node:http');
+            const {
+                buildSystemPrompt,
+                buildUserMessage,
+                cleanStoryboard,
+                enhanceVideoPrompt,
+                H3PromptError,
+            } = await import('../../src/services/h3-prompt-service.js');
+
+            // Only the format block the mode needs is sent: showing the model a
+            // spec it must not follow is how a three-field answer becomes six
+            const ref2va = buildSystemPrompt('ref2va');
+            const base = buildSystemPrompt('t2va');
+            expect(
+                ref2va.includes('subject_definitions') && !ref2va.includes('integrated_multimodal_description'),
+                'ref2va gets the six-section spec only'
+            );
+            expect(
+                base.includes('integrated_multimodal_description') && !base.includes('subject_definitions'),
+                't2va gets the multi-shot spec only'
+            );
+            expect(
+                base.includes('One dominant action') || base.includes('ONE dominant action'),
+                'both carry the shared rules'
+            );
+            expect(!base.includes('<!--'), 'and the marker comments are stripped');
+
+            const withImage = buildUserMessage({
+                brief: '雨夜的电车',
+                mode: 'ref2va',
+                durationSeconds: 8,
+                aspectRatio: '9:16',
+                shots: 2,
+                referenceImages: ['QUJD'],
+            });
+            expect(
+                withImage.includes('MODE: ref2va') &&
+                    withImage.includes('duration_s: 8') &&
+                    withImage.includes('ratio: 9:16') &&
+                    withImage.includes('shots: 2'),
+                `the brief template carries the target (got ${JSON.stringify(withImage)})`
+            );
+            expect(
+                withImage.includes('<Picture 1>') && withImage.includes('NOT a frame anchor'),
+                'and tells the model what the image is for'
+            );
+
+            expect(
+                cleanStoryboard('```\nintegrated_multimodal_description: [Shot 1] x\n```') ===
+                    'integrated_multimodal_description: [Shot 1] x',
+                'markdown fences are stripped'
+            );
+            expect(
+                cleanStoryboard('Here is your prompt:\n\nsubject_definitions:\n<Subject 1> is a cat.') ===
+                    'subject_definitions:\n<Subject 1> is a cat.',
+                'and so is the preamble it was told not to write'
+            );
+
+            let lastBody: Record<string, any> = {};
+            let replyWith: { status: number; body: unknown } = {
+                status: 200,
+                body: {
+                    choices: [
+                        {
+                            message: {
+                                content: '```\nintegrated_multimodal_description: [Shot 1] A tram.\n```',
+                            },
+                        },
+                    ],
+                },
+            };
+
+            const server = createServer((request, response) => {
+                const chunks: Buffer[] = [];
+                request.on('data', (chunk: Buffer) => chunks.push(chunk));
+                request.on('end', () => {
+                    lastBody = JSON.parse(Buffer.concat(chunks).toString() || '{}');
+                    response.writeHead(replyWith.status, { 'Content-Type': 'application/json' });
+                    response.end(JSON.stringify(replyWith.body));
+                });
+            });
+            await new Promise<void>((ready) => server.listen(GROK_PORT, '127.0.0.1', ready));
+
+            try {
+                const storyboard = await enhanceVideoPrompt({
+                    brief: '雨夜的电车',
+                    mode: 'ref2va',
+                    durationSeconds: 5,
+                    aspectRatio: '16:9',
+                    shots: null,
+                    referenceImages: ['QUJD'],
+                });
+                expect(
+                    storyboard === 'integrated_multimodal_description: [Shot 1] A tram.',
+                    `the answer comes back cleaned (got ${JSON.stringify(storyboard)})`
+                );
+
+                const parts = lastBody.messages?.[1]?.content ?? [];
+                expect(
+                    lastBody.messages?.[0]?.role === 'system' &&
+                        String(lastBody.messages?.[0]?.content).includes('subject_definitions'),
+                    'the mode picked the system prompt'
+                );
+                expect(
+                    Array.isArray(parts) &&
+                        parts.some((part: any) => part.type === 'image_url' &&
+                            String(part.image_url?.url).includes('QUJD')),
+                    'and the reference image is actually shown to the model'
+                );
+
+                replyWith = { status: 500, body: { error: 'boom' } };
+                const [error] = await import('../../src/shared/result.js').then(({ to }) =>
+                    to(
+                        enhanceVideoPrompt({
+                            brief: '雨夜的电车',
+                            mode: 't2va',
+                            durationSeconds: 5,
+                            aspectRatio: '16:9',
+                            shots: null,
+                            referenceImages: [],
+                        })
+                    )
+                );
+                expect(
+                    error instanceof H3PromptError && Boolean(error.userReason),
+                    `a failure is reportable rather than fatal (got ${String(error)})`
+                );
+            } finally {
+                await new Promise<void>((closed) => server.close(() => closed()));
+            }
+        },
+    },
+    {
+        // The picture path proves submit/poll; this one proves the fork at the
+        // end — a video is downloaded from videos/N and goes out as a video.
+        name: 'a video job is delivered as a video and stored as one',
+        body: async () => {
+            const { createServer } = await import('node:http');
+            const { forgetWorkflows } = await import('../../src/services/comfy-forward-service.js');
+            const { runGeneration } = await import(
+                '../../src/reply/commands/generation-runner.js'
+            );
+            const { forgetAllJobs } = await import(
+                '../../src/reply/commands/generation-job-store.js'
+            );
+
+            const MP4_BYTES = Buffer.from('00000018667479706d703432', 'hex');
+            let downloadedPath = '';
+
+            const server = createServer((request, response) => {
+                const path = request.url ?? '';
+                const json = (body: unknown, status = 200): void => {
+                    response.writeHead(status, { 'Content-Type': 'application/json' });
+                    response.end(JSON.stringify(body));
+                };
+
+                if (path === '/health') {
+                    json({ status: 'ok', comfyui: 'available', queue: { running: 0, pending: 0 } });
+                    return;
+                }
+                if (path === '/v1/generations' && request.method === 'POST') {
+                    request.on('data', () => undefined);
+                    request.on('end', () => json({ success: true, id: 'job-2', status: 'queued' }, 202));
+                    return;
+                }
+                if (path === '/v1/generations/job-2/videos/0') {
+                    downloadedPath = path;
+                    response.writeHead(200, { 'Content-Type': 'video/mp4' });
+                    response.end(MP4_BYTES);
+                    return;
+                }
+                if (path === '/v1/generations/job-2') {
+                    json({
+                        success: true,
+                        id: 'job-2',
+                        status: 'succeeded',
+                        // No `images` at all: a video job carries only `videos`
+                        videos: [
+                            { index: 0, filename: 'h3.mp4', url: '/v1/generations/job-2/videos/0' },
+                        ],
+                    });
+                    return;
+                }
+                json({ error: 'not found' }, 404);
+            });
+            await new Promise<void>((ready) => server.listen(COMFY_PORT, '127.0.0.1', ready));
+
+            interface SentVideo { spoiler: boolean; caption: string; streaming: boolean }
+            const sentVideos: SentVideo[] = [];
+            const sentPhotos: unknown[] = [];
+            let videoMessageId = 0;
+
+            const api = {
+                sendMessage: async () => ({ message_id: takeMessageId() }),
+                editMessageText: async () => true,
+                editMessageReplyMarkup: async () => true,
+                deleteMessage: async () => true,
+                sendPhoto: async () => {
+                    sentPhotos.push({});
+                    return { message_id: takeMessageId() };
+                },
+                sendVideo: async (
+                    _chatId: number,
+                    _video: unknown,
+                    other: { has_spoiler?: boolean; caption?: string; supports_streaming?: boolean }
+                ) => {
+                    sentVideos.push({
+                        spoiler: Boolean(other.has_spoiler),
+                        caption: other.caption ?? '',
+                        streaming: Boolean(other.supports_streaming),
+                    });
+                    videoMessageId = takeMessageId();
+                    return { message_id: videoMessageId };
+                },
+            };
+
+            try {
+                forgetWorkflows();
+                forgetAllJobs();
+                const userMessageId = await seedMessage({ text: '/vid 雨夜的电车' });
+
+                await runGeneration({
+                    api: api as unknown as Parameters<typeof runGeneration>[0]['api'],
+                    chatId: OFFLINE_CHAT_ID,
+                    userMessageId,
+                    kind: 'video',
+                    request: {
+                        workflow: 'minimax-h3-turbo',
+                        prompt: 'integrated_multimodal_description: [Shot 1] A tram.',
+                        options: { seed: 4242, duration_seconds: 5, aspect_ratio: '16:9' },
+                    },
+                    spoiler: true,
+                    workflowName: 'MiniMax H3 Turbo 文生视频',
+                });
+
+                expect(
+                    downloadedPath === '/v1/generations/job-2/videos/0',
+                    `the video is fetched from the videos path (got ${JSON.stringify(downloadedPath)})`
+                );
+                expect(sentPhotos.length === 0, 'and it does not go out as a photo');
+                expect(sentVideos.length === 1, 'one video is sent');
+                expect(sentVideos[0]?.spoiler === true, 'and /vid masked it');
+                expect(sentVideos[0]?.streaming === true, 'with streaming enabled, so it plays inline');
+                expect(
+                    sentVideos[0]?.caption.includes('seed 4242') &&
+                        sentVideos[0]?.caption.includes('5s') &&
+                        sentVideos[0]?.caption.includes('16:9'),
+                    `the caption says how to reproduce it (got ${JSON.stringify(sentVideos[0]?.caption)})`
+                );
+
+                const stored = await Message.findOne({
+                    where: { chatId: OFFLINE_CHAT_ID, messageId: videoMessageId },
+                });
+                expect(
+                    stored?.file?.equals(MP4_BYTES) === true && stored?.fileMime === 'video/mp4',
+                    `the clip is stored as a video (got mime ${JSON.stringify(stored?.fileMime)})`
+                );
+                expect(
+                    stored?.text?.startsWith('[生成的视频]') === true,
+                    `and labelled as one for the model (got ${JSON.stringify(stored?.text)})`
                 );
             } finally {
                 await new Promise<void>((closed) => server.close(() => closed()));

@@ -6,8 +6,12 @@
  * the selection rules are testable without a server.
  */
 import type { ComfyWorkflow, GenerationRequest } from '../../services/comfy-forward-service.js';
-import { MAX_INPUT_IMAGE_BYTES } from '../../services/comfy-forward-service.js';
+import {
+    MAX_INPUT_IMAGE_BYTES,
+    mediaKindOfWorkflow,
+} from '../../services/comfy-forward-service.js';
 import type { PicCommandSpec } from './pic-command-parser.js';
+import { describeWorkflows, matchWorkflowByQuery, type WorkflowMatch } from './workflow-picker.js';
 
 /** The API's documented cap */
 const MAX_PROMPT_LENGTH = 10_000;
@@ -29,9 +33,7 @@ export type BuildResult =
     }
     | { ok: false; reason: string };
 
-type WorkflowChoice =
-    | { ok: true; workflow: ComfyWorkflow }
-    | { ok: false; reason: string };
+type WorkflowChoice = WorkflowMatch;
 
 /**
  * Explicit `-w=` wins; otherwise the presence of a reference image decides,
@@ -42,24 +44,15 @@ const pickWorkflow = (
     query: string | null,
     hasReference: boolean
 ): WorkflowChoice => {
-    const known = (): string => workflows.map((workflow) => `\`${workflow.id}\``).join('、');
-
     if (query) {
-        const lowered = query.toLowerCase();
-        const exact = workflows.find((workflow) => workflow.id.toLowerCase() === lowered);
-        if (exact) return { ok: true, workflow: exact };
-
-        const prefixed = workflows.filter((workflow) =>
-            workflow.id.toLowerCase().startsWith(lowered)
-        );
-        if (prefixed.length === 1) return { ok: true, workflow: prefixed[0]! };
-        if (prefixed.length > 1) {
-            return {
-                ok: false,
-                reason: `\`-w=${query}\` 能对上好几个工作流：${prefixed.map((w) => `\`${w.id}\``).join('、')}`,
-            };
+        const matched = matchWorkflowByQuery(workflows, query);
+        if (!matched.ok) return matched;
+        // The server offers video workflows too; submitting one here would poll
+        // to success and then find no `images` in the result
+        if (mediaKindOfWorkflow(matched.workflow.kind) !== 'image') {
+            return { ok: false, reason: `\`${matched.workflow.id}\` 是出视频的工作流，出视频请用 /vid` };
         }
-        return { ok: false, reason: `没有叫 \`${query}\` 的工作流。现在有：${known()}` };
+        return matched;
     }
 
     const wanted = hasReference ? 'image-edit' : 'text-to-image';
@@ -69,8 +62,8 @@ const pickWorkflow = (
     return {
         ok: false,
         reason: hasReference
-            ? `服务端没有可用的图生图工作流。现在有：${known()}`
-            : `服务端没有可用的文生图工作流。现在有：${known()}`,
+            ? `服务端没有可用的图生图工作流。现在有：${describeWorkflows(workflows)}`
+            : `服务端没有可用的文生图工作流。现在有：${describeWorkflows(workflows)}`,
     };
 };
 

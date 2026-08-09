@@ -287,18 +287,32 @@ export const waitForStoredOcrText = async (
 export const waitForStoredImageReply = async (
     replyToId: number,
     timeoutMs = 180_000
+): Promise<number> => waitForStoredMediaReply(replyToId, { timeoutMs, noun: 'picture' });
+
+/**
+ * The generated media the bot stored as a reply to `replyToId`. `mimePrefix`
+ * separates a `/vid` clip from a `/pic` result on a row that otherwise looks
+ * identical.
+ */
+export const waitForStoredMediaReply = async (
+    replyToId: number,
+    options: { timeoutMs?: number; mimePrefix?: string; noun?: string } = {}
 ): Promise<number> => {
+    const { timeoutMs = 180_000, mimePrefix, noun = 'result' } = options;
     const deadline = Date.now() + timeoutMs;
+    const mimeClause = mimePrefix ? " AND fileMime LIKE ? || '%'" : '';
+    const params = mimePrefix ? [TEST_CHAT_ID, replyToId, mimePrefix] : [TEST_CHAT_ID, replyToId];
+
     while (Date.now() < deadline) {
         const row = await queryOne<{ messageId: number; bytes: number }>(
             `SELECT messageId, length(file) AS bytes FROM telegram_messages
-             WHERE chatId = ? AND replyToId = ? AND fromBotSelf = 1 AND file IS NOT NULL`,
-            [TEST_CHAT_ID, replyToId]
+             WHERE chatId = ? AND replyToId = ? AND fromBotSelf = 1 AND file IS NOT NULL${mimeClause}`,
+            params
         );
         if (row && row.bytes > 0) return row.messageId;
         await new Promise((resolve) => setTimeout(resolve, 3000));
     }
-    throw new Error(`Timed out waiting for a generated picture replying to ${replyToId}`);
+    throw new Error(`Timed out waiting for a generated ${noun} replying to ${replyToId}`);
 };
 
 /** The ids a `/chat` message pulled into the context (its message_links rows) */

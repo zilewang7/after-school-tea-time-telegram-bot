@@ -1,5 +1,5 @@
 /**
- * comfy-forward client (API 2.1.0) — see docs/comfy-forward-API.md.
+ * comfy-forward client (API 2.2.0) — see docs/comfy-forward-API.md.
  *
  * Deliberately free of any grammy/Telegram concern: it speaks HTTP, returns
  * plain data, and turns every failure into a `ComfyError` carrying a Chinese
@@ -25,7 +25,7 @@ if (!process.env.COMFY_FORWARD_URL && process.env.PICZIT_ENDPOINT) {
     );
 }
 
-/** Whether image generation is configured at all */
+/** Whether generation (pictures and videos alike) is configured at all */
 export const isComfyConfigured = (): boolean => Boolean(baseUrl);
 
 // The box is behind a home connection and a TLS-terminating proxy. The name
@@ -45,6 +45,10 @@ const POLL_TIMEOUT_MS = envTimeout('COMFY_POLL_TIMEOUT_MS', 15_000);
 // here can reach), and a long budget turns that into a long dead wait — so the
 // budget is generous rather than huge, and the retries above do the rest.
 const DOWNLOAD_TIMEOUT_MS = envTimeout('COMFY_DOWNLOAD_TIMEOUT_MS', 300_000);
+// An H3 clip is an order of magnitude bigger than a picture: 0.4 MP × 15s
+// lands around 8-10 MB, which is minutes on this link even when nothing is
+// wrong. The picture budget would abandon a video that was arriving fine.
+const VIDEO_DOWNLOAD_TIMEOUT_MS = envTimeout('COMFY_VIDEO_DOWNLOAD_TIMEOUT_MS', 600_000);
 
 /** How long a cached workflow list stays fresh */
 const WORKFLOWS_TTL_MS = 5 * 60 * 1000;
@@ -52,20 +56,56 @@ const WORKFLOWS_TTL_MS = 5 * 60 * 1000;
 /** Decoded input image cap, per the API docs (20 MiB) */
 export const MAX_INPUT_IMAGE_BYTES = 20 * 1024 * 1024;
 
-export type WorkflowKind = 'text-to-image' | 'image-edit';
+/**
+ * As of API 2.3.0. Three of these mean "video" — the suffix is the reliable
+ * part, and new conditioning modes are expected to keep it.
+ */
+export type WorkflowKind =
+    | 'text-to-image'
+    | 'image-edit'
+    | 'text-to-video'
+    | 'image-to-video'
+    | 'reference-to-video';
+
+/**
+ * What a workflow produces. The server says `kind`, which describes the
+ * conditioning as well, so the mapping lives here rather than being guessed at
+ * every call site.
+ */
+export type GenerationMediaKind = 'image' | 'video';
+
+export const mediaKindOfWorkflow = (kind: string): GenerationMediaKind =>
+    kind.endsWith('-to-video') ? 'video' : 'image';
+
+/** The request fields a workflow accepts, per `accepted_inputs` */
+export type WorkflowInput =
+    | 'input_image'
+    | 'first_frame'
+    | 'last_frame'
+    | 'reference_images'
+    | 'reference_videos'
+    | 'reference_audios';
 
 export interface ComfyWorkflow {
     id: string;
     name: string;
     kind: string;
     input_image_required: boolean;
+    /** Since 2.3.0; absent on older servers, where only `input_image` exists */
+    accepted_inputs?: string[];
     default_options: Record<string, unknown>;
 }
 
+/** Whether a workflow takes a given input field, tolerating a pre-2.3.0 server */
+export const workflowAccepts = (workflow: ComfyWorkflow, input: WorkflowInput): boolean =>
+    workflow.accepted_inputs === undefined
+        ? input === 'input_image'
+        : workflow.accepted_inputs.includes(input);
+
 /**
  * Used when `/v1/workflows` cannot be reached. Only costs us auto-discovery of
- * workflows added after this was written; the two below have been there since
- * 2.1.0.
+ * workflows added after this was written; the five below have been there since
+ * 2.3.0.
  */
 const FALLBACK_WORKFLOWS: ComfyWorkflow[] = [
     {
@@ -73,6 +113,7 @@ const FALLBACK_WORKFLOWS: ComfyWorkflow[] = [
         name: 'Z-Image Turbo 文生图',
         kind: 'text-to-image',
         input_image_required: false,
+        accepted_inputs: [],
         default_options: {},
     },
     {
@@ -80,24 +121,81 @@ const FALLBACK_WORKFLOWS: ComfyWorkflow[] = [
         name: 'FLUX.2 Klein 9B Base NSFW Standard 图像编辑',
         kind: 'image-edit',
         input_image_required: true,
+        accepted_inputs: ['input_image'],
         default_options: {},
+    },
+    {
+        id: 'minimax-h3-turbo',
+        name: 'MiniMax H3 Turbo 文生视频 / 单图参考',
+        kind: 'text-to-video',
+        input_image_required: false,
+        accepted_inputs: ['input_image'],
+        default_options: { steps: 6, lora_strength: 1 },
+    },
+    {
+        id: 'minimax-h3-i2v',
+        name: 'MiniMax H3 Turbo 首尾帧图生视频',
+        kind: 'image-to-video',
+        input_image_required: true,
+        accepted_inputs: ['first_frame', 'last_frame', 'input_image'],
+        default_options: { steps: 6, lora_strength: 1 },
+    },
+    {
+        id: 'minimax-h3-ref2v',
+        name: 'MiniMax H3 Turbo 多素材参考视频',
+        kind: 'reference-to-video',
+        input_image_required: false,
+        accepted_inputs: [
+            'input_image', 'reference_images', 'reference_videos', 'reference_audios',
+        ],
+        default_options: { steps: 6, lora_strength: 1 },
+    },
+    {
+        id: 'minimax-h3-base',
+        name: 'MiniMax H3 Base 24 步质量模式',
+        kind: 'text-to-video',
+        input_image_required: false,
+        accepted_inputs: [
+            'input_image', 'first_frame', 'last_frame',
+            'reference_images', 'reference_videos', 'reference_audios',
+        ],
+        default_options: { steps: 24, sampler_name: 'res_multistep' },
     },
 ];
 
 export type GenerationOptionValue = number | string | boolean;
+
+/** Every media field in the request uses this envelope */
+export interface MediaPayload {
+    /** Bare base64 or a `data:` URL */
+    data: string;
+    /** Only used to derive a safe temp filename server-side */
+    filename?: string;
+}
 
 export interface GenerationRequest {
     workflow: string;
     prompt: string;
     negative_prompt?: string;
     negative_prompt_override?: boolean;
-    input_image?: { data: string; filename?: string };
+    /** FLUX.2's input, and H3's single-image Ref2VA reference */
+    input_image?: MediaPayload;
+    /** H3 I2V: locked to frame 0 */
+    first_frame?: MediaPayload;
+    /** H3 I2V: locked to the final frame; only valid alongside `first_frame` */
+    last_frame?: MediaPayload;
+    /** H3 Ref2VA: 1-9 images, `<Picture N>` in the prompt */
+    reference_images?: MediaPayload[];
+    /** H3 Ref2VA: 1-3 clips, `<Video N>` in the prompt */
+    reference_videos?: MediaPayload[];
+    /** H3 Ref2VA: 1-3 tracks, `<Audio N>` in the prompt */
+    reference_audios?: MediaPayload[];
     options?: Record<string, GenerationOptionValue>;
 }
 
 export type GenerationStatus = 'queued' | 'running' | 'succeeded' | 'failed';
 
-export interface GeneratedImageRef {
+export interface GeneratedMediaRef {
     index: number;
     filename: string;
     url: string;
@@ -106,9 +204,16 @@ export interface GeneratedImageRef {
 export interface GenerationJob {
     id: string;
     status: GenerationStatus;
-    images: GeneratedImageRef[];
+    /** Present for the picture workflows */
+    images: GeneratedMediaRef[];
+    /** Present for the video workflows; same shape, different download path */
+    videos: GeneratedMediaRef[];
     error?: string;
 }
+
+/** The finished results of whichever kind this job produces */
+export const resultsOf = (job: GenerationJob, kind: GenerationMediaKind): GeneratedMediaRef[] =>
+    kind === 'video' ? job.videos : job.images;
 
 /**
  * A failure with something we are willing to show the user. `retryable` marks
@@ -141,14 +246,14 @@ const readErrorMessage = async (response: Response): Promise<string> => {
 const describeStatus = (status: number, detail: string): string =>
     match(status)
         .with(400, () => `参数不合法：${detail}`)
-        .with(401, () => '生图服务要求鉴权，但 bot 没有配置凭据')
+        .with(401, () => '生成服务要求鉴权，但 bot 没有配置凭据')
         .with(404, () => '任务已经不在服务端了（可能重启过），请重新发一次命令')
         .with(413, () => '参考图太大了，换一张小一点的')
         .with(422, () => `模型拒绝了这组参数：${detail}`)
         .with(500, 502, () => `生成失败（多半是显存不够）：${detail}\n可以试试 -n=1 或更小的 -size=`)
-        .with(503, () => '生图服务未启动')
+        .with(503, () => '生成服务未启动')
         .with(504, () => '生成超时')
-        .otherwise(() => `生图服务返回了 HTTP ${status}：${detail}`);
+        .otherwise(() => `生成服务返回了 HTTP ${status}：${detail}`);
 
 /**
  * Network-level failures never reach an HTTP status. `fetch` reports most of
@@ -170,7 +275,7 @@ const describeTransport = (error: unknown): ComfyError => {
     ].join(' ');
     const timedOut = /timeout/i.test(names);
 
-    return new ComfyError(timedOut ? '生图服务没有响应（超时）' : '连不上生图服务', detail, true);
+    return new ComfyError(timedOut ? '生成服务没有响应（超时）' : '连不上生成服务', detail, true);
 };
 
 interface RequestOptions {
@@ -187,7 +292,7 @@ const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout
 
 const requestOnce = async (path: string, options: RequestOptions): Promise<Response> => {
     if (!baseUrl) {
-        throw new ComfyError('生图服务未配置', 'COMFY_FORWARD_URL is empty');
+        throw new ComfyError('生成服务未配置', 'COMFY_FORWARD_URL is empty');
     }
 
     let response: Response;
@@ -264,7 +369,7 @@ export interface HealthReport {
  * submit-then-fail round trip.
  */
 export const checkHealth = async (): Promise<HealthReport> => {
-    if (!baseUrl) return { ok: false, reason: '生图服务未配置' };
+    if (!baseUrl) return { ok: false, reason: '生成服务未配置' };
 
     try {
         const payload = await requestJson('/health', {
@@ -272,11 +377,11 @@ export const checkHealth = async (): Promise<HealthReport> => {
             retries: 1,
         });
         if (typeof payload !== 'object' || payload === null) {
-            return { ok: false, reason: '生图服务返回了看不懂的内容' };
+            return { ok: false, reason: '生成服务返回了看不懂的内容' };
         }
         const comfyui = 'comfyui' in payload ? payload.comfyui : undefined;
         if (comfyui !== 'available') {
-            return { ok: false, reason: '生图服务在线，但它后面的 ComfyUI 没起来' };
+            return { ok: false, reason: '生成服务在线，但它后面的 ComfyUI 没起来' };
         }
         const queue = 'queue' in payload ? payload.queue : undefined;
         return {
@@ -292,7 +397,7 @@ export const checkHealth = async (): Promise<HealthReport> => {
         console.warn(`[comfy] health check failed: ${detail}`);
         return {
             ok: false,
-            reason: error instanceof ComfyError ? error.userMessage : '连不上生图服务',
+            reason: error instanceof ComfyError ? error.userMessage : '连不上生成服务',
         };
     }
 };
@@ -350,7 +455,7 @@ export const submitGeneration = async (body: GenerationRequest): Promise<string>
     });
     const id = typeof payload === 'object' && payload !== null ? Reflect.get(payload, 'id') : null;
     if (typeof id !== 'string' || !id) {
-        throw new ComfyError('生图服务没有返回任务号', 'POST /v1/generations returned no id');
+        throw new ComfyError('生成服务没有返回任务号', 'POST /v1/generations returned no id');
     }
     return id;
 };
@@ -358,51 +463,67 @@ export const submitGeneration = async (body: GenerationRequest): Promise<string>
 const isStatus = (value: unknown): value is GenerationStatus =>
     value === 'queued' || value === 'running' || value === 'succeeded' || value === 'failed';
 
+/**
+ * `images` and `videos` are the same envelope, so one reader serves both. A
+ * job carries only the array its workflow produces; the other stays empty.
+ */
+const readMediaRefs = (
+    payload: object,
+    field: 'images' | 'videos',
+    extension: string
+): GeneratedMediaRef[] => {
+    const raw = Reflect.get(payload, field);
+    if (!Array.isArray(raw)) return [];
+
+    return raw.flatMap((entry: unknown, fallbackIndex) => {
+        if (typeof entry !== 'object' || entry === null) return [];
+        const index = Reflect.get(entry, 'index');
+        const filename = Reflect.get(entry, 'filename');
+        const url = Reflect.get(entry, 'url');
+        return [{
+            index: typeof index === 'number' ? index : fallbackIndex,
+            filename:
+                typeof filename === 'string' ? filename : `${field}-${fallbackIndex}.${extension}`,
+            url: typeof url === 'string' ? url : '',
+        }];
+    });
+};
+
 /** One poll of a job's state. */
 export const fetchGeneration = async (id: string): Promise<GenerationJob> => {
     const payload = await requestJson(`/v1/generations/${id}`, { timeoutMs: POLL_TIMEOUT_MS });
     if (typeof payload !== 'object' || payload === null) {
-        throw new ComfyError('生图服务返回了看不懂的内容', 'malformed job payload', true);
+        throw new ComfyError('生成服务返回了看不懂的内容', 'malformed job payload', true);
     }
 
     const status = Reflect.get(payload, 'status');
     if (!isStatus(status)) {
-        throw new ComfyError('生图服务返回了未知的任务状态', `status: ${String(status)}`, true);
+        throw new ComfyError('生成服务返回了未知的任务状态', `status: ${String(status)}`, true);
     }
-
-    const rawImages = Reflect.get(payload, 'images');
-    const images: GeneratedImageRef[] = Array.isArray(rawImages)
-        ? rawImages.flatMap((image: unknown, fallbackIndex) => {
-            if (typeof image !== 'object' || image === null) return [];
-            const index = Reflect.get(image, 'index');
-            const filename = Reflect.get(image, 'filename');
-            const url = Reflect.get(image, 'url');
-            return [{
-                index: typeof index === 'number' ? index : fallbackIndex,
-                filename: typeof filename === 'string' ? filename : `image-${fallbackIndex}.png`,
-                url: typeof url === 'string' ? url : '',
-            }];
-        })
-        : [];
 
     const error = Reflect.get(payload, 'error');
 
     return {
         id,
         status,
-        images,
+        images: readMediaRefs(payload, 'images', 'png'),
+        videos: readMediaRefs(payload, 'videos', 'mp4'),
         error: typeof error === 'string' ? error : undefined,
     };
 };
 
-/** Download one finished image. */
-export const downloadImage = async (id: string, index: number): Promise<Buffer> => {
+/** Download one finished result — a picture or a video, per `kind`. */
+export const downloadResult = async (
+    kind: GenerationMediaKind,
+    id: string,
+    index: number
+): Promise<Buffer> => {
     const startedAt = Date.now();
     const bytes = await request(
-        `/v1/generations/${id}/images/${index}`,
+        `/v1/generations/${id}/${kind === 'video' ? 'videos' : 'images'}/${index}`,
         {
-            timeoutMs: DOWNLOAD_TIMEOUT_MS,
-            // The picture already exists on the far side — never lose it to a blip
+            timeoutMs: kind === 'video' ? VIDEO_DOWNLOAD_TIMEOUT_MS : DOWNLOAD_TIMEOUT_MS,
+            // The result already exists on the far side — never lose it to a blip
             retries: 2,
         },
         async (response) => Buffer.from(await response.arrayBuffer())
@@ -411,7 +532,7 @@ export const downloadImage = async (id: string, index: number): Promise<Buffer> 
     // The link to this box is the slowest part of the whole flow; keep it visible
     const seconds = (Date.now() - startedAt) / 1000;
     console.log(
-        `[comfy] downloaded image ${index} of ${id}: ${Math.round(bytes.length / 1024)} KiB in ${seconds.toFixed(1)}s`
+        `[comfy] downloaded ${kind} ${index} of ${id}: ${Math.round(bytes.length / 1024)} KiB in ${seconds.toFixed(1)}s`
     );
     return bytes;
 };

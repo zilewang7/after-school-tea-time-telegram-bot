@@ -17,7 +17,8 @@
     "test:e2e:bot": "tsx scripts/e2e/with-test-bot.mts",
     "test:e2e:bot:full": "tsx scripts/e2e/with-test-bot.mts --full",
     "test:e2e:bot:attach": "tsx scripts/e2e/run.mts",
-    "test:e2e:ocr": "tsx scripts/e2e/ocr-fallback.mts"
+    "test:e2e:ocr": "tsx scripts/e2e/ocr-fallback.mts",
+    "test:e2e:vid": "tsx scripts/e2e/vid-probe.mts"
   },
   "keywords": [],
   "author": "ddc",

@@ -22,8 +22,20 @@ declare global {
             MCP_SERVERS?: string
             /** comfy-forward base URL for /pic; replaces PICZIT_ENDPOINT */
             COMFY_FORWARD_URL?: string
-            /** How long to keep polling one generation job (default 15min) */
+            /** How long to keep polling one picture job (default 15min) */
             COMFY_JOB_TIMEOUT_MS?: string
+            /** How long to keep polling one video job (default 30min) */
+            COMFY_VIDEO_JOB_TIMEOUT_MS?: string
+            /** Overrides for the comfy-forward HTTP budgets, in ms */
+            COMFY_HEALTH_TIMEOUT_MS?: string
+            COMFY_SUBMIT_TIMEOUT_MS?: string
+            COMFY_POLL_TIMEOUT_MS?: string
+            COMFY_DOWNLOAD_TIMEOUT_MS?: string
+            COMFY_VIDEO_DOWNLOAD_TIMEOUT_MS?: string
+            /** Grok model that writes /vid storyboards (default grok-4.5) */
+            GROK_PROMPT_MODEL?: string
+            /** Overrides prompts/h3-video-prompt.md */
+            H3_PROMPT_FILE?: string
             /** @deprecated legacy name for COMFY_FORWARD_URL */
             PICZIT_ENDPOINT?: string
             BOT_PROXY?: string

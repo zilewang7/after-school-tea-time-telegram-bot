@@ -24,6 +24,8 @@ import { handlePicbananaCommand, checkPicbananaCommand } from './commands/picban
 import { handlePicgptCommand, checkPicgptCommand } from './commands/picgpt-handler.js';
 import { handlePicCommand } from './commands/pic-command.js';
 import { isPicCommandText } from './commands/pic-command-parser.js';
+import { handleVidCommand } from './commands/vid-command.js';
+import { isVidCommandText } from './commands/vid-command-parser.js';
 import { dealChatCommand } from './commands/chat-command.js';
 import { isChatCommandText } from './commands/chat-command-parser.js';
 
@@ -39,6 +41,7 @@ const willReply = (ctx: Context): boolean => {
     const text = ctx.message?.text ?? ctx.message?.caption ?? '';
     if (/^\/(picbanana|picgpt)(@\S+)?(\s|$)/.test(text)) return true;
     if (isPicCommandText(text)) return true;
+    if (isVidCommandText(text)) return true;
     if (isChatCommandText(text)) return true;
     return checkIfMentioned(ctx, undefined);
 };
@@ -289,16 +292,23 @@ export const registerChatHandler = (bot: Bot): void => {
                 if (!tryMarkUserMessageHandling(ctx.chat.id, ctx.message.message_id)) return;
 
                 const text = ctx.message.text ?? ctx.message.caption ?? '';
-                const isPicCommand =
-                    /^\/(picbanana|picgpt)(@\S+)?(\s|$)/.test(text) || isPicCommandText(text);
+                const isGenerationCommand =
+                    /^\/(picbanana|picgpt)(@\S+)?(\s|$)/.test(text) ||
+                    isPicCommandText(text) ||
+                    isVidCommandText(text);
 
-                if (isPicCommand) {
-                    // Pic commands read reference images during the check, so wait
-                    // for the current + reply target media first (with feedback).
+                if (isGenerationCommand) {
+                    // These read reference images during the check, so wait for
+                    // the current + reply target media first (with feedback).
                     await awaitMediaWithFeedback(ctx, collectImmediateMediaIds(ctx));
 
                     if (isPicCommandText(text)) {
                         await handlePicCommand(ctx);
+                        return;
+                    }
+
+                    if (isVidCommandText(text)) {
+                        await handleVidCommand(ctx);
                         return;
                     }
 

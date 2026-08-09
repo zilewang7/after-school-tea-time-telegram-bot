@@ -12,11 +12,15 @@
  */
 import type { Context } from 'grammy';
 import { to } from '../../shared/result.js';
-import { isComfyConfigured, listWorkflows } from '../../services/comfy-forward-service.js';
+import {
+    isComfyConfigured,
+    listWorkflows,
+    mediaKindOfWorkflow,
+} from '../../services/comfy-forward-service.js';
 import { collectReferenceImages } from './reference-images.js';
 import { parsePicCommand, type PicCommandSpec } from './pic-command-parser.js';
 import { buildGenerationRequest } from './pic-request-builder.js';
-import { runGeneration } from './pic-generation-runner.js';
+import { runGeneration } from './generation-runner.js';
 
 const HELP_HEADER = [
     '🎨 生图用法',
@@ -36,10 +40,11 @@ const HELP_HEADER = [
 /** The help ends with what the server currently offers, not a hardcoded list */
 const buildHelpText = async (): Promise<string> => {
     const workflows = await listWorkflows();
-    const lines = workflows.map(
-        (workflow) => `· \`${workflow.id}\` — ${workflow.name}`
-    );
-    return `${HELP_HEADER}\n\n当前可用工作流：\n${lines.join('\n')}`;
+    // The server also offers video workflows now; those belong to /vid
+    const lines = workflows
+        .filter((workflow) => mediaKindOfWorkflow(workflow.kind) === 'image')
+        .map((workflow) => `· \`${workflow.id}\` — ${workflow.name}`);
+    return `${HELP_HEADER}\n\n当前可用工作流：\n${lines.join('\n')}\n\n出视频用 /vid`;
 };
 
 const replyWith = async (ctx: Context, text: string): Promise<void> => {
@@ -97,6 +102,7 @@ const startRun = async (ctx: Context, spec: PicCommandSpec): Promise<void> => {
         api: ctx.api,
         chatId,
         userMessageId,
+        kind: 'image',
         request: built.request,
         spoiler: spec.spoiler,
         workflowName: built.workflow.name,
@@ -111,7 +117,7 @@ export const handlePicCommand = async (ctx: Context): Promise<void> => {
     if (!ctx.message || !ctx.chat) return;
 
     if (!isComfyConfigured()) {
-        await replyWith(ctx, '生图服务未配置');
+        await replyWith(ctx, '生成服务未配置');
         return;
     }
 

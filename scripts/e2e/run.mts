@@ -24,6 +24,7 @@ import {
     waitForBotResponse,
     waitForButtonState,
     waitForStoredImageReply,
+    waitForStoredMediaReply,
     waitForStoredMessage,
     waitForStoredOcrText,
     type DriverMessage,
@@ -93,6 +94,26 @@ const contextLinksOf = (message: DriverMessage): string[] =>
         .map((entity) => entity['url'])
         .filter((url): url is string => typeof url === 'string')
         .filter((url) => url.startsWith(`https://t.me/c/${TEST_GROUP}/`));
+
+/**
+ * Poll for ANY bot message after `minId` whose text satisfies the predicate.
+ * Unlike waitForVisibleMessage this doesn't need the message id up front, which
+ * a command that posts several unrelated messages (`/vid`) doesn't have.
+ */
+const waitForAnyBotMessage = async (
+    minId: number,
+    predicate: (text: string) => boolean,
+    timeoutMs = 60_000
+): Promise<string | undefined> => {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+        const visible = await readGroupMessages(minId);
+        const found = visible.find((m) => m.sender_id === BOT_USER_ID && predicate(m.text));
+        if (found) return found.text;
+        await sleep(3000);
+    }
+    return undefined;
+};
 
 /** Poll until the newest bot message (after minId) carries buttons */
 const waitForVisibleButtons = async (minId: number, timeoutMs = 15_000): Promise<boolean> => {
@@ -457,6 +478,41 @@ const cases: Array<{ name: string; full?: boolean; body: () => Promise<void> }> 
                 pictureId > trigger,
                 `a generated picture came back and was stored (message ${pictureId})`
             );
+        },
+    },
+    {
+        // Same home machine as the /pic case, and much slower: H3 takes minutes
+        // per clip and the GPU runs one job at a time.
+        name: '/vid writes a storyboard and generates a video',
+        full: true,
+        body: async () => {
+            if (!(await comfyIsReachable())) {
+                skip('生成服务不在线（pc.home 非常开），本条跳过');
+            }
+
+            const trigger = await sendAsUser(
+                `/vid@${BOT_USERNAME} -d=5 -steps=4 -mp=0.2 a red tram crosses a rainy street at night`
+            );
+
+            // The storyboard message is the visible half of this command, and
+            // the only thing that proves Grok ran at all — assert it before
+            // settling in for the render
+            const storyboard = await waitForAnyBotMessage(
+                trigger,
+                (text) => text.includes('分镜') || text.includes('原话生成'),
+                120_000
+            );
+            expect(
+                storyboard !== undefined && !storyboard.includes('原话生成'),
+                `Grok wrote the storyboard rather than degrading (got ${JSON.stringify(storyboard?.slice(0, 120))})`
+            );
+
+            const videoId = await waitForStoredMediaReply(trigger, {
+                timeoutMs: 900_000,
+                mimePrefix: 'video/',
+                noun: 'video',
+            });
+            expect(videoId > trigger, `a generated video came back and was stored (message ${videoId})`);
         },
     },
     {
