@@ -18,7 +18,7 @@ import {
     badFlag,
     isAddressedToUs,
     oneOption,
-    scanLeadingFlags,
+    scanFlags,
     splitNegativePrompt,
     type FlagResult,
 } from './command-flags.js';
@@ -131,6 +131,7 @@ const parseFlag = (key: string, raw: string): FlagResult =>
         })
         .otherwise(() => ({
             ok: false as const,
+            unknownKey: true as const,
             reason: `不认识的参数 \`-${key}=\``,
         }));
 
@@ -144,7 +145,7 @@ export const parseVidCommand = (rawText: string | undefined): VidCommandParse =>
     // H3 ignores negative prompts, but people will write them out of `/pic`
     // habit — strip them off the brief so they don't end up as scene direction
     const { body, negativePrompt } = splitNegativePrompt(args);
-    const { options, meta, rest, reason } = scanLeadingFlags(body, parseFlag);
+    const { options, meta, rest, reason } = scanFlags(body, parseFlag);
     if (reason) return { type: 'invalid', reason };
 
     const mode = VID_MODES.find((candidate) => candidate === meta.mode) ?? 'auto';

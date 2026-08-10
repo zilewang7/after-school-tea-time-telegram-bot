@@ -24,7 +24,8 @@ import {
     type GenerationRequest,
     type MediaPayload,
 } from '../../services/comfy-forward-service.js';
-import type { VidCommandSpec, VidMode } from './vid-command-parser.js';
+import { H3_ASPECT_RATIOS, type VidCommandSpec, type VidMode } from './vid-command-parser.js';
+import { aspectRatioOfImage } from './aspect-ratio.js';
 import { describeWorkflows, matchWorkflowByQuery } from './workflow-picker.js';
 
 /** The API's documented cap */
@@ -49,6 +50,8 @@ export interface VideoPlan {
     /** What the storyboard has to fit into, and what the API is told */
     durationSeconds: number;
     aspectRatio: string;
+    /** True when the ratio was read off the reference picture rather than asked for */
+    aspectRatioFromImage: boolean;
     /** False when the ratio should be left out so I2V follows the first frame */
     sendAspectRatio: boolean;
     shots: number | null;
@@ -247,13 +250,25 @@ export const planVideoGeneration = (input: VideoPlanInput): VideoPlanResult => {
     const explicitRatio = spec.options.aspect_ratio !== undefined;
     const explicitSize = spec.options.width !== undefined && spec.options.height !== undefined;
 
+    // Ref2VA doesn't inherit anything from its reference, so a portrait photo
+    // would otherwise come back as a 16:9 crop of an idea. With exactly one
+    // picture and no ratio asked for, follow the picture.
+    const followsImage =
+        !explicitRatio && !explicitSize && !isFrameAnchored(mode) && usable.length === 1;
+    const imageRatio = followsImage ? aspectRatioOfImage(H3_ASPECT_RATIOS, usable[0]!) : null;
+
     return {
         ok: true,
         plan: {
             workflow,
             mode,
             durationSeconds: numberOption(spec.options, 'duration_seconds', DEFAULT_DURATION_SECONDS),
-            aspectRatio: stringOption(spec.options, 'aspect_ratio', DEFAULT_ASPECT_RATIO),
+            aspectRatio: stringOption(
+                spec.options,
+                'aspect_ratio',
+                imageRatio ?? DEFAULT_ASPECT_RATIO
+            ),
+            aspectRatioFromImage: imageRatio !== null,
             sendAspectRatio: !explicitSize && (explicitRatio || !isFrameAnchored(mode)),
             shots: spec.shots,
             referenceImages: usable,

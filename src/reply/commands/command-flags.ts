@@ -1,10 +1,14 @@
 /**
  * The `-key=value` grammar the generation commands share.
  *
- * Flags are only recognised at the HEAD of the argument list — scanning stops
- * at the first token that isn't `-key=value`. Prompts are free text and
- * regularly contain hyphens, so a trailing-flag syntax would either eat prompt
- * words or need quoting; neither is worth it.
+ * A flag is recognised ANYWHERE in the argument list, not just at the head:
+ * `/vid 雨夜的街头 -ar=9:16` is what people actually type, and the earlier
+ * head-only rule silently swallowed such a flag into the prompt — the request
+ * then went out with the default ratio and nothing said so.
+ *
+ * Free text is protected by only ever consuming keys the command knows. An
+ * unrecognised `-foo=bar` is an error while it is still among the leading
+ * flags (a typo'd parameter), but plain prompt text once the prompt has begun.
  *
  * Each command supplies its own `parseFlag`, because the same letters mean
  * different things: `-ar` is FLUX.2's aspect MODE for `/pic` and H3's aspect
@@ -12,15 +16,16 @@
  */
 import type { GenerationOptionValue } from '../../services/comfy-forward-service.js';
 
-/** One leading parameter, e.g. `-steps=20` */
-export const FLAG_PATTERN = /^-([a-zA-Z]+)=(\S+)$/;
+/** One parameter, e.g. `-steps=20`; `=value` is optional so a bare `-steps` is caught */
+export const FLAG_PATTERN = /(^|\s)-([a-zA-Z]+)(?:=(\S+))?(?=\s|$)/g;
 
 export type FlagEntry = readonly [string, GenerationOptionValue];
 
 export type FlagResult =
     /** `entries` land in `options`; `meta` holds anything not sent to the API */
     | { ok: true; entries: FlagEntry[]; meta?: Record<string, string> }
-    | { ok: false; reason: string };
+    /** `unknownKey` separates "not a parameter at all" from "bad value" */
+    | { ok: false; reason: string; unknownKey?: true };
 
 /**
  * A command explicitly addressed to another bot is not ours to answer — with
@@ -87,40 +92,80 @@ export interface FlagScan {
     options: Record<string, GenerationOptionValue>;
     /** Flags that steer the bot rather than the API (`-w`, `-mode`, …) */
     meta: Record<string, string>;
-    /** Everything from the first non-flag token on: the prompt */
+    /** Everything that wasn't a flag: the prompt, with its line breaks intact */
     rest: string;
     /** Set when a flag was malformed; scanning stops there */
     reason?: string;
 }
 
-/** Eat `-key=value` tokens off the front, in the order the user wrote them */
-export const scanLeadingFlags = (
+/**
+ * Does this command know the key at all? Probed with an empty value, so a known
+ * key answers "bad value" (or even accepts it) while an unknown one says so.
+ */
+const knowsKey = (parseFlag: (key: string, raw: string) => FlagResult, key: string): boolean => {
+    const probe = parseFlag(key, '');
+    return probe.ok || probe.unknownKey !== true;
+};
+
+/** Pull every `-key=value` this command understands out of the argument text */
+export const scanFlags = (
     body: string,
     parseFlag: (key: string, raw: string) => FlagResult
 ): FlagScan => {
     const options: Record<string, GenerationOptionValue> = {};
     const meta: Record<string, string> = {};
-    let rest = body;
 
-    while (rest.length > 0) {
-        const token = rest.split(/\s+/, 1)[0] ?? '';
-        const matched = token.match(FLAG_PATTERN);
-        if (!matched) break;
+    // Rebuilt from the pieces between the flags, so a multi-line prompt keeps
+    // its shape instead of being re-joined by single spaces
+    let kept = '';
+    let cursor = 0;
+    let promptStarted = false;
 
-        const result = parseFlag(matched[1]!, matched[2]!);
-        if (!result.ok) return { options, meta, rest, reason: result.reason };
+    for (const matched of body.matchAll(FLAG_PATTERN)) {
+        const [whole, lead = '', key = '', value] = matched;
+        const start = matched.index + lead.length;
+        const before = body.slice(cursor, start);
+        if (before.trim().length > 0) promptStarted = true;
 
-        result.entries.forEach(([name, value]) => {
-            options[name] = value;
+        if (value === undefined) {
+            // A hyphen word inside a prompt is ordinary text; a known key
+            // written without its value is a mistake worth naming
+            if (!knowsKey(parseFlag, key)) continue;
+            return {
+                options,
+                meta,
+                rest: (kept + body.slice(cursor)).trim(),
+                reason: `参数 \`-${key}\` 少了值，要写成 \`-${key}=…\`，等号两边不能有空格`,
+            };
+        }
+
+        const result = parseFlag(key, value);
+        if (!result.ok) {
+            // Unknown keys are only a typo while the prompt hasn't started;
+            // after that they are just words the user wrote
+            if (result.unknownKey === true && promptStarted) continue;
+            return { options, meta, rest: (kept + body.slice(cursor)).trim(), reason: result.reason };
+        }
+
+        result.entries.forEach(([name, entryValue]) => {
+            options[name] = entryValue;
         });
-        Object.entries(result.meta ?? {}).forEach(([name, value]) => {
-            meta[name] = value;
+        Object.entries(result.meta ?? {}).forEach(([name, metaValue]) => {
+            meta[name] = metaValue;
         });
 
-        rest = rest.slice(token.length).trimStart();
+        kept += before;
+        cursor = start + whole.length - lead.length;
+
+        // Lifting a flag out of the middle of a sentence would otherwise leave
+        // the spaces from both of its sides behind
+        if (/\s$/.test(before)) {
+            const spaces = body.slice(cursor).match(/^[^\S\n]+/);
+            if (spaces) cursor += spaces[0].length;
+        }
     }
 
-    return { options, meta, rest };
+    return { options, meta, rest: (kept + body.slice(cursor)).trim() };
 };
 
 /** Shared shape of a "one flag was wrong" failure */

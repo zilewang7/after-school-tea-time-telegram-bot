@@ -15,7 +15,7 @@ import {
     badFlag,
     isAddressedToUs,
     oneOption,
-    scanLeadingFlags,
+    scanFlags,
     splitNegativePrompt,
     type FlagResult,
 } from './command-flags.js';
@@ -78,6 +78,7 @@ const parseFlag = (key: string, raw: string): FlagResult =>
         )
         .otherwise(() => ({
             ok: false as const,
+            unknownKey: true as const,
             reason: `不认识的参数 \`-${key}=\``,
         }));
 
@@ -95,7 +96,7 @@ export const parsePicCommand = (rawText: string | undefined): PicCommandParse =>
     if (!isAddressedToUs(mention)) return { type: 'none' };
 
     const { body, negativePrompt, negativePromptOverride } = splitNegativePrompt(args);
-    const { options, meta, rest, reason } = scanLeadingFlags(body, parseFlag);
+    const { options, meta, rest, reason } = scanFlags(body, parseFlag);
     if (reason) return { type: 'invalid', reason };
 
     return {

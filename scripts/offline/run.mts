@@ -1251,6 +1251,39 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
                 '-lowvram= is a boolean option'
             );
 
+            // A flag written after the idea used to be swallowed into the brief:
+            // the request went out with the default ratio and nothing said so
+            const trailing = specOf('/vid 雨夜的电车 -ar=9:16 -d=8');
+            expect(
+                trailing?.options.aspect_ratio === '9:16' && trailing?.options.duration_seconds === 8,
+                `flags after the idea count too (got ${JSON.stringify(trailing?.options)})`
+            );
+            expect(trailing?.brief === '雨夜的电车', 'and they are taken back out of the brief');
+
+            const surrounded = specOf('/vid -d=8 街头 -ar=1:1 的电车');
+            expect(
+                surrounded?.options.aspect_ratio === '1:1' && surrounded?.brief === '街头 的电车',
+                `a flag mid-sentence is lifted out (got ${JSON.stringify(surrounded)})`
+            );
+
+            const multiline = specOf('/vid -ar=1:1 第一行\n第二行');
+            expect(multiline?.brief === '第一行\n第二行', 'a multi-line brief keeps its line breaks');
+
+            expect(
+                specOf('/vid 一只 close-up 的猫 -ar=1:1')?.brief === '一只 close-up 的猫',
+                'a hyphen inside a word is not a flag'
+            );
+            expect(
+                specOf('/vid 一只猫 -zzz=1')?.brief === '一只猫 -zzz=1',
+                'an unknown flag after the idea is just text the user wrote'
+            );
+
+            const spaced = parse('/vid -ar 9:16 一只猫');
+            expect(
+                spaced.type === 'invalid' && spaced.reason.includes('-ar='),
+                `a known flag without its = is named, not silently ignored (got ${JSON.stringify(spaced)})`
+            );
+
             // H3 takes no negative prompt, but /pic habits die hard
             const negative = specOf('/vid 一只猫 -: 模糊');
             expect(
@@ -1269,6 +1302,132 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
             ]) {
                 expect(parse(bad).type === 'invalid', `${bad} is rejected with an explanation`);
             }
+        },
+    },
+    {
+        name: 'a single reference picture decides the video shape',
+        body: async () => {
+            const { readImageSize } = await import('../../src/shared/image-size.js');
+            const { closestAspectRatio } = await import(
+                '../../src/reply/commands/aspect-ratio.js'
+            );
+            const { H3_ASPECT_RATIOS } = await import(
+                '../../src/reply/commands/vid-command-parser.js'
+            );
+            const { planVideoGeneration } = await import(
+                '../../src/reply/commands/vid-request-builder.js'
+            );
+            const { parseVidCommand } = await import(
+                '../../src/reply/commands/vid-command-parser.js'
+            );
+
+            /** A PNG is its signature, then IHDR carrying the two dimensions */
+            const pngOf = (width: number, height: number): string => {
+                const header = Buffer.alloc(24);
+                Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]).copy(header, 0);
+                header.writeUInt32BE(13, 8);
+                header.write('IHDR', 12, 'ascii');
+                header.writeUInt32BE(width, 16);
+                header.writeUInt32BE(height, 20);
+                return header.toString('base64');
+            };
+            /** SOI, a stray segment to walk past, then SOF0 with height before width */
+            const jpegOf = (width: number, height: number): string => {
+                const segment = Buffer.from([0xff, 0xe0, 0x00, 0x04, 0x00, 0x00]);
+                const sof = Buffer.alloc(11);
+                sof.writeUInt16BE(0xffc0, 0);
+                sof.writeUInt16BE(8, 2);
+                sof.writeUInt8(8, 4);
+                sof.writeUInt16BE(height, 5);
+                sof.writeUInt16BE(width, 7);
+                return Buffer.concat([Buffer.from([0xff, 0xd8]), segment, sof]).toString('base64');
+            };
+
+            expect(
+                JSON.stringify(readImageSize(pngOf(1080, 2400))) === '{"width":1080,"height":2400}',
+                `a PNG header is read (got ${JSON.stringify(readImageSize(pngOf(1080, 2400)))})`
+            );
+            expect(
+                JSON.stringify(readImageSize(jpegOf(1600, 900))) === '{"width":1600,"height":900}',
+                `a JPEG frame marker is found after other segments (got ${JSON.stringify(readImageSize(jpegOf(1600, 900)))})`
+            );
+            expect(readImageSize('QUJD') === null, 'and something that is not an image says so');
+
+            expect(
+                closestAspectRatio(H3_ASPECT_RATIOS, 1080, 2400) === '9:16',
+                'a phone screenshot lands on the portrait ratio'
+            );
+            expect(
+                closestAspectRatio(H3_ASPECT_RATIOS, 1000, 1010) === '1:1',
+                'a near-square picture lands on 1:1'
+            );
+            expect(
+                closestAspectRatio(H3_ASPECT_RATIOS, 3440, 1440) === '21:9',
+                'an ultrawide picture lands on the widest ratio'
+            );
+            expect(
+                closestAspectRatio(H3_ASPECT_RATIOS, 900, 1200) === '3:4',
+                'and a portrait photo lands on 3:4 rather than the more extreme 9:16'
+            );
+
+            const workflows = [
+                {
+                    id: 'minimax-h3-turbo',
+                    name: 'turbo',
+                    kind: 'text-to-video',
+                    input_image_required: false,
+                    accepted_inputs: ['input_image'],
+                    default_options: { steps: 6, lora_strength: 1 },
+                },
+                {
+                    id: 'minimax-h3-i2v',
+                    name: 'i2v',
+                    kind: 'image-to-video',
+                    input_image_required: true,
+                    accepted_inputs: ['first_frame', 'last_frame', 'input_image'],
+                    default_options: { steps: 6, lora_strength: 1 },
+                },
+                {
+                    id: 'minimax-h3-ref2v',
+                    name: 'ref2v',
+                    kind: 'reference-to-video',
+                    input_image_required: false,
+                    accepted_inputs: ['input_image', 'reference_images'],
+                    default_options: { steps: 6, lora_strength: 1 },
+                },
+            ];
+            const planOf = (text: string, referenceImages: string[]) => {
+                const parsed = parseVidCommand(text);
+                if (parsed.type !== 'valid') throw new Error(`unparsable: ${text}`);
+                const result = planVideoGeneration({ spec: parsed.spec, workflows, referenceImages });
+                return result.ok ? result.plan : null;
+            };
+
+            const portrait = planOf('/vid 唯从图片里跳出来', [pngOf(1080, 2400)]);
+            expect(
+                portrait?.aspectRatio === '9:16' && portrait?.aspectRatioFromImage === true,
+                `a portrait screenshot makes a portrait video (got ${portrait?.aspectRatio})`
+            );
+            expect(portrait?.sendAspectRatio === true, 'and the ratio is actually sent');
+
+            expect(
+                planOf('/vid -ar=16:9 唯', [pngOf(1080, 2400)])?.aspectRatio === '16:9',
+                'an explicit -ar= still wins over the picture'
+            );
+            expect(
+                planOf('/vid 唯', [pngOf(1080, 2400), pngOf(1080, 2400)])?.aspectRatio === '16:9',
+                'with several pictures there is no single shape to follow'
+            );
+            expect(
+                planOf('/vid 唯', [])?.aspectRatio === '16:9',
+                'and text-only keeps the documented default'
+            );
+
+            const anchored = planOf('/vid -mode=i2va 唯', [pngOf(1080, 2400)]);
+            expect(
+                anchored?.sendAspectRatio === false,
+                'frame anchoring sends no ratio at all — the backend follows the first frame exactly'
+            );
         },
     },
     {

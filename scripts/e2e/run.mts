@@ -497,14 +497,19 @@ const cases: Array<{ name: string; full?: boolean; body: () => Promise<void> }> 
             // The storyboard message is the visible half of this command, and
             // the only thing that proves Grok ran at all — assert it before
             // settling in for the render
+            // "🎬 正在写分镜…" is the placeholder, so match the settled form only
             const storyboard = await waitForAnyBotMessage(
                 trigger,
-                (text) => text.includes('分镜') || text.includes('原话生成'),
+                (text) => text.startsWith('🎬 分镜') || text.includes('原话生成'),
                 120_000
             );
             expect(
                 storyboard !== undefined && !storyboard.includes('原话生成'),
                 `Grok wrote the storyboard rather than degrading (got ${JSON.stringify(storyboard?.slice(0, 120))})`
+            );
+            expect(
+                (storyboard?.length ?? 0) > 200,
+                `and it is a real storyboard, not an empty block (${storyboard?.length ?? 0} chars)`
             );
 
             const videoId = await waitForStoredMediaReply(trigger, {
@@ -586,9 +591,31 @@ const cases: Array<{ name: string; full?: boolean; body: () => Promise<void> }> 
     },
 ];
 
+/** `--only=vid,pic` — comma separated substrings of the case names */
+const onlyPatterns = (): string[] => {
+    const flag = process.argv.find((arg) => arg.startsWith('--only='));
+    if (!flag) return [];
+    return flag
+        .slice('--only='.length)
+        .split(',')
+        .map((pattern) => pattern.trim().toLowerCase())
+        .filter(Boolean);
+};
+
 const main = async (): Promise<void> => {
     const runFull = process.argv.includes('--full');
-    const selected = cases.filter((testCase) => runFull || !testCase.full);
+    const only = onlyPatterns();
+    const selected = cases
+        .filter((testCase) => runFull || !testCase.full)
+        .filter(
+            (testCase) =>
+                only.length === 0 ||
+                only.some((pattern) => testCase.name.toLowerCase().includes(pattern))
+        );
+    if (only.length > 0 && selected.length === 0) {
+        console.error(`No case matches --only=${only.join(',')}`);
+        process.exit(1);
+    }
     console.log(`Running ${runFull ? 'FULL' : 'QUICK'} suite: ${selected.length}/${cases.length} cases`);
 
     const results: CaseResult[] = [];
