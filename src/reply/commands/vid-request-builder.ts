@@ -24,7 +24,7 @@ import {
     type GenerationRequest,
     type MediaPayload,
 } from '../../services/comfy-forward-service.js';
-import { H3_ASPECT_RATIOS, type VidCommandSpec, type VidMode } from './vid-command-parser.js';
+import type { VidCommandSpec, VidMode } from './vid-command-parser.js';
 import { aspectRatioOfImage } from './aspect-ratio.js';
 import { describeWorkflows, matchWorkflowByQuery } from './workflow-picker.js';
 
@@ -255,7 +255,7 @@ export const planVideoGeneration = (input: VideoPlanInput): VideoPlanResult => {
     // picture and no ratio asked for, follow the picture.
     const followsImage =
         !explicitRatio && !explicitSize && !isFrameAnchored(mode) && usable.length === 1;
-    const imageRatio = followsImage ? aspectRatioOfImage(H3_ASPECT_RATIOS, usable[0]!) : null;
+    const imageRatio = followsImage ? aspectRatioOfImage(usable[0]!) : null;
 
     return {
         ok: true,

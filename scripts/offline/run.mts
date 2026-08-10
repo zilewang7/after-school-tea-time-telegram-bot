@@ -1291,9 +1291,21 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
                 `-: is stripped off the brief and flagged (got ${JSON.stringify(negative)})`
             );
 
+            // The API takes any 宽:高 in 1:4…4:1 now, so only the shape is ours to check
+            expect(
+                specOf('/vid -ar=2.39:1 猫')?.options.aspect_ratio === '2.39:1',
+                'a decimal ratio is passed straight through'
+            );
+            expect(
+                specOf('/vid -ar=16x9 猫')?.options.aspect_ratio === '16:9',
+                'a ratio written with x is normalised to the API spelling'
+            );
+
             for (const bad of [
                 '/vid -d=99 猫',
-                '/vid -ar=16x9 猫',
+                '/vid -ar=5:1 猫',
+                '/vid -ar=1:5 猫',
+                '/vid -ar=16:9:2 猫',
                 '/vid -size=600x352 猫',
                 '/vid -mode=nope 猫',
                 '/vid -shots=9 猫',
@@ -1308,11 +1320,8 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
         name: 'a single reference picture decides the video shape',
         body: async () => {
             const { readImageSize } = await import('../../src/shared/image-size.js');
-            const { closestAspectRatio } = await import(
+            const { formatAspectRatio } = await import(
                 '../../src/reply/commands/aspect-ratio.js'
-            );
-            const { H3_ASPECT_RATIOS } = await import(
-                '../../src/reply/commands/vid-command-parser.js'
             );
             const { planVideoGeneration } = await import(
                 '../../src/reply/commands/vid-request-builder.js'
@@ -1354,20 +1363,28 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
             expect(readImageSize('QUJD') === null, 'and something that is not an image says so');
 
             expect(
-                closestAspectRatio(H3_ASPECT_RATIOS, 1080, 2400) === '9:16',
-                'a phone screenshot lands on the portrait ratio'
+                formatAspectRatio(1080, 2400) === '9:20',
+                `a phone screenshot keeps its own shape (got ${formatAspectRatio(1080, 2400)})`
             );
             expect(
-                closestAspectRatio(H3_ASPECT_RATIOS, 1000, 1010) === '1:1',
-                'a near-square picture lands on 1:1'
+                formatAspectRatio(1920, 1080) === '16:9',
+                `and a familiar shape is spelled the familiar way (got ${formatAspectRatio(1920, 1080)})`
             );
             expect(
-                closestAspectRatio(H3_ASPECT_RATIOS, 3440, 1440) === '21:9',
-                'an ultrawide picture lands on the widest ratio'
+                formatAspectRatio(1000, 1010) === '1:1',
+                `a near-square picture snaps to 1:1 (got ${formatAspectRatio(1000, 1010)})`
             );
             expect(
-                closestAspectRatio(H3_ASPECT_RATIOS, 900, 1200) === '3:4',
-                'and a portrait photo lands on 3:4 rather than the more extreme 9:16'
+                formatAspectRatio(3440, 1440) === '2.39:1',
+                `an ultrawide monitor is cinema scope (got ${formatAspectRatio(3440, 1440)})`
+            );
+            expect(
+                formatAspectRatio(1284, 2778) === '1:2.16',
+                `a ratio that reduces to nothing readable becomes decimal (got ${formatAspectRatio(1284, 2778)})`
+            );
+            expect(
+                formatAspectRatio(6000, 1000) === '4:1',
+                `and a panorama is clamped to the widest the server takes (got ${formatAspectRatio(6000, 1000)})`
             );
 
             const workflows = [
@@ -1405,7 +1422,7 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
 
             const portrait = planOf('/vid 唯从图片里跳出来', [pngOf(1080, 2400)]);
             expect(
-                portrait?.aspectRatio === '9:16' && portrait?.aspectRatioFromImage === true,
+                portrait?.aspectRatio === '9:20' && portrait?.aspectRatioFromImage === true,
                 `a portrait screenshot makes a portrait video (got ${portrait?.aspectRatio})`
             );
             expect(portrait?.sendAspectRatio === true, 'and the ratio is actually sent');

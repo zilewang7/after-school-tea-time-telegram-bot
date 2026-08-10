@@ -124,8 +124,9 @@ export const handlePicCommand = async (ctx: Context): Promise<void> => {
     const parsed = parsePicCommand(ctx.message.text ?? ctx.message.caption);
     if (parsed.type === 'none') return;
 
+    // One wrong parameter used to bury the answer under the whole help text
     if (parsed.type === 'invalid') {
-        await replyWith(ctx, `${parsed.reason}\n\n${await buildHelpText()}`);
+        await replyWith(ctx, `${parsed.reason}\n\n完整用法：单独发一条 \`/pic\``);
         return;
     }
 

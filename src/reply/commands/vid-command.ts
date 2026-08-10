@@ -53,7 +53,8 @@ const HELP_HEADER = [
     '　　　　`fl2va` 两张图锁首尾帧，`t2va` 纯文本',
     '',
     '`-ar` 写的是 宽:高 —— 竖屏是 `9:16`，`21:9` 是比 16:9 更宽的横屏。',
-    '只有一张参考图又没写 `-ar` 时，画幅自动取最接近那张图的比例。',
+    '1:4 到 4:1 之间的任意比例都行，小数也行：`5:4`、`16:10`、`2.39:1`。',
+    '只有一张参考图又没写 `-ar` 时，画幅直接跟那张图走。',
     '',
     '例：`/vid -d=8 -ar=9:16 雨夜的香港街头，红色电车驶过`',
     '例：回复一张图 `/vid -mode=i2va 镜头缓缓推进，她转头看向窗外`',
@@ -286,8 +287,9 @@ export const handleVidCommand = async (ctx: Context): Promise<void> => {
     const parsed = parseVidCommand(ctx.message.text ?? ctx.message.caption);
     if (parsed.type === 'none') return;
 
+    // One wrong parameter used to bury the answer under the whole help text
     if (parsed.type === 'invalid') {
-        await replyWith(target, `${parsed.reason}\n\n${await buildHelpText()}`);
+        await replyWith(target, `${parsed.reason}\n\n完整用法：单独发一条 \`/vid\``);
         return;
     }
 

@@ -10,6 +10,7 @@
  */
 import { match } from 'ts-pattern';
 import type { GenerationOptionValue } from '../../services/comfy-forward-service.js';
+import { parseAspectRatio } from './aspect-ratio.js';
 import {
     asBoolean,
     asInteger,
@@ -22,11 +23,6 @@ import {
     splitNegativePrompt,
     type FlagResult,
 } from './command-flags.js';
-
-/** H3's documented aspect ratios */
-export const H3_ASPECT_RATIOS = [
-    '1:1', '2:3', '3:2', '3:4', '4:3', '9:16', '16:9', '21:9',
-] as const;
 
 /**
  * How the reference material constrains the video — H3's conditioning axis,
@@ -118,11 +114,13 @@ const parseFlag = (key: string, raw: string): FlagResult =>
                 ? badFlag(key, raw, '要写成 `-lowvram=1`')
                 : { ok: true as const, entries: [['low_vram', value] as const] };
         })
-        .with('ar', () =>
-            H3_ASPECT_RATIOS.some((ratio) => ratio === raw)
-                ? { ok: true as const, entries: [['aspect_ratio', raw] as const] }
-                : badFlag(key, raw, `只能是 ${H3_ASPECT_RATIOS.join(' / ')}`)
-        )
+        // Any 宽:高 the server accepts, not a fixed list (API 2.3.1)
+        .with('ar', () => {
+            const ratio = parseAspectRatio(raw);
+            return ratio === null
+                ? badFlag(key, raw, '要写成 `宽:高`，比例在 1:4 到 4:1 之间，例如 `9:16` `5:4` `2.39:1`')
+                : { ok: true as const, entries: [['aspect_ratio', ratio.text] as const] };
+        })
         .with('size', () => {
             const entries = asSize(raw, SIZE_GRID);
             return entries === null
