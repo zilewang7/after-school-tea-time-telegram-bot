@@ -1467,6 +1467,15 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
                     accepted_inputs: [],
                     default_options: {},
                 },
+                // Its id says "base" too, which is what made `-w=base` ambiguous
+                {
+                    id: 'flux2-klein-9b-base-edit',
+                    name: 'FLUX.2 图像编辑',
+                    kind: 'image-edit',
+                    input_image_required: true,
+                    accepted_inputs: ['input_image'],
+                    default_options: {},
+                },
                 {
                     id: 'minimax-h3-turbo',
                     name: 'MiniMax H3 Turbo 文生视频 / 单图参考',
@@ -1572,10 +1581,12 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
                 'and both of them are used'
             );
 
+            // A picture workflow with "base" in its id is not a rival here: /vid
+            // could never run it, so it was never a candidate to be ambiguous with
             const quality = plan('/vid -w=base -steps=24 慢工出细活');
             expect(
                 quality.result.ok && quality.result.plan.workflow.id === 'minimax-h3-base',
-                '-w= substring-matches the quality workflow, where 24 steps is the baseline'
+                `-w= substring-matches the quality workflow among the video ones (got ${quality.result.ok ? quality.result.plan.workflow.id : quality.result.reason})`
             );
 
             const tooManySteps = plan('/vid -steps=24 猫');
@@ -1588,6 +1599,18 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
             expect(
                 !wrongCommand.result.ok && wrongCommand.result.reason.includes('/pic'),
                 'pointing -w= at a picture workflow says which command to use'
+            );
+            expect(
+                !plan('/vid -w=flux2 猫').result.ok,
+                'and that stays true for a picture workflow that a video query nearly matches'
+            );
+
+            const noSuchWorkflow = plan('/vid -w=nope 猫');
+            expect(
+                !noSuchWorkflow.result.ok &&
+                    !noSuchWorkflow.result.reason.includes('z-image') &&
+                    noSuchWorkflow.result.reason.includes('minimax-h3-base'),
+                `an unknown -w= lists the video workflows only (got ${noSuchWorkflow.result.ok ? 'ok' : noSuchWorkflow.result.reason})`
             );
 
             const oneImageAnchored = plan('/vid -mode=i2va 推进', ['QUJD', 'RUZH']);

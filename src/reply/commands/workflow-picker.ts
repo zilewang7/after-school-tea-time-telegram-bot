@@ -5,7 +5,12 @@
  * unique prefix, then a helpful list) have nothing to do with what the
  * workflow produces.
  */
-import type { ComfyWorkflow } from '../../services/comfy-forward-service.js';
+import { match } from 'ts-pattern';
+import {
+    mediaKindOfWorkflow,
+    type ComfyWorkflow,
+    type GenerationMediaKind,
+} from '../../services/comfy-forward-service.js';
 
 export type WorkflowMatch =
     | { ok: true; workflow: ComfyWorkflow }
@@ -53,4 +58,38 @@ export const matchWorkflowByQuery = (
         ok: false,
         reason: `没有叫 \`${query}\` 的工作流。现在有：${describeWorkflows(workflows)}`,
     };
+};
+
+/** "that one belongs to the other command" — worth saying instead of "not found" */
+const wrongKindReason = (workflow: ComfyWorkflow, wanted: GenerationMediaKind): string =>
+    match(wanted)
+        .with('video', () => `\`${workflow.id}\` 是出图的工作流，出图请用 /pic`)
+        .with('image', () => `\`${workflow.id}\` 是出视频的工作流，出视频请用 /vid`)
+        .exhaustive();
+
+/**
+ * `-w=` inside a command that only makes one kind of media. The candidates are
+ * that kind's workflows alone: `-w=base` from `/vid` means `minimax-h3-base`,
+ * and `flux2-klein-9b-base-edit` is not a rival for it — it was never something
+ * `/vid` could run. The full list is consulted only to explain a query that
+ * named the other command's workflow.
+ */
+export const matchWorkflowOfKind = (
+    workflows: ComfyWorkflow[],
+    query: string,
+    wanted: GenerationMediaKind
+): WorkflowMatch => {
+    const isWanted = (workflow: ComfyWorkflow): boolean =>
+        mediaKindOfWorkflow(workflow.kind) === wanted;
+
+    const matched = matchWorkflowByQuery(workflows.filter(isWanted), query);
+    if (matched.ok) return matched;
+
+    const elsewhere = matchWorkflowByQuery(
+        workflows.filter((workflow) => !isWanted(workflow)),
+        query
+    );
+    return elsewhere.ok
+        ? { ok: false, reason: wrongKindReason(elsewhere.workflow, wanted) }
+        : matched;
 };

@@ -26,7 +26,7 @@ import {
 } from '../../services/comfy-forward-service.js';
 import type { VidCommandSpec, VidMode } from './vid-command-parser.js';
 import { aspectRatioOfImage } from './aspect-ratio.js';
-import { describeWorkflows, matchWorkflowByQuery } from './workflow-picker.js';
+import { describeWorkflows, matchWorkflowOfKind } from './workflow-picker.js';
 
 /** The API's documented cap */
 const MAX_PROMPT_LENGTH = 10_000;
@@ -95,15 +95,7 @@ const pickVideoWorkflow = (
     imageCount: number
 ): { ok: true; workflow: ComfyWorkflow } | { ok: false; reason: string } => {
     if (spec.workflowQuery) {
-        const matched = matchWorkflowByQuery(workflows, spec.workflowQuery);
-        if (!matched.ok) return matched;
-        if (mediaKindOfWorkflow(matched.workflow.kind) !== 'video') {
-            return {
-                ok: false,
-                reason: `\`${matched.workflow.id}\` 是出图的工作流，出图请用 /pic`,
-            };
-        }
-        return { ok: true, workflow: matched.workflow };
+        return matchWorkflowOfKind(workflows, spec.workflowQuery, 'video');
     }
 
     const candidates = videoWorkflowsOf(workflows);

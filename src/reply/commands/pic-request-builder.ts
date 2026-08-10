@@ -6,12 +6,9 @@
  * the selection rules are testable without a server.
  */
 import type { ComfyWorkflow, GenerationRequest } from '../../services/comfy-forward-service.js';
-import {
-    MAX_INPUT_IMAGE_BYTES,
-    mediaKindOfWorkflow,
-} from '../../services/comfy-forward-service.js';
+import { MAX_INPUT_IMAGE_BYTES } from '../../services/comfy-forward-service.js';
 import type { PicCommandSpec } from './pic-command-parser.js';
-import { describeWorkflows, matchWorkflowByQuery, type WorkflowMatch } from './workflow-picker.js';
+import { describeWorkflows, matchWorkflowOfKind, type WorkflowMatch } from './workflow-picker.js';
 
 /** The API's documented cap */
 const MAX_PROMPT_LENGTH = 10_000;
@@ -44,16 +41,9 @@ const pickWorkflow = (
     query: string | null,
     hasReference: boolean
 ): WorkflowChoice => {
-    if (query) {
-        const matched = matchWorkflowByQuery(workflows, query);
-        if (!matched.ok) return matched;
-        // The server offers video workflows too; submitting one here would poll
-        // to success and then find no `images` in the result
-        if (mediaKindOfWorkflow(matched.workflow.kind) !== 'image') {
-            return { ok: false, reason: `\`${matched.workflow.id}\` 是出视频的工作流，出视频请用 /vid` };
-        }
-        return matched;
-    }
+    // The server offers video workflows too; one of those submitted here would
+    // poll to success and then find no `images` in the result
+    if (query) return matchWorkflowOfKind(workflows, query, 'image');
 
     const wanted = hasReference ? 'image-edit' : 'text-to-image';
     const chosen = workflows.find((workflow) => workflow.kind === wanted);
