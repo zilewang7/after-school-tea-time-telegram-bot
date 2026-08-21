@@ -66,9 +66,11 @@ export class DeepSeekPlatform extends BasePlatform {
     getModelCapabilities(model: string): ModelCapabilities {
         const lowerModel = model.toLowerCase();
         const isReasoner = lowerModel.includes('reasoner');
+        const supportsImageInput =
+            lowerModel.includes('vision') || lowerModel.includes('image');
 
         return {
-            supportsImageInput: false,
+            supportsImageInput,
             supportsImageOutput: false,
             supportsSystemPrompt: true,
             requiresMessageMerge: isReasoner,

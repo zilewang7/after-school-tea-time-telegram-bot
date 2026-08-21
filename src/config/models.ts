@@ -11,7 +11,7 @@ export const modelConfigs: ModelConfig[] = [
     { id: "claude-opus-5", name: "claude-opus-5" },
     { id: "gemini-3.6-flash", name: "gemini-3.6-flash" },
     { id: "gemini-3.1-pro-preview", name: "gemini-3.1-pro" },
-    { id: "deepseek-v4-flash", name: "deepseek-v4-flash" },
+    { id: "deepseek-v4-flash-vision-exp", name: "deepseek-v4-flash-vision-exp" },
     { id: "deepseek-v4-pro", name: "deepseek-v4-pro" },
     { id: "grok-4.5", name: "grok-4.5" },
     { id: "grok-4.20-multi-agent-0309", name: "grok-4.20-multi-agent" },
