@@ -32,7 +32,7 @@ declare global {
             COMFY_POLL_TIMEOUT_MS?: string
             COMFY_DOWNLOAD_TIMEOUT_MS?: string
             COMFY_VIDEO_DOWNLOAD_TIMEOUT_MS?: string
-            /** Grok model that writes /vid storyboards (default grok-4.5) */
+            /** Grok model that writes /vid storyboards (default grok4.6) */
             GROK_PROMPT_MODEL?: string
             /** Overrides prompts/h3-video-prompt.md */
             H3_PROMPT_FILE?: string

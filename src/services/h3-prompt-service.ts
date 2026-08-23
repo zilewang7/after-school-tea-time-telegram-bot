@@ -19,7 +19,7 @@ import type { ResolvedVidMode } from '../reply/commands/vid-request-builder.js';
 /** Resolved against the compiled file, so it doesn't depend on the cwd */
 const DEFAULT_PROMPT_PATH = new URL('../../prompts/h3-video-prompt.md', import.meta.url);
 
-const DEFAULT_MODEL = 'grok-4.5';
+const DEFAULT_MODEL = 'grok4.6';
 
 /** Long enough for a 500-word storyboard plus reasoning, short enough to fail fast */
 const REQUEST_TIMEOUT_MS = 90_000;
