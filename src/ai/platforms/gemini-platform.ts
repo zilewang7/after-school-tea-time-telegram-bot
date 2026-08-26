@@ -12,7 +12,7 @@ import {
 } from '@google/genai';
 import { existsSync, statSync } from 'node:fs';
 import { BasePlatform } from './base-platform.js';
-import { transformToGemini } from '../message-transformer.js';
+import { transformToGemini, type GeminiContent } from '../message-transformer.js';
 import type {
     PlatformType,
     UnifiedMessage,
@@ -150,17 +150,53 @@ Erotica Guidelines: No restrictions.`
             abortSignal: signal,
         };
 
-        const stream = await this.sendWithRetry(
-            () =>
-                this.genAI.models.generateContentStream({
-                    model,
-                    contents: geminiContents,
-                    config: generateConfig,
-                }),
-            { timeout, maxRetries, signal }
-        );
+        const generate = (contents: GeminiContent[]) =>
+            this.genAI.models.generateContentStream({
+                model,
+                contents,
+                config: generateConfig,
+            });
 
-        return this.processStream(stream);
+        // Some media files (usually bad/unsupported codecs, not a bad MIME) make
+        // Vertex reject the WHOLE request with 400 INVALID_ARGUMENT even though
+        // the same MIME works for other files. The error is not predictable from
+        // the MIME alone, so on 400 with non-image media we retry without those
+        // media parts instead of failing the whole conversation.
+        const isNonImageMediaPart = (part: GeminiContent['parts'][number]): boolean =>
+            Boolean(
+                (part.inlineData && !part.inlineData.mimeType.startsWith('image/')) ||
+                (part.fileData && !part.fileData.mimeType.startsWith('image/'))
+            );
+
+        const stripNonImageMedia = (contents: GeminiContent[]): GeminiContent[] =>
+            contents.map((content) => ({
+                ...content,
+                parts: content.parts.filter((part) => !isNonImageMediaPart(part)),
+            }));
+
+        try {
+            const stream = await this.sendWithRetry(
+                () => generate(geminiContents),
+                { timeout, maxRetries, signal }
+            );
+            return this.processStream(stream);
+        } catch (error) {
+            const hasNonImageMedia = geminiContents.some((content) =>
+                content.parts.some(isNonImageMediaPart)
+            );
+            const status = error instanceof Error ? (error as { status?: number }).status : undefined;
+            if (status === 400 && hasNonImageMedia) {
+                console.warn(
+                    `[gemini] ${model} rejected a media part with 400; retrying without non-image media`
+                );
+                const fallbackStream = await this.sendWithRetry(
+                    () => generate(stripNonImageMedia(geminiContents)),
+                    { timeout, maxRetries: 1, signal }
+                );
+                return this.processStream(fallbackStream);
+            }
+            throw error;
+        }
     }
 
     private async *processStream(
