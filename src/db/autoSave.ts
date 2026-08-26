@@ -23,7 +23,7 @@ import { isGeminiSupportedMimeType } from '../ai/supported-mime.js';
 import { uploadFileToGcs, uploadBytesToGcs, deleteGcsObject, isGcsEnabled } from '../services/gcs-service.js';
 import { acquireLinkPreview, extractFirstUrl, isLuoxuPreviewEnabled } from '../services/luoxu-preview-service.js';
 import { acquireOcr, isLuoxuOcrEnabled } from '../services/luoxu-ocr-service.js';
-import { convertTgsToWebm } from '../services/tgs-client.js';
+import { convertTgsToWebm, normalizeShortVideo } from '../services/tgs-client.js';
 import { to } from 'await-to-js';
 import { SocksProxyAgent } from 'socks-proxy-agent';
 import https from 'node:https';
@@ -39,6 +39,28 @@ const parseByteSize = (raw: string | undefined): number | undefined => {
     if (!matched || !matched[1]) return undefined;
     const multipliers: Record<string, number> = { '': 1, K: 1024, M: 1024 * 1024, G: 1024 * 1024 * 1024 };
     return Number(matched[1]) * (multipliers[(matched[2] ?? '').toUpperCase()] ?? 1);
+};
+
+/**
+ * Normalize a small video buffer for Gemini: ultra-short clips (< ~1s) are
+ * looped/padded by tgs-converter; normal-length videos pass through unchanged.
+ * Returns a null-safe result so a converter outage never blocks media saving.
+ */
+const normalizeSmallVideo = async (
+    data: Buffer,
+    mime: string
+): Promise<{ data: Buffer; mime: string }> => {
+    if (!mime.startsWith('video/')) {
+        return { data, mime };
+    }
+    const normalized = await normalizeShortVideo(data, mime);
+    if (!normalized) {
+        return { data, mime };
+    }
+    if (normalized.normalized) {
+        console.log(`[autoSave] normalized short video ${data.length}B ${mime} -> ${normalized.data.length}B ${normalized.mimeType}`);
+    }
+    return { data: normalized.data, mime: normalized.mimeType };
 };
 
 // Hard cap on what we even attempt to fetch, overridable via MAX_MEDIA_BYTES in
@@ -394,8 +416,9 @@ const acquireMediaBytes = async (
         if (!converted) {
             return { status: 'convert_failed' };
         }
-        await putCachedMedia({ fileUniqueId: media.fileUniqueId, data: converted.data, sizeBytes: converted.data.length, mime: converted.mime, kind: media.kind });
-        return { status: 'cached', fileUniqueId: media.fileUniqueId, mime: converted.mime };
+        const normalizedVideo = await normalizeSmallVideo(converted.data, converted.mime);
+        await putCachedMedia({ fileUniqueId: media.fileUniqueId, data: normalizedVideo.data, sizeBytes: normalizedVideo.data.length, mime: normalizedVideo.mime, kind: media.kind });
+        return { status: 'cached', fileUniqueId: media.fileUniqueId, mime: normalizedVideo.mime };
     }
 
     // Resolve the file: local Bot API yields an on-disk path (so large files can
@@ -430,13 +453,15 @@ const acquireMediaBytes = async (
         return { status: 'cached', fileUniqueId: media.fileUniqueId, mime: media.mime };
     }
 
-    // Small file → inline BLOB (existing behavior)
+    // Small file → inline BLOB (existing behavior), normalizing ultra-short
+    // videos so Gemini accepts them instead of 400-ing the whole request.
     const inlineBytes = resolved.kind === 'path' ? await readFile(resolved.path) : resolved.bytes;
     if (resolved.kind === 'path') {
         await to(unlink(resolved.path));
     }
-    await putCachedMedia({ fileUniqueId: media.fileUniqueId, data: inlineBytes, sizeBytes: inlineBytes.length, mime: media.mime, kind: media.kind });
-    return { status: 'cached', fileUniqueId: media.fileUniqueId, mime: media.mime };
+    const normalizedVideo = await normalizeSmallVideo(inlineBytes, media.mime);
+    await putCachedMedia({ fileUniqueId: media.fileUniqueId, data: normalizedVideo.data, sizeBytes: normalizedVideo.data.length, mime: normalizedVideo.mime, kind: media.kind });
+    return { status: 'cached', fileUniqueId: media.fileUniqueId, mime: normalizedVideo.mime };
 };
 
 const DOWNLOAD_TIMEOUT_MS = 30000;

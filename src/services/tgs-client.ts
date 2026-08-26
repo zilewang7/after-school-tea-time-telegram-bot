@@ -6,10 +6,17 @@
 
 const TGS_CONVERTER_URL = process.env.TGS_CONVERTER_URL;
 const CONVERT_TIMEOUT_MS = 30000;
+const NORMALIZE_TIMEOUT_MS = 30000;
 
 export interface ConvertedTgs {
     data: Buffer;
     mime: string;
+}
+
+export interface NormalizedVideo {
+    data: Buffer;
+    mimeType: string;
+    normalized: boolean;
 }
 
 /**
@@ -43,6 +50,51 @@ export const convertTgsToWebm = async (tgs: Buffer): Promise<ConvertedTgs | null
         return { data: Buffer.from(arrayBuffer), mime: 'video/webm' };
     } catch (error) {
         console.error('[tgs-client] convert request error:', error instanceof Error ? error.message : error);
+        return null;
+    } finally {
+        clearTimeout(timer);
+    }
+};
+
+/**
+ * Send a video through the converter's normalize endpoint: if the clip is
+ * shorter than ~1s, it is looped/padded into a Gemini-compatible MP4; otherwise
+ * the bytes are returned unchanged. Returns null on any failure.
+ */
+export const normalizeShortVideo = async (
+    video: Buffer,
+    mimeType: string
+): Promise<NormalizedVideo | null> => {
+    if (!TGS_CONVERTER_URL) {
+        console.warn('[tgs-client] TGS_CONVERTER_URL not set, skipping video normalization');
+        return null;
+    }
+
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), NORMALIZE_TIMEOUT_MS);
+
+    try {
+        const res = await fetch(`${TGS_CONVERTER_URL}/normalize-video?mime=${encodeURIComponent(mimeType)}`, {
+            method: 'POST',
+            headers: { 'Content-Type': mimeType },
+            body: video,
+            signal: controller.signal,
+        });
+
+        if (!res.ok) {
+            console.error(`[tgs-client] normalize failed: HTTP ${res.status}`);
+            return null;
+        }
+
+        const arrayBuffer = await res.arrayBuffer();
+        const responseMime = res.headers.get('content-type')?.split(';')[0] ?? mimeType;
+        return {
+            data: Buffer.from(arrayBuffer),
+            mimeType: responseMime,
+            normalized: res.headers.get('x-normalized') === '1',
+        };
+    } catch (error) {
+        console.error('[tgs-client] normalize request error:', error instanceof Error ? error.message : error);
         return null;
     } finally {
         clearTimeout(timer);
