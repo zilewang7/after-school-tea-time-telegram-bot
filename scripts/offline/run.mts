@@ -2151,20 +2151,35 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
                     .filter((entity) => entity.type === 'blockquote' || entity.type === 'expandable_blockquote')
                     .map((entity) => entity.type);
 
-            // Segmentation: blank lines split (Gemini shape)
-            const geminiStyle = '**Plan**\nfirst step\n\nsecond paragraph\n\nthird paragraph';
+            // Segmentation: a heading adopts the paragraphs under it (Gemini shape)
+            const geminiStyle =
+                '**Plan**\n\nthink about the request\n\n**Execute**\n\ndo the thing\n\nkeep doing it\n\n**Review**\n\ncheck the result';
+            const geminiSections = segmentThinking(geminiStyle);
             expect(
-                segmentThinking(geminiStyle).length === 3,
-                `blank lines split into paragraphs (got ${segmentThinking(geminiStyle).length})`
+                geminiSections.length === 3 &&
+                    geminiSections[1]?.startsWith('**Execute**') === true &&
+                    geminiSections[1]?.includes('keep doing it') === true,
+                `heading + content group into one section (got ${geminiSections.length})`
             );
 
-            // Segmentation: a long run without blank lines is cut by size
+            // Segmentation: headingless paragraphs group by size instead
+            const paragraph = 'A reasoning paragraph without any heading in front of it.'.repeat(5); // ~290 chars
+            const headingless = Array.from({ length: 6 }, () => paragraph).join('\n\n');
+            const groupedSections = segmentThinking(headingless);
+            expect(
+                groupedSections.length >= 2 &&
+                    groupedSections.length < 6 &&
+                    groupedSections.every((s) => s.length <= 950),
+                `headingless paragraphs merge into section-sized groups (got ${groupedSections.map((s) => s.length).join(',')})`
+            );
+
+            // Segmentation: a long run without blank lines is cut by size too
             const sentence = 'This is one reasoning sentence that keeps going for a while. ';
-            const longRun = sentence.repeat(20).trim(); // ~1240 chars, no blank lines
+            const longRun = sentence.repeat(40).trim(); // ~2480 chars, no blank lines
             const fallbackSegments = segmentThinking(longRun);
             expect(
-                fallbackSegments.length >= 3 && fallbackSegments.every((s) => s.length <= 600),
-                `a wall of text is cut into paragraph-sized segments (got ${fallbackSegments.map((s) => s.length).join(',')})`
+                fallbackSegments.length >= 3 && fallbackSegments.every((s) => s.length <= 950),
+                `a wall of text is cut into section-sized segments (got ${fallbackSegments.map((s) => s.length).join(',')})`
             );
 
             // Prefix stability: appending more text never reshuffles earlier segments
@@ -2176,22 +2191,27 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
                 'already-streamed segments stay identical as more text arrives'
             );
 
-            // <= 3 segments: everything visible in one plain blockquote
-            const shortThinking = 'alpha\n\nbeta\n\ngamma';
+            // <= 3 sections: everything visible in one plain blockquote
+            const shortThinking = '**Alpha**\n\nalpha body\n\n**Beta**\n\nbeta body\n\n**Gamma**\n\ngamma body';
             expect(
                 quoteTypes(formatThinkingForStreaming(shortThinking, { answerStarted: false }))
                     .join(',') === 'blockquote',
-                'up to three segments render as one visible blockquote'
+                'up to three sections render as one visible blockquote'
             );
 
-            // > 3 segments: collapsed head + two-segment visible preview
-            const longThinking = 'alpha\n\nbeta\n\ngamma\n\ndelta\n\nepsilon';
+            // > 3 sections: collapsed head + two-section visible preview
+            const longThinking =
+                shortThinking + '\n\n**Delta**\n\ndelta body\n\n**Epsilon**\n\nepsilon body';
+            expect(
+                segmentThinking(longThinking).length === 5,
+                `five heading sections are five segments (got ${segmentThinking(longThinking).length})`
+            );
             const rolling = formatThinkingForStreaming(longThinking, { answerStarted: false });
             expect(
                 quoteTypes(rolling).join(',') === 'expandable_blockquote,blockquote',
-                `older segments collapse, the tail stays visible (got ${quoteTypes(rolling).join(',')})`
+                `older sections collapse, the tail stays visible (got ${quoteTypes(rolling).join(',')})`
             );
-            const visibleStart = rolling.text.indexOf('delta');
+            const visibleStart = rolling.text.indexOf('Delta');
             const collapsedEntity = rolling.entities.find((e) => e.type === 'expandable_blockquote');
             const previewEntity = rolling.entities.find((e) => e.type === 'blockquote');
             expect(

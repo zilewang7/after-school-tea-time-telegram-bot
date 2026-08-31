@@ -1,8 +1,9 @@
 /**
  * Streaming display of the model's thinking (CoT) as a rolling preview.
  *
- * The raw thinking text is segmented into paragraph-sized chunks. While the
- * model is still thinking, only the last two segments stay visible as plain
+ * The raw thinking text is segmented into sections (a heading plus its
+ * paragraphs, Gemini's CoT shape; size-grouped when headingless). While the
+ * model is still thinking, only the last two sections stay visible as plain
  * blockquotes; everything earlier collapses into an expandable blockquote
  * (Telegram re-collapses it on every edit), so the streamed message keeps a
  * roughly constant height. Once the answer starts, the whole thinking
@@ -19,10 +20,21 @@ import type { RenderedMessage } from 'telegram-md-entities';
 const SEGMENT_SOFT_LIMIT = 400;
 /** Above this size a paragraph is cut unconditionally */
 const SEGMENT_HARD_LIMIT = 600;
-/** How many trailing segments stay visible as the preview */
+/** Headingless paragraphs group into a section up to roughly this size,
+ *  approximating the footprint of a Gemini heading + content section */
+const SECTION_SOFT_LIMIT = 900;
+/** How many trailing sections stay visible as the preview */
 const PREVIEW_SEGMENT_COUNT = 2;
-/** Up to this many segments the whole thinking shows uncollapsed */
+/** Up to this many sections the whole thinking shows uncollapsed */
 const UNCOLLAPSED_SEGMENT_LIMIT = 3;
+
+/** A heading line: markdown `#` heading or a lone bold line (Gemini style) */
+const HEADING_LINE_PATTERN = /^(#{1,6}\s+\S.*|\*\*[^*\n]+\*\*[:：]?)$/;
+
+const startsWithHeading = (unit: string): boolean => {
+    const firstLine = unit.split('\n', 1)[0] ?? '';
+    return HEADING_LINE_PATTERN.test(firstLine.trim());
+};
 
 /** CJK enders close a sentence by themselves; latin ones need whitespace */
 const SENTENCE_END_PATTERN = /[。！？；]|[.!?](?=\s)/g;
@@ -63,18 +75,35 @@ const splitOversizedParagraph = (paragraph: string): string[] => {
 };
 
 /**
- * Split raw thinking text into display segments: blank lines first (Gemini's
- * natural paragraphing), then a size fallback for platforms that stream long
- * runs without blank lines.
+ * Split raw thinking text into display sections. A section is a heading plus
+ * the paragraphs under it (Gemini's natural CoT shape). Paragraphs come from
+ * blank lines, with a size fallback for platforms that stream long runs
+ * without any; headingless paragraphs group by size instead, so every
+ * platform ends up with Gemini-sized sections.
  */
 export const segmentThinking = (raw: string): string[] => {
-    const segments: string[] = [];
+    const units: string[] = [];
     for (const paragraph of raw.split(/\n{2,}/)) {
         const trimmed = paragraph.trim();
         if (!trimmed) continue;
-        segments.push(...splitOversizedParagraph(trimmed));
+        units.push(...splitOversizedParagraph(trimmed));
     }
-    return segments;
+
+    // Group greedily: a heading opens a section and adopts what follows;
+    // grouping decisions never look ahead, so streamed prefixes stay stable
+    const sections: string[] = [];
+    let current = '';
+    for (const unit of units) {
+        const overflows = current.length + unit.length > SECTION_SOFT_LIMIT;
+        if (!current || startsWithHeading(unit) || overflows) {
+            if (current) sections.push(current);
+            current = unit;
+        } else {
+            current = `${current}\n\n${unit}`;
+        }
+    }
+    if (current) sections.push(current);
+    return sections;
 };
 
 export interface ThinkingStreamingOptions {
