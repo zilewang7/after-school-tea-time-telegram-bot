@@ -339,6 +339,44 @@ export class OpenAIPlatform extends BasePlatform {
             currentInput = [...currentInput, ...toolResultMessages];
         }
 
+        // Round budget exhausted while the model still wants tools: force one
+        // final answer without tools so the reply never ends with CoT + tool
+        // stats but an empty body.
+        if (!signal?.aborted) {
+            console.log('[openai] MCP round limit reached, forcing final answer');
+            const finalRequest: ResponseCreateParamsStreaming = {
+                model,
+                input: [
+                    ...currentInput,
+                    {
+                        type: 'message',
+                        role: 'developer',
+                        content: 'Tool call budget is exhausted. Answer the user now based on the tool results above; do not request any more tools.',
+                    },
+                ],
+                instructions: currentInstructions || null,
+                stream: true,
+            };
+
+            const finalStream = await this.sendWithRetry(
+                () => this.createResponseStream(finalRequest, signal),
+                { timeout, maxRetries, signal }
+            );
+
+            const { textChunks, completedResponse } =
+                await this.collectStreamWithFunctionCalls(finalStream);
+            for (const chunk of textChunks) {
+                yield chunk;
+            }
+
+            yield {
+                type: 'done',
+                rawResponse: completedResponse,
+                agentStats: { toolUsage },
+            };
+            return;
+        }
+
         yield { type: 'done', agentStats: { toolUsage } };
     }
 

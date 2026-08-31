@@ -201,6 +201,30 @@ export class DeepSeekPlatform extends BasePlatform {
             }
         }
 
+        // Round budget exhausted while the model still wants tools: force one
+        // final answer with tool_choice 'none' so the reply never ends with
+        // CoT + tool stats but an empty body.
+        if (!signal?.aborted) {
+            console.log('[deepseek] MCP round limit reached, forcing final answer');
+            const finalStream = await this.sendWithRetry(
+                () => this.client.chat.completions.create({
+                    model,
+                    messages: currentMessages,
+                    tools: openaiTools,
+                    tool_choice: 'none',
+                    stream: true,
+                }, { signal }),
+                { timeout, maxRetries, signal }
+            );
+
+            const { chunks } = await this.collectStreamWithTools(
+                finalStream as Stream<DeepSeekChunk>
+            );
+            for (const chunk of chunks) {
+                yield chunk;
+            }
+        }
+
         yield { type: 'done', agentStats: { toolUsage } };
     }
 
