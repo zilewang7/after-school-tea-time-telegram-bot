@@ -44,7 +44,7 @@ const rosterLine = (user: ContextUser): string => {
 };
 
 /** Roster of the users this context involves, so mentions come out right.
- *  Bots are listed apart so the model never tries to @ one. */
+ *  Bots are listed apart so the model doesn't take them for people. */
 const buildRosterSection = (users: ContextUser[]): string => {
     const humans = users.filter((user) => user.isBot !== true);
     const bots = users.filter((user) => user.isBot === true);
@@ -54,7 +54,7 @@ const buildRosterSection = (users: ContextUser[]): string => {
         blocks.push(humans.map(rosterLine).join('\n'));
     }
     if (bots.length) {
-        blocks.push(`以下是 bot 账号（不是人，@ 它们没有任何作用，不要提及）：
+        blocks.push(`以下是 bot 账号（自动程序，不是真人）：
 ${bots.map(rosterLine).join('\n')}`);
     }
     blocks.push(`需要提及（@）某用户时，优先写 \`[名字](tg://user?id=数字)\`（名字用对方的 first name），

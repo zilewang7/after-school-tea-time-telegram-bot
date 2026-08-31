@@ -800,7 +800,7 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
                 botBlockStart > 0 &&
                     prompt.indexOf('- Helper：id 1005，@helper_bot') > botBlockStart &&
                     prompt.indexOf('- Alice：id 1001，@alice_a') < botBlockStart,
-                'bots are listed apart from humans, after the do-not-mention notice'
+                'bots are listed apart from humans'
             );
             expect(
                 !buildSystemPrompt('gemini-3.1-pro-preview').includes('# 上下文中的用户'),
