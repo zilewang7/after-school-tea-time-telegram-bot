@@ -45,6 +45,8 @@ export interface ContextUser {
     username?: string;
     firstName: string;
     lastName?: string;
+    /** true = a bot account (listed apart so the model never @s it) */
+    isBot?: boolean;
     /** true = only pointed at in a message, never spoke in this context */
     mentionedOnly: boolean;
 }

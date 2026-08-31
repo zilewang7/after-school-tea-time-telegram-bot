@@ -354,6 +354,7 @@ const harvestRosterUsers = (msg: TgMessage | undefined): void => {
             username: user.username,
             firstName: user.first_name,
             lastName: user.last_name,
+            isBot: user.is_bot,
         });
     }
 };

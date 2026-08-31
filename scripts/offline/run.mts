@@ -711,9 +711,10 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
             await TelegramUser.upsert({ userId: 1002, username: null, firstName: '李四', lastName: null, updatedAt: now });
             await TelegramUser.upsert({ userId: 1003, username: 'carol_c', firstName: 'Carol', lastName: null, updatedAt: now });
             await TelegramUser.upsert({ userId: 1004, username: 'dave_d', firstName: 'Dave', lastName: null, updatedAt: now });
+            await TelegramUser.upsert({ userId: 1005, username: 'helper_bot', firstName: 'Helper', lastName: null, isBot: true, updatedAt: now });
 
             const first = await seedMessage({
-                text: '问问 @carol_c 和 [李四](tg://user?id=1002)，邮箱 someone@example.com 别管',
+                text: '问问 @carol_c 和 @helper_bot 还有 [李四](tg://user?id=1002)，邮箱 someone@example.com 别管',
                 userId: 1001,
                 userName: 'Alice',
             });
@@ -772,6 +773,11 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
                 dave?.mentionedOnly === true && dave.username === 'dave_d',
                 'the original sender of a forwarded message joins the roster'
             );
+            const helperBot = contextUsers.find((user) => user.userId === 1005);
+            expect(
+                helperBot?.isBot === true,
+                `a mentioned bot carries its is_bot flag (got ${JSON.stringify(helperBot)})`
+            );
             expect(
                 !contextUsers.some((user) => user.username === 'example'),
                 'an email address is not mistaken for a mention'
@@ -785,8 +791,16 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
             expect(
                 prompt.includes('# 上下文中的用户') &&
                     prompt.includes('- Alice：id 1001，@alice_a') &&
-                    prompt.includes('无需再 @ 它的作者'),
+                    prompt.includes('无需再 @ 它的作者') &&
+                    prompt.includes('优先写 `[名字](tg://user?id=数字)`'),
                 `the roster section lands in the system prompt (got ${JSON.stringify(prompt.match(/# 上下文中的用户[\s\S]*?(?=\n\n# )/)?.[0])})`
+            );
+            const botBlockStart = prompt.indexOf('以下是 bot 账号');
+            expect(
+                botBlockStart > 0 &&
+                    prompt.indexOf('- Helper：id 1005，@helper_bot') > botBlockStart &&
+                    prompt.indexOf('- Alice：id 1001，@alice_a') < botBlockStart,
+                'bots are listed apart from humans, after the do-not-mention notice'
             );
             expect(
                 !buildSystemPrompt('gemini-3.1-pro-preview').includes('# 上下文中的用户'),

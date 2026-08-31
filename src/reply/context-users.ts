@@ -77,6 +77,7 @@ export const collectContextUsers = async (
             username: roster?.username ?? undefined,
             firstName: roster?.firstName ?? fallbackName,
             lastName: roster?.lastName ?? undefined,
+            isBot: roster?.isBot ?? undefined,
             mentionedOnly,
         });
     };
@@ -99,6 +100,7 @@ export const collectContextUsers = async (
             username: row.username,
             firstName: row.firstName,
             lastName: row.lastName ?? undefined,
+            isBot: row.isBot ?? undefined,
             mentionedOnly: true,
         });
     }

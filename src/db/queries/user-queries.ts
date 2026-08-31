@@ -11,6 +11,8 @@ export interface TelegramUserInfo {
     username?: string | null;
     firstName: string;
     lastName?: string | null;
+    /** Telegram's is_bot flag */
+    isBot?: boolean;
 }
 
 /**
@@ -21,13 +23,15 @@ export interface TelegramUserInfo {
 export const upsertTelegramUser = async (info: TelegramUserInfo): Promise<void> => {
     const username = info.username?.toLowerCase() ?? null;
     const lastName = info.lastName ?? null;
+    const isBot = info.isBot ?? null;
     try {
         const existing = await TelegramUser.findByPk(info.userId);
         if (
             existing &&
             existing.username === username &&
             existing.firstName === info.firstName &&
-            existing.lastName === lastName
+            existing.lastName === lastName &&
+            existing.isBot === isBot
         ) {
             return;
         }
@@ -36,6 +40,7 @@ export const upsertTelegramUser = async (info: TelegramUserInfo): Promise<void> 
             username,
             firstName: info.firstName,
             lastName,
+            isBot,
             updatedAt: new Date(),
         });
     } catch (error) {

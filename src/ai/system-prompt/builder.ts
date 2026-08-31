@@ -34,23 +34,33 @@ const buildEnvironmentSection = (model: string): string => `# 当前环境
 - 当前时间：${formatCurrentTime()}
 - 当前模型：${model}`;
 
-/** Roster of the users this context involves, so mentions come out right */
+/** One roster entry, shared by the human and bot lists */
+const rosterLine = (user: ContextUser): string => {
+    const name = user.lastName ? `${user.firstName} ${user.lastName}` : user.firstName;
+    const id = user.userId === undefined ? 'id 未知' : `id ${user.userId}`;
+    const handle = user.username ? `@${user.username}` : '无 username';
+    const tag = user.mentionedOnly ? '（仅被提及，未在上下文中发言）' : '';
+    return `- ${name}：${id}，${handle}${tag}`;
+};
+
+/** Roster of the users this context involves, so mentions come out right.
+ *  Bots are listed apart so the model never tries to @ one. */
 const buildRosterSection = (users: ContextUser[]): string => {
-    const lines = users.map((user) => {
-        const name = user.lastName ? `${user.firstName} ${user.lastName}` : user.firstName;
-        const id = user.userId === undefined ? 'id 未知' : `id ${user.userId}`;
-        const handle = user.username ? `@${user.username}` : '无 username';
-        const tag = user.mentionedOnly ? '（仅被提及，未在上下文中发言）' : '';
-        return `- ${name}：${id}，${handle}${tag}`;
-    });
+    const humans = users.filter((user) => user.isBot !== true);
+    const bots = users.filter((user) => user.isBot === true);
 
-    return `# 上下文中的用户
-
-${lines.join('\n')}
-
-需要提及（@）某用户时：有 username 的直接写 @username；没有 username 的写
-\`[名字](tg://user?id=数字)\`，会渲染成可点击的提及。你本来就在回复最后一条消息，
-无需再 @ 它的作者；也不要 @ 与话题无关的人。`;
+    const blocks: string[] = ['# 上下文中的用户'];
+    if (humans.length) {
+        blocks.push(humans.map(rosterLine).join('\n'));
+    }
+    if (bots.length) {
+        blocks.push(`以下是 bot 账号（不是人，@ 它们没有任何作用，不要提及）：
+${bots.map(rosterLine).join('\n')}`);
+    }
+    blocks.push(`需要提及（@）某用户时，优先写 \`[名字](tg://user?id=数字)\`（名字用对方的 first name），
+会渲染成可点击的提及；只有拿不到 id 时才退而写 @username。你本来就在回复最后一条消息，
+无需再 @ 它的作者；也不要 @ 与话题无关的人。`);
+    return blocks.join('\n\n');
 };
 
 export interface SystemPromptExtras {

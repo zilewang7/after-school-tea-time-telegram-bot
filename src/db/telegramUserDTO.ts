@@ -23,6 +23,8 @@ export class TelegramUser extends Model<
   declare username: CreationOptional<string | null>;
   declare firstName: string;
   declare lastName: CreationOptional<string | null>;
+  /** Telegram's is_bot flag; null = recorded before this column existed */
+  declare isBot: CreationOptional<boolean | null>;
   declare updatedAt: Date;
 }
 
@@ -43,6 +45,11 @@ TelegramUser.init({
   },
   lastName: {
     type: DataTypes.STRING,
+    allowNull: true,
+    defaultValue: null,
+  },
+  isBot: {
+    type: DataTypes.BOOLEAN,
     allowNull: true,
     defaultValue: null,
   },
