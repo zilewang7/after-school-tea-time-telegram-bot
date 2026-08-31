@@ -2141,6 +2141,77 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
         },
     },
     {
+        name: 'streaming thinking keeps a two-segment preview and collapses the rest',
+        body: async () => {
+            const { segmentThinking, formatThinkingForStreaming } =
+                await import('../../src/telegram/formatters/thinking-display.js');
+
+            const quoteTypes = (rendered: { entities: readonly { type: string }[] }): string[] =>
+                rendered.entities
+                    .filter((entity) => entity.type === 'blockquote' || entity.type === 'expandable_blockquote')
+                    .map((entity) => entity.type);
+
+            // Segmentation: blank lines split (Gemini shape)
+            const geminiStyle = '**Plan**\nfirst step\n\nsecond paragraph\n\nthird paragraph';
+            expect(
+                segmentThinking(geminiStyle).length === 3,
+                `blank lines split into paragraphs (got ${segmentThinking(geminiStyle).length})`
+            );
+
+            // Segmentation: a long run without blank lines is cut by size
+            const sentence = 'This is one reasoning sentence that keeps going for a while. ';
+            const longRun = sentence.repeat(20).trim(); // ~1240 chars, no blank lines
+            const fallbackSegments = segmentThinking(longRun);
+            expect(
+                fallbackSegments.length >= 3 && fallbackSegments.every((s) => s.length <= 600),
+                `a wall of text is cut into paragraph-sized segments (got ${fallbackSegments.map((s) => s.length).join(',')})`
+            );
+
+            // Prefix stability: appending more text never reshuffles earlier segments
+            const grown = segmentThinking(longRun + sentence.repeat(5));
+            expect(
+                fallbackSegments
+                    .slice(0, -1)
+                    .every((segment, index) => grown[index] === segment),
+                'already-streamed segments stay identical as more text arrives'
+            );
+
+            // <= 3 segments: everything visible in one plain blockquote
+            const shortThinking = 'alpha\n\nbeta\n\ngamma';
+            expect(
+                quoteTypes(formatThinkingForStreaming(shortThinking, { answerStarted: false }))
+                    .join(',') === 'blockquote',
+                'up to three segments render as one visible blockquote'
+            );
+
+            // > 3 segments: collapsed head + two-segment visible preview
+            const longThinking = 'alpha\n\nbeta\n\ngamma\n\ndelta\n\nepsilon';
+            const rolling = formatThinkingForStreaming(longThinking, { answerStarted: false });
+            expect(
+                quoteTypes(rolling).join(',') === 'expandable_blockquote,blockquote',
+                `older segments collapse, the tail stays visible (got ${quoteTypes(rolling).join(',')})`
+            );
+            const visibleStart = rolling.text.indexOf('delta');
+            const collapsedEntity = rolling.entities.find((e) => e.type === 'expandable_blockquote');
+            const previewEntity = rolling.entities.find((e) => e.type === 'blockquote');
+            expect(
+                collapsedEntity !== undefined &&
+                    previewEntity !== undefined &&
+                    collapsedEntity.offset + collapsedEntity.length <= visibleStart &&
+                    previewEntity.offset <= visibleStart &&
+                    rolling.text.includes('epsilon'),
+                'the preview blockquote covers exactly the last two segments'
+            );
+
+            // Answer started: the whole thinking collapses like the final render
+            expect(
+                quoteTypes(formatThinkingForStreaming(longThinking, { answerStarted: true }))
+                    .join(',') === 'expandable_blockquote',
+                'once the answer starts the whole thinking collapses'
+            );
+        },
+    },
+    {
         name: 'mention batcher merges a burst into one trigger',
         body: async () => {
             // Short sliding window so the case runs in milliseconds; the module

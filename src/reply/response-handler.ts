@@ -36,6 +36,7 @@ import {
 } from 'telegram-md-entities';
 import type { RenderedMessage } from 'telegram-md-entities';
 import { buildErrorDisplay } from '../telegram/formatters/error-display.js';
+import { formatThinkingForStreaming } from '../telegram/formatters/thinking-display.js';
 import { buildFinalMessages } from '../telegram/formatters/final-message-builder.js';
 import { splitRawByFits, splitAtLastNewline } from '../telegram/formatters/smart-splitter.js';
 import type {
@@ -229,8 +230,9 @@ const contextLinkResolverFor = (
 /**
  * Format current state for display (without status text - handled by
  * StreamingEditor). While processing, markdown renders in streaming mode
- * (unclosed constructs show as their intended formatting) and thinking is a
- * plain blockquote; the final pass renders strict and collapses thinking.
+ * (unclosed constructs show as their intended formatting) and thinking shows
+ * as a rolling preview (older segments collapse while streaming); the final
+ * pass renders strict and collapses thinking entirely.
  */
 const formatStateForDisplay = (
     state: ResponseState,
@@ -241,10 +243,11 @@ const formatStateForDisplay = (
 
     if (state.thinkingBuffer) {
         parts.push(
-            wrapInBlockquote(
-                renderMarkdown(state.thinkingBuffer, { streaming: isProcessing }),
-                !isProcessing
-            )
+            isProcessing
+                ? formatThinkingForStreaming(state.thinkingBuffer, {
+                    answerStarted: Boolean(state.textBuffer),
+                })
+                : wrapInBlockquote(renderMarkdown(state.thinkingBuffer), true)
         );
         if (state.textBuffer) {
             parts.push('\n');
@@ -412,7 +415,9 @@ export const processStream = async (
             // the entity count the message actually carries.
             const renderThinkingForStreaming = (thinking: string): RenderedMessage =>
                 linkifyContextNumbers(
-                    wrapInBlockquote(renderMarkdown(thinking, { streaming: true }), false),
+                    formatThinkingForStreaming(thinking, {
+                        answerStarted: Boolean(state.textBuffer),
+                    }),
                     resolveContextLink
                 );
 
