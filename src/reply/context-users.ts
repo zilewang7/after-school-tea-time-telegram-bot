@@ -21,6 +21,10 @@ const TEXT_MENTION_PATTERN = /\[([^\]]+)\]\(tg:\/\/user\?id=(\d+)\)/g;
  */
 const HANDLE_PATTERN = /(?<![\w@])@([A-Za-z0-9_]{4,32})\b/g;
 
+/** forwardOrigin renders a user forward as "user 张三"; recover the bare name */
+const forwardedName = (forwardOrigin: string | null): string =>
+    forwardOrigin?.replace(/^user /, '') ?? '';
+
 export const collectContextUsers = async (
     contextMessages: ContextMessage[]
 ): Promise<ContextUser[]> => {
@@ -33,6 +37,11 @@ export const collectContextUsers = async (
     for (const msg of contextMessages) {
         if (!msg.fromBotSelf && msg.userId !== null) {
             authorNameById.set(msg.userId, msg.userName);
+        }
+        // The original sender of a forwarded message counts as mentioned: the
+        // conversation is literally about their words
+        if (msg.forwardFromId !== null) {
+            mentionNameById.set(msg.forwardFromId, forwardedName(msg.forwardOrigin));
         }
         if (!msg.text) continue;
         for (const match of msg.text.matchAll(TEXT_MENTION_PATTERN)) {

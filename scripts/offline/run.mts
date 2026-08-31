@@ -58,6 +58,8 @@ interface SeedOptions {
     userId?: number | null;
     viaBot?: string | null;
     ocrText?: string | null;
+    forwardOrigin?: string | null;
+    forwardFromId?: number | null;
 }
 
 /** Insert one message row directly, bypassing the Telegram-facing save path */
@@ -80,7 +82,8 @@ const seedMessage = async (options: SeedOptions = {}): Promise<number> => {
         chatCommand: options.chatCommand ?? null,
         modelParts: null,
         mediaHint: null,
-        forwardOrigin: null,
+        forwardOrigin: options.forwardOrigin ?? null,
+        forwardFromId: options.forwardFromId ?? null,
         viaBot: options.viaBot ?? null,
         ocrText: options.ocrText ?? null,
     });
@@ -707,6 +710,7 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
             await TelegramUser.upsert({ userId: 1001, username: 'alice_a', firstName: 'Alice', lastName: null, updatedAt: now });
             await TelegramUser.upsert({ userId: 1002, username: null, firstName: '李四', lastName: null, updatedAt: now });
             await TelegramUser.upsert({ userId: 1003, username: 'carol_c', firstName: 'Carol', lastName: null, updatedAt: now });
+            await TelegramUser.upsert({ userId: 1004, username: 'dave_d', firstName: 'Dave', lastName: null, updatedAt: now });
 
             const first = await seedMessage({
                 text: '问问 @carol_c 和 [李四](tg://user?id=1002)，邮箱 someone@example.com 别管',
@@ -714,6 +718,14 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
                 userName: 'Alice',
             });
             await seedMessage({ text: '我插一句', fromBotSelf: true, replyToId: first });
+            await seedMessage({
+                text: '这条是转来的',
+                userId: 1001,
+                userName: 'Alice',
+                replyToId: first,
+                forwardOrigin: 'user Dave',
+                forwardFromId: 1004,
+            });
             const messageId = await seedMessage({
                 text: '好',
                 userId: 9999,
@@ -754,6 +766,11 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
             expect(
                 carol?.mentionedOnly === true && carol.username === 'carol_c',
                 'a plain @handle mention resolves through the roster table'
+            );
+            const dave = contextUsers.find((user) => user.userId === 1004);
+            expect(
+                dave?.mentionedOnly === true && dave.username === 'dave_d',
+                'the original sender of a forwarded message joins the roster'
             );
             expect(
                 !contextUsers.some((user) => user.username === 'example'),

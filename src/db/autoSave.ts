@@ -783,6 +783,11 @@ export const autoSave = (bot: Bot) => {
                     );
                 harvestRosterUsers(ctx.message);
                 const forwardOrigin = resolveForwardOrigin(ctx.message?.forward_origin);
+                // Original sender's id (privacy-protected forwards have none);
+                // lets the context roster resolve who the forward came from
+                const forwardFromId = ctx.message?.forward_origin?.type === 'user'
+                    ? ctx.message.forward_origin.sender_user.id
+                    : undefined;
                 // Inline-mode messages ("via @bot"): the content came out of that
                 // bot's inline results, not typed by the user
                 const viaBot = ctx.message?.via_bot
@@ -825,6 +830,7 @@ export const autoSave = (bot: Bot) => {
                     chatCommand: chatCommandSpec ? serializeChatCommand(chatCommandSpec) : null,
                     mediaHint: media ? media.hint : undefined,
                     forwardOrigin,
+                    forwardFromId,
                     viaBot,
                 }), `ingest ${chatId}/${messageId}`);
 
@@ -862,6 +868,7 @@ export const autoSave = (bot: Bot) => {
                             replyToId,
                             mediaHint: finalHint,
                             forwardOrigin,
+                            forwardFromId,
                             viaBot,
                         }), `media update ${chatId}/${messageId}`));
                         if (saveErr) {

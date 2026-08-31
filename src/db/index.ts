@@ -35,12 +35,13 @@ const saveMessage = async (
         modelParts?: any,
         mediaHint?: string | null,
         forwardOrigin?: string | null,
+        forwardFromId?: number | null,
         viaBot?: string | null,
         /** Serialized `/chat` parameters when this message is a `/chat` summon */
         chatCommand?: string | null
     }
 ) => {
-    const { chatId, messageId, userId, date = new Date(), userName = '佚名', message, quoteText, fileLink, fileBuffer, fileMime, fileUniqueId, replyToId, modelParts, mediaHint, forwardOrigin, viaBot, chatCommand } = info;
+    const { chatId, messageId, userId, date = new Date(), userName = '佚名', message, quoteText, fileLink, fileBuffer, fileMime, fileUniqueId, replyToId, modelParts, mediaHint, forwardOrigin, forwardFromId, viaBot, chatCommand } = info;
 
     const fromBotSelf = userId === Number(process.env.BOT_USER_ID);
     // Callers pass Number(env) shapes that can be NaN; never write that
@@ -87,6 +88,9 @@ const saveMessage = async (
         }
         if (forwardOrigin !== undefined) {
             existingMessage.forwardOrigin = forwardOrigin;
+        }
+        if (forwardFromId !== undefined) {
+            existingMessage.forwardFromId = forwardFromId;
         }
         if (viaBot !== undefined) {
             existingMessage.viaBot = viaBot;
@@ -136,6 +140,7 @@ const saveMessage = async (
         modelParts: modelParts ?? null,
         mediaHint: mediaHint ?? null,
         forwardOrigin: forwardOrigin ?? null,
+        forwardFromId: forwardFromId ?? null,
         viaBot: viaBot ?? null,
     });
 

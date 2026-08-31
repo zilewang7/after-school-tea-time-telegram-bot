@@ -34,6 +34,8 @@ export class Message extends Model<InferAttributes<Message>, InferCreationAttrib
   declare mediaHint: string | null;
   /** Forward origin, e.g. "user 张三" / "channel 某频道" */
   declare forwardOrigin: string | null;
+  /** Original sender's user id for forwards without privacy protection */
+  declare forwardFromId: number | null;
   /** Inline bot the message was sent via, e.g. "@gif" */
   declare viaBot: string | null;
   /** Text recognized in this message's images, for models that can't see them */
@@ -110,6 +112,12 @@ Message.init({
   },
   forwardOrigin: {
     type: DataTypes.STRING,
+    allowNull: true,
+    defaultValue: null,
+  },
+  forwardFromId: {
+    // SQLite INTEGER is 64-bit; the sqlite dialect has no BIGINT type
+    type: DataTypes.INTEGER,
     allowNull: true,
     defaultValue: null,
   },

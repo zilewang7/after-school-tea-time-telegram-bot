@@ -34,6 +34,8 @@ export interface ContextMessage {
     modelParts: string | null;
     mediaHint: string | null;
     forwardOrigin: string | null;
+    /** Original sender's user id for forwards without privacy protection */
+    forwardFromId: number | null;
     /** Inline bot the message was sent via, e.g. "@gif" */
     viaBot: string | null;
     /** Text recognized in this message's images (models that can't see them) */
@@ -60,6 +62,7 @@ export const toContextMessage = (msg: Message): ContextMessage => ({
     modelParts: msg.modelParts,
     mediaHint: msg.mediaHint,
     forwardOrigin: msg.forwardOrigin,
+    forwardFromId: msg.forwardFromId,
     viaBot: msg.viaBot,
     ocrText: msg.ocrText,
 });
@@ -196,6 +199,7 @@ export const getContextMessage = async (
             modelParts: currentVersion?.modelParts ? JSON.stringify(currentVersion.modelParts) : null,
             mediaHint: null,
             forwardOrigin: null,
+            forwardFromId: null,
             viaBot: null,
             ocrText: null,
         };
@@ -222,6 +226,7 @@ export const getContextMessage = async (
             modelParts: currentVersion?.modelParts ? JSON.stringify(currentVersion.modelParts) : null,
             mediaHint: null,
             forwardOrigin: null,
+            forwardFromId: null,
             viaBot: null,
             ocrText: null,
         };
