@@ -3,6 +3,7 @@
  */
 import { match } from 'ts-pattern';
 import type { ChatCompletionMessageParam, ChatCompletionContentPart } from 'openai/resources';
+import type Anthropic from '@anthropic-ai/sdk';
 import type { UnifiedMessage, UnifiedContentPart, ModelCapabilities } from './types.js';
 import { isGeminiSupportedMimeType, normalizeMimeType } from './supported-mime.js';
 
@@ -225,6 +226,86 @@ export const transformToOpenAI = (
             })
             .exhaustive();
     });
+
+    return result;
+};
+
+const transformToAnthropicParts = (
+    parts: UnifiedContentPart[]
+): Anthropic.ContentBlockParam[] => {
+    return parts.map((part) =>
+        match(part)
+            .with({ type: 'text' }, (p): Anthropic.ContentBlockParam => ({
+                type: 'text',
+                text: p.text ?? '',
+            }))
+            .with({ type: 'image' }, (p): Anthropic.ContentBlockParam => ({
+                type: 'image',
+                source: {
+                    type: 'base64',
+                    media_type: 'image/png',
+                    data: p.imageData ?? '',
+                },
+            }))
+            .with({ type: 'media' }, (p): Anthropic.ContentBlockParam => ({
+                // Anthropic messages can't carry inline audio/video; use a text placeholder
+                type: 'text',
+                text: `[media: ${p.mimeType ?? 'file'}]`,
+            }))
+            .exhaustive()
+    );
+};
+
+/**
+ * Transform unified messages to Anthropic Messages API format.
+ * System messages are skipped (the system prompt goes in the top-level
+ * `system` request field).
+ */
+export const transformToAnthropic = (
+    messages: UnifiedMessage[]
+): Anthropic.MessageParam[] => {
+    const result: Anthropic.MessageParam[] = [];
+
+    messages.forEach((msg) => {
+        match(msg)
+            .with({ role: 'user' }, (m) => {
+                result.push({
+                    role: 'user',
+                    content: transformToAnthropicParts(m.content),
+                });
+            })
+            .with({ role: 'assistant' }, (m) => {
+                const textContent = m.content
+                    .map((part) =>
+                        match(part)
+                            .with({ type: 'text' }, (p) => p.text ?? '')
+                            .with({ type: 'image' }, () => '[assistant image]')
+                            .with({ type: 'media' }, () => '[assistant media]')
+                            .exhaustive()
+                    )
+                    .join('\n');
+
+                // Anthropic rejects assistant turns with empty text
+                if (textContent.trim().length > 0) {
+                    result.push({
+                        role: 'assistant',
+                        content: textContent,
+                    });
+                }
+            })
+            .with({ role: 'system' }, () => {
+                // Handled via the top-level system field, skip
+            })
+            .exhaustive();
+    });
+
+    // Anthropic requires messages[0] to be a user turn
+    if (result.length > 0 && result[0]!.role !== 'user') {
+        result.unshift({
+            role: 'user',
+            content: '[conversation continues]',
+        });
+    }
 
     return result;
 };

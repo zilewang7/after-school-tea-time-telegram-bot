@@ -79,7 +79,8 @@ export class OpenAIPlatform extends BasePlatform {
             !lowerModel.startsWith('gemini') &&
             !lowerModel.startsWith('deepseek') &&
             !lowerModel.startsWith('grok-') &&
-            !lowerModel.startsWith('mimo')
+            !lowerModel.startsWith('mimo') &&
+            !lowerModel.startsWith('claude')
         );
     }
 

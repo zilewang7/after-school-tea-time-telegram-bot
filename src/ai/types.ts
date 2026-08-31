@@ -3,7 +3,7 @@
  */
 
 // Platform type identifier
-export type PlatformType = 'openai' | 'gemini' | 'deepseek' | 'grok' | 'mimo';
+export type PlatformType = 'openai' | 'gemini' | 'deepseek' | 'grok' | 'mimo' | 'anthropic';
 
 // Unified content part (compatible with existing ChatContentPart)
 export interface UnifiedContentPart {
@@ -43,7 +43,7 @@ export interface AgentStats {
 
 // Search / grounding data
 export interface GroundingData {
-    provider?: 'google' | 'xai' | 'mcp';
+    provider?: 'google' | 'xai' | 'mcp' | 'anthropic';
     searchQueries: string[];
     searchEntryPoint?: {
         renderedContent?: string;

@@ -5,3 +5,4 @@
 export type { McpServerConfig, McpTool, McpToolCall, McpToolResult } from './types.js';
 export { initMcpClients, getMcpTools, executeMcpTool, shutdownMcp } from './client.js';
 export { mcpToolsToOpenAI } from './tool-adapter.js';
+export { extractGroundingFromToolResult } from './grounding.js';

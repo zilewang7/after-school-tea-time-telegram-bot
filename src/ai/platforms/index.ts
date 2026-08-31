@@ -6,3 +6,4 @@ export { GeminiPlatform } from './gemini-platform.js';
 export { OpenAIPlatform } from './openai-platform.js';
 export { DeepSeekPlatform } from './deepseek-platform.js';
 export { GrokPlatform } from './grok-platform.js';
+export { AnthropicPlatform } from './anthropic-platform.js';
