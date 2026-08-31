@@ -237,13 +237,13 @@ export const handleReply = async (
         await handleResponseError(chatContext, ctxResult[0]);
         return;
     }
-    const chatContents = ctxResult[1];
+    const { messages: chatContents, contextUsers } = ctxResult[1];
 
     // Send to AI and get stream
     const streamResult = await to(
         sendMessage(chatContents, {
             model,
-            systemPrompt: buildSystemPrompt(model),
+            systemPrompt: buildSystemPrompt(model, { contextUsers }),
             signal: chatContext.session.streamController.signal,
         })
     );

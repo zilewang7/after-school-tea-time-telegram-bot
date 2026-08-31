@@ -10,6 +10,8 @@ export class Message extends Model<InferAttributes<Message>, InferCreationAttrib
   declare chatId: number;
   declare messageId: number;
   declare fromBotSelf: boolean;
+  /** Author's Telegram user id; null on rows stored before the roster existed */
+  declare userId: number | null;
   declare date: Date;
   declare userName: string;
   declare text: string | null;
@@ -49,6 +51,12 @@ Message.init({
   },
   fromBotSelf: {
     type: DataTypes.BOOLEAN
+  },
+  userId: {
+    // SQLite INTEGER is 64-bit; the sqlite dialect has no BIGINT type
+    type: DataTypes.INTEGER,
+    allowNull: true,
+    defaultValue: null,
   },
   date: {
     type: DataTypes.DATE,

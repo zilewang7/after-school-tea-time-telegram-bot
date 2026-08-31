@@ -29,7 +29,8 @@ import { SocksProxyAgent } from 'socks-proxy-agent';
 import https from 'node:https';
 import { readFile, stat, unlink } from 'node:fs/promises';
 import { buffer as readStreamToBuffer } from 'node:stream/consumers';
-import type { Message as TgMessage, MessageEntity, MessageOrigin, RichBlock, RichMessage } from 'grammy/types';
+import type { Message as TgMessage, MessageEntity, MessageOrigin, RichBlock, RichMessage, User } from 'grammy/types';
+import { upsertTelegramUser } from './queries/user-queries.js';
 import { entitiesToMarkdown, richBlocksToMarkdown } from 'telegram-md-entities';
 
 // Parse sizes like "300M", "1G", "500K", "12345" (bare bytes); undefined on bad input
@@ -331,6 +332,30 @@ const resolveRichMessageMedia = (richMessage: RichMessage | undefined): Captured
         };
     }
     return picked;
+};
+
+/**
+ * Feed every User object a message exposes into the roster: the author, a
+ * forwarded-from user, and text_mention entities (users without a @username
+ * being pointed at). Fire-and-forget — roster completeness never blocks or
+ * fails an ingest.
+ */
+const harvestRosterUsers = (msg: TgMessage | undefined): void => {
+    if (!msg) return;
+    const users: User[] = [];
+    if (msg.from) users.push(msg.from);
+    if (msg.forward_origin?.type === 'user') users.push(msg.forward_origin.sender_user);
+    for (const entity of [...(msg.entities ?? []), ...(msg.caption_entities ?? [])]) {
+        if (entity.type === 'text_mention') users.push(entity.user);
+    }
+    for (const user of users) {
+        void upsertTelegramUser({
+            userId: user.id,
+            username: user.username,
+            firstName: user.first_name,
+            lastName: user.last_name,
+        });
+    }
 };
 
 /** Forward origin as stored in the forwardOrigin column, e.g. "user 张三" */
@@ -756,6 +781,7 @@ export const autoSave = (bot: Bot) => {
                                 || ''
                         )
                     );
+                harvestRosterUsers(ctx.message);
                 const forwardOrigin = resolveForwardOrigin(ctx.message?.forward_origin);
                 // Inline-mode messages ("via @bot"): the content came out of that
                 // bot's inline results, not typed by the user

@@ -252,21 +252,22 @@ const handleChatRetry = async (
     // Build AI context (exclude current bot response since we're retrying it)
     const model = getCurrentModel();
     const capabilities = getModelCapabilities(model);
-    const [ctxErr, chatContents] = await to(buildContext(userMessage, {
+    const [ctxErr, builtContext] = await to(buildContext(userMessage, {
         capabilities,
         excludeMessageIds: [botResponse.messageId], // Exclude the bot response we're retrying
     }));
-    if (ctxErr) {
+    if (ctxErr || !builtContext) {
         console.error('[retry-handler] Failed to build context:', ctxErr);
-        await handleResponseError(chatContext, ctxErr);
+        await handleResponseError(chatContext, ctxErr ?? new Error('Failed to build context'));
         return;
     }
+    const { messages: chatContents, contextUsers } = builtContext;
 
     // Send to AI
     const [streamErr, stream] = await to(
         sendMessage(chatContents, {
             model,
-            systemPrompt: buildSystemPrompt(model),
+            systemPrompt: buildSystemPrompt(model, { contextUsers }),
             signal: session.streamController.signal,
         })
     );

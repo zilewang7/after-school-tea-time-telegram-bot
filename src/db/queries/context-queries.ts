@@ -19,6 +19,8 @@ export interface ContextMessage {
     chatId: number;
     messageId: number;
     fromBotSelf: boolean;
+    /** Author's Telegram user id; null on rows stored before it was recorded */
+    userId: number | null;
     date: Date;
     userName: string;
     text: string | null;
@@ -45,6 +47,7 @@ export const toContextMessage = (msg: Message): ContextMessage => ({
     chatId: msg.chatId,
     messageId: msg.messageId,
     fromBotSelf: msg.fromBotSelf,
+    userId: msg.userId,
     date: msg.date,
     userName: msg.userName,
     text: msg.text,
@@ -180,6 +183,7 @@ export const getContextMessage = async (
             chatId: botResponse.chatId,
             messageId: botResponse.messageId,
             fromBotSelf: true,
+            userId: null,
             date: new Date(currentVersion?.createdAt || Date.now()),
             userName: botUserName,
             text: currentVersion?.text || null,
@@ -205,6 +209,7 @@ export const getContextMessage = async (
             chatId: foundResponse.chatId,
             messageId: foundResponse.messageId,
             fromBotSelf: true,
+            userId: null,
             date: new Date(currentVersion?.createdAt || Date.now()),
             userName: botUserName,
             text: currentVersion?.text || null,

@@ -55,6 +55,7 @@ interface SeedOptions {
     userName?: string;
     fileUniqueId?: string | null;
     fromBotSelf?: boolean;
+    userId?: number | null;
     viaBot?: string | null;
     ocrText?: string | null;
 }
@@ -66,6 +67,7 @@ const seedMessage = async (options: SeedOptions = {}): Promise<number> => {
         chatId: OFFLINE_CHAT_ID,
         messageId,
         fromBotSelf: options.fromBotSelf ?? false,
+        userId: options.userId ?? null,
         date: new Date(messageId * 1000),
         userName: options.userName ?? 'tester',
         // `text: null` must stay null — a /chat summon with no words of its own
@@ -524,7 +526,7 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
                     where: { chatId: OFFLINE_CHAT_ID, messageId },
                 });
                 if (!row) throw new Error(`seeded message ${messageId} not found`);
-                const turns = await buildContext(row);
+                const { messages: turns } = await buildContext(row);
                 const textOfTurn = (turn: (typeof turns)[number]): string =>
                     turn.content.map((part) => part.text ?? '').join('\n');
                 return {
@@ -673,7 +675,7 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
             });
             if (!row) throw new Error('seeded message not found');
 
-            const context = await buildContext(row, {
+            const { messages: context } = await buildContext(row, {
                 supportsImageInput: true,
                 supportsImageOutput: false,
                 supportsSystemPrompt: true,
@@ -688,6 +690,90 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
             expect(
                 texts.some((text) => text.includes('[via inline bot @gif]')),
                 `the header carries the inline bot (got ${JSON.stringify(texts)})`
+            );
+        },
+    },
+    {
+        // The roster feeds the system prompt: authors carry their id/@username
+        // from telegram_users, mentioned users are resolved out of the text
+        // (both tg://user links and plain @handles), the bot stays out.
+        name: 'the context user roster resolves authors and mentions',
+        body: async () => {
+            const { TelegramUser } = await import('../../src/db/telegramUserDTO.js');
+            const { buildContext } = await import('../../src/reply/context-builder.js');
+            const { buildSystemPrompt } = await import('../../src/ai/system-prompt/index.js');
+
+            const now = new Date();
+            await TelegramUser.upsert({ userId: 1001, username: 'alice_a', firstName: 'Alice', lastName: null, updatedAt: now });
+            await TelegramUser.upsert({ userId: 1002, username: null, firstName: '李四', lastName: null, updatedAt: now });
+            await TelegramUser.upsert({ userId: 1003, username: 'carol_c', firstName: 'Carol', lastName: null, updatedAt: now });
+
+            const first = await seedMessage({
+                text: '问问 @carol_c 和 [李四](tg://user?id=1002)，邮箱 someone@example.com 别管',
+                userId: 1001,
+                userName: 'Alice',
+            });
+            await seedMessage({ text: '我插一句', fromBotSelf: true, replyToId: first });
+            const messageId = await seedMessage({
+                text: '好',
+                userId: 9999,
+                userName: '路人',
+                replyToId: first,
+            });
+            const row = await Message.findOne({
+                where: { chatId: OFFLINE_CHAT_ID, messageId },
+            });
+            if (!row) throw new Error('seeded message not found');
+
+            const { contextUsers } = await buildContext(row, {
+                supportsImageInput: true,
+                supportsImageOutput: false,
+                supportsSystemPrompt: true,
+                requiresMessageMerge: false,
+                supportsThinking: false,
+                supportsGrounding: false,
+                supportsMediaInput: false,
+            });
+
+            const alice = contextUsers.find((user) => user.userId === 1001);
+            expect(
+                alice?.username === 'alice_a' && alice.mentionedOnly === false,
+                `the author is resolved against the roster table (got ${JSON.stringify(contextUsers)})`
+            );
+            const passerby = contextUsers.find((user) => user.userId === 9999);
+            expect(
+                passerby?.firstName === '路人' && passerby.username === undefined,
+                'an author without a roster row falls back to the stored first name'
+            );
+            const lisi = contextUsers.find((user) => user.userId === 1002);
+            expect(
+                lisi?.mentionedOnly === true && lisi.username === undefined,
+                'a tg://user mention is collected with its id'
+            );
+            const carol = contextUsers.find((user) => user.userId === 1003);
+            expect(
+                carol?.mentionedOnly === true && carol.username === 'carol_c',
+                'a plain @handle mention resolves through the roster table'
+            );
+            expect(
+                !contextUsers.some((user) => user.username === 'example'),
+                'an email address is not mistaken for a mention'
+            );
+            expect(
+                contextUsers.every((user) => user.userId !== undefined || user.username !== undefined),
+                'no information-free entries'
+            );
+
+            const prompt = buildSystemPrompt('gemini-3.1-pro-preview', { contextUsers });
+            expect(
+                prompt.includes('# 上下文中的用户') &&
+                    prompt.includes('- Alice：id 1001，@alice_a') &&
+                    prompt.includes('无需再 @ 它的作者'),
+                `the roster section lands in the system prompt (got ${JSON.stringify(prompt.match(/# 上下文中的用户[\s\S]*?(?=\n\n# )/)?.[0])})`
+            );
+            expect(
+                !buildSystemPrompt('gemini-3.1-pro-preview').includes('# 上下文中的用户'),
+                'no roster, no section'
             );
         },
     },
@@ -726,7 +812,7 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
                 supportsMediaInput: false,
             };
 
-            const blind = await buildContext(row, capabilities);
+            const { messages: blind } = await buildContext(row, capabilities);
             const blindTexts = blind.flatMap((message) =>
                 message.content.filter((part) => part.type === 'text').map((part) => part.text ?? '')
             );
@@ -743,7 +829,7 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
                 'it is labelled as machine-recognized'
             );
 
-            const seeing = await buildContext(row, {
+            const { messages: seeing } = await buildContext(row, {
                 ...capabilities,
                 supportsImageInput: true,
             });

@@ -4,6 +4,7 @@ import { BotResponse, ButtonState, type ResponseVersion, type ResponseMetadata, 
 import { MediaCache } from "./mediaCacheDTO.js";
 import { LinkPreviewCache } from "./linkPreviewCacheDTO.js";
 import { MessageLink } from "./messageLinkDTO.js";
+import { TelegramUser } from "./telegramUserDTO.js";
 import { getBlob } from "../util.js";
 import { removeAsyncFileSaveMsgId, findFirstMessageIdByContinuation } from '../state.js';
 
@@ -42,6 +43,8 @@ const saveMessage = async (
     const { chatId, messageId, userId, date = new Date(), userName = '佚名', message, quoteText, fileLink, fileBuffer, fileMime, fileUniqueId, replyToId, modelParts, mediaHint, forwardOrigin, viaBot, chatCommand } = info;
 
     const fromBotSelf = userId === Number(process.env.BOT_USER_ID);
+    // Callers pass Number(env) shapes that can be NaN; never write that
+    const authorId = Number.isFinite(userId) ? userId : null;
 
     // async file save
     const saveFile = async (fileLink: string) => {
@@ -70,6 +73,7 @@ const saveMessage = async (
     const existingMessage = await Message.findOne({ where: { chatId, messageId } });
     if (existingMessage) {
         existingMessage.text = message ?? existingMessage.text;
+        existingMessage.userId = authorId;
         existingMessage.date = date;
         existingMessage.quoteText = quoteText ?? existingMessage.quoteText;
         if (modelParts !== undefined) {
@@ -119,6 +123,7 @@ const saveMessage = async (
         chatId,
         messageId,
         fromBotSelf,
+        userId: authorId,
         text: message,
         quoteText,
         date,
@@ -237,6 +242,7 @@ export {
     MediaCache,
     LinkPreviewCache,
     MessageLink,
+    TelegramUser,
     ButtonState,
     type ResponseVersion,
     type ResponseMetadata,

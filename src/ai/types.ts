@@ -34,6 +34,21 @@ export interface AgentToolUsage {
     count: number;
 }
 
+/**
+ * One entry of the context user roster, injected into the system prompt so the
+ * model can mention (@) people correctly.
+ */
+export interface ContextUser {
+    /** Unknown for a plain @handle mention we have no record of */
+    userId?: number;
+    /** Handle without the leading @; absent when the user has none / unknown */
+    username?: string;
+    firstName: string;
+    lastName?: string;
+    /** true = only pointed at in a message, never spoke in this context */
+    mentionedOnly: boolean;
+}
+
 export interface AgentStats {
     mode?: string;
     reasoningTokens?: number;

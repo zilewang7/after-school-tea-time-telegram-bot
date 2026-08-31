@@ -15,6 +15,7 @@ import { getLinkPreviewParts } from '../services/luoxu-preview-service.js';
 import { buildOcrFallbackPart } from '../services/luoxu-ocr-service.js';
 import { applyModelCapabilities } from '../ai/message-transformer.js';
 import { getCurrentModel, setContextNumbering } from '../state.js';
+import { collectContextUsers, type ContextUser } from './context-users.js';
 import { getModelCapabilities } from '../ai/platform-factory.js';
 import type { UnifiedMessage, UnifiedContentPart, ModelCapabilities } from '../ai/types.js';
 
@@ -477,6 +478,13 @@ const isBuildContextOptions = (
     value !== null &&
     ('capabilities' in value || 'excludeMessageIds' in value);
 
+/** Assembled context: the model-facing turns plus the user roster they involve */
+export interface BuiltContext {
+    messages: UnifiedMessage[];
+    /** Authors and mentioned users, for the system prompt's roster section */
+    contextUsers: ContextUser[];
+}
+
 /**
  * Build complete chat context from a message
  * This is the main entry point for building AI request context
@@ -484,7 +492,7 @@ const isBuildContextOptions = (
 export const buildContext = async (
     msg: Message,
     options?: BuildContextOptions | ModelCapabilities
-): Promise<UnifiedMessage[]> => {
+): Promise<BuiltContext> => {
     const { chatId, messageId } = msg;
 
     // Handle both old signature (capabilities) and new signature (options)
@@ -514,13 +522,18 @@ export const buildContext = async (
     const index = buildContextIndex(contextMessages);
     publishContextNumbering(chatId, messageId, index);
 
+    const contextUsers = await collectContextUsers(contextMessages);
+
     const chatContents: UnifiedMessage[] = [];
     for (const contextMsg of contextMessages) {
         chatContents.push(await buildMessageContent(contextMsg, modelCapabilities, index));
     }
 
     // Apply model capabilities (filter images, merge messages if needed)
-    return applyModelCapabilities(chatContents, modelCapabilities);
+    return {
+        messages: applyModelCapabilities(chatContents, modelCapabilities),
+        contextUsers,
+    };
 };
 
 /**
