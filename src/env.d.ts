@@ -45,6 +45,8 @@ declare global {
             GCS_BUCKET?: string
             GOOGLE_APPLICATION_CREDENTIALS?: string
             LUOXU_PREVIEW_URL?: string
+            /** Sliding batch window for merging a burst of triggers (default 500ms) */
+            MENTION_BATCH_WINDOW_MS?: string
         }
     }
 }

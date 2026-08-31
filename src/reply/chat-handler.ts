@@ -13,7 +13,9 @@ import {
 import { sendMessage, buildSystemPrompt, getModelCapabilities } from '../ai/index.js';
 import { getCurrentModel, getMediaGroupIdTemp, getAsyncFileSaveMsgIdList, getAsyncPreviewMsgIdList, getAsyncOcrMsgIdList, tryMarkUserMessageHandling } from '../state.js';
 import { checkIfMentioned } from '../util.js';
+import { saveMessageLinks } from '../db/queries/context-queries.js';
 import { buildContext } from './context-builder.js';
+import { submitToMentionBatch } from './mention-batcher.js';
 import {
     createChatContext,
     processStream,
@@ -32,6 +34,10 @@ import { isChatCommandText } from './commands/chat-command-parser.js';
 // Slightly under the 70s acquisition backstop in autoSave: fresh link
 // previews (Telegram-side embed generation) regularly take 30-60s
 const MEDIA_WAIT_TIMEOUT_MS = 65000;
+
+// Small media settles in well under a second; a silent grace period before the
+// "downloading" notice keeps it from flashing on screen only to be deleted.
+const NOTICE_GRACE_MS = 500;
 
 /**
  * Whether the bot will actually reply to this message — used to gate the
@@ -102,13 +108,24 @@ const awaitMediaWithFeedback = async (
         pendingPreview.every((id) => !getAsyncPreviewMsgIdList().includes(id)) &&
         pendingOcr.every((id) => !getAsyncOcrMsgIdList().includes(id));
 
-    const waitLoop = async (): Promise<void> => {
-        const start = Date.now();
-        while (Date.now() - start < MEDIA_WAIT_TIMEOUT_MS) {
-            if (allSettled()) return;
+    // One shared deadline clock: the notice grace period spends the same budget
+    // as the main wait, so the overall timeout is unchanged.
+    const start = Date.now();
+    const settledBefore = async (deadline: number): Promise<boolean> => {
+        while (Date.now() < deadline && !allSettled()) {
             await new Promise((resolve) => setTimeout(resolve, 100));
         }
+        return allSettled();
     };
+    const waitLoop = async (): Promise<void> => {
+        await settledBefore(start + MEDIA_WAIT_TIMEOUT_MS);
+    };
+
+    // Silent grace: when everything settles fast (small media), skip the notice
+    // entirely instead of flashing it and deleting it right away.
+    if (await settledBefore(start + NOTICE_GRACE_MS)) {
+        return;
+    }
 
     // Post the notice; if it can't be sent, degrade to a silent wait.
     // Preview-only failures are silent (an enhancement, not core content), so
@@ -330,9 +347,32 @@ export const registerChatHandler = (bot: Bot): void => {
                 // buildContext) so the wait covers the messages /chat pulls in.
                 const outcome = await dealChatCommand(ctx);
                 if (outcome.type === 'help-shown' || outcome.type === 'too-many') return;
-                await handleReply(ctx, {
-                    // A /chat summon is a request to reply even without an @mention
-                    mention: outcome.type === 'ready' ? true : undefined,
+                if (outcome.type === 'ready') {
+                    // A /chat summon is a request to reply even without an
+                    // @mention; it never joins a batch window.
+                    await handleReply(ctx, { mention: true });
+                    return;
+                }
+
+                // Skip duplicate media-group members BEFORE batching so an
+                // album contributes exactly one batch member (its first).
+                if (shouldSkipMessage(ctx)) return;
+
+                // A burst from the same user (forwarded messages, album +
+                // typed question) merges into one trigger; the earlier members
+                // ride into the context as links on the anchor, exactly like
+                // the bystanders /chat pulls in.
+                submitToMentionBatch(ctx, async (anchorCtx, earlierMessageIds) => {
+                    if (earlierMessageIds.length && anchorCtx.chat && anchorCtx.message) {
+                        await saveMessageLinks(
+                            anchorCtx.chat.id,
+                            anchorCtx.message.message_id,
+                            earlierMessageIds
+                        );
+                    }
+                    // The anchor passed checkIfMentioned before entering the
+                    // batch, so the re-check is skipped via mention: true.
+                    await handleReply(anchorCtx, { mention: true });
                 });
             } catch (error) {
                 console.error('[chat-handler] Unhandled error in deferred reply processing:', error);

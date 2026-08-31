@@ -2124,6 +2124,119 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
         },
     },
     {
+        name: 'mention batcher merges a burst into one trigger',
+        body: async () => {
+            // Short sliding window so the case runs in milliseconds; the module
+            // reads it per call, so setting it here (post-import) works.
+            process.env.MENTION_BATCH_WINDOW_MS = '100';
+            const { submitToMentionBatch } = await import('../../src/reply/mention-batcher.js');
+            type BatcherCtx = Parameters<typeof submitToMentionBatch>[0];
+
+            const fakeCtx = (fields: {
+                messageId: number;
+                userId?: number;
+                forward?: boolean;
+                photo?: boolean;
+            }): BatcherCtx => {
+                const shape = {
+                    chat: { id: OFFLINE_CHAT_ID, type: 'private' },
+                    message: {
+                        message_id: fields.messageId,
+                        from: { id: fields.userId ?? 500, is_bot: false, first_name: 'T' },
+                        ...(fields.forward ? { forward_origin: { type: 'hidden_user' } } : {}),
+                        ...(fields.photo ? { photo: [{}] } : {}),
+                    },
+                };
+                // Only the fields the batcher touches; a real grammy Context is
+                // not constructible without a live bot instance.
+                return shape as unknown as BatcherCtx;
+            };
+
+            interface FlushRecord {
+                anchorId: number;
+                earlierIds: number[];
+            }
+            const flushes: FlushRecord[] = [];
+            const record = (anchorCtx: BatcherCtx, earlierIds: number[]): Promise<void> => {
+                flushes.push({
+                    anchorId: anchorCtx.message?.message_id ?? -1,
+                    earlierIds,
+                });
+                return Promise.resolve();
+            };
+            const settle = (): Promise<void> =>
+                new Promise((resolve) => setTimeout(resolve, 250));
+
+            // 1. A forwarded burst collapses into one flush anchored on the last
+            const f1 = takeMessageId();
+            const f2 = takeMessageId();
+            const f3 = takeMessageId();
+            submitToMentionBatch(fakeCtx({ messageId: f1, forward: true }), record);
+            submitToMentionBatch(fakeCtx({ messageId: f2, forward: true }), record);
+            submitToMentionBatch(fakeCtx({ messageId: f3, forward: true }), record);
+            expect(flushes.length === 0, 'the window holds the burst back');
+            await settle();
+            expect(flushes.length === 1, 'the burst flushes exactly once');
+            expect(flushes[0]?.anchorId === f3, 'the newest message is the anchor');
+            expect(
+                JSON.stringify(flushes[0]?.earlierIds) === JSON.stringify([f1, f2]),
+                'the earlier members ride along, oldest first'
+            );
+
+            // …and linking them onto the anchor merges the burst into one context
+            const m1 = await seedMessage({ text: '转发一' });
+            const m2 = await seedMessage({ text: '转发二' });
+            const anchor = await seedMessage({ text: '转发三' });
+            await queries.saveMessageLinks(OFFLINE_CHAT_ID, anchor, [m1, m2]);
+            const history = await queries.getRepliesHistory(OFFLINE_CHAT_ID, anchor, {
+                excludeSelf: false,
+            });
+            expect(
+                JSON.stringify(idsOf(history)) === JSON.stringify([m1, m2, anchor]),
+                'the linked burst assembles chronologically with no reply relation'
+            );
+
+            // 2. A plain typed message with no open window triggers immediately
+            flushes.length = 0;
+            const typed = takeMessageId();
+            submitToMentionBatch(fakeCtx({ messageId: typed }), record);
+            expect(
+                flushes.length === 1 && flushes[0]?.anchorId === typed,
+                'plain text with no window flushes with zero delay'
+            );
+            expect(flushes[0]?.earlierIds.length === 0, 'and carries no batch members');
+
+            // 3. A typed message closes an open window on the spot
+            flushes.length = 0;
+            const media = takeMessageId();
+            const question = takeMessageId();
+            submitToMentionBatch(fakeCtx({ messageId: media, photo: true }), record);
+            expect(flushes.length === 0, 'a lone media message opens a window');
+            submitToMentionBatch(fakeCtx({ messageId: question }), record);
+            expect(
+                flushes.length === 1 && flushes[0]?.anchorId === question,
+                'the typed follow-up flushes immediately as the anchor'
+            );
+            expect(
+                JSON.stringify(flushes[0]?.earlierIds) === JSON.stringify([media]),
+                'with the media message as the earlier member'
+            );
+
+            // 4. Different users never share a window
+            flushes.length = 0;
+            const alice = takeMessageId();
+            const bob = takeMessageId();
+            submitToMentionBatch(fakeCtx({ messageId: alice, forward: true, userId: 501 }), record);
+            submitToMentionBatch(fakeCtx({ messageId: bob, forward: true, userId: 502 }), record);
+            await settle();
+            expect(flushes.length === 2, 'two users get two separate flushes');
+            expect(
+                flushes.every((flush) => flush.earlierIds.length === 0),
+                'neither batch absorbed the other user'
+            );
+        },
+    },
+    {
         // Deletes everything seeded above (the seeds carry 1970-era dates), so
         // this case has to stay last.
         name: 'the hourly cleanup deletes expired rows in batches and spares fresh ones',
