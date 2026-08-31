@@ -34,11 +34,12 @@ const saveMessage = async (
         modelParts?: any,
         mediaHint?: string | null,
         forwardOrigin?: string | null,
+        viaBot?: string | null,
         /** Serialized `/chat` parameters when this message is a `/chat` summon */
         chatCommand?: string | null
     }
 ) => {
-    const { chatId, messageId, userId, date = new Date(), userName = '佚名', message, quoteText, fileLink, fileBuffer, fileMime, fileUniqueId, replyToId, modelParts, mediaHint, forwardOrigin, chatCommand } = info;
+    const { chatId, messageId, userId, date = new Date(), userName = '佚名', message, quoteText, fileLink, fileBuffer, fileMime, fileUniqueId, replyToId, modelParts, mediaHint, forwardOrigin, viaBot, chatCommand } = info;
 
     const fromBotSelf = userId === Number(process.env.BOT_USER_ID);
 
@@ -82,6 +83,9 @@ const saveMessage = async (
         }
         if (forwardOrigin !== undefined) {
             existingMessage.forwardOrigin = forwardOrigin;
+        }
+        if (viaBot !== undefined) {
+            existingMessage.viaBot = viaBot;
         }
         if (chatCommand !== undefined) {
             existingMessage.chatCommand = chatCommand;
@@ -127,6 +131,7 @@ const saveMessage = async (
         modelParts: modelParts ?? null,
         mediaHint: mediaHint ?? null,
         forwardOrigin: forwardOrigin ?? null,
+        viaBot: viaBot ?? null,
     });
 
     if (fileLink && !fileBuffer) {

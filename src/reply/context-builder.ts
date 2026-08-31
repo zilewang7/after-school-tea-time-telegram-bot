@@ -317,6 +317,9 @@ const renderMessageHeader = (
     if (msg.forwardOrigin) {
         annotations.push(`[forwarded from ${msg.forwardOrigin}]`);
     }
+    if (msg.viaBot) {
+        annotations.push(`[via inline bot ${msg.viaBot}]`);
+    }
     annotations.push(...replyAnnotations);
     if (msg.mediaHint) {
         // failure hints already end with "you cannot see it" — don't double up

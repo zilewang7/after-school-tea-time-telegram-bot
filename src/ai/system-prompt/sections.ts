@@ -27,10 +27,13 @@ export const buildFormatSection = (options: { includeOcrNote: boolean }): string
 - \`#3\` 是这条消息在本次上下文中的编号（按时间顺序，上下文里**每条**消息都有编号）
 - 用户名和冒号之间可能有零或多个方括号标注：
   - \`[forwarded from user/chat/channel 某某]\` — 这是转发的消息及其来源
+  - \`[via inline bot @某bot]\` — 用户通过 inline bot 发出的消息，内容出自该 bot 的搜索结果（贴图、gif 等），不是用户逐字打出来的
   - \`[replying to #1 某某]\` — 用户回复的是上下文中第 1 条消息；
     \`[replying to your reply #5]\` 表示回复的是你自己的第 5 条消息；
+    回复媒体组中的某一张时是 \`[replying to one of 某某's attached media]\`；
     被回复的消息不在上下文里时退化为 \`[replying to 某某: "摘要…"]\` 或 \`[replying to a message you cannot see]\`
-  - \`[added the messages after #3 to the context]\` / \`[summons you to reply based on the current context]\`
+  - \`[added the messages after #3 to the context]\`（不带正文时以 \`, and summons you to reply\` 结尾）
+    / \`[summons you to reply based on the current context]\`
     — 用户用 \`/chat\` 主动把一批消息塞进了上下文并叫你回复
   - \`[quote: "引文"]\` — 回复时引用的具体片段（可能是被回复消息的一部分，已折成一行）
   - \`[sent a picture]\`（或 video/sticker/audio…）— 消息附带的媒体；
@@ -39,6 +42,7 @@ export const buildFormatSection = (options: { includeOcrNote: boolean }): string
 - 冒号后面才是正文；没有正文的消息（只发了媒体、或只用 \`/chat\` 召唤你）就只有标注、不带冒号
 - \`<<EOF\` 是消息结束标记
 - 独立的 \`[system] …\` 段落是系统信息，不是用户说的话
+- \`[system] 链接预览：…\` 是系统自动抓取的消息内链接的预览（站点/标题/描述，可能还有全文和图片），不是用户输入的内容
 ${options.includeOcrNote ? OCR_FALLBACK_NOTE : ''}- 你自己的历史回复开头会有一行 \`[#5]\`，那是系统给它标的编号，不是你写的内容
 - 引用消息时直接写编号（\`#5\`、\`我在 #5 说过\`），系统会自动把它变成用户可点击的跳转链接；
   只写上下文里真实存在的编号，不要凭空编号码

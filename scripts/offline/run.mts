@@ -55,6 +55,7 @@ interface SeedOptions {
     userName?: string;
     fileUniqueId?: string | null;
     fromBotSelf?: boolean;
+    viaBot?: string | null;
     ocrText?: string | null;
 }
 
@@ -78,6 +79,7 @@ const seedMessage = async (options: SeedOptions = {}): Promise<number> => {
         modelParts: null,
         mediaHint: null,
         forwardOrigin: null,
+        viaBot: options.viaBot ?? null,
         ocrText: options.ocrText ?? null,
     });
     if (options.links?.length) {
@@ -655,6 +657,37 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
             expect(
                 !visionPrompt.includes('OCR') && blindPrompt.includes('OCR'),
                 'the OCR fallback note is injected only for models that cannot see images'
+            );
+        },
+    },
+    {
+        // Inline-mode messages carry the sending bot in a header annotation, so
+        // the model knows the content came out of that bot's results.
+        name: 'a via-bot message is annotated in the header',
+        body: async () => {
+            const { buildContext } = await import('../../src/reply/context-builder.js');
+
+            const messageId = await seedMessage({ text: '看这个', viaBot: '@gif' });
+            const row = await Message.findOne({
+                where: { chatId: OFFLINE_CHAT_ID, messageId },
+            });
+            if (!row) throw new Error('seeded message not found');
+
+            const context = await buildContext(row, {
+                supportsImageInput: true,
+                supportsImageOutput: false,
+                supportsSystemPrompt: true,
+                requiresMessageMerge: false,
+                supportsThinking: false,
+                supportsGrounding: false,
+                supportsMediaInput: false,
+            });
+            const texts = context.flatMap((message) =>
+                message.content.filter((part) => part.type === 'text').map((part) => part.text ?? '')
+            );
+            expect(
+                texts.some((text) => text.includes('[via inline bot @gif]')),
+                `the header carries the inline bot (got ${JSON.stringify(texts)})`
             );
         },
     },

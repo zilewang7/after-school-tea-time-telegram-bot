@@ -757,6 +757,13 @@ export const autoSave = (bot: Bot) => {
                         )
                     );
                 const forwardOrigin = resolveForwardOrigin(ctx.message?.forward_origin);
+                // Inline-mode messages ("via @bot"): the content came out of that
+                // bot's inline results, not typed by the user
+                const viaBot = ctx.message?.via_bot
+                    ? (ctx.message.via_bot.username
+                        ? `@${ctx.message.via_bot.username}`
+                        : ctx.message.via_bot.first_name)
+                    : undefined;
 
                 const chatId = ctx.chat.id;
                 const messageId = ctx.message.message_id;
@@ -792,6 +799,7 @@ export const autoSave = (bot: Bot) => {
                     chatCommand: chatCommandSpec ? serializeChatCommand(chatCommandSpec) : null,
                     mediaHint: media ? media.hint : undefined,
                     forwardOrigin,
+                    viaBot,
                 }), `ingest ${chatId}/${messageId}`);
 
                 // Acquire media bytes asynchronously (download + optional .tgs->webm),
@@ -828,6 +836,7 @@ export const autoSave = (bot: Bot) => {
                             replyToId,
                             mediaHint: finalHint,
                             forwardOrigin,
+                            viaBot,
                         }), `media update ${chatId}/${messageId}`));
                         if (saveErr) {
                             console.error('[autoSave] Failed to update message with media:', saveErr);

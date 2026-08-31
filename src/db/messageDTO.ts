@@ -32,6 +32,8 @@ export class Message extends Model<InferAttributes<Message>, InferCreationAttrib
   declare mediaHint: string | null;
   /** Forward origin, e.g. "user 张三" / "channel 某频道" */
   declare forwardOrigin: string | null;
+  /** Inline bot the message was sent via, e.g. "@gif" */
+  declare viaBot: string | null;
   /** Text recognized in this message's images, for models that can't see them */
   declare ocrText: string | null;
 }
@@ -99,6 +101,11 @@ Message.init({
     defaultValue: null,
   },
   forwardOrigin: {
+    type: DataTypes.STRING,
+    allowNull: true,
+    defaultValue: null,
+  },
+  viaBot: {
     type: DataTypes.STRING,
     allowNull: true,
     defaultValue: null,
