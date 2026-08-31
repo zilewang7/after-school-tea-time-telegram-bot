@@ -18,7 +18,7 @@ import {
 } from './chat-command-selection.js';
 
 /** Never attach more than this many messages to one reply */
-const MAX_ATTACHED_MESSAGES = 50;
+const MAX_ATTACHED_MESSAGES = 100;
 
 /**
  * Hard cap on the rows a single `/chat a` scans, so an ancient reply target
@@ -122,7 +122,7 @@ export const dealChatCommand = async (ctx: Context): Promise<ChatCommandOutcome>
     const selected = selectAttachedMessageIds(candidates, parsed.spec, commandMessageId);
 
     if (selected.length > MAX_ATTACHED_MESSAGES) {
-        await ctx.reply(`共查询到 ${selected.length} 条消息，超出50条，太多了！`);
+        await ctx.reply(`共查询到 ${selected.length} 条消息，超出${MAX_ATTACHED_MESSAGES}条，太多了！`);
         return { type: 'too-many', matched: selected.length };
     }
 
