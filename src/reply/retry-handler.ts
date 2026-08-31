@@ -9,7 +9,7 @@ import { getMessage, getBotResponse } from '../db/index.js';
 import type { CommandType } from '../db/index.js';
 import { collectReferenceImages } from './commands/reference-images.js';
 import { startRetry } from '../services/index.js';
-import { sendMessage, getSystemPrompt, getModelCapabilities } from '../ai/index.js';
+import { sendMessage, buildSystemPrompt, getModelCapabilities } from '../ai/index.js';
 import { buildContext, buildContextFromParts } from './context-builder.js';
 import { getCurrentModel } from '../state.js';
 import { to } from '../shared/result.js';
@@ -266,7 +266,7 @@ const handleChatRetry = async (
     const [streamErr, stream] = await to(
         sendMessage(chatContents, {
             model,
-            systemPrompt: getSystemPrompt(),
+            systemPrompt: buildSystemPrompt(model),
             signal: session.streamController.signal,
         })
     );

@@ -620,22 +620,41 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
             process.env.BOT_USER_NAME = 'WatchFirstBot';
             process.env.BOT_NAME = 'Test-KON';
 
-            const { getSystemPrompt } = await import('../../src/ai/platform-factory.js');
-            const prompt = getSystemPrompt();
+            const { buildSystemPrompt } = await import('../../src/ai/system-prompt/index.js');
+            // gemini sees images, mimo-pro does not — the OCR note must follow
+            const visionPrompt = buildSystemPrompt('gemini-3.1-pro-preview');
+            const blindPrompt = buildSystemPrompt('mimo-v2.5-pro');
             rmSync(promptPath, { force: true });
             process.env.BOT_USER_NAME = ownUserName;
 
             expect(
-                prompt.includes('@WatchFirstBot') && prompt.includes('你的用户名是 Test-KON'),
-                `the running bot's own identity is substituted (got ${JSON.stringify(prompt)})`
+                visionPrompt.includes('@WatchFirstBot') && visionPrompt.includes('你的用户名是 Test-KON'),
+                `the running bot's own identity is substituted (got ${JSON.stringify(visionPrompt.slice(0, 200))})`
             );
             expect(
-                !prompt.includes('{{BOT_USER_NAME}}') && !prompt.includes('{{BOT_NAME}}'),
+                !visionPrompt.includes('{{BOT_USER_NAME}}') && !visionPrompt.includes('{{BOT_NAME}}'),
                 'no placeholder is left behind'
             );
             expect(
-                prompt.includes('{{UNKNOWN_VAR}}'),
+                visionPrompt.includes('{{UNKNOWN_VAR}}'),
                 'a variable outside the allowlist is left verbatim rather than silently dropped'
+            );
+            expect(
+                /当前时间：\d{4}\/\d{2}\/\d{2} \d{2}:\d{2} 周./.test(visionPrompt),
+                `the current time is injected as YYYY/MM/DD HH:mm 周X (got ${JSON.stringify(visionPrompt.match(/当前时间：[^\n]*/)?.[0])})`
+            );
+            expect(
+                visionPrompt.includes('当前模型：gemini-3.1-pro-preview') &&
+                    blindPrompt.includes('当前模型：mimo-v2.5-pro'),
+                'the current model id is injected'
+            );
+            expect(
+                visionPrompt.includes('# 你收到的消息格式') && visionPrompt.includes('<<EOF'),
+                'the built-in format protocol section is appended'
+            );
+            expect(
+                !visionPrompt.includes('OCR') && blindPrompt.includes('OCR'),
+                'the OCR fallback note is injected only for models that cannot see images'
             );
         },
     },

@@ -18,8 +18,10 @@ export {
     isImageModel,
     getDefaultModel,
     sendMessage,
-    getSystemPrompt,
 } from './platform-factory.js';
+
+// System prompt (layered assembly)
+export { buildSystemPrompt, getPreferencePrompt } from './system-prompt/index.js';
 
 // Platform classes (for direct use if needed)
 export { GeminiPlatform } from './platforms/gemini-platform.js';

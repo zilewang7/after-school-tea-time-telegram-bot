@@ -10,7 +10,7 @@ import {
     findChildMessageIds,
     type ContextMessage,
 } from '../db/queries/context-queries.js';
-import { sendMessage, getSystemPrompt, getModelCapabilities } from '../ai/index.js';
+import { sendMessage, buildSystemPrompt, getModelCapabilities } from '../ai/index.js';
 import { getCurrentModel, getMediaGroupIdTemp, getAsyncFileSaveMsgIdList, getAsyncPreviewMsgIdList, getAsyncOcrMsgIdList, tryMarkUserMessageHandling } from '../state.js';
 import { checkIfMentioned } from '../util.js';
 import { buildContext } from './context-builder.js';
@@ -243,7 +243,7 @@ export const handleReply = async (
     const streamResult = await to(
         sendMessage(chatContents, {
             model,
-            systemPrompt: getSystemPrompt(),
+            systemPrompt: buildSystemPrompt(model),
             signal: chatContext.session.streamController.signal,
         })
     );
