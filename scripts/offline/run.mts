@@ -2359,6 +2359,83 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
         },
     },
     {
+        name: 'the keyboard is dropped when only bodyless failures precede a good version',
+        body: async () => {
+            const { decideFinalButtonState } = await import(
+                '../../src/services/final-button-state.js'
+            );
+            const { ButtonState } = await import('../../src/db/botResponseDTO.js');
+            type Version = Parameters<typeof decideFinalButtonState>[0]['versions'][number];
+
+            let versionId = 0;
+            const version = (fields: { text?: string; imageBase64?: string }): Version => ({
+                versionId: ++versionId,
+                createdAt: new Date().toISOString(),
+                messageIds: [versionId],
+                currentMessageId: versionId,
+                text: fields.text ?? '',
+                imageBase64: fields.imageBase64,
+                wasStoppedByUser: false,
+            });
+            const decide = (
+                versions: Version[],
+                overrides?: { hasError?: boolean; editedWhileProcessing?: boolean }
+            ) =>
+                decideFinalButtonState({
+                    versions,
+                    hasError: overrides?.hasError ?? false,
+                    editedWhileProcessing: overrides?.editedWhileProcessing ?? false,
+                });
+
+            const emptyFailure = version({});
+            const goodText = version({ text: 'a proper answer' });
+
+            expect(
+                decide([emptyFailure, goodText]) === ButtonState.NONE,
+                'empty failure + clean answer hides the keyboard'
+            );
+            expect(
+                decide([emptyFailure, version({}), version({ text: 'finally' })]) ===
+                    ButtonState.NONE,
+                'any number of bodyless failures before the good version still hides it'
+            );
+            expect(
+                decide([emptyFailure, version({ imageBase64: 'aGk=' })]) === ButtonState.NONE,
+                'an image counts as body for the current version'
+            );
+            expect(
+                decide([version({ text: 'partial words' }), version({ text: 'retried' })]) ===
+                    ButtonState.HAS_VERSIONS,
+                'an earlier version with body keeps version switching'
+            );
+            expect(
+                decide([version({ imageBase64: 'aGk=' }), version({ text: 'retried' })]) ===
+                    ButtonState.HAS_VERSIONS,
+                'an earlier image-only version also counts as switchable body'
+            );
+            expect(
+                decide([emptyFailure, version({ text: 'partial' })], { hasError: true }) ===
+                    ButtonState.HAS_VERSIONS,
+                'a current version that itself errored keeps the keyboard'
+            );
+            expect(
+                decide([emptyFailure, version({})]) === ButtonState.HAS_VERSIONS,
+                'a bodyless current version keeps the keyboard (retry stays reachable)'
+            );
+            expect(
+                decide([emptyFailure, goodText], { editedWhileProcessing: true }) ===
+                    ButtonState.EDIT_DETECTED,
+                'the collapse falls through to the edit-detected offer'
+            );
+            expect(
+                decide([goodText]) === ButtonState.NONE &&
+                    decide([version({ text: 'oops' })], { hasError: true }) ===
+                        ButtonState.RETRY_ONLY,
+                'single-version behavior is unchanged'
+            );
+        },
+    },
+    {
         // Deletes everything seeded above (the seeds carry 1970-era dates), so
         // this case has to stay last.
         name: 'the hourly cleanup deletes expired rows in batches and spares fresh ones',

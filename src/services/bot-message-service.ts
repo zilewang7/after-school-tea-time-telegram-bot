@@ -32,6 +32,7 @@ import {
     unregisterContinuation,
 } from '../state.js';
 import { runApiCall, submitEdit } from '../telegram/edit-coordinator.js';
+import { decideFinalButtonState } from './final-button-state.js';
 import type { AgentStats } from '../ai/types.js';
 
 /**
@@ -368,14 +369,11 @@ const finalizeSession = async (
             session.chatId,
             session.userMessageId
         );
-        const hasMultipleVersions = response.getVersions().length > 1;
-        const hasError = options?.wasStoppedByUser || options?.errorMessage;
-        response.buttonState = match({ hasMultipleVersions, hasError })
-            .with({ hasMultipleVersions: true }, () => ButtonState.HAS_VERSIONS)
-            .with({ hasError: true }, () => ButtonState.RETRY_ONLY)
-            .otherwise(() =>
-                editedWhileProcessing ? ButtonState.EDIT_DETECTED : ButtonState.NONE
-            );
+        response.buttonState = decideFinalButtonState({
+            versions: response.getVersions(),
+            hasError: Boolean(options?.wasStoppedByUser || options?.errorMessage),
+            editedWhileProcessing,
+        });
 
         // Update metadata if has images
         if (session.images.length > 0) {
