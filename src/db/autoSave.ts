@@ -22,6 +22,7 @@ import { getCachedMedia, putCachedMedia } from '../services/media-cache-service.
 import { isGeminiSupportedMimeType } from '../ai/supported-mime.js';
 import { uploadFileToGcs, uploadBytesToGcs, deleteGcsObject, isGcsEnabled } from '../services/gcs-service.js';
 import { acquireLinkPreview, extractFirstUrl, isLuoxuPreviewEnabled } from '../services/luoxu-preview-service.js';
+import { primeDanmakuSnapshot } from '../services/bilibili-danmaku-service.js';
 import { acquireOcr, isLuoxuOcrEnabled } from '../services/luoxu-ocr-service.js';
 import { convertTgsToWebm, normalizeShortVideo } from '../services/tgs-client.js';
 import { to } from 'await-to-js';
@@ -900,6 +901,15 @@ export const autoSave = (bot: Bot) => {
                         removeAsyncPreviewMsgId(messageId);
                     })();
                 }
+
+                // Bilifeed videos: archive a danmaku snapshot while the video is
+                // still alive, so a later deletion can fall back to it.
+                primeDanmakuSnapshot({
+                    text: baseText,
+                    viaBot: viaBot ?? null,
+                    forwardOrigin: forwardOrigin ?? null,
+                    mediaHint: media ? media.hint : null,
+                });
 
                 // OCR: recognize the text inside this message's images (its own,
                 // plus the preview/IV images of its link) so models that cannot

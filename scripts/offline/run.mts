@@ -2444,6 +2444,8 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
                 parseDanmakuXml,
                 selectDanmaku,
                 renderDanmakuBlock,
+                saveDanmakuSnapshot,
+                loadArchivedDanmakuBlock,
             } = await import('../../src/services/bilibili-danmaku-service.js');
 
             // --- trigger condition ---
@@ -2536,6 +2538,29 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
             expect(
                 renderDanmakuBlock({ aid: '1', bvid: null, page: 1 }, []) === null,
                 'no danmaku means no block at all'
+            );
+
+            // --- archive snapshot roundtrip (deletion fallback) ---
+            const snapshotRef = { aid: '999000111', bvid: null, page: 1 };
+            await saveDanmakuSnapshot(snapshotRef, entries);
+            const archived = await loadArchivedDanmakuBlock(snapshotRef);
+            expect(
+                Boolean(
+                    archived?.includes('弹幕存档快照') &&
+                        archived.includes('av999000111') &&
+                        archived.includes('[02:06] 是不是太正常了')
+                ),
+                'a persisted snapshot renders back as a marked archive block'
+            );
+            await saveDanmakuSnapshot(snapshotRef, []);
+            expect(
+                (await loadArchivedDanmakuBlock(snapshotRef)) === archived,
+                'an empty fetch result never overwrites an existing snapshot'
+            );
+            expect(
+                (await loadArchivedDanmakuBlock({ aid: '404404', bvid: null, page: 1 })) ===
+                    null,
+                'a video never snapshotted has no archive to fall back to'
             );
         },
     },

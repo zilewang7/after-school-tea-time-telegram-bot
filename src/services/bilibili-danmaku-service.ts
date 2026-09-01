@@ -10,7 +10,13 @@
  * posted, so an ingest-time snapshot would be stale-thin for fresh videos) and
  * cached in memory by video+page. Failures never block a reply: short request
  * timeouts, a negative cache, and a cool-down after network errors.
+ *
+ * Every successful fetch also persists the parsed danmaku as a DB snapshot —
+ * bilibili closes the danmaku pool server-side when a video is deleted and no
+ * public archive covers arbitrary UGC videos, so when a live fetch comes back
+ * empty-handed the last snapshot is served instead, marked as an archive.
  */
+import { BiliDanmakuSnapshot } from '../db/biliDanmakuSnapshotDTO.js';
 import type { UnifiedContentPart } from '../ai/types.js';
 
 /** One video reference extracted from a message text */
@@ -144,19 +150,11 @@ const formatTimestamp = (timeSec: number): string => {
     return `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
 };
 
-/** Render the injected context block; null when there is nothing to show */
-export const renderDanmakuBlock = (
-    ref: BilibiliVideoRef,
-    entries: DanmakuEntry[]
-): string | null => {
-    if (!entries.length) return null;
-    const selected = selectDanmaku(entries, MAX_DANMAKU_LINES);
+const videoLabelOf = (ref: BilibiliVideoRef): string =>
+    `${ref.bvid ?? `av${ref.aid}`}${ref.page > 1 ? ` P${ref.page}` : ''}`;
 
-    const videoLabel = ref.bvid ?? `av${ref.aid}`;
-    const pageLabel = ref.page > 1 ? ` P${ref.page}` : '';
-    const header = `[system] 该 B 站视频（${videoLabel}${pageLabel}）的观众弹幕节选（${selected.length} 条，按视频内出现时间排序）。弹幕是观众发表的评论，反映观众反应，不代表视频本身的内容：`;
+const renderLines = (header: string, selected: DanmakuEntry[]): string => {
     const lines = [header];
-
     let totalChars = header.length;
     for (const entry of selected) {
         const line = `[${formatTimestamp(entry.timeSec)}] ${entry.text}`;
@@ -165,6 +163,30 @@ export const renderDanmakuBlock = (
         lines.push(line);
     }
     return lines.join('\n');
+};
+
+/** Render the injected context block; null when there is nothing to show */
+export const renderDanmakuBlock = (
+    ref: BilibiliVideoRef,
+    entries: DanmakuEntry[]
+): string | null => {
+    if (!entries.length) return null;
+    const selected = selectDanmaku(entries, MAX_DANMAKU_LINES);
+    const header = `[system] 该 B 站视频（${videoLabelOf(ref)}）的观众弹幕节选（${selected.length} 条，按视频内出现时间排序）。弹幕是观众发表的评论，反映观众反应，不代表视频本身的内容：`;
+    return renderLines(header, selected);
+};
+
+/** Render a persisted snapshot of a video that can no longer be fetched live */
+export const renderArchivedDanmakuBlock = (
+    ref: BilibiliVideoRef,
+    entries: DanmakuEntry[],
+    capturedAt: Date
+): string | null => {
+    if (!entries.length) return null;
+    const selected = selectDanmaku(entries, MAX_DANMAKU_LINES);
+    const capturedDate = capturedAt.toISOString().slice(0, 10);
+    const header = `[system] 该 B 站视频（${videoLabelOf(ref)}）的弹幕当前无法实时获取（视频可能已失效），以下为此前抓取的弹幕存档快照（${capturedDate} 抓取，${selected.length} 条，按视频内出现时间排序）。弹幕是观众发表的评论，不代表视频本身的内容：`;
+    return renderLines(header, selected);
 };
 
 interface PagelistPage {
@@ -228,16 +250,67 @@ const remember = (key: string, block: string | null, ttlMs: number): void => {
     cache.set(key, { expiresAt: Date.now() + ttlMs, block });
 };
 
-const fetchDanmakuBlock = async (ref: BilibiliVideoRef): Promise<string | null> => {
+/** Parsed danmaku, or null when the video is gone (pagelist knows no cid) */
+const fetchDanmakuEntries = async (ref: BilibiliVideoRef): Promise<DanmakuEntry[] | null> => {
     const cid = await resolveCid(ref);
     if (cid === null) return null;
-    const entries = parseDanmakuXml(await fetchDanmakuXml(cid));
-    return renderDanmakuBlock(ref, entries);
+    return parseDanmakuXml(await fetchDanmakuXml(cid));
 };
+
+const videoRefKey = (ref: BilibiliVideoRef): string =>
+    `${ref.bvid ?? `av${ref.aid}`}:p${ref.page}`;
+
+/**
+ * Persist the parsed danmaku as the video's archive snapshot. An empty list
+ * never overwrites an existing snapshot — emptiness is what the archive is for.
+ */
+export const saveDanmakuSnapshot = async (
+    ref: BilibiliVideoRef,
+    entries: DanmakuEntry[]
+): Promise<void> => {
+    if (!entries.length) return;
+    await BiliDanmakuSnapshot.upsert({
+        videoKey: videoRefKey(ref),
+        entries: JSON.stringify(entries),
+        entryCount: entries.length,
+        capturedAt: new Date(),
+    });
+};
+
+const isDanmakuEntry = (value: unknown): value is DanmakuEntry =>
+    typeof value === 'object' &&
+    value !== null &&
+    'timeSec' in value &&
+    typeof value.timeSec === 'number' &&
+    'weight' in value &&
+    typeof value.weight === 'number' &&
+    'text' in value &&
+    typeof value.text === 'string';
+
+/** The rendered archive snapshot for a video, or null when none was captured */
+export const loadArchivedDanmakuBlock = async (
+    ref: BilibiliVideoRef
+): Promise<string | null> => {
+    const row = await BiliDanmakuSnapshot.findByPk(videoRefKey(ref));
+    if (!row) return null;
+    const parsed: unknown = (() => {
+        try {
+            return JSON.parse(row.entries);
+        } catch {
+            return null;
+        }
+    })();
+    if (!Array.isArray(parsed)) return null;
+    return renderArchivedDanmakuBlock(ref, parsed.filter(isDanmakuEntry), row.capturedAt);
+};
+
+const toPart = (block: string | null): UnifiedContentPart | null =>
+    block === null ? null : { type: 'text', text: block };
 
 /**
  * The context-builder entry point: the danmaku text part for one message, or
- * null when the message is not a bilifeed video / has no danmaku / fetch failed.
+ * null when the message is not a bilifeed video / has no danmaku anywhere.
+ * A dead or empty live fetch falls back to the archive snapshot.
  */
 export const getBilibiliDanmakuPart = async (
     msg: DanmakuSourceMessage
@@ -246,27 +319,52 @@ export const getBilibiliDanmakuPart = async (
     const ref = extractBilibiliVideoRef(msg.text);
     if (!ref) return null;
 
-    const key = `${ref.bvid ?? `av${ref.aid}`}:p${ref.page}`;
+    const key = videoRefKey(ref);
     const cached = cache.get(key);
     if (cached && cached.expiresAt > Date.now()) {
-        return cached.block === null ? null : { type: 'text', text: cached.block };
+        return toPart(cached.block);
     }
     if (Date.now() < coolDownUntil) return null;
 
     try {
-        const block = await fetchDanmakuBlock(ref);
-        remember(key, block, block === null ? FAILURE_TTL_MS : SUCCESS_TTL_MS);
-        if (block !== null) {
+        const entries = await fetchDanmakuEntries(ref);
+        if (entries && entries.length) {
+            const block = renderDanmakuBlock(ref, entries);
+            remember(key, block, SUCCESS_TTL_MS);
+            saveDanmakuSnapshot(ref, entries).catch((error) => {
+                console.error(
+                    '[bili-danmaku] snapshot persist failed:',
+                    error instanceof Error ? error.message : error
+                );
+            });
             console.log(`[bili-danmaku] injected danmaku for ${key}`);
+            return toPart(block);
         }
-        return block === null ? null : { type: 'text', text: block };
+
+        // Video deleted (no cid) or its pool is closed/empty → archive fallback
+        const archived = await loadArchivedDanmakuBlock(ref);
+        remember(key, archived, FAILURE_TTL_MS);
+        if (archived !== null) {
+            console.log(`[bili-danmaku] served archived snapshot for ${key}`);
+        }
+        return toPart(archived);
     } catch (error) {
         coolDownUntil = Date.now() + COOL_DOWN_MS;
-        remember(key, null, FAILURE_TTL_MS);
         console.error(
             '[bili-danmaku] fetch failed:',
             error instanceof Error ? error.message : error
         );
-        return null;
+        const archived = await loadArchivedDanmakuBlock(ref).catch(() => null);
+        remember(key, archived, FAILURE_TTL_MS);
+        return toPart(archived);
     }
+};
+
+/**
+ * Ingest-time hook: capture the danmaku snapshot while the video is still
+ * alive, ahead of anyone asking. Fire-and-forget; shares the pipeline (and
+ * its cache/cool-down) with the context-build path.
+ */
+export const primeDanmakuSnapshot = (msg: DanmakuSourceMessage): void => {
+    void getBilibiliDanmakuPart(msg);
 };
