@@ -12,6 +12,7 @@ import {
     type ContextMessage,
 } from '../db/queries/context-queries.js';
 import { getLinkPreviewParts } from '../services/luoxu-preview-service.js';
+import { getBilibiliDanmakuPart } from '../services/bilibili-danmaku-service.js';
 import { buildOcrFallbackPart } from '../services/luoxu-ocr-service.js';
 import { applyModelCapabilities } from '../ai/message-transformer.js';
 import { getCurrentModel, setContextNumbering } from '../state.js';
@@ -432,6 +433,12 @@ const buildUserMessage = async (
         includeOcrFallback: !capabilities.supportsImageInput,
     });
     parts.push(...previewParts);
+
+    // Viewer danmaku for a bilibili video shared through @bilifeedbot.
+    const danmakuPart = await getBilibiliDanmakuPart(msg);
+    if (danmakuPart) {
+        parts.push(danmakuPart);
+    }
 
     // Nudges about the attachments the model can really see (watch/listen,
     // sticker emoji, sticker clips).

@@ -2436,6 +2436,110 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
         },
     },
     {
+        name: 'bilifeed video messages get their danmaku extracted and rendered',
+        body: async () => {
+            const {
+                isBilifeedVideoMessage,
+                extractBilibiliVideoRef,
+                parseDanmakuXml,
+                selectDanmaku,
+                renderDanmakuBlock,
+            } = await import('../../src/services/bilibili-danmaku-service.js');
+
+            // --- trigger condition ---
+            const inlinePost = {
+                text: '[标题](https://www.bilibili.com/video/av117189625585269?p=1)',
+                viaBot: '@bilifeedbot',
+                forwardOrigin: null,
+                mediaHint: 'a video',
+            };
+            const forwardedPost = {
+                ...inlinePost,
+                viaBot: null,
+                forwardOrigin: 'user Bilibili Feed Bot',
+            };
+            expect(
+                isBilifeedVideoMessage(inlinePost) && isBilifeedVideoMessage(forwardedPost),
+                'inline via @bilifeedbot and forwards of it both trigger'
+            );
+            expect(
+                !isBilifeedVideoMessage({ ...inlinePost, mediaHint: 'a picture' }),
+                'a bilifeed post without a video does not trigger'
+            );
+            expect(
+                !isBilifeedVideoMessage({ ...inlinePost, viaBot: '@gif' }),
+                'a video via some other inline bot does not trigger'
+            );
+
+            // --- video reference extraction ---
+            const avRef = extractBilibiliVideoRef(inlinePost.text);
+            expect(
+                avRef?.aid === '117189625585269' && avRef.bvid === null && avRef.page === 1,
+                'the avid and page are read out of the markdown link'
+            );
+            const bvRef = extractBilibiliVideoRef(
+                'look https://www.bilibili.com/video/BV1uht86rEDA?p=3&t=10 nice'
+            );
+            expect(
+                bvRef?.bvid === 'BV1uht86rEDA' && bvRef.page === 3,
+                'BV ids and a mid-query p= parameter are extracted'
+            );
+            expect(
+                extractBilibiliVideoRef('no video here') === null,
+                'a text without a video link yields no reference'
+            );
+
+            // --- XML parsing (entities decoded, empty lines dropped) ---
+            const xml =
+                '<?xml version="1.0"?><i><maxlimit>1000</maxlimit>' +
+                '<d p="126.248,5,25,16777215,1788202194,0,a1,90001,10">是不是太正常了</d>' +
+                '<d p="3.5,1,25,16777215,1788202194,0,a2,90002,4">A &amp;&lt;B&gt; &#33; ok</d>' +
+                '<d p="60,1,25,16777215,1788202194,0,a3,90003,7">   </d>' +
+                '</i>';
+            const entries = parseDanmakuXml(xml);
+            expect(
+                entries.length === 2 && entries[1].text === 'A &<B> ! ok',
+                'danmaku lines are parsed and XML entities are decoded'
+            );
+            expect(
+                entries[0].timeSec === 126.248 && entries[0].weight === 10,
+                'appearance time and weight come from the p attribute'
+            );
+
+            // --- over-cap selection keeps the heavy ones, in timeline order ---
+            const many = Array.from({ length: 10 }, (_, i) => ({
+                timeSec: 10 - i,
+                weight: i,
+                text: `w${i}`,
+            }));
+            const picked = selectDanmaku(many, 3);
+            expect(
+                picked.map((entry) => entry.text).join(',') === 'w9,w8,w7' &&
+                    picked[0].timeSec < picked[2].timeSec,
+                'selection keeps the highest-weight danmaku and restores timeline order'
+            );
+
+            // --- rendered block ---
+            const block = renderDanmakuBlock(
+                { aid: null, bvid: 'BV1uht86rEDA', page: 2 },
+                entries
+            );
+            expect(
+                Boolean(
+                    block?.startsWith('[system]') &&
+                        block.includes('BV1uht86rEDA P2') &&
+                        block.includes('[02:06] 是不是太正常了') &&
+                        block.includes('[00:03] A &<B> ! ok')
+                ),
+                'the block carries the video label and mm:ss-stamped lines'
+            );
+            expect(
+                renderDanmakuBlock({ aid: '1', bvid: null, page: 1 }, []) === null,
+                'no danmaku means no block at all'
+            );
+        },
+    },
+    {
         // Deletes everything seeded above (the seeds carry 1970-era dates), so
         // this case has to stay last.
         name: 'the hourly cleanup deletes expired rows in batches and spares fresh ones',
