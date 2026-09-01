@@ -12,11 +12,13 @@
  * timeouts, a negative cache, and a cool-down after network errors.
  *
  * Every successful fetch also persists the parsed danmaku as a DB snapshot —
- * bilibili closes the danmaku pool server-side when a video is deleted and no
- * public archive covers arbitrary UGC videos, so when a live fetch comes back
- * empty-handed the last snapshot is served instead, marked as an archive.
+ * bilibili closes the danmaku pool server-side when a video is deleted, so
+ * when a live fetch comes back empty-handed the fallback chain is: our own
+ * snapshot, then the Internet Archive (biliarchiver items, a lucky-hit source),
+ * each served with an archive-marked header.
  */
 import { BiliDanmakuSnapshot } from '../db/biliDanmakuSnapshotDTO.js';
+import { fetchArchiveOrgDanmakuFile, parseAssDanmaku } from './bilibili-danmaku-archive.js';
 import type { UnifiedContentPart } from '../ai/types.js';
 
 /** One video reference extracted from a message text */
@@ -266,14 +268,15 @@ const videoRefKey = (ref: BilibiliVideoRef): string =>
  */
 export const saveDanmakuSnapshot = async (
     ref: BilibiliVideoRef,
-    entries: DanmakuEntry[]
+    entries: DanmakuEntry[],
+    capturedAt: Date = new Date()
 ): Promise<void> => {
     if (!entries.length) return;
     await BiliDanmakuSnapshot.upsert({
         videoKey: videoRefKey(ref),
         entries: JSON.stringify(entries),
         entryCount: entries.length,
-        capturedAt: new Date(),
+        capturedAt,
     });
 };
 
@@ -341,13 +344,43 @@ export const getBilibiliDanmakuPart = async (
             return toPart(block);
         }
 
-        // Video deleted (no cid) or its pool is closed/empty → archive fallback
+        // Video deleted (no cid) or its pool is closed/empty → archive fallbacks:
+        // our own snapshot first, then the Internet Archive (biliarchiver items)
         const archived = await loadArchivedDanmakuBlock(ref);
-        remember(key, archived, FAILURE_TTL_MS);
         if (archived !== null) {
+            remember(key, archived, FAILURE_TTL_MS);
             console.log(`[bili-danmaku] served archived snapshot for ${key}`);
+            return toPart(archived);
         }
-        return toPart(archived);
+
+        const iaFile = await fetchArchiveOrgDanmakuFile(ref).catch((error) => {
+            console.error(
+                '[bili-danmaku] archive.org lookup failed:',
+                error instanceof Error ? error.message : error
+            );
+            return null;
+        });
+        const iaEntries = iaFile
+            ? iaFile.kind === 'xml'
+                ? parseDanmakuXml(iaFile.content)
+                : parseAssDanmaku(iaFile.content)
+            : [];
+        if (iaFile && iaEntries.length) {
+            // Persist the recovered danmaku locally, so the next miss is a DB hit
+            await saveDanmakuSnapshot(ref, iaEntries, iaFile.archivedAt).catch((error) => {
+                console.error(
+                    '[bili-danmaku] snapshot persist failed:',
+                    error instanceof Error ? error.message : error
+                );
+            });
+            const block = renderArchivedDanmakuBlock(ref, iaEntries, iaFile.archivedAt);
+            remember(key, block, SUCCESS_TTL_MS);
+            console.log(`[bili-danmaku] recovered danmaku from archive.org for ${key}`);
+            return toPart(block);
+        }
+
+        remember(key, null, FAILURE_TTL_MS);
+        return null;
     } catch (error) {
         coolDownUntil = Date.now() + COOL_DOWN_MS;
         console.error(

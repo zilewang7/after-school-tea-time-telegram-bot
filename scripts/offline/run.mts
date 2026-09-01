@@ -2562,6 +2562,34 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
                     null,
                 'a video never snapshotted has no archive to fall back to'
             );
+
+            // --- Internet Archive fallback helpers ---
+            const { avToBv, parseAssDanmaku } = await import(
+                '../../src/services/bilibili-danmaku-archive.js'
+            );
+            expect(
+                // Both pairs verified against bilibili's own API
+                avToBv('117189961058874') === 'BV1uht86rEDA' &&
+                    avToBv('170001') === 'BV17x411w7KC',
+                'the offline av→BV conversion matches known pairs'
+            );
+            expect(avToBv('not a number') === null, 'a malformed avid converts to null');
+
+            const ass = [
+                '[Events]',
+                'Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text',
+                'Dialogue: 0,0:02:06.24,0:02:16.24,R2L,,0,0,0,,{\\move(1920,50,-200,50)}是不是太正常了',
+                'Dialogue: 0,0:00:03.50,0:00:13.50,R2L,,0,0,0,,带逗号,的弹幕',
+                'Dialogue: 0,0:00:09.00,0:00:19.00,R2L,,0,0,0,,{\\pos(960,50)}',
+            ].join('\n');
+            const assEntries = parseAssDanmaku(ass);
+            expect(
+                assEntries.length === 2 &&
+                    assEntries[0].text === '是不是太正常了' &&
+                    Math.abs(assEntries[0].timeSec - 126.24) < 0.001 &&
+                    assEntries[1].text === '带逗号,的弹幕',
+                'ASS dialogues parse into timed danmaku with override tags stripped'
+            );
         },
     },
     {
