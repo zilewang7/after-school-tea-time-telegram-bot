@@ -104,6 +104,10 @@ const searchArchiveItems = async (bvid: string, page: number): Promise<string[]>
     });
 };
 
+/** Whether the video already has any item on the Archive (search only) */
+export const hasArchiveOrgItem = async (bvid: string): Promise<boolean> =>
+    (await searchArchiveItems(bvid, 1)).length > 0;
+
 interface ArchiveDanmakuFile {
     name: string;
     kind: 'xml' | 'ass';

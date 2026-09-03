@@ -19,6 +19,7 @@
  */
 import { BiliDanmakuSnapshot } from '../db/biliDanmakuSnapshotDTO.js';
 import { fetchArchiveOrgDanmakuFile, parseAssDanmaku } from './bilibili-danmaku-archive.js';
+import { submitVideoForArchiving } from './biliarchiver-submit-service.js';
 import type { UnifiedContentPart } from '../ai/types.js';
 
 /** One video reference extracted from a message text */
@@ -395,9 +396,14 @@ export const getBilibiliDanmakuPart = async (
 
 /**
  * Ingest-time hook: capture the danmaku snapshot while the video is still
- * alive, ahead of anyone asking. Fire-and-forget; shares the pipeline (and
- * its cache/cool-down) with the context-build path.
+ * alive, ahead of anyone asking, and ask @biliarchiver_bot to put the video
+ * on the public Archive. Fire-and-forget; the snapshot shares the pipeline
+ * (and its cache/cool-down) with the context-build path.
  */
 export const primeDanmakuSnapshot = (msg: DanmakuSourceMessage): void => {
+    if (!isBilifeedVideoMessage(msg)) return;
+    const ref = extractBilibiliVideoRef(msg.text);
+    if (!ref) return;
     void getBilibiliDanmakuPart(msg);
+    submitVideoForArchiving(ref);
 };
