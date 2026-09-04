@@ -25,7 +25,7 @@ const COMMANDS: BotCommand[] = [
     {
         command: "chat",
         description:
-            "为消息添加上下文关联再进行对话，回复消息时输入 /chat [数量] [筛选条件]",
+            "为消息添加上下文关联再进行对话：回复消息时输入 /chat [数量|a|r] [筛选条件]，或 /chat <消息链接> 拼接另一段对话",
     },
     { command: "context", description: "查看当前上下文结构" },
 ];

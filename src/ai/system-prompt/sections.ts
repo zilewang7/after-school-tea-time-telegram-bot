@@ -35,6 +35,7 @@ export const buildFormatSection = (options: { includeOcrNote: boolean }): string
   - \`[added the messages after #3 to the context]\`（不带正文时以 \`, and summons you to reply\` 结尾）
     / \`[summons you to reply based on the current context]\`
     — 用户用 \`/chat\` 主动把一批消息塞进了上下文并叫你回复
+  - \`[attached the conversation around #7 to the context]\` — 用户用 \`/chat\` 把另一段对话（#7 所在的那一串）拼进了本上下文；这只是拼接，不是在叫你回复 #7，也不是在回复这条消息的回复目标
   - \`[quote: "引文"]\` — 回复时引用的具体片段（可能是被回复消息的一部分，已折成一行）
   - \`[sent a picture]\`（或 video/sticker/audio…）— 消息附带的媒体；
     标注里出现 failed / too large / not visible 时说明该媒体你看不到；

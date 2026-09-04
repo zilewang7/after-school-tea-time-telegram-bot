@@ -13,6 +13,7 @@ import {
 } from '../db/queries/context-queries.js';
 import { getLinkPreviewParts } from '../services/luoxu-preview-service.js';
 import { getBilibiliDanmakuPart } from '../services/bilibili-danmaku-service.js';
+import { readStoredChatCommand } from './commands/chat-command-parser.js';
 import { buildOcrFallbackPart } from '../services/luoxu-ocr-service.js';
 import { applyModelCapabilities } from '../ai/message-transformer.js';
 import { getCurrentModel, setContextNumbering } from '../state.js';
@@ -248,6 +249,23 @@ const renderReplyTarget = async (
 };
 
 /**
+ * `/chat <link>` spliced other conversations in without asking for a reply. The
+ * linked messages are in the context whenever their conversation came along,
+ * so `#N` tells the model which stretch was brought in; a link that could not
+ * be followed at build time gets the vague form.
+ */
+const renderLinkedConversationAnnotation = (
+    linkedMessageIds: number[],
+    index: ContextIndex
+): string => {
+    const numbers = linkedMessageIds
+        .map((messageId) => index.numberOf.get(messageId))
+        .filter((number): number is number => number !== undefined);
+    if (!numbers.length) return '[attached another conversation to the context]';
+    return `[attached the conversation around ${numbers.map((number) => `#${number}`).join(', ')} to the context]`;
+};
+
+/**
  * Render the annotation of a `/chat` summon, which replaces `[replying to …]`:
  * the reply was only how the user picked a starting point, not something they
  * were answering.
@@ -262,6 +280,11 @@ const renderChatCommandAnnotation = (
     msg: ContextMessage,
     index: ContextIndex
 ): string | null => {
+    const stored = readStoredChatCommand(msg.chatCommand ?? '');
+    if (stored.mode === 'link') {
+        return renderLinkedConversationAnnotation(stored.linkedMessageIds, index);
+    }
+
     const targetNumber = msg.replyToId === null ? undefined : index.numberOf.get(msg.replyToId);
     const pulledInPart = targetNumber !== undefined && targetNumber > 1;
     const hasWords = Boolean(msg.text?.trim());

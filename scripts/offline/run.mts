@@ -159,7 +159,8 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
             const plain = parse('/chat 5 他们在说什么');
             expect(
                 plain.type === 'valid' &&
-                    plain.spec.messageCount === 5 &&
+                    plain.spec.selection.type === 'count' &&
+                    plain.spec.selection.count === 5 &&
                     plain.spec.prompt === '他们在说什么' &&
                     plain.spec.userScope.type === 'anyone' &&
                     plain.spec.userScope.limit === Infinity,
@@ -175,7 +176,7 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
             const mentioned = parse('/chat@AfterSchoolTeatimeBot a');
             expect(
                 mentioned.type === 'valid' &&
-                    mentioned.spec.messageCount === Infinity &&
+                    mentioned.spec.selection.type === 'all' &&
                     mentioned.spec.prompt === null,
                 'the @BotName form parses, with no prompt of its own'
             );
@@ -208,22 +209,99 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
             const spelledOut = parse('/chat all 总结一下');
             expect(
                 spelledOut.type === 'valid' &&
-                    spelledOut.spec.messageCount === Infinity &&
+                    spelledOut.spec.selection.type === 'all' &&
                     spelledOut.spec.prompt === '总结一下',
                 '`all` is spelled-out `a`'
             );
             expect(
                 (() => {
                     const upper = parse('/chat ALL');
-                    return upper.type === 'valid' && upper.spec.messageCount === Infinity;
+                    return upper.type === 'valid' && upper.spec.selection.type === 'all';
                 })(),
                 'and case does not matter for it'
             );
 
             const summon = parse('/chat 1');
             expect(
-                summon.type === 'valid' && summon.spec.messageCount === 1 && summon.spec.prompt === null,
+                summon.type === 'valid' &&
+                    summon.spec.selection.type === 'count' &&
+                    summon.spec.selection.count === 1 &&
+                    summon.spec.prompt === null,
                 '/chat 1 is a valid pure summon'
+            );
+
+            const recent = parse('/chat r -s 总结');
+            expect(
+                recent.type === 'valid' &&
+                    recent.spec.selection.type === 'recent' &&
+                    recent.spec.userScope.type === 'named' &&
+                    recent.spec.prompt === '总结',
+                '`r` selects the recent burst and still takes a user scope'
+            );
+            expect(
+                (() => {
+                    const spelled = parse('/chat RECENT');
+                    return spelled.type === 'valid' && spelled.spec.selection.type === 'recent';
+                })(),
+                '`recent` is spelled-out `r`, case-insensitive'
+            );
+
+            const linked = parse(
+                '/chat https://t.me/c/1234567890/5678 https://t.me/c/1234567890/91/23?single 顺便看看'
+            );
+            expect(
+                linked.type === 'valid' &&
+                    linked.spec.selection.type === 'link' &&
+                    linked.spec.selection.links.length === 2 &&
+                    linked.spec.selection.links[0]?.messageId === 5678 &&
+                    linked.spec.selection.links[1]?.messageId === 23 &&
+                    linked.spec.prompt === '顺便看看',
+                `a leading message link enters link mode and absorbs further links (got ${JSON.stringify(linked)})`
+            );
+            expect(
+                parse('/chat https://t.me/c/1234567890/5678 -s').type === 'invalid',
+                'a user scope makes no sense on a link splice'
+            );
+            expect(
+                parse('/chat https://example.com/whatever').type === 'invalid',
+                'a non-Telegram URL is not a selection'
+            );
+        },
+    },
+    {
+        name: 'Telegram message links resolve to a chat and a message id',
+        body: async () => {
+            const { parseTelegramMessageLink, linkPointsIntoChat } = await import(
+                '../../src/reply/commands/telegram-message-link.js'
+            );
+            const internal = parseTelegramMessageLink('https://t.me/c/1234567890/5678');
+            expect(
+                internal?.chatRef.type === 'internal' &&
+                    internal.chatRef.chatId === -1001234567890 &&
+                    internal.messageId === 5678,
+                't.me/c/<internal>/<msg> maps to the -100 supergroup id'
+            );
+            const topic = parseTelegramMessageLink('https://t.me/c/1234567890/42/5678?thread=42');
+            expect(topic?.messageId === 5678, 'with a topic segment the last number is the message');
+            const named = parseTelegramMessageLink('https://t.me/Some_Group/77?single');
+            expect(
+                named?.chatRef.type === 'username' &&
+                    named.chatRef.username === 'some_group' &&
+                    named.messageId === 77,
+                'public links carry the username, lower-cased'
+            );
+            expect(parseTelegramMessageLink('https://t.me/joinchat/abc') === null, 'invite links are not message links');
+            expect(parseTelegramMessageLink('https://t.me/c/123/0') === null, 'message id 0 is rejected');
+            if (!internal || !named) throw new Error('parsed links missing');
+            expect(
+                linkPointsIntoChat(internal, { id: -1001234567890 }) &&
+                    !linkPointsIntoChat(internal, { id: -1009999999999 }),
+                'internal links are matched on chat id'
+            );
+            expect(
+                linkPointsIntoChat(named, { id: -1, username: 'SOME_group' }) &&
+                    !linkPointsIntoChat(named, { id: -1 }),
+                'public links are matched on the chat username'
             );
         },
     },
@@ -469,10 +547,14 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
             const { parseChatCommand } = await import(
                 '../../src/reply/commands/chat-command-parser.js'
             );
-            const specOf = (text: string) => {
+            const select = (rows: Parameters<typeof selectAttachedMessageIds>[0], text: string) => {
                 const parsed = parseChatCommand(text, 'ZHANG');
                 if (parsed.type !== 'valid') throw new Error(`not a valid command: ${text}`);
-                return parsed.spec;
+                const { selection, userScope } = parsed.spec;
+                if (selection.type !== 'count' && selection.type !== 'all') {
+                    throw new Error(`not a sequential selection: ${text}`);
+                }
+                return selectAttachedMessageIds(rows, selection, userScope, 99);
             };
 
             const rows = [
@@ -486,35 +568,164 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
             ];
 
             expect(
-                JSON.stringify(selectAttachedMessageIds(rows, specOf('/chat 3 what'), 99)) ===
+                JSON.stringify(select(rows, '/chat 3 what')) ===
                     JSON.stringify([11, 12]),
                 'the count includes the reply target, so 3 attaches 2 more'
             );
             expect(
-                JSON.stringify(selectAttachedMessageIds(rows, specOf('/chat 2 what'), 99)) ===
+                JSON.stringify(select(rows, '/chat 2 what')) ===
                     JSON.stringify([11]),
                 'a count of 2 stops at the first message after the target'
             );
             expect(
-                JSON.stringify(selectAttachedMessageIds(rows, specOf('/chat 4 what'), 99)) ===
+                JSON.stringify(select(rows, '/chat 4 what')) ===
                     JSON.stringify([11, 12, 14]),
                 'the sub-image and the command itself never spend a slot'
             );
             expect(
-                JSON.stringify(selectAttachedMessageIds(rows, specOf('/chat a'), 99)) ===
+                JSON.stringify(select(rows, '/chat a')) ===
                     JSON.stringify([11, 12, 14, 15, 16]),
                 'a takes everything that carries content'
             );
             expect(
-                JSON.stringify(selectAttachedMessageIds(rows, specOf('/chat 4 -2 who'), 99)) ===
+                JSON.stringify(select(rows, '/chat 4 -2 who')) ===
                     JSON.stringify([11, 12, 16]),
                 '-2 admits exactly two people, and the count applies after filtering'
             );
             expect(
-                JSON.stringify(selectAttachedMessageIds(rows, specOf('/chat 1 hi'), 99)) ===
+                JSON.stringify(select(rows, '/chat 1 hi')) ===
                     JSON.stringify([]),
                 'a count of 1 is a pure summon that attaches nothing'
             );
+        },
+    },
+    {
+        name: '/chat r takes the recent burst, gap-bounded and silently capped',
+        body: async () => {
+            const { selectRecentMessageIds, RECENT_GAP_MS } = await import(
+                '../../src/reply/commands/chat-command-selection.js'
+            );
+            const minute = 60_000;
+            const at = (messageId: number, minutesAgo: number, userName = 'ZHANG', text: string | null = `m${messageId}`) => ({
+                messageId,
+                userName,
+                text,
+                date: new Date(100 * minute - minutesAgo * minute),
+            });
+            const anyone = { type: 'anyone' as const, limit: Infinity };
+            const base = { userScope: anyone, commandMessageId: 99, anchorDate: null, maxMessages: 100 };
+
+            // newest first, as the query returns them
+            const rows = [
+                at(20, 1, 'LI'),
+                at(19, 5),
+                at(18, 6, 'LI', 'sub image of [17]'),
+                at(17, 6, 'LI'),
+                at(16, 24), // 18 minutes before #17: same burst
+                at(15, 50), // 26 minutes before #16: previous burst
+                at(14, 51),
+            ];
+            expect(
+                JSON.stringify(selectRecentMessageIds(rows, base)) === JSON.stringify([16, 17, 19, 20]),
+                'stops at the first gap over 20 minutes, drops sub-images, returns ascending'
+            );
+            // Replying to a target 22 minutes ago: the query only returns rows older than it
+            expect(
+                JSON.stringify(
+                    selectRecentMessageIds(rows.slice(4), {
+                        ...base,
+                        anchorDate: new Date(100 * minute - 22 * minute),
+                    })
+                ) === JSON.stringify([16]),
+                'with a reply target the first gap is measured from the target (22→24 ok, 24→50 breaks)'
+            );
+            expect(
+                JSON.stringify(
+                    selectRecentMessageIds(rows, { ...base, userScope: { type: 'named', names: ['LI'] } })
+                ) === JSON.stringify([17, 20]),
+                'the gap is measured before the user scope filters'
+            );
+            expect(
+                JSON.stringify(
+                    selectRecentMessageIds(rows, { ...base, userScope: { type: 'anyone', limit: 1 } })
+                ) === JSON.stringify([17, 20]),
+                '-1 admits the one person nearest the anchor'
+            );
+            const many = Array.from({ length: 150 }, (_, i) => at(1000 - i, i * 0.5));
+            const capped = selectRecentMessageIds(many, { ...base, maxMessages: 100 });
+            expect(
+                capped.length === 100 && capped[0] === 901 && capped[99] === 1000,
+                'over the cap only the 100 nearest the anchor stay, no refusal'
+            );
+            expect(RECENT_GAP_MS === 20 * 60 * 1000, 'the gap is 20 minutes');
+        },
+    },
+    {
+        // The tree is assembled root-down, so a link splice must attach the
+        // linked conversation's root — otherwise only the linked message and
+        // what hangs below it would come along.
+        name: '/chat <link> splices in the whole conversation the linked message sits in',
+        body: async () => {
+            const { attachLinkedConversations, describeLinkProblems } = await import(
+                '../../src/reply/commands/chat-command-link.js'
+            );
+            const { buildContext } = await import('../../src/reply/context-builder.js');
+
+            // Conversation one: A ← B ← C
+            const a = await seedMessage({ text: 'topic A', userName: 'Kuro' });
+            const b = await seedMessage({ replyToId: a, text: 'follow-up B', userName: 'Enren' });
+            const c = await seedMessage({ replyToId: b, text: 'closing C', userName: 'Kuro' });
+            // Conversation two: X, which the splice command replies to
+            const x = await seedMessage({ text: 'unrelated X', userName: 'Enren' });
+            const command = await seedMessage({
+                replyToId: x,
+                text: null,
+                userName: 'Kuro',
+                chatCommand: JSON.stringify({ mode: 'link', linkedMessageIds: [c] }),
+            });
+            const chat = { id: OFFLINE_CHAT_ID };
+            const link = (messageId: number, chatId = OFFLINE_CHAT_ID) => ({
+                chatRef: { type: 'internal' as const, chatId },
+                messageId,
+            });
+
+            const result = await attachLinkedConversations(chat, command, x, [
+                link(c),
+                link(c, OFFLINE_CHAT_ID - 1),
+                link(x),
+                link(987654321),
+            ]);
+            expect(
+                result.attachedRoots === 1 &&
+                    JSON.stringify(result.foreign) === JSON.stringify([c]) &&
+                    JSON.stringify(result.alreadyInTree) === JSON.stringify([x]) &&
+                    JSON.stringify(result.missing) === JSON.stringify([987654321]),
+                `one root attached, the rest classified (got ${JSON.stringify(result)})`
+            );
+            expect(
+                (describeLinkProblems(result) ?? '').includes('只能拼接本群'),
+                'the notice mentions the foreign link'
+            );
+
+            const links = await queries.getLinkedMessageIds(OFFLINE_CHAT_ID, [command]);
+            expect(
+                JSON.stringify(links.get(command)) === JSON.stringify([a]),
+                `the edge points at the root A, not at C (got ${JSON.stringify(links.get(command))})`
+            );
+
+            const asker = await seedMessage({ replyToId: command, text: 'so what about A?', userName: 'Enren' });
+            const askerRow = await Message.findOne({ where: { chatId: OFFLINE_CHAT_ID, messageId: asker } });
+            if (!askerRow) throw new Error('seeded asker not found');
+            const { messages: turns } = await buildContext(askerRow);
+            const whole = turns.map((turn) => turn.content.map((part) => part.text ?? '').join('\n')).join('\n');
+            for (const text of ['topic A', 'follow-up B', 'closing C', 'unrelated X', 'so what about A?']) {
+                expect(whole.includes(text), `both conversations are in the context (${text})`);
+            }
+            expect(
+                /\[attached the conversation around #\d+ to the context\]/.test(whole),
+                `the splice is annotated with the linked message's number (got ${JSON.stringify(whole)})`
+            );
+            expect(!whole.includes('summons you to reply'), 'a splice is not a summon');
         },
     },
     {

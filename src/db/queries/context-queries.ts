@@ -240,7 +240,7 @@ export const getContextMessage = async (
  * first. A hole here truncates the whole chain above it, which is how a reply to
  * a message we failed to store ends up with no context at all.
  */
-const getContextMessageOrRecover = async (
+export const getContextMessageOrRecover = async (
     chatId: number,
     messageId: number
 ): Promise<ContextMessage | null> => {
@@ -255,7 +255,7 @@ const getContextMessageOrRecover = async (
 /**
  * Find the root message of a reply chain
  */
-const findRootMessage = async (
+export const findRootMessage = async (
     chatId: number,
     messageId: number
 ): Promise<ContextMessage | null> => {

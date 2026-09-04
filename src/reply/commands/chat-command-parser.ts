@@ -8,6 +8,7 @@
  * groups, and none of them looked at a photo's caption.
  */
 import { match, P } from 'ts-pattern';
+import { parseTelegramMessageLink, type TelegramMessageLink } from './telegram-message-link.js';
 
 /** How many people's messages to pull in */
 export type UserScope =
@@ -16,9 +17,22 @@ export type UserScope =
     /** Only these names (the reply target's author is always included) */
     | { type: 'named'; names: string[] };
 
+/** Which messages the command pulls into the context */
+export type MessageSelection =
+    /** `/chat 5`: the reply target plus the next count-1 messages */
+    | { type: 'count'; count: number }
+    /** `/chat a`: every message after the reply target */
+    | { type: 'all' }
+    /** `/chat r`: the recent burst of conversation, walking back from the target (or from now) */
+    | { type: 'recent' }
+    /** `/chat https://t.me/…`: splice the conversation(s) around the linked message(s) into this one */
+    | { type: 'link'; links: TelegramMessageLink[] };
+
+/** The selections that walk forward from the reply target, message by message */
+export type SequentialSelection = Extract<MessageSelection, { type: 'count' | 'all' }>;
+
 export interface ChatCommandSpec {
-    /** Upper bound on how many messages to pull in; Infinity for `a` / `all` */
-    messageCount: number;
+    selection: MessageSelection;
     userScope: UserScope;
     /** What the user wrote for the model after the parameters; null if nothing */
     prompt: string | null;
@@ -39,6 +53,8 @@ export type ChatCommandParse =
 const COMMAND_PATTERN =
     /^\/chat(?:@(\S+))?(?=\s|$)(?:\s+(\S+))?(?:\s+(-\S+))?\s*([\s\S]*)$/;
 
+const NO_USER_SCOPE: UserScope = { type: 'anyone', limit: Infinity };
+
 /**
  * A command explicitly addressed to another bot is not ours to answer — with
  * privacy mode off we receive those too, and we used to treat any `@whatever`
@@ -55,11 +71,15 @@ const isAddressedToUs = (mention: string | undefined): boolean => {
 export const isChatCommandText = (rawText: string | undefined): boolean =>
     parseChatCommand(rawText).type !== 'none';
 
-/** `a` / `all` → every message after the target; otherwise a positive integer */
-const parseMessageCount = (token: string | undefined): number | null =>
+/** `a` / `all` → everything after the target; `r` / `recent` → the recent burst; else a positive integer */
+const parseSelectionToken = (token: string | undefined): MessageSelection | null =>
     match(token?.toLowerCase())
-        .with('a', 'all', () => Infinity)
-        .with(P.string.regex(/^[1-9]\d*$/), (digits) => Number(digits))
+        .with('a', 'all', () => ({ type: 'all' as const }))
+        .with('r', 'recent', () => ({ type: 'recent' as const }))
+        .with(P.string.regex(/^[1-9]\d*$/), (digits) => ({
+            type: 'count' as const,
+            count: Number(digits),
+        }))
         .otherwise(() => null);
 
 /**
@@ -69,8 +89,8 @@ const parseMessageCount = (token: string | undefined): number | null =>
  */
 const parseUserScope = (token: string | undefined, targetAuthor: string): UserScope =>
     match(token?.slice(1))
-        .with(undefined, () => ({ type: 'anyone' as const, limit: Infinity }))
-        .with('', () => ({ type: 'anyone' as const, limit: Infinity }))
+        .with(undefined, () => NO_USER_SCOPE)
+        .with('', () => NO_USER_SCOPE)
         .with('s', () => ({ type: 'named' as const, names: [targetAuthor] }))
         .with(P.string.regex(/^[1-9]\d*$/), (digits) => ({
             type: 'anyone' as const,
@@ -82,11 +102,32 @@ const parseUserScope = (token: string | undefined, targetAuthor: string): UserSc
         }));
 
 /**
+ * Link mode: the first token was a message link; any further leading tokens of
+ * `trailing` that are links join it, and whatever follows is the prompt.
+ */
+const parseLinkSelection = (
+    firstLink: TelegramMessageLink,
+    trailing: string
+): { selection: MessageSelection; prompt: string | null } => {
+    const links = [firstLink];
+    let rest = trailing.trimStart();
+    for (;;) {
+        const nextToken = rest.match(/^\S+/)?.[0];
+        if (nextToken === undefined) break;
+        const nextLink = parseTelegramMessageLink(nextToken);
+        if (nextLink === null) break;
+        links.push(nextLink);
+        rest = rest.slice(nextToken.length).trimStart();
+    }
+    return { selection: { type: 'link', links }, prompt: rest.trim() || null };
+};
+
+/**
  * Parse a `/chat` command out of a message's text or caption.
  *
  * `targetAuthor` is the first name of the replied-to message's author; pass an
- * empty string when unknown (the command needs a reply target anyway, and the
- * handler rejects it before the scope matters).
+ * empty string when unknown (the handler rejects a missing target before the
+ * scope matters).
  */
 export const parseChatCommand = (
     rawText: string | undefined,
@@ -95,17 +136,27 @@ export const parseChatCommand = (
     const matched = rawText?.match(COMMAND_PATTERN);
     if (!matched) return { type: 'none' };
 
-    const [, mention, countToken, scopeToken, trailing = ''] = matched;
+    const [, mention, firstToken, scopeToken, trailing = ''] = matched;
     if (!isAddressedToUs(mention)) return { type: 'none' };
 
-    const messageCount = parseMessageCount(countToken);
-    if (messageCount === null) return { type: 'invalid' };
+    const firstLink = firstToken === undefined ? null : parseTelegramMessageLink(firstToken);
+    if (firstLink !== null) {
+        // A user filter makes no sense for splicing whole conversations
+        if (scopeToken !== undefined) return { type: 'invalid' };
+        const { selection, prompt } = parseLinkSelection(firstLink, trailing);
+        return { type: 'valid', spec: { selection, userScope: NO_USER_SCOPE, prompt } };
+    }
 
-    const prompt = trailing.trim() || null;
+    const selection = parseSelectionToken(firstToken);
+    if (selection === null) return { type: 'invalid' };
 
     return {
         type: 'valid',
-        spec: { messageCount, userScope: parseUserScope(scopeToken, targetAuthor), prompt },
+        spec: {
+            selection,
+            userScope: parseUserScope(scopeToken, targetAuthor),
+            prompt: trailing.trim() || null,
+        },
     };
 };
 
@@ -115,14 +166,49 @@ export const parseChatCommand = (
  * prompt is left out — it is the message's own text.
  */
 export const serializeChatCommand = (spec: ChatCommandSpec): string =>
-    JSON.stringify({
-        messageCount: spec.messageCount === Infinity ? 'a' : spec.messageCount,
-        // JSON has no Infinity, so an unbounded people count reads as 'a' too
-        userScope:
-            spec.userScope.type === 'named'
-                ? spec.userScope
-                : {
-                    type: 'anyone',
-                    limit: spec.userScope.limit === Infinity ? 'a' : spec.userScope.limit,
-                },
-    });
+    match(spec.selection)
+        .with({ type: 'link' }, (selection) =>
+            JSON.stringify({
+                mode: 'link',
+                linkedMessageIds: selection.links.map((link) => link.messageId),
+            })
+        )
+        .with({ type: P.union('count', 'all', 'recent') }, (selection) =>
+            JSON.stringify({
+                // JSON has no Infinity: `a` and `r` are stored as their letters
+                messageCount: match(selection)
+                    .with({ type: 'count' }, (counted) => counted.count)
+                    .with({ type: 'all' }, () => 'a')
+                    .with({ type: 'recent' }, () => 'r')
+                    .exhaustive(),
+                userScope:
+                    spec.userScope.type === 'named'
+                        ? spec.userScope
+                        : {
+                            type: 'anyone',
+                            limit: spec.userScope.limit === Infinity ? 'a' : spec.userScope.limit,
+                        },
+            })
+        )
+        .exhaustive();
+
+/** What the context builder needs to know about a stored `/chat` row */
+export type StoredChatCommand =
+    /** Pulled messages in and summoned a reply (count / all / recent, and every row stored before link mode existed) */
+    | { mode: 'summon' }
+    /** Spliced other conversations in; no reply was asked for */
+    | { mode: 'link'; linkedMessageIds: number[] };
+
+export const readStoredChatCommand = (stored: string): StoredChatCommand => {
+    try {
+        const parsed: unknown = JSON.parse(stored);
+        return match(parsed)
+            .with({ mode: 'link', linkedMessageIds: P.array(P.number) }, (link) => ({
+                mode: 'link' as const,
+                linkedMessageIds: link.linkedMessageIds,
+            }))
+            .otherwise(() => ({ mode: 'summon' as const }));
+    } catch {
+        return { mode: 'summon' };
+    }
+};

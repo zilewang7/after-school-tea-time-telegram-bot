@@ -31,6 +31,15 @@ import { isVidCommandText } from './commands/vid-command-parser.js';
 import { dealChatCommand } from './commands/chat-command.js';
 import { isChatCommandText } from './commands/chat-command-parser.js';
 
+/** A `/chat <link>` splice only gets a reaction back, never a message */
+const acknowledgeSilently = async (ctx: Context): Promise<void> => {
+    try {
+        await ctx.react('👌');
+    } catch (error) {
+        console.error('[chat-handler] reaction on /chat link command failed:', error);
+    }
+};
+
 // Slightly under the 70s acquisition backstop in autoSave: fresh link
 // previews (Telegram-side embed generation) regularly take 30-60s
 const MEDIA_WAIT_TIMEOUT_MS = 65000;
@@ -346,7 +355,18 @@ export const registerChatHandler = (bot: Bot): void => {
                 // BEFORE the wait (which happens inside handleReply, before
                 // buildContext) so the wait covers the messages /chat pulls in.
                 const outcome = await dealChatCommand(ctx);
-                if (outcome.type === 'help-shown' || outcome.type === 'too-many') return;
+                if (
+                    outcome.type === 'help-shown' ||
+                    outcome.type === 'too-many' ||
+                    outcome.type === 'declined'
+                ) {
+                    return;
+                }
+                if (outcome.type === 'linked') {
+                    // Splicing conversations is not a summon: acknowledge and stop
+                    await acknowledgeSilently(ctx);
+                    return;
+                }
                 if (outcome.type === 'ready') {
                     // A /chat summon is a request to reply even without an
                     // @mention; it never joins a batch window.

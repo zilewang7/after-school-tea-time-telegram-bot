@@ -9,7 +9,7 @@ export const registerHelpCommand = (bot: Bot) => {
     3. 消息的回复会自动加入上下文，可以点击首个消息的查看回复的 tg 自带功能查看消息树（不包含 /chat 命令的上下文）
     4. 如果想要查看某条消息确切的上下文回复 /context 命令
     5. 你可以通过带上 @${process.env.BOT_USER_NAME} 回复非 bot 消息以以此调消息所属的上下文进行对话
-    6. 如果你想要把连续多条没有回复关系的消息作为上下文开始对话请使用 /chat 命令
+    6. 如果你想要把连续多条没有回复关系的消息作为上下文开始对话请使用 /chat 命令（/chat r 收最近一波聊天；/chat <消息链接> 把另一段对话拼进来）
 
 常规使用场景：
     1. 直接 @${process.env.BOT_USER_NAME} 向 bot 提问
