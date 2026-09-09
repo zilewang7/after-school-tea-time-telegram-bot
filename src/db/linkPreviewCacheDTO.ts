@@ -35,6 +35,8 @@ export class LinkPreviewCache extends Model<
   // Text recognized in the preview thumbnail / Instant-View images, so a model
   // that cannot see them still gets what they say.
   declare ocrText: CreationOptional<string | null>;
+  declare ocrSourceTimestamp: CreationOptional<number | null>;
+  declare ocrSourceUpdateId: CreationOptional<number | null>;
   declare createdAt: CreationOptional<Date>;
   declare lastUsedAt: Date;
 }
@@ -91,6 +93,16 @@ LinkPreviewCache.init({
   },
   ocrText: {
     type: DataTypes.TEXT,
+    allowNull: true,
+    defaultValue: null,
+  },
+  ocrSourceTimestamp: {
+    type: DataTypes.INTEGER,
+    allowNull: true,
+    defaultValue: null,
+  },
+  ocrSourceUpdateId: {
+    type: DataTypes.INTEGER,
     allowNull: true,
     defaultValue: null,
   },

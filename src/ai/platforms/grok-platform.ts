@@ -11,6 +11,7 @@ import type {
     ResponseStreamEvent,
 } from 'openai/resources/responses/responses';
 import { BasePlatform } from './base-platform.js';
+import { toVisionImageMimeType } from '../supported-mime.js';
 import type {
     AgentStats,
     PlatformType,
@@ -217,10 +218,17 @@ export class GrokPlatform extends BasePlatform {
             };
         }
 
+        const mimeType = toVisionImageMimeType(part.mimeType);
+        if (!mimeType) {
+            return {
+                type: 'input_text',
+                text: `[image omitted: unsupported type ${part.mimeType ?? 'unknown'}]`,
+            };
+        }
         return {
             type: 'input_image',
             detail: 'auto',
-            image_url: `data:image/png;base64,${part.imageData ?? ''}`,
+            image_url: `data:${mimeType};base64,${part.imageData ?? ''}`,
         };
     }
 

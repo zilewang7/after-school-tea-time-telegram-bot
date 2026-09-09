@@ -7,6 +7,28 @@
 const TGS_CONVERTER_URL = process.env.TGS_CONVERTER_URL;
 const CONVERT_TIMEOUT_MS = 30000;
 const NORMALIZE_TIMEOUT_MS = 30000;
+const EMOJI_TIMEOUT_MS = 30000;
+const MAX_EMOJI_ATLAS_ITEMS = 8;
+const MAX_EMOJI_PREVIEW_BYTES = 1024 * 1024;
+const MAX_EMOJI_ATLAS_BYTES = 512 * 1024;
+
+const createTimedController = (
+    timeoutMs: number,
+    parentSignal?: AbortSignal
+): { signal: AbortSignal; dispose: () => void } => {
+    const controller = new AbortController();
+    const abortFromParent = (): void => controller.abort(parentSignal?.reason);
+    if (parentSignal?.aborted) abortFromParent();
+    else parentSignal?.addEventListener('abort', abortFromParent, { once: true });
+    const timer = setTimeout(() => controller.abort(new Error('request timed out')), timeoutMs);
+    return {
+        signal: controller.signal,
+        dispose: () => {
+            clearTimeout(timer);
+            parentSignal?.removeEventListener('abort', abortFromParent);
+        },
+    };
+};
 
 export interface ConvertedTgs {
     data: Buffer;
@@ -17,6 +39,24 @@ export interface NormalizedVideo {
     data: Buffer;
     mimeType: string;
     normalized: boolean;
+}
+
+export interface CustomEmojiPreviewInput {
+    data: Buffer;
+    mimeType: string;
+    animated: boolean;
+    video: boolean;
+    needsRepainting: boolean;
+}
+
+export interface CustomEmojiAtlasItem {
+    label: string;
+    image: Buffer;
+}
+
+export interface CustomEmojiImage {
+    data: Buffer;
+    mimeType: 'image/png';
 }
 
 /**
@@ -98,5 +138,94 @@ export const normalizeShortVideo = async (
         return null;
     } finally {
         clearTimeout(timer);
+    }
+};
+
+const readPngResponse = async (
+    response: Response,
+    context: string,
+    maxBytes: number
+): Promise<CustomEmojiImage | null> => {
+    if (!response.ok) {
+        console.error(`[tgs-client] ${context} failed: HTTP ${response.status}`);
+        return null;
+    }
+    const mimeType = response.headers.get('content-type')?.split(';')[0];
+    if (mimeType !== 'image/png') {
+        console.error(`[tgs-client] ${context} returned unexpected content type: ${mimeType ?? 'missing'}`);
+        return null;
+    }
+    const contentLength = Number(response.headers.get('content-length'));
+    if (Number.isFinite(contentLength) && contentLength > maxBytes) {
+        console.error(`[tgs-client] ${context} response exceeds ${maxBytes} bytes`);
+        return null;
+    }
+    const arrayBuffer = await response.arrayBuffer();
+    if (arrayBuffer.byteLength === 0 || arrayBuffer.byteLength > maxBytes) {
+        console.error(`[tgs-client] ${context} returned an empty or oversized body`);
+        return null;
+    }
+    return { data: Buffer.from(arrayBuffer), mimeType: 'image/png' };
+};
+
+export const createCustomEmojiPreview = async (
+    input: CustomEmojiPreviewInput,
+    signal?: AbortSignal
+): Promise<CustomEmojiImage | null> => {
+    if (!TGS_CONVERTER_URL || input.data.length === 0 || input.mimeType.length === 0) {
+        return null;
+    }
+    const query = new URLSearchParams({
+        mime: input.mimeType,
+        animated: input.animated ? '1' : '0',
+        video: input.video ? '1' : '0',
+        repaint: input.needsRepainting ? '1' : '0',
+    });
+    const request = createTimedController(EMOJI_TIMEOUT_MS, signal);
+    try {
+        const response = await fetch(`${TGS_CONVERTER_URL}/emoji-preview?${query.toString()}`, {
+            method: 'POST',
+            headers: { 'Content-Type': input.mimeType },
+            body: input.data,
+            signal: request.signal,
+        });
+        return await readPngResponse(response, 'emoji preview', MAX_EMOJI_PREVIEW_BYTES);
+    } catch (error) {
+        console.error('[tgs-client] emoji preview request error:', error instanceof Error ? error.message : error);
+        return null;
+    } finally {
+        request.dispose();
+    }
+};
+
+export const createCustomEmojiAtlas = async (
+    items: readonly CustomEmojiAtlasItem[],
+    signal?: AbortSignal
+): Promise<CustomEmojiImage | null> => {
+    if (!TGS_CONVERTER_URL || items.length === 0 || items.length > MAX_EMOJI_ATLAS_ITEMS) {
+        return null;
+    }
+    if (items.some((item) => item.image.length === 0 || !/^E(?:[1-9]|1[0-6])$/.test(item.label))) {
+        return null;
+    }
+    const request = createTimedController(EMOJI_TIMEOUT_MS, signal);
+    try {
+        const response = await fetch(`${TGS_CONVERTER_URL}/emoji-atlas`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                items: items.map((item) => ({
+                    label: item.label,
+                    imageBase64: item.image.toString('base64'),
+                })),
+            }),
+            signal: request.signal,
+        });
+        return await readPngResponse(response, 'emoji atlas', MAX_EMOJI_ATLAS_BYTES);
+    } catch (error) {
+        console.error('[tgs-client] emoji atlas request error:', error instanceof Error ? error.message : error);
+        return null;
+    } finally {
+        request.dispose();
     }
 };

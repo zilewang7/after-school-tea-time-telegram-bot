@@ -12,7 +12,7 @@
     "dev:node": "node --enable-source-maps --watch dist/index.js --inspect-brk",
     "dev": "pnpm run \"/dev:/\"",
     "tsx": "tsx ./src/index.ts",
-    "test:offline": "tsx scripts/offline/run.mts",
+    "test:offline": "tsx scripts/offline/run.mts && tsx scripts/offline/custom-emoji.mts",
     "test:lock": "tsx scripts/offline/lock-check.mts",
     "test:e2e:bot": "tsx scripts/e2e/with-test-bot.mts",
     "test:e2e:bot:full": "tsx scripts/e2e/with-test-bot.mts --full",

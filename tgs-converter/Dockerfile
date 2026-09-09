@@ -10,7 +10,7 @@ FROM node:20-bookworm-slim
 # python-lottie rasterizes frames via cairo (cairosvg/pillow); ffmpeg encodes webm.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
-        python3 python3-pip ffmpeg libcairo2 libglib2.0-0 \
+        python3 python3-pip ffmpeg fonts-dejavu-core libcairo2 libglib2.0-0 \
     && pip3 install --no-cache-dir --break-system-packages lottie cairosvg pillow opencv-python-headless \
     && rm -rf /var/lib/apt/lists/*
 
@@ -23,6 +23,7 @@ COPY server.mjs /app/server.mjs
 COPY lottie_to_webm.sh /usr/local/bin/lottie_to_webm.sh
 RUN chmod +x /usr/local/bin/lottie_to_webm.sh
 
+USER node
 ENV PORT=8080
 EXPOSE 8080
 CMD ["node", "/app/server.mjs"]

@@ -19,6 +19,7 @@ import { applyModelCapabilities } from '../ai/message-transformer.js';
 import { getCurrentModel, setContextNumbering } from '../state.js';
 import { collectContextUsers, type ContextUser } from './context-users.js';
 import { getModelCapabilities } from '../ai/platform-factory.js';
+import { buildCustomEmojiContextPlan } from '../services/custom-emoji-context-service.js';
 import type { UnifiedMessage, UnifiedContentPart, ModelCapabilities } from '../ai/types.js';
 
 /** Sticker kinds as recorded by autoSave when the media was captured */
@@ -423,7 +424,9 @@ const buildAssistantMessage = async (
 const buildUserMessage = async (
     msg: ContextMessage,
     capabilities: ModelCapabilities,
-    index: ContextIndex
+    index: ContextIndex,
+    customEmojiAnnotation?: string,
+    customEmojiAtlasParts: UnifiedContentPart[] = []
 ): Promise<UnifiedMessage> => {
     const fileContents = (msg.file || msg.fileUniqueId)
         ? await getFileContentsOfMessage(msg.chatId, msg.messageId)
@@ -441,8 +444,12 @@ const buildUserMessage = async (
 
     const parts: UnifiedContentPart[] = [
         ...fileContents,
+        ...customEmojiAtlasParts,
         { type: 'text', text: renderUserText(header, msg.text) },
     ];
+    if (customEmojiAnnotation) {
+        parts.push({ type: 'text', text: customEmojiAnnotation });
+    }
 
     // Images the model can't see are dropped downstream, so their recognized
     // text is all it will ever get about them.
@@ -484,11 +491,19 @@ const buildUserMessage = async (
 const buildMessageContent = async (
     msg: ContextMessage,
     capabilities: ModelCapabilities,
-    index: ContextIndex
+    index: ContextIndex,
+    customEmojiAnnotation?: string,
+    customEmojiAtlasParts: UnifiedContentPart[] = []
 ): Promise<UnifiedMessage> =>
     msg.fromBotSelf
         ? buildAssistantMessage(msg, index)
-        : buildUserMessage(msg, capabilities, index);
+        : buildUserMessage(
+            msg,
+            capabilities,
+            index,
+            customEmojiAnnotation,
+            customEmojiAtlasParts
+        );
 
 /**
  * Options for building context
@@ -552,11 +567,24 @@ export const buildContext = async (
     const index = buildContextIndex(contextMessages);
     publishContextNumbering(chatId, messageId, index);
 
-    const contextUsers = await collectContextUsers(contextMessages);
+    const [contextUsers, customEmojiPlan] = await Promise.all([
+        collectContextUsers(contextMessages),
+        buildCustomEmojiContextPlan(
+            chatId,
+            contextMessages.map((contextMessage) => contextMessage.messageId),
+            modelCapabilities.supportsImageInput
+        ),
+    ]);
 
     const chatContents: UnifiedMessage[] = [];
     for (const contextMsg of contextMessages) {
-        chatContents.push(await buildMessageContent(contextMsg, modelCapabilities, index));
+        chatContents.push(await buildMessageContent(
+            contextMsg,
+            modelCapabilities,
+            index,
+            customEmojiPlan.annotations.get(contextMsg.messageId),
+            contextMsg.messageId === messageId ? customEmojiPlan.atlasParts : []
+        ));
     }
 
     // Apply model capabilities (filter images, merge messages if needed)

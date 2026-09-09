@@ -44,6 +44,24 @@ const ALIAS: ReadonlyMap<string, string> = new Map([
 /** Canonicalize a known alias; pass everything else through unchanged. */
 export const normalizeMimeType = (mime: string): string => ALIAS.get(mime) ?? mime;
 
+export type VisionImageMimeType = 'image/png' | 'image/jpeg' | 'image/gif' | 'image/webp';
+
+/** Image types shared by OpenAI Responses, Grok Responses, and Anthropic. */
+export const toVisionImageMimeType = (
+    mime: string | null | undefined
+): VisionImageMimeType | null => {
+    const normalized = normalizeMimeType(mime ?? 'image/png');
+    if (
+        normalized === 'image/png'
+        || normalized === 'image/jpeg'
+        || normalized === 'image/gif'
+        || normalized === 'image/webp'
+    ) {
+        return normalized;
+    }
+    return null;
+};
+
 /**
  * True if Gemini can ingest this MIME type as binary media.
  * Aliases are normalized first; any text/* type is always accepted.

@@ -7,4 +7,7 @@ export * from './biliarchiver-submit-service.js';
 export * from './bot-message-service.js';
 export * from './final-button-state.js';
 export * from './media-cache-service.js';
+export * from './custom-emoji-extractor.js';
+export * from './custom-emoji-service.js';
+export * from './telegram-file-service.js';
 export * from './tgs-client.js';

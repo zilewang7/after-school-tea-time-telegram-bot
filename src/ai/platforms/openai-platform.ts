@@ -25,6 +25,7 @@ import type {
     ResponseStreamEvent,
 } from 'openai/resources/responses/responses';
 import { BasePlatform } from './base-platform.js';
+import { toVisionImageMimeType } from '../supported-mime.js';
 import { getMcpTools, executeMcpTool } from '../mcp/index.js';
 import type {
     PlatformType,
@@ -222,10 +223,17 @@ export class OpenAIPlatform extends BasePlatform {
             };
         }
 
+        const mimeType = toVisionImageMimeType(part.mimeType);
+        if (!mimeType) {
+            return {
+                type: 'input_text',
+                text: `[image omitted: unsupported type ${part.mimeType ?? 'unknown'}]`,
+            };
+        }
         return {
             type: 'input_image',
             detail: 'auto',
-            image_url: `data:image/png;base64,${part.imageData ?? ''}`,
+            image_url: `data:${mimeType};base64,${part.imageData ?? ''}`,
         };
     }
 
@@ -587,7 +595,11 @@ export class OpenAIPlatform extends BasePlatform {
         const imageMetaList: { size: number; source: string }[] = [];
         for (const message of messages) {
             for (const part of message.content) {
-                if (part.type === 'image' && part.imageData) {
+                if (
+                    part.type === 'image'
+                    && part.imageData
+                    && part.mediaKind !== 'custom_emoji_atlas'
+                ) {
                     imageMetaList.push({
                         size: Math.round(part.imageData.length * 3 / 4 / 1024),
                         source: message.role === 'user' ? 'user upload' : 'generated',
@@ -801,7 +813,11 @@ export class OpenAIPlatform extends BasePlatform {
         const images: string[] = [];
         for (const message of messages) {
             for (const part of message.content) {
-                if (part.type === 'image' && part.imageData) {
+                if (
+                    part.type === 'image'
+                    && part.imageData
+                    && part.mediaKind !== 'custom_emoji_atlas'
+                ) {
                     images.push(part.imageData);
                 }
             }

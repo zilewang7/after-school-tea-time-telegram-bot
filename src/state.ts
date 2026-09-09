@@ -14,13 +14,13 @@ interface AppStateType {
     currentModel: string;
     // media group tracking
     mediaGroupIdTemp: MediaGroupIdTemp;
-    // file saving queue
-    asynchronousFileSaveMsgIdList: number[];
-    // link-preview fetching queue (kept separate from the media list: ids are
-    // removed by filtering, so sharing one list would release the other waiter)
-    asynchronousPreviewMsgIdList: number[];
-    // OCR queue; only waited on when the current model cannot see images
-    asynchronousOcrMsgIdList: number[];
+    // File tasks by "chatId:messageId". A message remains pending until every
+    // original-media/custom-emoji task has settled.
+    asynchronousFileSaveTasks: Map<string, Set<string>>;
+    // Link-preview tasks by chat/message and revision-aware task id.
+    asynchronousPreviewTasks: Map<string, Set<string>>;
+    // OCR tasks use the same isolation; only blind models wait for them.
+    asynchronousOcrTasks: Map<string, Set<string>>;
     // user messages edited while their response was still generating:
     // "chatId:userMessageId" (consumed at finalize to set EDIT_DETECTED)
     pendingEditsWhileProcessing: Set<string>;
@@ -40,9 +40,9 @@ const createInitialState = (): AppStateType => ({
         messageId: 0,
         mediaGroupId: "",
     },
-    asynchronousFileSaveMsgIdList: [],
-    asynchronousPreviewMsgIdList: [],
-    asynchronousOcrMsgIdList: [],
+    asynchronousFileSaveTasks: new Map(),
+    asynchronousPreviewTasks: new Map(),
+    asynchronousOcrTasks: new Map(),
     pendingEditsWhileProcessing: new Set(),
     continuationRegistry: new Map(),
     handledUserMessages: new Map(),
@@ -70,38 +70,165 @@ export const setMediaGroupIdTemp = (temp: MediaGroupIdTemp): void => {
     getAppState().mediaGroupIdTemp = temp;
 };
 
-export const getAsyncFileSaveMsgIdList = (): number[] => getAppState().asynchronousFileSaveMsgIdList;
-export const addAsyncFileSaveMsgId = (id: number): void => {
-    getAppState().asynchronousFileSaveMsgIdList.push(id);
-};
-export const removeAsyncFileSaveMsgId = (id: number): void => {
-    const state = getAppState();
-    state.asynchronousFileSaveMsgIdList = state.asynchronousFileSaveMsgIdList.filter(
-        (msgId) => msgId !== id
-    );
+const fileSaveKey = (chatId: number, messageId: number): string => `${chatId}:${messageId}`;
+
+export const isAsyncFileSavePending = (chatId: number, messageId: number): boolean =>
+    (getAppState().asynchronousFileSaveTasks.get(fileSaveKey(chatId, messageId))?.size ?? 0) > 0;
+
+export const addAsyncFileSaveTask = (
+    chatId: number,
+    messageId: number,
+    taskId: string
+): void => {
+    const key = fileSaveKey(chatId, messageId);
+    const tasks = getAppState().asynchronousFileSaveTasks.get(key) ?? new Set<string>();
+    tasks.add(taskId);
+    getAppState().asynchronousFileSaveTasks.set(key, tasks);
 };
 
-export const getAsyncPreviewMsgIdList = (): number[] => getAppState().asynchronousPreviewMsgIdList;
-export const addAsyncPreviewMsgId = (id: number): void => {
-    getAppState().asynchronousPreviewMsgIdList.push(id);
-};
-export const removeAsyncPreviewMsgId = (id: number): void => {
-    const state = getAppState();
-    state.asynchronousPreviewMsgIdList = state.asynchronousPreviewMsgIdList.filter(
-        (msgId) => msgId !== id
-    );
+export const removeAsyncFileSaveTask = (
+    chatId: number,
+    messageId: number,
+    taskId: string
+): void => {
+    const key = fileSaveKey(chatId, messageId);
+    const tasks = getAppState().asynchronousFileSaveTasks.get(key);
+    if (!tasks) return;
+    tasks.delete(taskId);
+    if (tasks.size === 0) getAppState().asynchronousFileSaveTasks.delete(key);
 };
 
-export const getAsyncOcrMsgIdList = (): number[] => getAppState().asynchronousOcrMsgIdList;
-export const addAsyncOcrMsgId = (id: number): void => {
-    getAppState().asynchronousOcrMsgIdList.push(id);
+export interface AsyncFileTaskRevision {
+    updateId: number;
+    telegramTimestamp: number;
+}
+
+const taskRevisionOf = (taskId: string): AsyncFileTaskRevision | null => {
+    const parts = taskId.split(':');
+    const updateId = Number(parts.at(-1));
+    const telegramTimestamp = Number(parts.at(-2));
+    return Number.isSafeInteger(updateId) && Number.isSafeInteger(telegramTimestamp)
+        ? { updateId, telegramTimestamp }
+        : null;
 };
-export const removeAsyncOcrMsgId = (id: number): void => {
-    const state = getAppState();
-    state.asynchronousOcrMsgIdList = state.asynchronousOcrMsgIdList.filter(
-        (msgId) => msgId !== id
+
+const isRevisionAfter = (
+    candidate: AsyncFileTaskRevision,
+    current: AsyncFileTaskRevision
+): boolean =>
+    candidate.telegramTimestamp > current.telegramTimestamp
+    || (
+        candidate.telegramTimestamp === current.telegramTimestamp
+        && candidate.updateId > current.updateId
     );
+
+export const retainAsyncFileSaveTasks = (
+    chatId: number,
+    messageId: number,
+    currentRevision: AsyncFileTaskRevision,
+    retainedTaskIds: readonly string[]
+): void => {
+    const key = fileSaveKey(chatId, messageId);
+    const retained = new Set(retainedTaskIds);
+    const tasks = getAppState().asynchronousFileSaveTasks.get(key);
+    if (!tasks) return;
+    for (const taskId of tasks) {
+        const taskRevision = taskRevisionOf(taskId);
+        const belongsToNewerUpdate = taskRevision !== null
+            && isRevisionAfter(taskRevision, currentRevision);
+        if (!retained.has(taskId) && !belongsToNewerUpdate) tasks.delete(taskId);
+    }
+    if (tasks.size === 0) getAppState().asynchronousFileSaveTasks.delete(key);
 };
+
+const addAsyncTask = (
+    registry: Map<string, Set<string>>,
+    chatId: number,
+    messageId: number,
+    taskId: string
+): void => {
+    const key = fileSaveKey(chatId, messageId);
+    const tasks = registry.get(key) ?? new Set<string>();
+    tasks.add(taskId);
+    registry.set(key, tasks);
+};
+
+const removeAsyncTask = (
+    registry: Map<string, Set<string>>,
+    chatId: number,
+    messageId: number,
+    taskId: string
+): void => {
+    const key = fileSaveKey(chatId, messageId);
+    const tasks = registry.get(key);
+    if (!tasks) return;
+    tasks.delete(taskId);
+    if (tasks.size === 0) registry.delete(key);
+};
+
+const retainAsyncTasks = (
+    registry: Map<string, Set<string>>,
+    chatId: number,
+    messageId: number,
+    currentRevision: AsyncFileTaskRevision,
+    retainedTaskIds: readonly string[]
+): void => {
+    const key = fileSaveKey(chatId, messageId);
+    const retained = new Set(retainedTaskIds);
+    const tasks = registry.get(key);
+    if (!tasks) return;
+    for (const taskId of tasks) {
+        const taskRevision = taskRevisionOf(taskId);
+        const belongsToNewerUpdate = taskRevision !== null
+            && isRevisionAfter(taskRevision, currentRevision);
+        if (!retained.has(taskId) && !belongsToNewerUpdate) tasks.delete(taskId);
+    }
+    if (tasks.size === 0) registry.delete(key);
+};
+
+export const isAsyncPreviewPending = (chatId: number, messageId: number): boolean =>
+    (getAppState().asynchronousPreviewTasks.get(fileSaveKey(chatId, messageId))?.size ?? 0) > 0;
+
+export const addAsyncPreviewTask = (chatId: number, messageId: number, taskId: string): void =>
+    addAsyncTask(getAppState().asynchronousPreviewTasks, chatId, messageId, taskId);
+
+export const removeAsyncPreviewTask = (chatId: number, messageId: number, taskId: string): void =>
+    removeAsyncTask(getAppState().asynchronousPreviewTasks, chatId, messageId, taskId);
+
+export const retainAsyncPreviewTasks = (
+    chatId: number,
+    messageId: number,
+    currentRevision: AsyncFileTaskRevision,
+    retainedTaskIds: readonly string[]
+): void => retainAsyncTasks(
+    getAppState().asynchronousPreviewTasks,
+    chatId,
+    messageId,
+    currentRevision,
+    retainedTaskIds
+);
+
+export const isAsyncOcrPending = (chatId: number, messageId: number): boolean =>
+    (getAppState().asynchronousOcrTasks.get(fileSaveKey(chatId, messageId))?.size ?? 0) > 0;
+
+export const addAsyncOcrTask = (chatId: number, messageId: number, taskId: string): void =>
+    addAsyncTask(getAppState().asynchronousOcrTasks, chatId, messageId, taskId);
+
+export const removeAsyncOcrTask = (chatId: number, messageId: number, taskId: string): void =>
+    removeAsyncTask(getAppState().asynchronousOcrTasks, chatId, messageId, taskId);
+
+export const retainAsyncOcrTasks = (
+    chatId: number,
+    messageId: number,
+    currentRevision: AsyncFileTaskRevision,
+    retainedTaskIds: readonly string[]
+): void => retainAsyncTasks(
+    getAppState().asynchronousOcrTasks,
+    chatId,
+    messageId,
+    currentRevision,
+    retainedTaskIds
+);
 
 // Edit monitor accessors
 const MAX_PENDING_EDITS = 200;

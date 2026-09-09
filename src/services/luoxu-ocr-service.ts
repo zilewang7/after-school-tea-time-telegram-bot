@@ -15,8 +15,12 @@
  *
  * Unconfigured (LUOXU_OCR_URL empty) → everything here is a no-op.
  */
-import { Message } from '../db/messageDTO.js';
-import { LinkPreviewCache } from '../db/linkPreviewCacheDTO.js';
+import {
+    updateLinkPreviewOcrForRevision,
+    updateMessageOcrForRevision,
+    type MessageRevisionToken,
+} from '../db/queries/message-revision-queries.js';
+import { withBusyRetry } from '../db/busy-retry.js';
 
 const luoxuBaseUrl = process.env.LUOXU_OCR_URL;
 
@@ -26,6 +30,7 @@ export const isLuoxuOcrEnabled = (): boolean => Boolean(luoxuBaseUrl);
 // Keep a wall of recognized text from crowding out the conversation. luoxu caps
 // each image too; this caps the whole message.
 const OCR_TEXT_LIMIT = 4000;
+const OCR_REQUEST_TIMEOUT_MS = 30000;
 
 /** `which` values that belong to the link preview rather than the message */
 const isPreviewItem = (which: string): boolean =>
@@ -76,7 +81,9 @@ const renderOcrText = (items: LuoxuOcrItem[]): string | null => {
 
 const fetchOcrJson = async (channelId: number, messageId: number): Promise<LuoxuOcrResponse> => {
     const endpoint = `${luoxuBaseUrl}/ocr?g=${channelId}&id=${messageId}`;
-    const res = await fetch(endpoint);
+    const res = await fetch(endpoint, {
+        signal: AbortSignal.timeout(OCR_REQUEST_TIMEOUT_MS),
+    });
     if (!res.ok) {
         throw new Error(`luoxu /ocr HTTP ${res.status}`);
     }
@@ -87,7 +94,7 @@ const fetchOcrJson = async (channelId: number, messageId: number): Promise<Luoxu
     return payload;
 };
 
-/** In-flight acquisitions by "chatId:messageId", so concurrent triggers share one call */
+/** In-flight acquisitions by message revision, so edits never reuse stale OCR work. */
 const inflightAcquisitions = new Map<string, Promise<void>>();
 
 /**
@@ -98,15 +105,14 @@ const inflightAcquisitions = new Map<string, Promise<void>>();
  * recognized but have nowhere to be stored, so they are skipped.
  */
 export const acquireOcr = (
-    chatId: number,
-    messageId: number,
+    revision: MessageRevisionToken,
     previewUrl: string | null
 ): Promise<void> => {
-    const key = `${chatId}:${messageId}`;
+    const key = `${revision.chatId}:${revision.messageId}:${revision.telegramTimestamp}:${revision.updateId}`;
     const inflight = inflightAcquisitions.get(key);
     if (inflight) return inflight;
 
-    const acquisition = doAcquireOcr(chatId, messageId, previewUrl);
+    const acquisition = doAcquireOcr(revision, previewUrl);
     inflightAcquisitions.set(key, acquisition);
     void acquisition.then(
         () => inflightAcquisitions.delete(key),
@@ -116,40 +122,36 @@ export const acquireOcr = (
 };
 
 const doAcquireOcr = async (
-    chatId: number,
-    messageId: number,
+    revision: MessageRevisionToken,
     previewUrl: string | null
 ): Promise<void> => {
+    const { chatId, messageId } = revision;
     if (!isLuoxuOcrEnabled()) return;
 
     const channelId = toLuoxuChannelId(chatId);
     if (channelId === null) return;
 
     const response = await fetchOcrJson(channelId, messageId);
-    if (response.status !== 'ok') return;
-
-    const items = (response.items ?? []).filter(isOcrItem);
+    const items = response.status === 'ok'
+        ? (response.items ?? []).filter(isOcrItem)
+        : [];
     const messageText = renderOcrText(items.filter((item) => !isPreviewItem(item.which)));
     const previewText = renderOcrText(items.filter((item) => isPreviewItem(item.which)));
 
-    if (messageText) {
-        // Targeted update: the row is written concurrently by the media-bytes
-        // save, and a full instance save would overwrite whatever it stored.
-        await Message.update(
-            { ocrText: messageText },
-            { where: { chatId, messageId } }
-        );
-    }
+    await withBusyRetry(
+        () => updateMessageOcrForRevision(revision, messageText),
+        `OCR update ${chatId}/${messageId}`
+    );
 
-    if (previewText && previewUrl) {
-        // The preview row is created by the link-preview acquisition, which may
-        // still be polling Telegram; only fill an existing row.
-        const [updated] = await LinkPreviewCache.update(
-            { ocrText: previewText },
-            { where: { url: previewUrl } }
+    if (previewUrl) {
+        // The preview row is created before OCR starts. The URL cache accepts
+        // only a current, monotonically newer message revision.
+        const updated = await withBusyRetry(
+            () => updateLinkPreviewOcrForRevision(revision, previewUrl, previewText),
+            `preview OCR update ${chatId}/${messageId}`
         );
         if (!updated) {
-            console.log(`[luoxu-ocr] no preview row yet for ${previewUrl}, OCR text dropped`);
+            console.log(`[luoxu-ocr] stale revision or no preview row for ${previewUrl}; OCR dropped`);
         }
     }
 

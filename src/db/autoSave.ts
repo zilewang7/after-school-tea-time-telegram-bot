@@ -1,7 +1,11 @@
 import { Bot } from "grammy";
 import type { Api } from "grammy";
 import { match } from "ts-pattern";
-import { saveMessage, getMessage, findBotResponseByMessageId, BotResponse, MediaCache, LinkPreviewCache, MessageLink, ButtonState } from "./index.js";
+import { saveMessage, findBotResponseByMessageId, BotResponse, MediaCache, LinkPreviewCache, MessageLink, ButtonState } from "./index.js";
+import { MessageAttachment } from './messageAttachmentDTO.js';
+import { CustomEmojiAsset } from './customEmojiAssetDTO.js';
+import { MessageRevision } from './messageRevisionDTO.js';
+import { sequelize } from './config.js';
 import { parseChatCommand, serializeChatCommand } from "../reply/commands/chat-command-parser.js";
 import { withBusyRetry } from "./busy-retry.js";
 import { Message } from "./messageDTO.js";
@@ -9,12 +13,15 @@ import { Op } from "@sequelize/core";
 import {
     getMediaGroupIdTemp,
     setMediaGroupIdTemp,
-    addAsyncFileSaveMsgId,
-    removeAsyncFileSaveMsgId,
-    addAsyncPreviewMsgId,
-    removeAsyncPreviewMsgId,
-    addAsyncOcrMsgId,
-    removeAsyncOcrMsgId,
+    addAsyncFileSaveTask,
+    removeAsyncFileSaveTask,
+    retainAsyncFileSaveTasks,
+    addAsyncPreviewTask,
+    removeAsyncPreviewTask,
+    retainAsyncPreviewTasks,
+    addAsyncOcrTask,
+    removeAsyncOcrTask,
+    retainAsyncOcrTasks,
     markPendingEditWhileProcessing,
 } from '../state.js';
 import { buildResponseButtons } from '../cmd/menus/index.js';
@@ -26,13 +33,22 @@ import { primeDanmakuSnapshot } from '../services/bilibili-danmaku-service.js';
 import { acquireOcr, isLuoxuOcrEnabled } from '../services/luoxu-ocr-service.js';
 import { convertTgsToWebm, normalizeShortVideo } from '../services/tgs-client.js';
 import { to } from 'await-to-js';
-import { SocksProxyAgent } from 'socks-proxy-agent';
-import https from 'node:https';
-import { readFile, stat, unlink } from 'node:fs/promises';
-import { buffer as readStreamToBuffer } from 'node:stream/consumers';
+import { readFile, unlink } from 'node:fs/promises';
 import type { Message as TgMessage, MessageEntity, MessageOrigin, RichBlock, RichMessage, User } from 'grammy/types';
 import { upsertTelegramUser } from './queries/user-queries.js';
 import { entitiesToMarkdown, richBlocksToMarkdown } from 'telegram-md-entities';
+import { extractCustomEmojiOccurrences } from '../services/custom-emoji-extractor.js';
+import { acquireCustomEmojiAttachments } from '../services/custom-emoji-service.js';
+import {
+    failPendingCustomEmojiAttachments,
+    replaceCustomEmojiAttachments,
+} from './queries/message-attachment-queries.js';
+import {
+    claimMessageRevision,
+    updateMessageMediaForRevision,
+    type MessageRevisionToken,
+} from './queries/message-revision-queries.js';
+import { downloadTelegramFileBytes, resolveTelegramFile } from '../services/telegram-file-service.js';
 
 // Parse sizes like "300M", "1G", "500K", "12345" (bare bytes); undefined on bad input
 const parseByteSize = (raw: string | undefined): number | undefined => {
@@ -395,6 +411,57 @@ const renderRichMessage = (richMessage: RichMessage | undefined): string | undef
     return markdown.length > 0 ? markdown : undefined;
 };
 
+const CUSTOM_EMOJI_ENABLED = process.env.CUSTOM_EMOJI_ENABLED !== '0';
+let asyncTaskNonce = 0;
+
+const createRevisionTaskId = (
+    kind: string,
+    revision: MessageRevisionToken
+): string => {
+    asyncTaskNonce += 1;
+    return `${kind}:${asyncTaskNonce}:${revision.telegramTimestamp}:${revision.updateId}`;
+};
+
+const CUSTOM_EMOJI_ACQUISITION_TIMEOUT_MS = 60000;
+
+const startCustomEmojiAcquisition = (
+    bot: Bot,
+    revision: MessageRevisionToken,
+    taskId: string
+): void => {
+    const controller = new AbortController();
+    let settled = false;
+    const settleTask = (): void => {
+        if (settled) return;
+        settled = true;
+        removeAsyncFileSaveTask(revision.chatId, revision.messageId, taskId);
+    };
+    const backstop = setTimeout(() => {
+        controller.abort(new Error('custom emoji acquisition timed out'));
+        void withBusyRetry(
+            () => failPendingCustomEmojiAttachments(
+                revision,
+                'custom emoji acquisition timed out; visual omitted'
+            ),
+            `custom emoji timeout ${revision.chatId}/${revision.messageId}`
+        ).catch((error: unknown) => {
+            console.error('[custom-emoji] timeout finalization failed:', error);
+        }).finally(settleTask);
+    }, CUSTOM_EMOJI_ACQUISITION_TIMEOUT_MS);
+
+    void acquireCustomEmojiAttachments(bot, revision, controller.signal)
+        .catch((error: unknown) => {
+            console.error(
+                `[custom-emoji] acquisition failed for ${revision.chatId}/${revision.messageId}:`,
+                error
+            );
+        })
+        .finally(() => {
+            clearTimeout(backstop);
+            settleTask();
+        });
+};
+
 /** Outcome of trying to acquire media bytes into the cache */
 type AcquireResult =
     | { status: 'cached'; fileUniqueId: string; mime: string }
@@ -402,6 +469,18 @@ type AcquireResult =
     | { status: 'unsupported' }
     | { status: 'download_failed' }
     | { status: 'convert_failed' };
+
+const mediaHintForAcquireResult = (
+    media: CapturedMedia,
+    outcome: AcquireResult
+): string =>
+    match(outcome)
+        .with({ status: 'cached' }, () => media.hint)
+        .with({ status: 'too_large' }, () => `${media.hint} — too large to process, you cannot see it`)
+        .with({ status: 'unsupported' }, () => `${media.hint} — file type not supported, you cannot see it`)
+        .with({ status: 'download_failed' }, () => `${media.hint} — failed to download, you cannot see it`)
+        .with({ status: 'convert_failed' }, () => `${media.hint} — failed to render, you cannot see it`)
+        .exhaustive();
 
 /**
  * Ensure a media file's bytes are available in MediaCache, downloading and
@@ -491,77 +570,6 @@ const acquireMediaBytes = async (
     return { status: 'cached', fileUniqueId: media.fileUniqueId, mime: normalizedVideo.mime };
 };
 
-const DOWNLOAD_TIMEOUT_MS = 30000;
-
-const localApiRoot = process.env.TG_LOCAL_API_ROOT;
-
-// Cloud file downloads go through the SOCKS proxy (BOT_PROXY) — the global
-// fetch() (undici) can't speak SOCKS, so we use node:https with a SocksProxyAgent.
-// The local Bot API is reached over plain in-cluster HTTP, so no proxy there.
-const downloadProxyAgent = (!localApiRoot && process.env.BOT_PROXY)
-    ? new SocksProxyAgent(process.env.BOT_PROXY)
-    : undefined;
-
-const fileBaseUrl = localApiRoot
-    ? `${localApiRoot}/file/bot${process.env.BOT_TOKEN}`
-    : `https://api.telegram.org/file/bot${process.env.BOT_TOKEN}`;
-
-/** A resolved Telegram file: an on-disk path (local Bot API) or downloaded bytes. */
-type ResolvedFile =
-    | { kind: 'path'; path: string; size: number }
-    | { kind: 'buffer'; bytes: Buffer };
-
-/**
- * Resolve a Telegram file by file_id.
- * - Local Bot API (--local): getFile returns an absolute on-disk path; we stat it
- *   and hand back the path so large files can be streamed to GCS, not buffered.
- * - Cloud Bot API: download the bytes over HTTPS (through the SOCKS proxy).
- */
-const resolveTelegramFile = async (bot: Bot, fileId: string): Promise<ResolvedFile> => {
-    const file = await bot.api.getFile(fileId);
-    const filePath = file.file_path;
-    if (!filePath) throw new Error('getFile returned no file_path');
-
-    if (filePath.startsWith('/')) {
-        const info = await stat(filePath);
-        return { kind: 'path', path: filePath, size: info.size };
-    }
-
-    const url = `${fileBaseUrl}/${filePath}`;
-    const bytes = await httpGetBuffer(url);
-    return { kind: 'buffer', bytes };
-};
-
-/** Always return the file's bytes (reads the local file when on the local server). */
-const downloadTelegramFileBytes = async (bot: Bot, fileId: string): Promise<Buffer> => {
-    const resolved = await resolveTelegramFile(bot, fileId);
-    return resolved.kind === 'path' ? readFile(resolved.path) : resolved.bytes;
-};
-
-/**
- * GET a URL into a Buffer, via the proxy, bounded by a timeout. Used only for the
- * cloud path (https); the local server returns on-disk paths, read directly.
- */
-const httpGetBuffer = (url: string): Promise<Buffer> =>
-    new Promise<Buffer>((resolve, reject) => {
-        const request = https.get(
-            url,
-            { agent: downloadProxyAgent, timeout: DOWNLOAD_TIMEOUT_MS },
-            (res) => {
-                if (res.statusCode !== 200) {
-                    res.resume(); // drain so the socket can be released
-                    reject(new Error(`file download HTTP ${res.statusCode}`));
-                    return;
-                }
-                // Read the whole response into a Buffer (avoids Buffer.concat's
-                // Uint8Array<ArrayBuffer> typing friction under newer @types/node).
-                readStreamToBuffer(res).then(resolve, reject);
-            }
-        );
-        request.on('timeout', () => request.destroy(new Error('file download timed out')));
-        request.on('error', reject);
-    });
-
 // 监听编辑消息并更新数据库
 export const autoUpdate = (bot: Bot) => {
     bot.on('edited_message', async (ctx) => {
@@ -571,114 +579,226 @@ export const autoUpdate = (bot: Bot) => {
         const chatId = ctx.chat.id;
         const messageId = editedMsg.message_id;
 
-        // 检查消息是否已存在于数据库
-        const existingMessage = await getMessage(chatId, messageId);
-        if (!existingMessage) {
-            // 没有存过的消息不需要更新
-            return;
-        }
-
         try {
-            // 获取新的文本内容（同样还原 text_link 实体中隐藏的链接）
             const newText = renderTextWithEntities(editedMsg.text, editedMsg.entities)
                 || renderTextWithEntities(editedMsg.caption, editedMsg.caption_entities)
                 || renderRichMessage(editedMsg.rich_message)
                 || '';
-
-            // A rich-message edit may introduce media the original save missed
-            // (e.g. an image added to the block tree). One file slot per row:
-            // only acquire when the row has none yet.
-            const richMedia = existingMessage.fileUniqueId
-                ? undefined
-                : resolveRichMessageMedia(editedMsg.rich_message);
-
-            // The edit carries the reply quote again; keep the stored one in sync
-            // (absent quote leaves the previous value alone).
+            const resolvedEditedMedia = resolveCapturedMedia(editedMsg)
+                ?? resolveRichMessageMedia(editedMsg.rich_message);
             const newQuoteText = renderTextWithEntities(
                 editedMsg.quote?.text,
                 editedMsg.quote?.entities
             );
+            const revisionToken: MessageRevisionToken = {
+                chatId,
+                messageId,
+                updateId: ctx.update.update_id,
+                telegramTimestamp: editedMsg.edit_date ?? editedMsg.date,
+            };
+            const customEmojiOccurrences = CUSTOM_EMOJI_ENABLED
+                ? extractCustomEmojiOccurrences(editedMsg)
+                : [];
+            const previewUrl = isLuoxuPreviewEnabled() ? extractFirstUrl(newText) : null;
+            const shouldAcquireOcr = isLuoxuOcrEnabled()
+                && Boolean(resolvedEditedMedia || previewUrl);
+            const mediaTaskId = createRevisionTaskId('primary-media-edit', revisionToken);
+            const emojiTaskId = createRevisionTaskId('custom-emoji', revisionToken);
+            const previewTaskId = createRevisionTaskId('link-preview', revisionToken);
+            const ocrTaskId = createRevisionTaskId('ocr', revisionToken);
 
-            if (newText) {
-                existingMessage.text = newText;
-                existingMessage.quoteText = newQuoteText ?? existingMessage.quoteText;
-                if (richMedia) {
-                    existingMessage.mediaHint = richMedia.hint;
-                }
-                existingMessage.date = new Date(editedMsg.edit_date! * 1000);
-                await existingMessage.save();
+            if (resolvedEditedMedia) addAsyncFileSaveTask(chatId, messageId, mediaTaskId);
+            if (customEmojiOccurrences.length > 0) {
+                addAsyncFileSaveTask(chatId, messageId, emojiTaskId);
+            }
+            if (previewUrl) addAsyncPreviewTask(chatId, messageId, previewTaskId);
+            if (shouldAcquireOcr) addAsyncOcrTask(chatId, messageId, ocrTaskId);
+            let editedMediaForAcquisition: CapturedMedia | undefined;
 
-                if (richMedia) {
-                    addAsyncFileSaveMsgId(messageId);
-                    const fileBackstop = setTimeout(() => removeAsyncFileSaveMsgId(messageId), 70000);
-                    void (async () => {
-                        const [acquireErr, result] = await to(acquireMediaBytes(bot, richMedia));
-                        if (!acquireErr && result?.status === 'cached') {
-                            existingMessage.fileMime = result.mime;
-                            existingMessage.fileUniqueId = result.fileUniqueId;
-                            const [saveErr] = await to(existingMessage.save());
-                            if (saveErr) {
-                                console.error('[autoUpdate] Failed to attach rich media:', saveErr);
-                            }
+            try {
+                const editResult = await withBusyRetry(
+                    () => sequelize.transaction(async (transaction) => {
+                        if (!(await claimMessageRevision(revisionToken, transaction))) {
+                            return { accepted: false, editedMedia: undefined };
                         }
-                        clearTimeout(fileBackstop);
-                        removeAsyncFileSaveMsgId(messageId);
-                    })();
-                }
-
-                console.log(`[autoUpdate] Updated message ${messageId} in chat ${chatId}`);
-
-                // The edit may have introduced or changed a URL: (re-)acquire
-                // its link preview and flag it pending so replies wait for it.
-                // Cache hits and in-flight duplicates return immediately.
-                const previewUrl = isLuoxuPreviewEnabled() ? extractFirstUrl(newText) : null;
-                let previewAcquisition: Promise<unknown> | undefined;
-                if (previewUrl) {
-                    addAsyncPreviewMsgId(messageId);
-                    const previewBackstop = setTimeout(() => removeAsyncPreviewMsgId(messageId), 70000);
-                    previewAcquisition = (async () => {
-                        const [previewErr] = await to(acquireLinkPreview(chatId, messageId, previewUrl));
-                        if (previewErr) {
-                            console.error('[autoUpdate] link preview acquire failed:', previewErr.message);
+                        let currentMessage = await Message.findOne({
+                            where: { chatId, messageId },
+                            transaction,
+                        });
+                        if (!currentMessage) {
+                            currentMessage = await Message.create({
+                                chatId,
+                                messageId,
+                                fromBotSelf: editedMsg.from?.id === Number(process.env.BOT_USER_ID),
+                                userId: editedMsg.from?.id ?? null,
+                                date: new Date(editedMsg.date * 1000),
+                                userName: editedMsg.from?.first_name ?? '佚名',
+                                text: newText,
+                                quoteText: newQuoteText ?? null,
+                                file: null,
+                                fileMime: null,
+                                fileUniqueId: null,
+                                replyToId: editedMsg.reply_to_message?.message_id ?? null,
+                                chatCommand: null,
+                                modelParts: null,
+                                mediaHint: resolvedEditedMedia?.hint ?? null,
+                                forwardOrigin: resolveForwardOrigin(editedMsg.forward_origin) ?? null,
+                                forwardFromId: editedMsg.forward_origin?.type === 'user'
+                                    ? editedMsg.forward_origin.sender_user.id
+                                    : null,
+                                viaBot: editedMsg.via_bot?.username
+                                    ? `@${editedMsg.via_bot.username}`
+                                    : editedMsg.via_bot?.first_name ?? null,
+                                ocrText: null,
+                            }, { transaction });
                         }
-                        clearTimeout(previewBackstop);
-                        removeAsyncPreviewMsgId(messageId);
-                    })();
-                }
-
-                // The edit may have introduced an image or a new link: redo OCR
-                // (luoxu's own cache makes an unchanged image free)
-                if (isLuoxuOcrEnabled() && (richMedia || existingMessage.fileUniqueId || previewUrl)) {
-                    addAsyncOcrMsgId(messageId);
-                    const ocrBackstop = setTimeout(() => removeAsyncOcrMsgId(messageId), 70000);
-                    void (async () => {
-                        if (previewAcquisition) await to(previewAcquisition);
-                        const [ocrErr] = await to(acquireOcr(chatId, messageId, previewUrl));
-                        if (ocrErr) {
-                            console.error('[autoUpdate] ocr acquire failed:', ocrErr.message);
+                        const editedMedia = resolvedEditedMedia
+                            && currentMessage.fileUniqueId !== resolvedEditedMedia.fileUniqueId
+                            ? resolvedEditedMedia
+                            : undefined;
+                        currentMessage.text = newText;
+                        currentMessage.quoteText = newQuoteText ?? currentMessage.quoteText;
+                        if (shouldAcquireOcr) currentMessage.ocrText = null;
+                        if (editedMedia) {
+                            currentMessage.file = null;
+                            currentMessage.fileMime = null;
+                            currentMessage.fileUniqueId = null;
+                            currentMessage.ocrText = null;
+                            currentMessage.mediaHint = editedMedia.hint;
                         }
-                        clearTimeout(ocrBackstop);
-                        removeAsyncOcrMsgId(messageId);
-                    })();
+                        await currentMessage.save({ transaction });
+                        await replaceCustomEmojiAttachments(
+                            revisionToken,
+                            customEmojiOccurrences,
+                            transaction
+                        );
+                        return { accepted: true, editedMedia };
+                    }),
+                    `edit ${chatId}/${messageId}`
+                );
+                if (!editResult.accepted) {
+                    removeAsyncFileSaveTask(chatId, messageId, mediaTaskId);
+                    removeAsyncFileSaveTask(chatId, messageId, emojiTaskId);
+                    removeAsyncPreviewTask(chatId, messageId, previewTaskId);
+                    removeAsyncOcrTask(chatId, messageId, ocrTaskId);
+                    return;
                 }
+                retainAsyncFileSaveTasks(
+                    chatId,
+                    messageId,
+                    revisionToken,
+                    [
+                        ...(editResult.editedMedia ? [mediaTaskId] : []),
+                        ...(customEmojiOccurrences.length > 0 ? [emojiTaskId] : []),
+                    ]
+                );
+                retainAsyncPreviewTasks(
+                    chatId,
+                    messageId,
+                    revisionToken,
+                    previewUrl ? [previewTaskId] : []
+                );
+                retainAsyncOcrTasks(
+                    chatId,
+                    messageId,
+                    revisionToken,
+                    shouldAcquireOcr ? [ocrTaskId] : []
+                );
+                if (!editResult.editedMedia) {
+                    removeAsyncFileSaveTask(chatId, messageId, mediaTaskId);
+                }
+                editedMediaForAcquisition = editResult.editedMedia;
+            } catch (error) {
+                removeAsyncFileSaveTask(chatId, messageId, mediaTaskId);
+                removeAsyncFileSaveTask(chatId, messageId, emojiTaskId);
+                removeAsyncPreviewTask(chatId, messageId, previewTaskId);
+                removeAsyncOcrTask(chatId, messageId, ocrTaskId);
+                throw error;
+            }
 
-                // Edit-detected retry: DB-driven so it survives restarts.
-                // PROCESSING responses can't take the button yet (the final
-                // edit would wipe it) — mark pending; finalize consumes it.
-                const ownResponse = await BotResponse.findOne({
-                    where: { chatId, userMessageId: messageId },
-                });
-                if (ownResponse) {
-                    if (ownResponse.buttonState === ButtonState.PROCESSING) {
-                        markPendingEditWhileProcessing(chatId, messageId);
-                    } else if (
-                        ownResponse.buttonState === ButtonState.NONE ||
-                        // EDIT_DETECTED again: re-apply — heals buttons that a
-                        // final-edit race wiped before this self-heal existed
-                        ownResponse.buttonState === ButtonState.EDIT_DETECTED
-                    ) {
-                        await addEditDetectedButton(ctx.api, chatId, ownResponse);
+            if (customEmojiOccurrences.length > 0) {
+                startCustomEmojiAcquisition(bot, revisionToken, emojiTaskId);
+            }
+
+            if (editedMediaForAcquisition) {
+                const fileBackstop = setTimeout(
+                    () => removeAsyncFileSaveTask(chatId, messageId, mediaTaskId),
+                    70000
+                );
+                void (async () => {
+                    const [acquireErr, result] = await to(
+                        acquireMediaBytes(bot, editedMediaForAcquisition)
+                    );
+                    const outcome: AcquireResult = acquireErr || !result
+                        ? { status: 'download_failed' }
+                        : result;
+                    const finalHint = mediaHintForAcquireResult(editedMediaForAcquisition, outcome);
+                    const [saveErr] = await to(withBusyRetry(
+                        () => updateMessageMediaForRevision(
+                            revisionToken,
+                            outcome.status === 'cached'
+                                ? {
+                                    fileMime: outcome.mime,
+                                    fileUniqueId: outcome.fileUniqueId,
+                                    mediaHint: finalHint,
+                                }
+                                : { mediaHint: finalHint }
+                        ),
+                        `edited media update ${chatId}/${messageId}`
+                    ));
+                    if (saveErr) {
+                        console.error('[autoUpdate] Failed to update edited media:', saveErr);
                     }
+                    clearTimeout(fileBackstop);
+                    removeAsyncFileSaveTask(chatId, messageId, mediaTaskId);
+                })();
+            }
+
+            console.log(`[autoUpdate] Updated message ${messageId} in chat ${chatId}`);
+
+            let previewAcquisition: Promise<unknown> | undefined;
+            if (previewUrl) {
+                const previewBackstop = setTimeout(
+                    () => removeAsyncPreviewTask(chatId, messageId, previewTaskId),
+                    70000
+                );
+                previewAcquisition = (async () => {
+                    const [previewErr] = await to(acquireLinkPreview(chatId, messageId, previewUrl));
+                    if (previewErr) {
+                        console.error('[autoUpdate] link preview acquire failed:', previewErr.message);
+                    }
+                    clearTimeout(previewBackstop);
+                    removeAsyncPreviewTask(chatId, messageId, previewTaskId);
+                })();
+            }
+
+            if (shouldAcquireOcr) {
+                const ocrBackstop = setTimeout(
+                    () => removeAsyncOcrTask(chatId, messageId, ocrTaskId),
+                    70000
+                );
+                void (async () => {
+                    if (previewAcquisition) await to(previewAcquisition);
+                    const [ocrErr] = await to(acquireOcr(revisionToken, previewUrl));
+                    if (ocrErr) {
+                        console.error('[autoUpdate] ocr acquire failed:', ocrErr.message);
+                    }
+                    clearTimeout(ocrBackstop);
+                    removeAsyncOcrTask(chatId, messageId, ocrTaskId);
+                })();
+            }
+
+            const ownResponse = await BotResponse.findOne({
+                where: { chatId, userMessageId: messageId },
+            });
+            if (ownResponse) {
+                if (ownResponse.buttonState === ButtonState.PROCESSING) {
+                    markPendingEditWhileProcessing(chatId, messageId);
+                } else if (
+                    ownResponse.buttonState === ButtonState.NONE
+                    || ownResponse.buttonState === ButtonState.EDIT_DETECTED
+                ) {
+                    await addEditDetectedButton(ctx.api, chatId, ownResponse);
                 }
             }
         } catch (error) {
@@ -725,6 +845,10 @@ export const autoSave = (bot: Bot) => {
         if (ctx.chat?.id && ctx.message?.message_id && ctx.from?.id && !excludeList.includes(ctx.message.text || '')) {
             let replyToId = ctx.message.reply_to_message?.message_id;
             let isSubImage = false;
+            let registeredPrimaryTask: { chatId: number; messageId: number; taskId: string } | undefined;
+            let registeredEmojiTask: { chatId: number; messageId: number; taskId: string } | undefined;
+            let registeredPreviewTask: { chatId: number; messageId: number; taskId: string } | undefined;
+            let registeredOcrTask: { chatId: number; messageId: number; taskId: string } | undefined;
 
             // If replying to a bot message, resolve to firstMessageId
             // This ensures context building works correctly even after version switching
@@ -807,56 +931,59 @@ export const autoSave = (bot: Bot) => {
                     ctx.message?.quote?.text,
                     ctx.message?.quote?.entities
                 );
-
-                // Mark the async file save BEFORE any await, so a rapid follow-up
-                // reply that triggers waitForFileSave() will block until this
-                // message's media is cached (fixes a context race).
-                if (media) {
-                    addAsyncFileSaveMsgId(messageId);
-                }
-
-                // Save text first (no media bytes yet). Text is pure content;
-                // media/forward metadata live in their own columns and are
-                // rendered into the model-facing format at context-build time.
-                // Retried on a locked database: this row is the only record that
-                // the message ever existed.
-                await withBusyRetry(() => saveMessage({
+                const revisionToken: MessageRevisionToken = {
                     chatId,
                     messageId,
-                    userId,
-                    date,
-                    userName,
-                    message: baseText,
-                    quoteText,
-                    replyToId,
-                    chatCommand: chatCommandSpec ? serializeChatCommand(chatCommandSpec) : null,
-                    mediaHint: media ? media.hint : undefined,
-                    forwardOrigin,
-                    forwardFromId,
-                    viaBot,
-                }), `ingest ${chatId}/${messageId}`);
+                    updateId: ctx.update.update_id,
+                    telegramTimestamp: ctx.message.date,
+                };
+                const customEmojiOccurrences = CUSTOM_EMOJI_ENABLED && !isSubImage
+                    ? extractCustomEmojiOccurrences(ctx.message)
+                    : [];
+                const previewUrl = isLuoxuPreviewEnabled() ? extractFirstUrl(baseText) : null;
+                const shouldAcquireOcr = isLuoxuOcrEnabled() && Boolean(media || previewUrl);
 
-                // Acquire media bytes asynchronously (download + optional .tgs->webm),
-                // then update the saved message with the cache key or a corrected hint.
+                // Register every batch before the first await, so a rapid reply
+                // waits for both the original media and all custom emoji assets.
                 if (media) {
-                    // Hard backstop: never let the async-save flag stick (waitForFileSave
-                    // would otherwise loop forever). Idempotent with the removal below.
-                    const backstop = setTimeout(() => removeAsyncFileSaveMsgId(messageId), 70000);
-                    void (async () => {
-                        const [acquireErr, result] = await to(acquireMediaBytes(bot, media));
-                        const outcome: AcquireResult = acquireErr || !result
-                            ? { status: 'download_failed' }
-                            : result;
+                    registeredPrimaryTask = {
+                        chatId,
+                        messageId,
+                        taskId: createRevisionTaskId('primary-media', revisionToken),
+                    };
+                    addAsyncFileSaveTask(chatId, messageId, registeredPrimaryTask.taskId);
+                }
+                if (customEmojiOccurrences.length > 0) {
+                    registeredEmojiTask = {
+                        chatId,
+                        messageId,
+                        taskId: createRevisionTaskId('custom-emoji', revisionToken),
+                    };
+                    addAsyncFileSaveTask(chatId, messageId, registeredEmojiTask.taskId);
+                }
+                if (previewUrl) {
+                    registeredPreviewTask = {
+                        chatId,
+                        messageId,
+                        taskId: createRevisionTaskId('link-preview', revisionToken),
+                    };
+                    addAsyncPreviewTask(chatId, messageId, registeredPreviewTask.taskId);
+                }
+                if (shouldAcquireOcr) {
+                    registeredOcrTask = {
+                        chatId,
+                        messageId,
+                        taskId: createRevisionTaskId('ocr', revisionToken),
+                    };
+                    addAsyncOcrTask(chatId, messageId, registeredOcrTask.taskId);
+                }
 
-                        const finalHint = match(outcome)
-                            .with({ status: 'cached' }, () => media.hint)
-                            .with({ status: 'too_large' }, () => `${media.hint} — too large to process, you cannot see it`)
-                            .with({ status: 'unsupported' }, () => `${media.hint} — file type not supported, you cannot see it`)
-                            .with({ status: 'download_failed' }, () => `${media.hint} — failed to download, you cannot see it`)
-                            .with({ status: 'convert_failed' }, () => `${media.hint} — failed to render, you cannot see it`)
-                            .exhaustive();
-
-                        const [saveErr] = await to(withBusyRetry(() => saveMessage({
+                // Text and its emoji manifest become visible atomically. Media
+                // acquisition happens afterwards and can fail independently.
+                const revisionAccepted = await withBusyRetry(
+                    () => sequelize.transaction(async (transaction) => {
+                        if (!(await claimMessageRevision(revisionToken, transaction))) return false;
+                        await saveMessage({
                             chatId,
                             messageId,
                             userId,
@@ -864,20 +991,84 @@ export const autoSave = (bot: Bot) => {
                             userName,
                             message: baseText,
                             quoteText,
-                            chatCommand: chatCommandSpec ? serializeChatCommand(chatCommandSpec) : null,
-                            fileMime: outcome.status === 'cached' ? outcome.mime : undefined,
-                            fileUniqueId: outcome.status === 'cached' ? outcome.fileUniqueId : undefined,
                             replyToId,
-                            mediaHint: finalHint,
+                            chatCommand: chatCommandSpec ? serializeChatCommand(chatCommandSpec) : null,
+                            mediaHint: media ? media.hint : undefined,
                             forwardOrigin,
                             forwardFromId,
                             viaBot,
-                        }), `media update ${chatId}/${messageId}`));
+                            transaction,
+                        });
+                        await replaceCustomEmojiAttachments(
+                            revisionToken,
+                            customEmojiOccurrences,
+                            transaction
+                        );
+                        return true;
+                    }),
+                    `ingest ${chatId}/${messageId}`
+                );
+                if (!revisionAccepted) {
+                    if (registeredPrimaryTask) {
+                        removeAsyncFileSaveTask(chatId, messageId, registeredPrimaryTask.taskId);
+                    }
+                    if (registeredEmojiTask) {
+                        removeAsyncFileSaveTask(chatId, messageId, registeredEmojiTask.taskId);
+                    }
+                    if (registeredPreviewTask) {
+                        removeAsyncPreviewTask(chatId, messageId, registeredPreviewTask.taskId);
+                    }
+                    if (registeredOcrTask) {
+                        removeAsyncOcrTask(chatId, messageId, registeredOcrTask.taskId);
+                    }
+                    await next();
+                    return;
+                }
+
+                if (customEmojiOccurrences.length > 0 && registeredEmojiTask) {
+                    startCustomEmojiAcquisition(
+                        bot,
+                        revisionToken,
+                        registeredEmojiTask.taskId
+                    );
+                }
+
+                // Acquire media bytes asynchronously (download + optional .tgs->webm),
+                // then update the saved message with the cache key or a corrected hint.
+                if (media && registeredPrimaryTask) {
+                    const primaryTaskId = registeredPrimaryTask.taskId;
+                    // Hard backstop: never let the async-save flag stick (waitForFileSave
+                    // would otherwise loop forever). Idempotent with the removal below.
+                    const backstop = setTimeout(
+                        () => removeAsyncFileSaveTask(chatId, messageId, primaryTaskId),
+                        70000
+                    );
+                    void (async () => {
+                        const [acquireErr, result] = await to(acquireMediaBytes(bot, media));
+                        const outcome: AcquireResult = acquireErr || !result
+                            ? { status: 'download_failed' }
+                            : result;
+
+                        const finalHint = mediaHintForAcquireResult(media, outcome);
+
+                        const [saveErr] = await to(withBusyRetry(
+                            () => updateMessageMediaForRevision(
+                                revisionToken,
+                                outcome.status === 'cached'
+                                    ? {
+                                        fileMime: outcome.mime,
+                                        fileUniqueId: outcome.fileUniqueId,
+                                        mediaHint: finalHint,
+                                    }
+                                    : { mediaHint: finalHint }
+                            ),
+                            `media update ${chatId}/${messageId}`
+                        ));
                         if (saveErr) {
                             console.error('[autoSave] Failed to update message with media:', saveErr);
                         }
                         clearTimeout(backstop);
-                        removeAsyncFileSaveMsgId(messageId);
+                        removeAsyncFileSaveTask(chatId, messageId, primaryTaskId);
                     })();
                 }
 
@@ -887,18 +1078,20 @@ export const autoSave = (bot: Bot) => {
                 // stored — so save-time and build-time extraction always agree.
                 // The flag below only gates how long a reply waits; the
                 // acquisition itself polls until Telegram confirms ready/none.
-                const previewUrl = isLuoxuPreviewEnabled() ? extractFirstUrl(baseText) : null;
                 let previewAcquisition: Promise<unknown> | undefined;
-                if (previewUrl) {
-                    addAsyncPreviewMsgId(messageId);
-                    const previewBackstop = setTimeout(() => removeAsyncPreviewMsgId(messageId), 70000);
+                if (previewUrl && registeredPreviewTask) {
+                    const previewTaskId = registeredPreviewTask.taskId;
+                    const previewBackstop = setTimeout(
+                        () => removeAsyncPreviewTask(chatId, messageId, previewTaskId),
+                        70000
+                    );
                     previewAcquisition = (async () => {
                         const [previewErr] = await to(acquireLinkPreview(chatId, messageId, previewUrl));
                         if (previewErr) {
                             console.error('[autoSave] link preview acquire failed:', previewErr.message);
                         }
                         clearTimeout(previewBackstop);
-                        removeAsyncPreviewMsgId(messageId);
+                        removeAsyncPreviewTask(chatId, messageId, previewTaskId);
                     })();
                 }
 
@@ -915,19 +1108,22 @@ export const autoSave = (bot: Bot) => {
                 // plus the preview/IV images of its link) so models that cannot
                 // see pictures still get their content. Fire-and-forget — only a
                 // reply that actually needs it waits (see chat-handler).
-                if (isLuoxuOcrEnabled() && (media || previewUrl)) {
-                    addAsyncOcrMsgId(messageId);
-                    const ocrBackstop = setTimeout(() => removeAsyncOcrMsgId(messageId), 70000);
+                if (shouldAcquireOcr && registeredOcrTask) {
+                    const ocrTaskId = registeredOcrTask.taskId;
+                    const ocrBackstop = setTimeout(
+                        () => removeAsyncOcrTask(chatId, messageId, ocrTaskId),
+                        70000
+                    );
                     void (async () => {
                         // A preview image's text is stored on the preview row, so
                         // that row has to exist first
                         if (previewAcquisition) await to(previewAcquisition);
-                        const [ocrErr] = await to(acquireOcr(chatId, messageId, previewUrl));
+                        const [ocrErr] = await to(acquireOcr(revisionToken, previewUrl));
                         if (ocrErr) {
                             console.error('[autoSave] ocr acquire failed:', ocrErr.message);
                         }
                         clearTimeout(ocrBackstop);
-                        removeAsyncOcrMsgId(messageId);
+                        removeAsyncOcrTask(chatId, messageId, ocrTaskId);
                     })();
                 }
             } catch (error) {
@@ -937,9 +1133,33 @@ export const autoSave = (bot: Bot) => {
                     `[autoSave] DROPPED message ${ctx.chat.id}/${ctx.message.message_id} from ${ctx.from.first_name}:`,
                     error
                 );
-                if (ctx.message?.message_id) {
-                    removeAsyncFileSaveMsgId(ctx.message.message_id);
-                    removeAsyncPreviewMsgId(ctx.message.message_id);
+                if (registeredPrimaryTask) {
+                    removeAsyncFileSaveTask(
+                        registeredPrimaryTask.chatId,
+                        registeredPrimaryTask.messageId,
+                        registeredPrimaryTask.taskId
+                    );
+                }
+                if (registeredEmojiTask) {
+                    removeAsyncFileSaveTask(
+                        registeredEmojiTask.chatId,
+                        registeredEmojiTask.messageId,
+                        registeredEmojiTask.taskId
+                    );
+                }
+                if (registeredPreviewTask) {
+                    removeAsyncPreviewTask(
+                        registeredPreviewTask.chatId,
+                        registeredPreviewTask.messageId,
+                        registeredPreviewTask.taskId
+                    );
+                }
+                if (registeredOcrTask) {
+                    removeAsyncOcrTask(
+                        registeredOcrTask.chatId,
+                        registeredOcrTask.messageId,
+                        registeredOcrTask.taskId
+                    );
                 }
             }
         }
@@ -985,6 +1205,61 @@ const mutateInChunks = async <T>(
     return ids.length;
 };
 
+interface StaleMessageDeleteCounts {
+    attachments: number;
+    revisions: number;
+    messages: number;
+}
+
+const deleteStaleMessagesInChunks = async (
+    candidateKeys: MessageKey[],
+    cutoff: Date
+): Promise<StaleMessageDeleteCounts> => {
+    const counts: StaleMessageDeleteCounts = { attachments: 0, revisions: 0, messages: 0 };
+    for (let start = 0; start < candidateKeys.length; start += CLEANUP_BATCH_SIZE) {
+        const candidates = candidateKeys.slice(start, start + CLEANUP_BATCH_SIZE);
+        const deleted = await sequelize.transaction(async (transaction) => {
+            const stillStale = await Message.findAll({
+                where: {
+                    [Op.and]: [
+                        { [Op.or]: candidates },
+                        { date: { [Op.lt]: cutoff.toISOString() } },
+                    ],
+                },
+                attributes: ['chatId', 'messageId'],
+                transaction,
+            });
+            const keys = stillStale.map(messageKeyOf);
+            if (keys.length === 0) {
+                return { attachments: 0, revisions: 0, messages: 0 };
+            }
+            const attachments = await MessageAttachment.destroy({
+                where: { [Op.or]: keys },
+                transaction,
+            });
+            const revisions = await MessageRevision.destroy({
+                where: { [Op.or]: keys },
+                transaction,
+            });
+            const messages = await Message.destroy({
+                where: {
+                    [Op.and]: [
+                        { [Op.or]: keys },
+                        { date: { [Op.lt]: cutoff.toISOString() } },
+                    ],
+                },
+                transaction,
+            });
+            return { attachments, revisions, messages };
+        });
+        counts.attachments += deleted.attachments;
+        counts.revisions += deleted.revisions;
+        counts.messages += deleted.messages;
+        await new Promise((resolve) => setImmediate(resolve));
+    }
+    return counts;
+};
+
 /**
  * One cleanup pass. Exported so the offline suite can run it directly instead of
  * waiting an hour for the timer.
@@ -1002,10 +1277,14 @@ export const clearExpiredData = async (): Promise<void> => {
             where: { date: { [Op.lt]: oneWeekAgo.toISOString() } },
             attributes: ['chatId', 'messageId'],
         });
-        const messageResult = await mutateInChunks(
-            staleMessages.map(messageKeyOf),
-            (chunk) => Message.destroy({ where: { [Op.or]: chunk } })
+        const staleMessageKeys = staleMessages.map(messageKeyOf);
+        const staleMessageDeleteCounts = await deleteStaleMessagesInChunks(
+            staleMessageKeys,
+            oneWeekAgo
         );
+        const attachmentResult = staleMessageDeleteCounts.attachments;
+        const revisionResult = staleMessageDeleteCounts.revisions;
+        const messageResult = staleMessageDeleteCounts.messages;
 
         // /chat 拉进上下文的边：消息本体都删了，边没有意义
         const staleLinks = await MessageLink.findAll({
@@ -1065,6 +1344,15 @@ export const clearExpiredData = async (): Promise<void> => {
             (chunk) => MediaCache.destroy({ where: { fileUniqueId: { [Op.in]: chunk } } })
         );
 
+        const staleEmojiAssets = await CustomEmojiAsset.findAll({
+            where: { lastUsedAt: { [Op.lt]: oneWeekAgo } },
+            attributes: ['customEmojiId'],
+        });
+        const emojiAssetResult = await mutateInChunks(
+            staleEmojiAssets.map((row) => row.customEmojiId),
+            (chunk) => CustomEmojiAsset.destroy({ where: { customEmojiId: { [Op.in]: chunk } } })
+        );
+
         // 链接预览缓存同节奏 LRU 清理（其媒体行已由上面的 MediaCache 清理覆盖）
         const stalePreviews = await LinkPreviewCache.findAll({
             where: { lastUsedAt: { [Op.lt]: oneWeekAgo } },
@@ -1076,7 +1364,7 @@ export const clearExpiredData = async (): Promise<void> => {
         );
 
         const elapsedMs = Date.now() - startedAt;
-        const summary = `Cleared ${messageResult} messages, ${messageLinkResult} message links, ${botResponseResult} bot responses before ${oneWeekAgo.toISOString()}; cleared media bytes of ${mediaClearedCount} messages before ${oneDayAgo.toISOString()}; deleted ${staleGcsRows.length} GCS refs; evicted ${mediaCacheResult} media cache entries, ${linkPreviewResult} link previews (${elapsedMs}ms)`;
+        const summary = `Cleared ${messageResult} messages, ${attachmentResult} attachments, ${revisionResult} revisions, ${messageLinkResult} message links, ${botResponseResult} bot responses before ${oneWeekAgo.toISOString()}; cleared media bytes of ${mediaClearedCount} messages before ${oneDayAgo.toISOString()}; deleted ${staleGcsRows.length} GCS refs; evicted ${mediaCacheResult} media cache entries, ${emojiAssetResult} emoji assets, ${linkPreviewResult} link previews (${elapsedMs}ms)`;
         if (elapsedMs > CLEANUP_SLOW_MS) {
             console.warn(`[autoClear] slow cleanup — ${summary}`);
         } else {

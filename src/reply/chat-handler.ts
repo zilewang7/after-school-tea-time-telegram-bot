@@ -11,7 +11,15 @@ import {
     type ContextMessage,
 } from '../db/queries/context-queries.js';
 import { sendMessage, buildSystemPrompt, getModelCapabilities } from '../ai/index.js';
-import { getCurrentModel, getMediaGroupIdTemp, getAsyncFileSaveMsgIdList, getAsyncPreviewMsgIdList, getAsyncOcrMsgIdList, tryMarkUserMessageHandling } from '../state.js';
+import {
+    getCurrentModel,
+    getMediaGroupIdTemp,
+    isAsyncFileSavePending,
+    isAsyncPreviewPending,
+    isAsyncOcrPending,
+    tryMarkUserMessageHandling,
+} from '../state.js';
+import { getFailedCustomEmojiAttachments } from '../db/queries/message-attachment-queries.js';
 import { checkIfMentioned } from '../util.js';
 import { saveMessageLinks } from '../db/queries/context-queries.js';
 import { buildContext } from './context-builder.js';
@@ -100,11 +108,11 @@ const awaitMediaWithFeedback = async (
 ): Promise<void> => {
     if (!ctx.message || !ctx.chat) return;
 
-    const pending = ids.filter((id) => getAsyncFileSaveMsgIdList().includes(id));
-    const pendingPreview = ids.filter((id) => getAsyncPreviewMsgIdList().includes(id));
+    const pending = ids.filter((id) => isAsyncFileSavePending(ctx.chat!.id, id));
+    const pendingPreview = ids.filter((id) => isAsyncPreviewPending(ctx.chat!.id, id));
     // OCR is a fallback for models that can't see images; nobody else waits for it
     const pendingOcr = options.awaitOcr
-        ? ids.filter((id) => getAsyncOcrMsgIdList().includes(id))
+        ? ids.filter((id) => isAsyncOcrPending(ctx.chat!.id, id))
         : [];
     if (pending.length === 0 && pendingPreview.length === 0 && pendingOcr.length === 0) {
         return; // nothing in flight → no notice, just continue
@@ -113,9 +121,9 @@ const awaitMediaWithFeedback = async (
     const chatId = ctx.chat.id;
 
     const allSettled = (): boolean =>
-        pending.every((id) => !getAsyncFileSaveMsgIdList().includes(id)) &&
-        pendingPreview.every((id) => !getAsyncPreviewMsgIdList().includes(id)) &&
-        pendingOcr.every((id) => !getAsyncOcrMsgIdList().includes(id));
+        pending.every((id) => !isAsyncFileSavePending(chatId, id)) &&
+        pendingPreview.every((id) => !isAsyncPreviewPending(chatId, id)) &&
+        pendingOcr.every((id) => !isAsyncOcrPending(chatId, id));
 
     // One shared deadline clock: the notice grace period spends the same budget
     // as the main wait, so the overall timeout is unchanged.
@@ -161,14 +169,19 @@ const awaitMediaWithFeedback = async (
     // failure suffix in mediaHint, or without a cached file id.
     const failures: string[] = [];
     for (const id of pending) {
-        const stuck = getAsyncFileSaveMsgIdList().includes(id);
+        const stuck = isAsyncFileSavePending(chatId, id);
         const message = await getMessage(chatId, id);
-        if (stuck || !message?.fileUniqueId) {
-            // mediaHint: "a picture" or "a video — failed to download, you cannot see it"
-            const [hintName, hintReason] = (message?.mediaHint ?? '').split(' — ');
-            const name = hintName?.trim() || '媒体';
-            const reason = stuck ? '下载超时' : (hintReason?.trim() || '获取失败');
-            failures.push(`${name}：${reason}`);
+        if (stuck) {
+            failures.push(`${message?.mediaHint?.split(' — ')[0]?.trim() || '媒体'}：下载超时`);
+            continue;
+        }
+        if (message?.mediaHint && !message.fileUniqueId) {
+            const [hintName, hintReason] = message.mediaHint.split(' — ');
+            failures.push(`${hintName?.trim() || '媒体'}：${hintReason?.trim() || '获取失败'}`);
+        }
+        const failedEmoji = await getFailedCustomEmojiAttachments(chatId, id);
+        if (failedEmoji.length > 0) {
+            failures.push(`自定义 emoji：${failedEmoji.length} 个图像获取失败`);
         }
     }
 

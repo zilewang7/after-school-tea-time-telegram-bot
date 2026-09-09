@@ -5,7 +5,11 @@ import { match } from 'ts-pattern';
 import type { ChatCompletionMessageParam, ChatCompletionContentPart } from 'openai/resources';
 import type Anthropic from '@anthropic-ai/sdk';
 import type { UnifiedMessage, UnifiedContentPart, ModelCapabilities } from './types.js';
-import { isGeminiSupportedMimeType, normalizeMimeType } from './supported-mime.js';
+import {
+    isGeminiSupportedMimeType,
+    normalizeMimeType,
+    toVisionImageMimeType,
+} from './supported-mime.js';
 
 // Gemini content types
 export interface GeminiPart {
@@ -164,12 +168,20 @@ const transformToOpenAIParts = (parts: UnifiedContentPart[]): ChatCompletionCont
                 type: 'text' as const,
                 text: p.text ?? '',
             }))
-            .with({ type: 'image' }, (p) => ({
-                type: 'image_url' as const,
-                image_url: {
-                    url: `data:image/png;base64,${p.imageData ?? ''}`,
-                },
-            }))
+            .with({ type: 'image' }, (p): ChatCompletionContentPart => {
+                const mimeType = toVisionImageMimeType(p.mimeType);
+                return mimeType
+                    ? {
+                        type: 'image_url',
+                        image_url: {
+                            url: `data:${mimeType};base64,${p.imageData ?? ''}`,
+                        },
+                    }
+                    : {
+                        type: 'text',
+                        text: `[image omitted: unsupported type ${p.mimeType ?? 'unknown'}]`,
+                    };
+            })
             .with({ type: 'media' }, (p) => ({
                 // OpenAI chat parts can't carry inline audio/video; use a text placeholder
                 type: 'text' as const,
@@ -239,14 +251,22 @@ const transformToAnthropicParts = (
                 type: 'text',
                 text: p.text ?? '',
             }))
-            .with({ type: 'image' }, (p): Anthropic.ContentBlockParam => ({
-                type: 'image',
-                source: {
-                    type: 'base64',
-                    media_type: 'image/png',
-                    data: p.imageData ?? '',
-                },
-            }))
+            .with({ type: 'image' }, (p): Anthropic.ContentBlockParam => {
+                const mediaType = toVisionImageMimeType(p.mimeType);
+                return mediaType
+                    ? {
+                        type: 'image',
+                        source: {
+                            type: 'base64',
+                            media_type: mediaType,
+                            data: p.imageData ?? '',
+                        },
+                    }
+                    : {
+                        type: 'text',
+                        text: `[image omitted: unsupported type ${p.mimeType ?? 'unknown'}]`,
+                    };
+            })
             .with({ type: 'media' }, (p): Anthropic.ContentBlockParam => ({
                 // Anthropic messages can't carry inline audio/video; use a text placeholder
                 type: 'text',
@@ -448,7 +468,7 @@ export const toLegacyContentPart = (part: UnifiedContentPart): {
         .with({ type: 'image' }, (p) => ({
             type: 'image_url' as const,
             image_url: {
-                url: `data:image/png;base64,${p.imageData ?? ''}`,
+                url: `data:${normalizeMimeType(p.mimeType ?? 'image/png')};base64,${p.imageData ?? ''}`,
             },
         }))
         .with({ type: 'media' }, (p) => ({

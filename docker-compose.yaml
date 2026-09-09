@@ -76,8 +76,23 @@ services:
     profiles: ["tgs"]
     build:
       context: ./tgs-converter
+    init: true
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 128
+    mem_limit: 1536m
+    cpus: 2.0
+    tmpfs:
+      - /tmp:size=536870912,mode=1777
     environment:
       - TZ=Asia/Shanghai
+      - NODE_OPTIONS=--max-old-space-size=384
+      - CACHE_MAX_BYTES=67108864
+      - MAX_EXPENSIVE_PROCESSES=3
+      - MAX_EXPENSIVE_QUEUE=32
     networks:
       - traefik-net
 

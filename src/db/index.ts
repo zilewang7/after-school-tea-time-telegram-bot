@@ -1,4 +1,5 @@
 import { sequelize, enableWriteAheadLog } from "./config.js";
+import type { Transaction } from '@sequelize/core';
 import { Message } from "./messageDTO.js";
 import { BotResponse, ButtonState, type ResponseVersion, type ResponseMetadata, type CommandType } from "./botResponseDTO.js";
 import { MediaCache } from "./mediaCacheDTO.js";
@@ -6,15 +7,23 @@ import { LinkPreviewCache } from "./linkPreviewCacheDTO.js";
 import { BiliDanmakuSnapshot } from "./biliDanmakuSnapshotDTO.js";
 import { MessageLink } from "./messageLinkDTO.js";
 import { TelegramUser } from "./telegramUserDTO.js";
+import { MessageAttachment } from "./messageAttachmentDTO.js";
+import { CustomEmojiAsset } from "./customEmojiAssetDTO.js";
+import { MessageRevision } from './messageRevisionDTO.js';
 import { getBlob } from "../util.js";
-import { removeAsyncFileSaveMsgId, findFirstMessageIdByContinuation } from '../state.js';
+import { addAsyncFileSaveTask, removeAsyncFileSaveTask, findFirstMessageIdByContinuation } from '../state.js';
+import { runSchemaMigrations } from './schema-migrations.js';
 
 // sync database (the imports above ensure every table is registered before sync)
 // Exported so callers can await schema readiness instead of racing the migration;
 // the attached catch also keeps a failed sync from becoming an unhandled rejection.
 // WAL goes first: the sync itself is a long writer, and it is what a restart
 // races against.
-export const dbReady = enableWriteAheadLog().then(() => sequelize.sync({ alter: true }));
+// New schema is additive. Plain sync creates missing tables without rebuilding
+// the multi-GB message table on every restart.
+export const dbReady = enableWriteAheadLog()
+    .then(() => runSchemaMigrations())
+    .then(() => sequelize.sync());
 dbReady.catch((error: unknown) => {
     console.error('[db] schema sync failed:', error);
 });
@@ -39,10 +48,11 @@ const saveMessage = async (
         forwardFromId?: number | null,
         viaBot?: string | null,
         /** Serialized `/chat` parameters when this message is a `/chat` summon */
-        chatCommand?: string | null
+        chatCommand?: string | null,
+        transaction?: Transaction
     }
 ) => {
-    const { chatId, messageId, userId, date = new Date(), userName = '佚名', message, quoteText, fileLink, fileBuffer, fileMime, fileUniqueId, replyToId, modelParts, mediaHint, forwardOrigin, forwardFromId, viaBot, chatCommand } = info;
+    const { chatId, messageId, userId, date = new Date(), userName = '佚名', message, quoteText, fileLink, fileBuffer, fileMime, fileUniqueId, replyToId, modelParts, mediaHint, forwardOrigin, forwardFromId, viaBot, chatCommand, transaction } = info;
 
     const fromBotSelf = userId === Number(process.env.BOT_USER_ID);
     // Callers pass Number(env) shapes that can be NaN; never write that
@@ -55,24 +65,24 @@ const saveMessage = async (
             const fileBuffer = blob ? Buffer.from(await blob.arrayBuffer()) : undefined;
 
             if (fileBuffer) {
-                const message = await Message.findOne({ where: { chatId, messageId } });
+                const message = await Message.findOne({ where: { chatId, messageId }, transaction });
                 if (message) {
                     message.file = fileBuffer;
                     if (fileMime !== undefined) {
                         message.fileMime = fileMime;
                     }
-                    await message.save();
+                    await message.save({ transaction });
                 }
             }
 
         } catch (error) {
             console.error("保存文件失败", error);
         } finally {
-            removeAsyncFileSaveMsgId(messageId);
+            removeAsyncFileSaveTask(chatId, messageId, 'legacy-file-link');
         }
     };
 
-    const existingMessage = await Message.findOne({ where: { chatId, messageId } });
+    const existingMessage = await Message.findOne({ where: { chatId, messageId }, transaction });
     if (existingMessage) {
         existingMessage.text = message ?? existingMessage.text;
         existingMessage.userId = authorId;
@@ -105,14 +115,15 @@ const saveMessage = async (
             if (fileMime !== undefined) {
                 existingMessage.fileMime = fileMime;
             }
-            await existingMessage.save();
+            await existingMessage.save({ transaction });
             return;
         }
 
-        await existingMessage.save();
+        await existingMessage.save({ transaction });
 
         if (fileLink) {
-            saveFile(fileLink);
+            addAsyncFileSaveTask(chatId, messageId, 'legacy-file-link');
+            void saveFile(fileLink);
         }
 
         return;
@@ -143,10 +154,11 @@ const saveMessage = async (
         forwardOrigin: forwardOrigin ?? null,
         forwardFromId: forwardFromId ?? null,
         viaBot: viaBot ?? null,
-    });
+    }, { transaction });
 
     if (fileLink && !fileBuffer) {
-        saveFile(fileLink);
+        addAsyncFileSaveTask(chatId, messageId, 'legacy-file-link');
+        void saveFile(fileLink);
     }
 }
 
@@ -250,6 +262,9 @@ export {
     BiliDanmakuSnapshot,
     MessageLink,
     TelegramUser,
+    MessageAttachment,
+    CustomEmojiAsset,
+    MessageRevision,
     ButtonState,
     type ResponseVersion,
     type ResponseMetadata,

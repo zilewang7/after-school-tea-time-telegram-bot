@@ -11,6 +11,7 @@ import { getAppState } from './state.js';
 import { initMcpClients } from './ai/mcp/index.js';
 import { isTestInstance, getAllowedChatIds, isChatAllowed } from './config/instance.js';
 import { registerSenderGate } from './config/sender-gate.js';
+import { startCustomEmojiRecovery } from './services/custom-emoji-service.js';
 
 if (!process.env.BOT_TOKEN) {
     throw new Error('BOT_TOKEN must be provided');
@@ -123,11 +124,11 @@ process.once('SIGINT', () => void shutdown('SIGINT'));
 
 // 启动
 async function main() {
-    // Wait for the schema migration before taking updates. On a multi-GB
-    // database `sync({ alter: true })` runs for a while, and writes racing it
-    // used to fail with SQLITE_BUSY for the whole restart window.
+    // Wait for additive schema creation before taking updates. Startup never
+    // alters the multi-GB message table; writes still must not race DDL.
     await dbReady;
     console.log('[db] Schema ready');
+    startCustomEmojiRecovery(bot);
     await initMcpClients();
     console.log('[mcp] Initialization complete');
     // Test instance: never react to updates queued while it was offline
