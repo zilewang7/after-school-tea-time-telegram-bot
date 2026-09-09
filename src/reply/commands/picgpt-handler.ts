@@ -1,8 +1,9 @@
 /**
  * Picgpt command handler
- * Handles /picgpt image generation command using OpenAI gpt-image-2
+ * Handles /picgpt image generation command using OpenAI image generation
  */
 import type { Context } from 'grammy';
+import { OPENAI_IMAGE_MODEL } from '../../config/models.js';
 import { to, isErr } from '../../shared/result.js';
 import { collectReferenceImages } from './reference-images.js';
 import { sendMessage } from '../../ai/index.js';
@@ -101,7 +102,7 @@ export const handlePicgptCommand = async (
     // Send to OpenAI image model
     const streamResult = await to(
         sendMessage(messages, {
-            model: 'gpt-image-2-dev',
+            model: OPENAI_IMAGE_MODEL,
             signal: chatContext.session.streamController.signal,
         })
     );

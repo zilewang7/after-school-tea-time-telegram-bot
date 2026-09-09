@@ -1,6 +1,7 @@
 import { Bot } from "grammy";
 import type { BotCommand } from "grammy/types";
 import { isTestInstance, getAllowedChatIds } from "../config/instance.js";
+import { OPENAI_IMAGE_MODEL } from "../config/models.js";
 import {
     registerStartCommand,
     registerHelpCommand,
@@ -20,7 +21,7 @@ const COMMANDS: BotCommand[] = [
     { command: "vidunsafe", description: "[视频不带遮罩]同 /vid" },
     { command: "picgrok", description: "使用 Grok 模型根据提示词生成图片" },
     { command: "picbanana", description: "使用 🍌 Gemini Nano Banana Pro 根据提示词生成图片(支持图生图)" },
-    { command: "picgpt", description: "使用 OpenAI gpt-image-2 根据提示词生成图片(支持图生图)" },
+    { command: "picgpt", description: `使用 OpenAI ${OPENAI_IMAGE_MODEL} 根据提示词生成图片(支持图生图)` },
     { command: "model", description: "查看/切换大语言模型" },
     {
         command: "chat",

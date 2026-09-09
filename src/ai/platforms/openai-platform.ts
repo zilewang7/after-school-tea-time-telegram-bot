@@ -24,6 +24,7 @@ import type {
     ResponseInputMessageContentList,
     ResponseStreamEvent,
 } from 'openai/resources/responses/responses';
+import { OPENAI_IMAGE_CHAT_BASE_MODEL } from '../../config/models.js';
 import { BasePlatform } from './base-platform.js';
 import { toVisionImageMimeType } from '../supported-mime.js';
 import { getMcpTools, executeMcpTool } from '../mcp/index.js';
@@ -37,7 +38,6 @@ import type {
     AgentToolUsage,
 } from '../types.js';
 
-const IMAGE_PROXY_MODEL = 'gpt-5.4';
 const MAX_MCP_ROUNDS = 5;
 
 const IMAGE_GENERATION_TOOL = {
@@ -108,7 +108,7 @@ export class OpenAIPlatform extends BasePlatform {
         const capabilities = this.getModelCapabilities(model);
 
         if (capabilities.supportsImageOutput) {
-            // Chat flow: proxy through gpt-5.4 with image generation tool
+            // Chat flow: proxy through the configured base model with image generation tool
             if (systemPrompt) {
                 return this.sendImageChatMessage(messages, config);
             }
@@ -587,7 +587,7 @@ export class OpenAIPlatform extends BasePlatform {
         const { model, systemPrompt, timeout = 85000, maxRetries = 3, signal } = config;
 
         this.logMessageContents(messages);
-        console.log(`[openai] Image chat mode: proxy ${model} through ${IMAGE_PROXY_MODEL} with tool`);
+        console.log(`[openai] Image chat mode: proxy ${model} through ${OPENAI_IMAGE_CHAT_BASE_MODEL} with tool`);
 
         const input = this.transformToResponsesInput(messages);
         const referenceImages = this.collectReferenceImages(messages);
@@ -623,12 +623,12 @@ export class OpenAIPlatform extends BasePlatform {
             imageListStr;
 
         const request: ResponseCreateParamsStreaming = {
-            model: IMAGE_PROXY_MODEL,
+            model: OPENAI_IMAGE_CHAT_BASE_MODEL,
             input,
             instructions: (systemPrompt || '') + '\n\n' + imageInstructions,
             stream: true,
             tools: [IMAGE_GENERATION_TOOL as any],
-            ...(this.isReasoningModel(IMAGE_PROXY_MODEL)
+            ...(this.isReasoningModel(OPENAI_IMAGE_CHAT_BASE_MODEL)
                 ? { reasoning: { effort: 'high', summary: 'detailed' } }
                 : {}),
         };
@@ -758,7 +758,7 @@ export class OpenAIPlatform extends BasePlatform {
                     },
                 ];
                 const continueRequest: ResponseCreateParamsStreaming = {
-                    model: IMAGE_PROXY_MODEL,
+                    model: OPENAI_IMAGE_CHAT_BASE_MODEL,
                     input: continueInput,
                     instructions,
                     stream: true,

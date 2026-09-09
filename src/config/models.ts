@@ -4,6 +4,9 @@ export interface ModelConfig {
     name: string;
 }
 
+export const OPENAI_IMAGE_MODEL = "gpt-image-2.5-sunburst";
+export const OPENAI_IMAGE_CHAT_BASE_MODEL = "gpt-5.6-sol";
+
 export const modelConfigs: ModelConfig[] = [
     { id: "gpt-5.6-luna", name: "gpt-5.6-luna" },
     { id: "gpt-5.6-sol", name: "gpt-5.6-sol" },
@@ -18,5 +21,5 @@ export const modelConfigs: ModelConfig[] = [
     { id: "mimo-v2.5", name: "mimo-v2.5" },
     { id: "mimo-v2.5-pro", name: "mimo-v2.5-pro" },
     { id: "gemini-3-pro-image", name: "gemini-3-pro-image" },
-    { id: "gpt-image-2-dev", name: "gpt-image-2" },
+    { id: OPENAI_IMAGE_MODEL, name: OPENAI_IMAGE_MODEL },
 ];

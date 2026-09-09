@@ -5,6 +5,7 @@
  */
 import type { Context } from 'grammy';
 import { match } from 'ts-pattern';
+import { OPENAI_IMAGE_MODEL } from '../config/models.js';
 import { getMessage, getBotResponse } from '../db/index.js';
 import type { CommandType } from '../db/index.js';
 import { collectReferenceImages } from './commands/reference-images.js';
@@ -195,7 +196,7 @@ const handlePicgptRetry = async (
     // Send to OpenAI image model
     const [streamErr, stream] = await to(
         sendMessage(messages, {
-            model: 'gpt-image-2-dev',
+            model: OPENAI_IMAGE_MODEL,
             signal: session.streamController.signal,
         })
     );
