@@ -66,8 +66,12 @@ export class DeepSeekPlatform extends BasePlatform {
     getModelCapabilities(model: string): ModelCapabilities {
         const lowerModel = model.toLowerCase();
         const isReasoner = lowerModel.includes('reasoner');
+        // deepseek-flash (V4.1-Flash) reads pictures despite carrying no
+        // "vision"/"image" marker in its id
         const supportsImageInput =
-            lowerModel.includes('vision') || lowerModel.includes('image');
+            lowerModel.includes('vision') ||
+            lowerModel.includes('image') ||
+            lowerModel === 'deepseek-flash';
 
         return {
             supportsImageInput,

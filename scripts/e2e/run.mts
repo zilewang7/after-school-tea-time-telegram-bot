@@ -167,11 +167,12 @@ const runCase = async (
 };
 
 /**
- * The model every case runs against. Text-only on purpose: it is fast and cheap,
- * and it forces the picture cases through the OCR fallback rather than letting a
- * vision model read the image directly.
+ * The model every case runs against: fast and cheap, and it reads pictures
+ * itself (deepseek-flash is multimodal), so the picture cases exercise the
+ * direct-image path. The OCR-only path needs a text-only model and lives in
+ * scripts/e2e/ocr-fallback.mts.
  */
-const SUITE_MODEL = 'deepseek-v4-flash';
+const SUITE_MODEL = 'deepseek-flash';
 
 /** Callback data the model menu uses (see src/cmd/menu.ts) */
 const MODEL_CALLBACK_PREFIX = 'mdl:';

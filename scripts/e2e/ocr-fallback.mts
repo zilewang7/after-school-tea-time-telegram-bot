@@ -3,7 +3,7 @@
  * suite (which runs on whatever DEFAULT_MODEL the test instance has).
  *
  * Prerequisites:
- *   1. .env.test → DEFAULT_MODEL=deepseek-v4-flash (or another model whose
+ *   1. .env.test → DEFAULT_MODEL=mimo-v2.5-pro (or another model whose
  *      capabilities have supportsImageInput: false)
  *   2. docker compose --profile test up -d --force-recreate k-on-bot-test
  *   3. pnpm test:e2e:ocr
