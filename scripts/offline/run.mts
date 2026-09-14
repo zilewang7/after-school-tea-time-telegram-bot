@@ -2457,6 +2457,100 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
         },
     },
     {
+        name: 'a thinking quote never nests a block entity, so the CoT cannot leak as body',
+        body: async () => {
+            const { formatThinkingForStreaming } =
+                await import('../../src/telegram/formatters/thinking-display.js');
+            const { buildFinalMessages } =
+                await import('../../src/telegram/formatters/final-message-builder.js');
+            const { renderMarkdown } = await import('telegram-md-entities');
+
+            type AnyMessage = { text: string; entities: readonly { type: string; offset: number; length: number }[] };
+
+            /** Block entities nested inside the outermost quote — Telegram renders none of them */
+            const nestedBlocks = (rendered: AnyMessage): string[] => {
+                const quote = rendered.entities.find(
+                    (entity) => entity.type === 'expandable_blockquote' || entity.type === 'blockquote'
+                );
+                if (!quote) return ['<no quote>'];
+                return rendered.entities
+                    .filter(
+                        (entity) =>
+                            entity !== quote &&
+                            entity.offset >= quote.offset &&
+                            entity.offset + entity.length <= quote.offset + quote.length
+                    )
+                    .filter(
+                        (entity) =>
+                            entity.type === 'pre' ||
+                            entity.type === 'blockquote' ||
+                            entity.type === 'expandable_blockquote'
+                    )
+                    .map((entity) => entity.type);
+            };
+
+            const quoteCoversAll = (rendered: AnyMessage): boolean => {
+                const quote = rendered.entities.find(
+                    (entity) => entity.type === 'expandable_blockquote' || entity.type === 'blockquote'
+                );
+                return (
+                    quote !== undefined &&
+                    quote.offset === 0 &&
+                    quote.length === rendered.text.length
+                );
+            };
+
+            // Gemini's CoT shape: bullets whose sub-items are indented by four
+            // spaces, which commonmark reads as an indented code block (pre).
+            const indentedCoT =
+                '**Plan**\n\ndo the thing\n\n    * **Sub point:** nested reasoning\n\n    * **Another sub point:** more of it\n\n**Execute**\n\nwrite the answer\n\n**Review**\n\ncheck it';
+            expect(
+                renderMarkdown(indentedCoT).entities.some((entity) => entity.type === 'pre'),
+                'the trap is real: indented CoT bullets render as a pre entity'
+            );
+
+            expect(
+                nestedBlocks(formatThinkingForStreaming(indentedCoT, { answerStarted: false })).length === 0,
+                `streaming preview keeps its quote free of block entities (got ${nestedBlocks(formatThinkingForStreaming(indentedCoT, { answerStarted: false })).join(',')})`
+            );
+            expect(
+                nestedBlocks(formatThinkingForStreaming(indentedCoT, { answerStarted: true })).length === 0,
+                'the collapsed thinking quote contains no block entity'
+            );
+
+            // The leaked case: a CoT that *starts* with the indented block used to
+            // drop the quote entirely (pre at offset 0), showing the whole CoT as body
+            const leadingBlockCoT = '    * **Leading point:** starts with an indented block\n\n    * **Second point:** still inside it\n\n**After**\n\nplain prose';
+            const collapsed = formatThinkingForStreaming(leadingBlockCoT, { answerStarted: true });
+            expect(
+                quoteCoversAll(collapsed) && nestedBlocks(collapsed).length === 0,
+                'a CoT starting with an indented block still renders as one whole quote'
+            );
+
+            // Fenced code in the CoT would nest a pre the same way
+            const fencedCoT = '**Draft**\n\n```js\nconst answer = 42;\n```\n\n**Ship**\n\nsend it';
+            expect(
+                nestedBlocks(formatThinkingForStreaming(fencedCoT, { answerStarted: true })).length === 0,
+                'a fenced code block in the CoT does not nest inside the quote'
+            );
+
+            // Final render: quote(thinking) + answer, built and split for Telegram
+            const finalChunks = buildFinalMessages({
+                text: '正文在这里',
+                thinking: indentedCoT,
+            });
+            expect(finalChunks.length > 0, 'the final render produced a message');
+            expect(
+                finalChunks.every((chunk) => nestedBlocks(chunk).length === 0),
+                `no final chunk nests a block entity in its quote (got ${finalChunks.map((chunk) => nestedBlocks(chunk).join(',')).join(' | ')})`
+            );
+            expect(
+                finalChunks.some((chunk) => chunk.text.includes('正文在这里')),
+                'the answer text still lands outside the quote'
+            );
+        },
+    },
+    {
         name: 'mention batcher merges a burst into one trigger',
         body: async () => {
             // Short sliding window so the case runs in milliseconds; the module

@@ -9,13 +9,13 @@ import {
     concatMessages,
     renderMarkdown,
     splitMessage,
-    wrapInBlockquote,
 } from 'telegram-md-entities';
 import type { RenderedMessage } from 'telegram-md-entities';
 import type { AgentStats, GroundingData } from '../../ai/types.js';
 import { buildAgentStatsSections } from './agent-stats-formatter.js';
 import { buildGroundingSections } from './grounding-formatter.js';
 import { plainText } from './entity-text.js';
+import { renderQuotedMarkdown } from './quoted-render.js';
 import { linkifyContextNumbers, type ContextLinkResolver } from './context-links.js';
 
 /** Safe per-message length budget (below Telegram's 4096 hard limit) */
@@ -50,7 +50,7 @@ export const buildFinalMessages = (
     const parts: (RenderedMessage | string)[] = [];
 
     if (thinking) {
-        parts.push(wrapInBlockquote(renderMarkdown(thinking), true));
+        parts.push(renderQuotedMarkdown(thinking, { expandable: true }));
     }
 
     if (text) {

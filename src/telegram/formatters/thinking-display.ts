@@ -9,12 +9,9 @@
  * roughly constant height. Once the answer starts, the whole thinking
  * collapses — the same shape the final render uses.
  */
-import {
-    concatMessages,
-    renderMarkdown,
-    wrapInBlockquote,
-} from 'telegram-md-entities';
+import { concatMessages } from 'telegram-md-entities';
 import type { RenderedMessage } from 'telegram-md-entities';
+import { renderQuotedMarkdown } from './quoted-render.js';
 
 /** Above this size a paragraph is cut at a newline / sentence boundary */
 const SEGMENT_SOFT_LIMIT = 400;
@@ -114,26 +111,27 @@ export interface ThinkingStreamingOptions {
 /**
  * Render the thinking buffer for the streaming (processing) view. Markdown is
  * always rendered in streaming mode: a segment cut can land inside an
- * unclosed construct.
+ * unclosed construct. Quotes are built block-free (see quoted-render.ts) so a
+ * nested code block can never break the quote and leak the CoT as body text.
  */
 export const formatThinkingForStreaming = (
     thinking: string,
     options: ThinkingStreamingOptions
 ): RenderedMessage => {
     if (options.answerStarted) {
-        return wrapInBlockquote(renderMarkdown(thinking, { streaming: true }), true);
+        return renderQuotedMarkdown(thinking, { expandable: true, streaming: true });
     }
 
     const segments = segmentThinking(thinking);
     if (segments.length <= UNCOLLAPSED_SEGMENT_LIMIT) {
-        return wrapInBlockquote(renderMarkdown(thinking, { streaming: true }), false);
+        return renderQuotedMarkdown(thinking, { expandable: false, streaming: true });
     }
 
     const collapsed = segments.slice(0, -PREVIEW_SEGMENT_COUNT).join('\n\n');
     const preview = segments.slice(-PREVIEW_SEGMENT_COUNT).join('\n\n');
     return concatMessages(
-        wrapInBlockquote(renderMarkdown(collapsed, { streaming: true }), true),
+        renderQuotedMarkdown(collapsed, { expandable: true, streaming: true }),
         '\n',
-        wrapInBlockquote(renderMarkdown(preview, { streaming: true }), false)
+        renderQuotedMarkdown(preview, { expandable: false, streaming: true })
     );
 };

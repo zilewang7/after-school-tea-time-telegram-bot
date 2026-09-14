@@ -32,11 +32,11 @@ import { registerContinuation } from '../state.js';
 import {
     concatMessages,
     renderMarkdown,
-    wrapInBlockquote,
 } from 'telegram-md-entities';
 import type { RenderedMessage } from 'telegram-md-entities';
 import { buildErrorDisplay } from '../telegram/formatters/error-display.js';
 import { formatThinkingForStreaming } from '../telegram/formatters/thinking-display.js';
+import { renderQuotedMarkdown } from '../telegram/formatters/quoted-render.js';
 import { buildFinalMessages } from '../telegram/formatters/final-message-builder.js';
 import { splitRawByFits, splitAtLastNewline } from '../telegram/formatters/smart-splitter.js';
 import type {
@@ -247,7 +247,7 @@ const formatStateForDisplay = (
                 ? formatThinkingForStreaming(state.thinkingBuffer, {
                     answerStarted: Boolean(state.textBuffer),
                 })
-                : wrapInBlockquote(renderMarkdown(state.thinkingBuffer), true)
+                : renderQuotedMarkdown(state.thinkingBuffer, { expandable: true })
         );
         if (state.textBuffer) {
             parts.push('\n');
