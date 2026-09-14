@@ -15,7 +15,7 @@ import type { AgentStats, GroundingData } from '../../ai/types.js';
 import { buildAgentStatsSections } from './agent-stats-formatter.js';
 import { buildGroundingSections } from './grounding-formatter.js';
 import { plainText } from './entity-text.js';
-import { renderQuotedMarkdown } from './quoted-render.js';
+import { renderThinkingQuote } from './quoted-render.js';
 import { linkifyContextNumbers, type ContextLinkResolver } from './context-links.js';
 
 /** Safe per-message length budget (below Telegram's 4096 hard limit) */
@@ -50,7 +50,7 @@ export const buildFinalMessages = (
     const parts: (RenderedMessage | string)[] = [];
 
     if (thinking) {
-        parts.push(renderQuotedMarkdown(thinking, { expandable: true }));
+        parts.push(renderThinkingQuote(thinking, { expandable: true }));
     }
 
     if (text) {

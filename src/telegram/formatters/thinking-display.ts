@@ -12,6 +12,7 @@
 import { concatMessages } from 'telegram-md-entities';
 import type { RenderedMessage } from 'telegram-md-entities';
 import { renderQuotedMarkdown } from './quoted-render.js';
+import { normalizeThinkingIndent } from './thinking-markdown.js';
 
 /** Above this size a paragraph is cut at a newline / sentence boundary */
 const SEGMENT_SOFT_LIMIT = 400;
@@ -118,13 +119,18 @@ export const formatThinkingForStreaming = (
     thinking: string,
     options: ThinkingStreamingOptions
 ): RenderedMessage => {
+    // Re-anchor the model's indentation once, before any slicing: list levels
+    // are tracked across lines, so normalizing each part on its own would put
+    // a part's first bullet at top level (see quoted-render.ts)
+    const markdown = normalizeThinkingIndent(thinking);
+
     if (options.answerStarted) {
-        return renderQuotedMarkdown(thinking, { expandable: true, streaming: true });
+        return renderQuotedMarkdown(markdown, { expandable: true, streaming: true });
     }
 
-    const segments = segmentThinking(thinking);
+    const segments = segmentThinking(markdown);
     if (segments.length <= UNCOLLAPSED_SEGMENT_LIMIT) {
-        return renderQuotedMarkdown(thinking, { expandable: false, streaming: true });
+        return renderQuotedMarkdown(markdown, { expandable: false, streaming: true });
     }
 
     const collapsed = segments.slice(0, -PREVIEW_SEGMENT_COUNT).join('\n\n');

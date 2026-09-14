@@ -2548,6 +2548,94 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
                 finalChunks.some((chunk) => chunk.text.includes('正文在这里')),
                 'the answer text still lands outside the quote'
             );
+
+            // Re-anchored indentation: the sub-points render as real bullets
+            // with their bold, not as literal `*   ` markers inside a code block
+            const reanchored = formatThinkingForStreaming(indentedCoT, { answerStarted: true });
+            expect(
+                reanchored.text.includes('• Sub point:') &&
+                    !reanchored.text.includes('* **Sub point:'),
+                `indented CoT sub-points render as bullets (got ${JSON.stringify(reanchored.text.slice(0, 160))})`
+            );
+        },
+    },
+    {
+        name: 'thinking indentation is re-anchored: four-space sub-points stay bullets, fences stay literal',
+        body: async () => {
+            const { normalizeThinkingIndent } =
+                await import('../../src/telegram/formatters/thinking-markdown.js');
+
+            // Gemini's shape: a paragraph, then sub-points indented by four
+            // spaces. After a blank line that indentation is an indented code
+            // block, so the bullets would render as literal markers instead
+            const geminiCoT = [
+                '**Plan**',
+                '',
+                'do the thing',
+                '    * **Sub point:** nested reasoning',
+                '',
+                '    * **Another:** more',
+                '        * **Deep:** deeper still',
+                '',
+                '**Execute**',
+                '',
+                'write it',
+            ].join('\n');
+            expect(
+                normalizeThinkingIndent(geminiCoT) ===
+                    [
+                        '**Plan**',
+                        '',
+                        'do the thing',
+                        '* **Sub point:** nested reasoning',
+                        '',
+                        '* **Another:** more',
+                        '    * **Deep:** deeper still',
+                        '',
+                        '**Execute**',
+                        '',
+                        'write it',
+                    ].join('\n'),
+                `sub-points are re-anchored to a legal list depth (got ${JSON.stringify(normalizeThinkingIndent(geminiCoT))})`
+            );
+
+            // Markdown that was already legal stays exactly as it is
+            const legalNesting = '* top\n    * nested\n        * deeper';
+            expect(
+                normalizeThinkingIndent(legalNesting) === legalNesting,
+                'legal nested lists are untouched'
+            );
+
+            expect(
+                normalizeThinkingIndent('para\n\n    indented prose') ===
+                    'para\n\nindented prose',
+                'indented prose is not treated as code'
+            );
+
+            // Fenced content is literal: only the fence itself is re-anchored
+            const indentedFence =
+                'before\n\n    ```js\n    const x = 1;\n        deep\n    ```\n\nafter';
+            expect(
+                normalizeThinkingIndent(indentedFence) ===
+                    'before\n\n```js\n    const x = 1;\n        deep\n```\n\nafter',
+                `an indented fence moves to column 0 and keeps its content verbatim (got ${JSON.stringify(normalizeThinkingIndent(indentedFence))})`
+            );
+
+            // Streaming safety: a line's indentation never depends on later text
+            const lines = geminiCoT.split('\n');
+            const reference = normalizeThinkingIndent(geminiCoT).split('\n');
+            expect(
+                lines.every((_, index) => {
+                    const prefix = normalizeThinkingIndent(
+                        lines.slice(0, index + 1).join('\n')
+                    ).split('\n');
+                    return (
+                        prefix.length === index + 1 &&
+                        prefix.every((line, at) => line === reference[at])
+                    );
+                }),
+                'every streamed prefix renders exactly like the final text'
+            );
         },
     },
     {

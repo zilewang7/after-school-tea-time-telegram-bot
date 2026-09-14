@@ -1,34 +1,16 @@
 /**
- * Quote rendering that keeps Telegram's block-nesting rule.
+ * Quote rendering for the model's chain of thought.
  *
- * A blockquote cannot render a block-level entity nested inside it: the client
- * cuts the quote short at the first nested `pre` and a quote that *starts* with
- * one is dropped altogether, so the quoted text falls back to ordinary message
- * body. That is exactly how a long CoT leaked into the message text — Gemini's
- * thinking indents nested bullet lists by four spaces, markdown reads that as an
- * indented code block (`pre`), and the thinking quote broke around it.
- *
- * Every quote built from markdown goes through here, so block entities are
- * flattened (the entity is dropped, its text stays) before the quote is applied.
+ * Telegram renders inline entities only inside a quote: a block entity nested
+ * in one makes the client cut the quote short, and a quote that starts with one
+ * is dropped entirely — the CoT then leaks into the message body as plain text
+ * (the 2026-09-14 incident). Two layers keep that from happening: the renderer
+ * never emits a block entity inside a quote (telegram-md-entities ≥ 0.6.0), and
+ * `wrapInBlockquote` flattens the ones a caller composes in.
  */
 import { renderMarkdown, wrapInBlockquote } from 'telegram-md-entities';
-import type { EntityType, RenderedMessage } from 'telegram-md-entities';
-
-/** Entity types Telegram renders as blocks — no legal nesting inside a quote */
-const BLOCK_ENTITY_TYPES: ReadonlySet<EntityType> = new Set([
-    'pre',
-    'blockquote',
-    'expandable_blockquote',
-]);
-
-/**
- * Drop block entities while keeping their text. Only used on messages that are
- * about to be quoted as a whole, where every remaining entity is nested anyway.
- */
-export const withoutBlockEntities = (message: RenderedMessage): RenderedMessage => ({
-    text: message.text,
-    entities: message.entities.filter((entity) => !BLOCK_ENTITY_TYPES.has(entity.type)),
-});
+import type { RenderedMessage } from 'telegram-md-entities';
+import { normalizeThinkingIndent } from './thinking-markdown.js';
 
 export interface QuotedMarkdownOptions {
     /** Collapse the quote behind a tap (Telegram's expandable blockquote) */
@@ -43,6 +25,21 @@ export const renderQuotedMarkdown = (
     options: QuotedMarkdownOptions
 ): RenderedMessage =>
     wrapInBlockquote(
-        withoutBlockEntities(renderMarkdown(markdown, { streaming: options.streaming })),
+        renderMarkdown(markdown, { streaming: options.streaming }),
         options.expandable
     );
+
+/**
+ * Chain of thought → quote: `renderQuotedMarkdown` with the model's indentation
+ * re-anchored first, so four-space sub-points render as nested bullets instead
+ * of an indented code block.
+ *
+ * Callers that slice the thinking up (thinking-display) normalize the whole
+ * text once and pass the slices to `renderQuotedMarkdown`: list levels are
+ * tracked across lines, so normalizing each slice on its own would re-anchor
+ * its first bullet as if it were top level.
+ */
+export const renderThinkingQuote = (
+    thinking: string,
+    options: QuotedMarkdownOptions
+): RenderedMessage => renderQuotedMarkdown(normalizeThinkingIndent(thinking), options);

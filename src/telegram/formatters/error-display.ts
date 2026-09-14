@@ -14,7 +14,7 @@ import {
 } from 'telegram-md-entities';
 import type { RenderedMessage } from 'telegram-md-entities';
 import { italicText } from './entity-text.js';
-import { renderQuotedMarkdown } from './quoted-render.js';
+import { renderThinkingQuote } from './quoted-render.js';
 import { truncateForTelegram } from './text-utils.js';
 import { linkifyContextNumbers, type ContextLinkResolver } from './context-links.js';
 
@@ -52,7 +52,7 @@ export const buildErrorDisplay = (input: ErrorDisplayInput): RenderedMessage => 
     const parts: (RenderedMessage | string)[] = [];
 
     if (input.thinking) {
-        parts.push(renderQuotedMarkdown(input.thinking, { expandable: true }));
+        parts.push(renderThinkingQuote(input.thinking, { expandable: true }));
         if (input.text) parts.push('\n');
     }
     if (input.text) {
