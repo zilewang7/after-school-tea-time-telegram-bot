@@ -8,6 +8,12 @@ import type { ChatCompletionChunk } from 'openai/resources';
 import { BasePlatform } from './base-platform.js';
 import { transformToMimo, type MimoMessageParam } from '../message-transformer.js';
 import { prepareMimoMedia } from './mimo-media.js';
+import {
+    buildMimoContentFilterError,
+    isMimoContentFilterFinishReason,
+    isMimoContentFilterNotice,
+    isMimoContentFilterNoticePrefix,
+} from './mimo-content-filter.js';
 import { getMcpTools, executeMcpTool, mcpToolsToOpenAI, extractGroundingFromToolResult } from '../mcp/index.js';
 import type {
     PlatformType,
@@ -145,9 +151,16 @@ export class MimoPlatform extends BasePlatform {
                 { timeout, maxRetries, signal }
             );
 
-            const { toolCalls, assistantText, reasoningText, chunks } =
+            const { toolCalls, assistantText, reasoningText, chunks, blocked } =
                 await this.collectStreamWithTools(stream);
             console.log(`[mimo] Round ${round + 1}: ${chunks.length} chunks, ${toolCalls.length} tools, text: ${assistantText.length}, thinking: ${reasoningText.length}`);
+
+            // The provider refused this round: fail the turn instead of showing
+            // its moderation notice as if the bot had written it
+            if (blocked) {
+                console.warn('[mimo] the request was blocked by the provider content filter');
+                throw buildMimoContentFilterError();
+            }
 
             for (const chunk of chunks) {
                 yield chunk;
@@ -236,9 +249,13 @@ export class MimoPlatform extends BasePlatform {
                 { timeout, maxRetries, signal }
             );
 
-            const { chunks } = await this.collectStreamWithTools(
+            const { chunks, blocked: finalBlocked } = await this.collectStreamWithTools(
                 finalStream as Stream<ChatCompletionChunk>
             );
+            if (finalBlocked) {
+                console.warn('[mimo] the request was blocked by the provider content filter');
+                throw buildMimoContentFilterError();
+            }
             for (const chunk of chunks) {
                 yield chunk;
             }
@@ -248,7 +265,11 @@ export class MimoPlatform extends BasePlatform {
     }
 
     /**
-     * Collect stream, capturing text, thinking, and tool calls
+     * Collect stream, capturing text, thinking, and tool calls.
+     *
+     * `blocked` is set when MiMo answers with its moderation notice instead of a
+     * reply (`finish_reason: content_filter`); the notice text itself is never
+     * kept, so it cannot be mistaken for an assistant turn inside the tool loop.
      */
     private async collectStreamWithTools(
         stream: Stream<ChatCompletionChunk>
@@ -257,14 +278,18 @@ export class MimoPlatform extends BasePlatform {
         assistantText: string;
         reasoningText: string;
         chunks: StreamChunk[];
+        blocked: boolean;
     }> {
         const toolCallsMap = new Map<number, { id: string; name: string; arguments: string }>();
         let assistantText = '';
         let reasoningText = '';
+        let heldNotice = '';
+        let blocked = false;
         const chunks: StreamChunk[] = [];
 
         for await (const chunk of stream) {
-            const delta = chunk.choices[0]?.delta;
+            const choice = chunk.choices[0];
+            const delta = choice?.delta;
 
             // Handle reasoning/thinking content (MIMO thinking mode)
             const mimoDelta = delta as typeof delta & { reasoning_content?: string | null };
@@ -273,10 +298,22 @@ export class MimoPlatform extends BasePlatform {
                 chunks.push({ type: 'thinking', content: mimoDelta.reasoning_content });
             }
 
-            // Handle regular text content
-            if (delta?.content) {
-                assistantText += delta.content;
-                chunks.push({ type: 'text', content: delta.content });
+            const content = delta?.content ?? '';
+            if (isMimoContentFilterFinishReason(choice?.finish_reason) || isMimoContentFilterNotice(content)) {
+                blocked = true;
+                break;
+            }
+
+            // Handle regular text content, holding anything that could still turn
+            // out to be the filter notice
+            if (content) {
+                heldNotice += content;
+                if (isMimoContentFilterNoticePrefix(heldNotice)) {
+                    continue;
+                }
+                assistantText += heldNotice;
+                chunks.push({ type: 'text', content: heldNotice });
+                heldNotice = '';
             }
 
             // Handle tool calls
@@ -300,7 +337,7 @@ export class MimoPlatform extends BasePlatform {
         }
 
         const toolCalls = Array.from(toolCallsMap.values()).filter(tc => tc.name);
-        return { toolCalls, assistantText, reasoningText, chunks };
+        return { toolCalls, assistantText, reasoningText, chunks, blocked };
     }
 
     /**
@@ -309,8 +346,11 @@ export class MimoPlatform extends BasePlatform {
     private async *processStream(
         stream: Stream<ChatCompletionChunk>
     ): AsyncIterable<StreamChunk> {
+        let heldNotice = '';
+
         for await (const chunk of stream) {
-            const delta = chunk.choices[0]?.delta;
+            const choice = chunk.choices[0];
+            const delta = choice?.delta;
             const mimoDelta = delta as typeof delta & { reasoning_content?: string | null };
 
             // Handle reasoning/thinking content
@@ -318,10 +358,26 @@ export class MimoPlatform extends BasePlatform {
                 yield { type: 'thinking', content: mimoDelta.reasoning_content };
             }
 
-            // Handle regular text content
-            if (delta?.content) {
-                yield { type: 'text', content: delta.content };
+            const content = delta?.content ?? '';
+            if (isMimoContentFilterFinishReason(choice?.finish_reason) || isMimoContentFilterNotice(content)) {
+                console.warn('[mimo] the request was blocked by the provider content filter');
+                throw buildMimoContentFilterError();
             }
+
+            // Handle regular text content, holding anything that could still turn
+            // out to be the filter notice (seen both whole and streamed in pieces)
+            if (content) {
+                heldNotice += content;
+                if (isMimoContentFilterNoticePrefix(heldNotice)) {
+                    continue;
+                }
+                yield { type: 'text', content: heldNotice };
+                heldNotice = '';
+            }
+        }
+
+        if (heldNotice) {
+            yield { type: 'text', content: heldNotice };
         }
 
         yield { type: 'done' };

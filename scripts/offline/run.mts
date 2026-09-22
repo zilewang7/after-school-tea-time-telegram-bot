@@ -36,6 +36,9 @@ const GROK_PORT = 9139;
 /** The tgs-converter stub the MiMo media case runs against (snapshotted at import) */
 const TGS_PORT = 9140;
 
+/** The MiMo-shaped stub the content-filter case runs against */
+const MIMO_PORT = 9141;
+
 // The /chat and /pic parsers decide whether `/cmd@Name` is addressed to us
 process.env.BOT_USER_NAME = 'AfterSchoolTeatimeBot';
 process.env.LUOXU_PREVIEW_URL = `http://127.0.0.1:${BACKFILL_PORT}`;
@@ -43,6 +46,8 @@ process.env.COMFY_FORWARD_URL = `http://127.0.0.1:${COMFY_PORT}`;
 process.env.GROK_API_URL = `http://127.0.0.1:${GROK_PORT}/v1`;
 process.env.GROK_API_KEY = 'offline-stub';
 process.env.TGS_CONVERTER_URL = `http://127.0.0.1:${TGS_PORT}`;
+process.env.MIMO_API_URL = `http://127.0.0.1:${MIMO_PORT}/v1`;
+process.env.MIMO_API_KEY = 'offline-stub';
 const { shouldIgnoreSender } = await import('../../src/config/sender-gate.js');
 
 const db: OfflineDb = await setupOfflineDb();
@@ -3210,6 +3215,100 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
                         (part) => part.type === 'image_url' && part.image_url.url === 'https://example.invalid/signed.jpg'
                     ),
                     'a GCS photo stored as media becomes image_url on its signed URL'
+                );
+            } finally {
+                server.close();
+            }
+        },
+    },
+    {
+        // MiMo answers a moderation block with HTTP 200 and
+        // `finish_reason: "content_filter"` whose content is a fixed English
+        // sentence, so the block looks like an ordinary reply. It is not a
+        // parameter the client can switch off (verified), so the platform has to
+        // recognise it — otherwise the bot posts that sentence as its own reply,
+        // which is exactly what happened in production on 2026-09-22.
+        name: 'a mimo content filter block fails the turn instead of becoming the reply',
+        body: async () => {
+            const { createServer } = await import('node:http');
+            const { MimoPlatform } = await import('../../src/ai/platforms/mimo-platform.js');
+            const { MIMO_CONTENT_FILTER_NOTICE } = await import('../../src/ai/platforms/mimo-content-filter.js');
+
+            let mode: 'blocked' | 'split' | 'normal' = 'blocked';
+            const sse = (payload: unknown): string => `data: ${JSON.stringify(payload)}\n\n`;
+            const chunkOf = (delta: Record<string, unknown>, finishReason: string | null = null) => ({
+                id: 'offline-chunk',
+                object: 'chat.completion.chunk',
+                created: 0,
+                model: 'mimo-v2.6-flash',
+                choices: [{ index: 0, delta, finish_reason: finishReason }],
+            });
+            const blockedBody = (): string[] =>
+                mode === 'blocked'
+                    ? [sse(chunkOf({ content: MIMO_CONTENT_FILTER_NOTICE }, 'content_filter'))]
+                    : mode === 'split'
+                        ? [
+                            sse(chunkOf({ content: 'The request was rej' })),
+                            sse(chunkOf({ content: 'ected because it was considered high risk' }, 'content_filter')),
+                        ]
+                        : [sse(chunkOf({ content: '正常回复' })), sse(chunkOf({}, 'stop'))];
+
+            const server = createServer((request, response) => {
+                request.resume();
+                request.on('end', () => {
+                    response.writeHead(200, { 'Content-Type': 'text/event-stream' });
+                    response.end([
+                        sse(chunkOf({ role: 'assistant', content: '' })),
+                        sse(chunkOf({ reasoning_content: '我先想想怎么回…' })),
+                        ...blockedBody(),
+                        'data: [DONE]\n\n',
+                    ].join(''));
+                });
+            });
+            await new Promise<void>((resolve) => {
+                server.listen(MIMO_PORT, '127.0.0.1', () => resolve());
+            });
+
+            const runTurn = async (): Promise<{ text: string; error: string | null }> => {
+                const platform = new MimoPlatform();
+                const stream = await platform.sendMessage(
+                    [{ role: 'user', content: [{ type: 'text', text: '你好' }] }],
+                    { model: 'mimo-v2.6-flash', timeout: 20000 }
+                );
+                let text = '';
+                try {
+                    for await (const chunk of stream) {
+                        if (chunk.type === 'text') text += chunk.content ?? '';
+                    }
+                    return { text, error: null };
+                } catch (error) {
+                    return { text, error: error instanceof Error ? error.message : String(error) };
+                }
+            };
+
+            try {
+                const blocked = await runTurn();
+                expect(
+                    blocked.error !== null && blocked.error.includes('风控'),
+                    `a blocked turn ends as a readable error (got ${JSON.stringify(blocked.error)})`
+                );
+                expect(
+                    blocked.text === '',
+                    `the provider notice never becomes reply text (got ${JSON.stringify(blocked.text)})`
+                );
+
+                mode = 'split';
+                const split = await runTurn();
+                expect(
+                    split.error !== null && split.text === '',
+                    `a notice that streams in pieces is caught too (text=${JSON.stringify(split.text)})`
+                );
+
+                mode = 'normal';
+                const normal = await runTurn();
+                expect(
+                    normal.error === null && normal.text === '正常回复',
+                    `a normal reply still streams through untouched (got ${JSON.stringify(normal)})`
                 );
             } finally {
                 server.close();
