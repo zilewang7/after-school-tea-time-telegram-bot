@@ -461,6 +461,8 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
     {
         // The model sometimes copies the `[#N]` label its own history carries,
         // despite the system prompt. It must never reach the group or the DB.
+        // The glued shape (`[#4] 哈哈确实…`) is the one that slipped through
+        // until 2026-09-22, when only a label alone on its line was caught.
         name: 'a leaked [#N] label is stripped from the reply',
         body: async () => {
             const { createContextLabelStripper, stripContextLabel } = await import(
@@ -483,8 +485,8 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
                 'the blank lines after the label go too'
             );
             expect(
-                streamed(['[#3] 说得对', '，我同意']) === '[#3] 说得对，我同意',
-                'a label used mid-sentence is a real reference and stays'
+                streamed(['[#4] 哈哈确实', '，直接掀桌']) === '哈哈确实，直接掀桌',
+                'a label glued to the text on the first line goes too'
             );
             expect(
                 streamed(['你', '好', '呀']) === '你好呀',
@@ -499,8 +501,20 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
                 'a bare context reference is not a label'
             );
             expect(
+                streamed(['我觉得', '[#3] 说得对']) === '我觉得[#3] 说得对',
+                'a label written inside a sentence is a real reference and stays'
+            );
+            expect(
                 stripContextLabel('[#7]\n完整文本') === '完整文本',
                 'the non-streaming path strips it as well'
+            );
+            expect(
+                stripContextLabel('[#4] 哈哈确实，直接掀桌') === '哈哈确实，直接掀桌',
+                'the non-streaming path strips the glued shape too'
+            );
+            expect(
+                stripContextLabel('这就去查！\n[#61]\n好，查回来了') === '这就去查！\n好，查回来了',
+                'a label alone on its line mid-reply is a separator and goes'
             );
         },
     },
@@ -542,6 +556,79 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
             expect(
                 finished.fullText === '梓喵的回答就是这样',
                 `a replacement final text is cleaned as well (got ${JSON.stringify(finished.fullText)})`
+            );
+        },
+    },
+    {
+        // Steps used to render one MCPTools + Sources pair each (plus Agent
+        // Stats), so a five-step answer flooded the chat with ten sections and
+        // pushed the tail into a second message. Everything merges into two
+        // collapsed blocks now, with the repeated calls and pages dropped.
+        name: 'tool records merge into two collapsed blocks',
+        body: async () => {
+            const { buildToolRecordSections } = await import(
+                '../../src/telegram/formatters/tool-records-formatter.js'
+            );
+
+            const firstStep = {
+                provider: 'mcp' as const,
+                searchQueries: ['searxng_web_search: 户鞘谷蛾 灭杀'],
+                citations: [
+                    { uri: 'https://a.example/moths' },
+                    { uri: 'https://b.example/traps' },
+                ],
+            };
+            const secondStep = {
+                provider: 'mcp' as const,
+                // The same call and the same page again: both must appear once
+                searchQueries: ['searxng_web_search: 户鞘谷蛾 灭杀'],
+                citations: [
+                    { uri: 'https://b.example/traps' },
+                    { uri: 'https://c.example/guide', title: '灭蛾指南' },
+                ],
+            };
+
+            const sections = buildToolRecordSections(
+                { toolUsage: [{ name: 'searxng_web_search', count: 2 }] },
+                [firstStep, secondStep]
+            );
+
+            expect(sections.length === 2, `one block per kind (got ${sections.length})`);
+
+            const tools = sections[0]?.text ?? '';
+            const sources = sections[1]?.text ?? '';
+
+            expect(
+                sections.every((section) =>
+                    section.entities.some((entity) => entity.type === 'expandable_blockquote')
+                ),
+                'both blocks collapse until tapped'
+            );
+            expect(tools.startsWith('Tools\n'), `the calls get their own titled block (got ${JSON.stringify(tools.slice(0, 24))})`);
+            expect(
+                tools.includes('tool usage: searxng_web_search x2'),
+                'the usage summary rides at the top'
+            );
+            expect(
+                tools.split('searxng_web_search: 户鞘谷蛾 灭杀').length - 1 === 1,
+                `a call made twice is listed once (got ${JSON.stringify(tools)})`
+            );
+            expect(
+                sources.startsWith('Sources\n') && sources.includes('[1] a.example'),
+                'the sources get the second block, numbered from 1'
+            );
+            expect(
+                sources.split('b.example').length - 1 === 1,
+                'a page cited by two steps is listed once'
+            );
+            expect(
+                sources.includes('[3] 灭蛾指南'),
+                `numbering stays continuous after dedupe (got ${JSON.stringify(sources)})`
+            );
+
+            expect(
+                buildToolRecordSections(undefined, []).length === 0,
+                'a reply that used no tools renders no blocks'
             );
         },
     },

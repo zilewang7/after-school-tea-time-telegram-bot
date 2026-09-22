@@ -23,6 +23,7 @@ import { buildMessageLinkResolver } from '../telegram/message-link.js';
 import { plainText } from '../telegram/formatters/entity-text.js';
 import { appendErrorLine } from '../telegram/formatters/error-display.js';
 import { formatErrorForUser } from '../shared/errors.js';
+import { stripContextLabel } from '../reply/context-label.js';
 import { toApiEntities } from '../telegram/api-entities.js';
 import { buildResponseButtons } from '../cmd/menus/index.js';
 import { to, isErr } from '../shared/result.js';
@@ -339,6 +340,11 @@ const finalizeSession = async (
     session.isFinalized = true;
 
     const sessionKey = getSessionKey(session.chatId, session.firstMessageId);
+
+    // Last line of defense before the reply is versioned and stored: text that
+    // never went through the stream processor (image-chat turns and the like)
+    // loses its imitated `[#N]` labels here as well
+    session.textBuffer = stripContextLabel(session.textBuffer);
 
     // Build version data
     const version: ResponseVersion = {

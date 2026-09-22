@@ -255,7 +255,12 @@ const formatStateForDisplay = (
     }
 
     if (state.textBuffer) {
-        parts.push(renderMarkdown(state.textBuffer, { streaming: isProcessing }));
+        // The whole text is cleaned here, not just the opening: a label the
+        // model dropped further down must not show up mid-stream and then
+        // disappear in the final edit
+        parts.push(
+            renderMarkdown(stripContextLabel(state.textBuffer), { streaming: isProcessing })
+        );
     }
 
     // Linkified here, before the caller measures length/entities, so the
@@ -543,6 +548,13 @@ export const processStream = async (
             lastUpdateTime = Date.now();
         }
     }
+
+    // The streaming stripper only guards the opening, so the assembled text is
+    // cleaned once more: what the final edit displays, what finalize stores and
+    // therefore what the next context reads never carries an imitated label.
+    state.textBuffer = stripContextLabel(state.textBuffer);
+    state.fullText = stripContextLabel(state.fullText);
+    session.textBuffer = state.fullText;
 
     return {
         text: state.textBuffer,

@@ -1,6 +1,6 @@
 /**
  * Final response assembly: collapsed thinking quote + markdown-rendered text
- * + agent-stats / grounding sections, composed as one entity message and then
+ * + tool-call / sources sections, composed as one entity message and then
  * split into chunks that fit both the length and entity budgets. Formatting
  * spanning a boundary is closed and reopened by splitMessage, so styles are
  * seamless across messages.
@@ -12,8 +12,7 @@ import {
 } from 'telegram-md-entities';
 import type { RenderedMessage } from 'telegram-md-entities';
 import type { AgentStats, GroundingData } from '../../ai/types.js';
-import { buildAgentStatsSections } from './agent-stats-formatter.js';
-import { buildGroundingSections } from './grounding-formatter.js';
+import { buildToolRecordSections } from './tool-records-formatter.js';
 import { plainText } from './entity-text.js';
 import { renderThinkingQuote } from './quoted-render.js';
 import { linkifyContextNumbers, type ContextLinkResolver } from './context-links.js';
@@ -58,15 +57,12 @@ export const buildFinalMessages = (
         parts.push(renderMarkdown(text));
     }
 
-    for (const section of buildAgentStatsSections(agentStats)) {
-        parts.push('\n', section);
-    }
-
     if (wasStoppedByUser) {
         parts.push('\n\n', plainText('[stopped]'));
     }
 
-    for (const section of buildGroundingSections(groundingData ?? [])) {
+    // What the reply did with tools, merged into at most two collapsed blocks
+    for (const section of buildToolRecordSections(agentStats, groundingData ?? [])) {
         parts.push('\n', section);
     }
 
