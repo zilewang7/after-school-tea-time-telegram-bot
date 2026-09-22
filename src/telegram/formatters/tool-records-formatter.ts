@@ -7,7 +7,12 @@
  * sections and pushed the tail into a second message. The steps are merged here
  * instead: one block for the calls themselves — usage counts first, then one
  * line per call in call order — and one for the sources, deduplicated and
- * numbered once across all steps.
+ * numbered once across all steps. Nothing is dropped along the way: every call
+ * and every source the old sections printed is still here, only the exact
+ * repeats (a call made twice, a page cited by two steps) collapse.
+ *
+ * Sources arrive in two shapes — `citations` (xai, mcp) and Gemini's search
+ * `groundingChunks` — and both are collected.
  *
  * Built directly as entities (bold title + expandable blockquote), so titles
  * and URLs never need escaping.
@@ -221,7 +226,19 @@ const collectToolLines = (
 };
 
 /**
- * Every citation of every step, first-seen order, one entry per URL: the same
+ * The sources of one step, whatever shape its provider reports them in: xai and
+ * mcp fill `citations`, Gemini's search grounding fills `groundingChunks` — and
+ * a step may carry both.
+ */
+const sourcesOfStep = (metadata: GroundingData): GroundingCitation[] => [
+    ...(metadata.citations ?? []),
+    ...(metadata.groundingChunks ?? []).flatMap((chunk) =>
+        chunk.web?.uri ? [{ uri: chunk.web.uri, title: chunk.web.title }] : []
+    ),
+];
+
+/**
+ * Every source of every step, first-seen order, one entry per URL: the same
  * page is read or cited by several steps and must not be listed several times.
  * A step that only knows the URL keeps the title another step found for it.
  */
@@ -229,7 +246,7 @@ const collectCitations = (groundingData: GroundingData[]): GroundingCitation[] =
     const byUri = new Map<string, GroundingCitation>();
 
     for (const metadata of groundingData) {
-        for (const citation of metadata.citations ?? []) {
+        for (const citation of sourcesOfStep(metadata)) {
             if (!citation.uri) continue;
 
             const known = byUri.get(citation.uri);

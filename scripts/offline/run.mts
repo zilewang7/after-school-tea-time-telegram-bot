@@ -630,6 +630,39 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
                 buildToolRecordSections(undefined, []).length === 0,
                 'a reply that used no tools renders no blocks'
             );
+
+            // Gemini's search grounding reports its sources as `groundingChunks`
+            // (with the query links in `searchEntryPoint`), not as citations —
+            // they must land in Sources all the same
+            const geminiBlocks = buildToolRecordSections(undefined, [
+                {
+                    searchQueries: ['衣蛾 怎么消灭'],
+                    searchEntryPoint: {
+                        renderedContent:
+                            '<div><a href="https://www.google.com/search?q=衣蛾">衣蛾 怎么消灭</a></div>',
+                    },
+                    groundingChunks: [
+                        { web: { uri: 'https://g.example/guide', title: 'Garden guide' } },
+                    ],
+                },
+            ]);
+
+            const geminiTools = geminiBlocks[0]?.text ?? '';
+            const geminiSources = geminiBlocks[1]?.text ?? '';
+            expect(
+                geminiTools.includes('google_search: 衣蛾 怎么消灭'),
+                `the search lands in the calls block (got ${JSON.stringify(geminiTools)})`
+            );
+            expect(
+                geminiSources.includes('[1] Garden guide'),
+                `the grounding chunk lands in Sources with its title (got ${JSON.stringify(geminiSources)})`
+            );
+            expect(
+                geminiBlocks
+                    .flatMap((block) => block.entities)
+                    .some((entity) => entity.type === 'text_link' && entity.url === 'https://g.example/guide'),
+                'the grounding chunk is still a clickable source'
+            );
         },
     },
     {
