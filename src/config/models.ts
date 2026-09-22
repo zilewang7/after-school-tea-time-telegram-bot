@@ -18,8 +18,8 @@ export const modelConfigs: ModelConfig[] = [
     { id: "deepseek-flash", name: "deepseek-flash" },
     { id: "grok4.6", name: "grok4.6" },
     { id: "grok-4.20-multi-agent-0309", name: "grok-4.20-multi-agent" },
-    { id: "mimo-v2.5", name: "mimo-v2.5" },
-    { id: "mimo-v2.5-pro", name: "mimo-v2.5-pro" },
+    { id: "mimo-v2.6-flash", name: "mimo-v2.6-flash" },
+    { id: "mimo-v2.6-pro", name: "mimo-v2.6-pro" },
     { id: "gemini-3-pro-image", name: "gemini-3-pro-image" },
     { id: OPENAI_IMAGE_MODEL, name: OPENAI_IMAGE_MODEL },
 ];

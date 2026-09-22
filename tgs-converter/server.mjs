@@ -4,6 +4,9 @@
  * Endpoints:
  *   POST /convert          body = raw .tgs bytes          -> video/webm
  *   POST /normalize-video  body = raw video bytes         -> original or video/mp4
+ *                          ?format=mp4 also re-encodes clips that need no padding
+ *                          (for a model that rejects webm/mkv containers)
+ *                          ?mime=<input mime>  input container hint
  *   POST /emoji-preview    body = raw emoji media bytes   -> image/png
  *   POST /emoji-atlas      body = JSON image items        -> image/png
  *   GET  /health                                          -> text/plain
@@ -408,25 +411,36 @@ const probeVideoDuration = async (filePath, jobDirectory, signal) => {
     return duration;
 };
 
-const normalizeShortVideo = async (videoBuffer, inputMime, signal) => {
+/**
+ * @param {object} [options]
+ * @param {boolean} [options.forceMp4] caller needs H.264/MP4 even when the clip
+ *   already lasts >= MIN_VIDEO_SECONDS (a model that rejects webm/mkv), so the
+ *   pass-through shortcut is skipped.
+ */
+const normalizeShortVideo = async (videoBuffer, inputMime, signal, options = {}) => {
     if (!NORMALIZE_VIDEO_MIMES.has(inputMime)) {
         throw new HttpError(415, `unsupported video MIME: ${inputMime}`);
     }
+    const forceMp4 = options.forceMp4 === true;
     const dir = await mkdtemp(join(tmpdir(), 'normalize-'));
     const inPath = join(dir, 'input.bin');
     const outPath = join(dir, 'output.mp4');
     try {
         await writeFile(inPath, videoBuffer);
         const videoInfo = await probeNormalizeVideo(inPath, dir, signal);
-        if (videoInfo.duration >= MIN_VIDEO_SECONDS) {
+        const needsPadding = videoInfo.duration < MIN_VIDEO_SECONDS;
+        if (!forceMp4 && !needsPadding) {
             return { data: videoBuffer, mimeType: inputMime, normalized: false };
         }
+        // Ultra-short clips are looped up to MIN_VIDEO_SECONDS; a normal-length
+        // clip is re-encoded as-is (only reached with forceMp4).
+        const inputArgs = needsPadding
+            ? ['-stream_loop', '-1', '-i', inPath, '-t', String(MIN_VIDEO_SECONDS)]
+            : ['-i', inPath];
         await runProcess('ffmpeg', [
             '-y',
             '-threads', '2',
-            '-stream_loop', '-1',
-            '-i', inPath,
-            '-t', String(MIN_VIDEO_SECONDS),
+            ...inputArgs,
             '-c:v', 'libx264',
             '-preset', 'ultrafast',
             '-pix_fmt', 'yuv420p',
@@ -880,19 +894,24 @@ const server = http.createServer(async (req, res) => {
         try {
             const parsed = new URL(req.url, 'http://localhost');
             const inputMime = parsed.searchParams.get('mime') || 'video/webm';
+            const format = parsed.searchParams.get('format');
+            if (format !== null && format !== 'mp4') {
+                throw new HttpError(400, `unsupported format: ${format}`);
+            }
+            const forceMp4 = format === 'mp4';
             const normalized = await withExpensiveRequest(req, res, async (signal) => {
                 if (!NORMALIZE_VIDEO_MIMES.has(inputMime)) {
                     throw new HttpError(415, `unsupported video MIME: ${inputMime}`);
                 }
                 const body = await readBody(req, NORMALIZE_MAX_INPUT_BYTES, signal);
                 if (body.length === 0) throw new HttpError(400, 'empty body');
-                const key = createHash('sha256').update('normalize\0').update(inputMime).update('\0').update(body).digest('hex');
+                const key = createHash('sha256').update('normalize\0').update(inputMime).update('\0').update(format ?? '').update('\0').update(body).digest('hex');
                 const cached = cacheGet(key);
                 if (cached !== undefined && !Buffer.isBuffer(cached)) {
                     console.log(`[tgs-converter] normalize cache hit for ${key.slice(0, 12)}`);
                     return cached;
                 }
-                const result = await normalizeShortVideo(body, inputMime, signal);
+                const result = await normalizeShortVideo(body, inputMime, signal, { forceMp4 });
                 if (result.normalized) cacheSet(key, result);
                 console.log(`[tgs-converter] ${result.normalized ? 'normalized' : 'passed'} ${body.length}B ${inputMime} -> ${result.data.length}B ${result.mimeType} (cache miss)`);
                 return result;

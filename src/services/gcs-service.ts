@@ -81,3 +81,33 @@ export const deleteGcsObject = async (gsUri: string): Promise<void> => {
         console.error('[gcs] Failed to delete object:', gsUri, error);
     }
 };
+
+/**
+ * Time-limited read URL for an object, for model APIs that fetch remote media
+ * themselves (MiMo takes https URLs, not gs://). Signed with the mounted
+ * service account key; returns null on any failure so the caller can drop the
+ * attachment instead of sending a dead URL.
+ */
+export const createSignedReadUrl = async (
+    gsUri: string,
+    ttlSeconds: number
+): Promise<string | null> => {
+    const parsed = /^gs:\/\/([^/]+)\/(.+)$/.exec(gsUri);
+    const bucket = parsed?.[1];
+    const objectName = parsed?.[2];
+    if (!bucket || !objectName) {
+        console.error('[gcs] Cannot sign a malformed URI:', gsUri);
+        return null;
+    }
+    try {
+        const [url] = await getStorage().bucket(bucket).file(objectName).getSignedUrl({
+            version: 'v4',
+            action: 'read',
+            expires: Date.now() + ttlSeconds * 1000,
+        });
+        return url;
+    } catch (error) {
+        console.error('[gcs] Failed to sign URL:', gsUri, error instanceof Error ? error.message : error);
+        return null;
+    }
+};

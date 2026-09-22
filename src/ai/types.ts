@@ -15,6 +15,7 @@ export interface UnifiedContentPart {
     sizeBytes?: number; // original file size in bytes (for logging / observability)
     mimeType?: string; // real MIME type for media (and optionally image)
     mediaKind?: string; // source kind (e.g. video_sticker, animated_sticker, video) for sampling hints
+    remoteUrl?: string; // pre-signed https URL for platforms that fetch media themselves (MiMo)
 }
 
 // Unified message format

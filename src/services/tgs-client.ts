@@ -141,6 +141,54 @@ export const normalizeShortVideo = async (
     }
 };
 
+/**
+ * Re-encode a video into MP4/H.264 through the converter's normalize endpoint
+ * with `format=mp4`, which skips the pass-through shortcut. Needed for models
+ * that only ingest MP4-family containers (MiMo rejects webm outright, e.g. every
+ * animated sticker). Returns null on any failure — the caller drops the media
+ * part and keeps the text hint.
+ */
+export const transcodeVideoToMp4 = async (
+    video: Buffer,
+    mimeType: string
+): Promise<NormalizedVideo | null> => {
+    if (!TGS_CONVERTER_URL) {
+        console.warn('[tgs-client] TGS_CONVERTER_URL not set, skipping video transcode');
+        return null;
+    }
+
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), NORMALIZE_TIMEOUT_MS);
+
+    try {
+        const query = `mime=${encodeURIComponent(mimeType)}&format=mp4`;
+        const res = await fetch(`${TGS_CONVERTER_URL}/normalize-video?${query}`, {
+            method: 'POST',
+            headers: { 'Content-Type': mimeType },
+            body: video,
+            signal: controller.signal,
+        });
+
+        if (!res.ok) {
+            console.error(`[tgs-client] transcode failed: HTTP ${res.status}`);
+            return null;
+        }
+
+        const arrayBuffer = await res.arrayBuffer();
+        const responseMime = res.headers.get('content-type')?.split(';')[0] ?? 'video/mp4';
+        return {
+            data: Buffer.from(arrayBuffer),
+            mimeType: responseMime,
+            normalized: res.headers.get('x-normalized') === '1',
+        };
+    } catch (error) {
+        console.error('[tgs-client] transcode request error:', error instanceof Error ? error.message : error);
+        return null;
+    } finally {
+        clearTimeout(timer);
+    }
+};
+
 const readPngResponse = async (
     response: Response,
     context: string,

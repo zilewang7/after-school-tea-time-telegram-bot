@@ -7,6 +7,8 @@ import type Anthropic from '@anthropic-ai/sdk';
 import type { UnifiedMessage, UnifiedContentPart, ModelCapabilities } from './types.js';
 import {
     isGeminiSupportedMimeType,
+    isMimoSupportedImageMime,
+    isMimoSupportedMediaMime,
     normalizeMimeType,
     toVisionImageMimeType,
 } from './supported-mime.js';
@@ -232,6 +234,125 @@ export const transformToOpenAI = (
                     role: 'assistant',
                     content: textContent,
                 });
+            })
+            .with({ role: 'system' }, () => {
+                // System messages already handled above, skip
+            })
+            .exhaustive();
+    });
+
+    return result;
+};
+
+/** MiMo (OpenAI-compatible) content parts. `video_url` / `input_audio` are MiMo extensions. */
+export type MimoContentPart =
+    | { type: 'text'; text: string }
+    | { type: 'image_url'; image_url: { url: string } }
+    | { type: 'video_url'; video_url: { url: string }; fps?: number; media_resolution?: 'default' | 'max' }
+    | { type: 'input_audio'; input_audio: { data: string } };
+
+/** MiMo message shapes (system/user/assistant only, no tool turns here). */
+export type MimoMessageParam =
+    | { role: 'system'; content: string }
+    | { role: 'user'; content: MimoContentPart[] }
+    | { role: 'assistant'; content: string };
+
+/** Inline `data:` URI, the form MiMo takes for small attachments. */
+const toDataUri = (mimeType: string, base64: string): string => `data:${mimeType};base64,${base64}`;
+
+const transformToMimoParts = (parts: UnifiedContentPart[]): MimoContentPart[] =>
+    parts.flatMap((part) =>
+        match(part)
+            .with({ type: 'text' }, (p): MimoContentPart[] => [
+                { type: 'text', text: p.text ?? '' },
+            ])
+            .with({ type: 'image' }, (p): MimoContentPart[] => {
+                const mimeType = normalizeMimeType(p.mimeType ?? 'image/png');
+                if (!isMimoSupportedImageMime(mimeType)) {
+                    console.warn(`[mimo] dropping unsupported image (mime=${mimeType})`);
+                    return [];
+                }
+                return [{
+                    type: 'image_url',
+                    image_url: { url: toDataUri(mimeType, p.imageData ?? '') },
+                }];
+            })
+            .with({ type: 'media' }, (p): MimoContentPart[] => {
+                const mimeType = normalizeMimeType(p.mimeType ?? 'application/octet-stream');
+                // Oversized images (>20MB) arrive as GCS `media` parts, so the
+                // image branch has to be reachable from here too.
+                if (mimeType.startsWith('image/')) {
+                    if (!isMimoSupportedImageMime(mimeType)) {
+                        console.warn(`[mimo] dropping unsupported image (mime=${mimeType})`);
+                        return [];
+                    }
+                    const imageUrl = p.remoteUrl
+                        ?? (p.mediaData ? toDataUri(mimeType, p.mediaData) : null);
+                    if (!imageUrl) {
+                        console.warn(`[mimo] dropping ${mimeType}: no inline bytes and no remote URL`);
+                        return [];
+                    }
+                    return [{ type: 'image_url', image_url: { url: imageUrl } }];
+                }
+                if (!isMimoSupportedMediaMime(mimeType)) {
+                    console.warn(`[mimo] dropping unsupported media (mime=${mimeType})`);
+                    return [];
+                }
+                // A signed https URL (large GCS media) or inline base64.
+                const url = p.remoteUrl ?? (p.mediaData ? toDataUri(mimeType, p.mediaData) : null);
+                if (!url) {
+                    console.warn(`[mimo] dropping ${mimeType}: no inline bytes and no remote URL`);
+                    return [];
+                }
+                if (mimeType.startsWith('video/')) {
+                    const isStickerClip = Boolean(p.mediaKind && STICKER_MEDIA_KINDS.has(p.mediaKind));
+                    return [{
+                        type: 'video_url',
+                        video_url: { url },
+                        // Sticker clips are ~2s of fast motion: sample denser so the
+                        // whole animation is seen, regular videos keep the default 2fps
+                        ...(isStickerClip ? { fps: STICKER_SAMPLING_FPS } : {}),
+                    }];
+                }
+                return [{ type: 'input_audio', input_audio: { data: url } }];
+            })
+            .exhaustive()
+    );
+
+/**
+ * Transform unified messages to MiMo's OpenAI-compatible format. MiMo reads
+ * video/audio natively, so media parts become `video_url` / `input_audio`
+ * instead of the text placeholders the plain OpenAI transformer emits.
+ * Unsupported types are dropped here as a safety net (see mimo-media.ts).
+ */
+export const transformToMimo = (
+    messages: UnifiedMessage[],
+    options?: { includeSystemPrompt?: boolean; systemPrompt?: string }
+): MimoMessageParam[] => {
+    const result: MimoMessageParam[] = [];
+
+    if (options?.includeSystemPrompt && options.systemPrompt) {
+        result.push({ role: 'system', content: options.systemPrompt });
+    }
+
+    messages.forEach((msg) => {
+        match(msg)
+            .with({ role: 'user' }, (m) => {
+                result.push({ role: 'user', content: transformToMimoParts(m.content) });
+            })
+            .with({ role: 'assistant' }, (m) => {
+                // MiMo assistant turns are plain text, like the OpenAI path
+                const textContent = m.content
+                    .map((part) =>
+                        match(part)
+                            .with({ type: 'text' }, (p) => p.text ?? '')
+                            .with({ type: 'image' }, () => '[assistant image]')
+                            .with({ type: 'media' }, () => '[assistant media]')
+                            .exhaustive()
+                    )
+                    .join('\n');
+
+                result.push({ role: 'assistant', content: textContent });
             })
             .with({ role: 'system' }, () => {
                 // System messages already handled above, skip

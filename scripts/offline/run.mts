@@ -18,7 +18,7 @@ import {
     type OfflineDb,
 } from './harness.mts';
 import type { User } from 'grammy/types';
-import type { ResponseState } from '../../src/ai/types.js';
+import type { ResponseState, UnifiedMessage } from '../../src/ai/types.js';
 
 // Set before importing the gate: it snapshots the env at module load
 process.env.IGNORED_SENDER_IDS = '424242';
@@ -33,12 +33,16 @@ const COMFY_PORT = 9138;
 /** The xAI-shaped stub the storyboard case runs against */
 const GROK_PORT = 9139;
 
+/** The tgs-converter stub the MiMo media case runs against (snapshotted at import) */
+const TGS_PORT = 9140;
+
 // The /chat and /pic parsers decide whether `/cmd@Name` is addressed to us
 process.env.BOT_USER_NAME = 'AfterSchoolTeatimeBot';
 process.env.LUOXU_PREVIEW_URL = `http://127.0.0.1:${BACKFILL_PORT}`;
 process.env.COMFY_FORWARD_URL = `http://127.0.0.1:${COMFY_PORT}`;
 process.env.GROK_API_URL = `http://127.0.0.1:${GROK_PORT}/v1`;
 process.env.GROK_API_KEY = 'offline-stub';
+process.env.TGS_CONVERTER_URL = `http://127.0.0.1:${TGS_PORT}`;
 const { shouldIgnoreSender } = await import('../../src/config/sender-gate.js');
 
 const db: OfflineDb = await setupOfflineDb();
@@ -3029,6 +3033,187 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
                 !expiredIds.some((id) => survivingIds.includes(id)),
                 `all ${expiredIds.length} expired messages are gone, batching and all`
             );
+        },
+    },
+    {
+        // mimo-v2.6 reads pictures, voice notes and video natively, but only in
+        // mp4-family containers and with no document channel at all. So media has
+        // to be re-encoded before the request, and unsupported parts dropped —
+        // one bad part 400s the whole conversation context.
+        name: 'mimo gets real media parts, with webm re-encoded and documents dropped',
+        body: async () => {
+            const { createServer } = await import('node:http');
+            const { prepareMimoMedia } = await import('../../src/ai/platforms/mimo-media.js');
+            const { transformToMimo } = await import('../../src/ai/message-transformer.js');
+
+            const mp4Stub = Buffer.from('mimo-transcoded-mp4');
+            let converterReply: 'ok' | 'reject' = 'ok';
+            let converterUrl = '';
+            const server = createServer((request, response) => {
+                converterUrl = request.url ?? '';
+                request.resume();
+                request.on('end', () => {
+                    if (converterReply === 'reject') {
+                        response.writeHead(415).end('unsupported video MIME');
+                        return;
+                    }
+                    response.writeHead(200, { 'Content-Type': 'video/mp4', 'X-Normalized': '1' });
+                    response.end(mp4Stub);
+                });
+            });
+            await new Promise<void>((resolve) => {
+                server.listen(TGS_PORT, '127.0.0.1', () => resolve());
+            });
+
+            try {
+                const stickerBytes = Buffer.from('webm-sticker-bytes');
+                const messages: UnifiedMessage[] = [
+                    {
+                        role: 'user',
+                        content: [
+                            { type: 'text', text: '#1 tester: 看这个' },
+                            {
+                                type: 'image',
+                                imageData: Buffer.from('webp-bytes').toString('base64'),
+                                mimeType: 'image/webp',
+                                mediaKind: 'sticker',
+                            },
+                            {
+                                type: 'media',
+                                mediaData: Buffer.from('ogg-bytes').toString('base64'),
+                                mimeType: 'audio/ogg',
+                                mediaKind: 'voice',
+                            },
+                            {
+                                type: 'media',
+                                mediaData: stickerBytes.toString('base64'),
+                                mimeType: 'video/webm',
+                                mediaKind: 'video_sticker',
+                            },
+                            {
+                                type: 'media',
+                                mediaData: Buffer.from('%PDF-1.4').toString('base64'),
+                                mimeType: 'application/pdf',
+                            },
+                            {
+                                type: 'media',
+                                mediaData: Buffer.from('mp4-clip-bytes').toString('base64'),
+                                mimeType: 'video/mp4',
+                                mediaKind: 'video',
+                            },
+                        ],
+                    },
+                ];
+
+                const prepared = await prepareMimoMedia(messages);
+                const preparedParts = prepared[0]?.content ?? [];
+
+                expect(
+                    converterUrl.includes('format=mp4') && converterUrl.includes('mime=video%2Fwebm'),
+                    `the converter is asked for an mp4 re-encode (got ${converterUrl})`
+                );
+                const preparedVideos = preparedParts.filter((part) => part.mimeType?.startsWith('video/'));
+                expect(
+                    preparedVideos.length === 2 && preparedVideos.every((part) => part.mimeType === 'video/mp4'),
+                    'the webm sticker becomes mp4 while an mp4 clip is passed through'
+                );
+                expect(
+                    preparedVideos.some((part) => part.mediaData === mp4Stub.toString('base64')),
+                    'the re-encoded bytes are the ones the converter returned'
+                );
+                expect(
+                    !preparedParts.some((part) => part.mimeType === 'application/pdf'),
+                    'a document mimo has no channel for is dropped'
+                );
+                expect(
+                    preparedParts.some((part) => part.type === 'text'),
+                    'the text hint survives the dropped attachment'
+                );
+
+                const transformed = transformToMimo(prepared, {
+                    includeSystemPrompt: true,
+                    systemPrompt: 'sys',
+                });
+                const userTurn = transformed.find((message) => message.role === 'user');
+                const mimoParts = userTurn?.role === 'user' ? userTurn.content : [];
+                const videoParts = mimoParts.filter((part) => part.type === 'video_url');
+                const audioParts = mimoParts.filter((part) => part.type === 'input_audio');
+
+                expect(
+                    mimoParts.some(
+                        (part) => part.type === 'image_url' && part.image_url.url.startsWith('data:image/webp;base64,')
+                    ),
+                    'a picture rides along as an inline image_url data URI'
+                );
+                expect(
+                    audioParts.length === 1 && audioParts[0]!.input_audio.data.startsWith('data:audio/ogg;base64,'),
+                    'a voice note rides along as input_audio (Telegram sends ogg/opus)'
+                );
+                expect(
+                    videoParts.length === 2 &&
+                        videoParts.every((part) => part.video_url.url.startsWith('data:video/mp4;base64,')),
+                    'both videos are video_url parts carrying the mp4 bytes'
+                );
+                expect(
+                    videoParts.some((part) => part.type === 'video_url' && part.fps === 5),
+                    'the sticker clip is sampled denser than a normal video'
+                );
+                expect(
+                    videoParts.filter((part) => part.type === 'video_url' && part.fps === undefined).length === 1,
+                    'a regular video keeps the platform default sampling rate'
+                );
+
+                // Converter outage: the clip is dropped, the reply still goes out.
+                converterReply = 'reject';
+                const degraded = await prepareMimoMedia(messages);
+                const degradedParts = degraded[0]?.content ?? [];
+                expect(
+                    degradedParts.filter((part) => part.mimeType === 'video/mp4').length === 1,
+                    'without a working converter the sticker is dropped instead of sent as webm'
+                );
+                expect(
+                    degradedParts.some((part) => part.type === 'text'),
+                    'and the text hint still reaches the model'
+                );
+
+                // Oversized media is signed into a URL beforehand; both a video and
+                // an image must ride on that URL instead of being dropped.
+                const signed: UnifiedMessage[] = [{
+                    role: 'user',
+                    content: [
+                        { type: 'text', text: '#3 tester: 长视频和一个大图' },
+                        {
+                            type: 'media',
+                            remoteUrl: 'https://example.invalid/signed.mp4',
+                            mimeType: 'video/mp4',
+                            sizeBytes: 50_000_000,
+                            mediaKind: 'video',
+                        },
+                        {
+                            type: 'media',
+                            remoteUrl: 'https://example.invalid/signed.jpg',
+                            mimeType: 'image/jpeg',
+                            sizeBytes: 25_000_000,
+                        },
+                    ],
+                }];
+                const signedTurn = transformToMimo(signed).find((message) => message.role === 'user');
+                const signedParts = signedTurn?.role === 'user' ? signedTurn.content : [];
+                expect(
+                    signedParts.some(
+                        (part) => part.type === 'video_url' && part.video_url.url === 'https://example.invalid/signed.mp4'
+                    ),
+                    'an oversized video rides on its signed URL'
+                );
+                expect(
+                    signedParts.some(
+                        (part) => part.type === 'image_url' && part.image_url.url === 'https://example.invalid/signed.jpg'
+                    ),
+                    'a GCS photo stored as media becomes image_url on its signed URL'
+                );
+            } finally {
+                server.close();
+            }
         },
     },
 ];

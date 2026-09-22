@@ -72,3 +72,50 @@ export const isGeminiSupportedMimeType = (mime: string | null | undefined): bool
     if (normalized.startsWith('text/')) return true;
     return SUPPORTED_EXACT.has(normalized);
 };
+
+/**
+ * MiMo (mimo-v2.6-flash / pro) ingest policy — a stricter, differently shaped
+ * set than Gemini's, so it gets its own lists:
+ * - image: jpeg/png/gif/webp/bmp;
+ * - audio: mp3/wav/flac/m4a/ogg (Telegram voice notes are audio/ogg);
+ * - video: mp4/mov/avi/wmv only — webm is rejected by the API;
+ * - documents: no channel at all (an OpenAI-style `file` part is a hard 400).
+ * Anything outside these lists must be dropped (or re-encoded, see below)
+ * before the request: one bad part 400s the whole conversation context.
+ */
+const MIMO_IMAGE_MIMES: ReadonlySet<string> = new Set([
+    'image/jpeg', 'image/png', 'image/gif', 'image/webp', 'image/bmp',
+    'image/jpg', // alias of image/jpeg
+]);
+
+const MIMO_AUDIO_MIMES: ReadonlySet<string> = new Set([
+    'audio/mpeg', 'audio/mp3', 'audio/wav', 'audio/x-wav', 'audio/flac',
+    'audio/x-flac', 'audio/mp4', 'audio/m4a', 'audio/x-m4a', 'audio/ogg',
+]);
+
+const MIMO_VIDEO_MIMES: ReadonlySet<string> = new Set([
+    'video/mp4', 'video/mov', 'video/quicktime', 'video/avi',
+    'video/x-msvideo', 'video/wmv', 'video/x-ms-wmv',
+]);
+
+/**
+ * Video containers MiMo does not take but the tgs-converter can re-encode into
+ * MP4 (mirrors its NORMALIZE_VIDEO_MIMES). This is what makes animated stickers
+ * (.webm) usable at all.
+ */
+const MIMO_TRANSCODABLE_VIDEO_MIMES: ReadonlySet<string> = new Set([
+    'video/webm', 'video/mpeg', 'video/mpg', 'video/mpegps', 'video/x-flv', 'video/3gpp',
+]);
+
+export const isMimoSupportedImageMime = (mime: string): boolean =>
+    MIMO_IMAGE_MIMES.has(normalizeMimeType(mime));
+
+export const isMimoSupportedMediaMime = (mime: string): boolean =>
+    MIMO_AUDIO_MIMES.has(mime) || MIMO_VIDEO_MIMES.has(mime);
+
+/** Any binary type MiMo ingests as-is, images included. */
+export const isMimoIngestibleMime = (mime: string): boolean =>
+    isMimoSupportedImageMime(mime) || isMimoSupportedMediaMime(mime);
+
+export const isMimoTranscodableVideoMime = (mime: string): boolean =>
+    MIMO_TRANSCODABLE_VIDEO_MIMES.has(mime);

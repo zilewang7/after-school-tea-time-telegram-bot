@@ -59,7 +59,7 @@ export const getDefaultModel = (platformType: string): string => {
         .with('openai', () => 'gpt-5.4')
         .with('deepseek', () => 'deepseek-reasoning')
         .with('grok', () => 'grok-4.20-0309-reasoning')
-        .with('mimo', () => 'mimo-v2.5-pro')
+        .with('mimo', () => 'mimo-v2.6-pro')
         .with('anthropic', () => 'claude-sonnet-5')
         .otherwise(() => process.env.DEFAULT_MODEL || 'gpt-5.4');
 };

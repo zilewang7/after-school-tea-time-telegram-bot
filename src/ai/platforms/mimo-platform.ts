@@ -6,7 +6,8 @@ import OpenAI from 'openai';
 import type { Stream } from 'openai/streaming';
 import type { ChatCompletionChunk } from 'openai/resources';
 import { BasePlatform } from './base-platform.js';
-import { transformToOpenAI } from '../message-transformer.js';
+import { transformToMimo, type MimoMessageParam } from '../message-transformer.js';
+import { prepareMimoMedia } from './mimo-media.js';
 import { getMcpTools, executeMcpTool, mcpToolsToOpenAI, extractGroundingFromToolResult } from '../mcp/index.js';
 import type {
     PlatformType,
@@ -20,13 +21,22 @@ import type {
 
 const MAX_MCP_ROUNDS = 10;
 
+/**
+ * MiMo extends the OpenAI chat parts with `video_url` / `input_audio`, which the
+ * OpenAI SDK types do not describe. Cast once, at the request boundary.
+ */
+const toChatMessageParams = (
+    messages: MimoMessageParam[]
+): OpenAI.Chat.ChatCompletionMessageParam[] =>
+    messages as unknown as OpenAI.Chat.ChatCompletionMessageParam[];
+
 export class MimoPlatform extends BasePlatform {
     readonly type: PlatformType = 'mimo';
     private client: OpenAI;
 
     constructor() {
         super();
-        const baseURL = process.env.MIMO_API_URL || 'https://token-plan-cn.xiaomimimo.com/v1';
+        const baseURL = process.env.MIMO_API_URL || 'https://api.xiaomimimo.com/v1';
         const apiKey = process.env.MIMO_API_KEY || '';
 
         this.client = new OpenAI({ baseURL, apiKey });
@@ -39,16 +49,20 @@ export class MimoPlatform extends BasePlatform {
 
     getModelCapabilities(model: string): ModelCapabilities {
         const lowerModel = model.toLowerCase();
-        const isPro = lowerModel.includes('pro');
+        // mimo-v2.5-pro is text-only (image input answers 404 "No endpoints found
+        // that support image input"). It is no longer in the menu but stays
+        // routable: it is the text-only model the OCR-fallback e2e run needs.
+        const isTextOnlyLegacy = lowerModel === 'mimo-v2.5-pro';
 
         return {
-            supportsImageInput: !isPro,
+            supportsImageInput: !isTextOnlyLegacy,
             supportsImageOutput: false,
             supportsSystemPrompt: true,
             requiresMessageMerge: false,
             supportsThinking: true,
             supportsGrounding: false,
-            supportsMediaInput: false,
+            // v2.6 flash / pro read audio and video natively (full-modal)
+            supportsMediaInput: lowerModel.startsWith('mimo-v2.6'),
         };
     }
 
@@ -61,10 +75,14 @@ export class MimoPlatform extends BasePlatform {
         this.logMessageContents(messages);
         console.log(`[mimo] Using model: ${model}`);
 
-        const openaiMessages = transformToOpenAI(messages, {
-            includeSystemPrompt: true,
-            systemPrompt,
-        });
+        // Attachments MiMo cannot ingest are transcoded, signed or dropped here
+        const preparedMessages = await prepareMimoMedia(messages);
+        const openaiMessages = toChatMessageParams(
+            transformToMimo(preparedMessages, {
+                includeSystemPrompt: true,
+                systemPrompt,
+            })
+        );
 
         const mcpTools = getMcpTools();
         if (mcpTools.length > 0) {
