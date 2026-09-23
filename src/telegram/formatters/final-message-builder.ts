@@ -13,6 +13,7 @@ import {
 import type { RenderedMessage } from 'telegram-md-entities';
 import type { AgentStats, GroundingData } from '../../ai/types.js';
 import { buildToolRecordSections } from './tool-records-formatter.js';
+import { buildGoogleSearchSections } from './google-search-formatter.js';
 import { plainText } from './entity-text.js';
 import { renderThinkingQuote } from './quoted-render.js';
 import { linkifyContextNumbers, type ContextLinkResolver } from './context-links.js';
@@ -61,8 +62,13 @@ export const buildFinalMessages = (
         parts.push('\n\n', plainText('[stopped]'));
     }
 
-    // What the reply did with tools, merged into at most two collapsed blocks
-    for (const section of buildToolRecordSections(agentStats, groundingData ?? [])) {
+    // Records of the run: the merged tool-call blocks, plus Gemini's search
+    // grounding in its own dedicated block
+    const recordSections = [
+        ...buildToolRecordSections(agentStats, groundingData ?? []),
+        ...buildGoogleSearchSections(groundingData ?? []),
+    ];
+    for (const section of recordSections) {
         parts.push('\n', section);
     }
 
