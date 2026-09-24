@@ -31,6 +31,9 @@ interface AppStateType {
     // context numbering of one assembled context, for turning the `#N` the model
     // writes into message links: "chatId:userMessageId" -> (#N -> messageId)
     contextNumbering: Map<string, Map<number, number>>;
+    // user messages whose reply is still being generated:
+    // "chatId:userMessageId" -> started-at (ms)
+    repliesInFlight: Map<string, number>;
 }
 
 const createInitialState = (): AppStateType => ({
@@ -47,6 +50,7 @@ const createInitialState = (): AppStateType => ({
     continuationRegistry: new Map(),
     handledUserMessages: new Map(),
     contextNumbering: new Map(),
+    repliesInFlight: new Map(),
 });
 
 // singleton instance
@@ -338,3 +342,43 @@ export const getContextNumbering = (
     userMessageId: number
 ): Map<number, number> | undefined =>
     getAppState().contextNumbering.get(`${chatId}:${userMessageId}`);
+
+// Replies currently being generated
+// A session that never finalizes (crash, kill) would leave its entry behind, so
+// entries older than the TTL are ignored when read.
+const REPLY_IN_FLIGHT_TTL_MS = 10 * 60 * 1000;
+
+/** Mark a user message as being answered right now */
+export const registerReplyInFlight = (chatId: number, userMessageId: number): void => {
+    getAppState().repliesInFlight.set(`${chatId}:${userMessageId}`, Date.now());
+};
+
+/** Drop the mark once the reply for that message is done (or failed) */
+export const unregisterReplyInFlight = (chatId: number, userMessageId: number): void => {
+    getAppState().repliesInFlight.delete(`${chatId}:${userMessageId}`);
+};
+
+/**
+ * User messages of this chat whose reply is still being generated. Used when
+ * assembling another reply's context, so a second trigger does not answer a
+ * question that is already being answered.
+ */
+export const getRepliesInFlight = (chatId: number): number[] => {
+    const registry = getAppState().repliesInFlight;
+    const now = Date.now();
+    const messageIds: number[] = [];
+
+    for (const [key, startedAt] of registry) {
+        if (now - startedAt > REPLY_IN_FLIGHT_TTL_MS) {
+            registry.delete(key);
+            continue;
+        }
+        const [, rawMessageId] = key.split(':');
+        const messageId = Number(rawMessageId);
+        if (Number.isSafeInteger(messageId) && key.startsWith(`${chatId}:`)) {
+            messageIds.push(messageId);
+        }
+    }
+
+    return messageIds;
+};

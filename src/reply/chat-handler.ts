@@ -20,9 +20,10 @@ import {
     tryMarkUserMessageHandling,
 } from '../state.js';
 import { getFailedCustomEmojiAttachments } from '../db/queries/message-attachment-queries.js';
-import { checkIfMentioned } from '../util.js';
+import { checkIfMentioned, isGroupChat } from '../util.js';
 import { saveMessageLinks } from '../db/queries/context-queries.js';
 import { buildContext } from './context-builder.js';
+import { resolveContextRoot } from './context-root.js';
 import { submitToMentionBatch } from './mention-batcher.js';
 import {
     createChatContext,
@@ -395,17 +396,28 @@ export const registerChatHandler = (bot: Bot): void => {
                 // typed question) merges into one trigger; the earlier members
                 // ride into the context as links on the anchor, exactly like
                 // the bystanders /chat pulls in.
-                submitToMentionBatch(ctx, async (anchorCtx, earlierMessageIds) => {
-                    if (earlierMessageIds.length && anchorCtx.chat && anchorCtx.message) {
-                        await saveMessageLinks(
-                            anchorCtx.chat.id,
-                            anchorCtx.message.message_id,
-                            earlierMessageIds
-                        );
-                    }
-                    // The anchor passed checkIfMentioned before entering the
-                    // batch, so the re-check is skipped via mention: true.
-                    await handleReply(anchorCtx, { mention: true });
+                //
+                // In a group the trigger is explicit, so the batch is keyed by
+                // the context instead: A and B answering in the same reply tree
+                // moments apart merge into one reply that sees both.
+                const contextKey = isGroupChat(ctx) && ctx.chat
+                    ? await resolveContextRoot(ctx.chat.id, ctx.message.message_id)
+                    : undefined;
+
+                submitToMentionBatch(ctx, {
+                    contextKey,
+                    onFlush: async (anchorCtx, earlierMessageIds) => {
+                        if (earlierMessageIds.length && anchorCtx.chat && anchorCtx.message) {
+                            await saveMessageLinks(
+                                anchorCtx.chat.id,
+                                anchorCtx.message.message_id,
+                                earlierMessageIds
+                            );
+                        }
+                        // The anchor passed checkIfMentioned before entering the
+                        // batch, so the re-check is skipped via mention: true.
+                        await handleReply(anchorCtx, { mention: true });
+                    },
                 });
             } catch (error) {
                 console.error('[chat-handler] Unhandled error in deferred reply processing:', error);

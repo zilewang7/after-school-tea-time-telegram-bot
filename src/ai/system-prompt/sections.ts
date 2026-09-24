@@ -43,6 +43,8 @@ export const buildFormatSection = (options: { includeOcrNote: boolean }): string
 - 冒号后面才是正文；没有正文的消息（只发了媒体、或只用 \`/chat\` 召唤你）就只有标注、不带冒号
 - \`<<EOF\` 是消息结束标记
 - 独立的 \`[system] …\` 段落是系统信息，不是用户说的话
+- \`[system] another session is already replying to #3 …\` 表示 #3 已经由另一个正在生成的回复接手了：
+  不要再回答 #3 的内容、也不要重复它即将给出的答案，只处理这次新出现的内容
 - \`[system] 链接预览：…\` 是系统自动抓取的消息内链接的预览（站点/标题/描述，可能还有全文和图片），不是用户输入的内容
 ${options.includeOcrNote ? OCR_FALLBACK_NOTE : ''}- 你自己的历史回复开头会有一行 \`[#5]\`，那是系统给它标的编号，不是你写的内容
 - 引用消息时直接写编号（\`#5\`、\`我在 #5 说过\`），系统会自动把它变成用户可点击的跳转链接；

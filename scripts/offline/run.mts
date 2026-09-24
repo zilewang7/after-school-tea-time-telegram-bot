@@ -2799,9 +2799,11 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
                 userId?: number;
                 forward?: boolean;
                 photo?: boolean;
+                /** Group chats batch by context instead of by sender */
+                group?: boolean;
             }): BatcherCtx => {
                 const shape = {
-                    chat: { id: OFFLINE_CHAT_ID, type: 'private' },
+                    chat: { id: OFFLINE_CHAT_ID, type: fields.group ? 'supergroup' : 'private' },
                     message: {
                         message_id: fields.messageId,
                         from: { id: fields.userId ?? 500, is_bot: false, first_name: 'T' },
@@ -2833,9 +2835,9 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
             const f1 = takeMessageId();
             const f2 = takeMessageId();
             const f3 = takeMessageId();
-            submitToMentionBatch(fakeCtx({ messageId: f1, forward: true }), record);
-            submitToMentionBatch(fakeCtx({ messageId: f2, forward: true }), record);
-            submitToMentionBatch(fakeCtx({ messageId: f3, forward: true }), record);
+            submitToMentionBatch(fakeCtx({ messageId: f1, forward: true }), { onFlush: record });
+            submitToMentionBatch(fakeCtx({ messageId: f2, forward: true }), { onFlush: record });
+            submitToMentionBatch(fakeCtx({ messageId: f3, forward: true }), { onFlush: record });
             expect(flushes.length === 0, 'the window holds the burst back');
             await settle();
             expect(flushes.length === 1, 'the burst flushes exactly once');
@@ -2861,7 +2863,7 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
             // 2. A plain typed message with no open window triggers immediately
             flushes.length = 0;
             const typed = takeMessageId();
-            submitToMentionBatch(fakeCtx({ messageId: typed }), record);
+            submitToMentionBatch(fakeCtx({ messageId: typed }), { onFlush: record });
             expect(
                 flushes.length === 1 && flushes[0]?.anchorId === typed,
                 'plain text with no window flushes with zero delay'
@@ -2872,9 +2874,9 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
             flushes.length = 0;
             const media = takeMessageId();
             const question = takeMessageId();
-            submitToMentionBatch(fakeCtx({ messageId: media, photo: true }), record);
+            submitToMentionBatch(fakeCtx({ messageId: media, photo: true }), { onFlush: record });
             expect(flushes.length === 0, 'a lone media message opens a window');
-            submitToMentionBatch(fakeCtx({ messageId: question }), record);
+            submitToMentionBatch(fakeCtx({ messageId: question }), { onFlush: record });
             expect(
                 flushes.length === 1 && flushes[0]?.anchorId === question,
                 'the typed follow-up flushes immediately as the anchor'
@@ -2888,14 +2890,163 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
             flushes.length = 0;
             const alice = takeMessageId();
             const bob = takeMessageId();
-            submitToMentionBatch(fakeCtx({ messageId: alice, forward: true, userId: 501 }), record);
-            submitToMentionBatch(fakeCtx({ messageId: bob, forward: true, userId: 502 }), record);
+            submitToMentionBatch(fakeCtx({ messageId: alice, forward: true, userId: 501 }), { onFlush: record });
+            submitToMentionBatch(fakeCtx({ messageId: bob, forward: true, userId: 502 }), { onFlush: record });
             await settle();
             expect(flushes.length === 2, 'two users get two separate flushes');
             expect(
                 flushes.every((flush) => flush.earlierIds.length === 0),
                 'neither batch absorbed the other user'
             );
+
+            // 5. Group: two people triggering in the same context merge into one
+            flushes.length = 0;
+            const a1 = takeMessageId();
+            const a2 = takeMessageId();
+            const contextOfTree = takeMessageId();
+            submitToMentionBatch(fakeCtx({ messageId: a1, userId: 501, group: true }), {
+                contextKey: contextOfTree,
+                onFlush: record,
+            });
+            submitToMentionBatch(fakeCtx({ messageId: a2, userId: 502, group: true }), {
+                contextKey: contextOfTree,
+                onFlush: record,
+            });
+            await settle();
+            expect(
+                flushes.length === 1,
+                `two triggers in one context merge into a single reply (got ${flushes.length})`
+            );
+            expect(flushes[0]?.anchorId === a2, 'the newest one is the anchor');
+            expect(
+                JSON.stringify(flushes[0]?.earlierIds) === JSON.stringify([a1]),
+                'the first member rides along'
+            );
+
+            // 6. Group: a trigger of another context is its own reply
+            flushes.length = 0;
+            const other1 = takeMessageId();
+            const other2 = takeMessageId();
+            submitToMentionBatch(fakeCtx({ messageId: other1, userId: 501, group: true }), {
+                contextKey: takeMessageId(),
+                onFlush: record,
+            });
+            submitToMentionBatch(fakeCtx({ messageId: other2, userId: 502, group: true }), {
+                contextKey: takeMessageId(),
+                onFlush: record,
+            });
+            await settle();
+            expect(flushes.length === 2, 'different contexts stay separate replies');
+
+            // 7. Group: a lone typed trigger still waits out the window
+            flushes.length = 0;
+            const lone = takeMessageId();
+            submitToMentionBatch(fakeCtx({ messageId: lone, group: true }), {
+                contextKey: takeMessageId(),
+                onFlush: record,
+            });
+            expect(flushes.length === 0, 'a group trigger waits for a possible second one');
+            await settle();
+            expect(
+                flushes.length === 1 && flushes[0]?.anchorId === lone,
+                'and then replies on its own'
+            );
+        },
+    },
+    {
+        name: 'the reply-tree root identifies one context',
+        body: async () => {
+            const { clearContextRootCache, resolveContextRoot } = await import(
+                '../../src/reply/context-root.js'
+            );
+            clearContextRootCache();
+
+            // One thread (root ← middle ← tip) plus a separate root
+            const root = await seedMessage({ text: 'thread root' });
+            const middle = await seedMessage({ replyToId: root, text: 'middle' });
+            const tip = await seedMessage({ replyToId: middle, text: 'tip' });
+            const alone = await seedMessage({ text: 'unrelated' });
+
+            expect(
+                (await resolveContextRoot(OFFLINE_CHAT_ID, tip)) === root,
+                'a deep message resolves to the root of its thread'
+            );
+            expect(
+                (await resolveContextRoot(OFFLINE_CHAT_ID, middle)) === root,
+                'a middle message resolves to the same root'
+            );
+            expect(
+                (await resolveContextRoot(OFFLINE_CHAT_ID, alone)) === alone,
+                'a message nobody replies to is its own context'
+            );
+            const unknown = takeMessageId();
+            expect(
+                (await resolveContextRoot(OFFLINE_CHAT_ID, unknown)) === unknown,
+                'a message that is not stored yet falls back to itself'
+            );
+        },
+    },
+    {
+        name: 'a message already being answered says so in the next context',
+        body: async () => {
+            const { buildContext } = await import('../../src/reply/context-builder.js');
+            const { registerReplyInFlight, unregisterReplyInFlight } = await import(
+                '../../src/state.js'
+            );
+
+            // A asks, B asks in the same thread; A's reply is still streaming
+            const asked = await seedMessage({ text: 'A asks', userName: 'Kuro' });
+            const answer = await seedMessage({
+                replyToId: asked,
+                text: 'answer in progress',
+                fromBotSelf: true,
+                userName: 'AfterSchoolTeatimeBot',
+            });
+            const second = await seedMessage({
+                replyToId: answer,
+                text: 'B asks too',
+                userName: 'Enren',
+            });
+            const row = await Message.findOne({
+                where: { chatId: OFFLINE_CHAT_ID, messageId: second },
+            });
+            if (!row) throw new Error('seeded second message not found');
+
+            const contextOf = async (): Promise<{ all: string; turns: string[] }> => {
+                const { messages: turns } = await buildContext(row);
+                const texts = turns.map((turn) =>
+                    turn.content.map((part) => part.text ?? '').join('\n')
+                );
+                return { all: texts.join('\n'), turns: texts };
+            };
+
+            registerReplyInFlight(OFFLINE_CHAT_ID, asked);
+            const during = await contextOf();
+            expect(
+                /\[system\] another session is already replying to #1 — do not react to #1 again/
+                    .test(during.all),
+                `the in-flight answer is announced on the message being answered (got ${JSON.stringify(during.all)})`
+            );
+            expect(
+                during.turns[0]?.includes('another session is already replying') === true &&
+                    during.turns.at(-1)?.includes('another session is already replying') === false,
+                'the note sits in that message\'s turn, not in the trigger\'s own turn'
+            );
+
+            // Nothing in flight → nothing to announce
+            unregisterReplyInFlight(OFFLINE_CHAT_ID, asked);
+            const after = await contextOf();
+            expect(!after.all.includes('another session is already replying'), 'no note once the reply is done');
+
+            // In flight, but not part of this context → still nothing to announce
+            const elsewhere = await seedMessage({ text: 'other thread' });
+            registerReplyInFlight(OFFLINE_CHAT_ID, elsewhere);
+            const unrelated = await contextOf();
+            expect(
+                !unrelated.all.includes('another session is already replying'),
+                'a reply in another context is none of this reply\'s business'
+            );
+            unregisterReplyInFlight(OFFLINE_CHAT_ID, elsewhere);
         },
     },
     {

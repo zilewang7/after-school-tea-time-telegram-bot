@@ -30,7 +30,9 @@ import { to, isErr } from '../shared/result.js';
 import {
     getCurrentModel,
     registerContinuation,
+    registerReplyInFlight,
     unregisterContinuation,
+    unregisterReplyInFlight,
 } from '../state.js';
 import { runApiCall, submitEdit } from '../telegram/edit-coordinator.js';
 import { decideFinalButtonState } from './final-button-state.js';
@@ -278,6 +280,10 @@ export const createSession = async (
     const sessionKey = getSessionKey(chatId, resolvedFirstMessageId);
     activeSessions.set(sessionKey, session);
 
+    // Another trigger may assemble its context while this reply streams: mark
+    // the user message as answered so that context can say so (see context-builder)
+    registerReplyInFlight(chatId, userMessageId);
+
     // Initialize database record for new response (not retry)
     if (!options?.isRetry) {
         const metadata: ResponseMetadata = {
@@ -418,6 +424,7 @@ const finalizeSession = async (
 
     // Remove from active sessions
     activeSessions.delete(sessionKey);
+    unregisterReplyInFlight(session.chatId, session.userMessageId);
 
     for (const msgId of session.messageIds) {
         if (msgId !== session.firstMessageId) {

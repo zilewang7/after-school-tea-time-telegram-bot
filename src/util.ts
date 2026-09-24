@@ -39,6 +39,13 @@ export const removeSpecificText = (message: string, textToRemove?: string): stri
 };
 
 /**
+ * Group chats (where a trigger is always an explicit @mention or a reply to the
+ * bot) behave differently from a private chat, where every message triggers.
+ */
+export const isGroupChat = (ctx: Context): boolean =>
+    ctx.chat?.type === 'group' || ctx.chat?.type === 'supergroup';
+
+/**
  * Check if bot was mentioned in the message
  */
 export const checkIfMentioned = (
