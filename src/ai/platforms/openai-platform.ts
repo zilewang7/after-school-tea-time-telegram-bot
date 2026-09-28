@@ -158,9 +158,12 @@ export class OpenAIPlatform extends BasePlatform {
             return false;
         }
 
-        // OpenAI reasoning model IDs are currently gpt-5* and o-series families.
+        // OpenAI reasoning model IDs are the gpt-5*/gpt-6* and o-series families.
+        // The GPT-5.6 code names were renamed to gpt-6-*, so both prefixes stay
+        // here to keep the reasoning effort identical across the rename.
         return (
             lowerModel.startsWith('gpt-5') ||
+            lowerModel.startsWith('gpt-6') ||
             lowerModel.startsWith('o1') ||
             lowerModel.startsWith('o3') ||
             lowerModel.startsWith('o4')
