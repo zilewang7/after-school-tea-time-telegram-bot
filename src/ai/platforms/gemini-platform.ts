@@ -53,6 +53,7 @@ const LARGE_MEDIA_TIMEOUT_MS = 300000;
 export class GeminiPlatform extends BasePlatform {
     readonly type: PlatformType = 'gemini';
     private genAI: GoogleGenAI;
+    private readonly customEndpoint: boolean;
 
     constructor() {
         super();
@@ -68,6 +69,7 @@ export class GeminiPlatform extends BasePlatform {
         // already be set) must NOT trigger ADC: it would fail with "Could not load
         // the default credentials".
         const apiUrl = process.env.GEMINI_API_URL;
+        this.customEndpoint = Boolean(apiUrl);
         const project = process.env.GOOGLE_CLOUD_PROJECT;
         const credsPath = process.env.GOOGLE_APPLICATION_CREDENTIALS;
         const hasServiceAccount = Boolean(
@@ -127,7 +129,10 @@ export class GeminiPlatform extends BasePlatform {
         this.logMessageContents(messages);
         console.log(`[gemini] Using model: ${model}, isImageModel: ${isImageModel}`);
 
-        const geminiContents = transformToGemini(messages, { isImageModel });
+        const geminiContents = transformToGemini(messages, {
+            isImageModel,
+            skipStoredSignatures: this.customEndpoint,
+        });
 
         // Large media (gs:// fileData) is slow to first token — extend the timeout
         // so a slow-but-healthy request isn't retried early.

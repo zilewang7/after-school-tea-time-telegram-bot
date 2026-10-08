@@ -121,17 +121,31 @@ const transformToGeminiParts = (
  * did) replayed every past reply as empty, leaving the model blind to what it
  * had said. It is appended verbatim, purely to carry the thought signature
  * back: rewriting a signed part is what would risk rejection, sitting next to
- * one does not.
+ * one does not. On a custom endpoint (GEMINI_API_URL) the signature is not
+ * portable — it may have been issued by Vertex — and replaying it gets the
+ * request rejected once tools are declared; the part is kept but its signature
+ * is rewritten to the skip sentinel, which turns validation off for it.
  */
 const buildGeminiModelParts = (
     message: UnifiedMessage,
-    options?: { isImageModel?: boolean }
+    options?: { isImageModel?: boolean; skipStoredSignatures?: boolean }
 ): GeminiPart[] => {
     const contentParts = transformToGeminiParts(message.content, {
         forceSkipThoughtSignature: options?.isImageModel,
     });
     const storedParts = (message.modelParts ?? []) as GeminiPart[];
-    return [...contentParts, ...storedParts];
+    // On a custom endpoint the stored signature may have been issued by another
+    // serving backend (e.g. Vertex): a foreign signature gets the whole request
+    // rejected (400 INVALID_ARGUMENT) as soon as tools are declared, so it is
+    // replaced with the API's skip sentinel instead of being replayed verbatim.
+    const replayedParts = options?.skipStoredSignatures
+        ? storedParts.map((part) =>
+              part.thoughtSignature
+                  ? { ...part, thoughtSignature: 'skip_thought_signature_validator' }
+                  : part
+          )
+        : storedParts;
+    return [...contentParts, ...replayedParts];
 };
 
 /**
@@ -139,7 +153,7 @@ const buildGeminiModelParts = (
  */
 export const transformToGemini = (
     messages: UnifiedMessage[],
-    options?: { isImageModel?: boolean }
+    options?: { isImageModel?: boolean; skipStoredSignatures?: boolean }
 ): GeminiContent[] => {
     return messages
         .filter((msg) => msg.role !== 'system') // System messages handled separately
