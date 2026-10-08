@@ -56,27 +56,42 @@ export class GeminiPlatform extends BasePlatform {
 
     constructor() {
         super();
+        // A custom Gemini-compatible endpoint (GEMINI_API_URL + GEMINI_API_KEY,
+        // e.g. an API relay) wins over Vertex below: requests then use the
+        // generativelanguage-style paths ({url}/v1beta/...) with x-goog-api-key.
+        // vertexai: false is explicit — GOOGLE_GENAI_USE_VERTEXAI=True in the
+        // env would otherwise push the SDK into Vertex express mode.
         // Use full Vertex (ADC via the mounted service account JSON) ONLY when a
         // real SA credentials file is present — this lets the SA read its own
         // private GCS bucket for gs:// large media and raises quotas vs express.
         // Otherwise use express (apiKey). A bare GOOGLE_CLOUD_PROJECT env (which may
         // already be set) must NOT trigger ADC: it would fail with "Could not load
         // the default credentials".
+        const apiUrl = process.env.GEMINI_API_URL;
         const project = process.env.GOOGLE_CLOUD_PROJECT;
         const credsPath = process.env.GOOGLE_APPLICATION_CREDENTIALS;
         const hasServiceAccount = Boolean(
             credsPath && existsSync(credsPath) && statSync(credsPath).size > 0
         );
-        this.genAI = (project && hasServiceAccount)
-            ? new GoogleGenAI({
-                  vertexai: true,
-                  project,
-                  location: process.env.GOOGLE_CLOUD_LOCATION || 'global',
-              })
-            : new GoogleGenAI({
-                  vertexai: true,
-                  apiKey: process.env.GEMINI_API_KEY,
-              });
+        if (apiUrl) {
+            this.genAI = new GoogleGenAI({
+                apiKey: process.env.GEMINI_API_KEY,
+                vertexai: false,
+                httpOptions: { baseUrl: apiUrl },
+            });
+            console.log(`[gemini] Using Gemini API at ${apiUrl}`);
+        } else {
+            this.genAI = (project && hasServiceAccount)
+                ? new GoogleGenAI({
+                      vertexai: true,
+                      project,
+                      location: process.env.GOOGLE_CLOUD_LOCATION || 'global',
+                  })
+                : new GoogleGenAI({
+                      vertexai: true,
+                      apiKey: process.env.GEMINI_API_KEY,
+                  });
+        }
     }
 
     supportsModel(model: string): boolean {

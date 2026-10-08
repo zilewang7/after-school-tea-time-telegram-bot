@@ -12,6 +12,7 @@ declare global {
             GOOGLE_CLOUD_PROJECT?: string
             GOOGLE_GENAI_USE_VERTEXAI?: string
             GEMINI_API_KEY?: string
+            GEMINI_API_URL?: string
             DEFAULT_MODEL?: string
             DEEPSEEK_API_URL?: string
             DEEPSEEK_API_KEY?: string
