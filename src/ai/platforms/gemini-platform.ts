@@ -46,9 +46,11 @@ const safetySettings: SafetySetting[] = [
     },
 ];
 
-// Large media (gs:// fileData) needs much longer before the first token: Gemini
-// fetches and processes the file first. Avoids retrying a slow-but-fine request.
-const LARGE_MEDIA_TIMEOUT_MS = 300000;
+// Large media (gs:// fileData) needs minutes before the first token: Gemini
+// fetches and processes the whole file first, and a few hundred MB measured
+// anywhere between 50s and over 5 minutes. One long attempt is better than
+// several long attempts, so large media also drops to a single try.
+const LARGE_MEDIA_TIMEOUT_MS = 600000;
 
 export class GeminiPlatform extends BasePlatform {
     readonly type: PlatformType = 'gemini';
@@ -161,6 +163,9 @@ export class GeminiPlatform extends BasePlatform {
         );
         if (hasLargeMedia) {
             timeout = Math.max(timeout, LARGE_MEDIA_TIMEOUT_MS);
+            // A single attempt already costs minutes; a retry would keep the user
+            // waiting far longer than pressing the bot's own retry button.
+            maxRetries = 1;
         }
 
         // gs:// media must land on a Vertex-type channel; without the dedicated
