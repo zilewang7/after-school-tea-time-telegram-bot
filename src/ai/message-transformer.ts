@@ -32,14 +32,41 @@ export interface GeminiPart {
 }
 
 // Short sticker clips (video/animated) are sampled above Gemini's default 1.0 fps
-// so the model sees the whole animation, not just the first frame. Large files
-// (>20MB, sent as a gs:// reference) are usually long videos, and Gemini's ingest
-// cost grows with the number of sampled frames: the same 98MB clip answered in
-// 57s at 0.5 fps, while the 1.0 fps default ran past the 300s request cap and
-// never answered (measured 2026-10-10).
+// so the model sees the whole animation, not just the first frame. Regular videos
+// are sampled by their LENGTH instead of their file size, because Gemini's ingest
+// cost grows with the number of sampled frames: the same 98MB clip answered in 57s
+// at 0.5 fps, while the 1.0 fps default ran past the 300s request cap and never
+// answered (measured 2026-10-10).
 const STICKER_SAMPLING_FPS = 5;
-const LARGE_VIDEO_SAMPLING_FPS = 0.5;
+const SHORT_VIDEO_MAX_SECONDS = 120; // up to 2min: Gemini's 1 fps default is enough
+const MEDIUM_VIDEO_MAX_SECONDS = 300;
+const LONG_VIDEO_MAX_SECONDS = 900;
+const MEDIUM_VIDEO_SAMPLING_FPS = 0.5;
+const LONG_VIDEO_SAMPLING_FPS = 0.3;
+const EXTRA_LONG_VIDEO_SAMPLING_FPS = 0.2;
 const STICKER_MEDIA_KINDS = new Set(['video_sticker', 'animated_sticker']);
+
+/**
+ * Sampling rate for a video part, or null to leave Gemini's own 1 fps default in
+ * place (short clips: the default is both the most accurate and cheap enough).
+ *
+ * The duration is what Telegram reported when the media was cached, so it is
+ * unknown for rows written before that column existed and for media carrying no
+ * Telegram metadata at all (luoxu previews). An unknown length keeps the value
+ * measured for gs:// references — those are >20MB and therefore usually long —
+ * and the default for anything small enough to inline.
+ */
+export const samplingFpsForVideo = (
+    durationSeconds: number | null | undefined,
+    hasFileUri: boolean
+): number | null =>
+    match(durationSeconds)
+        .returnType<number | null>()
+        .with(null, undefined, () => (hasFileUri ? MEDIUM_VIDEO_SAMPLING_FPS : null))
+        .when((seconds) => seconds <= SHORT_VIDEO_MAX_SECONDS, () => null)
+        .when((seconds) => seconds <= MEDIUM_VIDEO_MAX_SECONDS, () => MEDIUM_VIDEO_SAMPLING_FPS)
+        .when((seconds) => seconds <= LONG_VIDEO_MAX_SECONDS, () => LONG_VIDEO_SAMPLING_FPS)
+        .otherwise(() => EXTRA_LONG_VIDEO_SAMPLING_FPS);
 
 export interface GeminiContent {
     role: 'user' | 'model';
@@ -102,13 +129,16 @@ const transformToGeminiParts = (
                 const mediaPart: GeminiPart = p.fileUri
                     ? { fileData: { mimeType, fileUri: p.fileUri } }
                     : { inlineData: { mimeType, data: p.mediaData ?? '' } };
-                // Video sampling: dense for stickers (short, fast motion), sparse for
-                // large files so a long clip still answers inside the request cap.
+                // Video sampling: dense for stickers (short, fast motion), by
+                // length for regular videos so a long clip still answers.
                 if (mimeType.startsWith('video/')) {
-                    if (p.mediaKind && STICKER_MEDIA_KINDS.has(p.mediaKind)) {
-                        mediaPart.videoMetadata = { fps: STICKER_SAMPLING_FPS };
-                    } else if (p.fileUri) {
-                        mediaPart.videoMetadata = { fps: LARGE_VIDEO_SAMPLING_FPS };
+                    const isStickerClip = Boolean(p.mediaKind && STICKER_MEDIA_KINDS.has(p.mediaKind));
+                    const fps = isStickerClip
+                        ? STICKER_SAMPLING_FPS
+                        : samplingFpsForVideo(p.durationSeconds, Boolean(p.fileUri));
+                    // null = keep Gemini's default sampling
+                    if (fps !== null) {
+                        mediaPart.videoMetadata = { fps };
                     }
                 }
                 if (options?.forceSkipThoughtSignature) {

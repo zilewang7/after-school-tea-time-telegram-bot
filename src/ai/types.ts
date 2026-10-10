@@ -13,6 +13,7 @@ export interface UnifiedContentPart {
     mediaData?: string; // base64 encoded media data (audio/video/other)
     fileUri?: string; // GCS gs:// reference for large media (used instead of inline base64)
     sizeBytes?: number; // original file size in bytes (for logging / observability)
+    durationSeconds?: number; // video length as Telegram reported it (drives frame sampling)
     mimeType?: string; // real MIME type for media (and optionally image)
     mediaKind?: string; // source kind (e.g. video_sticker, animated_sticker, video) for sampling hints
     remoteUrl?: string; // pre-signed https URL for platforms that fetch media themselves (MiMo)

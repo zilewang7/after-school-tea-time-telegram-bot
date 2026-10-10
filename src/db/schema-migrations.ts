@@ -6,7 +6,7 @@ interface TableColumn {
 }
 
 const tableColumns = async (
-  tableName: 'message_attachments' | 'link_preview_cache',
+  tableName: 'message_attachments' | 'link_preview_cache' | 'media_cache',
   transaction: Transaction
 ): Promise<Set<string>> => {
   const columns = await sequelize.query<TableColumn>(
@@ -17,7 +17,7 @@ const tableColumns = async (
 };
 
 const ensureColumn = async (
-  tableName: 'message_attachments' | 'link_preview_cache',
+  tableName: 'message_attachments' | 'link_preview_cache' | 'media_cache',
   columnName: string,
   definition: string,
   transaction: Transaction
@@ -144,6 +144,22 @@ const migratePreviewOcrRevision = async (transaction: Transaction): Promise<void
   );
 };
 
+/**
+ * Video duration (seconds) for cached media, used to pick the model's frame
+ * sampling rate. Nullable and left NULL for non-videos and for every row cached
+ * before this column existed — the readers treat NULL as "length unknown".
+ * A fresh database needs nothing here: sequelize.sync() creates the table with
+ * the column, and this migration runs before that sync.
+ */
+const migrateMediaCacheDurationSeconds = async (transaction: Transaction): Promise<void> => {
+  const tables = await sequelize.query<{ name: string }>(
+    "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'media_cache'",
+    { type: QueryTypes.SELECT, transaction }
+  );
+  if (tables.length === 0) return;
+  await ensureColumn('media_cache', 'durationSeconds', 'INTEGER', transaction);
+};
+
 /** Apply additive, idempotent DDL without altering the large message table. */
 export const runSchemaMigrations = async (): Promise<void> => {
   await sequelize.query(`
@@ -156,9 +172,15 @@ export const runSchemaMigrations = async (): Promise<void> => {
   await sequelize.transaction(async (transaction) => {
     await migrateCustomEmojiSchema(transaction);
     await migratePreviewOcrRevision(transaction);
+    await migrateMediaCacheDurationSeconds(transaction);
     await sequelize.query(
       `INSERT OR IGNORE INTO schema_migrations (name, appliedAt)
        VALUES ('20260908_custom_emoji_phase1', :appliedAt)`,
+      { replacements: { appliedAt: new Date().toISOString() }, transaction }
+    );
+    await sequelize.query(
+      `INSERT OR IGNORE INTO schema_migrations (name, appliedAt)
+       VALUES ('20261010_media_cache_duration_seconds', :appliedAt)`,
       { replacements: { appliedAt: new Date().toISOString() }, transaction }
     );
   });

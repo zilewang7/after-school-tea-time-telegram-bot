@@ -24,6 +24,9 @@ export class MediaCache extends Model<
   declare fileUri: CreationOptional<string | null>;
   // Original file size in bytes (for logging / observability). Null if unknown.
   declare sizeBytes: CreationOptional<number | null>;
+  // Video length in seconds as reported by Telegram, driving the model's frame
+  // sampling rate. Null for non-videos and for rows cached before this column.
+  declare durationSeconds: CreationOptional<number | null>;
   declare kind: string;
   declare createdAt: CreationOptional<Date>;
   declare lastUsedAt: Date;
@@ -49,6 +52,11 @@ MediaCache.init({
     defaultValue: null,
   },
   sizeBytes: {
+    type: DataTypes.INTEGER,
+    allowNull: true,
+    defaultValue: null,
+  },
+  durationSeconds: {
     type: DataTypes.INTEGER,
     allowNull: true,
     defaultValue: null,

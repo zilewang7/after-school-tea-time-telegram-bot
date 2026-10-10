@@ -106,6 +106,8 @@ interface CapturedMedia {
     kind: MediaKind;
     /** File size in bytes if Telegram reported it (used for the size cap) */
     sizeBytes?: number;
+    /** Video length in seconds if Telegram reported it (drives frame sampling) */
+    durationSeconds?: number;
     /** Human-readable hint appended to message text for non-multimodal models */
     hint: string;
     /** Animated sticker (.tgs) needs rendering to webm via the converter service */
@@ -209,6 +211,7 @@ const resolveCapturedMedia = (msg: TgMessage | undefined): CapturedMedia | undef
             mime: video.mime_type ?? 'video/mp4',
             kind: 'video',
             sizeBytes: video.file_size,
+            durationSeconds: video.duration,
             hint: 'a video',
             needsTgsConversion: false,
         };
@@ -222,6 +225,7 @@ const resolveCapturedMedia = (msg: TgMessage | undefined): CapturedMedia | undef
             mime: 'video/mp4',
             kind: 'video_note',
             sizeBytes: videoNote.file_size,
+            durationSeconds: videoNote.duration,
             hint: 'a video note',
             needsTgsConversion: false,
         };
@@ -276,6 +280,7 @@ const collectRichBlockMedia = (blocks: RichBlock[], found: CapturedMedia[]): voi
                     mime: block.video.mime_type ?? 'video/mp4',
                     kind: 'video',
                     sizeBytes: block.video.file_size,
+                    durationSeconds: block.video.duration,
                     hint: 'a video',
                     needsTgsConversion: false,
                 });
@@ -287,6 +292,7 @@ const collectRichBlockMedia = (blocks: RichBlock[], found: CapturedMedia[]): voi
                     mime: block.animation.mime_type ?? 'video/mp4',
                     kind: 'video',
                     sizeBytes: block.animation.file_size,
+                    durationSeconds: block.animation.duration,
                     hint: 'an animation',
                     needsTgsConversion: false,
                 });
@@ -523,7 +529,7 @@ const acquireMediaBytes = async (
             return { status: 'convert_failed' };
         }
         const normalizedVideo = await normalizeSmallVideo(converted.data, converted.mime);
-        await putCachedMedia({ fileUniqueId: media.fileUniqueId, data: normalizedVideo.data, sizeBytes: normalizedVideo.data.length, mime: normalizedVideo.mime, kind: media.kind });
+        await putCachedMedia({ fileUniqueId: media.fileUniqueId, data: normalizedVideo.data, sizeBytes: normalizedVideo.data.length, durationSeconds: media.durationSeconds, mime: normalizedVideo.mime, kind: media.kind });
         return { status: 'cached', fileUniqueId: media.fileUniqueId, mime: normalizedVideo.mime };
     }
 
@@ -555,7 +561,7 @@ const acquireMediaBytes = async (
             console.error('[autoSave] GCS upload failed:', uploadErr?.message);
             return { status: 'download_failed' };
         }
-        await putCachedMedia({ fileUniqueId: media.fileUniqueId, fileUri, sizeBytes: size, mime: media.mime, kind: media.kind });
+        await putCachedMedia({ fileUniqueId: media.fileUniqueId, fileUri, sizeBytes: size, durationSeconds: media.durationSeconds, mime: media.mime, kind: media.kind });
         return { status: 'cached', fileUniqueId: media.fileUniqueId, mime: media.mime };
     }
 
@@ -566,7 +572,7 @@ const acquireMediaBytes = async (
         await to(unlink(resolved.path));
     }
     const normalizedVideo = await normalizeSmallVideo(inlineBytes, media.mime);
-    await putCachedMedia({ fileUniqueId: media.fileUniqueId, data: normalizedVideo.data, sizeBytes: normalizedVideo.data.length, mime: normalizedVideo.mime, kind: media.kind });
+    await putCachedMedia({ fileUniqueId: media.fileUniqueId, data: normalizedVideo.data, sizeBytes: normalizedVideo.data.length, durationSeconds: media.durationSeconds, mime: normalizedVideo.mime, kind: media.kind });
     return { status: 'cached', fileUniqueId: media.fileUniqueId, mime: normalizedVideo.mime };
 };
 

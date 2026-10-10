@@ -380,6 +380,7 @@ interface ResolvedMedia {
     fileUri?: string;
     expired?: boolean;
     sizeBytes?: number | null;
+    durationSeconds?: number | null;
     mime: string | null;
     kind: string | null;
 }
@@ -393,12 +394,12 @@ const resolveFileBytes = async (msg: Message): Promise<ResolvedMedia | null> => 
                 // will) delete it, so mark expired rather than feed a dead gs://.
                 const ageMs = Date.now() - new Date(cached.createdAt).getTime();
                 if (ageMs > MEDIA_URI_TTL_MS) {
-                    return { expired: true, sizeBytes: cached.sizeBytes, mime: cached.mime, kind: cached.kind };
+                    return { expired: true, sizeBytes: cached.sizeBytes, durationSeconds: cached.durationSeconds, mime: cached.mime, kind: cached.kind };
                 }
-                return { fileUri: cached.fileUri, sizeBytes: cached.sizeBytes, mime: cached.mime, kind: cached.kind };
+                return { fileUri: cached.fileUri, sizeBytes: cached.sizeBytes, durationSeconds: cached.durationSeconds, mime: cached.mime, kind: cached.kind };
             }
             if (cached.data) {
-                return { bytes: cached.data, sizeBytes: cached.sizeBytes ?? cached.data.length, mime: cached.mime, kind: cached.kind };
+                return { bytes: cached.data, sizeBytes: cached.sizeBytes ?? cached.data.length, durationSeconds: cached.durationSeconds, mime: cached.mime, kind: cached.kind };
             }
         }
     }
@@ -466,6 +467,7 @@ export const getFileContentsOfMessage = async (
                 type: 'media',
                 fileUri: f.fileUri,
                 sizeBytes: f.sizeBytes ?? undefined,
+                durationSeconds: f.durationSeconds ?? undefined,
                 mimeType: f.mime ?? 'application/octet-stream',
                 mediaKind: f.kind ?? undefined,
             };
@@ -488,6 +490,7 @@ export const getFileContentsOfMessage = async (
             type: 'media',
             mediaData: base64,
             sizeBytes: f.sizeBytes ?? bytes.length,
+            durationSeconds: f.durationSeconds ?? undefined,
             mimeType: mime,
             mediaKind: kind ?? undefined,
         };

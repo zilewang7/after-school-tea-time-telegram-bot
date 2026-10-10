@@ -1,4 +1,5 @@
 import 'dotenv/config';
+import { installHttpDispatcher } from './shared/http-dispatcher.js';
 import { Bot } from "grammy";
 import { autoRetry } from "@grammyjs/auto-retry";
 import { SocksProxyAgent } from "socks-proxy-agent";
@@ -16,6 +17,9 @@ import { startCustomEmojiRecovery } from './services/custom-emoji-service.js';
 if (!process.env.BOT_TOKEN) {
     throw new Error('BOT_TOKEN must be provided');
 }
+
+// Slow-but-healthy large-media requests must not be cut off by fetch defaults.
+installHttpDispatcher();
 
 const proxyUrl = process.env.BOT_PROXY;
 const localApiRoot = process.env.TG_LOCAL_API_ROOT;

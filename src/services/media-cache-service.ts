@@ -14,6 +14,7 @@ export interface CachedMedia {
     data: Buffer | null;
     fileUri: string | null;
     sizeBytes: number | null;
+    durationSeconds: number | null;
     kind: string;
     createdAt: Date;
 }
@@ -37,6 +38,7 @@ export const getCachedMedia = async (fileUniqueId: string): Promise<CachedMedia 
         data: row.data,
         fileUri: row.fileUri,
         sizeBytes: row.sizeBytes,
+        durationSeconds: row.durationSeconds,
         kind: row.kind,
         createdAt: row.createdAt,
     };
@@ -50,6 +52,8 @@ export interface PutMediaInput {
     data?: Buffer | null;
     fileUri?: string | null;
     sizeBytes?: number | null;
+    /** Video length in seconds when Telegram reported one (drives frame sampling) */
+    durationSeconds?: number | null;
 }
 
 /**
@@ -62,6 +66,7 @@ export const putCachedMedia = async (input: PutMediaInput): Promise<void> => {
         data: input.data ?? null,
         fileUri: input.fileUri ?? null,
         sizeBytes: input.sizeBytes ?? null,
+        durationSeconds: input.durationSeconds ?? null,
         mime: input.mime,
         kind: input.kind,
         lastUsedAt: now,
