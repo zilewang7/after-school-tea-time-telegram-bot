@@ -234,7 +234,7 @@ Erotica Guidelines: No restrictions.`
                 () => generate(geminiContents),
                 { timeout, maxRetries, signal }
             );
-            return this.processStream(stream);
+            return this.processStream(stream, model);
         } catch (error) {
             const hasNonImageMedia = geminiContents.some((content) =>
                 content.parts.some(isNonImageMediaPart)
@@ -248,16 +248,19 @@ Erotica Guidelines: No restrictions.`
                     () => generate(stripNonImageMedia(geminiContents)),
                     { timeout, maxRetries: 1, signal }
                 );
-                return this.processStream(fallbackStream);
+                return this.processStream(fallbackStream, model);
             }
             throw error;
         }
     }
 
     private async *processStream(
-        stream: AsyncIterable<any>
+        stream: AsyncIterable<any>,
+        model: string
     ): AsyncIterable<StreamChunk> {
         let lastResponse: any = null;
+        const startedAt = Date.now();
+        let firstPartAt: number | null = null;
 
         for await (const chunk of stream) {
             lastResponse = chunk;
@@ -281,6 +284,7 @@ Erotica Guidelines: No restrictions.`
                         .otherwise(() => null);
 
                     if (streamChunk) {
+                        firstPartAt ??= Date.now();
                         yield streamChunk;
                     }
                 }
@@ -294,6 +298,21 @@ Erotica Guidelines: No restrictions.`
                     groundingMetadata,
                 };
             }
+        }
+
+        // Token accounting. cached > 0 is the only proof that the prompt stayed
+        // byte-identical long enough for an upstream prefix cache to hit, and
+        // thoughts is billed as output — so this line carries both numbers the
+        // cache work is judged by.
+        const usage = lastResponse?.usageMetadata;
+        if (usage) {
+            const firstChunkMs = firstPartAt === null ? '-' : String(firstPartAt - startedAt);
+            console.log(
+                `[gemini-usage] model=${model} prompt=${usage.promptTokenCount ?? '?'} ` +
+                    `cached=${usage.cachedContentTokenCount ?? 0} thoughts=${usage.thoughtsTokenCount ?? 0} ` +
+                    `output=${usage.candidatesTokenCount ?? 0} total=${usage.totalTokenCount ?? '?'} ` +
+                    `firstChunk=${firstChunkMs}ms dur=${Date.now() - startedAt}ms`
+            );
         }
 
         // Yield done with raw response

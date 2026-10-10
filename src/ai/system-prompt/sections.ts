@@ -52,6 +52,17 @@ ${options.includeOcrNote ? OCR_FALLBACK_NOTE : ''}- 你自己的历史回复开�
 - 你本身就已经在回复最后一条消息了，此时不用引用 # 编号，只在需要引用更早的消息时才使用，尽量少用
 - 最后一条消息是发给你的，回复它；你的回复直接输出正文，**不要**模仿上述格式（不要带 \`[#N]\`、编号、用户名前缀或 \`<<EOF\`）`;
 
+/**
+ * Mention rules for the user roster. The rules never change, so they live in
+ * the static head; the roster itself is per-request and is rendered into the
+ * runtime block appended to the newest message (runtime-context.ts).
+ */
+export const ROSTER_SECTION = `# 上下文中的用户
+
+最后一条消息末尾的 \`[system]\` 块会给出本次回复涉及的用户名单；名单里标了 \`[bot]\` 的账号是自动程序，不是真人。
+需要提及（@）某用户时，优先写 \`[名字](tg://user?id=数字)\`（名字用对方的 first name），会渲染成可点击的提及；
+只有拿不到 id 时才退而写 @username。你本来就在回复最后一条消息，无需再 @ 它的作者；也不要 @ 与话题无关的人。`;
+
 export const CAPABILITIES_SECTION = `# 能力与输出
 
 - 输出支持完整 Markdown（标准语法+部分方言）：防剧透 \`||spoiler||\`、折叠块 \`<details>/<summary>\`（summary 可选）、引用 \`>\`、任务列表 \`- [x]\` 等等（可以多使用来增加易读性和节目效果）

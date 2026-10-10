@@ -2,5 +2,6 @@
  * System prompt module - layered prompt assembly
  */
 
-export { buildSystemPrompt } from './builder.js';
+export { buildStaticSystemPrompt } from './builder.js';
+export { buildRuntimeContext } from './runtime-context.js';
 export { getPreferencePrompt } from './preference.js';

@@ -892,8 +892,8 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
                     turn.content.map((part) => part.text ?? '').join('\n');
                 return {
                     whole: turns.map(textOfTurn).join('\n'),
-                    /** Just the trigger's own turn, which closes the context */
-                    last: textOfTurn(turns[turns.length - 1]!),
+                    /** Just the trigger's own turn, minus the runtime block riding it */
+                    last: textOfTurn(turns[turns.length - 1]!).replace(/\n*\[system\] 运行时信息[\s\S]*$/, ''),
                 };
             };
 
@@ -985,10 +985,12 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
             process.env.BOT_USER_NAME = 'WatchFirstBot';
             process.env.BOT_NAME = 'Test-KON';
 
-            const { buildSystemPrompt } = await import('../../src/ai/system-prompt/index.js');
+            const { buildStaticSystemPrompt, buildRuntimeContext } = await import(
+                '../../src/ai/system-prompt/index.js'
+            );
             // gemini sees images, mimo-pro does not — the OCR note must follow
-            const visionPrompt = buildSystemPrompt('gemini-3.1-pro-preview');
-            const blindPrompt = buildSystemPrompt('mimo-v2.5-pro');
+            const visionPrompt = buildStaticSystemPrompt('gemini-3.1-pro-preview');
+            const blindPrompt = buildStaticSystemPrompt('mimo-v2.5-pro');
             rmSync(promptPath, { force: true });
             process.env.BOT_USER_NAME = ownUserName;
 
@@ -1004,14 +1006,20 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
                 visionPrompt.includes('{{UNKNOWN_VAR}}'),
                 'a variable outside the allowlist is left verbatim rather than silently dropped'
             );
+            const visionRuntime = buildRuntimeContext('gemini-3.1-pro-preview', []);
+            const blindRuntime = buildRuntimeContext('mimo-v2.5-pro', []);
             expect(
-                /当前时间：\d{4}\/\d{2}\/\d{2} \d{2}:\d{2} 周./.test(visionPrompt),
-                `the current time is injected as YYYY/MM/DD HH:mm 周X (got ${JSON.stringify(visionPrompt.match(/当前时间：[^\n]*/)?.[0])})`
+                /当前时间：\d{4}\/\d{2}\/\d{2} \d{2}:\d{2} 周./.test(visionRuntime),
+                `the current time is injected as YYYY/MM/DD HH:mm 周X (got ${JSON.stringify(visionRuntime.match(/当前时间：[^\n]*/)?.[0])})`
             );
             expect(
-                visionPrompt.includes('当前模型：gemini-3.1-pro-preview') &&
-                    blindPrompt.includes('当前模型：mimo-v2.5-pro'),
+                visionRuntime.includes('当前模型：gemini-3.1-pro-preview') &&
+                    blindRuntime.includes('当前模型：mimo-v2.5-pro'),
                 'the current model id is injected'
+            );
+            expect(
+                !visionPrompt.includes('当前时间：') && !visionPrompt.includes('当前模型：'),
+                'the volatile runtime info stays out of the static (cacheable) system prompt'
             );
             expect(
                 visionPrompt.includes('# 你收到的消息格式') && visionPrompt.includes('<<EOF'),
@@ -1055,14 +1063,16 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
         },
     },
     {
-        // The roster feeds the system prompt: authors carry their id/@username
+        // The roster feeds the runtime block: authors carry their id/@username
         // from telegram_users, mentioned users are resolved out of the text
         // (both tg://user links and plain @handles), the bot stays out.
         name: 'the context user roster resolves authors and mentions',
         body: async () => {
             const { TelegramUser } = await import('../../src/db/telegramUserDTO.js');
             const { buildContext } = await import('../../src/reply/context-builder.js');
-            const { buildSystemPrompt } = await import('../../src/ai/system-prompt/index.js');
+            const { buildStaticSystemPrompt, buildRuntimeContext } = await import(
+                '../../src/ai/system-prompt/index.js'
+            );
 
             const now = new Date();
             await TelegramUser.upsert({ userId: 1001, username: 'alice_a', firstName: 'Alice', lastName: null, updatedAt: now });
@@ -1145,24 +1155,86 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
                 'no information-free entries'
             );
 
-            const prompt = buildSystemPrompt('gemini-3.1-pro-preview', { contextUsers });
+            const prompt = buildStaticSystemPrompt('gemini-3.1-pro-preview');
             expect(
                 prompt.includes('# 上下文中的用户') &&
-                    prompt.includes('- Alice：id 1001，@alice_a') &&
                     prompt.includes('无需再 @ 它的作者') &&
-                    prompt.includes('优先写 `[名字](tg://user?id=数字)`'),
-                `the roster section lands in the system prompt (got ${JSON.stringify(prompt.match(/# 上下文中的用户[\s\S]*?(?=\n\n# )/)?.[0])})`
+                    prompt.includes('优先写 `[名字](tg://user?id=数字)`') &&
+                    !prompt.includes('- Alice：id 1001，@alice_a'),
+                `the mention rules stay in the static prompt while the roster itself moves out (got ${JSON.stringify(prompt.match(/# 上下文中的用户[\s\S]*?(?=\n\n# )/)?.[0])})`
             );
-            const botBlockStart = prompt.indexOf('以下是 bot 账号');
+            const runtime = buildRuntimeContext('gemini-3.1-pro-preview', contextUsers);
+            const botLine = runtime.indexOf('- [bot] Helper：id 1005，@helper_bot');
             expect(
-                botBlockStart > 0 &&
-                    prompt.indexOf('- Helper：id 1005，@helper_bot') > botBlockStart &&
-                    prompt.indexOf('- Alice：id 1001，@alice_a') < botBlockStart,
-                'bots are listed apart from humans'
+                runtime.includes('- Alice：id 1001，@alice_a') && botLine > 0,
+                `the roster lands in the runtime block (got ${JSON.stringify(runtime)})`
             );
             expect(
-                !buildSystemPrompt('gemini-3.1-pro-preview').includes('# 上下文中的用户'),
-                'no roster, no section'
+                runtime.indexOf('- Alice：id 1001，@alice_a') < botLine,
+                'bots are listed after the humans and marked [bot]'
+            );
+            expect(
+                !buildRuntimeContext('gemini-3.1-pro-preview', []).includes('本次回复涉及的用户'),
+                'no roster, no list'
+            );
+        },
+    },
+    {
+        // The split exists so upstream prefix caches can hit: the head must be
+        // byte-identical between requests (no clock, no roster inside it) and the
+        // one volatile block has to ride the newest message, after every byte
+        // that the next request of the same tree will reuse.
+        name: 'runtime info rides the newest message and never the cacheable prompt head',
+        body: async () => {
+            const { buildStaticSystemPrompt, buildRuntimeContext } = await import(
+                '../../src/ai/system-prompt/index.js'
+            );
+            const { buildContext } = await import('../../src/reply/context-builder.js');
+
+            const head = buildStaticSystemPrompt('gemini-3.1-pro-preview');
+            expect(
+                head === buildStaticSystemPrompt('gemini-3.1-pro-preview') &&
+                    !/当前时间：\d/.test(head) &&
+                    !head.includes('[system] 运行时信息'),
+                'the cacheable head carries nothing that changes between requests'
+            );
+            const runtime = buildRuntimeContext('gemini-3.1-pro-preview', []);
+            expect(
+                runtime.startsWith('[system] 运行时信息') && runtime.includes('当前时间：'),
+                `the volatile block is rendered per request (got ${JSON.stringify(runtime)})`
+            );
+
+            const messageId = await seedMessage({ text: '在吗', userId: 1001, userName: 'Alice' });
+            const row = await Message.findOne({ where: { chatId: OFFLINE_CHAT_ID, messageId } });
+            if (!row) throw new Error('seeded message not found');
+
+            const { messages } = await buildContext(row, {
+                model: 'gemini-3.1-pro-preview',
+                capabilities: {
+                    supportsImageInput: true,
+                    supportsImageOutput: false,
+                    supportsSystemPrompt: true,
+                    requiresMessageMerge: false,
+                    supportsThinking: false,
+                    supportsGrounding: false,
+                    supportsMediaInput: false,
+                },
+            });
+
+            const newest = messages[messages.length - 1];
+            const lastPart = newest.content[newest.content.length - 1];
+            expect(
+                lastPart.type === 'text' && lastPart.text.startsWith('[system] 运行时信息'),
+                `the runtime block is the last part of the newest message (got ${JSON.stringify(lastPart)})`
+            );
+            const runtimeParts = messages.flatMap((message) =>
+                message.content.filter(
+                    (part) => part.type === 'text' && part.text.includes('[system] 运行时信息')
+                )
+            );
+            expect(
+                runtimeParts.length === 1,
+                `the runtime block appears exactly once (got ${runtimeParts.length})`
             );
         },
     },

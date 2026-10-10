@@ -16,6 +16,7 @@ import { getBilibiliDanmakuPart } from '../services/bilibili-danmaku-service.js'
 import { readStoredChatCommand } from './commands/chat-command-parser.js';
 import { buildOcrFallbackPart } from '../services/luoxu-ocr-service.js';
 import { applyModelCapabilities } from '../ai/message-transformer.js';
+import { buildRuntimeContext } from '../ai/system-prompt/runtime-context.js';
 import { getCurrentModel, getRepliesInFlight, setContextNumbering } from '../state.js';
 import { buildInFlightReplyNote } from './inflight-reply-note.js';
 import { collectContextUsers, type ContextUser } from './context-users.js';
@@ -520,6 +521,8 @@ const buildMessageContent = async (
 export interface BuildContextOptions {
     /** Model capabilities for filtering */
     capabilities?: ModelCapabilities;
+    /** Model id rendered into the runtime block (defaults to the chat's model) */
+    model?: string;
     /** Message IDs to exclude from context (e.g., current bot response when retrying) */
     excludeMessageIds?: number[];
 }
@@ -530,7 +533,7 @@ const isBuildContextOptions = (
 ): value is BuildContextOptions =>
     typeof value === 'object' &&
     value !== null &&
-    ('capabilities' in value || 'excludeMessageIds' in value);
+    ('capabilities' in value || 'excludeMessageIds' in value || 'model' in value);
 
 /** Assembled context: the model-facing turns plus the user roster they involve */
 export interface BuiltContext {
@@ -580,7 +583,8 @@ export const buildContext = async (
         : { capabilities: options };
 
     // Get capabilities for current model if not provided
-    const modelCapabilities = opts.capabilities ?? getModelCapabilities(getCurrentModel());
+    const model = opts.model ?? getCurrentModel();
+    const modelCapabilities = opts.capabilities ?? getModelCapabilities(model);
     const excludeMessageIds = opts.excludeMessageIds ?? [];
 
     // Get history messages (excluding current message). Resolved fresh here (not
@@ -623,9 +627,27 @@ export const buildContext = async (
         ));
     }
 
+    // Runtime info (time, model, roster) rides the newest message instead of
+    // heading the prompt: it is the only part that changes between requests, so
+    // keeping it last leaves the cacheable prefix byte-identical. The next
+    // request in this tree diverges at this very message and no earlier.
+    const runtimeBlock: UnifiedContentPart = {
+        type: 'text',
+        text: buildRuntimeContext(model, contextUsers),
+    };
+    const newestIndex = Math.max(
+        0,
+        contextMessages.findIndex((contextMsg) => contextMsg.messageId === messageId)
+    );
+    const withRuntime = chatContents.map((content, contentIndex) =>
+        contentIndex === newestIndex
+            ? { ...content, content: [...content.content, runtimeBlock] }
+            : content
+    );
+
     // Apply model capabilities (filter images, merge messages if needed)
     return {
-        messages: applyModelCapabilities(chatContents, modelCapabilities),
+        messages: applyModelCapabilities(withRuntime, modelCapabilities),
         contextUsers,
     };
 };

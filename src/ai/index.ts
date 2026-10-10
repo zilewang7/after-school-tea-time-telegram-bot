@@ -20,8 +20,12 @@ export {
     sendMessage,
 } from './platform-factory.js';
 
-// System prompt (layered assembly)
-export { buildSystemPrompt, getPreferencePrompt } from './system-prompt/index.js';
+// System prompt (static head + per-request runtime block)
+export {
+    buildStaticSystemPrompt,
+    buildRuntimeContext,
+    getPreferencePrompt,
+} from './system-prompt/index.js';
 
 // Platform classes (for direct use if needed)
 export { GeminiPlatform } from './platforms/gemini-platform.js';

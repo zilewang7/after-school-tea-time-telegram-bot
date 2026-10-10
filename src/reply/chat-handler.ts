@@ -10,7 +10,7 @@ import {
     findChildMessageIds,
     type ContextMessage,
 } from '../db/queries/context-queries.js';
-import { sendMessage, buildSystemPrompt, getModelCapabilities } from '../ai/index.js';
+import { sendMessage, buildStaticSystemPrompt, getModelCapabilities } from '../ai/index.js';
 import {
     getCurrentModel,
     getMediaGroupIdTemp,
@@ -272,18 +272,18 @@ export const handleReply = async (
 
     // Build AI context (buildContext walks the reply tree itself, post-wait, so
     // media downloaded during the wait is now included).
-    const ctxResult = await to(buildContext(msg, capabilities));
+    const ctxResult = await to(buildContext(msg, { capabilities, model }));
     if (isErr(ctxResult)) {
         await handleResponseError(chatContext, ctxResult[0]);
         return;
     }
-    const { messages: chatContents, contextUsers } = ctxResult[1];
+    const { messages: chatContents } = ctxResult[1];
 
     // Send to AI and get stream
     const streamResult = await to(
         sendMessage(chatContents, {
             model,
-            systemPrompt: buildSystemPrompt(model, { contextUsers }),
+            systemPrompt: buildStaticSystemPrompt(model),
             signal: chatContext.session.streamController.signal,
         })
     );

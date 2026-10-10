@@ -10,7 +10,7 @@ import { getMessage, getBotResponse } from '../db/index.js';
 import type { CommandType } from '../db/index.js';
 import { collectReferenceImages } from './commands/reference-images.js';
 import { startRetry } from '../services/index.js';
-import { sendMessage, buildSystemPrompt, getModelCapabilities } from '../ai/index.js';
+import { sendMessage, buildStaticSystemPrompt, getModelCapabilities } from '../ai/index.js';
 import { buildContext, buildContextFromParts } from './context-builder.js';
 import { getCurrentModel } from '../state.js';
 import { to } from '../shared/result.js';
@@ -255,6 +255,7 @@ const handleChatRetry = async (
     const capabilities = getModelCapabilities(model);
     const [ctxErr, builtContext] = await to(buildContext(userMessage, {
         capabilities,
+        model,
         excludeMessageIds: [botResponse.messageId], // Exclude the bot response we're retrying
     }));
     if (ctxErr || !builtContext) {
@@ -262,13 +263,13 @@ const handleChatRetry = async (
         await handleResponseError(chatContext, ctxErr ?? new Error('Failed to build context'));
         return;
     }
-    const { messages: chatContents, contextUsers } = builtContext;
+    const { messages: chatContents } = builtContext;
 
     // Send to AI
     const [streamErr, stream] = await to(
         sendMessage(chatContents, {
             model,
-            systemPrompt: buildSystemPrompt(model, { contextUsers }),
+            systemPrompt: buildStaticSystemPrompt(model),
             signal: session.streamController.signal,
         })
     );
