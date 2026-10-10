@@ -32,9 +32,13 @@ export interface GeminiPart {
 }
 
 // Short sticker clips (video/animated) are sampled above Gemini's default 1.0 fps
-// so the model sees the whole animation, not just the first frame. Regular video
-// files keep the default sampling rate.
+// so the model sees the whole animation, not just the first frame. Large files
+// (>20MB, sent as a gs:// reference) are usually long videos, and Gemini's ingest
+// cost grows with the number of sampled frames: the same 98MB clip answered in
+// 57s at 0.5 fps, while the 1.0 fps default ran past the 300s request cap and
+// never answered (measured 2026-10-10).
 const STICKER_SAMPLING_FPS = 5;
+const LARGE_VIDEO_SAMPLING_FPS = 0.5;
 const STICKER_MEDIA_KINDS = new Set(['video_sticker', 'animated_sticker']);
 
 export interface GeminiContent {
@@ -98,10 +102,14 @@ const transformToGeminiParts = (
                 const mediaPart: GeminiPart = p.fileUri
                     ? { fileData: { mimeType, fileUri: p.fileUri } }
                     : { inlineData: { mimeType, data: p.mediaData ?? '' } };
-                // Sample short sticker clips at a higher rate so the whole animation
-                // is seen; regular video files keep Gemini's default 1.0 fps.
-                if (mimeType.startsWith('video/') && p.mediaKind && STICKER_MEDIA_KINDS.has(p.mediaKind)) {
-                    mediaPart.videoMetadata = { fps: STICKER_SAMPLING_FPS };
+                // Video sampling: dense for stickers (short, fast motion), sparse for
+                // large files so a long clip still answers inside the request cap.
+                if (mimeType.startsWith('video/')) {
+                    if (p.mediaKind && STICKER_MEDIA_KINDS.has(p.mediaKind)) {
+                        mediaPart.videoMetadata = { fps: STICKER_SAMPLING_FPS };
+                    } else if (p.fileUri) {
+                        mediaPart.videoMetadata = { fps: LARGE_VIDEO_SAMPLING_FPS };
+                    }
                 }
                 if (options?.forceSkipThoughtSignature) {
                     mediaPart.thoughtSignature = 'skip_thought_signature_validator';
