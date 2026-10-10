@@ -15,6 +15,8 @@ declare global {
             GEMINI_API_URL?: string
             /** Second hub key bound to Vertex-type channels, used for gs:// media */
             GEMINI_LARGE_MEDIA_API_KEY?: string
+            /** Origin-side base URL for gs:// media (no CDN 100s cut-off) */
+            GEMINI_LARGE_MEDIA_API_URL?: string
             DEFAULT_MODEL?: string
             DEEPSEEK_API_URL?: string
             DEEPSEEK_API_KEY?: string

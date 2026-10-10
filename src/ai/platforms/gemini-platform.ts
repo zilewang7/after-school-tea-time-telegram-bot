@@ -86,16 +86,20 @@ export class GeminiPlatform extends BasePlatform {
                 httpOptions: { baseUrl: apiUrl },
             });
             const largeMediaKey = process.env.GEMINI_LARGE_MEDIA_API_KEY;
+            // Large media needs minutes before the first token, and the primary
+            // host sits behind a CDN that cuts the connection at 100s (HTTP 524).
+            // GEMINI_LARGE_MEDIA_API_URL points that traffic at the origin host.
+            const largeMediaUrl = process.env.GEMINI_LARGE_MEDIA_API_URL ?? apiUrl;
             this.largeMediaClient = largeMediaKey
                 ? new GoogleGenAI({
                       apiKey: largeMediaKey,
                       vertexai: false,
-                      httpOptions: { baseUrl: apiUrl },
+                      httpOptions: { baseUrl: largeMediaUrl },
                   })
                 : null;
             console.log(`[gemini] Using Gemini API at ${apiUrl}`);
             if (this.largeMediaClient) {
-                console.log('[gemini] gs:// large media rides the dedicated Vertex key');
+                console.log(`[gemini] gs:// large media rides the dedicated Vertex key at ${largeMediaUrl}`);
             }
         } else {
             this.largeMediaClient = null;

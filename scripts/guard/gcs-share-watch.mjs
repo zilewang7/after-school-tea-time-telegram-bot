@@ -46,8 +46,12 @@ const probeModel = process.env.GUARD_PROBE_MODEL ?? 'gemini-3.1-pro-preview';
 
 /** The dedicated key for requests that carry gs:// media, when one is set. */
 const probeTarget = () => {
-    // The guard always probes the hub, even when the bot itself runs elsewhere.
-    const base = process.env.HUB_GEMINI_API_URL ?? process.env.GEMINI_API_URL;
+    // Probe the host large media actually uses (the primary host's CDN cuts long
+    // requests at 100s), falling back to the bot's endpoint.
+    const base =
+        process.env.GEMINI_LARGE_MEDIA_API_URL ??
+        process.env.HUB_GEMINI_API_URL ??
+        process.env.GEMINI_API_URL;
     const key =
         process.env.GEMINI_LARGE_MEDIA_API_KEY ??
         process.env.HUB_GEMINI_API_KEY ??
