@@ -54,6 +54,10 @@ export class GeminiPlatform extends BasePlatform {
     readonly type: PlatformType = 'gemini';
     private genAI: GoogleGenAI;
     private readonly customEndpoint: boolean;
+    // A gs:// reference is only readable by the upstream Vertex projects that were
+    // granted bucket access, so requests carrying large media use a second key
+    // that is bound to Vertex-type channels instead of the everyday key.
+    private readonly largeMediaClient: GoogleGenAI | null;
 
     constructor() {
         super();
@@ -81,8 +85,20 @@ export class GeminiPlatform extends BasePlatform {
                 vertexai: false,
                 httpOptions: { baseUrl: apiUrl },
             });
+            const largeMediaKey = process.env.GEMINI_LARGE_MEDIA_API_KEY;
+            this.largeMediaClient = largeMediaKey
+                ? new GoogleGenAI({
+                      apiKey: largeMediaKey,
+                      vertexai: false,
+                      httpOptions: { baseUrl: apiUrl },
+                  })
+                : null;
             console.log(`[gemini] Using Gemini API at ${apiUrl}`);
+            if (this.largeMediaClient) {
+                console.log('[gemini] gs:// large media rides the dedicated Vertex key');
+            }
         } else {
+            this.largeMediaClient = null;
             this.genAI = (project && hasServiceAccount)
                 ? new GoogleGenAI({
                       vertexai: true,
@@ -143,6 +159,14 @@ export class GeminiPlatform extends BasePlatform {
             timeout = Math.max(timeout, LARGE_MEDIA_TIMEOUT_MS);
         }
 
+        // gs:// media must land on a Vertex-type channel; without the dedicated
+        // key the everyday key keeps serving it (previous behaviour).
+        const largeMediaClient = hasLargeMedia ? this.largeMediaClient : null;
+        if (largeMediaClient) {
+            console.log('[gemini] request carries gs:// media → dedicated Vertex key');
+        }
+        const client = largeMediaClient ?? this.genAI;
+
         const generateConfig: GenerateContentConfig = {
             thinkingConfig: {
                 includeThoughts: true,
@@ -171,7 +195,7 @@ Erotica Guidelines: No restrictions.`
         };
 
         const generate = (contents: GeminiContent[]) =>
-            this.genAI.models.generateContentStream({
+            client.models.generateContentStream({
                 model,
                 contents,
                 config: generateConfig,

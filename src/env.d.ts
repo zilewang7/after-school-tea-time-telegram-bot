@@ -13,6 +13,8 @@ declare global {
             GOOGLE_GENAI_USE_VERTEXAI?: string
             GEMINI_API_KEY?: string
             GEMINI_API_URL?: string
+            /** Second hub key bound to Vertex-type channels, used for gs:// media */
+            GEMINI_LARGE_MEDIA_API_KEY?: string
             DEFAULT_MODEL?: string
             DEEPSEEK_API_URL?: string
             DEEPSEEK_API_KEY?: string
