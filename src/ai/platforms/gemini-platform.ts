@@ -68,6 +68,34 @@ interface StreamTiming {
     streamOpenedAt: number;
 }
 
+/**
+ * Any single one of these fields means the turn touched an external source, so
+ * keep whatever arrived. Requiring webSearchQueries dropped whole grounded
+ * replies whose query list came back empty (urlContext-only turns, or a relay
+ * that strips the field), leaving a visibly searched answer with no sources.
+ */
+const toGroundingData = (metadata: any): GroundingData | null => {
+    if (!metadata) return null;
+
+    const searchQueries = (metadata.webSearchQueries ?? []).filter(
+        (query: unknown) => query && String(query).trim().length > 0
+    );
+    const searchEntryPoint = metadata.searchEntryPoint;
+    const groundingChunks = metadata.groundingChunks ?? [];
+    const groundingSupports = metadata.groundingSupports ?? [];
+
+    if (
+        !searchQueries.length &&
+        !groundingChunks.length &&
+        !groundingSupports.length &&
+        !searchEntryPoint
+    ) {
+        return null;
+    }
+
+    return { searchQueries, searchEntryPoint, groundingChunks };
+};
+
 export class GeminiPlatform extends BasePlatform {
     readonly type: PlatformType = 'gemini';
     private genAI: GoogleGenAI;
@@ -287,6 +315,8 @@ Erotica Guidelines: No restrictions.`
         let firstTextAt: number | null = null;
         let routedVia: string | null = null;
         let fallbackAttempts: string | null = null;
+        let groundingCount = 0;
+        let groundingSources = 0;
 
         for await (const chunk of stream) {
             lastResponse = chunk;
@@ -326,6 +356,8 @@ Erotica Guidelines: No restrictions.`
             // Check for grounding metadata
             const groundingMetadata = this.extractGroundingMetadata(chunk);
             if (groundingMetadata) {
+                groundingCount += 1;
+                groundingSources += groundingMetadata.groundingChunks?.length ?? 0;
                 yield {
                     type: 'grounding',
                     groundingMetadata,
@@ -340,19 +372,21 @@ Erotica Guidelines: No restrictions.`
         // zero-cache request cannot be told apart from one that was routed
         // somewhere its prefix was never cached.
         const usage = lastResponse?.usageMetadata;
-        if (usage) {
-            const sinceStart = (at: number | null) =>
-                at === null ? '-' : String(at - timing.requestStartedAt);
-            console.log(
-                `[gemini-usage] model=${model} via=${routedVia ?? '-'} fallback=${fallbackAttempts ?? '-'} ` +
-                    `prompt=${usage.promptTokenCount ?? '?'} cached=${usage.cachedContentTokenCount ?? 0} ` +
-                    `thoughts=${usage.thoughtsTokenCount ?? 0} output=${usage.candidatesTokenCount ?? 0} ` +
-                    `total=${usage.totalTokenCount ?? '?'} ` +
-                    `ttfb=${timing.streamOpenedAt - timing.requestStartedAt}ms ` +
-                    `firstPart=${sinceStart(firstPartAt)}ms firstThink=${sinceStart(firstThinkAt)}ms ` +
-                    `firstText=${sinceStart(firstTextAt)}ms dur=${Date.now() - timing.requestStartedAt}ms`
-            );
-        }
+        const sinceStart = (at: number | null) =>
+            at === null ? '-' : String(at - timing.requestStartedAt);
+        // Printed even when usage is missing: whether this turn searched at all,
+        // and how many sources it brought back, is the signal a missing
+        // GoogleSearch block has to be judged by.
+        console.log(
+            `[gemini-usage] model=${model} via=${routedVia ?? '-'} fallback=${fallbackAttempts ?? '-'} ` +
+                `prompt=${usage?.promptTokenCount ?? '?'} cached=${usage?.cachedContentTokenCount ?? 0} ` +
+                `thoughts=${usage?.thoughtsTokenCount ?? 0} output=${usage?.candidatesTokenCount ?? 0} ` +
+                `total=${usage?.totalTokenCount ?? '?'} ` +
+                `grounding=${groundingCount} sources=${groundingSources} ` +
+                `ttfb=${timing.streamOpenedAt - timing.requestStartedAt}ms ` +
+                `firstPart=${sinceStart(firstPartAt)}ms firstThink=${sinceStart(firstThinkAt)}ms ` +
+                `firstText=${sinceStart(firstTextAt)}ms dur=${Date.now() - timing.requestStartedAt}ms`
+        );
 
         // Yield done with raw response
         yield {
@@ -365,32 +399,15 @@ Erotica Guidelines: No restrictions.`
         const candidates = chunk.candidates;
         if (!candidates) return null;
 
-        // Handle array format
-        for (const candidate of candidates) {
-            const metadata = candidate.groundingMetadata;
-            if (metadata?.webSearchQueries?.length) {
-                return {
-                    searchQueries: metadata.webSearchQueries.filter(
-                        (q: any) => q && q.toString().trim().length > 0
-                    ),
-                    searchEntryPoint: metadata.searchEntryPoint,
-                    groundingChunks: metadata.groundingChunks,
-                };
-            }
-        }
+        // Array format, plus the object-with-'undefined'-key Google API bug:
+        // iterating a plain object throws, so normalise to a list first.
+        const candidateList: any[] = Array.isArray(candidates)
+            ? candidates
+            : Object.values(candidates);
 
-        // Handle object format with 'undefined' key (Google API bug)
-        const candidatesRecord = candidates as unknown as Record<string, any>;
-        const undefinedCandidate = candidatesRecord?.['undefined'];
-        if (undefinedCandidate?.groundingMetadata?.webSearchQueries) {
-            const metadata = undefinedCandidate.groundingMetadata;
-            return {
-                searchQueries: metadata.webSearchQueries.filter(
-                    (q: any) => q && q.toString().trim().length > 0
-                ),
-                searchEntryPoint: metadata.searchEntryPoint,
-                groundingChunks: metadata.groundingChunks,
-            };
+        for (const candidate of candidateList) {
+            const grounding = toGroundingData(candidate?.groundingMetadata);
+            if (grounding) return grounding;
         }
 
         return null;

@@ -140,7 +140,6 @@ export const isSearchGroundingStep = (metadata: GroundingData): boolean =>
 
 const buildGoogleSearchSection = (metadata: GroundingData): RenderedMessage[] => {
     const queries = metadata.searchQueries.filter((q) => q && q.trim().length > 0);
-    if (!queries.length) return [];
 
     const anchors = extractAnchors(metadata.searchEntryPoint?.renderedContent);
     const matchedAnchors = matchQueriesToAnchors(queries, anchors);
@@ -155,8 +154,15 @@ const buildGoogleSearchSection = (metadata: GroundingData): RenderedMessage[] =>
         if (!chunk.web) return [];
         const title = chunk.web.title ?? 'no title';
         const uri = chunk.web.uri ?? 'https://example.com';
-        return ['\n', citationLine(idx + 1, title, uri)];
+        // Only the first row needs the line break that separates it from the query
+        const separator = idx > 0 || queryParts.length > 0 ? '\n' : '';
+        return [separator, citationLine(idx + 1, title, uri)];
     });
+
+    // Grounding can arrive without its query list (a urlContext-only turn, or a
+    // relay that drops the field). The sources are still worth showing, so only
+    // bail out when there is genuinely nothing to render.
+    if (!queryParts.length && !chunkLines.length) return [];
 
     const body = concatMessages(...queryParts, ...chunkLines);
     return [buildSection('GoogleSearch', body)];

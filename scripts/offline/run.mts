@@ -681,6 +681,31 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
                 ),
                 'the grounded source stays clickable'
             );
+
+            // A relay can hand back the sources without the query list; the
+            // block used to vanish entirely, which looked like "never searched".
+            const sourcesOnly = buildGoogleSearchSections([
+                {
+                    searchQueries: [],
+                    groundingChunks: [
+                        { web: { uri: 'https://a.example/x', title: 'Source A' } },
+                        { web: { uri: 'https://b.example/y', title: 'Source B' } },
+                    ],
+                },
+            ]);
+            const sourcesText = sourcesOnly[0]?.text ?? '';
+            expect(
+                sourcesOnly.length === 1 && sourcesText.startsWith('GoogleSearch\n'),
+                `sources without queries still render the block (got ${JSON.stringify(sourcesText)})`
+            );
+            expect(
+                sourcesText.includes('[1] Source A') && sourcesText.includes('[2] Source B'),
+                'both sources keep their numbered lines when no query line exists'
+            );
+            expect(
+                !sourcesText.includes('\n\n\n'),
+                'the first citation does not open with a blank line'
+            );
         },
     },
     {
