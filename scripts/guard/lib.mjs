@@ -142,15 +142,19 @@ export const revokeServiceAgent = async ({ serviceAccount, role = DEFAULT_ROLE, 
     const bucket = bucketOf(requireCredentials());
     const policy = await readPolicy(bucket);
     const member = asMember(serviceAccount);
-    const removed = (policy.bindings ?? []).filter((binding) => matches(binding, member, role));
-    if (removed.length === 0) return { changed: false, removed: 0 };
-    if (!dryRun) {
-        await writePolicy(bucket, {
-            ...policy,
-            bindings: (policy.bindings ?? []).filter((binding) => !matches(binding, member, role)),
-        });
-    }
-    return { changed: true, removed: removed.length };
+    const affected = (policy.bindings ?? []).filter((binding) => matches(binding, member, role));
+    if (affected.length === 0) return { changed: false, removed: 0 };
+    // Storage merges equal role+condition bindings into one member list, so only
+    // this member is dropped -- never the whole binding.
+    const bindings = (policy.bindings ?? [])
+        .map((binding) =>
+            matches(binding, member, role)
+                ? { ...binding, members: (binding.members ?? []).filter((entry) => entry !== member) }
+                : binding
+        )
+        .filter((binding) => (binding.members ?? []).length > 0);
+    if (!dryRun) await writePolicy(bucket, { ...policy, bindings });
+    return { changed: true, removed: affected.length };
 };
 
 /** Mint an access token for the guard's own service account. */
