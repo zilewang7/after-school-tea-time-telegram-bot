@@ -26,6 +26,10 @@ export const isRetryableError = (error: unknown): boolean => {
         .with({ message: P.string.includes('429') }, () => true)
         .with({ message: P.string.includes('rate limit') }, () => true)
         .with({ message: P.string.includes('exhausted') }, () => true)
+        // The hub balances requests across upstream projects: a channel that has
+        // no billing enabled is worth another attempt, since the retry may land
+        // on a healthy channel.
+        .with({ message: P.string.includes('requires billing') }, () => true)
         .with({ message: P.string.includes('ECONNRESET') }, () => true)
         .with({ message: P.string.includes('socket hang up') }, () => true)
         .with({ status: P.number.gte(500).lte(599) }, () => true)
