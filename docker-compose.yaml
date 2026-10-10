@@ -53,6 +53,9 @@ services:
       - TGS_CONVERTER_URL=http://tgs-converter:8080
       - GOOGLE_APPLICATION_CREDENTIALS=/app/k-on-bot/gcp-sa.json
       - DB_PATH=database.test.sqlite
+      # Keep pnpm's store inside the container: it runs as root and would
+      # otherwise create root-owned files in the mounted working tree.
+      - npm_config_store_dir=/tmp/pnpm-store
     volumes:
       - .:/app/k-on-bot
       - k-on-bot-test-node-modules:/app/k-on-bot/node_modules
