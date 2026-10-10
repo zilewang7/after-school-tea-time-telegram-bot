@@ -54,6 +54,20 @@ const safetySettings: SafetySetting[] = [
 // the value that actually bounds the wait.
 const LARGE_MEDIA_TIMEOUT_MS = 600000;
 
+// The relay reports which upstream channel served the request on a response
+// header. That is the only way to tell "the prompt broke the cache" apart from
+// "this request landed on a channel whose prefix cache was cold".
+const headerOf = (chunk: any, name: string): string | null =>
+    chunk?.sdkHttpResponse?.headers?.[name] ?? null;
+
+interface StreamTiming {
+    // Measured from before the request is sent. The SDK resolves the await only
+    // after the stream is open and the first chunk is buffered, so any timestamp
+    // taken inside the consume loop reports ~0 and hides the real first-token wait.
+    requestStartedAt: number;
+    streamOpenedAt: number;
+}
+
 export class GeminiPlatform extends BasePlatform {
     readonly type: PlatformType = 'gemini';
     private genAI: GoogleGenAI;
@@ -230,11 +244,15 @@ Erotica Guidelines: No restrictions.`
             }));
 
         try {
+            const requestStartedAt = Date.now();
             const stream = await this.sendWithRetry(
                 () => generate(geminiContents),
                 { timeout, maxRetries, signal }
             );
-            return this.processStream(stream, model);
+            return this.processStream(stream, model, {
+                requestStartedAt,
+                streamOpenedAt: Date.now(),
+            });
         } catch (error) {
             const hasNonImageMedia = geminiContents.some((content) =>
                 content.parts.some(isNonImageMediaPart)
@@ -244,11 +262,15 @@ Erotica Guidelines: No restrictions.`
                 console.warn(
                     `[gemini] ${model} rejected a media part with 400; retrying without non-image media`
                 );
+                const requestStartedAt = Date.now();
                 const fallbackStream = await this.sendWithRetry(
                     () => generate(stripNonImageMedia(geminiContents)),
                     { timeout, maxRetries: 1, signal }
                 );
-                return this.processStream(fallbackStream, model);
+                return this.processStream(fallbackStream, model, {
+                    requestStartedAt,
+                    streamOpenedAt: Date.now(),
+                });
             }
             throw error;
         }
@@ -256,14 +278,20 @@ Erotica Guidelines: No restrictions.`
 
     private async *processStream(
         stream: AsyncIterable<any>,
-        model: string
+        model: string,
+        timing: StreamTiming
     ): AsyncIterable<StreamChunk> {
         let lastResponse: any = null;
-        const startedAt = Date.now();
         let firstPartAt: number | null = null;
+        let firstThinkAt: number | null = null;
+        let firstTextAt: number | null = null;
+        let routedVia: string | null = null;
+        let fallbackAttempts: string | null = null;
 
         for await (const chunk of stream) {
             lastResponse = chunk;
+            routedVia ??= headerOf(chunk, 'x-axonhub-routed-via');
+            fallbackAttempts ??= headerOf(chunk, 'x-axonhub-fallback-attempts');
             const parts = chunk.candidates?.[0]?.content?.parts;
 
             if (parts) {
@@ -285,6 +313,11 @@ Erotica Guidelines: No restrictions.`
 
                     if (streamChunk) {
                         firstPartAt ??= Date.now();
+                        if (streamChunk.type === 'thinking') {
+                            firstThinkAt ??= Date.now();
+                        } else if (streamChunk.type === 'text') {
+                            firstTextAt ??= Date.now();
+                        }
                         yield streamChunk;
                     }
                 }
@@ -303,15 +336,21 @@ Erotica Guidelines: No restrictions.`
         // Token accounting. cached > 0 is the only proof that the prompt stayed
         // byte-identical long enough for an upstream prefix cache to hit, and
         // thoughts is billed as output — so this line carries both numbers the
-        // cache work is judged by.
+        // cache work is judged by. `via` names the upstream channel: without it a
+        // zero-cache request cannot be told apart from one that was routed
+        // somewhere its prefix was never cached.
         const usage = lastResponse?.usageMetadata;
         if (usage) {
-            const firstChunkMs = firstPartAt === null ? '-' : String(firstPartAt - startedAt);
+            const sinceStart = (at: number | null) =>
+                at === null ? '-' : String(at - timing.requestStartedAt);
             console.log(
-                `[gemini-usage] model=${model} prompt=${usage.promptTokenCount ?? '?'} ` +
-                    `cached=${usage.cachedContentTokenCount ?? 0} thoughts=${usage.thoughtsTokenCount ?? 0} ` +
-                    `output=${usage.candidatesTokenCount ?? 0} total=${usage.totalTokenCount ?? '?'} ` +
-                    `firstChunk=${firstChunkMs}ms dur=${Date.now() - startedAt}ms`
+                `[gemini-usage] model=${model} via=${routedVia ?? '-'} fallback=${fallbackAttempts ?? '-'} ` +
+                    `prompt=${usage.promptTokenCount ?? '?'} cached=${usage.cachedContentTokenCount ?? 0} ` +
+                    `thoughts=${usage.thoughtsTokenCount ?? 0} output=${usage.candidatesTokenCount ?? 0} ` +
+                    `total=${usage.totalTokenCount ?? '?'} ` +
+                    `ttfb=${timing.streamOpenedAt - timing.requestStartedAt}ms ` +
+                    `firstPart=${sinceStart(firstPartAt)}ms firstThink=${sinceStart(firstThinkAt)}ms ` +
+                    `firstText=${sinceStart(firstTextAt)}ms dur=${Date.now() - timing.requestStartedAt}ms`
             );
         }
 
