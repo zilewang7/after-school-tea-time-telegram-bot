@@ -49,8 +49,10 @@ const safetySettings: SafetySetting[] = [
 // Large media (gs:// fileData) needs minutes before the first token: Gemini
 // fetches and processes the whole file first, and a few hundred MB measured
 // anywhere between 50s and over 5 minutes. One long attempt is better than
-// several long attempts, so large media also drops to a single try.
-const LARGE_MEDIA_TIMEOUT_MS = 600000;
+// several long attempts, so large media also drops to a single try. The real
+// ceiling is Node fetch's 300s header timeout (UND_ERR_HEADERS_TIMEOUT), so
+// raising this value only helps once that dispatcher limit is raised too.
+const LARGE_MEDIA_TIMEOUT_MS = 300000;
 
 export class GeminiPlatform extends BasePlatform {
     readonly type: PlatformType = 'gemini';

@@ -2,8 +2,14 @@
 /**
  * Watch how many bytes leave the private media bucket and SMS the operator when
  * it looks abnormal. The bucket is shared read-only with the hub's upstream
- * Vertex projects so gs:// large media keeps working; this is the tripwire that
- * makes handing that access out safe.
+ * Vertex projects so gs:// large media keeps working.
+ *
+ * KNOWN LIMIT (measured 2026-10-10): the Cloud Monitoring network/* metrics only
+ * report traffic from clients in THIS project. Reads performed by the hub's
+ * upstream projects (the reason the bucket is shared at all) do NOT show up --
+ * a day of hub reads stayed invisible while a single read of ours showed as
+ * 62MB. So this guard covers our own usage only; catching abuse by the shared
+ * projects needs Cloud Storage data-access audit logs (see the design doc).
  *
  *   node scripts/guard/gcs-egress-guard.mjs             # normal run (timer)
  *   node scripts/guard/gcs-egress-guard.mjs --dry-run   # print numbers, never send
