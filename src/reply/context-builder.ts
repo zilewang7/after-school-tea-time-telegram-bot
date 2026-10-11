@@ -376,6 +376,22 @@ const renderUserText = (header: string, text: string | null): string => {
 };
 
 /**
+ * A stored reply of ours can leak the wire format (`[replying to #2 某某]` or
+ * `[#7]` on the first line). Replayed as an example it teaches the model to
+ * emit it again — the one thing the format section forbids outright — so those
+ * leading lines are stripped whenever our own turn is rebuilt.
+ */
+const LEAKED_WIRE_FORMAT_LINE = /^[ \t]*(?:\[replying to[^\]\n]*\]|\[#\d+\])[ \t]*\n?/;
+
+export const stripLeakedWireFormat = (text: string): string => {
+    let cleaned = text;
+    while (LEAKED_WIRE_FORMAT_LINE.test(cleaned)) {
+        cleaned = cleaned.replace(LEAKED_WIRE_FORMAT_LINE, '');
+    }
+    return cleaned.replace(/^\n+/, '');
+};
+
+/**
  * Build the assistant turn for one of the bot's own messages.
  *
  * The context number is prefixed as `[#5]` on its own line — deliberately a
@@ -407,7 +423,8 @@ const buildAssistantMessage = async (
     const parts: UnifiedContentPart[] = [...fileContents];
 
     // An image-only reply still needs the label, so the model can refer to it
-    const body = msg.text || (fileContents.length ? '' : '[system] message lost');
+    const body =
+        stripLeakedWireFormat(msg.text ?? '') || (fileContents.length ? '' : '[system] message lost');
     if (numberLabel || body) {
         parts.push({ type: 'text', text: `${numberLabel}${body}` });
     }

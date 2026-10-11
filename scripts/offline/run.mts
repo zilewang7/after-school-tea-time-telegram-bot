@@ -463,7 +463,7 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
         // despite the system prompt. It must never reach the group or the DB.
         // The glued shape (`[#4] 哈哈确实…`) is the one that slipped through
         // until 2026-09-22, when only a label alone on its line was caught.
-        name: 'a leaked [#N] label is stripped from the reply',
+        name: 'a leaked [#N] or [replying to …] annotation is stripped from the reply',
         body: async () => {
             const { createContextLabelStripper, stripContextLabel } = await import(
                 '../../src/reply/context-label.js'
@@ -515,6 +515,28 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
             expect(
                 stripContextLabel('这就去查！\n[#61]\n好，查回来了') === '这就去查！\n好，查回来了',
                 'a label alone on its line mid-reply is a separator and goes'
+            );
+            expect(
+                streamed(['[replying to #2 HTT 家電修理センター]\n\n其实不是内部矛盾']) ===
+                    '其实不是内部矛盾',
+                'a leading [replying to …] annotation goes too'
+            );
+            expect(
+                streamed(['[replying to #', '2 某人] 你好']) === '你好',
+                'the annotation is held back when it arrives split across chunks'
+            );
+            expect(
+                streamed(['[reply', 'ing to #2 某人]\n你好']) === '你好',
+                'a partial opening is held back until the bracket closes'
+            );
+            expect(
+                streamed(['[图', '片] 看看']) === '[图片] 看看',
+                'a non-annotation bracketed opening is never held back'
+            );
+            expect(
+                stripContextLabel('这就去查！\n[replying to #2 某人]\n好，查回来了') ===
+                    '这就去查！\n好，查回来了',
+                'a misplaced annotation alone on its line is a separator and goes'
             );
         },
     },
@@ -1260,6 +1282,60 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
             expect(
                 runtimeParts.length === 1,
                 `the runtime block appears exactly once (got ${runtimeParts.length})`
+            );
+        },
+    },
+    {
+        // Our own replies ride the context as assistant turns; one that leaked the
+        // wire format used to come back as an example the model then copied.
+        name: 'a leaked wire-format prefix in our own past reply never reaches the model',
+        body: async () => {
+            const { buildContext } = await import('../../src/reply/context-builder.js');
+
+            const askerId = await seedMessage({ text: '在吗', userId: 1001, userName: 'Alice' });
+            const leakedReplyId = await seedMessage({
+                fromBotSelf: true,
+                text: '[replying to #1 Alice]\n\n我看着还行呀～',
+                replyToId: askerId,
+            });
+            const followUpId = await seedMessage({
+                text: '再看看呢',
+                userId: 1001,
+                userName: 'Alice',
+                replyToId: leakedReplyId,
+            });
+            const row = await Message.findOne({
+                where: { chatId: OFFLINE_CHAT_ID, messageId: followUpId },
+            });
+            if (!row) throw new Error('seeded message not found');
+
+            const { messages } = await buildContext(row, {
+                model: 'gemini-3.1-pro-preview',
+                capabilities: {
+                    supportsImageInput: true,
+                    supportsImageOutput: false,
+                    supportsSystemPrompt: true,
+                    requiresMessageMerge: false,
+                    supportsThinking: false,
+                    supportsGrounding: false,
+                    supportsMediaInput: false,
+                },
+            });
+
+            const assistantTexts = messages
+                .filter((message) => message.role === 'assistant')
+                .flatMap((message) =>
+                    message.content
+                        .filter((part) => part.type === 'text')
+                        .map((part) => part.text ?? '')
+                );
+            expect(
+                assistantTexts.some((text) => text.includes('我看着还行呀')),
+                `the reply body survives (got ${JSON.stringify(assistantTexts)})`
+            );
+            expect(
+                assistantTexts.every((text) => !/\[replying to/i.test(text)),
+                `no leaked annotation is replayed (got ${JSON.stringify(assistantTexts)})`
             );
         },
     },
