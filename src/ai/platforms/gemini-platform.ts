@@ -104,6 +104,10 @@ export class GeminiPlatform extends BasePlatform {
     // granted bucket access, so requests carrying large media use a second key
     // that is bound to Vertex-type channels instead of the everyday key.
     private readonly largeMediaClient: GoogleGenAI | null;
+    // Image generation can be pinned to its own endpoint: with GEMINI_API_URL
+    // pointed at a relay that bills the operator's own GCP project, image models
+    // would generate on their account, so they take a separate endpoint instead.
+    private readonly imageClient: GoogleGenAI | null;
 
     constructor() {
         super();
@@ -147,8 +151,22 @@ export class GeminiPlatform extends BasePlatform {
             if (this.largeMediaClient) {
                 console.log(`[gemini] gs:// large media rides the dedicated Vertex key at ${largeMediaUrl}`);
             }
+            const imageKey = process.env.GEMINI_IMAGE_API_KEY;
+            const imageUrl = process.env.GEMINI_IMAGE_API_URL;
+            this.imageClient =
+                imageKey && imageUrl
+                    ? new GoogleGenAI({
+                          apiKey: imageKey,
+                          vertexai: false,
+                          httpOptions: { baseUrl: imageUrl },
+                      })
+                    : null;
+            if (this.imageClient) {
+                console.log(`[gemini] image models ride their own endpoint at ${imageUrl}`);
+            }
         } else {
             this.largeMediaClient = null;
+            this.imageClient = null;
             this.genAI = (project && hasServiceAccount)
                 ? new GoogleGenAI({
                       vertexai: true,
@@ -218,7 +236,14 @@ export class GeminiPlatform extends BasePlatform {
         if (largeMediaClient) {
             console.log('[gemini] request carries gs:// media → dedicated Vertex key');
         }
-        const client = largeMediaClient ?? this.genAI;
+        // Image models may be pinned to their own endpoint so they never spend the
+        // default endpoint's quota (see constructor). gs:// media still wins: only
+        // a Vertex channel can read our bucket.
+        const imageClient = isImageModel ? this.imageClient : null;
+        if (imageClient) {
+            console.log('[gemini] image model → dedicated image endpoint');
+        }
+        const client = largeMediaClient ?? imageClient ?? this.genAI;
 
         const generateConfig: GenerateContentConfig = {
             thinkingConfig: {
