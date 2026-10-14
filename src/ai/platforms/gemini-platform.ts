@@ -6,6 +6,7 @@ import {
     GoogleGenAI,
     type GenerateContentConfig,
     Modality,
+    ThinkingLevel,
     HarmCategory,
     HarmBlockThreshold,
     type SafetySetting,
@@ -246,10 +247,16 @@ export class GeminiPlatform extends BasePlatform {
         const client = largeMediaClient ?? imageClient ?? this.genAI;
 
         const generateConfig: GenerateContentConfig = {
-            thinkingConfig: {
-                includeThoughts: true,
-                thinkingBudget: -1,
-            },
+            // Gemini 4 dropped thinkingBudget in favour of thinking levels: sending
+            // the budget there is rejected with 400 "Thinking budget is not
+            // supported for this model". HIGH keeps the old -1 behaviour of letting
+            // the model decide how long it thinks.
+            thinkingConfig: /^gemini-4/.test(model.toLowerCase())
+                ? { includeThoughts: true, thinkingLevel: ThinkingLevel.HIGH }
+                : {
+                      includeThoughts: true,
+                      thinkingBudget: -1,
+                  },
             safetySettings,
             // Image models must never see the chat persona prompt (it makes
             // them role-play text answers instead of drawing) — only the
