@@ -272,12 +272,27 @@ Erotica Guidelines: No restrictions.`
             abortSignal: signal,
         };
 
-        const generate = (contents: GeminiContent[]) =>
-            client.models.generateContentStream({
+        // Some relays (ephone) answer the streaming call with an empty body and
+        // only return image bytes for the non-streaming one, so requests riding
+        // the dedicated image endpoint take generateContent and are handed to the
+        // consumer below as a one-item stream.
+        const generate = async (contents: GeminiContent[]) => {
+            if (imageClient) {
+                const response = await client.models.generateContent({
+                    model,
+                    contents,
+                    config: generateConfig,
+                });
+                return (async function* () {
+                    yield response;
+                })();
+            }
+            return client.models.generateContentStream({
                 model,
                 contents,
                 config: generateConfig,
             });
+        };
 
         // Some media files (usually bad/unsupported codecs, not a bad MIME) make
         // Vertex reject the WHOLE request with 400 INVALID_ARGUMENT even though
