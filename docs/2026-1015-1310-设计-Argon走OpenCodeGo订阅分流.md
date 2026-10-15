@@ -149,3 +149,36 @@ OPENCODE_GO_MODEL_MAP=gemini-4-argon=gemini-4-argon-contributor
 
 - 清空 `OPENCODE_GO_API_KEY` + `docker compose up -d k-on-bot` ⇒ Argon 立刻回到原主端点，代码零改动。
 - 代码侧单独 commit，便于 revert。
+
+## 9. 实施记录（2026-10-15）
+
+部署：commit `7b90466`（代码 + 本文档），`docker compose up -d k-on-bot` 重建容器，启动日志四条端点行齐全。
+
+真实 platform 路径实测（`tmp/route-verify.mts`）：
+
+| 模型 | 结果 |
+|---|---|
+| `gemini-4-argon` | `via=opencode-go`，6.4s，正文 `OK`，session 头生效 |
+| `gemini-3.1-pro-preview` | `via=11414`（hub），8.5s，正文 `ok` |
+| `gemini-3.8-flash` | `via=23781`（hub，fb=1），2.5s，正文 `ok` |
+| `gemini-3-pro-image` | ephone，14.8s，出图约 1MB |
+
+### hub 渠道现状与 key 调整（同日）
+
+逐渠道实测（临时 key 手动绑单渠道，各 2 轮，`maxOutputTokens=512`）：
+
+| 渠道 | gemini-3.8-flash | gemini-3.1-pro-preview |
+|---|---|---|
+| #23558 「0.3x」 | 43.8s / 503 空 | 400（不支持） |
+| #23781 「gemini-vertex」 | **1.9s / 2.0s** | 400（不支持） |
+| #22127 「vertex官方API」 | 2.4s / 1.7s | **3.0s / 6.3s（偶发 429）** |
+| #20694 「高缓存企业号不降智」(copilot) | 2.1s / 2.6s | 400（不支持） |
+| #11414（vertex） | 400（不支持 flash） | 429（限流） |
+
+据此更新日常 key `84635`：`excludeChannelIDs=[15444, 23558]`，`fallbackChannelIDs=[11414, 22127]`（其余保持 dynamic + onlyOfficial + sticky_hrw + maxChannels=20）。
+
+**踩坑（重要）**：一度把 fallback 扩成 `[22127, 11414, 23781, 20694]`，结果 `gemini-3.1-pro-preview`（默认模型）**全量 403** `All candidate channels have exhausted their declared marketplace budget`——23781/20694 并不支持 3.1-pro。还原为 `[11414, 22127]` 后两个模型全部恢复。结论：**`fallbackChannelIDs` 只能放「能服务该 key 全部常用模型」的渠道**，否则会把整条请求判成无可用候选。
+
+调整后复测：3.1-pro `via=22127` 4/4 成功（3.4–19.6s）；3.8-flash `via=23781` 4/4 成功（1.7–1.9s，此前经 #23558 为 10–70s）。
+
+其它：`gemini-4-argon` 在 hub 上 0 provider（已与 bot 路径无关）；大文件 gs:// 巡检仍 `authorised`；hub 临时 key 已全部归档。
