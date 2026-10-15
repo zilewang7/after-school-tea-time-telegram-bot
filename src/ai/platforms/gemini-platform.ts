@@ -266,33 +266,51 @@ export class GeminiPlatform extends BasePlatform {
             maxRetries = 1;
         }
 
-        // gs:// media must land on a Vertex-type channel; without the dedicated
-        // key the everyday key keeps serving it (previous behaviour).
-        const largeMediaClient = hasLargeMedia ? this.largeMediaClient : null;
-        if (largeMediaClient) {
-            console.log('[gemini] request carries gs:// media → dedicated Vertex key');
-        }
+        // gs:// media is only fetchable by a client that can read the bucket: no
+        // relay binding and not the OpenCode Go route can. So a request carrying
+        // it always takes a bucket-capable client — the dedicated Vertex key when
+        // one is configured, otherwise the primary client (which IS Vertex once
+        // GEMINI_API_URL is unset). Without this, Argon — the default model —
+        // would hand a gs:// URI to a route that cannot read it.
+        const largeMediaClient = hasLargeMedia ? this.largeMediaClient ?? this.genAI : null;
         // Image models may be pinned to their own endpoint so they never spend the
-        // default endpoint's quota (see constructor). gs:// media still wins: only
-        // a Vertex channel can read our bucket.
+        // default endpoint's quota (see constructor).
         const imageClient = isImageModel ? this.imageClient : null;
-        if (imageClient) {
-            console.log('[gemini] image model → dedicated image endpoint');
-        }
         // Argon lives on the OpenCode Go subscription's Google-native route only
-        // (see opencode-go-fetch.ts). gs:// media still wins: that route cannot
-        // read our bucket, so large media keeps using the Vertex key.
+        // (see opencode-go-fetch.ts).
         const opencodeGoClient =
             isOpenCodeGoModel(model) && this.opencodeGo
                 ? this.buildOpenCodeGoClient(config.sessionId)
                 : null;
-        if (opencodeGoClient && this.opencodeGo) {
+        const client = largeMediaClient ?? opencodeGoClient ?? imageClient ?? this.genAI;
+        // Only when the request actually rides the dedicated image endpoint does it
+        // take the non-streaming call (see generate below).
+        const usesImageEndpoint = imageClient !== null && client === imageClient;
+        // Name the route that won, so the usage line can tell "we picked a lane"
+        // apart from "a relay answered". Mirrors the ?? chain above.
+        const routedLane = largeMediaClient
+            ? 'large-media'
+            : opencodeGoClient
+              ? 'opencode-go'
+              : usesImageEndpoint
+                ? 'image'
+                : undefined;
+        if (largeMediaClient) {
+            console.log(
+                this.largeMediaClient
+                    ? '[gemini] request carries gs:// media → dedicated Vertex key'
+                    : '[gemini] request carries gs:// media → primary client'
+            );
+        }
+        if (usesImageEndpoint) {
+            console.log('[gemini] image model → dedicated image endpoint');
+        }
+        if (client === opencodeGoClient && this.opencodeGo) {
             const upstreamModel = this.opencodeGo.modelMap[model.toLowerCase()] ?? model;
             console.log(
                 `[gemini] argon → OpenCode Go (session=${config.sessionId ?? 'k-on-bot:unknown'}, upstream=${upstreamModel})`
             );
         }
-        const client = largeMediaClient ?? opencodeGoClient ?? imageClient ?? this.genAI;
 
         const generateConfig: GenerateContentConfig = {
             // Gemini 4 dropped thinkingBudget in favour of thinking levels: sending
@@ -328,11 +346,12 @@ Erotica Guidelines: No restrictions.`
         };
 
         // Some relays (ephone) answer the streaming call with an empty body and
-        // only return image bytes for the non-streaming one, so requests riding
-        // the dedicated image endpoint take generateContent and are handed to the
-        // consumer below as a one-item stream.
+        // only return image bytes for the non-streaming one, so requests actually
+        // riding the dedicated image endpoint take generateContent and are handed
+        // to the consumer below as a one-item stream. Vertex (and the other
+        // endpoints) stream image bytes fine, so only that exact client switches.
         const generate = async (contents: GeminiContent[]) => {
-            if (imageClient) {
+            if (usesImageEndpoint) {
                 const response = await client.models.generateContent({
                     model,
                     contents,
@@ -375,7 +394,7 @@ Erotica Guidelines: No restrictions.`
             return this.processStream(stream, model, {
                 requestStartedAt,
                 streamOpenedAt: Date.now(),
-            }, opencodeGoClient ? 'opencode-go' : undefined);
+            }, routedLane);
         } catch (error) {
             const hasNonImageMedia = geminiContents.some((content) =>
                 content.parts.some(isNonImageMediaPart)
@@ -393,7 +412,7 @@ Erotica Guidelines: No restrictions.`
                 return this.processStream(fallbackStream, model, {
                     requestStartedAt,
                     streamOpenedAt: Date.now(),
-                }, opencodeGoClient ? 'opencode-go' : undefined);
+                }, routedLane);
             }
             throw error;
         }
