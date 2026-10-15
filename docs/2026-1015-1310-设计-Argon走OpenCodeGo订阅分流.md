@@ -182,3 +182,13 @@ OPENCODE_GO_MODEL_MAP=gemini-4-argon=gemini-4-argon-contributor
 调整后复测：3.1-pro `via=22127` 4/4 成功（3.4–19.6s）；3.8-flash `via=23781` 4/4 成功（1.7–1.9s，此前经 #23558 为 10–70s）。
 
 其它：`gemini-4-argon` 在 hub 上 0 provider（已与 bot 路径无关）；大文件 gs:// 巡检仍 `authorised`；hub 临时 key 已全部归档。
+
+### 上线后的事故与修复（同日 14:05 → 14:12）
+
+群里 `/model gemini-4-argon` 后第一条回复报 **`Failed to parse URL from [object Request]`**。
+
+根因：进程启动时 `installHttpDispatcher()` 会把 `globalThis.fetch` 换成 **npm 版 undici 的 fetch**（为了 900s 超时），而我的改写函数把**Node 内置 `Request` 类**构造的对象直接交给它——两个实现不同源，undici 只能把它字符串化成 `[object Request]` 再当 URL 解析，于是报这个错。宿主侧自测之所以通过，是因为那个 harness 没装 dispatcher（用的是内置 fetch）。
+
+修复（commit `4fa14ad`）：改写结果以 `(url, init)` 形式交给「当前安装的」fetch，绝不跨实现传 Request；离线用例新增 fetch spy，断言第一个参数必须是**字符串 URL**、且 Bearer/session 头在、`x-goog-api-key` 不在。顺带修掉 `buildOpenCodeGoRequest` 未传 `modelMap` 时不套默认映射的隐患（漏映射会向上游要 `gemini-4-argon`，而 Go 不提供该 id）。
+
+验证：容器内用同一份 dist + 同一套 patched fetch 实测 `OK 4.5s via=opencode-go`；重启后 06:12 群里真实轮次成功（`prompt=1574 thoughts=83 output=26 via=opencode-go`）。
