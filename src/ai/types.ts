@@ -107,6 +107,12 @@ export interface PlatformConfig {
     timeout?: number;
     maxRetries?: number;
     isImageModel?: boolean;
+    /**
+     * Stable id for the conversation this turn belongs to. Only OpenCode Go
+     * reads it today (it wants one session id per conversation); providers that
+     * cannot use it ignore the field.
+     */
+    sessionId?: string;
     /** AbortSignal for cancelling the request */
     signal?: AbortSignal;
 }

@@ -33,3 +33,10 @@ export { OpenAIPlatform } from './platforms/openai-platform.js';
 export { DeepSeekPlatform } from './platforms/deepseek-platform.js';
 export { GrokPlatform } from './platforms/grok-platform.js';
 export { MimoPlatform } from './platforms/mimo-platform.js';
+
+// OpenCode Go route helpers (Argon only; see opencode-go-fetch.ts)
+export {
+    isOpenCodeGoModel,
+    openCodeGoSessionId,
+    parseModelMap,
+} from './platforms/opencode-go-fetch.js';

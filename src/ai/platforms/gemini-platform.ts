@@ -13,6 +13,11 @@ import {
 } from '@google/genai';
 import { existsSync, statSync } from 'node:fs';
 import { BasePlatform } from './base-platform.js';
+import {
+    createOpenCodeGoFetch,
+    isOpenCodeGoModel,
+    parseModelMap,
+} from './opencode-go-fetch.js';
 import { transformToGemini, type GeminiContent } from '../message-transformer.js';
 import type {
     PlatformType,
@@ -60,6 +65,14 @@ const LARGE_MEDIA_TIMEOUT_MS = 600000;
 // "this request landed on a channel whose prefix cache was cold".
 const headerOf = (chunk: any, name: string): string | null =>
     chunk?.sdkHttpResponse?.headers?.[name] ?? null;
+
+/** Everything needed to build an OpenCode Go client for one request */
+interface OpenCodeGoConfig {
+    baseUrl: string;
+    apiKey: string;
+    /** request model id -> upstream model id */
+    modelMap: Readonly<Record<string, string>>;
+}
 
 interface StreamTiming {
     // Measured from before the request is sent. The SDK resolves the await only
@@ -109,6 +122,12 @@ export class GeminiPlatform extends BasePlatform {
     // pointed at a relay that bills the operator's own GCP project, image models
     // would generate on their account, so they take a separate endpoint instead.
     private readonly imageClient: GoogleGenAI | null;
+    // Gemini 4 Argon is only served by the operator's OpenCode Go subscription,
+    // and only on that subscription's own Google-native route -- no relay in
+    // between can serve it, because a model-name mapping renames the id without
+    // converting protocols. Absent when OPENCODE_GO_API_KEY is unset, in which
+    // case Argon falls back to the endpoint above.
+    private readonly opencodeGo: OpenCodeGoConfig | null;
 
     constructor() {
         super();
@@ -130,6 +149,22 @@ export class GeminiPlatform extends BasePlatform {
         const hasServiceAccount = Boolean(
             credsPath && existsSync(credsPath) && statSync(credsPath).size > 0
         );
+        // Argon's endpoint is independent of the one above: it is chosen per model
+        // in sendMessage() and only exists when a key is configured, so an unset
+        // OPENCODE_GO_API_KEY leaves Argon on the normal endpoint.
+        const opencodeGoKey = process.env.OPENCODE_GO_API_KEY;
+        this.opencodeGo = opencodeGoKey
+            ? {
+                  baseUrl: process.env.OPENCODE_GO_API_URL ?? 'https://opencode.ai',
+                  apiKey: opencodeGoKey,
+                  modelMap: parseModelMap(process.env.OPENCODE_GO_MODEL_MAP),
+              }
+            : null;
+        if (this.opencodeGo) {
+            console.log(
+                `[gemini] gemini-4-argon rides the OpenCode Go subscription at ${this.opencodeGo.baseUrl}`
+            );
+        }
         if (apiUrl) {
             this.genAI = new GoogleGenAI({
                 apiKey: process.env.GEMINI_API_KEY,
@@ -244,7 +279,20 @@ export class GeminiPlatform extends BasePlatform {
         if (imageClient) {
             console.log('[gemini] image model → dedicated image endpoint');
         }
-        const client = largeMediaClient ?? imageClient ?? this.genAI;
+        // Argon lives on the OpenCode Go subscription's Google-native route only
+        // (see opencode-go-fetch.ts). gs:// media still wins: that route cannot
+        // read our bucket, so large media keeps using the Vertex key.
+        const opencodeGoClient =
+            isOpenCodeGoModel(model) && this.opencodeGo
+                ? this.buildOpenCodeGoClient(config.sessionId)
+                : null;
+        if (opencodeGoClient && this.opencodeGo) {
+            const upstreamModel = this.opencodeGo.modelMap[model.toLowerCase()] ?? model;
+            console.log(
+                `[gemini] argon → OpenCode Go (session=${config.sessionId ?? 'k-on-bot:unknown'}, upstream=${upstreamModel})`
+            );
+        }
+        const client = largeMediaClient ?? opencodeGoClient ?? imageClient ?? this.genAI;
 
         const generateConfig: GenerateContentConfig = {
             // Gemini 4 dropped thinkingBudget in favour of thinking levels: sending
@@ -327,7 +375,7 @@ Erotica Guidelines: No restrictions.`
             return this.processStream(stream, model, {
                 requestStartedAt,
                 streamOpenedAt: Date.now(),
-            });
+            }, opencodeGoClient ? 'opencode-go' : undefined);
         } catch (error) {
             const hasNonImageMedia = geminiContents.some((content) =>
                 content.parts.some(isNonImageMediaPart)
@@ -345,16 +393,38 @@ Erotica Guidelines: No restrictions.`
                 return this.processStream(fallbackStream, model, {
                     requestStartedAt,
                     streamOpenedAt: Date.now(),
-                });
+                }, opencodeGoClient ? 'opencode-go' : undefined);
             }
             throw error;
         }
     }
 
+    /**
+     * A fresh client per request: the session id has to ride on the request, and
+     * the SDK only takes the custom fetch at construction time.
+     */
+    private buildOpenCodeGoClient(sessionId: string | undefined): GoogleGenAI {
+        const config = this.opencodeGo;
+        if (!config) throw new Error('OpenCode Go client requested without configuration');
+        return new GoogleGenAI({
+            apiKey: config.apiKey,
+            vertexai: false,
+            httpOptions: {
+                baseUrl: config.baseUrl,
+                fetch: createOpenCodeGoFetch({
+                    apiKey: config.apiKey,
+                    sessionId: sessionId ?? 'k-on-bot:unknown',
+                    modelMap: config.modelMap,
+                }),
+            },
+        });
+    }
+
     private async *processStream(
         stream: AsyncIterable<any>,
         model: string,
-        timing: StreamTiming
+        timing: StreamTiming,
+        viaLabel?: string
     ): AsyncIterable<StreamChunk> {
         let lastResponse: any = null;
         let firstPartAt: number | null = null;
@@ -425,7 +495,7 @@ Erotica Guidelines: No restrictions.`
         // and how many sources it brought back, is the signal a missing
         // GoogleSearch block has to be judged by.
         console.log(
-            `[gemini-usage] model=${model} via=${routedVia ?? '-'} fallback=${fallbackAttempts ?? '-'} ` +
+            `[gemini-usage] model=${model} via=${routedVia ?? viaLabel ?? '-'} fallback=${fallbackAttempts ?? '-'} ` +
                 `prompt=${usage?.promptTokenCount ?? '?'} cached=${usage?.cachedContentTokenCount ?? 0} ` +
                 `thoughts=${usage?.thoughtsTokenCount ?? 0} output=${usage?.candidatesTokenCount ?? 0} ` +
                 `total=${usage?.totalTokenCount ?? '?'} ` +

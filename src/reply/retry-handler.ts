@@ -10,8 +10,9 @@ import { getMessage, getBotResponse } from '../db/index.js';
 import type { CommandType } from '../db/index.js';
 import { collectReferenceImages } from './commands/reference-images.js';
 import { startRetry } from '../services/index.js';
-import { sendMessage, buildStaticSystemPrompt, getModelCapabilities } from '../ai/index.js';
+import { sendMessage, buildStaticSystemPrompt, getModelCapabilities, isOpenCodeGoModel, openCodeGoSessionId } from '../ai/index.js';
 import { buildContext, buildContextFromParts } from './context-builder.js';
+import { resolveContextRoot } from './context-root.js';
 import { getCurrentModel } from '../state.js';
 import { to } from '../shared/result.js';
 import {
@@ -265,11 +266,18 @@ const handleChatRetry = async (
     }
     const { messages: chatContents } = builtContext;
 
+    // Argon rides the OpenCode Go subscription: reuse the same session id the
+    // original turn used, so a retry stays inside the same upstream session.
+    const openCodeGoSession = isOpenCodeGoModel(model)
+        ? openCodeGoSessionId(chatId, await resolveContextRoot(chatId, botResponse.userMessageId))
+        : null;
+
     // Send to AI
     const [streamErr, stream] = await to(
         sendMessage(chatContents, {
             model,
             systemPrompt: buildStaticSystemPrompt(model),
+            ...(openCodeGoSession ? { sessionId: openCodeGoSession } : {}),
             signal: session.streamController.signal,
         })
     );

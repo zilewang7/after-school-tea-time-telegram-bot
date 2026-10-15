@@ -10,7 +10,13 @@ import {
     findChildMessageIds,
     type ContextMessage,
 } from '../db/queries/context-queries.js';
-import { sendMessage, buildStaticSystemPrompt, getModelCapabilities } from '../ai/index.js';
+import {
+    sendMessage,
+    buildStaticSystemPrompt,
+    getModelCapabilities,
+    isOpenCodeGoModel,
+    openCodeGoSessionId,
+} from '../ai/index.js';
 import {
     getCurrentModel,
     getMediaGroupIdTemp,
@@ -279,11 +285,18 @@ export const handleReply = async (
     }
     const { messages: chatContents } = ctxResult[1];
 
+    // Argon rides the OpenCode Go subscription, which wants one stable session id
+    // per conversation: the reply-tree root identifies exactly that.
+    const openCodeGoSession = isOpenCodeGoModel(model)
+        ? openCodeGoSessionId(chatId, await resolveContextRoot(chatId, userMessageId))
+        : null;
+
     // Send to AI and get stream
     const streamResult = await to(
         sendMessage(chatContents, {
             model,
             systemPrompt: buildStaticSystemPrompt(model),
+            ...(openCodeGoSession ? { sessionId: openCodeGoSession } : {}),
             signal: chatContext.session.streamController.signal,
         })
     );

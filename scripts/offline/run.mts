@@ -3777,6 +3777,84 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
             }
         },
     },
+    {
+        // Argon is only served by OpenCode Go's own Google-native route, so every
+        // SDK request to it is rewritten in flight: same body, different path,
+        // mapped model id and auth headers. Breaking this shape breaks every Argon
+        // reply, so it is pinned here instead of only in the live probes.
+        name: 'the OpenCode Go route rewrites path, model id and auth headers',
+        body: async () => {
+            const { buildOpenCodeGoRequest, parseModelMap, openCodeGoSessionId } = await import(
+                '../../src/ai/platforms/opencode-go-fetch.js'
+            );
+
+            const rewritten = buildOpenCodeGoRequest(
+                'https://opencode.ai/v1beta/models/gemini-4-argon:streamGenerateContent?alt=sse',
+                {
+                    method: 'POST',
+                    headers: {
+                        'content-type': 'application/json',
+                        'x-goog-api-key': 'must-not-leak',
+                        'x-goog-api-client': 'genai-js/2.29.1',
+                    },
+                    body: JSON.stringify({ contents: [] }),
+                },
+                {
+                    apiKey: 'go-key',
+                    sessionId: openCodeGoSessionId(-100123, 45),
+                    modelMap: parseModelMap(undefined),
+                }
+            );
+
+            expect(
+                rewritten.url ===
+                    'https://opencode.ai/inference/go/v1/models/gemini-4-argon-contributor:streamGenerateContent?alt=sse',
+                `path, mapped model id and query survive (got ${rewritten.url})`
+            );
+            expect(
+                rewritten.headers.get('authorization') === 'Bearer go-key',
+                'the Go key travels as a bearer token'
+            );
+            expect(
+                rewritten.headers.get('x-opencode-session') === 'k-on-bot:-100123:45',
+                'a stable per-conversation session id is attached'
+            );
+            expect(
+                rewritten.headers.get('x-goog-api-key') === null &&
+                    rewritten.headers.get('x-goog-api-client') === null,
+                'the SDK api key header never reaches a third party'
+            );
+            expect(
+                (rewritten.headers.get('user-agent') ?? '').startsWith('k-on-bot/'),
+                'the client identifies itself instead of naming the SDK'
+            );
+            expect(
+                (await rewritten.text()).includes('contents'),
+                'the request body is passed through untouched'
+            );
+
+            const alreadyMapped = buildOpenCodeGoRequest(
+                'https://opencode.ai/v1beta/models/gemini-4-argon-contributor:generateContent',
+                undefined,
+                { apiKey: 'k', sessionId: 's', modelMap: parseModelMap(undefined) }
+            );
+            expect(
+                alreadyMapped.url ===
+                    'https://opencode.ai/inference/go/v1/models/gemini-4-argon-contributor:generateContent',
+                `an already-mapped id is left alone (got ${alreadyMapped.url})`
+            );
+
+            const overridden = parseModelMap('gemini-4-argon=gemini-4-argon-fast,broken');
+            expect(
+                overridden['gemini-4-argon'] === 'gemini-4-argon-fast',
+                'an override replaces the built-in mapping'
+            );
+            expect(
+                parseModelMap(undefined)['gemini-4-argon'] === 'gemini-4-argon-contributor',
+                'the built-in mapping is the default'
+            );
+        },
+    },
 ];
 
 const results: CaseResult[] = [];
