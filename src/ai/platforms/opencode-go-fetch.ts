@@ -59,7 +59,8 @@ export const buildOpenCodeGoRequest = (
 
     if (url.pathname.startsWith(SDK_PATH_PREFIX)) {
         const [model = '', action] = url.pathname.slice(SDK_PATH_PREFIX.length).split(':');
-        const upstreamModel = options.modelMap?.[model] ?? model;
+        const modelMap = options.modelMap ?? DEFAULT_MODEL_MAP;
+        const upstreamModel = modelMap[model] ?? model;
         url.pathname = `${GO_PATH_PREFIX}${upstreamModel}${action ? `:${action}` : ''}`;
     }
 
@@ -85,7 +86,20 @@ export const buildOpenCodeGoRequest = (
 
 /** Fetch implementation handed to the GoogleGenAI client on the Go endpoint */
 export const createOpenCodeGoFetch = (options: OpenCodeGoRequestOptions): typeof fetch => {
-    return (input, init) => fetch(buildOpenCodeGoRequest(input, init, options));
+    return (input, init) => {
+        const rewritten = buildOpenCodeGoRequest(input, init, options);
+        // Hand the request over as (url, init): the process replaces global fetch
+        // with the npm undici build (see shared/http-dispatcher.ts), and that fetch
+        // cannot read a Request made by Node's built-in class -- it stringifies it
+        // and dies with "Failed to parse URL from [object Request]".
+        return fetch(rewritten.url, {
+            method: rewritten.method,
+            headers: rewritten.headers,
+            body: rewritten.body,
+            signal: rewritten.signal,
+            duplex: 'half',
+        });
+    };
 };
 
 /** One id per conversation (reply tree), which is what upstream asks for */

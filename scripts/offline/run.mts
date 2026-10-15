@@ -3784,9 +3784,8 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
         // reply, so it is pinned here instead of only in the live probes.
         name: 'the OpenCode Go route rewrites path, model id and auth headers',
         body: async () => {
-            const { buildOpenCodeGoRequest, parseModelMap, openCodeGoSessionId } = await import(
-                '../../src/ai/platforms/opencode-go-fetch.js'
-            );
+            const { buildOpenCodeGoRequest, createOpenCodeGoFetch, parseModelMap, openCodeGoSessionId } =
+                await import('../../src/ai/platforms/opencode-go-fetch.js');
 
             const rewritten = buildOpenCodeGoRequest(
                 'https://opencode.ai/v1beta/models/gemini-4-argon:streamGenerateContent?alt=sse',
@@ -3853,6 +3852,48 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
                 parseModelMap(undefined)['gemini-4-argon'] === 'gemini-4-argon-contributor',
                 'the built-in mapping is the default'
             );
+
+            // The container swaps global fetch for the npm undici build, which cannot
+            // read a Request made by Node's built-in class -- it answered Argon with
+            // "Failed to parse URL from [object Request]" in production. Pin the call
+            // shape: the rewritten request must reach the installed fetch as (url, init).
+            const originalFetch = globalThis.fetch;
+            const calls: Array<{ input: unknown; headers: Headers }> = [];
+            globalThis.fetch = (async (input: unknown, init?: { headers?: HeadersInit }) => {
+                calls.push({ input, headers: new Headers(init?.headers) });
+                return new Response('data: {}\n\n', { status: 200 });
+            }) as typeof fetch;
+            try {
+                await createOpenCodeGoFetch({ apiKey: 'go-key', sessionId: 'k-on-bot:1:2' })(
+                    'https://opencode.ai/v1beta/models/gemini-4-argon:streamGenerateContent?alt=sse',
+                    {
+                        method: 'POST',
+                        headers: {
+                            'content-type': 'application/json',
+                            'x-goog-api-key': 'must-not-leak',
+                        },
+                        body: '{"contents":[]}',
+                    }
+                );
+            } finally {
+                globalThis.fetch = originalFetch;
+            }
+            const call = calls[0];
+            expect(
+                typeof call?.input === 'string',
+                `the installed fetch receives a URL string, not a Request (got ${typeof call?.input})`
+            );
+            expect(
+                call?.input ===
+                    'https://opencode.ai/inference/go/v1/models/gemini-4-argon-contributor:streamGenerateContent?alt=sse',
+                `that string is the rewritten Go URL (got ${String(call?.input)})`
+            );
+            expect(call?.headers.get('authorization') === 'Bearer go-key', 'the bearer token reaches the call');
+            expect(
+                call?.headers.get('x-opencode-session') === 'k-on-bot:1:2',
+                'the session header reaches the call'
+            );
+            expect(call?.headers.get('x-goog-api-key') === null, 'the SDK key header is gone from the call');
         },
     },
 ];
