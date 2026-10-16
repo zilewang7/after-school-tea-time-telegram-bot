@@ -20,7 +20,7 @@ const COMMANDS: BotCommand[] = [
     { command: "vid", description: "生成视频：说个想法，Grok 写分镜，H3 出片（回复图片则作参考）" },
     { command: "vidunsafe", description: "[视频不带遮罩]同 /vid" },
     { command: "picgrok", description: "使用 Grok 模型根据提示词生成图片" },
-    { command: "picbanana", description: "使用 🍌 Gemini Nano Banana Pro 根据提示词生成图片(支持图生图)" },
+    { command: "picbanana", description: "使用 🍌 Gemini Nano Banana 2.1 根据提示词生成图片(支持图生图)" },
     { command: "picgpt", description: `使用 OpenAI ${OPENAI_IMAGE_MODEL} 根据提示词生成图片(支持图生图)` },
     { command: "model", description: "查看/切换大语言模型" },
     {

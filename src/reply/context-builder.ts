@@ -22,6 +22,7 @@ import { buildInFlightReplyNote } from './inflight-reply-note.js';
 import { collectContextUsers, type ContextUser } from './context-users.js';
 import { getModelCapabilities } from '../ai/platform-factory.js';
 import { buildCustomEmojiContextPlan } from '../services/custom-emoji-context-service.js';
+import type { ContextIndex, ContextIndexEntry } from './context-index.js';
 import type { UnifiedMessage, UnifiedContentPart, ModelCapabilities } from '../ai/types.js';
 
 /** Sticker kinds as recorded by autoSave when the media was captured */
@@ -137,7 +138,7 @@ const oneLineExcerpt = (text: string, maxChars: number): string => {
  * lookup of everything in the context, so a reply can point at a number instead
  * of a truncated excerpt.
  */
-interface ContextIndex {
+interface ContextNumbering {
     /** messageId → display number; every message in the context has one */
     numberOf: Map<number, number>;
     /** Every message in the assembled context, by message id */
@@ -148,7 +149,7 @@ interface ContextIndex {
  * Number every message in context order, the bot's own replies included, so it
  * can point at what it said itself (`我在 #5 说过`) instead of describing it.
  */
-const buildContextIndex = (messages: ContextMessage[]): ContextIndex => {
+const buildContextNumbering = (messages: ContextMessage[]): ContextNumbering => {
     const numberOf = new Map<number, number>();
     const byId = new Map<number, ContextMessage>();
 
@@ -172,7 +173,7 @@ const buildContextIndex = (messages: ContextMessage[]): ContextIndex => {
 const publishContextNumbering = (
     chatId: number,
     userMessageId: number,
-    index: ContextIndex
+    index: ContextNumbering
 ): void => {
     const messageIdOf = new Map<number, number>();
     for (const [messageId, contextNumber] of index.numberOf) {
@@ -229,7 +230,7 @@ const withMissingReplyTargets = async (
 const renderReplyTarget = async (
     chatId: number,
     replyToId: number,
-    index: ContextIndex
+    index: ContextNumbering
 ): Promise<string> => {
     const target = index.byId.get(replyToId);
 
@@ -259,7 +260,7 @@ const renderReplyTarget = async (
  */
 const renderLinkedConversationAnnotation = (
     linkedMessageIds: number[],
-    index: ContextIndex
+    index: ContextNumbering
 ): string => {
     const numbers = linkedMessageIds
         .map((messageId) => index.numberOf.get(messageId))
@@ -281,7 +282,7 @@ const renderLinkedConversationAnnotation = (
  */
 const renderChatCommandAnnotation = (
     msg: ContextMessage,
-    index: ContextIndex
+    index: ContextNumbering
 ): string | null => {
     const stored = readStoredChatCommand(msg.chatCommand ?? '');
     if (stored.mode === 'link') {
@@ -310,7 +311,7 @@ const renderChatCommandAnnotation = (
  */
 const buildReplyAnnotations = async (
     msg: ContextMessage,
-    index: ContextIndex
+    index: ContextNumbering
 ): Promise<string[]> => {
     const annotations: string[] = [];
 
@@ -392,20 +393,27 @@ export const stripLeakedWireFormat = (text: string): string => {
 };
 
 /**
+ * The message's own attachments (its file plus album sub-images) as context
+ * parts, unfiltered by model capabilities.
+ */
+const loadMessageFiles = async (msg: ContextMessage): Promise<UnifiedContentPart[]> =>
+    msg.file || msg.fileUniqueId ? getFileContentsOfMessage(msg.chatId, msg.messageId) : [];
+
+const countImageParts = (parts: UnifiedContentPart[]): number =>
+    parts.filter((part) => part.type === 'image').length;
+
+/**
  * Build the assistant turn for one of the bot's own messages.
  *
  * The context number is prefixed as `[#5]` on its own line — deliberately a
  * different shape from the `#5 用户名:` header of user messages, so the model is
  * less tempted to imitate it (the system prompt also forbids it outright).
  */
-const buildAssistantMessage = async (
+const buildAssistantMessage = (
     msg: ContextMessage,
-    index: ContextIndex
-): Promise<UnifiedMessage> => {
-    const fileContents = (msg.file || msg.fileUniqueId)
-        ? await getFileContentsOfMessage(msg.chatId, msg.messageId)
-        : [];
-
+    fileContents: UnifiedContentPart[],
+    index: ContextNumbering
+): UnifiedMessage => {
     // Parse modelParts if available
     const modelParts = (() => {
         try {
@@ -442,16 +450,13 @@ const buildAssistantMessage = async (
  */
 const buildUserMessage = async (
     msg: ContextMessage,
+    fileContents: UnifiedContentPart[],
     capabilities: ModelCapabilities,
-    index: ContextIndex,
+    index: ContextNumbering,
     customEmojiAnnotation?: string,
     customEmojiAtlasParts: UnifiedContentPart[] = [],
     answeredElsewhereNumber?: number
 ): Promise<UnifiedMessage> => {
-    const fileContents = (msg.file || msg.fileUniqueId)
-        ? await getFileContentsOfMessage(msg.chatId, msg.messageId)
-        : [];
-
     const replyAnnotations = await buildReplyAnnotations(msg, index);
     const mediaVisible = mediaVisibleToModel(fileContents, capabilities);
 
@@ -515,16 +520,18 @@ const buildUserMessage = async (
  */
 const buildMessageContent = async (
     msg: ContextMessage,
+    fileContents: UnifiedContentPart[],
     capabilities: ModelCapabilities,
-    index: ContextIndex,
+    index: ContextNumbering,
     customEmojiAnnotation?: string,
     customEmojiAtlasParts: UnifiedContentPart[] = [],
     answeredElsewhereNumber?: number
 ): Promise<UnifiedMessage> =>
     msg.fromBotSelf
-        ? buildAssistantMessage(msg, index)
+        ? buildAssistantMessage(msg, fileContents, index)
         : buildUserMessage(
             msg,
+            fileContents,
             capabilities,
             index,
             customEmojiAnnotation,
@@ -557,7 +564,26 @@ export interface BuiltContext {
     messages: UnifiedMessage[];
     /** Authors and mentioned users, for the system prompt's roster section */
     contextUsers: ContextUser[];
+    /** `#N` → message, for tools that take context numbers */
+    contextIndex: ContextIndex;
 }
+
+/** The numbering as tools see it: keyed by `#N`, with each message's image count */
+const buildToolContextIndex = (
+    numbering: ContextNumbering,
+    imageCounts: ReadonlyMap<number, number>
+): ContextIndex => {
+    const contextIndex = new Map<number, ContextIndexEntry>();
+    for (const [messageId, number] of numbering.numberOf) {
+        contextIndex.set(number, {
+            number,
+            messageId,
+            fromBot: numbering.byId.get(messageId)?.fromBotSelf ?? false,
+            imageCount: imageCounts.get(messageId) ?? 0,
+        });
+    }
+    return contextIndex;
+};
 
 /**
  * Messages in this context whose reply is already being generated by another
@@ -569,7 +595,7 @@ export interface BuiltContext {
 const findRepliesInFlightElsewhere = (
     chatId: number,
     currentMessageId: number,
-    index: ContextIndex
+    index: ContextNumbering
 ): Map<number, number> => {
     const answeredElsewhere = new Map<number, number>();
 
@@ -619,7 +645,7 @@ export const buildContext = async (
     ];
 
     const contextMessages = await withMissingReplyTargets(chatId, assembled, excludeMessageIds);
-    const index = buildContextIndex(contextMessages);
+    const index = buildContextNumbering(contextMessages);
     publishContextNumbering(chatId, messageId, index);
     const repliesInFlightElsewhere = findRepliesInFlightElsewhere(chatId, messageId, index);
 
@@ -633,9 +659,15 @@ export const buildContext = async (
     ]);
 
     const chatContents: UnifiedMessage[] = [];
+    const imageCounts = new Map<number, number>();
     for (const contextMsg of contextMessages) {
+        // Loaded once: the turn is built from these parts, and the tool index
+        // counts the images among them before any capability filtering
+        const fileContents = await loadMessageFiles(contextMsg);
+        imageCounts.set(contextMsg.messageId, countImageParts(fileContents));
         chatContents.push(await buildMessageContent(
             contextMsg,
+            fileContents,
             modelCapabilities,
             index,
             customEmojiPlan.annotations.get(contextMsg.messageId),
@@ -666,6 +698,7 @@ export const buildContext = async (
     return {
         messages: applyModelCapabilities(withRuntime, modelCapabilities),
         contextUsers,
+        contextIndex: buildToolContextIndex(index, imageCounts),
     };
 };
 

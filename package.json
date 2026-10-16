@@ -12,10 +12,11 @@
     "dev:node": "node --enable-source-maps --watch dist/index.js --inspect-brk",
     "dev": "pnpm run \"/dev:/\"",
     "tsx": "tsx ./src/index.ts",
-    "test:offline": "tsx scripts/offline/run.mts && tsx scripts/offline/custom-emoji.mts",
+    "test:offline": "tsx scripts/offline/run.mts && tsx scripts/offline/custom-emoji.mts && tsx scripts/offline/tools.mts && tsx scripts/offline/tools-platforms.mts && tsx scripts/offline/tools-gemini.mts && tsx scripts/offline/tools-grok.mts && tsx scripts/offline/tools-sms.mts && tsx scripts/offline/tools-image.mts",
     "test:lock": "tsx scripts/offline/lock-check.mts",
     "test:e2e:bot": "tsx scripts/e2e/with-test-bot.mts",
     "test:e2e:bot:full": "tsx scripts/e2e/with-test-bot.mts --full",
+    "test:e2e:bot:tools": "tsx scripts/e2e/with-test-bot.mts --tools",
     "test:e2e:bot:attach": "tsx scripts/e2e/run.mts",
     "test:e2e:ocr": "tsx scripts/e2e/ocr-fallback.mts",
     "test:e2e:vid": "tsx scripts/e2e/vid-probe.mts"

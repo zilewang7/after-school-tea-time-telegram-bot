@@ -14,18 +14,37 @@ import {
     isMimoContentFilterNotice,
     isMimoContentFilterNoticePrefix,
 } from './mimo-content-filter.js';
-import { getMcpTools, executeMcpTool, mcpToolsToOpenAI, extractGroundingFromToolResult } from '../mcp/index.js';
+import {
+    runToolLoop,
+    toChatCompletionTools,
+    type ToolCall,
+    type TurnTools,
+} from '../tools/index.js';
+import {
+    buildChatToolTurn,
+    createChatToolCallCollector,
+} from './chat-completions/chat-completions-tool-round.js';
+import type { ReasoningChunkDelta } from '../../types/api-extensions.js';
 import type {
     PlatformType,
     UnifiedMessage,
     PlatformConfig,
     StreamChunk,
     ModelCapabilities,
-    AgentToolUsage,
-    GroundingData,
 } from '../types.js';
 
-const MAX_MCP_ROUNDS = 10;
+const MAX_TOOL_ROUNDS = 10;
+
+/** One collected tool-loop round */
+interface MimoToolRound {
+    readonly chunks: readonly StreamChunk[];
+    readonly text: string;
+    /** Thinking text; MiMo wants it back with the round's tool calls */
+    readonly reasoning: string;
+    readonly toolCalls: readonly ToolCall[];
+    /** The provider answered with its moderation notice instead */
+    readonly blocked: boolean;
+}
 
 /**
  * MiMo extends the OpenAI chat parts with `video_url` / `input_audio`, which the
@@ -69,6 +88,7 @@ export class MimoPlatform extends BasePlatform {
             supportsGrounding: false,
             // v2.6 flash / pro read audio and video natively (full-modal)
             supportsMediaInput: lowerModel.startsWith('mimo-v2.6'),
+            supportsClientTools: true,
         };
     }
 
@@ -76,7 +96,7 @@ export class MimoPlatform extends BasePlatform {
         messages: UnifiedMessage[],
         config: PlatformConfig
     ): Promise<AsyncIterable<StreamChunk>> {
-        const { model, systemPrompt, timeout = 85000, maxRetries = 3, signal } = config;
+        const { model, systemPrompt, timeout = 85000, maxRetries = 3, signal, tools } = config;
 
         this.logMessageContents(messages);
         console.log(`[mimo] Using model: ${model}`);
@@ -90,9 +110,8 @@ export class MimoPlatform extends BasePlatform {
             })
         );
 
-        const mcpTools = getMcpTools();
-        if (mcpTools.length > 0) {
-            return this.sendMessageWithTools(openaiMessages, model, mcpTools, timeout, maxRetries, signal);
+        if (tools && tools.definitions.length > 0) {
+            return this.sendMessageWithTools(openaiMessages, model, tools, timeout, maxRetries, signal);
         }
 
         return this.sendMessageDirect(openaiMessages, model, timeout, maxRetries, signal);
@@ -125,143 +144,57 @@ export class MimoPlatform extends BasePlatform {
         yield* this.processStream(stream as Stream<ChatCompletionChunk>);
     }
 
+    /**
+     * Client tool loop (runToolLoop). MIMO docs: keep reasoning_content in
+     * history for multi-turn tool calls, so the assistant message carries it
+     * with the calls; the final round sets tool_choice none.
+     */
     private async *sendMessageWithTools(
         initialMessages: OpenAI.Chat.ChatCompletionMessageParam[],
         model: string,
-        mcpTools: ReturnType<typeof getMcpTools>,
+        tools: TurnTools,
         timeout: number,
         maxRetries: number,
         signal?: AbortSignal
-    ): AsyncIterable<StreamChunk> {
-        const openaiTools = mcpToolsToOpenAI(mcpTools);
-        let currentMessages = [...initialMessages];
-        const toolUsage: AgentToolUsage[] = [];
+    ): AsyncGenerator<StreamChunk, void, undefined> {
+        const chatTools = toChatCompletionTools(tools.definitions);
+        const currentMessages = [...initialMessages];
 
-        for (let round = 0; round < MAX_MCP_ROUNDS; round++) {
-            if (signal?.aborted) break;
-            console.log(`[mimo] MCP round ${round + 1}/${MAX_MCP_ROUNDS}, messages: ${currentMessages.length}`);
+        yield* runToolLoop<MimoToolRound>({
+            tools,
+            maxToolRounds: MAX_TOOL_ROUNDS,
+            signal,
+            logPrefix: '[mimo]',
+            sendRound: async (roundIndex, final) => {
+                const roundLabel = final ? 'final round' : `round ${roundIndex + 1}/${MAX_TOOL_ROUNDS}`;
+                console.log(`[mimo] Tool ${roundLabel}, messages: ${currentMessages.length}`);
 
-            const stream = await this.sendWithRetry(
-                () => this.client.chat.completions.create({
-                    ...this.getRequestBody(model),
-                    messages: currentMessages,
-                    tools: openaiTools,
-                    stream: true,
-                }, { signal }),
-                { timeout, maxRetries, signal }
-            );
+                const stream = await this.sendWithRetry(
+                    () => this.client.chat.completions.create({
+                        ...this.getRequestBody(model),
+                        messages: currentMessages,
+                        tools: chatTools,
+                        ...(final ? { tool_choice: 'none' as const } : {}),
+                        stream: true,
+                    }, { signal }),
+                    { timeout, maxRetries, signal }
+                );
 
-            const { toolCalls, assistantText, reasoningText, chunks, blocked } =
-                await this.collectStreamWithTools(stream);
-            console.log(`[mimo] Round ${round + 1}: ${chunks.length} chunks, ${toolCalls.length} tools, text: ${assistantText.length}, thinking: ${reasoningText.length}`);
+                const collected = await this.collectStreamWithTools(stream, roundIndex);
+                console.log(`[mimo] Tool ${roundLabel}: ${collected.chunks.length} chunks, ${collected.toolCalls.length} tools, text: ${collected.text.length}, thinking: ${collected.reasoning.length}`);
 
-            // The provider refused this round: fail the turn instead of showing
-            // its moderation notice as if the bot had written it
-            if (blocked) {
-                console.warn('[mimo] the request was blocked by the provider content filter');
-                throw buildMimoContentFilterError();
-            }
-
-            for (const chunk of chunks) {
-                yield chunk;
-            }
-
-            if (toolCalls.length === 0) {
-                yield {
-                    type: 'done',
-                    ...(toolUsage.length > 0 ? { agentStats: { toolUsage } } : {}),
-                };
-                return;
-            }
-
-            // Build assistant message with tool calls + reasoning_content (per MIMO docs)
-            const assistantMsg: OpenAI.Chat.ChatCompletionAssistantMessageParam = {
-                role: 'assistant',
-                content: assistantText || null,
-                tool_calls: toolCalls.map(tc => ({
-                    id: tc.id,
-                    type: 'function' as const,
-                    function: {
-                        name: tc.name,
-                        arguments: tc.arguments,
-                    },
-                })),
-            };
-            // MIMO docs: keep reasoning_content in history for multi-turn tool calls
-            if (reasoningText) {
-                (assistantMsg as unknown as Record<string, unknown>).reasoning_content = reasoningText;
-            }
-            currentMessages.push(assistantMsg);
-
-            // Execute each tool call and append results
-            const groundingData: GroundingData[] = [];
-            for (const tc of toolCalls) {
-                const usage = toolUsage.find(u => u.name === tc.name);
-                if (usage) {
-                    usage.count++;
-                } else {
-                    toolUsage.push({ name: tc.name, count: 1 });
+                // The provider refused this round: fail the turn instead of showing
+                // its moderation notice as if the bot had written it
+                if (collected.blocked) {
+                    console.warn('[mimo] the request was blocked by the provider content filter');
+                    throw buildMimoContentFilterError();
                 }
-
-                let resultContent: string;
-                try {
-                    console.log(`[mimo] MCP tool: ${tc.name} (id: ${tc.id})`);
-                    const result = await executeMcpTool(tc.name, tc.arguments);
-                    resultContent = result.content;
-
-                    // Extract grounding data from tool result
-                    const grounding = extractGroundingFromToolResult(tc.name, tc.arguments, resultContent);
-                    if (grounding) {
-                        groundingData.push(grounding);
-                    }
-                } catch (error) {
-                    const errorMsg = error instanceof Error ? error.message : String(error);
-                    console.error(`[mimo] MCP tool ${tc.name} failed:`, errorMsg);
-                    resultContent = `Error: ${errorMsg}`;
-                }
-
-                currentMessages.push({
-                    role: 'tool',
-                    tool_call_id: tc.id,
-                    content: resultContent,
-                });
-            }
-
-            // Yield grounding data as stream chunks
-            for (const gd of groundingData) {
-                yield { type: 'grounding', groundingMetadata: gd };
-            }
-        }
-
-        // Round budget exhausted while the model still wants tools: force one
-        // final answer with tool_choice 'none' so the reply never ends with
-        // CoT + tool stats but an empty body.
-        if (!signal?.aborted) {
-            console.log('[mimo] MCP round limit reached, forcing final answer');
-            const finalStream = await this.sendWithRetry(
-                () => this.client.chat.completions.create({
-                    ...this.getRequestBody(model),
-                    messages: currentMessages,
-                    tools: openaiTools,
-                    tool_choice: 'none',
-                    stream: true,
-                }, { signal }),
-                { timeout, maxRetries, signal }
-            );
-
-            const { chunks, blocked: finalBlocked } = await this.collectStreamWithTools(
-                finalStream as Stream<ChatCompletionChunk>
-            );
-            if (finalBlocked) {
-                console.warn('[mimo] the request was blocked by the provider content filter');
-                throw buildMimoContentFilterError();
-            }
-            for (const chunk of chunks) {
-                yield chunk;
-            }
-        }
-
-        yield { type: 'done', agentStats: { toolUsage } };
+                return collected;
+            },
+            appendRound: (round, executedCalls) => {
+                currentMessages.push(...buildChatToolTurn(round, executedCalls));
+            },
+        });
     }
 
     /**
@@ -272,30 +205,24 @@ export class MimoPlatform extends BasePlatform {
      * kept, so it cannot be mistaken for an assistant turn inside the tool loop.
      */
     private async collectStreamWithTools(
-        stream: Stream<ChatCompletionChunk>
-    ): Promise<{
-        toolCalls: Array<{ id: string; name: string; arguments: string }>;
-        assistantText: string;
-        reasoningText: string;
-        chunks: StreamChunk[];
-        blocked: boolean;
-    }> {
-        const toolCallsMap = new Map<number, { id: string; name: string; arguments: string }>();
-        let assistantText = '';
-        let reasoningText = '';
+        stream: AsyncIterable<ChatCompletionChunk>,
+        round: number
+    ): Promise<MimoToolRound> {
+        const toolCallCollector = createChatToolCallCollector();
+        let text = '';
+        let reasoning = '';
         let heldNotice = '';
         let blocked = false;
         const chunks: StreamChunk[] = [];
 
         for await (const chunk of stream) {
             const choice = chunk.choices[0];
-            const delta = choice?.delta;
+            const delta: ReasoningChunkDelta | undefined = choice?.delta;
 
             // Handle reasoning/thinking content (MIMO thinking mode)
-            const mimoDelta = delta as typeof delta & { reasoning_content?: string | null };
-            if (mimoDelta?.reasoning_content) {
-                reasoningText += mimoDelta.reasoning_content;
-                chunks.push({ type: 'thinking', content: mimoDelta.reasoning_content });
+            if (delta?.reasoning_content) {
+                reasoning += delta.reasoning_content;
+                chunks.push({ type: 'thinking', content: delta.reasoning_content });
             }
 
             const content = delta?.content ?? '';
@@ -311,33 +238,21 @@ export class MimoPlatform extends BasePlatform {
                 if (isMimoContentFilterNoticePrefix(heldNotice)) {
                     continue;
                 }
-                assistantText += heldNotice;
+                text += heldNotice;
                 chunks.push({ type: 'text', content: heldNotice });
                 heldNotice = '';
             }
 
-            // Handle tool calls
-            if (delta?.tool_calls) {
-                for (const tc of delta.tool_calls) {
-                    const idx = tc.index;
-                    if (!toolCallsMap.has(idx)) {
-                        toolCallsMap.set(idx, {
-                            id: tc.id || '',
-                            name: tc.function?.name || '',
-                            arguments: tc.function?.arguments || '',
-                        });
-                    } else {
-                        const existing = toolCallsMap.get(idx)!;
-                        if (tc.id) existing.id = tc.id;
-                        if (tc.function?.name) existing.name = tc.function.name;
-                        if (tc.function?.arguments) existing.arguments += tc.function.arguments;
-                    }
-                }
-            }
+            toolCallCollector.add(delta?.tool_calls);
         }
 
-        const toolCalls = Array.from(toolCallsMap.values()).filter(tc => tc.name);
-        return { toolCalls, assistantText, reasoningText, chunks, blocked };
+        // Text still held when the stream ends never became the notice: it is reply text
+        if (!blocked && heldNotice) {
+            text += heldNotice;
+            chunks.push({ type: 'text', content: heldNotice });
+        }
+
+        return { toolCalls: toolCallCollector.toolCalls(round), text, reasoning, chunks, blocked };
     }
 
     /**
@@ -350,12 +265,11 @@ export class MimoPlatform extends BasePlatform {
 
         for await (const chunk of stream) {
             const choice = chunk.choices[0];
-            const delta = choice?.delta;
-            const mimoDelta = delta as typeof delta & { reasoning_content?: string | null };
+            const delta: ReasoningChunkDelta | undefined = choice?.delta;
 
             // Handle reasoning/thinking content
-            if (mimoDelta?.reasoning_content) {
-                yield { type: 'thinking', content: mimoDelta.reasoning_content };
+            if (delta?.reasoning_content) {
+                yield { type: 'thinking', content: delta.reasoning_content };
             }
 
             const content = delta?.content ?? '';

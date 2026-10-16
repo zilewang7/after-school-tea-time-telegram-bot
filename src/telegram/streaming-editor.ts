@@ -87,6 +87,13 @@ export interface StreamingEditor {
     updateStatusOnly: (options?: { replyMarkup?: any }) => Promise<boolean>;
 
     /**
+     * Show a fixed status line (e.g. the running tool) instead of the rotating
+     * spinner word; undefined restores the spinner. Display only: final
+     * updates never carry a status line.
+     */
+    setStatus: (statusText: string | undefined) => void;
+
+    /**
      * Stop the editor - clears timers, discards pending non-final edits
      */
     stop: () => void;
@@ -114,6 +121,8 @@ interface EditorState {
     stopped: boolean;
     statusIndex: number;
     lastStatusRotateTime: number;
+    /** Fixed status line replacing the spinner word while set */
+    statusOverride: string | undefined;
     /** Latest submitted content, without the status line */
     currentContent: string | null;
     currentEntities: readonly RenderedEntity[] | undefined;
@@ -130,6 +139,7 @@ export const createStreamingEditor = (options: StreamingEditorOptions): Streamin
         stopped: false,
         statusIndex: 0,
         lastStatusRotateTime: Date.now(),
+        statusOverride: undefined,
         currentContent: null,
         currentEntities: undefined,
         spinnerTimer: null,
@@ -140,9 +150,11 @@ export const createStreamingEditor = (options: StreamingEditorOptions): Streamin
     }
 
     /**
-     * Get the plain status line, rotating when due
+     * Get the plain status line: the fixed one when set, else the spinner word,
+     * rotating when due
      */
     const getStatusText = (): string => {
+        if (state.statusOverride !== undefined) return state.statusOverride;
         const now = Date.now();
         if (now - state.lastStatusRotateTime >= STATUS_ROTATE_MS) {
             state.statusIndex = (state.statusIndex + 1) % statusData.length;
@@ -160,11 +172,11 @@ export const createStreamingEditor = (options: StreamingEditorOptions): Streamin
     };
 
     /**
-     * Spinner tick: submit a lowest-priority status refresh.
+     * Re-submit the latest content with a fresh status line.
      * Submitting is free (desired-state overwrite); under load the
-     * coordinator starves these in favor of content/final edits.
+     * coordinator starves spinner refreshes in favor of content/final edits.
      */
-    const spinnerTick = (): void => {
+    const submitStatusRefresh = (priority: 'content' | 'spinner'): void => {
         if (state.stopped) {
             stopSpinner();
             return;
@@ -186,9 +198,12 @@ export const createStreamingEditor = (options: StreamingEditorOptions): Streamin
         void submitEdit(api, chatId, messageId, text, {
             entities: state.currentEntities,
             replyMarkup: buttons,
-            priority: 'spinner',
+            priority,
         });
     };
+
+    /** Spinner tick: the lowest-priority status refresh */
+    const spinnerTick = (): void => submitStatusRefresh('spinner');
 
     state.spinnerTimer = setInterval(spinnerTick, idleInterval);
 
@@ -227,6 +242,15 @@ export const createStreamingEditor = (options: StreamingEditorOptions): Streamin
                 priority: 'spinner',
             });
             return true;
+        },
+
+        setStatus: (statusText: string | undefined): void => {
+            if (state.stopped || statusText === state.statusOverride) return;
+            state.statusOverride = statusText;
+            // The spinner resumes with a full interval rather than jumping a word
+            state.lastStatusRotateTime = Date.now();
+            // A status change is news to the user: shown now, not at the next tick
+            submitStatusRefresh('content');
         },
 
         stop: (): void => {

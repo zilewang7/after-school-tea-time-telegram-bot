@@ -2,11 +2,14 @@
  * Typing indicator management for Telegram
  */
 import type { Api } from 'grammy';
+import type { ToolChatAction } from '../ai/types.js';
 
 export interface TypingIndicator {
     start: () => void;
     stop: () => void;
     isActive: () => boolean;
+    /** Switch the chat action (e.g. upload_photo while a picture is drawn); sent at once when active */
+    setAction: (action: ToolChatAction) => void;
 }
 
 /**
@@ -19,10 +22,11 @@ export const createTypingIndicator = (
 ): TypingIndicator => {
     let interval: NodeJS.Timeout | undefined;
     let active = false;
+    let currentAction: ToolChatAction = 'typing';
 
-    const sendTyping = () => {
-        api.sendChatAction(chatId, 'typing').catch((err) => {
-            console.error('[typing] Failed to send typing action:', err.message);
+    const sendAction = () => {
+        api.sendChatAction(chatId, currentAction).catch((err) => {
+            console.error(`[typing] Failed to send ${currentAction} action:`, err.message);
         });
     };
 
@@ -30,8 +34,8 @@ export const createTypingIndicator = (
         start: () => {
             if (active) return;
             active = true;
-            sendTyping();
-            interval = setInterval(sendTyping, intervalMs);
+            sendAction();
+            interval = setInterval(sendAction, intervalMs);
         },
 
         stop: () => {
@@ -44,6 +48,13 @@ export const createTypingIndicator = (
         },
 
         isActive: () => active,
+
+        setAction: (action: ToolChatAction) => {
+            if (action === currentAction) return;
+            currentAction = action;
+            // Telegram shows an action for ~5s, so the switch would lag without this
+            if (active) sendAction();
+        },
     };
 };
 

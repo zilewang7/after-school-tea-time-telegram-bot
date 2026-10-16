@@ -25,6 +25,24 @@ declare global {
             MIMO_API_URL?: string
             MIMO_API_KEY?: string
             MCP_SERVERS?: string
+            /** Comma-separated chat ids offered send_sms_to_owner and generate_image */
+            TOOL_CHAT_IDS?: string
+            /** Comma-separated tool names or MCP server keys to switch off */
+            DISABLED_TOOLS?: string
+            /** '0' leaves Gemini with its built-in search tools only */
+            GEMINI_CLIENT_TOOLS?: string
+            /** Telegram user id of the owner send_sms_to_owner reaches */
+            OWNER_USER_ID?: string
+            /** Owner's name in model-facing text (default 机主) */
+            OWNER_DISPLAY_NAME?: string
+            /** What the chat calls the owner */
+            OWNER_SHORT_NAME?: string
+            /** Owner SMS MCP endpoint; empty = no send_sms_to_owner */
+            OWNER_SMS_MCP_URL?: string
+            /** Bearer token for OWNER_SMS_MCP_URL */
+            OWNER_SMS_MCP_TOKEN?: string
+            /** '1' lets a TEST_INSTANCE send SMS too */
+            OWNER_SMS_ALLOW_TEST?: string
             /** comfy-forward base URL for /pic; replaces PICZIT_ENDPOINT */
             COMFY_FORWARD_URL?: string
             /** How long to keep polling one picture job (default 15min) */

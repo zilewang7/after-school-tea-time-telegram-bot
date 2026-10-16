@@ -6,6 +6,8 @@ export interface ModelConfig {
 
 export const OPENAI_IMAGE_MODEL = "gpt-image-2.5-sunburst";
 export const OPENAI_IMAGE_CHAT_BASE_MODEL = "gpt-6-sol";
+/** Gemini image generation: /picbanana, the /model menu entry and generate_image */
+export const GEMINI_IMAGE_MODEL = "gemini-nano-banana-2.1";
 
 export const modelConfigs: ModelConfig[] = [
     { id: "gpt-6-luna", name: "gpt-6-luna" },
@@ -20,6 +22,6 @@ export const modelConfigs: ModelConfig[] = [
     { id: "grok-4.20-multi-agent-0309", name: "grok-4.20-multi-agent" },
     { id: "mimo-v2.6-flash", name: "mimo-v2.6-flash" },
     { id: "mimo-v2.6-pro", name: "mimo-v2.6-pro" },
-    { id: "gemini-3-pro-image", name: "gemini-3-pro-image" },
+    { id: GEMINI_IMAGE_MODEL, name: GEMINI_IMAGE_MODEL },
     { id: OPENAI_IMAGE_MODEL, name: OPENAI_IMAGE_MODEL },
 ];

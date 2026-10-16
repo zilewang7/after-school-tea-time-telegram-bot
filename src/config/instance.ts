@@ -9,15 +9,12 @@
  * ALLOWED_CHAT_IDS (comma-separated) restricts which chats the bot reacts
  * to at all; unset/empty = no restriction (production behavior).
  */
+import { parseChatIdList } from './chat-id-list.js';
+
 export const isTestInstance = (): boolean => process.env.TEST_INSTANCE === '1';
 
 const parseAllowedChatIds = (): number[] | null => {
-    const raw = process.env.ALLOWED_CHAT_IDS;
-    if (!raw) return null;
-    const ids = raw
-        .split(',')
-        .map((part) => Number(part.trim()))
-        .filter((id) => Number.isFinite(id) && id !== 0);
+    const ids = parseChatIdList(process.env.ALLOWED_CHAT_IDS);
     return ids.length ? ids : null;
 };
 

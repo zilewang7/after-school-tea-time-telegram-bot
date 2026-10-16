@@ -27,7 +27,13 @@ import type {
 import { OPENAI_IMAGE_CHAT_BASE_MODEL } from '../../config/models.js';
 import { BasePlatform } from './base-platform.js';
 import { toVisionImageMimeType } from '../supported-mime.js';
-import { getMcpTools, executeMcpTool } from '../mcp/index.js';
+import { isImageOutputModel } from '../model-kinds.js';
+import { runToolLoop, toResponsesFunctionTools, type TurnTools } from '../tools/index.js';
+import {
+    buildToolRoundMessages,
+    collectResponsesRound,
+    type ResponsesRound,
+} from './openai/responses-tool-round.js';
 import type {
     PlatformType,
     UnifiedMessage,
@@ -35,10 +41,16 @@ import type {
     PlatformConfig,
     StreamChunk,
     ModelCapabilities,
-    AgentToolUsage,
 } from '../types.js';
 
-const MAX_MCP_ROUNDS = 5;
+const MAX_TOOL_ROUNDS = 5;
+
+/** Closes the input of the final, tool-less round */
+const FINAL_ROUND_NOTE: EasyInputMessage = {
+    type: 'message',
+    role: 'developer',
+    content: 'Tool call budget is exhausted. Answer the user now based on the tool results above; do not request any more tools.',
+};
 
 const IMAGE_GENERATION_TOOL = {
     type: 'function' as const,
@@ -85,9 +97,9 @@ export class OpenAIPlatform extends BasePlatform {
         );
     }
 
-    getModelCapabilities(_model: string): ModelCapabilities {
-        const supportsThinking = this.isReasoningModel(_model);
-        const isImageModel = this.isImageGenerationModel(_model);
+    getModelCapabilities(model: string): ModelCapabilities {
+        const supportsThinking = this.isReasoningModel(model);
+        const isImageModel = this.isImageGenerationModel(model);
 
         return {
             supportsImageInput: true,
@@ -97,6 +109,8 @@ export class OpenAIPlatform extends BasePlatform {
             supportsThinking,
             supportsGrounding: false,
             supportsMediaInput: false,
+            // Image models answer through their own image paths, never the tool loop
+            supportsClientTools: !isImageModel && !isImageOutputModel(model),
         };
     }
 
@@ -104,7 +118,7 @@ export class OpenAIPlatform extends BasePlatform {
         messages: UnifiedMessage[],
         config: PlatformConfig
     ): Promise<AsyncIterable<StreamChunk>> {
-        let { model, systemPrompt, timeout = 85000, maxRetries = 3, signal, isImageModel } = config;
+        let { model, systemPrompt, timeout = 85000, maxRetries = 3, signal, isImageModel, tools } = config;
         const capabilities = this.getModelCapabilities(model);
 
         if (capabilities.supportsImageOutput) {
@@ -116,10 +130,9 @@ export class OpenAIPlatform extends BasePlatform {
             return this.generateImage(messages, config);
         }
 
-        // MCP tool-enabled flow
-        const mcpTools = getMcpTools();
-        if (mcpTools.length > 0) {
-            return this.sendMessageWithMcpTools(messages, config, mcpTools);
+        // Client tool loop
+        if (tools && tools.definitions.length > 0) {
+            return this.sendMessageWithTools(messages, config, tools);
         }
 
         this.logMessageContents(messages);
@@ -241,248 +254,56 @@ export class OpenAIPlatform extends BasePlatform {
     }
 
     /**
-     * MCP tool-enabled message flow using Responses API with function tools
+     * Client tool loop on the Responses API (runToolLoop). Each round goes back
+     * to the model as messages (buildToolRoundMessages); the final round
+     * declares no tools and says why.
      */
-    private async *sendMessageWithMcpTools(
+    private async *sendMessageWithTools(
         messages: UnifiedMessage[],
         config: PlatformConfig,
-        mcpTools: ReturnType<typeof getMcpTools>
-    ): AsyncIterable<StreamChunk> {
+        tools: TurnTools
+    ): AsyncGenerator<StreamChunk, void, undefined> {
         const { model, systemPrompt, timeout = 85000, maxRetries = 3, signal } = config;
 
         this.logMessageContents(messages);
-        console.log(`[openai] Using model: ${model} with ${mcpTools.length} MCP tool(s)`);
+        console.log(`[openai] Using model: ${model} with ${tools.definitions.length} tool(s)`);
 
-        const input = this.transformToResponsesInput(messages);
-        const mcpToolsForApi = mcpTools.map(tool => ({
-            type: 'function' as const,
-            name: tool.name,
-            description: tool.description ?? '',
-            parameters: tool.inputSchema,
-        }));
+        const functionTools = toResponsesFunctionTools(tools.definitions);
+        const instructions = systemPrompt || null;
+        let currentInput: EasyInputMessage[] = this.transformToResponsesInput(messages);
 
-        const toolUsage: AgentToolUsage[] = [];
-        let currentInput = input;
-        let currentInstructions = systemPrompt ?? '';
-
-        for (let round = 0; round < MAX_MCP_ROUNDS; round++) {
-            if (signal?.aborted) break;
-
-            const request: ResponseCreateParamsStreaming = {
-                model,
-                input: currentInput,
-                instructions: currentInstructions || null,
-                stream: true,
-                tools: mcpToolsForApi as any,
-            };
-
-            const stream = await this.sendWithRetry(
-                () => this.createResponseStream(request, signal),
-                { timeout, maxRetries, signal }
-            );
-
-            // Collect the stream, capturing function calls
-            const { textChunks, functionCalls, completedResponse } = await this.collectStreamWithFunctionCalls(stream);
-
-            // Yield text and thinking chunks
-            for (const chunk of textChunks) {
-                yield chunk;
-            }
-
-            // If no function calls, we're done
-            if (functionCalls.length === 0) {
-                // Extract images if any
-                if (completedResponse?.output) {
-                    for (const item of completedResponse.output) {
-                        const imageData = await this.extractImageFromOutput(item);
-                        if (imageData) {
-                            yield { type: 'image', imageData };
-                        }
-                    }
-                }
-
-                yield {
-                    type: 'done',
-                    rawResponse: completedResponse,
-                    ...(toolUsage.length > 0 ? { agentStats: { toolUsage } } : {}),
-                };
-                return;
-            }
-
-            // Build continuation input with tool results
-            const toolResultMessages: EasyInputMessage[] = [];
-
-            // Add assistant message with function call info
-            const assistantMsg: EasyInputMessage = {
-                type: 'message',
-                role: 'assistant',
-                content: '[Called MCP tools]',
-            };
-            toolResultMessages.push(assistantMsg);
-
-            // Execute each tool and add results
-            for (const fc of functionCalls) {
-                const usage = toolUsage.find(u => u.name === fc.name);
-                if (usage) {
-                    usage.count++;
-                } else {
-                    toolUsage.push({ name: fc.name, count: 1 });
-                }
-
-                let resultContent: string;
-                try {
-                    console.log(`[openai] MCP tool call: ${fc.name}`);
-                    const result = await executeMcpTool(fc.name, fc.arguments);
-                    resultContent = result.content;
-                } catch (error) {
-                    const errorMsg = error instanceof Error ? error.message : String(error);
-                    console.error(`[openai] MCP tool ${fc.name} failed:`, errorMsg);
-                    resultContent = `Error: ${errorMsg}`;
-                }
-
-                toolResultMessages.push({
-                    type: 'message',
-                    role: 'developer',
-                    content: `Tool "${fc.name}" result:\n${resultContent}`,
-                });
-            }
-
-            // Continue conversation with tool results
-            currentInput = [...currentInput, ...toolResultMessages];
-        }
-
-        // Round budget exhausted while the model still wants tools: force one
-        // final answer without tools so the reply never ends with CoT + tool
-        // stats but an empty body.
-        if (!signal?.aborted) {
-            console.log('[openai] MCP round limit reached, forcing final answer');
-            const finalRequest: ResponseCreateParamsStreaming = {
-                model,
-                input: [
-                    ...currentInput,
-                    {
-                        type: 'message',
-                        role: 'developer',
-                        content: 'Tool call budget is exhausted. Answer the user now based on the tool results above; do not request any more tools.',
-                    },
-                ],
-                instructions: currentInstructions || null,
-                stream: true,
-            };
-
-            const finalStream = await this.sendWithRetry(
-                () => this.createResponseStream(finalRequest, signal),
-                { timeout, maxRetries, signal }
-            );
-
-            const { textChunks, completedResponse } =
-                await this.collectStreamWithFunctionCalls(finalStream);
-            for (const chunk of textChunks) {
-                yield chunk;
-            }
-
-            yield {
-                type: 'done',
-                rawResponse: completedResponse,
-                agentStats: { toolUsage },
-            };
-            return;
-        }
-
-        yield { type: 'done', agentStats: { toolUsage } };
+        yield* runToolLoop<ResponsesRound>({
+            tools,
+            maxToolRounds: MAX_TOOL_ROUNDS,
+            signal,
+            logPrefix: '[openai]',
+            sendRound: async (roundIndex, final) => {
+                // Tool rounds keep today's request shape (no reasoning params)
+                const request: ResponseCreateParamsStreaming = final
+                    ? { model, input: [...currentInput, FINAL_ROUND_NOTE], instructions, stream: true }
+                    : { model, input: currentInput, instructions, stream: true, tools: functionTools };
+                const stream = await this.sendWithRetry(
+                    () => this.createResponseStream(request, signal),
+                    { timeout, maxRetries, signal }
+                );
+                return collectResponsesRound(stream, roundIndex);
+            },
+            appendRound: (round, executedCalls) => {
+                currentInput = [...currentInput, ...buildToolRoundMessages(round.text, executedCalls)];
+            },
+            answerChunks: (round) => this.outputImageChunks(round.completedResponse),
+            rawResponseOf: (round) => round.completedResponse,
+        });
     }
 
-    /**
-     * Collect stream events, yielding text/thinking chunks and capturing function calls
-     */
-    private async collectStreamWithFunctionCalls(
-        stream: Stream<ResponseStreamEvent>
-    ): Promise<{
-        textChunks: StreamChunk[];
-        functionCalls: Array<{ name: string; arguments: string }>;
-        completedResponse: Response | null;
-    }> {
-        const textChunks: StreamChunk[] = [];
-        const functionCallsMap = new Map<number, { name: string; arguments: string }>();
-        let completedResponse: Response | null = null;
-
-        for await (const event of stream) {
-            if (event.type === 'response.output_text.delta' && event.delta) {
-                textChunks.push({ type: 'text', content: event.delta });
-                continue;
-            }
-
-            if (
-                (event.type === 'response.reasoning_text.delta' ||
-                    event.type === 'response.reasoning_summary_text.delta') &&
-                event.delta
-            ) {
-                textChunks.push({ type: 'thinking', content: event.delta });
-                continue;
-            }
-
-            if (event.type === 'response.function_call_arguments.delta') {
-                const deltaEvent = event as Record<string, any>;
-                const idx = deltaEvent._meta?.index ?? 0;
-                if (!functionCallsMap.has(idx)) {
-                    functionCallsMap.set(idx, { name: '', arguments: '' });
-                }
-                const fc = functionCallsMap.get(idx)!;
-                fc.arguments += deltaEvent.delta ?? '';
-                continue;
-            }
-
-            if (event.type === 'response.function_call_arguments.done') {
-                const doneEvent = event as Record<string, any>;
-                const idx = doneEvent._meta?.index ?? 0;
-                if (!functionCallsMap.has(idx)) {
-                    functionCallsMap.set(idx, { name: '', arguments: '' });
-                }
-                const fc = functionCallsMap.get(idx)!;
-                fc.name = doneEvent.name ?? fc.name;
-                fc.arguments = doneEvent.arguments ?? fc.arguments;
-                continue;
-            }
-
-            if (event.type === 'response.output_item.done') {
-                const item = (event as Record<string, any>).item;
-                if (item?.type === 'function_call') {
-                    // Find or create by matching name
-                    let found = false;
-                    for (const [, fc] of functionCallsMap) {
-                        if (!fc.name && item.name) {
-                            fc.name = item.name;
-                            fc.arguments = item.arguments ?? fc.arguments;
-                            found = true;
-                            break;
-                        }
-                    }
-                    if (!found && item.name) {
-                        functionCallsMap.set(functionCallsMap.size, {
-                            name: item.name,
-                            arguments: item.arguments ?? '',
-                        });
-                    }
-                }
-                continue;
-            }
-
-            if (event.type === 'response.completed') {
-                completedResponse = event.response;
-                continue;
-            }
-
-            if (event.type === 'response.failed') {
-                throw new Error(event.response.error?.message ?? 'OpenAI response failed');
-            }
-
-            if (event.type === 'error') {
-                throw new Error(event.message || 'OpenAI stream error');
+    /** Images among a completed response's output items */
+    private async *outputImageChunks(response: Response | null): AsyncGenerator<StreamChunk, void, undefined> {
+        for (const item of response?.output ?? []) {
+            const imageData = await this.extractImageFromOutput(item);
+            if (imageData) {
+                yield { type: 'image', imageData };
             }
         }
-
-        const functionCalls = Array.from(functionCallsMap.values()).filter(fc => fc.name);
-        return { textChunks, functionCalls, completedResponse };
     }
 
     private async createResponseStream(

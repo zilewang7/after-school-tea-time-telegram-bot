@@ -9,6 +9,7 @@ import {
     createBotResponse,
     getBotResponse,
     findBotResponseByMessageId,
+    writeBotMessageRow,
     type ResponseVersion,
     type ResponseMetadata,
     type CommandType,
@@ -36,6 +37,9 @@ import {
 } from '../state.js';
 import { runApiCall, submitEdit } from '../telegram/edit-coordinator.js';
 import { decideFinalButtonState } from './final-button-state.js';
+import { sniffImageMime } from '../ai/image-generation/image-mime.js';
+import { buildImageCaption, imageInputFile, sendWithCaptionFallback } from '../reply/tools/image-message.js';
+import type { ContextLinkResolver } from '../telegram/formatters/context-links.js';
 import type { AgentStats } from '../ai/types.js';
 
 /**
@@ -82,6 +86,8 @@ export interface FinalizeOptions {
     modelParts?: any;
     wasStoppedByUser?: boolean;
     errorMessage?: string;
+    /** Caption the reply's image went out with */
+    imageCaption?: string;
 }
 
 /**
@@ -332,6 +338,27 @@ const createContinuation = async (session: BotMessageSession): Promise<MessageEd
 };
 
 /**
+ * The bot's turn as later contexts read it: the reply text, the [stopped]
+ * marker, then the image caption, in the order the chat shows them. null when
+ * an image says it all.
+ */
+const botRowTextOf = (reply: {
+    readonly text: string;
+    readonly wasStoppedByUser: boolean;
+    readonly hasImage: boolean;
+    readonly imageCaption: string | undefined;
+}): string | null => {
+    const parts = [
+        reply.text,
+        reply.wasStoppedByUser ? '[stopped]' : '',
+        reply.hasImage ? reply.imageCaption ?? '' : '',
+    ].filter((part) => part.length > 0);
+
+    if (parts.length > 0) return parts.join('\n\n');
+    return reply.hasImage ? null : '[Empty response]';
+};
+
+/**
  * Finalize session - save to database and cleanup
  */
 const finalizeSession = async (
@@ -352,6 +379,10 @@ const finalizeSession = async (
     // loses its imitated `[#N]` labels here as well
     session.textBuffer = stripContextLabel(session.textBuffer);
 
+    const image = session.images[0];
+    // Only the delivered (first) image has a caption
+    const imageCaption = image && options?.imageCaption ? options.imageCaption : undefined;
+
     // Build version data
     const version: ResponseVersion = {
         versionId: session.versionCount + 1,
@@ -365,7 +396,8 @@ const finalizeSession = async (
         errorMessage: options?.errorMessage,
         modelParts: options?.modelParts,
         wasStoppedByUser: options?.wasStoppedByUser ?? false,
-        imageBase64: session.images[0]?.toString('base64'),
+        imageBase64: image?.toString('base64'),
+        imageCaption,
     };
 
     // Update BotResponse database
@@ -397,29 +429,23 @@ const finalizeSession = async (
         await response.save();
     }
 
-    // Also save to Message table for context building
-    // This ensures bot messages appear in the reply chain
-    // Bot message is ONE record with text + image (if any)
-    // Include [stopped] or [Empty response] markers for context consistency
-    let messageText = session.textBuffer || '';
-    if (options?.wasStoppedByUser) {
-        messageText = messageText ? `${messageText}\n\n[stopped]` : '[stopped]';
-    }
-    if (!messageText && !session.images.length) {
-        messageText = '[Empty response]';
-    }
-
-    const { saveMessage } = await import('../db/index.js');
-    await saveMessage({
+    // Also save to Message table for context building: the bot's reply is
+    // ONE row with text + its first image, overwritten whole so nothing of an
+    // earlier version survives in it
+    await writeBotMessageRow({
         chatId: session.chatId,
         messageId: session.firstMessageId,
-        userId: Number(process.env.BOT_USER_ID),
-        date: new Date(),
-        userName: process.env.BOT_NAME || 'Bot',
-        message: messageText || undefined,
         replyToId: session.userMessageId,
-        modelParts: options?.modelParts,
-        fileBuffer: session.images[0], // First image if any
+        date: new Date(),
+        text: botRowTextOf({
+            text: session.textBuffer,
+            wasStoppedByUser: options?.wasStoppedByUser ?? false,
+            hasImage: image !== undefined,
+            imageCaption,
+        }),
+        modelParts: options?.modelParts ?? null,
+        file: image ?? null,
+        fileMime: image ? sniffImageMime(image) : null,
     });
 
     // Remove from active sessions
@@ -483,6 +509,41 @@ export const stopResponse = async (chatId: number, firstMessageId: number): Prom
 };
 
 /**
+ * The messages a stored version shows: the final layout of its text,
+ * thinking and records, plus an errored version's error line (display-only,
+ * never stored)
+ */
+const buildVersionMessages = (
+    version: ResponseVersion,
+    resolveContextLink?: ContextLinkResolver
+): RenderedMessage[] => {
+    const chunks = buildFinalMessages({
+        text: version.text || '',
+        thinking: version.thinkingText,
+        agentStats: version.agentStats,
+        groundingData: version.groundingData,
+        wasStoppedByUser: version.wasStoppedByUser,
+        resolveContextLink,
+    });
+    if (version.errorMessage) {
+        const lastIndex = Math.max(0, chunks.length - 1);
+        chunks[lastIndex] = appendErrorLine(
+            chunks[lastIndex] ?? plainText(''),
+            formatErrorForUser({ message: version.errorMessage })
+        );
+    }
+    return chunks;
+};
+
+/**
+ * The version went out as its image alone. Judged by what it shows, as the
+ * final delivery does: a reply without model text still shows its thinking
+ * or tool records above the image, in a text message that can be edited.
+ */
+const isImageOnlyVersion = (version: ResponseVersion): boolean =>
+    Boolean(version.imageBase64) && !buildVersionMessages(version)[0]?.text;
+
+/**
  * Start a retry for an existing response
  */
 export const startRetry = async (
@@ -507,7 +568,7 @@ export const startRetry = async (
     }
 
     // Check if current version is image-only (first message is a photo, can't be edited to text)
-    const isCurrentImageOnly = Boolean(!currentVersion.text && currentVersion.imageBase64);
+    const isCurrentImageOnly = isImageOnlyVersion(currentVersion);
 
     if (isCurrentImageOnly) {
         // Delete all messages (they're all photos, can't edit to text)
@@ -568,23 +629,10 @@ export const switchVersion = async (
 
     if (!oldVersion || !newVersion) return false;
 
-    // Format content using formatters
-    const contentChunks = buildFinalMessages({
-        text: newVersion.text || '',
-        thinking: newVersion.thinkingText,
-        agentStats: newVersion.agentStats,
-        groundingData: newVersion.groundingData,
-        wasStoppedByUser: newVersion.wasStoppedByUser,
-        resolveContextLink: buildMessageLinkResolver(chatId, response.userMessageId),
-    });
-    // Errored versions re-show their error line (display-only, never stored)
-    if (newVersion.errorMessage) {
-        const lastIndex = Math.max(0, contentChunks.length - 1);
-        contentChunks[lastIndex] = appendErrorLine(
-            contentChunks[lastIndex] ?? plainText(''),
-            formatErrorForUser({ message: newVersion.errorMessage })
-        );
-    }
+    const resolveContextLink = buildMessageLinkResolver(chatId, response.userMessageId);
+
+    // Format content using formatters; errored versions re-show their error line
+    const contentChunks = buildVersionMessages(newVersion, resolveContextLink);
     let content = contentChunks[0] ?? plainText('');
 
     if (!content.text && !newVersion.imageBase64) {
@@ -597,15 +645,25 @@ export const switchVersion = async (
         versions.length
     );
 
-    let imageBuffer: Buffer | null = null;
-    if (newVersion.imageBase64) {
-        imageBuffer = Buffer.from(newVersion.imageBase64, 'base64');
-    }
+    const imageBuffer = newVersion.imageBase64 ? Buffer.from(newVersion.imageBase64, 'base64') : null;
+
+    // A re-sent image keeps the caption it first went out with
+    const captionFields = buildImageCaption(newVersion.imageCaption, resolveContextLink);
+    const sendVersionImage = (image: Buffer) =>
+        sendWithCaptionFallback(captionFields, (fields) =>
+            to(
+                ctx.api.sendPhoto(chatId, imageInputFile(image), {
+                    reply_parameters: { message_id: response.userMessageId },
+                    reply_markup: versionButtons,
+                    ...fields,
+                })
+            )
+        );
 
     const hasImage = imageBuffer !== null;
     const hasContent = Boolean(content.text);
     const newIsImageOnly = hasImage && !hasContent;
-    const oldIsImageOnly = Boolean(!oldVersion.text && oldVersion.imageBase64);
+    const oldIsImageOnly = isImageOnlyVersion(oldVersion);
 
     // Determine if first message type changes (text <-> image-only)
     const firstMessageTypeChanged = newIsImageOnly !== oldIsImageOnly;
@@ -642,13 +700,7 @@ export const switchVersion = async (
 
         if (newIsImageOnly) {
             // Old was text → new is image-only
-            const { InputFile } = await import('grammy');
-            const [sendErr, sentMsg] = await to(
-                ctx.api.sendPhoto(chatId, new InputFile(imageBuffer as unknown as ConstructorParameters<typeof InputFile>[0], 'image.png'), {
-                    reply_parameters: { message_id: response.userMessageId },
-                    reply_markup: versionButtons,
-                })
-            );
+            const [sendErr, sentMsg] = await sendVersionImage(imageBuffer);
             if (!sendErr) {
                 newMessageIds.push(sentMsg.message_id);
                 currentMessageId = sentMsg.message_id;
@@ -692,13 +744,7 @@ export const switchVersion = async (
 
             // Send image after text if present
             if (hasImage && imageBuffer) {
-                const { InputFile } = await import('grammy');
-                const [imgErr, imgMsg] = await to(
-                    ctx.api.sendPhoto(chatId, new InputFile(imageBuffer as unknown as ConstructorParameters<typeof InputFile>[0], 'image.png'), {
-                        reply_parameters: { message_id: response.userMessageId },
-                        reply_markup: versionButtons,
-                    })
-                );
+                const [imgErr, imgMsg] = await sendVersionImage(imageBuffer);
                 if (!imgErr) {
                     newMessageIds.push(imgMsg.message_id);
                     currentMessageId = imgMsg.message_id;
@@ -709,13 +755,7 @@ export const switchVersion = async (
         // Both old and new are image-only: delete old image, send new image
         await to(ctx.api.deleteMessage(chatId, oldFirstMsgId));
 
-        const { InputFile } = await import('grammy');
-        const [sendErr, sentMsg] = await to(
-            ctx.api.sendPhoto(chatId, new InputFile(imageBuffer as unknown as ConstructorParameters<typeof InputFile>[0], 'image.png'), {
-                reply_parameters: { message_id: response.userMessageId },
-                reply_markup: versionButtons,
-            })
-        );
+        const [sendErr, sentMsg] = await sendVersionImage(imageBuffer);
         if (!sendErr) {
             newMessageIds.push(sentMsg.message_id);
             currentMessageId = sentMsg.message_id;
@@ -758,13 +798,7 @@ export const switchVersion = async (
 
         // Send image after text if present
         if (hasImage && imageBuffer) {
-            const { InputFile } = await import('grammy');
-            const [sendErr, sentMsg] = await to(
-                ctx.api.sendPhoto(chatId, new InputFile(imageBuffer as unknown as ConstructorParameters<typeof InputFile>[0], 'image.png'), {
-                    reply_parameters: { message_id: response.userMessageId },
-                    reply_markup: versionButtons,
-                })
-            );
+            const [sendErr, sentMsg] = await sendVersionImage(imageBuffer);
             if (!sendErr) {
                 newMessageIds.push(sentMsg.message_id);
                 currentMessageId = sentMsg.message_id;
@@ -782,28 +816,22 @@ export const switchVersion = async (
 
     await response.save();
 
-    // Also update Message table with new version's content
-    // This ensures context building uses the correct version
-    // Include [stopped] or [Empty response] markers for context consistency
-    let messageText = newVersion.text || '';
-    if (newVersion.wasStoppedByUser) {
-        messageText = messageText ? `${messageText}\n\n[stopped]` : '[stopped]';
-    }
-    if (!messageText && !imageBuffer) {
-        messageText = '[Empty response]';
-    }
-
-    const { saveMessage } = await import('../db/index.js');
-    await saveMessage({
+    // Also overwrite the Message row with the new version's content, so the
+    // context reads this version only — never its text next to another's image
+    await writeBotMessageRow({
         chatId,
         messageId: firstMessageId,
-        userId: Number(process.env.BOT_USER_ID),
-        date: new Date(),
-        userName: process.env.BOT_NAME || 'Bot',
-        message: messageText || undefined,
         replyToId: response.userMessageId,
-        modelParts: newVersion.modelParts,
-        fileBuffer: imageBuffer ?? undefined,
+        date: new Date(),
+        text: botRowTextOf({
+            text: newVersion.text || '',
+            wasStoppedByUser: newVersion.wasStoppedByUser,
+            hasImage,
+            imageCaption: newVersion.imageCaption,
+        }),
+        modelParts: newVersion.modelParts ?? null,
+        file: imageBuffer,
+        fileMime: imageBuffer ? sniffImageMime(imageBuffer) : null,
     });
 
     return true;
@@ -827,22 +855,8 @@ export const refreshToFinalState = async (
     const version = versions[response.currentVersionIndex];
     if (!version) return false;
 
-    const chunks = buildFinalMessages({
-        text: version.text || '',
-        thinking: version.thinkingText,
-        agentStats: version.agentStats,
-        groundingData: version.groundingData,
-        wasStoppedByUser: version.wasStoppedByUser,
-        resolveContextLink: buildMessageLinkResolver(chatId, response.userMessageId),
-    });
     // Errored versions keep their error line across refreshes (display-only)
-    if (version.errorMessage) {
-        const lastIndex = Math.max(0, chunks.length - 1);
-        chunks[lastIndex] = appendErrorLine(
-            chunks[lastIndex] ?? plainText(''),
-            formatErrorForUser({ message: version.errorMessage })
-        );
-    }
+    const chunks = buildVersionMessages(version, buildMessageLinkResolver(chatId, response.userMessageId));
     if (chunks.length === 0) {
         chunks.push(plainText('[Empty response]'));
     }

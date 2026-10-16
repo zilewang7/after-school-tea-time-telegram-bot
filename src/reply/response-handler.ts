@@ -4,8 +4,7 @@
  */
 import { match } from 'ts-pattern';
 import type { Context } from 'grammy';
-import { InputFile } from 'grammy';
-import { to, isErr } from '../shared/result.js';
+import { to, isErr, type Result } from '../shared/result.js';
 import { formatErrorForUser } from '../shared/errors.js';
 import {
     createSession,
@@ -39,10 +38,17 @@ import { formatThinkingForStreaming } from '../telegram/formatters/thinking-disp
 import { renderThinkingQuote } from '../telegram/formatters/quoted-render.js';
 import { buildFinalMessages } from '../telegram/formatters/final-message-builder.js';
 import { splitRawByFits, splitAtLastNewline } from '../telegram/formatters/smart-splitter.js';
+import {
+    buildImageCaption,
+    imageInputFile,
+    sendWithCaptionFallback,
+    type ImageCaptionFields,
+} from './tools/image-message.js';
 import type {
     StreamChunk,
     AIResponse,
     ResponseState,
+    ToolStatus,
 } from '../ai/types.js';
 
 const MESSAGE_LENGTH_LIMIT = 3900;
@@ -53,6 +59,8 @@ const THINKING_BUFFER_LIMIT = 10000;
 /** Below this remaining budget, move the whole text to the continuation
  *  instead of squeezing a tiny tail that would be chopped mid-sentence */
 const MIN_TAIL_TEXT_BUDGET = 500;
+/** Shown in place of a reply that was only an image Telegram would not take */
+const IMAGE_NOT_SENT_TEXT = '[image failed to send]';
 
 /**
  * Chat context for response handling
@@ -63,7 +71,6 @@ export interface ChatContext {
     userMessageId: number;
     editor: StreamingEditor;
     typing: TypingIndicator;
-    messageHistory: number[];  // All message IDs created for this response
     /** Current response state for idle updates */
     currentState?: ResponseState;
     /** Bot message session for lifecycle management */
@@ -117,7 +124,6 @@ export const createChatContext = async (
         userMessageId,
         editor: null as any, // Will be set below
         typing,
-        messageHistory: session.messageIds,
         currentState: undefined,
         session,
         currentButtonState: ButtonState.PROCESSING,
@@ -186,15 +192,23 @@ export const processChunk = (
                 thinkingTruncatedChars: truncatedChars,
             };
         })
-        .with({ type: 'image' }, ({ imageData }) => ({
+        .with({ type: 'image' }, ({ imageData, imageCaption }) => ({
             ...state,
             images: imageData ? [...state.images, imageData] : state.images,
+            // Only the first image is delivered, so only its caption is kept
+            imageCaption:
+                imageData && state.images.length === 0 ? imageCaption : state.imageCaption,
         }))
         .with({ type: 'grounding' }, ({ groundingMetadata }) => ({
             ...state,
             groundingData: groundingMetadata
                 ? [...state.groundingData, groundingMetadata]
                 : state.groundingData,
+        }))
+        // A status chunk without `status` clears the line
+        .with({ type: 'status' }, ({ status }) => ({
+            ...state,
+            toolStatus: status,
         }))
         .with({ type: 'done' }, ({ rawResponse, agentStats }) => {
             const rawFinalText = (rawResponse as any)?.output_text;
@@ -324,7 +338,7 @@ const createContinuationMessage = async (
     }
 
     const newMessage = sendResult[1];
-    chatContext.messageHistory.push(newMessage.message_id);
+    session.messageIds.push(newMessage.message_id);
     registerContinuation(chatId, newMessage.message_id, session.firstMessageId);
 
     // Create new StreamingEditor for the continuation message
@@ -347,6 +361,15 @@ const createContinuationMessage = async (
     chatContext.editor = newEditor;
 
     return newMessage.message_id;
+};
+
+/**
+ * Display-only: while a tool runs, its status line replaces the spinner word
+ * and its chat action replaces "typing"; undefined restores both.
+ */
+const showToolStatus = (chatContext: ChatContext, status: ToolStatus | undefined): void => {
+    chatContext.editor.setStatus(status?.text);
+    chatContext.typing.setAction(status?.chatAction ?? 'typing');
 };
 
 /**
@@ -379,6 +402,8 @@ export const processStream = async (
     const resolveContextLink = contextLinkResolverFor(chatContext);
     // Per-stream, because the label can arrive split across the first chunks
     const stripLeadingLabel = createContextLabelStripper();
+    // The tool status on screen; never synced to the session, so never stored
+    let shownToolStatus: ToolStatus | undefined;
 
     for await (const chunk of stream) {
         // Check if stream was aborted (user clicked stop)
@@ -388,6 +413,11 @@ export const processStream = async (
         }
 
         state = processChunk(chunk, state, stripLeadingLabel);
+        const toolStatusChanged = state.toolStatus !== shownToolStatus;
+        if (toolStatusChanged) {
+            shownToolStatus = state.toolStatus;
+            showToolStatus(chatContext, shownToolStatus);
+        }
 
         // Sync complete text to session buffers (not the display buffers)
         session.textBuffer = state.fullText;
@@ -524,6 +554,8 @@ export const processStream = async (
                 console.error('[response-handler] Failed to create continuation message, stopping stream');
                 break;
             }
+            // A running tool's status moves along to the new message
+            chatContext.editor.setStatus(shownToolStatus?.text);
 
             // Update state with remaining content
             state.thinkingBuffer = remainingThinking; // May have remaining thinking
@@ -534,10 +566,12 @@ export const processStream = async (
             continue;
         }
 
-        // Update message periodically
+        // Update message periodically. A tool status change flushes at once:
+        // the text streamed right before a long tool call must not sit behind
+        // the throttle until the tool is done.
         const shouldUpdate =
             (state.textBuffer || state.thinkingBuffer) &&
-            Date.now() - lastUpdateTime > updateInterval;
+            (toolStatusChanged || Date.now() - lastUpdateTime > updateInterval);
 
         if (shouldUpdate) {
             const buttons = buildResponseButtons(chatContext.currentButtonState);
@@ -560,6 +594,7 @@ export const processStream = async (
         text: state.textBuffer,
         thinkingText: state.thinkingBuffer,
         images: state.images,
+        imageCaption: state.imageCaption,
         groundingData: state.groundingData,
         agentStats: state.agentStats,
         modelParts: state.modelParts,
@@ -591,6 +626,63 @@ const healEditDetectedButtons = async (chatContext: ChatContext): Promise<void> 
 };
 
 /**
+ * Send the reply's image after its text, with the caption the model wrote
+ * for it; a photo Telegram refuses goes out as a document, caption included,
+ * and a refused caption is tried once more as plain text. Returns the id of
+ * the message that carries the image, null when nothing went through.
+ */
+const sendReplyImage = async (
+    chatContext: ChatContext,
+    image: Buffer,
+    captionFields: ImageCaptionFields
+): Promise<number | null> => {
+    const { ctx, chatId, userMessageId } = chatContext;
+
+    const sendAsPhotoOrDocument = async (fields: ImageCaptionFields): Promise<Result<number>> => {
+        const options = { reply_parameters: { message_id: userMessageId }, ...fields };
+        const photoResult = await to(
+            runApiCall(chatId, () => ctx.api.sendPhoto(chatId, imageInputFile(image), options))
+        );
+        if (!isErr(photoResult)) return [null, photoResult[1].message_id];
+
+        console.warn('[response-handler] sendPhoto failed, fallback to sendDocument:', photoResult[0].message);
+        const documentResult = await to(
+            runApiCall(chatId, () => ctx.api.sendDocument(chatId, imageInputFile(image), options))
+        );
+        if (!isErr(documentResult)) return [null, documentResult[1].message_id];
+
+        console.error('[response-handler] sendDocument also failed:', documentResult[0]);
+        return [documentResult[0], undefined];
+    };
+
+    console.log('[response-handler] Sending photo:', { bufferSize: image.length, chatId, replyTo: userMessageId });
+    const sent = await sendWithCaptionFallback(captionFields, sendAsPhotoOrDocument);
+    return isErr(sent) ? null : sent[1];
+};
+
+/**
+ * Send the reply's (first) image and make it the last message of the reply.
+ * An image that went out neither as a photo nor as a document is dropped
+ * from the session, so it is not stored as part of the reply either (B7).
+ * Returns whether it went out.
+ */
+const deliverReplyImage = async (
+    chatContext: ChatContext,
+    image: Buffer | undefined,
+    captionFields: ImageCaptionFields
+): Promise<boolean> => {
+    const { session } = chatContext;
+    const imageMessageId = image ? await sendReplyImage(chatContext, image, captionFields) : null;
+    if (imageMessageId === null) {
+        session.images = [];
+        return false;
+    }
+    session.messageIds.push(imageMessageId);
+    session.currentMessageId = imageMessageId;
+    return true;
+};
+
+/**
  * Send final response (text and/or images)
  * Handles the last message in the chain (may be first or continuation)
  */
@@ -608,6 +700,7 @@ export const sendFinalResponse = async (
 
     // Check if stopped by user
     const wasStoppedByUser = session.streamController.isAborted();
+    const resolveContextLink = contextLinkResolverFor(chatContext);
 
     const finalChunks = buildFinalMessages({
         text: response.text,
@@ -615,8 +708,15 @@ export const sendFinalResponse = async (
         agentStats: response.agentStats,
         wasStoppedByUser,
         groundingData: response.groundingData,
-        resolveContextLink: contextLinkResolverFor(chatContext),
+        resolveContextLink,
     });
+    // Only the first image is delivered, and it carries the reply's image caption
+    const imageCaptionFields = buildImageCaption(response.imageCaption, resolveContextLink);
+    const finalizeOptions = {
+        modelParts: response.modelParts,
+        wasStoppedByUser,
+        imageCaption: response.imageCaption,
+    };
     let finalMessage: RenderedMessage = finalChunks[0] ?? { text: '', entities: [] };
 
     if (response.groundingData?.length) {
@@ -649,54 +749,17 @@ export const sendFinalResponse = async (
             }
 
             const contMsg = continuationResult[1];
-            chatContext.messageHistory.push(contMsg.message_id);
             session.messageIds.push(contMsg.message_id);
             session.currentMessageId = contMsg.message_id;
         }
 
         // Send image if present (after text split)
-        const hasImages = response.images.length > 0;
-        if (hasImages) {
-            const photoBuffer = response.images[0];
-            if (photoBuffer) {
-                console.log('[response-handler] Sending photo (split path):', { bufferSize: photoBuffer.length, chatId });
-                const sendResult = await to(
-                    runApiCall(chatId, () =>
-                        ctx.api.sendPhoto(chatId, new InputFile(photoBuffer as unknown as ConstructorParameters<typeof InputFile>[0], 'image.png'), {
-                            reply_parameters: { message_id: userMessageId },
-                        })
-                    )
-                );
-
-                if (!isErr(sendResult)) {
-                    const sentMsg = sendResult[1];
-                    chatContext.messageHistory.push(sentMsg.message_id);
-                    session.messageIds.push(sentMsg.message_id);
-                    session.currentMessageId = sentMsg.message_id;
-                } else {
-                    console.error('[response-handler] sendPhoto failed (split path):', sendResult[0].message);
-                    const docFile = new InputFile(photoBuffer as unknown as ConstructorParameters<typeof InputFile>[0], 'image.png');
-                    const docResult = await to(
-                        runApiCall(chatId, () =>
-                            ctx.api.sendDocument(chatId, docFile, {
-                                reply_parameters: { message_id: userMessageId },
-                            })
-                        )
-                    );
-                    if (!isErr(docResult)) {
-                        const sentMsg = docResult[1];
-                        chatContext.messageHistory.push(sentMsg.message_id);
-                        session.messageIds.push(sentMsg.message_id);
-                        session.currentMessageId = sentMsg.message_id;
-                    } else {
-                        console.error('[response-handler] sendDocument also failed (split path):', docResult[0]);
-                    }
-                }
-            }
+        if (response.images.length > 0) {
+            await deliverReplyImage(chatContext, response.images[0], imageCaptionFields);
         }
 
         // Finalize session (saves to both Message and BotResponse tables)
-        await session.finalize({ modelParts: response.modelParts, wasStoppedByUser });
+        await session.finalize(finalizeOptions);
 
         // Add buttons to the last message after finalization
         const getBotResponseForButtons = async () => {
@@ -751,7 +814,7 @@ export const sendFinalResponse = async (
         imageCount: response.images.length,
         textLength: response.text.length,
         thinkingLength: response.thinkingText.length,
-        messageCount: chatContext.messageHistory.length,
+        messageCount: session.messageIds.length,
         wasStoppedByUser,
         isImageGenerationContext,
         noImageInResponse,
@@ -764,55 +827,25 @@ export const sendFinalResponse = async (
                 entities: finalMessage.entities,
                 isFinal: true,
             });
-        } else {
-            // No text, delete the processing message
-            await editor.delete();
-            session.messageIds = session.messageIds.filter(id => id !== session.firstMessageId);
         }
 
         // Send image as last message (buttons will be added after finalize)
-        const photoBuffer = response.images[0];
-        if (photoBuffer) {
-            console.log('[response-handler] Sending photo:', { bufferSize: photoBuffer.length, chatId, replyTo: userMessageId });
-            const inputFile = new InputFile(photoBuffer as unknown as ConstructorParameters<typeof InputFile>[0], 'image.png');
+        const imageDelivered = await deliverReplyImage(chatContext, response.images[0], imageCaptionFields);
 
-            // Try sendPhoto first, fallback to sendDocument if Telegram rejects the format
-            const sendResult = await to(
-                runApiCall(chatId, () =>
-                    ctx.api.sendPhoto(chatId, inputFile, {
-                        reply_parameters: { message_id: userMessageId },
-                    })
-                )
-            );
-
-            if (!isErr(sendResult)) {
-                const sentMsg = sendResult[1];
-                chatContext.messageHistory.push(sentMsg.message_id);
-                session.messageIds.push(sentMsg.message_id);
-                session.currentMessageId = sentMsg.message_id;
+        if (!hasText) {
+            if (imageDelivered) {
+                // No text: the image takes the processing message's place
+                const processingMessageId = editor.getIds().messageId;
+                await editor.delete();
+                session.messageIds = session.messageIds.filter(id => id !== processingMessageId);
             } else {
-                console.warn('[response-handler] sendPhoto failed, fallback to sendDocument:', sendResult[0].message);
-                const docFile = new InputFile(photoBuffer as unknown as ConstructorParameters<typeof InputFile>[0], 'image.png');
-                const docResult = await to(
-                    runApiCall(chatId, () =>
-                        ctx.api.sendDocument(chatId, docFile, {
-                            reply_parameters: { message_id: userMessageId },
-                        })
-                    )
-                );
-                if (!isErr(docResult)) {
-                    const sentMsg = docResult[1];
-                    chatContext.messageHistory.push(sentMsg.message_id);
-                    session.messageIds.push(sentMsg.message_id);
-                    session.currentMessageId = sentMsg.message_id;
-                } else {
-                    console.error('[response-handler] sendDocument also failed:', docResult[0]);
-                }
+                // Nothing went out: the processing message stays and says so
+                await editor.updateContent(IMAGE_NOT_SENT_TEXT, { isFinal: true });
             }
         }
 
         // Finalize session AFTER sending all messages (so image message ID is included)
-        await session.finalize({ modelParts: response.modelParts, wasStoppedByUser });
+        await session.finalize(finalizeOptions);
 
         // Get the correct button state after finalization and update the last message
         const getBotResponseForButtons = async () => {
@@ -829,7 +862,7 @@ export const sendFinalResponse = async (
                 botResponse?.getVersions().length ?? 1
             );
 
-            // Edit the last message (image) to add buttons
+            // Edit the last message (the image, unless it did not go out) to add buttons
             const [editErr] = await to(
                 runApiCall(chatId, () =>
                     ctx.api.editMessageReplyMarkup(chatId, session.currentMessageId, {
@@ -845,7 +878,7 @@ export const sendFinalResponse = async (
         }
     } else {
         // Finalize session first to determine button state (no image case)
-        await session.finalize({ modelParts: response.modelParts, wasStoppedByUser });
+        await session.finalize(finalizeOptions);
 
         // Get the correct button state after finalization
         const getBotResponseForButtons = async () => {
@@ -912,6 +945,7 @@ export const handleResponseError = async (
             text: chatContext.currentState?.textBuffer || '',
             thinkingText: chatContext.currentState?.thinkingBuffer || '',
             images: chatContext.currentState?.images || [],
+            imageCaption: chatContext.currentState?.imageCaption,
             groundingData: chatContext.currentState?.groundingData || [],
             agentStats: chatContext.currentState?.agentStats,
             modelParts: chatContext.currentState?.modelParts,
@@ -930,6 +964,10 @@ export const handleResponseError = async (
 
     typing.stop();
     editor.stop();
+
+    // The error edit below carries text only: an image produced before the
+    // failure never reached the chat, so it is not stored as part of the reply
+    session.images = [];
 
     // Finalize session with error first: persists partial text as the version
     // content and the error string in the separate errorMessage field
@@ -998,7 +1036,6 @@ export const createChatContextForRetry = (
         userMessageId: session.userMessageId,
         editor: null as any, // Will be set below
         typing,
-        messageHistory: session.messageIds,
         currentState: undefined,
         session,
         currentButtonState: ButtonState.PROCESSING,

@@ -54,6 +54,8 @@ export interface ResponseVersion {
     wasStoppedByUser: boolean;
     /** Image data as base64 (for version switching) */
     imageBase64?: string;
+    /** Caption the image went out with (generate_image); re-sent with it on version switching */
+    imageCaption?: string;
 }
 
 /**

@@ -1,6 +1,7 @@
 /**
  * AI Platform unified types
  */
+import type { TurnTools } from './tools/tool-types.js';
 
 // Platform type identifier
 export type PlatformType = 'openai' | 'gemini' | 'deepseek' | 'grok' | 'mimo' | 'anthropic';
@@ -76,15 +77,38 @@ export interface GroundingData {
     citations?: GroundingCitation[];
 }
 
+// Chat action shown while a tool runs
+export type ToolChatAction = 'typing' | 'upload_photo';
+
+// Transient status line while a tool runs (never persisted)
+export interface ToolStatus {
+    readonly text: string;
+    readonly chatAction: ToolChatAction;
+}
+
+// Image output knobs for image models
+export interface ImageOutputOptions {
+    aspectRatio?: string;
+    imageSize?: '1K' | '2K' | '4K';
+    /** Replaces the default image-model system instruction for this request */
+    instruction?: string;
+}
+
 // Stream chunk types
-export type StreamChunkType = 'text' | 'thinking' | 'image' | 'grounding' | 'done';
+export type StreamChunkType = 'text' | 'thinking' | 'image' | 'grounding' | 'status' | 'done';
 
 // Stream chunk
 export interface StreamChunk {
     type: StreamChunkType;
     content?: string;
     imageData?: Buffer;
+    /** Real mime of imageData; png when absent */
+    imageMimeType?: string;
+    /** Caption to send with the image */
+    imageCaption?: string;
     groundingMetadata?: GroundingData;
+    /** Tool status; a status chunk without it clears the status */
+    status?: ToolStatus;
     agentStats?: AgentStats;
     rawResponse?: unknown;
 }
@@ -94,6 +118,8 @@ export interface AIResponse {
     text: string;
     thinkingText: string;
     images: Buffer[];
+    /** Caption of the first image */
+    imageCaption?: string;
     groundingData?: GroundingData[];
     agentStats?: AgentStats;
     modelParts?: unknown[];
@@ -115,6 +141,10 @@ export interface PlatformConfig {
     sessionId?: string;
     /** AbortSignal for cancelling the request */
     signal?: AbortSignal;
+    /** Client tools offered this turn; absent = no client tools */
+    tools?: TurnTools;
+    /** Image model output knobs (aspect ratio, size, instruction) */
+    imageOutput?: ImageOutputOptions;
 }
 
 // Model capabilities
@@ -127,6 +157,10 @@ export interface ModelCapabilities {
     supportsGrounding: boolean;
     /** Audio/video/other non-image inline input (full-modal models) */
     supportsMediaInput: boolean;
+    /** Accepts client-side function tools (config.tools) */
+    supportsClientTools?: boolean;
+    /** False: a request carrying large media (gs:// references) goes out without client tools */
+    clientToolsWithLargeMedia?: boolean;
 }
 
 // AI Platform interface
@@ -165,6 +199,10 @@ export interface ResponseState {
     /** Total chars truncated from thinking to avoid telegram flood */
     thinkingTruncatedChars: number;
     images: Buffer[];
+    /** Caption of the first image */
+    imageCaption?: string;
+    /** Status of the running tool; display only, never persisted */
+    toolStatus?: ToolStatus;
     groundingData: GroundingData[];
     agentStats?: AgentStats;
     modelParts?: unknown[];

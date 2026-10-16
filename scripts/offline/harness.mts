@@ -5,13 +5,23 @@
  * safe to run on every change, unlike the e2e suite. DB_PATH is pointed at a
  * throwaway database BEFORE any db module is imported, which is why every
  * import here is dynamic.
+ *
+ * The scratch database belongs to this process alone (a directory in the OS
+ * temp dir named after the pid, removed on exit), so a full `pnpm test:offline`
+ * and single test files can run at the same time without sharing or wiping
+ * each other's state.
  */
-import { rmSync } from 'node:fs';
-import { join, dirname } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { mkdirSync, rmSync } from 'node:fs';
+import { constants, tmpdir } from 'node:os';
+import { join } from 'node:path';
 
-const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '../..');
-const OFFLINE_DB_PATH = join(repoRoot, 'database.offline.sqlite');
+const SCRATCH_DIRECTORY = join(tmpdir(), `k-on-bot-offline-${process.pid}`);
+const OFFLINE_DB_PATH = join(SCRATCH_DIRECTORY, 'database.sqlite');
+
+// Set as soon as a test file imports the harness: a file that reaches the db
+// layer without setupOfflineDb then fails on a missing directory instead of
+// opening ./database.sqlite, the production file.
+process.env.DB_PATH = OFFLINE_DB_PATH;
 
 /** Assertion helper, same shape as the e2e harness */
 export const expect = (condition: boolean, description: string): void => {
@@ -45,10 +55,22 @@ export const reportResults = (results: CaseResult[]): void => {
     if (results.some((result) => !result.ok)) process.exit(1);
 };
 
-/** Drop the scratch database so each run starts from a known empty state */
-const resetDatabaseFile = (): void => {
-    for (const suffix of ['', '-journal', '-wal', '-shm']) {
-        rmSync(`${OFFLINE_DB_PATH}${suffix}`, { force: true });
+const removeScratchDirectory = (): void => {
+    rmSync(SCRATCH_DIRECTORY, { recursive: true, force: true });
+};
+
+/**
+ * Start from an empty directory (a leftover can only come from a killed
+ * process that had the same pid) and remove it again on exit, including an
+ * interrupted run.
+ */
+const prepareScratchDirectory = (): void => {
+    removeScratchDirectory();
+    mkdirSync(SCRATCH_DIRECTORY, { recursive: true });
+    process.once('exit', removeScratchDirectory);
+    for (const signal of ['SIGINT', 'SIGTERM'] as const) {
+        // Exit code as if the signal had ended the process; 'exit' cleans up
+        process.once(signal, () => process.exit(128 + constants.signals[signal]));
     }
 };
 
@@ -63,8 +85,8 @@ export interface OfflineDb {
  * Point the app at the scratch database, import the db layer and create the
  * schema. Returns the pieces the cases need.
  */
-export const setupOfflineDb = async (): Promise<OfflineDb> => {
-    resetDatabaseFile();
+const createOfflineDb = async (): Promise<OfflineDb> => {
+    prepareScratchDirectory();
     process.env.DB_PATH = OFFLINE_DB_PATH;
     // The AI platforms build their clients at import time and refuse to exist
     // without credentials. Nothing here ever sends a request, so a placeholder
@@ -84,6 +106,11 @@ export const setupOfflineDb = async (): Promise<OfflineDb> => {
 
     return { Message, queries, saveMessage: dbIndex.saveMessage, putCachedMedia };
 };
+
+let offlineDb: Promise<OfflineDb> | undefined;
+
+/** Once per process: a second reset would pull the file from under the open connection */
+export const setupOfflineDb = (): Promise<OfflineDb> => (offlineDb ??= createOfflineDb());
 
 export const OFFLINE_CHAT_ID = -1009999999999;
 

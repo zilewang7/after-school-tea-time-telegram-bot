@@ -5,14 +5,22 @@
  */
 import type { Context } from 'grammy';
 import { match } from 'ts-pattern';
-import { OPENAI_IMAGE_MODEL } from '../config/models.js';
+import { GEMINI_IMAGE_MODEL, OPENAI_IMAGE_MODEL } from '../config/models.js';
 import { getMessage, getBotResponse } from '../db/index.js';
 import type { CommandType } from '../db/index.js';
 import { collectReferenceImages } from './commands/reference-images.js';
 import { startRetry } from '../services/index.js';
-import { sendMessage, buildStaticSystemPrompt, getModelCapabilities, isOpenCodeGoModel, openCodeGoSessionId } from '../ai/index.js';
+import {
+    sendMessage,
+    buildStaticSystemPrompt,
+    carriesLargeMedia,
+    getModelCapabilities,
+    isOpenCodeGoModel,
+    openCodeGoSessionId,
+} from '../ai/index.js';
 import { buildContext, buildContextFromParts } from './context-builder.js';
 import { resolveContextRoot } from './context-root.js';
+import { buildReplyToolContext, createReplyTools } from './tools/index.js';
 import { getCurrentModel } from '../state.js';
 import { to } from '../shared/result.js';
 import {
@@ -111,10 +119,11 @@ const handlePicbananaRetry = async (
     // Build context from parts
     const messages = buildContextFromParts(contentParts);
 
-    // Send to Gemini image model
+    // Send to Gemini image model; like the live command, ride out 429s until an image comes back
     const [streamErr, stream] = await to(
         sendMessage(messages, {
-            model: 'gemini-3-pro-image',
+            model: GEMINI_IMAGE_MODEL,
+            maxRetries: 50,
             signal: session.streamController.signal,
         })
     );
@@ -264,7 +273,7 @@ const handleChatRetry = async (
         await handleResponseError(chatContext, ctxErr ?? new Error('Failed to build context'));
         return;
     }
-    const { messages: chatContents } = builtContext;
+    const { messages: chatContents, contextIndex } = builtContext;
 
     // Argon rides the OpenCode Go subscription: reuse the same session id the
     // original turn used, so a retry stays inside the same upstream session.
@@ -272,13 +281,22 @@ const handleChatRetry = async (
         ? openCodeGoSessionId(chatId, await resolveContextRoot(chatId, botResponse.userMessageId))
         : null;
 
+    // The requester is the original message's author, not whoever pressed retry
+    const signal = session.streamController.signal;
+    const { tools, availability } = createReplyTools(
+        model,
+        buildReplyToolContext({ chat: ctx.chat, triggerMessage: userMessage, contextIndex, signal }),
+        { carriesLargeMedia: carriesLargeMedia(chatContents) }
+    );
+
     // Send to AI
     const [streamErr, stream] = await to(
         sendMessage(chatContents, {
             model,
-            systemPrompt: buildStaticSystemPrompt(model),
+            systemPrompt: buildStaticSystemPrompt(model, { sms: availability.sms }),
             ...(openCodeGoSession ? { sessionId: openCodeGoSession } : {}),
-            signal: session.streamController.signal,
+            signal,
+            tools,
         })
     );
     if (streamErr) {

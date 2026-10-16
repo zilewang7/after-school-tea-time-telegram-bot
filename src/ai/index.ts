@@ -8,6 +8,9 @@ export * from './types.js';
 // Message transformer
 export * from './message-transformer.js';
 
+// Large media (gs:// references)
+export { carriesLargeMedia } from './large-media.js';
+
 // MCP module
 export * from './mcp/index.js';
 

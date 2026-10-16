@@ -2,22 +2,16 @@
  * Type extensions for third-party APIs with incomplete type definitions
  */
 
-import { ChatCompletionChunk } from "openai/resources";
-import { GroundingMetadata } from "@google/genai";
+import type { ChatCompletionChunk } from "openai/resources";
+import type { GroundingMetadata } from "@google/genai";
 
-// DeepSeek extends OpenAI API with reasoning_content for reasoner models
-export interface DeepSeekDelta {
-    content?: string | null;
-    reasoning_content?: string;
-}
-
-export interface DeepSeekChatCompletionChunk extends Omit<ChatCompletionChunk, 'choices'> {
-    choices: Array<{
-        delta: DeepSeekDelta;
-        index: number;
-        finish_reason: string | null;
-    }>;
-}
+/**
+ * A chat.completions chunk delta plus `reasoning_content`, the thinking text
+ * DeepSeek and MiMo stream alongside the answer
+ */
+export type ReasoningChunkDelta = ChatCompletionChunk.Choice.Delta & {
+    readonly reasoning_content?: string | null;
+};
 
 // Google Gemini API has inconsistent type definitions
 // groundingChunks vs groundingChuncks (typo in SDK types)

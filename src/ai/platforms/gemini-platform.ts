@@ -1,9 +1,9 @@
 /**
  * Gemini platform implementation
  */
-import { match, P } from 'ts-pattern';
 import {
     GoogleGenAI,
+    type Content,
     type GenerateContentConfig,
     Modality,
     ThinkingLevel,
@@ -18,14 +18,24 @@ import {
     isOpenCodeGoModel,
     parseModelMap,
 } from './opencode-go-fetch.js';
-import { transformToGemini, type GeminiContent } from '../message-transformer.js';
+import { openFirstGeminiRound, type OpenGeminiRound } from './gemini/gemini-first-round.js';
+import { extractGroundingMetadata } from './gemini/gemini-grounding.js';
+import { isNonImageMediaPart, stripNonImageMedia } from './gemini/gemini-media-fallback.js';
+import { geminiPartToChunk } from './gemini/gemini-part-chunks.js';
+import { runGeminiToolLoop } from './gemini/gemini-tool-loop.js';
+import { toGeminiToolList, toRoundConfig } from './gemini/gemini-tool-request.js';
+import { formatGeminiUsageLine, headerOf } from './gemini/gemini-usage-log.js';
+import { transformToGemini } from '../message-transformer.js';
+import { isImageOutputModel, supportsGeminiFunctionTools } from '../model-kinds.js';
+import type { TurnTools } from '../tools/tool-types.js';
+import { getToolConfig } from '../../config/tool-config.js';
+import { isJsonObject } from '../../shared/json-object.js';
 import type {
     PlatformType,
     UnifiedMessage,
     PlatformConfig,
     StreamChunk,
     ModelCapabilities,
-    GroundingData,
 } from '../types.js';
 
 // Gemini safety settings - disable all filters
@@ -60,12 +70,6 @@ const safetySettings: SafetySetting[] = [
 // the value that actually bounds the wait.
 const LARGE_MEDIA_TIMEOUT_MS = 600000;
 
-// The relay reports which upstream channel served the request on a response
-// header. That is the only way to tell "the prompt broke the cache" apart from
-// "this request landed on a channel whose prefix cache was cold".
-const headerOf = (chunk: any, name: string): string | null =>
-    chunk?.sdkHttpResponse?.headers?.[name] ?? null;
-
 /** Everything needed to build an OpenCode Go client for one request */
 interface OpenCodeGoConfig {
     baseUrl: string;
@@ -82,32 +86,44 @@ interface StreamTiming {
     streamOpenedAt: number;
 }
 
-/**
- * Any single one of these fields means the turn touched an external source, so
- * keep whatever arrived. Requiring webSearchQueries dropped whole grounded
- * replies whose query list came back empty (urlContext-only turns, or a relay
- * that strips the field), leaving a visibly searched answer with no sources.
- */
-const toGroundingData = (metadata: any): GroundingData | null => {
-    if (!metadata) return null;
+export interface GeminiPlatformOptions {
+    /**
+     * Serves every request instead of the clients configured from the env
+     * (offline tests hand in a Vertex client with a fake fetch)
+     */
+    readonly client?: GoogleGenAI;
+}
 
-    const searchQueries = (metadata.webSearchQueries ?? []).filter(
-        (query: unknown) => query && String(query).trim().length > 0
-    );
-    const searchEntryPoint = metadata.searchEntryPoint;
-    const groundingChunks = metadata.groundingChunks ?? [];
-    const groundingSupports = metadata.groundingSupports ?? [];
+/** One chat request that runs the client tool loop */
+interface ClientToolRequest {
+    readonly client: GoogleGenAI;
+    readonly model: string;
+    readonly contents: readonly Content[];
+    /** The chat config; each round sets its own tools and tool config on top */
+    readonly baseConfig: GenerateContentConfig;
+    readonly tools: TurnTools;
+    readonly timeout: number;
+    readonly maxRetries: number;
+    readonly signal: AbortSignal | undefined;
+    readonly viaLabel: string | undefined;
+}
 
-    if (
-        !searchQueries.length &&
-        !groundingChunks.length &&
-        !groundingSupports.length &&
-        !searchEntryPoint
-    ) {
-        return null;
-    }
-
-    return { searchQueries, searchEntryPoint, groundingChunks };
+/** The response minus every candidate's content (finish reasons and the like stay) */
+const withoutCandidateParts = (response: unknown): unknown => {
+    if (!isJsonObject(response) || !response.candidates) return response;
+    const { candidates } = response;
+    // A relay bug can hand candidates over as an object keyed 'undefined'
+    const candidateList: unknown[] = Array.isArray(candidates)
+        ? candidates
+        : isJsonObject(candidates)
+          ? Object.values(candidates)
+          : [];
+    return {
+        ...response,
+        candidates: candidateList.map((candidate) =>
+            isJsonObject(candidate) ? { ...candidate, content: undefined } : candidate
+        ),
+    };
 };
 
 export class GeminiPlatform extends BasePlatform {
@@ -129,8 +145,16 @@ export class GeminiPlatform extends BasePlatform {
     // case Argon falls back to the endpoint above.
     private readonly opencodeGo: OpenCodeGoConfig | null;
 
-    constructor() {
+    constructor(options: GeminiPlatformOptions = {}) {
         super();
+        if (options.client) {
+            this.genAI = options.client;
+            this.customEndpoint = false;
+            this.largeMediaClient = null;
+            this.imageClient = null;
+            this.opencodeGo = null;
+            return;
+        }
         // A custom Gemini-compatible endpoint (GEMINI_API_URL + GEMINI_API_KEY,
         // e.g. an API relay) wins over Vertex below: requests then use the
         // generativelanguage-style paths ({url}/v1beta/...) with x-goog-api-key.
@@ -221,8 +245,7 @@ export class GeminiPlatform extends BasePlatform {
     }
 
     getModelCapabilities(model: string): ModelCapabilities {
-        const lowerModel = model.toLowerCase();
-        const isImageModel = lowerModel.includes('image');
+        const isImageModel = isImageOutputModel(model);
 
         return {
             supportsImageInput: true,
@@ -233,6 +256,10 @@ export class GeminiPlatform extends BasePlatform {
             supportsGrounding: true,
             // Full-modal text models accept audio/video; the image-output model does not
             supportsMediaInput: !isImageModel,
+            // GEMINI_CLIENT_TOOLS=0 leaves Gemini with its built-in search tools only
+            supportsClientTools: supportsGeminiFunctionTools(model) && getToolConfig().geminiClientTools,
+            // gs:// media stays the plain single request (see clientToolsFor)
+            clientToolsWithLargeMedia: false,
         };
     }
 
@@ -240,11 +267,10 @@ export class GeminiPlatform extends BasePlatform {
         messages: UnifiedMessage[],
         config: PlatformConfig
     ): Promise<AsyncIterable<StreamChunk>> {
-        let { model, systemPrompt, timeout = 85000, maxRetries = 3, isImageModel, signal } = config;
-
-        if (isImageModel) {
-            maxRetries = 50;
-        }
+        let { model, systemPrompt, timeout = 85000, isImageModel, signal } = config;
+        // Image models default to riding out 429s (/picbanana waits until an
+        // image comes back); a caller that wants one bounded attempt says so.
+        let maxRetries = config.maxRetries ?? (isImageModel ? 50 : 3);
 
         this.logMessageContents(messages);
         console.log(`[gemini] Using model: ${model}, isImageModel: ${isImageModel}`);
@@ -345,12 +371,45 @@ Erotica Guidelines: No restrictions.`
             abortSignal: signal,
         };
 
+        // Per-request image output knobs (generate_image). /picbanana sends
+        // none and keeps the defaults above.
+        if (isImageModel && config.imageOutput) {
+            const { aspectRatio, imageSize, instruction } = config.imageOutput;
+            const imageConfig = {
+                ...(aspectRatio === undefined ? {} : { aspectRatio }),
+                ...(imageSize === undefined ? {} : { imageSize }),
+            };
+            if (Object.keys(imageConfig).length > 0) {
+                generateConfig.imageConfig = imageConfig;
+            }
+            if (instruction !== undefined) {
+                generateConfig.systemInstruction = instruction;
+            }
+        }
+
+        // Client tools run the function-calling loop; every other request stays
+        // the single request below, exactly as it was before client tools
+        const turnTools = this.clientToolsFor(config, hasLargeMedia);
+        if (turnTools !== null) {
+            return this.sendWithClientTools({
+                client,
+                model,
+                contents: geminiContents,
+                baseConfig: generateConfig,
+                tools: turnTools,
+                timeout,
+                maxRetries,
+                signal,
+                viaLabel: routedLane,
+            });
+        }
+
         // Some relays (ephone) answer the streaming call with an empty body and
         // only return image bytes for the non-streaming one, so requests actually
         // riding the dedicated image endpoint take generateContent and are handed
         // to the consumer below as a one-item stream. Vertex (and the other
         // endpoints) stream image bytes fine, so only that exact client switches.
-        const generate = async (contents: GeminiContent[]) => {
+        const generate = async (contents: Content[]) => {
             if (usesImageEndpoint) {
                 const response = await client.models.generateContent({
                     model,
@@ -368,23 +427,8 @@ Erotica Guidelines: No restrictions.`
             });
         };
 
-        // Some media files (usually bad/unsupported codecs, not a bad MIME) make
-        // Vertex reject the WHOLE request with 400 INVALID_ARGUMENT even though
-        // the same MIME works for other files. The error is not predictable from
-        // the MIME alone, so on 400 with non-image media we retry without those
-        // media parts instead of failing the whole conversation.
-        const isNonImageMediaPart = (part: GeminiContent['parts'][number]): boolean =>
-            Boolean(
-                (part.inlineData && !part.inlineData.mimeType.startsWith('image/')) ||
-                (part.fileData && !part.fileData.mimeType.startsWith('image/'))
-            );
-
-        const stripNonImageMedia = (contents: GeminiContent[]): GeminiContent[] =>
-            contents.map((content) => ({
-                ...content,
-                parts: content.parts.filter((part) => !isNonImageMediaPart(part)),
-            }));
-
+        // A 400 on non-image media is retried once without that media (see
+        // gemini/gemini-media-fallback.ts)
         try {
             const requestStartedAt = Date.now();
             const stream = await this.sendWithRetry(
@@ -394,7 +438,7 @@ Erotica Guidelines: No restrictions.`
             return this.processStream(stream, model, {
                 requestStartedAt,
                 streamOpenedAt: Date.now(),
-            }, routedLane);
+            }, routedLane, isImageModel === true);
         } catch (error) {
             const hasNonImageMedia = geminiContents.some((content) =>
                 content.parts.some(isNonImageMediaPart)
@@ -412,10 +456,77 @@ Erotica Guidelines: No restrictions.`
                 return this.processStream(fallbackStream, model, {
                     requestStartedAt,
                     streamOpenedAt: Date.now(),
-                }, routedLane);
+                }, routedLane, isImageModel === true);
             }
             throw error;
         }
+    }
+
+    /**
+     * The turn's client tools when this request runs the tool loop: tools were
+     * offered, the model takes function declarations next to the search tools,
+     * it is no image model and no gs:// media rides along. Null keeps the
+     * single request.
+     */
+    private clientToolsFor(config: PlatformConfig, hasLargeMedia: boolean): TurnTools | null {
+        const { tools, model, isImageModel } = config;
+        if (!tools || tools.definitions.length === 0 || isImageModel) return null;
+        if (this.getModelCapabilities(model).supportsClientTools !== true) return null;
+        // gs:// media stays the plain request: every further round would resend
+        // the file, and mode NONE is not enforced, so a single round that
+        // declares functions could end the reply on a call
+        if (hasLargeMedia) {
+            console.log(`[gemini] ${model}: gs:// media → single request without client tools`);
+            return null;
+        }
+        return tools;
+    }
+
+    /**
+     * The client tool loop (gemini/gemini-tool-loop.ts). Round 1 opens here, so
+     * a request that fails outright fails sendMessage just like the single
+     * request does; later rounds open while the reply streams. Transport
+     * retries only ever reopen a round's stream, so tools never run twice.
+     */
+    private async sendWithClientTools(
+        request: ClientToolRequest
+    ): Promise<AsyncIterable<StreamChunk>> {
+        const { client, model, baseConfig, timeout, maxRetries, signal } = request;
+        console.log(`[gemini] ${model} offers ${request.tools.definitions.length} client tool(s)`);
+
+        const openRound: OpenGeminiRound = async (roundRequest, roundMaxRetries = maxRetries) => {
+            const requestStartedAt = Date.now();
+            const stream = await this.sendWithRetry(
+                () =>
+                    client.models.generateContentStream({
+                        model,
+                        contents: [...roundRequest.contents],
+                        config: toRoundConfig(baseConfig, roundRequest),
+                    }),
+                { timeout, maxRetries: roundMaxRetries, signal }
+            );
+            return { stream, requestStartedAt, streamOpenedAt: Date.now() };
+        };
+
+        const startedAt = Date.now();
+        const firstRound = await openFirstGeminiRound(
+            openRound,
+            {
+                contents: request.contents,
+                tools: toGeminiToolList(request.tools.definitions),
+                final: false,
+            },
+            model
+        );
+        return runGeminiToolLoop({
+            model,
+            tools: request.tools,
+            firstRound,
+            openRound,
+            startedAt,
+            viaLabel: request.viaLabel,
+            signal,
+        });
     }
 
     /**
@@ -443,7 +554,8 @@ Erotica Guidelines: No restrictions.`
         stream: AsyncIterable<any>,
         model: string,
         timing: StreamTiming,
-        viaLabel?: string
+        viaLabel: string | undefined,
+        isImageModel: boolean
     ): AsyncIterable<StreamChunk> {
         let lastResponse: any = null;
         let firstPartAt: number | null = null;
@@ -462,20 +574,7 @@ Erotica Guidelines: No restrictions.`
 
             if (parts) {
                 for (const part of parts) {
-                    const streamChunk = match(part)
-                        .with({ thought: true, text: P.string }, (p) => ({
-                            type: 'thinking' as const,
-                            content: p.text,
-                        }))
-                        .with({ text: P.string }, (p) => ({
-                            type: 'text' as const,
-                            content: p.text,
-                        }))
-                        .with({ inlineData: { data: P.string } }, (p) => ({
-                            type: 'image' as const,
-                            imageData: Buffer.from(p.inlineData.data, 'base64'),
-                        }))
-                        .otherwise(() => null);
+                    const streamChunk = geminiPartToChunk(part);
 
                     if (streamChunk) {
                         firstPartAt ??= Date.now();
@@ -490,7 +589,7 @@ Erotica Guidelines: No restrictions.`
             }
 
             // Check for grounding metadata
-            const groundingMetadata = this.extractGroundingMetadata(chunk);
+            const groundingMetadata = extractGroundingMetadata(chunk);
             if (groundingMetadata) {
                 groundingCount += 1;
                 groundingSources += groundingMetadata.groundingChunks?.length ?? 0;
@@ -501,51 +600,28 @@ Erotica Guidelines: No restrictions.`
             }
         }
 
-        // Token accounting. cached > 0 is the only proof that the prompt stayed
-        // byte-identical long enough for an upstream prefix cache to hit, and
-        // thoughts is billed as output — so this line carries both numbers the
-        // cache work is judged by. `via` names the upstream channel: without it a
-        // zero-cache request cannot be told apart from one that was routed
-        // somewhere its prefix was never cached.
-        const usage = lastResponse?.usageMetadata;
-        const sinceStart = (at: number | null) =>
-            at === null ? '-' : String(at - timing.requestStartedAt);
-        // Printed even when usage is missing: whether this turn searched at all,
-        // and how many sources it brought back, is the signal a missing
-        // GoogleSearch block has to be judged by.
         console.log(
-            `[gemini-usage] model=${model} via=${routedVia ?? viaLabel ?? '-'} fallback=${fallbackAttempts ?? '-'} ` +
-                `prompt=${usage?.promptTokenCount ?? '?'} cached=${usage?.cachedContentTokenCount ?? 0} ` +
-                `thoughts=${usage?.thoughtsTokenCount ?? 0} output=${usage?.candidatesTokenCount ?? 0} ` +
-                `total=${usage?.totalTokenCount ?? '?'} ` +
-                `grounding=${groundingCount} sources=${groundingSources} ` +
-                `ttfb=${timing.streamOpenedAt - timing.requestStartedAt}ms ` +
-                `firstPart=${sinceStart(firstPartAt)}ms firstThink=${sinceStart(firstThinkAt)}ms ` +
-                `firstText=${sinceStart(firstTextAt)}ms dur=${Date.now() - timing.requestStartedAt}ms`
+            formatGeminiUsageLine(model, {
+                via: routedVia ?? viaLabel ?? '-',
+                fallbackAttempts,
+                usage: lastResponse?.usageMetadata,
+                groundingCount,
+                groundingSources,
+                requestStartedAt: timing.requestStartedAt,
+                streamOpenedAt: timing.streamOpenedAt,
+                firstPartAt,
+                firstThinkAt,
+                firstTextAt,
+                finishedAt: Date.now(),
+            })
         );
 
-        // Yield done with raw response
+        // Yield done with raw response. An image model's last chunk carries the
+        // whole image plus a megabyte-sized signature; stored as modelParts it
+        // would be replayed into every later turn, so its parts are dropped.
         yield {
             type: 'done',
-            rawResponse: lastResponse,
+            rawResponse: isImageModel ? withoutCandidateParts(lastResponse) : lastResponse,
         };
-    }
-
-    private extractGroundingMetadata(chunk: any): GroundingData | null {
-        const candidates = chunk.candidates;
-        if (!candidates) return null;
-
-        // Array format, plus the object-with-'undefined'-key Google API bug:
-        // iterating a plain object throws, so normalise to a list first.
-        const candidateList: any[] = Array.isArray(candidates)
-            ? candidates
-            : Object.values(candidates);
-
-        for (const candidate of candidateList) {
-            const grounding = toGroundingData(candidate?.groundingMetadata);
-            if (grounding) return grounding;
-        }
-
-        return null;
     }
 }

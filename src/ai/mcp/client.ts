@@ -1,20 +1,62 @@
 /**
  * MCP Client - manages connections to MCP servers and tool execution
  */
+import { match, P } from 'ts-pattern';
 import { Client } from '@modelcontextprotocol/sdk/client';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
-import type { McpServerConfig, McpTool, McpToolResult } from './types.js';
+import { parseMcpServers } from './server-config.js';
+import type {
+    McpCallOptions,
+    McpServerConfig,
+    McpServerInfo,
+    McpTool,
+    McpToolResult,
+} from './types.js';
 
-interface McpServerConnection {
-    name: string;
-    config: McpServerConfig;
-    client: InstanceType<typeof Client>;
-    tools: McpTool[];
-    connected: boolean;
+type McpClient = InstanceType<typeof Client>;
+
+/** A connected server: what it offers plus the client that reaches it */
+export interface McpServerConnection extends McpServerInfo {
+    readonly client: McpClient;
 }
 
 let connections: McpServerConnection[] = [];
 let initialized = false;
+
+const describeError = (error: unknown): string =>
+    error instanceof Error ? error.message : String(error);
+
+/**
+ * Connect to one server and list its tools. Throws when the server cannot be
+ * reached; also used by tools that manage their own connection.
+ */
+export const connectMcpServer = async (
+    name: string,
+    config: McpServerConfig
+): Promise<McpServerConnection> => {
+    const client = new Client({ name: `k-on-bot-${name}`, version: '1.0.0' }, { capabilities: {} });
+    const transport = new StreamableHTTPClientTransport(
+        new URL(config.serverUrl),
+        config.headers ? { requestInit: { headers: config.headers } } : {}
+    );
+
+    try {
+        await client.connect(transport);
+        const toolsResponse = await client.listTools();
+        const tools: McpTool[] = toolsResponse.tools.map((tool) => ({
+            name: tool.name,
+            description: tool.description,
+            inputSchema: tool.inputSchema,
+        }));
+        console.log(
+            `[mcp] Server "${name}" connected: ${tools.length} tool(s) [${tools.map((tool) => tool.name).join(', ')}]`
+        );
+        return { name, config, client, tools };
+    } catch (error) {
+        await client.close().catch(() => undefined);
+        throw error;
+    }
+};
 
 /**
  * Parse MCP_SERVERS environment variable and initialize connections
@@ -29,120 +71,110 @@ export async function initMcpClients(): Promise<void> {
         return;
     }
 
-    let servers: Record<string, McpServerConfig>;
-    try {
-        servers = JSON.parse(serversJson);
-    } catch (error) {
-        console.error('[mcp] Failed to parse MCP_SERVERS:', error);
-        initialized = true;
-        return;
-    }
-
-    const entries = Object.entries(servers);
+    const entries = parseMcpServers(serversJson);
     if (entries.length === 0) {
         initialized = true;
         return;
     }
 
-    console.log(`[mcp] Initializing ${entries.length} MCP server(s): ${entries.map(([n]) => n).join(', ')}`);
+    console.log(
+        `[mcp] Initializing ${entries.length} MCP server(s): ${entries.map((entry) => entry.name).join(', ')}`
+    );
 
-    const connectPromises = entries.map(([name, config]) => connectServer(name, config));
-    const results = await Promise.allSettled(connectPromises);
-
-    for (const result of results) {
-        if (result.status === 'fulfilled' && result.value) {
+    const results = await Promise.allSettled(
+        entries.map((entry) => connectMcpServer(entry.name, entry.config))
+    );
+    // allSettled keeps the input order, so connections stay in config order
+    results.forEach((result, index) => {
+        if (result.status === 'fulfilled') {
             connections.push(result.value);
+            return;
         }
-    }
+        console.error(
+            `[mcp] Failed to connect to "${entries[index]?.name}":`,
+            describeError(result.reason)
+        );
+    });
 
     initialized = true;
-    const totalTools = connections.reduce((sum, c) => sum + c.tools.length, 0);
+    const totalTools = connections.reduce((sum, connection) => sum + connection.tools.length, 0);
     console.log(`[mcp] ${connections.length}/${entries.length} servers connected, ${totalTools} tools available`);
 }
 
-async function connectServer(name: string, config: McpServerConfig): Promise<McpServerConnection | null> {
-    try {
-        const client = new Client(
-            { name: `k-on-bot-${name}`, version: '1.0.0' },
-            { capabilities: {} }
-        );
+/**
+ * Connected servers with their tools, in MCP_SERVERS order
+ */
+export const listMcpServers = (): McpServerInfo[] =>
+    connections.map(({ name, config, tools }) => ({ name, config, tools }));
 
-        const url = new URL(config.serverUrl);
-        const transportOptions: { requestInit?: { headers: Record<string, string> } } = {};
-        if (config.headers) {
-            transportOptions.requestInit = { headers: config.headers };
-        }
-        const transport = new StreamableHTTPClientTransport(url, transportOptions);
+/** One content block as text: non-text blocks leave a placeholder line instead of vanishing */
+const renderContentBlock = (block: unknown): string =>
+    match(block)
+        .with({ type: 'text', text: P.string }, ({ text }) => text)
+        .with({ type: 'resource_link', uri: P.string }, ({ uri }) => `[resource link: ${uri}]`)
+        .with(
+            { type: P.string, mimeType: P.string },
+            ({ type, mimeType }) => `[${type} content omitted (${mimeType})]`
+        )
+        .with({ type: P.string }, ({ type }) => `[${type} content omitted]`)
+        .otherwise(() => '[unrecognized content omitted]');
 
-        await client.connect(transport);
+/** Stands in for a tool result without any content */
+const NO_CONTENT_PLACEHOLDER = 'Tool returned no content.';
 
-        // List tools
-        const toolsResponse = await client.listTools();
-        const tools: McpTool[] = (toolsResponse.tools ?? []).map((tool: { name: string; description?: string; inputSchema?: Record<string, unknown> }) => ({
-            name: tool.name,
-            serverName: name,
-            description: tool.description,
-            inputSchema: (tool.inputSchema ?? {}) as Record<string, unknown>,
-        }));
-
-        console.log(`[mcp] Server "${name}" connected: ${tools.length} tool(s) [${tools.map((t: McpTool) => t.name).join(', ')}]`);
-
-        return { name, config, client, tools, connected: true };
-    } catch (error) {
-        const errorMsg = error instanceof Error ? error.message : String(error);
-        console.error(`[mcp] Failed to connect to "${name}":`, errorMsg);
-        return null;
-    }
-}
+/** A tool result's content blocks as text; empty when there are none */
+const renderMcpToolContent = (content: unknown): string => {
+    const blocks: unknown[] = Array.isArray(content) ? content : [];
+    return blocks.map(renderContentBlock).join('\n');
+};
 
 /**
- * Get all available MCP tools
+ * Call a tool through a client the caller holds (see connectMcpServer).
+ * Transport failures, timeouts and aborts throw; a tool-level failure comes
+ * back with isError.
  */
-export function getMcpTools(): McpTool[] {
-    return connections.flatMap(c => c.tools);
-}
-
-/**
- * Execute an MCP tool call
- */
-export async function executeMcpTool(toolName: string, argsJson: string): Promise<McpToolResult> {
-    const connection = connections.find(c => c.tools.some(t => t.name === toolName));
-    if (!connection) {
-        throw new Error(`MCP tool "${toolName}" not found in any connected server`);
-    }
-
-    let args: Record<string, unknown> = {};
-    try {
-        args = argsJson ? JSON.parse(argsJson) : {};
-    } catch {
-        throw new Error(`Invalid JSON arguments for tool "${toolName}": ${argsJson}`);
-    }
-
-    console.log(`[mcp] Executing tool "${toolName}" on server "${connection.name}"`);
-
-    const result = await connection.client.callTool({
-        name: toolName,
-        arguments: args,
+export const callConnectedMcpTool = async (
+    client: McpClient,
+    toolName: string,
+    args: Readonly<Record<string, unknown>>,
+    options: McpCallOptions = {}
+): Promise<McpToolResult> => {
+    const result = await client.callTool({ name: toolName, arguments: { ...args } }, undefined, {
+        signal: options.signal,
+        timeout: options.timeoutMs,
     });
-
-    const contentParts = Array.isArray(result.content) ? result.content : [];
-    const textParts = contentParts
-        .filter((p: unknown) => (p as { type: string }).type === 'text')
-        .map((p: unknown) => (p as { text: string }).text);
-
+    const text = renderMcpToolContent(result.content);
+    const hasContent = text.trim() !== '';
     return {
-        content: textParts.join('\n') || 'Tool executed successfully.',
+        content: hasContent ? text : NO_CONTENT_PLACEHOLDER,
+        hasContent,
         isError: result.isError === true,
     };
-}
+};
+
+/**
+ * Call a tool, by its original MCP name, on one of the connected servers
+ */
+export const callMcpTool = async (
+    serverName: string,
+    toolName: string,
+    args: Readonly<Record<string, unknown>>,
+    options: McpCallOptions = {}
+): Promise<McpToolResult> => {
+    const connection = connections.find((candidate) => candidate.name === serverName);
+    if (!connection) {
+        throw new Error(`MCP server "${serverName}" is not connected`);
+    }
+    return callConnectedMcpTool(connection.client, toolName, args, options);
+};
 
 /**
  * Shutdown all MCP connections
  */
 export async function shutdownMcp(): Promise<void> {
-    for (const conn of connections) {
+    for (const connection of connections) {
         try {
-            await conn.client.close();
+            await connection.client.close();
         } catch {
             // ignore close errors
         }

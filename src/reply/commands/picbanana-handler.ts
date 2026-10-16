@@ -6,6 +6,7 @@ import type { Context } from 'grammy';
 import { to, isErr } from '../../shared/result.js';
 import { collectReferenceImages } from './reference-images.js';
 import { sendMessage } from '../../ai/index.js';
+import { GEMINI_IMAGE_MODEL } from '../../config/models.js';
 import { buildContextFromParts } from './../context-builder.js';
 import {
     createChatContext,
@@ -98,10 +99,11 @@ export const handlePicbananaCommand = async (
     // Build context from parts
     const messages = buildContextFromParts(contentParts);
 
-    // Send to Gemini image model
+    // Send to Gemini image model; 429s are ridden out until an image comes back
     const streamResult = await to(
         sendMessage(messages, {
-            model: 'gemini-3-pro-image',
+            model: GEMINI_IMAGE_MODEL,
+            maxRetries: 50,
             signal: chatContext.session.streamController.signal,
         })
     );

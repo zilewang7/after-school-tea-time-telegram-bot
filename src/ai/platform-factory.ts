@@ -10,6 +10,7 @@ import { GrokPlatform } from './platforms/grok-platform.js';
 import { MimoPlatform } from './platforms/mimo-platform.js';
 import { AnthropicPlatform } from './platforms/anthropic-platform.js';
 import { applyModelCapabilities } from './message-transformer.js';
+import { isImageOutputModel } from './model-kinds.js';
 
 // Singleton platform instances - initialized once at module load
 const geminiPlatform = new GeminiPlatform();
@@ -44,11 +45,7 @@ export const getModelCapabilities = (model: string): ModelCapabilities => {
 /**
  * Check if model is an image generation model
  */
-export const isImageModel = (model: string): boolean => {
-    return match(model.toLowerCase())
-        .when((m) => m.includes('image'), () => true)
-        .otherwise(() => false);
-};
+export const isImageModel = (model: string): boolean => isImageOutputModel(model);
 
 /**
  * Get default model name for a platform type

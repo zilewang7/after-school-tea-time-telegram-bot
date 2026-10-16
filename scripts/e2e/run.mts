@@ -6,16 +6,19 @@
  *
  * Run: pnpm test:e2e:bot         — quick suite (reply/markdown/store//model)
  *      pnpm test:e2e:bot:full    — quick + slow edit-flow cases
+ *      pnpm test:e2e:bot:tools   — quick + client tool cases (tool-cases.mts:
+ *                                  Gemini tool loops, two real pictures)
+ *      `--full --tools` runs everything; `--only=tools:` just the tool cases
  */
 import {
     BOT_USER_ID,
     BOT_USERNAME,
     COMFY_FORWARD_URL,
     TEST_GROUP,
-    clickButton,
     deleteStoredMessage,
     editAsUser,
     expect,
+    hasFinishedStreaming,
     readLinkedMessageIds,
     readGroupMessages,
     sendAsUser,
@@ -29,6 +32,14 @@ import {
     waitForStoredOcrText,
     type DriverMessage,
 } from './harness.mts';
+import {
+    SkippedCase,
+    skip,
+    switchModelWithKeyboard,
+    waitForVisibleMessage,
+    type E2eCase,
+} from './suite-helpers.mts';
+import { toolCases } from './tool-cases.mts';
 
 /** Fixture image whose only content is this exact string */
 const OCR_FIXTURE = 'ocr-sample.png';
@@ -43,50 +54,7 @@ interface CaseResult {
     ms: number;
 }
 
-/**
- * Bail out of a case without failing the suite. For dependencies that legitimately
- * come and go — the /pic backend runs on a home machine that isn't always on, and
- * a red suite nobody trusts is worse than a case that says it didn't run.
- */
-class SkippedCase extends Error {}
-
-const skip = (reason: string): never => {
-    throw new SkippedCase(reason);
-};
-
 const CASE_GAP_MS = 4000; // pace userbot sends, keep the account flood-safe
-
-/**
- * Poll a bot message until it satisfies the predicate. session.finalize marks
- * the DB final BEFORE the last edit is delivered, so a read right after
- * waitForBotResponse can still see an intermediate render.
- */
-const waitForVisibleMessage = async (
-    minId: number,
-    messageId: number,
-    predicate: (message: DriverMessage) => boolean,
-    timeoutMs = 20_000
-): Promise<DriverMessage | undefined> => {
-    const deadline = Date.now() + timeoutMs;
-    let latest: DriverMessage | undefined;
-    while (Date.now() < deadline) {
-        const visible = await readGroupMessages(minId);
-        latest = visible.find((m) => m.sender_id === BOT_USER_ID && m.id === messageId);
-        if (latest && predicate(latest)) return latest;
-        await sleep(1500);
-    }
-    return latest;
-};
-
-/**
- * The status line StreamingEditor rotates through while a reply is still being
- * written (src/telegram/streaming-editor.ts). A reasoning model streams its
- * thinking first, which makes catching this state easy.
- */
-const STREAMING_STATUS_MARKERS = ['✽', '◐', '◑', '◒', '◓', '●', '◯', '◈', '◇', '◆', '▲', '▼'];
-
-const hasFinishedStreaming = (message: DriverMessage): boolean =>
-    !STREAMING_STATUS_MARKERS.some((marker) => message.text.includes(marker));
 
 /** Message links the bot rendered for its `#N` context references */
 const contextLinksOf = (message: DriverMessage): string[] =>
@@ -174,56 +142,14 @@ const runCase = async (
  */
 const SUITE_MODEL = 'deepseek-flash';
 
-/** Callback data the model menu uses (see src/cmd/menu.ts) */
-const MODEL_CALLBACK_PREFIX = 'mdl:';
-
-/**
- * Drive the model switcher the way a user does: `/model`, expand the keyboard,
- * press the model. Returns the menu message id.
- */
-const switchModelWithKeyboard = async (): Promise<number> => {
-    const before = await readGroupMessages(0, 1);
-    const lastId = before[before.length - 1]?.id ?? 0;
-    await sendAsUser(`/model@${BOT_USERNAME}`);
-
-    const findBotMessage = async (contains: string): Promise<DriverMessage | undefined> => {
-        for (let attempt = 0; attempt < 20; attempt++) {
-            await sleep(1500);
-            const visible = await readGroupMessages(lastId);
-            const found = visible.find(
-                (m) => m.sender_id === BOT_USER_ID && m.text.includes(contains)
-            );
-            if (found) return found;
-        }
-        return undefined;
-    };
-
-    const menu = await findBotMessage('当前模型');
-    if (!menu) throw new Error('the model menu never arrived');
-    expect(menu.has_buttons, 'the model menu carries its keyboard');
-
-    // Collapsed by default: expand, then press the model itself
-    await clickButton(menu.id, `${MODEL_CALLBACK_PREFIX}expand`);
-    await sleep(1500);
-    await clickButton(menu.id, `${MODEL_CALLBACK_PREFIX}${SUITE_MODEL}`);
-
-    const switched = await findBotMessage(`切换为`);
-    if (!switched) throw new Error('the bot never confirmed the switch');
-    expect(
-        switched.text.includes(SUITE_MODEL),
-        `the confirmation names ${SUITE_MODEL} (got: ${switched.text.replace(/\n/g, ' ').slice(0, 80)})`
-    );
-    return menu.id;
-};
-
-const cases: Array<{ name: string; full?: boolean; body: () => Promise<void> }> = [
+const cases: E2eCase[] = [
     {
         // Runs first (see SUITE_MODEL): every later case then talks to a fast,
         // text-only model, which also means the picture cases can only pass via
         // the OCR fallback.
         name: `/model switches to ${SUITE_MODEL} through its keyboard`,
         body: async () => {
-            const menuMessageId = await switchModelWithKeyboard();
+            const menuMessageId = await switchModelWithKeyboard(SUITE_MODEL);
             expect(menuMessageId > 0, `the model menu answered and switched to ${SUITE_MODEL}`);
         },
     },
@@ -358,9 +284,12 @@ const cases: Array<{ name: string; full?: boolean; body: () => Promise<void> }> 
             );
             const response = await waitForBotResponse(trigger);
             expect(!response.errorMessage, `no error (got: ${response.errorMessage ?? ''})`);
+            // The test group offers generate_image, so the model may answer
+            // with a picture whose caption carries the string
+            const answer = [response.text, response.imageCaption ?? ''].join('\n');
             expect(
-                response.text.includes(OCR_FIXTURE_TEXT),
-                `the picture reached the model (got: ${response.text.slice(0, 120)})`
+                answer.includes(OCR_FIXTURE_TEXT),
+                `the picture reached the model (got: ${answer.slice(0, 120)})`
             );
 
             const linked = await readLinkedMessageIds(trigger);
@@ -590,6 +519,8 @@ const cases: Array<{ name: string; full?: boolean; body: () => Promise<void> }> 
             );
         },
     },
+    // Last, and only with --tools: they switch the model away from SUITE_MODEL
+    ...toolCases,
 ];
 
 /** `--only=vid,pic` — comma separated substrings of the case names */
@@ -605,9 +536,12 @@ const onlyPatterns = (): string[] => {
 
 const main = async (): Promise<void> => {
     const runFull = process.argv.includes('--full');
+    // Opt-in: real tool loops and picture generations cost money and minutes
+    const runTools = process.argv.includes('--tools');
     const only = onlyPatterns();
     const selected = cases
         .filter((testCase) => runFull || !testCase.full)
+        .filter((testCase) => runTools || !testCase.tools)
         .filter(
             (testCase) =>
                 only.length === 0 ||
@@ -617,7 +551,8 @@ const main = async (): Promise<void> => {
         console.error(`No case matches --only=${only.join(',')}`);
         process.exit(1);
     }
-    console.log(`Running ${runFull ? 'FULL' : 'QUICK'} suite: ${selected.length}/${cases.length} cases`);
+    const suiteLabel = `${runFull ? 'FULL' : 'QUICK'}${runTools ? ' + TOOLS' : ''}`;
+    console.log(`Running ${suiteLabel} suite: ${selected.length}/${cases.length} cases`);
 
     const results: CaseResult[] = [];
     for (const testCase of selected) {

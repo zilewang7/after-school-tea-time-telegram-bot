@@ -9,22 +9,31 @@
  * cached prefix for every reply.
  */
 import { getModelCapabilities } from '../platform-factory.js';
+import { getToolConfig } from '../../config/tool-config.js';
 import { getPreferencePrompt } from './preference.js';
 import {
+    buildCapabilitiesSection,
     buildFormatSection,
-    CAPABILITIES_SECTION,
     NOTES_SECTION,
     ROSTER_SECTION,
 } from './sections.js';
 
-export const buildStaticSystemPrompt = (model: string): string => {
+export interface StaticPromptOptions {
+    /**
+     * send_sms_to_owner is offered this turn. Decided per model and chat only,
+     * so the prompt stays byte-identical across requests of one conversation.
+     */
+    readonly sms?: boolean;
+}
+
+export const buildStaticSystemPrompt = (model: string, options: StaticPromptOptions = {}): string => {
     const capabilities = getModelCapabilities(model);
 
     return [
         getPreferencePrompt(),
         ROSTER_SECTION,
         buildFormatSection({ includeOcrNote: !capabilities.supportsImageInput }),
-        CAPABILITIES_SECTION,
+        buildCapabilitiesSection({ smsOwner: options.sms === true ? getToolConfig().owner : null }),
         NOTES_SECTION,
     ]
         .filter((section) => section.length > 0)

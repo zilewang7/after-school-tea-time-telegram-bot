@@ -1,6 +1,5 @@
 export type {
-  DeepSeekDelta,
-  DeepSeekChatCompletionChunk,
+  ReasoningChunkDelta,
   GroundingChunk,
   ExtendedGroundingMetadata,
 } from "./api-extensions.js";

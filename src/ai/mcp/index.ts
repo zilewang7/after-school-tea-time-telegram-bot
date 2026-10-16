@@ -2,7 +2,21 @@
  * MCP module - Model Context Protocol client and tool integration
  */
 
-export type { McpServerConfig, McpTool, McpToolCall, McpToolResult } from './types.js';
-export { initMcpClients, getMcpTools, executeMcpTool, shutdownMcp } from './client.js';
-export { mcpToolsToOpenAI } from './tool-adapter.js';
+export type {
+    McpCallOptions,
+    McpServerConfig,
+    McpServerInfo,
+    McpTool,
+    McpToolResult,
+} from './types.js';
+export type { McpServerConnection } from './client.js';
+export {
+    initMcpClients,
+    connectMcpServer,
+    listMcpServers,
+    callMcpTool,
+    callConnectedMcpTool,
+    shutdownMcp,
+} from './client.js';
+export { parseMcpServers } from './server-config.js';
 export { extractGroundingFromToolResult } from './grounding.js';

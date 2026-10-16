@@ -13,6 +13,7 @@ import {
 import {
     sendMessage,
     buildStaticSystemPrompt,
+    carriesLargeMedia,
     getModelCapabilities,
     isOpenCodeGoModel,
     openCodeGoSessionId,
@@ -31,6 +32,7 @@ import { saveMessageLinks } from '../db/queries/context-queries.js';
 import { buildContext } from './context-builder.js';
 import { resolveContextRoot } from './context-root.js';
 import { submitToMentionBatch } from './mention-batcher.js';
+import { buildReplyToolContext, createReplyTools } from './tools/index.js';
 import {
     createChatContext,
     processStream,
@@ -283,7 +285,7 @@ export const handleReply = async (
         await handleResponseError(chatContext, ctxResult[0]);
         return;
     }
-    const { messages: chatContents } = ctxResult[1];
+    const { messages: chatContents, contextIndex } = ctxResult[1];
 
     // Argon rides the OpenCode Go subscription, which wants one stable session id
     // per conversation: the reply-tree root identifies exactly that.
@@ -291,13 +293,21 @@ export const handleReply = async (
         ? openCodeGoSessionId(chatId, await resolveContextRoot(chatId, userMessageId))
         : null;
 
+    const signal = chatContext.session.streamController.signal;
+    const { tools, availability } = createReplyTools(
+        model,
+        buildReplyToolContext({ chat: ctx.chat, triggerMessage: msg, contextIndex, signal }),
+        { carriesLargeMedia: carriesLargeMedia(chatContents) }
+    );
+
     // Send to AI and get stream
     const streamResult = await to(
         sendMessage(chatContents, {
             model,
-            systemPrompt: buildStaticSystemPrompt(model),
+            systemPrompt: buildStaticSystemPrompt(model, { sms: availability.sms }),
             ...(openCodeGoSession ? { sessionId: openCodeGoSession } : {}),
-            signal: chatContext.session.streamController.signal,
+            signal,
+            tools,
         })
     );
     if (isErr(streamResult)) {

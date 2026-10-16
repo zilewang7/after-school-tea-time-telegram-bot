@@ -1,24 +1,31 @@
 /**
  * Reference-image collection for the image-generation commands (/picgpt,
- * /picbanana), shared by the live command handlers and the retry paths.
+ * /picbanana) and the generate_image tool, shared by the live handlers and
+ * the retry paths.
  */
 import { findBotResponseByMessageId, getMessage } from '../../db/index.js';
 import { getFileContentsOfMessage } from '../../db/queries/context-queries.js';
 
-/** Base64 images stored on one message row (media group sub-images included) */
-const storedImagesOf = async (chatId: number, messageId: number): Promise<string[]> => {
-    const images: string[] = [];
+/** One image stored with a message */
+export interface MessageImage {
+    /** Base64 bytes */
+    readonly data: string;
+    /** MIME recorded with the bytes; image/png when none was (legacy rows, reply versions) */
+    readonly mimeType: string;
+}
+
+/** Images stored on one message row, media group sub-images included, in context order */
+const storedImagesOf = async (chatId: number, messageId: number): Promise<MessageImage[]> => {
     const parts = await getFileContentsOfMessage(chatId, messageId);
-    for (const part of parts) {
-        if (part.type === 'image' && part.imageData) {
-            images.push(part.imageData);
-        }
-    }
-    return images;
+    return parts.flatMap((part) =>
+        part.type === 'image' && part.imageData
+            ? [{ data: part.imageData, mimeType: part.mimeType ?? 'image/png' }]
+            : []
+    );
 };
 
 /**
- * Base64 images attached to one message.
+ * Images attached to one message.
  *
  * A bot response is stored in the messages table under its FIRST message id,
  * while the picture the user actually sees is a later message with a different
@@ -27,7 +34,7 @@ const storedImagesOf = async (chatId: number, messageId: number): Promise<string
  * also keeps a base64 copy of the image per version. Without that step,
  * replying to a bot-generated picture yields no reference image at all.
  */
-const imagesOfMessage = async (chatId: number, messageId: number): Promise<string[]> => {
+export const loadMessageImages = async (chatId: number, messageId: number): Promise<MessageImage[]> => {
     const row = await getMessage(chatId, messageId);
 
     if (row) {
@@ -43,7 +50,7 @@ const imagesOfMessage = async (chatId: number, messageId: number): Promise<strin
     if (anchoredImages.length) return anchoredImages;
 
     const versionImage = botResponse.getCurrentVersion()?.imageBase64;
-    return versionImage ? [versionImage] : [];
+    return versionImage ? [{ data: versionImage, mimeType: 'image/png' }] : [];
 };
 
 /**
@@ -58,8 +65,8 @@ export const collectReferenceImages = async (
 
     for (const messageId of messageIds) {
         if (!messageId) continue;
-        const images = await imagesOfMessage(chatId, messageId);
-        images.forEach((image) => collected.add(image));
+        const images = await loadMessageImages(chatId, messageId);
+        images.forEach((image) => collected.add(image.data));
     }
 
     return [...collected];

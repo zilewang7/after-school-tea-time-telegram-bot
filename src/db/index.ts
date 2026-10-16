@@ -1,5 +1,5 @@
 import { sequelize, enableWriteAheadLog } from "./config.js";
-import type { Transaction } from '@sequelize/core';
+import { Op, sql, type Transaction } from '@sequelize/core';
 import { Message } from "./messageDTO.js";
 import { BotResponse, ButtonState, type ResponseVersion, type ResponseMetadata, type CommandType } from "./botResponseDTO.js";
 import { MediaCache } from "./mediaCacheDTO.js";
@@ -190,19 +190,21 @@ const findBotResponseByMessageId = async (chatId: number, messageId: number): Pr
         if (fromRegistry) return fromRegistry;
     }
 
-    // Otherwise search through all responses in this chat
-    const allResponses = await BotResponse.findAll({ where: { chatId } });
+    // Otherwise scan the chat, but only the responses whose stored versions
+    // mention the id at all: SQLite filters the text, so the rest are never
+    // loaded or parsed. The digits can also sit inside a longer id, a timestamp
+    // or the reply text, so the parsed versions have the final say. The cast
+    // keeps Sequelize from JSON-encoding the pattern for the JSON column.
+    const candidates = await BotResponse.findAll({
+        where: {
+            chatId,
+            [Op.and]: [sql.where(sql.cast(sql.attribute('versions'), 'TEXT'), Op.like, `%${messageId}%`)],
+        },
+    });
 
-    for (const response of allResponses) {
-        const versions = response.getVersions();
-        for (const version of versions) {
-            if (version.messageIds.includes(messageId)) {
-                return response;
-            }
-        }
-    }
-
-    return null;
+    return candidates.find((response) =>
+        response.getVersions().some((version) => version.messageIds.includes(messageId))
+    ) ?? null;
 };
 
 /**
@@ -248,6 +250,8 @@ const updateBotResponseButtonState = async (
     await response.save();
     return true;
 };
+
+export { writeBotMessageRow, type BotMessageRow } from './bot-message-row.js';
 
 export {
     saveMessage,

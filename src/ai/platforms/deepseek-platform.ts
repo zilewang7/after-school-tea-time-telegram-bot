@@ -2,36 +2,37 @@
  * DeepSeek platform implementation
  */
 import OpenAI from 'openai';
-import type { Stream } from 'openai/streaming';
 import type { ChatCompletionChunk } from 'openai/resources';
 import { BasePlatform } from './base-platform.js';
 import { transformToOpenAI, mergeConsecutiveMessages } from '../message-transformer.js';
-import { getMcpTools, executeMcpTool, mcpToolsToOpenAI } from '../mcp/index.js';
+import {
+    runToolLoop,
+    toChatCompletionTools,
+    type ToolCall,
+    type TurnTools,
+} from '../tools/index.js';
+import {
+    buildChatToolTurn,
+    createChatToolCallCollector,
+} from './chat-completions/chat-completions-tool-round.js';
+import type { ReasoningChunkDelta } from '../../types/api-extensions.js';
 import type {
     PlatformType,
     UnifiedMessage,
     PlatformConfig,
     StreamChunk,
     ModelCapabilities,
-    AgentToolUsage,
 } from '../types.js';
 
-const MAX_MCP_ROUNDS = 5;
+const MAX_TOOL_ROUNDS = 5;
 
-// DeepSeek specific delta type with reasoning_content
-interface DeepSeekDelta {
-    content?: string | null;
-    reasoning_content?: string | null;
-}
-
-interface DeepSeekChoice {
-    delta: DeepSeekDelta;
-    finish_reason: 'stop' | 'length' | 'tool_calls' | 'content_filter' | 'function_call' | null;
-    index: number;
-}
-
-interface DeepSeekChunk extends ChatCompletionChunk {
-    choices: DeepSeekChoice[];
+/** One collected tool-loop round */
+interface DeepSeekToolRound {
+    readonly chunks: readonly StreamChunk[];
+    readonly text: string;
+    /** Thinking text; thinking mode requires it back with the round's tool calls */
+    readonly reasoning: string;
+    readonly toolCalls: readonly ToolCall[];
 }
 
 export class DeepSeekPlatform extends BasePlatform {
@@ -81,6 +82,7 @@ export class DeepSeekPlatform extends BasePlatform {
             supportsThinking: isReasoner,
             supportsGrounding: false,
             supportsMediaInput: false,
+            supportsClientTools: true,
         };
     }
 
@@ -88,7 +90,7 @@ export class DeepSeekPlatform extends BasePlatform {
         messages: UnifiedMessage[],
         config: PlatformConfig
     ): Promise<AsyncIterable<StreamChunk>> {
-        const { model, systemPrompt, timeout = 85000, maxRetries = 3, signal } = config;
+        const { model, systemPrompt, timeout = 85000, maxRetries = 3, signal, tools } = config;
         const capabilities = this.getModelCapabilities(model);
 
         this.logMessageContents(messages);
@@ -105,10 +107,9 @@ export class DeepSeekPlatform extends BasePlatform {
             systemPrompt,
         });
 
-        // MCP tool-enabled flow
-        const mcpTools = getMcpTools();
-        if (mcpTools.length > 0) {
-            return this.sendMessageWithTools(openaiMessages, model, mcpTools, timeout, maxRetries, signal);
+        // Client tool loop
+        if (tools && tools.definitions.length > 0) {
+            return this.sendMessageWithTools(openaiMessages, model, tools, timeout, maxRetries, signal);
         }
 
         const stream = await this.sendWithRetry(
@@ -121,172 +122,86 @@ export class DeepSeekPlatform extends BasePlatform {
             { timeout, maxRetries, signal }
         );
 
-        return this.processStream(stream as Stream<DeepSeekChunk>);
+        return this.processStream(stream);
     }
 
+    /**
+     * Client tool loop (runToolLoop): the assistant message carries the calls
+     * and the round's reasoning_content (required back while tools are
+     * present), then one tool message per result; the final round sets
+     * tool_choice none.
+     */
     private async *sendMessageWithTools(
         initialMessages: OpenAI.Chat.ChatCompletionMessageParam[],
         model: string,
-        mcpTools: ReturnType<typeof getMcpTools>,
+        tools: TurnTools,
         timeout: number,
         maxRetries: number,
         signal?: AbortSignal
-    ): AsyncIterable<StreamChunk> {
-        const openaiTools = mcpToolsToOpenAI(mcpTools);
-        let currentMessages = [...initialMessages];
-        const toolUsage: AgentToolUsage[] = [];
+    ): AsyncGenerator<StreamChunk, void, undefined> {
+        const chatTools = toChatCompletionTools(tools.definitions);
+        const currentMessages = [...initialMessages];
 
-        for (let round = 0; round < MAX_MCP_ROUNDS; round++) {
-            if (signal?.aborted) break;
-
-            const stream = await this.sendWithRetry(
-                () => this.client.chat.completions.create({
-                    model,
-                    messages: currentMessages,
-                    tools: openaiTools,
-                    stream: true,
-                }, { signal }),
-                { timeout, maxRetries, signal }
-            );
-
-            const { toolCalls, assistantText, chunks } = await this.collectStreamWithTools(stream as Stream<DeepSeekChunk>);
-
-            for (const chunk of chunks) {
-                yield chunk;
-            }
-
-            if (toolCalls.length === 0) {
-                yield {
-                    type: 'done',
-                    ...(toolUsage.length > 0 ? { agentStats: { toolUsage } } : {}),
-                };
-                return;
-            }
-
-            // Append assistant message with tool calls
-            currentMessages.push({
-                role: 'assistant',
-                content: assistantText || null,
-                tool_calls: toolCalls.map(tc => ({
-                    id: tc.id,
-                    type: 'function' as const,
-                    function: {
-                        name: tc.name,
-                        arguments: tc.arguments,
-                    },
-                })),
-            });
-
-            // Execute each tool and append results
-            for (const tc of toolCalls) {
-                const usage = toolUsage.find(u => u.name === tc.name);
-                if (usage) {
-                    usage.count++;
-                } else {
-                    toolUsage.push({ name: tc.name, count: 1 });
-                }
-
-                let resultContent: string;
-                try {
-                    console.log(`[deepseek] MCP tool call: ${tc.name}`);
-                    const result = await executeMcpTool(tc.name, tc.arguments);
-                    resultContent = result.content;
-                } catch (error) {
-                    const errorMsg = error instanceof Error ? error.message : String(error);
-                    console.error(`[deepseek] MCP tool ${tc.name} failed:`, errorMsg);
-                    resultContent = `Error: ${errorMsg}`;
-                }
-
-                currentMessages.push({
-                    role: 'tool',
-                    tool_call_id: tc.id,
-                    content: resultContent,
-                });
-            }
-        }
-
-        // Round budget exhausted while the model still wants tools: force one
-        // final answer with tool_choice 'none' so the reply never ends with
-        // CoT + tool stats but an empty body.
-        if (!signal?.aborted) {
-            console.log('[deepseek] MCP round limit reached, forcing final answer');
-            const finalStream = await this.sendWithRetry(
-                () => this.client.chat.completions.create({
-                    model,
-                    messages: currentMessages,
-                    tools: openaiTools,
-                    tool_choice: 'none',
-                    stream: true,
-                }, { signal }),
-                { timeout, maxRetries, signal }
-            );
-
-            const { chunks } = await this.collectStreamWithTools(
-                finalStream as Stream<DeepSeekChunk>
-            );
-            for (const chunk of chunks) {
-                yield chunk;
-            }
-        }
-
-        yield { type: 'done', agentStats: { toolUsage } };
+        yield* runToolLoop<DeepSeekToolRound>({
+            tools,
+            maxToolRounds: MAX_TOOL_ROUNDS,
+            signal,
+            logPrefix: '[deepseek]',
+            sendRound: async (roundIndex, final) => {
+                const stream = await this.sendWithRetry(
+                    () => this.client.chat.completions.create({
+                        model,
+                        messages: currentMessages,
+                        tools: chatTools,
+                        ...(final ? { tool_choice: 'none' as const } : {}),
+                        stream: true,
+                    }, { signal }),
+                    { timeout, maxRetries, signal }
+                );
+                return this.collectToolRound(stream, roundIndex);
+            },
+            appendRound: (round, executedCalls) => {
+                currentMessages.push(...buildChatToolTurn(round, executedCalls));
+            },
+        });
     }
 
-    private async collectStreamWithTools(
-        stream: Stream<DeepSeekChunk>
-    ): Promise<{
-        toolCalls: Array<{ id: string; name: string; arguments: string }>;
-        assistantText: string;
-        chunks: StreamChunk[];
-    }> {
-        const toolCallsMap = new Map<number, { id: string; name: string; arguments: string }>();
-        let assistantText = '';
+    /** Consume one tool-loop stream: chunks, text, reasoning and tool calls */
+    private async collectToolRound(
+        stream: AsyncIterable<ChatCompletionChunk>,
+        round: number
+    ): Promise<DeepSeekToolRound> {
+        const toolCallCollector = createChatToolCallCollector();
         const chunks: StreamChunk[] = [];
+        let text = '';
+        let reasoning = '';
 
         for await (const chunk of stream) {
-            const delta = chunk.choices[0]?.delta;
+            const delta: ReasoningChunkDelta | undefined = chunk.choices[0]?.delta;
 
             // Handle reasoning content (thinking)
             if (delta?.reasoning_content) {
+                reasoning += delta.reasoning_content;
                 chunks.push({ type: 'thinking', content: delta.reasoning_content });
             }
 
             // Handle regular content
             if (delta?.content) {
-                assistantText += delta.content;
+                text += delta.content;
                 chunks.push({ type: 'text', content: delta.content });
             }
 
-            // Handle tool calls
-            const rawChunk = chunk as unknown as { choices: Array<{ delta: { tool_calls?: Array<{ index: number; id?: string; function?: { name?: string; arguments?: string } }> } }> };
-            if (rawChunk.choices[0]?.delta?.tool_calls) {
-                for (const tc of rawChunk.choices[0].delta.tool_calls) {
-                    const idx = tc.index;
-                    if (!toolCallsMap.has(idx)) {
-                        toolCallsMap.set(idx, {
-                            id: tc.id || '',
-                            name: tc.function?.name || '',
-                            arguments: tc.function?.arguments || '',
-                        });
-                    } else {
-                        const existing = toolCallsMap.get(idx)!;
-                        if (tc.id) existing.id = tc.id;
-                        if (tc.function?.name) existing.name = tc.function.name;
-                        if (tc.function?.arguments) existing.arguments += tc.function.arguments;
-                    }
-                }
-            }
+            toolCallCollector.add(delta?.tool_calls);
         }
 
-        const toolCalls = Array.from(toolCallsMap.values()).filter(tc => tc.name);
-        return { toolCalls, assistantText, chunks };
+        return { chunks, text, reasoning, toolCalls: toolCallCollector.toolCalls(round) };
     }
 
     private async *processStream(
-        stream: Stream<DeepSeekChunk>
+        stream: AsyncIterable<ChatCompletionChunk>
     ): AsyncIterable<StreamChunk> {
         for await (const chunk of stream) {
-            const delta = chunk.choices[0]?.delta;
+            const delta: ReasoningChunkDelta | undefined = chunk.choices[0]?.delta;
 
             // Handle reasoning content (thinking)
             if (delta?.reasoning_content) {

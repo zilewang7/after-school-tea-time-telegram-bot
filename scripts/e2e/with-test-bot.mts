@@ -12,10 +12,10 @@
 import { spawn } from 'node:child_process';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { TEST_CONTAINER } from './container-logs.mts';
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '../..');
 
-const CONTAINER = 'k-on-bot-test';
 /** pnpm install + tsc + connect; ~40s observed, with room for a cold volume */
 const STARTUP_TIMEOUT_MS = 240_000;
 
@@ -52,26 +52,26 @@ const compose = (...args: string[]): Promise<number> =>
 const waitUntilReady = async (): Promise<void> => {
     const deadline = Date.now() + STARTUP_TIMEOUT_MS;
     while (Date.now() < deadline) {
-        const logs = await capture('docker', ['logs', CONTAINER, '--tail', '200']);
+        const logs = await capture('docker', ['logs', TEST_CONTAINER, '--tail', '200']);
         if (logs.includes('Bot started as @')) return;
         if (/error TS\d+|ELIFECYCLE|Cannot find module/.test(logs)) {
-            throw new Error(`${CONTAINER} failed to start:\n${logs.slice(-2000)}`);
+            throw new Error(`${TEST_CONTAINER} failed to start:\n${logs.slice(-2000)}`);
         }
         await sleep(3000);
     }
-    throw new Error(`${CONTAINER} did not report "Bot started" within ${STARTUP_TIMEOUT_MS / 1000}s`);
+    throw new Error(`${TEST_CONTAINER} did not report "Bot started" within ${STARTUP_TIMEOUT_MS / 1000}s`);
 };
 
 const stopContainer = async (): Promise<void> => {
-    console.log(`\n⏹  stopping ${CONTAINER}`);
-    await compose('stop', CONTAINER);
+    console.log(`\n⏹  stopping ${TEST_CONTAINER}`);
+    await compose('stop', TEST_CONTAINER);
 };
 
 const main = async (): Promise<void> => {
-    console.log(`▶ starting ${CONTAINER} on the current working tree`);
+    console.log(`▶ starting ${TEST_CONTAINER} on the current working tree`);
     // --force-recreate so it always builds the tree as it is right now
-    const started = await compose('up', '-d', '--force-recreate', CONTAINER);
-    if (started !== 0) throw new Error(`could not start ${CONTAINER}`);
+    const started = await compose('up', '-d', '--force-recreate', TEST_CONTAINER);
+    if (started !== 0) throw new Error(`could not start ${TEST_CONTAINER}`);
 
     let stopped = false;
     const stopOnce = async (): Promise<void> => {
@@ -88,7 +88,7 @@ const main = async (): Promise<void> => {
 
     try {
         await waitUntilReady();
-        console.log(`✓ ${CONTAINER} is up\n`);
+        console.log(`✓ ${TEST_CONTAINER} is up\n`);
         const suiteArgs = process.argv.slice(2);
         const code = await run('npx', ['tsx', 'scripts/e2e/run.mts', ...suiteArgs]);
         await stopOnce();

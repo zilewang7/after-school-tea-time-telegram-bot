@@ -6,6 +6,7 @@
  * They live in code — not in the mounted preference file — so a format
  * change and its prompt documentation are versioned in the same commit.
  */
+import { formatOwnerLabel, type OwnerIdentity } from '../../config/tool-config.js';
 
 /**
  * OCR fallback semantics. Only injected when the model cannot see images:
@@ -63,10 +64,21 @@ export const ROSTER_SECTION = `# 上下文中的用户
 需要提及（@）某用户时，优先写 \`[名字](tg://user?id=数字)\`（名字用对方的 first name），会渲染成可点击的提及；
 只有拿不到 id 时才退而写 @username。你本来就在回复最后一条消息，无需再 @ 它的作者；也不要 @ 与话题无关的人。`;
 
-export const CAPABILITIES_SECTION = `# 能力与输出
+const CAPABILITIES_SECTION = `# 能力与输出
 
 - 输出支持完整 Markdown（标准语法+部分方言）：防剧透 \`||spoiler||\`、折叠块 \`<details>/<summary>\`（summary 可选）、引用 \`>\`、任务列表 \`- [x]\` 等等（可以多使用来增加易读性和节目效果）
 - 多使用搜索工具联网查证；不要把任何问题预设为简单问题`;
+
+/**
+ * The capabilities section, plus one line naming the owner when this turn
+ * offers send_sms_to_owner — the line and the tool always come together.
+ */
+export const buildCapabilitiesSection = (options: { smsOwner: OwnerIdentity | null }): string => {
+    const owner = options.smsOwner;
+    if (!owner) return CAPABILITIES_SECTION;
+    const ownerLabel = formatOwnerLabel(owner, { idLabel: 'id', withShortName: false });
+    return `${CAPABILITIES_SECTION}\n- 可以用 \`send_sms_to_owner\` 给${ownerLabel}发送短信`;
+};
 
 export const NOTES_SECTION = `# 注意
 
