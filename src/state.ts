@@ -34,6 +34,9 @@ interface AppStateType {
     // user messages whose reply is still being generated:
     // "chatId:userMessageId" -> started-at (ms)
     repliesInFlight: Map<string, number>;
+    // bot messages that are still being generated:
+    // "chatId:botMessageId" -> started-at (ms)
+    botRepliesInFlight: Map<string, number>;
 }
 
 const createInitialState = (): AppStateType => ({
@@ -51,6 +54,7 @@ const createInitialState = (): AppStateType => ({
     handledUserMessages: new Map(),
     contextNumbering: new Map(),
     repliesInFlight: new Map(),
+    botRepliesInFlight: new Map(),
 });
 
 // singleton instance
@@ -381,4 +385,33 @@ export const getRepliesInFlight = (chatId: number): number[] => {
     }
 
     return messageIds;
+};
+
+/** Mark a bot reply message as being generated right now */
+export const registerBotReplyInFlight = (chatId: number, messageId: number): void => {
+    getAppState().botRepliesInFlight.set(`${chatId}:${messageId}`, Date.now());
+};
+
+/** Drop the mark once that reply's content has been stored */
+export const unregisterBotReplyInFlight = (chatId: number, messageId: number): void => {
+    getAppState().botRepliesInFlight.delete(`${chatId}:${messageId}`);
+};
+
+/**
+ * Whether this bot message is still being written by a live session.
+ *
+ * A reply's stored row carries no text until finalize, so another context that
+ * includes the reply mid-stream would otherwise see an empty turn and report it
+ * as lost. The registry is what tells the two apart.
+ */
+export const isBotReplyInFlight = (chatId: number, messageId: number): boolean => {
+    const registry = getAppState().botRepliesInFlight;
+    const key = `${chatId}:${messageId}`;
+    const startedAt = registry.get(key);
+    if (startedAt === undefined) return false;
+    if (Date.now() - startedAt > REPLY_IN_FLIGHT_TTL_MS) {
+        registry.delete(key);
+        return false;
+    }
+    return true;
 };

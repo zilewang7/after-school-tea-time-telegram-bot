@@ -3223,6 +3223,60 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
         },
     },
     {
+        name: 'a reply that is still being written is not reported as lost',
+        body: async () => {
+            const { buildContext } = await import('../../src/reply/context-builder.js');
+            const { createBotResponse } = await import('../../src/db/index.js');
+            const { registerBotReplyInFlight, unregisterBotReplyInFlight } = await import(
+                '../../src/state.js'
+            );
+
+            // Someone replies to the bot's answer while it still streams: the
+            // BotResponse row exists from session start but has no version yet,
+            // so the context sees a bot turn without text
+            const picture = await seedMessage({ text: '', userName: 'Enren' });
+            const ask = await seedMessage({ replyToId: picture, text: '@bot', userName: 'Enren' });
+            const replyId = takeMessageId();
+            await createBotResponse(OFFLINE_CHAT_ID, replyId, ask, {
+                model: 'offline-model',
+                hasImage: false,
+            });
+            const sticker = await seedMessage({ replyToId: replyId, text: '', userName: 'Kuro' });
+            const row = await Message.findOne({
+                where: { chatId: OFFLINE_CHAT_ID, messageId: sticker },
+            });
+            if (!row) throw new Error('seeded sticker not found');
+
+            const textOf = async (): Promise<string> => {
+                const { messages } = await buildContext(row);
+                return messages
+                    .map((turn) => turn.content.map((part) => part.text ?? '').join('\n'))
+                    .join('\n');
+            };
+
+            registerBotReplyInFlight(OFFLINE_CHAT_ID, replyId);
+            try {
+                const during = await textOf();
+                expect(
+                    /\[system\] your reply #3 is still being generated in another session/.test(during),
+                    `the streaming reply is announced as in progress (got ${JSON.stringify(during)})`
+                );
+                expect(
+                    !during.includes('message lost'),
+                    'a reply that is still being written is not called lost'
+                );
+            } finally {
+                unregisterBotReplyInFlight(OFFLINE_CHAT_ID, replyId);
+            }
+
+            const after = await textOf();
+            expect(
+                !after.includes('still being generated in another session'),
+                'no in-progress note once the reply is finalized'
+            );
+        },
+    },
+    {
         name: 'the keyboard is dropped when only bodyless failures precede a good version',
         body: async () => {
             const { decideFinalButtonState } = await import(

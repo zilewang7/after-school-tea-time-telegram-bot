@@ -9,3 +9,16 @@
  */
 export const buildInFlightReplyNote = (contextNumber: number): string =>
     `[system] another session is already replying to #${contextNumber} — do not react to #${contextNumber} again, that answer is on its way; answer only what is new.`;
+
+/**
+ * Note on the bot's own turn while that reply is still being written.
+ *
+ * A reply exists as a stored row from the moment its session starts, but its
+ * text is only written at finalize. If the user replies to that message while
+ * it streams (a sticker reacting to it, a follow-up question), the next context
+ * includes the bot turn with no content — which used to render as
+ * `[system] message lost` and made the model believe its own answer had been
+ * corrupted. Say what is actually happening instead.
+ */
+export const buildInFlightOwnReplyNote = (contextNumber: number): string =>
+    `[system] your reply #${contextNumber} is still being generated in another session — nothing has been lost; its text is not stored yet. Do not claim it is missing, blank or broken, and do not repeat that answer; respond only to the new message.`;

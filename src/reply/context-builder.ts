@@ -17,8 +17,8 @@ import { readStoredChatCommand } from './commands/chat-command-parser.js';
 import { buildOcrFallbackPart } from '../services/luoxu-ocr-service.js';
 import { applyModelCapabilities } from '../ai/message-transformer.js';
 import { buildRuntimeContext } from '../ai/system-prompt/runtime-context.js';
-import { getCurrentModel, getRepliesInFlight, setContextNumbering } from '../state.js';
-import { buildInFlightReplyNote } from './inflight-reply-note.js';
+import { getCurrentModel, getRepliesInFlight, isBotReplyInFlight, setContextNumbering } from '../state.js';
+import { buildInFlightOwnReplyNote, buildInFlightReplyNote } from './inflight-reply-note.js';
 import { collectContextUsers, type ContextUser } from './context-users.js';
 import { getModelCapabilities } from '../ai/platform-factory.js';
 import { buildCustomEmojiContextPlan } from '../services/custom-emoji-context-service.js';
@@ -403,6 +403,18 @@ const countImageParts = (parts: UnifiedContentPart[]): number =>
     parts.filter((part) => part.type === 'image').length;
 
 /**
+ * What an assistant turn with no text says. A reply that is still streaming has
+ * a stored row but no content yet — report that, instead of calling it lost.
+ */
+const missingAssistantText = (
+    msg: ContextMessage,
+    contextNumber: number | undefined
+): string =>
+    contextNumber !== undefined && isBotReplyInFlight(msg.chatId, msg.messageId)
+        ? buildInFlightOwnReplyNote(contextNumber)
+        : '[system] message lost';
+
+/**
  * Build the assistant turn for one of the bot's own messages.
  *
  * The context number is prefixed as `[#5]` on its own line — deliberately a
@@ -432,7 +444,8 @@ const buildAssistantMessage = (
 
     // An image-only reply still needs the label, so the model can refer to it
     const body =
-        stripLeakedWireFormat(msg.text ?? '') || (fileContents.length ? '' : '[system] message lost');
+        stripLeakedWireFormat(msg.text ?? '') ||
+        (fileContents.length ? '' : missingAssistantText(msg, contextNumber));
     if (numberLabel || body) {
         parts.push({ type: 'text', text: `${numberLabel}${body}` });
     }

@@ -46,6 +46,8 @@ export const buildFormatSection = (options: { includeOcrNote: boolean }): string
 - 独立的 \`[system] …\` 段落是系统信息，不是用户说的话
 - \`[system] another session is already replying to #3 …\` 表示 #3 已经由另一个正在生成的回复接手了：
   不要再回答 #3 的内容、也不要重复它即将给出的答案，只处理这次新出现的内容
+- \`[system] your reply #5 is still being generated …\`（出现在你自己的回复里）说明那条回复此刻还在生成（用户可能正是回复它才触发的这次对话）：
+  它不是丢失、空白或故障，不要声称自己出错或丢了记忆，也不要重复那条回复即将给出的内容，只处理这次新出现的内容
 - \`[system] 链接预览：…\` 是系统自动抓取的消息内链接的预览（站点/标题/描述，可能还有全文和图片），不是用户输入的内容
 ${options.includeOcrNote ? OCR_FALLBACK_NOTE : ''}- 你自己的历史回复开头会有一行 \`[#5]\`，那是系统给它标的编号，不是你写的内容
 - 引用消息时直接写编号（\`#5\`、\`我在 #5 说过\`），系统会自动把它变成用户可点击的跳转链接；

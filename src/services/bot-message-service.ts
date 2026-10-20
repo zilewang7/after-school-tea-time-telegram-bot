@@ -30,8 +30,10 @@ import { buildResponseButtons } from '../cmd/menus/index.js';
 import { to, isErr } from '../shared/result.js';
 import {
     getCurrentModel,
+    registerBotReplyInFlight,
     registerContinuation,
     registerReplyInFlight,
+    unregisterBotReplyInFlight,
     unregisterContinuation,
     unregisterReplyInFlight,
 } from '../state.js';
@@ -287,8 +289,10 @@ export const createSession = async (
     activeSessions.set(sessionKey, session);
 
     // Another trigger may assemble its context while this reply streams: mark
-    // the user message as answered so that context can say so (see context-builder)
+    // both the user message as answered and the reply itself as still being
+    // written, so a context that includes either can say so (see context-builder)
     registerReplyInFlight(chatId, userMessageId);
+    registerBotReplyInFlight(chatId, resolvedFirstMessageId);
 
     // Initialize database record for new response (not retry)
     if (!options?.isRetry) {
@@ -333,6 +337,8 @@ const createContinuation = async (session: BotMessageSession): Promise<MessageEd
     session.editor = createMessageEditor(session.api, session.chatId, newMessageId);
 
     registerContinuation(session.chatId, newMessageId, session.firstMessageId);
+    // A reply can target this chunk, not just the first message
+    registerBotReplyInFlight(session.chatId, newMessageId);
 
     return session.editor;
 };
@@ -448,11 +454,13 @@ const finalizeSession = async (
         fileMime: image ? sniffImageMime(image) : null,
     });
 
-    // Remove from active sessions
+    // Remove from active sessions; the reply now has stored content, so it is no
+    // longer "still being written" for contexts assembled later
     activeSessions.delete(sessionKey);
     unregisterReplyInFlight(session.chatId, session.userMessageId);
 
     for (const msgId of session.messageIds) {
+        unregisterBotReplyInFlight(session.chatId, msgId);
         if (msgId !== session.firstMessageId) {
             unregisterContinuation(session.chatId, msgId);
         }
