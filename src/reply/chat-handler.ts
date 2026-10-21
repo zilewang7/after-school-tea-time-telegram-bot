@@ -47,6 +47,7 @@ import { handleVidCommand } from './commands/vid-command.js';
 import { isVidCommandText } from './commands/vid-command-parser.js';
 import { dealChatCommand } from './commands/chat-command.js';
 import { isChatCommandText } from './commands/chat-command-parser.js';
+import { chatTitleOf } from '../telegram/chat-title.js';
 
 /** A `/chat <link>` splice only gets a reaction back, never a message */
 const acknowledgeSilently = async (ctx: Context): Promise<void> => {
@@ -280,7 +281,11 @@ export const handleReply = async (
 
     // Build AI context (buildContext walks the reply tree itself, post-wait, so
     // media downloaded during the wait is now included).
-    const ctxResult = await to(buildContext(msg, { capabilities, model }));
+    const ctxResult = await to(buildContext(msg, {
+        capabilities,
+        model,
+        chatTitle: chatTitleOf(ctx.chat),
+    }));
     if (isErr(ctxResult)) {
         await handleResponseError(chatContext, ctxResult[0]);
         return;

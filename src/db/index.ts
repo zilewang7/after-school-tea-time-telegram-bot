@@ -4,6 +4,7 @@ import { Message } from "./messageDTO.js";
 import { BotResponse, ButtonState, type ResponseVersion, type ResponseMetadata, type CommandType } from "./botResponseDTO.js";
 import { MediaCache } from "./mediaCacheDTO.js";
 import { LinkPreviewCache } from "./linkPreviewCacheDTO.js";
+import { TgMessageLinkCache } from "./tgMessageLinkCacheDTO.js";
 import { BiliDanmakuSnapshot } from "./biliDanmakuSnapshotDTO.js";
 import { MessageLink } from "./messageLinkDTO.js";
 import { TelegramUser } from "./telegramUserDTO.js";
@@ -263,6 +264,7 @@ export {
     BotResponse,
     MediaCache,
     LinkPreviewCache,
+    TgMessageLinkCache,
     BiliDanmakuSnapshot,
     MessageLink,
     TelegramUser,

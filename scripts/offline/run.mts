@@ -3950,6 +3950,398 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
             expect(call?.headers.get('x-goog-api-key') === null, 'the SDK key header is gone from the call');
         },
     },
+
+    {
+        // Every spelling of a message link must collapse to one cache key, and
+        // links that are not messages (t.me/s/… previews) must stay out.
+        name: 't.me message links are extracted and canonicalized',
+        body: async () => {
+            const { extractTelegramMessageLinks } = await import(
+                '../../src/reply/commands/telegram-message-link.js'
+            );
+
+            const links = extractTelegramMessageLinks(
+                '看这条 https://t.me/c/1415974153/1090259?single 和 ' +
+                '[这个](https://www.t.me/SomeChannel/42)，' +
+                '还有 https://t.me/s/SomeChannel/7 以及 https://t.me/c/1415974153/1090259'
+            );
+            expect(links.length === 2, `only message links survive (got ${JSON.stringify(links)})`);
+            expect(
+                links[0]?.url === 'https://t.me/c/1415974153/1090259',
+                `internal links are canonicalized (got ${links[0]?.url})`
+            );
+            expect(
+                links[1]?.url === 'https://t.me/somechannel/42',
+                `public links are lowercased and kept (got ${links[1]?.url})`
+            );
+            expect(
+                links[0]?.link.chatRef.type === 'internal' &&
+                    links[0].link.chatRef.chatId === -1001415974153,
+                'the internal id becomes a -100… chat id'
+            );
+
+            // Chinese text glued to the link must not become part of the URL
+            const glued = extractTelegramMessageLinks(
+                'https://t.me/c/1415974153/1090259看这个（https://t.me/AppDoDo/981）'
+            );
+            expect(
+                glued.length === 2 &&
+                    glued[0]?.url === 'https://t.me/c/1415974153/1090259' &&
+                    glued[1]?.url === 'https://t.me/appdodo/981',
+                `links glued to Chinese text still parse (got ${JSON.stringify(glued)})`
+            );
+
+            const dotted = extractTelegramMessageLinks('https://telegram.me/c/1415974153/9/77');
+            expect(
+                dotted.length === 1 &&
+                    dotted[0]?.url === 'https://t.me/c/1415974153/77',
+                `telegram.me and topic links collapse to one URL (got ${JSON.stringify(dotted)})`
+            );
+
+            // The per-context budget walks newest-first: 4 blocks, only the
+            // newest 2 carrying media.
+            const { planTgMessageLinkPreviews } = await import(
+                '../../src/services/tg-message-link-service.js'
+            );
+            const plan = planTgMessageLinkPreviews(OFFLINE_CHAT_ID, [
+                { messageId: 1, text: 'https://t.me/c/1415974153/1 https://t.me/c/1415974153/2' },
+                { messageId: 2, text: 'https://t.me/c/1415974153/3 https://t.me/c/1415974153/4' },
+                { messageId: 3, text: 'https://t.me/c/1415974153/5 https://t.me/c/1415974153/6' },
+            ]);
+            const planned = [...plan.values()].flat();
+            expect(planned.length === 4, `the block budget caps at 4 (got ${planned.length})`);
+            expect(
+                planned.filter((entry) => entry.withMedia).length === 2,
+                'only the newest two blocks keep their media'
+            );
+            expect(
+                plan.get(3)?.length === 2 && plan.get(2)?.length === 2,
+                'the newest messages win the budget'
+            );
+        },
+    },
+    {
+        // The luoxu path: target + the message it replies to + its photo are
+        // stored once and rendered as one quoted block.
+        name: 'a linked message is fetched once and injected as a quoted block',
+        body: async () => {
+            const { createServer } = await import('node:http');
+            const { acquireTgMessageLinkPreviews, getTgMessageLinkPreviewParts } = await import(
+                '../../src/services/tg-message-link-service.js'
+            );
+            const { extractTelegramMessageLinks } = await import(
+                '../../src/reply/commands/telegram-message-link.js'
+            );
+
+            const targetId = 700001;
+            const replyId = 700000;
+            const url = `https://t.me/c/8888888888/${targetId}`;
+            const calls: string[] = [];
+            const server = createServer((request, response) => {
+                const parsed = new URL(request.url ?? '', 'http://localhost');
+                calls.push(parsed.pathname);
+                if (parsed.pathname === '/message-media') {
+                    response.writeHead(200, { 'Content-Type': 'image/jpeg' });
+                    response.end(Buffer.from('JPEG'));
+                    return;
+                }
+                const ids = (parsed.searchParams.get('ids') ?? '').split(',');
+                const messages = ids.includes(String(targetId))
+                    ? [{
+                        id: targetId,
+                        sender_id: 123,
+                        sender_name: '远处的人',
+                        sender_is_bot: false,
+                        text: '被链接的正文加粗',
+                        entities: [{ type: 'bold', offset: 6, length: 2 }],
+                        reply_to: replyId,
+                        date: 1792000000,
+                        media: { type: 'photo', mime: 'image/jpeg', size: 4 },
+                    }]
+                    : ids.includes(String(replyId))
+                        ? [{
+                            id: replyId,
+                            sender_id: 456,
+                            sender_name: '楼主',
+                            sender_is_bot: false,
+                            text: '原帖正文',
+                            entities: [],
+                            reply_to: null,
+                            date: 1791999000,
+                            media: null,
+                        }]
+                        : [];
+                response.writeHead(200, { 'Content-Type': 'application/json' });
+                response.end(JSON.stringify({ messages }));
+            });
+            await new Promise<void>((ready) => server.listen(BACKFILL_PORT, '127.0.0.1', ready));
+
+            try {
+                const context = {
+                    chatId: OFFLINE_CHAT_ID,
+                    chatTitle: '测试群',
+                    messageId: 900001,
+                    text: `看这条 ${url}`,
+                };
+                await acquireTgMessageLinkPreviews(null, context);
+                const callsAfterFirst = calls.length;
+
+                const parsed = extractTelegramMessageLinks(context.text)[0];
+                if (!parsed) throw new Error('link not parsed');
+
+                const parts = await getTgMessageLinkPreviewParts(
+                    OFFLINE_CHAT_ID,
+                    [{ parsed, withMedia: true }],
+                    new Map()
+                );
+                const texts = parts.filter((part) => part.type === 'text').map((part) => part.text ?? '');
+                expect(
+                    texts.some((text) => text.includes('消息链接预览') && text.includes(url)),
+                    `the block names the link (got ${JSON.stringify(texts)})`
+                );
+                expect(
+                    texts.some((text) => text.includes('被链接的正文**加粗**')),
+                    'the target text is rendered with its entities'
+                );
+                expect(
+                    texts.some((text) => text.includes('它回复的消息') && text.includes('原帖正文')),
+                    'the replied-to message rides along'
+                );
+                expect(
+                    parts.some((part) => part.type === 'image' && part.mimeType === 'image/jpeg'),
+                    'the target photo is attached'
+                );
+
+                await acquireTgMessageLinkPreviews(null, context);
+                expect(
+                    calls.length === callsAfterFirst,
+                    `a second acquisition reuses the snapshot (calls: ${calls.join(',')})`
+                );
+            } finally {
+                await new Promise<void>((closed) => server.close(() => closed()));
+            }
+        },
+    },
+    {
+        // A link to a message in this very context is answered with its #N, so
+        // the linked text is not repeated in the prompt.
+        name: 'an in-context linked message is referenced by number, not repeated',
+        body: async () => {
+            const { buildContext } = await import('../../src/reply/context-builder.js');
+
+            const targetId = await seedMessage({ text: '被引用的独特正文XYZ' });
+            const internalId = -OFFLINE_CHAT_ID - 1_000_000_000_000;
+            const messageId = await seedMessage({
+                text: `看这条 https://t.me/c/${internalId}/${targetId}`,
+                replyToId: targetId,
+            });
+            const row = await Message.findOne({
+                where: { chatId: OFFLINE_CHAT_ID, messageId },
+            });
+            if (!row) throw new Error('seeded message not found');
+
+            const { messages } = await buildContext(row, {
+                supportsImageInput: true,
+                supportsImageOutput: false,
+                supportsSystemPrompt: true,
+                requiresMessageMerge: false,
+            });
+            const texts = messages.flatMap((message) =>
+                message.content.filter((part) => part.type === 'text').map((part) => part.text ?? '')
+            );
+            expect(
+                texts.some((text) => text.includes('已在本次上下文中，见 #')),
+                `the block points at the context number (got ${JSON.stringify(texts)})`
+            );
+            expect(
+                texts.filter((text) => text.includes('被引用的独特正文XYZ')).length === 1,
+                'the linked text appears exactly once (its own turn)'
+            );
+        },
+    },
+    {
+        // Unreachable targets are recorded as such: the model is told it cannot
+        // read the link instead of inventing content.
+        name: 'an unreachable link degrades to a note',
+        body: async () => {
+            const { createServer } = await import('node:http');
+            const { acquireTgMessageLinkPreviews, getTgMessageLinkPreviewParts } = await import(
+                '../../src/services/tg-message-link-service.js'
+            );
+            const { extractTelegramMessageLinks } = await import(
+                '../../src/reply/commands/telegram-message-link.js'
+            );
+
+            const server = createServer((request, response) => {
+                response.writeHead(200, { 'Content-Type': 'application/json' });
+                response.end(JSON.stringify({ messages: [] }));
+            });
+            await new Promise<void>((ready) => server.listen(BACKFILL_PORT, '127.0.0.1', ready));
+
+            try {
+                const text = '看 https://t.me/c/8888888888/799999';
+                await acquireTgMessageLinkPreviews(null, {
+                    chatId: OFFLINE_CHAT_ID,
+                    chatTitle: '测试群',
+                    messageId: 900002,
+                    text,
+                });
+                const parsed = extractTelegramMessageLinks(text)[0];
+                if (!parsed) throw new Error('link not parsed');
+
+                const parts = await getTgMessageLinkPreviewParts(
+                    OFFLINE_CHAT_ID,
+                    [{ parsed, withMedia: false }],
+                    new Map()
+                );
+                const texts = parts.filter((part) => part.type === 'text').map((part) => part.text ?? '');
+                expect(
+                    texts.some((part) => part.includes('读不到') && part.includes('消息不存在或已删除')),
+                    `the block explains the failure (got ${JSON.stringify(texts)})`
+                );
+            } finally {
+                await new Promise<void>((closed) => server.close(() => closed()));
+            }
+        },
+    },
+    {
+        // An older luoxu has no /message-media: the snapshot still works, just
+        // without attachments.
+        name: 'a missing media endpoint degrades to text only',
+        body: async () => {
+            const { createServer } = await import('node:http');
+            const { acquireTgMessageLinkPreviews, getTgMessageLinkPreviewParts } = await import(
+                '../../src/services/tg-message-link-service.js'
+            );
+            const { extractTelegramMessageLinks } = await import(
+                '../../src/reply/commands/telegram-message-link.js'
+            );
+
+            const targetId = 700002;
+            const server = createServer((request, response) => {
+                const parsed = new URL(request.url ?? '', 'http://localhost');
+                if (parsed.pathname === '/message-media') {
+                    response.writeHead(404);
+                    response.end();
+                    return;
+                }
+                response.writeHead(200, { 'Content-Type': 'application/json' });
+                response.end(JSON.stringify({
+                    messages: [{
+                        id: targetId,
+                        sender_id: 123,
+                        sender_name: '远处的人',
+                        sender_is_bot: false,
+                        text: '只有文字',
+                        entities: [],
+                        reply_to: null,
+                        date: 1792000000,
+                        media: { type: 'photo', mime: 'image/jpeg', size: 4 },
+                    }],
+                }));
+            });
+            await new Promise<void>((ready) => server.listen(BACKFILL_PORT, '127.0.0.1', ready));
+
+            try {
+                const text = `看 https://t.me/c/8888888888/${targetId}`;
+                await acquireTgMessageLinkPreviews(null, {
+                    chatId: OFFLINE_CHAT_ID,
+                    chatTitle: '测试群',
+                    messageId: 900003,
+                    text,
+                });
+                const parsed = extractTelegramMessageLinks(text)[0];
+                if (!parsed) throw new Error('link not parsed');
+
+                const parts = await getTgMessageLinkPreviewParts(
+                    OFFLINE_CHAT_ID,
+                    [{ parsed, withMedia: true }],
+                    new Map()
+                );
+                expect(
+                    parts.some((part) => part.type === 'text' && part.text.includes('只有文字')),
+                    'the text block survives'
+                );
+                expect(
+                    parts.every((part) => part.type === 'text'),
+                    'no media part is produced when the bytes are unavailable'
+                );
+            } finally {
+                await new Promise<void>((closed) => server.close(() => closed()));
+            }
+        },
+    },
+    {
+        // Links saved before this feature existed have no snapshot row; the
+        // builder must still render them out of our own database.
+        name: 'a link saved without a snapshot renders from our own database',
+        body: async () => {
+            const { buildContext } = await import('../../src/reply/context-builder.js');
+
+            const targetId = await seedMessage({ text: '库里的旧消息' });
+            const internalId = -OFFLINE_CHAT_ID - 1_000_000_000_000;
+            const messageId = await seedMessage({
+                text: `看 https://t.me/c/${internalId}/${targetId}`,
+            });
+            const row = await Message.findOne({
+                where: { chatId: OFFLINE_CHAT_ID, messageId },
+            });
+            if (!row) throw new Error('seeded message not found');
+
+            const { messages } = await buildContext(row, {
+                supportsImageInput: true,
+                supportsImageOutput: false,
+                supportsSystemPrompt: true,
+                requiresMessageMerge: false,
+            });
+            const texts = messages.flatMap((message) =>
+                message.content.filter((part) => part.type === 'text').map((part) => part.text ?? '')
+            );
+            expect(
+                texts.some((text) => text.includes('消息链接预览') && text.includes('库里的旧消息')),
+                `the stored target is rendered without a snapshot row (got ${JSON.stringify(texts)})`
+            );
+        },
+    },
+    {
+        // The chat name is part of the runtime block: the model should know
+        // which group it is answering in.
+        name: 'the runtime block names the current chat',
+        body: async () => {
+            const { buildContext } = await import('../../src/reply/context-builder.js');
+            const { buildRuntimeContext } = await import('../../src/ai/system-prompt/index.js');
+
+            expect(
+                buildRuntimeContext('m', [], '浪新').includes('当前群聊：浪新'),
+                'a titled chat is named'
+            );
+            expect(
+                buildRuntimeContext('m', [], null).includes('当前对话：私聊'),
+                'a private chat is called a private chat'
+            );
+
+            const messageId = await seedMessage({ text: '你好' });
+            const row = await Message.findOne({
+                where: { chatId: OFFLINE_CHAT_ID, messageId },
+            });
+            if (!row) throw new Error('seeded message not found');
+
+            const { messages } = await buildContext(row, {
+                supportsImageInput: true,
+                supportsImageOutput: false,
+                supportsSystemPrompt: true,
+                requiresMessageMerge: false,
+                chatTitle: '浪新',
+            });
+            const texts = messages.flatMap((message) =>
+                message.content.filter((part) => part.type === 'text').map((part) => part.text ?? '')
+            );
+            expect(
+                texts.some((text) => text.includes('[system] 运行时信息') && text.includes('当前群聊：浪新')),
+                `the built context carries the chat name (got ${JSON.stringify(texts)})`
+            );
+        },
+    },
 ];
 
 const results: CaseResult[] = [];

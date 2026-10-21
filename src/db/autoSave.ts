@@ -29,6 +29,10 @@ import { getCachedMedia, putCachedMedia } from '../services/media-cache-service.
 import { isGeminiSupportedMimeType } from '../ai/supported-mime.js';
 import { uploadFileToGcs, uploadBytesToGcs, deleteGcsObject, isGcsEnabled } from '../services/gcs-service.js';
 import { acquireLinkPreview, extractFirstUrl, isLuoxuPreviewEnabled } from '../services/luoxu-preview-service.js';
+import { acquireTgMessageLinkPreviews, type TgChatLookup } from '../services/tg-message-link-service.js';
+import { extractTelegramMessageLinks } from '../reply/commands/telegram-message-link.js';
+import { chatTitleOf } from '../telegram/chat-title.js';
+import { TgMessageLinkCache } from './tgMessageLinkCacheDTO.js';
 import { primeDanmakuSnapshot } from '../services/bilibili-danmaku-service.js';
 import { acquireOcr, isLuoxuOcrEnabled } from '../services/luoxu-ocr-service.js';
 import { convertTgsToWebm, normalizeShortVideo } from '../services/tgs-client.js';
@@ -576,8 +580,21 @@ const acquireMediaBytes = async (
     return { status: 'cached', fileUniqueId: media.fileUniqueId, mime: normalizedVideo.mime };
 };
 
+/** Bot API getChat adapter, used to resolve public usernames to chat ids */
+const buildChatLookup = (bot: Bot): TgChatLookup => ({
+    getChat: async (username) => {
+        const chat = await bot.api.getChat(username);
+        return {
+            id: chat.id,
+            type: chat.type,
+            ...('title' in chat ? { title: chat.title } : {}),
+        };
+    },
+});
+
 // 监听编辑消息并更新数据库
 export const autoUpdate = (bot: Bot) => {
+    const chatLookup = buildChatLookup(bot);
     bot.on('edited_message', async (ctx) => {
         const editedMsg = ctx.editedMessage;
         if (!editedMsg || !ctx.chat?.id) return;
@@ -612,6 +629,9 @@ export const autoUpdate = (bot: Bot) => {
             const emojiTaskId = createRevisionTaskId('custom-emoji', revisionToken);
             const previewTaskId = createRevisionTaskId('link-preview', revisionToken);
             const ocrTaskId = createRevisionTaskId('ocr', revisionToken);
+            const tgLinkTaskId = createRevisionTaskId('tg-message-link', revisionToken);
+            const tgLinkShouldAcquire = editedMsg.from?.id !== Number(process.env.BOT_USER_ID)
+                && extractTelegramMessageLinks(newText).length > 0;
 
             if (resolvedEditedMedia) addAsyncFileSaveTask(chatId, messageId, mediaTaskId);
             if (customEmojiOccurrences.length > 0) {
@@ -619,6 +639,7 @@ export const autoUpdate = (bot: Bot) => {
             }
             if (previewUrl) addAsyncPreviewTask(chatId, messageId, previewTaskId);
             if (shouldAcquireOcr) addAsyncOcrTask(chatId, messageId, ocrTaskId);
+            if (tgLinkShouldAcquire) addAsyncPreviewTask(chatId, messageId, tgLinkTaskId);
             let editedMediaForAcquisition: CapturedMedia | undefined;
 
             try {
@@ -686,6 +707,7 @@ export const autoUpdate = (bot: Bot) => {
                     removeAsyncFileSaveTask(chatId, messageId, mediaTaskId);
                     removeAsyncFileSaveTask(chatId, messageId, emojiTaskId);
                     removeAsyncPreviewTask(chatId, messageId, previewTaskId);
+                    removeAsyncPreviewTask(chatId, messageId, tgLinkTaskId);
                     removeAsyncOcrTask(chatId, messageId, ocrTaskId);
                     return;
                 }
@@ -702,7 +724,10 @@ export const autoUpdate = (bot: Bot) => {
                     chatId,
                     messageId,
                     revisionToken,
-                    previewUrl ? [previewTaskId] : []
+                    [
+                        ...(previewUrl ? [previewTaskId] : []),
+                        ...(tgLinkShouldAcquire ? [tgLinkTaskId] : []),
+                    ]
                 );
                 retainAsyncOcrTasks(
                     chatId,
@@ -718,6 +743,7 @@ export const autoUpdate = (bot: Bot) => {
                 removeAsyncFileSaveTask(chatId, messageId, mediaTaskId);
                 removeAsyncFileSaveTask(chatId, messageId, emojiTaskId);
                 removeAsyncPreviewTask(chatId, messageId, previewTaskId);
+                removeAsyncPreviewTask(chatId, messageId, tgLinkTaskId);
                 removeAsyncOcrTask(chatId, messageId, ocrTaskId);
                 throw error;
             }
@@ -775,6 +801,26 @@ export const autoUpdate = (bot: Bot) => {
                     }
                     clearTimeout(previewBackstop);
                     removeAsyncPreviewTask(chatId, messageId, previewTaskId);
+                })();
+            }
+
+            if (tgLinkShouldAcquire) {
+                const tgLinkBackstop = setTimeout(
+                    () => removeAsyncPreviewTask(chatId, messageId, tgLinkTaskId),
+                    70000
+                );
+                void (async () => {
+                    const [linkErr] = await to(acquireTgMessageLinkPreviews(chatLookup, {
+                        chatId,
+                        chatTitle: chatTitleOf(ctx.chat),
+                        messageId,
+                        text: newText,
+                    }));
+                    if (linkErr) {
+                        console.error('[autoUpdate] tg message link acquire failed:', linkErr.message);
+                    }
+                    clearTimeout(tgLinkBackstop);
+                    removeAsyncPreviewTask(chatId, messageId, tgLinkTaskId);
                 })();
             }
 
@@ -840,6 +886,7 @@ const addEditDetectedButton = async (api: Api, chatId: number, response: BotResp
 
 // 自动保存消息到数据库
 export const autoSave = (bot: Bot) => {
+    const chatLookup = buildChatLookup(bot);
     // 使用中间件
     bot.use(async (ctx, next) => {
         const excludeList = ['/context'];
@@ -854,6 +901,7 @@ export const autoSave = (bot: Bot) => {
             let registeredPrimaryTask: { chatId: number; messageId: number; taskId: string } | undefined;
             let registeredEmojiTask: { chatId: number; messageId: number; taskId: string } | undefined;
             let registeredPreviewTask: { chatId: number; messageId: number; taskId: string } | undefined;
+            let registeredTgLinkTask: { chatId: number; messageId: number; taskId: string } | undefined;
             let registeredOcrTask: { chatId: number; messageId: number; taskId: string } | undefined;
 
             // If replying to a bot message, resolve to firstMessageId
@@ -948,6 +996,11 @@ export const autoSave = (bot: Bot) => {
                     : [];
                 const previewUrl = isLuoxuPreviewEnabled() ? extractFirstUrl(baseText) : null;
                 const shouldAcquireOcr = isLuoxuOcrEnabled() && Boolean(media || previewUrl);
+                const tgLinkText = !isSubImage && userId !== Number(process.env.BOT_USER_ID)
+                    ? baseText
+                    : null;
+                const tgLinkShouldAcquire = tgLinkText !== null
+                    && extractTelegramMessageLinks(tgLinkText).length > 0;
 
                 // Register every batch before the first await, so a rapid reply
                 // waits for both the original media and all custom emoji assets.
@@ -982,6 +1035,14 @@ export const autoSave = (bot: Bot) => {
                         taskId: createRevisionTaskId('ocr', revisionToken),
                     };
                     addAsyncOcrTask(chatId, messageId, registeredOcrTask.taskId);
+                }
+                if (tgLinkShouldAcquire) {
+                    registeredTgLinkTask = {
+                        chatId,
+                        messageId,
+                        taskId: createRevisionTaskId('tg-message-link', revisionToken),
+                    };
+                    addAsyncPreviewTask(chatId, messageId, registeredTgLinkTask.taskId);
                 }
 
                 // Text and its emoji manifest become visible atomically. Media
@@ -1023,6 +1084,9 @@ export const autoSave = (bot: Bot) => {
                     }
                     if (registeredPreviewTask) {
                         removeAsyncPreviewTask(chatId, messageId, registeredPreviewTask.taskId);
+                    }
+                    if (registeredTgLinkTask) {
+                        removeAsyncPreviewTask(chatId, messageId, registeredTgLinkTask.taskId);
                     }
                     if (registeredOcrTask) {
                         removeAsyncOcrTask(chatId, messageId, registeredOcrTask.taskId);
@@ -1101,6 +1165,30 @@ export const autoSave = (bot: Bot) => {
                     })();
                 }
 
+                // Message links (t.me/…): fetch the linked message and its media
+                // into the URL-addressed snapshot cache. Same wait semantics as
+                // the web preview above: a reply waits up to 65s for it.
+                if (tgLinkText !== null && registeredTgLinkTask) {
+                    const tgLinkTaskId = registeredTgLinkTask.taskId;
+                    const tgLinkBackstop = setTimeout(
+                        () => removeAsyncPreviewTask(chatId, messageId, tgLinkTaskId),
+                        70000
+                    );
+                    void (async () => {
+                        const [linkErr] = await to(acquireTgMessageLinkPreviews(chatLookup, {
+                            chatId,
+                            chatTitle: chatTitleOf(ctx.chat),
+                            messageId,
+                            text: tgLinkText,
+                        }));
+                        if (linkErr) {
+                            console.error('[autoSave] tg message link acquire failed:', linkErr.message);
+                        }
+                        clearTimeout(tgLinkBackstop);
+                        removeAsyncPreviewTask(chatId, messageId, tgLinkTaskId);
+                    })();
+                }
+
                 // Bilifeed videos: archive a danmaku snapshot while the video is
                 // still alive, so a later deletion can fall back to it.
                 primeDanmakuSnapshot({
@@ -1158,6 +1246,13 @@ export const autoSave = (bot: Bot) => {
                         registeredPreviewTask.chatId,
                         registeredPreviewTask.messageId,
                         registeredPreviewTask.taskId
+                    );
+                }
+                if (registeredTgLinkTask) {
+                    removeAsyncPreviewTask(
+                        registeredTgLinkTask.chatId,
+                        registeredTgLinkTask.messageId,
+                        registeredTgLinkTask.taskId
                     );
                 }
                 if (registeredOcrTask) {
@@ -1369,8 +1464,18 @@ export const clearExpiredData = async (): Promise<void> => {
             (chunk) => LinkPreviewCache.destroy({ where: { url: { [Op.in]: chunk } } })
         );
 
+        // TG 消息链接快照同节奏 LRU 清理（媒体行同样由上面的 MediaCache 清理覆盖）
+        const staleTgLinks = await TgMessageLinkCache.findAll({
+            where: { lastUsedAt: { [Op.lt]: oneWeekAgo } },
+            attributes: ['url'],
+        });
+        const tgLinkResult = await mutateInChunks(
+            staleTgLinks.map((row) => row.url),
+            (chunk) => TgMessageLinkCache.destroy({ where: { url: { [Op.in]: chunk } } })
+        );
+
         const elapsedMs = Date.now() - startedAt;
-        const summary = `Cleared ${messageResult} messages, ${attachmentResult} attachments, ${revisionResult} revisions, ${messageLinkResult} message links, ${botResponseResult} bot responses before ${oneWeekAgo.toISOString()}; cleared media bytes of ${mediaClearedCount} messages before ${oneDayAgo.toISOString()}; deleted ${staleGcsRows.length} GCS refs; evicted ${mediaCacheResult} media cache entries, ${emojiAssetResult} emoji assets, ${linkPreviewResult} link previews (${elapsedMs}ms)`;
+        const summary = `Cleared ${messageResult} messages, ${attachmentResult} attachments, ${revisionResult} revisions, ${messageLinkResult} message links, ${botResponseResult} bot responses before ${oneWeekAgo.toISOString()}; cleared media bytes of ${mediaClearedCount} messages before ${oneDayAgo.toISOString()}; deleted ${staleGcsRows.length} GCS refs; evicted ${mediaCacheResult} media cache entries, ${emojiAssetResult} emoji assets, ${linkPreviewResult} link previews, ${tgLinkResult} tg message link snapshots (${elapsedMs}ms)`;
         if (elapsedMs > CLEANUP_SLOW_MS) {
             console.warn(`[autoClear] slow cleanup — ${summary}`);
         } else {

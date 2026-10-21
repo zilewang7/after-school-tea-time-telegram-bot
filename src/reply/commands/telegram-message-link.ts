@@ -48,3 +48,66 @@ export const linkPointsIntoChat = (
         .with({ type: 'internal' }, (ref) => ref.chatId === chat.id)
         .with({ type: 'username' }, (ref) => chat.username?.toLowerCase() === ref.username)
         .exhaustive();
+
+/** A message link plus the URL that addresses its cache row */
+export interface ParsedTelegramMessageLink {
+    link: TelegramMessageLink;
+    /** Canonical `https://t.me/…` form; topic segments and query strings are dropped */
+    url: string;
+}
+
+/**
+ * Canonical URL for one message link: `t.me/c/<chat>/<msg>` for internal links,
+ * `t.me/<username>/<msg>` for public ones. The same message linked through two
+ * spellings (`www.`, `telegram.me`, a topic segment, `?single`) collapses to one
+ * cache row.
+ */
+export const canonicalTelegramMessageLink = (link: TelegramMessageLink): string =>
+    match(link.chatRef)
+        .with({ type: 'internal' }, (ref) => {
+            const internalId = -ref.chatId - 1_000_000_000_000;
+            return `https://t.me/c/${internalId}/${link.messageId}`;
+        })
+        .with(
+            { type: 'username' },
+            (ref) => `https://t.me/${ref.username}/${link.messageId}`
+        )
+        .exhaustive();
+
+/**
+ * The message-link shape itself, not a generic URL: Chinese text often follows
+ * a link without a space (`…/1090259看这个`), and a generic match would swallow
+ * it and then fail to parse. The pattern ends at the message id, or at a `?query`.
+ */
+const MESSAGE_LINK_PATTERN =
+    /https?:\/\/(?:www\.)?t(?:elegram)?\.me\/(?:c\/\d+|[A-Za-z][A-Za-z0-9_]{4,31})\/\d+(?:\/\d+)?(?:\?\S*)?/g;
+
+/** Punctuation that commonly trails a pasted link but is not part of it */
+const TRAILING_PUNCTUATION = /[.,;:!?，。；：！？、]+$/;
+
+/**
+ * Every distinct Telegram message link in one piece of text, in order of
+ * appearance. Links to users, `t.me/s/…` preview pages and other telegram.me
+ * URLs that do not address a message are dropped by the parser.
+ */
+export const extractTelegramMessageLinks = (
+    text: string | null | undefined
+): ParsedTelegramMessageLink[] => {
+    if (!text) return [];
+
+    const links: ParsedTelegramMessageLink[] = [];
+    const seen = new Set<string>();
+
+    for (const matched of text.matchAll(MESSAGE_LINK_PATTERN)) {
+        const token = matched[0].replace(TRAILING_PUNCTUATION, '');
+        const link = parseTelegramMessageLink(token);
+        if (!link) continue;
+
+        const url = canonicalTelegramMessageLink(link);
+        if (seen.has(url)) continue;
+        seen.add(url);
+        links.push({ link, url });
+    }
+
+    return links;
+};

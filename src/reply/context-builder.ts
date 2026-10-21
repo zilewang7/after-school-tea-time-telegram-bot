@@ -12,6 +12,11 @@ import {
     type ContextMessage,
 } from '../db/queries/context-queries.js';
 import { getLinkPreviewParts } from '../services/luoxu-preview-service.js';
+import {
+    getTgMessageLinkPreviewParts,
+    planTgMessageLinkPreviews,
+    type TgMessageLinkPlan,
+} from '../services/tg-message-link-service.js';
 import { getBilibiliDanmakuPart } from '../services/bilibili-danmaku-service.js';
 import { readStoredChatCommand } from './commands/chat-command-parser.js';
 import { buildOcrFallbackPart } from '../services/luoxu-ocr-service.js';
@@ -468,7 +473,9 @@ const buildUserMessage = async (
     index: ContextNumbering,
     customEmojiAnnotation?: string,
     customEmojiAtlasParts: UnifiedContentPart[] = [],
-    answeredElsewhereNumber?: number
+    answeredElsewhereNumber?: number,
+    messageLinkPlan?: TgMessageLinkPlan,
+    chatTitle?: string | null
 ): Promise<UnifiedMessage> => {
     const replyAnnotations = await buildReplyAnnotations(msg, index);
     const mediaVisible = mediaVisibleToModel(fileContents, capabilities);
@@ -502,6 +509,16 @@ const buildUserMessage = async (
     });
     parts.push(...previewParts);
 
+    // t.me message links: the linked message (+ the one it replies to) and its
+    // media, read from the snapshot cache or our own database.
+    const messageLinkParts = await getTgMessageLinkPreviewParts(
+        msg.chatId,
+        messageLinkPlan,
+        index.numberOf,
+        { chatTitle }
+    );
+    parts.push(...messageLinkParts);
+
     // Viewer danmaku for a bilibili video shared through @bilifeedbot.
     const danmakuPart = await getBilibiliDanmakuPart(msg);
     if (danmakuPart) {
@@ -510,7 +527,7 @@ const buildUserMessage = async (
 
     // Nudges about the attachments the model can really see (watch/listen,
     // sticker emoji, sticker clips).
-    const visibleParts = [...fileContents, ...previewParts].filter((part) =>
+    const visibleParts = [...fileContents, ...previewParts, ...messageLinkParts].filter((part) =>
         partVisibleToModel(part, capabilities)
     );
     for (const nudge of buildMediaNudges(visibleParts)) {
@@ -538,7 +555,9 @@ const buildMessageContent = async (
     index: ContextNumbering,
     customEmojiAnnotation?: string,
     customEmojiAtlasParts: UnifiedContentPart[] = [],
-    answeredElsewhereNumber?: number
+    answeredElsewhereNumber?: number,
+    messageLinkPlan?: TgMessageLinkPlan,
+    chatTitle?: string | null
 ): Promise<UnifiedMessage> =>
     msg.fromBotSelf
         ? buildAssistantMessage(msg, fileContents, index)
@@ -549,7 +568,9 @@ const buildMessageContent = async (
             index,
             customEmojiAnnotation,
             customEmojiAtlasParts,
-            answeredElsewhereNumber
+            answeredElsewhereNumber,
+            messageLinkPlan,
+            chatTitle
         );
 
 /**
@@ -560,6 +581,8 @@ export interface BuildContextOptions {
     capabilities?: ModelCapabilities;
     /** Model id rendered into the runtime block (defaults to the chat's model) */
     model?: string;
+    /** Title of the chat this reply happens in (runtime block); null for private chats */
+    chatTitle?: string | null;
     /** Message IDs to exclude from context (e.g., current bot response when retrying) */
     excludeMessageIds?: number[];
 }
@@ -570,7 +593,10 @@ const isBuildContextOptions = (
 ): value is BuildContextOptions =>
     typeof value === 'object' &&
     value !== null &&
-    ('capabilities' in value || 'excludeMessageIds' in value || 'model' in value);
+    ('capabilities' in value ||
+        'excludeMessageIds' in value ||
+        'model' in value ||
+        'chatTitle' in value);
 
 /** Assembled context: the model-facing turns plus the user roster they involve */
 export interface BuiltContext {
@@ -659,6 +685,17 @@ export const buildContext = async (
 
     const contextMessages = await withMissingReplyTargets(chatId, assembled, excludeMessageIds);
     const index = buildContextNumbering(contextMessages);
+    // Newest-first budget: keeps the current exchange covered when a long
+    // history carries many pasted links.
+    const messageLinkPlan = planTgMessageLinkPreviews(
+        chatId,
+        contextMessages
+            .filter((contextMessage) => !contextMessage.fromBotSelf)
+            .map((contextMessage) => ({
+                messageId: contextMessage.messageId,
+                text: contextMessage.text,
+            }))
+    );
     publishContextNumbering(chatId, messageId, index);
     const repliesInFlightElsewhere = findRepliesInFlightElsewhere(chatId, messageId, index);
 
@@ -685,7 +722,9 @@ export const buildContext = async (
             index,
             customEmojiPlan.annotations.get(contextMsg.messageId),
             contextMsg.messageId === messageId ? customEmojiPlan.atlasParts : [],
-            repliesInFlightElsewhere.get(contextMsg.messageId)
+            repliesInFlightElsewhere.get(contextMsg.messageId),
+            messageLinkPlan.get(contextMsg.messageId),
+            opts.chatTitle ?? null
         ));
     }
 
@@ -695,7 +734,7 @@ export const buildContext = async (
     // request in this tree diverges at this very message and no earlier.
     const runtimeBlock: UnifiedContentPart = {
         type: 'text',
-        text: buildRuntimeContext(model, contextUsers),
+        text: buildRuntimeContext(model, contextUsers, opts.chatTitle ?? null),
     };
     const newestIndex = Math.max(
         0,

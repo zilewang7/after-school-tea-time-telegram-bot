@@ -46,11 +46,19 @@ const rosterLine = (user: ContextUser): string => {
 /**
  * Render the runtime block for the newest message. Humans come first, bots
  * last, so an automated account is never mistaken for a person mid-list.
+ *
+ * `chatTitle` names the group/channel this reply happens in; private chats have
+ * none and are reported as such.
  */
-export const buildRuntimeContext = (model: string, contextUsers: ContextUser[]): string => {
+export const buildRuntimeContext = (
+    model: string,
+    contextUsers: ContextUser[],
+    chatTitle?: string | null
+): string => {
     const lines = [
         '[system] 运行时信息（不是用户说的话）：',
         `- 当前时间：${formatCurrentTime()}`,
+        chatTitle ? `- 当前群聊：${chatTitle}` : '- 当前对话：私聊',
         `- 当前模型：${model}`,
     ];
 

@@ -183,5 +183,12 @@ export const runSchemaMigrations = async (): Promise<void> => {
        VALUES ('20261010_media_cache_duration_seconds', :appliedAt)`,
       { replacements: { appliedAt: new Date().toISOString() }, transaction }
     );
+    // tg_message_link_cache is a brand-new table: sequelize.sync() below creates
+    // it, this row only records that the feature's schema has been applied.
+    await sequelize.query(
+      `INSERT OR IGNORE INTO schema_migrations (name, appliedAt)
+       VALUES ('20261021_tg_message_link_cache', :appliedAt)`,
+      { replacements: { appliedAt: new Date().toISOString() }, transaction }
+    );
   });
 };

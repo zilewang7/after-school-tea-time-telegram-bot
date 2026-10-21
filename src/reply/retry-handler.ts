@@ -19,6 +19,7 @@ import {
     openCodeGoSessionId,
 } from '../ai/index.js';
 import { buildContext, buildContextFromParts } from './context-builder.js';
+import { chatTitleOf } from '../telegram/chat-title.js';
 import { resolveContextRoot } from './context-root.js';
 import { buildReplyToolContext, createReplyTools } from './tools/index.js';
 import { getCurrentModel } from '../state.js';
@@ -266,6 +267,7 @@ const handleChatRetry = async (
     const [ctxErr, builtContext] = await to(buildContext(userMessage, {
         capabilities,
         model,
+        chatTitle: chatTitleOf(ctx.chat),
         excludeMessageIds: [botResponse.messageId], // Exclude the bot response we're retrying
     }));
     if (ctxErr || !builtContext) {
