@@ -310,7 +310,24 @@ const handleEditError = (
     ) {
         // Dead-man switch: offline validation should make rejected entities
         // impossible, but if the server refuses them, deliver the plain text
-        // over delivering nothing.
+        // over delivering nothing. Links are what the server's budgets
+        // usually reject (ENTITIES_TOO_LONG is driven by URL bytes), so drop
+        // them first: the collapsed blocks and styles survive, which is the
+        // difference between a readable reply and a wall of bare text.
+        const linkless = state.entities.filter((entity) => !entity.url);
+        if (linkless.length !== state.entities.length && entry.desired === state) {
+            console.error(
+                '[edit-coordinator] Edit with entities rejected, retrying without links:',
+                message
+            );
+            entry.desired = {
+                ...state,
+                entities: linkless.length ? linkless : undefined,
+                entitiesJson: linkless.length ? JSON.stringify(linkless) : '[]',
+            };
+            return;
+        }
+
         console.error('[edit-coordinator] Edit with entities rejected, degrading to plain text:', message);
         if (entry.desired === state) {
             entry.desired = { ...state, entities: undefined, entitiesJson: '[]' };

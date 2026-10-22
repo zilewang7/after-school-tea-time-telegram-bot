@@ -1,15 +1,11 @@
 /**
  * Final response assembly: collapsed thinking quote + markdown-rendered text
  * + tool-call / sources sections, composed as one entity message and then
- * split into chunks that fit both the length and entity budgets. Formatting
- * spanning a boundary is closed and reopened by splitMessage, so styles are
- * seamless across messages.
+ * split into chunks that fit the length, entity and entity-URL budgets.
+ * Formatting spanning a boundary is closed and reopened by the splitter, so
+ * styles are seamless across messages.
  */
-import {
-    concatMessages,
-    renderMarkdown,
-    splitMessage,
-} from 'telegram-md-entities';
+import { concatMessages, renderMarkdown } from 'telegram-md-entities';
 import type { RenderedMessage } from 'telegram-md-entities';
 import type { AgentStats, GroundingData } from '../../ai/types.js';
 import { buildToolRecordSections } from './tool-records-formatter.js';
@@ -17,6 +13,7 @@ import { buildGoogleSearchSections } from './google-search-formatter.js';
 import { plainText } from './entity-text.js';
 import { renderThinkingQuote } from './quoted-render.js';
 import { linkifyContextNumbers, type ContextLinkResolver } from './context-links.js';
+import { splitWithUrlBudget } from './url-budget-split.js';
 
 /** Safe per-message length budget (below Telegram's 4096 hard limit) */
 const TELEGRAM_MAX_LENGTH = 4000;
@@ -78,7 +75,7 @@ export const buildFinalMessages = (
     const combined = linkifyContextNumbers(concatMessages(...parts), resolveContextLink);
     if (!combined.text.trim()) return [];
 
-    return splitMessage(combined, {
+    return splitWithUrlBudget(combined, {
         maxLength,
         maxEntities: TELEGRAM_MAX_ENTITIES,
     }).filter((chunk) => chunk.text.length > 0);

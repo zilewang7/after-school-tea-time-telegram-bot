@@ -731,6 +731,133 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
         },
     },
     {
+        // 2026-10-22 incident: a turn that searched 29 times kept 39 grounded
+        // sources, whose redirect URLs total ~9.5k UTF-16 units — past the
+        // ~10000 ENTITIES_TOO_LONG budget once the query links join them.
+        // Telegram rejected the final edit, the dead-man switch delivered the
+        // chunk as plain text, and the collapsed GoogleSearch block showed up
+        // expanded and unstyled. The splitter now counts URL bytes as a third
+        // budget, so the footer splits instead of losing its entities.
+        name: 'a search footer splits by URL budget instead of losing its fold',
+        body: async () => {
+            const { buildFinalMessages } = await import(
+                '../../src/telegram/formatters/final-message-builder.js'
+            );
+
+            const redirectUrl = (index: number): string =>
+                `https://vertexaisearch.cloud.google.com/grounding-api-redirect/AUZIYQ${String(index).padStart(4, '0')}${'x'.repeat(200)}`;
+            const searchQueries = Array.from({ length: 29 }, (_, i) => `查询 ${i + 1}`);
+
+            const chunks = buildFinalMessages({
+                text: '正文。\n'.repeat(40),
+                groundingData: [
+                    {
+                        searchQueries,
+                        groundingChunks: Array.from({ length: 39 }, (_, i) => ({
+                            web: { uri: redirectUrl(i + 1), title: `example${i + 1}.com` },
+                        })),
+                    },
+                ],
+            });
+
+            const urlBytes = (chunk: (typeof chunks)[number]): number =>
+                chunk.entities.reduce(
+                    (total, entity) => total + (entity.url ? entity.url.length + 20 : 0),
+                    0
+                );
+
+            expect(
+                chunks.filter((chunk) => urlBytes(chunk) > 0).length > 1,
+                `the footer splits across messages (got ${chunks.length} chunks)`
+            );
+            expect(
+                chunks.every((chunk) => urlBytes(chunk) <= 9000),
+                `every chunk stays inside the URL budget (got ${chunks
+                    .map((chunk) => urlBytes(chunk))
+                    .join(', ')})`
+            );
+            expect(
+                chunks.some((chunk) => chunk.text.includes('GoogleSearch')),
+                'the GoogleSearch title survives the split'
+            );
+
+            const foldedChunks = chunks.filter((chunk) =>
+                chunk.entities.some((entity) => entity.type === 'expandable_blockquote')
+            );
+            expect(
+                foldedChunks.length >= 2,
+                `both halves of the footer stay collapsible (got ${foldedChunks.length})`
+            );
+
+            const joined = chunks.map((chunk) => chunk.text).join('\n');
+            expect(
+                joined.includes('example39.com'),
+                'the last source still renders after the split'
+            );
+        },
+    },
+    {
+        // Last line of defence behind the splitter budget: if the server still
+        // refuses the entities, drop the links only. Stripping every entity is
+        // what turned a collapsed block into a wall of bare text.
+        name: 'a rejected entity edit retries without links before going plain',
+        body: async () => {
+            const { submitEdit } = await import('../../src/telegram/edit-coordinator.js');
+            const { GrammyError } = await import('grammy');
+
+            type Sent = { entities?: readonly { type: string; url?: string }[] };
+            const attempts: Sent[] = [];
+            const reject = () =>
+                new GrammyError(
+                    "Call to 'editMessageText' failed!",
+                    { error_code: 400, description: 'Bad Request: ENTITIES_TOO_LONG' },
+                    'editMessageText',
+                    { ok: false, error_code: 400, description: 'Bad Request: ENTITIES_TOO_LONG' }
+                );
+
+            const api = {
+                async editMessageText(
+                    _chatId: number | string,
+                    _messageId: number,
+                    _text: string,
+                    other: Sent
+                ): Promise<true> {
+                    attempts.push({ entities: other.entities });
+                    // The server only refuses the URL payload
+                    if (other.entities?.some((entity) => entity.url)) throw reject();
+                    return true;
+                },
+            };
+
+            const delivered = await submitEdit(
+                api as never,
+                -1009999001,
+                7,
+                'GoogleSearch body',
+                {
+                    entities: [
+                        { type: 'expandable_blockquote', offset: 0, length: 18 },
+                        {
+                            type: 'text_link',
+                            offset: 0,
+                            length: 7,
+                            url: 'https://vertexaisearch.cloud.google.com/grounding-api-redirect/x',
+                        },
+                    ],
+                    isFinal: true,
+                }
+            );
+
+            expect(delivered, 'the linkless retry is delivered, not dropped');
+            expect(attempts.length === 2, `exactly one retry (got ${attempts.length})`);
+            const retried = attempts[1]?.entities ?? [];
+            expect(
+                retried.length === 1 && retried[0]?.type === 'expandable_blockquote',
+                `only the link is dropped, the fold survives (got ${JSON.stringify(retried)})`
+            );
+        },
+    },
+    {
         // Every rule the help text promises, on the pure selector. Each one used
         // to be broken by the inline version this replaced.
         name: '/chat attaches the messages the help text promises',
