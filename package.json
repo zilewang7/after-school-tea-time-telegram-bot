@@ -46,7 +46,7 @@
     "openai": "^6.47.0",
     "socks-proxy-agent": "^10.1.0",
     "sqlite3": "^6.0.1",
-    "telegram-md-entities": "^0.6.0",
+    "telegram-md-entities": "^0.7.2",
     "ts-pattern": "^5.9.0",
     "undici": "^8.11.2"
   },

@@ -5,7 +5,7 @@
  * Formatting spanning a boundary is closed and reopened by the splitter, so
  * styles are seamless across messages.
  */
-import { concatMessages, renderMarkdown } from 'telegram-md-entities';
+import { concatMessages, renderMarkdown, splitMessage } from 'telegram-md-entities';
 import type { RenderedMessage } from 'telegram-md-entities';
 import type { AgentStats, GroundingData } from '../../ai/types.js';
 import { buildToolRecordSections } from './tool-records-formatter.js';
@@ -13,7 +13,6 @@ import { buildGoogleSearchSections } from './google-search-formatter.js';
 import { plainText } from './entity-text.js';
 import { renderThinkingQuote } from './quoted-render.js';
 import { linkifyContextNumbers, type ContextLinkResolver } from './context-links.js';
-import { splitWithUrlBudget } from './url-budget-split.js';
 
 /** Safe per-message length budget (below Telegram's 4096 hard limit) */
 const TELEGRAM_MAX_LENGTH = 4000;
@@ -75,7 +74,7 @@ export const buildFinalMessages = (
     const combined = linkifyContextNumbers(concatMessages(...parts), resolveContextLink);
     if (!combined.text.trim()) return [];
 
-    return splitWithUrlBudget(combined, {
+    return splitMessage(combined, {
         maxLength,
         maxEntities: TELEGRAM_MAX_ENTITIES,
     }).filter((chunk) => chunk.text.length > 0);
