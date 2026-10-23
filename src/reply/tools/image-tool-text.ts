@@ -4,7 +4,13 @@
  * can pin the wording without a network or a Telegram client.
  */
 import type { SearchCandidate, SearchSet, ReplyMediaState } from './reply-media-state.js';
-import { unseenCandidates } from './reply-media-state.js';
+import {
+    MAX_IMAGE_FETCHES,
+    MAX_IMAGE_SEARCHES,
+    MAX_SEARCH_PAGES,
+    MAX_SEARCH_THUMBNAILS,
+    unseenCandidates,
+} from './reply-media-state.js';
 
 /** Ids as the model reads them: `s1 s2 s3` */
 const idList = (candidates: readonly SearchCandidate[]): string =>
@@ -28,8 +34,8 @@ export const formatCandidateLine = (candidate: SearchCandidate, options: { withP
 
 /** The reply's remaining budgets, in one short line */
 export const formatBudgetLine = (state: ReplyMediaState): string =>
-    `本条回复已用：搜索 ${state.searchCount}/3、翻页 ${state.searchPageCount}/4、` +
-    `缩略图 ${state.thumbnailCount}/24、读图 ${state.fetchCount}/4`;
+    `本条回复已用：搜索 ${state.searchCount}/${MAX_IMAGE_SEARCHES}、翻页 ${state.searchPageCount}/${MAX_SEARCH_PAGES}、` +
+    `缩略图 ${state.thumbnailCount}/${MAX_SEARCH_THUMBNAILS}、读图 ${state.fetchCount}/${MAX_IMAGE_FETCHES}`;
 
 export interface SearchTextInput {
     readonly set: SearchSet;
@@ -56,6 +62,10 @@ const attachLines = (input: SearchTextInput): string[] => {
     return lines;
 };
 
+/** Once enough is on screen, searching again only burns the remaining rounds */
+const mustSendNow = (state: ReplyMediaState): boolean =>
+    state.searchCount >= MAX_IMAGE_SEARCHES || state.thumbnailCount >= 8;
+
 const nextStepLines = (input: SearchTextInput, unseen: readonly SearchCandidate[]): string[] => {
     const lines: string[] = [];
     const { set } = input;
@@ -73,6 +83,10 @@ const nextStepLines = (input: SearchTextInput, unseen: readonly SearchCandidate[
         }
     }
     lines.push(`- 确定要发：send_image(search_id='${set.candidates[0]?.id ?? 's1'}')`);
+    if (mustSendNow(input.state)) {
+        lines.unshift('⚠️ 已经看过足够多（搜索 ' + input.state.searchCount + ' 次、缩略图 ' + input.state.thumbnailCount + ' 张）：' +
+            '现在必须用 send_image 挑一张发出去，不要再搜索或翻页——工具轮次用光就发不出图了。');
+    }
     return lines;
 };
 
@@ -161,10 +175,12 @@ export const formatSendResult = (input: {
 
 /** Error answers; every one names the next thing to try */
 export const mediaToolErrors = {
-    searchBudget: '这条回复已经搜了 3 次图了。直接发已有的候选（send_image），或问用户要不要换个说法/画一张。',
+    searchBudget:
+        `这条回复已经搜了 ${MAX_IMAGE_SEARCHES} 次图了。直接用 send_image 发已有的候选；` +
+        '都不合适就问用户要不要换个说法，或直接发最接近的一张。',
     pageBudget: '这条回复的翻页次数用完了。可以直接 send_image 发已有候选，或用 fetch_image 单独看某一张。',
     thumbnailBudget:
-        '缩略图额度用完了（24 张）。用 fetch_image(search_id=…) 看单张，或直接 send_image 发已经看到的。',
+        `缩略图额度用完了（${MAX_SEARCH_THUMBNAILS} 张）。直接 send_image 发已经看到的，别再搜了。`,
     noMoreThumbnails: (setId: string) =>
         `${setId} 的候选都看过了。可以换一个 query、用 fetch_image 看原图，或直接 send_image。`,
     unknownSet: (setId: string, state: ReplyMediaState) => {

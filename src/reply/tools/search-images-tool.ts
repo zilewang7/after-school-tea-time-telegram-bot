@@ -34,15 +34,16 @@ const DESCRIPTION_WITH_IMAGES =
     '返回编号 s1、s2…，尺寸/格式/来源页。本回复的第一次搜索先附 3 张缩略图；' +
     '之后每次搜索（包括换关键词）都会把该批剩下的缩略图一次全给你（不会重复搜索）。' +
     "只想看文字清单用 view='details'；想单张细看用 fetch_image。" +
-    '确定要发哪张就用 send_image(search_id=…)。' +
+    '一条回复最多搜 2 次：看过就立刻用 send_image 挑一张发出去，' +
+    '别把工具轮次都花在搜索上，轮次用光就发不出图。' +
     '用户要的是“找现成的图”时用本工具；只有用户明确要“画一张/改图”才用 generate_image。';
 
 /** For a model that cannot see: no thumbnails are attached, so do not promise any */
 const DESCRIPTION_TEXT_ONLY =
     '在网上搜索真实存在的图片（表情包、梗图、截图、新闻图、参考照片）。' +
     '返回编号 s1、s2…，尺寸/格式/来源页和候选清单。' +
-    '你看不到图片内容，按标题、尺寸和来源挑；' +
-    '确定要发哪张就用 send_image(search_id=…)。' +
+    '你看不到图片内容，按标题、尺寸和来源挑。' +
+    '一条回复最多搜 2 次：挑到就用 send_image 发，别把工具轮次花在搜索上。' +
     '用户要的是“现成的图”时用本工具；只有用户明确要“画一张/改图”才用 generate_image。';
 
 const INPUT_SCHEMA = {

@@ -137,6 +137,10 @@ const cases = [
             expect(second.modelImages?.length === 5, `the rest comes at once (got ${second.modelImages?.length ?? 0})`);
             expect(state.thumbnailCount === 8, `all eight thumbnails were spent (got ${state.thumbnailCount})`);
             expect(second.content.includes('这批缩略图都看过了'), 'the text says the batch is done');
+            expect(
+                second.content.includes('必须用 send_image'),
+                'after a full batch the tool tells the model to send instead of searching again'
+            );
 
             const third = await tool.execute({ search: 'q1' }, AbortSignal.abort());
             expect(third.isError && third.content.includes('都看过了'), 'asking again is an error that explains');
@@ -278,15 +282,15 @@ const cases = [
         },
     },
     {
-        name: 'the search budget is three searches per reply',
+        name: 'the search budget is two searches per reply',
         body: async (): Promise<void> => {
             const state = createReplyMediaState(null);
             const tool = searchToolWith(state, searchStub());
-            for (const query of ['a', 'b', 'c']) {
+            for (const query of ['a', 'b']) {
                 await tool.execute({ query }, AbortSignal.abort());
             }
-            const refused = await tool.execute({ query: 'd' }, AbortSignal.abort());
-            expect(refused.isError && refused.content.includes('搜了 3 次'), 'the fourth search is refused');
+            const refused = await tool.execute({ query: 'c' }, AbortSignal.abort());
+            expect(refused.isError && refused.content.includes('搜了 2 次'), 'the third search is refused');
             expect(state.searchCount === MAX_IMAGE_SEARCHES, 'and the count is the limit');
         },
     },

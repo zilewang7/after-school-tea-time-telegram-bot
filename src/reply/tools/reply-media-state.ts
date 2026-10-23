@@ -13,12 +13,16 @@
  */
 import type { SniffedImageMime } from '../../ai/image-generation/image-mime.js';
 
-/** Searches a reply may run (each one hits SearXNG) */
-export const MAX_IMAGE_SEARCHES = 3;
+/**
+ * Searches a reply may run (each one hits SearXNG). Two is deliberate: the
+ * tool rounds are finite, and a reply that spends them all searching can no
+ * longer send the picture it found (live, 2026-10-23).
+ */
+export const MAX_IMAGE_SEARCHES = 2;
 /** Paging / details calls a reply may make (no network) */
 export const MAX_SEARCH_PAGES = 4;
-/** Safety net across all searches, not a working limit */
-export const MAX_SEARCH_THUMBNAILS = 24;
+/** Safety net across all searches: two full batches (3 + 5 + 8) */
+export const MAX_SEARCH_THUMBNAILS = 16;
 /** fetch_image calls per reply; re-reading the same image is free */
 export const MAX_IMAGE_FETCHES = 4;
 /** Thumbnails in the reply's very first window */

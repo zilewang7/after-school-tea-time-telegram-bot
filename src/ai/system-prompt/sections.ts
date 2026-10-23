@@ -92,8 +92,9 @@ const searchImageLines = (canDraw: boolean): string[] => [
     '- 用户要“找图/表情包/截图/这张图”时，先用 `search_images` 找真实存在的图，再用 `send_image` 发；' +
         (canDraw ? '只有用户明确要“画一张/改图”，或找不到且用户同意时，才用 `generate_image`。' : ''),
     '- `search_images` 第一次只附 3 张缩略图；都不合适就用 `search_images(search=\'q1\')` 继续看，' +
-        '不要硬发第一张' +
-        (canDraw ? '，也不要因为没挑到就直接转去生图。' : '。'),
+        '但一条回复最多搜 2 次：看过就立刻 `send_image` 发一张，' +
+        '不要把工具轮次都花在搜索上，轮次用光就发不出图了' +
+        (canDraw ? '；也不要因为没挑到就直接转去生图。' : '。'),
 ];
 
 const IMAGE_FETCH_LINE =
