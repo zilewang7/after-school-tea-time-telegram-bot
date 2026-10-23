@@ -18,7 +18,7 @@ import {
     createToolUsageTally,
     finalRoundReason,
     runToolRound,
-    withToolRoundsLeft,
+    withToolBudget,
     TOOL_LOOP_DEADLINE_MS,
     type ToolCall,
     type TurnTools,
@@ -134,7 +134,11 @@ export async function* runGrokToolLoop(
             final = true;
         }
         const roundsLeft = final ? 0 : Math.max(0, MAX_ROUNDS - 1 - roundCount);
-        const answeredCalls = withToolRoundsLeft(executedCalls, roundsLeft);
+        const answeredCalls = withToolBudget(executedCalls, {
+            roundsLeft,
+            elapsedMs: deadlineMs - Math.max(0, deadlineAt - Date.now()),
+            deadlineMs,
+        });
         stream = await options.openContinuation(
             buildContinuationRequest(
                 acceptedRequest,

@@ -93,7 +93,7 @@ const asRecord = (value: unknown): Record<string, unknown> =>
 const asArray = (value: unknown): unknown[] => (Array.isArray(value) ? value : []);
 
 /** The per-call tool-rounds line is injected by the loops; comparisons ignore it */
-const withoutRoundsLeft = (text: string): string => text.replace(/\n\n\[工具轮次\][^\n]*/g, '');
+const withoutRoundsLeft = (text: string): string => text.replace(/\n\n\[工具轮次\][^\n]*(?:\n\[时间\][^\n]*)?/g, '');
 const json = (value: unknown): string =>
     JSON.stringify(value, (_key, item: unknown) => (typeof item === 'string' ? withoutRoundsLeft(item) : item));
 
@@ -982,7 +982,11 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
                     `next to output and error (got ${json(partsOf(contentsOf(recordedRequests[2])[4]))})`
                 );
                 expect(
-                    lines.some((line) => line.includes('deadline (180s) passed') && line.includes('notice on the round 2 responses')),
+                    lines.some(
+                        (line) =>
+                            line.includes(`deadline (${Math.round(TOOL_LOOP_DEADLINE_MS / 1000)}s) passed`) &&
+                            line.includes('notice on the round 2 responses')
+                    ),
                     'the deadline and the notice are logged'
                 );
                 expect(executions.length === 3, 'the calls of rounds 1 and 2 still ran');

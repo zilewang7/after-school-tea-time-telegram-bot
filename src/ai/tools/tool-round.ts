@@ -19,14 +19,38 @@ export const toolRoundsLeftNotice = (remaining: number): string =>
         ? '[工具轮次] 本次调用后不能再调用工具了，下一步必须直接用文字回答。'
         : `[工具轮次] 本次调用后最多还能调用工具 ${remaining} 次（用完就只能用文字回答）。`;
 
-/** The same results with the remaining tool rounds appended to what the model reads */
-export const withToolRoundsLeft = (
+const secondsOf = (ms: number): number => Math.max(0, Math.round(ms / 1000));
+
+/**
+ * The same budget as a clock: a tool round can take a minute on a big
+ * picture-heavy prompt, so the model needs to know how much wall clock is left
+ * to spend on looking before it must send (live 1106627/1941: it believed it
+ * had rounds left and ran into the tight deadline instead).
+ */
+export const toolTimeNotice = (timing: { elapsedMs: number; deadlineMs: number }): string =>
+    `[时间] 已用 ${secondsOf(timing.elapsedMs)}s / 共 ${secondsOf(timing.deadlineMs)}s，` +
+    `还剩 ${secondsOf(timing.deadlineMs - timing.elapsedMs)}s（用尽会被强制收尾，图就发不出去）。`;
+
+/** What a tool result tells the model about its remaining budget */
+export interface ToolBudget {
+    readonly roundsLeft: number;
+    readonly elapsedMs: number;
+    readonly deadlineMs: number;
+}
+
+/** The same results with the remaining rounds and wall clock appended */
+export const withToolBudget = (
     executedCalls: readonly ExecutedToolCall[],
-    remaining: number
+    budget: ToolBudget
 ): ExecutedToolCall[] =>
     executedCalls.map(({ call, result }) => ({
         call,
-        result: { ...result, content: `${result.content}\n\n${toolRoundsLeftNotice(remaining)}` },
+        result: {
+            ...result,
+            content:
+                `${result.content}\n\n${toolRoundsLeftNotice(budget.roundsLeft)}\n` +
+                toolTimeNotice(budget),
+        },
     }));
 
 /** Per-reply call counts for agentStats.toolUsage */

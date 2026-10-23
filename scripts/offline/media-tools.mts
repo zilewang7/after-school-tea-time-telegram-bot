@@ -332,20 +332,36 @@ const cases = [
         },
     },
     {
-        name: 'the remaining tool rounds are appended to what the model reads',
+        name: 'the remaining rounds and wall clock are appended to what the model reads',
         body: async (): Promise<void> => {
-            const { toolRoundsLeftNotice, withToolRoundsLeft } = await import('../../src/ai/tools/tool-round.js');
+            const { toolRoundsLeftNotice, toolTimeNotice, withToolBudget } = await import(
+                '../../src/ai/tools/tool-round.js'
+            );
             const base: ToolResult = { content: 'sunny in Paris', isError: false, images: [], record: null };
             const call: ToolCall = { id: 'call_1', name: 'lookup', argumentsJson: '{}' };
-            const [decorated] = withToolRoundsLeft([{ call, result: base }], 5);
+            const [decorated] = withToolBudget([{ call, result: base }], {
+                roundsLeft: 5,
+                elapsedMs: 95_000,
+                deadlineMs: 300_000,
+            });
             expect(
-                decorated?.result.content === `sunny in Paris\n\n${toolRoundsLeftNotice(5)}`,
-                `the count rides in the result (got ${decorated?.result.content})`
+                decorated?.result.content ===
+                    `sunny in Paris\n\n${toolRoundsLeftNotice(5)}\n${toolTimeNotice({ elapsedMs: 95_000, deadlineMs: 300_000 })}`,
+                `both budgets ride in the result (got ${decorated?.result.content})`
             );
             expect(toolRoundsLeftNotice(5).includes('5'), 'the number is the one passed');
             expect(
                 toolRoundsLeftNotice(0).includes('不能再调用工具'),
                 'zero says the next step must be the answer'
+            );
+            expect(
+                toolTimeNotice({ elapsedMs: 95_000, deadlineMs: 300_000 }).includes('95s / 共 300s') &&
+                    toolTimeNotice({ elapsedMs: 95_000, deadlineMs: 300_000 }).includes('还剩 205s'),
+                'the clock says how long the reply has been running and how long is left'
+            );
+            expect(
+                toolTimeNotice({ elapsedMs: 400_000, deadlineMs: 300_000 }).includes('还剩 0s'),
+                'an overrun never shows negative time'
             );
         },
     },

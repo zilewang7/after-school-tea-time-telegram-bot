@@ -175,7 +175,7 @@ const asRecord = (value: unknown): Record<string, unknown> =>
 const asArray = (value: unknown): unknown[] => (Array.isArray(value) ? value : []);
 
 /** The per-call tool-rounds line is injected by the loops; comparisons ignore it */
-const withoutRoundsLeft = (text: string): string => text.replace(/\n\n\[工具轮次\][^\n]*/g, '');
+const withoutRoundsLeft = (text: string): string => text.replace(/\n\n\[工具轮次\][^\n]*(?:\n\[时间\][^\n]*)?/g, '');
 const json = (value: unknown): string =>
     JSON.stringify(value, (_key, item: unknown) => (typeof item === 'string' ? withoutRoundsLeft(item) : item));
 

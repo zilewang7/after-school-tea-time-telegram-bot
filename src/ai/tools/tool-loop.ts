@@ -14,14 +14,22 @@ import { createRoundTextSeparator } from './round-text-separator.js';
 import {
     createToolUsageTally,
     runToolRound,
-    withToolRoundsLeft,
+    withToolBudget,
     type ExecutedToolCall,
     type ToolUsageTally,
 } from './tool-round.js';
 import type { ToolCall, TurnTools } from './tool-types.js';
 
-/** Wall-clock budget of one reply's tool loop, counted from its first request */
-export const TOOL_LOOP_DEADLINE_MS = 180_000;
+/**
+ * Wall-clock budget of one reply's tool loop, counted from its first request.
+ *
+ * Was 180s. With the media budgets gone a reply may search and read for a long
+ * time, and one round on a picture-heavy prompt takes 30-160s by itself (live
+ * 1941: four searches and three reads filled 180s before it could send the
+ * picture). 300s fits about nine such rounds; the count and the deadline the
+ * model is told about stay the real bounds.
+ */
+export const TOOL_LOOP_DEADLINE_MS = 300_000;
 
 export interface CollectedToolRound {
     /** The round's text and thinking chunks, in stream order */
@@ -127,7 +135,11 @@ export async function* runToolLoop<Round extends CollectedToolRound>(
         const executedCalls = yield* runToolRound(tools, round.toolCalls, tally, signal);
         options.appendRound(
             round,
-            withToolRoundsLeft(executedCalls, roundsLeftAfter(roundIndex, maxToolRounds, deadlineAt, deadlineMs))
+            withToolBudget(executedCalls, {
+                roundsLeft: roundsLeftAfter(roundIndex, maxToolRounds, deadlineAt, deadlineMs),
+                elapsedMs: deadlineMs - Math.max(0, deadlineAt - Date.now()),
+                deadlineMs,
+            })
         );
     }
 }

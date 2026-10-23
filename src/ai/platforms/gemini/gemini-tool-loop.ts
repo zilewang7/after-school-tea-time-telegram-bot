@@ -31,7 +31,7 @@ import { finalRoundReason, TOOL_LOOP_DEADLINE_MS } from '../../tools/tool-loop.j
 import {
     createToolUsageTally,
     runToolRound,
-    withToolRoundsLeft,
+    withToolBudget,
     type ToolUsageTally,
 } from '../../tools/tool-round.js';
 import type { TurnTools } from '../../tools/tool-types.js';
@@ -61,8 +61,9 @@ import {
  * send), so a reply could run out of rounds before sending the picture it had
  * already found (live 1106440). Twelve of the rounds may call tools: the model
  * decides how much to search and it is told what is left after every call, so
- * the count only has to be generous enough to finish in. The 180s deadline
- * stays the real bound — it is hit long before twelve rounds of real work.
+ * the count only has to be generous enough to finish in. The wall clock
+ * (TOOL_LOOP_DEADLINE_MS) stays the real bound and is now told to the model in
+ * every tool result, so it can send the picture before the time runs out.
  */
 export const GEMINI_MAX_ROUNDS = 13;
 
@@ -218,7 +219,11 @@ export async function* runGeminiToolLoop(
                 finalReason !== null
                     ? 0
                     : Math.max(0, GEMINI_MAX_ROUNDS - 1 - roundNumber);
-            const answeredCalls = withToolRoundsLeft(executedCalls, roundsLeft);
+            const answeredCalls = withToolBudget(executedCalls, {
+                roundsLeft,
+                elapsedMs: Date.now() - startedAt,
+                deadlineMs,
+            });
             toolRounds.push({
                 modelParts: round.parts,
                 responseParts: buildFunctionResponseParts(
