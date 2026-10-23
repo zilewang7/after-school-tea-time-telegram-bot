@@ -9,7 +9,7 @@
 import type { ToolHandler } from '../../ai/tools/tool-types.js';
 import { fetchImageBytes } from '../../services/image-fetch-service.js';
 import { imageToolError } from './image-tool-result.js';
-import { formatFetchResult, formatBudgetLine, mediaToolErrors, mustSendNow } from './image-tool-text.js';
+import { formatFetchResult, formatBudgetLine, mediaToolErrors } from './image-tool-text.js';
 import {
     candidateCaption,
     downloadCandidateImage,
@@ -111,9 +111,6 @@ export const createFetchImageTool = (options: FetchImageToolOptions): ToolHandle
             }
 
             if (!canFetchImage(state)) return imageToolError(mediaToolErrors.fetchBudget);
-            // After a whole batch, sending is the only move left: a fetch round
-            // is exactly what starved send_image in the 1106440 replay.
-            if (mustSendNow(state)) return imageToolError(mediaToolErrors.sendNow(state));
 
             const candidate =
                 args.searchId !== undefined

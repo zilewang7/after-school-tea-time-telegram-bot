@@ -12,7 +12,7 @@ import type { ImageSearchOptions, ImageSearchOutcome, SearchedImage } from '../.
 import type { SniffedImageMime } from '../../ai/image-generation/image-mime.js';
 import type { ToolHandler } from '../../ai/tools/tool-types.js';
 import { imageToolError } from './image-tool-result.js';
-import { formatSearchResult, mediaToolErrors, mustSendNow } from './image-tool-text.js';
+import { formatSearchResult, mediaToolErrors } from './image-tool-text.js';
 import { parseSearchImagesArgs } from './media-tool-args.js';
 import {
     addAllowedUrls,
@@ -34,7 +34,7 @@ const DESCRIPTION_WITH_IMAGES =
     '返回编号 s1、s2…，尺寸/格式/来源页。本回复的第一次搜索先附 3 张缩略图；' +
     '之后每次搜索（包括换关键词）都会把该批剩下的缩略图一次全给你（不会重复搜索）。' +
     "只想看文字清单用 view='details'；想单张细看用 fetch_image。" +
-    '一条回复最多搜 2 次：看过就立刻用 send_image 挑一张发出去，' +
+    '看到合适的就尽快用 send_image 发出去，别把工具轮次都花在搜索上；' +
     '别把工具轮次都花在搜索上，轮次用光就发不出图。' +
     '用户要的是“找现成的图”时用本工具；只有用户明确要“画一张/改图”才用 generate_image。';
 
@@ -43,7 +43,7 @@ const DESCRIPTION_TEXT_ONLY =
     '在网上搜索真实存在的图片（表情包、梗图、截图、新闻图、参考照片）。' +
     '返回编号 s1、s2…，尺寸/格式/来源页和候选清单。' +
     '你看不到图片内容，按标题、尺寸和来源挑。' +
-    '一条回复最多搜 2 次：挑到就用 send_image 发，别把工具轮次花在搜索上。' +
+    '挑到就用 send_image 发，别把工具轮次花在搜索上。' +
     '用户要的是“现成的图”时用本工具；只有用户明确要“画一张/改图”才用 generate_image。';
 
 const INPUT_SCHEMA = {
@@ -237,8 +237,6 @@ export const createSearchImagesTool = (options: SearchImagesToolOptions): ToolHa
             if (!parsed.ok) return imageToolError(parsed.error);
             const args = parsed.args;
 
-            // A whole batch is already on screen: only send_image can move this reply on
-            if (mustSendNow(state)) return imageToolError(mediaToolErrors.sendNow(state));
 
             // A brand-new search is not a page; paging, reusing a query and
             // details all spend the (smaller) paging budget.

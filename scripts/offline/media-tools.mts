@@ -138,14 +138,14 @@ const cases = [
             expect(state.thumbnailCount === 8, `all eight thumbnails were spent (got ${state.thumbnailCount})`);
             expect(second.content.includes('这批缩略图都看过了'), 'the text says the batch is done');
             expect(
-                second.content.includes('必须用 send_image'),
-                'after a full batch the tool tells the model to send instead of searching again'
+                second.content.includes('💡') && second.content.includes('send_image'),
+                'after a full batch the tool suggests sending instead of searching again'
             );
 
             const third = await tool.execute({ search: 'q1' }, AbortSignal.abort());
             expect(
-                third.isError && third.content.includes('必须调用 send_image'),
-                `after a whole batch only sending is allowed (got ${third.content.slice(0, 80)})`
+                third.isError && third.content.includes('都看过了'),
+                `nothing is left to show in q1 (got ${third.content.slice(0, 80)})`
             );
             expect(stub.calls.length === 1, `SearXNG was hit once (got ${stub.calls.length})`);
         },
@@ -285,7 +285,7 @@ const cases = [
         },
     },
     {
-        name: 'after a whole batch only send_image can run',
+        name: 'after a whole batch searching on is allowed, and the text suggests sending',
         body: async (): Promise<void> => {
             const state = createReplyMediaState(null);
             const tool = searchToolWith(state, searchStub());
@@ -294,40 +294,26 @@ const cases = [
             expect(state.thumbnailCount === 8, `the whole batch is on screen (got ${state.thumbnailCount})`);
 
             const searchAgain = await tool.execute({ query: '换个词' }, AbortSignal.abort());
+            expect(!searchAgain.isError, 'the model may keep looking if it wants to');
             expect(
-                searchAgain.isError && searchAgain.content.includes('必须调用 send_image'),
-                `a new search is refused (got ${searchAgain.content.slice(0, 80)})`
+                searchAgain.content.includes('💡') && searchAgain.content.includes('send_image'),
+                'but the result keeps suggesting to send'
             );
-
-            const fetch = createFetchImageTool({
-                state,
-                dependencies: {
-                    fetchImage: async () => ({
-                        ok: true,
-                        image: { data: PNG, mimeType: 'image/png', finalUrl: 'https://cdn.example.com/img-1.jpg' },
-                    }),
-                },
-            });
-            const read = await fetch.execute({ search_id: 's1' }, AbortSignal.abort());
-            expect(
-                read.isError && read.content.includes('必须调用 send_image'),
-                `reading another image is refused (got ${read.content.slice(0, 80)})`
-            );
-            expect(read.content.includes("search_id='s1'"), 'and the refusal names a candidate to send');
         },
     },
     {
-        name: 'the search budget is two searches per reply',
+        name: 'the search budget is three searches per reply',
         body: async (): Promise<void> => {
             const state = createReplyMediaState(null);
             const tool = searchToolWith(state, searchStub());
-            await tool.execute({ query: 'a' }, AbortSignal.abort());
-            const secondSearch = await tool.execute({ query: 'b' }, AbortSignal.abort());
-            expect(!secondSearch.isError, 'the second search still runs');
-            const refused = await tool.execute({ query: 'c' }, AbortSignal.abort());
+            for (const query of ['a', 'b', 'c']) {
+                const allowed = await tool.execute({ query }, AbortSignal.abort());
+                expect(!allowed.isError, `search ${query} runs`);
+            }
+            const refused = await tool.execute({ query: 'd' }, AbortSignal.abort());
             expect(
-                refused.isError && refused.content.includes('必须调用 send_image'),
-                'once a batch is seen, a third search is refused and points at send_image'
+                refused.isError && refused.content.includes('搜了 3 次'),
+                `the fourth search is refused (got ${refused.content.slice(0, 60)})`
             );
             expect(state.searchCount === MAX_IMAGE_SEARCHES, 'and the count is the limit');
         },
