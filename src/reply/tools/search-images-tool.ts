@@ -9,8 +9,7 @@
  */
 import type { ImageFetchOutcome } from '../../services/image-fetch-service.js';
 import type { ImageSearchOptions, ImageSearchOutcome, SearchedImage } from '../../services/image-search-service.js';
-import type { SniffedImageMime } from '../../ai/image-generation/image-mime.js';
-import type { ToolHandler } from '../../ai/tools/tool-types.js';
+import type { ToolHandler, ToolModelImage } from '../../ai/tools/tool-types.js';
 import { imageToolError } from './image-tool-result.js';
 import { formatSearchResult, mediaToolErrors } from './image-tool-text.js';
 import { parseSearchImagesArgs } from './media-tool-args.js';
@@ -99,7 +98,7 @@ const toCandidate = (searchId: string, id: string, image: SearchedImage): Search
     ...(image.width === undefined ? {} : { width: image.width }),
     ...(image.height === undefined ? {} : { height: image.height }),
     ...(image.format === undefined ? {} : { format: image.format }),
-    originalSendable: image.originalSendable,
+    sendKind: image.sendKind,
 });
 
 const newSearchSet = (
@@ -127,7 +126,7 @@ const findExistingSet = (state: ReplyMediaState, query: string): SearchSet | und
 interface AttachedThumbnails {
     readonly attached: readonly SearchCandidate[];
     readonly failed: readonly SearchCandidate[];
-    readonly modelImages: readonly { data: Buffer; mimeType: SniffedImageMime; caption: string }[];
+    readonly modelImages: readonly ToolModelImage[];
 }
 
 /** Download this window's thumbnails; failures are reported, not fatal */
@@ -147,7 +146,7 @@ const attachThumbnails = async (
 
     const attached: SearchCandidate[] = [];
     const failed: SearchCandidate[] = [];
-    const modelImages: { data: Buffer; mimeType: SniffedImageMime; caption: string }[] = [];
+    const modelImages: ToolModelImage[] = [];
 
     for (const { candidate, outcome } of results) {
         if (!outcome.ok) {

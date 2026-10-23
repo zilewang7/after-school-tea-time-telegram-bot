@@ -12,7 +12,8 @@
  * shows three pictures, every later search shows whatever is still unseen.
  * Round trips cost more than image tokens here (see the design doc).
  */
-import type { SniffedImageMime } from '../../ai/image-generation/image-mime.js';
+import type { SniffedMediaMime } from '../../ai/image-generation/image-mime.js';
+import type { SendKind } from '../../services/image-search-service.js';
 
 /** Thumbnails in the reply's very first window */
 export const FIRST_THUMBNAIL_WINDOW = 3;
@@ -32,8 +33,8 @@ export interface SearchCandidate {
     readonly width?: number;
     readonly height?: number;
     readonly format?: string;
-    /** False for GIF/SVG/unknown originals: only the thumbnail can be sent */
-    readonly originalSendable: boolean;
+    /** static: sendable as a photo; animated: a GIF; unsupported: only the thumbnail */
+    readonly sendKind: SendKind;
 }
 
 export interface SearchSet {
@@ -49,8 +50,14 @@ export interface SearchSet {
 export interface FetchedImage {
     /** `img1`, … */
     readonly id: string;
+    /** Bytes to deliver: the GIF original, or the static picture */
     readonly data: Buffer;
-    readonly mimeType: SniffedImageMime;
+    readonly mimeType: SniffedMediaMime;
+    /** The frame the model reads and generate_image may reference */
+    readonly still: {
+        readonly data: Buffer;
+        readonly mimeType: SniffedMediaMime;
+    };
     readonly sourcePage: string;
     readonly title?: string;
     readonly imageUrl: string;

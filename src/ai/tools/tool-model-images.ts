@@ -4,6 +4,7 @@
  * this file holds the parts that are the same everywhere: which images a round
  * produced, their data URLs and the label that ties them to the tool result.
  */
+import type { SniffedImageMime } from '../image-generation/image-mime.js';
 import type { ExecutedToolCall } from './tool-round.js';
 import type { ToolModelImage } from './tool-types.js';
 
@@ -25,3 +26,12 @@ export const modelImagesIntro = (images: readonly ToolModelImage[]): string =>
         '以下是上一条工具结果里的图片，顺序与之一致（有没有发给用户见该工具结果的文字）：',
         ...images.map((image, index) => `${index + 1}. ${image.caption}`),
     ].join('\n');
+
+/**
+ * A picture the non-Gemini replays can take: everything but the mp4. Those
+ * platforms append a user message of images; an mp4 there would be a 400.
+ */
+export const isStillImage = (
+    image: ToolModelImage
+): image is ToolModelImage & { readonly mimeType: SniffedImageMime | 'image/gif' } =>
+    image.mimeType !== 'video/mp4';

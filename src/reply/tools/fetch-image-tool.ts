@@ -3,16 +3,23 @@
  * sending it anywhere. The companion to search_images for "let me look at that
  * one properly" — full size, OCR, or as a reference for generate_image.
  *
+ * A GIF is different from a still picture here: handed over as `image/gif` a
+ * model reads only its first frame (verified 2026-10-23 — `videoMetadata.fps`
+ * is ignored for an image part), so the animation is re-encoded to mp4 and
+ * replayed as a video part where the platform supports it. The chat still gets
+ * the original GIF when the model sends it.
+ *
  * Reading the same image twice returns the first read: the bytes are already in
  * the conversation, and only the id is needed for send_image / generate_image.
  */
-import type { ToolHandler } from '../../ai/tools/tool-types.js';
+import type { ToolHandler, ToolModelImage } from '../../ai/tools/tool-types.js';
 import { fetchImageBytes } from '../../services/image-fetch-service.js';
+import { transcodeVideoToMp4 } from '../../services/tgs-client.js';
 import { imageToolError } from './image-tool-result.js';
 import { formatFetchResult, mediaToolErrors } from './image-tool-text.js';
 import {
     candidateCaption,
-    downloadCandidateImage,
+    downloadCandidateMedia,
     MAX_ORIGINAL_IMAGE_BYTES,
     type ImageDownloadDependencies,
 } from './image-source-download.js';
@@ -28,6 +35,7 @@ const DESCRIPTION =
     '读取一张图片进你的上下文（不发给用户），用于确认图里到底是什么、做 OCR、或作为生图参考。' +
     '可以传 search_id（搜索结果编号，形如 s3）、image_id（之前读取过的图，形如 img1）' +
     '或 url（上下文里出现过的图片直链）。默认读原图；只要认个大概可以传 view=\'thumbnail\'。' +
+    '候选是动图（GIF）时，会转成视频给你看动作。' +
     '读过的图会得到编号 img1，可直接用于 send_image 或 generate_image 的 web_references。';
 
 const INPUT_SCHEMA = {
@@ -44,13 +52,29 @@ const INPUT_SCHEMA = {
     },
 };
 
+/** GIF → mp4, the only shape in which a model sees an animation move */
+const transcodeGifToMp4 = async (gif: Buffer): Promise<Buffer | null> => {
+    const result = await transcodeVideoToMp4(gif, 'image/gif');
+    return result?.data ?? null;
+};
+
+export interface FetchImageDependencies extends ImageDownloadDependencies {
+    /** Null/absent: no converter, the model gets the still frame */
+    readonly transcodeAnimation?: (gif: Buffer) => Promise<Buffer | null>;
+}
+
 export interface FetchImageToolOptions {
     readonly state: ReplyMediaState;
-    readonly dependencies: ImageDownloadDependencies;
+    readonly dependencies: FetchImageDependencies;
+    /** The platform replays an mp4 inside a tool result (Gemini today) */
+    readonly canSeeAnimated?: boolean;
 }
 
 /** Production wiring; tests pass their own */
-export const PRODUCTION_FETCH_DEPENDENCIES: ImageDownloadDependencies = { fetchImage: fetchImageBytes };
+export const PRODUCTION_FETCH_DEPENDENCIES: FetchImageDependencies = {
+    fetchImage: fetchImageBytes,
+    transcodeAnimation: transcodeGifToMp4,
+};
 
 /** A url the model supplied, dressed as a candidate so one downloader serves both */
 const candidateOfUrl = (url: string): SearchCandidate => ({
@@ -67,18 +91,12 @@ const candidateOfUrl = (url: string): SearchCandidate => ({
     })(),
     imageUrl: url,
     thumbnailUrl: url,
-    originalSendable: true,
+    sendKind: 'static',
 });
-
-const thumbnailNoteOf = (candidate: SearchCandidate, usedThumbnail: boolean): string | undefined => {
-    if (!usedThumbnail) return undefined;
-    return candidate.originalSendable
-        ? '原图取不到，给的是缩略图静帧'
-        : '原图是动图或格式不支持，给的是缩略图静帧';
-};
 
 export const createFetchImageTool = (options: FetchImageToolOptions): ToolHandler => {
     const { state, dependencies } = options;
+    const canSeeAnimated = options.canSeeAnimated === true;
 
     return {
         definition: {
@@ -125,53 +143,63 @@ export const createFetchImageTool = (options: FetchImageToolOptions): ToolHandle
                 return imageToolError(mediaToolErrors.urlNotAllowed);
             }
 
-            const downloaded = await downloadCandidateImage(candidate, dependencies, {
+            const downloaded = await downloadCandidateMedia(candidate, dependencies, {
                 preferThumbnail: args.view === 'thumbnail',
             });
             if (!downloaded.ok) return imageToolError(mediaToolErrors.downloadFailed(downloaded.error));
 
-            const { bytes } = downloaded;
-            if (bytes.data.length > MAX_ORIGINAL_IMAGE_BYTES) {
+            const { media } = downloaded;
+            if (media.deliverable.data.length > MAX_ORIGINAL_IMAGE_BYTES) {
                 return imageToolError(mediaToolErrors.tooLarge(MAX_ORIGINAL_IMAGE_BYTES / 1024 / 1024));
             }
 
             const id = nextFetchedImageId(state);
             state.fetched.set(id, {
                 id,
-                data: bytes.data,
-                mimeType: bytes.mimeType,
+                data: media.deliverable.data,
+                mimeType: media.deliverable.mimeType,
+                still: media.still,
                 sourcePage: candidate.sourcePage,
                 ...(candidate.title === candidate.sourcePage ? {} : { title: candidate.title }),
-                imageUrl: bytes.url,
+                imageUrl: candidate.imageUrl,
                 ...(args.searchId === undefined ? {} : { candidateId: args.searchId }),
             });
+
+            const caption =
+                args.searchId === undefined ? `[${id}] ${candidate.domain}` : candidateCaption(candidate);
+            const animated = media.deliverable.mimeType === 'image/gif';
+            const mp4 =
+                animated && canSeeAnimated && dependencies.transcodeAnimation !== undefined
+                    ? await dependencies.transcodeAnimation(media.deliverable.data)
+                    : null;
+            const note = animated
+                ? mp4 === null
+                    ? '动图，给你看的是第一帧'
+                    : '动图，已转成 mp4 给你看动作'
+                : media.deliverable.note;
+            const modelImage: ToolModelImage =
+                mp4 === null
+                    ? { data: media.still.data, mimeType: media.still.mimeType, caption }
+                    : { data: mp4, mimeType: 'video/mp4', caption: `${caption}（动图，转成视频看动作）` };
 
             const content = formatFetchResult({
                 image: {
                     id,
-                    mimeType: bytes.mimeType,
-                    dataLength: bytes.data.length,
+                    mimeType: media.deliverable.mimeType,
+                    dataLength: media.deliverable.data.length,
                     sourcePage: candidate.sourcePage,
                     ...(candidate.width === undefined ? {} : { width: candidate.width }),
                     ...(candidate.height === undefined ? {} : { height: candidate.height }),
                 },
                 ...(args.searchId === undefined ? {} : { fromCandidateId: args.searchId }),
-                ...(thumbnailNoteOf(candidate, bytes.usedThumbnail) === undefined
-                    ? {}
-                    : { note: thumbnailNoteOf(candidate, bytes.usedThumbnail) }),
+                note,
             });
 
             return {
                 content,
                 isError: false,
                 images: [],
-                modelImages: [
-                    {
-                        data: bytes.data,
-                        mimeType: bytes.mimeType,
-                        caption: args.searchId === undefined ? `[${id}] ${candidate.domain}` : candidateCaption(candidate),
-                    },
-                ],
+                modelImages: [modelImage],
                 record: {
                     provider: 'mcp',
                     searchQueries: [`${FETCH_IMAGE_TOOL_NAME}: ${args.searchId ?? candidate.domain}`],

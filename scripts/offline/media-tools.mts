@@ -24,6 +24,26 @@ const PNG = Buffer.from(
     'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9ZlZkAAAAASUVORK5CYII=',
     'base64'
 );
+const GIF = Buffer.from('GIF89a offline animated bytes');
+const JPEG = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, 0x4a, 0x46, 0x49, 0x46]);
+const MP4 = Buffer.from([0x00, 0x00, 0x00, 0x20, 0x66, 0x74, 0x79, 0x70, 0x69, 0x73, 0x6f, 0x6d]);
+
+const gifCandidate = (): Record<string, unknown> => ({
+    id: 's1',
+    searchId: 'q1',
+    title: '动图候选',
+    sourcePage: 'https://example.com/animated',
+    domain: 'example.com',
+    imageUrl: 'https://cdn.example.com/a.gif',
+    thumbnailUrl: 'https://cdn.example.com/a-thumb.jpg',
+    sendKind: 'animated',
+});
+
+/** The two URLs a GIF candidate downloads, answered by extension */
+const mediaFetch = (url: string) =>
+    url.endsWith('.gif')
+        ? { ok: true as const, image: { data: GIF, mimeType: 'image/gif' as const, finalUrl: url } }
+        : { ok: true as const, image: { data: JPEG, mimeType: 'image/jpeg' as const, finalUrl: url } };
 
 const replyTools = await import('../../src/reply/tools/index.js');
 const searchService = await import('../../src/services/image-search-service.js');
@@ -58,7 +78,7 @@ const searchedImages = (count: number) =>
         width: 640,
         height: 480,
         format: 'jpeg',
-        originalSendable: true,
+        sendKind: 'static',
     }));
 
 interface SearchStub {
@@ -436,7 +456,7 @@ const cases = [
                     outcome.images.length === 2,
                     `pdf and icon are dropped, both gif spellings fold into one (got ${outcome.images.length})`
                 );
-                expect(outcome.images[0]?.originalSendable === false, 'a gif original can only be sent as its thumbnail');
+                expect(outcome.images[0]?.sendKind === 'animated', 'a gif original is delivered as an animation');
                 expect(outcome.images[0]?.thumbnailUrl.includes('thumb-1'), 'its thumbnail is kept');
                 expect(outcome.images[1]?.width === 1080 && outcome.images[1]?.height === 1080, 'size comes from resolution');
                 expect(outcome.images.at(-1)?.format === 'png', 'img_format is lowercased');
@@ -494,6 +514,106 @@ const cases = [
 
             const grokInput = grok.buildModelImagesInput([executed]);
             expect(grokInput.length === 1, 'Grok: one input item for the images');
+        },
+    },
+    {
+        name: 'a GIF candidate goes out as an animation while the model reads its still frame',
+        body: async (): Promise<void> => {
+            const state = createReplyMediaState(null);
+            state.candidates.set('s1', {
+                id: 's1',
+                searchId: 'q1',
+                title: '动图候选',
+                sourcePage: 'https://example.com/animated',
+                domain: 'example.com',
+                imageUrl: 'https://cdn.example.com/a.gif',
+                thumbnailUrl: 'https://cdn.example.com/a-thumb.jpg',
+                sendKind: 'animated',
+            });
+
+            const downloads: string[] = [];
+            const send = createSendImageTool({
+                state,
+                context: { chatId: -100, contextIndex: new Map(), signal: AbortSignal.abort() },
+                dependencies: {
+                    fetchImage: async (url) => {
+                        downloads.push(url);
+                        return mediaFetch(url);
+                    },
+                    loadMessageImages: async () => [],
+                },
+            });
+
+            const sent = await send.execute({ search_id: 's1' }, AbortSignal.abort());
+            expect(!sent.isError, `the animation goes out (got ${sent.content})`);
+            expect(
+                sent.images.length === 1 && sent.images[0]?.mimeType === 'image/gif' && sent.images[0]?.data.equals(GIF),
+                'the chat receives the GIF itself'
+            );
+            expect(
+                sent.modelImages?.length === 1 &&
+                    sent.modelImages[0]?.mimeType === 'image/jpeg' &&
+                    sent.modelImages[0]?.data.equals(JPEG),
+                'the model is shown the still frame, not the multi-megabyte animation'
+            );
+            expect(
+                sent.content.includes('动图') && sent.content.includes('第一帧'),
+                `the text says what the chat gets and what the model sees (got ${sent.content})`
+            );
+            expect(downloads.length === 2, `original and thumbnail are both fetched (got ${downloads.length})`);
+        },
+    },
+    {
+        name: 'fetch_image turns a GIF into an mp4 only where the platform can replay it',
+        body: async (): Promise<void> => {
+            const readGif = async (options: {
+                readonly canSeeAnimated?: boolean;
+                readonly transcode?: (gif: Buffer) => Promise<Buffer | null>;
+            }) => {
+                const state = createReplyMediaState(null);
+                state.candidates.set('s1', gifCandidate());
+                const tool = createFetchImageTool({
+                    state,
+                    ...(options.canSeeAnimated === undefined ? {} : { canSeeAnimated: options.canSeeAnimated }),
+                    dependencies: {
+                        fetchImage: async (url) => mediaFetch(url),
+                        ...(options.transcode === undefined ? {} : { transcodeAnimation: options.transcode }),
+                    },
+                });
+                const result = await tool.execute({ search_id: 's1' }, AbortSignal.abort());
+                return { result, state };
+            };
+
+            const replayed = await readGif({ canSeeAnimated: true, transcode: async () => MP4 });
+            expect(
+                !replayed.result.isError &&
+                    replayed.result.modelImages?.[0]?.mimeType === 'video/mp4' &&
+                    replayed.result.modelImages?.[0]?.data.equals(MP4),
+                `a video-capable platform gets the mp4 (got ${replayed.result.content})`
+            );
+            expect(
+                replayed.result.content.includes('已转成 mp4'),
+                `the text says the animation was transcoded (got ${replayed.result.content})`
+            );
+            const stored = [...replayed.state.fetched.values()][0];
+            expect(
+                stored?.mimeType === 'image/gif' && stored.data.equals(GIF) && stored.still.mimeType === 'image/jpeg',
+                'the state keeps the GIF for sending and the still for references'
+            );
+
+            const stillOnly = await readGif({ canSeeAnimated: false, transcode: async () => MP4 });
+            expect(
+                stillOnly.result.modelImages?.[0]?.mimeType === 'image/jpeg' &&
+                    stillOnly.result.modelImages[0].data.equals(JPEG),
+                'a platform that cannot replay video is shown the still'
+            );
+
+            const failed = await readGif({ canSeeAnimated: true, transcode: async () => null });
+            expect(
+                failed.result.modelImages?.[0]?.mimeType === 'image/jpeg' &&
+                    failed.result.content.includes('第一帧'),
+                'a failed transcode falls back to the still and says so'
+            );
         },
     },
 ];

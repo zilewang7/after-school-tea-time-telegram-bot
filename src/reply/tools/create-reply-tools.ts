@@ -14,7 +14,7 @@ import type { ToolHandler, TurnTools } from '../../ai/tools/tool-types.js';
 import { getToolConfig } from '../../config/tool-config.js';
 import { fetchImageBytes } from '../../services/image-fetch-service.js';
 import { searchImages } from '../../services/image-search-service.js';
-import { createFetchImageTool } from './fetch-image-tool.js';
+import { createFetchImageTool, PRODUCTION_FETCH_DEPENDENCIES } from './fetch-image-tool.js';
 import { createGenerateImageTool } from './generate-image-tool.js';
 import { createReplyMediaState } from './reply-media-state.js';
 import { createSearchImagesTool, THUMBNAIL_LIMITS } from './search-images-tool.js';
@@ -71,7 +71,9 @@ export const createReplyTools = (
             ? [
                   createFetchImageTool({
                       state: mediaState,
-                      dependencies: { fetchImage: fetchImageBytes, signal: context.signal },
+                      dependencies: { ...PRODUCTION_FETCH_DEPENDENCIES, signal: context.signal },
+                      // An mp4 in a tool result only travels on the Gemini replay
+                      canSeeAnimated: capabilities.supportsVideoToolResult === true,
                   }),
               ]
             : []),

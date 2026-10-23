@@ -18,7 +18,7 @@ import { loadMessageImages } from '../commands/reference-images.js';
 import { IMAGE_ASPECT_RATIOS, parseGenerateImageArgs, type ImageWebReferenceArg } from './image-tool-args.js';
 import { MAX_REFERENCE_IMAGES, resolveImageReferences, type MessageImageLoader } from './image-references.js';
 import {
-    downloadCandidateImage,
+    downloadCandidateMedia,
     type ImageFetch,
 } from './image-source-download.js';
 import {
@@ -132,7 +132,13 @@ const resolveWebReferences = async (
                 problems.push(`${reference.imageId} 没有读过；先用 fetch_image 读取`);
                 continue;
             }
-            images.push({ data: fetched.data, mimeType: fetched.mimeType });
+            // A GIF is stored with its still frame: the image model takes no GIF
+            const still = sniffImageMime(fetched.still.data);
+            if (!still) {
+                problems.push(`${reference.imageId} ${NON_VISION_REFERENCE}`);
+                continue;
+            }
+            images.push({ data: fetched.still.data, mimeType: still });
             continue;
         }
 
@@ -143,17 +149,17 @@ const resolveWebReferences = async (
             continue;
         }
 
-        const downloaded = await downloadCandidateImage(candidate, { fetchImage: dependencies.fetchImage, signal });
+        const downloaded = await downloadCandidateMedia(candidate, { fetchImage: dependencies.fetchImage, signal });
         if (!downloaded.ok) {
             problems.push(`${searchId} 取不到图：${downloaded.error}`);
             continue;
         }
-        const mimeType = sniffImageMime(downloaded.bytes.data);
+        const mimeType = sniffImageMime(downloaded.media.still.data);
         if (!mimeType) {
             problems.push(`${searchId} ${NON_VISION_REFERENCE}`);
             continue;
         }
-        images.push({ data: downloaded.bytes.data, mimeType });
+        images.push({ data: downloaded.media.still.data, mimeType });
     }
 
     if (problems.length > 0) return { ok: false, error: `参数有误：\n${problems.map((p) => `- ${p}`).join('\n')}` };

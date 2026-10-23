@@ -7,6 +7,9 @@
  *                          ?format=mp4 also re-encodes clips that need no padding
  *                          (for a model that rejects webm/mkv containers)
  *                          ?mime=<input mime>  input container hint
+ *                          image/gif input is always re-encoded to mp4: a GIF
+ *                          handed to a model as an image only ever shows one
+ *                          frame, as a video part it shows the motion
  *   POST /emoji-preview    body = raw emoji media bytes   -> image/png
  *   POST /emoji-atlas      body = JSON image items        -> image/png
  *   GET  /health                                          -> text/plain
@@ -77,6 +80,8 @@ const NORMALIZE_VIDEO_MIMES = new Set([
     'video/mp4', 'video/mpeg', 'video/mov', 'video/quicktime', 'video/avi',
     'video/x-msvideo', 'video/x-flv', 'video/mpg', 'video/mpegps',
     'video/webm', 'video/wmv', 'video/x-ms-wmv', 'video/3gpp',
+    // Animated images: only useful to a model as a video part (see below)
+    'image/gif',
 ]);
 const MAX_EXPENSIVE_PROCESSES = positiveIntegerEnv('MAX_EXPENSIVE_PROCESSES', 3, 8);
 const MAX_EXPENSIVE_QUEUE = nonNegativeIntegerEnv('MAX_EXPENSIVE_QUEUE', 32, 128);
@@ -898,7 +903,9 @@ const server = http.createServer(async (req, res) => {
             if (format !== null && format !== 'mp4') {
                 throw new HttpError(400, `unsupported format: ${format}`);
             }
-            const forceMp4 = format === 'mp4';
+            // A GIF is only ever read as a still image; re-encode it so the
+            // caller gets something a model can watch
+            const forceMp4 = format === 'mp4' || inputMime === 'image/gif';
             const normalized = await withExpensiveRequest(req, res, async (signal) => {
                 if (!NORMALIZE_VIDEO_MIMES.has(inputMime)) {
                     throw new HttpError(415, `unsupported video MIME: ${inputMime}`);

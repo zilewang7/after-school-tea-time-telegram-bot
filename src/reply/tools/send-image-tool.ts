@@ -4,6 +4,10 @@
  * it already read, a picture from the context, or a link the conversation
  * carried.
  *
+ * A GIF goes out as an animation (`sendAnimation`, see the delivery layer); the
+ * model is shown its still frame, because a model reads a GIF as one frame
+ * anyway and the still is all it needs to caption it.
+ *
  * Sharing one "this reply already has an image" flag with generate_image keeps
  * delivery and version storage to their one-image assumption.
  *
@@ -15,7 +19,7 @@
  * already in the conversation — attaching it again would only double its
  * tokens.
  */
-import { sniffImageMime, type SniffedImageMime } from '../../ai/image-generation/image-mime.js';
+import { sniffMediaMime, type SniffedMediaMime } from '../../ai/image-generation/image-mime.js';
 import type { ToolHandler } from '../../ai/tools/tool-types.js';
 import { fetchImageBytes } from '../../services/image-fetch-service.js';
 import { loadMessageImages } from '../commands/reference-images.js';
@@ -23,7 +27,7 @@ import type { MessageImageLoader } from './image-references.js';
 import { imageToolError } from './image-tool-result.js';
 import { formatSendResult, mediaToolErrors } from './image-tool-text.js';
 import {
-    downloadCandidateImage,
+    downloadCandidateMedia,
     MAX_ORIGINAL_IMAGE_BYTES,
     type ImageFetch,
     type ImageDownloadDependencies,
@@ -37,6 +41,7 @@ const DESCRIPTION =
     '把一张真实存在的图片发到聊天里（会附在你这条回复后面，每条回复最多一张）。' +
     '来源可以是 search_id（搜索结果编号）、image_id（fetch_image 读过的图）、' +
     'message（上下文里某条消息的编号 #N）或 url（上下文里出现过的直链）。' +
+    '候选是 GIF 动图时，发出去的就是会动的动图。' +
     '这是“把找到的图给用户看”的唯一方式：用户要表情包/截图/新闻图时，先 search_images 找到，' +
     '再用本工具发，不要用 generate_image 画一张冒充。';
 
@@ -79,11 +84,17 @@ const PRODUCTION_DEPENDENCIES: SendImageToolDependencies = {
     loadMessageImages,
 };
 
+interface MediaBytes {
+    /** What the chat receives: a GIF stays a GIF */
+    readonly data: Buffer;
+    readonly mimeType: SniffedMediaMime;
+    /** What the model sees (and already saw, for a fetched image) */
+    readonly still: { readonly data: Buffer; readonly mimeType: SniffedMediaMime };
+}
+
 type ResolvedBytes =
-    | {
+    | (MediaBytes & {
           readonly ok: true;
-          readonly data: Buffer;
-          readonly mimeType: SniffedImageMime;
           readonly sourcePage: string;
           readonly title?: string;
           /** Why this is not the original, when it is not */
@@ -91,7 +102,7 @@ type ResolvedBytes =
           readonly candidateId?: string;
           readonly imageId?: string;
           readonly contextNumber?: number;
-      }
+      })
     | { readonly ok: false; readonly error: string };
 
 const urlCandidate = (url: string): SearchCandidate => {
@@ -109,7 +120,7 @@ const urlCandidate = (url: string): SearchCandidate => {
         domain,
         imageUrl: url,
         thumbnailUrl: url,
-        originalSendable: true,
+        sendKind: 'static',
     };
 };
 
@@ -144,7 +155,7 @@ export const createSendImageTool = (options: SendImageToolOptions): ToolHandler 
         }
 
         const data = Buffer.from(stored.data, 'base64');
-        const mimeType = sniffImageMime(data);
+        const mimeType = sniffMediaMime(data);
         if (!mimeType) return { ok: false, error: mediaToolErrors.notAnImage };
         if (data.length > MAX_ORIGINAL_IMAGE_BYTES) {
             return { ok: false, error: mediaToolErrors.tooLarge(MAX_ORIGINAL_IMAGE_BYTES / 1024 / 1024) };
@@ -154,6 +165,7 @@ export const createSendImageTool = (options: SendImageToolOptions): ToolHandler 
             ok: true,
             data,
             mimeType,
+            still: { data, mimeType },
             sourcePage: '',
             contextNumber,
         };
@@ -173,6 +185,7 @@ export const createSendImageTool = (options: SendImageToolOptions): ToolHandler 
                 ok: true,
                 data: existing.data,
                 mimeType: existing.mimeType,
+                still: existing.still,
                 sourcePage: existing.sourcePage,
                 ...(existing.title === undefined ? {} : { title: existing.title }),
                 imageId: existing.id,
@@ -191,17 +204,18 @@ export const createSendImageTool = (options: SendImageToolOptions): ToolHandler 
             return { ok: false, error: mediaToolErrors.urlNotAllowed };
         }
 
-        const downloaded = await downloadCandidateImage(candidate, downloadDependencies);
+        const downloaded = await downloadCandidateMedia(candidate, downloadDependencies);
         if (!downloaded.ok) return { ok: false, error: mediaToolErrors.downloadFailed(downloaded.error) };
 
-        const { bytes } = downloaded;
+        const { media } = downloaded;
         return {
             ok: true,
-            data: bytes.data,
-            mimeType: bytes.mimeType,
+            data: media.deliverable.data,
+            mimeType: media.deliverable.mimeType,
+            still: media.still,
             sourcePage: candidate.sourcePage,
             ...(candidate.title === candidate.sourcePage ? {} : { title: candidate.title }),
-            ...(bytes.usedThumbnail ? { note: '原图不可用，发的是缩略图静帧' } : {}),
+            ...(media.deliverable.note === undefined ? {} : { note: media.deliverable.note }),
             ...(args.searchId === undefined ? {} : { candidateId: args.searchId }),
         };
     };
@@ -233,6 +247,7 @@ export const createSendImageTool = (options: SendImageToolOptions): ToolHandler 
             if (!resolved.ok) return imageToolError(resolved.error);
 
             state.hasReplyImage = true;
+            const animated = resolved.mimeType === 'image/gif';
             const note = resolved.note;
             const label =
                 resolved.candidateId ??
@@ -246,6 +261,7 @@ export const createSendImageTool = (options: SendImageToolOptions): ToolHandler 
                     ...(resolved.contextNumber === undefined
                         ? {}
                         : { contextNumber: resolved.contextNumber }),
+                    ...(animated ? { animated: true } : {}),
                     ...(note === undefined ? {} : { note }),
                     ...(resolved.sourcePage === '' ? {} : { sourcePage: resolved.sourcePage }),
                 }),
@@ -261,11 +277,11 @@ export const createSendImageTool = (options: SendImageToolOptions): ToolHandler 
                     ? {
                           modelImages: [
                               {
-                                  data: resolved.data,
-                                  mimeType: resolved.mimeType,
+                                  data: resolved.still.data,
+                                  mimeType: resolved.still.mimeType,
                                   caption: `你刚发出的图片 ${label}${
                                       resolved.title === undefined ? '' : ` · ${resolved.title}`
-                                  }`,
+                                  }${animated ? '（动图，这里是它的第一帧）' : ''}`,
                               },
                           ],
                       }

@@ -26,8 +26,12 @@ export interface SearchedImage {
     readonly height?: number;
     /** Lowercase img_format when the engine reported one */
     readonly format?: string;
-    /** False for GIF/SVG/unknown originals: only the thumbnail can be sent */
-    readonly originalSendable: boolean;
+    /**
+     * How the original can be used: `static` can be sent as a photo and read by
+     * a model, `animated` (GIF) can be sent as an animation but reads as one
+     * frame, `unsupported` (SVG/unknown) has only its thumbnail.
+     */
+    readonly sendKind: SendKind;
 }
 
 export interface ImageSearchOptions {
@@ -80,6 +84,10 @@ const REJECTED_EXTENSIONS: ReadonlySet<string> = new Set([
 ]);
 
 const STATIC_FORMATS: ReadonlySet<string> = new Set(['png', 'jpeg', 'jpg', 'webp']);
+const ANIMATED_FORMATS: ReadonlySet<string> = new Set(['gif']);
+
+/** How a candidate's original can be delivered to the chat */
+export type SendKind = 'static' | 'animated' | 'unsupported';
 
 const cache = new Map<string, { readonly expiresAt: number; readonly images: readonly SearchedImage[] }>();
 
@@ -195,7 +203,11 @@ const fieldsOf = (value: unknown): CandidateFields | null => {
     const extension = extensionOf(imageUrl);
     if (REJECTED_EXTENSIONS.has(extension)) return null;
 
-    const format = formatOf(value.img_format) ?? (STATIC_FORMATS.has(extension) ? extension : '');
+    const format =
+        formatOf(value.img_format) ??
+        (STATIC_FORMATS.has(extension) || ANIMATED_FORMATS.has(extension) ? extension : '');
+    // A GIF needs its still thumbnail: the original is an animation, and the
+    // model is shown (and generate_image references) a static frame
     const thumbnailUrl = isHttpUrl(value.thumbnail_src)
         ? value.thumbnail_src
         : STATIC_FORMATS.has(format)
@@ -221,7 +233,11 @@ const toSearchedImage = (fields: CandidateFields): SearchedImage | 'icon' => {
         return 'icon';
     }
 
-    const knownStatic = STATIC_FORMATS.has(fields.format) || STATIC_FORMATS.has(fields.extension);
+    const sendKind: SendKind = ANIMATED_FORMATS.has(fields.format) || ANIMATED_FORMATS.has(fields.extension)
+        ? 'animated'
+        : STATIC_FORMATS.has(fields.format) || STATIC_FORMATS.has(fields.extension)
+          ? 'static'
+          : 'unsupported';
     return {
         title: fields.title || fields.sourcePage,
         sourcePage: fields.sourcePage,
@@ -231,7 +247,7 @@ const toSearchedImage = (fields: CandidateFields): SearchedImage | 'icon' => {
         ...(width === undefined ? {} : { width }),
         ...(height === undefined ? {} : { height }),
         ...(fields.format === '' ? {} : { format: fields.format }),
-        originalSendable: knownStatic,
+        sendKind,
     };
 };
 

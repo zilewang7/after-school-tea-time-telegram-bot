@@ -4,7 +4,7 @@
  */
 import { match } from 'ts-pattern';
 import type { Context } from 'grammy';
-import { to, isErr, type Result } from '../shared/result.js';
+import { to, isErr } from '../shared/result.js';
 import { formatErrorForUser } from '../shared/errors.js';
 import {
     createSession,
@@ -20,6 +20,7 @@ import {
     type TypingIndicator,
 } from '../telegram/index.js';
 import { runApiCall } from '../telegram/edit-coordinator.js';
+import { sendReplyImageMessage } from '../telegram/reply-image-send.js';
 import { toApiEntities } from '../telegram/api-entities.js';
 import { buildMessageLinkResolver } from '../telegram/message-link.js';
 import { createContextLabelStripper, stripContextLabel } from './context-label.js';
@@ -38,12 +39,7 @@ import { formatThinkingForStreaming } from '../telegram/formatters/thinking-disp
 import { renderThinkingQuote } from '../telegram/formatters/quoted-render.js';
 import { buildFinalMessages } from '../telegram/formatters/final-message-builder.js';
 import { splitRawByFits, splitAtLastNewline } from '../telegram/formatters/smart-splitter.js';
-import {
-    buildImageCaption,
-    imageInputFile,
-    sendWithCaptionFallback,
-    type ImageCaptionFields,
-} from './tools/image-message.js';
+import { buildImageCaption, type ImageCaptionFields } from './tools/image-message.js';
 import type {
     StreamChunk,
     AIResponse,
@@ -638,26 +634,21 @@ const sendReplyImage = async (
 ): Promise<number | null> => {
     const { ctx, chatId, userMessageId } = chatContext;
 
-    const sendAsPhotoOrDocument = async (fields: ImageCaptionFields): Promise<Result<number>> => {
-        const options = { reply_parameters: { message_id: userMessageId }, ...fields };
-        const photoResult = await to(
-            runApiCall(chatId, () => ctx.api.sendPhoto(chatId, imageInputFile(image), options))
-        );
-        if (!isErr(photoResult)) return [null, photoResult[1].message_id];
-
-        console.warn('[response-handler] sendPhoto failed, fallback to sendDocument:', photoResult[0].message);
-        const documentResult = await to(
-            runApiCall(chatId, () => ctx.api.sendDocument(chatId, imageInputFile(image), options))
-        );
-        if (!isErr(documentResult)) return [null, documentResult[1].message_id];
-
-        console.error('[response-handler] sendDocument also failed:', documentResult[0]);
-        return [documentResult[0], undefined];
-    };
-
-    console.log('[response-handler] Sending photo:', { bufferSize: image.length, chatId, replyTo: userMessageId });
-    const sent = await sendWithCaptionFallback(captionFields, sendAsPhotoOrDocument);
-    return isErr(sent) ? null : sent[1];
+    // GIF goes out as an animation, everything else as a photo; the fallbacks
+    // (document, then photo) live in the shared sender
+    const sent = await sendReplyImageMessage({
+        api: ctx.api,
+        chatId,
+        image,
+        captionFields,
+        target: { reply_parameters: { message_id: userMessageId } },
+        runApiCall: (operation) => runApiCall(chatId, operation),
+    });
+    if (isErr(sent)) {
+        console.error('[response-handler] image send failed:', sent[0]);
+        return null;
+    }
+    return sent[1];
 };
 
 /**

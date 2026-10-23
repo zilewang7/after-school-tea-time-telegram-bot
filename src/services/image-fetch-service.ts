@@ -9,11 +9,11 @@
  */
 import { promises as dns } from 'node:dns';
 import { isIPv4, isIPv6 } from 'node:net';
-import { sniffImageMime, type SniffedImageMime } from '../ai/image-generation/image-mime.js';
+import { sniffMediaMime, type SniffedMediaMime } from '../ai/image-generation/image-mime.js';
 
 export interface FetchedImageBytes {
     readonly data: Buffer;
-    readonly mimeType: SniffedImageMime;
+    readonly mimeType: SniffedMediaMime;
     /** After redirects */
     readonly finalUrl: string;
 }
@@ -211,8 +211,8 @@ export const fetchImageBytes = async (
         }
         if (body === 'read-failed') return { ok: false, error: '图片下载中断' };
 
-        const mimeType = sniffImageMime(body);
-        if (!mimeType) return { ok: false, error: '链接内容不是 PNG/JPEG/WebP 图片' };
+        const mimeType = sniffMediaMime(body);
+        if (!mimeType) return { ok: false, error: '链接内容不是 PNG/JPEG/WebP/GIF 图片' };
 
         console.log(
             `[image-fetch] host=${current.hostname} status=${response.status} mime=${mimeType} ` +

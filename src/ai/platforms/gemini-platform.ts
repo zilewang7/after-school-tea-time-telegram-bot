@@ -256,6 +256,8 @@ export class GeminiPlatform extends BasePlatform {
             supportsGrounding: true,
             // Full-modal text models accept audio/video; the image-output model does not
             supportsMediaInput: !isImageModel,
+            // functionResponse.parts carries inlineData of any media type (verified with mp4)
+            supportsVideoToolResult: !isImageModel,
             // GEMINI_CLIENT_TOOLS=0 leaves Gemini with its built-in search tools only
             supportsClientTools: supportsGeminiFunctionTools(model) && getToolConfig().geminiClientTools,
             // gs:// media stays the plain single request (see clientToolsFor)

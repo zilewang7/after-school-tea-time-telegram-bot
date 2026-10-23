@@ -39,8 +39,9 @@ import {
 } from '../state.js';
 import { runApiCall, submitEdit } from '../telegram/edit-coordinator.js';
 import { decideFinalButtonState } from './final-button-state.js';
-import { sniffImageMime } from '../ai/image-generation/image-mime.js';
-import { buildImageCaption, imageInputFile, sendWithCaptionFallback } from '../reply/tools/image-message.js';
+import { sniffMediaMime } from '../ai/image-generation/image-mime.js';
+import { buildImageCaption } from '../reply/tools/image-message.js';
+import { sendReplyImageMessage } from '../telegram/reply-image-send.js';
 import type { ContextLinkResolver } from '../telegram/formatters/context-links.js';
 import type { AgentStats } from '../ai/types.js';
 
@@ -451,7 +452,7 @@ const finalizeSession = async (
         }),
         modelParts: options?.modelParts ?? null,
         file: image ?? null,
-        fileMime: image ? sniffImageMime(image) : null,
+        fileMime: image ? sniffMediaMime(image) : null,
     });
 
     // Remove from active sessions; the reply now has stored content, so it is no
@@ -657,16 +658,19 @@ export const switchVersion = async (
 
     // A re-sent image keeps the caption it first went out with
     const captionFields = buildImageCaption(newVersion.imageCaption, resolveContextLink);
+    // Same sender as the first delivery: a GIF version switch stays an animation
     const sendVersionImage = (image: Buffer) =>
-        sendWithCaptionFallback(captionFields, (fields) =>
-            to(
-                ctx.api.sendPhoto(chatId, imageInputFile(image), {
-                    reply_parameters: { message_id: response.userMessageId },
-                    reply_markup: versionButtons,
-                    ...fields,
-                })
-            )
-        );
+        sendReplyImageMessage({
+            api: ctx.api,
+            chatId,
+            image,
+            captionFields,
+            target: {
+                reply_parameters: { message_id: response.userMessageId },
+                reply_markup: versionButtons,
+            },
+            runApiCall: (operation) => runApiCall(chatId, operation),
+        });
 
     const hasImage = imageBuffer !== null;
     const hasContent = Boolean(content.text);
@@ -710,8 +714,8 @@ export const switchVersion = async (
             // Old was text → new is image-only
             const [sendErr, sentMsg] = await sendVersionImage(imageBuffer);
             if (!sendErr) {
-                newMessageIds.push(sentMsg.message_id);
-                currentMessageId = sentMsg.message_id;
+                newMessageIds.push(sentMsg);
+                currentMessageId = sentMsg;
             } else {
                 console.error('[bot-message-service] Failed to send image:', sendErr);
                 return false;
@@ -754,8 +758,8 @@ export const switchVersion = async (
             if (hasImage && imageBuffer) {
                 const [imgErr, imgMsg] = await sendVersionImage(imageBuffer);
                 if (!imgErr) {
-                    newMessageIds.push(imgMsg.message_id);
-                    currentMessageId = imgMsg.message_id;
+                    newMessageIds.push(imgMsg);
+                    currentMessageId = imgMsg;
                 }
             }
         }
@@ -765,8 +769,8 @@ export const switchVersion = async (
 
         const [sendErr, sentMsg] = await sendVersionImage(imageBuffer);
         if (!sendErr) {
-            newMessageIds.push(sentMsg.message_id);
-            currentMessageId = sentMsg.message_id;
+            newMessageIds.push(sentMsg);
+            currentMessageId = sentMsg;
         } else {
             console.error('[bot-message-service] Failed to send image:', sendErr);
             return false;
@@ -808,8 +812,8 @@ export const switchVersion = async (
         if (hasImage && imageBuffer) {
             const [sendErr, sentMsg] = await sendVersionImage(imageBuffer);
             if (!sendErr) {
-                newMessageIds.push(sentMsg.message_id);
-                currentMessageId = sentMsg.message_id;
+                newMessageIds.push(sentMsg);
+                currentMessageId = sentMsg;
             }
         }
     }
@@ -839,7 +843,7 @@ export const switchVersion = async (
         }),
         modelParts: newVersion.modelParts ?? null,
         file: imageBuffer,
-        fileMime: imageBuffer ? sniffImageMime(imageBuffer) : null,
+        fileMime: imageBuffer ? sniffMediaMime(imageBuffer) : null,
     });
 
     return true;

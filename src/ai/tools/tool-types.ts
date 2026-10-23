@@ -4,7 +4,7 @@
  * Only contracts live here; concrete tools (SMS, image generation) are built by
  * the reply layer and injected per turn, so the AI layer never imports them.
  */
-import type { SniffedImageMime } from '../image-generation/image-mime.js';
+import type { SniffedMediaMime } from '../image-generation/image-mime.js';
 import type { GroundingData, ToolChatAction, ToolStatus } from '../types.js';
 
 export type { ToolChatAction, ToolStatus } from '../types.js';
@@ -34,11 +34,16 @@ export interface ToolImage {
 /**
  * An image the model itself should see (thumbnails of a search, a page being
  * checked). Never delivered to the chat: only `images` goes out.
+ *
+ * `video/mp4` is a GIF re-encoded so the model can watch the motion: a GIF
+ * given as an image is read as a single frame. Only platforms whose
+ * capabilities say `supportsVideoToolResult` get one (currently Gemini); the
+ * other replay paths keep receiving still frames.
  */
 export interface ToolModelImage {
     readonly data: Buffer;
-    /** PNG / JPEG / WebP, as sniffed from the bytes */
-    readonly mimeType: SniffedImageMime;
+    /** PNG / JPEG / WebP, a GIF (bare-URL fallback), or an mp4 made from a GIF */
+    readonly mimeType: SniffedMediaMime | 'video/mp4';
     /** Short model-facing label, e.g. `[s3] 标题 — example.com` */
     readonly caption: string;
 }

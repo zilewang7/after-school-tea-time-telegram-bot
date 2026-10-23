@@ -327,7 +327,7 @@ interface FakeTelegram {
     readonly sentIds: (method: string) => number[];
 }
 
-const SENDING_METHODS: ReadonlySet<string> = new Set(['sendMessage', 'sendPhoto', 'sendDocument']);
+const SENDING_METHODS: ReadonlySet<string> = new Set(['sendMessage', 'sendPhoto', 'sendDocument', 'sendAnimation']);
 let nextFakeMessageId = 190_000;
 
 const fakeChat = (chatId: number) => ({ id: chatId, type: 'supergroup' as const, title: '测试群' });
@@ -1134,10 +1134,10 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
             const photos = callsOf(refusedEntities.telegram, 'sendPhoto');
             expect(
                 photos.length === 2 &&
-                    callsOf(refusedEntities.telegram, 'sendDocument').length === 1 &&
+                    callsOf(refusedEntities.telegram, 'sendDocument').length === 0 &&
                     photos[1]?.payload.caption === '一只猫' &&
                     !('caption_entities' in (photos[1]?.payload ?? {})),
-                `photo and document with entities, then the photo with a plain caption (got ${json(refusedEntities.telegram.calls.map((telegramCall) => telegramCall.method))})`
+                `a refused caption is retried as plain text before the picture is downgraded (got ${json(refusedEntities.telegram.calls.map((telegramCall) => telegramCall.method))})`
             );
             expect(
                 refusedEntities.version?.imageBase64 !== undefined &&
@@ -1153,7 +1153,7 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
             );
             expect(
                 callsOf(imageRefused.telegram, 'sendPhoto').length === 2 &&
-                    callsOf(imageRefused.telegram, 'sendDocument').length === 2 &&
+                    callsOf(imageRefused.telegram, 'sendDocument').length === 1 &&
                     imageRefused.version?.imageBase64 === undefined,
                 'a refusal of the image itself gets one plain-caption round, then gives up'
             );
@@ -1281,9 +1281,67 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
         },
     },
     {
+        name: 'a GIF reply goes out as an animation, and a version switch re-sends it the same way',
+        body: async () => {
+            const delivered = await deliver(
+                -1003900000055,
+                reply({ text: '给你', images: [GIF_BYTES], imageCaption: '**动图**' })
+            );
+            const animations = callsOf(delivered.telegram, 'sendAnimation');
+            expect(
+                animations.length === 1 && callsOf(delivered.telegram, 'sendPhoto').length === 0,
+                `a GIF goes through sendAnimation (got ${json(delivered.telegram.calls.map((call) => call.method))})`
+            );
+            expect(animations[0]?.payload.caption === '动图', 'the rendered caption rides along');
+            expect(
+                delivered.version?.imageBase64 !== undefined,
+                'the GIF bytes are stored, so a version switch can re-send them'
+            );
+
+            // An animation Telegram refuses still leaves the file with the chat
+            const refused = await deliver(
+                -1003900000056,
+                reply({ text: '给你', images: [GIF_BYTES], imageCaption: '**动图**' }),
+                ['sendAnimation']
+            );
+            expect(
+                callsOf(refused.telegram, 'sendAnimation').length === 2 &&
+                    callsOf(refused.telegram, 'sendDocument').length === 1 &&
+                    callsOf(refused.telegram, 'sendPhoto').length === 0 &&
+                    refused.version?.imageBase64 !== undefined,
+                `a refused animation is retried with a plain caption, then falls back to the document (got ${json(refused.telegram.calls.map((call) => call.method))})`
+            );
+
+            // Version switching takes the same sender
+            const switchChatId = -1003900000057;
+            const telegram = createFakeTelegram(switchChatId);
+            const userMessageId = takeMessageId();
+            const replyId = takeMessageId();
+            await seedResponse({
+                chatId: switchChatId,
+                firstMessageId: replyId,
+                userMessageId,
+                currentVersionIndex: 1,
+                versions: [
+                    { text: '第一版', imageBase64: GIF_BYTES.toString('base64'), imageCaption: '**动图**' },
+                    { text: '第二版' },
+                ],
+            });
+            const { result: switched } = await captureConsole(() =>
+                switchVersion(contextIn(telegram, switchChatId, takeMessageId()), replyId, 'prev')
+            );
+            expect(
+                switched &&
+                    callsOf(telegram, 'sendAnimation').length === 1 &&
+                    callsOf(telegram, 'sendPhoto').length === 0,
+                `a re-sent GIF stays an animation (got ${json(telegram.calls.map((call) => call.method))})`
+            );
+        },
+    },
+    {
         name: 'image bytes are told apart by their signatures',
         body: async () => {
-            const { sniffImageMime, imageFileName } = imageGeneration;
+            const { sniffImageMime, sniffMediaMime, imageFileName } = imageGeneration;
             expect(
                 sniffImageMime(PNG_BYTES) === 'image/png' &&
                     sniffImageMime(JPEG_BYTES) === 'image/jpeg' &&
@@ -1293,7 +1351,17 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
                 'png, jpeg and webp are recognised, anything else is not'
             );
             expect(
-                imageFileName(JPEG_BYTES) === 'image.jpg' && imageFileName(WEBP_BYTES) === 'image.webp' && imageFileName(GIF_BYTES) === 'image.png',
+                sniffMediaMime(GIF_BYTES) === 'image/gif' &&
+                    sniffMediaMime(GIF_BYTES.subarray(0, 6)) === 'image/gif' &&
+                    sniffMediaMime(JPEG_BYTES) === 'image/jpeg' &&
+                    sniffMediaMime(Buffer.alloc(0)) === null,
+                'the media view adds gif on top of the image formats'
+            );
+            expect(
+                imageFileName(JPEG_BYTES) === 'image.jpg' &&
+                    imageFileName(WEBP_BYTES) === 'image.webp' &&
+                    imageFileName(GIF_BYTES) === 'image.gif' &&
+                    imageFileName(Buffer.from('not an image')) === 'image.png',
                 'upload names follow the bytes, unknown keeps image.png'
             );
         },

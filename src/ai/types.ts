@@ -166,6 +166,12 @@ export interface ModelCapabilities {
     supportsGrounding: boolean;
     /** Audio/video/other non-image inline input (full-modal models) */
     supportsMediaInput: boolean;
+    /**
+     * Tool results may carry an mp4 (a GIF re-encoded so the model sees the
+     * motion). Only the Gemini replay puts media in functionResponse.parts;
+     * the others append a user message of images.
+     */
+    supportsVideoToolResult?: boolean;
     /** Accepts client-side function tools (config.tools) */
     supportsClientTools?: boolean;
     /** False: a request carrying large media (gs:// references) goes out without client tools */

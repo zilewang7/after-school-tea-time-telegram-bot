@@ -17,7 +17,9 @@ const sizeOf = (candidate: SearchCandidate): string =>
 
 const formatOf = (candidate: SearchCandidate): string => {
     const format = candidate.format ?? '格式未知';
-    return candidate.originalSendable ? format : `${format}（动图，只能发静帧）`;
+    if (candidate.sendKind === 'animated') return `${format} 动图`;
+    if (candidate.sendKind === 'unsupported') return `${format}（发不了）`;
+    return format;
 };
 
 /** `s1 · 634x539 · jpeg · bilibili.com · 标题` */
@@ -142,6 +144,8 @@ export const formatSendResult = (input: {
     readonly candidateId?: string;
     readonly imageId?: string;
     readonly contextNumber?: number;
+    /** The chat receives an animation, not a still */
+    readonly animated?: boolean;
     /** Why this is not the original, when it is not */
     readonly note?: string;
     readonly sourcePage?: string;
@@ -152,8 +156,10 @@ export const formatSendResult = (input: {
           ? `已读图 ${input.imageId}`
           : `#${input.contextNumber ?? '?'} 的图`;
     const note = input.note ? `（${input.note}）` : '';
+    const kind = input.animated === true ? '动图' : '图片';
     return [
-        `已把${source}的图片发到聊天里${note}，会附在你这条回复后面。`,
+        `已把${source}的${kind}发到聊天里${note}，会附在你这条回复后面。`,
+        ...(input.animated === true ? ['发出去的是会动的 GIF；下面给你看的是它的第一帧。'] : []),
         ...(input.sourcePage ? [`来源页：${input.sourcePage}`] : []),
     ].join('\n');
 };
@@ -173,7 +179,7 @@ export const mediaToolErrors = {
         '这个 url 不在本次对话出现过的图片直链里。用 search_id / image_id，或让用户直接发那张图。',
     noImageSource: '要发哪张图？传 search_id、image_id、message（上下文编号）或 url 之一。',
     downloadFailed: (reason: string) => `图片没取到：${reason}`,
-    notAnImage: '这张不是 PNG/JPEG/WebP 图片，发不了。换一张候选试试。',
+    notAnImage: '这张不是 PNG/JPEG/WebP/GIF 图片，发不了。换一张候选试试。',
     tooLarge: (megabytes: number) => `图片超过 ${megabytes}MB，发不了。换一张候选试试。`,
     alreadyHasImage: '这条回复已经有一张图了，每条回复只能发一张。',
 };

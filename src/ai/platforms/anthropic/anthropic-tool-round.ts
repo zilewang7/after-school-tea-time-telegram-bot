@@ -5,6 +5,7 @@
 import type Anthropic from '@anthropic-ai/sdk';
 import { match } from 'ts-pattern';
 import { isJsonObject } from '../../../shared/json-object.js';
+import { isStillImage } from '../../tools/tool-model-images.js';
 import { toolResultText, type ExecutedToolCall, type ToolCall } from '../../tools/index.js';
 import type { StreamChunk } from '../../types.js';
 
@@ -201,16 +202,19 @@ export const toToolResultBlocks = (
                     ? text
                     : [
                           { type: 'text', text },
-                          ...images.map(
-                              (image): Anthropic.ImageBlockParam => ({
-                                  type: 'image',
-                                  source: {
-                                      type: 'base64',
-                                      media_type: image.mimeType,
-                                      data: image.data.toString('base64'),
-                                  },
-                              })
-                          ),
+                          // Only Gemini replays mp4 tool media; Claude takes stills
+                          ...images
+                              .filter(isStillImage)
+                              .map(
+                                  (image): Anthropic.ImageBlockParam => ({
+                                      type: 'image',
+                                      source: {
+                                          type: 'base64',
+                                          media_type: image.mimeType,
+                                          data: image.data.toString('base64'),
+                                      },
+                                  })
+                              ),
                       ],
             is_error: result.isError,
         };
