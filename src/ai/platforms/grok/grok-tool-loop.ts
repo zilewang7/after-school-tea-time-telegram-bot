@@ -18,6 +18,7 @@ import {
     createToolUsageTally,
     finalRoundReason,
     runToolRound,
+    withToolRoundsLeft,
     TOOL_LOOP_DEADLINE_MS,
     type ToolCall,
     type TurnTools,
@@ -131,13 +132,15 @@ export async function* runGrokToolLoop(
             console.log(`[grok] ${finalReason}, forcing final answer`);
             final = true;
         }
+        const roundsLeft = final ? 0 : Math.max(0, MAX_ROUNDS - 1 - roundCount);
+        const answeredCalls = withToolRoundsLeft(executedCalls, roundsLeft);
         stream = await options.openContinuation(
             buildContinuationRequest(
                 acceptedRequest,
                 round.response.id,
-                buildFunctionCallOutputs(round.functionCalls, executedCalls),
+                buildFunctionCallOutputs(round.functionCalls, answeredCalls),
                 final,
-                options.supportsImageInput ? buildModelImagesInput(executedCalls) : []
+                options.supportsImageInput ? buildModelImagesInput(answeredCalls) : []
             )
         );
     }

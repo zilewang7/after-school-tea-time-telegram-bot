@@ -92,15 +92,20 @@ const asRecord = (value: unknown): Record<string, unknown> =>
 
 const asArray = (value: unknown): unknown[] => (Array.isArray(value) ? value : []);
 
-const json = (value: unknown): string => JSON.stringify(value);
+/** The per-call tool-rounds line is injected by the loops; comparisons ignore it */
+const withoutRoundsLeft = (text: string): string => text.replace(/\n\n\[工具轮次\][^\n]*/g, '');
+const json = (value: unknown): string =>
+    JSON.stringify(value, (_key, item: unknown) => (typeof item === 'string' ? withoutRoundsLeft(item) : item));
 
 /** JSON with object keys sorted, so key order (SDK conversions) never matters */
 const canonical = (value: unknown): string =>
-    JSON.stringify(value, (_key, nested: unknown) =>
-        typeof nested === 'object' && nested !== null && !Array.isArray(nested)
-            ? Object.fromEntries(Object.entries(nested).sort(([left], [right]) => left.localeCompare(right)))
-            : nested
-    );
+    JSON.stringify(value, (_key, nested: unknown) => {
+        if (typeof nested === 'string') return withoutRoundsLeft(nested);
+        if (typeof nested === 'object' && nested !== null && !Array.isArray(nested)) {
+            return Object.fromEntries(Object.entries(nested).sort(([left], [right]) => left.localeCompare(right)));
+        }
+        return nested;
+    });
 
 const fakeFetch = async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
     const rawBody = typeof init?.body === 'string' ? init.body : '{}';
@@ -865,6 +870,10 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
             expect(
                 json(doneChunksOf(chunks)[0]?.agentStats?.toolUsage) === json([{ name: 'lookup_a', count: toolRounds }]),
                 `${toolRounds} calls counted`
+            );
+            expect(
+                JSON.stringify(lastToolRoundResponses).includes('不能再调用工具'),
+                'the last tool result also tells the model no more rounds are left'
             );
         },
     },

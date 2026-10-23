@@ -14,6 +14,7 @@ import { createRoundTextSeparator } from './round-text-separator.js';
 import {
     createToolUsageTally,
     runToolRound,
+    withToolRoundsLeft,
     type ExecutedToolCall,
     type ToolUsageTally,
 } from './tool-round.js';
@@ -73,6 +74,20 @@ const doneChunk = (rawResponse: unknown, tally: ToolUsageTally): StreamChunk => 
     };
 };
 
+/**
+ * Tool rounds left after the round at `roundIndex`; 0 when the next one is
+ * forced final by the count or the deadline.
+ */
+const roundsLeftAfter = (
+    roundIndex: number,
+    maxToolRounds: number,
+    deadlineAt: number,
+    deadlineMs: number
+): number => {
+    if (finalRoundReason(roundIndex + 1, maxToolRounds, deadlineAt, deadlineMs) !== null) return 0;
+    return Math.max(0, maxToolRounds - roundIndex - 1);
+};
+
 export async function* runToolLoop<Round extends CollectedToolRound>(
     options: ToolLoopOptions<Round>
 ): AsyncGenerator<StreamChunk, void, undefined> {
@@ -110,6 +125,9 @@ export async function* runToolLoop<Round extends CollectedToolRound>(
         }
 
         const executedCalls = yield* runToolRound(tools, round.toolCalls, tally, signal);
-        options.appendRound(round, executedCalls);
+        options.appendRound(
+            round,
+            withToolRoundsLeft(executedCalls, roundsLeftAfter(roundIndex, maxToolRounds, deadlineAt, deadlineMs))
+        );
     }
 }

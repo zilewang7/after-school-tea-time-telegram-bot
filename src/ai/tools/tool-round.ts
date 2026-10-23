@@ -9,6 +9,26 @@ export interface ExecutedToolCall {
     readonly result: ToolResult;
 }
 
+/**
+ * What the model is told about the tool-loop budget after a round: the common
+ * practice of putting the remaining budget in the tool result itself, so the
+ * model can decide between one more look and sending/finishing.
+ */
+export const toolRoundsLeftNotice = (remaining: number): string =>
+    remaining <= 0
+        ? '[工具轮次] 本次调用后不能再调用工具了，下一步必须直接用文字回答。'
+        : `[工具轮次] 本次调用后最多还能调用工具 ${remaining} 次（用完就只能用文字回答）。`;
+
+/** The same results with the remaining tool rounds appended to what the model reads */
+export const withToolRoundsLeft = (
+    executedCalls: readonly ExecutedToolCall[],
+    remaining: number
+): ExecutedToolCall[] =>
+    executedCalls.map(({ call, result }) => ({
+        call,
+        result: { ...result, content: `${result.content}\n\n${toolRoundsLeftNotice(remaining)}` },
+    }));
+
 /** Per-reply call counts for agentStats.toolUsage */
 export interface ToolUsageTally {
     count(name: string): void;

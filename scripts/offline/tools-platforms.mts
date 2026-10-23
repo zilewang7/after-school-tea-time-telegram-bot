@@ -190,7 +190,10 @@ const asRecord = (value: unknown): Record<string, unknown> =>
 
 const asArray = (value: unknown): unknown[] => (Array.isArray(value) ? value : []);
 
-const json = (value: unknown): string => JSON.stringify(value);
+/** The per-call tool-rounds line is injected by the loops; comparisons ignore it */
+const withoutRoundsLeft = (text: string): string => text.replace(/\n\n\[工具轮次\][^\n]*/g, '');
+const json = (value: unknown): string =>
+    JSON.stringify(value, (_key, item: unknown) => (typeof item === 'string' ? withoutRoundsLeft(item) : item));
 
 // ---- Responses API (OpenAI) fixtures ----
 
@@ -886,8 +889,13 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
             expect(
                 continuation[0]?.reasoning_content === 'Look it up.' &&
                     continuation[0]?.content === null &&
-                    continuation[1]?.content === 'sunny in Rome',
+                    typeof continuation[1]?.content === 'string' &&
+                    withoutRoundsLeft(continuation[1].content) === 'sunny in Rome',
                 `reasoning_content and the result go back (got ${json(continuation)})`
+            );
+            expect(
+                /\[工具轮次\].*[0-9]/.test(String(continuation[1]?.content)),
+                `the tool result says how many rounds are left (got ${json(continuation[1]?.content)})`
             );
 
             resetStub([

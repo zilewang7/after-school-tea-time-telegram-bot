@@ -28,7 +28,12 @@ import { FinishReason, type GenerateContentResponse } from '@google/genai';
 import type { GroundingData, StreamChunk } from '../../types.js';
 import { createRoundTextSeparator } from '../../tools/round-text-separator.js';
 import { finalRoundReason, TOOL_LOOP_DEADLINE_MS } from '../../tools/tool-loop.js';
-import { createToolUsageTally, runToolRound, type ToolUsageTally } from '../../tools/tool-round.js';
+import {
+    createToolUsageTally,
+    runToolRound,
+    withToolRoundsLeft,
+    type ToolUsageTally,
+} from '../../tools/tool-round.js';
 import type { TurnTools } from '../../tools/tool-types.js';
 import type { FirstGeminiRound, OpenGeminiRound } from './gemini-first-round.js';
 import { mergeGroundingData } from './gemini-grounding.js';
@@ -206,11 +211,18 @@ export async function* runGeminiToolLoop(
                     `[gemini] ${finalReason}, forcing final answer (notice on the round ${roundNumber} responses)`
                 );
             }
+            // The round budget rides in each result, like every other limit the
+            // model has to plan around; the final-round notice stays separate.
+            const roundsLeft =
+                finalReason !== null
+                    ? 0
+                    : Math.max(0, GEMINI_MAX_ROUNDS - 1 - roundNumber);
+            const answeredCalls = withToolRoundsLeft(executedCalls, roundsLeft);
             toolRounds.push({
                 modelParts: round.parts,
                 responseParts: buildFunctionResponseParts(
                     round.functionCalls,
-                    executedCalls.map((executedCall) => executedCall.result),
+                    answeredCalls.map((executedCall) => executedCall.result),
                     { lastToolRound: finalReason !== null }
                 ),
             });

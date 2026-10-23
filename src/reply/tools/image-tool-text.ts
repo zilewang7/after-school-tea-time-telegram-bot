@@ -84,8 +84,9 @@ const nextStepLines = (input: SearchTextInput, unseen: readonly SearchCandidate[
     lines.push(`- 确定要发：send_image(search_id='${set.candidates[0]?.id ?? 's1'}')`);
     if (sendNowSuggested(input.state)) {
         lines.unshift(
-            '💡 已经看过足够多（搜索 ' + input.state.searchCount + ' 次、缩略图 ' + input.state.thumbnailCount + ' 张）：' +
-                '满意的就现在 send_image 发出去，别把工具轮次都花在找图上——轮次用光就发不出图了。'
+            '💡 已经看过 ' + input.state.thumbnailCount + ' 张（搜索 ' + input.state.searchCount + ' 次）：' +
+                "用户要图的话，现在就从这些候选里挑一张 send_image 发出去——发一张比只列文字好，" +
+                '别把工具轮次都花在找图上（轮次用光就发不出图了）。'
         );
     }
     return lines;

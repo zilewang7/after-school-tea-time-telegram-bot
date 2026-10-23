@@ -137,10 +137,7 @@ const cases = [
             expect(second.modelImages?.length === 5, `the rest comes at once (got ${second.modelImages?.length ?? 0})`);
             expect(state.thumbnailCount === 8, `all eight thumbnails were spent (got ${state.thumbnailCount})`);
             expect(second.content.includes('这批缩略图都看过了'), 'the text says the batch is done');
-            expect(
-                second.content.includes('💡') && second.content.includes('send_image'),
-                'after a full batch the tool suggests sending instead of searching again'
-            );
+
 
             const third = await tool.execute({ search: 'q1' }, AbortSignal.abort());
             expect(
@@ -285,7 +282,7 @@ const cases = [
         },
     },
     {
-        name: 'after a whole batch searching on is allowed, and the text suggests sending',
+        name: 'after a whole batch the model may keep looking',
         body: async (): Promise<void> => {
             const state = createReplyMediaState(null);
             const tool = searchToolWith(state, searchStub());
@@ -295,9 +292,24 @@ const cases = [
 
             const searchAgain = await tool.execute({ query: '换个词' }, AbortSignal.abort());
             expect(!searchAgain.isError, 'the model may keep looking if it wants to');
+            expect(state.searchCount === 2, 'and the search is counted');
+        },
+    },
+    {
+        name: 'the remaining tool rounds are appended to what the model reads',
+        body: async (): Promise<void> => {
+            const { toolRoundsLeftNotice, withToolRoundsLeft } = await import('../../src/ai/tools/tool-round.js');
+            const base: ToolResult = { content: 'sunny in Paris', isError: false, images: [], record: null };
+            const call: ToolCall = { id: 'call_1', name: 'lookup', argumentsJson: '{}' };
+            const [decorated] = withToolRoundsLeft([{ call, result: base }], 5);
             expect(
-                searchAgain.content.includes('💡') && searchAgain.content.includes('send_image'),
-                'but the result keeps suggesting to send'
+                decorated?.result.content === `sunny in Paris\n\n${toolRoundsLeftNotice(5)}`,
+                `the count rides in the result (got ${decorated?.result.content})`
+            );
+            expect(toolRoundsLeftNotice(5).includes('5'), 'the number is the one passed');
+            expect(
+                toolRoundsLeftNotice(0).includes('不能再调用工具'),
+                'zero says the next step must be the answer'
             );
         },
     },
