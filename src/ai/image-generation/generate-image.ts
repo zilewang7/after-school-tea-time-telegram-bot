@@ -14,6 +14,7 @@
  */
 import { GEMINI_IMAGE_MODEL } from '../../config/models.js';
 import type {
+    GroundingData,
     ImageOutputOptions,
     PlatformConfig,
     StreamChunk,
@@ -66,7 +67,12 @@ export interface ImageGenerationOptions {
 }
 
 export type ImageGenerationOutcome =
-    | { readonly ok: true; readonly image: GeneratedImage }
+    | {
+          readonly ok: true;
+          readonly image: GeneratedImage;
+          /** Image-search grounding of this generation, when the model reported it */
+          readonly grounding: GroundingData | null;
+      }
     | { readonly ok: false; readonly failure: ImageGenerationFailure };
 
 const buildRequestMessages = (request: ImageGenerationRequest): UnifiedMessage[] => {
@@ -118,7 +124,11 @@ export const generateImage = async (
         }
 
         const { data, mimeType } = drained.image;
-        return { ok: true, image: { data, mimeType: sniffImageMime(data) ?? mimeType } };
+        return {
+            ok: true,
+            image: { data, mimeType: sniffImageMime(data) ?? mimeType },
+            grounding: drained.grounding,
+        };
     } catch (error) {
         return { ok: false, failure: classifyGenerationError(error, abortCauses()) };
     }

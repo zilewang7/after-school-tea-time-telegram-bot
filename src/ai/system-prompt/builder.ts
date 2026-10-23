@@ -24,6 +24,12 @@ export interface StaticPromptOptions {
      * so the prompt stays byte-identical across requests of one conversation.
      */
     readonly sms?: boolean;
+    /** search_images / send_image are offered this turn */
+    readonly imageTools?: boolean;
+    /** fetch_image is offered this turn */
+    readonly imageFetch?: boolean;
+    /** generate_image is offered this turn */
+    readonly imageGenerate?: boolean;
 }
 
 export const buildStaticSystemPrompt = (model: string, options: StaticPromptOptions = {}): string => {
@@ -33,7 +39,12 @@ export const buildStaticSystemPrompt = (model: string, options: StaticPromptOpti
         getPreferencePrompt(),
         ROSTER_SECTION,
         buildFormatSection({ includeOcrNote: !capabilities.supportsImageInput }),
-        buildCapabilitiesSection({ smsOwner: options.sms === true ? getToolConfig().owner : null }),
+        buildCapabilitiesSection({
+            smsOwner: options.sms === true ? getToolConfig().owner : null,
+            imageTools: options.imageTools === true,
+            imageFetch: options.imageFetch === true,
+            imageGenerate: options.imageGenerate === true,
+        }),
         NOTES_SECTION,
     ]
         .filter((section) => section.length > 0)

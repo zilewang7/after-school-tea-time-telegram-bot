@@ -77,6 +77,9 @@ const toFunctionResponsePart = (
     lastToolRound: boolean
 ): Part => {
     const id = providerIdOf(functionCall);
+    // FunctionResponse.parts takes inlineData/fileData only: captions ride
+    // response.output (a text part there is rejected with 400, 2026-10-23).
+    const images = result.modelImages ?? [];
     return {
         functionResponse: {
             ...(id === undefined ? {} : { id }),
@@ -85,6 +88,16 @@ const toFunctionResponsePart = (
                 ...(result.isError ? { error: result.content } : { output: result.content }),
                 ...(lastToolRound ? { notice: LAST_TOOL_ROUND_NOTICE } : {}),
             },
+            ...(images.length === 0
+                ? {}
+                : {
+                      parts: images.map((image) => ({
+                          inlineData: {
+                              mimeType: image.mimeType,
+                              data: image.data.toString('base64'),
+                          },
+                      })),
+                  }),
         },
     };
 };

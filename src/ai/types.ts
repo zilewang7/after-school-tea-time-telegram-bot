@@ -68,10 +68,19 @@ export interface GroundingData {
     searchEntryPoint?: {
         renderedContent?: string;
     };
+    /** Image-search queries of Gemini's image grounding (searchTypes.imageSearch) */
+    imageSearchQueries?: string[];
     groundingChunks?: Array<{
         web?: {
             uri?: string;
             title?: string;
+        };
+        /** A grounding image: the page it came from and the image Google served */
+        image?: {
+            sourceUri?: string;
+            imageUri?: string;
+            title?: string;
+            domain?: string;
         };
     }>;
     citations?: GroundingCitation[];

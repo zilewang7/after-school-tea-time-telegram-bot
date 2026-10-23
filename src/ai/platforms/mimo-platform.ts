@@ -192,7 +192,11 @@ export class MimoPlatform extends BasePlatform {
                 return collected;
             },
             appendRound: (round, executedCalls) => {
-                currentMessages.push(...buildChatToolTurn(round, executedCalls));
+                currentMessages.push(
+                    ...buildChatToolTurn(round, executedCalls, {
+                        supportsImageInput: this.getModelCapabilities(model).supportsImageInput,
+                    })
+                );
             },
         });
     }

@@ -74,14 +74,41 @@ const CAPABILITIES_SECTION = `# 能力与输出
 - 多使用搜索工具联网查证；不要把任何问题预设为简单问题`;
 
 /**
- * The capabilities section, plus one line naming the owner when this turn
- * offers send_sms_to_owner — the line and the tool always come together.
+ * The capabilities section, plus one line per optional tool group that is on
+ * this turn. Each line and its tools always come together, which is what keeps
+ * the prompt honest about what the model can actually call.
  */
-export const buildCapabilitiesSection = (options: { smsOwner: OwnerIdentity | null }): string => {
+export interface CapabilityOptions {
+    readonly smsOwner: OwnerIdentity | null;
+    /** search_images + send_image are offered */
+    readonly imageTools: boolean;
+    /** fetch_image is offered (the model can see what it reads) */
+    readonly imageFetch: boolean;
+    /** generate_image is offered; the drawing fallback is only named when it exists */
+    readonly imageGenerate: boolean;
+}
+
+const searchImageLines = (canDraw: boolean): string[] => [
+    '- 用户要“找图/表情包/截图/这张图”时，先用 `search_images` 找真实存在的图，再用 `send_image` 发；' +
+        (canDraw ? '只有用户明确要“画一张/改图”，或找不到且用户同意时，才用 `generate_image`。' : ''),
+    '- `search_images` 第一次只附 3 张缩略图；都不合适就用 `search_images(search=\'q1\')` 继续看，' +
+        '不要硬发第一张' +
+        (canDraw ? '，也不要因为没挑到就直接转去生图。' : '。'),
+];
+
+const IMAGE_FETCH_LINE =
+    '- 拿不准图里是什么、要看清细节或做 OCR 时，可以先用 `fetch_image` 把它读进上下文再决定。';
+
+export const buildCapabilitiesSection = (options: CapabilityOptions): string => {
+    const lines: string[] = [CAPABILITIES_SECTION];
     const owner = options.smsOwner;
-    if (!owner) return CAPABILITIES_SECTION;
-    const ownerLabel = formatOwnerLabel(owner, { idLabel: 'id', withShortName: false });
-    return `${CAPABILITIES_SECTION}\n- 可以用 \`send_sms_to_owner\` 给${ownerLabel}发送短信`;
+    if (owner) {
+        const ownerLabel = formatOwnerLabel(owner, { idLabel: 'id', withShortName: false });
+        lines.push(`- 可以用 \`send_sms_to_owner\` 给${ownerLabel}发送短信`);
+    }
+    if (options.imageTools) lines.push(...searchImageLines(options.imageGenerate));
+    if (options.imageFetch) lines.push(IMAGE_FETCH_LINE);
+    return lines.join('\n');
 };
 
 export const NOTES_SECTION = `# 注意

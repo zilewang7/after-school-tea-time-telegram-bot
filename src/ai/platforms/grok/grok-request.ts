@@ -10,6 +10,9 @@ import type {
 } from 'openai/resources/responses/responses';
 import { isJsonObject } from '../../../shared/json-object.js';
 import {
+    imageDataUrl,
+    modelImagesIntro,
+    modelImagesOf,
     toResponsesFunctionTools,
     toolResultText,
     type ExecutedToolCall,
@@ -235,10 +238,38 @@ export const buildContinuationRequest = (
     acceptedRequest: GrokResponseRequest,
     previousResponseId: string,
     functionCallOutputs: readonly ResponseInputItem.FunctionCallOutput[],
-    final: boolean
+    final: boolean,
+    extraInput: readonly ResponseInputItem[] = []
 ): GrokResponseRequest => ({
     ...acceptedRequest,
     previous_response_id: previousResponseId,
-    input: [...functionCallOutputs],
+    input: [...functionCallOutputs, ...extraInput],
     tool_choice: final ? 'none' : undefined,
 });
+
+/**
+ * The pictures a tool round produced. xAI's input list takes a plain message
+ * with input_image parts after the function outputs, which keeps the outputs
+ * themselves valid for their own schema.
+ */
+export const buildModelImagesInput = (
+    executedCalls: readonly ExecutedToolCall[]
+): ResponseInputItem[] => {
+    const images = modelImagesOf(executedCalls);
+    if (images.length === 0) return [];
+
+    return [
+        {
+            type: 'message',
+            role: 'user',
+            content: [
+                { type: 'input_text', text: modelImagesIntro(images) },
+                ...images.map((image) => ({
+                    type: 'input_image' as const,
+                    image_url: imageDataUrl(image),
+                    detail: 'auto' as const,
+                })),
+            ],
+        },
+    ];
+};

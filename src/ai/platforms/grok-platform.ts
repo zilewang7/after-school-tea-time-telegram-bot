@@ -124,6 +124,7 @@ export class GrokPlatform extends BasePlatform {
             tools: clientTools ?? NO_TURN_TOOLS,
             startedAt,
             signal,
+            supportsImageInput: this.getModelCapabilities(model).supportsImageInput,
             openContinuation: (continuation) =>
                 this.sendWithRetry(() => this.createResponseStream(continuation, signal), retryOptions),
         });

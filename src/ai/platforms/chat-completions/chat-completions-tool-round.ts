@@ -5,7 +5,14 @@
  */
 import type OpenAI from 'openai';
 import type { ChatCompletionChunk } from 'openai/resources/chat/completions';
-import { toolResultText, type ExecutedToolCall, type ToolCall } from '../../tools/index.js';
+import {
+    imageDataUrl,
+    modelImagesIntro,
+    modelImagesOf,
+    toolResultText,
+    type ExecutedToolCall,
+    type ToolCall,
+} from '../../tools/index.js';
 
 /** The assistant message of a tool round, plus the DeepSeek / MiMo `reasoning_content` extension */
 type AssistantToolCallMessage = OpenAI.Chat.ChatCompletionAssistantMessageParam & {
@@ -62,9 +69,33 @@ export const createChatToolCallCollector = (): ChatToolCallCollector => {
  * calls, with the round's reasoning (thinking-mode providers reject a tool
  * continuation without it), then one tool message per result.
  */
+const modelImageMessage = (
+    executedCalls: readonly ExecutedToolCall[]
+): OpenAI.Chat.ChatCompletionUserMessageParam | null => {
+    const images = modelImagesOf(executedCalls);
+    if (images.length === 0) return null;
+
+    return {
+        role: 'user',
+        content: [
+            { type: 'text', text: modelImagesIntro(images) },
+            ...images.map((image) => ({
+                type: 'image_url' as const,
+                image_url: { url: imageDataUrl(image) },
+            })),
+        ],
+    };
+};
+
+export interface ChatToolTurnOptions {
+    /** Only a model that can see gets the pictures; others get the text alone */
+    readonly supportsImageInput: boolean;
+}
+
 export const buildChatToolTurn = (
     round: { readonly text: string; readonly reasoning: string },
-    executedCalls: readonly ExecutedToolCall[]
+    executedCalls: readonly ExecutedToolCall[],
+    options: ChatToolTurnOptions = { supportsImageInput: false }
 ): OpenAI.Chat.ChatCompletionMessageParam[] => {
     const assistantMessage: AssistantToolCallMessage = {
         role: 'assistant',
@@ -84,5 +115,6 @@ export const buildChatToolTurn = (
         })
     );
 
-    return [assistantMessage, ...toolMessages];
+    const images = options.supportsImageInput ? modelImageMessage(executedCalls) : null;
+    return [assistantMessage, ...toolMessages, ...(images === null ? [] : [images])];
 };

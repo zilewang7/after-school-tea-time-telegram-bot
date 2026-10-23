@@ -28,6 +28,7 @@ import { extractGrokGrounding } from './grok-grounding.js';
 import {
     buildContinuationRequest,
     buildFunctionCallOutputs,
+    buildModelImagesInput,
     functionToolNames,
     isGrokMultiAgentModel,
     type GrokResponseRequest,
@@ -52,6 +53,8 @@ export interface GrokToolLoopOptions {
     readonly signal?: AbortSignal;
     /** Open a later round's stream (no candidate walk) */
     readonly openContinuation: (request: GrokResponseRequest) => Promise<AsyncIterable<ResponseStreamEvent>>;
+    /** The model can see pictures, so tool images are replayed */
+    readonly supportsImageInput: boolean;
 }
 
 /** The calls that may run: those naming a tool the accepted request offered */
@@ -133,7 +136,8 @@ export async function* runGrokToolLoop(
                 acceptedRequest,
                 round.response.id,
                 buildFunctionCallOutputs(round.functionCalls, executedCalls),
-                final
+                final,
+                options.supportsImageInput ? buildModelImagesInput(executedCalls) : []
             )
         );
     }

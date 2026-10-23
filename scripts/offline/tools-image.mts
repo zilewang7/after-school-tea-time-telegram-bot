@@ -50,6 +50,7 @@ const { resolveImageReferences } = await import('../../src/reply/tools/image-ref
 const { buildImageCaption, IMAGE_CAPTION_MAX_LENGTH } = await import('../../src/reply/tools/image-message.js');
 const { ONE_IMAGE_PER_REPLY } = await import('../../src/reply/tools/image-tool-result.js');
 const { buildReplyToolContext } = await import('../../src/reply/tools/reply-tool-context.js');
+const { createReplyMediaState } = await import('../../src/reply/tools/reply-media-state.js');
 const imageGeneration = await import('../../src/ai/image-generation/index.js');
 const { GEMINI_IMAGE_MODEL } = await import('../../src/config/models.js');
 const { loadMessageImages, collectReferenceImages } = await import('../../src/reply/commands/reference-images.js');
@@ -216,15 +217,21 @@ const stubImageModel = (answer: (request: ImageRequest) => ImageModelAnswer = ()
 
 type ImageModel = ReturnType<typeof stubImageModel>;
 
+const noNetworkFetch = async (): Promise<{ ok: false; error: string }> => ({
+    ok: false,
+    error: 'offline: no network',
+});
+
 const toolFor = (contextIndex: ContextIndex, model: ImageModel, signal = new AbortController().signal): ToolHandler =>
     createGenerateImageTool(
         buildReplyToolContext({
             chat: { id: OFFLINE_CHAT_ID, type: 'supergroup', title: '测试群' },
-            triggerMessage: { messageId: 1, userId: 42, userName: '张三' },
+            triggerMessage: { messageId: 1, userId: 42, userName: '张三', text: null },
             contextIndex,
             signal,
         }),
-        { sendMessage: model.sendMessage, loadMessageImages }
+        createReplyMediaState(null),
+        { sendMessage: model.sendMessage, loadMessageImages, fetchImage: noNetworkFetch }
     );
 
 const runTool = async (tool: ToolHandler, args: Record<string, unknown>): Promise<ToolResult> =>

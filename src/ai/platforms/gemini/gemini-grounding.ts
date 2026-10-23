@@ -19,12 +19,17 @@ const toGroundingData = (metadata: GroundingMetadata | undefined): GroundingData
     const searchQueries = (metadata.webSearchQueries ?? []).filter(
         (query: unknown) => query && String(query).trim().length > 0
     );
+    // Image-search grounding reports its queries apart from the web ones
+    const imageSearchQueries = (metadata.imageSearchQueries ?? []).filter(
+        (query: unknown) => query && String(query).trim().length > 0
+    );
     const searchEntryPoint = metadata.searchEntryPoint;
     const groundingChunks = metadata.groundingChunks ?? [];
     const groundingSupports = metadata.groundingSupports ?? [];
 
     if (
         !searchQueries.length &&
+        !imageSearchQueries.length &&
         !groundingChunks.length &&
         !groundingSupports.length &&
         !searchEntryPoint
@@ -32,7 +37,12 @@ const toGroundingData = (metadata: GroundingMetadata | undefined): GroundingData
         return null;
     }
 
-    return { searchQueries, searchEntryPoint, groundingChunks };
+    return {
+        searchQueries,
+        ...(imageSearchQueries.length > 0 ? { imageSearchQueries } : {}),
+        searchEntryPoint,
+        groundingChunks,
+    };
 };
 
 /** The first candidate grounding a chunk carries, or null */
@@ -66,9 +76,15 @@ const uniqueBy = <T>(items: readonly T[], keyOf: (item: T) => string): T[] => {
     });
 };
 
-/** A source is the same source when its uri is; uri-less entries compare whole */
+/**
+ * A source is the same source when its uri is: a web chunk's page, or the page
+ * an image chunk came from (imageUri alone is the CDN copy, which rotates).
+ */
 const groundingChunkKey = (groundingChunk: GroundingChunk): string =>
-    groundingChunk.web?.uri ?? JSON.stringify(groundingChunk);
+    groundingChunk.web?.uri ??
+    groundingChunk.image?.sourceUri ??
+    groundingChunk.image?.imageUri ??
+    JSON.stringify(groundingChunk);
 
 /**
  * One search block for the whole reply. Every round of a tool loop reports
@@ -81,6 +97,10 @@ export const mergeGroundingData = (steps: readonly GroundingData[]): GroundingDa
 
     const searchQueries = uniqueBy(
         steps.flatMap((step) => step.searchQueries),
+        (query) => query
+    );
+    const imageSearchQueries = uniqueBy(
+        steps.flatMap((step) => step.imageSearchQueries ?? []),
         (query) => query
     );
     const groundingChunks = uniqueBy(
@@ -96,6 +116,7 @@ export const mergeGroundingData = (steps: readonly GroundingData[]): GroundingDa
 
     return {
         searchQueries,
+        ...(imageSearchQueries.length > 0 ? { imageSearchQueries } : {}),
         ...(renderedContents.length > 0
             ? { searchEntryPoint: { renderedContent: renderedContents.join('') } }
             : {}),

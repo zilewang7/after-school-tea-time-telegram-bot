@@ -8,3 +8,8 @@ export * from './reply-tool-context.js';
 export * from './create-reply-tools.js';
 export * from './send-sms-tool.js';
 export * from './generate-image-tool.js';
+export * from './reply-media-state.js';
+export * from './search-images-tool.js';
+export * from './fetch-image-tool.js';
+export * from './send-image-tool.js';
+export * from './image-tool-text.js';

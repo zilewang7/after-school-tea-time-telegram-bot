@@ -6,6 +6,11 @@
  * - DISABLED_TOOLS: tool names (MCP tools by their original name) or MCP server
  *   keys switched off, comma-separated
  * - GEMINI_CLIENT_TOOLS=0: Gemini keeps its built-in search tools only
+ * - IMAGE_TOOLS=0: no search_images / fetch_image / send_image
+ * - IMAGE_SEARCH_URL: the SearXNG base URL (default http://searxng:8080)
+ * - IMAGE_SEARCH_ENGINES: comma-separated SearXNG engines; empty = its defaults
+ * - IMAGE_SEARCH_SAFESEARCH: 0 / 1 / 2, fixed for the model (default 1)
+ * - IMAGE_SEARCH_GROUNDING=0: image generation does not declare imageSearch
  * - OWNER_SMS_MCP_URL: the owner SMS endpoint; empty = no SMS tool
  * - OWNER_SMS_ALLOW_TEST=1: the test instance may send SMS too (off by default:
  *   it inherits the production env)
@@ -27,6 +32,14 @@ export interface ToolConfig {
     readonly toolChatIds: ReadonlySet<number>;
     readonly disabledTools: ReadonlySet<string>;
     readonly geminiClientTools: boolean;
+    /** search_images / send_image / fetch_image are on */
+    readonly imageTools: boolean;
+    readonly imageSearchUrl: string;
+    /** Comma-joined SearXNG engines; empty = the instance's own default */
+    readonly imageSearchEngines: string;
+    readonly imageSearchSafesearch: 0 | 1 | 2;
+    /** Image generation declares searchTypes.imageSearch (supported models only) */
+    readonly imageSearchGrounding: boolean;
     /** Empty when not configured */
     readonly ownerSmsUrl: string;
     readonly ownerSmsAllowTest: boolean;
@@ -45,6 +58,14 @@ const splitList = (raw: string | undefined): string[] =>
 /** A trimmed env value; null when unset or blank */
 const optionalValue = (raw: string | undefined): string | null => raw?.trim() || null;
 
+const DEFAULT_IMAGE_SEARCH_URL = 'http://searxng:8080';
+
+/** 0 / 1 / 2; anything else keeps the moderate default */
+const parseSafesearch = (raw: string | undefined): 0 | 1 | 2 => {
+    const parsed = Number.parseInt((raw ?? '').trim(), 10);
+    return parsed === 0 || parsed === 2 ? parsed : 1;
+};
+
 const readOwner = (env: NodeJS.ProcessEnv): OwnerIdentity => {
     const displayName = optionalValue(env.OWNER_DISPLAY_NAME) ?? DEFAULT_OWNER_NAME;
     const shortName = optionalValue(env.OWNER_SHORT_NAME);
@@ -61,6 +82,11 @@ export const readToolConfig = (env: NodeJS.ProcessEnv = process.env): ToolConfig
     toolChatIds: new Set(parseChatIdList(env.TOOL_CHAT_IDS)),
     disabledTools: new Set(splitList(env.DISABLED_TOOLS)),
     geminiClientTools: env.GEMINI_CLIENT_TOOLS !== '0',
+    imageTools: env.IMAGE_TOOLS !== '0',
+    imageSearchUrl: optionalValue(env.IMAGE_SEARCH_URL) ?? DEFAULT_IMAGE_SEARCH_URL,
+    imageSearchEngines: splitList(env.IMAGE_SEARCH_ENGINES).join(','),
+    imageSearchSafesearch: parseSafesearch(env.IMAGE_SEARCH_SAFESEARCH),
+    imageSearchGrounding: env.IMAGE_SEARCH_GROUNDING !== '0',
     ownerSmsUrl: env.OWNER_SMS_MCP_URL?.trim() ?? '',
     ownerSmsAllowTest: env.OWNER_SMS_ALLOW_TEST === '1',
     owner: readOwner(env),

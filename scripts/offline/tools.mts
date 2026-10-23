@@ -367,7 +367,7 @@ const DRAWING: ToolStatus = { text: '🎨 正在画图…', chatAction: 'upload_
 const toolContext = (chatId: number) =>
     replyTools.buildReplyToolContext({
         chat: { id: chatId, type: 'supergroup', title: '测试群' },
-        triggerMessage: { messageId: 1, userId: 42, userName: '张三' },
+        triggerMessage: { messageId: 1, userId: 42, userName: '张三', text: '找张狗头表情包' },
         contextIndex: new Map(),
         signal: new AbortController().signal,
     });
@@ -1096,7 +1096,8 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
             const first = build();
             const names = first.tools.definitions.map((definition) => definition.name);
             expect(
-                names.join(',') === 'resolve-library-id,generate_image_2,slow_tool,send_sms_to_owner,generate_image',
+                names.join(',') ===
+                    'resolve-library-id,generate_image_2,slow_tool,send_sms_to_owner,generate_image,search_images,fetch_image,send_image',
                 `order, and DISABLED_TOOLS applied per tool by original name (got ${names.join(',')})`
             );
             expect(
@@ -1113,7 +1114,8 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
             const imageSchema = asRecord(image?.inputSchema);
             expect(
                 json(imageSchema.required) === '["prompt","caption"]' &&
-                    Object.keys(asRecord(imageSchema.properties)).join(',') === 'prompt,caption,references,aspect_ratio',
+                    Object.keys(asRecord(imageSchema.properties)).join(',') ===
+                        'prompt,caption,references,web_references,aspect_ratio',
                 'generate_image requires prompt and caption'
             );
             expect(
@@ -1154,7 +1156,9 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
             const unnamed = { userId: null, displayName: '机主', shortName: null };
             expect(formatOwnerLabel(unnamed, toolLabel) === '机主', 'nothing configured: a bare 机主');
             expect(
-                buildCapabilitiesSection({ smsOwner: unnamed }).endsWith('\n- 可以用 `send_sms_to_owner` 给机主发送短信'),
+                buildCapabilitiesSection({ smsOwner: unnamed, imageTools: false, imageFetch: false }).endsWith(
+                    '\n- 可以用 `send_sms_to_owner` 给机主发送短信'
+                ),
                 'and the prompt line reads the same'
             );
         },
@@ -1163,7 +1167,7 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
         name: 'the tool context names the chat, or none in a private chat',
         body: async () => {
             const signal = new AbortController().signal;
-            const triggerMessage = { messageId: 5, userId: null, userName: '李四' };
+            const triggerMessage = { messageId: 5, userId: null, userName: '李四', text: null };
             const group = replyTools.buildReplyToolContext({
                 chat: { id: -100555, type: 'supergroup', title: '主群' },
                 triggerMessage,

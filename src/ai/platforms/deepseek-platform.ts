@@ -161,7 +161,11 @@ export class DeepSeekPlatform extends BasePlatform {
                 return this.collectToolRound(stream, roundIndex);
             },
             appendRound: (round, executedCalls) => {
-                currentMessages.push(...buildChatToolTurn(round, executedCalls));
+                currentMessages.push(
+                    ...buildChatToolTurn(round, executedCalls, {
+                        supportsImageInput: this.getModelCapabilities(model).supportsImageInput,
+                    })
+                );
             },
         });
     }

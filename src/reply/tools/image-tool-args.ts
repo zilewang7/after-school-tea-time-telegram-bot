@@ -29,12 +29,20 @@ export interface ImageReferenceArg {
     readonly image: number | undefined;
 }
 
+/** A picture found on the web: a search candidate or an already-read image */
+export interface ImageWebReferenceArg {
+    readonly searchId: string | undefined;
+    readonly imageId: string | undefined;
+}
+
 export interface GenerateImageArgs {
     readonly prompt: string;
     /** Empty: the image goes out without a caption */
     readonly caption: string;
     /** Empty: drawn from scratch */
     readonly references: readonly ImageReferenceArg[];
+    /** Web pictures to follow, resolved by the tool from the reply's media state */
+    readonly webReferences: readonly ImageWebReferenceArg[];
     readonly aspectRatio: ImageAspectRatio | undefined;
 }
 
@@ -85,6 +93,33 @@ const parseReferences = (value: unknown): Field<readonly ImageReferenceArg[]> =>
     return valid(parsed.flatMap((item) => (item.ok ? [item.value] : [])));
 };
 
+/** One web reference: exactly one of search_id / image_id */
+const parseWebReference = (value: unknown, label: string): Field<ImageWebReferenceArg> => {
+    if (!isJsonObject(value)) return invalid(`${label} 必须是 {"search_id": "s2"} 或 {"image_id": "img1"} 这样的对象`);
+
+    const searchId = isAbsent(value.search_id) ? '' : value.search_id;
+    const imageId = isAbsent(value.image_id) ? '' : value.image_id;
+    if (typeof searchId !== 'string' || typeof imageId !== 'string') {
+        return invalid(`${label} 的 search_id / image_id 必须是字符串`);
+    }
+    const given = [searchId.trim(), imageId.trim()].filter((id) => id !== '');
+    if (given.length !== 1) return invalid(`${label} 的 search_id 和 image_id 必须传且只传一个`);
+    return valid({
+        searchId: searchId.trim() === '' ? undefined : searchId.trim(),
+        imageId: imageId.trim() === '' ? undefined : imageId.trim(),
+    });
+};
+
+const parseWebReferences = (value: unknown): Field<readonly ImageWebReferenceArg[]> => {
+    if (isAbsent(value)) return valid([]);
+    if (!Array.isArray(value)) return invalid('web_references 必须是数组，例如 [{"search_id": "s2"}]');
+
+    const parsed = value.map((item: unknown, index) => parseWebReference(item, `web_references[${index}]`));
+    const problems = parsed.flatMap((item) => (item.ok ? [] : item.problems));
+    if (problems.length > 0) return { ok: false, problems };
+    return valid(parsed.flatMap((item) => (item.ok ? [item.value] : [])));
+};
+
 const parseAspectRatio = (value: unknown): Field<ImageAspectRatio | undefined> => {
     if (isAbsent(value)) return valid(undefined);
     return isAspectRatio(value)
@@ -96,21 +131,23 @@ export const parseGenerateImageArgs = (args: Readonly<Record<string, unknown>>):
     const prompt = parsePrompt(args.prompt);
     const caption = parseCaption(args.caption);
     const references = parseReferences(args.references);
+    const webReferences = parseWebReferences(args.web_references);
     const aspectRatio = parseAspectRatio(args.aspect_ratio);
 
-    if (prompt.ok && caption.ok && references.ok && aspectRatio.ok) {
+    if (prompt.ok && caption.ok && references.ok && webReferences.ok && aspectRatio.ok) {
         return {
             ok: true,
             args: {
                 prompt: prompt.value,
                 caption: caption.value,
                 references: references.value,
+                webReferences: webReferences.value,
                 aspectRatio: aspectRatio.value,
             },
         };
     }
 
-    const problems = [prompt, caption, references, aspectRatio].flatMap((field) =>
+    const problems = [prompt, caption, references, webReferences, aspectRatio].flatMap((field) =>
         field.ok ? [] : field.problems
     );
     return { ok: false, error: `参数有误：\n${problems.map((problem) => `- ${problem}`).join('\n')}` };

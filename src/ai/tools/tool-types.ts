@@ -4,6 +4,7 @@
  * Only contracts live here; concrete tools (SMS, image generation) are built by
  * the reply layer and injected per turn, so the AI layer never imports them.
  */
+import type { SniffedImageMime } from '../image-generation/image-mime.js';
 import type { GroundingData, ToolChatAction, ToolStatus } from '../types.js';
 
 export type { ToolChatAction, ToolStatus } from '../types.js';
@@ -30,12 +31,26 @@ export interface ToolImage {
     readonly caption?: string;
 }
 
+/**
+ * An image the model itself should see (thumbnails of a search, a page being
+ * checked). Never delivered to the chat: only `images` goes out.
+ */
+export interface ToolModelImage {
+    readonly data: Buffer;
+    /** PNG / JPEG / WebP, as sniffed from the bytes */
+    readonly mimeType: SniffedImageMime;
+    /** Short model-facing label, e.g. `[s3] 标题 — example.com` */
+    readonly caption: string;
+}
+
 export interface ToolResult {
     /** What the model reads back */
     readonly content: string;
     readonly isError: boolean;
     /** Images that become part of the bot reply */
     readonly images: readonly ToolImage[];
+    /** Images only the model sees, replayed after the tool result */
+    readonly modelImages?: readonly ToolModelImage[];
     /** Record for the merged Tools/Sources block; null = usage count only */
     readonly record: GroundingData | null;
 }

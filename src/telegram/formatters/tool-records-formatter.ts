@@ -117,9 +117,14 @@ const collectToolLines = (
  */
 const sourcesOfStep = (metadata: GroundingData): GroundingCitation[] => [
     ...(metadata.citations ?? []),
-    ...(metadata.groundingChunks ?? []).flatMap((chunk) =>
-        chunk.web?.uri ? [{ uri: chunk.web.uri, title: chunk.web.title }] : []
-    ),
+    ...(metadata.groundingChunks ?? []).flatMap((chunk) => {
+        if (chunk.web?.uri) return [{ uri: chunk.web.uri, title: chunk.web.title }];
+        // An image chunk cites the page the image came from, not the CDN copy
+        if (chunk.image?.sourceUri) {
+            return [{ uri: chunk.image.sourceUri, title: chunk.image.title ?? chunk.image.domain }];
+        }
+        return [];
+    }),
 ];
 
 /**

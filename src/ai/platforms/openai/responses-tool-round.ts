@@ -7,7 +7,14 @@ import type {
     Response,
     ResponseStreamEvent,
 } from 'openai/resources/responses/responses';
-import { toolResultText, type ExecutedToolCall, type ToolCall } from '../../tools/index.js';
+import {
+    imageDataUrl,
+    modelImagesIntro,
+    modelImagesOf,
+    toolResultText,
+    type ExecutedToolCall,
+    type ToolCall,
+} from '../../tools/index.js';
 import type { StreamChunk } from '../../types.js';
 import {
     collectStreamedFunctionCall,
@@ -18,6 +25,26 @@ import {
 
 /** Stands in for the assistant text when a round only called tools */
 const CALLED_TOOLS_PLACEHOLDER = '[Called tools]';
+
+/**
+ * The pictures a tool round produced, as one user turn after the results:
+ * ephone's message replay cannot carry input_image inside a developer message,
+ * but a plain user message with input_image parts is exactly what it accepts.
+ */
+const modelImageMessages = (executedCalls: readonly ExecutedToolCall[]): EasyInputMessage[] => {
+    const images = modelImagesOf(executedCalls);
+    if (images.length === 0) return [];
+
+    const content: Exclude<EasyInputMessage['content'], string> = [
+        { type: 'input_text', text: modelImagesIntro(images) },
+        ...images.map((image) => ({
+            type: 'input_image' as const,
+            image_url: imageDataUrl(image),
+            detail: 'auto' as const,
+        })),
+    ];
+    return [{ type: 'message', role: 'user', content }];
+};
 
 export interface ResponsesRound {
     /** Text and thinking chunks in stream order */
@@ -112,5 +139,5 @@ export const buildToolRoundMessages = (
         })
     );
 
-    return [assistantMessage, ...resultMessages];
+    return [assistantMessage, ...resultMessages, ...modelImageMessages(executedCalls)];
 };

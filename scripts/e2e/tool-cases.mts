@@ -36,6 +36,9 @@ const TOOL_REPLY_TIMEOUT_MS = 300_000;
 /** context7's MCP tools (get-library-docs is the name before context7 v2) */
 const CONTEXT7_TOOL_NAMES: readonly string[] = ['resolve-library-id', 'query-docs', 'get-library-docs'];
 const GENERATE_IMAGE = 'generate_image';
+const SEARCH_IMAGES = 'search_images';
+const FETCH_IMAGE = 'fetch_image';
+const SEND_IMAGE = 'send_image';
 const SEND_SMS = 'send_sms_to_owner';
 
 const IMAGE_GENERATIONS_PER_RUN = 3;
@@ -354,6 +357,78 @@ export const toolCases: E2eCase[] = [
         },
     },
     {
+        // The incident this feature comes from: the user asked for a real meme
+        // and the bot drew one instead. The reply must find it and send it.
+        name: 'tools: a found picture is sent, not drawn',
+        tools: true,
+        body: async () => {
+            const startedAt = await beginToolCase();
+            const trigger = await sendAsUser(
+                `@${BOT_USERNAME} 帮我找一张柴犬的表情包发我，要网上真实存在的图，不要你画。`
+            );
+            const response = await waitForToolReply(trigger);
+            expect(!response.errorMessage, `no errorMessage recorded (got: ${response.errorMessage ?? ''})`);
+            expect(
+                !response.toolUsage.some((entry) => entry.name === GENERATE_IMAGE),
+                `the reply did not fall back to ${GENERATE_IMAGE} (tool usage: ${describeToolUsage(response)})`
+            );
+            expect(
+                response.toolUsage.some((entry) => entry.name === SEARCH_IMAGES) &&
+                    response.toolUsage.some((entry) => entry.name === SEND_IMAGE),
+                `it searched and sent a real picture (tool usage: ${describeToolUsage(response)})`
+            );
+            expectPresent(
+                response.image,
+                `the final version carries the found picture (text: ${response.text.slice(0, 120)})`
+            );
+
+            const logLines = await readContainerLogLines(startedAt);
+            if (logLines === null) {
+                console.log('    ↷ container log not readable: the SearXNG hit is not checked');
+            } else {
+                expect(
+                    logLines.some((line) => line.includes('[image-search]')),
+                    'the search really hit SearXNG (log has an [image-search] line)'
+                );
+            }
+
+            const visible = await waitForFinishedReply(trigger, response.messageIds);
+            expectReplyFinished(visible, response);
+        },
+    },
+    {
+        // Weak on purpose: whether the model wants a second look is its call.
+        // What must hold is that the reply still ends with one found picture.
+        name: 'tools: paging brings the rest of the thumbnails without drawing',
+        tools: true,
+        body: async () => {
+            const startedAt = await beginToolCase();
+            const trigger = await sendAsUser(
+                `@${BOT_USERNAME} 找几张不同画风的狗头表情包，先看看前几张，不满意就把剩下的缩略图也调出来，最后挑一张发我，不要画。`
+            );
+            const response = await waitForToolReply(trigger);
+            expect(!response.errorMessage, `no errorMessage recorded (got: ${response.errorMessage ?? ''})`);
+            const searches = response.toolUsage.find((entry) => entry.name === SEARCH_IMAGES)?.count ?? 0;
+            if (searches < 2) {
+                console.log(`    ↷ the model did not page (${describeToolUsage(response)}); paging is optional here`);
+            } else {
+                console.log(`    ✓ the model paged (${describeToolUsage(response)})`);
+            }
+            expect(
+                !response.toolUsage.some((entry) => entry.name === GENERATE_IMAGE),
+                `no drawing even when paging (tool usage: ${describeToolUsage(response)})`
+            );
+            const visible = await waitForFinishedReply(trigger, response.messageIds);
+            expectReplyFinished(visible, response);
+            const paged = (await readContainerLogLines(startedAt)) ?? [];
+            console.log(
+                paged.some((line) => line.includes('search=q') && line.includes('thumbnails'))
+                    ? '    ✓ a paging call is in the log'
+                    : '    ↷ no paging line in the log (the model may have stopped after the first search)'
+            );
+        },
+    },
+    {
         // The test instance inherits the production env, so SMS has to be off
         // by default there. Nothing stores the tool list a turn was offered, but
         // the Gemini log line counts it: context7's tools + generate_image, and
@@ -379,10 +454,13 @@ export const toolCases: E2eCase[] = [
             }
             const context7Tools =
                 context7ToolCountIn(wholeLog) ?? skip('日志里没有 context7 的连接记录，算不出应有的工具数，本条跳过');
-            const expected = context7Tools + 1;
+            // generate_image + search_images + fetch_image + send_image, unless
+            // the media tools are switched off for the test instance
+            const mediaTools = process.env.IMAGE_TOOLS === '0' ? 1 : 4;
+            const expected = context7Tools + mediaTools;
             expect(
                 offered.every((count) => count === expected),
-                `every Gemini tool turn offered ${expected} tools: context7's ${context7Tools} + ${GENERATE_IMAGE}; ${SEND_SMS} would make one more (offered: ${offered.join(', ')})`
+                `every Gemini tool turn offered ${expected} tools: context7's ${context7Tools} + ${mediaTools} media tool(s); ${SEND_SMS} would make one more (offered: ${offered.join(', ')})`
             );
         },
     },

@@ -6,6 +6,7 @@ import { IMAGE_GENERATION_TIMEOUT_MS } from '../../ai/image-generation/generate-
 import type { GeneratedImage } from '../../ai/image-generation/drain-image-stream.js';
 import type { ImageGenerationFailure } from '../../ai/image-generation/image-generation-failure.js';
 import type { ToolResult } from '../../ai/tools/tool-types.js';
+import type { GroundingCitation, GroundingData } from '../../ai/types.js';
 import type { GenerateImageArgs } from './image-tool-args.js';
 import { GENERATE_IMAGE_TOOL_NAME } from './tool-names.js';
 
@@ -50,8 +51,21 @@ export const imageToolError = (content: string): ToolResult => ({
     record: null,
 });
 
-export const imageToolSuccess = (image: GeneratedImage, args: GenerateImageArgs): ToolResult => {
+/** The pages Google's image search grounded the drawing in */
+const imageCitations = (grounding: GroundingData | null): GroundingCitation[] =>
+    (grounding?.groundingChunks ?? []).flatMap((chunk) => {
+        const uri = chunk.image?.sourceUri;
+        if (!uri) return [];
+        return [{ uri, title: chunk.image?.title ?? chunk.image?.domain }];
+    });
+
+export const imageToolSuccess = (
+    image: GeneratedImage,
+    args: GenerateImageArgs,
+    grounding: GroundingData | null = null
+): ToolResult => {
     const promptLine = args.prompt.replace(/\s+/g, ' ').trim();
+    const imageSearchQueries = grounding?.imageSearchQueries ?? [];
     return {
         content: IMAGE_READY,
         isError: false,
@@ -64,8 +78,11 @@ export const imageToolSuccess = (image: GeneratedImage, args: GenerateImageArgs)
         ],
         record: {
             provider: 'mcp',
-            searchQueries: [`${GENERATE_IMAGE_TOOL_NAME}: ${excerpt(promptLine, RECORD_PROMPT_CHARS)}`],
-            citations: [],
+            searchQueries: [
+                `${GENERATE_IMAGE_TOOL_NAME}: ${excerpt(promptLine, RECORD_PROMPT_CHARS)}`,
+                ...imageSearchQueries.map((query) => `参考图搜索: ${excerpt(query, RECORD_PROMPT_CHARS)}`),
+            ],
+            citations: imageCitations(grounding),
         },
     };
 };

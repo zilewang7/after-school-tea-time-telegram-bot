@@ -1258,7 +1258,25 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
                 ]),
             ]);
             const image = await runTurn({ model: GEMINI_IMAGE_MODEL, tools: turnTools, isImageModel: true });
-            expect(json(recordedRequests[0]?.body.tools) === '[{"googleSearch":{}}]', 'an image model keeps its own tool list, no declarations');
+            expect(
+                json(recordedRequests[0]?.body.tools) ===
+                    '[{"googleSearch":{"searchTypes":{"imageSearch":{},"webSearch":{}}}}]',
+                `an image model gets image-search grounding, no declarations (got ${json(recordedRequests[0]?.body.tools)})`
+            );
+
+            // A model that rejects imageSearch keeps the plain search tool
+            reset([
+                sse([
+                    event([{ inlineData: { mimeType: 'image/png', data: Buffer.from('final').toString('base64') } }], {
+                        finishReason: 'STOP',
+                    }),
+                ]),
+            ]);
+            await runTurn({ model: 'gemini-3-pro-image', tools: turnTools, isImageModel: true });
+            expect(
+                json(recordedRequests[0]?.body.tools) === '[{"googleSearch":{}}]',
+                'gemini-3-pro-image (no imageSearch support) keeps the plain googleSearch'
+            );
             const images = image.chunks.filter((chunk) => chunk.type === 'image');
             expect(images.length === 1 && images[0]?.imageData?.toString() === 'final', 'and still yields only the final image');
         },

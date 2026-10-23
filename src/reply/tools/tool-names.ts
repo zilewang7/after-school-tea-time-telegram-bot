@@ -4,6 +4,15 @@
  */
 export const SEND_SMS_TOOL_NAME = 'send_sms_to_owner';
 export const GENERATE_IMAGE_TOOL_NAME = 'generate_image';
+export const SEARCH_IMAGES_TOOL_NAME = 'search_images';
+export const FETCH_IMAGE_TOOL_NAME = 'fetch_image';
+export const SEND_IMAGE_TOOL_NAME = 'send_image';
 
 /** Built-in names an MCP tool may never take */
-export const RESERVED_TOOL_NAMES: readonly string[] = [SEND_SMS_TOOL_NAME, GENERATE_IMAGE_TOOL_NAME];
+export const RESERVED_TOOL_NAMES: readonly string[] = [
+    SEND_SMS_TOOL_NAME,
+    GENERATE_IMAGE_TOOL_NAME,
+    SEARCH_IMAGES_TOOL_NAME,
+    FETCH_IMAGE_TOOL_NAME,
+    SEND_IMAGE_TOOL_NAME,
+];

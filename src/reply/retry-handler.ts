@@ -295,7 +295,12 @@ const handleChatRetry = async (
     const [streamErr, stream] = await to(
         sendMessage(chatContents, {
             model,
-            systemPrompt: buildStaticSystemPrompt(model, { sms: availability.sms }),
+            systemPrompt: buildStaticSystemPrompt(model, {
+                sms: availability.sms,
+                imageTools: availability.imageSearch,
+                imageFetch: availability.imageFetch,
+                imageGenerate: availability.image,
+            }),
             ...(openCodeGoSession ? { sessionId: openCodeGoSession } : {}),
             signal,
             tools,

@@ -151,12 +151,15 @@ const buildGoogleSearchSection = (metadata: GroundingData): RenderedMessage[] =>
     });
 
     const chunkLines = (metadata.groundingChunks ?? []).flatMap((chunk, idx) => {
-        if (!chunk.web) return [];
-        const title = chunk.web.title ?? 'no title';
-        const uri = chunk.web.uri ?? 'https://example.com';
+        const source = chunk.web
+            ? { title: chunk.web.title ?? 'no title', uri: chunk.web.uri ?? 'https://example.com' }
+            : chunk.image?.sourceUri
+              ? { title: chunk.image.title ?? chunk.image.domain ?? 'no title', uri: chunk.image.sourceUri }
+              : null;
+        if (!source) return [];
         // Only the first row needs the line break that separates it from the query
         const separator = idx > 0 || queryParts.length > 0 ? '\n' : '';
-        return [separator, citationLine(idx + 1, title, uri)];
+        return [separator, citationLine(idx + 1, source.title, source.uri)];
     });
 
     // Grounding can arrive without its query list (a urlContext-only turn, or a

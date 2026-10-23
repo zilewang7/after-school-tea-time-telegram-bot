@@ -12,7 +12,13 @@ import { getModelCapabilities, getPlatform } from '../../ai/platform-factory.js'
 import { listMcpServers } from '../../ai/mcp/index.js';
 import { isTestInstance } from '../../config/instance.js';
 import { getToolConfig, type ToolConfig } from '../../config/tool-config.js';
-import { GENERATE_IMAGE_TOOL_NAME, SEND_SMS_TOOL_NAME } from './tool-names.js';
+import {
+    FETCH_IMAGE_TOOL_NAME,
+    GENERATE_IMAGE_TOOL_NAME,
+    SEARCH_IMAGES_TOOL_NAME,
+    SEND_IMAGE_TOOL_NAME,
+    SEND_SMS_TOOL_NAME,
+} from './tool-names.js';
 
 /** What the turn's request carries, as far as tool availability cares */
 export interface ToolRequestTraits {
@@ -31,6 +37,10 @@ export interface ToolAvailability {
     readonly sms: boolean;
     /** generate_image is offered */
     readonly image: boolean;
+    /** search_images and send_image are offered (text-only models may still pick and send) */
+    readonly imageSearch: boolean;
+    /** fetch_image is offered: only models that can see what they read */
+    readonly imageFetch: boolean;
 }
 
 const NO_TOOLS: ToolAvailability = {
@@ -38,6 +48,8 @@ const NO_TOOLS: ToolAvailability = {
     isMcpToolEnabled: () => false,
     sms: false,
     image: false,
+    imageSearch: false,
+    imageFetch: false,
 };
 
 export const resolveToolAvailability = (
@@ -67,6 +79,14 @@ export const resolveToolAvailability = (
     // The test instance inherits the production env, so it must opt in to SMS
     const smsInstanceAllowed = !isTestInstance() || config.ownerSmsAllowTest;
 
+    // Media tools follow generate_image's scope: same chats, same switch
+    const imageSearch =
+        chatAllowed &&
+        config.imageTools &&
+        config.imageSearchUrl !== '' &&
+        isEnabled(SEARCH_IMAGES_TOOL_NAME) &&
+        isEnabled(SEND_IMAGE_TOOL_NAME);
+
     return {
         mcpServers,
         isMcpToolEnabled: isEnabled,
@@ -76,5 +96,8 @@ export const resolveToolAvailability = (
             smsInstanceAllowed &&
             isEnabled(SEND_SMS_TOOL_NAME),
         image: chatAllowed && isEnabled(GENERATE_IMAGE_TOOL_NAME),
+        imageSearch,
+        // Reading a picture is only useful to a model that can see it
+        imageFetch: imageSearch && capabilities.supportsImageInput && isEnabled(FETCH_IMAGE_TOOL_NAME),
     };
 };

@@ -5,15 +5,22 @@
  * The schema is static so the declaration stays byte-identical between
  * requests (prompt caching). A tool instance serves exactly one reply, which
  * is where the one-image-per-reply rule lives: delivery and version storage
- * hold a single image.
+ * hold a single image. The flag is shared with send_image, so a reply can end
+ * with a found picture or a drawn one, never both.
  */
 import { sendMessage } from '../../ai/platform-factory.js';
-import { generateImage, type SendImageRequest } from '../../ai/image-generation/generate-image.js';
+import { generateImage, type ImageReference, type SendImageRequest } from '../../ai/image-generation/generate-image.js';
 import { failureLogDetail } from '../../ai/image-generation/image-generation-failure.js';
+import { sniffImageMime } from '../../ai/image-generation/image-mime.js';
 import type { ToolHandler } from '../../ai/tools/tool-types.js';
+import { fetchImageBytes } from '../../services/image-fetch-service.js';
 import { loadMessageImages } from '../commands/reference-images.js';
-import { IMAGE_ASPECT_RATIOS, parseGenerateImageArgs } from './image-tool-args.js';
-import { resolveImageReferences, type MessageImageLoader } from './image-references.js';
+import { IMAGE_ASPECT_RATIOS, parseGenerateImageArgs, type ImageWebReferenceArg } from './image-tool-args.js';
+import { MAX_REFERENCE_IMAGES, resolveImageReferences, type MessageImageLoader } from './image-references.js';
+import {
+    downloadCandidateImage,
+    type ImageFetch,
+} from './image-source-download.js';
 import {
     ONE_IMAGE_PER_REPLY,
     describeImageGenerationFailure,
@@ -21,14 +28,19 @@ import {
     imageToolSuccess,
 } from './image-tool-result.js';
 import type { ReplyToolContext } from './reply-tool-context.js';
+import type { ReplyMediaState } from './reply-media-state.js';
 import { GENERATE_IMAGE_TOOL_NAME } from './tool-names.js';
 
 export { IMAGE_ASPECT_RATIOS } from './image-tool-args.js';
 
 const DESCRIPTION =
     '生成或修改一张图片，图片会带着 caption 附在你这条回复后面发出（每条回复最多一张）。' +
-    '需要时你可以自己用它生成图片来回复，比如回复表情包、斗图，或者用户在对话中请你画图、编辑图片。' +
-    '要参考或修改上下文里的图片（包括你自己之前生成的），在 references 里填图片所在消息的编号。';
+    '只在需要“新画一张/改一张图”时使用；如果用户要的是真实存在的图片、表情包、截图、新闻图，' +
+    '请先用 search_images 找到，再用 send_image 发，不要用本工具冒充“找到了”。' +
+    '要参考或修改上下文里的图片（包括你自己之前生成的），在 references 里填消息编号；' +
+    '要参考网上找到的图，在 web_references 里填 search_id / image_id。' +
+    '生图模型在需要真实参考时会自动使用 Google 图片搜索；你可以在 prompt 里明确要求' +
+    '“参考网络上真实的照片/地标/人物”，生成后参考来源会列在回复底部。';
 
 const INPUT_SCHEMA = {
     type: 'object',
@@ -45,7 +57,7 @@ const INPUT_SCHEMA = {
         },
         references: {
             type: 'array',
-            description: '要参考或修改的图片；不填就是从零画。',
+            description: '要参考或修改的上下文图片；不填就是从零画。',
             items: {
                 type: 'object',
                 properties: {
@@ -63,6 +75,17 @@ const INPUT_SCHEMA = {
                 required: ['message'],
             },
         },
+        web_references: {
+            type: 'array',
+            description: '要参考的网上图片（search_images 的候选或 fetch_image 读过的图）。',
+            items: {
+                type: 'object',
+                properties: {
+                    search_id: { type: 'string', description: "搜索结果候选编号，形如 's2'" },
+                    image_id: { type: 'string', description: "已读图编号，形如 'img1'" },
+                },
+            },
+        },
         aspect_ratio: {
             type: 'string',
             enum: IMAGE_ASPECT_RATIOS,
@@ -72,21 +95,76 @@ const INPUT_SCHEMA = {
     required: ['prompt', 'caption'],
 };
 
-/** What the tool talks to; the offline tests swap both */
+/** What the tool talks to; the offline tests swap all of it */
 export interface GenerateImageToolDependencies {
     readonly sendMessage: SendImageRequest;
     readonly loadMessageImages: MessageImageLoader;
+    readonly fetchImage: ImageFetch;
 }
 
-const PRODUCTION_DEPENDENCIES: GenerateImageToolDependencies = { sendMessage, loadMessageImages };
+const PRODUCTION_DEPENDENCIES: GenerateImageToolDependencies = {
+    sendMessage,
+    loadMessageImages,
+    fetchImage: fetchImageBytes,
+};
+
+type ResolvedWebReferences =
+    | { readonly ok: true; readonly images: readonly ImageReference[] }
+    | { readonly ok: false; readonly error: string };
+
+const NON_VISION_REFERENCE =
+    '这张图不能作为参考：不是 PNG/JPEG/WebP，或下载失败。换一张，或用上下文里的图。';
+
+/** Web pictures → bytes the image model takes, in the order the model listed them */
+const resolveWebReferences = async (
+    references: readonly ImageWebReferenceArg[],
+    state: ReplyMediaState,
+    dependencies: GenerateImageToolDependencies,
+    signal: AbortSignal
+): Promise<ResolvedWebReferences> => {
+    const images: ImageReference[] = [];
+    const problems: string[] = [];
+
+    for (const reference of references) {
+        if (reference.imageId !== undefined) {
+            const fetched = state.fetched.get(reference.imageId);
+            if (!fetched) {
+                problems.push(`${reference.imageId} 没有读过；先用 fetch_image 读取`);
+                continue;
+            }
+            images.push({ data: fetched.data, mimeType: fetched.mimeType });
+            continue;
+        }
+
+        const searchId = reference.searchId ?? '';
+        const candidate = state.candidates.get(searchId);
+        if (!candidate) {
+            problems.push(`${searchId} 不是本次的搜索结果编号`);
+            continue;
+        }
+
+        const downloaded = await downloadCandidateImage(candidate, { fetchImage: dependencies.fetchImage, signal });
+        if (!downloaded.ok) {
+            problems.push(`${searchId} 取不到图：${downloaded.error}`);
+            continue;
+        }
+        const mimeType = sniffImageMime(downloaded.bytes.data);
+        if (!mimeType) {
+            problems.push(`${searchId} ${NON_VISION_REFERENCE}`);
+            continue;
+        }
+        images.push({ data: downloaded.bytes.data, mimeType });
+    }
+
+    if (problems.length > 0) return { ok: false, error: `参数有误：\n${problems.map((p) => `- ${p}`).join('\n')}` };
+    return { ok: true, images };
+};
 
 export const createGenerateImageTool = (
     context: ReplyToolContext,
+    state: ReplyMediaState,
     dependencies: GenerateImageToolDependencies = PRODUCTION_DEPENDENCIES
 ): ToolHandler => {
-    // Set by the first image this reply got; a failed attempt leaves room for another
-    let replyHasImage = false;
-
     return {
         definition: {
             name: GENERATE_IMAGE_TOOL_NAME,
@@ -96,7 +174,7 @@ export const createGenerateImageTool = (
         statusText: '🎨 正在画图…',
         chatAction: 'upload_photo',
         execute: async (rawArgs, signal) => {
-            if (replyHasImage) return imageToolError(ONE_IMAGE_PER_REPLY);
+            if (state.hasReplyImage) return imageToolError(ONE_IMAGE_PER_REPLY);
 
             const parsed = parseGenerateImageArgs(rawArgs);
             if (!parsed.ok) return imageToolError(parsed.error);
@@ -109,18 +187,38 @@ export const createGenerateImageTool = (
             });
             if (!references.ok) return imageToolError(references.error);
 
+            const web = await resolveWebReferences(
+                args.webReferences,
+                state,
+                dependencies,
+                AbortSignal.any([signal, context.signal])
+            );
+            if (!web.ok) return imageToolError(web.error);
+
+            const referenceImages = [...references.images, ...web.images];
+            if (referenceImages.length > MAX_REFERENCE_IMAGES) {
+                return imageToolError(
+                    `参考图最多 ${MAX_REFERENCE_IMAGES} 张（现在 ${referenceImages.length} 张）。` +
+                        '去掉几张再试：references 和 web_references 合计不能超。'
+                );
+            }
+
             const outcome = await generateImage(
-                { prompt: args.prompt, references: references.images, aspectRatio: args.aspectRatio },
+                {
+                    prompt: args.prompt,
+                    references: referenceImages,
+                    aspectRatio: args.aspectRatio,
+                },
                 { sendMessage: dependencies.sendMessage, signal: AbortSignal.any([signal, context.signal]) }
             );
             console.log(
-                `[generate_image] ${references.images.length} reference(s), aspect=${args.aspectRatio ?? 'auto'}: ` +
+                `[generate_image] ${referenceImages.length} reference(s), aspect=${args.aspectRatio ?? 'auto'}: ` +
                     (outcome.ok ? `${outcome.image.mimeType} ${outcome.image.data.length}B` : failureLogDetail(outcome.failure))
             );
             if (!outcome.ok) return imageToolError(describeImageGenerationFailure(outcome.failure));
 
-            replyHasImage = true;
-            return imageToolSuccess(outcome.image, args);
+            state.hasReplyImage = true;
+            return imageToolSuccess(outcome.image, args, outcome.grounding);
         },
     };
 };

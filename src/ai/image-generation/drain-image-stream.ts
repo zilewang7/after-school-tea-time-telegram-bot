@@ -6,7 +6,7 @@
  * closing raw response, which carries the finish reason and prompt feedback.
  */
 import { match, P } from 'ts-pattern';
-import type { StreamChunk } from '../types.js';
+import type { GroundingData, StreamChunk } from '../types.js';
 
 export interface GeneratedImage {
     readonly data: Buffer;
@@ -21,9 +21,41 @@ export interface DrainedImageStream {
     readonly text: string;
     /** rawResponse of the closing done chunk */
     readonly rawResponse: unknown;
+    /** Search grounding of the generation (image references Google found) */
+    readonly grounding: GroundingData | null;
 }
 
-const NOTHING_DRAINED: DrainedImageStream = { image: null, text: '', rawResponse: undefined };
+const NOTHING_DRAINED: DrainedImageStream = {
+    image: null,
+    text: '',
+    rawResponse: undefined,
+    grounding: null,
+};
+
+const chunkKey = (chunk: NonNullable<GroundingData['groundingChunks']>[number]): string =>
+    chunk.web?.uri ?? chunk.image?.sourceUri ?? chunk.image?.imageUri ?? JSON.stringify(chunk);
+
+/** Rounds of one stream may report grounding apart; merge whatever arrived */
+const mergeGrounding = (into: GroundingData | null, next: GroundingData): GroundingData => {
+    if (!into) return next;
+
+    const seenChunks = new Set((into.groundingChunks ?? []).map(chunkKey));
+    const chunks = [
+        ...(into.groundingChunks ?? []),
+        ...(next.groundingChunks ?? []).filter((chunk) => !seenChunks.has(chunkKey(chunk))),
+    ];
+    const imageSearchQueries = [
+        ...new Set([...(into.imageSearchQueries ?? []), ...(next.imageSearchQueries ?? [])]),
+    ];
+    const searchQueries = [...new Set([...into.searchQueries, ...next.searchQueries])];
+
+    return {
+        ...into,
+        searchQueries,
+        ...(imageSearchQueries.length > 0 ? { imageSearchQueries } : {}),
+        ...(chunks.length > 0 ? { groundingChunks: chunks } : {}),
+    };
+};
 
 const applyChunk = (drained: DrainedImageStream, chunk: StreamChunk): DrainedImageStream =>
     match(chunk)
@@ -34,6 +66,10 @@ const applyChunk = (drained: DrainedImageStream, chunk: StreamChunk): DrainedIma
         }))
         .with({ type: 'text' }, ({ content }) => ({ ...drained, text: drained.text + (content ?? '') }))
         .with({ type: 'done' }, ({ rawResponse }) => ({ ...drained, rawResponse }))
+        .with({ type: 'grounding', groundingMetadata: P.nonNullable }, ({ groundingMetadata }) => ({
+            ...drained,
+            grounding: mergeGrounding(drained.grounding, groundingMetadata),
+        }))
         .otherwise(() => drained);
 
 export const drainImageStream = async (stream: AsyncIterable<StreamChunk>): Promise<DrainedImageStream> => {

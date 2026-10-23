@@ -41,3 +41,18 @@ const GEMINI_FUNCTION_TOOL_MODELS: ReadonlySet<string> = new Set([
 
 export const supportsGeminiFunctionTools = (model: string): boolean =>
     GEMINI_FUNCTION_TOOL_MODELS.has(model.toLowerCase());
+
+/**
+ * Image models that can ground a generation in real web images
+ * (searchTypes.imageSearch). Verified 2026-10-23 on the image search endpoint:
+ * nano-banana-2.1 returns imageSearchQueries + groundingChunks[].image only when
+ * imageSearch and webSearch are both declared; gemini-3-pro-image rejects
+ * imageSearch with 400 "image_search is not supported for this model".
+ */
+const GEMINI_IMAGE_SEARCH_GROUNDING_MODELS: ReadonlySet<string> = new Set([
+    'gemini-nano-banana-2.1',
+    'gemini-3.1-flash-image',
+]);
+
+export const supportsGeminiImageSearchGrounding = (model: string): boolean =>
+    GEMINI_IMAGE_SEARCH_GROUNDING_MODELS.has(model.toLowerCase());

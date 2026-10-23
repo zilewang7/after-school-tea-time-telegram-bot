@@ -20,6 +20,8 @@ export interface ReplyToolContext {
     readonly requester: ToolRequester;
     /** `#N` → message of this turn's context */
     readonly contextIndex: ContextIndex;
+    /** The trigger message's text: its image links are the only url arguments allowed */
+    readonly triggerText: string | null;
     /** Aborts when the reply is stopped */
     readonly signal: AbortSignal;
 }
@@ -29,6 +31,7 @@ export interface TriggerMessageRow {
     readonly messageId: number;
     readonly userId: number | null;
     readonly userName: string;
+    readonly text: string | null;
 }
 
 export const buildReplyToolContext = (input: {
@@ -45,5 +48,6 @@ export const buildReplyToolContext = (input: {
         name: input.triggerMessage.userName,
     },
     contextIndex: input.contextIndex,
+    triggerText: input.triggerMessage.text,
     signal: input.signal,
 });

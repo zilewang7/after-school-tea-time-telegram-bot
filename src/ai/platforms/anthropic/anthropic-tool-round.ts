@@ -182,13 +182,36 @@ export const collectAnthropicRound = async (
     };
 };
 
-/** One tool_result per executed call, in call order, flagged by the result itself */
+/**
+ * One tool_result per executed call, in call order, flagged by the result
+ * itself. Pictures meant for the model ride inside the same block, ahead of
+ * any later text, which is where the Messages API reads them.
+ */
 export const toToolResultBlocks = (
     executedCalls: readonly ExecutedToolCall[]
 ): Anthropic.ToolResultBlockParam[] =>
-    executedCalls.map(({ call, result }) => ({
-        type: 'tool_result',
-        tool_use_id: call.id,
-        content: toolResultText(result),
-        is_error: result.isError,
-    }));
+    executedCalls.map(({ call, result }) => {
+        const images = result.modelImages ?? [];
+        const text = toolResultText(result);
+        return {
+            type: 'tool_result',
+            tool_use_id: call.id,
+            content:
+                images.length === 0
+                    ? text
+                    : [
+                          { type: 'text', text },
+                          ...images.map(
+                              (image): Anthropic.ImageBlockParam => ({
+                                  type: 'image',
+                                  source: {
+                                      type: 'base64',
+                                      media_type: image.mimeType,
+                                      data: image.data.toString('base64'),
+                                  },
+                              })
+                          ),
+                      ],
+            is_error: result.isError,
+        };
+    });
