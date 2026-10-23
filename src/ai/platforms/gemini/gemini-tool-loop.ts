@@ -51,8 +51,13 @@ import {
 /**
  * Rounds per reply; the last one may no longer call functions. Only a final
  * round that still calls gets one round more.
+ *
+ * Was 5 (4 tool rounds). The media tools added three call types (search, read,
+ * send) and a refused call still spends a round, so a reply could run out
+ * before sending its picture (live 1106440). 8 keeps the deadline as the real
+ * bound: 180s is hit long before eight rounds of real work.
  */
-export const GEMINI_MAX_ROUNDS = 5;
+export const GEMINI_MAX_ROUNDS = 8;
 
 /** A function call Gemini could not produce: retried once as the final round */
 const FAILED_CALL_FINISH_REASONS: ReadonlySet<FinishReason> = new Set([

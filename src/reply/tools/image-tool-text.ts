@@ -62,9 +62,12 @@ const attachLines = (input: SearchTextInput): string[] => {
     return lines;
 };
 
-/** Once enough is on screen, searching again only burns the remaining rounds */
-const mustSendNow = (state: ReplyMediaState): boolean =>
-    state.searchCount >= MAX_IMAGE_SEARCHES || state.thumbnailCount >= 8;
+/**
+ * Once a whole batch is on screen (8 thumbnails), more searching or reading
+ * only burns the rounds send_image needs. The tools refuse instead of hinting:
+ * a hint was not enough (live 1106440 and its replay).
+ */
+export const mustSendNow = (state: ReplyMediaState): boolean => state.thumbnailCount >= 8;
 
 const nextStepLines = (input: SearchTextInput, unseen: readonly SearchCandidate[]): string[] => {
     const lines: string[] = [];
@@ -178,6 +181,14 @@ export const mediaToolErrors = {
     searchBudget:
         `这条回复已经搜了 ${MAX_IMAGE_SEARCHES} 次图了。直接用 send_image 发已有的候选；` +
         '都不合适就问用户要不要换个说法，或直接发最接近的一张。',
+    sendNow: (state: ReplyMediaState) => {
+        const first = [...state.candidates.values()][0]?.id ?? 's1';
+        return (
+            '已经看过一整批缩略图了，不能再搜索或读图了：' +
+            `下一步必须调用 send_image(search_id='${first}') 把选中的一张发出去，` +
+            '否则这条回复发不出图（工具轮次不够了）。换候选就换成别的 sN，但动作必须是 send_image。'
+        );
+    },
     pageBudget: '这条回复的翻页次数用完了。可以直接 send_image 发已有候选，或用 fetch_image 单独看某一张。',
     thumbnailBudget:
         `缩略图额度用完了（${MAX_SEARCH_THUMBNAILS} 张）。直接 send_image 发已经看到的，别再搜了。`,

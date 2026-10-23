@@ -143,7 +143,10 @@ const cases = [
             );
 
             const third = await tool.execute({ search: 'q1' }, AbortSignal.abort());
-            expect(third.isError && third.content.includes('都看过了'), 'asking again is an error that explains');
+            expect(
+                third.isError && third.content.includes('必须调用 send_image'),
+                `after a whole batch only sending is allowed (got ${third.content.slice(0, 80)})`
+            );
             expect(stub.calls.length === 1, `SearXNG was hit once (got ${stub.calls.length})`);
         },
     },
@@ -282,15 +285,50 @@ const cases = [
         },
     },
     {
+        name: 'after a whole batch only send_image can run',
+        body: async (): Promise<void> => {
+            const state = createReplyMediaState(null);
+            const tool = searchToolWith(state, searchStub());
+            await tool.execute({ query: '狗头表情包' }, AbortSignal.abort());
+            await tool.execute({ search: 'q1' }, AbortSignal.abort());
+            expect(state.thumbnailCount === 8, `the whole batch is on screen (got ${state.thumbnailCount})`);
+
+            const searchAgain = await tool.execute({ query: '换个词' }, AbortSignal.abort());
+            expect(
+                searchAgain.isError && searchAgain.content.includes('必须调用 send_image'),
+                `a new search is refused (got ${searchAgain.content.slice(0, 80)})`
+            );
+
+            const fetch = createFetchImageTool({
+                state,
+                dependencies: {
+                    fetchImage: async () => ({
+                        ok: true,
+                        image: { data: PNG, mimeType: 'image/png', finalUrl: 'https://cdn.example.com/img-1.jpg' },
+                    }),
+                },
+            });
+            const read = await fetch.execute({ search_id: 's1' }, AbortSignal.abort());
+            expect(
+                read.isError && read.content.includes('必须调用 send_image'),
+                `reading another image is refused (got ${read.content.slice(0, 80)})`
+            );
+            expect(read.content.includes("search_id='s1'"), 'and the refusal names a candidate to send');
+        },
+    },
+    {
         name: 'the search budget is two searches per reply',
         body: async (): Promise<void> => {
             const state = createReplyMediaState(null);
             const tool = searchToolWith(state, searchStub());
-            for (const query of ['a', 'b']) {
-                await tool.execute({ query }, AbortSignal.abort());
-            }
+            await tool.execute({ query: 'a' }, AbortSignal.abort());
+            const secondSearch = await tool.execute({ query: 'b' }, AbortSignal.abort());
+            expect(!secondSearch.isError, 'the second search still runs');
             const refused = await tool.execute({ query: 'c' }, AbortSignal.abort());
-            expect(refused.isError && refused.content.includes('搜了 2 次'), 'the third search is refused');
+            expect(
+                refused.isError && refused.content.includes('必须调用 send_image'),
+                'once a batch is seen, a third search is refused and points at send_image'
+            );
             expect(state.searchCount === MAX_IMAGE_SEARCHES, 'and the count is the limit');
         },
     },

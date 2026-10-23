@@ -12,7 +12,7 @@ import type { ImageSearchOptions, ImageSearchOutcome, SearchedImage } from '../.
 import type { SniffedImageMime } from '../../ai/image-generation/image-mime.js';
 import type { ToolHandler } from '../../ai/tools/tool-types.js';
 import { imageToolError } from './image-tool-result.js';
-import { formatSearchResult, mediaToolErrors } from './image-tool-text.js';
+import { formatSearchResult, mediaToolErrors, mustSendNow } from './image-tool-text.js';
 import { parseSearchImagesArgs } from './media-tool-args.js';
 import {
     addAllowedUrls,
@@ -236,6 +236,9 @@ export const createSearchImagesTool = (options: SearchImagesToolOptions): ToolHa
             const parsed = parseSearchImagesArgs(rawArgs);
             if (!parsed.ok) return imageToolError(parsed.error);
             const args = parsed.args;
+
+            // A whole batch is already on screen: only send_image can move this reply on
+            if (mustSendNow(state)) return imageToolError(mediaToolErrors.sendNow(state));
 
             // A brand-new search is not a page; paging, reusing a query and
             // details all spend the (smaller) paging budget.
