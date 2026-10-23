@@ -74,6 +74,8 @@ const MAX_WEBM_FRAME_RATE = 60;
 const MAX_NORMALIZE_DIMENSION = 4096;
 const MAX_NORMALIZE_PIXELS = 16 * 1024 * 1024;
 const MAX_NORMALIZE_DURATION_SECONDS = 6 * 60 * 60;
+/** An animation is watched, not archived: 30s is plenty for a meme */
+const MAX_ANIMATION_SECONDS = 30;
 const MAX_NORMALIZE_FRAME_RATE = 240;
 const MAX_NORMALIZE_STREAMS = 8;
 const NORMALIZE_VIDEO_MIMES = new Set([
@@ -427,26 +429,35 @@ const normalizeShortVideo = async (videoBuffer, inputMime, signal, options = {})
         throw new HttpError(415, `unsupported video MIME: ${inputMime}`);
     }
     const forceMp4 = options.forceMp4 === true;
+    const isAnimation = inputMime === 'image/gif';
     const dir = await mkdtemp(join(tmpdir(), 'normalize-'));
     const inPath = join(dir, 'input.bin');
     const outPath = join(dir, 'output.mp4');
     try {
         await writeFile(inPath, videoBuffer);
-        const videoInfo = await probeNormalizeVideo(inPath, dir, signal);
-        const needsPadding = videoInfo.duration < MIN_VIDEO_SECONDS;
+        const videoInfo = await probeNormalizeVideo(inPath, dir, signal, {
+            allowUnknownDuration: isAnimation,
+        });
+        const needsPadding =
+            videoInfo.duration !== undefined && videoInfo.duration < MIN_VIDEO_SECONDS;
         if (!forceMp4 && !needsPadding) {
             return { data: videoBuffer, mimeType: inputMime, normalized: false };
         }
         // Ultra-short clips are looped up to MIN_VIDEO_SECONDS; a normal-length
-        // clip is re-encoded as-is (only reached with forceMp4).
+        // clip is re-encoded as-is (only reached with forceMp4). A GIF with no
+        // duration is capped instead, so a long loop cannot run unbounded.
         const inputArgs = needsPadding
             ? ['-stream_loop', '-1', '-i', inPath, '-t', String(MIN_VIDEO_SECONDS)]
-            : ['-i', inPath];
+            : isAnimation
+              ? ['-i', inPath, '-t', String(MAX_ANIMATION_SECONDS)]
+              : ['-i', inPath];
         await runProcess('ffmpeg', [
             '-y',
             '-threads', '2',
             ...inputArgs,
             '-c:v', 'libx264',
+            // yuv420p needs even dimensions, and GIFs are often odd-sized
+            '-vf', 'scale=trunc(iw/2)*2:trunc(ih/2)*2',
             '-preset', 'ultrafast',
             '-pix_fmt', 'yuv420p',
             '-c:a', 'aac',
@@ -554,7 +565,12 @@ const probeMedia = async (filePath, jobDirectory, signal) => {
     }
 };
 
-const probeNormalizeVideo = async (filePath, jobDirectory, signal) => {
+/**
+ * @param {object} [options]
+ * @param {boolean} [options.allowUnknownDuration] animated images often report
+ *   no duration at all; the caller bounds those with `-t` instead.
+ */
+const probeNormalizeVideo = async (filePath, jobDirectory, signal, options = {}) => {
     const probe = await probeMedia(filePath, jobDirectory, signal);
     const streams = Array.isArray(probe.streams) ? probe.streams : [];
     const videoStreams = streams.filter((stream) => stream?.codec_type === 'video');
@@ -571,13 +587,17 @@ const probeNormalizeVideo = async (filePath, jobDirectory, signal) => {
         || width * height > MAX_NORMALIZE_PIXELS) {
         throw new HttpError(422, 'video dimensions exceed the normalize limit');
     }
-    if (!Number.isFinite(duration) || duration <= 0 || duration > MAX_NORMALIZE_DURATION_SECONDS) {
+    const durationUsable = Number.isFinite(duration) && duration > 0;
+    if (!durationUsable && options.allowUnknownDuration !== true) {
+        throw new HttpError(422, 'video duration exceeds the normalize limit');
+    }
+    if (durationUsable && duration > MAX_NORMALIZE_DURATION_SECONDS) {
         throw new HttpError(422, 'video duration exceeds the normalize limit');
     }
     if (!Number.isFinite(frameRate) || frameRate <= 0 || frameRate > MAX_NORMALIZE_FRAME_RATE) {
         throw new HttpError(422, 'video frame rate exceeds the normalize limit');
     }
-    return { duration };
+    return { duration: durationUsable ? duration : undefined };
 };
 
 const probeWebm = async (filePath, jobDirectory, signal) => {
