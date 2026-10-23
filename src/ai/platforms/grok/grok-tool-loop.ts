@@ -37,7 +37,8 @@ import {
 import { streamGrokRound } from './grok-round.js';
 
 /** Rounds of one reply, the final tool-less one included */
-const MAX_ROUNDS = 5;
+/** Rounds of one reply, the final tool-less one included (12 may call tools) */
+const MAX_ROUNDS = 13;
 
 export interface GrokToolLoopOptions {
     readonly model: string;

@@ -3,14 +3,8 @@
  * what is left, and the next useful call. Pure functions so the offline suite
  * can pin the wording without a network or a Telegram client.
  */
-import type { SearchCandidate, SearchSet, ReplyMediaState } from './reply-media-state.js';
-import {
-    MAX_IMAGE_FETCHES,
-    MAX_IMAGE_SEARCHES,
-    MAX_SEARCH_PAGES,
-    MAX_SEARCH_THUMBNAILS,
-    unseenCandidates,
-} from './reply-media-state.js';
+import type { ReplyMediaState, SearchCandidate, SearchSet } from './reply-media-state.js';
+import { unseenCandidates } from './reply-media-state.js';
 
 /** Ids as the model reads them: `s1 s2 s3` */
 const idList = (candidates: readonly SearchCandidate[]): string =>
@@ -32,14 +26,8 @@ export const formatCandidateLine = (candidate: SearchCandidate, options: { withP
     return options.withPage === true ? `${line}\n   ${candidate.sourcePage}` : line;
 };
 
-/** The reply's remaining budgets, in one short line */
-export const formatBudgetLine = (state: ReplyMediaState): string =>
-    `本条回复已用：搜索 ${state.searchCount}/${MAX_IMAGE_SEARCHES}、翻页 ${state.searchPageCount}/${MAX_SEARCH_PAGES}、` +
-    `缩略图 ${state.thumbnailCount}/${MAX_SEARCH_THUMBNAILS}、读图 ${state.fetchCount}/${MAX_IMAGE_FETCHES}`;
-
 export interface SearchTextInput {
     readonly set: SearchSet;
-    readonly state: ReplyMediaState;
     readonly attached: readonly SearchCandidate[];
     readonly failed: readonly SearchCandidate[];
     readonly view: 'thumbnails' | 'details';
@@ -62,9 +50,6 @@ const attachLines = (input: SearchTextInput): string[] => {
     return lines;
 };
 
-/** A whole batch is on screen: good point to send instead of looking further */
-export const sendNowSuggested = (state: ReplyMediaState): boolean => state.thumbnailCount >= 8;
-
 const nextStepLines = (input: SearchTextInput, unseen: readonly SearchCandidate[]): string[] => {
     const lines: string[] = [];
     const { set } = input;
@@ -74,7 +59,7 @@ const nextStepLines = (input: SearchTextInput, unseen: readonly SearchCandidate[
         if (input.view === 'thumbnails' && unseen.length > 0) {
             lines.push(`- 想看剩下的 ${unseen.length} 张：search_images(search='${set.id}')`);
         }
-        if (input.view === 'thumbnails' && input.state.thumbnailCount > 0) {
+        if (input.view === 'thumbnails') {
             lines.push(`- 只要文字清单：search_images(search='${set.id}', view='details')`);
         }
         if (unseen.length > 0) {
@@ -82,13 +67,6 @@ const nextStepLines = (input: SearchTextInput, unseen: readonly SearchCandidate[
         }
     }
     lines.push(`- 确定要发：send_image(search_id='${set.candidates[0]?.id ?? 's1'}')`);
-    if (sendNowSuggested(input.state)) {
-        lines.unshift(
-            '💡 已经看过 ' + input.state.thumbnailCount + ' 张（搜索 ' + input.state.searchCount + ' 次）：' +
-                "用户要图的话，现在就从这些候选里挑一张 send_image 发出去——发一张比只列文字好，" +
-                '别把工具轮次都花在找图上（轮次用光就发不出图了）。'
-        );
-    }
     return lines;
 };
 
@@ -97,7 +75,7 @@ const nextStepLines = (input: SearchTextInput, unseen: readonly SearchCandidate[
  * just been shown, which are left, and the calls that move forward.
  */
 export const formatSearchResult = (input: SearchTextInput): string => {
-    const { set, state } = input;
+    const { set } = input;
     const unseen = unseenCandidates(set);
 
     const header = [
@@ -111,19 +89,15 @@ export const formatSearchResult = (input: SearchTextInput): string => {
         formatCandidateLine(candidate, { withPage: input.view === 'details' })
     );
 
-    const lines = [
+    return [
         ...header,
         ...candidateLines,
         ...attachLines(input),
         ...(input.canSeeImages
             ? [unseen.length === 0 ? '这批缩略图都看过了。' : `还没看：${idList(unseen)}`]
-            : []),
-        ...(input.canSeeImages ? [] : ['你看不到图：按标题、尺寸和来源挑，发之前可以让用户确认。']),
+            : ['你看不到图：按标题、尺寸和来源挑，发之前可以让用户确认。']),
         ...nextStepLines(input, unseen),
-        formatBudgetLine(state),
-    ];
-
-    return lines.join('\n');
+    ].join('\n');
 };
 
 /** What fetch_image says after reading one image */
@@ -139,7 +113,6 @@ export const formatFetchResult = (input: {
     readonly fromCandidateId?: string;
     /** Why this is not the original, when it is not */
     readonly note?: string;
-    readonly state: ReplyMediaState;
 }): string => {
     const { image } = input;
     const size =
@@ -150,7 +123,6 @@ export const formatFetchResult = (input: {
         `已读取 ${image.id}${origin}：${size}${image.mimeType}，${Math.round(image.dataLength / 1024)}KB${note}。`,
         `来源页：${image.sourcePage}`,
         `可以直接作为 generate_image 的参考图（web_references），或 send_image(image_id='${image.id}') 发出。`,
-        formatBudgetLine(input.state),
     ].join('\n');
 };
 
@@ -177,13 +149,6 @@ export const formatSendResult = (input: {
 
 /** Error answers; every one names the next thing to try */
 export const mediaToolErrors = {
-    searchBudget:
-        `这条回复已经搜了 ${MAX_IMAGE_SEARCHES} 次图了（安全上限）。直接用 send_image 发已有的候选；` +
-        '都不合适就问用户要不要换个说法，或直接发最接近的一张。',
-
-    pageBudget: '这条回复的翻页次数用完了。可以直接 send_image 发已有候选，或用 fetch_image 单独看某一张。',
-    thumbnailBudget:
-        `缩略图额度用完了（${MAX_SEARCH_THUMBNAILS} 张）。直接 send_image 发已经看到的，别再搜了。`,
     noMoreThumbnails: (setId: string) =>
         `${setId} 的候选都看过了。可以换一个 query、用 fetch_image 看原图，或直接 send_image。`,
     unknownSet: (setId: string, state: ReplyMediaState) => {
@@ -195,7 +160,6 @@ export const mediaToolErrors = {
     unknownFetched: (imageId: string) => `没有读过的图 ${imageId}。先用 fetch_image 读取，或改用 search_id。`,
     urlNotAllowed:
         '这个 url 不在本次对话出现过的图片直链里。用 search_id / image_id，或让用户直接发那张图。',
-    fetchBudget: '这条回复已经读取 4 张图了，直接把选中的图发出去吧（send_image）。',
     noImageSource: '要发哪张图？传 search_id、image_id、message（上下文编号）或 url 之一。',
     downloadFailed: (reason: string) => `图片没取到：${reason}`,
     notAnImage: '这张不是 PNG/JPEG/WebP 图片，发不了。换一张候选试试。',

@@ -22,6 +22,6 @@ export const imageDataUrl = (image: ToolModelImage): string =>
  */
 export const modelImagesIntro = (images: readonly ToolModelImage[]): string =>
     [
-        '以下是工具结果附带的图片（只给你看，没有发给用户），顺序与上一条工具结果一致：',
+        '以下是上一条工具结果里的图片，顺序与之一致（有没有发给用户见该工具结果的文字）：',
         ...images.map((image, index) => `${index + 1}. ${image.caption}`),
     ].join('\n');

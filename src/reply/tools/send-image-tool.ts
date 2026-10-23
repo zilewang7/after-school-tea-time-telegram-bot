@@ -6,6 +6,14 @@
  *
  * Sharing one "this reply already has an image" flag with generate_image keeps
  * delivery and version storage to their one-image assumption.
+ *
+ * A picture the reply did not already show the model comes back as a
+ * model-only image: the model has to see what it is about to send, or it
+ * captions a candidate from its title and describes a picture the chat never
+ * saw (live 1106627: text about a solo meme next to a group poster). An image
+ * the model read with fetch_image, or one taken from a context message, is
+ * already in the conversation — attaching it again would only double its
+ * tokens.
  */
 import { sniffImageMime, type SniffedImageMime } from '../../ai/image-generation/image-mime.js';
 import type { ToolHandler } from '../../ai/tools/tool-types.js';
@@ -226,6 +234,10 @@ export const createSendImageTool = (options: SendImageToolOptions): ToolHandler 
 
             state.hasReplyImage = true;
             const note = resolved.note;
+            const label =
+                resolved.candidateId ??
+                resolved.imageId ??
+                (resolved.contextNumber === undefined ? 'url' : `#${resolved.contextNumber}`);
 
             return {
                 content: formatSendResult({
@@ -245,6 +257,19 @@ export const createSendImageTool = (options: SendImageToolOptions): ToolHandler 
                         ...(args.caption ? { caption: args.caption } : {}),
                     },
                 ],
+                ...(resolved.imageId === undefined && resolved.contextNumber === undefined
+                    ? {
+                          modelImages: [
+                              {
+                                  data: resolved.data,
+                                  mimeType: resolved.mimeType,
+                                  caption: `你刚发出的图片 ${label}${
+                                      resolved.title === undefined ? '' : ` · ${resolved.title}`
+                                  }`,
+                              },
+                          ],
+                      }
+                    : {}),
                 record:
                     resolved.sourcePage === ''
                         ? null

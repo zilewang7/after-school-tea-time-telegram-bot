@@ -59,11 +59,12 @@ import {
  *
  * Was 5 (4 tool rounds). The media tools added three call types (search, read,
  * send), so a reply could run out of rounds before sending the picture it had
- * already found (live 1106440). The model decides how much to search; the
- * rounds only have to be enough for it to finish. The 180s deadline stays the
- * real bound: it is hit long before ten rounds of real work.
+ * already found (live 1106440). Twelve of the rounds may call tools: the model
+ * decides how much to search and it is told what is left after every call, so
+ * the count only has to be generous enough to finish in. The 180s deadline
+ * stays the real bound — it is hit long before twelve rounds of real work.
  */
-export const GEMINI_MAX_ROUNDS = 10;
+export const GEMINI_MAX_ROUNDS = 13;
 
 /** A function call Gemini could not produce: retried once as the final round */
 const FAILED_CALL_FINISH_REASONS: ReadonlySet<FinishReason> = new Set([

@@ -17,9 +17,6 @@ import { parseSearchImagesArgs } from './media-tool-args.js';
 import {
     addAllowedUrls,
     allocateCandidateIds,
-    MAX_IMAGE_SEARCHES,
-    MAX_SEARCH_PAGES,
-    MAX_SEARCH_THUMBNAILS,
     nextSearchId,
     thumbnailWindowSize,
     unseenCandidates,
@@ -34,8 +31,7 @@ const DESCRIPTION_WITH_IMAGES =
     '返回编号 s1、s2…，尺寸/格式/来源页。本回复的第一次搜索先附 3 张缩略图；' +
     '之后每次搜索（包括换关键词）都会把该批剩下的缩略图一次全给你（不会重复搜索）。' +
     "只想看文字清单用 view='details'；想单张细看用 fetch_image。" +
-    '用户要图就尽快用 send_image 发一张（不必等最完美），别把工具轮次都花在搜索上；' +
-    '别把工具轮次都花在搜索上，轮次用光就发不出图。' +
+    '用户要图就用 send_image 发一张（不必等最完美）；' +
     '用户要的是“找现成的图”时用本工具；只有用户明确要“画一张/改图”才用 generate_image。';
 
 /** For a model that cannot see: no thumbnails are attached, so do not promise any */
@@ -191,10 +187,6 @@ const resolveSet = async (
     const existing = findExistingSet(state, query);
     if (existing) return { ok: true, set: existing, reused: true };
 
-    if (state.searchCount >= MAX_IMAGE_SEARCHES) {
-        return { ok: false, error: mediaToolErrors.searchBudget };
-    }
-
     const outcome = await dependencies.search({
         query,
         count: args.count,
@@ -217,7 +209,6 @@ const resolveSet = async (
         };
     }
 
-    state.searchCount += 1;
     return { ok: true, set: newSearchSet(state, query, outcome.images), reused: false };
 };
 
@@ -237,28 +228,13 @@ export const createSearchImagesTool = (options: SearchImagesToolOptions): ToolHa
             if (!parsed.ok) return imageToolError(parsed.error);
             const args = parsed.args;
 
-
-            // A brand-new search is not a page; paging, reusing a query and
-            // details all spend the (smaller) paging budget.
             const resolved = await resolveSet(options, args);
             if (!resolved.ok) return imageToolError(resolved.error);
             const { set, reused } = resolved;
 
-            // A brand-new search is not a page; paging, reusing a query and
-            // details all spend the (smaller) paging budget.
-            const isNewSearch = args.searchId === undefined && !reused;
-            const spendPage = !isNewSearch || args.view === 'details';
-            if (spendPage && state.searchPageCount >= MAX_SEARCH_PAGES) {
-                return imageToolError(mediaToolErrors.pageBudget);
-            }
-            if (spendPage) state.searchPageCount += 1;
-
             const unseenBefore = unseenCandidates(set).length;
             if (args.view === 'thumbnails' && unseenBefore === 0) {
                 return imageToolError(mediaToolErrors.noMoreThumbnails(set.id));
-            }
-            if (args.view === 'thumbnails' && state.thumbnailCount >= MAX_SEARCH_THUMBNAILS) {
-                return imageToolError(mediaToolErrors.thumbnailBudget);
             }
 
             const attachStartedAt = Date.now();
@@ -272,12 +248,11 @@ export const createSearchImagesTool = (options: SearchImagesToolOptions): ToolHa
                 `[image-search] search=${set.id} view=${args.view} ` +
                     `window=${windowIds.length > 0 ? `${windowIds[0]}..${windowIds.at(-1)}` : '-'} ` +
                     `thumbs=${attached.length}/${attached.length + failed.length} ` +
-                    `served=${state.thumbnailCount}/${MAX_SEARCH_THUMBNAILS} ms=${Date.now() - attachStartedAt}`
+                    `served=${state.thumbnailCount} ms=${Date.now() - attachStartedAt}`
             );
 
             const content = formatSearchResult({
                 set,
-                state,
                 attached,
                 failed,
                 view: args.view,

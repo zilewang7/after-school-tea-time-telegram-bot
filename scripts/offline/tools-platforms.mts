@@ -932,7 +932,7 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
             expectRoundLimit({
                 label: 'openai',
                 path: '/v1/responses',
-                maxToolRounds: 5,
+                maxToolRounds: 12,
                 toolRoundBody: responsesToolRoundBody,
                 finalBody: responsesAnswerBody('Enough lookups.'),
                 send: () =>
@@ -958,7 +958,7 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
             expectRoundLimit({
                 label: 'anthropic',
                 path: '/v1/messages',
-                maxToolRounds: 5,
+                maxToolRounds: 12,
                 toolRoundBody: (round) => messagesToolRoundBody(round),
                 finalBody: messagesAnswerBody('Enough lookups.'),
                 send: () =>
@@ -977,7 +977,7 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
             expectRoundLimit({
                 label: 'deepseek',
                 path: '/v1/chat/completions',
-                maxToolRounds: 5,
+                maxToolRounds: 12,
                 toolRoundBody: chatToolRoundBody,
                 finalBody: chatAnswerBody('Enough lookups.'),
                 send: () =>
@@ -991,7 +991,7 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
             }),
     },
     {
-        name: 'mimo stops offering tools after its ten rounds, and a filtered final round still fails',
+        name: 'mimo stops offering tools after twelve rounds, and a filtered final round still fails',
         body: async () => {
             const sendToMimo = () =>
                 new MimoPlatform().sendMessage(userTurn('Keep looking'), {
@@ -1002,7 +1002,7 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
             await expectRoundLimit({
                 label: 'mimo',
                 path: '/v1/chat/completions',
-                maxToolRounds: 10,
+                maxToolRounds: 12,
                 toolRoundBody: chatToolRoundBody,
                 finalBody: chatAnswerBody('Enough lookups.'),
                 send: sendToMimo,
@@ -1011,7 +1011,7 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
             });
 
             resetStub([
-                ...Array.from({ length: 10 }, (_, round) => ({ path: '/v1/chat/completions', body: chatToolRoundBody(round) })),
+                ...Array.from({ length: 12 }, (_, round) => ({ path: '/v1/chat/completions', body: chatToolRoundBody(round) })),
                 {
                     path: '/v1/chat/completions',
                     body: chatBody([chatChunk({ content: MIMO_CONTENT_FILTER_NOTICE }, 'content_filter')]),
@@ -1078,7 +1078,7 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
                 drain(
                     runToolLoop({
                         tools: turnTools,
-                        maxToolRounds: 5,
+                        maxToolRounds: 12,
                         deadlineMs: 50,
                         logPrefix: '[offline]',
                         sendRound: async (roundIndex, final) => {

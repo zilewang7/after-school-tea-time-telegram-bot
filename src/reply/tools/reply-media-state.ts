@@ -1,30 +1,19 @@
 /**
  * The media working set of one reply: what search_images found, what
- * fetch_image pulled into the model's context, and the budgets that keep a
- * single reply from spiralling.
+ * fetch_image pulled into the model's context, and the one-image-per-reply flag.
  *
- * Ids are per reply and stable: `q1` is a search, `s1…` a candidate (numbered
- * across searches), `img1…` an image the model has actually read. The model is
- * told these ids and may use them in later calls, so nothing here is reused.
+ * There are no quotas here on purpose. Searching, paging and reading are the
+ * model's call — the only real bound is the tool-round budget it is told about
+ * in every tool result. What is pinned is behaviour, not allowance: ids are
+ * stable per reply (`q1` a search, `s1…` a candidate, `img1…` an image the
+ * model has actually read) and paging never repeats a picture.
  *
- * Thumbnail budget is deliberately lopsided: only the reply's first search
+ * Thumbnail windows are deliberately lopsided: only the reply's first search
  * shows three pictures, every later search shows whatever is still unseen.
  * Round trips cost more than image tokens here (see the design doc).
  */
 import type { SniffedImageMime } from '../../ai/image-generation/image-mime.js';
 
-/**
- * Searches a reply may run (each one hits SearXNG). A safety net, not a plan:
- * the model decides how much to look. Three searches plus their paging calls
- * still leave a round for send_image inside the tool-loop budget.
- */
-export const MAX_IMAGE_SEARCHES = 3;
-/** Paging / details calls a reply may make (no network) */
-export const MAX_SEARCH_PAGES = 4;
-/** Safety net across all searches: three full batches (2×8 + 8) */
-export const MAX_SEARCH_THUMBNAILS = 24;
-/** fetch_image calls per reply; re-reading the same image is free */
-export const MAX_IMAGE_FETCHES = 4;
 /** Thumbnails in the reply's very first window */
 export const FIRST_THUMBNAIL_WINDOW = 3;
 /** Candidates one search keeps */
@@ -75,10 +64,8 @@ export interface ReplyMediaState {
     readonly fetched: Map<string, FetchedImage>;
     /** Image URLs the trigger message contained; url arguments must be in here */
     readonly allowedUrls: Set<string>;
-    searchCount: number;
-    searchPageCount: number;
+    /** Thumbnails attached so far; only the first window of the reply is small */
     thumbnailCount: number;
-    fetchCount: number;
     /** Set by the first image this reply will deliver */
     hasReplyImage: boolean;
 }
@@ -96,10 +83,7 @@ export const createReplyMediaState = (triggerText: string | null): ReplyMediaSta
     candidates: new Map(),
     fetched: new Map(),
     allowedUrls: new Set(urlsOf(triggerText)),
-    searchCount: 0,
-    searchPageCount: 0,
     thumbnailCount: 0,
-    fetchCount: 0,
     hasReplyImage: false,
 });
 
@@ -130,6 +114,3 @@ export const thumbnailWindowSize = (state: ReplyMediaState, set: SearchSet): num
     const unseen = unseenCandidates(set).length;
     return state.thumbnailCount === 0 ? Math.min(FIRST_THUMBNAIL_WINDOW, unseen) : unseen;
 };
-
-/** Whether the reply has room for one more fetch */
-export const canFetchImage = (state: ReplyMediaState): boolean => state.fetchCount < MAX_IMAGE_FETCHES;

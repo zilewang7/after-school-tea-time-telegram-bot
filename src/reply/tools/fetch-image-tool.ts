@@ -9,7 +9,7 @@
 import type { ToolHandler } from '../../ai/tools/tool-types.js';
 import { fetchImageBytes } from '../../services/image-fetch-service.js';
 import { imageToolError } from './image-tool-result.js';
-import { formatFetchResult, formatBudgetLine, mediaToolErrors } from './image-tool-text.js';
+import { formatFetchResult, mediaToolErrors } from './image-tool-text.js';
 import {
     candidateCaption,
     downloadCandidateImage,
@@ -18,7 +18,6 @@ import {
 } from './image-source-download.js';
 import { parseFetchImageArgs } from './media-tool-args.js';
 import {
-    canFetchImage,
     nextFetchedImageId,
     type ReplyMediaState,
     type SearchCandidate,
@@ -102,15 +101,12 @@ export const createFetchImageTool = (options: FetchImageToolOptions): ToolHandle
                     content:
                         `已经读过 ${existing.id}（${existing.mimeType}，${Math.round(existing.data.length / 1024)}KB），` +
                         '图片就在上面的对话里，不用重复读取。\n' +
-                        `可以直接 send_image(image_id='${existing.id}') 发出，或作为 generate_image 的参考图。\n` +
-                        formatBudgetLine(state),
+                        `可以直接 send_image(image_id='${existing.id}') 发出，或作为 generate_image 的参考图。`,
                     isError: false,
                     images: [],
                     record: null,
                 };
             }
-
-            if (!canFetchImage(state)) return imageToolError(mediaToolErrors.fetchBudget);
 
             const candidate =
                 args.searchId !== undefined
@@ -140,7 +136,6 @@ export const createFetchImageTool = (options: FetchImageToolOptions): ToolHandle
             }
 
             const id = nextFetchedImageId(state);
-            state.fetchCount += 1;
             state.fetched.set(id, {
                 id,
                 data: bytes.data,
@@ -164,7 +159,6 @@ export const createFetchImageTool = (options: FetchImageToolOptions): ToolHandle
                 ...(thumbnailNoteOf(candidate, bytes.usedThumbnail) === undefined
                     ? {}
                     : { note: thumbnailNoteOf(candidate, bytes.usedThumbnail) }),
-                state,
             });
 
             return {

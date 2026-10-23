@@ -584,7 +584,7 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
             expect(json(final.toolConfig) === '{"functionCallingConfig":{"mode":"NONE"}}', 'the final round switches function calling off');
             const finalWithout = toRoundConfig(baseConfig, { contents: [], tools: withoutFunctionDeclarations(toolList), final: true });
             expect(finalWithout.toolConfig === undefined, 'no toolConfig when nothing is declared');
-            expect(GEMINI_MAX_ROUNDS === 10, 'at most 10 rounds, the deadline being the real bound');
+            expect(GEMINI_MAX_ROUNDS === 13, 'twelve tool rounds plus the final one, the deadline being the real bound');
         },
     },
     {

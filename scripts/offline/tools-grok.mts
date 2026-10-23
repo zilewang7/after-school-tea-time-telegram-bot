@@ -542,32 +542,41 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
         },
     },
     {
-        name: 'the fifth grok round has tool_choice none',
+        name: 'the thirteenth grok round is the tool-less one',
         body: async () => {
+            const toolRounds = 12;
             reset(
                 scripted(
-                    toolRound('resp_1', 'call_1'),
-                    toolRound('resp_2', 'call_2'),
-                    toolRound('resp_3', 'call_3'),
-                    toolRound('resp_4', 'call_4'),
-                    answerRound('resp_5', 'Enough lookups.')
+                    ...Array.from({ length: toolRounds }, (_, index) =>
+                        toolRound(`resp_${index + 1}`, `call_${index + 1}`)
+                    ),
+                    answerRound(`resp_${toolRounds + 1}`, 'Enough lookups.')
                 )
             );
 
             const { result: chunks, lines } = await captureConsole(async () => drain(await sendGrok(MODEL, turnTools)));
 
-            expect(recordedRequests.length === 5, `five rounds at most (got ${recordedRequests.length})`);
-            expect(executions.length === 4, `four tool rounds ran (got ${executions.length})`);
             expect(
-                recordedRequests.slice(0, 4).every((request) => !('tool_choice' in request.body)),
+                recordedRequests.length === toolRounds + 1,
+                `${toolRounds + 1} rounds at most (got ${recordedRequests.length})`
+            );
+            expect(executions.length === toolRounds, `${toolRounds} tool rounds ran (got ${executions.length})`);
+            expect(
+                recordedRequests.slice(0, toolRounds).every((request) => !('tool_choice' in request.body)),
                 'the tool rounds leave tool_choice alone'
             );
-            const finalRequest = recordedRequests[4];
+            const finalRequest = recordedRequests[toolRounds];
             expect(
                 finalRequest?.body.tool_choice === 'none' &&
-                    finalRequest.body.previous_response_id === 'resp_4' &&
+                    finalRequest.body.previous_response_id === `resp_${toolRounds}` &&
                     json(finalRequest.body.input) ===
-                        json([{ type: 'function_call_output', call_id: 'call_4', output: 'sunny in Paris' }]) &&
+                        json([
+                            {
+                                type: 'function_call_output',
+                                call_id: `call_${toolRounds}`,
+                                output: 'sunny in Paris',
+                            },
+                        ]) &&
                     json(toolsOf(finalRequest)) === json(toolsOf(recordedRequests[0])),
                 `the final round switches the declared tools off (got ${json(finalRequest?.body)})`
             );
@@ -576,7 +585,7 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
             expect(
                 textOf(chunks) === 'Enough lookups.' &&
                     done?.type === 'done' &&
-                    json(done.agentStats?.toolUsage) === json([{ name: 'lookup_weather', count: 4 }]),
+                    json(done.agentStats?.toolUsage) === json([{ name: 'lookup_weather', count: toolRounds }]),
                 `the answer streams and the tally covers every round (got ${json(done?.agentStats)})`
             );
         },

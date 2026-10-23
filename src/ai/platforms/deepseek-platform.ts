@@ -24,7 +24,8 @@ import type {
     ModelCapabilities,
 } from '../types.js';
 
-const MAX_TOOL_ROUNDS = 5;
+/** Tool rounds before the forced final one; the model is told what is left */
+const MAX_TOOL_ROUNDS = 12;
 
 /** One collected tool-loop round */
 interface DeepSeekToolRound {

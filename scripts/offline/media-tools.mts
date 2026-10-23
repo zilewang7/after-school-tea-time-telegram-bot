@@ -1,8 +1,9 @@
 /**
- * Offline cases for the media tools: search paging, budgets, the shared
- * one-image rule, fetch once / read twice, the download safety rails, how the
- * instance's unusual result fields are read, and the per-platform replay of
- * model-only images.
+ * Offline cases for the media tools: search paging, the shared one-image rule,
+ * fetch once / read twice, the download safety rails, how the instance's
+ * unusual result fields are read, and the per-platform replay of model-only
+ * images. Nothing is capped by a media budget: the model decides how much to
+ * look, so the cases assert behaviour, not allowances.
  *
  * Run: npx tsx scripts/offline/media-tools.mts
  *
@@ -34,8 +35,6 @@ const {
     createFetchImageTool,
     createSendImageTool,
     createGenerateImageTool,
-    MAX_IMAGE_SEARCHES,
-    MAX_IMAGE_FETCHES,
 } = replyTools;
 
 const candidateJson = (index: number, overrides: Record<string, unknown> = {}): Record<string, unknown> => ({
@@ -218,6 +217,10 @@ const cases = [
             });
             const first = await send.execute({ search_id: 's1' }, AbortSignal.abort());
             expect(!first.isError && first.images.length === 1, `the first send goes out (got ${first.content})`);
+            expect(
+                first.modelImages?.length === 1 && first.modelImages[0]?.data.equals(PNG),
+                'the model gets the very picture it sent back into its context'
+            );
 
             const second = await send.execute({ search_id: 's2' }, AbortSignal.abort());
             expect(second.isError && second.content.includes('已经有一张图'), 'a second send is refused');
@@ -246,10 +249,44 @@ const cases = [
         },
     },
     {
-        name: 'fetch_image reads once, re-reading is free, and the budget is four',
+        name: 'send_image does not attach a picture the model already has',
         body: async (): Promise<void> => {
             const state = createReplyMediaState(null);
             const tool = searchToolWith(state, searchStub());
+            await tool.execute({ query: '狗头表情包' }, AbortSignal.abort());
+
+            const fetch = createFetchImageTool({
+                state,
+                dependencies: {
+                    fetchImage: async () => ({
+                        ok: true,
+                        image: { data: PNG, mimeType: 'image/png', finalUrl: 'https://cdn.example.com/img-1.jpg' },
+                    }),
+                },
+            });
+            await fetch.execute({ search_id: 's1' }, AbortSignal.abort());
+
+            const send = createSendImageTool({
+                state,
+                context: { chatId: -100, contextIndex: new Map(), signal: AbortSignal.abort() },
+                dependencies: {
+                    fetchImage: async () => ({ ok: false, error: 'must not be called' }),
+                    loadMessageImages: async () => [],
+                },
+            });
+            const sent = await send.execute({ image_id: 'img1' }, AbortSignal.abort());
+            expect(!sent.isError && sent.images.length === 1, `the picture still goes out (got ${sent.content})`);
+            expect(
+                !sent.modelImages || sent.modelImages.length === 0,
+                'but it is not fed to the model a second time'
+            );
+        },
+    },
+    {
+        name: 'fetch_image reads once, re-reading is free, and reading is not capped',
+        body: async (): Promise<void> => {
+            const state = createReplyMediaState(null);
+            const tool = searchToolWith(state, searchStub(10));
             await tool.execute({ query: '狗头表情包' }, AbortSignal.abort());
 
             const fetch = createFetchImageTool({
@@ -268,17 +305,12 @@ const cases = [
 
             const reread = await fetch.execute({ image_id: 'img1' }, AbortSignal.abort());
             expect(!reread.isError && (!reread.modelImages || reread.modelImages.length === 0), 're-reading sends no bytes again');
-            expect(state.fetchCount === 1, `re-reading is free (fetch count ${state.fetchCount})`);
 
-            for (const candidateId of ['s2', 's3', 's4']) {
-                await fetch.execute({ search_id: candidateId }, AbortSignal.abort());
+            for (const candidateId of ['s2', 's3', 's4', 's5', 's6']) {
+                const next = await fetch.execute({ search_id: candidateId }, AbortSignal.abort());
+                expect(!next.isError, `reading ${candidateId} is allowed (no quota)`);
             }
-            const overBudget = await fetch.execute({ search_id: 's5' }, AbortSignal.abort());
-            expect(
-                overBudget.isError && overBudget.content.includes('已经读取'),
-                `the fifth read is refused (got ${overBudget.content})`
-            );
-            expect(state.fetchCount === MAX_IMAGE_FETCHES, `the budget is ${MAX_IMAGE_FETCHES}`);
+            expect(state.fetched.size === 6, `six images are in the context (got ${state.fetched.size})`);
         },
     },
     {
@@ -292,7 +324,7 @@ const cases = [
 
             const searchAgain = await tool.execute({ query: '换个词' }, AbortSignal.abort());
             expect(!searchAgain.isError, 'the model may keep looking if it wants to');
-            expect(state.searchCount === 2, 'and the search is counted');
+            expect(state.searches.size === 2, 'and the second search is its own set');
         },
     },
     {
@@ -314,20 +346,20 @@ const cases = [
         },
     },
     {
-        name: 'the search budget is three searches per reply',
+        name: 'searching is not capped: the model decides how much to look',
         body: async (): Promise<void> => {
             const state = createReplyMediaState(null);
             const tool = searchToolWith(state, searchStub());
-            for (const query of ['a', 'b', 'c']) {
-                const allowed = await tool.execute({ query }, AbortSignal.abort());
-                expect(!allowed.isError, `search ${query} runs`);
+            let last = await tool.execute({ query: 'a' }, AbortSignal.abort());
+            for (const query of ['b', 'c', 'd', 'e']) {
+                last = await tool.execute({ query }, AbortSignal.abort());
+                expect(!last.isError, `search ${query} runs`);
             }
-            const refused = await tool.execute({ query: 'd' }, AbortSignal.abort());
+            expect(state.searches.size === 5, `every query became a set (got ${state.searches.size})`);
             expect(
-                refused.isError && refused.content.includes('搜了 3 次'),
-                `the fourth search is refused (got ${refused.content.slice(0, 60)})`
+                !last.content.includes('额度') && !last.content.includes('安全上限'),
+                'and the result carries no quota talk'
             );
-            expect(state.searchCount === MAX_IMAGE_SEARCHES, 'and the count is the limit');
         },
     },
     {
