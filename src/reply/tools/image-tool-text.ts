@@ -37,12 +37,23 @@ export interface SearchTextInput {
     readonly reused: boolean;
 }
 
+/**
+ * `第1张=s17、第2张=s18 …`: the pictures carry no id of their own (a text part
+ * in Gemini's functionResponse is rejected), so the only binding is position.
+ * Spelling it out keeps the model from sending a candidate by its title and
+ * discovering later that it picked a different picture (live 1106627).
+ */
+const attachmentOrder = (attached: readonly SearchCandidate[]): string =>
+    attached.map((candidate, index) => `第${index + 1}张=${candidate.id}`).join('、');
+
 const attachLines = (input: SearchTextInput): string[] => {
     if (input.view === 'details') return [];
 
     const lines: string[] = [];
     if (input.attached.length > 0) {
-        lines.push(`已附缩略图（可直接看图）：${idList(input.attached)}`);
+        lines.push(
+            `已附缩略图 ${input.attached.length} 张（图本身没编号，按下面的顺序对应）：${attachmentOrder(input.attached)}`
+        );
     }
     if (input.failed.length > 0) {
         lines.push(`缩略图下载失败：${idList(input.failed)}（可以用 fetch_image 试原图）`);

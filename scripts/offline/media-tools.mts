@@ -131,6 +131,10 @@ const cases = [
             expect(first.modelImages?.length === 3, `three thumbnails (got ${first.modelImages?.length ?? 0})`);
             expect(first.content.includes('还没看：s4 s5 s6 s7 s8'), 'the text names what is unseen');
             expect(first.content.includes("search_images(search='q1')"), 'and how to see it');
+            expect(
+                first.content.includes('第1张=s1、第2张=s2、第3张=s3'),
+                `the pictures are bound to their ids by position (got ${first.content})`
+            );
 
             const second = await tool.execute({ search: 'q1' }, AbortSignal.abort());
             expect(second.modelImages?.length === 5, `the rest comes at once (got ${second.modelImages?.length ?? 0})`);
