@@ -23,7 +23,7 @@ import { sniffMediaMime, type SniffedMediaMime } from '../../ai/image-generation
 import type { ToolHandler } from '../../ai/tools/tool-types.js';
 import { fetchImageBytes } from '../../services/image-fetch-service.js';
 import { loadMessageImages } from '../commands/reference-images.js';
-import type { MessageImageLoader } from './image-references.js';
+import { loadContextImages, type MessageImageLoader } from './image-references.js';
 import { imageToolError } from './image-tool-result.js';
 import { formatSendResult, mediaToolErrors } from './image-tool-text.js';
 import {
@@ -53,12 +53,12 @@ const INPUT_SCHEMA = {
         message: {
             type: 'integer',
             minimum: 1,
-            description: '上下文里的消息编号（#N 里的数字），发这条消息里的图',
+            description: '上下文里的消息编号（#N 里的数字），发这条消息里的图（含链接预览里的图）',
         },
         image: {
             type: 'integer',
             minimum: 1,
-            description: '这条消息里的第几张图，从 1 开始；省略=第一张',
+            description: '这条消息里的第几张图，从 1 开始（附件在前，链接预览里的图在后）；省略=第一张',
         },
         url: { type: 'string', description: '上下文里出现过的 http(s) 图片直链' },
         caption: {
@@ -141,7 +141,7 @@ export const createSendImageTool = (options: SendImageToolOptions): ToolHandler 
             return { ok: false, error: `#${contextNumber} 不在当前上下文里` };
         }
 
-        const images = await dependencies.loadMessageImages(context.chatId, entry.messageId);
+        const images = await loadContextImages(context.chatId, entry, dependencies.loadMessageImages);
         if (images.length === 0) {
             return { ok: false, error: `#${contextNumber} 这条消息没有可用的图片` };
         }
@@ -154,7 +154,12 @@ export const createSendImageTool = (options: SendImageToolOptions): ToolHandler 
             };
         }
 
-        const data = Buffer.from(stored.data, 'base64');
+        // A picture kept in cloud storage is one of the >20MB originals
+        if (stored.kind === 'cloud') {
+            return { ok: false, error: mediaToolErrors.tooLarge(MAX_ORIGINAL_IMAGE_BYTES / 1024 / 1024) };
+        }
+
+        const data = stored.data;
         const mimeType = sniffMediaMime(data);
         if (!mimeType) return { ok: false, error: mediaToolErrors.notAnImage };
         if (data.length > MAX_ORIGINAL_IMAGE_BYTES) {

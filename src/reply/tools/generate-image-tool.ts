@@ -37,7 +37,8 @@ const DESCRIPTION =
     '生成或修改一张图片，图片会带着 caption 附在你这条回复后面发出（每条回复最多一张）。' +
     '只在需要“新画一张/改一张图”时使用；如果用户要的是真实存在的图片、表情包、截图、新闻图，' +
     '请先用 search_images 找到，再用 send_image 发，不要用本工具冒充“找到了”。' +
-    '要参考或修改上下文里的图片（包括你自己之前生成的），在 references 里填消息编号；' +
+    '要参考或修改上下文里的图片（消息自带的附件、链接预览里的图、你自己之前生成的都算），在 references 里填消息编号；' +
+    '同一条消息有多张时用 image 指明第几张，按消息里出现的顺序数：附件在前，链接预览的图在后。' +
     '要参考网上找到的图，在 web_references 里填 search_id / image_id。' +
     '生图模型在需要真实参考时会自动使用 Google 图片搜索；你可以在 prompt 里明确要求' +
     '“参考网络上真实的照片/地标/人物”，生成后参考来源会列在回复底部。';
@@ -57,7 +58,7 @@ const INPUT_SCHEMA = {
         },
         references: {
             type: 'array',
-            description: '要参考或修改的上下文图片；不填就是从零画。',
+            description: '要参考或修改的上下文图片（消息附件、链接预览里的图都算）；不填就是从零画。',
             items: {
                 type: 'object',
                 properties: {
@@ -69,7 +70,8 @@ const INPUT_SCHEMA = {
                     image: {
                         type: 'integer',
                         minimum: 1,
-                        description: '这条消息里的第几张图，从 1 开始；省略就取这条消息的全部图',
+                        description:
+                            '这条消息里的第几张图，从 1 开始（附件在前，链接预览的图在后）；省略就取这条消息的全部图',
                     },
                 },
                 required: ['message'],

@@ -48,8 +48,9 @@ export const buildFormatSection = (options: { includeOcrNote: boolean }): string
   不要再回答 #3 的内容、也不要重复它即将给出的答案，只处理这次新出现的内容
 - \`[system] your reply #5 is still being generated …\`（出现在你自己的回复里）说明那条回复此刻还在生成（用户可能正是回复它才触发的这次对话）：
   它不是丢失、空白或故障，不要声称自己出错或丢了记忆，也不要重复那条回复即将给出的内容，只处理这次新出现的内容
-- \`[system] 链接预览：…\` 是系统自动抓取的消息内链接的预览（站点/标题/描述，可能还有全文和图片），不是用户输入的内容
-- \`[system] 消息链接预览：…\` 是系统自动抓取的消息链接（t.me/…）指向的那条消息，以及它回复的那条；里面的作者、时间、编号都属于被引用消息，不是本对话成员，也不要当成当前上下文的 #编号
+- \`[system] 链接预览：…\` 是系统自动抓取的消息内链接的预览（站点/标题/描述，可能还有全文和图片），不是用户输入的内容；
+  预览里的图片和消息自己附带的图片都属于这条消息的图，工具按出现顺序引用它们（消息附件在前，预览里的图在后）
+- \`[system] 消息链接预览：…\` 是系统自动抓取的消息链接（t.me/…）指向的那条消息，以及它回复的那条；里面的作者、时间、编号都属于被引用消息，不是本对话成员，也不要当成当前上下文的 #编号；它附带的图片同样算发链接的那条消息的图，排在消息自己的附件之后
 ${options.includeOcrNote ? OCR_FALLBACK_NOTE : ''}- 你自己的历史回复开头会有一行 \`[#5]\`，那是系统给它标的编号，不是你写的内容
 - 引用消息时直接写编号（\`#5\`、\`我在 #5 说过\`），系统会自动把它变成用户可点击的跳转链接；
   只写上下文里真实存在的编号，不要凭空编号码
@@ -99,6 +100,11 @@ const searchImageLines = (canDraw: boolean): string[] => [
 const IMAGE_FETCH_LINE =
     '- 拿不准图里是什么、要看清细节或做 OCR 时，可以先用 `fetch_image` 把它读进上下文再决定。';
 
+/** Editing a picture the conversation already shows: reference it, never redraw it from memory */
+const IMAGE_EDIT_LINE =
+    '- 要改/参考某张图时，用 `generate_image` 的 `references` 指向它（消息附件、链接预览带来的图都算），' +
+    '不要只凭描述重新画一张“像它”的图。';
+
 export const buildCapabilitiesSection = (options: CapabilityOptions): string => {
     const lines: string[] = [CAPABILITIES_SECTION];
     const owner = options.smsOwner;
@@ -108,6 +114,7 @@ export const buildCapabilitiesSection = (options: CapabilityOptions): string => 
     }
     if (options.imageTools) lines.push(...searchImageLines(options.imageGenerate));
     if (options.imageFetch) lines.push(IMAGE_FETCH_LINE);
+    if (options.imageGenerate) lines.push(IMAGE_EDIT_LINE);
     return lines.join('\n');
 };
 

@@ -5,6 +5,7 @@
  * take those numbers (image references) resolve them through this index, so
  * the number the model read is exactly the number that gets resolved.
  */
+import type { ContextImage } from './context-images.js';
 
 export interface ContextIndexEntry {
     /** The `#N` the model sees */
@@ -12,7 +13,9 @@ export interface ContextIndexEntry {
     readonly messageId: number;
     /** One of the bot's own replies */
     readonly fromBot: boolean;
-    /** Images attached to the message itself (album members included), before capability filtering */
+    /** The message's pictures as the turn shows them: attachments first, then link previews */
+    readonly images: readonly ContextImage[];
+    /** = images.length; kept so callers don't count everywhere */
     readonly imageCount: number;
 }
 

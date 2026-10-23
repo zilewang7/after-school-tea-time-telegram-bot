@@ -38,13 +38,15 @@ import type { ContextIndex } from '../../src/reply/context-index.js';
 
 // The bot's own rows are stored as messages of this user
 process.env.BOT_USER_ID = '7777';
-// Context building must never try to recover a message over the network
-delete process.env.LUOXU_PREVIEW_URL;
+// Link previews come from the URL-addressed cache only; this switch is what
+// makes the context builder read it at all (nothing here ever fetches)
+process.env.LUOXU_PREVIEW_URL = 'http://offline.invalid';
 
 const db = await setupOfflineDb();
 const { Message, putCachedMedia } = db;
 
 const { createGenerateImageTool } = await import('../../src/reply/tools/generate-image-tool.js');
+const { createSendImageTool } = await import('../../src/reply/tools/send-image-tool.js');
 const { parseGenerateImageArgs } = await import('../../src/reply/tools/image-tool-args.js');
 const { resolveImageReferences } = await import('../../src/reply/tools/image-references.js');
 const { buildImageCaption, IMAGE_CAPTION_MAX_LENGTH } = await import('../../src/reply/tools/image-message.js');
@@ -250,12 +252,18 @@ const imagesOf = (request: ImageRequest | undefined): Buffer[] =>
 
 const NO_CONTEXT: ContextIndex = new Map();
 
-/** A context index without a database behind it */
+/** A context index without a database behind it; the pictures come from the loader */
 const indexOf = (imageCounts: number[]): ContextIndex =>
     new Map(
         imageCounts.map((imageCount, position) => [
             position + 1,
-            { number: position + 1, messageId: 50_000 + position, fromBot: false, imageCount },
+            {
+                number: position + 1,
+                messageId: 50_000 + position,
+                fromBot: false,
+                images: [],
+                imageCount,
+            },
         ])
     );
 
@@ -650,6 +658,102 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
 
             const none = await resolveWith([], [0, 0], [{ message: 1, image: undefined }]);
             expect(!none.ok && none.error.endsWith('当前上下文里没有带图的消息'), 'a context without images says so');
+        },
+    },
+    {
+        name: 'a link preview’s pictures belong to the message that carried the link',
+        body: async () => {
+            // What autoSave caches for a link: preview text plus its photos
+            const url = 'https://fxtwitter.com/offline/status/42';
+            const seedPreviewMedia = async (which: string, data: Buffer, mime: string): Promise<string> => {
+                const mediaKey = `luoxu-preview:offline-${takeMessageId()}:${which}`;
+                await putCachedMedia({ fileUniqueId: mediaKey, data, sizeBytes: data.length, mime, kind: 'photo' });
+                return mediaKey;
+            };
+            const photoKey = await seedPreviewMedia('photo', JPEG_BYTES, 'image/jpeg');
+            const pagePhotoKey = await seedPreviewMedia('page_photo_0', WEBP_BYTES, 'image/webp');
+            await dbIndex.LinkPreviewCache.create({
+                url,
+                status: 'ready',
+                siteName: 'FxTwitter',
+                title: 'offline post',
+                mediaItems: JSON.stringify([
+                    { which: 'photo', kind: 'photo', mime: 'image/jpeg', mediaKey: photoKey, sizeBytes: JPEG_BYTES.length },
+                    { which: 'page_photo_0', kind: 'photo', mime: 'image/webp', mediaKey: pagePhotoKey, sizeBytes: WEBP_BYTES.length },
+                ]),
+                lastUsedAt: new Date(),
+            });
+
+            const attachmentUniqueId = `image-with-link-${takeMessageId()}`;
+            await putCachedMedia({ fileUniqueId: attachmentUniqueId, data: PNG_BYTES, sizeBytes: PNG_BYTES.length, mime: 'image/png', kind: 'photo' });
+            const linked = await seedRow({ text: `看这个 ${url}` });
+            const attached = await seedRow({ text: `这张我也贴上 ${url}`, fileUniqueId: attachmentUniqueId, mediaHint: 'a picture', replyToId: linked });
+            const trigger = await seedRow({ text: '改成黑白', replyToId: attached });
+
+            const row = await rowOf(OFFLINE_CHAT_ID, trigger);
+            if (!row) throw new Error('the trigger row was not stored');
+            const { result: built } = await captureConsole(() =>
+                buildContext(row, { capabilities: VISION, model: 'gemini-3.8-flash' })
+            );
+            const entryOf = (messageId: number) =>
+                [...built.contextIndex.values()].find((entry) => entry.messageId === messageId);
+            const linkedEntry = entryOf(linked);
+            const attachedEntry = entryOf(attached);
+            expect(
+                linkedEntry?.imageCount === 2 &&
+                    json(linkedEntry.images.map((image) => image.origin)) === json(['linkPreview', 'linkPreview']),
+                `the preview’s two pictures are the link message’s pictures (got ${json(linkedEntry?.images.map((image) => image.origin))})`
+            );
+            expect(
+                json(attachedEntry?.images.map((image) => image.origin)) ===
+                    json(['attachment', 'linkPreview', 'linkPreview']),
+                'a message with both numbers its attachment first, then the preview pictures'
+            );
+
+            const generate = async (args: Record<string, unknown>) => {
+                const model = stubImageModel();
+                const result = await runTool(toolFor(built.contextIndex, model), { prompt: '改成黑白', caption: '', ...args });
+                return { result, request: model.requests[0] };
+            };
+
+            if (linkedEntry === undefined) throw new Error('the link message is not in the context');
+            const whole = await generate({ references: [{ message: linkedEntry.number }] });
+            const wholeImages = imagesOf(whole.request);
+            expect(
+                !whole.result.isError &&
+                    wholeImages.length === 2 &&
+                    wholeImages[0]?.equals(JPEG_BYTES) === true &&
+                    wholeImages[1]?.equals(WEBP_BYTES) === true,
+                `#N alone takes every preview picture, in order (got ${json(whole.result.content)})`
+            );
+
+            if (attachedEntry === undefined) throw new Error('the attached message is not in the context');
+            const picked = await generate({ references: [{ message: attachedEntry.number, image: 2 }] });
+            expect(
+                imagesOf(picked.request).length === 1 && imagesOf(picked.request)[0]?.equals(JPEG_BYTES) === true,
+                'image 2 of a mixed message is the first preview picture'
+            );
+
+            const past = await generate({ references: [{ message: attachedEntry.number, image: 4 }] });
+            expect(
+                past.result.isError && past.result.content.includes(`#${attachedEntry.number} 只有 3 张图，没有第 4 张`),
+                `an index past the previews is refused with the real count (got ${json(past.result.content)})`
+            );
+
+            // send_image reads the same list, so “the 3rd picture” means the same thing in both tools
+            const send = createSendImageTool({
+                state: createReplyMediaState(null),
+                context: { chatId: OFFLINE_CHAT_ID, contextIndex: built.contextIndex, signal: new AbortController().signal },
+                dependencies: { fetchImage: noNetworkFetch, loadMessageImages },
+            });
+            const sent = await runTool(send, { message: attachedEntry.number, image: 3 });
+            expect(
+                !sent.isError &&
+                    sent.images.length === 1 &&
+                    sent.images[0]?.data.equals(WEBP_BYTES) === true &&
+                    sent.images[0].mimeType === 'image/webp',
+                `send_image forwards the preview picture too (got ${json(sent.content)})`
+            );
         },
     },
     {

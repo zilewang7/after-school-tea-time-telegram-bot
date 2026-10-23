@@ -27,6 +27,7 @@ import { buildInFlightOwnReplyNote, buildInFlightReplyNote } from './inflight-re
 import { collectContextUsers, type ContextUser } from './context-users.js';
 import { getModelCapabilities } from '../ai/platform-factory.js';
 import { buildCustomEmojiContextPlan } from '../services/custom-emoji-context-service.js';
+import { contextImagesOf, type ContextImage } from './context-images.js';
 import type { ContextIndex, ContextIndexEntry } from './context-index.js';
 import type { UnifiedMessage, UnifiedContentPart, ModelCapabilities } from '../ai/types.js';
 
@@ -404,8 +405,15 @@ export const stripLeakedWireFormat = (text: string): string => {
 const loadMessageFiles = async (msg: ContextMessage): Promise<UnifiedContentPart[]> =>
     msg.file || msg.fileUniqueId ? getFileContentsOfMessage(msg.chatId, msg.messageId) : [];
 
-const countImageParts = (parts: UnifiedContentPart[]): number =>
-    parts.filter((part) => part.type === 'image').length;
+/**
+ * One assembled turn plus the pictures the model sees in it, in reading order:
+ * the message's own attachments first, then the media of its link previews.
+ * Tools resolve `#N` image references against this list.
+ */
+interface BuiltTurn {
+    readonly message: UnifiedMessage;
+    readonly images: ContextImage[];
+}
 
 /**
  * What an assistant turn with no text says. A reply that is still streaming has
@@ -430,7 +438,7 @@ const buildAssistantMessage = (
     msg: ContextMessage,
     fileContents: UnifiedContentPart[],
     index: ContextNumbering
-): UnifiedMessage => {
+): BuiltTurn => {
     // Parse modelParts if available
     const modelParts = (() => {
         try {
@@ -456,9 +464,13 @@ const buildAssistantMessage = (
     }
 
     return {
-        role: 'assistant',
-        content: parts,
-        modelParts: modelParts && Array.isArray(modelParts) ? modelParts : undefined,
+        message: {
+            role: 'assistant',
+            content: parts,
+            modelParts: modelParts && Array.isArray(modelParts) ? modelParts : undefined,
+        },
+        // Our own turns carry their attachments only; link previews are built for user turns
+        images: contextImagesOf(fileContents, 'attachment'),
     };
 };
 
@@ -476,7 +488,7 @@ const buildUserMessage = async (
     answeredElsewhereNumber?: number,
     messageLinkPlan?: TgMessageLinkPlan,
     chatTitle?: string | null
-): Promise<UnifiedMessage> => {
+): Promise<BuiltTurn> => {
     const replyAnnotations = await buildReplyAnnotations(msg, index);
     const mediaVisible = mediaVisibleToModel(fileContents, capabilities);
 
@@ -540,8 +552,18 @@ const buildUserMessage = async (
     }
 
     return {
-        role: 'user',
-        content: parts,
+        message: {
+            role: 'user',
+            content: parts,
+        },
+        // In the same order the parts appear: attachments, then the two preview kinds.
+        // The custom emoji atlas stays out on purpose — it is a contact sheet of
+        // emoji the system added, not a picture the conversation is about.
+        images: [
+            ...contextImagesOf(fileContents, 'attachment'),
+            ...contextImagesOf(previewParts, 'linkPreview'),
+            ...contextImagesOf(messageLinkParts, 'messageLink'),
+        ],
     };
 };
 
@@ -558,7 +580,7 @@ const buildMessageContent = async (
     answeredElsewhereNumber?: number,
     messageLinkPlan?: TgMessageLinkPlan,
     chatTitle?: string | null
-): Promise<UnifiedMessage> =>
+): Promise<BuiltTurn> =>
     msg.fromBotSelf
         ? buildAssistantMessage(msg, fileContents, index)
         : buildUserMessage(
@@ -607,18 +629,20 @@ export interface BuiltContext {
     contextIndex: ContextIndex;
 }
 
-/** The numbering as tools see it: keyed by `#N`, with each message's image count */
+/** The numbering as tools see it: keyed by `#N`, with each message's pictures */
 const buildToolContextIndex = (
     numbering: ContextNumbering,
-    imageCounts: ReadonlyMap<number, number>
+    imagesByMessageId: ReadonlyMap<number, readonly ContextImage[]>
 ): ContextIndex => {
     const contextIndex = new Map<number, ContextIndexEntry>();
     for (const [messageId, number] of numbering.numberOf) {
+        const images = imagesByMessageId.get(messageId) ?? [];
         contextIndex.set(number, {
             number,
             messageId,
             fromBot: numbering.byId.get(messageId)?.fromBotSelf ?? false,
-            imageCount: imageCounts.get(messageId) ?? 0,
+            images,
+            imageCount: images.length,
         });
     }
     return contextIndex;
@@ -709,13 +733,12 @@ export const buildContext = async (
     ]);
 
     const chatContents: UnifiedMessage[] = [];
-    const imageCounts = new Map<number, number>();
+    const imagesByMessageId = new Map<number, readonly ContextImage[]>();
     for (const contextMsg of contextMessages) {
         // Loaded once: the turn is built from these parts, and the tool index
-        // counts the images among them before any capability filtering
+        // keeps the pictures among them before any capability filtering
         const fileContents = await loadMessageFiles(contextMsg);
-        imageCounts.set(contextMsg.messageId, countImageParts(fileContents));
-        chatContents.push(await buildMessageContent(
+        const turn = await buildMessageContent(
             contextMsg,
             fileContents,
             modelCapabilities,
@@ -725,7 +748,9 @@ export const buildContext = async (
             repliesInFlightElsewhere.get(contextMsg.messageId),
             messageLinkPlan.get(contextMsg.messageId),
             opts.chatTitle ?? null
-        ));
+        );
+        imagesByMessageId.set(contextMsg.messageId, turn.images);
+        chatContents.push(turn.message);
     }
 
     // Runtime info (time, model, roster) rides the newest message instead of
@@ -750,7 +775,7 @@ export const buildContext = async (
     return {
         messages: applyModelCapabilities(withRuntime, modelCapabilities),
         contextUsers,
-        contextIndex: buildToolContextIndex(index, imageCounts),
+        contextIndex: buildToolContextIndex(index, imagesByMessageId),
     };
 };
 
