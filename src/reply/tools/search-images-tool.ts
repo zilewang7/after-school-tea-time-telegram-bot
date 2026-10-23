@@ -259,10 +259,19 @@ export const createSearchImagesTool = (options: SearchImagesToolOptions): ToolHa
                 return imageToolError(mediaToolErrors.thumbnailBudget);
             }
 
+            const attachStartedAt = Date.now();
             const { attached, failed, modelImages } =
                 args.view === 'thumbnails' && dependencies.canSeeImages
                     ? await attachThumbnails(options, set)
                     : { attached: [], failed: [], modelImages: [] };
+
+            const windowIds = attached.map((candidate) => candidate.id);
+            console.log(
+                `[image-search] search=${set.id} view=${args.view} ` +
+                    `window=${windowIds.length > 0 ? `${windowIds[0]}..${windowIds.at(-1)}` : '-'} ` +
+                    `thumbs=${attached.length}/${attached.length + failed.length} ` +
+                    `served=${state.thumbnailCount}/${MAX_SEARCH_THUMBNAILS} ms=${Date.now() - attachStartedAt}`
+            );
 
             const content = formatSearchResult({
                 set,
