@@ -1,6 +1,7 @@
 /**
  * What a reply-layer tool knows about the turn it serves.
  */
+import type { Api } from 'grammy';
 import type { Chat } from 'grammy/types';
 import type { ContextIndex } from '../context-index.js';
 
@@ -24,6 +25,8 @@ export interface ReplyToolContext {
     readonly triggerText: string | null;
     /** Aborts when the reply is stopped */
     readonly signal: AbortSignal;
+    /** Bot API client; sticker tools resolve the pack through it */
+    readonly api: Api;
 }
 
 /** The stored row of the trigger message, as far as tools care */
@@ -39,6 +42,7 @@ export const buildReplyToolContext = (input: {
     readonly triggerMessage: TriggerMessageRow;
     readonly contextIndex: ContextIndex;
     readonly signal: AbortSignal;
+    readonly api: Api;
 }): ReplyToolContext => ({
     chatId: input.chat.id,
     chatTitle: input.chat.type === 'private' ? undefined : input.chat.title,
@@ -50,4 +54,5 @@ export const buildReplyToolContext = (input: {
     contextIndex: input.contextIndex,
     triggerText: input.triggerMessage.text,
     signal: input.signal,
+    api: input.api,
 });

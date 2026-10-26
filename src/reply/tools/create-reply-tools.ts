@@ -20,6 +20,7 @@ import { createReplyMediaState } from './reply-media-state.js';
 import { createSearchByImageTool } from './search-by-image-tool.js';
 import { createSearchImagesTool, THUMBNAIL_LIMITS } from './search-images-tool.js';
 import { createSendImageTool } from './send-image-tool.js';
+import { createSendStickerTool } from './send-sticker-tool.js';
 import { createSendSmsTool } from './send-sms-tool.js';
 import type { ReplyToolContext } from './reply-tool-context.js';
 import {
@@ -78,11 +79,29 @@ export const createReplyTools = (
                       dependencies: { ...PRODUCTION_FETCH_DEPENDENCIES, signal: context.signal },
                       // An mp4 in a tool result only travels on the Gemini replay
                       canSeeAnimated: capabilities.supportsVideoToolResult === true,
+                      ...(availability.sticker
+                          ? {
+                                sticker: {
+                                    setName: config.stickerSetName,
+                                    api: context.api,
+                                },
+                            }
+                          : {}),
                   }),
               ]
             : []),
         ...(availability.imageSearch
             ? [createSendImageTool({ state: mediaState, context })]
+            : []),
+        ...(availability.sticker
+            ? [
+                  createSendStickerTool({
+                      state: mediaState,
+                      context,
+                      setName: config.stickerSetName,
+                      canPreview: availability.imageFetch,
+                  }),
+              ]
             : []),
     ];
 

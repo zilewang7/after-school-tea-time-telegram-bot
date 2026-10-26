@@ -27,6 +27,18 @@ export enum ButtonState {
 }
 
 /**
+ * The sticker a version sent, enough to send it again after a version switch.
+ * The bytes live in `imageBase64`; this is the pack metadata.
+ */
+export interface StoredSticker {
+    packIndex: number;
+    label: string;
+    emoji: string;
+    fileId: string;
+    fileUniqueId: string;
+}
+
+/**
  * Single version of a response
  */
 export interface ResponseVersion {
@@ -52,10 +64,12 @@ export interface ResponseVersion {
     modelParts?: any;
     /** Whether stopped by user */
     wasStoppedByUser: boolean;
-    /** Image data as base64 (for version switching) */
+    /** Image data as base64 (for version switching); a sticker's webp when `sticker` is set */
     imageBase64?: string;
     /** Caption the image went out with (generate_image); re-sent with it on version switching */
     imageCaption?: string;
+    /** Set when the visual attachment was a sticker, not an image */
+    sticker?: StoredSticker;
 }
 
 /**
@@ -71,6 +85,8 @@ export interface ResponseMetadata {
     model: string;
     /** Whether response contains images */
     hasImage: boolean;
+    /** Whether the visual attachment is a sticker */
+    hasSticker?: boolean;
     /** Command type that generated this response */
     commandType?: CommandType;
     /** Input token count */

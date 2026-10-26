@@ -21,6 +21,8 @@ export interface BotMessageRow {
     readonly modelParts: Message['modelParts'];
     readonly file: Buffer | null;
     readonly fileMime: string | null;
+    /** `sticker` marks a sticker's webp; the context labels it accordingly */
+    readonly mediaHint?: string | null;
 }
 
 /** Replaces the row's content; whatever the new content lacks is cleared, not kept */
@@ -37,6 +39,7 @@ export const writeBotMessageRow = async (row: BotMessageRow): Promise<void> => {
         modelParts: row.modelParts,
         file: row.file,
         fileMime: row.fileMime,
+        mediaHint: row.mediaHint ?? null,
         // A cached-media reference would win over `file` when a context reads the row
         fileUniqueId: null,
     };

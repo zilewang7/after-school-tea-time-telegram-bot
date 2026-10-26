@@ -89,6 +89,8 @@ export interface CapabilityOptions {
     readonly imageReverseSearch: boolean;
     /** generate_image is offered; the drawing fallback is only named when it exists */
     readonly imageGenerate: boolean;
+    /** send_sticker is offered */
+    readonly stickerTools: boolean;
 }
 
 const searchImageLines = (canDraw: boolean): string[] => [
@@ -110,6 +112,10 @@ const IMAGE_EDIT_LINE =
     '- 要改/参考某张图时，用 `generate_image` 的 `references` 指向它（消息附件、链接预览带来的图都算），' +
     '不要只凭描述重新画一张“像它”的图。';
 
+const stickerLine = (canPreview: boolean): string =>
+    '- 可以用 `send_sticker` 发贴纸包里的表情（编号/名称见工具描述）' +
+    (canPreview ? "；拿不准画面时先用 `fetch_image(sticker='…')` 看一眼。" : '。');
+
 export const buildCapabilitiesSection = (options: CapabilityOptions): string => {
     const lines: string[] = [CAPABILITIES_SECTION];
     const owner = options.smsOwner;
@@ -121,6 +127,7 @@ export const buildCapabilitiesSection = (options: CapabilityOptions): string => 
     if (options.imageReverseSearch) lines.push(IMAGE_REVERSE_LINE);
     if (options.imageFetch) lines.push(IMAGE_FETCH_LINE);
     if (options.imageGenerate) lines.push(IMAGE_EDIT_LINE);
+    if (options.stickerTools) lines.push(stickerLine(options.imageFetch));
     return lines.join('\n');
 };
 

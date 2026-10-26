@@ -32,6 +32,8 @@ export interface StaticPromptOptions {
     readonly imageReverseSearch?: boolean;
     /** generate_image is offered this turn */
     readonly imageGenerate?: boolean;
+    /** send_sticker is offered this turn */
+    readonly stickerTools?: boolean;
 }
 
 export const buildStaticSystemPrompt = (model: string, options: StaticPromptOptions = {}): string => {
@@ -47,6 +49,7 @@ export const buildStaticSystemPrompt = (model: string, options: StaticPromptOpti
             imageFetch: options.imageFetch === true,
             imageReverseSearch: options.imageReverseSearch === true,
             imageGenerate: options.imageGenerate === true,
+            stickerTools: options.stickerTools === true,
         }),
         NOTES_SECTION,
     ]

@@ -181,5 +181,5 @@ export const mediaToolErrors = {
     downloadFailed: (reason: string) => `图片没取到：${reason}`,
     notAnImage: '这张不是 PNG/JPEG/WebP/GIF 图片，发不了。换一张候选试试。',
     tooLarge: (megabytes: number) => `图片超过 ${megabytes}MB，发不了。换一张候选试试。`,
-    alreadyHasImage: '这条回复已经有一张图了，每条回复只能发一张。',
+    alreadyHasImage: '这条回复已经有一张图或贴纸了，每条回复只能发一个视觉附件。',
 };

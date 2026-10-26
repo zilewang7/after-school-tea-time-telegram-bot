@@ -1,7 +1,7 @@
 import { sequelize, enableWriteAheadLog } from "./config.js";
 import { Op, sql, type Transaction } from '@sequelize/core';
 import { Message } from "./messageDTO.js";
-import { BotResponse, ButtonState, type ResponseVersion, type ResponseMetadata, type CommandType } from "./botResponseDTO.js";
+import { BotResponse, ButtonState, type ResponseVersion, type ResponseMetadata, type StoredSticker, type CommandType } from "./botResponseDTO.js";
 import { MediaCache } from "./mediaCacheDTO.js";
 import { LinkPreviewCache } from "./linkPreviewCacheDTO.js";
 import { TgMessageLinkCache } from "./tgMessageLinkCacheDTO.js";
@@ -274,5 +274,6 @@ export {
     ButtonState,
     type ResponseVersion,
     type ResponseMetadata,
+    type StoredSticker,
     type CommandType,
 }

@@ -556,6 +556,7 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
                 fullThinking: '',
                 thinkingTruncatedChars: 0,
                 images: [],
+                stickers: [],
                 groundingData: [],
                 agentStats: undefined,
                 modelParts: undefined,

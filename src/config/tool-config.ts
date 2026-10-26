@@ -18,6 +18,9 @@
  * - OWNER_USER_ID / OWNER_DISPLAY_NAME / OWNER_SHORT_NAME: who send_sms_to_owner
  *   reaches, the short name being what the chat calls them. They live in the
  *   env, never in the code: the repository is public.
+ * - STICKER_SET_NAME: the fixed Telegram sticker pack send_sticker draws from;
+ *   empty = no sticker tools
+ * - STICKER_TOOLS=0: no send_sticker / fetch_image(sticker)
  */
 import { parseChatIdList } from './chat-id-list.js';
 
@@ -45,6 +48,10 @@ export interface ToolConfig {
     readonly imageReverseSearch: boolean;
     /** Empty when not configured */
     readonly ownerSmsUrl: string;
+    /** The fixed sticker pack; empty = sticker tools off */
+    readonly stickerSetName: string;
+    /** STICKER_TOOLS is not 0 */
+    readonly stickerTools: boolean;
     readonly ownerSmsAllowTest: boolean;
     readonly owner: OwnerIdentity;
 }
@@ -93,6 +100,8 @@ export const readToolConfig = (env: NodeJS.ProcessEnv = process.env): ToolConfig
     imageReverseSearch: env.IMAGE_REVERSE_SEARCH !== '0',
     ownerSmsUrl: env.OWNER_SMS_MCP_URL?.trim() ?? '',
     ownerSmsAllowTest: env.OWNER_SMS_ALLOW_TEST === '1',
+    stickerSetName: optionalValue(env.STICKER_SET_NAME) ?? '',
+    stickerTools: env.STICKER_TOOLS !== '0',
     owner: readOwner(env),
 });
 

@@ -104,6 +104,9 @@ export async function* runToolRound(
                 imageCaption: image.caption,
             };
         }
+        for (const sticker of result.stickers ?? []) {
+            yield { type: 'sticker', sticker };
+        }
         if (result.record !== null) {
             yield { type: 'grounding', groundingMetadata: result.record };
         }

@@ -12,6 +12,7 @@ import {
     writeBotMessageRow,
     type ResponseVersion,
     type ResponseMetadata,
+    type StoredSticker,
     type CommandType,
 } from '../db/index.js';
 import {
@@ -27,7 +28,7 @@ import { formatErrorForUser } from '../shared/errors.js';
 import { stripContextLabel } from '../reply/context-label.js';
 import { toApiEntities } from '../telegram/api-entities.js';
 import { buildResponseButtons } from '../cmd/menus/index.js';
-import { to, isErr } from '../shared/result.js';
+import { to, isErr, type Result } from '../shared/result.js';
 import {
     getCurrentModel,
     registerBotReplyInFlight,
@@ -43,7 +44,7 @@ import { sniffMediaMime } from '../ai/image-generation/image-mime.js';
 import { buildImageCaption } from '../reply/tools/image-message.js';
 import { sendReplyImageMessage } from '../telegram/reply-image-send.js';
 import type { ContextLinkResolver } from '../telegram/formatters/context-links.js';
-import type { AgentStats } from '../ai/types.js';
+import type { AgentStats, StickerDelivery } from '../ai/types.js';
 
 /**
  * Stream controller for aborting streams
@@ -111,6 +112,10 @@ export interface BotMessageSession {
     textBuffer: string;
     thinkingBuffer: string;
     images: Buffer[];
+    /** The sticker this reply sent, when it chose one instead of an image */
+    sticker?: StickerDelivery;
+    /** The sticker's webp for storage and the next context; absent if download failed */
+    stickerBytes?: Buffer;
     groundingData: any[];
     agentStats?: AgentStats;
 
@@ -387,7 +392,10 @@ const finalizeSession = async (
     session.textBuffer = stripContextLabel(session.textBuffer);
 
     const image = session.images[0];
-    // Only the delivered (first) image has a caption
+    const sticker = session.sticker;
+    // The bytes stored with the version: an image, or the sticker's webp
+    const mediaBuffer = sticker ? session.stickerBytes : image;
+    // Only the delivered (first) image has a caption; stickers have none
     const imageCaption = image && options?.imageCaption ? options.imageCaption : undefined;
 
     // Build version data
@@ -403,8 +411,19 @@ const finalizeSession = async (
         errorMessage: options?.errorMessage,
         modelParts: options?.modelParts,
         wasStoppedByUser: options?.wasStoppedByUser ?? false,
-        imageBase64: image?.toString('base64'),
-        imageCaption,
+        imageBase64: mediaBuffer?.toString('base64'),
+        imageCaption: sticker ? undefined : imageCaption,
+        ...(sticker === undefined
+            ? {}
+            : {
+                  sticker: {
+                      packIndex: sticker.packIndex,
+                      label: sticker.label,
+                      emoji: sticker.emoji,
+                      fileId: sticker.fileId,
+                      fileUniqueId: sticker.fileUniqueId,
+                  } satisfies StoredSticker,
+              }),
     };
 
     // Update BotResponse database
@@ -426,10 +445,11 @@ const finalizeSession = async (
             editedWhileProcessing,
         });
 
-        // Update metadata if has images
-        if (session.images.length > 0) {
+        // Update metadata if the reply carries a visual attachment
+        if (session.images.length > 0 || sticker !== undefined) {
             const metadata = response.getMetadata();
             metadata.hasImage = true;
+            if (sticker !== undefined) metadata.hasSticker = true;
             response.setMetadata(metadata);
         }
 
@@ -447,12 +467,13 @@ const finalizeSession = async (
         text: botRowTextOf({
             text: session.textBuffer,
             wasStoppedByUser: options?.wasStoppedByUser ?? false,
-            hasImage: image !== undefined,
-            imageCaption,
+            hasImage: mediaBuffer !== undefined,
+            imageCaption: sticker === undefined ? imageCaption : undefined,
         }),
         modelParts: options?.modelParts ?? null,
-        file: image ?? null,
-        fileMime: image ? sniffMediaMime(image) : null,
+        file: mediaBuffer ?? null,
+        fileMime: mediaBuffer ? sniffMediaMime(mediaBuffer) : null,
+        ...(sticker === undefined ? {} : { mediaHint: 'sticker' }),
     });
 
     // Remove from active sessions; the reply now has stored content, so it is no
@@ -549,8 +570,8 @@ const buildVersionMessages = (
  * final delivery does: a reply without model text still shows its thinking
  * or tool records above the image, in a text message that can be edited.
  */
-const isImageOnlyVersion = (version: ResponseVersion): boolean =>
-    Boolean(version.imageBase64) && !buildVersionMessages(version)[0]?.text;
+const isMediaOnlyVersion = (version: ResponseVersion): boolean =>
+    Boolean(version.imageBase64 || version.sticker) && !buildVersionMessages(version)[0]?.text;
 
 /**
  * Start a retry for an existing response
@@ -577,9 +598,9 @@ export const startRetry = async (
     }
 
     // Check if current version is image-only (first message is a photo, can't be edited to text)
-    const isCurrentImageOnly = isImageOnlyVersion(currentVersion);
+    const isCurrentMediaOnly = isMediaOnlyVersion(currentVersion);
 
-    if (isCurrentImageOnly) {
+    if (isCurrentMediaOnly) {
         // Delete all messages (they're all photos, can't edit to text)
         for (const msgId of currentVersion.messageIds) {
             if (msgId === undefined) continue;
@@ -644,7 +665,7 @@ export const switchVersion = async (
     const contentChunks = buildVersionMessages(newVersion, resolveContextLink);
     let content = contentChunks[0] ?? plainText('');
 
-    if (!content.text && !newVersion.imageBase64) {
+    if (!content.text && !newVersion.imageBase64 && newVersion.sticker === undefined) {
         content = plainText('[Empty response]');
     }
 
@@ -655,6 +676,7 @@ export const switchVersion = async (
     );
 
     const imageBuffer = newVersion.imageBase64 ? Buffer.from(newVersion.imageBase64, 'base64') : null;
+    const sticker = newVersion.sticker;
 
     // A re-sent image keeps the caption it first went out with
     const captionFields = buildImageCaption(newVersion.imageCaption, resolveContextLink);
@@ -671,14 +693,32 @@ export const switchVersion = async (
             },
             runApiCall: (operation) => runApiCall(chatId, operation),
         });
+    // A sticker version goes back out as a sticker, not as the stored webp photo
+    const sendVersionSticker = async (): Promise<Result<number>> => {
+        if (sticker === undefined) return [new Error('version has no sticker'), undefined];
+        const [error, message] = await to(
+            runApiCall(chatId, () =>
+                ctx.api.sendSticker(chatId, sticker.fileId, {
+                    reply_parameters: { message_id: response.userMessageId },
+                    reply_markup: versionButtons,
+                })
+            )
+        );
+        return error ? [error, undefined] : [null, message.message_id];
+    };
+    const sendVersionMedia = async (): Promise<Result<number>> => {
+        if (sticker !== undefined) return sendVersionSticker();
+        if (imageBuffer !== null) return sendVersionImage(imageBuffer);
+        return [new Error('version has no media'), undefined];
+    };
 
-    const hasImage = imageBuffer !== null;
+    const hasMedia = imageBuffer !== null || sticker !== undefined;
     const hasContent = Boolean(content.text);
-    const newIsImageOnly = hasImage && !hasContent;
-    const oldIsImageOnly = isImageOnlyVersion(oldVersion);
+    const newIsMediaOnly = hasMedia && !hasContent;
+    const oldIsMediaOnly = isMediaOnlyVersion(oldVersion);
 
-    // Determine if first message type changes (text <-> image-only)
-    const firstMessageTypeChanged = newIsImageOnly !== oldIsImageOnly;
+    // Determine if first message type changes (text <-> media-only)
+    const firstMessageTypeChanged = newIsMediaOnly !== oldIsMediaOnly;
 
     // Delete old version's extra messages (keep first unless type changed)
     for (let i = 1; i < oldVersion.messageIds.length; i++) {
@@ -710,14 +750,14 @@ export const switchVersion = async (
         // Type mismatch: delete old first message, send new one
         await to(ctx.api.deleteMessage(chatId, oldFirstMsgId));
 
-        if (newIsImageOnly) {
-            // Old was text → new is image-only
-            const [sendErr, sentMsg] = await sendVersionImage(imageBuffer);
+        if (newIsMediaOnly) {
+            // Old was text → new is media-only
+            const [sendErr, sentMsg] = await sendVersionMedia();
             if (!sendErr) {
                 newMessageIds.push(sentMsg);
                 currentMessageId = sentMsg;
             } else {
-                console.error('[bot-message-service] Failed to send image:', sendErr);
+                console.error('[bot-message-service] Failed to send media:', sendErr);
                 return false;
             }
         } else {
@@ -727,7 +767,7 @@ export const switchVersion = async (
                 ctx.api.sendMessage(chatId, firstText.text, {
                     entities: toApiEntities(firstText.entities),
                     reply_parameters: { message_id: response.userMessageId },
-                    reply_markup: hasImage ? undefined : versionButtons,
+                    reply_markup: hasMedia ? undefined : versionButtons,
                 })
             );
             if (sendErr) {
@@ -741,7 +781,7 @@ export const switchVersion = async (
             for (let i = 1; i < contentChunks.length; i++) {
                 const chunk = contentChunks[i];
                 if (!chunk) continue;
-                const isLast = i === contentChunks.length - 1 && !hasImage;
+                const isLast = i === contentChunks.length - 1 && !hasMedia;
                 const [chunkErr, chunkMsg] = await to(
                     ctx.api.sendMessage(chatId, chunk.text, {
                         entities: toApiEntities(chunk.entities),
@@ -754,20 +794,20 @@ export const switchVersion = async (
                 currentMessageId = chunkMsg.message_id;
             }
 
-            // Send image after text if present
-            if (hasImage && imageBuffer) {
-                const [imgErr, imgMsg] = await sendVersionImage(imageBuffer);
-                if (!imgErr) {
-                    newMessageIds.push(imgMsg);
-                    currentMessageId = imgMsg;
+            // Send the visual attachment after text if present
+            if (hasMedia) {
+                const [mediaErr, mediaMsg] = await sendVersionMedia();
+                if (!mediaErr) {
+                    newMessageIds.push(mediaMsg);
+                    currentMessageId = mediaMsg;
                 }
             }
         }
-    } else if (newIsImageOnly) {
-        // Both old and new are image-only: delete old image, send new image
+    } else if (newIsMediaOnly) {
+        // Both old and new are media-only: delete old media, send the new one
         await to(ctx.api.deleteMessage(chatId, oldFirstMsgId));
 
-        const [sendErr, sentMsg] = await sendVersionImage(imageBuffer);
+        const [sendErr, sentMsg] = await sendVersionMedia();
         if (!sendErr) {
             newMessageIds.push(sentMsg);
             currentMessageId = sentMsg;
@@ -787,7 +827,7 @@ export const switchVersion = async (
             for (let i = 1; i < contentChunks.length; i++) {
                 const chunk = contentChunks[i];
                 if (!chunk) continue;
-                const isLast = i === contentChunks.length - 1 && !hasImage;
+                const isLast = i === contentChunks.length - 1 && !hasMedia;
                 const [sendErr, sentMsg] = await to(
                     ctx.api.sendMessage(chatId, chunk.text, {
                         entities: toApiEntities(chunk.entities),
@@ -804,13 +844,13 @@ export const switchVersion = async (
             await editMessage(
                 editor,
                 content.text ? content : plainText('[Empty response]'),
-                hasImage ? undefined : versionButtons
+                hasMedia ? undefined : versionButtons
             );
         }
 
-        // Send image after text if present
-        if (hasImage && imageBuffer) {
-            const [sendErr, sentMsg] = await sendVersionImage(imageBuffer);
+        // Send the visual attachment after text if present
+        if (hasMedia) {
+            const [sendErr, sentMsg] = await sendVersionMedia();
             if (!sendErr) {
                 newMessageIds.push(sentMsg);
                 currentMessageId = sentMsg;
@@ -838,12 +878,13 @@ export const switchVersion = async (
         text: botRowTextOf({
             text: newVersion.text || '',
             wasStoppedByUser: newVersion.wasStoppedByUser,
-            hasImage,
+            hasImage: hasMedia,
             imageCaption: newVersion.imageCaption,
         }),
         modelParts: newVersion.modelParts ?? null,
         file: imageBuffer,
         fileMime: imageBuffer ? sniffMediaMime(imageBuffer) : null,
+        ...(newVersion.sticker === undefined ? {} : { mediaHint: 'sticker' }),
     });
 
     return true;
@@ -879,10 +920,10 @@ export const refreshToFinalState = async (
         versions.length
     );
 
-    // Photo messages can't be edited to text: pair chunks with text messages only.
-    // When an image exists it is the last message (currentMessageId) and carries the buttons.
-    const hasImage = Boolean(version.imageBase64);
-    const textMessageIds = hasImage
+    // Media messages can't be edited to text: pair chunks with text messages only.
+    // When a visual attachment exists it is the last message (currentMessageId) and carries the buttons.
+    const hasMedia = Boolean(version.imageBase64 || version.sticker);
+    const textMessageIds = hasMedia
         ? version.messageIds.filter((id) => id !== version.currentMessageId)
         : version.messageIds;
 
@@ -894,7 +935,7 @@ export const refreshToFinalState = async (
         const chunk = chunks[i];
         if (messageId === undefined || chunk === undefined) continue;
 
-        const carriesButtons = !hasImage && i === chunks.length - 1;
+        const carriesButtons = !hasMedia && i === chunks.length - 1;
         const delivered = await submitEdit(api, chatId, messageId, chunk.text, {
             entities: chunk.entities,
             replyMarkup: carriesButtons ? buttons : undefined,
@@ -910,7 +951,7 @@ export const refreshToFinalState = async (
         for (let i = textMessageIds.length; i < chunks.length; i++) {
             const chunk = chunks[i];
             if (chunk === undefined) continue;
-            const carriesButtons = !hasImage && i === chunks.length - 1;
+            const carriesButtons = !hasMedia && i === chunks.length - 1;
             const [sendErr, sentMsg] = await to(
                 runApiCall(chatId, () =>
                     api.sendMessage(chatId, chunk.text, {
@@ -926,7 +967,7 @@ export const refreshToFinalState = async (
                 break;
             }
             version.messageIds.push(sentMsg.message_id);
-            if (!hasImage) {
+            if (!hasMedia) {
                 version.currentMessageId = sentMsg.message_id;
             }
             registerContinuation(chatId, sentMsg.message_id, firstMessageId);
@@ -938,8 +979,8 @@ export const refreshToFinalState = async (
         }
     }
 
-    // Image carries the buttons: refresh its markup separately
-    if (hasImage && buttons) {
+    // The media message carries the buttons: refresh its markup separately
+    if (hasMedia && buttons) {
         const [markupErr] = await to(
             runApiCall(chatId, () =>
                 api.editMessageReplyMarkup(chatId, version.currentMessageId, {

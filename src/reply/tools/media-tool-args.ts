@@ -108,6 +108,8 @@ export interface FetchImageArgs {
     readonly searchId: string | undefined;
     readonly imageId: string | undefined;
     readonly url: string | undefined;
+    /** A sticker pack index or actual picture name; `st1` re-reads a preview */
+    readonly sticker: string | undefined;
     readonly view: 'original' | 'thumbnail';
 }
 
@@ -137,19 +139,21 @@ export const parseFetchImageArgs = (
     const search = parseOptionalText(args.search_id, 'search_id', 16);
     const image = parseOptionalText(args.image_id, 'image_id', 16);
     const url = parseUrl(args.url);
+    const sticker = parseOptionalText(args.sticker, 'sticker', 40);
     const view = parseFetchView(args.view);
 
-    const problems = problemsOf([search, image, url, view]);
+    const problems = problemsOf([search, image, url, sticker, view]);
     if (problems.length > 0) return { ok: false, error: `参数有误：\n${problems.map((p) => `- ${p}`).join('\n')}` };
 
     const searchId = search.ok ? search.value : '';
     const imageId = image.ok ? image.value : '';
     const urlText = url.ok ? url.value : '';
-    if (countGiven([searchId, imageId, urlText]) !== 1) {
-        return { ok: false, error: '参数有误：\n- search_id、image_id、url 必须传且只传一个' };
+    const stickerText = sticker.ok ? sticker.value : '';
+    if (countGiven([searchId, imageId, urlText, stickerText]) !== 1) {
+        return { ok: false, error: '参数有误：\n- search_id、image_id、url、sticker 必须传且只传一个' };
     }
     if ((searchId !== '' && !idPattern.test(searchId)) || (imageId !== '' && !idPattern.test(imageId))) {
-        return { ok: false, error: '参数有误：\n- 编号要形如 s1 或 img1' };
+        return { ok: false, error: '参数有误：\n- 图片编号要形如 s1 或 img1' };
     }
 
     return {
@@ -158,6 +162,7 @@ export const parseFetchImageArgs = (
             searchId: searchId === '' ? undefined : searchId,
             imageId: imageId === '' ? undefined : imageId,
             url: urlText === '' ? undefined : urlText,
+            sticker: stickerText === '' ? undefined : stickerText,
             view: view.ok ? view.value : 'original',
         },
     };

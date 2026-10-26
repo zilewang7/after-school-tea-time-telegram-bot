@@ -287,7 +287,7 @@ const handleChatRetry = async (
     const signal = session.streamController.signal;
     const { tools, availability } = createReplyTools(
         model,
-        buildReplyToolContext({ chat: ctx.chat, triggerMessage: userMessage, contextIndex, signal }),
+        buildReplyToolContext({ chat: ctx.chat, triggerMessage: userMessage, contextIndex, signal, api: ctx.api }),
         { carriesLargeMedia: carriesLargeMedia(chatContents) }
     );
 
@@ -301,6 +301,7 @@ const handleChatRetry = async (
                 imageFetch: availability.imageFetch,
                 imageReverseSearch: availability.imageReverseSearch,
                 imageGenerate: availability.image,
+                stickerTools: availability.sticker,
             }),
             ...(openCodeGoSession ? { sessionId: openCodeGoSession } : {}),
             signal,

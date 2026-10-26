@@ -5,6 +5,7 @@
  */
 import { findBotResponseByMessageId, getMessage } from '../../db/index.js';
 import { getFileContentsOfMessage } from '../../db/queries/context-queries.js';
+import { sniffImageMime } from '../../ai/image-generation/image-mime.js';
 
 /** One image stored with a message */
 export interface MessageImage {
@@ -50,7 +51,9 @@ export const loadMessageImages = async (chatId: number, messageId: number): Prom
     if (anchoredImages.length) return anchoredImages;
 
     const versionImage = botResponse.getCurrentVersion()?.imageBase64;
-    return versionImage ? [{ data: versionImage, mimeType: 'image/png' }] : [];
+    if (!versionImage) return [];
+    const bytes = Buffer.from(versionImage, 'base64');
+    return [{ data: versionImage, mimeType: sniffImageMime(bytes) ?? 'image/png' }];
 };
 
 /**

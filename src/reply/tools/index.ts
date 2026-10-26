@@ -13,4 +13,5 @@ export * from './search-images-tool.js';
 export * from './search-by-image-tool.js';
 export * from './fetch-image-tool.js';
 export * from './send-image-tool.js';
+export * from './send-sticker-tool.js';
 export * from './image-tool-text.js';

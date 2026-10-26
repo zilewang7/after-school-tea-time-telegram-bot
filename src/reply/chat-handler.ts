@@ -301,7 +301,7 @@ export const handleReply = async (
     const signal = chatContext.session.streamController.signal;
     const { tools, availability } = createReplyTools(
         model,
-        buildReplyToolContext({ chat: ctx.chat, triggerMessage: msg, contextIndex, signal }),
+        buildReplyToolContext({ chat: ctx.chat, triggerMessage: msg, contextIndex, signal, api: ctx.api }),
         { carriesLargeMedia: carriesLargeMedia(chatContents) }
     );
 
@@ -315,6 +315,7 @@ export const handleReply = async (
                 imageFetch: availability.imageFetch,
                 imageReverseSearch: availability.imageReverseSearch,
                 imageGenerate: availability.image,
+                stickerTools: availability.sticker,
             }),
             ...(openCodeGoSession ? { sessionId: openCodeGoSession } : {}),
             signal,

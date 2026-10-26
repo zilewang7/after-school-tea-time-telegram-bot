@@ -234,7 +234,7 @@ export const createSendImageTool = (options: SendImageToolOptions): ToolHandler 
         statusText: '📤 正在发图…',
         chatAction: 'upload_photo',
         execute: async (rawArgs) => {
-            if (state.hasReplyImage) return imageToolError(mediaToolErrors.alreadyHasImage);
+            if (state.hasReplyImage || state.hasReplySticker) return imageToolError(mediaToolErrors.alreadyHasImage);
 
             const parsed = parseSendImageArgs(rawArgs);
             if (!parsed.ok) return imageToolError(parsed.error);

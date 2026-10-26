@@ -19,6 +19,7 @@ import {
     SEARCH_BY_IMAGE_TOOL_NAME,
     SEND_IMAGE_TOOL_NAME,
     SEND_SMS_TOOL_NAME,
+    SEND_STICKER_TOOL_NAME,
 } from './tool-names.js';
 
 /** What the turn's request carries, as far as tool availability cares */
@@ -44,6 +45,8 @@ export interface ToolAvailability {
     readonly imageReverseSearch: boolean;
     /** fetch_image is offered: only models that can see what they read */
     readonly imageFetch: boolean;
+    /** send_sticker is offered */
+    readonly sticker: boolean;
 }
 
 const NO_TOOLS: ToolAvailability = {
@@ -54,6 +57,7 @@ const NO_TOOLS: ToolAvailability = {
     imageSearch: false,
     imageReverseSearch: false,
     imageFetch: false,
+    sticker: false,
 };
 
 export const resolveToolAvailability = (
@@ -108,5 +112,10 @@ export const resolveToolAvailability = (
             isEnabled(SEARCH_BY_IMAGE_TOOL_NAME),
         // Reading a picture is only useful to a model that can see it
         imageFetch: imageSearch && capabilities.supportsImageInput && isEnabled(FETCH_IMAGE_TOOL_NAME),
+        sticker:
+            chatAllowed &&
+            config.stickerTools &&
+            config.stickerSetName !== '' &&
+            isEnabled(SEND_STICKER_TOOL_NAME),
     };
 };

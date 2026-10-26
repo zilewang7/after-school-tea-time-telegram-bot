@@ -20,8 +20,12 @@
  * Every project module is imported dynamically AFTER the env below is set and
  * the scratch database is in place: the db layer opens DB_PATH on import.
  */
+import { mkdtempSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { Api, Context, type Transformer } from 'grammy';
 import type { UserFromGetMe } from 'grammy/types';
+import { STICKER_CATALOG } from '../../src/services/sticker-catalog.js';
 import {
     OFFLINE_CHAT_ID,
     expect,
@@ -38,6 +42,8 @@ import type { ContextIndex } from '../../src/reply/context-index.js';
 
 // The bot's own rows are stored as messages of this user
 process.env.BOT_USER_ID = '7777';
+// The sticker delivery reads the pack name from the tool config
+process.env.STICKER_SET_NAME = 'ColorfulHachimi';
 // Link previews come from the URL-addressed cache only; this switch is what
 // makes the context builder read it at all (nothing here ever fetches)
 process.env.LUOXU_PREVIEW_URL = 'http://offline.invalid';
@@ -72,6 +78,8 @@ const PNG_BYTES = Buffer.from(
 // Only the signatures matter to the sniffer
 const JPEG_BYTES = Buffer.concat([Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10]), Buffer.from('JFIF offline jpeg')]);
 const WEBP_BYTES = Buffer.concat([Buffer.from('RIFF'), Buffer.from([0x20, 0, 0, 0]), Buffer.from('WEBPVP8 offline webp')]);
+const STICKER_WEBP_PATH = join(mkdtempSync(join(tmpdir(), 'k-on-sticker-image-')), 'sticker.webp');
+writeFileSync(STICKER_WEBP_PATH, WEBP_BYTES);
 const GIF_BYTES = Buffer.from('GIF89a offline gif');
 
 const IMAGE_READY = '图片已生成，会带着配文附在你这条回复后面发出。';
@@ -113,6 +121,7 @@ const emptyState = (): ResponseState => ({
     fullThinking: '',
     thinkingTruncatedChars: 0,
     images: [],
+    stickers: [],
     groundingData: [],
     agentStats: undefined,
     modelParts: undefined,
@@ -335,7 +344,7 @@ interface FakeTelegram {
     readonly sentIds: (method: string) => number[];
 }
 
-const SENDING_METHODS: ReadonlySet<string> = new Set(['sendMessage', 'sendPhoto', 'sendDocument', 'sendAnimation']);
+const SENDING_METHODS: ReadonlySet<string> = new Set(['sendMessage', 'sendPhoto', 'sendDocument', 'sendAnimation', 'sendSticker']);
 let nextFakeMessageId = 190_000;
 
 const fakeChat = (chatId: number) => ({ id: chatId, type: 'supergroup' as const, title: '测试群' });
@@ -355,6 +364,19 @@ const createFakeTelegram = (chatId: number): FakeTelegram => {
         if (entityRefusingMethods.has(method) && 'caption_entities' in fields) {
             return { ok: false, error_code: 400, description: "Bad Request: can't parse entities offline" };
         }
+        if (method === 'getStickerSet') {
+            return {
+                ok: true,
+                result: {
+                    stickers: STICKER_CATALOG.map((entry) => ({
+                        file_id: `file-${entry.packIndex}`,
+                        file_unique_id: entry.fileUniqueId,
+                        thumbnail: { file_id: `thumb-${entry.packIndex}` },
+                    })),
+                },
+            };
+        }
+        if (method === 'getFile') return { ok: true, result: { file_path: STICKER_WEBP_PATH } };
         if (!SENDING_METHODS.has(method)) return { ok: true, result: true };
         nextFakeMessageId += 1;
         sent.push({ method, messageId: nextFakeMessageId });
@@ -1440,6 +1462,100 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
                     callsOf(telegram, 'sendPhoto').length === 0,
                 `a re-sent GIF stays an animation (got ${json(telegram.calls.map((call) => call.method))})`
             );
+        },
+    },
+    {
+        name: 'a sticker reply goes out as a sticker and stores its webp for the next context',
+        body: async () => {
+            const sticker = {
+                packIndex: 7,
+                label: '吃冰棒',
+                emoji: '🍦',
+                fileId: 'file-7',
+                fileUniqueId: 'unique-7',
+            };
+            const delivered = await deliver(-1003900000022, reply({ text: '给你', stickers: [sticker] }));
+            const [sent] = callsOf(delivered.telegram, 'sendSticker');
+            expect(sent?.payload.sticker === 'file-7', `sent by file_id (got ${json(sent?.payload.sticker)})`);
+            expect(delivered.version?.sticker?.label === '吃冰棒', 'the version keeps the sticker metadata');
+            expect(
+                delivered.version?.imageBase64 !== undefined &&
+                    Buffer.from(delivered.version.imageBase64, 'base64').equals(WEBP_BYTES),
+                'the version keeps the webp bytes for a replay'
+            );
+            expect(
+                delivered.row?.text === '给你' &&
+                    delivered.row.fileMime === 'image/webp' &&
+                    delivered.row.mediaHint === 'sticker' &&
+                    delivered.row.file?.equals(WEBP_BYTES) === true,
+                `the bot row carries the text and the sticker webp (got ${json({ text: delivered.row?.text, mime: delivered.row?.fileMime, hint: delivered.row?.mediaHint })})`
+            );
+        },
+    },
+    {
+        name: 'a sticker version switches back as a sticker, not as its stored webp photo',
+        body: async () => {
+            const chatId = -1003900000021;
+            const telegram = createFakeTelegram(chatId);
+            const userMessageId = takeMessageId();
+            const replyId = takeMessageId();
+            const stickerMessageId = takeMessageId();
+            const sticker = {
+                packIndex: 7,
+                label: '吃冰棒',
+                emoji: '🍦',
+                fileId: 'file-7',
+                fileUniqueId: 'unique-7',
+            };
+            await seedResponse({
+                chatId,
+                firstMessageId: replyId,
+                userMessageId,
+                currentVersionIndex: 0,
+                versions: [
+                    {
+                        text: '第一版',
+                        messageIds: [replyId, stickerMessageId],
+                        currentMessageId: stickerMessageId,
+                        imageBase64: WEBP_BYTES.toString('base64'),
+                        sticker,
+                    },
+                    { text: '第二版', messageIds: [replyId], currentMessageId: replyId },
+                ],
+            });
+            await seedRow({
+                chatId,
+                messageId: replyId,
+                fromBotSelf: true,
+                userId: 7777,
+                text: '第一版',
+                file: WEBP_BYTES,
+                fileMime: 'image/webp',
+                mediaHint: 'sticker',
+            });
+            const ctx = contextIn(telegram, chatId, takeMessageId());
+
+            const { result: toTextOnly } = await captureConsole(() => switchVersion(ctx, replyId, 'next'));
+            const textRow = await rowOf(chatId, replyId);
+            expect(toTextOnly, 'switched to the text-only version');
+            expect(
+                textRow?.text === '第二版' && textRow.file === null && textRow.mediaHint === null,
+                `the text version leaves no sticker bytes or hint (got ${json({ text: textRow?.text, file: textRow?.file?.length, hint: textRow?.mediaHint })})`
+            );
+
+            const { result: backToSticker } = await captureConsole(() => switchVersion(ctx, replyId, 'prev'));
+            const [resent] = callsOf(telegram, 'sendSticker');
+            expect(backToSticker && resent?.payload.sticker === 'file-7', `the sticker is re-sent by file_id (got ${json(resent?.payload.sticker)})`);
+            const stickerRow = await rowOf(chatId, replyId);
+            expect(
+                stickerRow?.file?.equals(WEBP_BYTES) === true &&
+                    stickerRow.fileMime === 'image/webp' &&
+                    stickerRow.mediaHint === 'sticker' &&
+                    stickerRow.text === '第一版',
+                `the row has the sticker webp and its hint (got ${json({ mime: stickerRow?.fileMime, hint: stickerRow?.mediaHint, text: stickerRow?.text })})`
+            );
+            const stored = await dbIndex.BotResponse.findOne({ where: { chatId, messageId: replyId } });
+            expect(stored?.getCurrentVersion()?.sticker?.fileId === 'file-7', 'the version keeps the sticker metadata');
         },
     },
     {

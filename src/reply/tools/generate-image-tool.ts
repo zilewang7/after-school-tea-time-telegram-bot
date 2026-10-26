@@ -182,7 +182,7 @@ export const createGenerateImageTool = (
         statusText: '🎨 正在画图…',
         chatAction: 'upload_photo',
         execute: async (rawArgs, signal) => {
-            if (state.hasReplyImage) return imageToolError(ONE_IMAGE_PER_REPLY);
+            if (state.hasReplyImage || state.hasReplySticker) return imageToolError(ONE_IMAGE_PER_REPLY);
 
             const parsed = parseGenerateImageArgs(rawArgs);
             if (!parsed.ok) return imageToolError(parsed.error);

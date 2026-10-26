@@ -10,7 +10,7 @@ import type { GroundingCitation, GroundingData } from '../../ai/types.js';
 import type { GenerateImageArgs } from './image-tool-args.js';
 import { GENERATE_IMAGE_TOOL_NAME } from './tool-names.js';
 
-export const ONE_IMAGE_PER_REPLY = '这条回复已经有一张图了，每条回复只能发一张。';
+export const ONE_IMAGE_PER_REPLY = '这条回复已经有一张图或贴纸了，每条回复只能发一个视觉附件。';
 const IMAGE_READY = '图片已生成，会带着配文附在你这条回复后面发出。';
 
 /** The image model's own words are quoted, never dumped whole */

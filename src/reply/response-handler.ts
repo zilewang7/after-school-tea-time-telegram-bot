@@ -44,8 +44,12 @@ import type {
     StreamChunk,
     AIResponse,
     ResponseState,
+    StickerDelivery,
     ToolStatus,
 } from '../ai/types.js';
+import { getToolConfig } from '../config/tool-config.js';
+import { findStickerByPackIndex } from '../services/sticker-catalog.js';
+import { downloadStickerPreview } from '../services/sticker-set-service.js';
 
 const MESSAGE_LENGTH_LIMIT = 3900;
 /** Per-message entity budget during streaming (server cap is ~100; the
@@ -57,6 +61,8 @@ const THINKING_BUFFER_LIMIT = 10000;
 const MIN_TAIL_TEXT_BUDGET = 500;
 /** Shown in place of a reply that was only an image Telegram would not take */
 const IMAGE_NOT_SENT_TEXT = '[image failed to send]';
+/** Shown in place of a reply that was only a sticker Telegram would not take */
+const STICKER_NOT_SENT_TEXT = '[sticker failed to send]';
 
 /**
  * Chat context for response handling
@@ -194,6 +200,12 @@ export const processChunk = (
             // Only the first image is delivered, so only its caption is kept
             imageCaption:
                 imageData && state.images.length === 0 ? imageCaption : state.imageCaption,
+        }))
+        .with({ type: 'sticker' }, ({ sticker }) => ({
+            ...state,
+            // One sticker per reply; a second call is ignored (the tool rejects it too)
+            stickers:
+                sticker && state.stickers.length === 0 ? [...state.stickers, sticker] : state.stickers,
         }))
         .with({ type: 'grounding' }, ({ groundingMetadata }) => ({
             ...state,
@@ -385,6 +397,7 @@ export const processStream = async (
         fullThinking: '',
         thinkingTruncatedChars: 0,
         images: [],
+        stickers: [],
         groundingData: [],
         agentStats: undefined,
         modelParts: undefined,
@@ -591,6 +604,7 @@ export const processStream = async (
         thinkingText: state.thinkingBuffer,
         images: state.images,
         imageCaption: state.imageCaption,
+        stickers: state.stickers,
         groundingData: state.groundingData,
         agentStats: state.agentStats,
         modelParts: state.modelParts,
@@ -674,6 +688,64 @@ const deliverReplyImage = async (
 };
 
 /**
+ * Send the reply's sticker after its text. The webp is downloaded too, so the
+ * stored version and the next context can show what went out; a failed
+ * download is only a missing preview, never a failed send.
+ */
+const deliverReplySticker = async (
+    chatContext: ChatContext,
+    sticker: StickerDelivery
+): Promise<boolean> => {
+    const { ctx, chatId, userMessageId, session } = chatContext;
+
+    const sent = await to(
+        runApiCall(chatId, () =>
+            ctx.api.sendSticker(chatId, sticker.fileId, {
+                reply_parameters: { message_id: userMessageId },
+            })
+        )
+    );
+    if (isErr(sent)) {
+        console.error('[response-handler] sticker send failed:', sent[0]);
+        return false;
+    }
+
+    const messageId = sent[1].message_id;
+    session.messageIds.push(messageId);
+    session.currentMessageId = messageId;
+    session.sticker = sticker;
+
+    const entry = findStickerByPackIndex(sticker.packIndex);
+    const setName = getToolConfig().stickerSetName;
+    if (entry && setName !== '') {
+        try {
+            const preview = await downloadStickerPreview(ctx.api, setName, entry, 'thumbnail');
+            session.stickerBytes = preview.data;
+        } catch (error) {
+            console.warn('[response-handler] sticker preview for storage failed:', error);
+        }
+    }
+    return true;
+};
+
+/**
+ * Send the reply's one visual attachment: a sticker when it has one, otherwise
+ * its first image. Returns whether anything went out.
+ */
+const deliverReplyMedia = async (
+    chatContext: ChatContext,
+    response: AIResponse,
+    imageCaptionFields: ImageCaptionFields
+): Promise<boolean> => {
+    const sticker = response.stickers?.[0];
+    if (sticker) return deliverReplySticker(chatContext, sticker);
+    if (response.images.length > 0) {
+        return deliverReplyImage(chatContext, response.images[0], imageCaptionFields);
+    }
+    return false;
+};
+
+/**
  * Send final response (text and/or images)
  * Handles the last message in the chain (may be first or continuation)
  */
@@ -744,9 +816,9 @@ export const sendFinalResponse = async (
             session.currentMessageId = contMsg.message_id;
         }
 
-        // Send image if present (after text split)
-        if (response.images.length > 0) {
-            await deliverReplyImage(chatContext, response.images[0], imageCaptionFields);
+        // Send the one visual attachment (image or sticker) after the text split
+        if (response.images.length > 0 || (response.stickers?.length ?? 0) > 0) {
+            await deliverReplyMedia(chatContext, response, imageCaptionFields);
         }
 
         // Finalize session (saves to both Message and BotResponse tables)
@@ -785,6 +857,8 @@ export const sendFinalResponse = async (
 
     const hasText = Boolean(finalMessage.text);
     const hasImages = response.images.length > 0;
+    const hasStickers = (response.stickers?.length ?? 0) > 0;
+    const hasMedia = hasImages || hasStickers;
 
     // Check if this is an image generation context
     const isImageGenerationContext = chatContext.commandType === 'picbanana'
@@ -802,7 +876,9 @@ export const sendFinalResponse = async (
     console.log('[response-handler] Final response:', {
         hasText,
         hasImages,
+        hasStickers,
         imageCount: response.images.length,
+        stickerCount: response.stickers?.length ?? 0,
         textLength: response.text.length,
         thinkingLength: response.thinkingText.length,
         messageCount: session.messageIds.length,
@@ -811,7 +887,7 @@ export const sendFinalResponse = async (
         noImageInResponse,
     });
 
-    if (hasImages) {
+    if (hasMedia) {
         // Update text message first (no buttons - intermediate message)
         if (hasText) {
             await editor.updateContent(finalMessage.text, {
@@ -820,18 +896,20 @@ export const sendFinalResponse = async (
             });
         }
 
-        // Send image as last message (buttons will be added after finalize)
-        const imageDelivered = await deliverReplyImage(chatContext, response.images[0], imageCaptionFields);
+        // Send the attachment as last message (buttons will be added after finalize)
+        const mediaDelivered = await deliverReplyMedia(chatContext, response, imageCaptionFields);
 
         if (!hasText) {
-            if (imageDelivered) {
-                // No text: the image takes the processing message's place
+            if (mediaDelivered) {
+                // No text: the attachment takes the processing message's place
                 const processingMessageId = editor.getIds().messageId;
                 await editor.delete();
                 session.messageIds = session.messageIds.filter(id => id !== processingMessageId);
             } else {
                 // Nothing went out: the processing message stays and says so
-                await editor.updateContent(IMAGE_NOT_SENT_TEXT, { isFinal: true });
+                await editor.updateContent(hasStickers ? STICKER_NOT_SENT_TEXT : IMAGE_NOT_SENT_TEXT, {
+                    isFinal: true,
+                });
             }
         }
 
@@ -853,7 +931,7 @@ export const sendFinalResponse = async (
                 botResponse?.getVersions().length ?? 1
             );
 
-            // Edit the last message (the image, unless it did not go out) to add buttons
+            // Edit the last message (the attachment, unless it did not go out) to add buttons
             const [editErr] = await to(
                 runApiCall(chatId, () =>
                     ctx.api.editMessageReplyMarkup(chatId, session.currentMessageId, {
@@ -862,13 +940,13 @@ export const sendFinalResponse = async (
                 )
             );
             if (editErr) {
-                console.error('[response-handler] Failed to add buttons to image:', editErr);
+                console.error('[response-handler] Failed to add buttons to media:', editErr);
             }
         } else {
             await healEditDetectedButtons(chatContext);
         }
     } else {
-        // Finalize session first to determine button state (no image case)
+        // Finalize session first to determine button state (no media case)
         await session.finalize(finalizeOptions);
 
         // Get the correct button state after finalization

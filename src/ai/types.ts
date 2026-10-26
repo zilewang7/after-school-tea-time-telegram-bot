@@ -124,7 +124,7 @@ export interface GroundingData {
 }
 
 // Chat action shown while a tool runs
-export type ToolChatAction = 'typing' | 'upload_photo';
+export type ToolChatAction = 'typing' | 'upload_photo' | 'choose_sticker';
 
 // Transient status line while a tool runs (never persisted)
 export interface ToolStatus {
@@ -141,7 +141,23 @@ export interface ImageOutputOptions {
 }
 
 // Stream chunk types
-export type StreamChunkType = 'text' | 'thinking' | 'image' | 'grounding' | 'status' | 'done';
+export type StreamChunkType = 'text' | 'thinking' | 'image' | 'sticker' | 'grounding' | 'status' | 'done';
+
+/**
+ * A sticker the reply will send: the pack position, the actual picture name,
+ * and the resolved file_id. The file_id is what `sendSticker` takes; the rest
+ * is what the reply stores so a version switch can send the same sticker
+ * again without resolving it from the pack.
+ */
+export interface StickerDelivery {
+    /** 1-based position in the pack (the number the model and the user mean) */
+    readonly packIndex: number;
+    /** Actual picture name; never the misleading original filename */
+    readonly label: string;
+    readonly emoji: string;
+    readonly fileId: string;
+    readonly fileUniqueId: string;
+}
 
 // Stream chunk
 export interface StreamChunk {
@@ -152,6 +168,8 @@ export interface StreamChunk {
     imageMimeType?: string;
     /** Caption to send with the image */
     imageCaption?: string;
+    /** A sticker this reply will send (one per reply) */
+    sticker?: StickerDelivery;
     groundingMetadata?: GroundingData;
     /** Tool status; a status chunk without it clears the status */
     status?: ToolStatus;
@@ -166,6 +184,8 @@ export interface AIResponse {
     images: Buffer[];
     /** Caption of the first image */
     imageCaption?: string;
+    /** Stickers this reply sends (delivery keeps the first) */
+    stickers?: StickerDelivery[];
     groundingData?: GroundingData[];
     agentStats?: AgentStats;
     modelParts?: unknown[];
@@ -253,6 +273,8 @@ export interface ResponseState {
     images: Buffer[];
     /** Caption of the first image */
     imageCaption?: string;
+    /** Stickers collected so far; only the first is delivered */
+    stickers: StickerDelivery[];
     /** Status of the running tool; display only, never persisted */
     toolStatus?: ToolStatus;
     groundingData: GroundingData[];
