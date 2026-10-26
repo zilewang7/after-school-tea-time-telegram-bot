@@ -1,4 +1,5 @@
 import { SocksProxyAgent } from 'socks-proxy-agent';
+import http from 'node:http';
 import https from 'node:https';
 import { readFile, stat } from 'node:fs/promises';
 import { buffer as readStreamToBuffer } from 'node:stream/consumers';
@@ -35,7 +36,9 @@ export type ResolvedTelegramFile =
 
 const httpGetBuffer = (url: string, signal?: AbortSignal): Promise<Buffer> =>
   new Promise<Buffer>((resolve, reject) => {
-    const request = https.get(
+    // The local Bot API serves files over plain http; the cloud API over https
+    const transport = url.startsWith('http://') ? http : https;
+    const request = transport.get(
       url,
       { agent: downloadProxyAgent, timeout: DOWNLOAD_TIMEOUT_MS, signal },
       (response) => {
