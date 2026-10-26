@@ -8,8 +8,11 @@
 import { concatMessages, renderMarkdown, splitMessage } from 'telegram-md-entities';
 import type { RenderedMessage } from 'telegram-md-entities';
 import type { AgentStats, GroundingData } from '../../ai/types.js';
+import { getRenderConfig } from '../../config/render-config.js';
 import { buildToolRecordSections } from './tool-records-formatter.js';
-import { buildGoogleSearchSections } from './google-search-formatter.js';
+import { buildGoogleSearchSections, isSearchGroundingStep } from './google-search-formatter.js';
+import { resolveGroundingSources } from './grounding-sources.js';
+import { inlineCitations } from './inline-citations.js';
 import { plainText } from './entity-text.js';
 import { renderThinkingQuote } from './quoted-render.js';
 import { linkifyContextNumbers, type ContextLinkResolver } from './context-links.js';
@@ -18,6 +21,15 @@ import { linkifyContextNumbers, type ContextLinkResolver } from './context-links
 const TELEGRAM_MAX_LENGTH = 4000;
 /** Per-message entity budget (the server silently drops entities past ~100) */
 const TELEGRAM_MAX_ENTITIES = 90;
+
+/**
+ * Display-only superscript markers: the stored reply text stays clean, so a
+ * rerender (edit/retry) and the next turn's context never see them.
+ */
+const withCitations = (text: string, grounding: GroundingData | undefined): string => {
+    if (grounding === undefined || !getRenderConfig().groundingCitations) return text;
+    return inlineCitations(text, resolveGroundingSources(grounding), grounding.groundingSupports);
+};
 
 export interface FinalMessageBuildOptions {
     text: string;
@@ -45,13 +57,17 @@ export const buildFinalMessages = (
 
     const parts: (RenderedMessage | string)[] = [];
 
+    // The Gemini search-grounding step the footer is built from; its supports
+    // place the superscript markers in the body
+    const searchGrounding = (groundingData ?? []).find(isSearchGroundingStep);
+
     if (thinking) {
         parts.push(renderThinkingQuote(thinking, { expandable: true }));
     }
 
     if (text) {
         if (parts.length) parts.push('\n');
-        parts.push(renderMarkdown(text));
+        parts.push(renderMarkdown(withCitations(text, searchGrounding)));
     }
 
     if (wasStoppedByUser) {

@@ -15,6 +15,7 @@ import { concatMessages, wrapInBlockquote } from 'telegram-md-entities';
 import type { RenderedMessage } from 'telegram-md-entities';
 import type { GroundingData } from '../../ai/types.js';
 import { boldText, linkText, plainText } from './entity-text.js';
+import { resolveGroundingSources } from './grounding-sources.js';
 
 interface Anchor {
     href: string;
@@ -150,16 +151,10 @@ const buildGoogleSearchSection = (metadata: GroundingData): RenderedMessage[] =>
         return idx > 0 ? [' | ', part] : [part];
     });
 
-    const chunkLines = (metadata.groundingChunks ?? []).flatMap((chunk, idx) => {
-        const source = chunk.web
-            ? { title: chunk.web.title ?? 'no title', uri: chunk.web.uri ?? 'https://example.com' }
-            : chunk.image?.sourceUri
-              ? { title: chunk.image.title ?? chunk.image.domain ?? 'no title', uri: chunk.image.sourceUri }
-              : null;
-        if (!source) return [];
+    const chunkLines = resolveGroundingSources(metadata).sources.flatMap((source, idx) => {
         // Only the first row needs the line break that separates it from the query
         const separator = idx > 0 || queryParts.length > 0 ? '\n' : '';
-        return [separator, citationLine(idx + 1, source.title, source.uri)];
+        return [separator, citationLine(source.number, source.title, source.uri)];
     });
 
     // Grounding can arrive without its query list (a urlContext-only turn, or a

@@ -18,7 +18,7 @@ import {
     type OfflineDb,
 } from './harness.mts';
 import type { User } from 'grammy/types';
-import type { ResponseState, UnifiedMessage } from '../../src/ai/types.js';
+import type { GroundingData, ResponseState, UnifiedMessage } from '../../src/ai/types.js';
 
 // Set before importing the gate: it snapshots the env at module load
 process.env.IGNORED_SENDER_IDS = '424242';
@@ -4466,6 +4466,242 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
             expect(
                 texts.some((text) => text.includes('[system] 运行时信息') && text.includes('当前群聊：浪新')),
                 `the built context carries the chat name (got ${JSON.stringify(texts)})`
+            );
+        },
+    },
+    {
+        // Grounding supports name the slice of the reply each source backs.
+        // The renderer cannot use their offsets (UTF-8 bytes into a single
+        // part, startIndex often missing), so it locates the text and puts a
+        // superscript marker group after the closing punctuation. Every chunk
+        // kind shares one numbering, and the footer lists the same numbers.
+        name: 'grounded paragraphs get superscript source markers',
+        body: async () => {
+            const { buildFinalMessages } = await import(
+                '../../src/telegram/formatters/final-message-builder.js'
+            );
+            const { resolveGroundingSources } = await import(
+                '../../src/telegram/formatters/grounding-sources.js'
+            );
+
+            const grounding: GroundingData = {
+                searchQueries: ['巴西 大选'],
+                groundingChunks: [
+                    { web: { uri: 'https://news.example/brazil', title: '新闻页' } },
+                    { maps: { uri: 'https://maps.example/brasilia', title: '巴西利亚' } },
+                    { retrievedContext: { uri: 'https://docs.example/imf', title: 'IMF 报告' } },
+                    {
+                        web: { title: '没有地址的来源' },
+                    },
+                    { image: { sourceUri: 'https://img.example/page', title: '图库页' } },
+                ],
+                groundingSupports: [
+                    { segment: { text: '卢拉成功连任' }, groundingChunkIndices: [0] },
+                    { segment: { text: '第二条新闻也很重要' }, groundingChunkIndices: [2] },
+                ],
+            };
+
+            const sources = resolveGroundingSources(grounding);
+            expect(
+                sources.sources.map((source) => `${source.number}:${source.title}`).join(' | ') ===
+                    '1:新闻页 | 2:巴西利亚 | 3:IMF 报告 | 4:图库页',
+                `every chunk kind is numbered once, the uri-less one skipped (got ${JSON.stringify(
+                    sources.sources
+                )})`
+            );
+            expect(
+                sources.numberByChunk.get(3) === undefined,
+                'a chunk without a uri takes no number'
+            );
+            expect(
+                sources.numberByChunk.get(4) === 4,
+                'the kinds share one numbering instead of restarting per kind'
+            );
+
+            const messages = buildFinalMessages({
+                text: '2026年10月25日，巴西举行大选，卢拉成功连任。第二条新闻也很重要。',
+                groundingData: [grounding],
+            });
+            const body = messages[0]?.text ?? '';
+
+            expect(
+                body.includes('卢拉成功连任。¹第二条新闻也很重要。³'),
+                `the marker follows the sentence and carries the source number (got ${JSON.stringify(body)})`
+            );
+
+            const markerOffset = body.indexOf('¹');
+            const markerLink = (messages[0]?.entities ?? []).find(
+                (entity) => entity.type === 'text_link' && entity.offset === markerOffset
+            );
+            expect(
+                markerLink !== undefined && markerLink.type === 'text_link'
+                    ? markerLink.url === 'https://news.example/brazil'
+                    : false,
+                'the marker links to the page it stands for'
+            );
+
+            expect(
+                body.includes('[1] 新闻页') && body.includes('[4] 图库页'),
+                'the footer keeps the same numbers'
+            );
+
+            // Nothing to mark: no supports, or no text match (a stopped reply)
+            const unmarked = buildFinalMessages({
+                text: '卢拉成功连任。',
+                groundingData: [
+                    {
+                        searchQueries: ['巴西 大选'],
+                        groundingChunks: [{ web: { uri: 'https://news.example/brazil' } }],
+                    },
+                ],
+            });
+            expect(
+                !(unmarked[0]?.text ?? '').includes('¹'),
+                'a step without supports leaves the body alone'
+            );
+
+            const stopped = buildFinalMessages({
+                text: '卢拉成功连任。',
+                groundingData: [
+                    {
+                        searchQueries: [],
+                        groundingChunks: [{ web: { uri: 'https://news.example/brazil' } }],
+                        groundingSupports: [
+                            { segment: { text: '被截断的后半句' }, groundingChunkIndices: [0] },
+                        ],
+                    },
+                ],
+            });
+            expect(
+                !(stopped[0]?.text ?? '').includes('¹'),
+                'a segment missing from the reply is not guessed at'
+            );
+
+            const { readRenderConfig } = await import('../../src/config/render-config.js');
+            expect(
+                readRenderConfig({ GROUNDING_CITATIONS: '0' }).groundingCitations === false,
+                'the switch turns the markers off'
+            );
+            expect(
+                readRenderConfig({}).groundingCitations,
+                'the markers are on by default'
+            );
+        },
+    },
+    {
+        // A marker must never land where it would break the markdown: inside a
+        // code block it would show as literal `[¹](url)`, inside a link it
+        // would corrupt the link. Overlapping supports (Google reports a
+        // nested and a wider segment for the same line) merge into one group.
+        name: 'citation markers avoid code, links and overlapping segments',
+        body: async () => {
+            const { inlineCitations } = await import(
+                '../../src/telegram/formatters/inline-citations.js'
+            );
+            const { resolveGroundingSources } = await import(
+                '../../src/telegram/formatters/grounding-sources.js'
+            );
+
+            const sources = resolveGroundingSources({
+                searchQueries: [],
+                groundingChunks: [
+                    { web: { uri: 'https://a.example/1', title: 'A' } },
+                    { web: { uri: 'https://b.example/2', title: 'B' } },
+                ],
+            });
+
+            const text = [
+                '普通句子。',
+                '```',
+                '代码块里的句子。',
+                '```',
+                '行内 `代码里的词` 也在。',
+                '见[某页](https://example.com/page)结束。',
+            ].join('\n');
+            const untouched = inlineCitations(text, sources, [
+                { segment: { text: '代码块里的句子' }, groundingChunkIndices: [0] },
+                { segment: { text: '代码里的词' }, groundingChunkIndices: [0] },
+                { segment: { text: '某页' }, groundingChunkIndices: [0] },
+                { segment: { text: '不存在的句子' }, groundingChunkIndices: [0] },
+            ]);
+            expect(
+                untouched === text,
+                `no marker is placed where markdown would break (got ${JSON.stringify(untouched)})`
+            );
+
+            const overlapped = inlineCitations('参考来源：新华网、诺贝尔奖官网。', sources, [
+                { segment: { text: '参考来源：新华网' }, groundingChunkIndices: [0] },
+                { segment: { text: '参考来源：新华网、诺贝尔奖官网' }, groundingChunkIndices: [1] },
+            ]);
+            expect(
+                overlapped ===
+                    '参考来源：新华网、诺贝尔奖官网。[¹](https://a.example/1)\u202F[²](https://b.example/2)',
+                `overlapping supports share one marker group (got ${JSON.stringify(overlapped)})`
+            );
+
+            const plainUrl = inlineCitations('一句话。', resolveGroundingSources({
+                searchQueries: [],
+                groundingChunks: [{ web: { uri: 'gs://bucket/page' } }],
+            }), [{ segment: { text: '一句话' }, groundingChunkIndices: [0] }]);
+            expect(
+                plainUrl === '一句话。¹',
+                `a source Telegram cannot link stays a bare number (got ${JSON.stringify(plainUrl)})`
+            );
+        },
+    },
+    {
+        // Each tool round reports its own chunk array; merging de-duplicates
+        // shared pages, so every support has to be re-pointed at the merged
+        // list or the markers would cite the wrong pages.
+        name: 'merged rounds re-point their supports at the merged sources',
+        body: async () => {
+            const { mergeGroundingData } = await import(
+                '../../src/ai/platforms/gemini/gemini-grounding.js'
+            );
+
+            const merged = mergeGroundingData([
+                {
+                    searchQueries: ['第一轮'],
+                    groundingChunks: [{ web: { uri: 'https://a.example/1', title: 'A' } }],
+                    groundingSupports: [
+                        { segment: { text: '第一段' }, groundingChunkIndices: [0] },
+                    ],
+                },
+                {
+                    searchQueries: ['第二轮'],
+                    groundingChunks: [
+                        { web: { uri: 'https://b.example/2', title: 'B' } },
+                        { web: { uri: 'https://a.example/1', title: 'A' } },
+                    ],
+                    groundingSupports: [
+                        { segment: { text: '第二段' }, groundingChunkIndices: [0, 1] },
+                    ],
+                },
+                {
+                    searchQueries: ['第二轮'],
+                    groundingChunks: [
+                        { web: { uri: 'https://b.example/2', title: 'B' } },
+                        { web: { uri: 'https://a.example/1', title: 'A' } },
+                    ],
+                    groundingSupports: [
+                        { segment: { text: '第二段' }, groundingChunkIndices: [0, 1] },
+                    ],
+                },
+            ]);
+
+            expect(
+                merged?.groundingChunks?.length === 2,
+                `the shared page is kept once (got ${merged?.groundingChunks?.length})`
+            );
+            expect(
+                JSON.stringify(merged?.groundingSupports) ===
+                    JSON.stringify([
+                        { segment: { text: '第一段' }, groundingChunkIndices: [0] },
+                        { segment: { text: '第二段' }, groundingChunkIndices: [1, 0] },
+                    ]),
+                `supports point at the merged chunks (got ${JSON.stringify(
+                    merged?.groundingSupports
+                )})`
             );
         },
     },

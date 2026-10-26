@@ -32,6 +32,26 @@ export interface GroundingCitation {
     title?: string;
 }
 
+/**
+ * One paragraph of the reply a grounding chunk supports.
+ *
+ * `segment.text` is a verbatim slice of the reply and the only reliable
+ * locator: the numeric offsets are measured in UTF-8 bytes into a single part
+ * and `startIndex` is frequently missing, so they cannot be mapped onto the
+ * assembled reply text.
+ */
+export interface GroundingSupportData {
+    segment?: {
+        text?: string;
+        startIndex?: number;
+        endIndex?: number;
+        partIndex?: number;
+    };
+    /** Indices into `groundingChunks` */
+    groundingChunkIndices?: number[];
+    confidenceScores?: number[];
+}
+
 export interface AgentToolUsage {
     name: string;
     count: number;
@@ -71,9 +91,24 @@ export interface GroundingData {
     /** Image-search queries of Gemini's image grounding (searchTypes.imageSearch) */
     imageSearchQueries?: string[];
     groundingChunks?: Array<{
+        /** A page Google Search grounded the reply on */
         web?: {
             uri?: string;
             title?: string;
+        };
+        /** A document retrieved by Vertex AI Search (RAG) */
+        retrievedContext?: {
+            uri?: string;
+            title?: string;
+            text?: string;
+            documentName?: string;
+        };
+        /** A Google Maps place used as evidence */
+        maps?: {
+            uri?: string;
+            title?: string;
+            text?: string;
+            placeId?: string;
         };
         /** A grounding image: the page it came from and the image Google served */
         image?: {
@@ -83,6 +118,8 @@ export interface GroundingData {
             domain?: string;
         };
     }>;
+    /** Paragraph-level citations: which chunks back which slice of the reply */
+    groundingSupports?: GroundingSupportData[];
     citations?: GroundingCitation[];
 }
 
