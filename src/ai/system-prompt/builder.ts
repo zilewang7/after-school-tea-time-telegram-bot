@@ -28,6 +28,8 @@ export interface StaticPromptOptions {
     readonly imageTools?: boolean;
     /** fetch_image is offered this turn */
     readonly imageFetch?: boolean;
+    /** search_by_image is offered this turn */
+    readonly imageReverseSearch?: boolean;
     /** generate_image is offered this turn */
     readonly imageGenerate?: boolean;
 }
@@ -43,6 +45,7 @@ export const buildStaticSystemPrompt = (model: string, options: StaticPromptOpti
             smsOwner: options.sms === true ? getToolConfig().owner : null,
             imageTools: options.imageTools === true,
             imageFetch: options.imageFetch === true,
+            imageReverseSearch: options.imageReverseSearch === true,
             imageGenerate: options.imageGenerate === true,
         }),
         NOTES_SECTION,

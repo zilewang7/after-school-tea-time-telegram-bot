@@ -85,6 +85,8 @@ export interface CapabilityOptions {
     readonly imageTools: boolean;
     /** fetch_image is offered (the model can see what it reads) */
     readonly imageFetch: boolean;
+    /** search_by_image is offered */
+    readonly imageReverseSearch: boolean;
     /** generate_image is offered; the drawing fallback is only named when it exists */
     readonly imageGenerate: boolean;
 }
@@ -96,6 +98,9 @@ const searchImageLines = (canDraw: boolean): string[] => [
     '- `search_images` 第一次只附 3 张缩略图；想看更多就用 `search=\'q1\'` 继续翻或换 `query`，' +
         '搜几次由你判断。',
 ];
+
+const IMAGE_REVERSE_LINE =
+    '- 可以用 `search_by_image` 以图搜图：把一张图上传到 Yandex，返回包含这张图的网页、其他尺寸、相似图和识别标签（单张图上限 8MB）。';
 
 const IMAGE_FETCH_LINE =
     '- 拿不准图里是什么、要看清细节或做 OCR 时，可以先用 `fetch_image` 把它读进上下文再决定。';
@@ -113,6 +118,7 @@ export const buildCapabilitiesSection = (options: CapabilityOptions): string => 
         lines.push(`- 可以用 \`send_sms_to_owner\` 给${ownerLabel}发送短信`);
     }
     if (options.imageTools) lines.push(...searchImageLines(options.imageGenerate));
+    if (options.imageReverseSearch) lines.push(IMAGE_REVERSE_LINE);
     if (options.imageFetch) lines.push(IMAGE_FETCH_LINE);
     if (options.imageGenerate) lines.push(IMAGE_EDIT_LINE);
     return lines.join('\n');

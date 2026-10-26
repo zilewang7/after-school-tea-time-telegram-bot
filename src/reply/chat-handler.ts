@@ -313,6 +313,7 @@ export const handleReply = async (
                 sms: availability.sms,
                 imageTools: availability.imageSearch,
                 imageFetch: availability.imageFetch,
+                imageReverseSearch: availability.imageReverseSearch,
                 imageGenerate: availability.image,
             }),
             ...(openCodeGoSession ? { sessionId: openCodeGoSession } : {}),

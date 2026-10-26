@@ -227,3 +227,56 @@ export const parseSendImageArgs = (
         },
     };
 };
+
+export interface SearchByImageArgs {
+    readonly message: number | undefined;
+    readonly image: number | undefined;
+    readonly imageId: string | undefined;
+    readonly searchId: string | undefined;
+}
+
+export type ParsedSearchByImageArgs =
+    | { readonly ok: true; readonly args: SearchByImageArgs }
+    | { readonly ok: false; readonly error: string };
+
+/** One picture source, and only one: a context message, a read image or a search candidate */
+export const parseSearchByImageArgs = (
+    args: Readonly<Record<string, unknown>>
+): ParsedSearchByImageArgs => {
+    const message = parseMessage(args.message);
+    const image = parseImageIndex(args.image);
+    const imageId = parseOptionalText(args.image_id, 'image_id', 16);
+    const searchId = parseOptionalText(args.search_id, 'search_id', 16);
+
+    const problems = problemsOf([message, image, imageId, searchId]);
+    if (problems.length > 0) {
+        return { ok: false, error: `参数有误：\n${problems.map((problem) => `- ${problem}`).join('\n')}` };
+    }
+
+    const messageNumber = message.ok ? message.value : 0;
+    const fetchedId = imageId.ok ? imageId.value : '';
+    const searchedId = searchId.ok ? searchId.value : '';
+    const sources = [messageNumber > 0, fetchedId !== '', searchedId !== ''].filter(Boolean).length;
+    if (sources === 0) {
+        return { ok: false, error: '参数有误：\n- 要传 message、image_id 或 search_id 之一' };
+    }
+    if (sources > 1) {
+        return { ok: false, error: '参数有误：\n- message、image_id、search_id 只能传一个' };
+    }
+    if (!isAbsent(args.image) && messageNumber === 0) {
+        return { ok: false, error: '参数有误：\n- image 只能和 message 一起用' };
+    }
+    if ((fetchedId !== '' && !idPattern.test(fetchedId)) || (searchedId !== '' && !idPattern.test(searchedId))) {
+        return { ok: false, error: '参数有误：\n- 编号要形如 s1 或 img1' };
+    }
+
+    return {
+        ok: true,
+        args: {
+            message: messageNumber > 0 ? messageNumber : undefined,
+            image: messageNumber > 0 && !isAbsent(args.image) && image.ok ? image.value : undefined,
+            imageId: fetchedId === '' ? undefined : fetchedId,
+            searchId: searchedId === '' ? undefined : searchedId,
+        },
+    };
+};

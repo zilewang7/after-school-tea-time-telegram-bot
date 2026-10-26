@@ -17,6 +17,7 @@ import { searchImages } from '../../services/image-search-service.js';
 import { createFetchImageTool, PRODUCTION_FETCH_DEPENDENCIES } from './fetch-image-tool.js';
 import { createGenerateImageTool } from './generate-image-tool.js';
 import { createReplyMediaState } from './reply-media-state.js';
+import { createSearchByImageTool } from './search-by-image-tool.js';
 import { createSearchImagesTool, THUMBNAIL_LIMITS } from './search-images-tool.js';
 import { createSendImageTool } from './send-image-tool.js';
 import { createSendSmsTool } from './send-sms-tool.js';
@@ -66,6 +67,9 @@ export const createReplyTools = (
                       },
                   }),
               ]
+            : []),
+        ...(availability.imageReverseSearch
+            ? [createSearchByImageTool({ state: mediaState, context })]
             : []),
         ...(availability.imageFetch
             ? [

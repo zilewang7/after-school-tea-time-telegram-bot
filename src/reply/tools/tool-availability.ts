@@ -16,6 +16,7 @@ import {
     FETCH_IMAGE_TOOL_NAME,
     GENERATE_IMAGE_TOOL_NAME,
     SEARCH_IMAGES_TOOL_NAME,
+    SEARCH_BY_IMAGE_TOOL_NAME,
     SEND_IMAGE_TOOL_NAME,
     SEND_SMS_TOOL_NAME,
 } from './tool-names.js';
@@ -39,6 +40,8 @@ export interface ToolAvailability {
     readonly image: boolean;
     /** search_images and send_image are offered (text-only models may still pick and send) */
     readonly imageSearch: boolean;
+    /** search_by_image is offered */
+    readonly imageReverseSearch: boolean;
     /** fetch_image is offered: only models that can see what they read */
     readonly imageFetch: boolean;
 }
@@ -49,6 +52,7 @@ const NO_TOOLS: ToolAvailability = {
     sms: false,
     image: false,
     imageSearch: false,
+    imageReverseSearch: false,
     imageFetch: false,
 };
 
@@ -97,6 +101,11 @@ export const resolveToolAvailability = (
             isEnabled(SEND_SMS_TOOL_NAME),
         image: chatAllowed && isEnabled(GENERATE_IMAGE_TOOL_NAME),
         imageSearch,
+        imageReverseSearch:
+            chatAllowed &&
+            config.imageTools &&
+            config.imageReverseSearch &&
+            isEnabled(SEARCH_BY_IMAGE_TOOL_NAME),
         // Reading a picture is only useful to a model that can see it
         imageFetch: imageSearch && capabilities.supportsImageInput && isEnabled(FETCH_IMAGE_TOOL_NAME),
     };

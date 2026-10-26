@@ -1100,7 +1100,7 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
             const names = first.tools.definitions.map((definition) => definition.name);
             expect(
                 names.join(',') ===
-                    'resolve-library-id,generate_image_2,slow_tool,send_sms_to_owner,generate_image,search_images,fetch_image,send_image',
+                    'resolve-library-id,generate_image_2,slow_tool,send_sms_to_owner,generate_image,search_images,search_by_image,fetch_image,send_image',
                 `order, and DISABLED_TOOLS applied per tool by original name (got ${names.join(',')})`
             );
             expect(
@@ -1159,7 +1159,7 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
             const unnamed = { userId: null, displayName: '机主', shortName: null };
             expect(formatOwnerLabel(unnamed, toolLabel) === '机主', 'nothing configured: a bare 机主');
             expect(
-                buildCapabilitiesSection({ smsOwner: unnamed, imageTools: false, imageFetch: false }).endsWith(
+                buildCapabilitiesSection({ smsOwner: unnamed, imageTools: false, imageFetch: false, imageReverseSearch: false }).endsWith(
                     '\n- 可以用 `send_sms_to_owner` 给机主发送短信'
                 ),
                 'and the prompt line reads the same'

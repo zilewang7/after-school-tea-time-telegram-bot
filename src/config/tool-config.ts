@@ -11,6 +11,7 @@
  * - IMAGE_SEARCH_ENGINES: comma-separated SearXNG engines; empty = its defaults
  * - IMAGE_SEARCH_SAFESEARCH: 0 / 1 / 2, fixed for the model (default 1)
  * - IMAGE_SEARCH_GROUNDING=0: image generation does not declare imageSearch
+ * - IMAGE_REVERSE_SEARCH=0: no search_by_image (Yandex reverse image search)
  * - OWNER_SMS_MCP_URL: the owner SMS endpoint; empty = no SMS tool
  * - OWNER_SMS_ALLOW_TEST=1: the test instance may send SMS too (off by default:
  *   it inherits the production env)
@@ -40,6 +41,8 @@ export interface ToolConfig {
     readonly imageSearchSafesearch: 0 | 1 | 2;
     /** Image generation declares searchTypes.imageSearch (supported models only) */
     readonly imageSearchGrounding: boolean;
+    /** search_by_image is offered */
+    readonly imageReverseSearch: boolean;
     /** Empty when not configured */
     readonly ownerSmsUrl: string;
     readonly ownerSmsAllowTest: boolean;
@@ -87,6 +90,7 @@ export const readToolConfig = (env: NodeJS.ProcessEnv = process.env): ToolConfig
     imageSearchEngines: splitList(env.IMAGE_SEARCH_ENGINES).join(','),
     imageSearchSafesearch: parseSafesearch(env.IMAGE_SEARCH_SAFESEARCH),
     imageSearchGrounding: env.IMAGE_SEARCH_GROUNDING !== '0',
+    imageReverseSearch: env.IMAGE_REVERSE_SEARCH !== '0',
     ownerSmsUrl: env.OWNER_SMS_MCP_URL?.trim() ?? '',
     ownerSmsAllowTest: env.OWNER_SMS_ALLOW_TEST === '1',
     owner: readOwner(env),
