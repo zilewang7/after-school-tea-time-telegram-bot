@@ -4525,7 +4525,7 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
             const body = messages[0]?.text ?? '';
 
             expect(
-                body.includes('卢拉成功连任。¹第二条新闻也很重要。³'),
+                body.includes('卢拉成功连任。¹ 第二条新闻也很重要。³'),
                 `the marker follows the sentence and carries the source number (got ${JSON.stringify(body)})`
             );
 
@@ -4637,6 +4637,14 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
                 overlapped ===
                     '参考来源：新华网、诺贝尔奖官网。[¹](https://a.example/1)\u202F[²](https://b.example/2)',
                 `overlapping supports share one marker group (got ${JSON.stringify(overlapped)})`
+            );
+
+            const glued = inlineCitations('他说完了，然后走了。', sources, [
+                { segment: { text: '他说完了' }, groundingChunkIndices: [0] },
+            ]);
+            expect(
+                glued === '他说完了[¹](https://a.example/1)，然后走了。',
+                `a clause comma keeps the marker glued, no gap (got ${JSON.stringify(glued)})`
             );
 
             const plainUrl = inlineCitations('一句话。', resolveGroundingSources({

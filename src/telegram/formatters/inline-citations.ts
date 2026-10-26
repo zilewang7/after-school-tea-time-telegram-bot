@@ -78,6 +78,24 @@ const markdownForNumber = (number: number, urlByNumber: ReadonlyMap<number, stri
 
 const countOccurrences = (text: string, needle: string): number => text.split(needle).length - 1;
 
+/**
+ * Markdown that opens a new run of content right after the markers still wants
+ * the gap: `。¹ ²**下一句**` reads better than the marker touching the bold.
+ */
+const CONTENT_OPENING_MARKDOWN = '`*_[~>#|';
+
+/**
+ * A space after the markers when a word follows: `。¹ ² 瑞典皇家科学院…`
+ * instead of running the marker into the next sentence. Punctuation, symbols
+ * (emoji included) and whitespace speak for themselves.
+ */
+const needsTrailingSpace = (text: string, position: number): boolean => {
+    const next = text[position];
+    if (next === undefined) return false;
+    if (/[\s\p{P}\p{S}]/u.test(next)) return CONTENT_OPENING_MARKDOWN.includes(next);
+    return true;
+};
+
 /** Whether a marker may be inserted at this position without breaking markup */
 const canInsertAt = (text: string, position: number): boolean => {
     const before = text.slice(0, position);
@@ -211,6 +229,7 @@ export const inlineCitations = (
         const markers = stop.numbers
             .map((number) => markdownForNumber(number, urlByNumber))
             .join(CITATION_SEPARATOR);
-        return `${output.slice(0, stop.insertAt)}${markers}${output.slice(stop.insertAt)}`;
+        const gap = needsTrailingSpace(output, stop.insertAt) ? ' ' : '';
+        return `${output.slice(0, stop.insertAt)}${markers}${gap}${output.slice(stop.insertAt)}`;
     }, text);
 };
