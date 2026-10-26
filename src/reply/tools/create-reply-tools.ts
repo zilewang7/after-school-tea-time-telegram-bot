@@ -48,7 +48,15 @@ export const createReplyTools = (
     const handlers: ToolHandler[] = [
         ...buildMcpToolHandlers(availability.mcpServers, RESERVED_TOOL_NAMES, availability.isMcpToolEnabled),
         ...(availability.sms ? [createSendSmsTool(context)] : []),
-        ...(availability.image ? [createGenerateImageTool(context, mediaState)] : []),
+        ...(availability.image
+            ? [
+                  createGenerateImageTool(context, mediaState, {
+                      ...(availability.sticker
+                          ? { sticker: { setName: config.stickerSetName, api: context.api } }
+                          : {}),
+                  }),
+              ]
+            : []),
         ...(availability.imageSearch
             ? [
                   createSearchImagesTool({

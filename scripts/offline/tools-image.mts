@@ -236,7 +236,17 @@ const noNetworkFetch = async (): Promise<{ ok: false; error: string }> => ({
     error: 'offline: no network',
 });
 
-const toolFor = (contextIndex: ContextIndex, model: ImageModel, signal = new AbortController().signal): ToolHandler =>
+interface GenerateToolOptions {
+    readonly state?: ReplyMediaState;
+    readonly sticker?: { readonly setName: string; readonly api: Api };
+}
+
+const toolFor = (
+    contextIndex: ContextIndex,
+    model: ImageModel,
+    signal = new AbortController().signal,
+    options: GenerateToolOptions = {}
+): ToolHandler =>
     createGenerateImageTool(
         buildReplyToolContext({
             chat: { id: OFFLINE_CHAT_ID, type: 'supergroup', title: '测试群' },
@@ -244,8 +254,11 @@ const toolFor = (contextIndex: ContextIndex, model: ImageModel, signal = new Abo
             contextIndex,
             signal,
         }),
-        createReplyMediaState(null),
-        { sendMessage: model.sendMessage, loadMessageImages, fetchImage: noNetworkFetch }
+        options.state ?? createReplyMediaState(null),
+        {
+            dependencies: { sendMessage: model.sendMessage, loadMessageImages, fetchImage: noNetworkFetch },
+            ...(options.sticker ? { sticker: options.sticker } : {}),
+        }
     );
 
 const runTool = async (tool: ToolHandler, args: Record<string, unknown>): Promise<ToolResult> =>
@@ -588,6 +601,92 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
             expect(
                 (await collectReferenceImages(OFFLINE_CHAT_ID, [tree.album])).length === 2,
                 '/picbanana still collects the album as base64 strings'
+            );
+        },
+    },
+    {
+        name: 'a sticker reference resolves to the pack original, by st id or by pack index',
+        body: async () => {
+            const parsed = parseGenerateImageArgs({
+                prompt: '照这个画',
+                caption: '',
+                web_references: [{ sticker: 'st1' }],
+            });
+            expect(
+                parsed.ok && parsed.args.webReferences[0]?.sticker === 'st1',
+                'a sticker is a web reference of its own'
+            );
+            const mixed = parseGenerateImageArgs({
+                prompt: '照这个画',
+                caption: '',
+                web_references: [{ search_id: 's1', sticker: 'st1' }],
+            });
+            expect(!mixed.ok && mixed.error.includes('必须传且只传一个'), 'one reference carries exactly one id');
+
+            const telegram = createFakeTelegram(OFFLINE_CHAT_ID);
+            const sticker = { setName: 'ColorfulHachimi', api: telegram.api };
+
+            const previewed = createReplyMediaState(null);
+            previewed.fetchedStickers.set('st1', 7);
+            const model = stubImageModel();
+            const result = await runTool(toolFor(NO_CONTEXT, model, undefined, { state: previewed, sticker }), {
+                prompt: '照这个画',
+                caption: '',
+                web_references: [{ sticker: 'st1' }],
+            });
+            expect(!result.isError, `a previewed sticker is accepted (got ${json(result.content)})`);
+            const parts = partsOf(model.requests[0]);
+            expect(
+                parts.length === 2 &&
+                    parts[0]?.type === 'image' &&
+                    parts[0].mimeType === 'image/webp' &&
+                    imagesOf(model.requests[0])[0]?.equals(WEBP_BYTES) === true,
+                'the reference is the sticker’s original webp'
+            );
+            const fileCalls = callsOf(telegram, 'getFile');
+            expect(
+                fileCalls.some((call) => call.payload.file_id === 'file-7'),
+                `the original is fetched, not the 320px thumbnail (got ${json(fileCalls.map((call) => call.payload))})`
+            );
+
+            const byIndex = createReplyMediaState(null);
+            const indexModel = stubImageModel();
+            await runTool(toolFor(NO_CONTEXT, indexModel, undefined, { state: byIndex, sticker }), {
+                prompt: '照这个画',
+                caption: '',
+                web_references: [{ sticker: '07' }, { sticker: '7' }],
+            });
+            expect(
+                imagesOf(indexModel.requests[0]).length === 1,
+                'a pack index works without a preview, and the same sticker twice is sent once'
+            );
+
+            const unknown = createReplyMediaState(null);
+            const unknownModel = stubImageModel();
+            const refused = await runTool(toolFor(NO_CONTEXT, unknownModel, undefined, { state: unknown, sticker }), {
+                prompt: '照这个画',
+                caption: '',
+                web_references: [{ sticker: 'st9' }],
+            });
+            expect(
+                refused.isError && refused.content.includes('没有预览过 st9'),
+                `an unknown st id is refused (got ${json(refused.content)})`
+            );
+            expect(unknownModel.requests.length === 0, 'and the image model is never asked');
+
+            const schemaSticker = (tool: ToolHandler): unknown => {
+                const schema = asRecord(tool.definition.inputSchema);
+                const properties = asRecord(schema.properties);
+                const web = asRecord(properties.web_references);
+                return asRecord(asRecord(web.items).properties).sticker;
+            };
+            expect(
+                schemaSticker(toolFor(NO_CONTEXT, stubImageModel())) === undefined,
+                'without the pack the schema has no sticker field'
+            );
+            expect(
+                asRecord(schemaSticker(toolFor(NO_CONTEXT, stubImageModel(), undefined, { sticker }))).type === 'string',
+                'with the pack the model can fill one in'
             );
         },
     },

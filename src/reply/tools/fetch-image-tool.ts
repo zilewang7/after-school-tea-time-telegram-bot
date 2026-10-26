@@ -48,7 +48,8 @@ const DESCRIPTION =
 
 const STICKER_DESCRIPTION =
     '也可以传 sticker（贴纸包内序号或实际画面名称）读取贴纸，用于发送前确认画面；' +
-    "读过的贴纸会得到 st1 编号，可直接 send_sticker(sticker='st1')。";
+    "读过的贴纸会得到 st1 编号，可直接 send_sticker(sticker='st1')，" +
+    "也可以作为 generate_image 的参考（web_references 里 sticker='st1'）。";
 
 const inputSchemaOf = (hasSticker: boolean) => ({
     type: 'object',

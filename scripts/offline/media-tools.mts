@@ -261,11 +261,13 @@ const cases = [
                 },
                 state,
                 {
-                    sendMessage: async () => {
-                        throw new Error('must not be called');
+                    dependencies: {
+                        sendMessage: async () => {
+                            throw new Error('must not be called');
+                        },
+                        loadMessageImages: async () => [],
+                        fetchImage: async () => ({ ok: false, error: 'offline' }),
                     },
-                    loadMessageImages: async () => [],
-                    fetchImage: async () => ({ ok: false, error: 'offline' }),
                 }
             );
             const drawing = await draw.execute({ prompt: '一只狗', caption: '' }, AbortSignal.abort());

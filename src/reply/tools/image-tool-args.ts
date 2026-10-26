@@ -29,10 +29,11 @@ export interface ImageReferenceArg {
     readonly image: number | undefined;
 }
 
-/** A picture found on the web: a search candidate or an already-read image */
+/** A picture outside the messages: a search candidate, an already-read image, or a pack sticker */
 export interface ImageWebReferenceArg {
     readonly searchId: string | undefined;
     readonly imageId: string | undefined;
+    readonly sticker: string | undefined;
 }
 
 export interface GenerateImageArgs {
@@ -93,20 +94,28 @@ const parseReferences = (value: unknown): Field<readonly ImageReferenceArg[]> =>
     return valid(parsed.flatMap((item) => (item.ok ? [item.value] : [])));
 };
 
-/** One web reference: exactly one of search_id / image_id */
+/** One extra reference: exactly one of search_id / image_id / sticker */
 const parseWebReference = (value: unknown, label: string): Field<ImageWebReferenceArg> => {
-    if (!isJsonObject(value)) return invalid(`${label} 必须是 {"search_id": "s2"} 或 {"image_id": "img1"} 这样的对象`);
+    if (!isJsonObject(value)) {
+        return invalid(
+            `${label} 必须是 {"search_id": "s2"}、{"image_id": "img1"} 或 {"sticker": "st1"} 这样的对象`
+        );
+    }
 
     const searchId = isAbsent(value.search_id) ? '' : value.search_id;
     const imageId = isAbsent(value.image_id) ? '' : value.image_id;
-    if (typeof searchId !== 'string' || typeof imageId !== 'string') {
-        return invalid(`${label} 的 search_id / image_id 必须是字符串`);
+    const sticker = isAbsent(value.sticker) ? '' : value.sticker;
+    if (typeof searchId !== 'string' || typeof imageId !== 'string' || typeof sticker !== 'string') {
+        return invalid(`${label} 的 search_id / image_id / sticker 必须是字符串`);
     }
-    const given = [searchId.trim(), imageId.trim()].filter((id) => id !== '');
-    if (given.length !== 1) return invalid(`${label} 的 search_id 和 image_id 必须传且只传一个`);
+    const given = [searchId.trim(), imageId.trim(), sticker.trim()].filter((id) => id !== '');
+    if (given.length !== 1) {
+        return invalid(`${label} 的 search_id、image_id 和 sticker 必须传且只传一个`);
+    }
     return valid({
         searchId: searchId.trim() === '' ? undefined : searchId.trim(),
         imageId: imageId.trim() === '' ? undefined : imageId.trim(),
+        sticker: sticker.trim() === '' ? undefined : sticker.trim(),
     });
 };
 

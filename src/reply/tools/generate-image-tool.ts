@@ -14,9 +14,20 @@ import { failureLogDetail } from '../../ai/image-generation/image-generation-fai
 import { sniffImageMime } from '../../ai/image-generation/image-mime.js';
 import type { ToolHandler } from '../../ai/tools/tool-types.js';
 import { fetchImageBytes } from '../../services/image-fetch-service.js';
+import type { StickerCatalogEntry } from '../../services/sticker-catalog.js';
+import {
+    downloadStickerPreview,
+    StickerSetError,
+    type StickerSetApi,
+} from '../../services/sticker-set-service.js';
 import { loadMessageImages } from '../commands/reference-images.js';
 import { IMAGE_ASPECT_RATIOS, parseGenerateImageArgs, type ImageWebReferenceArg } from './image-tool-args.js';
-import { MAX_REFERENCE_IMAGES, resolveImageReferences, type MessageImageLoader } from './image-references.js';
+import {
+    MAX_REFERENCE_IMAGE_BYTES,
+    MAX_REFERENCE_IMAGES,
+    resolveImageReferences,
+    type MessageImageLoader,
+} from './image-references.js';
 import {
     downloadCandidateMedia,
     type ImageFetch,
@@ -29,21 +40,23 @@ import {
 } from './image-tool-result.js';
 import type { ReplyToolContext } from './reply-tool-context.js';
 import type { ReplyMediaState } from './reply-media-state.js';
+import { padPackIndex, resolveStickerQuery } from './sticker-query.js';
 import { GENERATE_IMAGE_TOOL_NAME } from './tool-names.js';
 
 export { IMAGE_ASPECT_RATIOS } from './image-tool-args.js';
 
-const DESCRIPTION =
+const descriptionOf = (hasSticker: boolean): string =>
     '生成或修改一张图片，图片会带着 caption 附在你这条回复后面发出（每条回复最多一张）。' +
     '只在需要“新画一张/改一张图”时使用；如果用户要的是真实存在的图片、表情包、截图、新闻图，' +
     '请先用 search_images 找到，再用 send_image 发，不要用本工具冒充“找到了”。' +
     '要参考或修改上下文里的图片（消息自带的附件、链接预览里的图、你自己之前生成的都算），在 references 里填消息编号；' +
     '同一条消息有多张时用 image 指明第几张，按消息里出现的顺序数：附件在前，链接预览的图在后。' +
     '要参考网上找到的图，在 web_references 里填 search_id / image_id。' +
+    (hasSticker ? '要参考贴纸包里的贴纸，也在 web_references 里填 sticker（st1、包内序号或画面名）。' : '') +
     '生图模型在需要真实参考时会自动使用 Google 图片搜索；你可以在 prompt 里明确要求' +
     '“参考网络上真实的照片/地标/人物”，生成后参考来源会列在回复底部。';
 
-const INPUT_SCHEMA = {
+const inputSchemaOf = (hasSticker: boolean) => ({
     type: 'object',
     properties: {
         prompt: {
@@ -79,12 +92,22 @@ const INPUT_SCHEMA = {
         },
         web_references: {
             type: 'array',
-            description: '要参考的网上图片（search_images 的候选或 fetch_image 读过的图）。',
+            description: hasSticker
+                ? '要参考的额外图片（search_images 的候选、fetch_image 读过的图、贴纸包里的贴纸）。'
+                : '要参考的网上图片（search_images 的候选或 fetch_image 读过的图）。',
             items: {
                 type: 'object',
                 properties: {
                     search_id: { type: 'string', description: "搜索结果候选编号，形如 's2'" },
                     image_id: { type: 'string', description: "已读图编号，形如 'img1'" },
+                    ...(hasSticker
+                        ? {
+                              sticker: {
+                                  type: 'string',
+                                  description: "贴纸：st1（fetch_image 预览过的）、包内序号 07 或实际画面名，如 '吃冰棒'",
+                              },
+                          }
+                        : {}),
                 },
             },
         },
@@ -95,13 +118,25 @@ const INPUT_SCHEMA = {
         },
     },
     required: ['prompt', 'caption'],
-};
+});
 
 /** What the tool talks to; the offline tests swap all of it */
 export interface GenerateImageToolDependencies {
     readonly sendMessage: SendImageRequest;
     readonly loadMessageImages: MessageImageLoader;
     readonly fetchImage: ImageFetch;
+}
+
+/** The fixed pack, when this turn has the sticker tools */
+export interface StickerReferenceSource {
+    readonly setName: string;
+    readonly api: StickerSetApi;
+}
+
+export interface GenerateImageToolOptions {
+    readonly dependencies?: GenerateImageToolDependencies;
+    /** Absent: the schema has no sticker field and references to stickers are refused */
+    readonly sticker?: StickerReferenceSource;
 }
 
 const PRODUCTION_DEPENDENCIES: GenerateImageToolDependencies = {
@@ -117,17 +152,60 @@ type ResolvedWebReferences =
 const NON_VISION_REFERENCE =
     '这张图不能作为参考：不是 PNG/JPEG/WebP，或下载失败。换一张，或用上下文里的图。';
 
-/** Web pictures → bytes the image model takes, in the order the model listed them */
+/** One sticker reference → the pack's original webp, never the 320px preview */
+const loadStickerReference = async (
+    entry: StickerCatalogEntry,
+    source: StickerReferenceSource,
+    signal: AbortSignal
+): Promise<ImageReference> => {
+    const preview = await downloadStickerPreview(source.api, source.setName, entry, 'original', signal);
+    return { data: preview.data, mimeType: preview.mimeType };
+};
+
+/** Extra pictures → bytes the image model takes, in the order the model listed them */
 const resolveWebReferences = async (
     references: readonly ImageWebReferenceArg[],
     state: ReplyMediaState,
     dependencies: GenerateImageToolDependencies,
-    signal: AbortSignal
+    signal: AbortSignal,
+    sticker: StickerReferenceSource | undefined
 ): Promise<ResolvedWebReferences> => {
     const images: ImageReference[] = [];
     const problems: string[] = [];
+    const seenStickers = new Set<number>();
 
     for (const reference of references) {
+        if (reference.sticker !== undefined) {
+            if (!sticker) {
+                problems.push('这一轮不能引用贴纸（没有配置贴纸包）。');
+                continue;
+            }
+            const resolved = resolveStickerQuery(reference.sticker, state);
+            if (!resolved.ok) {
+                problems.push(resolved.error);
+                continue;
+            }
+            const entry = resolved.entry;
+            if (seenStickers.has(entry.packIndex)) continue;
+            seenStickers.add(entry.packIndex);
+            try {
+                const loaded = await loadStickerReference(entry, sticker, signal);
+                if (loaded.data.length > MAX_REFERENCE_IMAGE_BYTES) {
+                    problems.push(`${padPackIndex(entry.packIndex)} ${entry.label} 超过 7MB`);
+                    continue;
+                }
+                images.push(loaded);
+            } catch (error) {
+                problems.push(
+                    error instanceof StickerSetError
+                        ? error.message
+                        : `${padPackIndex(entry.packIndex)} ${entry.label} 读不出来：` +
+                              (error instanceof Error ? error.message : String(error))
+                );
+            }
+            continue;
+        }
+
         if (reference.imageId !== undefined) {
             const fetched = state.fetched.get(reference.imageId);
             if (!fetched) {
@@ -171,13 +249,16 @@ const resolveWebReferences = async (
 export const createGenerateImageTool = (
     context: ReplyToolContext,
     state: ReplyMediaState,
-    dependencies: GenerateImageToolDependencies = PRODUCTION_DEPENDENCIES
+    options: GenerateImageToolOptions = {}
 ): ToolHandler => {
+    const dependencies = options.dependencies ?? PRODUCTION_DEPENDENCIES;
+    const hasSticker = options.sticker !== undefined;
+
     return {
         definition: {
             name: GENERATE_IMAGE_TOOL_NAME,
-            description: DESCRIPTION,
-            inputSchema: INPUT_SCHEMA,
+            description: descriptionOf(hasSticker),
+            inputSchema: inputSchemaOf(hasSticker),
         },
         statusText: '🎨 正在画图…',
         chatAction: 'upload_photo',
@@ -199,7 +280,8 @@ export const createGenerateImageTool = (
                 args.webReferences,
                 state,
                 dependencies,
-                AbortSignal.any([signal, context.signal])
+                AbortSignal.any([signal, context.signal]),
+                options.sticker
             );
             if (!web.ok) return imageToolError(web.error);
 
