@@ -139,15 +139,29 @@ export const isSearchGroundingStep = (metadata: GroundingData): boolean =>
     metadata.provider !== 'xai' &&
     !(metadata.citations ?? []).length;
 
-const buildGoogleSearchSection = (metadata: GroundingData): RenderedMessage[] => {
+export interface GoogleSearchBlock {
+    message: RenderedMessage;
+    /** First query rendered with a link; used for the message-level preview */
+    firstQueryUrl?: string;
+}
+
+/** Only real web links are usable as a Telegram link preview */
+const HTTP_URL_PATTERN = /^https?:\/\//i;
+
+const buildGoogleSearchBlock = (metadata: GroundingData): GoogleSearchBlock | null => {
     const queries = metadata.searchQueries.filter((q) => q && q.trim().length > 0);
 
     const anchors = extractAnchors(metadata.searchEntryPoint?.renderedContent);
     const matchedAnchors = matchQueriesToAnchors(queries, anchors);
 
+    let firstQueryUrl: string | undefined;
+
     const queryParts = queries.flatMap((query, idx) => {
-        const anchor = matchedAnchors[idx];
-        const part = anchor?.href ? linkText(query, anchor.href) : plainText(query);
+        const href = matchedAnchors[idx]?.href;
+        if (firstQueryUrl === undefined && href !== undefined && HTTP_URL_PATTERN.test(href)) {
+            firstQueryUrl = href;
+        }
+        const part = href ? linkText(query, href) : plainText(query);
         return idx > 0 ? [' | ', part] : [part];
     });
 
@@ -160,13 +174,22 @@ const buildGoogleSearchSection = (metadata: GroundingData): RenderedMessage[] =>
     // Grounding can arrive without its query list (a urlContext-only turn, or a
     // relay that drops the field). The sources are still worth showing, so only
     // bail out when there is genuinely nothing to render.
-    if (!queryParts.length && !chunkLines.length) return [];
+    if (!queryParts.length && !chunkLines.length) return null;
 
     const body = concatMessages(...queryParts, ...chunkLines);
-    return [buildSection('GoogleSearch', body)];
+    return { message: buildSection('GoogleSearch', body), firstQueryUrl };
 };
 
 /** One `GoogleSearch` block per search-grounding step, in step order */
+export const buildGoogleSearchBlocks = (
+    groundingData: GroundingData[]
+): GoogleSearchBlock[] =>
+    groundingData
+        .filter(isSearchGroundingStep)
+        .map(buildGoogleSearchBlock)
+        .filter((block): block is GoogleSearchBlock => block !== null);
+
+/** Rendered messages, for callers that do not need the preview metadata */
 export const buildGoogleSearchSections = (
     groundingData: GroundingData[]
-): RenderedMessage[] => groundingData.filter(isSearchGroundingStep).flatMap(buildGoogleSearchSection);
+): RenderedMessage[] => buildGoogleSearchBlocks(groundingData).map((block) => block.message);

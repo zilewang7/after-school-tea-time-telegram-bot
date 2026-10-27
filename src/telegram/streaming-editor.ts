@@ -17,6 +17,7 @@ import {
     dropMessageState,
     runApiCall,
 } from './edit-coordinator.js';
+import type { LinkPreviewOptions } from './link-preview.js';
 
 /**
  * Status text entries for cycling display
@@ -66,6 +67,8 @@ export interface UpdateContentOptions {
     /** Entities matching the content (offsets stay valid: status is appended after) */
     entities?: readonly RenderedEntity[];
     replyMarkup?: any;
+    /** Link preview for the final content; undefined keeps Telegram's default */
+    linkPreviewOptions?: LinkPreviewOptions;
     /** If true, don't append status text (for final messages) */
     isFinal?: boolean;
 }
@@ -217,6 +220,7 @@ export const createStreamingEditor = (options: StreamingEditorOptions): Streamin
                 return submitEdit(api, chatId, messageId, content, {
                     entities: opts.entities,
                     replyMarkup: opts.replyMarkup,
+                    linkPreviewOptions: opts.linkPreviewOptions,
                     isFinal: true,
                 });
             }

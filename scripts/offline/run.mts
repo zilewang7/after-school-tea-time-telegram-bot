@@ -800,6 +800,148 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
         },
     },
     {
+        // A reply split into several messages must not grow one preview card
+        // per message. With a search footer the card belongs to the chunk that
+        // starts the first linked query (the footer itself may span messages);
+        // everything else is explicitly disabled.
+        name: 'a search reply previews its first linked query on that chunk only',
+        body: async () => {
+            const { buildFinalMessages } = await import(
+                '../../src/telegram/formatters/final-message-builder.js'
+            );
+
+            const firstQueryUrl = 'https://www.google.com/search?q=first+query';
+            const secondQueryUrl = 'https://www.google.com/search?q=second+query';
+            const grounding = {
+                searchQueries: ['第一条查询', '第二条查询'],
+                searchEntryPoint: {
+                    renderedContent:
+                        `<a href="${firstQueryUrl}">第一条查询</a>` +
+                        `<a href="${secondQueryUrl}">第二条查询</a>`,
+                },
+                groundingChunks: Array.from({ length: 12 }, (_, i) => ({
+                    web: { uri: `https://source.example/${i + 1}`, title: `来源 ${i + 1}` },
+                })),
+            };
+
+            const chunks = buildFinalMessages({
+                text: '正文。'.repeat(400),
+                maxLength: 180,
+                groundingData: [grounding],
+            });
+
+            expect(chunks.length > 1, `the reply splits (got ${chunks.length})`);
+
+            const previewChunks = chunks.filter(
+                (chunk) => chunk.linkPreviewOptions?.url !== undefined
+            );
+            expect(
+                previewChunks.length === 1,
+                `exactly one chunk carries a preview (got ${previewChunks.length})`
+            );
+
+            const previewChunk = previewChunks[0];
+            if (previewChunk === undefined) {
+                expect(false, 'the preview chunk is missing');
+                return;
+            }
+
+            expect(
+                previewChunk.linkPreviewOptions?.url === firstQueryUrl,
+                `the first linked query is previewed (got ${previewChunk.linkPreviewOptions?.url})`
+            );
+            expect(
+                previewChunk.entities.some((entity) => entity.url === firstQueryUrl),
+                'the preview rides the chunk that starts the query line'
+            );
+            expect(
+                chunks.every(
+                    (chunk) =>
+                        chunk === previewChunk ||
+                        chunk.linkPreviewOptions?.is_disabled === true
+                ),
+                'every other chunk has its preview disabled'
+            );
+
+            const previewIndex = chunks.indexOf(previewChunk);
+            expect(
+                previewIndex >= 0 && previewIndex < chunks.length - 1,
+                `the footer spans messages, so the preview is not the last chunk (got ${previewIndex}/${chunks.length - 1})`
+            );
+
+            const single = buildFinalMessages({
+                text: '短答案',
+                groundingData: [
+                    {
+                        searchQueries: ['单条查询'],
+                        searchEntryPoint: {
+                            renderedContent: `<a href="${firstQueryUrl}">单条查询</a>`,
+                        },
+                        groundingChunks: [
+                            { web: { uri: 'https://source.example/one', title: '来源' } },
+                        ],
+                    },
+                ],
+            });
+            expect(
+                single.length === 1 && single[0]?.linkPreviewOptions?.url === firstQueryUrl,
+                'a single-message search reply previews its query too'
+            );
+        },
+    },
+    {
+        name: 'a reply without a linked search query previews only its last chunk',
+        body: async () => {
+            const { buildFinalMessages } = await import(
+                '../../src/telegram/formatters/final-message-builder.js'
+            );
+
+            const chunks = buildFinalMessages({
+                text: '正文。'.repeat(400),
+                maxLength: 180,
+            });
+
+            expect(chunks.length > 1, `the reply splits (got ${chunks.length})`);
+            expect(
+                chunks.every(
+                    (chunk, index) =>
+                        index === chunks.length - 1
+                            ? chunk.linkPreviewOptions === undefined
+                            : chunk.linkPreviewOptions?.is_disabled === true
+                ),
+                "earlier chunks are disabled, the last keeps Telegram's default"
+            );
+
+            // A footer can arrive without any linked query (e.g. a relay drops
+            // searchEntryPoint): then there is no query to preview either.
+            const queryless = buildFinalMessages({
+                text: '正文。'.repeat(400),
+                maxLength: 180,
+                groundingData: [
+                    {
+                        searchQueries: ['没有链接的查询'],
+                        groundingChunks: [
+                            { web: { uri: 'https://source.example/1', title: '来源' } },
+                        ],
+                    },
+                ],
+            });
+            expect(
+                queryless.length > 1,
+                `the queryless footer still splits (got ${queryless.length})`
+            );
+            expect(
+                queryless.every(
+                    (chunk, index) =>
+                        index === queryless.length - 1
+                            ? chunk.linkPreviewOptions === undefined
+                            : chunk.linkPreviewOptions?.is_disabled === true
+                ),
+                'a footer without query links falls back to the last-chunk default'
+            );
+        },
+    },
+    {
         // Last line of defence behind the splitter budget: if the server still
         // refuses the entities, drop the links only. Stripping every entity is
         // what turned a collapsed block into a wall of bare text.

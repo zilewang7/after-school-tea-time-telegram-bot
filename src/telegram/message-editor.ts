@@ -6,12 +6,14 @@ import type { Api } from 'grammy';
 import type { MessageEntity as RenderedEntity } from 'telegram-md-entities';
 import { to, isErr } from '../shared/result.js';
 import { submitEdit, dropMessageState, runApiCall } from './edit-coordinator.js';
+import type { LinkPreviewOptions } from './link-preview.js';
 
 export interface EditOptions {
     /** Pre-rendered entities for the text */
     entities?: readonly RenderedEntity[];
     replyMarkup?: any;
-    disableWebPagePreview?: boolean;
+    /** Link preview for this edit; undefined keeps Telegram's default */
+    linkPreviewOptions?: LinkPreviewOptions;
 }
 
 export interface MessageEditor {
@@ -44,7 +46,7 @@ export const createMessageEditor = (
             return submitEdit(api, chatId, messageId, text, {
                 entities: options?.entities,
                 replyMarkup: options?.replyMarkup,
-                linkPreviewDisabled: options?.disableWebPagePreview,
+                linkPreviewOptions: options?.linkPreviewOptions,
                 isFinal: true,
             });
         },

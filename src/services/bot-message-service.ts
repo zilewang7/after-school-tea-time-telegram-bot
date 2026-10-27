@@ -20,8 +20,7 @@ import {
     createMessageEditor,
     type MessageEditor,
 } from '../telegram/index.js';
-import type { RenderedMessage } from 'telegram-md-entities';
-import { buildFinalMessages } from '../telegram/formatters/final-message-builder.js';
+import { buildFinalMessages, type FinalMessageChunk } from '../telegram/formatters/final-message-builder.js';
 import { buildMessageLinkResolver } from '../telegram/message-link.js';
 import { plainText } from '../telegram/formatters/entity-text.js';
 import { appendErrorLine } from '../telegram/formatters/error-display.js';
@@ -588,7 +587,7 @@ export const reconcileInterruptedResponses = async (api: Api): Promise<number> =
 const buildVersionMessages = (
     version: ResponseVersion,
     resolveContextLink?: ContextLinkResolver
-): RenderedMessage[] => {
+): FinalMessageChunk[] => {
     const chunks = buildFinalMessages({
         text: version.text || '',
         thinking: version.thinkingText,
@@ -599,10 +598,14 @@ const buildVersionMessages = (
     });
     if (version.errorMessage) {
         const lastIndex = Math.max(0, chunks.length - 1);
-        chunks[lastIndex] = appendErrorLine(
-            chunks[lastIndex] ?? plainText(''),
-            formatErrorForUser({ message: version.errorMessage })
-        );
+        const lastChunk: FinalMessageChunk = chunks[lastIndex] ?? plainText('');
+        chunks[lastIndex] = {
+            ...appendErrorLine(
+                lastChunk,
+                formatErrorForUser({ message: version.errorMessage })
+            ),
+            linkPreviewOptions: lastChunk.linkPreviewOptions,
+        };
     }
     return chunks;
 };
@@ -711,7 +714,7 @@ export const switchVersion = async (
 
     // Format content using formatters; errored versions re-show their error line
     const contentChunks = buildVersionMessages(newVersion, resolveContextLink);
-    let content = contentChunks[0] ?? plainText('');
+    let content: FinalMessageChunk = contentChunks[0] ?? plainText('');
 
     if (!content.text && !newVersion.imageBase64 && newVersion.sticker === undefined) {
         content = plainText('[Empty response]');
@@ -781,12 +784,13 @@ export const switchVersion = async (
 
     const editMessage = async (
         editor: MessageEditor,
-        message: RenderedMessage,
+        message: FinalMessageChunk,
         replyMarkup?: any
     ): Promise<boolean> => {
         const delivered = await editor.edit(message.text, {
             entities: message.entities,
             replyMarkup,
+            linkPreviewOptions: message.linkPreviewOptions,
         });
         if (!delivered) {
             console.error('[bot-message-service] Failed to edit message');
@@ -810,12 +814,13 @@ export const switchVersion = async (
             }
         } else {
             // Old was image-only → new has text: send text message
-            const firstText = content.text ? content : plainText('[Empty response]');
+            const firstText: FinalMessageChunk = content.text ? content : plainText('[Empty response]');
             const [sendErr, sentMsg] = await to(
                 ctx.api.sendMessage(chatId, firstText.text, {
                     entities: toApiEntities(firstText.entities),
                     reply_parameters: { message_id: response.userMessageId },
                     reply_markup: hasMedia ? undefined : versionButtons,
+                    link_preview_options: firstText.linkPreviewOptions,
                 })
             );
             if (sendErr) {
@@ -835,6 +840,7 @@ export const switchVersion = async (
                         entities: toApiEntities(chunk.entities),
                         reply_parameters: { message_id: response.userMessageId },
                         reply_markup: isLast ? versionButtons : undefined,
+                        link_preview_options: chunk.linkPreviewOptions,
                     })
                 );
                 if (chunkErr) break;
@@ -881,6 +887,7 @@ export const switchVersion = async (
                         entities: toApiEntities(chunk.entities),
                         reply_parameters: { message_id: response.userMessageId },
                         reply_markup: isLast ? versionButtons : undefined,
+                        link_preview_options: chunk.linkPreviewOptions,
                     })
                 );
                 if (sendErr) break;
@@ -987,6 +994,7 @@ export const refreshToFinalState = async (
         const delivered = await submitEdit(api, chatId, messageId, chunk.text, {
             entities: chunk.entities,
             replyMarkup: carriesButtons ? buttons : undefined,
+            linkPreviewOptions: chunk.linkPreviewOptions,
             isFinal: true,
         });
         if (!delivered) allDelivered = false;
@@ -1006,6 +1014,7 @@ export const refreshToFinalState = async (
                         entities: toApiEntities(chunk.entities),
                         reply_parameters: { message_id: response.userMessageId },
                         reply_markup: carriesButtons ? buttons : undefined,
+                        link_preview_options: chunk.linkPreviewOptions,
                     })
                 )
             );

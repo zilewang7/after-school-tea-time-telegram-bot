@@ -37,7 +37,7 @@ import type { RenderedMessage } from 'telegram-md-entities';
 import { buildErrorDisplay } from '../telegram/formatters/error-display.js';
 import { formatThinkingForStreaming } from '../telegram/formatters/thinking-display.js';
 import { renderThinkingQuote } from '../telegram/formatters/quoted-render.js';
-import { buildFinalMessages } from '../telegram/formatters/final-message-builder.js';
+import { buildFinalMessages, type FinalMessageChunk } from '../telegram/formatters/final-message-builder.js';
 import { splitRawByFits, splitAtLastNewline } from '../telegram/formatters/smart-splitter.js';
 import { buildImageCaption, type ImageCaptionFields } from './tools/image-message.js';
 import type {
@@ -780,7 +780,7 @@ export const sendFinalResponse = async (
         wasStoppedByUser,
         imageCaption: response.imageCaption,
     };
-    let finalMessage: RenderedMessage = finalChunks[0] ?? { text: '', entities: [] };
+    let finalMessage: FinalMessageChunk = finalChunks[0] ?? { text: '', entities: [] };
 
     if (response.groundingData?.length) {
         console.log('[response-handler] Grounding metadata:', JSON.stringify(response.groundingData));
@@ -793,6 +793,7 @@ export const sendFinalResponse = async (
         // Send current part first (no buttons on split messages)
         await editor.updateContent(finalMessage.text, {
             entities: finalMessage.entities,
+            linkPreviewOptions: finalMessage.linkPreviewOptions,
             isFinal: true,
         });
 
@@ -802,6 +803,7 @@ export const sendFinalResponse = async (
                     ctx.api.sendMessage(chatId, chunk.text, {
                         entities: toApiEntities(chunk.entities),
                         reply_parameters: { message_id: userMessageId },
+                        link_preview_options: chunk.linkPreviewOptions,
                     })
                 )
             );
@@ -867,10 +869,13 @@ export const sendFinalResponse = async (
 
     // Add [no image in response] marker for image generation without images
     if (noImageInResponse) {
-        finalMessage = concatMessages(
-            finalMessage,
-            finalMessage.text ? '\n\n[no image in response]' : '[no image in response]'
-        );
+        finalMessage = {
+            ...concatMessages(
+                finalMessage,
+                finalMessage.text ? '\n\n[no image in response]' : '[no image in response]'
+            ),
+            linkPreviewOptions: finalMessage.linkPreviewOptions,
+        };
     }
 
     console.log('[response-handler] Final response:', {
@@ -892,6 +897,7 @@ export const sendFinalResponse = async (
         if (hasText) {
             await editor.updateContent(finalMessage.text, {
                 entities: finalMessage.entities,
+                linkPreviewOptions: finalMessage.linkPreviewOptions,
                 isFinal: true,
             });
         }
@@ -975,6 +981,7 @@ export const sendFinalResponse = async (
                 : { text: '[stopped]', entities: [] };
             await editor.updateContent(displayMessage.text, {
                 entities: displayMessage.entities,
+                linkPreviewOptions: finalMessage.linkPreviewOptions,
                 replyMarkup: finalButtons,
                 isFinal: true,
             });

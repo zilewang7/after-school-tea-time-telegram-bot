@@ -18,6 +18,7 @@ import type { Api } from 'grammy';
 import type { MessageEntity as RenderedEntity } from 'telegram-md-entities';
 import { to } from '../shared/result.js';
 import { toApiEntities } from './api-entities.js';
+import type { LinkPreviewOptions } from './link-preview.js';
 
 export type EditPriority = 'final' | 'content' | 'spinner';
 
@@ -30,8 +31,8 @@ export interface SubmitEditOptions {
     priority?: EditPriority;
     /** Final state: sticky-retried until delivered, entry removed on success */
     isFinal?: boolean;
-    /** Disable link preview for this edit */
-    linkPreviewDisabled?: boolean;
+    /** Link preview for this edit; undefined keeps Telegram's default */
+    linkPreviewOptions?: LinkPreviewOptions;
 }
 
 interface CoordinatorConfig {
@@ -69,7 +70,9 @@ interface DesiredState {
     parseMode?: 'MarkdownV2' | 'HTML' | 'Markdown';
     replyMarkup?: any;
     replyMarkupJson?: string;
-    linkPreviewDisabled?: boolean;
+    linkPreviewOptions?: LinkPreviewOptions;
+    /** Serialized options for cheap dedup comparison ('none' when unset) */
+    linkPreviewJson: string;
     priority: EditPriority;
     isFinal: boolean;
 }
@@ -82,6 +85,7 @@ interface MessageEntry {
     sentText?: string;
     sentEntitiesJson?: string;
     sentMarkupJson?: string;
+    sentLinkPreviewJson?: string;
     /** Flush attempts for the current desired state (reset on new submit) */
     attempts: number;
     submittedAt: number;
@@ -231,10 +235,22 @@ const matchesSentState = (entry: MessageEntry, state: DesiredState): boolean => 
     ) {
         return false;
     }
+    // Same text but different preview options is still a real change; only
+    // compare once the options of the sent state are known
+    if (
+        entry.sentLinkPreviewJson !== undefined &&
+        entry.sentLinkPreviewJson !== state.linkPreviewJson
+    ) {
+        return false;
+    }
     // Unknown sent markup (e.g. primed state) only compares text
     if (entry.sentMarkupJson === undefined) return true;
     return entry.sentMarkupJson === state.replyMarkupJson;
 };
+
+/** Stable comparison key for link preview options */
+const serializeLinkPreview = (options?: LinkPreviewOptions): string =>
+    options ? JSON.stringify(options) : 'none';
 
 /**
  * Mark a state as delivered; remove the entry when a final state lands
@@ -247,6 +263,7 @@ const settleDelivered = (
     entry.sentText = state.text;
     entry.sentEntitiesJson = state.entitiesJson;
     entry.sentMarkupJson = state.replyMarkupJson;
+    entry.sentLinkPreviewJson = state.linkPreviewJson;
     if (entry.desired === state) {
         entry.desired = null;
         resolveWaiters(entry, true);
@@ -417,9 +434,7 @@ const flushEntry = async (
                     : undefined,
                 parse_mode: state.parseMode,
                 reply_markup: state.replyMarkup,
-                link_preview_options: state.linkPreviewDisabled
-                    ? { is_disabled: true }
-                    : undefined,
+                link_preview_options: state.linkPreviewOptions,
             })
         );
 
@@ -505,7 +520,8 @@ export const submitEdit = (
             options?.replyMarkup === undefined
                 ? undefined
                 : JSON.stringify(options.replyMarkup),
-        linkPreviewDisabled: options?.linkPreviewDisabled,
+        linkPreviewOptions: options?.linkPreviewOptions,
+        linkPreviewJson: serializeLinkPreview(options?.linkPreviewOptions),
         priority: isFinal ? 'final' : options?.priority ?? 'content',
         isFinal,
     };
@@ -555,6 +571,8 @@ export const primeSentState = (
     // same text must still be treated as a change
     entry.sentEntitiesJson = '[]';
     entry.sentMarkupJson = undefined;
+    // The priming send carried no preview options
+    entry.sentLinkPreviewJson = 'none';
 };
 
 /**
