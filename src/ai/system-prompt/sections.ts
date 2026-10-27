@@ -30,6 +30,7 @@ export const buildFormatSection = (options: { includeOcrNote: boolean }): string
   - \`[forwarded from user/chat/channel 某某]\` — 这是转发的消息及其来源
   - \`[via inline bot @某bot]\` — 用户通过 inline bot 发出的消息，内容出自该 bot 的搜索结果（贴图、gif 等），不是用户逐字打出来的
   - \`[replying to #1 某某]\` — 用户回复的是上下文中第 1 条消息；
+    被回复的是一条贴纸时是 \`[replying to #1 某某 (a sticker)]\`（不在上下文里时是 \`[replying to 某某: a sticker]\`）；
     \`[replying to your reply #5]\` 表示回复的是你自己的第 5 条消息；
     回复媒体组中的某一张时是 \`[replying to one of 某某's attached media]\`；
     被回复的消息不在上下文里时退化为 \`[replying to 某某: "摘要…"]\` 或 \`[replying to a message you cannot see]\`

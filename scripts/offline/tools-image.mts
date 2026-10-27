@@ -1592,6 +1592,38 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
         },
     },
     {
+        name: 'the next context carries a sent sticker as a picture',
+        body: async () => {
+            const sticker = {
+                packIndex: 7,
+                label: '吃冰棒',
+                emoji: '🍦',
+                fileId: 'file-7',
+                fileUniqueId: 'unique-7',
+            };
+            const delivered = await deliver(OFFLINE_CHAT_ID, reply({ text: '给你', stickers: [sticker] }));
+            const replyId = delivered.chatContext.session.firstMessageId;
+            const later = await seedRow({ replyToId: replyId, text: '这是贴纸吗' });
+            const row = await rowOf(OFFLINE_CHAT_ID, later);
+            if (!row) throw new Error('the later message row was not stored');
+
+            const { result: built } = await captureConsole(() => buildContext(row));
+            const assistantWithSticker = built.messages.find(
+                (turn) =>
+                    turn.role === 'assistant' &&
+                    turn.content.some(
+                        (part) =>
+                            part.type === 'image' &&
+                            Buffer.from(part.imageData ?? '', 'base64').equals(WEBP_BYTES)
+                    )
+            );
+            expect(
+                assistantWithSticker !== undefined,
+                'the bot sticker reply rides the next context as its webp, like a sent photo'
+            );
+        },
+    },
+    {
         name: 'a sticker version switches back as a sticker, not as its stored webp photo',
         body: async () => {
             const chatId = -1003900000021;

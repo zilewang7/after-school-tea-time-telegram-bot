@@ -60,6 +60,16 @@ const isSticker = (part: UnifiedContentPart): boolean =>
 const isAnimatedSticker = (part: UnifiedContentPart): boolean =>
     Boolean(part.mediaKind && ANIMATED_STICKER_KINDS.has(part.mediaKind));
 
+/**
+ * A sticker message row, from the hint autoSave stored for it. Bot rows carry
+ * the short 'sticker'; user rows the longer media hints (and backfilled rows
+ * the recovered-history wording).
+ */
+const isStickerMessage = (msg: ContextMessage): boolean =>
+    msg.mediaHint === 'sticker' ||
+    msg.mediaHint?.startsWith('a sticker') === true ||
+    msg.mediaHint?.startsWith('an animated sticker') === true;
+
 /** Audio/visual media kinds present in the parts, for a type-specific nudge */
 const audioVisualKinds = (parts: UnifiedContentPart[]): Array<'video' | 'audio'> => {
     const kinds = new Set<'video' | 'audio'>();
@@ -242,14 +252,20 @@ const renderReplyTarget = async (
 
     if (target) {
         const targetNumber = index.numberOf.get(replyToId);
+        // Telegram lets a user swipe-reply to any message, including a sticker
+        // it merely scrolled past: state the medium, infer nothing from it.
+        const medium = isStickerMessage(target) ? ' (a sticker)' : '';
         return target.fromBotSelf
-            ? `[replying to your reply #${targetNumber}]`
-            : `[replying to #${targetNumber} ${target.userName}]`;
+            ? `[replying to your reply #${targetNumber}${medium}]`
+            : `[replying to #${targetNumber} ${target.userName}${medium}]`;
     }
 
     const replyMsg = await getContextMessage(chatId, replyToId);
     if (replyMsg && isSubImage(replyMsg)) {
         return `[replying to one of ${replyMsg.userName}'s attached media]`;
+    }
+    if (replyMsg && isStickerMessage(replyMsg)) {
+        return `[replying to ${replyMsg.userName}: a sticker]`;
     }
     const replyText = replyMsg?.text?.replace(/<<EOF\s*$/, '').trim();
     if (replyMsg && replyText) {

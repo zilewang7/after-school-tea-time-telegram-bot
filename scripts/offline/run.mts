@@ -69,6 +69,8 @@ interface SeedOptions {
     ocrText?: string | null;
     forwardOrigin?: string | null;
     forwardFromId?: number | null;
+    /** The `[sent …]` hint autoSave stores, e.g. 'a sticker image' */
+    mediaHint?: string | null;
 }
 
 /** Insert one message row directly, bypassing the Telegram-facing save path */
@@ -90,7 +92,7 @@ const seedMessage = async (options: SeedOptions = {}): Promise<number> => {
         replyToId: options.replyToId ?? null,
         chatCommand: options.chatCommand ?? null,
         modelParts: null,
-        mediaHint: null,
+        mediaHint: options.mediaHint ?? null,
         forwardOrigin: options.forwardOrigin ?? null,
         forwardFromId: options.forwardFromId ?? null,
         viaBot: options.viaBot ?? null,
@@ -1138,6 +1140,58 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
             expect(
                 !withWordsContext.last.includes('['),
                 'and carries no annotation it does not need'
+            );
+        },
+    },
+    {
+        // A swipe-reply to a sticker is often accidental; the prompt states the
+        // medium and leaves the reading to the model.
+        name: 'a reply to a sticker states the medium and nothing else',
+        body: async () => {
+            const { buildContext } = await import('../../src/reply/context-builder.js');
+            const contextOf = async (messageId: number): Promise<string> => {
+                const row = await Message.findOne({
+                    where: { chatId: OFFLINE_CHAT_ID, messageId },
+                });
+                if (!row) throw new Error(`seeded message ${messageId} not found`);
+                const { messages: turns } = await buildContext(row);
+                return turns
+                    .map((turn) => turn.content.map((part) => part.text ?? '').join('\n'))
+                    .join('\n');
+            };
+
+            const sticker = await seedMessage({
+                text: null,
+                userName: 'Enren',
+                mediaHint: 'a sticker image',
+            });
+            const replyToSticker = await seedMessage({
+                replyToId: sticker,
+                text: '这是什么',
+                userName: 'Kuro',
+            });
+            const userText = await contextOf(replyToSticker);
+            expect(
+                /\[replying to #\d+ Enren \(a sticker\)\](?=[:\n ])/.test(userText),
+                `the reply annotation names the sticker (got ${JSON.stringify(userText.slice(0, 220))})`
+            );
+
+            const botSticker = await seedMessage({
+                text: null,
+                fromBotSelf: true,
+                userId: 7777,
+                userName: 'K-ON',
+                mediaHint: 'sticker',
+            });
+            const replyToBotSticker = await seedMessage({
+                replyToId: botSticker,
+                text: '哈哈',
+                userName: 'Kuro',
+            });
+            const botText = await contextOf(replyToBotSticker);
+            expect(
+                /\[replying to your reply #\d+ \(a sticker\)\](?=[:\n ])/.test(botText),
+                `the bot's own sticker is named too (got ${JSON.stringify(botText.slice(0, 220))})`
             );
         },
     },
