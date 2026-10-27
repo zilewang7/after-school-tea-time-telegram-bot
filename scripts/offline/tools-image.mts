@@ -39,6 +39,7 @@ import type { AIResponse, PlatformConfig, ResponseState, StreamChunk, UnifiedMes
 import type { ToolHandler, ToolResult } from '../../src/ai/tools/tool-types.js';
 import type { ResponseVersion, ButtonState } from '../../src/db/botResponseDTO.js';
 import type { ContextIndex } from '../../src/reply/context-index.js';
+import type { AnimationFrameLoader } from '../../src/reply/tools/animation-frame.js';
 
 // The bot's own rows are stored as messages of this user
 process.env.BOT_USER_ID = '7777';
@@ -237,9 +238,12 @@ const noNetworkFetch = async (): Promise<{ ok: false; error: string }> => ({
     error: 'offline: no network',
 });
 
+const noAnimationFrame: AnimationFrameLoader = async () => null;
+
 interface GenerateToolOptions {
     readonly state?: ReplyMediaState;
     readonly sticker?: { readonly setName: string; readonly api: Api };
+    readonly loadAnimationFrame?: AnimationFrameLoader;
 }
 
 const toolFor = (
@@ -257,7 +261,12 @@ const toolFor = (
         }),
         options.state ?? createReplyMediaState(null),
         {
-            dependencies: { sendMessage: model.sendMessage, loadMessageImages, fetchImage: noNetworkFetch },
+            dependencies: {
+                sendMessage: model.sendMessage,
+                loadMessageImages,
+                loadAnimationFrame: options.loadAnimationFrame ?? noAnimationFrame,
+                fetchImage: noNetworkFetch,
+            },
             ...(options.sticker ? { sticker: options.sticker } : {}),
         }
     );
@@ -1798,6 +1807,29 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
                     imageFileName(GIF_BYTES) === 'image.gif' &&
                     imageFileName(Buffer.from('not an image')) === 'image.png',
                 'upload names follow the bytes, unknown keeps image.png'
+            );
+        },
+    },
+    {
+        name: 'an animation message is referenced by its first frame',
+        body: async () => {
+            const index: ContextIndex = new Map([
+                [9, { number: 9, messageId: 9001, fromBot: false, images: [], imageCount: 0 }],
+            ]);
+            const model = stubImageModel();
+            const tool = toolFor(index, model, new AbortController().signal, {
+                loadAnimationFrame: async () => ({ kind: 'bytes', data: JPEG_BYTES }),
+            });
+            const result = await runTool(tool, {
+                prompt: '照着这个画',
+                caption: '',
+                references: [{ message: 9 }],
+            });
+            expect(!result.isError, `the reference resolves (got ${json(result.content)})`);
+            const images = imagesOf(model.requests[0]);
+            expect(
+                images.length === 1 && images[0]?.equals(JPEG_BYTES) === true,
+                'the first frame becomes the reference'
             );
         },
     },

@@ -16,6 +16,7 @@ import {
 import type { ContextIndex, ContextIndexEntry } from '../../src/reply/context-index.js';
 import type { ReplyToolContext } from '../../src/reply/tools/reply-tool-context.js';
 import type { ImageFetch } from '../../src/reply/tools/image-source-download.js';
+import type { AnimationFrameLoader } from '../../src/reply/tools/animation-frame.js';
 import type { MessageImageLoader } from '../../src/reply/tools/image-references.js';
 import type { ParsedReverseSearch } from '../../src/services/image-reverse-search-parse.js';
 import type { ReverseSearchOptions, ReverseSearchOutcome } from '../../src/services/image-reverse-search-service.js';
@@ -120,6 +121,7 @@ const searchStub = (
 };
 
 const loadNothing: MessageImageLoader = async () => [];
+const noAnimationFrame: AnimationFrameLoader = async () => null;
 const fetchImageStub: ImageFetch = async (url) => ({
     ok: true,
     image: { data: JPEG, mimeType: 'image/jpeg', finalUrl: url },
@@ -129,7 +131,8 @@ const toolOf = (
     index: ContextIndex,
     state = createReplyMediaState(null),
     stub = searchStub(),
-    fetchImage: ImageFetch = fetchImageStub
+    fetchImage: ImageFetch = fetchImageStub,
+    loadAnimationFrame: AnimationFrameLoader = noAnimationFrame
 ) => ({
     state,
     stub,
@@ -139,6 +142,7 @@ const toolOf = (
         dependencies: {
             search: stub.search,
             loadMessageImages: loadNothing,
+            loadAnimationFrame,
             fetchImage,
         },
     }),
@@ -247,6 +251,32 @@ cases.push(
             state.allowedUrls.has('https://cdn.example.com/original.jpg?w=5800&h=4350'),
             'the size URL is allowed for send_image'
         );
+    })
+);
+
+cases.push(
+    await runCase('an animated message is searched by its first frame', async () => {
+        const entry: ContextIndexEntry = {
+            number: 1,
+            messageId: 101,
+            fromBot: false,
+            images: [],
+            imageCount: 0,
+        };
+        const frame = JPEG;
+        const { stub, tool } = toolOf(
+            new Map([[1, entry]]),
+            createReplyMediaState(null),
+            searchStub(),
+            fetchImageStub,
+            async () => ({ kind: 'bytes', data: frame })
+        );
+        const result = await tool.execute({ message: 1 }, new AbortController().signal);
+
+        expect(!result.isError, `the call succeeds (${result.content})`);
+        expect(stub.calls.length === 1, 'one search');
+        expect(stub.calls[0]?.bytes.equals(frame), 'the first frame is searched, not the video');
+        expect(stub.calls[0]?.mimeType === 'image/jpeg', 'the frame mime is sent');
     })
 );
 

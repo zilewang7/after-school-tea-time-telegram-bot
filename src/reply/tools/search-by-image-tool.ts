@@ -21,6 +21,7 @@ import type {
     ReverseSearchSize,
 } from '../../services/image-reverse-search-parse.js';
 import { loadMessageImages } from '../commands/reference-images.js';
+import { loadAnimationFrame, type AnimationFrameLoader } from './animation-frame.js';
 import { imageToolError } from './image-tool-result.js';
 import { parseSearchByImageArgs, type ParsedSearchByImageArgs } from './media-tool-args.js';
 import { loadContextImages, type MessageImageLoader } from './image-references.js';
@@ -38,7 +39,7 @@ import { SEARCH_BY_IMAGE_TOOL_NAME } from './tool-names.js';
 const DESCRIPTION =
     '以图搜图：把一张图片上传到 Yandex 图片搜索，返回包含这张图的网页、相同/近似图片的其他尺寸、相似图和识别标签。' +
     '输入可以是上下文消息里的图片（message / image）、fetch_image 读过的图（image_id）或 search_images 的候选（search_id）；' +
-    '单张图上限 8MB。';
+    '动图（GIF/动态贴纸）用的是首帧；单张图上限 8MB。';
 
 const INPUT_SCHEMA = {
     type: 'object',
@@ -67,6 +68,7 @@ const MAX_SIMILAR_PER_REPLY = 4;
 export interface SearchByImageDependencies {
     readonly search: (options: ReverseSearchOptions) => Promise<ReverseSearchOutcome>;
     readonly loadMessageImages: MessageImageLoader;
+    readonly loadAnimationFrame: AnimationFrameLoader;
     readonly fetchImage: ImageFetch;
 }
 
@@ -80,6 +82,7 @@ export interface SearchByImageToolOptions {
 const PRODUCTION_DEPENDENCIES: SearchByImageDependencies = {
     search: searchByImage,
     loadMessageImages,
+    loadAnimationFrame,
     fetchImage: fetchImageBytes,
 };
 
@@ -179,7 +182,12 @@ export const createSearchByImageTool = (options: SearchByImageToolOptions): Tool
         const entry = context.contextIndex.get(message);
         if (!entry) return { ok: false, error: `#${message} 不在当前上下文里。` };
 
-        const loaded = await loadContextImages(context.chatId, entry, dependencies.loadMessageImages);
+        const loaded = await loadContextImages(
+            context.chatId,
+            entry,
+            dependencies.loadMessageImages,
+            dependencies.loadAnimationFrame
+        );
         if (loaded.length === 0) return { ok: false, error: `#${message} 这条消息没有可用的图片。` };
 
         const picked = loaded[imageIndex - 1];

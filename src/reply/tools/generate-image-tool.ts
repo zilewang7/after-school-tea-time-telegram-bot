@@ -21,6 +21,7 @@ import {
     type StickerSetApi,
 } from '../../services/sticker-set-service.js';
 import { loadMessageImages } from '../commands/reference-images.js';
+import { loadAnimationFrame, type AnimationFrameLoader } from './animation-frame.js';
 import { IMAGE_ASPECT_RATIOS, parseGenerateImageArgs, type ImageWebReferenceArg } from './image-tool-args.js';
 import {
     MAX_REFERENCE_IMAGE_BYTES,
@@ -50,6 +51,7 @@ const descriptionOf = (hasSticker: boolean): string =>
     '只在需要“新画一张/改一张图”时使用；如果用户要的是真实存在的图片、表情包、截图、新闻图，' +
     '请先用 search_images 找到，再用 send_image 发，不要用本工具冒充“找到了”。' +
     '要参考或修改上下文里的图片（消息自带的附件、链接预览里的图、你自己之前生成的都算），在 references 里填消息编号；' +
+    '消息里是动图（GIF/动态贴纸）时，用的是它的首帧；' +
     '同一条消息有多张时用 image 指明第几张，按消息里出现的顺序数：附件在前，链接预览的图在后。' +
     '要参考网上找到的图，在 web_references 里填 search_id / image_id。' +
     (hasSticker ? '要参考贴纸包里的贴纸，也在 web_references 里填 sticker（st1、包内序号或画面名）。' : '') +
@@ -124,6 +126,7 @@ const inputSchemaOf = (hasSticker: boolean) => ({
 export interface GenerateImageToolDependencies {
     readonly sendMessage: SendImageRequest;
     readonly loadMessageImages: MessageImageLoader;
+    readonly loadAnimationFrame: AnimationFrameLoader;
     readonly fetchImage: ImageFetch;
 }
 
@@ -142,6 +145,7 @@ export interface GenerateImageToolOptions {
 const PRODUCTION_DEPENDENCIES: GenerateImageToolDependencies = {
     sendMessage,
     loadMessageImages,
+    loadAnimationFrame,
     fetchImage: fetchImageBytes,
 };
 
@@ -273,6 +277,7 @@ export const createGenerateImageTool = (
                 chatId: context.chatId,
                 contextIndex: context.contextIndex,
                 loadMessageImages: dependencies.loadMessageImages,
+                loadAnimationFrame: dependencies.loadAnimationFrame,
             });
             if (!references.ok) return imageToolError(references.error);
 

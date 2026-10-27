@@ -8,6 +8,8 @@ const TGS_CONVERTER_URL = process.env.TGS_CONVERTER_URL;
 const CONVERT_TIMEOUT_MS = 30000;
 const NORMALIZE_TIMEOUT_MS = 30000;
 const EMOJI_TIMEOUT_MS = 30000;
+const FRAME_TIMEOUT_MS = 15000;
+const MAX_FRAME_BYTES = 6 * 1024 * 1024;
 const MAX_EMOJI_ATLAS_ITEMS = 8;
 const MAX_EMOJI_PREVIEW_BYTES = 1024 * 1024;
 const MAX_EMOJI_ATLAS_BYTES = 512 * 1024;
@@ -186,6 +188,64 @@ export const transcodeVideoToMp4 = async (
         return null;
     } finally {
         clearTimeout(timer);
+    }
+};
+
+export interface ExtractedFrame {
+    data: Buffer;
+    mimeType: 'image/png' | 'image/jpeg';
+}
+
+/**
+ * First frame of an animation or video sticker, as a still image.
+ * JPEG for mp4 (small, photographic), PNG for webm (stickers may carry alpha).
+ * Returns null on any failure — the caller falls back to "no picture".
+ */
+export const extractVideoFrame = async (
+    video: Buffer,
+    mimeType: string,
+    signal?: AbortSignal
+): Promise<ExtractedFrame | null> => {
+    if (!TGS_CONVERTER_URL || video.length === 0 || !mimeType.startsWith('video/')) return null;
+
+    const format = mimeType === 'video/webm' ? 'png' : 'jpeg';
+    const request = createTimedController(FRAME_TIMEOUT_MS, signal);
+    try {
+        const query = `mime=${encodeURIComponent(mimeType)}&format=${format}`;
+        const res = await fetch(`${TGS_CONVERTER_URL}/frame?${query}`, {
+            method: 'POST',
+            headers: { 'Content-Type': mimeType },
+            body: video,
+            signal: request.signal,
+        });
+        if (!res.ok) {
+            console.error(`[tgs-client] frame failed: HTTP ${res.status}`);
+            return null;
+        }
+
+        const responseMime = res.headers.get('content-type')?.split(';')[0];
+        if (responseMime !== 'image/png' && responseMime !== 'image/jpeg') {
+            console.error(`[tgs-client] frame returned unexpected content type: ${responseMime ?? 'missing'}`);
+            return null;
+        }
+
+        const contentLength = Number(res.headers.get('content-length'));
+        if (Number.isFinite(contentLength) && contentLength > MAX_FRAME_BYTES) {
+            console.error(`[tgs-client] frame response exceeds ${MAX_FRAME_BYTES} bytes`);
+            return null;
+        }
+
+        const arrayBuffer = await res.arrayBuffer();
+        if (arrayBuffer.byteLength === 0 || arrayBuffer.byteLength > MAX_FRAME_BYTES) {
+            console.error('[tgs-client] frame returned an empty or oversized body');
+            return null;
+        }
+        return { data: Buffer.from(arrayBuffer), mimeType: responseMime };
+    } catch (error) {
+        console.error('[tgs-client] frame request error:', error instanceof Error ? error.message : error);
+        return null;
+    } finally {
+        request.dispose();
     }
 };
 

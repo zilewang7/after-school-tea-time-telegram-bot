@@ -192,3 +192,46 @@ export const runSchemaMigrations = async (): Promise<void> => {
     );
   });
 };
+
+/**
+ * Historical GIFs were captured as documents (the animation branch is newer):
+ * their hint names a converted .gif.mp4 and their cache row is kind=document.
+ * Rewrite both so the first-frame path can find them.
+ *
+ * Runs after sequelize.sync() — the table does not exist on a fresh database
+ * when runSchemaMigrations executes. Recorded so the LIKE scan over the large
+ * message table happens once; the statements themselves are idempotent.
+ */
+export const backfillAnimationMediaKind = async (): Promise<void> => {
+  const name = '20261027_animation_media_kind';
+  const applied = await sequelize.query<{ name: string }>(
+    'SELECT name FROM schema_migrations WHERE name = :name',
+    { type: QueryTypes.SELECT, replacements: { name } }
+  );
+  if (applied.length > 0) return;
+
+  await sequelize.transaction(async (transaction) => {
+    await sequelize.query(
+      `UPDATE telegram_messages
+          SET mediaHint = 'an animation'
+        WHERE fileMime LIKE 'video/%'
+          AND mediaHint LIKE 'a file: %.gif.mp4%'`,
+      { transaction }
+    );
+    await sequelize.query(
+      `UPDATE media_cache
+          SET kind = 'animation'
+        WHERE mime = 'video/mp4'
+          AND kind = 'document'
+          AND fileUniqueId IN (
+              SELECT DISTINCT fileUniqueId FROM telegram_messages WHERE mediaHint = 'an animation'
+          )`,
+      { transaction }
+    );
+    await sequelize.query(
+      `INSERT OR IGNORE INTO schema_migrations (name, appliedAt)
+       VALUES (:name, :appliedAt)`,
+      { replacements: { name, appliedAt: new Date().toISOString() }, transaction }
+    );
+  });
+};

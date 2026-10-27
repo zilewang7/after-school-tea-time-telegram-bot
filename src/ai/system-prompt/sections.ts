@@ -103,7 +103,7 @@ const searchImageLines = (canDraw: boolean): string[] => [
 ];
 
 const IMAGE_REVERSE_LINE =
-    '- 可以用 `search_by_image` 以图搜图：把一张图上传到 Yandex，返回包含这张图的网页、其他尺寸、相似图和识别标签（单张图上限 8MB）。';
+    '- 可以用 `search_by_image` 以图搜图：把一张图上传到 Yandex，返回包含这张图的网页、其他尺寸、相似图和识别标签（动图取首帧，单张图上限 8MB）。';
 
 const IMAGE_FETCH_LINE =
     '- 拿不准图里是什么、要看清细节或做 OCR 时，可以先用 `fetch_image` 把它读进上下文再决定。';

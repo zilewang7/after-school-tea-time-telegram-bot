@@ -13,7 +13,7 @@ import { CustomEmojiAsset } from "./customEmojiAssetDTO.js";
 import { MessageRevision } from './messageRevisionDTO.js';
 import { getBlob } from "../util.js";
 import { addAsyncFileSaveTask, removeAsyncFileSaveTask, findFirstMessageIdByContinuation } from '../state.js';
-import { runSchemaMigrations } from './schema-migrations.js';
+import { backfillAnimationMediaKind, runSchemaMigrations } from './schema-migrations.js';
 
 // sync database (the imports above ensure every table is registered before sync)
 // Exported so callers can await schema readiness instead of racing the migration;
@@ -24,7 +24,10 @@ import { runSchemaMigrations } from './schema-migrations.js';
 // the multi-GB message table on every restart.
 export const dbReady = enableWriteAheadLog()
     .then(() => runSchemaMigrations())
-    .then(() => sequelize.sync());
+    .then(() => sequelize.sync())
+    // Data fixes need the tables, so they run after sync (a fresh database has
+    // no rows for them, an existing one is scanned once)
+    .then(() => backfillAnimationMediaKind());
 dbReady.catch((error: unknown) => {
     console.error('[db] schema sync failed:', error);
 });

@@ -98,9 +98,9 @@ const INLINE_MAX_BYTES = 20 * 1024 * 1024;
 
 type MediaKind =
     | 'photo' | 'sticker' | 'video_sticker' | 'animated_sticker'
-    | 'voice' | 'audio' | 'video' | 'video_note' | 'document';
+    | 'voice' | 'audio' | 'animation' | 'video' | 'video_note' | 'document';
 
-interface CapturedMedia {
+export interface CapturedMedia {
     /** Telegram file_id to download */
     fileId: string;
     /** Stable cache key across re-sends */
@@ -121,8 +121,10 @@ interface CapturedMedia {
 /**
  * Resolve a capturable media file from a Telegram message.
  * Returns undefined when the message carries no supported media.
+ *
+ * Exported for the offline media-capture cases.
  */
-const resolveCapturedMedia = (msg: TgMessage | undefined): CapturedMedia | undefined => {
+export const resolveCapturedMedia = (msg: TgMessage | undefined): CapturedMedia | undefined => {
     if (!msg) return undefined;
 
     const photo = msg.photo?.at(-1);
@@ -203,6 +205,22 @@ const resolveCapturedMedia = (msg: TgMessage | undefined): CapturedMedia | undef
             kind: 'audio',
             sizeBytes: audio.file_size,
             hint: `an audio file${audio.file_name ? `: ${audio.file_name}` : ''}`,
+            needsTgsConversion: false,
+        };
+    }
+
+    // A GIF arrives as an animation and, for backward compatibility, also as a
+    // document. Read it before document so it keeps its duration and its kind.
+    const animation = msg.animation;
+    if (animation) {
+        return {
+            fileId: animation.file_id,
+            fileUniqueId: animation.file_unique_id,
+            mime: animation.mime_type ?? 'video/mp4',
+            kind: 'animation',
+            sizeBytes: animation.file_size,
+            durationSeconds: animation.duration,
+            hint: 'an animation',
             needsTgsConversion: false,
         };
     }

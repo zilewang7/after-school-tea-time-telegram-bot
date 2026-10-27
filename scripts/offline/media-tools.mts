@@ -266,6 +266,7 @@ const cases = [
                             throw new Error('must not be called');
                         },
                         loadMessageImages: async () => [],
+                        loadAnimationFrame: async () => null,
                         fetchImage: async () => ({ ok: false, error: 'offline' }),
                     },
                 }

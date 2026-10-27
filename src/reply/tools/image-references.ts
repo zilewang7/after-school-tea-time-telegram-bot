@@ -17,6 +17,7 @@ import { inlineImageBytes } from '../context-images.js';
 import type { ContextIndex, ContextIndexEntry } from '../context-index.js';
 import type { MessageImage } from '../commands/reference-images.js';
 import type { ImageReferenceArg } from './image-tool-args.js';
+import type { AnimationFrameLoader } from './animation-frame.js';
 
 /** Reference images one request may carry */
 export const MAX_REFERENCE_IMAGES = 6;
@@ -35,6 +36,8 @@ export interface ReferenceSource {
     readonly chatId: number;
     readonly contextIndex: ContextIndex;
     readonly loadMessageImages: MessageImageLoader;
+    /** First frame of an animated message, when it carries no picture of its own */
+    readonly loadAnimationFrame?: AnimationFrameLoader;
 }
 
 export type ResolvedReferences =
@@ -56,7 +59,8 @@ export type LoadedContextImage =
 export const loadContextImages = async (
     chatId: number,
     entry: ContextIndexEntry,
-    loadMessageImages: MessageImageLoader
+    loadMessageImages: MessageImageLoader,
+    loadAnimationFrame?: AnimationFrameLoader
 ): Promise<readonly LoadedContextImage[]> => {
     if (entry.images.length > 0) {
         return entry.images.map((image): LoadedContextImage => {
@@ -66,7 +70,15 @@ export const loadContextImages = async (
     }
 
     const stored = await loadMessageImages(chatId, entry.messageId);
-    return stored.map((image) => ({ kind: 'bytes', data: Buffer.from(image.data, 'base64') }));
+    if (stored.length > 0) {
+        return stored.map((image) => ({ kind: 'bytes', data: Buffer.from(image.data, 'base64') }));
+    }
+
+    // An animation carries a video part, not a picture: its first frame is the
+    // still that stands in for it.
+    if (loadAnimationFrame === undefined) return [];
+    const frame = await loadAnimationFrame(chatId, entry.messageId);
+    return frame === null ? [] : [frame];
 };
 
 type CheckedImage =
@@ -134,7 +146,12 @@ export const resolveImageReferences = async (
     const loadImages = async (entry: ContextIndexEntry): Promise<readonly LoadedContextImage[]> => {
         const cached = imagesByNumber.get(entry.number);
         if (cached) return cached;
-        const loaded = await loadContextImages(source.chatId, entry, source.loadMessageImages);
+        const loaded = await loadContextImages(
+            source.chatId,
+            entry,
+            source.loadMessageImages,
+            source.loadAnimationFrame
+        );
         imagesByNumber.set(entry.number, loaded);
         return loaded;
     };

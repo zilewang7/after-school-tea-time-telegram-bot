@@ -10,6 +10,10 @@
  *                          image/gif input is always re-encoded to mp4: a GIF
  *                          handed to a model as an image only ever shows one
  *                          frame, as a video part it shows the motion
+ *   POST /frame            body = raw video bytes          -> image/png|image/jpeg
+ *                          ?mime=video/mp4|video/webm  input container hint
+ *                          First frame of an animation, used as a still when
+ *                          a tool needs a picture instead of a clip.
  *   POST /emoji-preview    body = raw emoji media bytes   -> image/png
  *   POST /emoji-atlas      body = JSON image items        -> image/png
  *   GET  /health                                          -> text/plain
@@ -52,6 +56,13 @@ const REQUEST_BODY_TIMEOUT_MS = positiveIntegerEnv('REQUEST_BODY_TIMEOUT_MS', 30
 const MIN_VIDEO_SECONDS = positiveIntegerEnv('MIN_VIDEO_SECONDS', 1, 5);
 const NORMALIZE_MAX_INPUT_BYTES = positiveIntegerEnv('NORMALIZE_MAX_INPUT_BYTES', 20 * 1024 * 1024, 32 * 1024 * 1024);
 const NORMALIZE_TIMEOUT_MS = positiveIntegerEnv('NORMALIZE_TIMEOUT_MS', 30000, 60000);
+
+const FRAME_MAX_INPUT_BYTES = positiveIntegerEnv('FRAME_MAX_INPUT_BYTES', 20 * 1024 * 1024, 32 * 1024 * 1024);
+const FRAME_TIMEOUT_MS = positiveIntegerEnv('FRAME_TIMEOUT_MS', 15000, 30000);
+const FRAME_MAX_OUTPUT_BYTES = positiveIntegerEnv('FRAME_MAX_OUTPUT_BYTES', 6 * 1024 * 1024, 12 * 1024 * 1024);
+/** Longest side of the still; animations are 320 and stickers 512, so this only trims odd large inputs */
+const MAX_FRAME_DIMENSION = 1280;
+const FRAME_VIDEO_MIMES = new Set(['video/mp4', 'video/webm']);
 
 const EMOJI_MAX_INPUT_BYTES = positiveIntegerEnv('EMOJI_MAX_INPUT_BYTES', 10 * 1024 * 1024, 12 * 1024 * 1024);
 const EMOJI_TIMEOUT_MS = positiveIntegerEnv('EMOJI_TIMEOUT_MS', 30000, 60000);
@@ -473,6 +484,47 @@ const normalizeShortVideo = async (videoBuffer, inputMime, signal, options = {})
             throw new HttpError(500, `normalized output exceeds ${MAX_CONVERT_OUTPUT_BYTES} bytes`);
         }
         return { data: await readFile(outPath), mimeType: 'video/mp4', normalized: true };
+    } finally {
+        await rm(dir, { recursive: true, force: true }).catch(() => {});
+    }
+};
+
+/**
+ * First frame of an animation as a still image. The bytes are local (media
+ * cache), so this only decodes. A JPEG keeps a video frame small; webm
+ * stickers may carry alpha, so they stay PNG.
+ */
+const extractFirstFrame = async (videoBuffer, inputMime, format, signal) => {
+    if (!FRAME_VIDEO_MIMES.has(inputMime)) {
+        throw new HttpError(415, `unsupported video MIME: ${inputMime}`);
+    }
+    const dir = await mkdtemp(join(tmpdir(), 'frame-'));
+    const inPath = join(dir, 'input.bin');
+    const outPath = join(dir, format === 'jpeg' ? 'frame.jpg' : 'frame.png');
+    try {
+        await writeFile(inPath, videoBuffer);
+        await runProcess('ffmpeg', [
+            '-y',
+            '-threads', '2',
+            '-i', inPath,
+            '-frames:v', '1',
+            // Quotes are part of the filter expression (no shell here)
+            '-vf', `scale='min(${MAX_FRAME_DIMENSION},iw)':-2`,
+            ...(format === 'jpeg' ? ['-q:v', '2'] : []),
+            outPath,
+        ], FRAME_TIMEOUT_MS, 'frame extraction timed out', {
+            jobDirectory: dir,
+            maxFileBytes: FRAME_MAX_OUTPUT_BYTES,
+            signal,
+        });
+        const outputInfo = await stat(outPath);
+        if (outputInfo.size === 0) {
+            throw new HttpError(500, 'frame extraction produced no data');
+        }
+        if (outputInfo.size > FRAME_MAX_OUTPUT_BYTES) {
+            throw new HttpError(500, `frame output exceeds ${FRAME_MAX_OUTPUT_BYTES} bytes`);
+        }
+        return readFile(outPath);
     } finally {
         await rm(dir, { recursive: true, force: true }).catch(() => {});
     }
@@ -950,6 +1002,49 @@ const server = http.createServer(async (req, res) => {
             }, normalized.data);
         } catch (error) {
             sendError(res, 'normalize', error);
+        }
+        return;
+    }
+
+    if (req.method === 'POST' && req.url.split('?')[0] === '/frame') {
+        try {
+            const parsed = new URL(req.url, 'http://localhost');
+            const inputMime = parsed.searchParams.get('mime') || '';
+            const requestedFormat = parsed.searchParams.get('format');
+            if (requestedFormat !== null && requestedFormat !== 'jpeg' && requestedFormat !== 'png') {
+                throw new HttpError(400, `unsupported format: ${requestedFormat}`);
+            }
+            if (!FRAME_VIDEO_MIMES.has(inputMime)) {
+                throw new HttpError(415, `unsupported video MIME: ${inputMime}`);
+            }
+            const format = requestedFormat ?? (inputMime === 'video/webm' ? 'png' : 'jpeg');
+            const frame = await withExpensiveRequest(req, res, async (signal) => {
+                const body = await readBody(req, FRAME_MAX_INPUT_BYTES, signal);
+                if (body.length === 0) throw new HttpError(400, 'empty body');
+                const key = createHash('sha256')
+                    .update('frame\0')
+                    .update(inputMime)
+                    .update('\0')
+                    .update(format)
+                    .update('\0')
+                    .update(body)
+                    .digest('hex');
+                const cached = cacheGet(key);
+                if (Buffer.isBuffer(cached)) {
+                    console.log(`[tgs-converter] frame cache hit for ${key.slice(0, 12)}`);
+                    return cached;
+                }
+                const extracted = await extractFirstFrame(body, inputMime, format, signal);
+                cacheSet(key, extracted);
+                console.log(`[tgs-converter] frame ${body.length}B ${inputMime} -> ${extracted.length}B ${format} (cache miss)`);
+                return extracted;
+            });
+            sendBuffer(res, 200, {
+                'Content-Type': format === 'png' ? 'image/png' : 'image/jpeg',
+                'Content-Length': frame.length,
+            }, frame);
+        } catch (error) {
+            sendError(res, 'frame', error);
         }
         return;
     }
