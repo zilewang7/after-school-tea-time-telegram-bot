@@ -82,7 +82,7 @@ const cases: Promise<CaseResult>[] = [];
 cases.push(
     runCase('the catalog is the pack order: 72 unique pictures, 03 replaced by the author', async () => {
         expect(STICKER_CATALOG.length === 72, '72 pack positions');
-        expect(STICKER_CATALOG[0]?.packIndex === 1 && STICKER_CATALOG[0]?.label === '闭眼微笑', '01 is 闭眼微笑');
+        expect(STICKER_CATALOG[0]?.packIndex === 1 && STICKER_CATALOG[0]?.label === '眯眼猫嘴', '01 is 眯眼猫嘴');
         expect(
             STICKER_CATALOG[2]?.label === '蜷手困惑' && STICKER_CATALOG[2]?.fileUniqueId === 'AgADEyMAAv5cCVc',
             '03 is the picture the author added on 2026-10-27'
@@ -110,7 +110,7 @@ cases.push(
         for (const name of misleading) {
             expect(!STICKER_CATALOG_TEXT.includes(name), `description omits ${name}`);
         }
-        expect(STICKER_CATALOG_TEXT.startsWith('01闭眼微笑'), 'starts at 01');
+        expect(STICKER_CATALOG_TEXT.startsWith('01眯眼猫嘴'), 'starts at 01');
         expect(!STICKER_CATALOG_TEXT.includes('（与'), 'no duplicate note');
     })
 );
@@ -123,7 +123,7 @@ cases.push(
         expect(entryOf('#7', state).packIndex === 7, '#7');
         expect(entryOf('07_吃冰棒.png', state).packIndex === 7, 'original-name prefix + extension');
         expect(entryOf('吃冰棒', state).packIndex === 7, 'actual name');
-        expect(entryOf('托腮甜笑', state).packIndex === 42, 'actual name 42');
+        expect(entryOf('笑眼跪坐', state).packIndex === 42, 'actual name 42');
 
         state.fetchedStickers.set('st1', 7);
         expect(entryOf('st1', state).packIndex === 7, 'preview id');
@@ -134,14 +134,14 @@ cases.push(
     runCase('the resolver refuses misleading names and explains what the picture shows', async () => {
         const state = createReplyMediaState('');
         const hat = errorOf('戴黄色猫帽', state);
-        expect(hat.includes('42') && hat.includes('托腮甜笑'), 'cat hat points at 42 托腮甜笑');
+        expect(hat.includes('42') && hat.includes('笑眼跪坐'), 'cat hat points at 42 笑眼跪坐');
         const crown = errorOf('64_戴皇冠斗篷', state);
         expect(crown.includes('17') && crown.includes('端坐露齿笑'), 'crown points at 17, not pack 64');
         expect(errorOf('戴蓝黑条纹帽', state).includes('没有收进'), 'missing 67 is called out');
         expect(errorOf('99', state).includes('01'), 'out-of-range index lists the range');
         expect(errorOf('st9', state).includes('没有预览'), 'unknown preview id');
-        const ambiguous = errorOf('托腮', state);
-        expect(ambiguous.includes('24') && ambiguous.includes('42'), 'ambiguous name lists both');
+        const ambiguous = errorOf('疑惑', state);
+        expect(ambiguous.includes('54') && ambiguous.includes('64'), 'ambiguous name lists both');
     })
 );
 
@@ -171,7 +171,7 @@ cases.push(
         const badState = createReplyMediaState('');
         const badTool = createSendStickerTool({ state: badState, context: { api: fakeApi, signal }, setName: SET_NAME });
         const bad = await badTool.execute({ sticker: '戴黄色猫帽' }, signal);
-        expect(bad.isError && bad.content.includes('托腮甜笑'), 'misleading name refused');
+        expect(bad.isError && bad.content.includes('笑眼跪坐'), 'misleading name refused');
     })
 );
 
@@ -196,7 +196,7 @@ cases.push(
         const badState = createReplyMediaState('');
         const badTool = createSendStickerTool({ state: badState, context: { api: fakeApi, signal }, setName: SET_NAME });
         const bad = await badTool.execute({ sticker: '戴黄色猫帽' }, signal);
-        expect(bad.isError && bad.content.includes('托腮甜笑'), 'misleading name refused');
+        expect(bad.isError && bad.content.includes('笑眼跪坐'), 'misleading name refused');
     })
 );
 

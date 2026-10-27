@@ -3,8 +3,8 @@
  * or an `st1` the model already previewed.
  *
  * The misleading original filenames are not aliases. A model that asks for
- * "戴黄色猫帽" must be told the picture is "托腮甜笑", not handed a sticker
- * whose name promises a hat the drawing does not have.
+ * "戴黄色猫帽" must be told what the picture actually shows, not handed a
+ * sticker whose name promises a hat the drawing does not have.
  */
 import {
     findStickerByPackIndex,
@@ -19,15 +19,15 @@ export type StickerQueryResult =
     | { readonly ok: true; readonly entry: StickerCatalogEntry }
     | { readonly ok: false; readonly error: string };
 
-/** Original names whose picture says something else; value = the real label */
-const MISLEADING_NAMES: ReadonlyMap<string, { packIndex: number; label: string }> = new Map([
-    ['新年橘子顶头', { packIndex: 5, label: '趴白枕' }],
-    ['系蝴蝶结叼棒棒糖', { packIndex: 8, label: '半睁眼抬手' }],
-    ['戴皇冠斗篷', { packIndex: 17, label: '端坐露齿笑' }],
-    ['恶魔角翅膀', { packIndex: 24, label: '托腮自信笑' }],
-    ['戴黄色猫帽', { packIndex: 42, label: '托腮甜笑' }],
-    ['天使光环翅膀', { packIndex: 52, label: '单手贴脸笑' }],
-    ['戴螃蟹帽', { packIndex: 63, label: '合掌托腮' }],
+/** Original names whose picture says something else; value = the pack index that picture is */
+const MISLEADING_NAMES: ReadonlyMap<string, number> = new Map([
+    ['新年橘子顶头', 5],
+    ['系蝴蝶结叼棒棒糖', 8],
+    ['戴皇冠斗篷', 17],
+    ['恶魔角翅膀', 24],
+    ['戴黄色猫帽', 42],
+    ['天使光环翅膀', 52],
+    ['戴螃蟹帽', 63],
 ]);
 
 /** Never part of the pack: the author has not uploaded it */
@@ -69,13 +69,14 @@ const suggestionsOf = (query: string): string => {
 const misleadingError = (
     normalized: string
 ): { readonly ok: false; readonly error: string } | null => {
-    const misleading = MISLEADING_NAMES.get(normalized);
-    if (misleading) {
+    const packIndex = MISLEADING_NAMES.get(normalized);
+    if (packIndex !== undefined) {
+        const label = findStickerByPackIndex(packIndex)?.label ?? '';
         return {
             ok: false,
             error:
-                `“${normalized}”这个原名和画面对不上；实际画面叫 ${padPackIndex(misleading.packIndex)} ` +
-                `${misleading.label}。请用实际名称或包内序号。`,
+                `“${normalized}”这个原名和画面对不上；实际画面叫 ${padPackIndex(packIndex)} ` +
+                `${label}。请用实际名称或包内序号。`,
         };
     }
     if (MISSING_NAMES.has(normalized)) {
