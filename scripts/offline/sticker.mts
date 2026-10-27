@@ -84,10 +84,14 @@ cases.push(
         expect(STICKER_CATALOG.length === 72, '72 pack positions');
         expect(STICKER_CATALOG[0]?.packIndex === 1 && STICKER_CATALOG[0]?.label === '闭眼微笑', '01 is 闭眼微笑');
         expect(
-            STICKER_CATALOG[2]?.label === '握拳困惑' && STICKER_CATALOG[2]?.fileUniqueId === 'AgADEyMAAv5cCVc',
+            STICKER_CATALOG[2]?.label === '蜷手困惑' && STICKER_CATALOG[2]?.fileUniqueId === 'AgADEyMAAv5cCVc',
             '03 is the picture the author added on 2026-10-27'
         );
         expect(STICKER_CATALOG[71]?.label === '藏在云朵里', '72 stayed 藏在云朵里');
+        expect(
+            STICKER_CATALOG[54]?.label === '星星眼跪坐笑',
+            '55 is the sparkling-eye kneel, not the question marks its old label claimed'
+        );
         expect(
             STICKER_CATALOG.every((entry) => entry.duplicateOf === undefined),
             'no picture repeats another any more'

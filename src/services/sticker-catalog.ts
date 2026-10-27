@@ -35,7 +35,7 @@ export interface StickerCatalogEntry {
 export const STICKER_CATALOG: readonly StickerCatalogEntry[] = [
     { packIndex: 1, label: '闭眼微笑', sourceFileNumber: 29, emoji: '😊', fileUniqueId: 'AgAD7R8AAube8FY' },
     { packIndex: 2, label: '趴着等待', sourceFileNumber: 59, emoji: '⏳', fileUniqueId: 'AgADgCAAAkdC8VY' },
-    { packIndex: 3, label: '握拳困惑', sourceFileNumber: 0, emoji: '❓', fileUniqueId: 'AgADEyMAAv5cCVc' },
+    { packIndex: 3, label: '蜷手困惑', sourceFileNumber: 0, emoji: '❓', fileUniqueId: 'AgADEyMAAv5cCVc' },
     { packIndex: 4, label: '起床揉眼', sourceFileNumber: 30, emoji: '🌅', fileUniqueId: 'AgADbigAAjau8VY' },
     { packIndex: 5, label: '趴白枕', sourceFileNumber: 47, emoji: '🍊', fileUniqueId: 'AgADXR8AAjbH8VY' },
     { packIndex: 6, label: '吃汉堡', sourceFileNumber: 28, emoji: '🍔', fileUniqueId: 'AgADqSIAAro_8VY' },
@@ -87,7 +87,7 @@ export const STICKER_CATALOG: readonly StickerCatalogEntry[] = [
     { packIndex: 52, label: '单手贴脸笑', sourceFileNumber: 71, emoji: '🤔', fileUniqueId: 'AgADvx4AAmGy8FY' },
     { packIndex: 53, label: '举手求抱抱', sourceFileNumber: 15, emoji: '🤗', fileUniqueId: 'AgAD9i0AAoPr8VY' },
     { packIndex: 54, label: '问号疑惑', sourceFileNumber: 55, emoji: '🤨', fileUniqueId: 'AgADtTIAAnl68VY' },
-    { packIndex: 55, label: '满头问号', sourceFileNumber: 7, emoji: '🤩', fileUniqueId: 'AgADEh8AApal-VY' },
+    { packIndex: 55, label: '星星眼跪坐笑', sourceFileNumber: 7, emoji: '🤩', fileUniqueId: 'AgADEh8AApal-VY' },
     { packIndex: 56, label: '掩嘴偷笑', sourceFileNumber: 57, emoji: '🤭', fileUniqueId: 'AgAD9CYAAs448VY' },
     { packIndex: 57, label: '歪头卖萌', sourceFileNumber: 49, emoji: '🥰', fileUniqueId: 'AgADZCEAAmvK8VY' },
     { packIndex: 58, label: '困倦半睁眼', sourceFileNumber: 3, emoji: '🥱', fileUniqueId: 'AgADuCUAAnB48VY' },
