@@ -9,6 +9,7 @@ import {
     createBotResponse,
     getBotResponse,
     findBotResponseByMessageId,
+    findProcessingResponses,
     writeBotMessageRow,
     type ResponseVersion,
     type ResponseMetadata,
@@ -539,6 +540,47 @@ export const stopResponse = async (chatId: number, firstMessageId: number): Prom
 };
 
 /**
+ * A restart kills the stream it was in the middle of: the reply keeps a stop
+ * button no session answers any more, and a retry finds no stored version.
+ * Nothing can be streaming while starting up, so every row still marked as
+ * processing is stale. Make them retryable and take the stop button off their
+ * message, so the chat shows what the bot can actually do with them.
+ */
+export const reconcileInterruptedResponses = async (api: Api): Promise<number> => {
+    const [findErr, found] = await to(findProcessingResponses());
+    if (findErr || !found) {
+        console.error('[bot-message-service] Failed to list interrupted responses:', findErr);
+        return 0;
+    }
+
+    for (const response of found) {
+        response.buttonState = ButtonState.RETRY_ONLY;
+        const [saveErr] = await to(response.save());
+        if (saveErr) {
+            console.error('[bot-message-service] Failed to mark response retryable:', response.messageId, saveErr);
+            continue;
+        }
+
+        const [editErr] = await to(
+            runApiCall(response.chatId, () =>
+                api.editMessageReplyMarkup(response.chatId, response.messageId, {
+                    reply_markup: buildResponseButtons(ButtonState.RETRY_ONLY),
+                })
+            )
+        );
+        // A deleted message is already clean; anything else is worth a look
+        if (editErr && !/message is not modified|message to edit not found/i.test(editErr.message)) {
+            console.warn('[bot-message-service] Interrupted message keeps its buttons:', response.messageId, editErr.message);
+        }
+    }
+
+    if (found.length > 0) {
+        console.log(`[bot-message-service] ${found.length} interrupted response(s) made retryable`);
+    }
+    return found.length;
+};
+
+/**
  * The messages a stored version shows: the final layout of its text,
  * thinking and records, plus an errored version's error line (display-only,
  * never stored)
@@ -593,8 +635,14 @@ export const startRetry = async (
 
     const currentVersion = response.getCurrentVersion();
     if (!currentVersion) {
-        console.error('[bot-message-service] No current version for retry');
-        return null;
+        // A restart cut the stream off before anything was stored: there is no
+        // version to delete or switch, so regenerate into the message that is
+        // already in the chat instead of failing silently
+        console.warn('[bot-message-service] No stored version for retry, regenerating in place:', firstMessageId);
+        return createSession(ctx, response.userMessageId, {
+            isRetry: true,
+            existingFirstMessageId: firstMessageId,
+        });
     }
 
     // Check if current version is image-only (first message is a photo, can't be edited to text)

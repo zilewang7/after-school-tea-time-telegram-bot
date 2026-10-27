@@ -13,6 +13,7 @@ import { initMcpClients } from './ai/mcp/index.js';
 import { isTestInstance, getAllowedChatIds, isChatAllowed } from './config/instance.js';
 import { registerSenderGate } from './config/sender-gate.js';
 import { startCustomEmojiRecovery } from './services/custom-emoji-service.js';
+import { reconcileInterruptedResponses } from './services/bot-message-service.js';
 
 if (!process.env.BOT_TOKEN) {
     throw new Error('BOT_TOKEN must be provided');
@@ -132,6 +133,11 @@ async function main() {
     // alters the multi-GB message table; writes still must not race DDL.
     await dbReady;
     console.log('[db] Schema ready');
+    // No session survives a restart: replies still marked as streaming were cut
+    // off, so they get their stop button replaced by a retry that works
+    await reconcileInterruptedResponses(bot.api).catch((error: unknown) => {
+        console.error('[startup] Failed to reconcile interrupted responses:', error);
+    });
     startCustomEmojiRecovery(bot);
     await initMcpClients();
     console.log('[mcp] Initialization complete');

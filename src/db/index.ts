@@ -176,6 +176,14 @@ const getBotResponse = async (chatId: number, messageId: number): Promise<BotRes
 };
 
 /**
+ * Responses still marked as streaming. Only a live process streams one, so
+ * whatever is returned while starting up was cut off mid-generation.
+ */
+const findProcessingResponses = async (): Promise<BotResponse[]> => {
+    return BotResponse.findAll({ where: { buttonState: ButtonState.PROCESSING } });
+};
+
+/**
  * Find a bot response by any of its message IDs (searches through all versions)
  */
 const findBotResponseByMessageId = async (chatId: number, messageId: number): Promise<BotResponse | null> => {
@@ -259,6 +267,7 @@ export {
     getMessage,
     getBotResponse,
     findBotResponseByMessageId,
+    findProcessingResponses,
     createBotResponse,
     updateBotResponseButtonState,
     BotResponse,

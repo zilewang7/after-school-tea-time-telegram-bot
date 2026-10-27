@@ -37,7 +37,7 @@ import {
 } from './harness.mts';
 import type { AIResponse, PlatformConfig, ResponseState, StreamChunk, UnifiedMessage } from '../../src/ai/types.js';
 import type { ToolHandler, ToolResult } from '../../src/ai/tools/tool-types.js';
-import type { ResponseVersion } from '../../src/db/botResponseDTO.js';
+import type { ResponseVersion, ButtonState } from '../../src/db/botResponseDTO.js';
 import type { ContextIndex } from '../../src/reply/context-index.js';
 
 // The bot's own rows are stored as messages of this user
@@ -64,7 +64,7 @@ const { GEMINI_IMAGE_MODEL } = await import('../../src/config/models.js');
 const { loadMessageImages, collectReferenceImages } = await import('../../src/reply/commands/reference-images.js');
 const { buildContext } = await import('../../src/reply/context-builder.js');
 const responseHandler = await import('../../src/reply/response-handler.js');
-const { switchVersion, startRetry } = await import('../../src/services/bot-message-service.js');
+const { switchVersion, startRetry, reconcileInterruptedResponses } = await import('../../src/services/bot-message-service.js');
 const dbIndex = await import('../../src/db/index.js');
 
 // ---------------------------------------------------------------------------
@@ -174,6 +174,7 @@ const seedResponse = async (options: {
     userMessageId: number;
     versions: Array<Partial<ResponseVersion>>;
     currentVersionIndex?: number;
+    buttonState?: ButtonState;
 }): Promise<void> => {
     const versions: ResponseVersion[] = options.versions.map((version, index) => ({
         versionId: index + 1,
@@ -190,7 +191,7 @@ const seedResponse = async (options: {
         userMessageId: options.userMessageId,
         currentVersionIndex: options.currentVersionIndex ?? versions.length - 1,
         versions: JSON.stringify(versions),
-        buttonState: dbIndex.ButtonState.NONE,
+        buttonState: options.buttonState ?? dbIndex.ButtonState.NONE,
         metadata: JSON.stringify({ model: 'offline', hasImage: false }),
     });
 };
@@ -1502,6 +1503,89 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
                         (telegramCall) => telegramCall.payload.message_id === switchFirst && telegramCall.payload.text === '第二版'
                     ),
                 `the photo goes and the first message turns into the new version (got deleted=${json(switchDeleted)})`
+            );
+        },
+    },
+    {
+        name: 'a reply a restart cut off is retryable and loses its stuck stop button',
+        body: async () => {
+            // Retry: no version was ever stored, so the message already in the
+            // chat is the one regenerated into (it used to fail silently)
+            const retryChatId = -1003900000071;
+            const retryTelegram = createFakeTelegram(retryChatId);
+            const retryUser = takeMessageId();
+            const retryFirst = takeMessageId();
+            await seedResponse({
+                chatId: retryChatId,
+                firstMessageId: retryFirst,
+                userMessageId: retryUser,
+                versions: [],
+                buttonState: dbIndex.ButtonState.RETRY_ONLY,
+            });
+            const { result: retried, lines } = await captureConsole(() =>
+                startRetry(contextIn(retryTelegram, retryChatId, takeMessageId()), retryFirst)
+            );
+            const retryEdits = callsOf(retryTelegram, 'editMessageText');
+            expect(
+                retried?.firstMessageId === retryFirst && json(retried?.messageIds) === json([retryFirst]),
+                `the retry regenerates into the message already in the chat (got ${json(retried?.messageIds)})`
+            );
+            expect(
+                retryEdits.length === 1 &&
+                    retryEdits[0]?.payload.message_id === retryFirst &&
+                    retryEdits[0]?.payload.text === '✽ Thinking...' &&
+                    callsOf(retryTelegram, 'sendMessage').length === 0 &&
+                    callsOf(retryTelegram, 'deleteMessage').length === 0,
+                `the message turns back into a processing one in place (got ${json(retryEdits.map((telegramCall) => telegramCall.payload.text))})`
+            );
+            expect(
+                lines.some((line) => line.includes('No stored version for retry')),
+                'the interruption is named in the log'
+            );
+            retried?.streamController.abort();
+
+            // Startup reconcile: a reply still marked as streaming keeps a stop
+            // button no session answers, so it becomes a retry; finished replies
+            // are left alone
+            const reconcileChatId = -1003900000072;
+            const reconcileTelegram = createFakeTelegram(reconcileChatId);
+            const staleUser = takeMessageId();
+            const staleFirst = takeMessageId();
+            const healthyUser = takeMessageId();
+            const healthyFirst = takeMessageId();
+            await seedResponse({
+                chatId: reconcileChatId,
+                firstMessageId: staleFirst,
+                userMessageId: staleUser,
+                versions: [],
+                buttonState: dbIndex.ButtonState.PROCESSING,
+            });
+            await seedResponse({
+                chatId: reconcileChatId,
+                firstMessageId: healthyFirst,
+                userMessageId: healthyUser,
+                versions: [{ text: '答完了' }],
+            });
+            const { result: reconciled } = await captureConsole(() =>
+                reconcileInterruptedResponses(reconcileTelegram.api)
+            );
+            const staleRow = await dbIndex.getBotResponse(reconcileChatId, staleFirst);
+            const healthyRow = await dbIndex.getBotResponse(reconcileChatId, healthyFirst);
+            const markupCalls = callsOf(reconcileTelegram, 'editMessageReplyMarkup').filter(
+                (telegramCall) => telegramCall.payload.message_id === staleFirst
+            );
+            expect(
+                reconciled > 0 && staleRow?.buttonState === dbIndex.ButtonState.RETRY_ONLY,
+                `the interrupted reply becomes retryable (got ${reconciled}, ${staleRow?.buttonState})`
+            );
+            expect(
+                markupCalls.length === 1 && json(markupCalls[0]?.payload.reply_markup).includes('resp:retry'),
+                `its message gets the retry button (got ${json(markupCalls.map((telegramCall) => telegramCall.payload.reply_markup))})`
+            );
+            expect(
+                healthyRow?.buttonState === dbIndex.ButtonState.NONE &&
+                    callsOf(reconcileTelegram, 'editMessageText').length === 0,
+                'a finished reply is left untouched'
             );
         },
     },
