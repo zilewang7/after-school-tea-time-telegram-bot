@@ -80,12 +80,22 @@ const emptyState = (): ResponseState => ({
 const cases: Promise<CaseResult>[] = [];
 
 cases.push(
-    runCase('the catalog is the pack order, 72 entries, with the one duplicate', async () => {
+    runCase('the catalog is the pack order: 72 unique pictures, 03 replaced by the author', async () => {
         expect(STICKER_CATALOG.length === 72, '72 pack positions');
         expect(STICKER_CATALOG[0]?.packIndex === 1 && STICKER_CATALOG[0]?.label === '闭眼微笑', '01 is 闭眼微笑');
-        expect(STICKER_CATALOG[2]?.label === '藏在云朵里', '03 is 藏在云朵里');
-        expect(STICKER_CATALOG[71]?.label === '藏在云朵里', '72 is the same picture');
-        expect(STICKER_CATALOG[71]?.duplicateOf === 3, '72 points at 03');
+        expect(
+            STICKER_CATALOG[2]?.label === '握拳困惑' && STICKER_CATALOG[2]?.fileUniqueId === 'AgADEyMAAv5cCVc',
+            '03 is the picture the author added on 2026-10-27'
+        );
+        expect(STICKER_CATALOG[71]?.label === '藏在云朵里', '72 stayed 藏在云朵里');
+        expect(
+            STICKER_CATALOG.every((entry) => entry.duplicateOf === undefined),
+            'no picture repeats another any more'
+        );
+        expect(
+            new Set(STICKER_CATALOG.map((entry) => entry.fileUniqueId)).size === 72,
+            '72 distinct file ids'
+        );
         expect(STICKER_CATALOG.every((entry, index) => entry.packIndex === index + 1), 'indices are 01..72');
     })
 );
@@ -97,7 +107,7 @@ cases.push(
             expect(!STICKER_CATALOG_TEXT.includes(name), `description omits ${name}`);
         }
         expect(STICKER_CATALOG_TEXT.startsWith('01闭眼微笑'), 'starts at 01');
-        expect(STICKER_CATALOG_TEXT.includes('72藏在云朵里（与 03 相同）'), 'notes the duplicate');
+        expect(!STICKER_CATALOG_TEXT.includes('（与'), 'no duplicate note');
     })
 );
 

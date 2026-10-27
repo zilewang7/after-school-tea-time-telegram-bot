@@ -14,25 +14,28 @@
  * `fileUniqueId` is how the runtime finds the current file_id: it survives a
  * bot token change and catches an edited pack, where the position may mean a
  * different picture. Regenerate this table after the author edits the pack.
+ *
+ * The pack holds 72 unique pictures today. 03 used to repeat 72; the author
+ * replaced it on 2026-10-27, so it has no original file number (`0`).
  */
 export interface StickerCatalogEntry {
     /** 1-based position in the pack, 1..72 */
     readonly packIndex: number;
     /** What the picture actually shows; the only name the model sees */
     readonly label: string;
-    /** Original file number, for tracing only; never shown to the model */
+    /** Original file number, for tracing only; never shown to the model. 0 = added by the author later */
     readonly sourceFileNumber: number;
     readonly emoji: string;
     /** Stable across bots and pack edits; resolves to file_id at runtime */
     readonly fileUniqueId: string;
-    /** This picture is the same as another pack index (today: 72 repeats 3) */
+    /** This picture repeats another pack index (none in the pack today) */
     readonly duplicateOf?: number;
 }
 
 export const STICKER_CATALOG: readonly StickerCatalogEntry[] = [
     { packIndex: 1, label: '闭眼微笑', sourceFileNumber: 29, emoji: '😊', fileUniqueId: 'AgAD7R8AAube8FY' },
     { packIndex: 2, label: '趴着等待', sourceFileNumber: 59, emoji: '⏳', fileUniqueId: 'AgADgCAAAkdC8VY' },
-    { packIndex: 3, label: '藏在云朵里', sourceFileNumber: 24, emoji: '❓', fileUniqueId: 'AgADjiAAAs2B8VY' },
+    { packIndex: 3, label: '握拳困惑', sourceFileNumber: 0, emoji: '❓', fileUniqueId: 'AgADEyMAAv5cCVc' },
     { packIndex: 4, label: '起床揉眼', sourceFileNumber: 30, emoji: '🌅', fileUniqueId: 'AgADbigAAjau8VY' },
     { packIndex: 5, label: '趴白枕', sourceFileNumber: 47, emoji: '🍊', fileUniqueId: 'AgADXR8AAjbH8VY' },
     { packIndex: 6, label: '吃汉堡', sourceFileNumber: 28, emoji: '🍔', fileUniqueId: 'AgADqSIAAro_8VY' },
@@ -101,7 +104,7 @@ export const STICKER_CATALOG: readonly StickerCatalogEntry[] = [
     { packIndex: 69, label: '趴地躺平', sourceFileNumber: 19, emoji: '🫠', fileUniqueId: 'AgADhyMAAk7-8FY' },
     { packIndex: 70, label: '害羞捂脸', sourceFileNumber: 18, emoji: '🫣', fileUniqueId: 'AgADBSIAAoLd8FY' },
     { packIndex: 71, label: '惊恐发抖', sourceFileNumber: 16, emoji: '🫨', fileUniqueId: 'AgAD5hwAAhcJ8VY' },
-    { packIndex: 72, label: '藏在云朵里', sourceFileNumber: 24, emoji: '☁', fileUniqueId: 'AgADLSoAAri58FY', duplicateOf: 3 },
+    { packIndex: 72, label: '藏在云朵里', sourceFileNumber: 24, emoji: '☁', fileUniqueId: 'AgADLSoAAri58FY' },
 ];
 
 /** Trim and drop separators so "第 7 张" / "07" / "#7" all normalize the same way */
