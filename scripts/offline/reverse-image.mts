@@ -281,6 +281,53 @@ cases.push(
 );
 
 cases.push(
+    await runCase('the Yandex upload is a sized multipart body, not a chunked one', async () => {
+        const { searchByImage, clearReverseSearchCache } = await import(
+            '../../src/services/image-reverse-search-service.js'
+        );
+        clearReverseSearchCache();
+        const calls: Array<{ url: string; init: RequestInit }> = [];
+        const originalFetch = globalThis.fetch;
+        // Undici's chunked FormData upload gets a 200 with no cbirId from Yandex,
+        // so the service must send a body it can declare a length for.
+        globalThis.fetch = (async (input, init) => {
+            calls.push({ url: String(input), init: init ?? {} });
+            if (calls.length === 1) {
+                return new Response(JSON.stringify({ blocks: [{ params: { cbirId: '123/abc' } }] }), {
+                    status: 200,
+                    headers: { 'content-type': 'application/json' },
+                });
+            }
+            return new Response(FIXTURE, { status: 200, headers: { 'content-type': 'text/html' } });
+        }) as typeof fetch;
+        try {
+            const bytes = Buffer.concat([JPEG, Buffer.from('sized upload probe')]);
+            const outcome = await searchByImage({ bytes, mimeType: 'image/jpeg' });
+            expect(outcome.ok, `the fake Yandex answers (${outcome.ok ? '' : outcome.error})`);
+
+            const upload = calls[0];
+            const headers = new Headers(upload?.init.headers);
+            expect(
+                headers.get('content-type')?.startsWith('multipart/form-data; boundary=') === true,
+                'the body declares its own boundary'
+            );
+            const declaredLength = Number(headers.get('content-length'));
+            const body = upload?.init.body;
+            expect(
+                body instanceof Uint8Array && declaredLength === body.length,
+                `the body length is explicit (${declaredLength} vs ${body instanceof Uint8Array ? body.length : 'n/a'})`
+            );
+            expect(
+                body instanceof Uint8Array && Buffer.from(body).includes(bytes),
+                'the image rides inside that body'
+            );
+        } finally {
+            globalThis.fetch = originalFetch;
+        }
+    })
+);
+
+cases.push(
     await runCase('cached results do not consume the three-search budget', async () => {
         const index: ContextIndex = new Map([[1, entryOf(PNG)]]);
         const stub = searchStub(RESULT, { cached: true });

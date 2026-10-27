@@ -9,7 +9,7 @@
  * The page is also the only place this module trusts, and only as data: a
  * changed layout is a parse failure, never a half-filled answer.
  */
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import type { SniffedMediaMime } from '../ai/image-generation/image-mime.js';
 import { getErrorMessage, isTimeoutError } from '../shared/errors.js';
 import { isJsonObject } from '../shared/json-object.js';
@@ -132,14 +132,40 @@ const parseJson = (text: string): unknown => {
     }
 };
 
+/**
+ * A multipart body with an explicit Content-Length. `FormData` is left out on
+ * purpose: with the global undici fetch it goes out chunked, and Yandex then
+ * answers 200 with an empty `params` block instead of a cbirId (verified
+ * 2026-10-27 — same bytes, sized body works, chunked does not).
+ */
+const multipartImageBody = (
+    bytes: Buffer,
+    mimeType: string
+): { readonly body: Buffer; readonly contentType: string } => {
+    const boundary = `----k-on-bot-${randomUUID()}`;
+    const head = Buffer.from(
+        `--${boundary}\r\n` +
+            'Content-Disposition: form-data; name="upfile"; filename="blob"\r\n' +
+            `Content-Type: ${mimeType}\r\n\r\n`
+    );
+    const tail = Buffer.from(`\r\n--${boundary}--\r\n`);
+    return {
+        body: Buffer.concat([head, bytes, tail]),
+        contentType: `multipart/form-data; boundary=${boundary}`,
+    };
+};
+
 const uploadImage = async (options: ReverseSearchOptions): Promise<string> => {
-    const form = new FormData();
-    form.append('upfile', new Blob([new Uint8Array(options.bytes)], { type: options.mimeType }), 'blob');
+    const { body, contentType } = multipartImageBody(options.bytes, options.mimeType);
 
     const response = await fetch(UPLOAD_URL, {
         method: 'POST',
-        body: form,
-        headers: BROWSER_HEADERS,
+        body,
+        headers: {
+            ...BROWSER_HEADERS,
+            'content-type': contentType,
+            'content-length': String(body.length),
+        },
         signal: requestSignal(UPLOAD_TIMEOUT_MS, options.signal),
     });
     const text = await response.text();
