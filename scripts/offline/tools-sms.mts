@@ -101,11 +101,24 @@ type ToolsCallBehaviour =
     | 'http-500'
     | 'http-401'
     | 'drop'
-    | 'hang';
+    | 'hang'
+    | 'hang-once';
+type SentLogBehaviour = 'answer' | 'tool-error';
 /** How the stub answers; cases switch it and put it back */
-const stub: { initialize: InitializeBehaviour; toolsCall: ToolsCallBehaviour } = {
+const stub: {
+    initialize: InitializeBehaviour;
+    toolsCall: ToolsCallBehaviour;
+    sentLog: SentLogBehaviour;
+    /** What list_sent_messages reports as already delivered */
+    sentEntries: Array<{ content: string; ok?: boolean }>;
+    /** One send has hung already ('hang-once' answers the next one) */
+    hungOnce: boolean;
+} = {
     initialize: 'answer',
     toolsCall: 'answer',
+    sentLog: 'answer',
+    sentEntries: [],
+    hungOnce: false,
 };
 /** Initialize answers held back by the 'hold' behaviour, released by the case */
 const heldInitializes: Array<() => void> = [];
@@ -121,6 +134,19 @@ const SEND_TEXT_TOOL = {
             to: { description: '可选：指定接收方 id（默认发给自己）', type: 'string' },
         },
         required: ['content'],
+        $schema: 'http://json-schema.org/draft-07/schema#',
+    },
+};
+
+/** The sent log the sender verifies an unanswered attempt against */
+const LIST_SENT_TOOL = {
+    name: 'list_sent_messages',
+    description: '列出最近通过本服务发出的消息（含来源与结果，缓冲上限 200 条，最新在前）。',
+    inputSchema: {
+        type: 'object',
+        properties: {
+            limit: { description: '返回条数，默认 30', type: 'integer', minimum: 1, maximum: 200 },
+        },
         $schema: 'http://json-schema.org/draft-07/schema#',
     },
 };
@@ -162,7 +188,29 @@ const handleInitialize = (response: ServerResponse, id: unknown, params: Record<
     }
 };
 
-const handleToolsCall = (request: IncomingMessage, response: ServerResponse, id: unknown): void => {
+const handleSentLog = (response: ServerResponse, id: unknown): void => {
+    switch (stub.sentLog) {
+        case 'answer':
+            answer(response, id, {
+                content: [{ type: 'text', text: JSON.stringify({ ok: true, sent: stub.sentEntries }) }],
+            });
+            return;
+        case 'tool-error':
+            answer(response, id, { content: [{ type: 'text', text: '发送记录暂不可读' }], isError: true });
+            return;
+    }
+};
+
+const handleToolsCall = (
+    request: IncomingMessage,
+    response: ServerResponse,
+    id: unknown,
+    toolName: string
+): void => {
+    if (toolName === LIST_SENT_TOOL.name) {
+        handleSentLog(response, id);
+        return;
+    }
     switch (stub.toolsCall) {
         case 'answer':
             answer(response, id, { content: [{ type: 'text', text: '已发送' }] });
@@ -192,6 +240,13 @@ const handleToolsCall = (request: IncomingMessage, response: ServerResponse, id:
         case 'hang':
             // Never answers: the client has to give up on its own
             return;
+        case 'hang-once':
+            if (!stub.hungOnce) {
+                stub.hungOnce = true;
+                return;
+            }
+            answer(response, id, { content: [{ type: 'text', text: '已发送' }] });
+            return;
     }
 };
 
@@ -216,11 +271,11 @@ const smsStub = createServer(async (request: IncomingMessage, response: ServerRe
         return;
     }
     if (method === 'tools/list') {
-        answer(response, message.id, { tools: [SEND_TEXT_TOOL] });
+        answer(response, message.id, { tools: [SEND_TEXT_TOOL, LIST_SENT_TOOL] });
         return;
     }
     if (method === 'tools/call') {
-        handleToolsCall(request, response, message.id);
+        handleToolsCall(request, response, message.id, String(params.name));
         return;
     }
     sendJson(response, 200, { jsonrpc: '2.0', id: message.id, error: { code: -32601, message: 'Method not found' } });
@@ -288,8 +343,17 @@ const sentArguments = (start: number): unknown[] =>
     requestsSince(start)
         .filter((request) => request.method === 'tools/call')
         .map((request) => request.params.arguments);
+/** Tool names of the tools/call requests, in order */
+const calledTools = (start: number): string[] =>
+    requestsSince(start)
+        .filter((request) => request.method === 'tools/call')
+        .map((request) => String(request.params.name));
 
-const smsLogLines = (lines: readonly string[]): string[] => lines.filter((line) => line.startsWith('[sms]'));
+const smsLogLines = (lines: readonly string[]): string[] =>
+    lines.filter((line) => line.startsWith('[sms] chat '));
+/** What the sender itself logged about retries and lookups */
+const senderLogLines = (lines: readonly string[]): string[] =>
+    lines.filter((line) => line.startsWith('[sms] ') && !line.startsWith('[sms] chat '));
 const groupLogLine = (chars: number, status: string): string =>
     `[sms] chat ${GROUP_CHAT_ID}, requester ${REQUESTER_ID}, content ${chars} chars: ${status}`;
 
@@ -445,8 +509,9 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
         },
     },
     {
-        name: 'a JSON-RPC error from the server is an error result that may have gone out',
+        name: 'a JSON-RPC error from the server is looked up in the sent log, then retried once',
         body: async () => {
+            const start = stubRequests.length;
             stub.toolsCall = 'rpc-error';
             const { result, lines } = await captureConsole(() =>
                 groupTool.execute({ content: '你好' }, liveSignal())
@@ -462,10 +527,14 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
                 json(smsLogLines(lines)) === json([groupLogLine(2, 'error (failed, may have gone out)')]),
                 `logged as such (got ${json(smsLogLines(lines))})`
             );
+            expect(
+                json(calledTools(start)) === json(['send_text', 'list_sent_messages', 'send_text']),
+                `the unanswered send is looked up, found missing, then retried once (got ${json(calledTools(start))})`
+            );
         },
     },
     {
-        name: 'a transport failure resets the cached connection and the send is not retried',
+        name: 'a transport failure is looked up in the sent log and retried once',
         body: async () => {
             const failures: ToolsCallBehaviour[] = ['http-500', 'drop'];
             for (const failure of failures) {
@@ -483,7 +552,10 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
                     json(smsLogLines(lines)) === json([groupLogLine(2, 'error (failed, may have gone out)')]),
                     `${failure}: logged as such (got ${json(smsLogLines(lines))})`
                 );
-                expect(countSince(start, 'tools/call') === 1, `${failure}: send_text went out once, no retry`);
+                expect(
+                    json(calledTools(start)) === json(['send_text', 'list_sent_messages', 'send_text']),
+                    `${failure}: looked up, then one retry (got ${json(calledTools(start))})`
+                );
 
                 // A token changed after the first send must not be picked up
                 process.env.OWNER_SMS_MCP_TOKEN = 'a-token-set-after-the-first-send';
@@ -502,7 +574,7 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
         },
     },
     {
-        name: 'an HTTP 4xx refusal says nothing was sent and resets the connection',
+        name: 'an HTTP 4xx refusal is retried once, since nothing was sent',
         body: async () => {
             const start = stubRequests.length;
             stub.toolsCall = 'http-401';
@@ -518,7 +590,10 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
                 json(smsLogLines(lines)) === json([groupLogLine(2, 'error (http-refused)')]),
                 `logged as refused (got ${json(smsLogLines(lines))})`
             );
-            expect(countSince(start, 'tools/call') === 1, 'send_text went out once, no retry');
+            expect(
+                json(calledTools(start)) === json(['send_text', 'send_text']),
+                `nothing was sent, so it retries at once without a lookup (got ${json(calledTools(start))})`
+            );
 
             const next = stubRequests.length;
             const recovered = await groupTool.execute({ content: '你好' }, liveSignal());
@@ -559,8 +634,9 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
         },
     },
     {
-        name: 'a send past its deadline is a timeout with an unknown result',
+        name: 'a send past its deadline is a timeout that is looked up and retried once',
         body: async () => {
+            const start = stubRequests.length;
             stub.toolsCall = 'hang';
             const sender = createOwnerSmsSender({ url: SMS_URL, token: SMS_TOKEN }, 300);
             const startedAt = Date.now();
@@ -571,11 +647,82 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
                 json(outcome) === json({ kind: 'timeout', sendStarted: true }),
                 `a timeout after send_text went out (got ${json(outcome)})`
             );
-            expect(elapsed >= 250 && elapsed < 2000, `the deadline applies (took ${elapsed}ms)`);
+            expect(elapsed >= 250 && elapsed < 4000, `the deadline applies to each attempt (took ${elapsed}ms)`);
+            expect(
+                json(calledTools(start)) === json(['send_text', 'list_sent_messages', 'send_text']),
+                `the sender looks up the unanswered send, finds it missing, then retries (got ${json(calledTools(start))})`
+            );
             expect(
                 json(ownerSmsToolResult(outcome)) ===
                     json({ content: '短信服务没有及时响应，不确定短信是否已发出。', isError: true, images: [], record: null }),
                 'the model hears the result is unknown'
+            );
+        },
+    },
+    {
+        name: 'a timeout the sent log confirms is reported as sent, without a second text',
+        body: async () => {
+            const start = stubRequests.length;
+            stub.toolsCall = 'hang';
+            stub.sentEntries = [{ content: 'x' }];
+            const sender = createOwnerSmsSender({ url: SMS_URL, token: SMS_TOKEN }, 300);
+            const { result: outcome, lines } = await captureConsole(() => sender.send('x', liveSignal()));
+            stub.toolsCall = 'answer';
+            stub.sentEntries = [];
+            expect(
+                json(outcome) === json({ kind: 'sent', serverText: '', verified: true }),
+                `the lookup turns the unknown into a confirmed sent (got ${json(outcome)})`
+            );
+            expect(
+                json(calledTools(start)) === json(['send_text', 'list_sent_messages']),
+                `no second text goes out (got ${json(calledTools(start))})`
+            );
+            expect(
+                ownerSmsToolResult(outcome).content === '短信已发送（第一次没等到响应，核对发送记录确认已经发出）。',
+                `the model hears it was confirmed (got ${json(ownerSmsToolResult(outcome).content)})`
+            );
+            expect(
+                senderLogLines(lines).some((line) => line.includes('delivered after all')),
+                `the log says the lookup confirmed it (got ${json(senderLogLines(lines))})`
+            );
+        },
+    },
+    {
+        name: 'a sent log that cannot be read leaves the outcome unknown, with no retry',
+        body: async () => {
+            const start = stubRequests.length;
+            stub.toolsCall = 'hang';
+            stub.sentLog = 'tool-error';
+            const sender = createOwnerSmsSender({ url: SMS_URL, token: SMS_TOKEN }, 300);
+            const outcome = await sender.send('x', liveSignal());
+            stub.toolsCall = 'answer';
+            stub.sentLog = 'answer';
+            expect(
+                json(outcome) === json({ kind: 'timeout', sendStarted: true }),
+                `an unknown result stays unknown (got ${json(outcome)})`
+            );
+            expect(
+                json(calledTools(start)) === json(['send_text', 'list_sent_messages']),
+                `without a readable log there is no retry (got ${json(calledTools(start))})`
+            );
+        },
+    },
+    {
+        name: 'a send missing from the sent log is retried once and the retry goes through',
+        body: async () => {
+            const start = stubRequests.length;
+            stub.toolsCall = 'hang-once';
+            stub.hungOnce = false;
+            const sender = createOwnerSmsSender({ url: SMS_URL, token: SMS_TOKEN }, 300);
+            const outcome = await sender.send('x', liveSignal());
+            stub.toolsCall = 'answer';
+            expect(
+                outcome.kind === 'sent' && outcome.serverText === '已发送',
+                `the retry delivers (got ${json(outcome)})`
+            );
+            expect(
+                json(calledTools(start)) === json(['send_text', 'list_sent_messages', 'send_text']),
+                `looked up, found missing, retried (got ${json(calledTools(start))})`
             );
         },
     },
@@ -617,8 +764,12 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
                 ownerSmsToolResult(refused).content.startsWith('连接短信服务失败，短信没有发出：'),
                 `the model hears nothing was sent (got ${json(ownerSmsToolResult(refused).content)})`
             );
-            expect(countSince(start, 'tools/call') === 0, 'no send_text was attempted');
+            expect(
+                countSince(start, 'initialize') === 2 && countSince(start, 'tools/call') === 0,
+                `nothing reached the tool, so the connect is retried at once (got ${json(requestsSince(start).map((request) => request.method))})`
+            );
 
+            const slowStart = stubRequests.length;
             stub.initialize = 'hold';
             const slowSender = createOwnerSmsSender({ url: SMS_URL, token: SMS_TOKEN }, 300);
             const slow = await slowSender.send('x', liveSignal());
@@ -631,13 +782,16 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
                 ownerSmsToolResult(slow).content === '连接短信服务超时，短信没有发出。',
                 `the model hears nothing was sent (got ${json(ownerSmsToolResult(slow).content)})`
             );
-            expect(countSince(start, 'tools/call') === 0, 'still no send_text');
+            expect(
+                countSince(slowStart, 'tools/call') === 0 && heldInitializes.length === 2,
+                `the retry waits on a handshake of its own (got ${json(requestsSince(slowStart).map((request) => request.method))})`
+            );
 
-            // The held handshake completes late: that connection serves the next send
+            // The held handshakes complete late: one of them serves the next send
             const released = stubRequests.length;
             heldInitializes.splice(0).forEach((release) => release());
             expect(
-                await waitFor(() => countSince(released, 'tools/list') === 1),
+                await waitFor(() => countSince(released, 'tools/list') >= 1),
                 'the late handshake finishes'
             );
             await sleep(100);

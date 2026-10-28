@@ -738,8 +738,9 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
             expect(canonical(partsOf(second[1])) === canonical(partsOfRound(round1)), 'the model turn carries both calls verbatim');
             expect(noticeCountOf(recordedRequests[1]) === 0, 'round 2 may still call: no notice');
             expect(
-                json(doneChunksOf(chunks)[0]?.agentStats?.toolUsage) === '[{"name":"lookup_a","count":1},{"name":"broken_tool","count":1}]',
-                'both counted'
+                json(doneChunksOf(chunks)[0]?.agentStats?.toolUsage) ===
+                    '[{"name":"lookup_a","count":1},{"name":"broken_tool","count":1,"failed":1}]',
+                'both counted, the failed one marked'
             );
         },
     },

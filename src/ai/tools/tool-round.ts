@@ -56,17 +56,28 @@ export const withToolBudget = (
 /** Per-reply call counts for agentStats.toolUsage */
 export interface ToolUsageTally {
     count(name: string): void;
+    /** The call just counted ended in an error result */
+    fail(name: string): void;
     snapshot(): AgentToolUsage[];
 }
 
 export const createToolUsageTally = (): ToolUsageTally => {
     // Map keeps first-use order, which is the order the usage line shows
     const countsByName = new Map<string, number>();
+    const failuresByName = new Map<string, number>();
     return {
         count: (name) => {
             countsByName.set(name, (countsByName.get(name) ?? 0) + 1);
         },
-        snapshot: () => Array.from(countsByName, ([name, count]) => ({ name, count })),
+        fail: (name) => {
+            failuresByName.set(name, (failuresByName.get(name) ?? 0) + 1);
+        },
+        snapshot: () =>
+            Array.from(countsByName, ([name, count]) => {
+                const failed = failuresByName.get(name) ?? 0;
+                // Absent when nothing failed, so a clean reply keeps its shape
+                return failed > 0 ? { name, count, failed } : { name, count };
+            }),
     };
 };
 
@@ -76,7 +87,8 @@ export const createToolUsageTally = (): ToolUsageTally => {
  * and a final status clear. Returns the calls with their results.
  *
  * A call naming a tool this turn does not offer still gets its error result,
- * but neither a status line nor a place in the usage tally: nothing ran.
+ * but neither a status line nor a place in the usage tally: nothing ran. An
+ * offered call that fails is counted, and marked as failed.
  */
 export async function* runToolRound(
     tools: TurnTools,
@@ -89,13 +101,15 @@ export async function* runToolRound(
     let statusShown = false;
 
     for (const call of calls) {
-        if (offeredNames.has(call.name)) {
+        const counted = offeredNames.has(call.name);
+        if (counted) {
             tally.count(call.name);
             yield { type: 'status', status: tools.statusOf(call.name) };
             statusShown = true;
         }
 
         const result = await tools.execute(call, signal);
+        if (counted && result.isError) tally.fail(call.name);
         for (const image of result.images) {
             yield {
                 type: 'image',

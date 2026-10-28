@@ -10,7 +10,7 @@
  * reply cannot send a picture and a sticker.
  */
 import type { StickerDelivery } from '../../ai/types.js';
-import type { ToolHandler, ToolModelImage } from '../../ai/tools/tool-types.js';
+import type { ToolHandler, ToolModelImage, ToolResult } from '../../ai/tools/tool-types.js';
 import {
     downloadStickerPreview,
     resolveSticker,
@@ -54,6 +54,19 @@ export interface SendStickerToolOptions {
 const previewedPackIndexes = (state: ReplyMediaState): ReadonlySet<number> =>
     new Set(state.fetchedStickers.values());
 
+/**
+ * A rejected call leaves no other trace (the tool log keeps counts and errors
+ * only), so the reason gets its own line: it is the only way to tell why a
+ * reply shows `send_sticker x2`. The message quotes the model's own query, so
+ * it is cut short and never widened to the whole arguments.
+ */
+const REJECTION_LOG_MAX_CHARS = 200;
+
+const reject = (message: string): ToolResult => {
+    console.warn(`[send_sticker] rejected: ${Array.from(message).slice(0, REJECTION_LOG_MAX_CHARS).join('')}`);
+    return imageToolError(message);
+};
+
 export const createSendStickerTool = (options: SendStickerToolOptions): ToolHandler => {
     const { state, context, setName } = options;
 
@@ -67,16 +80,16 @@ export const createSendStickerTool = (options: SendStickerToolOptions): ToolHand
         chatAction: 'choose_sticker',
         execute: async (rawArgs, signal) => {
             if (state.hasReplyImage || state.hasReplySticker) {
-                return imageToolError('这条回复已经有一张图或贴纸了，每条回复只能发一个视觉附件。');
+                return reject('这条回复已经有一张图或贴纸了，每条回复只能发一个视觉附件。');
             }
 
             const raw = rawArgs.sticker;
             if (typeof raw !== 'string') {
-                return imageToolError("参数有误：sticker 要传字符串，如 '07' 或 '吃冰棒'");
+                return reject("参数有误：sticker 要传字符串，如 '07' 或 '吃冰棒'");
             }
 
             const resolvedQuery = resolveStickerQuery(raw, state);
-            if (!resolvedQuery.ok) return imageToolError(resolvedQuery.error);
+            if (!resolvedQuery.ok) return reject(resolvedQuery.error);
             const entry = resolvedQuery.entry;
 
             let fileId: string;
@@ -88,7 +101,7 @@ export const createSendStickerTool = (options: SendStickerToolOptions): ToolHand
                     error instanceof StickerSetError
                         ? error.message
                         : `贴纸包暂时不可用：${error instanceof Error ? error.message : String(error)}`;
-                return imageToolError(message);
+                return reject(message);
             }
 
             state.hasReplySticker = true;

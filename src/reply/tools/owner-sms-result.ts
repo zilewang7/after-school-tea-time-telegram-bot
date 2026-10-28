@@ -31,9 +31,13 @@ const serverAnswer = (serverText: string, withAnswer: string, withoutAnswer: str
 
 export const ownerSmsToolResult = (outcome: OwnerSmsOutcome): ToolResult =>
     match(outcome)
-        .with({ kind: 'sent' }, ({ serverText }) =>
-            toolResult(serverAnswer(serverText, '短信已发送。短信服务返回：', '短信已发送。'), false)
-        )
+        .with({ kind: 'sent' }, ({ serverText, verified }) => {
+            const lead =
+                verified === true
+                    ? '短信已发送（第一次没等到响应，核对发送记录确认已经发出）。'
+                    : '短信已发送。';
+            return toolResult(serverAnswer(serverText, `${lead}短信服务返回：`, lead), false);
+        })
         .with({ kind: 'rejected' }, ({ serverText }) =>
             toolResult(serverAnswer(serverText, '短信发送失败：', '短信发送失败，短信服务没有说明原因。'), true)
         )

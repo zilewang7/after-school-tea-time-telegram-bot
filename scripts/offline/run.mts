@@ -637,6 +637,14 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
                 tools.includes('tool usage: searxng_web_search x2'),
                 'the usage summary rides at the top'
             );
+            const withFailure = buildToolRecordSections(
+                { toolUsage: [{ name: 'send_sticker', count: 2, failed: 1 }] },
+                []
+            );
+            expect(
+                withFailure[0]?.text.includes('tool usage: send_sticker x2（1 次失败）'),
+                `a failed call is named, not just counted (got ${JSON.stringify(withFailure[0]?.text)})`
+            );
             expect(
                 tools.split('searxng_web_search: 户鞘谷蛾 灭杀').length - 1 === 1,
                 `a call made twice is listed once (got ${JSON.stringify(tools)})`

@@ -54,7 +54,10 @@ export interface GroundingSupportData {
 
 export interface AgentToolUsage {
     name: string;
+    /** Calls of this tool the reply made, failed ones included */
     count: number;
+    /** Of those calls, how many the tool answered with an error; absent when none failed */
+    failed?: number;
 }
 
 /**

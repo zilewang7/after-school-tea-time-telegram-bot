@@ -176,6 +176,29 @@ cases.push(
 );
 
 cases.push(
+    runCase('a refused send_sticker says why in the log, so an x2 can be explained', async () => {
+        const state = createReplyMediaState();
+        const tool = createSendStickerTool({ state, context: { api: fakeApi, signal }, setName: SET_NAME });
+        const warnings: string[] = [];
+        const originalWarn = console.warn;
+        console.warn = (...args: unknown[]): void => {
+            warnings.push(args.map((arg) => String(arg)).join(' '));
+        };
+        try {
+            const refused = await tool.execute({ sticker: '戴黄色猫帽' }, signal);
+            expect(refused.isError && !state.hasReplySticker, 'nothing is sent');
+        } finally {
+            console.warn = originalWarn;
+        }
+        const line = warnings.find((warning) => warning.startsWith('[send_sticker] rejected: '));
+        expect(
+            line?.includes('戴黄色猫帽') === true && line.includes('笑眼跪坐'),
+            `the rejection names the query and the real sticker (got ${JSON.stringify(warnings)})`
+        );
+    })
+);
+
+cases.push(
     runCase('fetch_image reads a sticker, registers st1 and re-reads without a second picture', async () => {
         const state = createReplyMediaState();
         const tool = createFetchImageTool({

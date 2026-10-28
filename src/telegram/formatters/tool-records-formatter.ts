@@ -57,6 +57,10 @@ const getCitationDisplayTitle = (uri: string, title?: string): string => {
  * What the reply did
  * ------------------------------------------------------------------ */
 
+/** A count alone reads like that many results: say how many calls failed */
+const failedNote = (failed: number | undefined): string =>
+    failed !== undefined && failed > 0 ? `（${failed} 次失败）` : '';
+
 /** Summary lines of the agent run: mode, tool usage counts, code interpreter */
 const agentSummaryLines = (stats?: AgentStats): string[] => {
     if (!stats) return [];
@@ -69,7 +73,7 @@ const agentSummaryLines = (stats?: AgentStats): string[] => {
 
     const toolUsage = (stats.toolUsage ?? [])
         .filter((tool) => tool.name && tool.count > 0)
-        .map((tool) => `${tool.name} x${tool.count}`)
+        .map((tool) => `${tool.name} x${tool.count}${failedNote(tool.failed)}`)
         .join(' | ');
     if (toolUsage) {
         lines.push(`tool usage: ${toolUsage}`);

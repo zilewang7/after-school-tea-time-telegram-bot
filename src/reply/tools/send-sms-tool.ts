@@ -25,7 +25,7 @@ const readContent = (value: unknown): string => (typeof value === 'string' ? val
 
 const describeOutcome = (outcome: OwnerSmsOutcome): string =>
     match(outcome)
-        .with({ kind: 'sent' }, () => 'ok')
+        .with({ kind: 'sent' }, ({ verified }) => (verified === true ? 'ok (confirmed)' : 'ok'))
         .with({ kind: 'failed' }, { sendStarted: true }, ({ kind }) => `error (${kind}, may have gone out)`)
         .otherwise(({ kind }) => `error (${kind})`);
 
