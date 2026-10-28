@@ -43,7 +43,7 @@ export const createReplyTools = (
     const config = getToolConfig();
     const availability = resolveToolAvailability(model, context.chatId, config, request);
     const capabilities = getModelCapabilities(model);
-    const mediaState = createReplyMediaState(context.triggerText);
+    const mediaState = createReplyMediaState();
 
     const handlers: ToolHandler[] = [
         ...buildMcpToolHandlers(availability.mcpServers, RESERVED_TOOL_NAMES, availability.isMcpToolEnabled),

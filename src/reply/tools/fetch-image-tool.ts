@@ -42,7 +42,7 @@ import { FETCH_IMAGE_TOOL_NAME } from './tool-names.js';
 const DESCRIPTION =
     '读取一张图片进你的上下文（不发给用户），用于确认图里到底是什么、做 OCR、或作为生图参考。' +
     '可以传 search_id（搜索结果编号，形如 s3）、image_id（之前读取过的图，形如 img1）' +
-    '或 url（上下文里出现过的图片直链）。默认读原图；只要认个大概可以传 view=\'thumbnail\'。' +
+    '或 url（http(s) 图片直链）。默认读原图；只要认个大概可以传 view=\'thumbnail\'。' +
     '候选是动图（GIF）时，会转成视频给你看动作。' +
     '读过的图会得到编号 img1，可直接用于 send_image 或 generate_image 的 web_references。';
 
@@ -56,7 +56,7 @@ const inputSchemaOf = (hasSticker: boolean) => ({
     properties: {
         search_id: { type: 'string', description: "搜索结果里的候选编号，形如 's3'" },
         image_id: { type: 'string', description: "已经读取过的图编号，形如 'img1'" },
-        url: { type: 'string', description: '上下文里出现过的 http(s) 图片直链' },
+        url: { type: 'string', description: 'http(s) 图片直链，可以是任意公开地址' },
         ...(hasSticker
             ? {
                   sticker: {
@@ -204,18 +204,9 @@ export const createFetchImageTool = (options: FetchImageToolOptions): ToolHandle
             const candidate =
                 args.searchId !== undefined
                     ? state.candidates.get(args.searchId)
-                    : args.url !== undefined
-                      ? candidateOfUrl(args.url)
-                      : undefined;
+                    : candidateOfUrl(args.url ?? '');
             if (!candidate) {
-                return imageToolError(
-                    args.searchId !== undefined
-                        ? mediaToolErrors.unknownCandidate(args.searchId)
-                        : mediaToolErrors.urlNotAllowed
-                );
-            }
-            if (args.url !== undefined && !state.allowedUrls.has(args.url)) {
-                return imageToolError(mediaToolErrors.urlNotAllowed);
+                return imageToolError(mediaToolErrors.unknownCandidate(args.searchId ?? ''));
             }
 
             const downloaded = await downloadCandidateMedia(candidate, dependencies, {

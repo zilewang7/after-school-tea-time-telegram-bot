@@ -14,7 +14,6 @@ import { imageToolError } from './image-tool-result.js';
 import { formatSearchResult, mediaToolErrors } from './image-tool-text.js';
 import { parseSearchImagesArgs } from './media-tool-args.js';
 import {
-    addAllowedUrls,
     allocateCandidateIds,
     nextSearchId,
     thumbnailWindowSize,
@@ -114,8 +113,6 @@ const newSearchSet = (
     state.searches.set(id, set);
     for (const candidate of candidates) {
         state.candidates.set(candidate.id, candidate);
-        // The model may send or read these without searching again
-        addAllowedUrls(state, [candidate.imageUrl, candidate.thumbnailUrl]);
     }
     return set;
 };

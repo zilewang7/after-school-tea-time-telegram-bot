@@ -27,7 +27,6 @@ import { parseSearchByImageArgs, type ParsedSearchByImageArgs } from './media-to
 import { loadContextImages, type MessageImageLoader } from './image-references.js';
 import { downloadCandidateMedia, type ImageFetch } from './image-source-download.js';
 import {
-    addAllowedUrls,
     allocateCandidateIds,
     type ReplyMediaState,
     type SearchCandidate,
@@ -165,7 +164,6 @@ const registerResults = (state: ReplyMediaState, result: ParsedReverseSearch): R
 
     for (const candidate of [...sizes, ...similar]) {
         state.candidates.set(candidate.id, candidate);
-        addAllowedUrls(state, [candidate.imageUrl]);
     }
     return { sizes, similar };
 };

@@ -142,7 +142,7 @@ const cases = [
     {
         name: 'search_images shows three first, then everything that is left',
         body: async (): Promise<void> => {
-            const state = createReplyMediaState(null);
+            const state = createReplyMediaState();
             const stub = searchStub();
             const tool = searchToolWith(state, stub);
 
@@ -173,7 +173,7 @@ const cases = [
     {
         name: 'a second query after the first search comes back with all eight',
         body: async (): Promise<void> => {
-            const state = createReplyMediaState(null);
+            const state = createReplyMediaState();
             const stub = searchStub();
             const tool = searchToolWith(state, stub);
 
@@ -192,7 +192,7 @@ const cases = [
     {
         name: 'details never attaches pictures and does not consume the first window',
         body: async (): Promise<void> => {
-            const state = createReplyMediaState(null);
+            const state = createReplyMediaState();
             const tool = searchToolWith(state, searchStub());
 
             const details = await tool.execute({ query: '狗头表情包', view: 'details' }, AbortSignal.abort());
@@ -210,7 +210,7 @@ const cases = [
     {
         name: 'a text-only model gets metadata and no pictures',
         body: async (): Promise<void> => {
-            const state = createReplyMediaState(null);
+            const state = createReplyMediaState();
             const stub = searchStub();
             const tool = searchToolWith(state, stub, { canSeeImages: false });
 
@@ -224,7 +224,7 @@ const cases = [
     {
         name: 'one reply gets one picture, shared by send_image and generate_image',
         body: async (): Promise<void> => {
-            const state = createReplyMediaState(null);
+            const state = createReplyMediaState();
             const tool = searchToolWith(state, searchStub());
             await tool.execute({ query: '狗头表情包' }, AbortSignal.abort());
 
@@ -256,7 +256,6 @@ const cases = [
                     triggerMessageId: 1,
                     requester: { userId: 42, name: '张三' },
                     contextIndex: new Map(),
-                    triggerText: null,
                     signal: AbortSignal.abort(),
                 },
                 state,
@@ -278,7 +277,7 @@ const cases = [
     {
         name: 'send_image does not attach a picture the model already has',
         body: async (): Promise<void> => {
-            const state = createReplyMediaState(null);
+            const state = createReplyMediaState();
             const tool = searchToolWith(state, searchStub());
             await tool.execute({ query: '狗头表情包' }, AbortSignal.abort());
 
@@ -312,7 +311,7 @@ const cases = [
     {
         name: 'fetch_image reads once, re-reading is free, and reading is not capped',
         body: async (): Promise<void> => {
-            const state = createReplyMediaState(null);
+            const state = createReplyMediaState();
             const tool = searchToolWith(state, searchStub(10));
             await tool.execute({ query: '狗头表情包' }, AbortSignal.abort());
 
@@ -341,9 +340,54 @@ const cases = [
         },
     },
     {
+        name: 'a url the conversation never carried is read and sent like any other',
+        body: async (): Promise<void> => {
+            const state = createReplyMediaState();
+            const requested: string[] = [];
+            const imageAt = (url: string) => ({
+                ok: true as const,
+                image: { data: PNG, mimeType: 'image/png' as const, finalUrl: url },
+            });
+
+            // A picture the model found on a page it read, not one the trigger carried
+            const fetch = createFetchImageTool({
+                state,
+                dependencies: {
+                    fetchImage: async (url) => {
+                        requested.push(url);
+                        return imageAt(url);
+                    },
+                },
+            });
+            const url = 'https://raw.githubusercontent.com/owner/repo/main/docs/issue.png';
+            const read = await fetch.execute({ url }, AbortSignal.abort());
+            expect(!read.isError, `an arbitrary public url is read (got ${read.content})`);
+            expect(read.modelImages?.length === 1, 'the bytes come back to the model');
+            expect(state.fetched.has('img1'), 'and it is numbered img1');
+            expect(requested[0] === url, `the url reached the downloader (got ${requested[0]})`);
+
+            const send = createSendImageTool({
+                state,
+                context: { chatId: -100, contextIndex: new Map(), signal: AbortSignal.abort() },
+                dependencies: {
+                    fetchImage: async (candidateUrl) => {
+                        requested.push(candidateUrl);
+                        return imageAt(candidateUrl);
+                    },
+                    loadMessageImages: async () => [],
+                },
+            });
+            const sent = await send.execute(
+                { url: 'https://cdn.example.com/from-the-page.png' },
+                AbortSignal.abort()
+            );
+            expect(!sent.isError && sent.images.length === 1, `send_image takes it too (got ${sent.content})`);
+        },
+    },
+    {
         name: 'after a whole batch the model may keep looking',
         body: async (): Promise<void> => {
-            const state = createReplyMediaState(null);
+            const state = createReplyMediaState();
             const tool = searchToolWith(state, searchStub());
             await tool.execute({ query: '狗头表情包' }, AbortSignal.abort());
             await tool.execute({ search: 'q1' }, AbortSignal.abort());
@@ -391,7 +435,7 @@ const cases = [
     {
         name: 'searching is not capped: the model decides how much to look',
         body: async (): Promise<void> => {
-            const state = createReplyMediaState(null);
+            const state = createReplyMediaState();
             const tool = searchToolWith(state, searchStub());
             let last = await tool.execute({ query: 'a' }, AbortSignal.abort());
             for (const query of ['b', 'c', 'd', 'e']) {
@@ -522,7 +566,7 @@ const cases = [
     {
         name: 'a GIF candidate goes out as an animation while the model reads its still frame',
         body: async (): Promise<void> => {
-            const state = createReplyMediaState(null);
+            const state = createReplyMediaState();
             state.candidates.set('s1', {
                 id: 's1',
                 searchId: 'q1',
@@ -573,7 +617,7 @@ const cases = [
                 readonly canSeeAnimated?: boolean;
                 readonly transcode?: (gif: Buffer) => Promise<Buffer | null>;
             }) => {
-                const state = createReplyMediaState(null);
+                const state = createReplyMediaState();
                 state.candidates.set('s1', gifCandidate());
                 const tool = createFetchImageTool({
                     state,

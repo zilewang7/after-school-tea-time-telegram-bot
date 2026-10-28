@@ -175,8 +175,6 @@ export const mediaToolErrors = {
     unknownCandidate: (candidateId: string) =>
         `没有候选 ${candidateId}。候选编号形如 s1，先 search_images 或看工具结果里的编号。`,
     unknownFetched: (imageId: string) => `没有读过的图 ${imageId}。先用 fetch_image 读取，或改用 search_id。`,
-    urlNotAllowed:
-        '这个 url 不在本次对话出现过的图片直链里。用 search_id / image_id，或让用户直接发那张图。',
     noImageSource: '要发哪张图？传 search_id、image_id、message（上下文编号）或 url 之一。',
     downloadFailed: (reason: string) => `图片没取到：${reason}`,
     notAnImage: '这张不是 PNG/JPEG/WebP/GIF 图片，发不了。换一张候选试试。',

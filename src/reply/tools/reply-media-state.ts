@@ -71,8 +71,6 @@ export interface ReplyMediaState {
     readonly fetched: Map<string, FetchedImage>;
     /** `st1`, … → pack index of a sticker the model has previewed */
     readonly fetchedStickers: Map<string, number>;
-    /** Image URLs the trigger message contained; url arguments must be in here */
-    readonly allowedUrls: Set<string>;
     /** Thumbnails attached so far; only the first window of the reply is small */
     thumbnailCount: number;
     /** Set by the first image or sticker this reply will deliver */
@@ -81,20 +79,11 @@ export interface ReplyMediaState {
     hasReplySticker: boolean;
 }
 
-const urlPattern = /https?:\/\/[^\s<>"'）)】\]]+/g;
-
-/** The trigger message's own image links, normalized */
-const urlsOf = (text: string | null): string[] => {
-    if (!text) return [];
-    return (text.match(urlPattern) ?? []).map((url) => url.replace(/[.,;:!?]+$/, ''));
-};
-
-export const createReplyMediaState = (triggerText: string | null): ReplyMediaState => ({
+export const createReplyMediaState = (): ReplyMediaState => ({
     searches: new Map(),
     candidates: new Map(),
     fetched: new Map(),
     fetchedStickers: new Map(),
-    allowedUrls: new Set(urlsOf(triggerText)),
     thumbnailCount: 0,
     hasReplyImage: false,
     hasReplySticker: false,
@@ -112,10 +101,6 @@ export const allocateCandidateIds = (state: ReplyMediaState, count: number): str
 export const nextFetchedImageId = (state: ReplyMediaState): string => `img${state.fetched.size + 1}`;
 
 export const nextFetchedStickerId = (state: ReplyMediaState): string => `st${state.fetchedStickers.size + 1}`;
-
-export const addAllowedUrls = (state: ReplyMediaState, urls: readonly string[]): void => {
-    for (const url of urls) state.allowedUrls.add(url);
-};
 
 /** The candidates of a set that were never attached for the model to look at */
 export const unseenCandidates = (set: SearchSet): SearchCandidate[] =>

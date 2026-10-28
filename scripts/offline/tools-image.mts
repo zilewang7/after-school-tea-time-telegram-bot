@@ -259,7 +259,7 @@ const toolFor = (
             contextIndex,
             signal,
         }),
-        options.state ?? createReplyMediaState(null),
+        options.state ?? createReplyMediaState(),
         {
             dependencies: {
                 sendMessage: model.sendMessage,
@@ -636,7 +636,7 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
             const telegram = createFakeTelegram(OFFLINE_CHAT_ID);
             const sticker = { setName: 'ColorfulHachimi', api: telegram.api };
 
-            const previewed = createReplyMediaState(null);
+            const previewed = createReplyMediaState();
             previewed.fetchedStickers.set('st1', 7);
             const model = stubImageModel();
             const result = await runTool(toolFor(NO_CONTEXT, model, undefined, { state: previewed, sticker }), {
@@ -659,7 +659,7 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
                 `the original is fetched, not the 320px thumbnail (got ${json(fileCalls.map((call) => call.payload))})`
             );
 
-            const byIndex = createReplyMediaState(null);
+            const byIndex = createReplyMediaState();
             const indexModel = stubImageModel();
             await runTool(toolFor(NO_CONTEXT, indexModel, undefined, { state: byIndex, sticker }), {
                 prompt: '照这个画',
@@ -671,7 +671,7 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
                 'a pack index works without a preview, and the same sticker twice is sent once'
             );
 
-            const unknown = createReplyMediaState(null);
+            const unknown = createReplyMediaState();
             const unknownModel = stubImageModel();
             const refused = await runTool(toolFor(NO_CONTEXT, unknownModel, undefined, { state: unknown, sticker }), {
                 prompt: '照这个画',
@@ -873,7 +873,7 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
 
             // send_image reads the same list, so “the 3rd picture” means the same thing in both tools
             const send = createSendImageTool({
-                state: createReplyMediaState(null),
+                state: createReplyMediaState(),
                 context: { chatId: OFFLINE_CHAT_ID, contextIndex: built.contextIndex, signal: new AbortController().signal },
                 dependencies: { fetchImage: noNetworkFetch, loadMessageImages },
             });

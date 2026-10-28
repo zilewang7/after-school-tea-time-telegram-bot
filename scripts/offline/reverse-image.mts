@@ -86,7 +86,6 @@ const contextOf = (contextIndex: ContextIndex): ReplyToolContext => ({
     triggerMessageId: 10,
     requester: { userId: 1, name: 'tester' },
     contextIndex,
-    triggerText: null,
     signal: new AbortController().signal,
 });
 
@@ -129,7 +128,7 @@ const fetchImageStub: ImageFetch = async (url) => ({
 
 const toolOf = (
     index: ContextIndex,
-    state = createReplyMediaState(null),
+    state = createReplyMediaState(),
     stub = searchStub(),
     fetchImage: ImageFetch = fetchImageStub,
     loadAnimationFrame: AnimationFrameLoader = noAnimationFrame
@@ -248,8 +247,8 @@ cases.push(
         expect(state.candidates.size === 3, `three candidates are registered (got ${state.candidates.size})`);
         expect(state.candidates.get('s1')?.width === 5800, 's1 is the largest size');
         expect(
-            state.allowedUrls.has('https://cdn.example.com/original.jpg?w=5800&h=4350'),
-            'the size URL is allowed for send_image'
+            state.candidates.get('s1')?.imageUrl === 'https://cdn.example.com/original.jpg?w=5800&h=4350',
+            'the size URL is registered as a candidate'
         );
     })
 );
@@ -266,7 +265,7 @@ cases.push(
         const frame = JPEG;
         const { stub, tool } = toolOf(
             new Map([[1, entry]]),
-            createReplyMediaState(null),
+            createReplyMediaState(),
             searchStub(),
             fetchImageStub,
             async () => ({ kind: 'bytes', data: frame })
@@ -331,7 +330,7 @@ cases.push(
     await runCase('cached results do not consume the three-search budget', async () => {
         const index: ContextIndex = new Map([[1, entryOf(PNG)]]);
         const stub = searchStub(RESULT, { cached: true });
-        const { tool } = toolOf(index, createReplyMediaState(null), stub);
+        const { tool } = toolOf(index, createReplyMediaState(), stub);
 
         for (let call = 0; call < 4; call += 1) {
             const result = await tool.execute({ message: 1 }, new AbortController().signal);
@@ -395,7 +394,7 @@ cases.push(
 
 cases.push(
     await runCase('image_id and search_id are the other two picture sources', async () => {
-        const state = createReplyMediaState(null);
+        const state = createReplyMediaState();
         state.fetched.set('img1', {
             id: 'img1',
             data: GIF,
@@ -419,7 +418,7 @@ cases.push(
             thumbnailUrl: 'https://cdn.example.com/candidate-thumb.jpg',
             sendKind: 'static' as const,
         };
-        const state2 = createReplyMediaState(null);
+        const state2 = createReplyMediaState();
         state2.candidates.set('s1', candidate);
         const fromCandidate = toolOf(new Map(), state2);
         const candidateResult = await fromCandidate.tool.execute({ search_id: 's1' }, new AbortController().signal);
@@ -430,7 +429,7 @@ cases.push(
 
 cases.push(
     await runCase('an empty page and a service failure keep their own wording', async () => {
-        const empty = toolOf(new Map([[1, entryOf(PNG)]]), createReplyMediaState(null), searchStub(EMPTY_RESULT));
+        const empty = toolOf(new Map([[1, entryOf(PNG)]]), createReplyMediaState(), searchStub(EMPTY_RESULT));
         const emptyResult = await empty.tool.execute({ message: 1 }, new AbortController().signal);
         expect(!emptyResult.isError, 'an empty result is not a tool error');
         expect(
@@ -441,7 +440,7 @@ cases.push(
 
         const failed = toolOf(
             new Map([[1, entryOf(PNG)]]),
-            createReplyMediaState(null),
+            createReplyMediaState(),
             searchStub(RESULT, { failure: { ok: false, kind: 'blocked', error: 'Yandex 返回了验证码页面。' } })
         );
         const failedResult = await failed.tool.execute({ message: 1 }, new AbortController().signal);

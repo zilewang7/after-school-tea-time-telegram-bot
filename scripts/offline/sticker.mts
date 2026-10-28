@@ -117,7 +117,7 @@ cases.push(
 
 cases.push(
     runCase('the resolver accepts pack indices, actual names and preview ids', async () => {
-        const state = createReplyMediaState('');
+        const state = createReplyMediaState();
         expect(entryOf('7', state).packIndex === 7, '7');
         expect(entryOf('07', state).packIndex === 7, '07');
         expect(entryOf('#7', state).packIndex === 7, '#7');
@@ -132,7 +132,7 @@ cases.push(
 
 cases.push(
     runCase('the resolver refuses misleading names and explains what the picture shows', async () => {
-        const state = createReplyMediaState('');
+        const state = createReplyMediaState();
         const hat = errorOf('戴黄色猫帽', state);
         expect(hat.includes('42') && hat.includes('笑眼跪坐'), 'cat hat points at 42 笑眼跪坐');
         const crown = errorOf('64_戴皇冠斗篷', state);
@@ -147,7 +147,7 @@ cases.push(
 
 cases.push(
     runCase('send_sticker resolves a real file_id and claims the reply attachment', async () => {
-        const state = createReplyMediaState('');
+        const state = createReplyMediaState();
         const tool = createSendStickerTool({ state, context: { api: fakeApi, signal }, setName: SET_NAME });
         const result = await tool.execute({ sticker: '07' }, signal);
         expect(result.isError === false, 'not an error');
@@ -162,13 +162,13 @@ cases.push(
         const second = await tool.execute({ sticker: '08' }, signal);
         expect(second.isError && second.content.includes('视觉附件'), 'second sticker is refused');
 
-        const imageState = createReplyMediaState('');
+        const imageState = createReplyMediaState();
         imageState.hasReplyImage = true;
         const imageTool = createSendStickerTool({ state: imageState, context: { api: fakeApi, signal }, setName: SET_NAME });
         const refused = await imageTool.execute({ sticker: '07' }, signal);
         expect(refused.isError && refused.content.includes('视觉附件'), 'image already claimed');
 
-        const badState = createReplyMediaState('');
+        const badState = createReplyMediaState();
         const badTool = createSendStickerTool({ state: badState, context: { api: fakeApi, signal }, setName: SET_NAME });
         const bad = await badTool.execute({ sticker: '戴黄色猫帽' }, signal);
         expect(bad.isError && bad.content.includes('笑眼跪坐'), 'misleading name refused');
@@ -177,7 +177,7 @@ cases.push(
 
 cases.push(
     runCase('fetch_image reads a sticker, registers st1 and re-reads without a second picture', async () => {
-        const state = createReplyMediaState('');
+        const state = createReplyMediaState();
         const tool = createFetchImageTool({
             state,
             dependencies: { fetchImage: async () => { throw new Error('not used'); } },
@@ -193,7 +193,7 @@ cases.push(
         expect((again.modelImages ?? []).length === 0, 'no duplicate image');
         expect(again.content.includes('已经预览过 st1'), 're-read is free');
 
-        const badState = createReplyMediaState('');
+        const badState = createReplyMediaState();
         const badTool = createSendStickerTool({ state: badState, context: { api: fakeApi, signal }, setName: SET_NAME });
         const bad = await badTool.execute({ sticker: '戴黄色猫帽' }, signal);
         expect(bad.isError && bad.content.includes('笑眼跪坐'), 'misleading name refused');
@@ -205,7 +205,7 @@ cases.push(
         const both = parseFetchImageArgs({ sticker: '07', url: 'https://example.com/a.png' });
         expect(both.ok === false && both.error.includes('只传一个'), 'two sources refused');
 
-        const state = createReplyMediaState('');
+        const state = createReplyMediaState();
         const sendImage = createSendImageTool({
             state,
             context: { chatId: 1, contextIndex: new Map(), signal },

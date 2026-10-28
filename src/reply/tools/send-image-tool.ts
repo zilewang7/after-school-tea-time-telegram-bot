@@ -1,8 +1,7 @@
 /**
  * send_image: put a real, existing picture into the reply. The only way the
  * model gives the chat an image it did not draw — search candidates, pictures
- * it already read, a picture from the context, or a link the conversation
- * carried.
+ * it already read, a picture from the context, or any public image url.
  *
  * A GIF goes out as an animation (`sendAnimation`, see the delivery layer); the
  * model is shown its still frame, because a model reads a GIF as one frame
@@ -40,7 +39,7 @@ import { SEND_IMAGE_TOOL_NAME } from './tool-names.js';
 const DESCRIPTION =
     '把一张真实存在的图片发到聊天里（会附在你这条回复后面，每条回复最多一张）。' +
     '来源可以是 search_id（搜索结果编号）、image_id（fetch_image 读过的图）、' +
-    'message（上下文里某条消息的编号 #N）或 url（上下文里出现过的直链）。' +
+    'message（上下文里某条消息的编号 #N）或 url（http(s) 图片直链）。' +
     '候选是 GIF 动图时，发出去的就是会动的动图。' +
     '这是“把找到的图给用户看”的唯一方式：用户要表情包/截图/新闻图时，先 search_images 找到，' +
     '再用本工具发，不要用 generate_image 画一张冒充。';
@@ -60,7 +59,7 @@ const INPUT_SCHEMA = {
             minimum: 1,
             description: '这条消息里的第几张图，从 1 开始（附件在前，链接预览里的图在后）；省略=第一张',
         },
-        url: { type: 'string', description: '上下文里出现过的 http(s) 图片直链' },
+        url: { type: 'string', description: 'http(s) 图片直链，可以是任意公开地址' },
         caption: {
             type: 'string',
             description: '随图发出的配文；不需要就省略。',
@@ -205,10 +204,6 @@ export const createSendImageTool = (options: SendImageToolOptions): ToolHandler 
                 ? state.candidates.get(args.searchId)
                 : urlCandidate(args.url ?? '');
         if (!candidate) return { ok: false, error: mediaToolErrors.unknownCandidate(args.searchId ?? '') };
-        if (args.url !== undefined && !state.allowedUrls.has(args.url)) {
-            return { ok: false, error: mediaToolErrors.urlNotAllowed };
-        }
-
         const downloaded = await downloadCandidateMedia(candidate, downloadDependencies);
         if (!downloaded.ok) return { ok: false, error: mediaToolErrors.downloadFailed(downloaded.error) };
 
