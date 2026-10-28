@@ -9,6 +9,7 @@ const CONVERT_TIMEOUT_MS = 30000;
 const NORMALIZE_TIMEOUT_MS = 30000;
 const EMOJI_TIMEOUT_MS = 30000;
 const FRAME_TIMEOUT_MS = 15000;
+const STILL_TIMEOUT_MS = 15000;
 const MAX_FRAME_BYTES = 6 * 1024 * 1024;
 const MAX_EMOJI_ATLAS_ITEMS = 8;
 const MAX_EMOJI_PREVIEW_BYTES = 1024 * 1024;
@@ -35,6 +36,11 @@ const createTimedController = (
 export interface ConvertedTgs {
     data: Buffer;
     mime: string;
+}
+
+export interface ConvertedTgsStill {
+    data: Buffer;
+    mime: 'image/png';
 }
 
 export interface NormalizedVideo {
@@ -95,6 +101,48 @@ export const convertTgsToWebm = async (tgs: Buffer): Promise<ConvertedTgs | null
         return null;
     } finally {
         clearTimeout(timer);
+    }
+};
+
+/**
+ * Render one frame of a .tgs as PNG via the converter service.
+ *
+ * The fallback for documents above the full-clip node ceiling: a still frame
+ * still shows the artwork, where "you cannot see it" shows nothing.
+ * Returns null if the service is unconfigured, unreachable, or fails.
+ */
+export const renderTgsStill = async (tgs: Buffer, frame?: number): Promise<ConvertedTgsStill | null> => {
+    if (!TGS_CONVERTER_URL) {
+        console.warn('[tgs-client] TGS_CONVERTER_URL not set, skipping still render');
+        return null;
+    }
+
+    const request = createTimedController(STILL_TIMEOUT_MS);
+    try {
+        // Direct call on the docker network — no Telegram proxy agent here.
+        const res = await fetch(`${TGS_CONVERTER_URL}/still?frame=${frame ?? 'auto'}`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/octet-stream' },
+            body: tgs,
+            signal: request.signal,
+        });
+
+        if (!res.ok) {
+            console.error(`[tgs-client] still failed: HTTP ${res.status}`);
+            return null;
+        }
+
+        const arrayBuffer = await res.arrayBuffer();
+        if (arrayBuffer.byteLength === 0) {
+            console.error('[tgs-client] still returned an empty body');
+            return null;
+        }
+        return { data: Buffer.from(arrayBuffer), mime: 'image/png' };
+    } catch (error) {
+        console.error('[tgs-client] still request error:', error instanceof Error ? error.message : error);
+        return null;
+    } finally {
+        request.dispose();
     }
 };
 

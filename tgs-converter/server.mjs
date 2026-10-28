@@ -3,6 +3,9 @@
  *
  * Endpoints:
  *   POST /convert          body = raw .tgs bytes          -> video/webm
+ *   POST /still            body = raw .tgs bytes          -> image/png
+ *                          ?frame=<n|auto>  one frame; auto = mid-animation.
+ *                          Fallback for documents too heavy for a full clip.
  *   POST /normalize-video  body = raw video bytes         -> original or video/mp4
  *                          ?format=mp4 also re-encodes clips that need no padding
  *                          (for a model that rejects webm/mkv containers)
@@ -79,7 +82,12 @@ const MAX_TGS_DIMENSION = 512;
 const MAX_TGS_DURATION_SECONDS = 3;
 const MAX_TGS_FRAME_RATE = 60;
 const MAX_TGS_FRAMES = 180;
-const MAX_TGS_JSON_NODES = 20000;
+/** Full-clip renders are cached per sticker, so a heavy document is paid once */
+const MAX_TGS_JSON_NODES = positiveIntegerEnv('MAX_TGS_JSON_NODES', 80000, 200000);
+/** A single frame costs a fraction of a clip; allow heavier documents for stills */
+const MAX_TGS_STILL_JSON_NODES = positiveIntegerEnv('MAX_TGS_STILL_JSON_NODES', 200000, 400000);
+const STILL_TIMEOUT_MS = positiveIntegerEnv('STILL_TIMEOUT_MS', 5000, 30000);
+const STILL_MAX_OUTPUT_BYTES = positiveIntegerEnv('STILL_MAX_OUTPUT_BYTES', 1024 * 1024, 2 * 1024 * 1024);
 const MAX_EMOJI_DURATION_SECONDS = 5;
 const MAX_WEBM_FRAME_RATE = 60;
 const MAX_NORMALIZE_DIMENSION = 4096;
@@ -413,6 +421,56 @@ const convertTgsToWebm = async (tgsBuffer, signal) => {
     }
 };
 
+const stillFrameOf = (animation, requested) => {
+    const firstFrame = Number(animation.ip);
+    const lastFrame = Number(animation.op);
+    if (requested === null || requested === 'auto') {
+        return Math.floor((firstFrame + lastFrame) / 2);
+    }
+    if (!/^\d+$/.test(requested)) {
+        throw new HttpError(400, 'frame must be a non-negative integer or auto');
+    }
+    const frame = Number(requested);
+    if (frame < firstFrame || frame > lastFrame - 1) {
+        throw new HttpError(422, `frame must be within ${firstFrame}-${Math.ceil(lastFrame) - 1}`);
+    }
+    return frame;
+};
+
+/**
+ * One rendered frame of a .tgs as PNG. Used when the document is too heavy for
+ * a full clip (or the clip render failed): a still beats "you cannot see it".
+ */
+const renderTgsStill = async (tgsBuffer, frame, signal) => {
+    const dir = await mkdtemp(join(tmpdir(), 'tgs-still-'));
+    const inPath = join(dir, 'in.tgs');
+    const outPath = join(dir, 'out.png');
+    try {
+        await writeFile(inPath, tgsBuffer);
+        await runProcess(
+            process.env.STILL_SCRIPT || 'lottie_convert.py',
+            ['--frame', String(frame), inPath, outPath],
+            STILL_TIMEOUT_MS,
+            'still render timed out',
+            { jobDirectory: dir, maxFileBytes: STILL_MAX_OUTPUT_BYTES, signal }
+        );
+        const outputInfo = await stat(outPath);
+        if (outputInfo.size === 0) {
+            throw new HttpError(500, 'still render produced no data');
+        }
+        if (outputInfo.size > STILL_MAX_OUTPUT_BYTES) {
+            throw new HttpError(500, `still output exceeds ${STILL_MAX_OUTPUT_BYTES} bytes`);
+        }
+        const still = await readFile(outPath);
+        if (!hasMagic(still, [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])) {
+            throw new HttpError(500, 'still output is not a PNG');
+        }
+        return still;
+    } finally {
+        await rm(dir, { recursive: true, force: true }).catch(() => {});
+    }
+};
+
 const probeVideoDuration = async (filePath, jobDirectory, signal) => {
     const { stdout } = await runProcess('ffprobe', [
         '-v', 'error',
@@ -549,7 +607,7 @@ const countJsonNodes = (root, maximum) => {
     return count;
 };
 
-const validateTgs = async (buffer) => {
+const parseTgs = async (buffer, maxNodes) => {
     if (!hasMagic(buffer, [0x1f, 0x8b])) throw new HttpError(415, 'invalid TGS gzip magic');
     let jsonBuffer;
     try {
@@ -564,8 +622,8 @@ const validateTgs = async (buffer) => {
         throw new HttpError(422, 'invalid TGS JSON');
     }
     if (animation === null || typeof animation !== 'object') throw new HttpError(422, 'invalid TGS document');
-    if (countJsonNodes(animation, MAX_TGS_JSON_NODES) > MAX_TGS_JSON_NODES) {
-        throw new HttpError(422, `TGS document exceeds ${MAX_TGS_JSON_NODES} JSON nodes`);
+    if (countJsonNodes(animation, maxNodes) > maxNodes) {
+        throw new HttpError(422, `TGS document exceeds ${maxNodes} JSON nodes`);
     }
     const width = Number(animation.w);
     const height = Number(animation.h);
@@ -587,7 +645,10 @@ const validateTgs = async (buffer) => {
     if (!Number.isFinite(duration) || duration <= 0 || duration > MAX_TGS_DURATION_SECONDS) {
         throw new HttpError(422, `TGS duration must be within ${MAX_TGS_DURATION_SECONDS} seconds`);
     }
+    return animation;
 };
+
+const validateTgs = (buffer) => parseTgs(buffer, MAX_TGS_JSON_NODES);
 
 const parseFrameRate = (value) => {
     if (typeof value !== 'string') return Number.NaN;
@@ -963,6 +1024,41 @@ const server = http.createServer(async (req, res) => {
             }, webm);
         } catch (error) {
             sendError(res, 'convert', error);
+        }
+        return;
+    }
+
+    if (req.method === 'POST' && req.url.split('?')[0] === '/still') {
+        try {
+            const parsed = new URL(req.url, 'http://localhost');
+            const requestedFrame = parsed.searchParams.get('frame');
+            const still = await withExpensiveRequest(req, res, async (signal) => {
+                const body = await readBody(req, MAX_INPUT_BYTES, signal);
+                if (body.length === 0) throw new HttpError(400, 'empty body');
+                const animation = await parseTgs(body, MAX_TGS_STILL_JSON_NODES);
+                const frame = stillFrameOf(animation, requestedFrame);
+                const key = createHash('sha256')
+                    .update('still\0')
+                    .update(String(frame))
+                    .update('\0')
+                    .update(body)
+                    .digest('hex');
+                const cached = cacheGet(key);
+                if (Buffer.isBuffer(cached)) {
+                    console.log(`[tgs-converter] still cache hit for ${key.slice(0, 12)}`);
+                    return cached;
+                }
+                const rendered = await renderTgsStill(body, frame, signal);
+                cacheSet(key, rendered);
+                console.log(`[tgs-converter] still ${body.length}B tgs frame=${frame} -> ${rendered.length}B png (cache miss)`);
+                return rendered;
+            });
+            sendBuffer(res, 200, {
+                'Content-Type': 'image/png',
+                'Content-Length': still.length,
+            }, still);
+        } catch (error) {
+            sendError(res, 'still', error);
         }
         return;
     }

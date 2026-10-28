@@ -35,7 +35,7 @@ import { chatTitleOf } from '../telegram/chat-title.js';
 import { TgMessageLinkCache } from './tgMessageLinkCacheDTO.js';
 import { primeDanmakuSnapshot } from '../services/bilibili-danmaku-service.js';
 import { acquireOcr, isLuoxuOcrEnabled } from '../services/luoxu-ocr-service.js';
-import { convertTgsToWebm, normalizeShortVideo } from '../services/tgs-client.js';
+import { convertTgsToWebm, normalizeShortVideo, renderTgsStill } from '../services/tgs-client.js';
 import { to } from 'await-to-js';
 import { readFile, unlink } from 'node:fs/promises';
 import type { Message as TgMessage, MessageEntity, MessageOrigin, RichBlock, RichMessage, User } from 'grammy/types';
@@ -114,6 +114,11 @@ export interface CapturedMedia {
     durationSeconds?: number;
     /** Human-readable hint appended to message text for non-multimodal models */
     hint: string;
+    /**
+     * Hint used instead of `hint` when only a single frame of an animation could
+     * be materialized (animated stickers above the clip node ceiling).
+     */
+    stillHint?: string;
     /** Animated sticker (.tgs) needs rendering to webm via the converter service */
     needsTgsConversion: boolean;
 }
@@ -169,6 +174,7 @@ export const resolveCapturedMedia = (msg: TgMessage | undefined): CapturedMedia 
                 kind: 'animated_sticker',
                 sizeBytes: sticker.file_size,
                 hint: `an animated sticker (a short video clip${emojiNote})`,
+                stillHint: `an animated sticker (a still frame only — the animation could not be rendered${emojiNote})`,
                 needsTgsConversion: true,
             };
         }
@@ -493,22 +499,71 @@ const startCustomEmojiAcquisition = (
 /** Outcome of trying to acquire media bytes into the cache */
 type AcquireResult =
     | { status: 'cached'; fileUniqueId: string; mime: string }
+    | { status: 'cached_still'; fileUniqueId: string; mime: string }
     | { status: 'too_large' }
     | { status: 'unsupported' }
     | { status: 'download_failed' }
     | { status: 'convert_failed' };
 
-const mediaHintForAcquireResult = (
+const isCachedOutcome = (
+    outcome: AcquireResult
+): outcome is Extract<AcquireResult, { status: 'cached' | 'cached_still' }> =>
+    outcome.status === 'cached' || outcome.status === 'cached_still';
+
+/** Exported for the offline animated-sticker cases */
+export const mediaHintForAcquireResult = (
     media: CapturedMedia,
     outcome: AcquireResult
 ): string =>
     match(outcome)
         .with({ status: 'cached' }, () => media.hint)
+        .with({ status: 'cached_still' }, () => media.stillHint ?? `${media.hint} — only a still frame could be rendered, you cannot see the motion`)
         .with({ status: 'too_large' }, () => `${media.hint} — too large to process, you cannot see it`)
         .with({ status: 'unsupported' }, () => `${media.hint} — file type not supported, you cannot see it`)
         .with({ status: 'download_failed' }, () => `${media.hint} — failed to download, you cannot see it`)
         .with({ status: 'convert_failed' }, () => `${media.hint} — failed to render, you cannot see it`)
         .exhaustive();
+
+/**
+ * Turn raw .tgs bytes from the Telegram download into a cached media row: the
+ * rendered clip when the converter accepts the document, otherwise one still
+ * frame. Never throws — the caller maps the status to a hint.
+ *
+ * Exported for the offline animated-sticker cases.
+ */
+export const materializeTgsMedia = async (
+    media: CapturedMedia,
+    rawBytes: Buffer
+): Promise<AcquireResult> => {
+    const converted = await convertTgsToWebm(rawBytes);
+    if (!converted) {
+        // The clip render is the expensive path; a single frame still shows the
+        // artwork where "you cannot see it" shows nothing (tgs-converter /still).
+        const still = await renderTgsStill(rawBytes);
+        if (!still) {
+            return { status: 'convert_failed' };
+        }
+        await putCachedMedia({
+            fileUniqueId: media.fileUniqueId,
+            data: still.data,
+            sizeBytes: still.data.length,
+            durationSeconds: media.durationSeconds,
+            mime: still.mime,
+            kind: 'animated_sticker_still',
+        });
+        return { status: 'cached_still', fileUniqueId: media.fileUniqueId, mime: still.mime };
+    }
+    const normalizedVideo = await normalizeSmallVideo(converted.data, converted.mime);
+    await putCachedMedia({
+        fileUniqueId: media.fileUniqueId,
+        data: normalizedVideo.data,
+        sizeBytes: normalizedVideo.data.length,
+        durationSeconds: media.durationSeconds,
+        mime: normalizedVideo.mime,
+        kind: media.kind,
+    });
+    return { status: 'cached', fileUniqueId: media.fileUniqueId, mime: normalizedVideo.mime };
+};
 
 /**
  * Ensure a media file's bytes are available in MediaCache, downloading and
@@ -546,13 +601,7 @@ const acquireMediaBytes = async (
             console.error(`[autoSave] download failed for ${media.kind}:`, bytesErr?.message || 'no bytes');
             return { status: 'download_failed' };
         }
-        const converted = await convertTgsToWebm(rawBytes);
-        if (!converted) {
-            return { status: 'convert_failed' };
-        }
-        const normalizedVideo = await normalizeSmallVideo(converted.data, converted.mime);
-        await putCachedMedia({ fileUniqueId: media.fileUniqueId, data: normalizedVideo.data, sizeBytes: normalizedVideo.data.length, durationSeconds: media.durationSeconds, mime: normalizedVideo.mime, kind: media.kind });
-        return { status: 'cached', fileUniqueId: media.fileUniqueId, mime: normalizedVideo.mime };
+        return materializeTgsMedia(media, rawBytes);
     }
 
     // Resolve the file: local Bot API yields an on-disk path (so large files can
@@ -786,7 +835,7 @@ export const autoUpdate = (bot: Bot) => {
                     const [saveErr] = await to(withBusyRetry(
                         () => updateMessageMediaForRevision(
                             revisionToken,
-                            outcome.status === 'cached'
+                            isCachedOutcome(outcome)
                                 ? {
                                     fileMime: outcome.mime,
                                     fileUniqueId: outcome.fileUniqueId,
@@ -1142,7 +1191,7 @@ export const autoSave = (bot: Bot) => {
                         const [saveErr] = await to(withBusyRetry(
                             () => updateMessageMediaForRevision(
                                 revisionToken,
-                                outcome.status === 'cached'
+                                isCachedOutcome(outcome)
                                     ? {
                                         fileMime: outcome.mime,
                                         fileUniqueId: outcome.fileUniqueId,

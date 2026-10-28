@@ -32,7 +32,7 @@ import type { ContextIndex, ContextIndexEntry } from './context-index.js';
 import type { UnifiedMessage, UnifiedContentPart, ModelCapabilities } from '../ai/types.js';
 
 /** Sticker kinds as recorded by autoSave when the media was captured */
-const STICKER_KINDS = new Set(['sticker', 'video_sticker', 'animated_sticker']);
+const STICKER_KINDS = new Set(['sticker', 'video_sticker', 'animated_sticker', 'animated_sticker_still']);
 /** Stickers that are short video clips rather than a single still frame */
 const ANIMATED_STICKER_KINDS = new Set(['video_sticker', 'animated_sticker']);
 
