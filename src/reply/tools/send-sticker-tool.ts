@@ -25,7 +25,7 @@ import { SEND_STICKER_TOOL_NAME } from './tool-names.js';
 
 const descriptionOf = (canPreview: boolean): string =>
     '从固定贴纸包 ColorfulHachimi 发送一张贴纸（每条回复最多附带一张图片或贴纸）。' +
-    'sticker 传入包内序号（01–72）或画面名称：\n' +
+    'sticker 传入包内序号（01–72）、画面名称，或下面目录里的整行（如 \'30刘海遮眼低落\'）：\n' +
     STICKER_CATALOG_TEXT +
     '。\n' +
     '序号为贴纸包内实际顺序（非原文件名编号），名称对应实际画面内容。' +
@@ -36,7 +36,7 @@ const INPUT_SCHEMA = {
     properties: {
         sticker: {
             type: 'string',
-            description: "包内序号（01–72）或实际画面名称，如 '07'、'吃冰棒'、'st1'",
+            description: "包内序号（01–72）、画面名称或目录整行，如 '07'、'吃冰棒'、'st1'",
         },
     },
     required: ['sticker'],

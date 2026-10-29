@@ -88,6 +88,50 @@ const misleadingError = (
     return null;
 };
 
+/** A catalog line copied whole: `30刘海遮眼低落`, `30 刘海遮眼低落`, `#30_刘海遮眼低落` */
+const CATALOG_ENTRY_PATTERN = /^#?(\d{1,3})[\s、.．·_＿-]*(\S[\s\S]*)$/u;
+
+/**
+ * The name half of a query. `raw` is what the model typed and is echoed in
+ * every error; `expectedIndex` is set when the query started with a pack
+ * number, so a number that names a different picture than the name does is
+ * refused instead of silently picking one of them.
+ */
+const resolveByName = (text: string, raw: string, expectedIndex?: number): StickerQueryResult => {
+    const normalized = normalizeStickerQuery(text);
+    const misleading = misleadingError(normalized);
+    if (misleading) return misleading;
+
+    const matches = searchStickersByLabel(text);
+    const first = matches[0];
+    if (matches.length === 1 && first) {
+        if (expectedIndex === undefined || expectedIndex === first.packIndex) {
+            return { ok: true, entry: first };
+        }
+        const numbered = findStickerByPackIndex(expectedIndex);
+        return {
+            ok: false,
+            error:
+                `“${raw}”里的序号和名称不是同一张：${expectedIndex} 是 ` +
+                `${numbered ? `${padPackIndex(numbered.packIndex)} ${numbered.label}` : '包内没有这张'}，` +
+                `${padPackIndex(first.packIndex)} 才是“${first.label}”。`,
+        };
+    }
+    if (matches.length > 1) {
+        return {
+            ok: false,
+            error:
+                `“${raw}”对应多张：` +
+                `${matches.map((entry) => `${padPackIndex(entry.packIndex)} ${entry.label}`).join('、')}；` +
+                '请用序号或更完整的名称。',
+        };
+    }
+    return {
+        ok: false,
+        error: `没有叫“${raw}”的贴纸。最接近的是：${suggestionsOf(normalized)}。`,
+    };
+};
+
 export const resolveStickerQuery = (
     raw: string,
     state: Pick<ReplyMediaState, 'fetchedStickers'>
@@ -112,24 +156,13 @@ export const resolveStickerQuery = (
         return { ok: false, error: `没有第 ${packIndex} 张；包内序号是 01–72。` };
     }
 
-    const normalized = normalizeStickerQuery(trimmed);
-    const misleading = misleadingError(normalized);
-    if (misleading) return misleading;
-
-    const matches = searchStickersByLabel(trimmed);
-    const first = matches[0];
-    if (matches.length === 1 && first) return { ok: true, entry: first };
-    if (matches.length > 1) {
-        return {
-            ok: false,
-            error:
-                `“${trimmed}”对应多张：` +
-                `${matches.map((entry) => `${padPackIndex(entry.packIndex)} ${entry.label}`).join('、')}；` +
-                '请用序号或更完整的名称。',
-        };
+    // The catalog prints `30刘海遮眼低落`, so a model copies that line as one value
+    const catalogEntry = CATALOG_ENTRY_PATTERN.exec(trimmed);
+    if (catalogEntry) {
+        const packIndex = Number.parseInt(catalogEntry[1] ?? '', 10);
+        const rest = (catalogEntry[2] ?? '').trim();
+        if (rest !== '') return resolveByName(rest, trimmed, packIndex);
     }
-    return {
-        ok: false,
-        error: `没有叫“${trimmed}”的贴纸。最接近的是：${suggestionsOf(normalized)}。`,
-    };
+
+    return resolveByName(trimmed, trimmed);
 };

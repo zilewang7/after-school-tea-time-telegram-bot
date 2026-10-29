@@ -101,7 +101,7 @@ const inputSchemaOf = (hasSticker: boolean) => ({
                         ? {
                               sticker: {
                                   type: 'string',
-                                  description: "贴纸：st1（fetch_image 预览过的）、包内序号 07 或实际画面名，如 '吃冰棒'",
+                                  description: "贴纸：st1（fetch_image 预览过的）、包内序号 07、实际画面名或目录整行，如 '吃冰棒'",
                               },
                           }
                         : {}),

@@ -126,9 +126,33 @@ cases.push(
         expect(entryOf('07_吃冰棒.png', state).packIndex === 7, 'original-name prefix + extension');
         expect(entryOf('吃冰棒', state).packIndex === 7, 'actual name');
         expect(entryOf('笑眼跪坐', state).packIndex === 42, 'actual name 42');
+        expect(entryOf('30刘海遮眼低落', state).packIndex === 30, 'catalog line, no separator');
+        expect(entryOf('30 刘海遮眼低落', state).packIndex === 30, 'catalog line with a space');
+        expect(entryOf('#30_刘海遮眼低落', state).packIndex === 30, 'catalog line with # and _');
 
         state.fetchedStickers.set('st1', 7);
         expect(entryOf('st1', state).packIndex === 7, 'preview id');
+    })
+);
+
+cases.push(
+    runCase('a catalog line whose number and name disagree is refused, not guessed', async () => {
+        const state = createReplyMediaState();
+        const mismatch = errorOf('30抱爱心', state);
+        expect(
+            mismatch.includes('刘海遮眼低落') && mismatch.includes('抱爱心'),
+            `both pictures are named (got ${mismatch})`
+        );
+        expect(errorOf('30哈基米', state).includes('30哈基米'), 'an unknown name keeps the whole query');
+
+        const tool = createFetchImageTool({
+            state,
+            dependencies: { fetchImage: async () => { throw new Error('not used'); } },
+            sticker: { setName: SET_NAME, api: fakeApi },
+        });
+        const read = await tool.execute({ sticker: '30刘海遮眼低落' }, signal);
+        expect(read.isError === false, 'fetch_image takes the whole catalog line');
+        expect(read.content.includes('30 刘海遮眼低落'), `it names the sticker it read (got ${read.content})`);
     })
 );
 

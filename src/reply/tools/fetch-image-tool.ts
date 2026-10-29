@@ -46,7 +46,7 @@ const DESCRIPTION =
     '读取后返回编号 imgN，可用于 send_image 或 generate_image 的 web_references。';
 
 const STICKER_DESCRIPTION =
-    '也可传入 sticker（贴纸包内序号 01–72，或 send_sticker 目录里的画面名称）预览贴纸；' +
+    '也可传入 sticker（贴纸包内序号 01–72、画面名称，或 send_sticker 目录里的整行如 \'30刘海遮眼低落\'）预览贴纸；' +
     '返回编号 stN，之后可用 send_sticker(sticker=…) 发出，或作为 generate_image 的 web_references。';
 
 const inputSchemaOf = (hasSticker: boolean) => ({
@@ -59,7 +59,8 @@ const inputSchemaOf = (hasSticker: boolean) => ({
             ? {
                   sticker: {
                       type: 'string',
-                      description: "贴纸包内序号（01–72）或 send_sticker 目录里的画面名称，如 '07'、'吃冰棒'",
+                      description:
+                          "贴纸包内序号（01–72）、画面名称，或 send_sticker 目录里的整行，如 '07'、'吃冰棒'、'30刘海遮眼低落'",
                   },
               }
             : {}),
