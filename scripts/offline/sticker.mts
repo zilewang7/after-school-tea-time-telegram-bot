@@ -30,6 +30,8 @@ const {
     createFetchImageTool,
     createSendImageTool,
     createSendStickerTool,
+    describeFetchImageRequest,
+    fetchImageRejectionLine,
 } = await import('../../src/reply/tools/index.js');
 const { processChunk } = await import('../../src/reply/response-handler.js');
 
@@ -195,6 +197,31 @@ cases.push(
             line?.includes('戴黄色猫帽') === true && line.includes('笑眼跪坐'),
             `the rejection names the query and the real sticker (got ${JSON.stringify(warnings)})`
         );
+    })
+);
+
+cases.push(
+    runCase('a refused fetch_image names the argument it was given, never a whole url', async () => {
+        const stickerRequest = describeFetchImageRequest({ sticker: '哈基米' });
+        const candidateRequest = describeFetchImageRequest({ search_id: 's9' });
+        const urlRequest = describeFetchImageRequest({ url: 'https://example.com/a.png?token=secret' });
+        expect(stickerRequest === 'sticker=哈基米', `the sticker query is quoted (got ${stickerRequest})`);
+        expect(candidateRequest === 'search_id=s9', `the candidate id is quoted (got ${candidateRequest})`);
+        expect(urlRequest === 'url=example.com', `the host is named (got ${urlRequest})`);
+        expect(!urlRequest.includes('token=secret'), 'the query string never reaches the log');
+
+        const line = fetchImageRejectionLine('sticker=哈基米', '没有叫“哈基米”的贴纸');
+        expect(line === 'sticker=哈基米 → 没有叫“哈基米”的贴纸', `one line: request, arrow, reason (got ${line})`);
+        expect(fetchImageRejectionLine('sticker=x', 'Y'.repeat(400)).length === 200, 'clipped to 200 chars');
+
+        const state = createReplyMediaState();
+        const tool = createFetchImageTool({
+            state,
+            dependencies: { fetchImage: async () => { throw new Error('not used'); } },
+            sticker: { setName: SET_NAME, api: fakeApi },
+        });
+        const refused = await tool.execute({ sticker: '哈基米' }, signal);
+        expect(refused.isError, 'the call is still refused');
     })
 );
 

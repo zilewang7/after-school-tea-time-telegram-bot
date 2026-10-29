@@ -12,7 +12,7 @@
  * Reading the same image twice returns the first read: the bytes are already in
  * the conversation, and only the id is needed for send_image / generate_image.
  */
-import type { ToolHandler, ToolModelImage } from '../../ai/tools/tool-types.js';
+import type { ToolHandler, ToolModelImage, ToolResult } from '../../ai/tools/tool-types.js';
 import { fetchImageBytes } from '../../services/image-fetch-service.js';
 import {
     downloadStickerPreview,
@@ -46,8 +46,8 @@ const DESCRIPTION =
     '读取后返回编号 imgN，可用于 send_image 或 generate_image 的 web_references。';
 
 const STICKER_DESCRIPTION =
-    '也可传入 sticker（贴纸包内序号或画面名称）预览贴纸，返回编号 stN，' +
-    "可用于 send_sticker(sticker='st1') 或 generate_image 的 web_references。";
+    '也可传入 sticker（贴纸包内序号 01–72，或 send_sticker 目录里的画面名称）预览贴纸；' +
+    '返回编号 stN，之后可用 send_sticker(sticker=…) 发出，或作为 generate_image 的 web_references。';
 
 const inputSchemaOf = (hasSticker: boolean) => ({
     type: 'object',
@@ -59,7 +59,7 @@ const inputSchemaOf = (hasSticker: boolean) => ({
             ? {
                   sticker: {
                       type: 'string',
-                      description: "贴纸包内序号（01–72）或实际画面名称，如 '07'、'吃冰棒'、'st1'",
+                      description: "贴纸包内序号（01–72）或 send_sticker 目录里的画面名称，如 '07'、'吃冰棒'",
                   },
               }
             : {}),
@@ -115,6 +115,49 @@ const candidateOfUrl = (url: string): SearchCandidate => ({
     sendKind: 'static',
 });
 
+/**
+ * A rejected call leaves no other trace (the tool log keeps counts and errors
+ * only), so the reason gets its own line — the rule send_sticker already
+ * follows. The request is named by the one argument the model picked, and a
+ * url only by its host: a query string can carry a secret.
+ */
+const REJECTION_LOG_MAX_CHARS = 200;
+
+const hostOfUrl = (raw: string): string => {
+    try {
+        return new URL(raw).hostname;
+    } catch {
+        return '<无法解析的地址>';
+    }
+};
+
+export const describeFetchImageRequest = (args: Readonly<Record<string, unknown>>): string => {
+    const textOf = (key: string): string | undefined => {
+        const value = args[key];
+        return typeof value === 'string' && value.trim() !== '' ? value.trim() : undefined;
+    };
+    const sticker = textOf('sticker');
+    if (sticker !== undefined) return `sticker=${sticker}`;
+    const searchId = textOf('search_id');
+    if (searchId !== undefined) return `search_id=${searchId}`;
+    const imageId = textOf('image_id');
+    if (imageId !== undefined) return `image_id=${imageId}`;
+    const url = textOf('url');
+    if (url !== undefined) return `url=${hostOfUrl(url)}`;
+    return '没有取图来源';
+};
+
+/** The one line a rejection leaves behind; pure so a test can pin its shape */
+export const fetchImageRejectionLine = (request: string, message: string): string =>
+    Array.from(`${request} → ${message}`.replace(/\s+/g, ' '))
+        .slice(0, REJECTION_LOG_MAX_CHARS)
+        .join('');
+
+const reject = (request: string, message: string): ToolResult => {
+    console.warn(`[fetch_image] rejected: ${fetchImageRejectionLine(request, message)}`);
+    return imageToolError(message);
+};
+
 export const createFetchImageTool = (options: FetchImageToolOptions): ToolHandler => {
     const { state, dependencies } = options;
     const canSeeAnimated = options.canSeeAnimated === true;
@@ -129,14 +172,15 @@ export const createFetchImageTool = (options: FetchImageToolOptions): ToolHandle
         statusText: '🖼 正在读图…',
         chatAction: 'typing',
         execute: async (rawArgs) => {
+            const request = describeFetchImageRequest(rawArgs);
             const parsed = parseFetchImageArgs(rawArgs);
-            if (!parsed.ok) return imageToolError(parsed.error);
+            if (!parsed.ok) return reject(request, parsed.error);
             const args = parsed.args;
 
             // Re-reading is free: the bytes already ride the conversation
             if (args.imageId !== undefined) {
                 const existing = state.fetched.get(args.imageId);
-                if (!existing) return imageToolError(mediaToolErrors.unknownFetched(args.imageId));
+                if (!existing) return reject(request, mediaToolErrors.unknownFetched(args.imageId));
                 return {
                     content:
                         `已经读过 ${existing.id}（${existing.mimeType}，${Math.round(existing.data.length / 1024)}KB），` +
@@ -150,7 +194,7 @@ export const createFetchImageTool = (options: FetchImageToolOptions): ToolHandle
 
             if (args.sticker !== undefined) {
                 const resolvedQuery = resolveStickerQuery(args.sticker, state);
-                if (!resolvedQuery.ok) return imageToolError(resolvedQuery.error);
+                if (!resolvedQuery.ok) return reject(request, resolvedQuery.error);
                 const entry = resolvedQuery.entry;
                 const existing = [...state.fetchedStickers.entries()].find(
                     ([, packIndex]) => packIndex === entry.packIndex
@@ -166,7 +210,7 @@ export const createFetchImageTool = (options: FetchImageToolOptions): ToolHandle
                         record: null,
                     };
                 }
-                if (!options.sticker) return imageToolError('这个模型/这一轮没有配置贴纸预览。');
+                if (!options.sticker) return reject(request, '这个模型/这一轮没有配置贴纸预览。');
 
                 let preview: StickerPreview;
                 try {
@@ -182,7 +226,7 @@ export const createFetchImageTool = (options: FetchImageToolOptions): ToolHandle
                         error instanceof StickerSetError
                             ? error.message
                             : `贴纸读不出来：${error instanceof Error ? error.message : String(error)}`;
-                    return imageToolError(message);
+                    return reject(request, message);
                 }
 
                 const id = nextFetchedStickerId(state);
@@ -204,17 +248,17 @@ export const createFetchImageTool = (options: FetchImageToolOptions): ToolHandle
                     ? state.candidates.get(args.searchId)
                     : candidateOfUrl(args.url ?? '');
             if (!candidate) {
-                return imageToolError(mediaToolErrors.unknownCandidate(args.searchId ?? ''));
+                return reject(request, mediaToolErrors.unknownCandidate(args.searchId ?? ''));
             }
 
             const downloaded = await downloadCandidateMedia(candidate, dependencies, {
                 preferThumbnail: args.view === 'thumbnail',
             });
-            if (!downloaded.ok) return imageToolError(mediaToolErrors.downloadFailed(downloaded.error));
+            if (!downloaded.ok) return reject(request, mediaToolErrors.downloadFailed(downloaded.error));
 
             const { media } = downloaded;
             if (media.deliverable.data.length > MAX_ORIGINAL_IMAGE_BYTES) {
-                return imageToolError(mediaToolErrors.tooLarge(MAX_ORIGINAL_IMAGE_BYTES / 1024 / 1024));
+                return reject(request, mediaToolErrors.tooLarge(MAX_ORIGINAL_IMAGE_BYTES / 1024 / 1024));
             }
 
             const id = nextFetchedImageId(state);
