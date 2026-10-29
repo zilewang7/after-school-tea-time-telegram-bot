@@ -808,6 +808,67 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
         },
     },
     {
+        // 2026-10-29: the streaming message filled up inside a <details> fold.
+        // The clean-only newline search found no boundary there, so the whole
+        // buffer (ending mid-sentence) was finalized, and the continuation was
+        // re-rendered from raw text that no longer carried the <details>
+        // opener — the fold tail showed up as plain body text.
+        name: 'a streaming continuation inside a fold keeps the fold and cuts at a line break',
+        body: async () => {
+            const { renderMarkdown } = await import('telegram-md-entities');
+            const { splitAtLastNewline } = await import(
+                '../../src/telegram/formatters/smart-splitter.js'
+            );
+
+            const body = Array.from(
+                { length: 120 },
+                (_, i) => `第 ${i} 段：盖闻硅基肇启，算力本为天下公器；模型开源，智能当属苍生之共业。`
+            ).join('\n\n');
+            const raw = `已为你拟好檄文：\n\n<details>\n<summary>📜 <b>点击展开</b></summary>\n\n### 檄曰：\n\n${body}\n\n</details>`;
+
+            // The streaming switch trips once the rendered prefix reaches the
+            // length limit
+            let cutIndex = raw.length;
+            for (let i = 1; i <= raw.length; i += 1) {
+                if (renderMarkdown(raw.slice(0, i), { streaming: true }).text.length >= 3850) {
+                    cutIndex = i;
+                    break;
+                }
+            }
+            const buffer = raw.slice(0, cutIndex);
+
+            const { currentPart, remaining } = splitAtLastNewline(
+                buffer,
+                Math.floor(buffer.length / 4)
+            );
+
+            expect(
+                currentPart.endsWith('\n'),
+                `the closed message ends on a line break (tail: ${JSON.stringify(
+                    currentPart.slice(-20)
+                )})`
+            );
+            expect(
+                remaining.startsWith('<details>'),
+                `the continuation reopens the fold (head: ${JSON.stringify(remaining.slice(0, 40))})`
+            );
+
+            const headQuotes = renderMarkdown(currentPart, { streaming: true }).entities.filter(
+                (entity) => entity.type === 'expandable_blockquote'
+            );
+            expect(headQuotes.length === 1, 'the closed message is still a fold');
+
+            const restQuotes = renderMarkdown(remaining).entities.filter(
+                (entity) => entity.type === 'expandable_blockquote'
+            );
+            expect(restQuotes.length === 1, 'the continuation is a fold too');
+            expect(
+                renderMarkdown(remaining).text.includes('（续）'),
+                'the continuation marks itself as continued'
+            );
+        },
+    },
+    {
         // A reply split into several messages must not grow one preview card
         // per message. With a search footer the card belongs to the chunk that
         // starts the first linked query (the footer itself may span messages);

@@ -29,8 +29,15 @@ export const splitRawByFits = (
  * the last clean newline) at or past minPos. Used when a streaming message
  * is being closed for a continuation. currentPart is empty when no boundary
  * qualifies — callers decide whether to move everything or keep all.
+ *
+ * A cut inside an open fold/fence/table is not clean by definition, so the
+ * clean-only search finds nothing there and the caller keeps the whole
+ * buffer — finalizing mid-sentence, with the continuation re-rendered from
+ * raw text that no longer carries the <details> opener (its fold is lost).
+ * `repair: true` cuts at the last line break anyway and reopens the open
+ * constructs in the remainder, so both halves stay folds at a line boundary.
  */
 export const splitAtLastNewline = (raw: string, minPos: number = 0): SplitResult => {
-    const { head, rest } = splitRawMarkdownAtNewline(raw, minPos);
+    const { head, rest } = splitRawMarkdownAtNewline(raw, minPos, { repair: true });
     return { currentPart: head, remaining: rest };
 };
