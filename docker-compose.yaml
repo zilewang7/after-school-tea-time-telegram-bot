@@ -35,11 +35,8 @@ services:
       - telegram-bot-api-data:/var/lib/telegram-bot-api
     command: ["/bin/bash", "/app/k-on-bot/build.sh"]
     working_dir: /app/k-on-bot
-    # Pin the MCP host to cloudflare's edge: the direct path (Osaka -> LAX ->
-    # Shanghai) drops 5-25% of packets, which stalled SMS calls. The public A
-    # record stays pointed at the origin so China Mobile's callback is unaffected.
-    extra_hosts:
-      - "cmcc-mcp.heimao.icu:104.18.32.1"
+    # SMS MCP uses the CF-optimised hostname (cmcc-mcp-cf.heimao.icu);
+    # plain cmcc-mcp.heimao.icu stays direct for China Mobile's callback.
     networks:
       - traefik-net
 
