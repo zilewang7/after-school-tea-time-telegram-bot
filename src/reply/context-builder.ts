@@ -85,18 +85,17 @@ const audioVisualKinds = (parts: UnifiedContentPart[]): Array<'video' | 'audio'>
 // and to repeat the same description in every following reply.
 const buildAudioVisualNudge = (kinds: Array<'video' | 'audio'>): string => {
     const noun = kinds.join(' and ');
-    const verb = kinds.map((kind) => (kind === 'video' ? 'watch' : 'listen to')).join(' / ');
-    return `[system] A ${noun} file is attached in this message. You can fully perceive it — actually ${verb} it and weave a concrete description of its real content into your reply; do not respond from the surrounding text alone. If one of your earlier replies already described this same file, do not describe it again.`;
+    return `[system] A ${noun} file is attached to this message and visible to you.`;
 };
 
 // Sticker clips are tone, not content: describing them is optional, and the
 // description must not be repeated in every following reply.
 const ANIMATED_STICKER_NUDGE =
-    '[system] The attached sticker is a short video clip — play it through to know what it really shows. Being a sticker it mostly carries tone, so describe it only when the description adds something to your reply, skip it when it does not, and never repeat a description you already gave in an earlier reply.';
+    '[system] The attached sticker is a short video clip — play it through to know what it really shows.';
 
 // The pack emoji rides along in the media hint but says little about the artwork.
 const STICKER_EMOJI_NUDGE =
-    "[system] A sticker's pack emoji is loose metadata that Telegram often assigns automatically, and it frequently has nothing to do with the artwork. Judge the sticker by the image/clip attached to you, never by that emoji.";
+    "[system] A sticker's pack emoji is loose metadata often assigned automatically by Telegram and may be unrelated to the actual image/clip.";
 
 /** Whether one content part survives the model's capability filter */
 const partVisibleToModel = (

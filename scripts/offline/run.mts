@@ -3589,7 +3589,7 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
             registerReplyInFlight(OFFLINE_CHAT_ID, asked);
             const during = await contextOf();
             expect(
-                /\[system\] another session is already replying to #1 — do not react to #1 again/
+                /\[system\] another session is already replying to #1/
                     .test(during.all),
                 `the in-flight answer is announced on the message being answered (got ${JSON.stringify(during.all)})`
             );

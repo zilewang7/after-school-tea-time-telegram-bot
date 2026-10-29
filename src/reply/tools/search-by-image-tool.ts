@@ -36,9 +36,9 @@ import { formatReverseSearchResult } from './reverse-image-text.js';
 import { SEARCH_BY_IMAGE_TOOL_NAME } from './tool-names.js';
 
 const DESCRIPTION =
-    '以图搜图：把一张图片上传到 Yandex 图片搜索，返回包含这张图的网页、相同/近似图片的其他尺寸、相似图和识别标签。' +
-    '输入可以是上下文消息里的图片（message / image）、fetch_image 读过的图（image_id）或 search_images 的候选（search_id）；' +
-    '动图（GIF/动态贴纸）用的是首帧；单张图上限 8MB。';
+    '以图搜图：将图片上传至 Yandex 图片搜索，返回包含该图的网页、其他尺寸、相似图与识别标签。' +
+    '支持传入上下文消息图片（message / image）、已读取图片（image_id）或搜索候选（search_id）；' +
+    '动图（GIF/动态贴纸）取首帧，单图上限 8MB。';
 
 const INPUT_SCHEMA = {
     type: 'object',

@@ -56,7 +56,7 @@ export const buildRuntimeContext = (
     chatTitle?: string | null
 ): string => {
     const lines = [
-        '[system] 运行时信息（不是用户说的话）：',
+        '[system] 运行时信息：',
         `- 当前时间：${formatCurrentTime()}`,
         chatTitle ? `- 当前群聊：${chatTitle}` : '- 当前对话：私聊',
         `- 当前模型：${model}`,

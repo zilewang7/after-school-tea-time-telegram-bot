@@ -23,7 +23,7 @@ export const imageDataUrl = (image: ToolModelImage): string =>
  */
 export const modelImagesIntro = (images: readonly ToolModelImage[]): string =>
     [
-        '以下是上一条工具结果里的图片，顺序与之一致（有没有发给用户见该工具结果的文字）：',
+        '上一条工具结果附带的图片（按顺序排列，是否已发送给用户见对应工具结果）：',
         ...images.map((image, index) => `${index + 1}. ${image.caption}`),
     ].join('\n');
 

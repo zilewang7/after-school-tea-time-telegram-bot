@@ -47,16 +47,12 @@ import { GENERATE_IMAGE_TOOL_NAME } from './tool-names.js';
 export { IMAGE_ASPECT_RATIOS } from './image-tool-args.js';
 
 const descriptionOf = (hasSticker: boolean): string =>
-    '生成或修改一张图片，图片会带着 caption 附在你这条回复后面发出（每条回复最多一张）。' +
-    '只在需要“新画一张/改一张图”时使用；如果用户要的是真实存在的图片、表情包、截图、新闻图，' +
-    '请先用 search_images 找到，再用 send_image 发，不要用本工具冒充“找到了”。' +
-    '要参考或修改上下文里的图片（消息自带的附件、链接预览里的图、你自己之前生成的都算），在 references 里填消息编号；' +
-    '消息里是动图（GIF/动态贴纸）时，用的是它的首帧；' +
-    '同一条消息有多张时用 image 指明第几张，按消息里出现的顺序数：附件在前，链接预览的图在后。' +
-    '要参考网上找到的图，在 web_references 里填 search_id / image_id。' +
-    (hasSticker ? '要参考贴纸包里的贴纸，也在 web_references 里填 sticker（st1、包内序号或画面名）。' : '') +
-    '生图模型在需要真实参考时会自动使用 Google 图片搜索；你可以在 prompt 里明确要求' +
-    '“参考网络上真实的照片/地标/人物”，生成后参考来源会列在回复底部。';
+    '生成新图片或基于现有图片进行修改，生成结果带 caption 随当前回复发出（每条回复最多附带一张图片或贴纸）。' +
+    '参考或修改上下文已有图片（含消息附件、链接预览图片及历史生成图）时，在 references 中指定消息编号；' +
+    '动图（GIF/动态贴纸）取首帧；同条消息含多张图片时用 image 指定序号（从 1 开始，消息附件在前，链接预览图片在后）。' +
+    '参考搜索候选或已读取图片时，在 web_references 中填入 search_id 或 image_id。' +
+    (hasSticker ? '参考贴纸包内贴纸时，在 web_references 中填入 sticker（st1、包内序号或画面名称）。' : '') +
+    '生图模型支持自动调用 Google 图片搜索获取真实视觉参考，可在 prompt 中注明所需参考对象，参考来源将附于回复末尾。';
 
 const inputSchemaOf = (hasSticker: boolean) => ({
     type: 'object',
@@ -64,16 +60,15 @@ const inputSchemaOf = (hasSticker: boolean) => ({
         prompt: {
             type: 'string',
             description:
-                '画面描述，中英文均可。参考多张图时按画面特征描述每张（如"那张穿红衣服的人像"），' +
-                '不要用"第一张图"这类序号指代；图里要出现的文字原样写进来。',
+                '画面描述（中英文均可）。参考多张图时按画面特征指代各图（如“穿红衣的人像”），勿用“第一张图”等序号；需呈现在画面中的文字请原样写出。',
         },
         caption: {
             type: 'string',
-            description: '随图发出的配文，显示在图片下方。',
+            description: '随图发送的配文，显示于图片下方。',
         },
         references: {
             type: 'array',
-            description: '要参考或修改的上下文图片（消息附件、链接预览里的图都算）；不填就是从零画。',
+            description: '要参考或修改的上下文图片（含消息附件与链接预览图片）；省略则从零生成。',
             items: {
                 type: 'object',
                 properties: {

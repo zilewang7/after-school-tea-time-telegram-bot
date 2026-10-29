@@ -164,4 +164,4 @@ const doAcquireOcr = async (
 
 /** Render OCR text as the context part shown to a model that cannot see images. */
 export const buildOcrFallbackPart = (ocrText: string): string =>
-    `[system] 图中文字（OCR 自动识别，可能有错字或漏字，不要当作原文引用）：\n${ocrText}`;
+    `[system] 图中文字（OCR 自动识别，可能有错字或漏字）：\n${ocrText}`;

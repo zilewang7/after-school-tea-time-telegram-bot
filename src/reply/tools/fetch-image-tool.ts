@@ -40,16 +40,14 @@ import { padPackIndex, resolveStickerQuery } from './sticker-query.js';
 import { FETCH_IMAGE_TOOL_NAME } from './tool-names.js';
 
 const DESCRIPTION =
-    '读取一张图片进你的上下文（不发给用户），用于确认图里到底是什么、做 OCR、或作为生图参考。' +
-    '可以传 search_id（搜索结果编号，形如 s3）、image_id（之前读取过的图，形如 img1）' +
-    '或 url（http(s) 图片直链）。默认读原图；只要认个大概可以传 view=\'thumbnail\'。' +
-    '候选是动图（GIF）时，会转成视频给你看动作。' +
-    '读过的图会得到编号 img1，可直接用于 send_image 或 generate_image 的 web_references。';
+    '将一张图片加载到当前上下文中（仅模型可见，不发送给用户），用于查看细节、识别文字或作为生图参考。' +
+    '支持传入 search_id（搜索候选编号，如 s3）、image_id（已读取图片编号，如 img1）或 url（http(s) 图片直链）。' +
+    "默认读取原图；传 view='thumbnail' 则读取缩略图。GIF 动图会转换为视频以展示完整动作。" +
+    '读取后返回编号 imgN，可用于 send_image 或 generate_image 的 web_references。';
 
 const STICKER_DESCRIPTION =
-    '也可以传 sticker（贴纸包内序号或实际画面名称）读取贴纸，用于发送前确认画面；' +
-    "读过的贴纸会得到 st1 编号，可直接 send_sticker(sticker='st1')，" +
-    "也可以作为 generate_image 的参考（web_references 里 sticker='st1'）。";
+    '也可传入 sticker（贴纸包内序号或画面名称）预览贴纸，返回编号 stN，' +
+    "可用于 send_sticker(sticker='st1') 或 generate_image 的 web_references。";
 
 const inputSchemaOf = (hasSticker: boolean) => ({
     type: 'object',

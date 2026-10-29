@@ -16,8 +16,8 @@ export interface ExecutedToolCall {
  */
 export const toolRoundsLeftNotice = (remaining: number): string =>
     remaining <= 0
-        ? '[工具轮次] 本次调用后不能再调用工具了，下一步必须直接用文字回答。'
-        : `[工具轮次] 本次调用后最多还能调用工具 ${remaining} 次（用完就只能用文字回答）。`;
+        ? '[工具轮次] 本次调用后不能再调用工具，下一步仅输出文字回复。'
+        : `[工具轮次] 剩余可用工具轮次：${remaining}。`;
 
 const secondsOf = (ms: number): number => Math.max(0, Math.round(ms / 1000));
 
@@ -29,7 +29,7 @@ const secondsOf = (ms: number): number => Math.max(0, Math.round(ms / 1000));
  */
 export const toolTimeNotice = (timing: { elapsedMs: number; deadlineMs: number }): string =>
     `[时间] 已用 ${secondsOf(timing.elapsedMs)}s / 共 ${secondsOf(timing.deadlineMs)}s，` +
-    `还剩 ${secondsOf(timing.deadlineMs - timing.elapsedMs)}s（用尽会被强制收尾，图就发不出去）。`;
+    `还剩 ${secondsOf(timing.deadlineMs - timing.elapsedMs)}s。`;
 
 /** What a tool result tells the model about its remaining budget */
 export interface ToolBudget {

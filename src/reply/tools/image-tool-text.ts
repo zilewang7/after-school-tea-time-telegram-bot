@@ -108,7 +108,7 @@ export const formatSearchResult = (input: SearchTextInput): string => {
         ...attachLines(input),
         ...(input.canSeeImages
             ? [unseen.length === 0 ? '这批缩略图都看过了。' : `还没看：${idList(unseen)}`]
-            : ['你看不到图：按标题、尺寸和来源挑，发之前可以让用户确认。']),
+            : ['你看不到图：可按标题、尺寸和来源选择。']),
         ...nextStepLines(input, unseen),
     ].join('\n');
 };

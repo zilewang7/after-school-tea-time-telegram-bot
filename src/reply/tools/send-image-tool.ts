@@ -37,12 +37,9 @@ import type { ReplyMediaState, SearchCandidate } from './reply-media-state.js';
 import { SEND_IMAGE_TOOL_NAME } from './tool-names.js';
 
 const DESCRIPTION =
-    '把一张真实存在的图片发到聊天里（会附在你这条回复后面，每条回复最多一张）。' +
-    '来源可以是 search_id（搜索结果编号）、image_id（fetch_image 读过的图）、' +
-    'message（上下文里某条消息的编号 #N）或 url（http(s) 图片直链）。' +
-    '候选是 GIF 动图时，发出去的就是会动的动图。' +
-    '这是“把找到的图给用户看”的唯一方式：用户要表情包/截图/新闻图时，先 search_images 找到，' +
-    '再用本工具发，不要用 generate_image 画一张冒充。';
+    '将一张已有图片发送到聊天（附于当前回复末尾，每条回复最多附带一张图片或贴纸）。' +
+    '支持传入 search_id（搜索候选编号）、image_id（fetch_image 已读图片编号）、' +
+    'message（上下文消息编号 #N）或 url（http(s) 图片直链）。GIF 候选将作为动图发送。';
 
 const INPUT_SCHEMA = {
     type: 'object',

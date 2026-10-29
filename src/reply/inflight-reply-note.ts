@@ -8,7 +8,7 @@
  * so the second reply does not answer A again.
  */
 export const buildInFlightReplyNote = (contextNumber: number): string =>
-    `[system] another session is already replying to #${contextNumber} — do not react to #${contextNumber} again, that answer is on its way; answer only what is new.`;
+    `[system] another session is already replying to #${contextNumber}.`;
 
 /**
  * Note on the bot's own turn while that reply is still being written.
@@ -21,4 +21,4 @@ export const buildInFlightReplyNote = (contextNumber: number): string =>
  * corrupted. Say what is actually happening instead.
  */
 export const buildInFlightOwnReplyNote = (contextNumber: number): string =>
-    `[system] your reply #${contextNumber} is still being generated in another session — nothing has been lost; its text is not stored yet. Do not claim it is missing, blank or broken, and do not repeat that answer; respond only to the new message.`;
+    `[system] your reply #${contextNumber} is still being generated in another session; its text is not stored yet.`;

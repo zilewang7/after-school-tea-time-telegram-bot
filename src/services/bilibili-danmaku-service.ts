@@ -175,7 +175,7 @@ export const renderDanmakuBlock = (
 ): string | null => {
     if (!entries.length) return null;
     const selected = selectDanmaku(entries, MAX_DANMAKU_LINES);
-    const header = `[system] 该 B 站视频（${videoLabelOf(ref)}）的观众弹幕节选（${selected.length} 条，按视频内出现时间排序）。弹幕是观众发表的评论，反映观众反应，不代表视频本身的内容：`;
+    const header = `[system] 该 B 站视频（${videoLabelOf(ref)}）的观众弹幕节选（${selected.length} 条，按视频内出现时间排序）：`;
     return renderLines(header, selected);
 };
 
@@ -188,7 +188,7 @@ export const renderArchivedDanmakuBlock = (
     if (!entries.length) return null;
     const selected = selectDanmaku(entries, MAX_DANMAKU_LINES);
     const capturedDate = capturedAt.toISOString().slice(0, 10);
-    const header = `[system] 该 B 站视频（${videoLabelOf(ref)}）的弹幕当前无法实时获取（视频可能已失效），以下为此前抓取的弹幕存档快照（${capturedDate} 抓取，${selected.length} 条，按视频内出现时间排序）。弹幕是观众发表的评论，不代表视频本身的内容：`;
+    const header = `[system] 该 B 站视频（${videoLabelOf(ref)}）当前无法实时获取弹幕（视频可能已失效），以下为此前抓取的弹幕存档快照（${capturedDate} 抓取，${selected.length} 条，按视频内出现时间排序）：`;
     return renderLines(header, selected);
 };
 

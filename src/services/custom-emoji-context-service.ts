@@ -115,7 +115,7 @@ const buildAnnotations = (
       : '';
     annotations.set(
       messageId,
-      `[system] Telegram custom emoji occurrences in this message, in reading order: ${descriptions.join('; ')}.${atlasNote} Treat them as visual tone and do not narrate them unless relevant.`
+      `[system] Telegram custom emoji occurrences in this message, in reading order: ${descriptions.join('; ')}.${atlasNote}`
     );
   }
   return annotations;

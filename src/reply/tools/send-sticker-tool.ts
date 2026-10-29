@@ -24,13 +24,12 @@ import type { ReplyMediaState } from './reply-media-state.js';
 import { SEND_STICKER_TOOL_NAME } from './tool-names.js';
 
 const descriptionOf = (canPreview: boolean): string =>
-    '从固定贴纸包 ColorfulHachimi 发一张贴纸（每条回复最多一张，不能和图片同时发）。' +
-    'sticker 传包内序号或实际画面名称；序号是贴纸包里的实际顺序 01–72：\n' +
+    '从固定贴纸包 ColorfulHachimi 发送一张贴纸（每条回复最多附带一张图片或贴纸）。' +
+    'sticker 传入包内序号（01–72）或画面名称：\n' +
     STICKER_CATALOG_TEXT +
     '。\n' +
-    '编号是包内顺序，不是原文件名编号；名称就是画面内容。' +
-    (canPreview ? "拿不准先用 fetch_image(sticker='序号/名称') 看一眼再发。" : '') +
-    '用户要“表情包/贴纸/发表情”时，先从这里挑；不要用 generate_image 画一张冒充，也不要用 send_image 发成图片。';
+    '序号为贴纸包内实际顺序（非原文件名编号），名称对应实际画面内容。' +
+    (canPreview ? "可通过 fetch_image(sticker='序号/名称') 预览贴纸画面。" : '');
 
 const INPUT_SCHEMA = {
     type: 'object',

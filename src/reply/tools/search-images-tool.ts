@@ -25,20 +25,14 @@ import {
 import { SEARCH_IMAGES_TOOL_NAME } from './tool-names.js';
 
 const DESCRIPTION_WITH_IMAGES =
-    '在网上搜索真实存在的图片（表情包、梗图、截图、新闻图、参考照片）。' +
-    '返回编号 s1、s2…，尺寸/格式/来源页。本回复的第一次搜索先附 3 张缩略图；' +
-    '之后每次搜索（包括换关键词）都会把该批剩下的缩略图一次全给你（不会重复搜索）。' +
-    "只想看文字清单用 view='details'；想单张细看用 fetch_image。" +
-    '用户要图就用 send_image 发一张（不必等最完美）；' +
-    '用户要的是“找现成的图”时用本工具；只有用户明确要“画一张/改图”才用 generate_image。';
+    '检索网络图片（表情包、梗图、截图、新闻图、参考照片等），返回候选编号 s1、s2… 及其尺寸、格式与来源页。' +
+    '当前回复首次搜索附带前 3 张缩略图；后续调用（含翻页或更换关键词）一次附带该批次剩余全部未看缩略图。' +
+    "传 view='details' 仅返回文字清单；需查看单张原图细节可调用 fetch_image，需发送给用户可调用 send_image。";
 
 /** For a model that cannot see: no thumbnails are attached, so do not promise any */
 const DESCRIPTION_TEXT_ONLY =
-    '在网上搜索真实存在的图片（表情包、梗图、截图、新闻图、参考照片）。' +
-    '返回编号 s1、s2…，尺寸/格式/来源页和候选清单。' +
-    '你看不到图片内容，按标题、尺寸和来源挑。' +
-    '挑到就用 send_image 发出去。' +
-    '用户要的是“现成的图”时用本工具；只有用户明确要“画一张/改图”才用 generate_image。';
+    '检索网络图片（表情包、梗图、截图、新闻图、参考照片等），返回候选编号 s1、s2… 及其标题、尺寸、格式与来源页清单。' +
+    '当前模型不支持图像输入，无缩略图附带；可根据元数据选择候选并调用 send_image 发送。';
 
 const INPUT_SCHEMA = {
     type: 'object',
@@ -193,15 +187,13 @@ const resolveSet = async (
     if (!outcome.ok) {
         return {
             ok: false,
-            error: `${outcome.error}。图搜现在不可用：直接告诉用户没找到，不要用 generate_image 假装找到了。`,
+            error: `图片搜索不可用：${outcome.error}。`,
         };
     }
     if (outcome.images.length === 0) {
         return {
             ok: false,
-            error:
-                `「${query}」一条可用的图都没有搜到。换个更短的关键词再试，或直接告诉用户没找到；` +
-                '不要用 generate_image 假装找到了。',
+            error: `「${query}」未搜到可用图片，可尝试更换关键词。`,
         };
     }
 
