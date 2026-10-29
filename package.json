@@ -37,7 +37,7 @@
     "@google/genai": "^2.29.1",
     "@grammyjs/auto-retry": "^2.0.2",
     "@grammyjs/menu": "^1.3.1",
-    "@modelcontextprotocol/sdk": "^1.32.1",
+    "@modelcontextprotocol/sdk": "^1.32.2",
     "@sequelize/core": "7.0.0-alpha.48",
     "@sequelize/sqlite3": "7.0.0-alpha.48",
     "await-to-js": "^3.0.0",
@@ -48,18 +48,21 @@
     "sqlite3": "^6.0.1",
     "telegram-md-entities": "^0.7.3",
     "ts-pattern": "^5.9.0",
-    "undici": "^8.11.2"
+    "undici": "^8.12.3",
+    "zod": "^4.6.7"
   },
   "pnpm": {
     "overrides": {
       "@sequelize/sqlite3>sqlite3": "6.0.1",
-      "ip-address": "^10.7.3",
+      "ip-address": "^10.7.5",
       "uuid": "^11.1.1",
       "hono": "^4.13.13",
-      "@hono/node-server": "^1.19.17",
-      "fast-uri": "^3.1.8",
+      "@hono/node-server": "^2.1.5",
+      "fast-uri": "^3.1.9",
+      "body-parser": "^2.4.0",
+      "qs": "^6.17.1",
       "tar": "^7.5.22",
-      "node-gyp>undici": "^6.29.0",
+      "node-gyp>undici": "^6.29.1",
       "express": "^5.3.0"
     }
   }
