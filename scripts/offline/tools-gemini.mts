@@ -73,6 +73,11 @@ interface ScriptedReply {
     readonly body: string;
     /** Runs when the reply is served (e.g. to move the fake clock) */
     readonly onServe?: () => void;
+    /**
+     * Never answers: the promise rejects only when the attempt's signal aborts.
+     * Used to prove a timed-out attempt is aborted instead of running on.
+     */
+    readonly hangUntilAborted?: boolean;
 }
 
 interface RecordedRequest {
@@ -80,6 +85,8 @@ interface RecordedRequest {
     /** The body exactly as sent, for byte-identity checks */
     readonly rawBody: string;
     readonly body: Record<string, unknown>;
+    /** The attempt's abort signal, as the SDK handed it to fetch */
+    readonly signal: AbortSignal | null;
 }
 
 const scriptedReplies: ScriptedReply[] = [];
@@ -109,7 +116,8 @@ const canonical = (value: unknown): string =>
 
 const fakeFetch = async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
     const rawBody = typeof init?.body === 'string' ? init.body : '{}';
-    recordedRequests.push({ url: String(input), rawBody, body: asRecord(JSON.parse(rawBody)) });
+    const signal = init?.signal ?? null;
+    recordedRequests.push({ url: String(input), rawBody, body: asRecord(JSON.parse(rawBody)), signal });
     const reply = scriptedReplies.shift();
     if (!reply) {
         return new Response(json({ error: { code: 400, message: 'unexpected request', status: 'INVALID_ARGUMENT' } }), {
@@ -118,6 +126,14 @@ const fakeFetch = async (input: string | URL | Request, init?: RequestInit): Pro
         });
     }
     reply.onServe?.();
+    if (reply.hangUntilAborted) {
+        return new Promise<Response>((_resolve, reject) => {
+            const abort = (): void => reject(signal?.reason ?? new Error('This operation was aborted'));
+            if (!signal) return;
+            if (signal.aborted) abort();
+            else signal.addEventListener('abort', abort, { once: true });
+        });
+    }
     return new Response(reply.body, { status: reply.status, headers: { 'content-type': reply.contentType } });
 };
 
@@ -287,6 +303,8 @@ interface TurnOptions {
     readonly signal?: AbortSignal;
     readonly maxRetries?: number;
     readonly isImageModel?: boolean;
+    /** Explicit open timeout; omitted keeps the platform's own default */
+    readonly timeout?: number;
 }
 
 const runTurn = async (options: TurnOptions = {}): Promise<{ chunks: StreamChunk[]; lines: string[] }> => {
@@ -295,6 +313,7 @@ const runTurn = async (options: TurnOptions = {}): Promise<{ chunks: StreamChunk
             model: options.model ?? 'gemini-3.8-flash',
             systemPrompt: 'offline system prompt',
             maxRetries: options.maxRetries ?? 1,
+            ...(options.timeout === undefined ? {} : { timeout: options.timeout }),
             ...(options.tools ? { tools: options.tools } : {}),
             ...(options.signal ? { signal: options.signal } : {}),
             ...(options.isImageModel ? { isImageModel: true } : {}),
@@ -1204,6 +1223,46 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
         },
     },
     {
+        name: 'an attempt that times out is aborted before the retry, which then answers',
+        body: async () => {
+            reset([
+                { status: 0, contentType: 'text/event-stream', body: '', hangUntilAborted: true },
+                sse(roundEvents([[textPart('Answered on the retry.')]])),
+            ]);
+
+            const { chunks, lines } = await runTurn({ timeout: 60, maxRetries: 2 });
+
+            expect(recordedRequests.length === 2, `the hung attempt and its retry (got ${recordedRequests.length})`);
+            expect(
+                recordedRequests[0]?.signal?.aborted === true,
+                'the timed-out attempt is aborted instead of running next to its retry'
+            );
+            expect(
+                recordedRequests[1]?.signal?.aborted === false,
+                'and the attempt that answered is left alone'
+            );
+            expect(
+                lines.some((line) => line.includes('Retry attempt 1/2') && line.includes('Timeout')),
+                `the timeout is logged (got ${json(lines)})`
+            );
+            expect(textOf(chunks) === 'Answered on the retry.', 'the retry delivers the reply');
+        },
+    },
+    {
+        name: 'the usage line reports the chunk count and the longest silence within a round',
+        body: async () => {
+            reset([sse(roundEvents([[thoughtPart('thinking')], [textPart('hello')]]))]);
+
+            const { lines } = await runTurn({});
+
+            const usage = usageLines(lines)[0] ?? '';
+            expect(/chunks=2\b/.test(usage), `two chunks were delivered (got ${usage})`);
+            // offline the scripted chunks arrive in the same tick, so the field
+            // reads 0ms@-; production fills in the real silence
+            expect(/maxGap=\d+ms@(?:\+\d+ms|-)/.test(usage), `the longest inter-chunk silence is reported (got ${usage})`);
+        },
+    },
+    {
         name: 'gs:// media: no function declarations, byte for byte the request without tools',
         body: async () => {
             const messages: UnifiedMessage[] = [
@@ -1222,7 +1281,12 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
                     event([signedEmptyText('g1-end')], { finishReason: 'STOP', grounding: groundingOf(['clip'], ['https://a']) }),
                 ]);
             const normalizedUsageLines = (lines: readonly string[]): string[] =>
-                usageLines(lines).map((line) => line.replace(/=\d+ms/g, '=Nms'));
+                // timings and the gap position are the only parts that may differ
+                usageLines(lines).map((line) =>
+                    line
+                        .replace(/maxGap=\d+ms@(?:\+\d+ms|-)/, 'maxGap=Nms')
+                        .replace(/=\d+ms/g, '=Nms')
+                );
 
             reset([videoRound()]);
             const withTools = await runTurn({ tools: turnTools, messages });
@@ -1253,7 +1317,7 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
             expect(
                 json(normalizedUsageLines(withTools.lines)) === json(normalizedUsageLines(withoutTools.lines)) &&
                     !(usageLines(withTools.lines)[0] ?? '').includes('round='),
-                'and the same single usage line'
+                `and the same single usage line (got ${json(normalizedUsageLines(withTools.lines))} vs ${json(normalizedUsageLines(withoutTools.lines))})`
             );
         },
     },

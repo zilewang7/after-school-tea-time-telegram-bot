@@ -8,6 +8,11 @@
  * work is judged by. `via` names the upstream channel: without it a
  * zero-cache request cannot be told apart from one that was routed somewhere
  * its prefix was never cached.
+ *
+ * Chunk cadence (`chunks`, `maxGap`): ttfb only covers the wait before the
+ * first chunk, so a stream that goes quiet halfway through used to be invisible
+ * in the logs. maxGap is the longest silence between two chunks of the round
+ * and where it ended; a long one on a search round is the search running.
  */
 import type { GenerateContentResponse, GenerateContentResponseUsageMetadata } from '@google/genai';
 
@@ -37,6 +42,12 @@ export interface GeminiRequestUsage {
     readonly firstThinkAt: number | null;
     readonly firstTextAt: number | null;
     readonly finishedAt: number;
+    /** Chunks the stream delivered for this request, empty ones included */
+    readonly chunkCount: number;
+    /** Longest silence between two chunks of this request (0 when it had <2) */
+    readonly maxChunkGapMs: number;
+    /** Offset from request start at which that silence ended, null when none */
+    readonly maxChunkGapAtMs: number | null;
 }
 
 /** Which tool loop round a request was, and how many function calls it made */
@@ -65,6 +76,8 @@ export const formatGeminiUsageLine = (
         `thoughts=${usage?.thoughtsTokenCount ?? 0} output=${usage?.candidatesTokenCount ?? 0} ` +
         `total=${usage?.totalTokenCount ?? '?'} ` +
         `grounding=${request.groundingCount} sources=${request.groundingSources} ` +
+        `chunks=${request.chunkCount} ` +
+        `maxGap=${request.maxChunkGapMs}ms@${request.maxChunkGapAtMs === null ? '-' : `+${request.maxChunkGapAtMs}ms`} ` +
         `ttfb=${request.streamOpenedAt - request.requestStartedAt}ms ` +
         `firstPart=${sinceStart(request.firstPartAt)}ms firstThink=${sinceStart(request.firstThinkAt)}ms ` +
         `firstText=${sinceStart(request.firstTextAt)}ms dur=${request.finishedAt - request.requestStartedAt}ms`

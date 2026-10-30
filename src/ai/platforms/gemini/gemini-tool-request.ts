@@ -40,12 +40,17 @@ export const withoutFunctionDeclarations = (tools: readonly Tool[]): Tool[] =>
 /**
  * The SDK config of one round. includeServerSideToolInvocations is never set:
  * the SDK rejects it on Vertex before sending anything.
+ *
+ * `abortSignal` is the transport attempt's signal (see BasePlatform.sendWithRetry):
+ * a round that times out must stop streaming, not run on next to its retry.
  */
 export const toRoundConfig = (
     baseConfig: GenerateContentConfig,
-    request: GeminiRoundRequest
+    request: GeminiRoundRequest,
+    abortSignal?: AbortSignal
 ): GenerateContentConfig => ({
     ...baseConfig,
+    ...(abortSignal ? { abortSignal } : {}),
     tools: [...request.tools],
     ...(request.final && hasFunctionDeclarations(request.tools)
         ? { toolConfig: { functionCallingConfig: { mode: FunctionCallingConfigMode.NONE } } }

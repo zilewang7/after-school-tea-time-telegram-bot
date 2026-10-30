@@ -15,7 +15,7 @@ import type {
     ResponseFunctionToolCall,
     ResponseOutputItem,
 } from 'openai/resources/responses/responses';
-import type { StreamChunk, UnifiedMessage } from '../../src/ai/types.js';
+import type { ModelCapabilities, StreamChunk, UnifiedMessage } from '../../src/ai/types.js';
 import type { ToolHandler, ToolResult } from '../../src/ai/tools/index.js';
 
 interface ScriptedResponse {
@@ -1178,6 +1178,45 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
                 platforms.mimo.getModelCapabilities('mimo-v2.6-pro').supportsClientTools === true,
                 'mimo gets client tools'
             );
+        },
+    },
+    {
+        name: 'the shared retry still times out an attempt that ignores its signal',
+        body: async () => {
+            const { BasePlatform } = await import('../../src/ai/platforms/base-platform.js');
+            class SignalIgnoringPlatform extends BasePlatform {
+                readonly type = 'gemini' as const;
+                sendMessage(): Promise<AsyncIterable<StreamChunk>> {
+                    return Promise.reject(new Error('not used'));
+                }
+                supportsModel(): boolean {
+                    return true;
+                }
+                getModelCapabilities(): ModelCapabilities {
+                    return {
+                        supportsImageInput: false,
+                        supportsImageOutput: false,
+                        supportsSystemPrompt: false,
+                        requiresMessageMerge: false,
+                        supportsThinking: false,
+                        supportsGrounding: false,
+                        supportsMediaInput: false,
+                    };
+                }
+                startNeverAnswering(): Promise<string> {
+                    return this.sendWithRetry(() => new Promise<string>(() => undefined), {
+                        timeout: 40,
+                        maxRetries: 1,
+                    });
+                }
+            }
+
+            const startedAt = Date.now();
+            const failure = await new SignalIgnoringPlatform()
+                .startNeverAnswering()
+                .then(() => null, (error: Error) => error);
+            expect(failure?.message === 'Timeout', `it timed out (got ${failure?.message})`);
+            expect(Date.now() - startedAt < 2000, 'without waiting for the request itself');
         },
     },
 ];

@@ -2,7 +2,6 @@
  * Base platform class with retry logic
  */
 import { match } from 'ts-pattern';
-import { to, isErr } from '../../shared/result.js';
 import { isRetryableError, getRetryWaitTime } from '../../shared/errors.js';
 import type {
     IAIPlatform,
@@ -21,6 +20,13 @@ const formatBytes = (n: number): string => {
     return `${(n / 1024 / 1024).toFixed(1)}MB`;
 };
 
+/** Aborts surface as DOMException AbortError, undici errors or the SDK's own text */
+const isAbortError = (error: unknown): boolean =>
+    error instanceof Error && (error.name === 'AbortError' || /abort/i.test(error.message));
+
+const toError = (error: unknown): Error =>
+    error instanceof Error ? error : new Error(String(error));
+
 export abstract class BasePlatform implements IAIPlatform {
     abstract readonly type: PlatformType;
 
@@ -34,10 +40,15 @@ export abstract class BasePlatform implements IAIPlatform {
     abstract getModelCapabilities(model: string): ModelCapabilities;
 
     /**
-     * Send message with retry logic
+     * Send message with retry logic.
+     *
+     * `operation` receives the signal of THIS attempt. An attempt that runs out
+     * of time is aborted before the retry is sent: a request left running next
+     * to its own retry bills twice and presses twice on the upstream quota,
+     * which is how a slow start turns into 429s and even slower starts.
      */
     protected async sendWithRetry<T>(
-        operation: () => Promise<T>,
+        operation: (signal: AbortSignal) => Promise<T>,
         options: SendOptions = { timeout: 85000, maxRetries: 3 }
     ): Promise<T> {
         const { timeout, maxRetries, onRetry, signal } = options;
@@ -50,24 +61,43 @@ export abstract class BasePlatform implements IAIPlatform {
             }
 
             const currentTimeout = timeout + (attempt - 1) * timeoutIncrement;
+            const attemptController = new AbortController();
+            const abortOnStop = () => attemptController.abort();
+            signal?.addEventListener('abort', abortOnStop, { once: true });
+            let timedOut = false;
+            let timeoutHandle: ReturnType<typeof setTimeout> | null = null;
 
-            const opResult = await to(
-                this.withTimeout(operation(), currentTimeout, signal)
-            );
+            let err: Error;
+            try {
+                // The attempt is awaited through a race, not just awaited: a
+                // platform that ignores its signal must still time out.
+                const operationPromise = operation(attemptController.signal);
+                // A late rejection of an abandoned attempt must not escape as an
+                // unhandled rejection once the race has already moved on.
+                operationPromise.catch(() => undefined);
+                const timeoutPromise = new Promise<never>((_resolve, reject) => {
+                    timeoutHandle = setTimeout(() => {
+                        timedOut = true;
+                        reject(new Error('Timeout'));
+                        attemptController.abort();
+                    }, currentTimeout);
+                });
 
-            if (!isErr(opResult)) {
-                return opResult[1];
-            }
-
-            const err = opResult[0];
-
-            // Don't retry if aborted
-            if (signal?.aborted || err.message === 'Aborted') {
-                throw new Error('Aborted');
+                const result = await Promise.race([operationPromise, timeoutPromise]);
+                if (timeoutHandle) clearTimeout(timeoutHandle);
+                // The stop listener stays for the lifetime of what the attempt
+                // opened (a stream outlives this call) so stop still aborts it.
+                return result;
+            } catch (error) {
+                if (timeoutHandle) clearTimeout(timeoutHandle);
+                signal?.removeEventListener('abort', abortOnStop);
+                if (signal?.aborted || (!timedOut && isAbortError(error))) {
+                    throw new Error('Aborted');
+                }
+                err = toError(error);
             }
 
             const shouldRetry = isRetryableError(err) && attempt < maxRetries;
-
             if (shouldRetry) {
                 const waitTime = getRetryWaitTime(err);
                 console.log(
@@ -83,42 +113,6 @@ export abstract class BasePlatform implements IAIPlatform {
         }
 
         throw new Error('Maximum retries exceeded');
-    }
-
-    /**
-     * Wrap promise with timeout and abort signal
-     */
-    protected withTimeout<T>(promise: Promise<T>, ms: number, signal?: AbortSignal): Promise<T> {
-        return new Promise((resolve, reject) => {
-            // Check if already aborted
-            if (signal?.aborted) {
-                reject(new Error('Aborted'));
-                return;
-            }
-
-            const timeoutId = setTimeout(() => {
-                reject(new Error('Timeout'));
-            }, ms);
-
-            // Listen for abort
-            const abortHandler = () => {
-                clearTimeout(timeoutId);
-                reject(new Error('Aborted'));
-            };
-            signal?.addEventListener('abort', abortHandler, { once: true });
-
-            promise
-                .then((result) => {
-                    clearTimeout(timeoutId);
-                    signal?.removeEventListener('abort', abortHandler);
-                    resolve(result);
-                })
-                .catch((error) => {
-                    clearTimeout(timeoutId);
-                    signal?.removeEventListener('abort', abortHandler);
-                    reject(error);
-                });
-        });
     }
 
     /**

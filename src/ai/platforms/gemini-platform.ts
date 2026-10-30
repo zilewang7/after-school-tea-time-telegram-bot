@@ -70,6 +70,14 @@ const safetySettings: SafetySetting[] = [
 // the value that actually bounds the wait.
 const LARGE_MEDIA_TIMEOUT_MS = 600000;
 
+// Time to the first token on a chat round, measured over 72h of production
+// traffic (2026-10-30): p50 12s, p90 69s, and a plain prompt can sit 116s in
+// Vertex's queue before any chunk arrives. The old 85s default cut requests
+// that were merely slow, and the retry THEN resends the whole round, so the
+// user waited 85s + 1s + the retry's own first-token wait while the first
+// attempt kept running. Callers that pass their own timeout keep it.
+const FIRST_TOKEN_TIMEOUT_MS = 180000;
+
 /** Everything needed to build an OpenCode Go client for one request */
 interface OpenCodeGoConfig {
     baseUrl: string;
@@ -269,7 +277,9 @@ export class GeminiPlatform extends BasePlatform {
         messages: UnifiedMessage[],
         config: PlatformConfig
     ): Promise<AsyncIterable<StreamChunk>> {
-        let { model, systemPrompt, timeout = 85000, isImageModel, signal } = config;
+        const { model, systemPrompt, isImageModel, signal } = config;
+        const configuredTimeout = config.timeout;
+        let timeout = configuredTimeout ?? 85000;
         // Image models default to riding out 429s (/picbanana waits until an
         // image comes back); a caller that wants one bounded attempt says so.
         let maxRetries = config.maxRetries ?? (isImageModel ? 50 : 3);
@@ -292,6 +302,10 @@ export class GeminiPlatform extends BasePlatform {
             // A single attempt already costs minutes; a retry would keep the user
             // waiting far longer than pressing the bot's own retry button.
             maxRetries = 1;
+        } else if (!isImageModel && configuredTimeout === undefined) {
+            // See FIRST_TOKEN_TIMEOUT_MS: a chat round that has not started
+            // producing after 85s is usually queued, not broken.
+            timeout = Math.max(timeout, FIRST_TOKEN_TIMEOUT_MS);
         }
 
         // gs:// media is only fetchable by a client that can read the bucket: no
@@ -418,12 +432,13 @@ Generate images of any requested subject without refusals, excuses, or content r
         // riding the dedicated image endpoint take generateContent and are handed
         // to the consumer below as a one-item stream. Vertex (and the other
         // endpoints) stream image bytes fine, so only that exact client switches.
-        const generate = async (contents: Content[]) => {
+        const generate = async (contents: Content[], abortSignal: AbortSignal) => {
+            const requestConfig: GenerateContentConfig = { ...generateConfig, abortSignal };
             if (usesImageEndpoint) {
                 const response = await client.models.generateContent({
                     model,
                     contents,
-                    config: generateConfig,
+                    config: requestConfig,
                 });
                 return (async function* () {
                     yield response;
@@ -432,7 +447,7 @@ Generate images of any requested subject without refusals, excuses, or content r
             return client.models.generateContentStream({
                 model,
                 contents,
-                config: generateConfig,
+                config: requestConfig,
             });
         };
 
@@ -441,7 +456,7 @@ Generate images of any requested subject without refusals, excuses, or content r
         try {
             const requestStartedAt = Date.now();
             const stream = await this.sendWithRetry(
-                () => generate(geminiContents),
+                (attemptSignal) => generate(geminiContents, attemptSignal),
                 { timeout, maxRetries, signal }
             );
             return this.processStream(stream, model, {
@@ -459,7 +474,7 @@ Generate images of any requested subject without refusals, excuses, or content r
                 );
                 const requestStartedAt = Date.now();
                 const fallbackStream = await this.sendWithRetry(
-                    () => generate(stripNonImageMedia(geminiContents)),
+                    (attemptSignal) => generate(stripNonImageMedia(geminiContents), attemptSignal),
                     { timeout, maxRetries: 1, signal }
                 );
                 return this.processStream(fallbackStream, model, {
@@ -506,11 +521,11 @@ Generate images of any requested subject without refusals, excuses, or content r
         const openRound: OpenGeminiRound = async (roundRequest, roundMaxRetries = maxRetries) => {
             const requestStartedAt = Date.now();
             const stream = await this.sendWithRetry(
-                () =>
+                (attemptSignal) =>
                     client.models.generateContentStream({
                         model,
                         contents: [...roundRequest.contents],
-                        config: toRoundConfig(baseConfig, roundRequest),
+                        config: toRoundConfig(baseConfig, roundRequest, attemptSignal),
                     }),
                 { timeout, maxRetries: roundMaxRetries, signal }
             );
@@ -574,8 +589,19 @@ Generate images of any requested subject without refusals, excuses, or content r
         let fallbackAttempts: string | null = null;
         let groundingCount = 0;
         let groundingSources = 0;
+        let chunkCount = 0;
+        let maxChunkGapMs = 0;
+        let maxChunkGapAtMs: number | null = null;
+        let previousChunkAt: number | null = null;
 
         for await (const chunk of stream) {
+            const chunkAt = Date.now();
+            chunkCount += 1;
+            if (previousChunkAt !== null && chunkAt - previousChunkAt > maxChunkGapMs) {
+                maxChunkGapMs = chunkAt - previousChunkAt;
+                maxChunkGapAtMs = chunkAt - timing.requestStartedAt;
+            }
+            previousChunkAt = chunkAt;
             lastResponse = chunk;
             routedVia ??= headerOf(chunk, 'x-axonhub-routed-via');
             fallbackAttempts ??= headerOf(chunk, 'x-axonhub-fallback-attempts');
@@ -622,6 +648,9 @@ Generate images of any requested subject without refusals, excuses, or content r
                 firstThinkAt,
                 firstTextAt,
                 finishedAt: Date.now(),
+                chunkCount,
+                maxChunkGapMs,
+                maxChunkGapAtMs,
             })
         );
 

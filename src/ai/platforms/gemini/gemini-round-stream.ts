@@ -56,8 +56,19 @@ export async function* consumeGeminiRound(
     let firstThinkAt: number | null = null;
     let firstTextAt: number | null = null;
     let groundingSources = 0;
+    let chunkCount = 0;
+    let maxChunkGapMs = 0;
+    let maxChunkGapAtMs: number | null = null;
+    let previousChunkAt: number | null = null;
 
     for await (const chunk of opened.stream) {
+        const chunkAt = Date.now();
+        chunkCount += 1;
+        if (previousChunkAt !== null && chunkAt - previousChunkAt > maxChunkGapMs) {
+            maxChunkGapMs = chunkAt - previousChunkAt;
+            maxChunkGapAtMs = chunkAt - opened.requestStartedAt;
+        }
+        previousChunkAt = chunkAt;
         lastChunk = chunk;
         routedVia ??= headerOf(chunk, 'x-axonhub-routed-via');
         fallbackAttempts ??= headerOf(chunk, 'x-axonhub-fallback-attempts');
@@ -111,6 +122,9 @@ export async function* consumeGeminiRound(
             firstThinkAt,
             firstTextAt,
             finishedAt: Date.now(),
+            chunkCount,
+            maxChunkGapMs,
+            maxChunkGapAtMs,
         },
     };
 }
