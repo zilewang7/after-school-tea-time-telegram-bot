@@ -29,6 +29,8 @@ const descriptionOf = (canPreview: boolean): string =>
     STICKER_CATALOG_TEXT +
     '。\n' +
     '序号为贴纸包内实际顺序（非原文件名编号），名称对应实际画面内容。' +
+    '\n' +
+    '贴纸应当在思考中就调用工具发送。' +
     (canPreview ? "可通过 fetch_image(sticker='序号/名称') 预览贴纸画面。" : '');
 
 const INPUT_SCHEMA = {
