@@ -121,6 +121,9 @@ export async function* runToolRound(
         for (const sticker of result.stickers ?? []) {
             yield { type: 'sticker', sticker };
         }
+        for (const file of result.files ?? []) {
+            yield { type: 'file', file };
+        }
         if (result.record !== null) {
             yield { type: 'grounding', groundingMetadata: result.record };
         }

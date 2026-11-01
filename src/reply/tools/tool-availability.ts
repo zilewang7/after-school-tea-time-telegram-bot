@@ -17,6 +17,7 @@ import {
     GENERATE_IMAGE_TOOL_NAME,
     SEARCH_IMAGES_TOOL_NAME,
     SEARCH_BY_IMAGE_TOOL_NAME,
+    SEND_FILE_TOOL_NAME,
     SEND_IMAGE_TOOL_NAME,
     SEND_SMS_TOOL_NAME,
     SEND_STICKER_TOOL_NAME,
@@ -47,6 +48,8 @@ export interface ToolAvailability {
     readonly imageFetch: boolean;
     /** send_sticker is offered */
     readonly sticker: boolean;
+    /** send_file is offered */
+    readonly file: boolean;
 }
 
 const NO_TOOLS: ToolAvailability = {
@@ -58,6 +61,7 @@ const NO_TOOLS: ToolAvailability = {
     imageReverseSearch: false,
     imageFetch: false,
     sticker: false,
+    file: false,
 };
 
 export const resolveToolAvailability = (
@@ -117,5 +121,6 @@ export const resolveToolAvailability = (
             config.stickerTools &&
             config.stickerSetName !== '' &&
             isEnabled(SEND_STICKER_TOOL_NAME),
+        file: chatAllowed && config.fileTools && isEnabled(SEND_FILE_TOOL_NAME),
     };
 };

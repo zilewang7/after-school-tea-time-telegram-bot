@@ -5,7 +5,13 @@
  * the reply layer and injected per turn, so the AI layer never imports them.
  */
 import type { SniffedMediaMime } from '../image-generation/image-mime.js';
-import type { GroundingData, StickerDelivery, ToolChatAction, ToolStatus } from '../types.js';
+import type {
+    FileDelivery,
+    GroundingData,
+    StickerDelivery,
+    ToolChatAction,
+    ToolStatus,
+} from '../types.js';
 
 export type { ToolChatAction, ToolStatus } from '../types.js';
 
@@ -56,6 +62,8 @@ export interface ToolResult {
     readonly images: readonly ToolImage[];
     /** Stickers that become part of the bot reply (one per reply) */
     readonly stickers?: readonly StickerDelivery[];
+    /** Files that become part of the bot reply (only the last one is delivered) */
+    readonly files?: readonly FileDelivery[];
     /** Images only the model sees, replayed after the tool result */
     readonly modelImages?: readonly ToolModelImage[];
     /** Record for the merged Tools/Sources block; null = usage count only */

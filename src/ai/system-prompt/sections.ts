@@ -87,6 +87,8 @@ export interface CapabilityOptions {
     readonly imageGenerate: boolean;
     /** send_sticker is offered */
     readonly stickerTools: boolean;
+    /** send_file is offered */
+    readonly fileTools: boolean;
 }
 
 const searchImageLines = (canDraw: boolean): string[] => [
@@ -108,6 +110,9 @@ const stickerLine = (canPreview: boolean): string =>
     '- 可以用 `send_sticker` 发送贴纸包中的贴纸（编号与名称见工具描述）' +
     (canPreview ? "，或用 `fetch_image(sticker='…')` 预览贴纸画面。" : '。');
 
+const FILE_LINE =
+    '- 可以用 `send_file` 把长文本（Markdown、代码、CSV 等）写成文件发到聊天（单份上限 10 MB）';
+
 export const buildCapabilitiesSection = (options: CapabilityOptions): string => {
     const lines: string[] = [CAPABILITIES_SECTION];
     const owner = options.smsOwner;
@@ -120,6 +125,7 @@ export const buildCapabilitiesSection = (options: CapabilityOptions): string => 
     if (options.imageFetch) lines.push(IMAGE_FETCH_LINE);
     if (options.imageGenerate) lines.push(IMAGE_EDIT_LINE);
     if (options.stickerTools) lines.push(stickerLine(options.imageFetch));
+    if (options.fileTools) lines.push(FILE_LINE);
     return lines.join('\n');
 };
 

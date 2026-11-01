@@ -39,6 +39,20 @@ export interface StoredSticker {
 }
 
 /**
+ * A text file a version sent, enough to re-send it after a version switch.
+ * The bytes live in `fileBase64`.
+ */
+export interface StoredFile {
+    /** Name the chat downloads, e.g. `SKILL.md` */
+    name: string;
+    /** From the extension, e.g. `text/markdown` */
+    mimeType: string;
+    sizeBytes: number;
+    /** Caption the file went out with; absent when it had none */
+    caption?: string;
+}
+
+/**
  * Single version of a response
  */
 export interface ResponseVersion {
@@ -70,6 +84,10 @@ export interface ResponseVersion {
     imageCaption?: string;
     /** Set when the visual attachment was a sticker, not an image */
     sticker?: StoredSticker;
+    /** Set when the attachment was a file; the bytes are in `fileBase64` */
+    file?: StoredFile;
+    /** File bytes as base64 (version switching re-uploads them) */
+    fileBase64?: string;
 }
 
 /**
@@ -87,6 +105,8 @@ export interface ResponseMetadata {
     hasImage: boolean;
     /** Whether the visual attachment is a sticker */
     hasSticker?: boolean;
+    /** Whether the attachment is a file */
+    hasFile?: boolean;
     /** Command type that generated this response */
     commandType?: CommandType;
     /** Input token count */

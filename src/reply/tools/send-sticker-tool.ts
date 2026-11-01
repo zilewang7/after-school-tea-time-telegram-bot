@@ -20,7 +20,7 @@ import {
 import { STICKER_CATALOG_TEXT } from '../../services/sticker-catalog.js';
 import { imageToolError } from './image-tool-result.js';
 import { padPackIndex, resolveStickerQuery } from './sticker-query.js';
-import type { ReplyMediaState } from './reply-media-state.js';
+import { ONE_ATTACHMENT_PER_REPLY, type ReplyMediaState } from './reply-media-state.js';
 import { SEND_STICKER_TOOL_NAME } from './tool-names.js';
 
 const descriptionOf = (canPreview: boolean): string =>
@@ -80,8 +80,8 @@ export const createSendStickerTool = (options: SendStickerToolOptions): ToolHand
         statusText: '🩷 正在发贴纸…',
         chatAction: 'choose_sticker',
         execute: async (rawArgs, signal) => {
-            if (state.hasReplyImage || state.hasReplySticker) {
-                return reject('这条回复已经有一张图或贴纸了，每条回复只能发一个视觉附件。');
+            if (state.hasReplyImage || state.hasReplySticker || state.hasReplyFile) {
+                return reject(ONE_ATTACHMENT_PER_REPLY);
             }
 
             const raw = rawArgs.sticker;

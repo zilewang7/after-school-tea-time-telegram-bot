@@ -20,6 +20,7 @@ import {
     type TypingIndicator,
 } from '../telegram/index.js';
 import { runApiCall } from '../telegram/edit-coordinator.js';
+import { sendReplyFileMessage } from '../telegram/reply-file-send.js';
 import { sendReplyImageMessage } from '../telegram/reply-image-send.js';
 import { toApiEntities } from '../telegram/api-entities.js';
 import { buildMessageLinkResolver } from '../telegram/message-link.js';
@@ -43,6 +44,7 @@ import { buildImageCaption, type ImageCaptionFields } from './tools/image-messag
 import type {
     StreamChunk,
     AIResponse,
+    FileDelivery,
     ResponseState,
     StickerDelivery,
     ToolStatus,
@@ -63,6 +65,8 @@ const MIN_TAIL_TEXT_BUDGET = 500;
 const IMAGE_NOT_SENT_TEXT = '[image failed to send]';
 /** Shown in place of a reply that was only a sticker Telegram would not take */
 const STICKER_NOT_SENT_TEXT = '[sticker failed to send]';
+/** Shown in place of a reply that was only a file Telegram would not take */
+const FILE_NOT_SENT_TEXT = '[file failed to send]';
 
 /**
  * Chat context for response handling
@@ -206,6 +210,11 @@ export const processChunk = (
             // One sticker per reply; a second call is ignored (the tool rejects it too)
             stickers:
                 sticker && state.stickers.length === 0 ? [...state.stickers, sticker] : state.stickers,
+        }))
+        .with({ type: 'file' }, ({ file }) => ({
+            ...state,
+            // One file per reply: a later call carries the whole content, so it wins
+            files: file ? [file] : state.files,
         }))
         .with({ type: 'grounding' }, ({ groundingMetadata }) => ({
             ...state,
@@ -398,6 +407,7 @@ export const processStream = async (
         thinkingTruncatedChars: 0,
         images: [],
         stickers: [],
+        files: [],
         groundingData: [],
         agentStats: undefined,
         modelParts: undefined,
@@ -605,6 +615,7 @@ export const processStream = async (
         images: state.images,
         imageCaption: state.imageCaption,
         stickers: state.stickers,
+        files: state.files,
         groundingData: state.groundingData,
         agentStats: state.agentStats,
         modelParts: state.modelParts,
@@ -688,6 +699,38 @@ const deliverReplyImage = async (
 };
 
 /**
+ * Send the reply's file after its text. The same bytes stay on the session so
+ * the stored version can re-upload them on a version switch; a failed send
+ * leaves the reply without the file, as the image path does.
+ */
+const deliverReplyFile = async (
+    chatContext: ChatContext,
+    file: FileDelivery | undefined,
+    captionFields: ImageCaptionFields
+): Promise<boolean> => {
+    const { session } = chatContext;
+    if (!file) return false;
+
+    const sent = await sendReplyFileMessage({
+        api: chatContext.ctx.api,
+        chatId: chatContext.chatId,
+        file,
+        captionFields,
+        target: { reply_parameters: { message_id: chatContext.userMessageId } },
+        runApiCall: (operation) => runApiCall(chatContext.chatId, operation),
+    });
+    if (isErr(sent)) {
+        console.error('[response-handler] file send failed:', sent[0]);
+        return false;
+    }
+
+    session.messageIds.push(sent[1]);
+    session.currentMessageId = sent[1];
+    session.file = file;
+    return true;
+};
+
+/**
  * Send the reply's sticker after its text. The webp is downloaded too, so the
  * stored version and the next context can show what went out; a failed
  * download is only a missing preview, never a failed send.
@@ -729,14 +772,18 @@ const deliverReplySticker = async (
 };
 
 /**
- * Send the reply's one visual attachment: a sticker when it has one, otherwise
- * its first image. Returns whether anything went out.
+ * Send the reply's one attachment: a file, a sticker or its first image. The
+ * tools keep these exclusive, so the order only decides the unlikely case of a
+ * stored response carrying two. Returns whether anything went out.
  */
 const deliverReplyMedia = async (
     chatContext: ChatContext,
     response: AIResponse,
-    imageCaptionFields: ImageCaptionFields
+    imageCaptionFields: ImageCaptionFields,
+    fileCaptionFields: ImageCaptionFields
 ): Promise<boolean> => {
+    const file = response.files?.[0];
+    if (file) return deliverReplyFile(chatContext, file, fileCaptionFields);
     const sticker = response.stickers?.[0];
     if (sticker) return deliverReplySticker(chatContext, sticker);
     if (response.images.length > 0) {
@@ -775,6 +822,8 @@ export const sendFinalResponse = async (
     });
     // Only the first image is delivered, and it carries the reply's image caption
     const imageCaptionFields = buildImageCaption(response.imageCaption, resolveContextLink);
+    // The file's caption rides on the file itself, so a version switch keeps it
+    const fileCaptionFields = buildImageCaption(response.files?.[0]?.caption, resolveContextLink);
     const finalizeOptions = {
         modelParts: response.modelParts,
         wasStoppedByUser,
@@ -818,9 +867,13 @@ export const sendFinalResponse = async (
             session.currentMessageId = contMsg.message_id;
         }
 
-        // Send the one visual attachment (image or sticker) after the text split
-        if (response.images.length > 0 || (response.stickers?.length ?? 0) > 0) {
-            await deliverReplyMedia(chatContext, response, imageCaptionFields);
+        // Send the one attachment (file, sticker or image) after the text split
+        if (
+            (response.files?.length ?? 0) > 0 ||
+            response.images.length > 0 ||
+            (response.stickers?.length ?? 0) > 0
+        ) {
+            await deliverReplyMedia(chatContext, response, imageCaptionFields, fileCaptionFields);
         }
 
         // Finalize session (saves to both Message and BotResponse tables)
@@ -860,7 +913,8 @@ export const sendFinalResponse = async (
     const hasText = Boolean(finalMessage.text);
     const hasImages = response.images.length > 0;
     const hasStickers = (response.stickers?.length ?? 0) > 0;
-    const hasMedia = hasImages || hasStickers;
+    const hasFile = (response.files?.length ?? 0) > 0;
+    const hasMedia = hasImages || hasStickers || hasFile;
 
     // Check if this is an image generation context
     const isImageGenerationContext = chatContext.commandType === 'picbanana'
@@ -882,8 +936,11 @@ export const sendFinalResponse = async (
         hasText,
         hasImages,
         hasStickers,
+        hasFile,
         imageCount: response.images.length,
         stickerCount: response.stickers?.length ?? 0,
+        fileName: response.files?.[0]?.name,
+        fileBytes: response.files?.[0]?.data.length,
         textLength: response.text.length,
         thinkingLength: response.thinkingText.length,
         messageCount: session.messageIds.length,
@@ -903,7 +960,12 @@ export const sendFinalResponse = async (
         }
 
         // Send the attachment as last message (buttons will be added after finalize)
-        const mediaDelivered = await deliverReplyMedia(chatContext, response, imageCaptionFields);
+        const mediaDelivered = await deliverReplyMedia(
+            chatContext,
+            response,
+            imageCaptionFields,
+            fileCaptionFields
+        );
 
         if (!hasText) {
             if (mediaDelivered) {
@@ -913,9 +975,12 @@ export const sendFinalResponse = async (
                 session.messageIds = session.messageIds.filter(id => id !== processingMessageId);
             } else {
                 // Nothing went out: the processing message stays and says so
-                await editor.updateContent(hasStickers ? STICKER_NOT_SENT_TEXT : IMAGE_NOT_SENT_TEXT, {
-                    isFinal: true,
-                });
+                const notSentText = hasFile
+                    ? FILE_NOT_SENT_TEXT
+                    : hasStickers
+                      ? STICKER_NOT_SENT_TEXT
+                      : IMAGE_NOT_SENT_TEXT;
+                await editor.updateContent(notSentText, { isFinal: true });
             }
         }
 

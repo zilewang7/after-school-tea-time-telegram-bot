@@ -467,15 +467,17 @@ const buildAssistantMessage = (
 
     const contextNumber = index.numberOf.get(msg.messageId);
     const numberLabel = contextNumber === undefined ? '' : `[#${contextNumber}]\n`;
+    // The file message itself, named (the bytes are not replayed)
+    const fileNote = msg.mediaHint?.startsWith('a file: ') ? `[sent ${msg.mediaHint}]\n` : '';
 
     const parts: UnifiedContentPart[] = [...fileContents];
 
-    // An image-only reply still needs the label, so the model can refer to it
+    // An attachment-only reply still needs the label, so the model can refer to it
     const body =
         stripLeakedWireFormat(msg.text ?? '') ||
-        (fileContents.length ? '' : missingAssistantText(msg, contextNumber));
-    if (numberLabel || body) {
-        parts.push({ type: 'text', text: `${numberLabel}${body}` });
+        (fileContents.length || fileNote ? '' : missingAssistantText(msg, contextNumber));
+    if (numberLabel || fileNote || body) {
+        parts.push({ type: 'text', text: `${numberLabel}${fileNote}${body}` });
     }
 
     return {

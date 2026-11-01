@@ -13,6 +13,7 @@ import {
     writeBotMessageRow,
     type ResponseVersion,
     type ResponseMetadata,
+    type StoredFile,
     type StoredSticker,
     type CommandType,
 } from '../db/index.js';
@@ -42,9 +43,10 @@ import { runApiCall, submitEdit } from '../telegram/edit-coordinator.js';
 import { decideFinalButtonState } from './final-button-state.js';
 import { sniffMediaMime } from '../ai/image-generation/image-mime.js';
 import { buildImageCaption } from '../reply/tools/image-message.js';
+import { sendReplyFileMessage } from '../telegram/reply-file-send.js';
 import { sendReplyImageMessage } from '../telegram/reply-image-send.js';
 import type { ContextLinkResolver } from '../telegram/formatters/context-links.js';
-import type { AgentStats, StickerDelivery } from '../ai/types.js';
+import type { AgentStats, FileDelivery, StickerDelivery } from '../ai/types.js';
 
 /**
  * Stream controller for aborting streams
@@ -116,6 +118,8 @@ export interface BotMessageSession {
     sticker?: StickerDelivery;
     /** The sticker's webp for storage and the next context; absent if download failed */
     stickerBytes?: Buffer;
+    /** The file this reply sent, when it sent one instead of an image or sticker */
+    file?: FileDelivery;
     groundingData: any[];
     agentStats?: AgentStats;
 
@@ -393,10 +397,15 @@ const finalizeSession = async (
 
     const image = session.images[0];
     const sticker = session.sticker;
-    // The bytes stored with the version: an image, or the sticker's webp
-    const mediaBuffer = sticker ? session.stickerBytes : image;
-    // Only the delivered (first) image has a caption; stickers have none
+    const file = session.file;
+    // Picture bytes: an image, or the sticker's webp. A file has its own slot.
+    // The row keeps picture bytes only: a file is named by its mediaHint, its
+    // bytes live in the version (for a version switch), never in the prompt.
+    const pictureBuffer = sticker ? session.stickerBytes : image;
+    const mediaMime = pictureBuffer ? sniffMediaMime(pictureBuffer) : null;
+    // Only the delivered attachment has a caption; stickers have none
     const imageCaption = image && options?.imageCaption ? options.imageCaption : undefined;
+    const fileCaption = file?.caption;
 
     // Build version data
     const version: ResponseVersion = {
@@ -411,8 +420,8 @@ const finalizeSession = async (
         errorMessage: options?.errorMessage,
         modelParts: options?.modelParts,
         wasStoppedByUser: options?.wasStoppedByUser ?? false,
-        imageBase64: mediaBuffer?.toString('base64'),
-        imageCaption: sticker ? undefined : imageCaption,
+        imageBase64: pictureBuffer?.toString('base64'),
+        imageCaption: sticker !== undefined || file !== undefined ? undefined : imageCaption,
         ...(sticker === undefined
             ? {}
             : {
@@ -423,6 +432,17 @@ const finalizeSession = async (
                       fileId: sticker.fileId,
                       fileUniqueId: sticker.fileUniqueId,
                   } satisfies StoredSticker,
+              }),
+        ...(file === undefined
+            ? {}
+            : {
+                  file: {
+                      name: file.name,
+                      mimeType: file.mimeType,
+                      sizeBytes: file.data.length,
+                      ...(fileCaption ? { caption: fileCaption } : {}),
+                  } satisfies StoredFile,
+                  fileBase64: file.data.toString('base64'),
               }),
     };
 
@@ -445,11 +465,12 @@ const finalizeSession = async (
             editedWhileProcessing,
         });
 
-        // Update metadata if the reply carries a visual attachment
-        if (session.images.length > 0 || sticker !== undefined) {
+        // Update metadata if the reply carries an attachment
+        if (session.images.length > 0 || sticker !== undefined || file !== undefined) {
             const metadata = response.getMetadata();
             metadata.hasImage = true;
             if (sticker !== undefined) metadata.hasSticker = true;
+            if (file !== undefined) metadata.hasFile = true;
             response.setMetadata(metadata);
         }
 
@@ -467,13 +488,18 @@ const finalizeSession = async (
         text: botRowTextOf({
             text: session.textBuffer,
             wasStoppedByUser: options?.wasStoppedByUser ?? false,
-            hasImage: mediaBuffer !== undefined,
-            imageCaption: sticker === undefined ? imageCaption : undefined,
+            // "has an attachment": its caption joins the stored text
+            hasImage: pictureBuffer !== undefined || file !== undefined,
+            imageCaption: sticker !== undefined ? undefined : file !== undefined ? fileCaption : imageCaption,
         }),
         modelParts: options?.modelParts ?? null,
-        file: mediaBuffer ?? null,
-        fileMime: mediaBuffer ? sniffMediaMime(mediaBuffer) : null,
-        ...(sticker === undefined ? {} : { mediaHint: 'sticker' }),
+        file: pictureBuffer ?? null,
+        fileMime: mediaMime,
+        ...(sticker !== undefined
+            ? { mediaHint: 'sticker' }
+            : file !== undefined
+              ? { mediaHint: `a file: ${file.name}, ${file.mimeType}` }
+              : {}),
     });
 
     // Remove from active sessions; the reply now has stored content, so it is no
@@ -616,7 +642,8 @@ const buildVersionMessages = (
  * or tool records above the image, in a text message that can be edited.
  */
 const isMediaOnlyVersion = (version: ResponseVersion): boolean =>
-    Boolean(version.imageBase64 || version.sticker) && !buildVersionMessages(version)[0]?.text;
+    Boolean(version.imageBase64 || version.fileBase64 || version.sticker) &&
+    !buildVersionMessages(version)[0]?.text;
 
 /**
  * Start a retry for an existing response
@@ -716,7 +743,12 @@ export const switchVersion = async (
     const contentChunks = buildVersionMessages(newVersion, resolveContextLink);
     let content: FinalMessageChunk = contentChunks[0] ?? plainText('');
 
-    if (!content.text && !newVersion.imageBase64 && newVersion.sticker === undefined) {
+    if (
+        !content.text &&
+        !newVersion.imageBase64 &&
+        !newVersion.fileBase64 &&
+        newVersion.sticker === undefined
+    ) {
         content = plainText('[Empty response]');
     }
 
@@ -728,9 +760,12 @@ export const switchVersion = async (
 
     const imageBuffer = newVersion.imageBase64 ? Buffer.from(newVersion.imageBase64, 'base64') : null;
     const sticker = newVersion.sticker;
+    const storedFile = newVersion.file;
+    const fileBuffer = newVersion.fileBase64 ? Buffer.from(newVersion.fileBase64, 'base64') : null;
 
     // A re-sent image keeps the caption it first went out with
     const captionFields = buildImageCaption(newVersion.imageCaption, resolveContextLink);
+    const fileCaptionFields = buildImageCaption(storedFile?.caption, resolveContextLink);
     // Same sender as the first delivery: a GIF version switch stays an animation
     const sendVersionImage = (image: Buffer) =>
         sendReplyImageMessage({
@@ -757,13 +792,36 @@ export const switchVersion = async (
         );
         return error ? [error, undefined] : [null, message.message_id];
     };
+    // A file version re-uploads the stored bytes with its original name
+    const sendVersionFile = (): Promise<Result<number>> => {
+        if (storedFile === undefined || fileBuffer === null) {
+            return Promise.resolve([new Error('version has no file'), undefined]);
+        }
+        return sendReplyFileMessage({
+            api: ctx.api,
+            chatId,
+            file: {
+                name: storedFile.name,
+                mimeType: storedFile.mimeType,
+                data: fileBuffer,
+                ...(storedFile.caption ? { caption: storedFile.caption } : {}),
+            },
+            captionFields: fileCaptionFields,
+            target: {
+                reply_parameters: { message_id: response.userMessageId },
+                reply_markup: versionButtons,
+            },
+            runApiCall: (operation) => runApiCall(chatId, operation),
+        });
+    };
     const sendVersionMedia = async (): Promise<Result<number>> => {
+        if (fileBuffer !== null) return sendVersionFile();
         if (sticker !== undefined) return sendVersionSticker();
         if (imageBuffer !== null) return sendVersionImage(imageBuffer);
         return [new Error('version has no media'), undefined];
     };
 
-    const hasMedia = imageBuffer !== null || sticker !== undefined;
+    const hasMedia = imageBuffer !== null || fileBuffer !== null || sticker !== undefined;
     const hasContent = Boolean(content.text);
     const newIsMediaOnly = hasMedia && !hasContent;
     const oldIsMediaOnly = isMediaOnlyVersion(oldVersion);
@@ -934,12 +992,21 @@ export const switchVersion = async (
             text: newVersion.text || '',
             wasStoppedByUser: newVersion.wasStoppedByUser,
             hasImage: hasMedia,
-            imageCaption: newVersion.imageCaption,
+            imageCaption:
+                newVersion.sticker !== undefined
+                    ? undefined
+                    : storedFile !== undefined
+                      ? storedFile.caption
+                      : newVersion.imageCaption,
         }),
         modelParts: newVersion.modelParts ?? null,
         file: imageBuffer,
         fileMime: imageBuffer ? sniffMediaMime(imageBuffer) : null,
-        ...(newVersion.sticker === undefined ? {} : { mediaHint: 'sticker' }),
+        ...(newVersion.sticker !== undefined
+            ? { mediaHint: 'sticker' }
+            : storedFile !== undefined
+              ? { mediaHint: `a file: ${storedFile.name}, ${storedFile.mimeType}` }
+              : {}),
     });
 
     return true;
@@ -977,7 +1044,7 @@ export const refreshToFinalState = async (
 
     // Media messages can't be edited to text: pair chunks with text messages only.
     // When a visual attachment exists it is the last message (currentMessageId) and carries the buttons.
-    const hasMedia = Boolean(version.imageBase64 || version.sticker);
+    const hasMedia = Boolean(version.imageBase64 || version.fileBase64 || version.sticker);
     const textMessageIds = hasMedia
         ? version.messageIds.filter((id) => id !== version.currentMessageId)
         : version.messageIds;

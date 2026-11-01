@@ -21,6 +21,7 @@
  * - STICKER_SET_NAME: the fixed Telegram sticker pack send_sticker draws from;
  *   empty = no sticker tools
  * - STICKER_TOOLS=0: no send_sticker / fetch_image(sticker)
+ * - FILE_TOOLS=0: no send_file (the model writing a text file into the chat)
  */
 import { parseChatIdList } from './chat-id-list.js';
 
@@ -52,6 +53,8 @@ export interface ToolConfig {
     readonly stickerSetName: string;
     /** STICKER_TOOLS is not 0 */
     readonly stickerTools: boolean;
+    /** FILE_TOOLS is not 0 */
+    readonly fileTools: boolean;
     readonly ownerSmsAllowTest: boolean;
     readonly owner: OwnerIdentity;
 }
@@ -102,6 +105,7 @@ export const readToolConfig = (env: NodeJS.ProcessEnv = process.env): ToolConfig
     ownerSmsAllowTest: env.OWNER_SMS_ALLOW_TEST === '1',
     stickerSetName: optionalValue(env.STICKER_SET_NAME) ?? '',
     stickerTools: env.STICKER_TOOLS !== '0',
+    fileTools: env.FILE_TOOLS !== '0',
     owner: readOwner(env),
 });
 

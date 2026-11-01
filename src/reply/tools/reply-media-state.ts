@@ -13,6 +13,7 @@
  * Round trips cost more than image tokens here (see the design doc).
  */
 import type { SniffedMediaMime } from '../../ai/image-generation/image-mime.js';
+import type { FileDelivery } from '../../ai/types.js';
 import type { SendKind } from '../../services/image-search-service.js';
 
 /** Thumbnails in the reply's very first window */
@@ -65,6 +66,23 @@ export interface FetchedImage {
     readonly candidateId?: string;
 }
 
+/** One attachment per reply: an image, a sticker or a file */
+export const ONE_ATTACHMENT_PER_REPLY =
+    '这条回复已经有一个附件（图片/贴纸/文件），每条回复只能发一个。';
+
+/**
+ * The file this reply is writing with send_file. Parts are appended in call
+ * order; the whole text is joined once when the delivery is built.
+ */
+export interface ReplyFileDraft {
+    /** Sanitized name; the first call fixes it */
+    readonly name: string;
+    readonly mimeType: string;
+    readonly parts: string[];
+    /** First non-empty caption wins */
+    caption?: string;
+}
+
 export interface ReplyMediaState {
     readonly searches: Map<string, SearchSet>;
     readonly candidates: Map<string, SearchCandidate>;
@@ -77,6 +95,10 @@ export interface ReplyMediaState {
     hasReplyImage: boolean;
     /** Set by the sticker this reply will deliver */
     hasReplySticker: boolean;
+    /** The file this reply is writing; absent until send_file is called */
+    fileDraft?: ReplyFileDraft;
+    /** Set by the file this reply will deliver */
+    hasReplyFile: boolean;
 }
 
 export const createReplyMediaState = (): ReplyMediaState => ({
@@ -87,6 +109,19 @@ export const createReplyMediaState = (): ReplyMediaState => ({
     thumbnailCount: 0,
     hasReplyImage: false,
     hasReplySticker: false,
+    hasReplyFile: false,
+});
+
+/** UTF-8 size of everything written into the draft so far */
+export const fileDraftBytes = (draft: ReplyFileDraft): number =>
+    Buffer.byteLength(draft.parts.join(''), 'utf8');
+
+/** The draft as the delivery layer, the stored version and the next context read it */
+export const fileDeliveryOf = (draft: ReplyFileDraft): FileDelivery => ({
+    name: draft.name,
+    mimeType: draft.mimeType,
+    data: Buffer.from(draft.parts.join(''), 'utf8'),
+    ...(draft.caption ? { caption: draft.caption } : {}),
 });
 
 /** `q1`, `q2`, …: one per search this reply makes */

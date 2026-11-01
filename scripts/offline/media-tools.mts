@@ -247,7 +247,7 @@ const cases = [
             );
 
             const second = await send.execute({ search_id: 's2' }, AbortSignal.abort());
-            expect(second.isError && second.content.includes('已经有一张图'), 'a second send is refused');
+            expect(second.isError && second.content.includes('已经有一个附件'), 'a second send is refused');
 
             const draw = createGenerateImageTool(
                 {
@@ -271,7 +271,7 @@ const cases = [
                 }
             );
             const drawing = await draw.execute({ prompt: '一只狗', caption: '' }, AbortSignal.abort());
-            expect(drawing.isError && drawing.content.includes('已经有一张图'), 'drawing is refused too');
+            expect(drawing.isError && drawing.content.includes('已经有一个附件'), 'drawing is refused too');
         },
     },
     {

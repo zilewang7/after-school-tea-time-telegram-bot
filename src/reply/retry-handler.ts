@@ -302,6 +302,7 @@ const handleChatRetry = async (
                 imageReverseSearch: availability.imageReverseSearch,
                 imageGenerate: availability.image,
                 stickerTools: availability.sticker,
+                fileTools: availability.file,
             }),
             ...(openCodeGoSession ? { sessionId: openCodeGoSession } : {}),
             signal,

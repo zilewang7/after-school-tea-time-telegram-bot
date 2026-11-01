@@ -19,6 +19,7 @@ import { createGenerateImageTool } from './generate-image-tool.js';
 import { createReplyMediaState } from './reply-media-state.js';
 import { createSearchByImageTool } from './search-by-image-tool.js';
 import { createSearchImagesTool, THUMBNAIL_LIMITS } from './search-images-tool.js';
+import { createSendFileTool } from './send-file-tool.js';
 import { createSendImageTool } from './send-image-tool.js';
 import { createSendStickerTool } from './send-sticker-tool.js';
 import { createSendSmsTool } from './send-sms-tool.js';
@@ -111,6 +112,7 @@ export const createReplyTools = (
                   }),
               ]
             : []),
+        ...(availability.file ? [createSendFileTool({ state: mediaState })] : []),
     ];
 
     return { tools: createTurnTools(handlers), availability };

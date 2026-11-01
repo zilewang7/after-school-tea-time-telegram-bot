@@ -33,7 +33,11 @@ import {
 } from './image-source-download.js';
 import { parseSendImageArgs } from './media-tool-args.js';
 import type { ReplyToolContext } from './reply-tool-context.js';
-import type { ReplyMediaState, SearchCandidate } from './reply-media-state.js';
+import {
+    ONE_ATTACHMENT_PER_REPLY,
+    type ReplyMediaState,
+    type SearchCandidate,
+} from './reply-media-state.js';
 import { SEND_IMAGE_TOOL_NAME } from './tool-names.js';
 
 const DESCRIPTION =
@@ -226,7 +230,9 @@ export const createSendImageTool = (options: SendImageToolOptions): ToolHandler 
         statusText: '📤 正在发图…',
         chatAction: 'upload_photo',
         execute: async (rawArgs) => {
-            if (state.hasReplyImage || state.hasReplySticker) return imageToolError(mediaToolErrors.alreadyHasImage);
+            if (state.hasReplyImage || state.hasReplySticker || state.hasReplyFile) {
+                return imageToolError(ONE_ATTACHMENT_PER_REPLY);
+            }
 
             const parsed = parseSendImageArgs(rawArgs);
             if (!parsed.ok) return imageToolError(parsed.error);

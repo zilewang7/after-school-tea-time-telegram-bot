@@ -57,7 +57,7 @@ const { createSendImageTool } = await import('../../src/reply/tools/send-image-t
 const { parseGenerateImageArgs } = await import('../../src/reply/tools/image-tool-args.js');
 const { resolveImageReferences } = await import('../../src/reply/tools/image-references.js');
 const { buildImageCaption, IMAGE_CAPTION_MAX_LENGTH } = await import('../../src/reply/tools/image-message.js');
-const { ONE_IMAGE_PER_REPLY } = await import('../../src/reply/tools/image-tool-result.js');
+const { ONE_ATTACHMENT_PER_REPLY } = await import('../../src/reply/tools/reply-media-state.js');
 const { buildReplyToolContext } = await import('../../src/reply/tools/reply-tool-context.js');
 const { createReplyMediaState } = await import('../../src/reply/tools/reply-media-state.js');
 const imageGeneration = await import('../../src/ai/image-generation/index.js');
@@ -123,6 +123,7 @@ const emptyState = (): ResponseState => ({
     thinkingTruncatedChars: 0,
     images: [],
     stickers: [],
+    files: [],
     groundingData: [],
     agentStats: undefined,
     modelParts: undefined,
@@ -908,7 +909,7 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
             );
 
             const second = await runTool(tool, { prompt: '再画一张', caption: '' });
-            expect(second.isError && second.content === ONE_IMAGE_PER_REPLY, `the second is refused (got ${json(second.content)})`);
+            expect(second.isError && second.content === ONE_ATTACHMENT_PER_REPLY, `the second is refused (got ${json(second.content)})`);
             expect(model.requests.length === 1, 'without a second request');
 
             const uncaptioned = await runTool(toolFor(NO_CONTEXT, stubImageModel()), { prompt: '猫', caption: '  ' });

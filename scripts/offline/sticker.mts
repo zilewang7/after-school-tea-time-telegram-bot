@@ -75,6 +75,7 @@ const emptyState = (): ResponseState => ({
     thinkingTruncatedChars: 0,
     images: [],
     stickers: [],
+    files: [],
     groundingData: [],
     isDone: false,
 });
@@ -186,13 +187,13 @@ cases.push(
         expect(result.modelImages?.[0]?.mimeType === 'image/webp', 'preview is webp');
 
         const second = await tool.execute({ sticker: '08' }, signal);
-        expect(second.isError && second.content.includes('视觉附件'), 'second sticker is refused');
+        expect(second.isError && second.content.includes('已经有一个附件'), 'second sticker is refused');
 
         const imageState = createReplyMediaState();
         imageState.hasReplyImage = true;
         const imageTool = createSendStickerTool({ state: imageState, context: { api: fakeApi, signal }, setName: SET_NAME });
         const refused = await imageTool.execute({ sticker: '07' }, signal);
-        expect(refused.isError && refused.content.includes('视觉附件'), 'image already claimed');
+        expect(refused.isError && refused.content.includes('已经有一个附件'), 'image already claimed');
 
         const badState = createReplyMediaState();
         const badTool = createSendStickerTool({ state: badState, context: { api: fakeApi, signal }, setName: SET_NAME });
@@ -290,7 +291,7 @@ cases.push(
         });
         state.hasReplySticker = true;
         const refused = await sendImage.execute({}, signal);
-        expect(refused.isError && refused.content.includes('视觉附件'), 'send_image sees the sticker');
+        expect(refused.isError && refused.content.includes('已经有一个附件'), 'send_image sees the sticker');
     })
 );
 

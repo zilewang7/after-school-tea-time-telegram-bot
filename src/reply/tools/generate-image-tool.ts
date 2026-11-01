@@ -34,13 +34,12 @@ import {
     type ImageFetch,
 } from './image-source-download.js';
 import {
-    ONE_IMAGE_PER_REPLY,
     describeImageGenerationFailure,
     imageToolError,
     imageToolSuccess,
 } from './image-tool-result.js';
 import type { ReplyToolContext } from './reply-tool-context.js';
-import type { ReplyMediaState } from './reply-media-state.js';
+import { ONE_ATTACHMENT_PER_REPLY, type ReplyMediaState } from './reply-media-state.js';
 import { padPackIndex, resolveStickerQuery } from './sticker-query.js';
 import { GENERATE_IMAGE_TOOL_NAME } from './tool-names.js';
 
@@ -262,7 +261,9 @@ export const createGenerateImageTool = (
         statusText: '🎨 正在画图…',
         chatAction: 'upload_photo',
         execute: async (rawArgs, signal) => {
-            if (state.hasReplyImage || state.hasReplySticker) return imageToolError(ONE_IMAGE_PER_REPLY);
+            if (state.hasReplyImage || state.hasReplySticker || state.hasReplyFile) {
+                return imageToolError(ONE_ATTACHMENT_PER_REPLY);
+            }
 
             const parsed = parseGenerateImageArgs(rawArgs);
             if (!parsed.ok) return imageToolError(parsed.error);

@@ -127,7 +127,7 @@ export interface GroundingData {
 }
 
 // Chat action shown while a tool runs
-export type ToolChatAction = 'typing' | 'upload_photo' | 'choose_sticker';
+export type ToolChatAction = 'typing' | 'upload_photo' | 'choose_sticker' | 'upload_document';
 
 // Transient status line while a tool runs (never persisted)
 export interface ToolStatus {
@@ -144,7 +144,7 @@ export interface ImageOutputOptions {
 }
 
 // Stream chunk types
-export type StreamChunkType = 'text' | 'thinking' | 'image' | 'sticker' | 'grounding' | 'status' | 'done';
+export type StreamChunkType = 'text' | 'thinking' | 'image' | 'sticker' | 'file' | 'grounding' | 'status' | 'done';
 
 /**
  * A sticker the reply will send: the pack position, the actual picture name,
@@ -162,6 +162,21 @@ export interface StickerDelivery {
     readonly fileUniqueId: string;
 }
 
+/**
+ * A file the reply will send as a Telegram document: the model wrote it with
+ * send_file. Bytes, name and mime travel together so the delivery layer, the
+ * stored version and the next context all read the same file.
+ */
+export interface FileDelivery {
+    /** Sanitized name the chat downloads, e.g. `SKILL.md` */
+    readonly name: string;
+    /** Inferred from the extension, e.g. `text/markdown` */
+    readonly mimeType: string;
+    readonly data: Buffer;
+    /** Optional caption; the reply's first one wins */
+    readonly caption?: string;
+}
+
 // Stream chunk
 export interface StreamChunk {
     type: StreamChunkType;
@@ -173,6 +188,8 @@ export interface StreamChunk {
     imageCaption?: string;
     /** A sticker this reply will send (one per reply) */
     sticker?: StickerDelivery;
+    /** The file this reply will send (one per reply, replaces an earlier one) */
+    file?: FileDelivery;
     groundingMetadata?: GroundingData;
     /** Tool status; a status chunk without it clears the status */
     status?: ToolStatus;
@@ -189,6 +206,8 @@ export interface AIResponse {
     imageCaption?: string;
     /** Stickers this reply sends (delivery keeps the first) */
     stickers?: StickerDelivery[];
+    /** Files this reply sends (delivery keeps the last) */
+    files?: FileDelivery[];
     groundingData?: GroundingData[];
     agentStats?: AgentStats;
     modelParts?: unknown[];
@@ -278,6 +297,8 @@ export interface ResponseState {
     imageCaption?: string;
     /** Stickers collected so far; only the first is delivered */
     stickers: StickerDelivery[];
+    /** Files collected so far; only the last (newest content) is delivered */
+    files: FileDelivery[];
     /** Status of the running tool; display only, never persisted */
     toolStatus?: ToolStatus;
     groundingData: GroundingData[];
