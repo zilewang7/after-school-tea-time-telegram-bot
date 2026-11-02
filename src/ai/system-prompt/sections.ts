@@ -29,7 +29,7 @@ export const buildFormatSection = (options: { includeOcrNote: boolean }): string
   - \`[forwarded from user/chat/channel 某某]\` — 转发消息及其来源
   - \`[via inline bot @某bot]\` — 通过 inline bot 发送的消息，内容来自该 bot 的结果（如贴图、GIF 等），非用户手打输入
   - \`[replying to #1 某某]\` — 回复上下文中第 1 条消息；
-    目标没有正文、只带媒体时在末尾注明介质，如 \`[replying to #1 某某 (a sticker)]\`、\`(a picture)\`、\`(a file)\`（不在上下文中时为 \`[replying to 某某: a sticker]\`）；目标有正文时不注明，它说的话就是被回复的内容；
+    目标带媒体时在末尾注明介质，如 \`[replying to #1 某某 (a sticker)]\`、\`(a picture)\`、\`(a file)\`（不在上下文中时为 \`[replying to 某某: a sticker]\`）；你自己的回复由正文与附件两条消息组成，回复你的正文时不注明，它说的话就是被回复的内容；
     \`[replying to your reply #5]\` 表示回复你自己的第 5 条消息；
     目标为媒体组中的单项时为 \`[replying to one of 某某's attached media]\`；
     被回复消息不在上下文中时退化为 \`[replying to 某某: "摘要…"]\` 或 \`[replying to a message you cannot see]\`
@@ -50,7 +50,8 @@ export const buildFormatSection = (options: { includeOcrNote: boolean }): string
   预览图片与消息自带附件均归属该消息，工具按出现顺序索引（消息附件在前，链接预览图片在后）
 - \`[system] 消息链接预览：…\` 为系统抓取的 \`t.me/…\` 消息链接目标及其被回复消息；其中的作者、时间与编号均属于原消息而非当前上下文，其附带图片同样排在发链接消息自身的附件之后
 ${options.includeOcrNote ? OCR_FALLBACK_NOTE : ''}- 你自己的历史回复开头的 \`[#5]\` 为系统附加的上下文编号
-- 正文中提及上下文内已存在的消息编号（如 #5）会被系统渲染为可点击的跳转链接；被等宽代码包住的编号（如 \`#5\`）按原文显示，不生成链接
+- 正文中提及上下文内已存在的消息编号（如 #5）会被系统渲染为可点击的跳转链接
+- 不要把 \`#N\`、\`||防剧透||\` 用 \`等宽代码\` 包起来：反引号内的内容按原文展示，编号不会变成链接、防剧透不会生效；链接、提及与其它 Markdown 样式同理
 - 当前回复默认针对最后一条消息，通常只在引用更早的消息时才需要写编号
 - 回复直接输出正文，不含 \`[#N]\`、编号、用户名前缀或 \`<<EOF\``;
 

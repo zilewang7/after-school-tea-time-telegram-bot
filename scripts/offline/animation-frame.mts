@@ -24,7 +24,8 @@ for (const key of ['GEMINI_API_KEY', 'OPENAI_API_KEY', 'DEEPSEEK_API_KEY', 'GROK
 const db = await setupOfflineDb();
 const { Message, putCachedMedia } = db;
 
-const { resolveCapturedMedia } = await import('../../src/db/autoSave.js');
+const { resolveCapturedMedia, verifiedMediaMime } = await import('../../src/db/autoSave.js');
+type CapturedMedia = import('../../src/db/autoSave.js').CapturedMedia;
 const { createAnimationFrameLoader } = await import('../../src/reply/tools/animation-frame.js');
 const { loadContextImages } = await import('../../src/reply/tools/image-references.js');
 const { getCachedMedia } = await import('../../src/services/media-cache-service.js');
@@ -225,6 +226,74 @@ cases.push(
         await backfillAnimationMediaKind();
         const again = await getMessage(OFFLINE_CHAT_ID, legacyId);
         expect(again?.mediaHint === 'an animation', 'the rewrite is idempotent');
+    })
+);
+
+cases.push(
+    await runCase('a photo sent as a file is still captured as a picture', async () => {
+        const sentAsFile = {
+            document: {
+                file_id: 'photo-doc',
+                file_unique_id: 'photo-doc-unique',
+                file_name: 'IMG_0001.JPG',
+                mime_type: 'application/octet-stream',
+                file_size: 2048,
+            },
+        } as unknown as TgMessage;
+        const captured = resolveCapturedMedia(sentAsFile);
+        expect(captured?.mime === 'image/jpeg', `the extension supplies the type (got ${captured?.mime})`);
+        expect(captured?.hint === 'a picture', `the hint is a picture, not a file (got ${captured?.hint})`);
+        expect(captured?.mimeGuessed === true, 'and the bytes still have to confirm it');
+
+        // Anything that is not a picture keeps its document shape
+        const archive = {
+            document: {
+                file_id: 'zip-doc',
+                file_unique_id: 'zip-unique',
+                file_name: 'archive.zip',
+                mime_type: 'application/octet-stream',
+                file_size: 2048,
+            },
+        } as unknown as TgMessage;
+        const zip = resolveCapturedMedia(archive);
+        expect(zip?.hint === 'a file: archive.zip, application/octet-stream', `anything else stays a file (got ${zip?.hint})`);
+        expect(zip?.mimeGuessed === undefined, 'with no guess to verify');
+
+        // A declared image type is taken as-is, no guessing involved
+        const declared = {
+            document: {
+                file_id: 'png-doc',
+                file_unique_id: 'png-unique',
+                file_name: 'scan.png',
+                mime_type: 'image/png',
+                file_size: 2048,
+            },
+        } as unknown as TgMessage;
+        const png = resolveCapturedMedia(declared);
+        expect(png?.hint === 'a picture', 'a declared picture was already named so');
+        expect(png?.mimeGuessed === undefined, 'and needs no verification');
+
+        // Above the inline cap the bytes go to GCS untouched, so no guess
+        const oversized = {
+            document: {
+                file_id: 'huge-doc',
+                file_unique_id: 'huge-unique',
+                file_name: 'huge.png',
+                mime_type: 'application/octet-stream',
+                file_size: 40 * 1024 * 1024,
+            },
+        } as unknown as TgMessage;
+        expect(
+            resolveCapturedMedia(oversized)?.hint === 'a file: huge.png, application/octet-stream',
+            'an oversized file is not re-typed from its name'
+        );
+
+        // A guessed type only stands when the bytes agree
+        const guessed = { mime: 'image/jpeg', mimeGuessed: true } as CapturedMedia;
+        expect(verifiedMediaMime(guessed, FRAME) === 'image/jpeg', 'a picture confirms the guess');
+        expect(verifiedMediaMime(guessed, VIDEO) === undefined, 'a renamed archive is dropped instead');
+        const declaredType = { mime: 'video/mp4' } as CapturedMedia;
+        expect(verifiedMediaMime(declaredType, VIDEO) === 'video/mp4', 'a declared type is taken as-is');
     })
 );
 

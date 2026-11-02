@@ -1356,11 +1356,11 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
         },
     },
     {
-        // A swipe-reply to a bare medium is often accidental; the prompt states
-        // the medium only when that medium is all the target carries. Our own
-        // replies keep their words and a sticker side by side, and a reply to
-        // one of those answers the words — not the sticker.
-        name: 'a reply to a bare medium names it, a reply to words does not',
+        // A user message is one Telegram message, so its caption belongs to the
+        // photo and the reply still answers the picture. Our own replies are two
+        // messages (words + attachment), so naming the sticker there hides the
+        // words the user actually replied to.
+        name: 'a reply names what it answers: the medium or the words',
         body: async () => {
             const { buildContext } = await import('../../src/reply/context-builder.js');
             const contextOf = async (messageId: number, exclude?: number[]): Promise<string> => {
@@ -1466,7 +1466,7 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
                 'a bare file is named as such'
             );
 
-            // A caption makes the picture a message with words: no medium
+            // A caption belongs to the photo: the user replied to the picture
             const captionedPicture = await seedMessage({
                 text: '看这个',
                 userName: 'Enren',
@@ -1479,8 +1479,28 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
             });
             const captionedText = await contextOf(replyToCaptioned);
             expect(
-                !captionedText.includes('(a picture)'),
-                `a captioned picture is answered by its words (got ${JSON.stringify(captionedText.slice(0, 220))})`
+                /\[replying to #\d+ Enren \(a picture\)\](?=[:\n ])/.test(captionedText),
+                `a captioned picture still reads as a reply to the picture (got ${JSON.stringify(captionedText.slice(0, 220))})`
+            );
+
+            // ...but our own picture reply spells its words out, so it stays words
+            const botPictureWithWords = await seedMessage({
+                text: '喏，画好了',
+                fromBotSelf: true,
+                userId: 7777,
+                userName: 'K-ON',
+                mediaHint: 'a picture',
+            });
+            const replyToBotPicture = await seedMessage({
+                replyToId: botPictureWithWords,
+                text: '好看',
+                userName: 'Kuro',
+            });
+            const botPictureText = await contextOf(replyToBotPicture);
+            expect(
+                /\[replying to your reply #\d+\](?=[:\n ])/.test(botPictureText) &&
+                    !botPictureText.includes('(a picture)'),
+                `a reply to our words stays words even with a picture attached (got ${JSON.stringify(botPictureText.slice(0, 220))})`
             );
 
             // Outside the context the medium is the whole annotation
@@ -1498,6 +1518,23 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
             expect(
                 /\[replying to Enren: a sticker\](?=[:\n ])/.test(outsideText),
                 `a target outside the context is named by its medium (got ${JSON.stringify(outsideText.slice(0, 220))})`
+            );
+
+            // ...and a captioned one is quoted, because its words are the clue
+            const captionedOutside = await seedMessage({
+                text: '这张是原图',
+                userName: 'Enren',
+                mediaHint: 'a picture',
+            });
+            const replyToCaptionedOutside = await seedMessage({
+                replyToId: captionedOutside,
+                text: '?',
+                userName: 'Kuro',
+            });
+            const captionedOutsideText = await contextOf(replyToCaptionedOutside, [captionedOutside]);
+            expect(
+                /\[replying to Enren: "这张是原图"\]/.test(captionedOutsideText),
+                `a captioned target outside the context is quoted (got ${JSON.stringify(captionedOutsideText.slice(0, 220))})`
             );
         },
     },

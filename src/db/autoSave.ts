@@ -27,6 +27,7 @@ import {
 import { buildResponseButtons } from '../cmd/menus/index.js';
 import { getCachedMedia, putCachedMedia } from '../services/media-cache-service.js';
 import { isGeminiSupportedMimeType } from '../ai/supported-mime.js';
+import { sniffMediaMime } from '../ai/image-generation/image-mime.js';
 import { uploadFileToGcs, uploadBytesToGcs, deleteGcsObject, isGcsEnabled } from '../services/gcs-service.js';
 import { acquireLinkPreview, extractFirstUrl, isLuoxuPreviewEnabled } from '../services/luoxu-preview-service.js';
 import { acquireTgMessageLinkPreviews, type TgChatLookup } from '../services/tg-message-link-service.js';
@@ -121,7 +122,43 @@ export interface CapturedMedia {
     stillHint?: string;
     /** Animated sticker (.tgs) needs rendering to webm via the converter service */
     needsTgsConversion: boolean;
+    /**
+     * The MIME was inferred from the file name because Telegram declared none
+     * (a photo sent "as a file"). The bytes must confirm it before use.
+     */
+    mimeGuessed?: boolean;
 }
+
+/**
+ * Types worth inferring from a file name when Telegram omits the MIME type.
+ * Clients that send a photo "as a file" leave it as application/octet-stream,
+ * which would otherwise be dropped as an unreadable binary.
+ */
+const IMAGE_EXTENSION_MIME: ReadonlyMap<string, string> = new Map([
+    ['png', 'image/png'],
+    ['jpg', 'image/jpeg'],
+    ['jpeg', 'image/jpeg'],
+    ['webp', 'image/webp'],
+]);
+
+/** A guessed image type for a document, only for files small enough to inline */
+const imageMimeFromDocument = (
+    fileName: string | undefined,
+    sizeBytes: number | undefined
+): string | undefined => {
+    // The bytes are verified after download, so only inline-sized files qualify
+    if (sizeBytes === undefined || sizeBytes > INLINE_MAX_BYTES) return undefined;
+    const extension = fileName?.toLowerCase().match(/\.([a-z0-9]+)$/)?.[1];
+    return extension ? IMAGE_EXTENSION_MIME.get(extension) : undefined;
+};
+
+/**
+ * The MIME to store for downloaded bytes. A type read off the file name is only
+ * a claim: the bytes decide, so a renamed archive never reaches the model as a
+ * picture. Exported for the offline media-capture cases.
+ */
+export const verifiedMediaMime = (media: CapturedMedia, bytes: Buffer): string | undefined =>
+    media.mimeGuessed ? (sniffMediaMime(bytes) ?? undefined) : media.mime;
 
 /**
  * Resolve a capturable media file from a Telegram message.
@@ -261,17 +298,23 @@ export const resolveCapturedMedia = (msg: TgMessage | undefined): CapturedMedia 
 
     const document = msg.document;
     if (document) {
-        const mime = document.mime_type ?? 'application/octet-stream';
+        const declaredMime = document.mime_type ?? 'application/octet-stream';
+        const fileName = document.file_name ?? 'unknown';
+        // A photo sent "as a file" keeps the name but loses the type: fall back
+        // to the extension, and let the download confirm the bytes.
+        const guessedMime = declaredMime.startsWith('image/')
+            ? undefined
+            : imageMimeFromDocument(document.file_name, document.file_size);
+        const mime = guessedMime ?? declaredMime;
         return {
             fileId: document.file_id,
             fileUniqueId: document.file_unique_id,
             mime,
             kind: 'document',
             sizeBytes: document.file_size,
-            hint: mime.startsWith('image/')
-                ? 'a picture'
-                : `a file: ${document.file_name ?? 'unknown'}, ${mime}`,
+            hint: mime.startsWith('image/') ? 'a picture' : `a file: ${fileName}, ${declaredMime}`,
             needsTgsConversion: false,
+            ...(guessedMime ? { mimeGuessed: true } : {}),
         };
     }
 
@@ -642,7 +685,13 @@ const acquireMediaBytes = async (
     if (resolved.kind === 'path') {
         await to(unlink(resolved.path));
     }
-    const normalizedVideo = await normalizeSmallVideo(inlineBytes, media.mime);
+    // An extension is only a claim: confirm a guessed type against the bytes so
+    // a renamed archive never reaches the model as a picture.
+    const verifiedMime = verifiedMediaMime(media, inlineBytes);
+    if (!verifiedMime) {
+        return { status: 'unsupported' };
+    }
+    const normalizedVideo = await normalizeSmallVideo(inlineBytes, verifiedMime);
     await putCachedMedia({ fileUniqueId: media.fileUniqueId, data: normalizedVideo.data, sizeBytes: normalizedVideo.data.length, durationSeconds: media.durationSeconds, mime: normalizedVideo.mime, kind: media.kind });
     return { status: 'cached', fileUniqueId: media.fileUniqueId, mime: normalizedVideo.mime };
 };

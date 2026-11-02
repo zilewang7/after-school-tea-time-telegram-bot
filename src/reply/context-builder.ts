@@ -93,13 +93,16 @@ const mediumLabelOf = (hint: string | null): string | undefined =>
         : MEDIUM_LABELS.find(([prefix]) => hint === prefix || hint.startsWith(prefix))?.[1];
 
 /**
- * The medium of a message that carries no words of its own, e.g. a swipe-reply
- * to a bare sticker. A message with a body is answered by what it says: our own
- * replies keep their text and a sticker side by side, so calling one "a sticker"
- * would hide the words the user actually replied to.
+ * The medium a reply annotation names, if any. A user message is a single
+ * Telegram message, so a caption belongs to its photo or file: what the reply
+ * answers is still that medium. Our own replies span two messages (text first,
+ * attachment second), so only a reply with no words of its own is answered by
+ * its medium — naming the sticker there would hide the words.
  */
-const bareMediumOf = (msg: ContextMessage): string | undefined =>
-    bodyTextOf(msg) ? undefined : mediumLabelOf(msg.mediaHint);
+const replyMediumOf = (msg: ContextMessage): string | undefined => {
+    if (msg.fromBotSelf && bodyTextOf(msg)) return undefined;
+    return mediumLabelOf(msg.mediaHint);
+};
 
 /** Audio/visual media kinds present in the parts, for a type-specific nudge */
 const audioVisualKinds = (parts: UnifiedContentPart[]): Array<'video' | 'audio'> => {
@@ -284,7 +287,7 @@ const renderReplyTarget = async (
         const targetNumber = index.numberOf.get(replyToId);
         // Telegram lets a user swipe-reply to any message, including a sticker
         // it merely scrolled past: state the medium, infer nothing from it.
-        const medium = bareMediumOf(target);
+        const medium = replyMediumOf(target);
         const mediumNote = medium ? ` (${medium})` : '';
         return target.fromBotSelf
             ? `[replying to your reply #${targetNumber}${mediumNote}]`
@@ -295,13 +298,15 @@ const renderReplyTarget = async (
     if (replyMsg && isSubImage(replyMsg)) {
         return `[replying to one of ${replyMsg.userName}'s attached media]`;
     }
-    if (replyMsg) {
-        const medium = bareMediumOf(replyMsg);
-        if (medium) return `[replying to ${replyMsg.userName}: ${medium}]`;
-    }
+    // Out of the context the words are the only clue: quote them rather than
+    // naming the medium the words belong to.
     const replyText = replyMsg ? bodyTextOf(replyMsg) : '';
     if (replyMsg && replyText) {
         return `[replying to ${replyMsg.userName}: "${oneLineExcerpt(replyText, REPLY_EXCERPT_CHARS)}"]`;
+    }
+    const medium = replyMsg ? mediumLabelOf(replyMsg.mediaHint) : undefined;
+    if (replyMsg && medium) {
+        return `[replying to ${replyMsg.userName}: ${medium}]`;
     }
     return '[replying to a message you cannot see]';
 };
