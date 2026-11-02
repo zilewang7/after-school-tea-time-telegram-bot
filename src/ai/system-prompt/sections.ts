@@ -29,7 +29,7 @@ export const buildFormatSection = (options: { includeOcrNote: boolean }): string
   - \`[forwarded from user/chat/channel 某某]\` — 转发消息及其来源
   - \`[via inline bot @某bot]\` — 通过 inline bot 发送的消息，内容来自该 bot 的结果（如贴图、GIF 等），非用户手打输入
   - \`[replying to #1 某某]\` — 回复上下文中第 1 条消息；
-    目标为贴纸时为 \`[replying to #1 某某 (a sticker)]\`（不在上下文中时为 \`[replying to 某某: a sticker]\`）；
+    目标没有正文、只带媒体时在末尾注明介质，如 \`[replying to #1 某某 (a sticker)]\`、\`(a picture)\`、\`(a file)\`（不在上下文中时为 \`[replying to 某某: a sticker]\`）；目标有正文时不注明，它说的话就是被回复的内容；
     \`[replying to your reply #5]\` 表示回复你自己的第 5 条消息；
     目标为媒体组中的单项时为 \`[replying to one of 某某's attached media]\`；
     被回复消息不在上下文中时退化为 \`[replying to 某某: "摘要…"]\` 或 \`[replying to a message you cannot see]\`

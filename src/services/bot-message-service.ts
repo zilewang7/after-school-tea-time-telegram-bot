@@ -499,7 +499,9 @@ const finalizeSession = async (
             ? { mediaHint: 'sticker' }
             : file !== undefined
               ? { mediaHint: `a file: ${file.name}, ${file.mimeType}` }
-              : {}),
+              : pictureBuffer !== undefined
+                ? { mediaHint: 'a picture' }
+                : {}),
     });
 
     // Remove from active sessions; the reply now has stored content, so it is no
@@ -1006,7 +1008,9 @@ export const switchVersion = async (
             ? { mediaHint: 'sticker' }
             : storedFile !== undefined
               ? { mediaHint: `a file: ${storedFile.name}, ${storedFile.mimeType}` }
-              : {}),
+              : imageBuffer
+                ? { mediaHint: 'a picture' }
+                : {}),
     });
 
     return true;

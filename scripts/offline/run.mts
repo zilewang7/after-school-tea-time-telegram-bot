@@ -1356,17 +1356,22 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
         },
     },
     {
-        // A swipe-reply to a sticker is often accidental; the prompt states the
-        // medium and leaves the reading to the model.
-        name: 'a reply to a sticker states the medium and nothing else',
+        // A swipe-reply to a bare medium is often accidental; the prompt states
+        // the medium only when that medium is all the target carries. Our own
+        // replies keep their words and a sticker side by side, and a reply to
+        // one of those answers the words — not the sticker.
+        name: 'a reply to a bare medium names it, a reply to words does not',
         body: async () => {
             const { buildContext } = await import('../../src/reply/context-builder.js');
-            const contextOf = async (messageId: number): Promise<string> => {
+            const contextOf = async (messageId: number, exclude?: number[]): Promise<string> => {
                 const row = await Message.findOne({
                     where: { chatId: OFFLINE_CHAT_ID, messageId },
                 });
                 if (!row) throw new Error(`seeded message ${messageId} not found`);
-                const { messages: turns } = await buildContext(row);
+                const { messages: turns } = await buildContext(
+                    row,
+                    exclude ? { excludeMessageIds: exclude } : undefined
+                );
                 return turns
                     .map((turn) => turn.content.map((part) => part.text ?? '').join('\n'))
                     .join('\n');
@@ -1403,7 +1408,96 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
             const botText = await contextOf(replyToBotSticker);
             expect(
                 /\[replying to your reply #\d+ \(a sticker\)\](?=[:\n ])/.test(botText),
-                `the bot's own sticker is named too (got ${JSON.stringify(botText.slice(0, 220))})`
+                `the bot's own bare sticker is named too (got ${JSON.stringify(botText.slice(0, 220))})`
+            );
+
+            // A bot reply carrying both words and a sticker: the user answered
+            // the words, so the sticker must not be named
+            const botStickerWithWords = await seedMessage({
+                text: '这是我随手配的贴纸',
+                fromBotSelf: true,
+                userId: 7777,
+                userName: 'K-ON',
+                mediaHint: 'sticker',
+            });
+            const replyToBotWords = await seedMessage({
+                replyToId: botStickerWithWords,
+                text: '哈哈',
+                userName: 'Kuro',
+            });
+            const botWordsText = await contextOf(replyToBotWords);
+            expect(
+                /\[replying to your reply #\d+\](?=[:\n ])/.test(botWordsText),
+                `a reply to our words carries no medium (got ${JSON.stringify(botWordsText.slice(0, 220))})`
+            );
+            expect(
+                !botWordsText.includes('(a sticker)'),
+                'and never calls that reply a sticker'
+            );
+
+            // Pictures and files are named the same way
+            const picture = await seedMessage({
+                text: null,
+                userName: 'Enren',
+                mediaHint: 'a picture',
+            });
+            const replyToPicture = await seedMessage({
+                replyToId: picture,
+                text: '这是什么',
+                userName: 'Kuro',
+            });
+            expect(
+                /\[replying to #\d+ Enren \(a picture\)\](?=[:\n ])/.test(await contextOf(replyToPicture)),
+                'a bare picture is named as such'
+            );
+
+            const file = await seedMessage({
+                text: null,
+                userName: 'Enren',
+                mediaHint: 'a file: notes.md, text/markdown',
+            });
+            const replyToFile = await seedMessage({
+                replyToId: file,
+                text: '总结一下',
+                userName: 'Kuro',
+            });
+            expect(
+                /\[replying to #\d+ Enren \(a file\)\](?=[:\n ])/.test(await contextOf(replyToFile)),
+                'a bare file is named as such'
+            );
+
+            // A caption makes the picture a message with words: no medium
+            const captionedPicture = await seedMessage({
+                text: '看这个',
+                userName: 'Enren',
+                mediaHint: 'a picture',
+            });
+            const replyToCaptioned = await seedMessage({
+                replyToId: captionedPicture,
+                text: '好',
+                userName: 'Kuro',
+            });
+            const captionedText = await contextOf(replyToCaptioned);
+            expect(
+                !captionedText.includes('(a picture)'),
+                `a captioned picture is answered by its words (got ${JSON.stringify(captionedText.slice(0, 220))})`
+            );
+
+            // Outside the context the medium is the whole annotation
+            const loneSticker = await seedMessage({
+                text: null,
+                userName: 'Enren',
+                mediaHint: 'a sticker image',
+            });
+            const replyOutside = await seedMessage({
+                replyToId: loneSticker,
+                text: '??',
+                userName: 'Kuro',
+            });
+            const outsideText = await contextOf(replyOutside, [loneSticker]);
+            expect(
+                /\[replying to Enren: a sticker\](?=[:\n ])/.test(outsideText),
+                `a target outside the context is named by its medium (got ${JSON.stringify(outsideText.slice(0, 220))})`
             );
         },
     },

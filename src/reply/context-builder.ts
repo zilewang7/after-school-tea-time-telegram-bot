@@ -61,14 +61,45 @@ const isAnimatedSticker = (part: UnifiedContentPart): boolean =>
     Boolean(part.mediaKind && ANIMATED_STICKER_KINDS.has(part.mediaKind));
 
 /**
- * A sticker message row, from the hint autoSave stored for it. Bot rows carry
- * the short 'sticker'; user rows the longer media hints (and backfilled rows
- * the recovered-history wording).
+ * The words a message carries. Rows older than the header change kept the
+ * `<<EOF` marker inside their text, so it is stripped before deciding whether
+ * a message says anything at all.
  */
-const isStickerMessage = (msg: ContextMessage): boolean =>
-    msg.mediaHint === 'sticker' ||
-    msg.mediaHint?.startsWith('a sticker') === true ||
-    msg.mediaHint?.startsWith('an animated sticker') === true;
+const bodyTextOf = (msg: ContextMessage): string =>
+    (msg.text ?? '').replace(/<<EOF\s*$/, '').trim();
+
+/**
+ * One stored media hint reduced to the short form a reply annotation names.
+ * Bot rows carry the short 'sticker', user rows the longer hints (and
+ * backfilled rows the recovered-history wording).
+ */
+const MEDIUM_LABELS: ReadonlyArray<readonly [string, string]> = [
+    ['sticker', 'a sticker'],
+    ['a sticker', 'a sticker'],
+    ['an animated sticker', 'a sticker'],
+    ['a picture', 'a picture'],
+    ['some pictures', 'some pictures'],
+    ['a file: ', 'a file'],
+    ['a video note', 'a video note'],
+    ['a video', 'a video'],
+    ['an animation', 'an animation'],
+    ['a voice message', 'a voice message'],
+    ['an audio file', 'an audio file'],
+];
+
+const mediumLabelOf = (hint: string | null): string | undefined =>
+    hint === null
+        ? undefined
+        : MEDIUM_LABELS.find(([prefix]) => hint === prefix || hint.startsWith(prefix))?.[1];
+
+/**
+ * The medium of a message that carries no words of its own, e.g. a swipe-reply
+ * to a bare sticker. A message with a body is answered by what it says: our own
+ * replies keep their text and a sticker side by side, so calling one "a sticker"
+ * would hide the words the user actually replied to.
+ */
+const bareMediumOf = (msg: ContextMessage): string | undefined =>
+    bodyTextOf(msg) ? undefined : mediumLabelOf(msg.mediaHint);
 
 /** Audio/visual media kinds present in the parts, for a type-specific nudge */
 const audioVisualKinds = (parts: UnifiedContentPart[]): Array<'video' | 'audio'> => {
@@ -253,20 +284,22 @@ const renderReplyTarget = async (
         const targetNumber = index.numberOf.get(replyToId);
         // Telegram lets a user swipe-reply to any message, including a sticker
         // it merely scrolled past: state the medium, infer nothing from it.
-        const medium = isStickerMessage(target) ? ' (a sticker)' : '';
+        const medium = bareMediumOf(target);
+        const mediumNote = medium ? ` (${medium})` : '';
         return target.fromBotSelf
-            ? `[replying to your reply #${targetNumber}${medium}]`
-            : `[replying to #${targetNumber} ${target.userName}${medium}]`;
+            ? `[replying to your reply #${targetNumber}${mediumNote}]`
+            : `[replying to #${targetNumber} ${target.userName}${mediumNote}]`;
     }
 
     const replyMsg = await getContextMessage(chatId, replyToId);
     if (replyMsg && isSubImage(replyMsg)) {
         return `[replying to one of ${replyMsg.userName}'s attached media]`;
     }
-    if (replyMsg && isStickerMessage(replyMsg)) {
-        return `[replying to ${replyMsg.userName}: a sticker]`;
+    if (replyMsg) {
+        const medium = bareMediumOf(replyMsg);
+        if (medium) return `[replying to ${replyMsg.userName}: ${medium}]`;
     }
-    const replyText = replyMsg?.text?.replace(/<<EOF\s*$/, '').trim();
+    const replyText = replyMsg ? bodyTextOf(replyMsg) : '';
     if (replyMsg && replyText) {
         return `[replying to ${replyMsg.userName}: "${oneLineExcerpt(replyText, REPLY_EXCERPT_CHARS)}"]`;
     }
