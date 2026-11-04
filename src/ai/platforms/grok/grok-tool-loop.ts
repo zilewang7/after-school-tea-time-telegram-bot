@@ -17,6 +17,7 @@ import {
     createRoundTextSeparator,
     createToolUsageTally,
     finalRoundReason,
+    MAX_TOOL_ROUNDS,
     runToolRound,
     withToolBudget,
     TOOL_LOOP_DEADLINE_MS,
@@ -37,8 +38,7 @@ import {
 import { streamGrokRound } from './grok-round.js';
 
 /** Rounds of one reply, the final tool-less one included */
-/** Rounds of one reply, the final tool-less one included (12 may call tools) */
-const MAX_ROUNDS = 13;
+const MAX_ROUNDS = MAX_TOOL_ROUNDS + 1;
 
 export interface GrokToolLoopOptions {
     readonly model: string;

@@ -10,7 +10,7 @@ export const HISTORY_DEFAULT_LIMIT = 10;
 export const HISTORY_MAX_LIMIT = 20;
 export const HISTORY_DEFAULT_MINUTES = 10;
 export const HISTORY_MAX_MINUTES = 120;
-export const HISTORY_MAX_REFS = 4;
+export const HISTORY_MAX_REFS = 10;
 export const HISTORY_MAX_QUERY_CHARS = 100;
 /** How long one history query may take, wall clock, before it is abandoned */
 export const HISTORY_DEFAULT_TIME_ZONE = 'Asia/Shanghai';

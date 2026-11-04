@@ -27,7 +27,7 @@ import { match, P } from 'ts-pattern';
 import { FinishReason, type GenerateContentResponse } from '@google/genai';
 import type { GroundingData, StreamChunk } from '../../types.js';
 import { createRoundTextSeparator } from '../../tools/round-text-separator.js';
-import { finalRoundReason, TOOL_LOOP_DEADLINE_MS } from '../../tools/tool-loop.js';
+import { finalRoundReason, MAX_TOOL_ROUNDS, TOOL_LOOP_DEADLINE_MS } from '../../tools/tool-loop.js';
 import {
     createToolUsageTally,
     runToolRound,
@@ -57,15 +57,13 @@ import {
  * Rounds per reply; the last one may no longer call functions. Only a final
  * round that still calls gets one round more.
  *
- * Was 5 (4 tool rounds). The media tools added three call types (search, read,
- * send), so a reply could run out of rounds before sending the picture it had
- * already found (live 1106440). Twelve of the rounds may call tools: the model
- * decides how much to search and it is told what is left after every call, so
- * the count only has to be generous enough to finish in. The wall clock
- * (TOOL_LOOP_DEADLINE_MS) stays the real bound and is now told to the model in
- * every tool result, so it can send the picture before the time runs out.
+ * Was 5 (4 tool rounds), then 13 (12 tool rounds). The archive tools added
+ * "search, read, search again" loops: a reply averages ~19 calls and hit the
+ * 12-round cap at p90 (2026-11-04), so the tool rounds follow MAX_TOOL_ROUNDS
+ * and the final round sits on top. The wall clock (TOOL_LOOP_DEADLINE_MS) is
+ * told to the model in every tool result, so it can still plan to finish in.
  */
-export const GEMINI_MAX_ROUNDS = 13;
+export const GEMINI_MAX_ROUNDS = MAX_TOOL_ROUNDS + 1;
 
 /** A function call Gemini could not produce: retried once as the final round */
 const FAILED_CALL_FINISH_REASONS: ReadonlySet<FinishReason> = new Set([

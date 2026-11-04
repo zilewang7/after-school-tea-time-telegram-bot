@@ -6,6 +6,7 @@ import type { ChatCompletionChunk } from 'openai/resources';
 import { BasePlatform } from './base-platform.js';
 import { transformToOpenAI, mergeConsecutiveMessages } from '../message-transformer.js';
 import {
+    MAX_TOOL_ROUNDS,
     runToolLoop,
     toChatCompletionTools,
     type ToolCall,
@@ -23,9 +24,6 @@ import type {
     StreamChunk,
     ModelCapabilities,
 } from '../types.js';
-
-/** Tool rounds before the forced final one; the model is told what is left */
-const MAX_TOOL_ROUNDS = 12;
 
 /** One collected tool-loop round */
 interface DeepSeekToolRound {

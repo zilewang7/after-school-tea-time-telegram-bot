@@ -12,6 +12,7 @@
 import { createServer } from 'node:http';
 import { expect, reportResults, runCase, type CaseResult } from './harness.mts';
 import type { ResponseStreamEvent } from 'openai/resources/responses/responses';
+import { MAX_TOOL_ROUNDS } from '../../src/ai/tools/index.js';
 import type { StreamChunk, UnifiedMessage } from '../../src/ai/types.js';
 import type { ToolHandler, TurnTools } from '../../src/ai/tools/index.js';
 
@@ -542,9 +543,9 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
         },
     },
     {
-        name: 'the thirteenth grok round is the tool-less one',
+        name: 'the round after the tool rounds is the tool-less one',
         body: async () => {
-            const toolRounds = 12;
+            const toolRounds = MAX_TOOL_ROUNDS;
             reset(
                 scripted(
                     ...Array.from({ length: toolRounds }, (_, index) =>

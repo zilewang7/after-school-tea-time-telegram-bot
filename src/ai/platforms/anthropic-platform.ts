@@ -11,7 +11,7 @@
 import Anthropic from '@anthropic-ai/sdk';
 import { BasePlatform } from './base-platform.js';
 import { transformToAnthropic } from '../message-transformer.js';
-import { runToolLoop, toAnthropicTools, type TurnTools } from '../tools/index.js';
+import { MAX_TOOL_ROUNDS, runToolLoop, toAnthropicTools, type TurnTools } from '../tools/index.js';
 import {
     collectAnthropicRound,
     toToolResultBlocks,
@@ -25,8 +25,6 @@ import type {
     ModelCapabilities,
 } from '../types.js';
 
-/** Tool rounds before the forced final one; the model is told what is left */
-const MAX_TOOL_ROUNDS = 12;
 const MAX_OUTPUT_TOKENS = 16000;
 
 interface RequestOptions {

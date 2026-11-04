@@ -13,7 +13,7 @@
  */
 import type { ToolHandler, ToolResult } from '../../ai/tools/tool-types.js';
 import { HISTORY_MESSAGES_TIMEOUT_MS } from '../../services/luoxu-history-service.js';
-import { parseHistoryReadArgs, parseHistoryReference, HISTORY_REF_HINT } from './history-args.js';
+import { parseHistoryReadArgs, parseHistoryReference, HISTORY_MAX_REFS, HISTORY_REF_HINT } from './history-args.js';
 import {
     attachmentSummary,
     formatHistoryTime,
@@ -39,7 +39,7 @@ import { READ_HISTORY_TOOL_NAME } from './tool-names.js';
 
 const DESCRIPTION =
     '读取历史归档里某条消息的完整索引文本（含网页预览、Instant View 正文、图片 OCR），或读取某条消息前后一段时间内的对话。' +
-    'ids 接受 hN（本回复中出现过的编号）、#N（上下文里的编号）与 https://t.me/c/... 链接，一次最多 4 条；around 接受同样的引用，minutes 默认 10 分钟。' +
+    `ids 接受 hN（本回复中出现过的编号）、#N（上下文里的编号）与 https://t.me/c/... 链接，一次最多 ${HISTORY_MAX_REFS} 条；around 接受同样的引用，minutes 默认 10 分钟。` +
     'bot 自己的回复以折叠块形式带思考过程与工具记录，默认省略为一行（保留首行 50 字），folded=true 时原样返回。';
 
 const INPUT_SCHEMA = {
@@ -48,7 +48,7 @@ const INPUT_SCHEMA = {
         ids: {
             type: 'array',
             items: { type: 'string' },
-            maxItems: 4,
+            maxItems: HISTORY_MAX_REFS,
             description: '要读全文的引用：hN、#N 或 https://t.me/c/... 链接。与 around 二选一。',
         },
         around: {
@@ -68,8 +68,9 @@ const INPUT_SCHEMA = {
     },
 };
 
+// Ten refs share this budget; one long message still stops at the per-message cap
 const MAX_FULL_CHARS_PER_MESSAGE = 4000;
-const MAX_FULL_CHARS_TOTAL = 12000;
+const MAX_FULL_CHARS_TOTAL = 24000;
 const WINDOW_CHARS_PER_MESSAGE = 300;
 const WINDOW_CHARS_TOTAL = 10000;
 const WINDOW_MAX_PER_SIDE = 20;
@@ -341,7 +342,7 @@ const readWindow = async (
 
 const summarizeReadArgs = (args: Readonly<Record<string, unknown>>): string =>
     JSON.stringify({
-        ids: Array.isArray(args.ids) ? args.ids.slice(0, 4) : (args.ids ?? null),
+        ids: Array.isArray(args.ids) ? args.ids.slice(0, HISTORY_MAX_REFS) : (args.ids ?? null),
         around: args.around ?? null,
         minutes: args.minutes ?? null,
         folded: args.folded === true,

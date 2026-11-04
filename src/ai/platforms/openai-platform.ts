@@ -28,7 +28,7 @@ import { OPENAI_IMAGE_CHAT_BASE_MODEL } from '../../config/models.js';
 import { BasePlatform } from './base-platform.js';
 import { toVisionImageMimeType } from '../supported-mime.js';
 import { isImageOutputModel } from '../model-kinds.js';
-import { runToolLoop, toResponsesFunctionTools, type TurnTools } from '../tools/index.js';
+import { MAX_TOOL_ROUNDS, runToolLoop, toResponsesFunctionTools, type TurnTools } from '../tools/index.js';
 import {
     buildToolRoundMessages,
     collectResponsesRound,
@@ -42,9 +42,6 @@ import type {
     StreamChunk,
     ModelCapabilities,
 } from '../types.js';
-
-/** Tool rounds before the forced final one; the model is told what is left */
-const MAX_TOOL_ROUNDS = 12;
 
 /** Closes the input of the final, tool-less round */
 const FINAL_ROUND_NOTE: EasyInputMessage = {

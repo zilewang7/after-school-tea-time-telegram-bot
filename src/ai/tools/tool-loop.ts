@@ -23,13 +23,20 @@ import type { ToolCall, TurnTools } from './tool-types.js';
 /**
  * Wall-clock budget of one reply's tool loop, counted from its first request.
  *
- * Was 180s. With the media budgets gone a reply may search and read for a long
- * time, and one round on a picture-heavy prompt takes 30-160s by itself (live
- * 1941: four searches and three reads filled 180s before it could send the
- * picture). 300s fits about nine such rounds; the count and the deadline the
- * model is told about stay the real bounds.
+ * Was 180s, then 300s. In the 2026-11-04 sample (3h, 26 replies, 500 tool
+ * calls) the clock never fired while the 12-round cap forced the final answer
+ * three times: archive lookups run "search, read, search again" for ~19 calls
+ * a reply, so the count, not the clock, was the bound. Rounds are 28 now and
+ * the clock 600s; both are still told to the model after every call.
  */
-export const TOOL_LOOP_DEADLINE_MS = 300_000;
+export const TOOL_LOOP_DEADLINE_MS = 600_000;
+
+/**
+ * Tool rounds a reply may run before the forced final, tool-less one, shared
+ * by the platforms on runToolLoop. Gemini and Grok count their final round on
+ * top of this.
+ */
+export const MAX_TOOL_ROUNDS = 28;
 
 export interface CollectedToolRound {
     /** The round's text and thinking chunks, in stream order */

@@ -61,6 +61,7 @@ const { isFunctionDeclarationError, toGeminiToolList, toRoundConfig, withoutFunc
     '../../src/ai/platforms/gemini/gemini-tool-request.js'
 );
 const { GEMINI_MAX_ROUNDS } = await import('../../src/ai/platforms/gemini/gemini-tool-loop.js');
+const { MAX_TOOL_ROUNDS } = await import('../../src/ai/tools/index.js');
 const { GEMINI_IMAGE_MODEL } = await import('../../src/config/models.js');
 
 // ---------------------------------------------------------------------------
@@ -603,7 +604,7 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
             expect(json(final.toolConfig) === '{"functionCallingConfig":{"mode":"NONE"}}', 'the final round switches function calling off');
             const finalWithout = toRoundConfig(baseConfig, { contents: [], tools: withoutFunctionDeclarations(toolList), final: true });
             expect(finalWithout.toolConfig === undefined, 'no toolConfig when nothing is declared');
-            expect(GEMINI_MAX_ROUNDS === 13, 'twelve tool rounds plus the final one, the deadline being the real bound');
+            expect(GEMINI_MAX_ROUNDS === MAX_TOOL_ROUNDS + 1, 'MAX_TOOL_ROUNDS tool rounds plus the final one');
         },
     },
     {

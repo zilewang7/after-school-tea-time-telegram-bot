@@ -203,7 +203,12 @@ cases.push(
     await runCase('read arguments need exactly one of ids and around', async () => {
         expect(!args.parseHistoryReadArgs({}).ok, 'neither ids nor around is refused');
         expect(!args.parseHistoryReadArgs({ ids: ['h1'], around: 'h2' }).ok, 'both together are refused');
-        expect(!args.parseHistoryReadArgs({ ids: ['h1', 'h2', 'h3', 'h4', 'h5'] }).ok, 'five ids are refused');
+        const tooManyIds = Array.from({ length: args.HISTORY_MAX_REFS + 1 }, (_, index) => `h${index + 1}`);
+        expect(!args.parseHistoryReadArgs({ ids: tooManyIds }).ok, `more than ${args.HISTORY_MAX_REFS} ids are refused`);
+        expect(
+            args.parseHistoryReadArgs({ ids: tooManyIds.slice(0, args.HISTORY_MAX_REFS) }).ok,
+            `exactly ${args.HISTORY_MAX_REFS} ids are accepted`
+        );
         expect(!args.parseHistoryReadArgs({ around: 'h1', minutes: 0 }).ok, 'minutes 0 is refused');
         expect(!args.parseHistoryReadArgs({ around: 'h1', minutes: 121 }).ok, 'minutes 121 is refused');
         const defaults = args.parseHistoryReadArgs({ around: 'h1' });
