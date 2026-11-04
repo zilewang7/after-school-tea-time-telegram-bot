@@ -49,14 +49,9 @@ export const extractFirstUrl = (text: string | null | undefined): string | null 
     return matched ? matched[0] : null;
 };
 
-/**
- * Bot API supergroup/channel ids look like -100<channel_id>; luoxu (MTProto)
- * uses the bare channel_id. Returns null for chats luoxu can't address.
- */
-const toLuoxuChannelId = (chatId: number): number | null => {
-    if (chatId >= -1_000_000_000_000) return null;
-    return -chatId - 1_000_000_000_000;
-};
+import { toLuoxuChannelId } from './luoxu-channel-id.js';
+
+export { toLuoxuChannelId };
 
 const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 

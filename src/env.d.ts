@@ -29,6 +29,10 @@ declare global {
             TOOL_CHAT_IDS?: string
             /** Comma-separated tool names or MCP server keys to switch off */
             DISABLED_TOOLS?: string
+            /** '0' turns off search_history / read_history */
+            HISTORY_TOOLS?: string
+            /** Comma-separated chat ids whose history luoxu archives */
+            HISTORY_CHAT_IDS?: string
             /** '0' leaves Gemini with its built-in search tools only */
             GEMINI_CLIENT_TOOLS?: string
             /** Telegram user id of the owner send_sms_to_owner reaches */

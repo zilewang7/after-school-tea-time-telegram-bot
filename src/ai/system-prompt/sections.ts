@@ -90,6 +90,8 @@ export interface CapabilityOptions {
     readonly stickerTools: boolean;
     /** send_file is offered */
     readonly fileTools: boolean;
+    /** search_history / read_history are offered */
+    readonly historyTools: boolean;
 }
 
 const searchImageLines = (canDraw: boolean): string[] => [
@@ -114,6 +116,9 @@ const stickerLine = (canPreview: boolean): string =>
 const FILE_LINE =
     '- 可以用 `send_file` 把长文本（Markdown、代码、CSV 等）写成文件发到聊天（单份上限 10 MB）';
 
+const HISTORY_LINE =
+    '- 可以用 `search_history` 检索本聊天的历史归档（关键词 / 时间 / 发言人；含链接预览、Instant View 与图片 OCR 文本），用 `read_history` 读整条原文或某条消息前后的对话';
+
 export const buildCapabilitiesSection = (options: CapabilityOptions): string => {
     const lines: string[] = [CAPABILITIES_SECTION];
     const owner = options.smsOwner;
@@ -127,6 +132,7 @@ export const buildCapabilitiesSection = (options: CapabilityOptions): string => 
     if (options.imageGenerate) lines.push(IMAGE_EDIT_LINE);
     if (options.stickerTools) lines.push(stickerLine(options.imageFetch));
     if (options.fileTools) lines.push(FILE_LINE);
+    if (options.historyTools) lines.push(HISTORY_LINE);
     return lines.join('\n');
 };
 

@@ -22,6 +22,8 @@
  *   empty = no sticker tools
  * - STICKER_TOOLS=0: no send_sticker / fetch_image(sticker)
  * - FILE_TOOLS=0: no send_file (the model writing a text file into the chat)
+ * - HISTORY_TOOLS=0: no search_history / read_history (luoxu's archive)
+ * - HISTORY_CHAT_IDS: chats whose history luoxu archives, comma-separated
  */
 import { parseChatIdList } from './chat-id-list.js';
 
@@ -55,6 +57,12 @@ export interface ToolConfig {
     readonly stickerTools: boolean;
     /** FILE_TOOLS is not 0 */
     readonly fileTools: boolean;
+    /** HISTORY_TOOLS is not 0 */
+    readonly historyTools: boolean;
+    /** Chats allowed to search the archive (they must also be indexed by luoxu) */
+    readonly historyChatIds: ReadonlySet<number>;
+    /** luoxu base URL; empty = no history tools */
+    readonly historyBaseUrl: string;
     readonly ownerSmsAllowTest: boolean;
     readonly owner: OwnerIdentity;
 }
@@ -106,6 +114,9 @@ export const readToolConfig = (env: NodeJS.ProcessEnv = process.env): ToolConfig
     stickerSetName: optionalValue(env.STICKER_SET_NAME) ?? '',
     stickerTools: env.STICKER_TOOLS !== '0',
     fileTools: env.FILE_TOOLS !== '0',
+    historyTools: env.HISTORY_TOOLS !== '0',
+    historyChatIds: new Set(parseChatIdList(env.HISTORY_CHAT_IDS)),
+    historyBaseUrl: optionalValue(env.LUOXU_PREVIEW_URL) ?? '',
     owner: readOwner(env),
 });
 

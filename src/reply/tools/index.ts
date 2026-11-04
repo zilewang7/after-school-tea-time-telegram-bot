@@ -14,4 +14,8 @@ export * from './search-by-image-tool.js';
 export * from './fetch-image-tool.js';
 export * from './send-image-tool.js';
 export * from './send-sticker-tool.js';
+export * from './history-state.js';
+export * from './history-tool-shared.js';
+export * from './search-history-tool.js';
+export * from './read-history-tool.js';
 export * from './image-tool-text.js';

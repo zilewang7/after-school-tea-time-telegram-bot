@@ -14,10 +14,15 @@ import type { ToolHandler, TurnTools } from '../../ai/tools/tool-types.js';
 import { getToolConfig } from '../../config/tool-config.js';
 import { fetchImageBytes } from '../../services/image-fetch-service.js';
 import { searchImages } from '../../services/image-search-service.js';
+import { createHistoryService } from '../../services/luoxu-history-service.js';
+import { toLuoxuChannelId } from '../../services/luoxu-preview-service.js';
 import { createFetchImageTool, PRODUCTION_FETCH_DEPENDENCIES } from './fetch-image-tool.js';
 import { createGenerateImageTool } from './generate-image-tool.js';
+import { createHistoryState } from './history-state.js';
+import { createReadHistoryTool } from './read-history-tool.js';
 import { createReplyMediaState } from './reply-media-state.js';
 import { createSearchByImageTool } from './search-by-image-tool.js';
+import { createSearchHistoryTool } from './search-history-tool.js';
 import { createSearchImagesTool, THUMBNAIL_LIMITS } from './search-images-tool.js';
 import { createSendFileTool } from './send-file-tool.js';
 import { createSendImageTool } from './send-image-tool.js';
@@ -45,6 +50,7 @@ export const createReplyTools = (
     const availability = resolveToolAvailability(model, context.chatId, config, request);
     const capabilities = getModelCapabilities(model);
     const mediaState = createReplyMediaState();
+    const historyState = createHistoryState();
 
     const handlers: ToolHandler[] = [
         ...buildMcpToolHandlers(availability.mcpServers, RESERVED_TOOL_NAMES, availability.isMcpToolEnabled),
@@ -113,7 +119,38 @@ export const createReplyTools = (
               ]
             : []),
         ...(availability.file ? [createSendFileTool({ state: mediaState })] : []),
+        ...(availability.history
+            ? [
+                  createSearchHistoryTool(historyOptions(historyState, context, config)),
+                  createReadHistoryTool(historyOptions(historyState, context, config)),
+              ]
+            : []),
     ];
 
     return { tools: createTurnTools(handlers), availability };
 };
+
+/** Telegram ids arrive as strings in the env; a malformed one is simply absent */
+const numericId = (value: string | null | undefined): number | null => {
+    if (!value) return null;
+    const parsed = Number.parseInt(value, 10);
+    return Number.isFinite(parsed) ? parsed : null;
+};
+
+/**
+ * The two history tools share one per-reply id space and one luoxu client.
+ * `channelId` is null for chats luoxu does not index (private chats), which the
+ * gate already prevents; the tools still refuse rather than crash.
+ */
+const historyOptions = (
+    state: ReturnType<typeof createHistoryState>,
+    context: ReplyToolContext,
+    config: ReturnType<typeof getToolConfig>
+): Parameters<typeof createSearchHistoryTool>[0] => ({
+    state,
+    context,
+    service: createHistoryService({ baseUrl: config.historyBaseUrl }),
+    channelId: toLuoxuChannelId(context.chatId),
+    ownerUserId: numericId(config.owner.userId),
+    botUserId: numericId(process.env.BOT_USER_ID),
+});

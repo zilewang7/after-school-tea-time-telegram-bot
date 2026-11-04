@@ -1,0 +1,20 @@
+{
+  "groupinfo": {
+    "2311128579": [
+      null,
+      "Personal Bot Test"
+    ]
+  },
+  "has_more": false,
+  "messages": [
+    {
+      "id": 2006,
+      "from_id": 603421700,
+      "from_name": "黑猫",
+      "group_id": 2311128579,
+      "html": "[webpage image]\n[iv image]\nhttps://<span class=\"keyword\">fixupx</span>.com/example/status/42?a=X&amp;s=19\n[webpage]\nhttps://<span class=\"keyword\">fixupx</span>.com/example/status/42?a=X&amp;s=19\n<span class=\"keyword\">FixupX</span> · example.com\nExample Author (@example)\n[instant view]\n又一篇论文开始挑战我们对 Agent Memory 和 RAG 的传统认知了\n\n《Context as Infrastructure》讨论了检索架构：\n\n不需要 Embedding，也不需要预先构建知识图谱\n\nRaw History should be the Source of Truth.",
+      "t": 1793716862,
+      "edited": null
+    }
+  ]
+}

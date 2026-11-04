@@ -21,6 +21,8 @@ import {
     SEND_IMAGE_TOOL_NAME,
     SEND_SMS_TOOL_NAME,
     SEND_STICKER_TOOL_NAME,
+    SEARCH_HISTORY_TOOL_NAME,
+    READ_HISTORY_TOOL_NAME,
 } from './tool-names.js';
 
 /** What the turn's request carries, as far as tool availability cares */
@@ -50,6 +52,8 @@ export interface ToolAvailability {
     readonly sticker: boolean;
     /** send_file is offered */
     readonly file: boolean;
+    /** search_history / read_history are offered (this chat is archived by luoxu) */
+    readonly history: boolean;
 }
 
 const NO_TOOLS: ToolAvailability = {
@@ -62,6 +66,7 @@ const NO_TOOLS: ToolAvailability = {
     imageFetch: false,
     sticker: false,
     file: false,
+    history: false,
 };
 
 export const resolveToolAvailability = (
@@ -90,6 +95,15 @@ export const resolveToolAvailability = (
     const chatAllowed = config.toolChatIds.has(chatId);
     // The test instance inherits the production env, so it must opt in to SMS
     const smsInstanceAllowed = !isTestInstance() || config.ownerSmsAllowTest;
+
+    // History is read-only, so it follows its own chat list rather than the
+    // side-effecting TOOL_CHAT_IDS: bilibili-archive chats can still be searched.
+    const historyAllowed =
+        config.historyTools &&
+        config.historyBaseUrl !== '' &&
+        config.historyChatIds.has(chatId) &&
+        isEnabled(SEARCH_HISTORY_TOOL_NAME) &&
+        isEnabled(READ_HISTORY_TOOL_NAME);
 
     // Media tools follow generate_image's scope: same chats, same switch
     const imageSearch =
@@ -122,5 +136,6 @@ export const resolveToolAvailability = (
             config.stickerSetName !== '' &&
             isEnabled(SEND_STICKER_TOOL_NAME),
         file: chatAllowed && config.fileTools && isEnabled(SEND_FILE_TOOL_NAME),
+        history: historyAllowed,
     };
 };
