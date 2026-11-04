@@ -26,7 +26,7 @@ import type { ToolCall, TurnTools } from './tool-types.js';
  * Was 180s, then 300s. In the 2026-11-04 sample (3h, 26 replies, 500 tool
  * calls) the clock never fired while the 12-round cap forced the final answer
  * three times: archive lookups run "search, read, search again" for ~19 calls
- * a reply, so the count, not the clock, was the bound. Rounds are 28 now and
+ * a reply, so the count, not the clock, was the bound. The count is now 50 and
  * the clock 600s; both are still told to the model after every call.
  */
 export const TOOL_LOOP_DEADLINE_MS = 600_000;
@@ -35,8 +35,13 @@ export const TOOL_LOOP_DEADLINE_MS = 600_000;
  * Tool rounds a reply may run before the forced final, tool-less one, shared
  * by the platforms on runToolLoop. Gemini and Grok count their final round on
  * top of this.
+ *
+ * Was 12, then 28. A reply that digs through the archive can keep asking for
+ * another search far past 28 rounds (2026-11-04: the model kept searching
+ * people and catchphrases), and the count is cheap to raise now that the wall
+ * clock is 600s: the deadline, not the count, is what actually stops a reply.
  */
-export const MAX_TOOL_ROUNDS = 28;
+export const MAX_TOOL_ROUNDS = 50;
 
 export interface CollectedToolRound {
     /** The round's text and thinking chunks, in stream order */
