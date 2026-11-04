@@ -1118,7 +1118,7 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
             expect(
                 json(imageSchema.required) === '["prompt","caption"]' &&
                     Object.keys(asRecord(imageSchema.properties)).join(',') ===
-                        'prompt,caption,references,web_references,aspect_ratio',
+                        'prompt,caption,references,web_references,model,aspect_ratio',
                 'generate_image requires prompt and caption'
             );
             expect(

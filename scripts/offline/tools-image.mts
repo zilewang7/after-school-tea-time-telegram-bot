@@ -61,7 +61,7 @@ const { ONE_ATTACHMENT_PER_REPLY } = await import('../../src/reply/tools/reply-m
 const { buildReplyToolContext } = await import('../../src/reply/tools/reply-tool-context.js');
 const { createReplyMediaState } = await import('../../src/reply/tools/reply-media-state.js');
 const imageGeneration = await import('../../src/ai/image-generation/index.js');
-const { GEMINI_IMAGE_MODEL } = await import('../../src/config/models.js');
+const { GEMINI_IMAGE_MODEL, OPENAI_IMAGE_MODEL } = await import('../../src/config/models.js');
 const { loadMessageImages, collectReferenceImages } = await import('../../src/reply/commands/reference-images.js');
 const { buildContext } = await import('../../src/reply/context-builder.js');
 const responseHandler = await import('../../src/reply/response-handler.js');
@@ -509,8 +509,19 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
                     minimal.args.prompt === '一只猫' &&
                     minimal.args.caption === '' &&
                     minimal.args.references.length === 0 &&
-                    minimal.args.aspectRatio === undefined,
-                'prompt and an empty caption are enough'
+                    minimal.args.aspectRatio === undefined &&
+                    minimal.args.model === 'banana',
+                'prompt and an empty caption are enough, and nano-banana draws by default'
+            );
+
+            const gpt = parseGenerateImageArgs({ prompt: '猫', caption: '', model: 'GPT' });
+            expect(gpt.ok && gpt.args.model === 'gpt', 'gpt can be asked for, case-insensitively');
+            const nullModel = parseGenerateImageArgs({ prompt: '猫', caption: '', model: null });
+            expect(nullModel.ok && nullModel.args.model === 'banana', 'a null model counts as absent');
+            const unknownModel = parseGenerateImageArgs({ prompt: '猫', caption: '', model: 'dall-e' });
+            expect(
+                !unknownModel.ok && unknownModel.error.includes('model 只能是 banana、gpt 之一'),
+                'any other model is refused with the two that exist'
             );
 
             const full = parseGenerateImageArgs({
@@ -744,6 +755,68 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
             expect(
                 stopped.isError && stopped.content === '这条回复已被停止，图片没有生成。',
                 `the reply’s stop reaches the request (got ${json(stopped.content)})`
+            );
+        },
+    },
+    {
+        name: 'a call may pick the GPT image model instead of nano-banana',
+        body: async () => {
+            const model = stubImageModel();
+            const drawn = await runTool(toolFor(tree.contextIndex, model), {
+                prompt: '画一只猫',
+                caption: '猫',
+                model: 'gpt',
+            });
+            const gpt = model.requests[0]?.config;
+            expect(
+                gpt?.model === OPENAI_IMAGE_MODEL &&
+                    gpt.imageOutput === undefined &&
+                    gpt.tools === undefined &&
+                    gpt.maxRetries === 1,
+                `gpt: the OpenAI image model, no Gemini output knobs (got ${json({ ...gpt, signal: undefined })})`
+            );
+            expect(
+                !drawn.isError && drawn.images.length === 1 && drawn.images[0]?.data.equals(PNG_BYTES) === true,
+                'the picture comes back like any other'
+            );
+            expect(
+                json(drawn.record?.searchQueries) === json(['generate_image(gpt): 画一只猫']),
+                `the Tools line names the model when it is not the default (got ${json(drawn.record?.searchQueries)})`
+            );
+
+            // The ratio is a Gemini knob; the GPT request must not carry one
+            const wideModel = stubImageModel();
+            await runTool(toolFor(tree.contextIndex, wideModel), {
+                prompt: '改成狗',
+                caption: '',
+                references: [{ message: 2 }],
+                aspect_ratio: '16:9',
+                model: 'gpt',
+            });
+            expect(
+                wideModel.requests[0]?.config.imageOutput === undefined,
+                'an aspect ratio is not forwarded to the GPT path'
+            );
+
+            const explicitBanana = stubImageModel();
+            const banana = await runTool(toolFor(NO_CONTEXT, explicitBanana), {
+                prompt: '猫',
+                caption: '',
+                model: 'banana',
+            });
+            expect(
+                explicitBanana.requests[0]?.config.model === GEMINI_IMAGE_MODEL &&
+                    json(banana.record?.searchQueries) === json(['generate_image: 猫']),
+                'banana stays the default and is the only one named in the Tools line'
+            );
+
+            const schema = asRecord(toolFor(NO_CONTEXT, stubImageModel()).definition.inputSchema);
+            const modelField = asRecord(asRecord(schema.properties).model);
+            expect(
+                json(modelField.enum) === json(['banana', 'gpt']) &&
+                    String(modelField.description).includes('gpt-image-2.5-dev') &&
+                    String(modelField.description).includes('默认'),
+                `the schema declares both models (got ${json(modelField)})`
             );
         },
     },

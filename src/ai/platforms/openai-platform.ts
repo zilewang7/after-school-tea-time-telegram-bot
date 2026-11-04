@@ -660,7 +660,9 @@ export class OpenAIPlatform extends BasePlatform {
             })
         );
 
-        const generateFn = async () => {
+        // The attempt signal reaches the SDK, so a stop or a deadline cancels the
+        // request instead of leaving it to bill in the background of its retry
+        const generateFn = async (attemptSignal: AbortSignal) => {
             if (imageFiles.length > 0) {
                 console.log(`[openai] Tool: images.edit with ${imageFiles.length} reference image(s):`,
                     imageFiles.map((f, i) => `[${i}] ${f.name} ${Math.round(f.size / 1024)}KB`));
@@ -670,7 +672,7 @@ export class OpenAIPlatform extends BasePlatform {
                     prompt,
                     n: 1,
                     size: 'auto',
-                });
+                }, { signal: attemptSignal });
             }
             console.log('[openai] Tool: images.generate');
             return this.client.images.generate({
@@ -678,7 +680,7 @@ export class OpenAIPlatform extends BasePlatform {
                 prompt,
                 n: 1,
                 size: 'auto',
-            });
+            }, { signal: attemptSignal });
         };
 
         const response = await this.sendWithRetry(generateFn, {

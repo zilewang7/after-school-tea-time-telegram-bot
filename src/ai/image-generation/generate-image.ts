@@ -1,18 +1,23 @@
 /**
- * One generate_image request: a single-turn call to the Gemini image model
- * through the platform path /picbanana uses (same client, safety settings and
- * draft-image skipping), with the generate_image output knobs on top.
+ * One generate_image request: a single-turn call to an image model through the
+ * platform path /picbanana and /picgpt use, with the generate_image output
+ * knobs on top.
+ *
+ * Two models are on offer: nano-banana (Gemini, the default) and the GPT image
+ * model. Both take the same user turn; only the platform config differs — the
+ * aspect-ratio knobs and the image-search grounding exist on the Gemini side.
  *
  * The reference images ride the user turn, ahead of the prompt: that is where
  * the model reads them, while images replayed in a model turn are ignored.
- * There is exactly one attempt. Whether to retry, rephrase or give up is the
- * chat model's call, so every failure comes back classified instead.
+ * There is exactly one attempt on our side. Whether to retry, rephrase or give
+ * up is the chat model's call, so every failure comes back classified instead.
+ * (The OpenAI platform's image path still retries on its own, as /picgpt does.)
  *
  * The platform logs this request like any chat request: part sizes and the
  * prompt's first 100 characters, the same exposure the chat text it came
  * from already has. No secret travels in a prompt.
  */
-import { GEMINI_IMAGE_MODEL } from '../../config/models.js';
+import { GEMINI_IMAGE_MODEL, OPENAI_IMAGE_MODEL } from '../../config/models.js';
 import type {
     GroundingData,
     ImageOutputOptions,
@@ -44,12 +49,22 @@ export interface ImageReference {
     readonly mimeType: string;
 }
 
+/** Image models generate_image can call; the GPT one only when the call asks */
+export const IMAGE_MODEL_CHOICES = ['banana', 'gpt'] as const;
+
+export type ImageModelChoice = (typeof IMAGE_MODEL_CHOICES)[number];
+
+/** Nano-banana draws unless the call says otherwise */
+export const DEFAULT_IMAGE_MODEL_CHOICE: ImageModelChoice = 'banana';
+
 export interface ImageGenerationRequest {
     readonly prompt: string;
     /** Images to follow or edit, in the order the prompt describes them */
     readonly references: readonly ImageReference[];
     /** Undefined: square from scratch, the source's shape when editing */
     readonly aspectRatio?: string;
+    /** Undefined: nano-banana */
+    readonly model?: ImageModelChoice;
 }
 
 /** The platform entry point (platform-factory's sendMessage) */
@@ -97,6 +112,34 @@ const imageOutputFor = (request: ImageGenerationRequest): ImageOutputOptions => 
     };
 };
 
+/**
+ * The platform config of the chosen model. Only Gemini reads the output knobs;
+ * the OpenAI platform answers an image model through images.generate/edit and
+ * keeps the ratio and grounding to itself.
+ */
+const requestConfig = (
+    choice: ImageModelChoice,
+    request: ImageGenerationRequest,
+    signal: AbortSignal,
+    timeoutMs: number
+): PlatformConfig =>
+    choice === 'gpt'
+        ? {
+              model: OPENAI_IMAGE_MODEL,
+              signal,
+              // Its image path retries inside the platform; nothing to add here
+              maxRetries: 1,
+              timeout: timeoutMs,
+          }
+        : {
+              model: GEMINI_IMAGE_MODEL,
+              signal,
+              maxRetries: 1,
+              // The platform's per-attempt timeout must not undercut the deadline
+              timeout: timeoutMs,
+              imageOutput: imageOutputFor(request),
+          };
+
 export const generateImage = async (
     request: ImageGenerationRequest,
     options: ImageGenerationOptions
@@ -104,16 +147,13 @@ export const generateImage = async (
     const timeoutMs = options.timeoutMs ?? IMAGE_GENERATION_TIMEOUT_MS;
     const deadline = AbortSignal.timeout(timeoutMs);
     const abortCauses = (): AbortCauses => ({ stopped: options.signal.aborted, timedOut: deadline.aborted });
+    const choice = request.model ?? DEFAULT_IMAGE_MODEL_CHOICE;
 
     try {
-        const stream = await options.sendMessage(buildRequestMessages(request), {
-            model: GEMINI_IMAGE_MODEL,
-            signal: AbortSignal.any([options.signal, deadline]),
-            maxRetries: 1,
-            // The platform's per-attempt timeout must not undercut the deadline
-            timeout: timeoutMs,
-            imageOutput: imageOutputFor(request),
-        });
+        const stream = await options.sendMessage(
+            buildRequestMessages(request),
+            requestConfig(choice, request, AbortSignal.any([options.signal, deadline]), timeoutMs)
+        );
         const drained = await drainImageStream(stream);
 
         // A stream cut short by an abort can end quietly, without an image

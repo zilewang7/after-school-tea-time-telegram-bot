@@ -9,7 +9,12 @@
  * with a found picture or a drawn one, never both.
  */
 import { sendMessage } from '../../ai/platform-factory.js';
-import { generateImage, type ImageReference, type SendImageRequest } from '../../ai/image-generation/generate-image.js';
+import {
+    generateImage,
+    IMAGE_MODEL_CHOICES,
+    type ImageReference,
+    type SendImageRequest,
+} from '../../ai/image-generation/generate-image.js';
 import { failureLogDetail } from '../../ai/image-generation/image-generation-failure.js';
 import { sniffImageMime } from '../../ai/image-generation/image-mime.js';
 import type { ToolHandler } from '../../ai/tools/tool-types.js';
@@ -51,7 +56,8 @@ const descriptionOf = (hasSticker: boolean): string =>
     '动图（GIF/动态贴纸）取首帧；同条消息含多张图片时用 image 指定序号（从 1 开始，消息附件在前，链接预览图片在后）。' +
     '参考搜索候选或已读取图片时，在 web_references 中填入 search_id 或 image_id。' +
     (hasSticker ? '参考贴纸包内贴纸时，在 web_references 中填入 sticker（st1、包内序号或画面名称）。' : '') +
-    '生图模型支持自动调用 Google 图片搜索获取真实视觉参考，可在 prompt 中注明所需参考对象，参考来源将附于回复末尾。';
+    '默认用 banana 模型（Gemini nano-banana）出图；model 传 gpt 则改用 gpt-image-2.5-dev。' +
+    'banana 按 aspect_ratio 出图，并支持自动调用 Google 图片搜索获取真实视觉参考（可在 prompt 中注明所需参考对象，参考来源附于回复末尾）；gpt 不支持这两项。';
 
 const inputSchemaOf = (hasSticker: boolean) => ({
     type: 'object',
@@ -107,10 +113,16 @@ const inputSchemaOf = (hasSticker: boolean) => ({
                 },
             },
         },
+        model: {
+            type: 'string',
+            enum: IMAGE_MODEL_CHOICES,
+            description:
+                '生图模型：banana（默认，Gemini nano-banana）或 gpt（gpt-image-2.5-dev）。gpt 不支持 aspect_ratio 与 Google 图片搜索参考。',
+        },
         aspect_ratio: {
             type: 'string',
             enum: IMAGE_ASPECT_RATIOS,
-            description: '画面比例；改图时省略就沿用原图比例。',
+            description: '画面比例（仅 banana 模型生效）；改图时省略就沿用原图比例。',
         },
     },
     required: ['prompt', 'caption'],
@@ -299,11 +311,14 @@ export const createGenerateImageTool = (
                     prompt: args.prompt,
                     references: referenceImages,
                     aspectRatio: args.aspectRatio,
+                    model: args.model,
                 },
                 { sendMessage: dependencies.sendMessage, signal: AbortSignal.any([signal, context.signal]) }
             );
+            // The ratio only reaches the Gemini side; logging it for gpt would lie
+            const aspectNote = args.model === 'banana' ? `, aspect=${args.aspectRatio ?? 'auto'}` : '';
             console.log(
-                `[generate_image] ${referenceImages.length} reference(s), aspect=${args.aspectRatio ?? 'auto'}: ` +
+                `[generate_image] model=${args.model}${aspectNote}, ${referenceImages.length} reference(s): ` +
                     (outcome.ok ? `${outcome.image.mimeType} ${outcome.image.data.length}B` : failureLogDetail(outcome.failure))
             );
             if (!outcome.ok) return imageToolError(describeImageGenerationFailure(outcome.failure));

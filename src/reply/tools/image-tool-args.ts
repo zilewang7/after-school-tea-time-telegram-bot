@@ -5,6 +5,11 @@
  * with. Optional fields sent as null count as absent: models fill unused
  * optional fields that way.
  */
+import {
+    DEFAULT_IMAGE_MODEL_CHOICE,
+    IMAGE_MODEL_CHOICES,
+    type ImageModelChoice,
+} from '../../ai/image-generation/generate-image.js';
 import { isJsonObject } from '../../shared/json-object.js';
 
 export const IMAGE_ASPECT_RATIOS = [
@@ -45,6 +50,8 @@ export interface GenerateImageArgs {
     /** Web pictures to follow, resolved by the tool from the reply's media state */
     readonly webReferences: readonly ImageWebReferenceArg[];
     readonly aspectRatio: ImageAspectRatio | undefined;
+    /** Which image model draws it; banana unless the call asks for gpt */
+    readonly model: ImageModelChoice;
 }
 
 export type ParsedImageArgs =
@@ -136,14 +143,25 @@ const parseAspectRatio = (value: unknown): Field<ImageAspectRatio | undefined> =
         : invalid(`aspect_ratio 只能是 ${IMAGE_ASPECT_RATIOS.join('、')} 之一`);
 };
 
+/** An absent model is nano-banana; only the declared choices are accepted */
+const parseModel = (value: unknown): Field<ImageModelChoice> => {
+    if (isAbsent(value)) return valid(DEFAULT_IMAGE_MODEL_CHOICE);
+    const choice = typeof value === 'string' ? value.trim().toLowerCase() : '';
+    const matched = IMAGE_MODEL_CHOICES.find((allowed) => allowed === choice);
+    return matched === undefined
+        ? invalid(`model 只能是 ${IMAGE_MODEL_CHOICES.join('、')} 之一`)
+        : valid(matched);
+};
+
 export const parseGenerateImageArgs = (args: Readonly<Record<string, unknown>>): ParsedImageArgs => {
     const prompt = parsePrompt(args.prompt);
     const caption = parseCaption(args.caption);
     const references = parseReferences(args.references);
     const webReferences = parseWebReferences(args.web_references);
     const aspectRatio = parseAspectRatio(args.aspect_ratio);
+    const model = parseModel(args.model);
 
-    if (prompt.ok && caption.ok && references.ok && webReferences.ok && aspectRatio.ok) {
+    if (prompt.ok && caption.ok && references.ok && webReferences.ok && aspectRatio.ok && model.ok) {
         return {
             ok: true,
             args: {
@@ -152,11 +170,12 @@ export const parseGenerateImageArgs = (args: Readonly<Record<string, unknown>>):
                 references: references.value,
                 webReferences: webReferences.value,
                 aspectRatio: aspectRatio.value,
+                model: model.value,
             },
         };
     }
 
-    const problems = [prompt, caption, references, webReferences, aspectRatio].flatMap((field) =>
+    const problems = [prompt, caption, references, webReferences, aspectRatio, model].flatMap((field) =>
         field.ok ? [] : field.problems
     );
     return { ok: false, error: `参数有误：\n${problems.map((problem) => `- ${problem}`).join('\n')}` };

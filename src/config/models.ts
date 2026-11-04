@@ -4,7 +4,8 @@ export interface ModelConfig {
     name: string;
 }
 
-export const OPENAI_IMAGE_MODEL = "gpt-image-2.5-sunburst";
+/** GPT image generation: /picgpt and the gpt half of generate_image */
+export const OPENAI_IMAGE_MODEL = "gpt-image-2.5-dev";
 export const OPENAI_IMAGE_CHAT_BASE_MODEL = "gpt-6-sol";
 /** Gemini image generation: /picbanana, the /model menu entry and generate_image */
 export const GEMINI_IMAGE_MODEL = "gemini-nano-banana-2.1";

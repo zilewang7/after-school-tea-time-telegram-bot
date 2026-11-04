@@ -65,6 +65,8 @@ export const imageToolSuccess = (
 ): ToolResult => {
     const promptLine = args.prompt.replace(/\s+/g, ' ').trim();
     const imageSearchQueries = grounding?.imageSearchQueries ?? [];
+    // The Tools line names the model only when it is not the default one
+    const toolLabel = args.model === 'gpt' ? `${GENERATE_IMAGE_TOOL_NAME}(gpt)` : GENERATE_IMAGE_TOOL_NAME;
     return {
         content: IMAGE_READY,
         isError: false,
@@ -78,7 +80,7 @@ export const imageToolSuccess = (
         record: {
             provider: 'mcp',
             searchQueries: [
-                `${GENERATE_IMAGE_TOOL_NAME}: ${excerpt(promptLine, RECORD_PROMPT_CHARS)}`,
+                `${toolLabel}: ${excerpt(promptLine, RECORD_PROMPT_CHARS)}`,
                 ...imageSearchQueries.map((query) => `参考图搜索: ${excerpt(query, RECORD_PROMPT_CHARS)}`),
             ],
             citations: imageCitations(grounding),
