@@ -1,6 +1,7 @@
 /**
  * What both history tools need: options, failure wording, ids and anchors.
  */
+import type { ToolHandler, ToolResult } from '../../ai/tools/tool-types.js';
 import { HistoryRequestError, type HistoryService } from '../../services/luoxu-history-service.js';
 import { HISTORY_DEFAULT_TIME_ZONE } from './history-args.js';
 import type { HistoryState } from './history-state.js';
@@ -65,3 +66,31 @@ export const anchorFor = (
 
 export const messageLink = (channelId: number, messageId: number): string =>
     `https://t.me/c/${channelId}/${messageId}`;
+
+const LOG_ARG_CHARS = 160;
+
+/**
+ * One log line per call: which tool, which chat, the arguments that shape the
+ * query, how long it took and whether it degraded. This is the only way to
+ * see later whether the model searches, reads, or gives up.
+ */
+export const withHistoryLogging = (
+    handler: ToolHandler,
+    chatId: number,
+    summarize: (args: Readonly<Record<string, unknown>>) => string
+): ToolHandler => ({
+    ...handler,
+    execute: async (args, signal): Promise<ToolResult> => {
+        const startedAt = Date.now();
+        const result = await handler.execute(args, signal);
+        const elapsed = Date.now() - startedAt;
+        const argsText = Array.from(summarize(args)).slice(0, LOG_ARG_CHARS).join('');
+        const outcome = result.isError
+            ? `error="${Array.from(result.content).slice(0, LOG_ARG_CHARS).join('')}"`
+            : `chars=${result.content.length}`;
+        console.log(
+            `[history] ${handler.definition.name} chat=${chatId} ${argsText} ${elapsed}ms ${outcome}`
+        );
+        return result;
+    },
+});

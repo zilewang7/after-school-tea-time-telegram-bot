@@ -36,6 +36,7 @@ import {
     historyTimeZoneOf,
     isOwner,
     messageKey,
+    withHistoryLogging,
     type HistoryToolOptions,
 } from './history-tool-shared.js';
 import { SEARCH_HISTORY_TOOL_NAME } from './tool-names.js';
@@ -183,10 +184,21 @@ const buildRow = (
     };
 };
 
+const summarizeSearchArgs = (args: Readonly<Record<string, unknown>>): string =>
+    JSON.stringify({
+        query: args.query ?? null,
+        sender: args.sender ?? null,
+        scope: args.scope ?? 'chat',
+        from: args.from ?? null,
+        to: args.to ?? null,
+        before: args.before ?? null,
+        limit: args.limit ?? null,
+    });
+
 export const createSearchHistoryTool = (options: HistoryToolOptions): ToolHandler => {
     const timeZone = historyTimeZoneOf(options);
 
-    return {
+    const handler: ToolHandler = {
         definition: {
             name: SEARCH_HISTORY_TOOL_NAME,
             description: DESCRIPTION,
@@ -320,4 +332,5 @@ export const createSearchHistoryTool = (options: HistoryToolOptions): ToolHandle
             return historyToolSuccess(text);
         },
     };
+    return withHistoryLogging(handler, options.context.chatId, summarizeSearchArgs);
 };

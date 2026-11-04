@@ -32,6 +32,7 @@ import {
     isOwner,
     messageKey,
     messageLink,
+    withHistoryLogging,
     type HistoryToolOptions,
 } from './history-tool-shared.js';
 import { READ_HISTORY_TOOL_NAME } from './tool-names.js';
@@ -323,7 +324,15 @@ const readWindow = async (
     return historyToolSuccess(text);
 };
 
-export const createReadHistoryTool = (options: HistoryToolOptions): ToolHandler => ({
+const summarizeReadArgs = (args: Readonly<Record<string, unknown>>): string =>
+    JSON.stringify({
+        ids: Array.isArray(args.ids) ? args.ids.slice(0, 4) : (args.ids ?? null),
+        around: args.around ?? null,
+        minutes: args.minutes ?? null,
+        folded: args.folded === true,
+    });
+
+const handlerOf = (options: HistoryToolOptions): ToolHandler => ({
     definition: {
         name: READ_HISTORY_TOOL_NAME,
         description: DESCRIPTION,
@@ -341,3 +350,6 @@ export const createReadHistoryTool = (options: HistoryToolOptions): ToolHandler 
         return readFull(options, readArgs.refs, readArgs.folded, signal);
     },
 });
+
+export const createReadHistoryTool = (options: HistoryToolOptions): ToolHandler =>
+    withHistoryLogging(handlerOf(options), options.context.chatId, summarizeReadArgs);
