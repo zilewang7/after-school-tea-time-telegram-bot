@@ -11,7 +11,11 @@
  * message body; it labels what it shows.
  */
 import type { HistoryEntry } from './history-state.js';
-import type { HistoryRawEntity } from '../../services/luoxu-history-service.js';
+import type {
+    HistoryForward,
+    HistoryMedia,
+    HistoryRawEntity,
+} from '../../services/luoxu-history-service.js';
 
 /** Keyword highlight luoxu wraps matches in */
 const KEYWORD_OPEN = '<span class="keyword">';
@@ -216,6 +220,40 @@ export const isInsideFolded = (
     return false;
 };
 
+/**
+ * The medium, worded the way the bot's own context words it (`[sent a sticker
+ * image (pack emoji: 🌟)]`), so a message read from the archive looks like the
+ * same message seen live.
+ */
+export const mediumHintOf = (media: HistoryMedia | null | undefined): string => {
+    if (!media) return '';
+    const emoji = media.stickerEmoji ? ` (pack emoji: ${media.stickerEmoji})` : '';
+    if (media.type === 'sticker') {
+        return media.mime === 'video/webm' ? `an animated sticker${emoji}` : `a sticker image${emoji}`;
+    }
+    if (media.type === 'photo') return 'a picture';
+    if (media.type === 'video') return 'a video';
+    if (media.type === 'animation') return 'an animation';
+    if (media.type === 'audio') return media.voice ? 'a voice message' : 'an audio file';
+    if (media.type === 'document') return media.fileName ? `a file: ${media.fileName}` : 'a file';
+    return '';
+};
+
+/** `[forwarded from channel X]`, the same annotation the live context uses */
+export const forwardHintOf = (forward: HistoryForward | null | undefined): string => {
+    if (!forward) return '';
+    const name = forward.fromName ?? (forward.fromId === null ? null : String(forward.fromId));
+    if (!name) return '';
+    const kind = forward.kind ? `${forward.kind} ` : '';
+    return `[forwarded from ${kind}${name}]`;
+};
+
+/** One line of live-context annotations for a message read from the archive */
+export const annotationsOf = (entry: HistoryEntry): string => {
+    const parts = [forwardHintOf(entry.forward), mediumHintOf(entry.media)].filter((part) => part.length > 0);
+    return parts.length > 0 ? parts.map((part) => (part.startsWith('[') ? part : `[sent ${part}]`)).join(' ') : '';
+};
+
 /** Our own wire format in user text must not read as an instruction */
 export const neutralizeWireFormat = (text: string): string =>
     text
@@ -292,7 +330,9 @@ const formatRow = (row: SearchListRow, timeZone: string, showGroup: boolean): st
     const group = showGroup && row.groupName ? `[${row.groupName}] ` : '';
     const reply = row.replyTo ? ` · 回复 ${row.replyTo}` : '';
     const lines = [`h${row.entry.h} · ${group}${time} · ${row.entry.fromName} · ${row.anchor}${reply}`];
-    if (row.firstLine) lines.push(`   ${neutralizeWireFormat(row.firstLine)}`);
+    const annotation = annotationsOf(row.entry);
+    const body = [annotation, row.firstLine].filter((part) => part.length > 0).join(' ');
+    if (body) lines.push(`   ${neutralizeWireFormat(body)}`);
     if (row.kwic) {
         const note = row.kwicInFolded ? '（命中在折叠块内）' : '';
         lines.push(`   ${neutralizeWireFormat(row.kwic)}${note}`);
@@ -351,6 +391,7 @@ export const renderFullMessage = (
     const anchor = options.anchor ? ` · ${options.anchor}` : '';
     const header = `h${entry.h} · ${group}${time} · ${entry.fromName}${anchor}`;
 
+    const annotation = annotationsOf(entry);
     const body = indexedBodyOf(entry);
     let stripped: { readonly text: string; readonly removed: number } = { text: body, removed: 0 };
     if (!options.folded && entry.rawText && entry.entities) {
@@ -370,7 +411,8 @@ export const renderFullMessage = (
     const budget = options.maxChars ?? 4000;
     const cut = truncateChars(stripped.text, budget);
     const note = cut.truncated ? `\n（已截断，共 ${cut.total} 字）` : '';
-    return `${header}\n${neutralizeWireFormat(cut.text)}${note}`;
+    const head = annotation ? `${header}\n${annotation}` : header;
+    return `${head}\n${neutralizeWireFormat(cut.text)}${note}`;
 };
 
 export interface WindowRow {
@@ -405,7 +447,9 @@ export const renderWindow = (
     for (const row of rows) {
         const time = formatHistoryTime(row.entry.timestamp, timeZone).slice(11);
         const body = truncateChars(indexedBodyOf(row.entry).replace(/\n+/g, ' '), header.perMessageChars);
-        const line = `h${row.entry.h} · ${time} · ${row.entry.fromName}: ${neutralizeWireFormat(body.text)}` +
+        const annotation = annotationsOf(row.entry);
+        const prefix = annotation ? ` ${annotation}` : '';
+        const line = `h${row.entry.h} · ${time} · ${row.entry.fromName}${prefix}: ${neutralizeWireFormat(body.text)}` +
             (row.attachments ? `（附：${row.attachments}）` : '') +
             (row.center ? '   ← 中心' : '');
         if (used + line.length + 1 > maxChars) {

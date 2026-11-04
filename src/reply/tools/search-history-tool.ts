@@ -290,6 +290,8 @@ export const createSearchHistoryTool = (options: HistoryToolOptions): ToolHandle
                               rawText: message.text,
                               entities: message.entities,
                               replyToId: message.replyToId,
+                              media: message.media,
+                              forward: message.forward,
                           }
                         : {}),
                 });

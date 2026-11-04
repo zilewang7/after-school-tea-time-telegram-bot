@@ -82,6 +82,25 @@ export interface HistoryRawEntity {
     readonly url?: string;
 }
 
+/** What kind of medium a message carries, as luoxu reports it */
+export interface HistoryMedia {
+    /** sticker / photo / video / animation / audio / document */
+    readonly type: string;
+    readonly mime: string | null;
+    readonly size: number | null;
+    readonly duration: number | null;
+    /** A sticker's pack emoji (`alt`), the hint a client paints on the bubble */
+    readonly stickerEmoji: string | null;
+    readonly fileName: string | null;
+    readonly voice: boolean;
+}
+
+export interface HistoryForward {
+    readonly kind: string | null;
+    readonly fromId: number | null;
+    readonly fromName: string | null;
+}
+
 /** A message as Telegram has it right now (no index extras, no OCR) */
 export interface HistoryRawMessage {
     readonly messageId: number;
@@ -91,6 +110,8 @@ export interface HistoryRawMessage {
     readonly text: string;
     readonly entities: readonly HistoryRawEntity[];
     readonly replyToId: number | null;
+    readonly media: HistoryMedia | null;
+    readonly forward: HistoryForward | null;
     /** Unix seconds */
     readonly date: number | null;
 }
@@ -164,6 +185,30 @@ const parseGroups = (raw: unknown): Map<number, string> => {
     return groups;
 };
 
+const parseMedia = (raw: unknown): HistoryMedia | null => {
+    if (!isRecord(raw)) return null;
+    const type = stringOf(raw.type);
+    if (type === null) return null;
+    return {
+        type,
+        mime: stringOf(raw.mime),
+        size: numberOf(raw.size),
+        duration: numberOf(raw.duration),
+        stickerEmoji: stringOf(raw.sticker_emoji),
+        fileName: stringOf(raw.file_name),
+        voice: raw.voice === true,
+    };
+};
+
+const parseForward = (raw: unknown): HistoryForward | null => {
+    if (!isRecord(raw)) return null;
+    return {
+        kind: stringOf(raw.kind),
+        fromId: numberOf(raw.from_id),
+        fromName: stringOf(raw.from_name),
+    };
+};
+
 const parseRawMessage = (raw: unknown): HistoryRawMessage | null => {
     if (!isRecord(raw)) return null;
     const messageId = numberOf(raw.id);
@@ -189,6 +234,8 @@ const parseRawMessage = (raw: unknown): HistoryRawMessage | null => {
         text: stringOf(raw.text) ?? '',
         entities,
         replyToId: numberOf(raw.reply_to) ?? replyTo,
+        media: parseMedia(raw.media),
+        forward: parseForward(raw.forward),
         date: numberOf(raw.date),
     };
 };

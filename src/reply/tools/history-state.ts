@@ -10,7 +10,7 @@
  * Entries are grown in place: a search registers the index text, a later read
  * adds the raw text and entities it fetched, and the id does not change.
  */
-import type { HistoryRawEntity } from '../../services/luoxu-history-service.js';
+import type { HistoryForward, HistoryMedia, HistoryRawEntity } from '../../services/luoxu-history-service.js';
 
 export interface HistoryMessageInput {
     /** luoxu group id (channel id), not the bot chat id */
@@ -29,6 +29,10 @@ export interface HistoryMessageInput {
     readonly rawText?: string;
     readonly entities?: readonly HistoryRawEntity[];
     readonly replyToId?: number | null;
+    /** The medium the message carries (sticker / photo / file …) */
+    readonly media?: HistoryMedia | null;
+    /** Where it was forwarded from */
+    readonly forward?: HistoryForward | null;
 }
 
 export interface HistoryEntry extends HistoryMessageInput {
@@ -61,6 +65,8 @@ const merge = (existing: HistoryEntry, input: HistoryMessageInput): HistoryEntry
     rawText: input.rawText ?? existing.rawText,
     entities: input.entities ?? existing.entities,
     replyToId: input.replyToId ?? existing.replyToId,
+    media: input.media ?? existing.media,
+    forward: input.forward ?? existing.forward,
 });
 
 export const createHistoryState = (): HistoryState => {

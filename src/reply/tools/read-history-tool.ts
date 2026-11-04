@@ -166,6 +166,8 @@ const loadRaw = async (
                     rawText: raw.text,
                     entities: raw.entities,
                     replyToId: raw.replyToId,
+                    media: raw.media,
+                    forward: raw.forward,
                 });
             }
         } catch (error) {
@@ -257,47 +259,60 @@ const readWindow = async (
         .sort((a, b) => a.timestamp - b.timestamp)
         .slice(0, WINDOW_MAX_PER_SIDE);
 
-    const timeZone = historyTimeZoneOf(options);
-    const rows: WindowRow[] = [];
-    const windowRow = (entry: HistoryEntry, center: boolean): WindowRow => {
-        const attachments = attachmentSummary(entry.indexedHtml);
-        return {
-            entry,
-            center,
-            ...(attachments ? { attachments } : {}),
-        };
-    };
-
+    const ordered: { readonly entry: HistoryEntry; readonly center: boolean }[] = [];
     for (const hit of [...earlierRows].reverse()) {
-        const groupName = earlier.groups.get(center.channelId);
-        const entry = options.state.remember({
-            channelId: hit.channelId,
-            messageId: hit.messageId,
-            timestamp: hit.timestamp,
-            fromId: hit.fromId,
-            fromName: hit.fromName,
-            fromIsBot: hit.fromId !== null && hit.fromId === options.botUserId,
-            indexedHtml: hit.html,
-            ...(groupName ? { groupName } : {}),
+        ordered.push({
+            entry: options.state.remember({
+                channelId: hit.channelId,
+                messageId: hit.messageId,
+                timestamp: hit.timestamp,
+                fromId: hit.fromId,
+                fromName: hit.fromName,
+                fromIsBot: hit.fromId !== null && hit.fromId === options.botUserId,
+                indexedHtml: hit.html,
+                ...(earlier.groups.get(center.channelId)
+                    ? { groupName: earlier.groups.get(center.channelId) }
+                    : {}),
+            }),
+            center: false,
         });
-        rows.push(windowRow(entry, false));
     }
-    rows.push(windowRow(center, true));
+    ordered.push({ entry: center, center: true });
     for (const hit of laterRows) {
-        const groupName = later.groups.get(center.channelId);
-        const entry = options.state.remember({
-            channelId: hit.channelId,
-            messageId: hit.messageId,
-            timestamp: hit.timestamp,
-            fromId: hit.fromId,
-            fromName: hit.fromName,
-            fromIsBot: hit.fromId !== null && hit.fromId === options.botUserId,
-            indexedHtml: hit.html,
-            ...(groupName ? { groupName } : {}),
+        ordered.push({
+            entry: options.state.remember({
+                channelId: hit.channelId,
+                messageId: hit.messageId,
+                timestamp: hit.timestamp,
+                fromId: hit.fromId,
+                fromName: hit.fromName,
+                fromIsBot: hit.fromId !== null && hit.fromId === options.botUserId,
+                indexedHtml: hit.html,
+                ...(later.groups.get(center.channelId)
+                    ? { groupName: later.groups.get(center.channelId) }
+                    : {}),
+            }),
+            center: false,
         });
-        rows.push(windowRow(entry, false));
     }
-    rows.sort((a, b) => a.entry.timestamp - b.entry.timestamp);
+
+    // One MTProto read for the whole window: media/forward/reply hints and the
+    // raw text, so a window row looks like the same message seen live.
+    await loadRaw(
+        options,
+        ordered.map((item) => item.entry),
+        signal
+    );
+
+    const timeZone = historyTimeZoneOf(options);
+    const rows: WindowRow[] = ordered
+        .map((item) => {
+            const entry =
+                options.state.findByMessage(item.entry.channelId, item.entry.messageId) ?? item.entry;
+            const attachments = attachmentSummary(entry.indexedHtml);
+            return { entry, center: item.center, ...(attachments ? { attachments } : {}) };
+        })
+        .sort((a, b) => a.entry.timestamp - b.entry.timestamp);
 
     const notes: string[] = [];
     if (earlier.hits.length > WINDOW_MAX_PER_SIDE) {

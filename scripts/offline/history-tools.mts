@@ -89,6 +89,8 @@ const rawMessage = (overrides: Partial<HistoryRawMessage> = {}): HistoryRawMessa
     text: `https://fixupx.com/example/status/42?a=X&s=19`,
     entities: [],
     replyToId: null,
+    media: null,
+    forward: null,
     date: fixtureMessage().t,
     ...overrides,
 });
@@ -266,6 +268,62 @@ cases.push(
             { type: 'blockquote', offset: 0, length: cut },
         ]);
         expect(userQuote.removed === 0 && userQuote.text === raw, 'a plain blockquote is left alone');
+    })
+);
+
+cases.push(
+    await runCase('media and forward hints mirror the live context', async () => {
+        const sticker = textKit.mediumHintOf({
+            type: 'sticker',
+            mime: 'image/webp',
+            size: 10076,
+            duration: null,
+            stickerEmoji: '🌟',
+            fileName: null,
+            voice: false,
+        });
+        expect(sticker === 'a sticker image (pack emoji: 🌟)', 'a static sticker keeps its emoji');
+        const animated = textKit.mediumHintOf({
+            type: 'sticker',
+            mime: 'video/webm',
+            size: 246896,
+            duration: 0.634,
+            stickerEmoji: '😁',
+            fileName: null,
+            voice: false,
+        });
+        expect(animated === 'an animated sticker (pack emoji: 😁)', 'an animated sticker says so');
+        expect(textKit.mediumHintOf(null) === '', 'no media means no hint');
+        expect(
+            textKit.forwardHintOf({ kind: 'channel', fromId: 123, fromName: '在花科技圈' }) ===
+                '[forwarded from channel 在花科技圈]',
+            'a forward names its channel'
+        );
+        expect(textKit.forwardHintOf(null) === '', 'no forward means no hint');
+
+        const fake = fakeService({
+            raw: [
+                rawMessage({
+                    text: '',
+                    media: {
+                        type: 'sticker',
+                        mime: 'image/webp',
+                        size: 10076,
+                        duration: null,
+                        stickerEmoji: '🌟',
+                        fileName: null,
+                        voice: false,
+                    },
+                    forward: { kind: 'channel', fromId: 123, fromName: '在花科技圈' },
+                }),
+            ],
+        });
+        const tool = createSearchHistoryTool(buildOptions(fake));
+        const result = await execute(tool, { query: 'fixupx' });
+        expect(
+            result.content.includes('[forwarded from channel 在花科技圈] [sent a sticker image (pack emoji: 🌟)]'),
+            'the list carries the same annotations as the live context'
+        );
     })
 );
 
