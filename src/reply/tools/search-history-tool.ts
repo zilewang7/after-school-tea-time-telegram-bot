@@ -204,7 +204,7 @@ export const createSearchHistoryTool = (options: HistoryToolOptions): ToolHandle
             description: DESCRIPTION,
             inputSchema: INPUT_SCHEMA,
         },
-        statusText: '翻聊天记录',
+        statusText: '🔍 正在翻聊天记录…',
         chatAction: 'typing',
         execute: async (args, signal): Promise<ToolResult> => {
             const parsed = parseHistorySearchArgs(args);

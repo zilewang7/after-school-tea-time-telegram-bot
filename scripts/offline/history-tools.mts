@@ -272,6 +272,17 @@ cases.push(
 );
 
 cases.push(
+    await runCase('the status line matches the other tools', async () => {
+        const fake = fakeService({});
+        const search = createSearchHistoryTool(buildOptions(fake));
+        const read = createReadHistoryTool(buildOptions(fake));
+        expect(search.statusText === '🔍 正在翻聊天记录…', 'searching says what it is doing, with an emoji');
+        expect(read.statusText === '📖 正在读聊天记录…', 'reading does the same');
+        expect(search.chatAction === 'typing' && read.chatAction === 'typing', 'both keep the typing action');
+    })
+);
+
+cases.push(
     await runCase('media and forward hints mirror the live context', async () => {
         const sticker = textKit.mediumHintOf({
             type: 'sticker',
