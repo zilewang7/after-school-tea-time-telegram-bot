@@ -143,6 +143,8 @@ export const formatFetchResult = (input: {
 export const formatSendResult = (input: {
     readonly candidateId?: string;
     readonly imageId?: string;
+    /** A picture generate_image drew in this reply */
+    readonly generatedId?: string;
     readonly contextNumber?: number;
     /** The chat receives an animation, not a still */
     readonly animated?: boolean;
@@ -150,11 +152,13 @@ export const formatSendResult = (input: {
     readonly note?: string;
     readonly sourcePage?: string;
 }): string => {
-    const source = input.candidateId
-        ? `候选 ${input.candidateId}`
-        : input.imageId
-          ? `已读图 ${input.imageId}`
-          : `#${input.contextNumber ?? '?'} 的图`;
+    const source = input.generatedId
+        ? `本次生成的图 ${input.generatedId}`
+        : input.candidateId
+          ? `候选 ${input.candidateId}`
+          : input.imageId
+            ? `已读图 ${input.imageId}`
+            : `#${input.contextNumber ?? '?'} 的图`;
     const note = input.note ? `（${input.note}）` : '';
     const kind = input.animated === true ? '动图' : '图片';
     return [
@@ -174,7 +178,8 @@ export const mediaToolErrors = {
     },
     unknownCandidate: (candidateId: string) =>
         `没有候选 ${candidateId}。候选编号形如 s1，先 search_images 或看工具结果里的编号。`,
-    unknownFetched: (imageId: string) => `没有读过的图 ${imageId}。先用 fetch_image 读取，或改用 search_id。`,
+    unknownFetched: (imageId: string) =>
+        `没有图片 ${imageId}。编号可以是 generate_image 本次生成的 g1，或 fetch_image 读过的 img1。`,
     noImageSource: '要发哪张图？传 search_id、image_id、message（上下文编号）或 url 之一。',
     downloadFailed: (reason: string) => `图片没取到：${reason}`,
     notAnImage: '这张不是 PNG/JPEG/WebP/GIF 图片，发不了。换一张候选试试。',

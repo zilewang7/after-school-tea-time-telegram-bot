@@ -43,8 +43,6 @@ export interface ImageWebReferenceArg {
 
 export interface GenerateImageArgs {
     readonly prompt: string;
-    /** Empty: the image goes out without a caption */
-    readonly caption: string;
     /** Empty: drawn from scratch */
     readonly references: readonly ImageReferenceArg[];
     /** Web pictures to follow, resolved by the tool from the reply's media state */
@@ -75,11 +73,6 @@ const parsePrompt = (value: unknown): Field<string> =>
     typeof value === 'string' && value.trim()
         ? valid(value.trim())
         : invalid('prompt 必须是非空字符串');
-
-const parseCaption = (value: unknown): Field<string> =>
-    typeof value === 'string'
-        ? valid(value.trim())
-        : invalid('caption 必须是字符串（不需要配文就传空字符串）');
 
 const parseReference = (value: unknown, label: string): Field<ImageReferenceArg> => {
     if (!isJsonObject(value)) return invalid(`${label} 必须是 {"message": 编号} 这样的对象`);
@@ -155,18 +148,16 @@ const parseModel = (value: unknown): Field<ImageModelChoice> => {
 
 export const parseGenerateImageArgs = (args: Readonly<Record<string, unknown>>): ParsedImageArgs => {
     const prompt = parsePrompt(args.prompt);
-    const caption = parseCaption(args.caption);
     const references = parseReferences(args.references);
     const webReferences = parseWebReferences(args.web_references);
     const aspectRatio = parseAspectRatio(args.aspect_ratio);
     const model = parseModel(args.model);
 
-    if (prompt.ok && caption.ok && references.ok && webReferences.ok && aspectRatio.ok && model.ok) {
+    if (prompt.ok && references.ok && webReferences.ok && aspectRatio.ok && model.ok) {
         return {
             ok: true,
             args: {
                 prompt: prompt.value,
-                caption: caption.value,
                 references: references.value,
                 webReferences: webReferences.value,
                 aspectRatio: aspectRatio.value,
@@ -175,7 +166,7 @@ export const parseGenerateImageArgs = (args: Readonly<Record<string, unknown>>):
         };
     }
 
-    const problems = [prompt, caption, references, webReferences, aspectRatio, model].flatMap((field) =>
+    const problems = [prompt, references, webReferences, aspectRatio, model].flatMap((field) =>
         field.ok ? [] : field.problems
     );
     return { ok: false, error: `参数有误：\n${problems.map((problem) => `- ${problem}`).join('\n')}` };

@@ -1,12 +1,18 @@
 /**
  * The media working set of one reply: what search_images found, what
- * fetch_image pulled into the model's context, and the one-image-per-reply flag.
+ * fetch_image pulled into the model's context, what generate_image drew, and
+ * the one-attachment-per-reply flag.
  *
  * There are no quotas here on purpose. Searching, paging and reading are the
  * model's call — the only real bound is the tool-round budget it is told about
  * in every tool result. What is pinned is behaviour, not allowance: ids are
  * stable per reply (`q1` a search, `s1…` a candidate, `img1…` an image the
- * model has actually read) and paging never repeats a picture.
+ * model has actually read, `g1…` a picture it drew) and paging never repeats a
+ * picture.
+ *
+ * Drawing is the one exception: a picture is a model call of its own, so a
+ * reply may draw at most MAX_GENERATED_IMAGES of them (see the design doc
+ * 2026-1104-1820). A failed draw does not use one up.
  *
  * Thumbnail windows are deliberately lopsided: only the reply's first search
  * shows three pictures, every later search shows whatever is still unseen.
@@ -20,6 +26,12 @@ import type { SendKind } from '../../services/image-search-service.js';
 export const FIRST_THUMBNAIL_WINDOW = 3;
 /** Candidates one search keeps */
 export const MAX_SEARCH_CANDIDATES = 8;
+/**
+ * Pictures one reply may draw. Each one is a model call of 10-20s, and the
+ * model is expected to compare them and send the best, so the cap is about
+ * wall clock, not tokens.
+ */
+export const MAX_GENERATED_IMAGES = 5;
 
 export interface SearchCandidate {
     /** `s1`, `s2`, … across every search of this reply */
@@ -66,6 +78,18 @@ export interface FetchedImage {
     readonly candidateId?: string;
 }
 
+/**
+ * A picture generate_image drew in this reply. It is not delivered on its own:
+ * the model looks at it, may keep editing it, and send_image posts the one it
+ * picks.
+ */
+export interface GeneratedImage {
+    /** `g1`, … */
+    readonly id: string;
+    readonly data: Buffer;
+    readonly mimeType: SniffedMediaMime;
+}
+
 /** One attachment per reply: an image, a sticker or a file */
 export const ONE_ATTACHMENT_PER_REPLY =
     '这条回复已经有一个附件（图片/贴纸/文件），每条回复只能发一个。';
@@ -87,11 +111,13 @@ export interface ReplyMediaState {
     readonly searches: Map<string, SearchSet>;
     readonly candidates: Map<string, SearchCandidate>;
     readonly fetched: Map<string, FetchedImage>;
+    /** `g1`, …: pictures this reply has drawn and not sent yet */
+    readonly generated: Map<string, GeneratedImage>;
     /** `st1`, … → pack index of a sticker the model has previewed */
     readonly fetchedStickers: Map<string, number>;
     /** Thumbnails attached so far; only the first window of the reply is small */
     thumbnailCount: number;
-    /** Set by the first image or sticker this reply will deliver */
+    /** Set by the image this reply will deliver */
     hasReplyImage: boolean;
     /** Set by the sticker this reply will deliver */
     hasReplySticker: boolean;
@@ -105,6 +131,7 @@ export const createReplyMediaState = (): ReplyMediaState => ({
     searches: new Map(),
     candidates: new Map(),
     fetched: new Map(),
+    generated: new Map(),
     fetchedStickers: new Map(),
     thumbnailCount: 0,
     hasReplyImage: false,
@@ -134,6 +161,12 @@ export const allocateCandidateIds = (state: ReplyMediaState, count: number): str
 };
 
 export const nextFetchedImageId = (state: ReplyMediaState): string => `img${state.fetched.size + 1}`;
+
+/** `g1`, `g2`, …: only successful draws take a number */
+export const nextGeneratedImageId = (state: ReplyMediaState): string => `g${state.generated.size + 1}`;
+
+/** The ids of the pictures drawn so far, as the model reads them: `g1 g2` */
+export const generatedImageIds = (state: ReplyMediaState): string[] => [...state.generated.keys()];
 
 export const nextFetchedStickerId = (state: ReplyMediaState): string => `st${state.fetchedStickers.size + 1}`;
 

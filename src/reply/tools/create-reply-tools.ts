@@ -4,8 +4,9 @@
  * for the same model and chat.
  *
  * All media tools of one reply share a single ReplyMediaState: the ids
- * search_images hands out are the ones fetch_image and send_image read, and the
- * one-image-per-reply flag lives there too.
+ * search_images hands out are the ones fetch_image, send_image and
+ * generate_image read, the drawn pictures wait there as g1…, and the
+ * one-attachment-per-reply flag lives there too.
  */
 import { getModelCapabilities } from '../../ai/platform-factory.js';
 import { buildMcpToolHandlers } from '../../ai/tools/mcp-tool-handlers.js';
@@ -105,9 +106,7 @@ export const createReplyTools = (
                   }),
               ]
             : []),
-        ...(availability.imageSearch
-            ? [createSendImageTool({ state: mediaState, context })]
-            : []),
+        ...(availability.sendImage ? [createSendImageTool({ state: mediaState, context })] : []),
         ...(availability.sticker
             ? [
                   createSendStickerTool({

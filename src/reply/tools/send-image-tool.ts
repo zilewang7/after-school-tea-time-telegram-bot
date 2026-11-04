@@ -42,14 +42,17 @@ import { SEND_IMAGE_TOOL_NAME } from './tool-names.js';
 
 const DESCRIPTION =
     '将一张已有图片发送到聊天（附于当前回复末尾，每条回复最多附带一张图片或贴纸）。' +
-    '支持传入 search_id（搜索候选编号）、image_id（fetch_image 已读图片编号）、' +
-    'message（上下文消息编号 #N）或 url（http(s) 图片直链）。GIF 候选将作为动图发送。';
+    '支持传入 image_id（generate_image 本次生成的 g1、fetch_image 已读的 img1）、' +
+    'search_id（搜索候选编号）、message（上下文消息编号 #N）或 url（http(s) 图片直链）。GIF 候选将作为动图发送。';
 
 const INPUT_SCHEMA = {
     type: 'object',
     properties: {
         search_id: { type: 'string', description: "搜索结果里的候选编号，形如 's3'" },
-        image_id: { type: 'string', description: "fetch_image 读过的图编号，形如 'img1'" },
+        image_id: {
+            type: 'string',
+            description: "图片编号：generate_image 本次生成的 g1，或 fetch_image 读过的 img1",
+        },
         message: {
             type: 'integer',
             minimum: 1,
@@ -101,6 +104,8 @@ type ResolvedBytes =
           readonly note?: string;
           readonly candidateId?: string;
           readonly imageId?: string;
+          /** `g1`: a picture this reply drew and has not sent */
+          readonly generatedId?: string;
           readonly contextNumber?: number;
       })
     | { readonly ok: false; readonly error: string };
@@ -184,6 +189,18 @@ export const createSendImageTool = (options: SendImageToolOptions): ToolHandler 
         readonly url: string | undefined;
     }): Promise<ResolvedBytes> => {
         if (args.imageId !== undefined) {
+            // A picture the model drew in this reply, or one fetch_image read
+            const drawn = state.generated.get(args.imageId);
+            if (drawn) {
+                return {
+                    ok: true,
+                    data: drawn.data,
+                    mimeType: drawn.mimeType,
+                    still: { data: drawn.data, mimeType: drawn.mimeType },
+                    sourcePage: '',
+                    generatedId: drawn.id,
+                };
+            }
             const existing = state.fetched.get(args.imageId);
             if (!existing) return { ok: false, error: mediaToolErrors.unknownFetched(args.imageId) };
             return {
@@ -255,12 +272,14 @@ export const createSendImageTool = (options: SendImageToolOptions): ToolHandler 
             const label =
                 resolved.candidateId ??
                 resolved.imageId ??
+                resolved.generatedId ??
                 (resolved.contextNumber === undefined ? 'url' : `#${resolved.contextNumber}`);
 
             return {
                 content: formatSendResult({
                     ...(resolved.candidateId === undefined ? {} : { candidateId: resolved.candidateId }),
                     ...(resolved.imageId === undefined ? {} : { imageId: resolved.imageId }),
+                    ...(resolved.generatedId === undefined ? {} : { generatedId: resolved.generatedId }),
                     ...(resolved.contextNumber === undefined
                         ? {}
                         : { contextNumber: resolved.contextNumber }),
@@ -276,7 +295,9 @@ export const createSendImageTool = (options: SendImageToolOptions): ToolHandler 
                         ...(args.caption ? { caption: args.caption } : {}),
                     },
                 ],
-                ...(resolved.imageId === undefined && resolved.contextNumber === undefined
+                ...(resolved.imageId === undefined &&
+                resolved.generatedId === undefined &&
+                resolved.contextNumber === undefined
                     ? {
                           modelImages: [
                               {

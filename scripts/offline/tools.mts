@@ -1060,6 +1060,14 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
             expect(!smsOff.sms && smsOff.image, 'DISABLED_TOOLS=send_sms_to_owner leaves the image tool');
             const imageOff = availableWith({ DISABLED_TOOLS: 'generate_image' });
             expect(imageOff.sms && !imageOff.image, 'DISABLED_TOOLS=generate_image leaves SMS');
+            // A drawing is delivered by send_image, so the two stand or fall together
+            const sendOff = availableWith({ DISABLED_TOOLS: 'send_image' });
+            expect(!sendOff.image && !sendOff.sendImage, 'without send_image there is nowhere to deliver a drawing');
+            const searchOff = availableWith({ IMAGE_TOOLS: '0' });
+            expect(
+                !searchOff.imageSearch && searchOff.image && searchOff.sendImage,
+                'IMAGE_TOOLS=0 keeps drawing and the send_image that delivers it'
+            );
 
             process.env.TEST_INSTANCE = '1';
             try {
@@ -1116,10 +1124,10 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
             const image = first.tools.definitions.find((definition) => definition.name === 'generate_image');
             const imageSchema = asRecord(image?.inputSchema);
             expect(
-                json(imageSchema.required) === '["prompt","caption"]' &&
+                json(imageSchema.required) === '["prompt"]' &&
                     Object.keys(asRecord(imageSchema.properties)).join(',') ===
-                        'prompt,caption,references,web_references,model,aspect_ratio',
-                'generate_image requires prompt and caption'
+                        'prompt,references,web_references,model,aspect_ratio',
+                'generate_image requires the prompt alone (the caption belongs to send_image)'
             );
             expect(
                 first.tools.statusOf('generate_image').text === '🎨 正在画图…' &&

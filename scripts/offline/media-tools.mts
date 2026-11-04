@@ -222,7 +222,7 @@ const cases = [
         },
     },
     {
-        name: 'one reply gets one picture, shared by send_image and generate_image',
+        name: 'one reply gets one picture: after send_image a drawing has nowhere to go',
         body: async (): Promise<void> => {
             const state = createReplyMediaState();
             const tool = searchToolWith(state, searchStub());
@@ -270,7 +270,7 @@ const cases = [
                     },
                 }
             );
-            const drawing = await draw.execute({ prompt: '一只狗', caption: '' }, AbortSignal.abort());
+            const drawing = await draw.execute({ prompt: '一只狗' }, AbortSignal.abort());
             expect(drawing.isError && drawing.content.includes('已经有一个附件'), 'drawing is refused too');
         },
     },

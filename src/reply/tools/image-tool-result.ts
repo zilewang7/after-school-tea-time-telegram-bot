@@ -1,21 +1,29 @@
 /**
- * What generate_image tells the model, and what its success adds to the reply.
+ * What generate_image tells the model, and the picture it hands back to it.
+ *
+ * A drawing is not delivered: it is registered as `g1`, `g2`, … in the reply's
+ * media state and replayed to the model, which compares the versions and sends
+ * the one it picks with send_image. See docs/2026-1104-1820.
  */
 import { match } from 'ts-pattern';
 import { IMAGE_GENERATION_TIMEOUT_MS } from '../../ai/image-generation/generate-image.js';
-import type { GeneratedImage } from '../../ai/image-generation/drain-image-stream.js';
 import type { ImageGenerationFailure } from '../../ai/image-generation/image-generation-failure.js';
 import type { ToolResult } from '../../ai/tools/tool-types.js';
 import type { GroundingCitation, GroundingData } from '../../ai/types.js';
 import type { GenerateImageArgs } from './image-tool-args.js';
+import { MAX_GENERATED_IMAGES, type GeneratedImage } from './reply-media-state.js';
 import { GENERATE_IMAGE_TOOL_NAME } from './tool-names.js';
-
-const IMAGE_READY = '图片已生成，会带着配文附在你这条回复后面发出。';
 
 /** The image model's own words are quoted, never dumped whole */
 const MODEL_TEXT_MAX_CHARS = 500;
 /** Prompt excerpt on the Tools block line */
 const RECORD_PROMPT_CHARS = 40;
+
+/** `PNG`, `JPEG`: the model reads this far more easily than a mime type */
+const mimeLabel = (mimeType: string): string => mimeType.replace(/^image\//, '').toUpperCase();
+
+const sizeLabel = (image: GeneratedImage): string =>
+    `${mimeLabel(image.mimeType)}，${Math.max(1, Math.round(image.data.length / 1024))}KB`;
 
 /** Cut by code points, so an emoji is never split in half */
 const excerpt = (text: string, maxChars: number): string => Array.from(text).slice(0, maxChars).join('');
@@ -61,20 +69,33 @@ const imageCitations = (grounding: GroundingData | null): GroundingCitation[] =>
 export const imageToolSuccess = (
     image: GeneratedImage,
     args: GenerateImageArgs,
+    /** Draws this reply still has after this one */
+    remaining: number,
     grounding: GroundingData | null = null
 ): ToolResult => {
     const promptLine = args.prompt.replace(/\s+/g, ' ').trim();
     const imageSearchQueries = grounding?.imageSearchQueries ?? [];
     // The Tools line names the model only when it is not the default one
     const toolLabel = args.model === 'gpt' ? `${GENERATE_IMAGE_TOOL_NAME}(gpt)` : GENERATE_IMAGE_TOOL_NAME;
+    const size = sizeLabel(image);
+    const id = image.id;
     return {
-        content: IMAGE_READY,
+        content: [
+            `已生成 ${id}（${size}），本条回复还没有发出图片。` +
+                `要发就用 send_image(image_id='${id}', caption='…')；要继续改，在 web_references 里用 image_id='${id}'。`,
+            remaining > 0
+                ? `本条回复最多画 ${MAX_GENERATED_IMAGES} 张，还剩 ${remaining} 张。`
+                : `本条回复已经画满 ${MAX_GENERATED_IMAGES} 张，不能再画；用 send_image 选一张发出。`,
+        ].join('\n'),
         isError: false,
-        images: [
+        images: [],
+        // The model has to see what it drew, or it compares nothing and
+        // describes a picture the chat never received (live 1114408).
+        modelImages: [
             {
                 data: image.data,
                 mimeType: image.mimeType,
-                ...(args.caption ? { caption: args.caption } : {}),
+                caption: `${id} · 生成的图（${size}）`,
             },
         ],
         record: {

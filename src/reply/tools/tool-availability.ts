@@ -40,10 +40,12 @@ export interface ToolAvailability {
     readonly isMcpToolEnabled: (toolName: string) => boolean;
     /** send_sms_to_owner is offered */
     readonly sms: boolean;
-    /** generate_image is offered */
+    /** generate_image is offered (it delivers through send_image) */
     readonly image: boolean;
-    /** search_images and send_image are offered (text-only models may still pick and send) */
+    /** search_images is offered (text-only models may still pick and send) */
     readonly imageSearch: boolean;
+    /** send_image is offered: the delivery path of a searched or drawn picture */
+    readonly sendImage: boolean;
     /** search_by_image is offered */
     readonly imageReverseSearch: boolean;
     /** fetch_image is offered: only models that can see what they read */
@@ -62,6 +64,7 @@ const NO_TOOLS: ToolAvailability = {
     sms: false,
     image: false,
     imageSearch: false,
+    sendImage: false,
     imageReverseSearch: false,
     imageFetch: false,
     sticker: false,
@@ -105,13 +108,15 @@ export const resolveToolAvailability = (
         isEnabled(SEARCH_HISTORY_TOOL_NAME) &&
         isEnabled(READ_HISTORY_TOOL_NAME);
 
-    // Media tools follow generate_image's scope: same chats, same switch
-    const imageSearch =
-        chatAllowed &&
-        config.imageTools &&
-        config.imageSearchUrl !== '' &&
-        isEnabled(SEARCH_IMAGES_TOOL_NAME) &&
-        isEnabled(SEND_IMAGE_TOOL_NAME);
+    // Media tools follow generate_image's scope: same chats, same switch.
+    // send_image is the only way a picture reaches the chat — a drawn one
+    // included — so it is offered whenever searching or drawing is.
+    const wantsSendImage = chatAllowed && isEnabled(SEND_IMAGE_TOOL_NAME);
+    const wantsSearchImages =
+        chatAllowed && config.imageTools && config.imageSearchUrl !== '' && isEnabled(SEARCH_IMAGES_TOOL_NAME);
+    const wantsGenerateImage = chatAllowed && isEnabled(GENERATE_IMAGE_TOOL_NAME);
+    const imageSearch = wantsSearchImages && wantsSendImage;
+    const image = wantsGenerateImage && wantsSendImage;
 
     return {
         mcpServers,
@@ -121,8 +126,9 @@ export const resolveToolAvailability = (
             config.ownerSmsUrl !== '' &&
             smsInstanceAllowed &&
             isEnabled(SEND_SMS_TOOL_NAME),
-        image: chatAllowed && isEnabled(GENERATE_IMAGE_TOOL_NAME),
+        image,
         imageSearch,
+        sendImage: wantsSendImage && (image || imageSearch),
         imageReverseSearch:
             chatAllowed &&
             config.imageTools &&

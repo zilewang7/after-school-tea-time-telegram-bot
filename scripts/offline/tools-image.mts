@@ -83,7 +83,6 @@ const STICKER_WEBP_PATH = join(mkdtempSync(join(tmpdir(), 'k-on-sticker-image-')
 writeFileSync(STICKER_WEBP_PATH, WEBP_BYTES);
 const GIF_BYTES = Buffer.from('GIF89a offline gif');
 
-const IMAGE_READY = '图片已生成，会带着配文附在你这条回复后面发出。';
 const BUSY = '生图服务繁忙（429），可以稍后重试或换个说法。';
 
 const asRecord = (value: unknown): Record<string, unknown> =>
@@ -503,22 +502,21 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
     {
         name: 'generate_image arguments are checked against the schema',
         body: async () => {
-            const minimal = parseGenerateImageArgs({ prompt: '  一只猫  ', caption: '' });
+            const minimal = parseGenerateImageArgs({ prompt: '  一只猫  ' });
             expect(
                 minimal.ok &&
                     minimal.args.prompt === '一只猫' &&
-                    minimal.args.caption === '' &&
                     minimal.args.references.length === 0 &&
                     minimal.args.aspectRatio === undefined &&
                     minimal.args.model === 'banana',
-                'prompt and an empty caption are enough, and nano-banana draws by default'
+                'a prompt alone is enough, and nano-banana draws by default'
             );
 
-            const gpt = parseGenerateImageArgs({ prompt: '猫', caption: '', model: 'GPT' });
+            const gpt = parseGenerateImageArgs({ prompt: '猫', model: 'GPT' });
             expect(gpt.ok && gpt.args.model === 'gpt', 'gpt can be asked for, case-insensitively');
-            const nullModel = parseGenerateImageArgs({ prompt: '猫', caption: '', model: null });
+            const nullModel = parseGenerateImageArgs({ prompt: '猫', model: null });
             expect(nullModel.ok && nullModel.args.model === 'banana', 'a null model counts as absent');
-            const unknownModel = parseGenerateImageArgs({ prompt: '猫', caption: '', model: 'dall-e' });
+            const unknownModel = parseGenerateImageArgs({ prompt: '猫', model: 'dall-e' });
             expect(
                 !unknownModel.ok && unknownModel.error.includes('model 只能是 banana、gpt 之一'),
                 'any other model is refused with the two that exist'
@@ -526,7 +524,6 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
 
             const full = parseGenerateImageArgs({
                 prompt: '把猫换成狗',
-                caption: '换好了',
                 references: [{ message: 3 }, { message: 1, image: 2 }],
                 aspect_ratio: '16:9',
             });
@@ -537,7 +534,7 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
                 'references and the aspect ratio are read'
             );
 
-            const nulls = parseGenerateImageArgs({ prompt: '猫', caption: '猫', references: null, aspect_ratio: null });
+            const nulls = parseGenerateImageArgs({ prompt: '猫', references: null, aspect_ratio: null });
             expect(nulls.ok && nulls.args.references.length === 0 && nulls.args.aspectRatio === undefined, 'null optional fields count as absent');
 
             const broken = parseGenerateImageArgs({
@@ -549,7 +546,6 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
             expect(
                 problems.startsWith('参数有误：') &&
                     problems.includes('prompt 必须是非空字符串') &&
-                    problems.includes('caption 必须是字符串') &&
                     problems.includes('references[0].message 必须是正整数') &&
                     problems.includes('references[1].message 必须是正整数') &&
                     problems.includes('references[2].image 必须是从 1 开始的正整数') &&
@@ -557,12 +553,16 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
                     problems.includes('aspect_ratio 只能是 1:1、2:3'),
                 `every problem is listed at once (got ${json(problems)})`
             );
-            const notArray = parseGenerateImageArgs({ prompt: '猫', caption: '', references: { message: 1 } });
+            const notArray = parseGenerateImageArgs({ prompt: '猫', references: { message: 1 } });
             expect(!notArray.ok && notArray.error.includes('references 必须是数组'), 'references must be an array');
 
+            // The caption moved to send_image; a call still sending one is not punished
+            const strayCaption = parseGenerateImageArgs({ prompt: '猫', caption: '旧参数' });
+            expect(strayCaption.ok, 'a caption left over from the old schema is ignored');
+
             const model = stubImageModel();
-            const result = await runTool(toolFor(NO_CONTEXT, model), { prompt: '猫' });
-            expect(result.isError && result.content.includes('caption 必须是字符串'), 'the tool answers bad arguments with an error');
+            const result = await runTool(toolFor(NO_CONTEXT, model), { prompt: '   ' });
+            expect(result.isError && result.content.includes('prompt 必须是非空字符串'), 'the tool answers bad arguments with an error');
             expect(model.requests.length === 0, 'and never reaches the image model');
         },
     },
@@ -577,7 +577,7 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
 
             const generate = async (args: Record<string, unknown>) => {
                 const model = stubImageModel();
-                const result = await runTool(toolFor(tree.contextIndex, model), { prompt: '拼图', caption: '', ...args });
+                const result = await runTool(toolFor(tree.contextIndex, model), { prompt: '拼图', ...args });
                 return { result, request: model.requests[0] };
             };
 
@@ -631,7 +631,6 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
         body: async () => {
             const parsed = parseGenerateImageArgs({
                 prompt: '照这个画',
-                caption: '',
                 web_references: [{ sticker: 'st1' }],
             });
             expect(
@@ -640,7 +639,6 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
             );
             const mixed = parseGenerateImageArgs({
                 prompt: '照这个画',
-                caption: '',
                 web_references: [{ search_id: 's1', sticker: 'st1' }],
             });
             expect(!mixed.ok && mixed.error.includes('必须传且只传一个'), 'one reference carries exactly one id');
@@ -653,7 +651,6 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
             const model = stubImageModel();
             const result = await runTool(toolFor(NO_CONTEXT, model, undefined, { state: previewed, sticker }), {
                 prompt: '照这个画',
-                caption: '',
                 web_references: [{ sticker: 'st1' }],
             });
             expect(!result.isError, `a previewed sticker is accepted (got ${json(result.content)})`);
@@ -675,7 +672,6 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
             const indexModel = stubImageModel();
             await runTool(toolFor(NO_CONTEXT, indexModel, undefined, { state: byIndex, sticker }), {
                 prompt: '照这个画',
-                caption: '',
                 web_references: [{ sticker: '07' }, { sticker: '7' }],
             });
             expect(
@@ -687,7 +683,6 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
             const unknownModel = stubImageModel();
             const refused = await runTool(toolFor(NO_CONTEXT, unknownModel, undefined, { state: unknown, sticker }), {
                 prompt: '照这个画',
-                caption: '',
                 web_references: [{ sticker: 'st9' }],
             });
             expect(
@@ -716,7 +711,7 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
         name: 'the request carries the image model, one attempt and the output knobs',
         body: async () => {
             const model = stubImageModel();
-            await runTool(toolFor(tree.contextIndex, model), { prompt: '画一只猫', caption: '' });
+            await runTool(toolFor(tree.contextIndex, model), { prompt: '画一只猫' });
             const fromScratch = model.requests[0]?.config;
             expect(
                 fromScratch?.model === GEMINI_IMAGE_MODEL &&
@@ -733,14 +728,13 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
             expect(fromScratch?.signal instanceof AbortSignal && !fromScratch.signal.aborted, 'a live signal rides along');
 
             const editModel = stubImageModel();
-            await runTool(toolFor(tree.contextIndex, editModel), { prompt: '改成狗', caption: '', references: [{ message: 2 }] });
+            await runTool(toolFor(tree.contextIndex, editModel), { prompt: '改成狗', references: [{ message: 2 }] });
             const edit = editModel.requests[0]?.config.imageOutput;
             expect(edit !== undefined && !('aspectRatio' in edit) && edit.imageSize === '1K', 'an edit follows the source shape');
 
             const wideModel = stubImageModel();
             await runTool(toolFor(tree.contextIndex, wideModel), {
                 prompt: '改成狗',
-                caption: '',
                 references: [{ message: 2 }],
                 aspect_ratio: '16:9',
             });
@@ -751,7 +745,7 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
                 stop.abort();
                 return config.signal?.aborted ? new Error('Aborted') : imageAnswer(PNG_BYTES);
             });
-            const stopped = await runTool(toolFor(tree.contextIndex, stoppedModel, stop.signal), { prompt: '猫', caption: '' });
+            const stopped = await runTool(toolFor(tree.contextIndex, stoppedModel, stop.signal), { prompt: '猫' });
             expect(
                 stopped.isError && stopped.content === '这条回复已被停止，图片没有生成。',
                 `the reply’s stop reaches the request (got ${json(stopped.content)})`
@@ -764,7 +758,6 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
             const model = stubImageModel();
             const drawn = await runTool(toolFor(tree.contextIndex, model), {
                 prompt: '画一只猫',
-                caption: '猫',
                 model: 'gpt',
             });
             const gpt = model.requests[0]?.config;
@@ -776,8 +769,11 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
                 `gpt: the OpenAI image model, no Gemini output knobs (got ${json({ ...gpt, signal: undefined })})`
             );
             expect(
-                !drawn.isError && drawn.images.length === 1 && drawn.images[0]?.data.equals(PNG_BYTES) === true,
-                'the picture comes back like any other'
+                !drawn.isError &&
+                    drawn.images.length === 0 &&
+                    drawn.modelImages?.length === 1 &&
+                    drawn.modelImages[0]?.data.equals(PNG_BYTES) === true,
+                'a gpt drawing also stays in the reply, shown to the model only'
             );
             expect(
                 json(drawn.record?.searchQueries) === json(['generate_image(gpt): 画一只猫']),
@@ -788,7 +784,6 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
             const wideModel = stubImageModel();
             await runTool(toolFor(tree.contextIndex, wideModel), {
                 prompt: '改成狗',
-                caption: '',
                 references: [{ message: 2 }],
                 aspect_ratio: '16:9',
                 model: 'gpt',
@@ -801,7 +796,6 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
             const explicitBanana = stubImageModel();
             const banana = await runTool(toolFor(NO_CONTEXT, explicitBanana), {
                 prompt: '猫',
-                caption: '',
                 model: 'banana',
             });
             expect(
@@ -826,7 +820,7 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
             const model = stubImageModel();
             const tool = toolFor(tree.contextIndex, model);
 
-            const missing = await runTool(tool, { prompt: '猫', caption: '', references: [{ message: 9 }, { message: 3 }] });
+            const missing = await runTool(tool, { prompt: '猫', references: [{ message: 9 }, { message: 3 }] });
             expect(
                 missing.isError &&
                     missing.content.includes('#9 不在当前上下文里') &&
@@ -835,7 +829,7 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
                 `each problem plus the numbers with images (got ${json(missing.content)})`
             );
 
-            const pastAlbum = await runTool(tool, { prompt: '猫', caption: '', references: [{ message: 1, image: 3 }] });
+            const pastAlbum = await runTool(tool, { prompt: '猫', references: [{ message: 1, image: 3 }] });
             expect(pastAlbum.isError && pastAlbum.content.includes('#1 只有 2 张图，没有第 3 张'), 'an index past the album');
             expect(model.requests.length === 0, 'none of them reaches the image model');
 
@@ -917,7 +911,7 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
 
             const generate = async (args: Record<string, unknown>) => {
                 const model = stubImageModel();
-                const result = await runTool(toolFor(built.contextIndex, model), { prompt: '改成黑白', caption: '', ...args });
+                const result = await runTool(toolFor(built.contextIndex, model), { prompt: '改成黑白', ...args });
                 return { result, request: model.requests[0] };
             };
 
@@ -962,42 +956,135 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
         },
     },
     {
-        name: 'one reply gets one image: a second successful call is refused',
+        name: 'a reply draws several versions, then sends the one it picks',
         body: async () => {
+            const state = createReplyMediaState();
             const model = stubImageModel();
-            const tool = toolFor(NO_CONTEXT, model);
+            const tool = toolFor(NO_CONTEXT, model, undefined, { state });
             const longPrompt = '一只戴着红色帽子的橘猫\n坐在窗台上看雪，窗外是傍晚的街道和路灯，远处有几个行人撑着伞走过';
 
-            const first = await runTool(tool, { prompt: longPrompt, caption: '雪天的猫' });
-            const image = first.images[0];
-            expect(!first.isError && first.content === IMAGE_READY, `the first image is generated (got ${json(first.content)})`);
+            const first = await runTool(tool, { prompt: longPrompt });
             expect(
-                first.images.length === 1 && image?.data.equals(PNG_BYTES) === true && image.mimeType === 'image/png' && image.caption === '雪天的猫',
-                'the result carries the image, its real mime and the caption'
+                !first.isError &&
+                    first.content.startsWith('已生成 g1（PNG，') &&
+                    first.content.includes('本条回复还没有发出图片') &&
+                    first.content.includes("send_image(image_id='g1'") &&
+                    first.content.includes("web_references 里用 image_id='g1'") &&
+                    first.images.length === 0,
+                `the first drawing stays inside the reply (got ${json(first.content)})`
             );
+            expect(
+                first.modelImages?.length === 1 &&
+                    first.modelImages[0]?.data.equals(PNG_BYTES) === true &&
+                    first.modelImages[0].mimeType === 'image/png' &&
+                    first.modelImages[0].caption.startsWith('g1 ·'),
+                `the model is shown the very picture it drew (got ${json(first.modelImages?.map((image) => image.caption))})`
+            );
+            expect(state.generated.get('g1')?.data.equals(PNG_BYTES) === true, 'and it is kept under g1');
+
             const expectedLine = `generate_image: ${Array.from(longPrompt.replace(/\s+/g, ' ')).slice(0, 40).join('')}`;
             expect(
                 first.record?.provider === 'mcp' && json(first.record.searchQueries) === json([expectedLine]) && json(first.record.citations) === '[]',
                 `the Tools line shows the prompt's first 40 chars on one line (got ${json(first.record?.searchQueries)})`
             );
 
-            const second = await runTool(tool, { prompt: '再画一张', caption: '' });
-            expect(second.isError && second.content === ONE_ATTACHMENT_PER_REPLY, `the second is refused (got ${json(second.content)})`);
-            expect(model.requests.length === 1, 'without a second request');
+            const second = await runTool(tool, { prompt: '再画一张' });
+            expect(!second.isError && second.content.startsWith('已生成 g2（'), 'a second version gets g2');
+            expect(state.generated.size === 2 && model.requests.length === 2, 'both versions wait in the reply');
 
-            const uncaptioned = await runTool(toolFor(NO_CONTEXT, stubImageModel()), { prompt: '猫', caption: '  ' });
-            expect(uncaptioned.images[0]?.caption === undefined, 'an empty caption leaves the image without one');
+            // The caption belongs to send_image now: the model picks and captions
+            const send = createSendImageTool({
+                state,
+                context: { chatId: OFFLINE_CHAT_ID, contextIndex: NO_CONTEXT, signal: new AbortController().signal },
+                dependencies: { fetchImage: noNetworkFetch, loadMessageImages },
+            });
+            const sent = await runTool(send, { image_id: 'g2', caption: '雪天的猫' });
+            expect(
+                !sent.isError &&
+                    sent.images.length === 1 &&
+                    sent.images[0]?.data.equals(PNG_BYTES) === true &&
+                    sent.images[0].caption === '雪天的猫',
+                `the picked version is what goes out, with the caption send_image got (got ${json(sent.content)})`
+            );
+            expect(sent.content.includes('本次生成的图 g2'), 'the result names the version it sent');
+            expect(!sent.modelImages || sent.modelImages.length === 0, 'no echo: the model has just looked at it');
 
-            // A failed attempt does not use up the reply's image
+            const again = await runTool(tool, { prompt: '再改一版' });
+            expect(again.isError && again.content === ONE_ATTACHMENT_PER_REPLY, 'after sending, drawing has nowhere to go');
+            expect(model.requests.length === 2, 'and the image model is not asked again');
+            const resend = await runTool(send, { image_id: 'g1' });
+            expect(resend.isError && resend.content === ONE_ATTACHMENT_PER_REPLY, 'a second send is refused too');
+        },
+    },
+    {
+        name: 'a reply draws at most five versions, and a drawn one can be edited in place',
+        body: async () => {
+            const state = createReplyMediaState();
+            const model = stubImageModel();
+            const tool = toolFor(NO_CONTEXT, model, undefined, { state });
+
+            for (let index = 1; index <= 5; index += 1) {
+                const drawn = await runTool(tool, { prompt: `第 ${index} 版` });
+                expect(
+                    !drawn.isError && drawn.content.startsWith(`已生成 g${index}（`),
+                    `drawing ${index} gets g${index} (got ${json(drawn.content)})`
+                );
+            }
+            expect(model.requests.length === 5, 'five calls reached the image model');
+
+            const sixth = await runTool(tool, { prompt: '第六版' });
+            expect(
+                sixth.isError &&
+                    sixth.content.includes('已经画了 5 张（g1 g2 g3 g4 g5）') &&
+                    sixth.content.includes("send_image(image_id='gN')"),
+                `a sixth drawing is refused with the versions that exist (got ${json(sixth.content)})`
+            );
+            expect(model.requests.length === 5, 'and never reaches the image model');
+
+            // Editing a drawn version: g1 goes back to the image model as the reference
+            const editedState = createReplyMediaState();
+            let draws = 0;
+            const editedModel = stubImageModel(() => {
+                draws += 1;
+                return imageAnswer(draws === 1 ? PNG_BYTES : JPEG_BYTES);
+            });
+            const editedTool = toolFor(NO_CONTEXT, editedModel, undefined, { state: editedState });
+            const base = await runTool(editedTool, { prompt: '第一版' });
+            expect(base.modelImages?.[0]?.data.equals(PNG_BYTES) === true, 'g1 is the first drawing');
+            const edit = await runTool(editedTool, {
+                prompt: '把钟楼补上',
+                web_references: [{ image_id: 'g1' }],
+            });
+            expect(
+                !edit.isError && edit.content.startsWith('已生成 g2（JPEG，'),
+                `the edit is a new version, g2 (got ${json(edit.content)})`
+            );
+            expect(
+                imagesOf(editedModel.requests[1]).length === 1 &&
+                    imagesOf(editedModel.requests[1])[0]?.equals(PNG_BYTES) === true,
+                'the reference sent to the image model is the drawn picture itself'
+            );
+
+            const unknown = await runTool(editedTool, { prompt: '再改', web_references: [{ image_id: 'img9' }] });
+            expect(unknown.isError && unknown.content.includes('img9 没有读过'), 'an id nobody has is refused');
+        },
+    },
+    {
+        name: 'a failed drawing does not use up a version number',
+        body: async () => {
             let attempts = 0;
             const flaky = stubImageModel(() => {
                 attempts += 1;
                 return attempts === 1 ? Object.assign(new Error('got status: 429 Too Many Requests'), { status: 429 }) : imageAnswer(PNG_BYTES);
             });
-            const flakyTool = toolFor(NO_CONTEXT, flaky);
-            const busy = await runTool(flakyTool, { prompt: '猫', caption: '' });
-            const retried = await runTool(flakyTool, { prompt: '猫', caption: '' });
-            expect(busy.content === BUSY && !retried.isError, 'after a 429 the model may try again in the same reply');
+            const tool = toolFor(NO_CONTEXT, flaky);
+            const busy = await runTool(tool, { prompt: '猫' });
+            const retried = await runTool(tool, { prompt: '猫' });
+            expect(busy.isError && busy.content === BUSY, 'a 429 is worded for the model');
+            expect(
+                !retried.isError && retried.content.startsWith('已生成 g1（'),
+                `the retry gets g1: a failure takes no number (got ${json(retried.content)})`
+            );
         },
     },
     {
@@ -1018,7 +1105,7 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
             expect(json(drained.rawResponse) === json({ candidates: [{ finishReason: 'STOP' }] }), 'the closing raw response is kept');
 
             const wordingFor = async (answer: ImageModelAnswer): Promise<string> =>
-                (await runTool(toolFor(NO_CONTEXT, stubImageModel(() => answer)), { prompt: '猫', caption: '' })).content;
+                (await runTool(toolFor(NO_CONTEXT, stubImageModel(() => answer)), { prompt: '猫' })).content;
 
             expect((await wordingFor(Object.assign(new Error('quota'), { status: 429 }))) === BUSY, 'HTTP 429 is busy');
             expect((await wordingFor(new Error('{"error":{"code":429,"status":"RESOURCE_EXHAUSTED"}}'))) === BUSY, 'RESOURCE_EXHAUSTED is busy');
@@ -1049,7 +1136,7 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
             const logLineFor = async (answer: ImageModelAnswer): Promise<string> => {
                 const tool = toolFor(NO_CONTEXT, stubImageModel(() => answer));
                 const { lines } = await captureConsole(() =>
-                    tool.execute({ prompt: PRIVATE_PROMPT, caption: '' }, new AbortController().signal)
+                    tool.execute({ prompt: PRIVATE_PROMPT }, new AbortController().signal)
                 );
                 return lines.find((line) => line.startsWith('[generate_image]')) ?? '';
             };
@@ -1896,7 +1983,6 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
             });
             const result = await runTool(tool, {
                 prompt: '照着这个画',
-                caption: '',
                 references: [{ message: 9 }],
             });
             expect(!result.isError, `the reference resolves (got ${json(result.content)})`);
