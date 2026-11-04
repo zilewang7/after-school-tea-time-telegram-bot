@@ -1108,7 +1108,7 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
             const names = first.tools.definitions.map((definition) => definition.name);
             expect(
                 names.join(',') ===
-                    'resolve-library-id,generate_image_2,slow_tool,send_sms_to_owner,generate_image,search_images,search_by_image,fetch_image,send_image,send_file',
+                    'resolve-library-id,generate_image_2,slow_tool,send_sms_to_owner,generate_image,search_images,search_by_image,fetch_image,send_image,send_file,list_harness_issues,create_harness_issue',
                 `order, and DISABLED_TOOLS applied per tool by original name (got ${names.join(',')})`
             );
             expect(

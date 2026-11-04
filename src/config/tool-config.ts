@@ -24,6 +24,7 @@
  * - FILE_TOOLS=0: no send_file (the model writing a text file into the chat)
  * - HISTORY_TOOLS=0: no search_history / read_history (luoxu's archive)
  * - HISTORY_CHAT_IDS: chats whose history luoxu archives, comma-separated
+ * - HARNESS_ISSUES=0: no list_harness_issues / create_harness_issue
  */
 import { parseChatIdList } from './chat-id-list.js';
 
@@ -59,6 +60,8 @@ export interface ToolConfig {
     readonly fileTools: boolean;
     /** HISTORY_TOOLS is not 0 */
     readonly historyTools: boolean;
+    /** HARNESS_ISSUES is not 0: the model may record harness friction itself */
+    readonly harnessIssues: boolean;
     /** Chats allowed to search the archive (they must also be indexed by luoxu) */
     readonly historyChatIds: ReadonlySet<number>;
     /** luoxu base URL; empty = no history tools */
@@ -115,6 +118,7 @@ export const readToolConfig = (env: NodeJS.ProcessEnv = process.env): ToolConfig
     stickerTools: env.STICKER_TOOLS !== '0',
     fileTools: env.FILE_TOOLS !== '0',
     historyTools: env.HISTORY_TOOLS !== '0',
+    harnessIssues: env.HARNESS_ISSUES !== '0',
     historyChatIds: new Set(parseChatIdList(env.HISTORY_CHAT_IDS)),
     historyBaseUrl: optionalValue(env.LUOXU_PREVIEW_URL) ?? '',
     owner: readOwner(env),

@@ -20,6 +20,8 @@ import { toLuoxuChannelId } from '../../services/luoxu-preview-service.js';
 import { createFetchImageTool, PRODUCTION_FETCH_DEPENDENCIES } from './fetch-image-tool.js';
 import { createGenerateImageTool } from './generate-image-tool.js';
 import { createHistoryState } from './history-state.js';
+import { createCreateHarnessIssueTool, createListHarnessIssuesTool } from './harness-issue-tool.js';
+import { createHarnessIssueState } from './harness-issue-state.js';
 import { createReadHistoryTool } from './read-history-tool.js';
 import { createReplyMediaState } from './reply-media-state.js';
 import { createSearchByImageTool } from './search-by-image-tool.js';
@@ -52,6 +54,7 @@ export const createReplyTools = (
     const capabilities = getModelCapabilities(model);
     const mediaState = createReplyMediaState();
     const historyState = createHistoryState();
+    const harnessIssueState = createHarnessIssueState();
 
     const handlers: ToolHandler[] = [
         ...buildMcpToolHandlers(availability.mcpServers, RESERVED_TOOL_NAMES, availability.isMcpToolEnabled),
@@ -122,6 +125,12 @@ export const createReplyTools = (
             ? [
                   createSearchHistoryTool(historyOptions(historyState, context, config)),
                   createReadHistoryTool(historyOptions(historyState, context, config)),
+              ]
+            : []),
+        ...(availability.harnessIssues
+            ? [
+                  createListHarnessIssuesTool(),
+                  createCreateHarnessIssueTool({ state: harnessIssueState, chatId: context.chatId }),
               ]
             : []),
     ];

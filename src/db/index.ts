@@ -11,6 +11,7 @@ import { TelegramUser } from "./telegramUserDTO.js";
 import { MessageAttachment } from "./messageAttachmentDTO.js";
 import { CustomEmojiAsset } from "./customEmojiAssetDTO.js";
 import { MessageRevision } from './messageRevisionDTO.js';
+import { HarnessIssue } from './harnessIssueDTO.js';
 import { getBlob } from "../util.js";
 import { addAsyncFileSaveTask, removeAsyncFileSaveTask, findFirstMessageIdByContinuation } from '../state.js';
 import { backfillAnimationMediaKind, runSchemaMigrations } from './schema-migrations.js';
@@ -283,6 +284,7 @@ export {
     MessageAttachment,
     CustomEmojiAsset,
     MessageRevision,
+    HarnessIssue,
     ButtonState,
     type ResponseVersion,
     type StoredFile,

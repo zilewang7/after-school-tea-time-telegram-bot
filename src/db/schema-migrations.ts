@@ -190,6 +190,13 @@ export const runSchemaMigrations = async (): Promise<void> => {
        VALUES ('20261021_tg_message_link_cache', :appliedAt)`,
       { replacements: { appliedAt: new Date().toISOString() }, transaction }
     );
+    // harness_issues is also new: the DTO creates the table at sync time, this
+    // row records the feature. Only people change its status column.
+    await sequelize.query(
+      `INSERT OR IGNORE INTO schema_migrations (name, appliedAt)
+       VALUES ('20261104_harness_issues', :appliedAt)`,
+      { replacements: { appliedAt: new Date().toISOString() }, transaction }
+    );
   });
 };
 

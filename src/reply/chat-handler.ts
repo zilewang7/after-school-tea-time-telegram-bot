@@ -318,6 +318,7 @@ export const handleReply = async (
                 stickerTools: availability.sticker,
                 historyTools: availability.history,
                 fileTools: availability.file,
+                harnessIssues: availability.harnessIssues,
             }),
             ...(openCodeGoSession ? { sessionId: openCodeGoSession } : {}),
             signal,

@@ -33,6 +33,8 @@ declare global {
             HISTORY_TOOLS?: string
             /** Comma-separated chat ids whose history luoxu archives */
             HISTORY_CHAT_IDS?: string
+            /** '0' turns off list_harness_issues / create_harness_issue */
+            HARNESS_ISSUES?: string
             /** '0' leaves Gemini with its built-in search tools only */
             GEMINI_CLIENT_TOOLS?: string
             /** Telegram user id of the owner send_sms_to_owner reaches */

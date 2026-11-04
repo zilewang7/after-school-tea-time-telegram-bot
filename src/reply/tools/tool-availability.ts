@@ -23,6 +23,8 @@ import {
     SEND_STICKER_TOOL_NAME,
     SEARCH_HISTORY_TOOL_NAME,
     READ_HISTORY_TOOL_NAME,
+    LIST_HARNESS_ISSUES_TOOL_NAME,
+    CREATE_HARNESS_ISSUE_TOOL_NAME,
 } from './tool-names.js';
 
 /** What the turn's request carries, as far as tool availability cares */
@@ -56,6 +58,8 @@ export interface ToolAvailability {
     readonly file: boolean;
     /** search_history / read_history are offered (this chat is archived by luoxu) */
     readonly history: boolean;
+    /** list_harness_issues / create_harness_issue are offered */
+    readonly harnessIssues: boolean;
 }
 
 const NO_TOOLS: ToolAvailability = {
@@ -70,6 +74,7 @@ const NO_TOOLS: ToolAvailability = {
     sticker: false,
     file: false,
     history: false,
+    harnessIssues: false,
 };
 
 export const resolveToolAvailability = (
@@ -143,5 +148,12 @@ export const resolveToolAvailability = (
             isEnabled(SEND_STICKER_TOOL_NAME),
         file: chatAllowed && config.fileTools && isEnabled(SEND_FILE_TOOL_NAME),
         history: historyAllowed,
+        // Self-reporting is chat-scoped like the other side-effecting tools: it
+        // writes a row, and the row is about this deployment, not the user.
+        harnessIssues:
+            chatAllowed &&
+            config.harnessIssues &&
+            isEnabled(LIST_HARNESS_ISSUES_TOOL_NAME) &&
+            isEnabled(CREATE_HARNESS_ISSUE_TOOL_NAME),
     };
 };

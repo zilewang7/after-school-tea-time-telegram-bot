@@ -12,6 +12,8 @@ export const SEND_STICKER_TOOL_NAME = 'send_sticker';
 export const SEND_FILE_TOOL_NAME = 'send_file';
 export const SEARCH_HISTORY_TOOL_NAME = 'search_history';
 export const READ_HISTORY_TOOL_NAME = 'read_history';
+export const LIST_HARNESS_ISSUES_TOOL_NAME = 'list_harness_issues';
+export const CREATE_HARNESS_ISSUE_TOOL_NAME = 'create_harness_issue';
 
 /** Built-in names an MCP tool may never take */
 export const RESERVED_TOOL_NAMES: readonly string[] = [
@@ -25,4 +27,6 @@ export const RESERVED_TOOL_NAMES: readonly string[] = [
     SEND_FILE_TOOL_NAME,
     SEARCH_HISTORY_TOOL_NAME,
     READ_HISTORY_TOOL_NAME,
+    LIST_HARNESS_ISSUES_TOOL_NAME,
+    CREATE_HARNESS_ISSUE_TOOL_NAME,
 ];

@@ -92,6 +92,8 @@ export interface CapabilityOptions {
     readonly fileTools: boolean;
     /** search_history / read_history are offered */
     readonly historyTools: boolean;
+    /** list_harness_issues / create_harness_issue are offered */
+    readonly harnessIssues: boolean;
 }
 
 const searchImageLines = (canDraw: boolean): string[] => [
@@ -119,6 +121,9 @@ const FILE_LINE =
 const HISTORY_LINE =
     '- 可以用 `search_history` 检索本聊天的历史归档（关键词 / 时间 / 发言人；含链接预览、Instant View 与图片 OCR 文本），用 `read_history` 读整条原文或某条消息前后的对话';
 
+const HARNESS_ISSUE_LINE =
+    '- 当你准备结束思考时才调用 issue 工具：如果本轮使用 harness 时遇到工具不好用、描述不清、缺能力或格式别扭，先 `list_harness_issues` 查重，再用 `create_harness_issue` 记录；没有就跳过。记录本身不要出现在回复正文里。';
+
 export const buildCapabilitiesSection = (options: CapabilityOptions): string => {
     const lines: string[] = [CAPABILITIES_SECTION];
     const owner = options.smsOwner;
@@ -133,6 +138,7 @@ export const buildCapabilitiesSection = (options: CapabilityOptions): string => 
     if (options.stickerTools) lines.push(stickerLine(options.imageFetch));
     if (options.fileTools) lines.push(FILE_LINE);
     if (options.historyTools) lines.push(HISTORY_LINE);
+    if (options.harnessIssues) lines.push(HARNESS_ISSUE_LINE);
     return lines.join('\n');
 };
 

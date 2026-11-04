@@ -38,6 +38,8 @@ export interface StaticPromptOptions {
     readonly fileTools?: boolean;
     /** search_history / read_history are offered this turn */
     readonly historyTools?: boolean;
+    /** list_harness_issues / create_harness_issue are offered this turn */
+    readonly harnessIssues?: boolean;
 }
 
 export const buildStaticSystemPrompt = (model: string, options: StaticPromptOptions = {}): string => {
@@ -56,6 +58,7 @@ export const buildStaticSystemPrompt = (model: string, options: StaticPromptOpti
             stickerTools: options.stickerTools === true,
             fileTools: options.fileTools === true,
             historyTools: options.historyTools === true,
+            harnessIssues: options.harnessIssues === true,
         }),
         NOTES_SECTION,
     ]
