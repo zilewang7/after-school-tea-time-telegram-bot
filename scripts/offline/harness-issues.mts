@@ -42,7 +42,7 @@ const cases: { name: string; body: () => Promise<void> }[] = [
             expect(created.toolName === 'send_sticker', 'the related tool is stored');
             expect(created.chatId === -100123, 'the reporting chat is stored');
 
-            const open = await listHarnessIssues({ status: 'open' });
+            const { records: open } = await listHarnessIssues({ status: 'open' });
             expect(open.length === 1 && open[0]?.id === created.id, 'the open list returns it');
         },
     },
@@ -55,15 +55,15 @@ const cases: { name: string; body: () => Promise<void> }[] = [
             await HarnessIssue.update({ status: 'fixed' }, { where: { id: first.id } });
             await HarnessIssue.update({ status: 'duplicate' }, { where: { id: second.id } });
 
-            const closed = await listHarnessIssues({ status: 'closed' });
+            const { records: closed } = await listHarnessIssues({ status: 'closed' });
             expect(closed.length === 2, `both closed issues are returned (got ${closed.length})`);
             expect(
                 closed.every((issue) => issue.status !== 'open'),
                 'closed never contains an open issue'
             );
-            const open = await listHarnessIssues({ status: 'open' });
+            const { records: open } = await listHarnessIssues({ status: 'open' });
             expect(open.length === 0, 'the open list is empty once both are closed');
-            const all = await listHarnessIssues({ status: 'all' });
+            const { records: all } = await listHarnessIssues({ status: 'all' });
             expect(all.length === 2, 'all returns both');
         },
     },
@@ -75,9 +75,9 @@ const cases: { name: string; body: () => Promise<void> }[] = [
             await createHarnessIssue({ title: '无关标题', body: '正文提到 风控 的处理', kind: 'bug' });
             await createHarnessIssue({ title: '第三条', body: '第三条正文', kind: 'bug' });
 
-            const hits = await listHarnessIssues({ status: 'open', query: '风控' });
+            const { records: hits } = await listHarnessIssues({ status: 'open', query: '风控' });
             expect(hits.length === 2, `title and body both match the keyword (got ${hits.length})`);
-            const limited = await listHarnessIssues({ status: 'open', limit: 1 });
+            const { records: limited } = await listHarnessIssues({ status: 'open', limit: 1 });
             expect(limited.length === 1, `limit caps the rows (got ${limited.length})`);
         },
     },
@@ -97,7 +97,7 @@ const cases: { name: string; body: () => Promise<void> }[] = [
             expect(longTitle.isError && longTitle.content.includes('200'), 'an over-long title is rejected');
             const longBody = await call(tool, { title: '标题', body: '长'.repeat(4001), kind: 'bug' });
             expect(longBody.isError && longBody.content.includes('4000'), 'an over-long body is rejected');
-            expect((await listHarnessIssues({ status: 'all' })).length === 0, 'nothing was written');
+            expect((await listHarnessIssues({ status: 'all' })).records.length === 0, 'nothing was written');
         },
     },
     {
@@ -121,7 +121,7 @@ const cases: { name: string; body: () => Promise<void> }[] = [
                 fourth.isError && fourth.content.includes('3 条'),
                 `the fourth is refused (got ${fourth.content})`
             );
-            expect((await listHarnessIssues({ status: 'all' })).length === 3, 'only three rows exist');
+            expect((await listHarnessIssues({ status: 'all' })).records.length === 3, 'only three rows exist');
         },
     },
     {
@@ -143,6 +143,40 @@ const cases: { name: string; body: () => Promise<void> }[] = [
             );
             const empty = await call(tool, { status: 'open', query: '没有这个关键词' });
             expect(empty.content.includes('没有匹配的 issue'), 'an empty result says so');
+        },
+    },
+    {
+        name: 'the list reports whole-list counts so an empty answer needs no second call',
+        body: async () => {
+            await clearHarnessIssues();
+            const tool = createListHarnessIssuesTool();
+
+            const empty = await call(tool, { status: 'open' });
+            expect(
+                empty.content.includes('没有匹配的 issue') &&
+                    empty.content.includes('全部 0 条') &&
+                    empty.content.includes('open 0'),
+                `an empty list reports zero everywhere (got ${empty.content})`
+            );
+
+            const first = await createHarnessIssue({ title: '甲', body: '正文甲', kind: 'bug' });
+            await createHarnessIssue({ title: '乙', body: '正文乙', kind: 'feature' });
+            await HarnessIssue.update({ status: 'fixed' }, { where: { id: first.id } });
+
+            const openView = await call(tool, { status: 'open' });
+            expect(
+                openView.content.includes('共 1 条') &&
+                    openView.content.includes('全部 2 条') &&
+                    openView.content.includes('open 1') &&
+                    openView.content.includes('fixed 1'),
+                `the open view still counts the closed one (got ${openView.content})`
+            );
+
+            const miss = await call(tool, { status: 'open', query: '没有这个关键词' });
+            expect(
+                miss.content.includes('没有匹配的 issue') && miss.content.includes('全部 2 条'),
+                `a filtered miss still reports the whole list (got ${miss.content})`
+            );
         },
     },
     {

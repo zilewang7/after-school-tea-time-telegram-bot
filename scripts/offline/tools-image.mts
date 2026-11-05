@@ -1491,7 +1491,10 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
                 imageOnly.version !== undefined &&
                     imageOnly.version.imageBase64 === undefined &&
                     json(imageOnly.version.messageIds) === json([processingId]) &&
-                    imageOnly.row?.text === '[Empty response]' &&
+                    // A reply that stored no text leaves the row empty: the
+                    // `[Empty response]` placeholder is display-only, and a
+                    // stored one would read back as the model's own content
+                    imageOnly.row?.text === null &&
                     imageOnly.row.file === null,
                 `nothing of the image is stored (got ${json({ ids: imageOnly.version?.messageIds, text: imageOnly.row?.text })})`
             );

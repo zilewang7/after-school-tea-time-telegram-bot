@@ -13,10 +13,12 @@ import {
     HARNESS_ISSUE_KINDS,
     HARNESS_ISSUE_LIST_LIMIT_MAX,
     HARNESS_ISSUE_SEVERITIES,
+    HARNESS_ISSUE_STATUSES,
     HARNESS_ISSUE_TITLE_MAX,
     type HarnessIssueKind,
     type HarnessIssueRecord,
     type HarnessIssueSeverity,
+    type HarnessIssueStats,
     type HarnessIssueStatusFilter,
 } from '../../services/harness-issue-service.js';
 import { MAX_HARNESS_ISSUES_PER_REPLY, type HarnessIssueState } from './harness-issue-state.js';
@@ -51,8 +53,21 @@ const formatRecord = (record: HarnessIssueRecord): string => {
     return `#${record.id} [${record.status}][${record.kind}]${severity} ${record.title}`;
 };
 
+/**
+ * Every call ends with the whole list's counts, not just the rows it returned.
+ * A zero-row answer that also says "0 total" is final: no second call with
+ * another filter can change it.
+ */
+const formatStats = (stats: HarnessIssueStats): string => {
+    const counts = HARNESS_ISSUE_STATUSES.map(
+        (status) => `${status} ${stats.byStatus[status]}`
+    ).join(' · ');
+    return `全部 ${stats.total} 条：${counts}`;
+};
+
 const LIST_DESCRIPTION =
-    '列出已记录的 harness 自身问题与改进建议及其状态。在提新 issue 前先用它查重；status=closed 可查已处理/已驳回的旧条目。';
+    '列出已记录的 harness 自身问题与改进建议及其状态。在提新 issue 前先用它查重；status=closed 可查已处理/已驳回的旧条目。' +
+    '每次结果末尾都带全量统计（总数与各状态计数），不必换过滤条件反复确认。';
 
 const LIST_INPUT_SCHEMA = {
     type: 'object',
@@ -133,16 +148,17 @@ export const createListHarnessIssuesTool = (): ToolHandler => ({
         const limit = typeof limitArg === 'number' && Number.isFinite(limitArg) ? Math.trunc(limitArg) : undefined;
 
         try {
-            const records = await listHarnessIssues({
+            const { records, stats } = await listHarnessIssues({
                 status: statusArg,
                 ...(query === undefined ? {} : { query }),
                 ...(limit === undefined ? {} : { limit }),
             });
-            if (records.length === 0) {
-                return ok(`没有匹配的 issue（status=${statusArg}）。`);
-            }
-            const lines = records.map(formatRecord);
-            lines.push(`共 ${records.length} 条（status=${statusArg}）。`);
+            const filterLabel = query === undefined ? `status=${statusArg}` : `status=${statusArg}, query=${query}`;
+            const lines =
+                records.length === 0
+                    ? [`没有匹配的 issue（${filterLabel}）。`]
+                    : [...records.map(formatRecord), `共 ${records.length} 条（${filterLabel}）。`];
+            lines.push(formatStats(stats));
             return ok(lines.join('\n'));
         } catch (error) {
             return failed(`读取 issue 列表失败：${error instanceof Error ? error.message : String(error)}`);

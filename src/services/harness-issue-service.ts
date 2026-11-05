@@ -58,6 +58,23 @@ export interface ListHarnessIssuesQuery {
     readonly limit?: number;
 }
 
+/**
+ * The whole list at a glance, independent of the filter and limit of the call.
+ *
+ * Without it a caller that gets zero rows cannot tell "nothing recorded yet"
+ * from "nothing matches this filter" and asks again with another filter. The
+ * counts answer both in one round trip.
+ */
+export interface HarnessIssueStats {
+    readonly total: number;
+    readonly byStatus: Readonly<Record<HarnessIssueStatus, number>>;
+}
+
+export interface ListHarnessIssuesResult {
+    readonly records: readonly HarnessIssueRecord[];
+    readonly stats: HarnessIssueStats;
+}
+
 const toRecord = (row: HarnessIssue): HarnessIssueRecord => ({
     id: row.id,
     status: row.status,
@@ -87,9 +104,27 @@ export const createHarnessIssue = async (input: CreateHarnessIssueInput): Promis
     return toRecord(row);
 };
 
+const isHarnessIssueStatus = (value: string): value is HarnessIssueStatus =>
+    (HARNESS_ISSUE_STATUSES as readonly string[]).includes(value);
+
+const countHarnessIssues = async (): Promise<HarnessIssueStats> => {
+    const rows = await HarnessIssue.findAll({ attributes: ['status'] });
+    const byStatus: Record<HarnessIssueStatus, number> = {
+        open: 0,
+        triaged: 0,
+        fixed: 0,
+        wontfix: 0,
+        duplicate: 0,
+    };
+    for (const row of rows) {
+        if (isHarnessIssueStatus(row.status)) byStatus[row.status] += 1;
+    }
+    return { total: rows.length, byStatus };
+};
+
 export const listHarnessIssues = async (
     query: ListHarnessIssuesQuery = {}
-): Promise<readonly HarnessIssueRecord[]> => {
+): Promise<ListHarnessIssuesResult> => {
     const filter = query.status ?? 'open';
     const limit = Math.min(
         Math.max(1, Math.trunc(query.limit ?? HARNESS_ISSUE_LIST_LIMIT_DEFAULT)),
@@ -97,22 +132,25 @@ export const listHarnessIssues = async (
     );
     const keyword = query.query?.trim();
 
-    const rows = await HarnessIssue.findAll({
-        where: {
-            status: { [Op.in]: [...statusesFor(filter)] },
-            ...(keyword
-                ? {
-                      [Op.or]: [
-                          { title: { [Op.like]: `%${keyword}%` } },
-                          { body: { [Op.like]: `%${keyword}%` } },
-                      ],
-                  }
-                : {}),
-        },
-        order: [['createdAt', 'DESC']],
-        limit,
-    });
-    return rows.map(toRecord);
+    const [rows, stats] = await Promise.all([
+        HarnessIssue.findAll({
+            where: {
+                status: { [Op.in]: [...statusesFor(filter)] },
+                ...(keyword
+                    ? {
+                          [Op.or]: [
+                              { title: { [Op.like]: `%${keyword}%` } },
+                              { body: { [Op.like]: `%${keyword}%` } },
+                          ],
+                      }
+                    : {}),
+            },
+            order: [['createdAt', 'DESC']],
+            limit,
+        }),
+        countHarnessIssues(),
+    ]);
+    return { records: rows.map(toRecord), stats };
 };
 
 /** Test helper: wipe the table between cases */

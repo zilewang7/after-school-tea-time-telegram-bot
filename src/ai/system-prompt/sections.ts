@@ -46,6 +46,7 @@ export const buildFormatSection = (options: { includeOcrNote: boolean }): string
 - 独立的 \`[system] …\` 段落为系统注入的元数据，非用户发言
 - \`[system] another session is already replying to #3 …\` 表示 #3 正由另一会话处理并生成回复
 - \`[system] your reply #5 is still being generated …\`（出现在你的历史消息位）表示你的 #5 回复正在另一会话中流式生成，尚未落库，并非内容丢失或故障
+- \`[system] your reply #5 ended without producing any text …\`（同上位置）表示那条回复在写出正文前就结束了（流中断、被停止或空回复），没有正文可读，用户可以重试
 - \`[system] 链接预览：…\` 为系统自动抓取的消息内链接预览（站点、标题、描述及可能的正文与图片）；
   预览图片与消息自带附件均归属该消息，工具按出现顺序索引（消息附件在前，链接预览图片在后）
 - \`[system] 消息链接预览：…\` 为系统抓取的 \`t.me/…\` 消息链接目标及其被回复消息；其中的作者、时间与编号均属于原消息而非当前上下文，其附带图片同样排在发链接消息自身的附件之后

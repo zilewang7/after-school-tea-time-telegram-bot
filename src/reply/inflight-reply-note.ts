@@ -22,3 +22,15 @@ export const buildInFlightReplyNote = (contextNumber: number): string =>
  */
 export const buildInFlightOwnReplyNote = (contextNumber: number): string =>
     `[system] your reply #${contextNumber} is still being generated in another session; its text is not stored yet.`;
+
+/**
+ * Note on a bot turn that ended without storing any text.
+ *
+ * A reply can end with no text at all — the stream died before the first
+ * token, the user stopped it, or the model answered with nothing. Its stored
+ * row then has no content, and the same turn reads as `[system] message lost`,
+ * which makes the model believe its own answer was corrupted. Say what
+ * happened, and that a retry exists.
+ */
+export const buildInterruptedOwnReplyNote = (contextNumber: number): string =>
+    `[system] your reply #${contextNumber} ended without producing any text (interrupted or empty); nothing of it was stored, and the user can retry it.`;

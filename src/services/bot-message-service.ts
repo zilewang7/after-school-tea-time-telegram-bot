@@ -356,7 +356,13 @@ const createContinuation = async (session: BotMessageSession): Promise<MessageEd
 /**
  * The bot's turn as later contexts read it: the reply text, the [stopped]
  * marker, then the image caption, in the order the chat shows them. null when
- * an image says it all.
+ * there is no text at all.
+ *
+ * `[Empty response]` is a display placeholder for a reply that produced no
+ * text, and must not be stored: a context reading it back cannot tell an
+ * interrupted reply from one that is still streaming (the in-flight note only
+ * applies to turns with no text), and the model then reads the placeholder as
+ * the content of its own message.
  */
 const botRowTextOf = (reply: {
     readonly text: string;
@@ -370,8 +376,7 @@ const botRowTextOf = (reply: {
         reply.hasImage ? reply.imageCaption ?? '' : '',
     ].filter((part) => part.length > 0);
 
-    if (parts.length > 0) return parts.join('\n\n');
-    return reply.hasImage ? null : '[Empty response]';
+    return parts.length > 0 ? parts.join('\n\n') : null;
 };
 
 /**

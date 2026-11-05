@@ -23,7 +23,7 @@ import { buildOcrFallbackPart } from '../services/luoxu-ocr-service.js';
 import { applyModelCapabilities } from '../ai/message-transformer.js';
 import { buildRuntimeContext } from '../ai/system-prompt/runtime-context.js';
 import { getCurrentModel, getRepliesInFlight, isBotReplyInFlight, setContextNumbering } from '../state.js';
-import { buildInFlightOwnReplyNote, buildInFlightReplyNote } from './inflight-reply-note.js';
+import { buildInFlightOwnReplyNote, buildInFlightReplyNote, buildInterruptedOwnReplyNote } from './inflight-reply-note.js';
 import { collectContextUsers, type ContextUser } from './context-users.js';
 import { getModelCapabilities } from '../ai/platform-factory.js';
 import { buildCustomEmojiContextPlan } from '../services/custom-emoji-context-service.js';
@@ -469,16 +469,22 @@ interface BuiltTurn {
 }
 
 /**
- * What an assistant turn with no text says. A reply that is still streaming has
- * a stored row but no content yet — report that, instead of calling it lost.
+ * What an assistant turn with no text says.
+ *
+ * Two different situations reach this point, and the model must be able to tell
+ * them apart: a reply that is still streaming (a stored row exists, its text is
+ * written at finalize) and one that ended without any text at all. Calling
+ * either of them lost made the model believe its own answer had been corrupted.
  */
 const missingAssistantText = (
     msg: ContextMessage,
     contextNumber: number | undefined
-): string =>
-    contextNumber !== undefined && isBotReplyInFlight(msg.chatId, msg.messageId)
+): string => {
+    if (contextNumber === undefined) return '[system] message lost';
+    return isBotReplyInFlight(msg.chatId, msg.messageId)
         ? buildInFlightOwnReplyNote(contextNumber)
-        : '[system] message lost';
+        : buildInterruptedOwnReplyNote(contextNumber);
+};
 
 /**
  * Build the assistant turn for one of the bot's own messages.

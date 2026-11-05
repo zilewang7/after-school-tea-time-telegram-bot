@@ -3799,6 +3799,10 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
                 !after.includes('still being generated in another session'),
                 'no in-progress note once the reply is finalized'
             );
+            expect(
+                /\[system\] your reply #3 ended without producing any text/.test(after),
+                `a reply that ended with no text says so instead of reading as lost (got ${JSON.stringify(after)})`
+            );
         },
     },
     {
