@@ -430,10 +430,11 @@ export const registerChatHandler = (bot: Bot): void => {
                 // album contributes exactly one batch member (its first).
                 if (shouldSkipMessage(ctx)) return;
 
-                // A burst from the same user (forwarded messages, album +
-                // typed question) merges into one trigger; the earlier members
-                // ride into the context as links on the anchor, exactly like
-                // the bystanders /chat pulls in.
+                // A burst of trigger messages from the same user — a forwarded
+                // run, an album + typed question, or a long paste the client
+                // split into several messages — merges into one trigger; the
+                // earlier members ride into the context as links on the anchor,
+                // exactly like the bystanders /chat pulls in.
                 //
                 // In a group the trigger is explicit, so the batch is keyed by
                 // the context instead: A and B answering in the same reply tree

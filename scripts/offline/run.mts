@@ -3572,26 +3572,36 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
                 'the linked burst assembles chronologically with no reply relation'
             );
 
-            // 2. A plain typed message with no open window triggers immediately
+            // 2. A typed burst merges too: a long paste split by the client at
+            //    4096 characters arrives as a run of plain text messages
             flushes.length = 0;
-            const typed = takeMessageId();
-            submitToMentionBatch(fakeCtx({ messageId: typed }), { onFlush: record });
+            const t1 = takeMessageId();
+            const t2 = takeMessageId();
+            const t3 = takeMessageId();
+            submitToMentionBatch(fakeCtx({ messageId: t1 }), { onFlush: record });
+            submitToMentionBatch(fakeCtx({ messageId: t2 }), { onFlush: record });
+            submitToMentionBatch(fakeCtx({ messageId: t3 }), { onFlush: record });
+            expect(flushes.length === 0, 'the window holds a typed burst back');
+            await settle();
+            expect(flushes.length === 1, 'the typed burst flushes exactly once');
+            expect(flushes[0]?.anchorId === t3, 'the newest chunk is the anchor');
             expect(
-                flushes.length === 1 && flushes[0]?.anchorId === typed,
-                'plain text with no window flushes with zero delay'
+                JSON.stringify(flushes[0]?.earlierIds) === JSON.stringify([t1, t2]),
+                'the earlier chunks ride along, oldest first'
             );
-            expect(flushes[0]?.earlierIds.length === 0, 'and carries no batch members');
 
-            // 3. A typed message closes an open window on the spot
+            // 3. A typed message extends an open window instead of closing it
             flushes.length = 0;
             const media = takeMessageId();
             const question = takeMessageId();
             submitToMentionBatch(fakeCtx({ messageId: media, photo: true }), { onFlush: record });
             expect(flushes.length === 0, 'a lone media message opens a window');
             submitToMentionBatch(fakeCtx({ messageId: question }), { onFlush: record });
+            expect(flushes.length === 0, 'the typed follow-up extends the same window');
+            await settle();
             expect(
                 flushes.length === 1 && flushes[0]?.anchorId === question,
-                'the typed follow-up flushes immediately as the anchor'
+                'the burst flushes once with the typed message as the anchor'
             );
             expect(
                 JSON.stringify(flushes[0]?.earlierIds) === JSON.stringify([media]),
@@ -3663,6 +3673,18 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
                 flushes.length === 1 && flushes[0]?.anchorId === lone,
                 'and then replies on its own'
             );
+
+            // 8. A lone private message replies too, one window later
+            flushes.length = 0;
+            const solo = takeMessageId();
+            submitToMentionBatch(fakeCtx({ messageId: solo }), { onFlush: record });
+            expect(flushes.length === 0, 'a lone private message opens a window');
+            await settle();
+            expect(
+                flushes.length === 1 && flushes[0]?.anchorId === solo,
+                'and then replies on its own'
+            );
+            expect(flushes[0]?.earlierIds.length === 0, 'with no batch members');
         },
     },
     {

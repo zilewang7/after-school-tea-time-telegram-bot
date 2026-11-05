@@ -1,23 +1,22 @@
 /**
  * Debounce window that merges a burst of trigger messages into a single reply.
  *
- * Private chat: one user forwarding several messages at once, or an album
- * followed by a typed question. Only forwards and media messages open a window
- * (they signal "more may follow"); a plain typed message with no open window
- * triggers immediately, so ordinary conversation gains zero latency, and a
- * typed message that lands in an open window closes it on the spot — it is
- * usually the question that ends the burst.
+ * A burst is one user forwarding several messages at once, an album followed by
+ * a typed question, or simply several typed messages landing back to back — a
+ * long paste is split by the client at 4096 characters and arrives as a run of
+ * plain text messages, which used to get one isolated reply per chunk. Every
+ * trigger opens the window and every follow-up extends it, so the whole run
+ * becomes one reply that sees all of it.
  *
- * Group chat: a trigger is always explicit (@mention or a reply to the bot), so
- * every trigger keeps the window open and the batch is keyed by the *context*
- * (the reply tree) instead of by sender: two people answering in the same
- * context within the window merge into one reply instead of two. Messages from
- * different contexts never share a batch.
+ * Private chat batches by sender (`chatId:user:<id>`); a group batches by the
+ * *context* (the reply tree root) instead, so two people answering in the same
+ * context within the window merge into one reply, and messages from different
+ * contexts never share a batch.
  *
  * At flush time the earlier members are linked to the newest message (the
- * anchor) via message_links, so a private-chat burst rides into the context
- * through the same mechanism /chat uses. In groups the members already share
- * the context, so the links are redundant but harmless.
+ * anchor) via message_links, so the whole burst rides into the context through
+ * the same mechanism /chat uses. In groups the members already share the
+ * context, so the links are redundant but harmless.
  */
 import type { Context } from 'grammy';
 import { isGroupChat } from '../util.js';
@@ -56,23 +55,6 @@ interface PendingBatch {
 
 /** Open windows, keyed by `chatId:ctx:<rootId>` (groups) or `chatId:user:<id>` */
 const pendingBatches = new Map<string, PendingBatch>();
-
-const hasMedia = (ctx: Context): boolean => {
-    const msg = ctx.message;
-    if (!msg) return false;
-    return Boolean(
-        msg.photo || msg.video || msg.document || msg.sticker ||
-        msg.voice || msg.audio || msg.video_note || msg.animation
-    );
-};
-
-/**
- * Whether this message may still be followed by more of the same burst. In a
- * group every trigger counts (the merge is bounded by the context instead), in
- * private only forwards and media signal "more may follow".
- */
-const keepsWindowOpen = (ctx: Context): boolean =>
-    isGroupChat(ctx) || Boolean(ctx.message?.forward_origin) || hasMedia(ctx);
 
 /** Batch key for this message, or null when there is nothing to key on */
 const batchKeyOf = (ctx: Context, contextKey: number | undefined): string | null => {
@@ -128,21 +110,14 @@ export const submitToMentionBatch = (
         const overCap =
             existing.earlierMessageIds.length + 1 >= MAX_BATCH_SIZE ||
             Date.now() - existing.openedAt >= MAX_WINDOW_MS;
-        if (!keepsWindowOpen(ctx) || overCap) {
-            // A typed message ends the private burst; caps end it defensively
+        if (overCap) {
+            // Caps end the burst defensively
             runFlush(key);
             return;
         }
 
         clearTimeout(existing.timer);
         existing.timer = setTimeout(() => runFlush(key), windowMs());
-        return;
-    }
-
-    if (!keepsWindowOpen(ctx)) {
-        onFlush(ctx, []).catch((error) => {
-            console.error('[mention-batcher] flush failed:', error);
-        });
         return;
     }
 
