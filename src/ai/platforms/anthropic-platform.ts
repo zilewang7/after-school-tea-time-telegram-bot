@@ -11,7 +11,7 @@
 import Anthropic from '@anthropic-ai/sdk';
 import { BasePlatform } from './base-platform.js';
 import { transformToAnthropic } from '../message-transformer.js';
-import { MAX_TOOL_ROUNDS, runToolLoop, toAnthropicTools, type TurnTools } from '../tools/index.js';
+import { runToolLoop, toAnthropicTools, type TurnTools } from '../tools/index.js';
 import {
     collectAnthropicRound,
     toToolResultBlocks,
@@ -164,7 +164,6 @@ export class AnthropicPlatform extends BasePlatform {
 
         yield* runToolLoop<AnthropicRound>({
             tools,
-            maxToolRounds: MAX_TOOL_ROUNDS,
             signal: options.signal,
             logPrefix: '[anthropic]',
             sendRound: async (_roundIndex, final) => {

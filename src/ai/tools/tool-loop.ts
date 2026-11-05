@@ -2,12 +2,13 @@
  * The client tool loop of the platforms that collect a whole round before
  * showing it (OpenAI, Anthropic, DeepSeek, MiMo). Each platform supplies how
  * a round is sent and how it extends the conversation; the loop owns the
- * rest: round limit, deadline, tool execution, display and the closing done.
+ * rest: the deadline, tool execution, display and the closing done.
  *
- * Rounds run until one answers without calling tools. Once the tool rounds
- * are used up, or the reply is past its deadline, one final round goes out
- * with tools switched off, so a reply never ends with tool records but no
- * answer. A stop ends the loop between rounds.
+ * Rounds run until one answers without calling tools. There is no round cap:
+ * the wall clock (TOOL_LOOP_DEADLINE_MS) is what bounds a reply. Once the
+ * deadline has passed, one final round goes out with tools switched off, so a
+ * reply never ends with tool records but no answer. A stop ends the loop
+ * between rounds.
  */
 import type { StreamChunk } from '../types.js';
 import { createRoundTextSeparator } from './round-text-separator.js';
@@ -23,25 +24,12 @@ import type { ToolCall, TurnTools } from './tool-types.js';
 /**
  * Wall-clock budget of one reply's tool loop, counted from its first request.
  *
- * Was 180s, then 300s. In the 2026-11-04 sample (3h, 26 replies, 500 tool
- * calls) the clock never fired while the 12-round cap forced the final answer
- * three times: archive lookups run "search, read, search again" for ~19 calls
- * a reply, so the count, not the clock, was the bound. The count is now 50 and
- * the clock 600s; both are still told to the model after every call.
+ * Was 180s, then 300s, then 600s. The round count used to be the other bound
+ * (12, then 28, then 50); it is gone, so this clock is the only one: a reply
+ * may keep calling tools as long as the model keeps asking for them, and the
+ * deadline is what turns the next round into the final, tool-less one.
  */
 export const TOOL_LOOP_DEADLINE_MS = 600_000;
-
-/**
- * Tool rounds a reply may run before the forced final, tool-less one, shared
- * by the platforms on runToolLoop. Gemini and Grok count their final round on
- * top of this.
- *
- * Was 12, then 28. A reply that digs through the archive can keep asking for
- * another search far past 28 rounds (2026-11-04: the model kept searching
- * people and catchphrases), and the count is cheap to raise now that the wall
- * clock is 600s: the deadline, not the count, is what actually stops a reply.
- */
-export const MAX_TOOL_ROUNDS = 50;
 
 export interface CollectedToolRound {
     /** The round's text and thinking chunks, in stream order */
@@ -52,8 +40,6 @@ export interface CollectedToolRound {
 
 export interface ToolLoopOptions<Round extends CollectedToolRound> {
     readonly tools: TurnTools;
-    /** Rounds that may call tools before the final one */
-    readonly maxToolRounds: number;
     /** Defaults to TOOL_LOOP_DEADLINE_MS */
     readonly deadlineMs?: number;
     readonly signal?: AbortSignal;
@@ -70,17 +56,11 @@ export interface ToolLoopOptions<Round extends CollectedToolRound> {
 }
 
 /**
- * Why the round at `roundIndex` (0-based) has to be the final, tool-less one,
- * or null while tools are still offered: `maxToolRounds` rounds have already
- * called tools, or the reply is past its deadline. Shared by every tool loop.
+ * Why the round about to be sent has to be the final, tool-less one, or null
+ * while tools are still offered. Shared by every tool loop; the deadline is
+ * the only bound, a reply has no round cap.
  */
-export const finalRoundReason = (
-    roundIndex: number,
-    maxToolRounds: number,
-    deadlineAt: number,
-    deadlineMs: number
-): string | null => {
-    if (roundIndex >= maxToolRounds) return 'Tool round limit reached';
+export const finalRoundReason = (deadlineAt: number, deadlineMs: number): string | null => {
     if (Date.now() >= deadlineAt) return `Tool loop deadline (${Math.round(deadlineMs / 1000)}s) passed`;
     return null;
 };
@@ -94,28 +74,15 @@ const doneChunk = (rawResponse: unknown, tally: ToolUsageTally): StreamChunk => 
     };
 };
 
-/**
- * Tool rounds left after the round at `roundIndex`; 0 when the next one is
- * forced final by the count or the deadline.
- */
-const roundsLeftAfter = (
-    roundIndex: number,
-    maxToolRounds: number,
-    deadlineAt: number,
-    deadlineMs: number
-): number => {
-    if (finalRoundReason(roundIndex + 1, maxToolRounds, deadlineAt, deadlineMs) !== null) return 0;
-    return Math.max(0, maxToolRounds - roundIndex - 1);
-};
-
 export async function* runToolLoop<Round extends CollectedToolRound>(
     options: ToolLoopOptions<Round>
 ): AsyncGenerator<StreamChunk, void, undefined> {
-    const { tools, maxToolRounds, signal, logPrefix } = options;
+    const { tools, signal, logPrefix } = options;
     const deadlineMs = options.deadlineMs ?? TOOL_LOOP_DEADLINE_MS;
     const deadlineAt = Date.now() + deadlineMs;
     const tally = createToolUsageTally();
     const separator = createRoundTextSeparator();
+    let executedCallCount = 0;
 
     for (let roundIndex = 0; ; roundIndex++) {
         // A stopped reply sends nothing further
@@ -124,7 +91,7 @@ export async function* runToolLoop<Round extends CollectedToolRound>(
             return;
         }
 
-        const finalReason = finalRoundReason(roundIndex, maxToolRounds, deadlineAt, deadlineMs);
+        const finalReason = finalRoundReason(deadlineAt, deadlineMs);
         if (finalReason !== null) {
             console.log(`${logPrefix} ${finalReason}, forcing final answer`);
         }
@@ -145,10 +112,13 @@ export async function* runToolLoop<Round extends CollectedToolRound>(
         }
 
         const executedCalls = yield* runToolRound(tools, round.toolCalls, tally, signal);
+        executedCallCount += executedCalls.length;
+        // Judged after the calls ran: they may have used up the clock
         options.appendRound(
             round,
             withToolBudget(executedCalls, {
-                roundsLeft: roundsLeftAfter(roundIndex, maxToolRounds, deadlineAt, deadlineMs),
+                toolCalls: executedCallCount,
+                finalRound: finalRoundReason(deadlineAt, deadlineMs) !== null,
                 elapsedMs: deadlineMs - Math.max(0, deadlineAt - Date.now()),
                 deadlineMs,
             })

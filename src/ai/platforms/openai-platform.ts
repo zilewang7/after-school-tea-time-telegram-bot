@@ -28,7 +28,7 @@ import { OPENAI_IMAGE_CHAT_BASE_MODEL } from '../../config/models.js';
 import { BasePlatform } from './base-platform.js';
 import { toVisionImageMimeType } from '../supported-mime.js';
 import { isImageOutputModel } from '../model-kinds.js';
-import { MAX_TOOL_ROUNDS, runToolLoop, toResponsesFunctionTools, type TurnTools } from '../tools/index.js';
+import { runToolLoop, toResponsesFunctionTools, type TurnTools } from '../tools/index.js';
 import {
     buildToolRoundMessages,
     collectResponsesRound,
@@ -272,7 +272,6 @@ export class OpenAIPlatform extends BasePlatform {
 
         yield* runToolLoop<ResponsesRound>({
             tools,
-            maxToolRounds: MAX_TOOL_ROUNDS,
             signal,
             logPrefix: '[openai]',
             sendRound: async (roundIndex, final) => {

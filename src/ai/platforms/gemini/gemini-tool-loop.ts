@@ -5,20 +5,20 @@
  * thinking show while they arrive, and the round's parts are kept verbatim
  * for the next request. A round that calls functions has them run in order,
  * then the next request repeats round 1's contents plus every tool round so
- * far (model turn + function responses). The last allowed round, a round
- * after the deadline, and the retry of a function call Gemini failed to
- * produce go out with function calling switched off (mode NONE).
+ * far (model turn + function responses). A round after the deadline, and the
+ * retry of a function call Gemini failed to produce, go out with function
+ * calling switched off (mode NONE). There is no round cap: the wall clock is
+ * what bounds a reply.
  *
  * Measured 2026-10-16, mode NONE drops the declarations from the prompt but
  * does not stop 3.8-flash or argon from calling a function they saw earlier
- * in the turn. So when the round limit or the deadline makes the next round
- * the final one, every function response of the round just run says that no
- * more calls are available (LAST_TOOL_ROUND_NOTICE). Calls a final round
- * still makes are never run; the reply would end on them (or on a preface
- * such as "let me check"), so they are answered as not run (function calling
- * is off) and the model gets ONE more round with function calling still off.
- * That round is the answer whatever it asks for, so a reply runs at most
- * GEMINI_MAX_ROUNDS + 1 rounds.
+ * in the turn. So when the deadline makes the next round the final one, every
+ * function response of the round just run says that no more calls are
+ * available (LAST_TOOL_ROUND_NOTICE). Calls a final round still makes are
+ * never run; the reply would end on them (or on a preface such as "let me
+ * check"), so they are answered as not run (function calling is off) and the
+ * model gets ONE more round with function calling still off. That round is
+ * the answer whatever it asks for.
  *
  * Search grounding is merged across rounds and yielded once, right before
  * the single done chunk.
@@ -27,7 +27,7 @@ import { match, P } from 'ts-pattern';
 import { FinishReason, type GenerateContentResponse } from '@google/genai';
 import type { GroundingData, StreamChunk } from '../../types.js';
 import { createRoundTextSeparator } from '../../tools/round-text-separator.js';
-import { finalRoundReason, MAX_TOOL_ROUNDS, TOOL_LOOP_DEADLINE_MS } from '../../tools/tool-loop.js';
+import { finalRoundReason, TOOL_LOOP_DEADLINE_MS } from '../../tools/tool-loop.js';
 import {
     createToolUsageTally,
     runToolRound,
@@ -52,18 +52,6 @@ import {
     formatGeminiUsageLine,
     type GeminiRequestUsage,
 } from './gemini-usage-log.js';
-
-/**
- * Rounds per reply; the last one may no longer call functions. Only a final
- * round that still calls gets one round more.
- *
- * Was 5 (4 tool rounds), then 13 (12 tool rounds). The archive tools added
- * "search, read, search again" loops: a reply averages ~19 calls and hit the
- * 12-round cap at p90 (2026-11-04), so the tool rounds follow MAX_TOOL_ROUNDS
- * and the final round sits on top. The wall clock (TOOL_LOOP_DEADLINE_MS) is
- * told to the model in every tool result, so it can still plan to finish in.
- */
-export const GEMINI_MAX_ROUNDS = MAX_TOOL_ROUNDS + 1;
 
 /** A function call Gemini could not produce: retried once as the final round */
 const FAILED_CALL_FINISH_REASONS: ReadonlySet<FinishReason> = new Set([
@@ -203,22 +191,18 @@ export async function* runGeminiToolLoop(
             executedCallCount += executedCalls.length;
             if (signal?.aborted) break;
 
-            // Judged after the calls ran: they may have used up the deadline. The
-            // next round's 0-based index is this round's 1-based number.
-            const finalReason = finalRoundReason(roundNumber, GEMINI_MAX_ROUNDS - 1, deadlineAt, deadlineMs);
+            // Judged after the calls ran: they may have used up the deadline
+            const finalReason = finalRoundReason(deadlineAt, deadlineMs);
             if (finalReason !== null) {
                 console.log(
                     `[gemini] ${finalReason}, forcing final answer (notice on the round ${roundNumber} responses)`
                 );
             }
-            // The round budget rides in each result, like every other limit the
+            // The call count rides in each result, like every other fact the
             // model has to plan around; the final-round notice stays separate.
-            const roundsLeft =
-                finalReason !== null
-                    ? 0
-                    : Math.max(0, GEMINI_MAX_ROUNDS - 1 - roundNumber);
             const answeredCalls = withToolBudget(executedCalls, {
-                roundsLeft,
+                toolCalls: executedCallCount,
+                finalRound: finalReason !== null,
                 elapsedMs: Date.now() - startedAt,
                 deadlineMs,
             });

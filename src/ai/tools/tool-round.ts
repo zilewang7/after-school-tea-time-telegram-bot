@@ -10,14 +10,15 @@ export interface ExecutedToolCall {
 }
 
 /**
- * What the model is told about the tool-loop budget after a round: the common
- * practice of putting the remaining budget in the tool result itself, so the
- * model can decide between one more look and sending/finishing.
+ * What the model is told about the tool loop after a round: how many calls it
+ * has made so far, so it can judge whether one more look is worth it. There is
+ * no round cap to announce — the clock is the bound — but the round that used
+ * the clock up says the next step has to be the answer.
  */
-export const toolRoundsLeftNotice = (remaining: number): string =>
-    remaining <= 0
-        ? '[工具轮次] 本次调用后不能再调用工具，下一步仅输出文字回复。'
-        : `[工具轮次] 剩余可用工具轮次：${remaining}。`;
+export const toolRoundNotice = (toolCalls: number, finalRound: boolean): string =>
+    finalRound
+        ? `[工具轮次] 本次回复已调用工具 ${toolCalls} 次；本次调用后不能再调用工具，下一步仅输出文字回复。`
+        : `[工具轮次] 本次回复已调用工具 ${toolCalls} 次。`;
 
 const secondsOf = (ms: number): number => Math.max(0, Math.round(ms / 1000));
 
@@ -31,14 +32,17 @@ export const toolTimeNotice = (timing: { elapsedMs: number; deadlineMs: number }
     `[时间] 已用 ${secondsOf(timing.elapsedMs)}s / 共 ${secondsOf(timing.deadlineMs)}s，` +
     `还剩 ${secondsOf(timing.deadlineMs - timing.elapsedMs)}s。`;
 
-/** What a tool result tells the model about its remaining budget */
+/** What a tool result tells the model about the tool loop it is in */
 export interface ToolBudget {
-    readonly roundsLeft: number;
+    /** Tool calls executed in this reply so far, this round included */
+    readonly toolCalls: number;
+    /** The clock makes the next round the final, tool-less one */
+    readonly finalRound: boolean;
     readonly elapsedMs: number;
     readonly deadlineMs: number;
 }
 
-/** The same results with the remaining rounds and wall clock appended */
+/** The same results with the call count, the last-round notice and the clock appended */
 export const withToolBudget = (
     executedCalls: readonly ExecutedToolCall[],
     budget: ToolBudget
@@ -48,7 +52,7 @@ export const withToolBudget = (
         result: {
             ...result,
             content:
-                `${result.content}\n\n${toolRoundsLeftNotice(budget.roundsLeft)}\n` +
+                `${result.content}\n\n${toolRoundNotice(budget.toolCalls, budget.finalRound)}\n` +
                 toolTimeNotice(budget),
         },
     }));

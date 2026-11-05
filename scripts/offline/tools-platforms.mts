@@ -16,7 +16,6 @@ import type {
     ResponseOutputItem,
 } from 'openai/resources/responses/responses';
 import type { ModelCapabilities, StreamChunk, UnifiedMessage } from '../../src/ai/types.js';
-import { MAX_TOOL_ROUNDS } from '../../src/ai/tools/index.js';
 import type { ToolHandler, ToolResult } from '../../src/ai/tools/index.js';
 
 interface ScriptedResponse {
@@ -75,7 +74,7 @@ const { OpenAIPlatform } = await import('../../src/ai/platforms/openai-platform.
 const { AnthropicPlatform } = await import('../../src/ai/platforms/anthropic-platform.js');
 const { DeepSeekPlatform } = await import('../../src/ai/platforms/deepseek-platform.js');
 const { MimoPlatform } = await import('../../src/ai/platforms/mimo-platform.js');
-const { createTurnTools, NO_TURN_TOOLS, runToolLoop, createRoundTextSeparator } = await import(
+const { createTurnTools, NO_TURN_TOOLS, runToolLoop, createRoundTextSeparator, TOOL_LOOP_DEADLINE_MS } = await import(
     '../../src/ai/tools/index.js'
 );
 const { buildToolRoundMessages } = await import('../../src/ai/platforms/openai/responses-tool-round.js');
@@ -89,6 +88,9 @@ const { OPENAI_IMAGE_MODEL } = await import('../../src/config/models.js');
 // ---- fake tools ----
 
 const executions: Array<{ name: string; args: Readonly<Record<string, unknown>> }> = [];
+
+/** Set by a deadline case: runs after each tool execution, may move the clock */
+let afterToolExecution: (() => void) | null = null;
 
 const WEATHER_SCHEMA = {
     $schema: 'http://json-schema.org/draft-07/schema#',
@@ -105,6 +107,8 @@ const weatherTool: ToolHandler = {
     },
     execute: async (args) => {
         executions.push({ name: 'lookup_weather', args });
+        // The clock may run out here, between two rounds
+        afterToolExecution?.();
         return { content: `sunny in ${String(args.city)}`, isError: false, images: [], record: null };
     },
 };
@@ -341,12 +345,28 @@ const chatToolRoundBody = (round: number): string =>
 
 const chatAnswerBody = (text: string): string => chatBody([chatChunk({ content: text }), chatChunk({}, 'stop')]);
 
-// ---- round limit, shared by every platform ----
+// ---- the deadline closes the loop, shared by every platform ----
 
-interface RoundLimitSpec {
+/** Runs `body` with Date.now under the test's control; `jump` moves it forward */
+const withFakeClock = async (body: (jump: (milliseconds: number) => void) => Promise<void>): Promise<void> => {
+    const realNow = Date.now.bind(Date);
+    let offsetMs = 0;
+    Date.now = () => realNow() + offsetMs;
+    try {
+        await body((milliseconds) => {
+            offsetMs += milliseconds;
+        });
+    } finally {
+        Date.now = realNow;
+        afterToolExecution = null;
+    }
+};
+
+interface DeadlineFinalSpec {
     readonly label: string;
     readonly path: string;
-    readonly maxToolRounds: number;
+    /** Tool rounds that run before the clock closes the loop */
+    readonly toolRounds: number;
     readonly toolRoundBody: (round: number) => string;
     readonly finalBody: string;
     readonly send: () => Promise<AsyncIterable<StreamChunk>>;
@@ -356,35 +376,56 @@ interface RoundLimitSpec {
     readonly forbidsTools: (body: Record<string, unknown>) => boolean;
 }
 
-const expectRoundLimit = async (spec: RoundLimitSpec): Promise<void> => {
-    resetStub([
-        ...Array.from({ length: spec.maxToolRounds }, (_, round) => ({ path: spec.path, body: spec.toolRoundBody(round) })),
-        { path: spec.path, body: spec.finalBody },
-    ]);
-    const { result: chunks, lines } = await captureConsole(async () => drain(await spec.send()));
+/**
+ * Every tool round runs, then the clock runs out during the last round's call:
+ * the next request is the final, tool-less one. No count closes the loop.
+ */
+const expectDeadlineFinal = async (spec: DeadlineFinalSpec): Promise<void> => {
+    await withFakeClock(async (jump) => {
+        resetStub([
+            ...Array.from({ length: spec.toolRounds }, (_, round) => ({ path: spec.path, body: spec.toolRoundBody(round) })),
+            { path: spec.path, body: spec.finalBody },
+        ]);
+        let callsLeft = spec.toolRounds;
+        afterToolExecution = () => {
+            callsLeft -= 1;
+            if (callsLeft === 0) jump(TOOL_LOOP_DEADLINE_MS + 1_000);
+        };
 
-    expect(executions.length === spec.maxToolRounds, `${spec.label}: ${spec.maxToolRounds} tool rounds run (got ${executions.length})`);
-    expect(
-        recordedRequests.length === spec.maxToolRounds + 1,
-        `${spec.label}: one final request follows (got ${recordedRequests.length})`
-    );
-    expect(
-        recordedRequests.slice(0, -1).every((request) => spec.offersTools(request.body)),
-        `${spec.label}: every tool round offers the tools`
-    );
-    const finalRequest = recordedRequests.at(-1)?.body ?? {};
-    expect(
-        spec.forbidsTools(finalRequest),
-        `${spec.label}: the final request takes the tools away (got ${json(Object.keys(finalRequest))})`
-    );
-    expect(lines.some((line) => line.includes('Tool round limit reached')), `${spec.label}: the reason is logged`);
-    const done = chunks.at(-1);
-    expect(
-        textOf(chunks) === 'Enough lookups.' &&
-            done?.type === 'done' &&
-            json(done.agentStats?.toolUsage) === json([{ name: 'lookup_weather', count: spec.maxToolRounds }]),
-        `${spec.label}: the final answer streams and the tally covers every round (got ${json(done)})`
-    );
+        const { result: chunks, lines } = await captureConsole(async () => drain(await spec.send()));
+
+        expect(executions.length === spec.toolRounds, `${spec.label}: ${spec.toolRounds} tool rounds run (got ${executions.length})`);
+        expect(
+            recordedRequests.length === spec.toolRounds + 1,
+            `${spec.label}: one final request follows (got ${recordedRequests.length})`
+        );
+        expect(
+            recordedRequests.slice(0, -1).every((request) => spec.offersTools(request.body)),
+            `${spec.label}: every tool round offers the tools`
+        );
+        const finalRequest = recordedRequests.at(-1)?.body ?? {};
+        expect(
+            spec.forbidsTools(finalRequest),
+            `${spec.label}: the final request takes the tools away (got ${json(Object.keys(finalRequest))})`
+        );
+        expect(
+            lines.some((line) => line.includes(`Tool loop deadline (${Math.round(TOOL_LOOP_DEADLINE_MS / 1000)}s) passed`)),
+            `${spec.label}: the reason is logged (got ${json(lines)})`
+        );
+        const finalRequestJson = JSON.stringify(finalRequest);
+        expect(
+            finalRequestJson.includes(`本次回复已调用工具 ${spec.toolRounds} 次`) &&
+                finalRequestJson.includes('不能再调用工具'),
+            `${spec.label}: the last tool result says how many calls it made and that the next step is the answer`
+        );
+        const done = chunks.at(-1);
+        expect(
+            textOf(chunks) === 'Enough lookups.' &&
+                done?.type === 'done' &&
+                json(done.agentStats?.toolUsage) === json([{ name: 'lookup_weather', count: spec.toolRounds }]),
+            `${spec.label}: the final answer streams and the tally covers every round (got ${json(done)})`
+        );
+    });
 };
 
 const cases: Array<{ name: string; body: () => Promise<void> }> = [
@@ -928,12 +969,12 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
         },
     },
     {
-        name: 'openai stops offering tools after the round limit',
+        name: 'openai takes the tools away once the deadline has passed',
         body: () =>
-            expectRoundLimit({
+            expectDeadlineFinal({
                 label: 'openai',
                 path: '/v1/responses',
-                maxToolRounds: MAX_TOOL_ROUNDS,
+                toolRounds: 2,
                 toolRoundBody: responsesToolRoundBody,
                 finalBody: responsesAnswerBody('Enough lookups.'),
                 send: () =>
@@ -954,12 +995,12 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
             }),
     },
     {
-        name: 'anthropic stops offering tools after the round limit',
+        name: 'anthropic takes the tools away once the deadline has passed',
         body: () =>
-            expectRoundLimit({
+            expectDeadlineFinal({
                 label: 'anthropic',
                 path: '/v1/messages',
-                maxToolRounds: MAX_TOOL_ROUNDS,
+                toolRounds: 2,
                 toolRoundBody: (round) => messagesToolRoundBody(round),
                 finalBody: messagesAnswerBody('Enough lookups.'),
                 send: () =>
@@ -973,12 +1014,12 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
             }),
     },
     {
-        name: 'deepseek stops offering tools after the round limit',
+        name: 'deepseek takes the tools away once the deadline has passed',
         body: () =>
-            expectRoundLimit({
+            expectDeadlineFinal({
                 label: 'deepseek',
                 path: '/v1/chat/completions',
-                maxToolRounds: MAX_TOOL_ROUNDS,
+                toolRounds: 2,
                 toolRoundBody: chatToolRoundBody,
                 finalBody: chatAnswerBody('Enough lookups.'),
                 send: () =>
@@ -992,7 +1033,7 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
             }),
     },
     {
-        name: 'mimo stops offering tools after the round limit, and a filtered final round still fails',
+        name: 'mimo takes the tools away once the deadline has passed, and a filtered final round still fails',
         body: async () => {
             const sendToMimo = () =>
                 new MimoPlatform().sendMessage(userTurn('Keep looking'), {
@@ -1000,10 +1041,10 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
                     timeout: 20000,
                     tools: turnTools,
                 });
-            await expectRoundLimit({
+            await expectDeadlineFinal({
                 label: 'mimo',
                 path: '/v1/chat/completions',
-                maxToolRounds: MAX_TOOL_ROUNDS,
+                toolRounds: 2,
                 toolRoundBody: chatToolRoundBody,
                 finalBody: chatAnswerBody('Enough lookups.'),
                 send: sendToMimo,
@@ -1011,20 +1052,28 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
                 forbidsTools: (body) => body.tool_choice === 'none' && json(body.thinking) === json({ type: 'enabled' }),
             });
 
-            resetStub([
-                ...Array.from({ length: MAX_TOOL_ROUNDS }, (_, round) => ({ path: '/v1/chat/completions', body: chatToolRoundBody(round) })),
-                {
-                    path: '/v1/chat/completions',
-                    body: chatBody([chatChunk({ content: MIMO_CONTENT_FILTER_NOTICE }, 'content_filter')]),
-                },
-            ]);
-            const { result: failure } = await captureConsole(async () =>
-                drain(await sendToMimo()).then(
-                    () => 'no error',
-                    (error: Error) => error.message
-                )
-            );
-            expect(failure.includes('风控'), `the filtered final round ends as the readable error (got ${json(failure)})`);
+            await withFakeClock(async (jump) => {
+                resetStub([
+                    { path: '/v1/chat/completions', body: chatToolRoundBody(0) },
+                    { path: '/v1/chat/completions', body: chatToolRoundBody(1) },
+                    {
+                        path: '/v1/chat/completions',
+                        body: chatBody([chatChunk({ content: MIMO_CONTENT_FILTER_NOTICE }, 'content_filter')]),
+                    },
+                ]);
+                let callsLeft = 2;
+                afterToolExecution = () => {
+                    callsLeft -= 1;
+                    if (callsLeft === 0) jump(TOOL_LOOP_DEADLINE_MS + 1_000);
+                };
+                const { result: failure } = await captureConsole(async () =>
+                    drain(await sendToMimo()).then(
+                        () => 'no error',
+                        (error: Error) => error.message
+                    )
+                );
+                expect(failure.includes('风控'), `the filtered final round ends as the readable error (got ${json(failure)})`);
+            });
         },
     },
     {
@@ -1079,7 +1128,6 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
                 drain(
                     runToolLoop({
                         tools: turnTools,
-                        maxToolRounds: MAX_TOOL_ROUNDS,
                         deadlineMs: 50,
                         logPrefix: '[offline]',
                         sendRound: async (roundIndex, final) => {

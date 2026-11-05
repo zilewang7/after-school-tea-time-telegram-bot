@@ -15,7 +15,6 @@ import {
     isMimoContentFilterNoticePrefix,
 } from './mimo-content-filter.js';
 import {
-    MAX_TOOL_ROUNDS,
     runToolLoop,
     toChatCompletionTools,
     type ToolCall,
@@ -161,11 +160,10 @@ export class MimoPlatform extends BasePlatform {
 
         yield* runToolLoop<MimoToolRound>({
             tools,
-            maxToolRounds: MAX_TOOL_ROUNDS,
             signal,
             logPrefix: '[mimo]',
             sendRound: async (roundIndex, final) => {
-                const roundLabel = final ? 'final round' : `round ${roundIndex + 1}/${MAX_TOOL_ROUNDS}`;
+                const roundLabel = final ? 'final round' : `round ${roundIndex + 1}`;
                 console.log(`[mimo] Tool ${roundLabel}, messages: ${currentMessages.length}`);
 
                 const stream = await this.sendWithRetry(

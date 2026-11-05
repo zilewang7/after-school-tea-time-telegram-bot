@@ -399,27 +399,31 @@ const cases = [
         },
     },
     {
-        name: 'the remaining rounds and wall clock are appended to what the model reads',
+        name: 'the calls made so far and the wall clock are appended to what the model reads',
         body: async (): Promise<void> => {
-            const { toolRoundsLeftNotice, toolTimeNotice, withToolBudget } = await import(
+            const { toolRoundNotice, toolTimeNotice, withToolBudget } = await import(
                 '../../src/ai/tools/tool-round.js'
             );
             const base: ToolResult = { content: 'sunny in Paris', isError: false, images: [], record: null };
             const call: ToolCall = { id: 'call_1', name: 'lookup', argumentsJson: '{}' };
             const [decorated] = withToolBudget([{ call, result: base }], {
-                roundsLeft: 5,
+                toolCalls: 7,
+                finalRound: false,
                 elapsedMs: 95_000,
                 deadlineMs: 300_000,
             });
             expect(
                 decorated?.result.content ===
-                    `sunny in Paris\n\n${toolRoundsLeftNotice(5)}\n${toolTimeNotice({ elapsedMs: 95_000, deadlineMs: 300_000 })}`,
-                `both budgets ride in the result (got ${decorated?.result.content})`
+                    `sunny in Paris\n\n${toolRoundNotice(7, false)}\n${toolTimeNotice({ elapsedMs: 95_000, deadlineMs: 300_000 })}`,
+                `both facts ride in the result (got ${decorated?.result.content})`
             );
-            expect(toolRoundsLeftNotice(5).includes('5'), 'the number is the one passed');
             expect(
-                toolRoundsLeftNotice(0).includes('不能再调用工具'),
-                'zero says the next step must be the answer'
+                toolRoundNotice(7, false).includes('7') && !toolRoundNotice(7, false).includes('不能再调用工具'),
+                'a normal round says how many calls were made, not how many are left'
+            );
+            expect(
+                toolRoundNotice(7, true).includes('7') && toolRoundNotice(7, true).includes('不能再调用工具'),
+                'the last round keeps the count and says the next step must be the answer'
             );
             expect(
                 toolTimeNotice({ elapsedMs: 95_000, deadlineMs: 300_000 }).includes('95s / 共 300s') &&

@@ -60,8 +60,6 @@ const { geminiPartToChunk } = await import('../../src/ai/platforms/gemini/gemini
 const { isFunctionDeclarationError, toGeminiToolList, toRoundConfig, withoutFunctionDeclarations } = await import(
     '../../src/ai/platforms/gemini/gemini-tool-request.js'
 );
-const { GEMINI_MAX_ROUNDS } = await import('../../src/ai/platforms/gemini/gemini-tool-loop.js');
-const { MAX_TOOL_ROUNDS } = await import('../../src/ai/tools/index.js');
 const { GEMINI_IMAGE_MODEL } = await import('../../src/config/models.js');
 
 // ---------------------------------------------------------------------------
@@ -604,7 +602,6 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
             expect(json(final.toolConfig) === '{"functionCallingConfig":{"mode":"NONE"}}', 'the final round switches function calling off');
             const finalWithout = toRoundConfig(baseConfig, { contents: [], tools: withoutFunctionDeclarations(toolList), final: true });
             expect(finalWithout.toolConfig === undefined, 'no toolConfig when nothing is declared');
-            expect(GEMINI_MAX_ROUNDS === MAX_TOOL_ROUNDS + 1, 'MAX_TOOL_ROUNDS tool rounds plus the final one');
         },
     },
     {
@@ -834,9 +831,9 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
         },
     },
     {
-        name: `the round limit: only round ${GEMINI_MAX_ROUNDS - 1} carries the notice, round ${GEMINI_MAX_ROUNDS} goes out with mode NONE and answers`,
+        name: `no round cap: 60 tool rounds all run, and only the deadline makes a round final`,
         body: async () => {
-            const toolRounds = GEMINI_MAX_ROUNDS - 1;
+            const toolRounds = 60;
             reset([
                 ...Array.from({ length: toolRounds }, (_, index) => lookupRound(index + 1)),
                 sse(roundEvents([[textPart('The code word is AZALEA-42.')], [signedEmptyText('l-end')]])),
@@ -844,122 +841,96 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
 
             const { chunks, lines } = await runTurn({ tools: turnTools });
 
-            expect(recordedRequests.length === GEMINI_MAX_ROUNDS, `the limit (got ${recordedRequests.length})`);
+            expect(
+                recordedRequests.length === toolRounds + 1,
+                `every round ran, then the answer (got ${recordedRequests.length})`
+            );
             expect(
                 recordedRequests.slice(0, toolRounds).every((request) => toolConfigOf(request) === undefined),
-                `rounds 1-${toolRounds} may call functions`
+                'no count made any round final'
             );
-            expect(isModeNone(recordedRequests[toolRounds]), `round ${GEMINI_MAX_ROUNDS} sets mode NONE`);
-            expect(declarationNamesOf(recordedRequests[toolRounds]).length === 3, 'with the same declarations');
-            expect(contentsOf(recordedRequests[toolRounds]).length === toolRounds * 2 + 1, `all ${toolRounds} tool rounds replayed`);
-            const expectedNotices = Array.from({ length: GEMINI_MAX_ROUNDS }, (_, index) =>
-                index === toolRounds
-                    ? [...Array<string>(toolRounds - 1).fill('0/1'), '1/1']
-                    : Array<string>(index).fill('0/1')
+            expect(toolConfigOf(recordedRequests[toolRounds]) === undefined, 'and the answering round still offers the tools');
+            expect(executions.length === toolRounds, `${toolRounds} tool rounds ran (got ${executions.length})`);
+            expect(
+                json(recordedRequests.map(noticePatternOf)) ===
+                    json(
+                        Array.from({ length: toolRounds + 1 }, (_, index) =>
+                            index === 0 ? [] : Array<string>(index).fill('0/1')
+                        )
+                    ),
+                'no round carries the last-round notice'
             );
             expect(
-                json(recordedRequests.map(noticePatternOf)) === json(expectedNotices),
-                `only the round before the final one carries the notice (got ${json(recordedRequests.map(noticePatternOf))})`
+                lines.every((line) => !line.includes('forcing final answer')),
+                `the deadline never fired (got ${json(lines)})`
             );
-            expect(
-                json(recordedRequests.map(noticeCountOf)) === json([...Array<number>(toolRounds).fill(0), 1]),
-                'and the notice appears nowhere else'
-            );
-            const lastToolRoundResponses = partsOf(contentsOf(recordedRequests[toolRounds])[toolRounds * 2]);
-            expect(
-                canonical(lastToolRoundResponses) ===
-                    canonical([
-                        {
-                            functionResponse: {
-                                id: `call_l${toolRounds}`,
-                                name: 'lookup_a',
-                                response: { output: `key of t${toolRounds} is K-7731`, notice: LAST_TOOL_ROUND_NOTICE },
-                            },
-                        },
-                    ]),
-                `next to the round ${toolRounds} output (got ${json(lastToolRoundResponses)})`
-            );
-            expect(executions.length === toolRounds, `${toolRounds} tool rounds ran`);
-            expect(
-                lines.some(
-                    (line) => line.includes('Tool round limit reached') && line.includes(`notice on the round ${toolRounds} responses`)
-                ),
-                'the limit and the notice are logged'
-            );
-            expect(textOf(chunks) === 'The code word is AZALEA-42.' && doneChunksOf(chunks).length === 1, 'the final round answers, one done');
-            expect(canonical(donePartsOf(chunks)) === canonical([signedEmptyText('l-end')]), "rawResponse is the final round's last chunk");
+            expect(textOf(chunks) === 'The code word is AZALEA-42.' && doneChunksOf(chunks).length === 1, 'the answer ends the reply');
             expect(
                 json(doneChunksOf(chunks)[0]?.agentStats?.toolUsage) === json([{ name: 'lookup_a', count: toolRounds }]),
                 `${toolRounds} calls counted`
-            );
-            expect(
-                JSON.stringify(lastToolRoundResponses).includes('不能再调用工具'),
-                'the last tool result also tells the model no more rounds are left'
             );
         },
     },
     {
         name: 'a final round with text and calls: the calls never run, one more request, both texts shown apart',
         body: async () => {
-            const toolRounds = GEMINI_MAX_ROUNDS - 1;
-            const finalIndex = toolRounds;
-            const retryIndex = toolRounds + 1;
-            const finalRound = [
-                [textPart('Let me check one more thing.')],
-                [callPart('lookup_b', { key: 'K-7731' }, 'l5', 'call_l5'), signedEmptyText('l5-end')],
-            ];
-            reset([
-                ...Array.from({ length: toolRounds }, (_, index) => lookupRound(index + 1)),
-                sse(roundEvents(finalRound)),
-                sse(roundEvents([[textPart('The code word is AZALEA-42.')], [signedEmptyText('l6-end')]])),
-            ]);
+            await withFakeClock(async (jump) => {
+                const finalRound = [
+                    [textPart('Let me check one more thing.')],
+                    [callPart('lookup_b', { key: 'K-7731' }, 'l5', 'call_l5'), signedEmptyText('l5-end')],
+                ];
+                reset([
+                    callThenDeadline(jump),
+                    sse(roundEvents(finalRound)),
+                    sse(roundEvents([[textPart('The code word is AZALEA-42.')], [signedEmptyText('l6-end')]])),
+                ]);
 
-            const { chunks, lines } = await runTurn({ tools: turnTools });
+                const { chunks, lines } = await runTurn({ tools: turnTools });
 
-            expect(recordedRequests.length === GEMINI_MAX_ROUNDS + 1, `the limit plus one retry (got ${recordedRequests.length})`);
-            expect(
-                isModeNone(recordedRequests[finalIndex]) && isModeNone(recordedRequests[retryIndex]),
-                'both of the last two with function calling off'
-            );
-            const retryContents = contentsOf(recordedRequests[retryIndex]);
-            const finalContents = contentsOf(recordedRequests[finalIndex]);
-            expect(
-                canonical(retryContents.slice(0, finalContents.length)) === canonical(finalContents),
-                'the retry builds on what the final round sent, the notice replayed as is'
-            );
-            expect(
-                canonical(partsOf(retryContents[finalContents.length])) === canonical(partsOfRound(finalRound)),
-                'the final round replayed verbatim: text, call, signatures'
-            );
-            expect(
-                canonical(partsOf(retryContents[finalContents.length + 1])) ===
-                    canonical([functionCallingOffResponse('lookup_b', 'call_l5')]),
-                `its call answered as not run (got ${json(partsOf(retryContents[finalContents.length + 1]))})`
-            );
-            expect(
-                json(noticePatternOf(recordedRequests[retryIndex])) ===
-                    json([...Array<string>(toolRounds - 1).fill('0/1'), '1/1', '0/1']) &&
-                    noticeCountOf(recordedRequests[retryIndex]) === 1,
-                `the not-run answers carry no notice (got ${json(noticePatternOf(recordedRequests[retryIndex]))})`
-            );
-            expect(
-                executions.length === toolRounds && executions.every((execution) => execution.name === 'lookup_a'),
-                'the final round call never ran'
-            );
-            expect(
-                textOf(chunks) === 'Let me check one more thing.\n\nThe code word is AZALEA-42.',
-                `the text of both rounds shows, a blank line apart (got ${json(textOf(chunks))})`
-            );
-            expect(
-                lines.some((line) => line.includes(`final round ${retryIndex} still made 1 function call(s) after some text`)),
-                'the retry is logged'
-            );
-            const done = doneChunksOf(chunks);
-            expect(
-                done.length === 1 && json(done[0]?.agentStats?.toolUsage) === json([{ name: 'lookup_a', count: toolRounds }]),
-                'one done, and the call that never ran is not counted'
-            );
-            expect(canonical(donePartsOf(chunks)) === canonical([signedEmptyText('l6-end')]), 'rawResponse is the last chunk of the retry');
+                expect(recordedRequests.length === 3, `round 1, the final round, one more (got ${recordedRequests.length})`);
+                expect(
+                    toolConfigOf(recordedRequests[0]) === undefined && isModeNone(recordedRequests[1]) && isModeNone(recordedRequests[2]),
+                    'the last two with function calling off'
+                );
+                const retryContents = contentsOf(recordedRequests[2]);
+                const finalContents = contentsOf(recordedRequests[1]);
+                expect(
+                    canonical(retryContents.slice(0, finalContents.length)) === canonical(finalContents),
+                    'the retry builds on what the final round sent, the notice replayed as is'
+                );
+                expect(
+                    canonical(partsOf(retryContents[finalContents.length])) === canonical(partsOfRound(finalRound)),
+                    'the final round replayed verbatim: text, call, signatures'
+                );
+                expect(
+                    canonical(partsOf(retryContents[finalContents.length + 1])) ===
+                        canonical([functionCallingOffResponse('lookup_b', 'call_l5')]),
+                    `its call answered as not run (got ${json(partsOf(retryContents[finalContents.length + 1]))})`
+                );
+                expect(
+                    json(noticePatternOf(recordedRequests[2])) === json(['1/1', '0/1']) &&
+                        noticeCountOf(recordedRequests[2]) === 1,
+                    `the not-run answer carries no notice (got ${json(noticePatternOf(recordedRequests[2]))})`
+                );
+                expect(
+                    executions.length === 1 && executions.every((execution) => execution.name === 'lookup_a'),
+                    'the final round call never ran'
+                );
+                expect(
+                    textOf(chunks) === 'Let me check one more thing.\n\nThe code word is AZALEA-42.',
+                    `the text of both rounds shows, a blank line apart (got ${json(textOf(chunks))})`
+                );
+                expect(
+                    lines.some((line) => line.includes('final round 2 still made 1 function call(s) after some text')),
+                    'the retry is logged'
+                );
+                const done = doneChunksOf(chunks);
+                expect(
+                    done.length === 1 && json(done[0]?.agentStats?.toolUsage) === json([{ name: 'lookup_a', count: 1 }]),
+                    'one done, and the call that never ran is not counted'
+                );
+                expect(canonical(donePartsOf(chunks)) === canonical([signedEmptyText('l6-end')]), 'rawResponse is the last chunk of the retry');
+            });
         },
     },
     {
@@ -1109,32 +1080,43 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
         },
     },
     {
-        name: 'the round limit plus the extra request: one more request at most',
+        name: 'the retry after a deadline-final round replays every tool round',
         body: async () => {
-            const toolRounds = GEMINI_MAX_ROUNDS - 1;
-            const toolRound = (index: number) =>
-                sse(roundEvents([[callPart('lookup_a', { topic: `t${index}` }, `x${index}`, `call_x${index}`), textPart('')]]));
-            reset([
-                ...Array.from({ length: toolRounds }, (_, index) => toolRound(index + 1)),
-                sse(roundEvents([[callPart('lookup_b', { key: 'K' }, 'x5', 'call_x5'), textPart('')]])),
-                sse(roundEvents([[textPart('Here is what the lookups found.')]])),
-            ]);
+            await withFakeClock(async (jump) => {
+                const toolRounds = 4;
+                const toolRound = (index: number) =>
+                    sse(roundEvents([[callPart('lookup_a', { topic: `t${index}` }, `x${index}`, `call_x${index}`), textPart('')]]));
+                reset([
+                    ...Array.from({ length: toolRounds }, (_, index) => toolRound(index + 1)),
+                    // The deadline passes while the fifth tool round streams
+                    sse(roundEvents([[callPart('lookup_b', { key: 'K' }, 'x5', 'call_x5'), textPart('')]]), () => {
+                        jump(TOOL_LOOP_DEADLINE_MS + 1_000);
+                    }),
+                    sse(roundEvents([[callPart('lookup_b', { key: 'K' }, 'x6', 'call_x6'), textPart('')]])),
+                    sse(roundEvents([[textPart('Here is what the lookups found.')]])),
+                ]);
 
-            const { chunks } = await runTurn({ tools: turnTools });
+                const { chunks } = await runTurn({ tools: turnTools });
 
-            expect(recordedRequests.length === GEMINI_MAX_ROUNDS + 1, `the limit plus one (got ${recordedRequests.length})`);
-            expect(
-                isModeNone(recordedRequests[toolRounds]) && isModeNone(recordedRequests[toolRounds + 1]),
-                'both of the last two with function calling off'
-            );
-            expect(contentsOf(recordedRequests[toolRounds + 1]).length === toolRounds * 2 + 3, 'the retry replays every round');
-            expect(
-                json(noticePatternOf(recordedRequests[toolRounds + 1])) ===
-                    json([...Array<string>(toolRounds - 1).fill('0/1'), '1/1', '0/1']),
-                `the notice on round ${toolRounds} only (got ${json(noticePatternOf(recordedRequests[toolRounds + 1]))})`
-            );
-            expect(executions.length === toolRounds, 'the final round calls never ran');
-            expect(textOf(chunks) === 'Here is what the lookups found.', 'and the retry answers');
+                const finalIndex = toolRounds + 1;
+                const retryIndex = toolRounds + 2;
+                expect(recordedRequests.length === retryIndex + 1, `five tool rounds, the final one, one more (got ${recordedRequests.length})`);
+                expect(
+                    isModeNone(recordedRequests[finalIndex]) && isModeNone(recordedRequests[retryIndex]),
+                    'both of the last two with function calling off'
+                );
+                expect(
+                    contentsOf(recordedRequests[retryIndex]).length === (toolRounds + 1) * 2 + 3,
+                    'the retry replays every tool round'
+                );
+                expect(
+                    json(noticePatternOf(recordedRequests[retryIndex])) ===
+                        json([...Array<string>(toolRounds).fill('0/1'), '1/1', '0/1']),
+                    `the notice on round ${toolRounds + 1} only (got ${json(noticePatternOf(recordedRequests[retryIndex]))})`
+                );
+                expect(executions.length === toolRounds + 1, 'the final round calls never ran');
+                expect(textOf(chunks) === 'Here is what the lookups found.', 'and the retry answers');
+            });
         },
     },
     {

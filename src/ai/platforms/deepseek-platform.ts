@@ -6,7 +6,6 @@ import type { ChatCompletionChunk } from 'openai/resources';
 import { BasePlatform } from './base-platform.js';
 import { transformToOpenAI, mergeConsecutiveMessages } from '../message-transformer.js';
 import {
-    MAX_TOOL_ROUNDS,
     runToolLoop,
     toChatCompletionTools,
     type ToolCall,
@@ -143,7 +142,6 @@ export class DeepSeekPlatform extends BasePlatform {
 
         yield* runToolLoop<DeepSeekToolRound>({
             tools,
-            maxToolRounds: MAX_TOOL_ROUNDS,
             signal,
             logPrefix: '[deepseek]',
             sendRound: async (roundIndex, final) => {

@@ -7,17 +7,15 @@
  * function call is answered with an error, so the chain never carries an
  * unanswered call and the model learns the tool is not there.
  *
- * At most MAX_ROUNDS rounds: once the last one is due, or the reply is past
- * its deadline, the next round goes out with `tool_choice: 'none'`, so a reply
- * never ends on tool records without an answer. A stop ends the loop between
- * rounds.
+ * Rounds are unbounded: once the reply is past its deadline, the next round
+ * goes out with `tool_choice: 'none'`, so a reply never ends on tool records
+ * without an answer. A stop ends the loop between rounds.
  */
 import type { Response, ResponseStreamEvent } from 'openai/resources/responses/responses';
 import {
     createRoundTextSeparator,
     createToolUsageTally,
     finalRoundReason,
-    MAX_TOOL_ROUNDS,
     runToolRound,
     withToolBudget,
     TOOL_LOOP_DEADLINE_MS,
@@ -36,9 +34,6 @@ import {
     type GrokResponseRequest,
 } from './grok-request.js';
 import { streamGrokRound } from './grok-round.js';
-
-/** Rounds of one reply, the final tool-less one included */
-const MAX_ROUNDS = MAX_TOOL_ROUNDS + 1;
 
 export interface GrokToolLoopOptions {
     readonly model: string;
@@ -89,6 +84,7 @@ export async function* runGrokToolLoop(
     let stream = options.firstStream;
     let final = false;
     let roundCount = 0;
+    let executedCallCount = 0;
     let lastResponse: Response | null = null;
 
     for (;;) {
@@ -121,21 +117,22 @@ export async function* runGrokToolLoop(
         const offeredCalls = offeredCallsOf(round.functionCalls, clientToolNames, roundCount);
         console.log(`[grok] Round ${roundCount}: running ${offeredCalls.length} client tool call(s)`);
         const executedCalls = yield* runToolRound(tools, offeredCalls, tally, signal);
+        executedCallCount += executedCalls.length;
 
         // A stopped reply sends nothing further
         if (signal?.aborted) {
             break;
         }
 
-        // roundCount rounds are done: the coming one has that 0-based index
-        const finalReason = finalRoundReason(roundCount, MAX_ROUNDS - 1, deadlineAt, deadlineMs);
+        // Judged after the calls ran: they may have used up the clock
+        const finalReason = finalRoundReason(deadlineAt, deadlineMs);
         if (finalReason !== null) {
             console.log(`[grok] ${finalReason}, forcing final answer`);
             final = true;
         }
-        const roundsLeft = final ? 0 : Math.max(0, MAX_ROUNDS - 1 - roundCount);
         const answeredCalls = withToolBudget(executedCalls, {
-            roundsLeft,
+            toolCalls: executedCallCount,
+            finalRound: final,
             elapsedMs: deadlineMs - Math.max(0, deadlineAt - Date.now()),
             deadlineMs,
         });

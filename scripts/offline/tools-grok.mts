@@ -12,7 +12,6 @@
 import { createServer } from 'node:http';
 import { expect, reportResults, runCase, type CaseResult } from './harness.mts';
 import type { ResponseStreamEvent } from 'openai/resources/responses/responses';
-import { MAX_TOOL_ROUNDS } from '../../src/ai/tools/index.js';
 import type { StreamChunk, UnifiedMessage } from '../../src/ai/types.js';
 import type { ToolHandler, TurnTools } from '../../src/ai/tools/index.js';
 
@@ -70,7 +69,7 @@ const { runGrokToolLoop } = await import('../../src/ai/platforms/grok/grok-tool-
 const { buildCandidateRequests, buildSearchTools, toGrokFunctionTools } = await import(
     '../../src/ai/platforms/grok/grok-request.js'
 );
-const { createTurnTools, NO_TURN_TOOLS } = await import('../../src/ai/tools/index.js');
+const { createTurnTools, NO_TURN_TOOLS, TOOL_LOOP_DEADLINE_MS } = await import('../../src/ai/tools/index.js');
 
 const MODEL = 'grok-4.7';
 const MULTI_AGENT_MODEL = 'grok-4.20-multi-agent-0309';
@@ -78,6 +77,9 @@ const MULTI_AGENT_MODEL = 'grok-4.20-multi-agent-0309';
 // ---- fake tools ----
 
 const executions: Array<{ name: string; args: Readonly<Record<string, unknown>> }> = [];
+
+/** Set by a deadline case: runs after each tool execution, may move the clock */
+let afterToolExecution: (() => void) | null = null;
 
 /** Shaped like an MCP tool schema, `$schema` included: the wire format must strip it */
 const WEATHER_SCHEMA = {
@@ -96,6 +98,8 @@ const weatherTool: ToolHandler = {
     },
     execute: async (args) => {
         executions.push({ name: 'lookup_weather', args });
+        // The clock may run out here, between two rounds
+        afterToolExecution?.();
         return { content: `sunny in ${String(args.city)}`, isError: false, images: [], record: null };
     },
 };
@@ -543,52 +547,75 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
         },
     },
     {
-        name: 'the round after the tool rounds is the tool-less one',
+        name: 'the round after the deadline is the tool-less one, however many rounds ran before it',
         body: async () => {
-            const toolRounds = MAX_TOOL_ROUNDS;
-            reset(
-                scripted(
-                    ...Array.from({ length: toolRounds }, (_, index) =>
-                        toolRound(`resp_${index + 1}`, `call_${index + 1}`)
-                    ),
-                    answerRound(`resp_${toolRounds + 1}`, 'Enough lookups.')
-                )
-            );
+            const realNow = Date.now.bind(Date);
+            let offsetMs = 0;
+            Date.now = () => realNow() + offsetMs;
+            try {
+                const toolRounds = 2;
+                reset(
+                    scripted(
+                        ...Array.from({ length: toolRounds }, (_, index) =>
+                            toolRound(`resp_${index + 1}`, `call_${index + 1}`)
+                        ),
+                        answerRound(`resp_${toolRounds + 1}`, 'Enough lookups.')
+                    )
+                );
+                // The clock runs out while the last tool round's call executes
+                let callsLeft = toolRounds;
+                afterToolExecution = () => {
+                    callsLeft -= 1;
+                    if (callsLeft === 0) offsetMs += TOOL_LOOP_DEADLINE_MS + 1_000;
+                };
 
-            const { result: chunks, lines } = await captureConsole(async () => drain(await sendGrok(MODEL, turnTools)));
+                const { result: chunks, lines } = await captureConsole(async () => drain(await sendGrok(MODEL, turnTools)));
 
-            expect(
-                recordedRequests.length === toolRounds + 1,
-                `${toolRounds + 1} rounds at most (got ${recordedRequests.length})`
-            );
-            expect(executions.length === toolRounds, `${toolRounds} tool rounds ran (got ${executions.length})`);
-            expect(
-                recordedRequests.slice(0, toolRounds).every((request) => !('tool_choice' in request.body)),
-                'the tool rounds leave tool_choice alone'
-            );
-            const finalRequest = recordedRequests[toolRounds];
-            expect(
-                finalRequest?.body.tool_choice === 'none' &&
-                    finalRequest.body.previous_response_id === `resp_${toolRounds}` &&
-                    json(finalRequest.body.input) ===
-                        json([
-                            {
-                                type: 'function_call_output',
-                                call_id: `call_${toolRounds}`,
-                                output: 'sunny in Paris',
-                            },
-                        ]) &&
-                    json(toolsOf(finalRequest)) === json(toolsOf(recordedRequests[0])),
-                `the final round switches the declared tools off (got ${json(finalRequest?.body)})`
-            );
-            expect(lines.some((line) => line.includes('Tool round limit reached')), 'the reason is logged');
-            const done = chunks.at(-1);
-            expect(
-                textOf(chunks) === 'Enough lookups.' &&
-                    done?.type === 'done' &&
-                    json(done.agentStats?.toolUsage) === json([{ name: 'lookup_weather', count: toolRounds }]),
-                `the answer streams and the tally covers every round (got ${json(done?.agentStats)})`
-            );
+                expect(
+                    recordedRequests.length === toolRounds + 1,
+                    `${toolRounds} tool rounds and one final (got ${recordedRequests.length})`
+                );
+                expect(executions.length === toolRounds, `${toolRounds} tool rounds ran (got ${executions.length})`);
+                expect(
+                    recordedRequests.slice(0, toolRounds).every((request) => !('tool_choice' in request.body)),
+                    'the tool rounds leave tool_choice alone'
+                );
+                const finalRequest = recordedRequests[toolRounds];
+                expect(
+                    finalRequest?.body.tool_choice === 'none' &&
+                        finalRequest.body.previous_response_id === `resp_${toolRounds}` &&
+                        json(finalRequest.body.input) ===
+                            json([
+                                {
+                                    type: 'function_call_output',
+                                    call_id: `call_${toolRounds}`,
+                                    output: 'sunny in Paris',
+                                },
+                            ]) &&
+                        json(toolsOf(finalRequest)) === json(toolsOf(recordedRequests[0])),
+                    `the final round switches the declared tools off (got ${json(finalRequest?.body)})`
+                );
+                const finalRequestJson = JSON.stringify(finalRequest?.body ?? {});
+                expect(
+                    finalRequestJson.includes(`本次回复已调用工具 ${toolRounds} 次`) &&
+                        finalRequestJson.includes('不能再调用工具'),
+                    `the last tool result counts the calls and says the next step is the answer (got ${json(finalRequest?.body)})`
+                );
+                expect(
+                    lines.some((line) => line.includes(`deadline (${Math.round(TOOL_LOOP_DEADLINE_MS / 1000)}s) passed`)),
+                    `the reason is logged (got ${json(lines)})`
+                );
+                const done = chunks.at(-1);
+                expect(
+                    textOf(chunks) === 'Enough lookups.' &&
+                        done?.type === 'done' &&
+                        json(done.agentStats?.toolUsage) === json([{ name: 'lookup_weather', count: toolRounds }]),
+                    `the answer streams and the tally covers every round (got ${json(done?.agentStats)})`
+                );
+            } finally {
+                Date.now = realNow;
+                afterToolExecution = null;
+            }
         },
     },
     {
