@@ -84,16 +84,31 @@ const willReply = (ctx: Context): boolean => {
  * context tree (reply chain + /chat-added messages) plus every context
  * message's children. The children matter because media-group sub-images are
  * filtered out of the tree while their media still rides on it.
+ *
+ * A message whose media was left out (`/chat r` videos) is not waited for: its
+ * bytes are never used, so waiting would only buy the delay the command
+ * skipped. Such a message is always in the tree, so the ids dropped here cover
+ * the children lookup as well.
  */
 const collectContextMessageIds = async (
     chatId: number,
     history: ContextMessage[],
     selfId: number
 ): Promise<number[]> => {
-    const ids = new Set<number>([selfId, ...history.map((message) => message.messageId)]);
+    const omitted = new Set(
+        history.filter((message) => message.mediaOmitted).map((message) => message.messageId)
+    );
+    const ids = new Set<number>([
+        selfId,
+        ...history
+            .filter((message) => !omitted.has(message.messageId))
+            .map((message) => message.messageId),
+    ]);
     // Two bulk lookups (reply children + /chat links) instead of one query per node
     const children = await findChildMessageIds(chatId, [...ids]);
-    children.forEach((id) => ids.add(id));
+    children.forEach((id) => {
+        if (!omitted.has(id)) ids.add(id);
+    });
     return [...ids];
 };
 

@@ -110,11 +110,16 @@ const seedChatCommand = async (options: {
     links?: number[];
     text?: string | null;
     userName?: string;
+    /** The stored `/chat` mode: `a` (default), `r`, or a message count */
+    messageCount?: number | 'a' | 'r';
 }): Promise<number> =>
     seedMessage({
         replyToId: options.target,
         links: options.links,
-        chatCommand: JSON.stringify({ messageCount: 'a', userScope: { type: 'anyone', limit: 'a' } }),
+        chatCommand: JSON.stringify({
+            messageCount: options.messageCount ?? 'a',
+            userScope: { type: 'anyone', limit: 'a' },
+        }),
         text: options.text ?? null,
         userName: options.userName,
     });
@@ -426,6 +431,200 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
             expect(
                 JSON.stringify(idsOf(history)) === JSON.stringify([root, child]),
                 `walk terminates with each message once (got ${JSON.stringify(idsOf(history))})`
+            );
+        },
+    },
+    {
+        // A hint may carry a failure or backfill suffix, and `a video note`
+        // starts with the same words as `a video`: only a prefix test is safe.
+        name: 'a video hint is told apart from a GIF and a video file',
+        body: async () => {
+            const { isVideoMediaHint } = await import('../../src/reply/media-hint.js');
+            const videos = [
+                'a video',
+                'a video note',
+                'a video — too large to process, you cannot see it',
+                'a video note — recovered from history, the file itself is no longer available',
+            ];
+            for (const hint of videos) {
+                expect(isVideoMediaHint(hint), `${hint} counts as a video`);
+            }
+            const others = [
+                'an animation',
+                'a picture',
+                'a file: clip.mp4, video/mp4',
+                'a voice message',
+                'a sticker image',
+                null,
+                undefined,
+                '',
+            ];
+            for (const hint of others) {
+                expect(!isVideoMediaHint(hint), `${String(hint)} does not count as a video`);
+            }
+        },
+    },
+    {
+        // `/chat r` asks for "what did we just talk about", not for the videos
+        // posted in that stretch: a video keeps its words and loses its frames.
+        name: '/chat r attaches videos for their words only',
+        body: async () => {
+            const target = await seedMessage({ text: 'where the burst ends' });
+            const talk = await seedMessage({ text: 'just talk' });
+            const video = await seedMessage({ text: '看这个', mediaHint: 'a video' });
+            const note = await seedMessage({ text: 'round one', mediaHint: 'a video note' });
+            const gif = await seedMessage({ text: 'a gif', mediaHint: 'an animation' });
+            const picture = await seedMessage({ text: 'a photo', mediaHint: 'a picture' });
+            const command = await seedChatCommand({
+                target,
+                links: [talk, video, note, gif, picture],
+                messageCount: 'r',
+            });
+
+            const history = await queries.getRepliesHistory(OFFLINE_CHAT_ID, command, {
+                excludeSelf: false,
+            });
+            const omitted = idsOf(history.filter((message) => message.mediaOmitted));
+            expect(
+                JSON.stringify(omitted) === JSON.stringify([video, note]),
+                `only the videos lose their media (got ${JSON.stringify(omitted)})`
+            );
+            expect(
+                history.find((message) => message.messageId === video)?.text === '看这个',
+                'the caption still comes through'
+            );
+
+            // Control: the same hint attached by a plain `/chat a` keeps its media
+            const otherTarget = await seedMessage({ text: 'another conversation' });
+            const otherVideo = await seedMessage({ text: '另一个', mediaHint: 'a video' });
+            const plain = await seedChatCommand({ target: otherTarget, links: [otherVideo] });
+            const plainHistory = await queries.getRepliesHistory(OFFLINE_CHAT_ID, plain, {
+                excludeSelf: false,
+            });
+            expect(
+                !plainHistory.some((message) => message.mediaOmitted),
+                'a count / all summon is untouched'
+            );
+        },
+    },
+    {
+        // The message a `/chat r` replies to is the newest of that burst, so it
+        // is left out too — but only for that reply: answering the same video
+        // later is an ordinary question and must still see it.
+        name: 'the video a /chat r replies to is left out of that reply only',
+        body: async () => {
+            const anchor = await seedMessage({ text: '刚刚那个视频', mediaHint: 'a video' });
+            const command = await seedChatCommand({ target: anchor, messageCount: 'r' });
+
+            const atCommand = await queries.getRepliesHistory(OFFLINE_CHAT_ID, command, {
+                excludeSelf: false,
+            });
+            expect(
+                atCommand.find((message) => message.messageId === anchor)?.mediaOmitted === true,
+                'the anchor video stays out of the /chat r reply'
+            );
+            expect(
+                atCommand.find((message) => message.messageId === command)?.mediaOmitted === false,
+                'the command itself is not marked'
+            );
+
+            const later = await seedMessage({ replyToId: anchor, text: '这个视频里是什么' });
+            const atLater = await queries.getRepliesHistory(OFFLINE_CHAT_ID, later, {
+                excludeSelf: false,
+            });
+            expect(
+                atLater.find((message) => message.messageId === anchor)?.mediaOmitted === false,
+                'a later ordinary reply still sees the video'
+            );
+        },
+    },
+    {
+        // The model must still know a video was posted — it just cannot see it.
+        name: 'a /chat r video reaches the model as a line of text, not as a video',
+        body: async () => {
+            const { buildContext } = await import('../../src/reply/context-builder.js');
+            const capabilities = {
+                supportsImageInput: true,
+                supportsImageOutput: false,
+                supportsSystemPrompt: true,
+                requiresMessageMerge: false,
+                supportsThinking: false,
+                supportsGrounding: false,
+                supportsMediaInput: true,
+            };
+
+            const videoUniqueId = `offline-r-video-${takeMessageId()}`;
+            const plainUniqueId = `offline-a-video-${takeMessageId()}`;
+            await db.putCachedMedia({
+                fileUniqueId: videoUniqueId,
+                data: Buffer.from('video-bytes'),
+                sizeBytes: 11,
+                mime: 'video/mp4',
+                kind: 'video',
+                durationSeconds: 12,
+            });
+            await db.putCachedMedia({
+                fileUniqueId: plainUniqueId,
+                data: Buffer.from('other-video-bytes'),
+                sizeBytes: 17,
+                mime: 'video/mp4',
+                kind: 'video',
+                durationSeconds: 12,
+            });
+
+            const target = await seedMessage({ text: 'root of the burst' });
+            const video = await seedMessage({
+                text: '看这个',
+                mediaHint: 'a video',
+                fileUniqueId: videoUniqueId,
+            });
+            const command = await seedChatCommand({
+                target,
+                links: [video],
+                messageCount: 'r',
+            });
+
+            const row = await Message.findOne({
+                where: { chatId: OFFLINE_CHAT_ID, messageId: command },
+            });
+            if (!row) throw new Error('seeded /chat r command not found');
+            const { messages } = await buildContext(row, capabilities);
+            const parts = messages.flatMap((message) => message.content);
+            expect(
+                !parts.some((part) => part.type === 'media'),
+                'no video part is built for an omitted video'
+            );
+            const text = parts
+                .filter((part) => part.type === 'text')
+                .map((part) => part.text ?? '')
+                .join('\n');
+            expect(
+                text.includes('a video — not included in this context, you cannot see it'),
+                `the annotation says why it is missing (got ${JSON.stringify(text)})`
+            );
+            expect(text.includes('看这个'), 'the caption is still in the context');
+
+            // Control: the same seeding through a plain `/chat a` still attaches it
+            const otherTarget = await seedMessage({ text: 'another root' });
+            const otherVideo = await seedMessage({
+                text: '另一个',
+                mediaHint: 'a video',
+                fileUniqueId: plainUniqueId,
+            });
+            const plainCommand = await seedChatCommand({
+                target: otherTarget,
+                links: [otherVideo],
+            });
+            const plainRow = await Message.findOne({
+                where: { chatId: OFFLINE_CHAT_ID, messageId: plainCommand },
+            });
+            if (!plainRow) throw new Error('seeded /chat a command not found');
+            const { messages: plainMessages } = await buildContext(plainRow, capabilities);
+            expect(
+                plainMessages
+                    .flatMap((message) => message.content)
+                    .some((part) => part.type === 'media' && part.mimeType === 'video/mp4'),
+                'a /chat a video is still attached as before'
             );
         },
     },

@@ -6,6 +6,8 @@ import { Op } from '@sequelize/core';
 import { getMessage, getBotResponse, findBotResponseByMessageId } from '../index.js';
 import { getCachedMedia } from '../../services/media-cache-service.js';
 import { backfillMessages, isMessageBackfillEnabled } from '../../services/message-backfill-service.js';
+import { isRecentSummonCommand } from '../../reply/commands/chat-command-parser.js';
+import { isVideoMediaHint } from '../../reply/media-hint.js';
 import { Message } from '../messageDTO.js';
 import { MessageLink } from '../messageLinkDTO.js';
 import type { UnifiedContentPart } from '../../ai/types.js';
@@ -40,6 +42,12 @@ export interface ContextMessage {
     viaBot: string | null;
     /** Text recognized in this message's images (models that can't see them) */
     ocrText: string | null;
+    /**
+     * The message is in the context for its words only: its media is
+     * deliberately left out (a video `/chat r` pulled in). Set while the reply
+     * tree is assembled, never stored.
+     */
+    mediaOmitted: boolean;
 }
 
 /**
@@ -65,6 +73,7 @@ export const toContextMessage = (msg: Message): ContextMessage => ({
     forwardFromId: msg.forwardFromId,
     viaBot: msg.viaBot,
     ocrText: msg.ocrText,
+    mediaOmitted: false,
 });
 
 /**
@@ -140,23 +149,55 @@ export const saveMessageLinks = async (
     );
 };
 
+/** One level of children, plus which of them a `/chat r` attached */
+export interface ChildMessages {
+    /** Every child, ascending by message id */
+    ids: number[];
+    /**
+     * Children attached through a `/chat r` summon. Their video media stays out
+     * of the context — the command asked for the conversation, not its videos.
+     */
+    recentLinkedIds: number[];
+}
+
 /**
  * All children of the given messages, chronologically: their replies (derived
  * from the children's own `replyToId`) plus everything `/chat` pulled in. Both
  * halves are one query each, so a whole tree level costs two queries.
+ *
+ * `commandByMessageId` supplies the stored `/chat` spec of the parent messages,
+ * which is what tells a `/chat r` link apart from the others.
  */
-export const findChildMessageIds = async (
+export const findChildMessages = async (
     chatId: number,
-    parentIds: number[]
-): Promise<number[]> => {
-    if (!parentIds.length) return [];
+    parentIds: number[],
+    commandByMessageId: ReadonlyMap<number, string | null> = new Map()
+): Promise<ChildMessages> => {
+    if (!parentIds.length) return { ids: [], recentLinkedIds: [] };
     const [replyChildren, linked] = await Promise.all([
         findReplyChildIds(chatId, parentIds),
         getLinkedMessageIds(chatId, parentIds),
     ]);
-    const merged = new Set<number>([...replyChildren, ...[...linked.values()].flat()]);
-    return [...merged].sort((a, b) => a - b);
+    const ids = new Set<number>(replyChildren);
+    const recentLinkedIds = new Set<number>();
+    for (const [sourceMessageId, linkedMessageIds] of linked) {
+        const fromRecentSummon = isRecentSummonCommand(commandByMessageId.get(sourceMessageId) ?? null);
+        for (const linkedMessageId of linkedMessageIds) {
+            ids.add(linkedMessageId);
+            if (fromRecentSummon) recentLinkedIds.add(linkedMessageId);
+        }
+    }
+    return {
+        ids: [...ids].sort((a, b) => a - b),
+        recentLinkedIds: [...recentLinkedIds],
+    };
 };
+
+/** Children of the given messages, ids only */
+export const findChildMessageIds = async (
+    chatId: number,
+    parentIds: number[]
+): Promise<number[]> => (await findChildMessages(chatId, parentIds)).ids;
 
 /** Children of a single message (see findChildMessageIds) */
 export const getChildMessageIds = async (
@@ -202,6 +243,7 @@ export const getContextMessage = async (
             forwardFromId: null,
             viaBot: null,
             ocrText: null,
+            mediaOmitted: false,
         };
     }
 
@@ -229,6 +271,7 @@ export const getContextMessage = async (
             forwardFromId: null,
             viaBot: null,
             ocrText: null,
+            mediaOmitted: false,
         };
     }
 
@@ -295,11 +338,17 @@ const collectDescendants = async (
     visited: Set<number>
 ): Promise<void> => {
     let level = [rootId];
+    // Already-collected `/chat` rows: their links decide which children keep
+    // their video media
+    const commandByMessageId = new Map<number, string | null>(
+        collected.map((message) => [message.messageId, message.chatCommand])
+    );
+    const recentLinkedIds = new Set<number>();
 
     while (level.length) {
-        const childIds = (await findChildMessageIds(chatId, level)).filter(
-            (childId) => !visited.has(childId)
-        );
+        const children = await findChildMessages(chatId, level, commandByMessageId);
+        children.recentLinkedIds.forEach((childId) => recentLinkedIds.add(childId));
+        const childIds = children.ids.filter((childId) => !visited.has(childId));
         const nextLevel: number[] = [];
 
         for (const childId of childIds) {
@@ -311,6 +360,7 @@ const collectDescendants = async (
                 const msg = await getContextMessageOrRecover(chatId, childId);
                 if (msg) {
                     collected.push(msg);
+                    commandByMessageId.set(childId, msg.chatCommand);
                     nextLevel.push(childId);
                 }
             } catch (error) {
@@ -319,6 +369,15 @@ const collectDescendants = async (
         }
 
         level = nextLevel;
+    }
+
+    // Landed after the walk: one message can be reached by several edges, and
+    // whether its media is left out depends on the message, not on which edge
+    // found it first
+    for (const message of collected) {
+        if (recentLinkedIds.has(message.messageId) && isVideoMediaHint(message.mediaHint)) {
+            message.mediaOmitted = true;
+        }
     }
 };
 
@@ -347,6 +406,18 @@ export const getRepliesHistory = async (
         messageList,
         new Set([rootMessage.messageId])
     );
+
+    // The message a `/chat r` walked back from is the newest of that burst, so
+    // its video stays out of this one reply too. Deliberately not persistent:
+    // a later message answering the same video is an ordinary question, not a
+    // `/chat r`, and must still see it.
+    const trigger = messageList.find((message) => message.messageId === messageId);
+    if (trigger && trigger.replyToId !== null && isRecentSummonCommand(trigger.chatCommand)) {
+        const anchor = messageList.find((message) => message.messageId === trigger.replyToId);
+        if (anchor && isVideoMediaHint(anchor.mediaHint)) {
+            anchor.mediaOmitted = true;
+        }
+    }
 
     // Deduplicate and filter
     const seen = new Set<number>();

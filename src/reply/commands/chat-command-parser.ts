@@ -194,10 +194,20 @@ export const serializeChatCommand = (spec: ChatCommandSpec): string =>
 
 /** What the context builder needs to know about a stored `/chat` row */
 export type StoredChatCommand =
-    /** Pulled messages in and summoned a reply (count / all / recent, and every row stored before link mode existed) */
-    | { mode: 'summon' }
+    /**
+     * Pulled messages in and summoned a reply (count / all / recent, and every
+     * row stored before link mode existed)
+     */
+    | {
+          mode: 'summon';
+          /** `/chat r`: the recent burst, whose video media is never included */
+          recentBurst: boolean;
+      }
     /** Spliced other conversations in; no reply was asked for */
     | { mode: 'link'; linkedMessageIds: number[] };
+
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+    typeof value === 'object' && value !== null;
 
 export const readStoredChatCommand = (stored: string): StoredChatCommand => {
     try {
@@ -207,8 +217,22 @@ export const readStoredChatCommand = (stored: string): StoredChatCommand => {
                 mode: 'link' as const,
                 linkedMessageIds: link.linkedMessageIds,
             }))
-            .otherwise(() => ({ mode: 'summon' as const }));
+            .otherwise(() => ({
+                mode: 'summon' as const,
+                // `a` and `r` are stored as their letters (JSON has no Infinity)
+                recentBurst: isRecord(parsed) && parsed.messageCount === 'r',
+            }));
     } catch {
-        return { mode: 'summon' };
+        return { mode: 'summon', recentBurst: false };
     }
+};
+
+/**
+ * `/chat r` is the one summon whose video media stays out of the context: the
+ * user asked for the recent conversation, not for the videos in it.
+ */
+export const isRecentSummonCommand = (stored: string | null | undefined): boolean => {
+    if (!stored) return false;
+    const parsed = readStoredChatCommand(stored);
+    return parsed.mode === 'summon' && parsed.recentBurst;
 };

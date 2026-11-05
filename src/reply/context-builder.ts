@@ -410,9 +410,15 @@ const renderMessageHeader = (
     }
     annotations.push(...replyAnnotations);
     if (msg.mediaHint) {
+        // A `/chat r` video is here for its words only; a failure hint already
+        // says "you cannot see it" and must not collect a second suffix
+        const hint =
+            msg.mediaOmitted && !msg.mediaHint.includes('you cannot see it')
+                ? `${msg.mediaHint} — not included in this context, you cannot see it`
+                : msg.mediaHint;
         // failure hints already end with "you cannot see it" — don't double up
-        const invisible = !mediaVisible && !msg.mediaHint.includes('you cannot see it');
-        annotations.push(`[sent ${msg.mediaHint}${invisible ? ' — not visible to you' : ''}]`);
+        const invisible = !mediaVisible && !hint.includes('you cannot see it');
+        annotations.push(`[sent ${hint}${invisible ? ' — not visible to you' : ''}]`);
     }
     const numberPrefix = contextNumber === undefined ? '' : `#${contextNumber} `;
     return `${numberPrefix}${msg.userName}${annotations.length ? ' ' + annotations.join(' ') : ''}`;
@@ -453,10 +459,15 @@ export const stripLeakedWireFormat = (text: string): string => {
 
 /**
  * The message's own attachments (its file plus album sub-images) as context
- * parts, unfiltered by model capabilities.
+ * parts, unfiltered by model capabilities. A message whose media was left out
+ * (`/chat r` videos) contributes no part at all — the bytes are never loaded.
  */
-const loadMessageFiles = async (msg: ContextMessage): Promise<UnifiedContentPart[]> =>
-    msg.file || msg.fileUniqueId ? getFileContentsOfMessage(msg.chatId, msg.messageId) : [];
+const loadMessageFiles = async (msg: ContextMessage): Promise<UnifiedContentPart[]> => {
+    if (msg.mediaOmitted) return [];
+    return msg.file || msg.fileUniqueId
+        ? getFileContentsOfMessage(msg.chatId, msg.messageId)
+        : [];
+};
 
 /**
  * One assembled turn plus the pictures the model sees in it, in reading order:
