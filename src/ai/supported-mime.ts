@@ -35,6 +35,8 @@ const SUPPORTED_EXACT: ReadonlySet<string> = new Set([
 const ALIAS: ReadonlyMap<string, string> = new Map([
     ['audio/x-wav', 'audio/wav'],
     ['audio/wave', 'audio/wav'],
+    // Telegram marks .wav documents with the IANA spelling, not audio/wav
+    ['audio/vnd.wave', 'audio/wav'],
     ['audio/x-aiff', 'audio/aiff'],
     ['audio/x-flac', 'audio/flac'],
     ['audio/x-m4a', 'audio/m4a'],

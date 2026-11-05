@@ -129,6 +129,20 @@ const asUser = (fields: { id: number; is_bot: boolean; username?: string }): Use
 
 const cases: Array<{ name: string; body: () => Promise<void> }> = [
     {
+        name: 'a .wav document Telegram marks audio/vnd.wave is still feedable',
+        body: async () => {
+            const { isGeminiSupportedMimeType, normalizeMimeType } = await import(
+                '../../src/ai/supported-mime.js'
+            );
+            // Telegram writes the IANA spelling on .wav documents; without the
+            // alias the file was dropped as unsupported and the model saw only
+            // "file type not supported"
+            expect(normalizeMimeType('audio/vnd.wave') === 'audio/wav', 'the IANA spelling is canonicalized');
+            expect(isGeminiSupportedMimeType('audio/vnd.wave'), 'so a .wav document is not dropped');
+            expect(!isGeminiSupportedMimeType('application/zip'), 'an archive is still dropped');
+        },
+    },
+    {
         name: 'sender gate silences bots but not people',
         body: async () => {
             expect(

@@ -414,6 +414,24 @@ cases.push(
 );
 
 cases.push(
+    await runCase('several display names of one uid are not an ambiguity', async () => {
+        // Someone who renamed themselves appears once per historical name; the
+        // uid is the identity, so all those rows are one sender.
+        const renamed = fakeService({
+            senders: [
+                { uid: 505132118, name: 'Azusa🐱' },
+                { uid: 505132118, name: 'Azusa🐱(spy account)' },
+                { uid: 505132118, name: 'Azusa🐱(fake account)' },
+            ],
+        });
+        const tool = createSearchHistoryTool(buildOptions(renamed));
+        const result = await execute(tool, { query: 'x', sender: 'Azusa' });
+        expect(!result.isError, `one person under many names resolves (got ${result.content})`);
+        expect(renamed.searches[0]?.senderId === 505132118, 'the shared uid is used');
+    })
+);
+
+cases.push(
     await runCase('scope=all is owner-only', async () => {
         const fake = fakeService({});
         const tool = createSearchHistoryTool(buildOptions(fake, { requesterId: 4242 }));

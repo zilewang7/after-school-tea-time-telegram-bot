@@ -103,13 +103,20 @@ const resolveSenderId = async (
     try {
         const candidates = await options.service.findSenders(options.channelId, sender, { signal });
         if (candidates.length === 0) return { senderId: null, error: `没有找到叫「${sender}」的发言人。` };
-        if (candidates.length === 1) {
-            const only = candidates[0];
-            return { senderId: only ? only.uid : null, error: null };
+        // One person shows up under every name they have used; the uid is what
+        // identifies a sender, so several rows sharing one uid are one match,
+        // not an ambiguity to hand back to the caller.
+        const namesByUid = new Map<number, string>();
+        for (const candidate of candidates) {
+            if (!namesByUid.has(candidate.uid)) namesByUid.set(candidate.uid, candidate.name);
         }
-        const listed = candidates
+        const [onlyUid] = [...namesByUid.keys()];
+        if (onlyUid !== undefined && namesByUid.size === 1) {
+            return { senderId: onlyUid, error: null };
+        }
+        const listed = [...namesByUid.entries()]
             .slice(0, 5)
-            .map((candidate) => `${candidate.uid}（${candidate.name}）`)
+            .map(([uid, name]) => `${uid}（${name}）`)
             .join('、');
         return { senderId: null, error: `「${sender}」对应多个发言人，请用 uid 指定：${listed}` };
     } catch (error) {
