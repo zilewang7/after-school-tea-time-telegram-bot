@@ -10,6 +10,7 @@ import {
     registerModelCommand,
     registerContextCommand,
 } from "./commands/index.js";
+import { registerPanelCommand } from "./commands/panel.js";
 
 const COMMANDS: BotCommand[] = [
     { command: "start", description: "开始" },
@@ -22,7 +23,8 @@ const COMMANDS: BotCommand[] = [
     { command: "picgrok", description: "使用 Grok 模型根据提示词生成图片" },
     { command: "picbanana", description: "使用 🍌 Gemini Nano Banana 2.1 根据提示词生成图片(支持图生图)" },
     { command: "picgpt", description: `使用 OpenAI ${OPENAI_IMAGE_MODEL} 根据提示词生成图片(支持图生图)` },
-    { command: "model", description: "查看/切换大语言模型" },
+    { command: "model", description: "查看/切换本聊天的模型" },
+    { command: "panel", description: "打开控制面板" },
     {
         command: "chat",
         description:
@@ -50,4 +52,5 @@ export const cmdLoad = async (bot: Bot) => {
     registerPicCommands(bot);
     registerModelCommand(bot);
     registerContextCommand(bot);
+    registerPanelCommand(bot);
 };
