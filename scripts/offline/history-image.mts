@@ -379,6 +379,29 @@ cases.push(
 );
 
 cases.push(
+    await runCase('a rich message picture is labelled and counted like the rest', async () => {
+        const rich: HistoryImageItem = {
+            which: 'rich_photo_0',
+            source: 'rich',
+            kind: 'photo',
+            mime: 'image/jpeg',
+            size: 4096,
+            width: 640,
+            height: 480,
+            duration: null,
+            fileName: null,
+        };
+        const history = fakeHistory({ images: [rich, previewItem(), pageItem()] });
+        const result = await loadHistoryImage(buildOptions({ history }), 'h1', 1, 'original', signal());
+        expect(result.ok, `the rich picture is read (${result.ok ? '' : result.error})`);
+        if (!result.ok) return;
+        expect(result.image.label === '富文本图片', 'it says where it came from');
+        expect(result.image.total === 3, 'the manifest size is the one number both tools use');
+        expect(history.byteCalls[0]?.which === 'rich_photo_0', 'the rich locator is forwarded');
+    })
+);
+
+cases.push(
     await runCase('the fetch_image tool registers a history picture as imgN', async () => {
         const history = fakeHistory({ images: [photoItem(), previewItem()] });
         const state = createReplyMediaState();

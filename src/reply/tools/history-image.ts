@@ -76,6 +76,7 @@ const pageOrdinal = (items: readonly HistoryImageItem[], index: number): number 
     items.slice(0, index + 1).filter((item) => item.source === 'page').length;
 
 export const historyImageLabel = (item: HistoryImageItem, ordinal: number): string => {
+    if (item.source === 'rich') return '富文本图片';
     if (item.source === 'preview') return '网页预览图';
     if (item.source === 'page') return `Instant View 第 ${ordinal} 张图`;
 

@@ -139,18 +139,17 @@ const OTHER_MARKERS: ReadonlyArray<readonly [string, string]> = [
  * What the index carries besides the message body, compressed to one phrase.
  * Only lines that *start* with a marker count, so OCR text mentioning
  * `[image]` mid-line is not miscounted.
+ *
+ * The picture count is not part of this: the index counts markers, while
+ * fetch_image can only serve what luoxu's manifest lists (one entry per
+ * distinct file). `attachmentLine` is what a row shows.
  */
 export const attachmentSummary = (indexedHtml: string): string | null => {
-    const text = htmlToText(indexedHtml);
     const labels: string[] = [];
-    let images = 0;
-    for (const line of text.split('\n')) {
+    for (const line of htmlToText(indexedHtml).split('\n')) {
         const marker = line.trim();
         if (!marker.startsWith('[')) continue;
-        if (IMAGE_MARKERS.some((prefix) => marker.startsWith(prefix))) {
-            images += 1;
-            continue;
-        }
+        if (IMAGE_MARKERS.some((prefix) => marker.startsWith(prefix))) continue;
         const other = OTHER_MARKERS.find(([prefix]) => marker.startsWith(prefix));
         if (other) {
             if (!labels.includes(other[1])) labels.push(other[1]);
@@ -158,8 +157,38 @@ export const attachmentSummary = (indexedHtml: string): string | null => {
         }
         if (marker.startsWith('[file]')) labels.push(`文件 ${marker.slice(6).trim()}`);
     }
-    if (images > 0) labels.unshift(`图×${images}`);
     return labels.length > 0 ? labels.join('、') : null;
+};
+
+/**
+ * Image markers in the index text; the fallback when luoxu reported no count.
+ *
+ * Only the leading run counts: luoxu prepends the image markers, while the body
+ * may itself contain a literal `[image]` (Instant View bodies render one for
+ * every picture in the article), which is text, not an attachment.
+ */
+export const indexedImageCount = (indexedHtml: string): number => {
+    let count = 0;
+    for (const line of htmlToText(indexedHtml).split('\n')) {
+        const marker = line.trim();
+        if (marker === '') continue;
+        if (!IMAGE_MARKERS.some((prefix) => marker.startsWith(prefix))) break;
+        count += 1;
+    }
+    return count;
+};
+
+/**
+ * The `附：` line of a list row: the picture count the model can actually act on
+ * (luoxu's manifest size when it reported one), then the index extras.
+ */
+export const attachmentLine = (indexedHtml: string, imageCount: number | null): string | null => {
+    const images = imageCount ?? indexedImageCount(indexedHtml);
+    const rest = attachmentSummary(indexedHtml);
+    const parts = [images > 0 ? `图×${images}` : null, rest].filter(
+        (part): part is string => part !== null
+    );
+    return parts.length > 0 ? parts.join('、') : null;
 };
 
 /** Ranges of collapsed (folded) blocks, in the order Telegram numbers them */

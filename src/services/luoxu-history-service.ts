@@ -116,6 +116,8 @@ export interface HistoryRawMessage {
     readonly replyToId: number | null;
     readonly media: HistoryMedia | null;
     readonly forward: HistoryForward | null;
+    /** Pictures/videos luoxu can serve for this message; null when it did not say */
+    readonly imageCount: number | null;
     /** Unix seconds */
     readonly date: number | null;
 }
@@ -173,8 +175,8 @@ export interface HistoryStats {
 export interface HistoryImageItem {
     /** Opaque locator `imageBytes` re-resolves (`media`, `photo`, `page_photo_0` …) */
     readonly which: string;
-    /** Where it sits: the message itself, its web preview, its Instant View page */
-    readonly source: 'media' | 'preview' | 'page';
+    /** Where it sits: the message itself, its rich block tree, its web preview, its Instant View page */
+    readonly source: 'media' | 'rich' | 'preview' | 'page';
     /** photo / sticker / animation / video / document */
     readonly kind: string;
     readonly mime: string;
@@ -306,8 +308,8 @@ const parseGroupStats = (raw: unknown): HistoryGroupStats | null => {
     };
 };
 
-const isImageSource = (value: string | null): value is 'media' | 'preview' | 'page' =>
-    value === 'media' || value === 'preview' || value === 'page';
+const isImageSource = (value: string | null): value is 'media' | 'rich' | 'preview' | 'page' =>
+    value === 'media' || value === 'rich' || value === 'preview' || value === 'page';
 
 const parseImageItem = (raw: unknown): HistoryImageItem | null => {
     if (!isRecord(raw)) return null;
@@ -355,6 +357,7 @@ const parseRawMessage = (raw: unknown): HistoryRawMessage | null => {
         replyToId: numberOf(raw.reply_to) ?? replyTo,
         media: parseMedia(raw.media),
         forward: parseForward(raw.forward),
+        imageCount: numberOf(raw.images),
         date: numberOf(raw.date),
     };
 };

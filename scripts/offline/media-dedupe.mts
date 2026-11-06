@@ -152,6 +152,22 @@ cases.push(
 );
 
 cases.push(
+    await runCase('a custom emoji atlas is never replaced by a pointer', async () => {
+        const atlas = (): UnifiedContentPart => ({
+            type: 'image',
+            imageData: base64Of('atlas'),
+            mimeType: 'image/png',
+            mediaKind: 'custom_emoji_atlas',
+        });
+        const first = turnOf(10, [atlas(), imagePart('primary')]);
+        const second = turnOf(11, [atlas()]);
+        const result = dedupeContextMedia([first, second], CAPABILITIES);
+        expect(result.removed === 0, 'the atlas is not conversation media');
+        expect(mediaPartsOf(result.turns[1]).length === 1, 'the second message keeps its atlas');
+    })
+);
+
+cases.push(
     await runCase('text parts are never touched', async () => {
         const first = turnOf(10, [textPart('同样的文字'), imagePart('a')]);
         const second = turnOf(11, [textPart('同样的文字'), imagePart('b')]);

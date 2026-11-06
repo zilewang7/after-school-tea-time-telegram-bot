@@ -24,7 +24,7 @@ import {
     HISTORY_MAX_LIMIT,
 } from './history-args.js';
 import {
-    attachmentSummary,
+    attachmentLine,
     firstLineOf,
     formatArchiveStatus,
     htmlToText,
@@ -211,7 +211,7 @@ const buildRow = (
     const firstLine = firstLineOf(body || htmlToText(entry.indexedHtml), 80);
     const window = query ? keywordWindow(entry.indexedHtml, query) : null;
     const inFolded = window?.term && raw ? isInsideFolded(window.term, raw.text, raw.entities) : false;
-    const attachments = attachmentSummary(entry.indexedHtml);
+    const attachments = attachmentLine(entry.indexedHtml, raw?.imageCount ?? null);
     return {
         entry,
         anchor,

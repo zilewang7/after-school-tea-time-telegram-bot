@@ -94,6 +94,7 @@ const rawMessage = (overrides: Partial<HistoryRawMessage> = {}): HistoryRawMessa
     replyToId: null,
     media: null,
     forward: null,
+    imageCount: null,
     date: fixtureMessage().t,
     ...overrides,
 });
@@ -264,8 +265,17 @@ cases.push(
 cases.push(
     await runCase('the index extras are compressed into one phrase', async () => {
         expect(
-            textKit.attachmentSummary(fixtureMessage().html) === '图×2、网页预览、IV 正文',
-            'two images, a webpage preview and an Instant View body'
+            textKit.attachmentSummary(fixtureMessage().html) === '网页预览、IV 正文',
+            'the extras are named without a picture count'
+        );
+        expect(textKit.indexedImageCount(fixtureMessage().html) === 2, 'the index marks two images');
+        expect(
+            textKit.attachmentLine(fixtureMessage().html, 1) === '图×1、网页预览、IV 正文',
+            'luoxu\'s count wins over the index markers'
+        );
+        expect(
+            textKit.attachmentLine(fixtureMessage().html, null) === '图×2、网页预览、IV 正文',
+            'without a count the index markers are the fallback'
         );
         expect(textKit.attachmentSummary('只有正文') === null, 'a plain message has no attachments');
     })
@@ -508,6 +518,19 @@ cases.push(
         expect(textKit.searchListBudget(200) > textKit.searchListBudget(50), 'more hits means more room');
         expect(textKit.searchListBudget(1) === 6000, 'a small list keeps the old floor');
         expect(textKit.searchListBudget(200) === 48000, 'a huge list stops at the ceiling');
+    })
+);
+
+cases.push(
+    await runCase('the list counts the pictures fetch_image can actually serve', async () => {
+        // The fixture's index marks two images; luoxu says the manifest holds three
+        const fake = fakeService({ raw: [rawMessage({ imageCount: 3 })] });
+        const tool = createSearchHistoryTool(buildOptions(fake));
+        const result = await execute(tool, { query: 'fixupx' });
+        expect(
+            result.content.includes('附：图×3、网页预览、IV 正文'),
+            `luoxu's count wins over the index markers (got ${result.content.split('\n').find((line) => line.includes('附：'))})`
+        );
     })
 );
 

@@ -79,6 +79,8 @@ const PNG_BYTES = Buffer.from(
 // Only the signatures matter to the sniffer
 const JPEG_BYTES = Buffer.concat([Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10]), Buffer.from('JFIF offline jpeg')]);
 const WEBP_BYTES = Buffer.concat([Buffer.from('RIFF'), Buffer.from([0x20, 0, 0, 0]), Buffer.from('WEBPVP8 offline webp')]);
+/** A different picture from the album's: contexts dedupe identical media */
+const BOT_PNG_BYTES = Buffer.concat([PNG_BYTES, Buffer.from('offline bot drawing')]);
 const STICKER_WEBP_PATH = join(mkdtempSync(join(tmpdir(), 'k-on-sticker-image-')), 'sticker.webp');
 writeFileSync(STICKER_WEBP_PATH, WEBP_BYTES);
 const GIF_BYTES = Buffer.from('GIF89a offline gif');
@@ -329,7 +331,7 @@ const buildReferenceTree = async () => {
         userId: 7777,
         userName: 'Bot',
         text: '画好了',
-        file: PNG_BYTES,
+        file: BOT_PNG_BYTES,
         fileMime: 'image/png',
         replyToId: album,
     });
@@ -606,7 +608,7 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
             );
 
             const botPicture = await generate({ references: [{ message: 2 }] });
-            expect(imagesOf(botPicture.request)[0]?.equals(PNG_BYTES) === true, 'the bot’s own picture comes from its row');
+            expect(imagesOf(botPicture.request)[0]?.equals(BOT_PNG_BYTES) === true, 'the bot’s own picture comes from its row');
 
             const versioned = await generate({ references: [{ message: 4 }] });
             const versionedParts = partsOf(versioned.request);
@@ -883,10 +885,25 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
                 lastUsedAt: new Date(),
             });
 
+            // A second link, with its own preview picture: two messages linking
+            // the same url would share one preview, and the context dedupes it
+            const secondUrl = 'https://fxtwitter.com/offline/status/43';
+            const secondPhotoKey = await seedPreviewMedia('photo', BOT_PNG_BYTES, 'image/png');
+            await dbIndex.LinkPreviewCache.create({
+                url: secondUrl,
+                status: 'ready',
+                siteName: 'FxTwitter',
+                title: 'offline second post',
+                mediaItems: JSON.stringify([
+                    { which: 'photo', kind: 'photo', mime: 'image/png', mediaKey: secondPhotoKey, sizeBytes: BOT_PNG_BYTES.length },
+                ]),
+                lastUsedAt: new Date(),
+            });
+
             const attachmentUniqueId = `image-with-link-${takeMessageId()}`;
             await putCachedMedia({ fileUniqueId: attachmentUniqueId, data: PNG_BYTES, sizeBytes: PNG_BYTES.length, mime: 'image/png', kind: 'photo' });
             const linked = await seedRow({ text: `看这个 ${url}` });
-            const attached = await seedRow({ text: `这张我也贴上 ${url}`, fileUniqueId: attachmentUniqueId, mediaHint: 'a picture', replyToId: linked });
+            const attached = await seedRow({ text: `这张我也贴上 ${secondUrl}`, fileUniqueId: attachmentUniqueId, mediaHint: 'a picture', replyToId: linked });
             const trigger = await seedRow({ text: '改成黑白', replyToId: attached });
 
             const row = await rowOf(OFFLINE_CHAT_ID, trigger);
@@ -904,8 +921,7 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
                 `the preview’s two pictures are the link message’s pictures (got ${json(linkedEntry?.images.map((image) => image.origin))})`
             );
             expect(
-                json(attachedEntry?.images.map((image) => image.origin)) ===
-                    json(['attachment', 'linkPreview', 'linkPreview']),
+                json(attachedEntry?.images.map((image) => image.origin)) === json(['attachment', 'linkPreview']),
                 'a message with both numbers its attachment first, then the preview pictures'
             );
 
@@ -929,28 +945,28 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
             if (attachedEntry === undefined) throw new Error('the attached message is not in the context');
             const picked = await generate({ references: [{ message: attachedEntry.number, image: 2 }] });
             expect(
-                imagesOf(picked.request).length === 1 && imagesOf(picked.request)[0]?.equals(JPEG_BYTES) === true,
-                'image 2 of a mixed message is the first preview picture'
+                imagesOf(picked.request).length === 1 && imagesOf(picked.request)[0]?.equals(BOT_PNG_BYTES) === true,
+                'image 2 of a mixed message is its preview picture'
             );
 
-            const past = await generate({ references: [{ message: attachedEntry.number, image: 4 }] });
+            const past = await generate({ references: [{ message: attachedEntry.number, image: 3 }] });
             expect(
-                past.result.isError && past.result.content.includes(`#${attachedEntry.number} 只有 3 张图，没有第 4 张`),
+                past.result.isError && past.result.content.includes(`#${attachedEntry.number} 只有 2 张图，没有第 3 张`),
                 `an index past the previews is refused with the real count (got ${json(past.result.content)})`
             );
 
-            // send_image reads the same list, so “the 3rd picture” means the same thing in both tools
+            // send_image reads the same list, so “the 2nd picture” means the same thing in both tools
             const send = createSendImageTool({
                 state: createReplyMediaState(),
                 context: { chatId: OFFLINE_CHAT_ID, contextIndex: built.contextIndex, signal: new AbortController().signal },
                 dependencies: { fetchImage: noNetworkFetch, loadMessageImages },
             });
-            const sent = await runTool(send, { message: attachedEntry.number, image: 3 });
+            const sent = await runTool(send, { message: attachedEntry.number, image: 2 });
             expect(
                 !sent.isError &&
                     sent.images.length === 1 &&
-                    sent.images[0]?.data.equals(WEBP_BYTES) === true &&
-                    sent.images[0].mimeType === 'image/webp',
+                    sent.images[0]?.data.equals(BOT_PNG_BYTES) === true &&
+                    sent.images[0].mimeType === 'image/png',
                 `send_image forwards the preview picture too (got ${json(sent.content)})`
             );
         },

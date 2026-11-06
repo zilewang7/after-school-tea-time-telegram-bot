@@ -45,8 +45,14 @@ export interface MediaDedupeResult {
     readonly removed: number;
 }
 
+/** The system's own contact sheet of a message's custom emoji, not conversation media */
+const CUSTOM_EMOJI_ATLAS = 'custom_emoji_atlas';
+
 /** A part whose content is a file the model would be charged for */
 const isDedupable = (part: UnifiedContentPart, capabilities: MediaDedupeCapabilities): boolean => {
+    // An atlas belongs to the message whose emoji it shows; its annotation
+    // points at it, so it is never replaced by a pointer to another message
+    if (part.mediaKind === CUSTOM_EMOJI_ATLAS) return false;
     if (part.type === 'image') return capabilities.supportsImageInput;
     if (part.type === 'media') return capabilities.supportsMediaInput;
     return false;
