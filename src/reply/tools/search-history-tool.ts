@@ -7,8 +7,9 @@
  * (`read_history`), which is what keeps a broad query cheap.
  *
  * Facts the description has to carry (the model cannot discover them): results
- * are newest-first with a hard 50-row cap rather than relevance, the index
- * covers previews/Instant-View/OCR text, and `before` is how you go further.
+ * are newest-first rather than relevance-ordered and capped by `limit` (10 by
+ * default, 200 at most), the index covers previews/Instant-View/OCR text, and
+ * `before` is how you go further.
  */
 import type { ToolHandler, ToolResult } from '../../ai/tools/tool-types.js';
 import {

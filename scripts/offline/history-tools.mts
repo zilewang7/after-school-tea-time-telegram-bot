@@ -209,8 +209,8 @@ cases.push(
         expect(!args.parseHistorySearchArgs({ query: 'x'.repeat(101) }).ok, 'an over-long query is refused');
         const defaults = args.parseHistorySearchArgs({ query: '  显卡  ' });
         expect(
-            defaults.ok && defaults.value.limit === 50 && defaults.value.scope === 'chat' && defaults.value.query === '显卡',
-            'defaults are limit 50, scope chat, query trimmed'
+            defaults.ok && defaults.value.limit === 10 && defaults.value.scope === 'chat' && defaults.value.query === '显卡',
+            'defaults are limit 10, scope chat, query trimmed'
         );
     })
 );

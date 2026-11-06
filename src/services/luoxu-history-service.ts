@@ -205,8 +205,7 @@ export const HISTORY_STATS_TIMEOUT_MS = 5_000;
 export const HISTORY_IMAGES_TIMEOUT_MS = 5_000;
 export const HISTORY_IMAGE_BYTES_TIMEOUT_MS = 30_000;
 
-/** Hits one search may ask for: luoxu's default and its ceiling */
-export const HISTORY_DEFAULT_SEARCH_LIMIT = 50;
+/** Most hits one search may ask for (luoxu's ceiling; luoxu itself defaults to 50) */
 export const HISTORY_MAX_SEARCH_LIMIT = 200;
 
 /** luoxu caps an id list at 50 per request (`/search?ids=` and `/messages`) */
