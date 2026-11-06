@@ -22,7 +22,8 @@ import { buildContext, buildContextFromParts } from './context-builder.js';
 import { chatTitleOf } from '../telegram/chat-title.js';
 import { resolveContextRoot } from './context-root.js';
 import { buildReplyToolContext, createReplyTools } from './tools/index.js';
-import { getCurrentModel } from '../state.js';
+import { snapshotReplySettings } from '../services/chat-settings-service.js';
+import { buildStaticPromptOptions } from './static-prompt-options.js';
 import { to } from '../shared/result.js';
 import {
     createChatContextForRetry,
@@ -75,7 +76,7 @@ const handlePicbananaRetry = async (
     const chatId = ctx.chat.id;
 
     // Start retry session
-    const session = await startRetry(ctx, botResponse.messageId);
+    const session = await startRetry(ctx, botResponse.messageId, { model: GEMINI_IMAGE_MODEL });
     if (!session) {
         console.error('[retry-handler] Failed to create retry session for picbanana');
         return;
@@ -161,7 +162,7 @@ const handlePicgptRetry = async (
     const chatId = ctx.chat.id;
 
     // Start retry session
-    const session = await startRetry(ctx, botResponse.messageId);
+    const session = await startRetry(ctx, botResponse.messageId, { model: OPENAI_IMAGE_MODEL });
     if (!session) {
         console.error('[retry-handler] Failed to create retry session for picgpt');
         return;
@@ -243,8 +244,13 @@ const handleChatRetry = async (
 
     const chatId = ctx.chat.id;
 
+    // The chat's settings at the moment retry was pressed; the model the
+    // original version used is never carried over
+    const settings = snapshotReplySettings(chatId);
+    const { model } = settings;
+
     // Start retry session
-    const session = await startRetry(ctx, botResponse.messageId);
+    const session = await startRetry(ctx, botResponse.messageId, { model });
     if (!session) {
         console.error('[retry-handler] Failed to create retry session');
         return;
@@ -262,12 +268,12 @@ const handleChatRetry = async (
     }
 
     // Build AI context (exclude current bot response since we're retrying it)
-    const model = getCurrentModel();
     const capabilities = getModelCapabilities(model);
     const [ctxErr, builtContext] = await to(buildContext(userMessage, {
         capabilities,
         model,
         chatTitle: chatTitleOf(ctx.chat),
+        chatAddendum: settings.promptAddendum,
         excludeMessageIds: [botResponse.messageId], // Exclude the bot response we're retrying
     }));
     if (ctxErr || !builtContext) {
@@ -295,16 +301,7 @@ const handleChatRetry = async (
     const [streamErr, stream] = await to(
         sendMessage(chatContents, {
             model,
-            systemPrompt: buildStaticSystemPrompt(model, {
-                sms: availability.sms,
-                imageTools: availability.imageSearch,
-                imageFetch: availability.imageFetch,
-                imageReverseSearch: availability.imageReverseSearch,
-                imageGenerate: availability.image,
-                stickerTools: availability.sticker,
-                historyTools: availability.history,
-                fileTools: availability.file,
-            }),
+            systemPrompt: buildStaticSystemPrompt(model, buildStaticPromptOptions(availability)),
             ...(openCodeGoSession ? { sessionId: openCodeGoSession } : {}),
             signal,
             tools,

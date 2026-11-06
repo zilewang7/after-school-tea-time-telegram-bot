@@ -19,7 +19,6 @@ import {
     openCodeGoSessionId,
 } from '../ai/index.js';
 import {
-    getCurrentModel,
     getMediaGroupIdTemp,
     isAsyncFileSavePending,
     isAsyncPreviewPending,
@@ -48,6 +47,9 @@ import { isVidCommandText } from './commands/vid-command-parser.js';
 import { dealChatCommand } from './commands/chat-command.js';
 import { isChatCommandText } from './commands/chat-command-parser.js';
 import { chatTitleOf } from '../telegram/chat-title.js';
+import { snapshotReplySettings } from '../services/chat-settings-service.js';
+import { buildStaticPromptOptions } from './static-prompt-options.js';
+import { stopIfChatPaused } from './chat-pause.js';
 
 /** A `/chat <link>` splice only gets a reaction back, never a message */
 const acknowledgeSilently = async (ctx: Context): Promise<void> => {
@@ -260,7 +262,10 @@ export const handleReply = async (
 
     const chatId = ctx.chat.id;
     const userMessageId = ctx.message.message_id;
-    const model = getCurrentModel();
+    // Taken once: a settings change during the media wait or the stream only
+    // affects later replies
+    const settings = snapshotReplySettings(chatId);
+    const { model } = settings;
     const capabilities = getModelCapabilities(model);
 
     // Resolve the context tree (reply chain + any messages /chat pulled in)
@@ -276,7 +281,7 @@ export const handleReply = async (
     );
 
     // Create chat context (includes processing message and typing indicator)
-    const chatContext = await createChatContext(ctx);
+    const chatContext = await createChatContext(ctx, { model });
     if (!chatContext) {
         console.error('[chat-handler] Failed to create chat context');
         return;
@@ -300,6 +305,7 @@ export const handleReply = async (
         capabilities,
         model,
         chatTitle: chatTitleOf(ctx.chat),
+        chatAddendum: settings.promptAddendum,
     }));
     if (isErr(ctxResult)) {
         await handleResponseError(chatContext, ctxResult[0]);
@@ -324,17 +330,7 @@ export const handleReply = async (
     const streamResult = await to(
         sendMessage(chatContents, {
             model,
-            systemPrompt: buildStaticSystemPrompt(model, {
-                sms: availability.sms,
-                imageTools: availability.imageSearch,
-                imageFetch: availability.imageFetch,
-                imageReverseSearch: availability.imageReverseSearch,
-                imageGenerate: availability.image,
-                stickerTools: availability.sticker,
-                historyTools: availability.history,
-                fileTools: availability.file,
-                harnessIssues: availability.harnessIssues,
-            }),
+            systemPrompt: buildStaticSystemPrompt(model, buildStaticPromptOptions(availability)),
             ...(openCodeGoSession ? { sessionId: openCodeGoSession } : {}),
             signal,
             tools,
@@ -383,6 +379,10 @@ export const registerChatHandler = (bot: Bot): void => {
                 // Idempotency (covers all reply paths; also prevents a duplicate
                 // trigger from posting two "downloading" notices).
                 if (!tryMarkUserMessageHandling(ctx.chat.id, ctx.message.message_id)) return;
+
+                // A paused chat generates nothing on any path below (replies,
+                // /chat summons and splices, /pic, /vid, /picbanana, /picgpt)
+                if (await stopIfChatPaused(ctx)) return;
 
                 const text = ctx.message.text ?? ctx.message.caption ?? '';
                 const isGenerationCommand =

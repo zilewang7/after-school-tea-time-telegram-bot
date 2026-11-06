@@ -19,6 +19,7 @@ import {
     switchVersion,
     refreshToFinalState,
 } from '../../services/index.js';
+import { isCallbackChatPaused, PAUSED_CALLBACK_NOTICE } from '../../reply/chat-pause.js';
 
 // Callback data prefix for our buttons
 const CALLBACK_PREFIX = 'resp:';
@@ -158,6 +159,12 @@ const handleRetry = async (ctx: Context): Promise<void> => {
     if (response.buttonState === ButtonState.PROCESSING) {
         await ctx.answerCallbackQuery({ text: '还在生成中' });
         await refreshButtonsToCurrent(ctx, response, msg.message_id);
+        return;
+    }
+
+    // A paused chat generates nothing; switching versions stays available
+    if (isCallbackChatPaused(ctx)) {
+        await ctx.answerCallbackQuery({ text: PAUSED_CALLBACK_NOTICE });
         return;
     }
 

@@ -464,7 +464,7 @@ const startChat = async (chatId: number) => {
         telegram.api,
         BOT_ME
     );
-    const { result: chatContext } = await captureConsole(() => responseHandler.createChatContext(ctx));
+    const { result: chatContext } = await captureConsole(() => responseHandler.createChatContext(ctx, { model: 'offline-model' }));
     if (!chatContext) throw new Error('the chat context was not created');
     return { telegram, chatContext };
 };
@@ -553,7 +553,7 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
         // 2.1 the chat persona and urlContext, which it answers with 400
         name: 'image models are recognised by id, including Nano Banana 2.1',
         body: async () => {
-            expect(GEMINI_IMAGE_MODEL === 'gemini-nano-banana-2.1', 'the menu/picbanana constant is 2.1');
+            expect(GEMINI_IMAGE_MODEL === 'gemini-nano-banana-2.1', 'the picbanana constant is 2.1');
             expect(isImageOutputModel('gemini-nano-banana-2.1'), 'gemini-nano-banana-2.1 is an image model');
             expect(isImageOutputModel('Gemini-Nano-Banana-2.1'), 'case does not matter');
             expect(isImageOutputModel('gemini-3-pro-image'), 'the previous image model still is one');

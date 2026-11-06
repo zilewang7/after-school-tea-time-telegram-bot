@@ -60,6 +60,8 @@ export interface ResponseVersion {
     versionId: number;
     /** ISO timestamp of creation */
     createdAt: string;
+    /** Model that generated this version; absent on versions stored before it was recorded */
+    model?: string;
     /** All message IDs for this version */
     messageIds: number[];
     /** Current active message ID (where buttons are) */

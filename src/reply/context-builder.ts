@@ -22,7 +22,9 @@ import { readStoredChatCommand } from './commands/chat-command-parser.js';
 import { buildOcrFallbackPart } from '../services/luoxu-ocr-service.js';
 import { applyModelCapabilities } from '../ai/message-transformer.js';
 import { buildRuntimeContext } from '../ai/system-prompt/runtime-context.js';
-import { getCurrentModel, getRepliesInFlight, isBotReplyInFlight, setContextNumbering } from '../state.js';
+import { getRepliesInFlight, isBotReplyInFlight, setContextNumbering } from '../state.js';
+import { getGlobalDefaultModel } from '../services/chat-settings-service.js';
+import { replacesChatSystemPrompt } from '../ai/model-kinds.js';
 import { buildInFlightOwnReplyNote, buildInFlightReplyNote, buildInterruptedOwnReplyNote } from './inflight-reply-note.js';
 import { collectContextUsers, type ContextUser } from './context-users.js';
 import { getModelCapabilities } from '../ai/platform-factory.js';
@@ -674,10 +676,17 @@ const buildMessageContent = async (
 export interface BuildContextOptions {
     /** Model capabilities for filtering */
     capabilities?: ModelCapabilities;
-    /** Model id rendered into the runtime block (defaults to the chat's model) */
+    /** Model id rendered into the runtime block (defaults to the global default model) */
     model?: string;
     /** Title of the chat this reply happens in (runtime block); null for private chats */
     chatTitle?: string | null;
+    /**
+     * The chat's prompt addendum, from the caller's settings snapshot (never
+     * read here: the context may be built minutes after the reply started).
+     * Closes the runtime block; left out for models whose chat system prompt
+     * is replaced, where it would read as part of the image description.
+     */
+    chatAddendum?: string | null;
     /** Message IDs to exclude from context (e.g., current bot response when retrying) */
     excludeMessageIds?: number[];
 }
@@ -691,7 +700,8 @@ const isBuildContextOptions = (
     ('capabilities' in value ||
         'excludeMessageIds' in value ||
         'model' in value ||
-        'chatTitle' in value);
+        'chatTitle' in value ||
+        'chatAddendum' in value);
 
 /** Assembled context: the model-facing turns plus the user roster they involve */
 export interface BuiltContext {
@@ -762,7 +772,7 @@ export const buildContext = async (
         : { capabilities: options };
 
     // Get capabilities for current model if not provided
-    const model = opts.model ?? getCurrentModel();
+    const model = opts.model ?? getGlobalDefaultModel();
     const modelCapabilities = opts.capabilities ?? getModelCapabilities(model);
     const excludeMessageIds = opts.excludeMessageIds ?? [];
 
@@ -846,9 +856,10 @@ export const buildContext = async (
     // heading the prompt: it is the only part that changes between requests, so
     // keeping it last leaves the cacheable prefix byte-identical. The next
     // request in this tree diverges at this very message and no earlier.
+    const chatAddendum = replacesChatSystemPrompt(model) ? null : opts.chatAddendum ?? null;
     const runtimeBlock: UnifiedContentPart = {
         type: 'text',
-        text: buildRuntimeContext(model, contextUsers, opts.chatTitle ?? null),
+        text: buildRuntimeContext(model, contextUsers, opts.chatTitle ?? null, chatAddendum),
     };
     const newestIndex = Math.max(
         0,

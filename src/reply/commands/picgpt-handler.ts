@@ -81,7 +81,7 @@ export const handlePicgptCommand = async (
     });
 
     // Create chat context with picgpt command type
-    const chatContext = await createChatContext(ctx, { commandType: 'picgpt' });
+    const chatContext = await createChatContext(ctx, { model: OPENAI_IMAGE_MODEL, commandType: 'picgpt' });
     if (!chatContext) {
         console.error('[picgpt] Failed to create chat context');
         return;

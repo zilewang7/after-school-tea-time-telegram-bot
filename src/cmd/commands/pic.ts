@@ -9,6 +9,7 @@ import type { Bot, Context } from 'grammy';
 import OpenAI from 'openai';
 import { to, isErr } from '../../shared/result.js';
 import { removeSpecificText } from '../../util.js';
+import { stopIfChatPaused } from '../../reply/chat-pause.js';
 
 // Grok agent for image generation
 const grokAgent = new OpenAI({
@@ -133,6 +134,9 @@ const extractPrompt = (ctx: Context): string | null => {
  */
 export const registerPicCommands = (bot: Bot): void => {
     bot.command('picgrok', async (ctx) => {
+        // Handled here rather than in chat-handler, so it checks the pause itself
+        if (await stopIfChatPaused(ctx)) return;
+
         const prompt = extractPrompt(ctx);
         if (!prompt) {
             await ctx.reply('请输入图片描述');
