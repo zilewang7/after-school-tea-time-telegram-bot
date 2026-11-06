@@ -1,14 +1,37 @@
 /**
  * Bot menus - model selection and response buttons
+ *
+ * The model menu reads and writes the current chat's own setting: `/model`
+ * and the `mdl:` buttons never change another chat. Writes go through
+ * updateChatSettings, which persists, updates the cache and audits.
  */
 import { InlineKeyboard } from 'grammy';
 import type { Bot, Context } from 'grammy';
+import { match } from 'ts-pattern';
+import type { RenderedMessage } from 'telegram-md-entities';
 import { modelConfigs } from '../config/models.js';
-import { getCurrentModel, setCurrentModel } from '../state.js';
+import { resolveChatModel } from '../config/chat-model.js';
+import { isOwnerUser } from '../config/owner.js';
+import {
+    ChatSettingsError,
+    getChatSettings,
+    updateChatSettings,
+    type ChatSettingsErrorCode,
+} from '../services/chat-settings-service.js';
+import { toApiEntities } from '../telegram/api-entities.js';
+import { to } from '../shared/result.js';
+import {
+    formatActionTime,
+    renderModelOverview,
+    renderModelSwitch,
+    type ChatModelView,
+} from './model-menu-text.js';
 import { setRetryHandler, registerResponseCallbacks, registerGenerationCallbacks } from './menus/index.js';
 import { handleRetryRequest } from '../reply/retry-handler.js';
 
 const MODEL_PREFIX = 'mdl:';
+/** `/model default` and `mdl:default`: drop the chat's own model */
+const FOLLOW_GLOBAL_REQUEST = 'default';
 const BUTTONS_PER_ROW = 2;
 
 const buildCollapsedModelKeyboard = (): InlineKeyboard => {
@@ -23,47 +46,108 @@ const buildExpandedModelKeyboard = (): InlineKeyboard => {
             keyboard.row();
         }
     });
+    keyboard.row().text('跟随全局默认', `${MODEL_PREFIX}${FOLLOW_GLOBAL_REQUEST}`);
     keyboard.row().text('收起', `${MODEL_PREFIX}collapse`);
     return keyboard;
 };
 
-const formatActionTime = (date: Date = new Date()): string => {
-    const time = date.toLocaleTimeString('zh-CN', { hour12: false });
-    const tz = process.env.TZ || 'UTC';
-    return `${time} ${tz}`;
+const chatModelViewOf = (chatId: number): ChatModelView => {
+    const ownModel = getChatSettings(chatId)?.model ?? null;
+    return {
+        model: resolveChatModel(chatId),
+        source: ownModel === null ? 'global' : 'chat',
+    };
 };
 
-const buildModelMessageText = (previousModel?: string, actionTime?: string): string => {
-    const current = getCurrentModel();
+const refusalNoticeOf = (code: ChatSettingsErrorCode): string =>
+    match(code)
+        .with('locked', () => '本聊天的设置已被机主锁定')
+        // Callers never pass a blank id, so the only invalid id is a long one
+        .with('invalid', () => '模型 id 过长')
+        .with('forbidden', () => '没有权限修改本聊天的设置')
+        .exhaustive();
 
-    let modleInfo: string;
+type ModelChangeOutcome =
+    | { kind: 'changed'; text: RenderedMessage; toast: string }
+    | { kind: 'refused'; notice: string };
 
-    if (previousModel) {
-        modleInfo = '切换为：`' + current + '`\n上一个模型：`' + previousModel + '`';
-        if (actionTime) {
-            modleInfo += '\n操作时间：`' + actionTime + '`';
+/**
+ * Set the chat's model to `requested` (a trimmed, non-empty id, or `default`
+ * to follow the global default). Any id is accepted, menu or not; refusals
+ * (locked chat, id too long) come back as a notice, never echoing the id.
+ */
+const applyModelChange = async (
+    chatId: number,
+    userId: number,
+    requested: string
+): Promise<ModelChangeOutcome> => {
+    const previousModel = resolveChatModel(chatId);
+    const followGlobal = requested === FOLLOW_GLOBAL_REQUEST;
+    try {
+        await updateChatSettings({
+            chatId,
+            patch: { model: followGlobal ? null : requested },
+            actor: { userId, isOwner: isOwnerUser(userId) },
+        });
+    } catch (error) {
+        if (error instanceof ChatSettingsError) {
+            return { kind: 'refused', notice: refusalNoticeOf(error.code) };
         }
-    } else {
-        modleInfo = '当前模型：`' + current + '`'
+        throw error;
     }
-    return modleInfo + '\n\n点击下方按钮快速切换或使用 `/model `+模型名 手动指定';
+
+    const current = chatModelViewOf(chatId);
+    return {
+        kind: 'changed',
+        text: renderModelSwitch({ current, previousModel, actionTime: formatActionTime() }),
+        toast: followGlobal ? `已改为跟随全局默认（当前 ${current.model}）` : `已切换到 ${current.model}`,
+    };
+};
+
+const replyWithModelText = async (ctx: Context, text: RenderedMessage): Promise<void> => {
+    await ctx.reply(text.text, {
+        entities: toApiEntities(text.entities),
+        reply_markup: buildCollapsedModelKeyboard(),
+    });
 };
 
 export const sendModelMsg = async (ctx: Context): Promise<void> => {
-    await ctx.reply(buildModelMessageText(), {
-        reply_markup: buildCollapsedModelKeyboard(),
-        parse_mode: 'Markdown',
-    });
+    if (!ctx.chat) return;
+    await replyWithModelText(ctx, renderModelOverview(chatModelViewOf(ctx.chat.id)));
 };
 
-export const changeModel = async (ctx: Context, model: string): Promise<void> => {
-    const previousModel = getCurrentModel();
-    setCurrentModel(model);
-    const actionTime = formatActionTime();
-    await ctx.reply(buildModelMessageText(previousModel, actionTime), {
-        reply_markup: buildCollapsedModelKeyboard(),
-        parse_mode: 'Markdown',
-    });
+/** `/model <id>`; `requested` is already trimmed and non-empty */
+export const changeModel = async (ctx: Context, requested: string): Promise<void> => {
+    if (!ctx.chat || !ctx.from) return;
+    const outcome = await applyModelChange(ctx.chat.id, ctx.from.id, requested);
+    await match(outcome)
+        .with({ kind: 'refused' }, ({ notice }) => ctx.reply(notice))
+        .with({ kind: 'changed' }, ({ text }) => replyWithModelText(ctx, text))
+        .exhaustive();
+};
+
+/** A model button (or 跟随全局默认): edit the menu in place, toast the result */
+const handleModelButton = async (ctx: Context, requested: string): Promise<void> => {
+    if (!ctx.chat || !ctx.from) {
+        await ctx.answerCallbackQuery();
+        return;
+    }
+    const outcome = await applyModelChange(ctx.chat.id, ctx.from.id, requested);
+    if (outcome.kind === 'refused') {
+        await ctx.answerCallbackQuery({ text: outcome.notice });
+        return;
+    }
+
+    const [editError] = await to(
+        ctx.editMessageText(outcome.text.text, {
+            entities: toApiEntities(outcome.text.entities),
+            reply_markup: buildCollapsedModelKeyboard(),
+        })
+    );
+    if (editError) {
+        console.warn('[menu] model menu edit failed:', editError.message);
+    }
+    await ctx.answerCallbackQuery({ text: outcome.toast });
 };
 
 const registerModelCallbacks = (bot: Bot): void => {
@@ -74,28 +158,21 @@ const registerModelCallbacks = (bot: Bot): void => {
             return next();
         }
 
-        const action = data.slice(MODEL_PREFIX.length);
+        const action = data.slice(MODEL_PREFIX.length).trim();
 
-        if (action === 'expand') {
-            await ctx.editMessageReplyMarkup({ reply_markup: buildExpandedModelKeyboard() });
-            await ctx.answerCallbackQuery();
-            return;
-        }
-
-        if (action === 'collapse') {
-            await ctx.editMessageReplyMarkup({ reply_markup: buildCollapsedModelKeyboard() });
-            await ctx.answerCallbackQuery();
-            return;
-        }
-
-        const previousModel = getCurrentModel();
-        setCurrentModel(action);
-        const actionTime = formatActionTime();
-        await ctx.editMessageText(buildModelMessageText(previousModel, actionTime), {
-            parse_mode: 'Markdown',
-            reply_markup: buildCollapsedModelKeyboard(),
-        });
-        await ctx.answerCallbackQuery({ text: `已切换到 ${action}` });
+        await match(action)
+            .with('expand', async () => {
+                await ctx.editMessageReplyMarkup({ reply_markup: buildExpandedModelKeyboard() });
+                await ctx.answerCallbackQuery();
+            })
+            .with('collapse', async () => {
+                await ctx.editMessageReplyMarkup({ reply_markup: buildCollapsedModelKeyboard() });
+                await ctx.answerCallbackQuery();
+            })
+            .with('', async () => {
+                await ctx.answerCallbackQuery();
+            })
+            .otherwise((requested) => handleModelButton(ctx, requested));
     });
 };
 

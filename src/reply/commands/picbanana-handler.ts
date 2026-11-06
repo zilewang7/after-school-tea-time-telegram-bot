@@ -81,7 +81,7 @@ export const handlePicbananaCommand = async (
     });
 
     // Create chat context with picbanana command type
-    const chatContext = await createChatContext(ctx, { commandType: 'picbanana' });
+    const chatContext = await createChatContext(ctx, { model: GEMINI_IMAGE_MODEL, commandType: 'picbanana' });
     if (!chatContext) {
         console.error('[picbanana] Failed to create chat context');
         return;

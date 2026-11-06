@@ -234,7 +234,7 @@ const contextIn = (telegram: FakeTelegram, chatId: number, messageId: number): C
 const startChat = async (chatId: number) => {
     const telegram = createFakeTelegram(chatId);
     const ctx = contextIn(telegram, chatId, takeMessageId());
-    const { result: chatContext } = await captureConsole(() => responseHandler.createChatContext(ctx));
+    const { result: chatContext } = await captureConsole(() => responseHandler.createChatContext(ctx, { model: 'offline-model' }));
     if (!chatContext) throw new Error('the chat context was not created');
     return { telegram, chatContext };
 };

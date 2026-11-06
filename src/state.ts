@@ -10,8 +10,6 @@ interface MediaGroupIdTemp {
 }
 
 interface AppStateType {
-    // current AI model
-    currentModel: string;
     // media group tracking
     mediaGroupIdTemp: MediaGroupIdTemp;
     // File tasks by "chatId:messageId". A message remains pending until every
@@ -40,7 +38,6 @@ interface AppStateType {
 }
 
 const createInitialState = (): AppStateType => ({
-    currentModel: process.env.DEFAULT_MODEL || "gpt-5",
     mediaGroupIdTemp: {
         chatId: 0,
         messageId: 0,
@@ -68,11 +65,6 @@ export const getAppState = (): AppStateType => {
 };
 
 // convenience accessors
-export const getCurrentModel = (): string => getAppState().currentModel;
-export const setCurrentModel = (model: string): void => {
-    getAppState().currentModel = model;
-};
-
 export const getMediaGroupIdTemp = (): MediaGroupIdTemp => getAppState().mediaGroupIdTemp;
 export const setMediaGroupIdTemp = (temp: MediaGroupIdTemp): void => {
     getAppState().mediaGroupIdTemp = temp;

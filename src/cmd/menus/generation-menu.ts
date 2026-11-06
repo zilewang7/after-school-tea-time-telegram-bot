@@ -12,12 +12,21 @@ import { to } from '../../shared/result.js';
 import {
     parseGenerationCallback,
     GENERATION_CALLBACK_PREFIX,
+    type GenerationAction,
 } from '../../reply/commands/generation-buttons.js';
 import { cancelJob, recallJob } from '../../reply/commands/generation-job-store.js';
 import { recallAction } from '../../reply/commands/generation-actions.js';
 import { runGeneration } from '../../reply/commands/generation-runner.js';
+import { isCallbackChatPaused, PAUSED_CALLBACK_NOTICE } from '../../reply/chat-pause.js';
 
 const EXPIRED = '这个任务已经过期了（bot 重启过），请重新发一次命令';
+
+/** Whether the button starts a new generation (and so stops in a paused chat) */
+const generatesAgain = (action: GenerationAction): boolean =>
+    match(action)
+        .with('cancel', () => false)
+        .with('reroll', 'retry', 'rewrite', () => true)
+        .exhaustive();
 
 const handleCancel = async (ctx: Context, jobId: string): Promise<void> => {
     const cancelled = cancelJob(jobId);
@@ -88,6 +97,11 @@ export const registerGenerationCallbacks = (bot: Bot): void => {
         const callback = parseGenerationCallback(data);
         if (!callback) {
             await ctx.answerCallbackQuery();
+            return;
+        }
+
+        if (generatesAgain(callback.action) && isCallbackChatPaused(ctx)) {
+            await ctx.answerCallbackQuery({ text: PAUSED_CALLBACK_NOTICE });
             return;
         }
 

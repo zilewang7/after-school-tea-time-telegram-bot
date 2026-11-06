@@ -17,6 +17,15 @@ import {
     type CaseResult,
     type OfflineDb,
 } from './harness.mts';
+import {
+    callbackUpdate,
+    contextOf,
+    createFakeTelegram,
+    messageUpdate,
+    quietly,
+    startChatCompletionStub,
+    systemPromptOf,
+} from './fake-telegram.mts';
 import type { User } from 'grammy/types';
 import type { GroundingData, ResponseState, UnifiedMessage } from '../../src/ai/types.js';
 
@@ -38,6 +47,13 @@ const TGS_PORT = 9140;
 
 /** The MiMo-shaped stub the content-filter case runs against */
 const MIMO_PORT = 9141;
+
+/**
+ * The chat the retry static-head case replies in. On the tool whitelist (read
+ * once into the tool config), so the harness issue tools are offered there.
+ */
+const TOOL_WHITELISTED_CHAT_ID = -1008800000001;
+process.env.TOOL_CHAT_IDS = [process.env.TOOL_CHAT_IDS, String(TOOL_WHITELISTED_CHAT_ID)].filter(Boolean).join(',');
 
 // The /chat and /pic parsers decide whether `/cmd@Name` is addressed to us
 process.env.BOT_USER_NAME = 'AfterSchoolTeatimeBot';
@@ -5348,6 +5364,51 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
                     merged?.groundingSupports
                 )})`
             );
+        },
+    },
+    {
+        // The first answer and the retry map tool availability to the static
+        // head's capability lines through one function now; the retry used to
+        // keep its own copy, which had lost the harness issue line
+        name: 'a retry sends the same static head as the first answer, harness issue line included',
+        body: async () => {
+            const { updateChatSettings } = await import('../../src/services/chat-settings-service.js');
+            const { handleReply } = await import('../../src/reply/chat-handler.js');
+            const { handleRetryRequest } = await import('../../src/reply/retry-handler.js');
+            const { BotResponse } = await import('../../src/db/index.js');
+
+            const chatId = TOOL_WHITELISTED_CHAT_ID;
+            const userId = 1001;
+            await updateChatSettings({ chatId, patch: { model: 'mimo-v2.6-flash' }, actor: { userId, isOwner: false } });
+
+            const stub = await startChatCompletionStub(MIMO_PORT, '第一版');
+            try {
+                const userMessageId = takeMessageId();
+                const text = '@AfterSchoolTeatimeBot 在吗';
+                await db.saveMessage({ chatId, messageId: userMessageId, userId, date: new Date(), userName: 'Alice', message: text });
+                const replyContext = contextOf(messageUpdate({ chatId, messageId: userMessageId, userId, text }), createFakeTelegram());
+                await quietly(() => handleReply(replyContext, { mention: true }));
+                const firstAnswerRequests = stub.requests.length;
+
+                const response = await BotResponse.findOne({ where: { chatId, userMessageId } });
+                if (!response) throw new Error('the first answer was not recorded');
+                const retryContext = contextOf(
+                    callbackUpdate({ chatId, messageId: response.messageId, userId, data: 'resp:retry' }),
+                    createFakeTelegram()
+                );
+                await quietly(() => handleRetryRequest(retryContext, response.messageId));
+
+                expect(
+                    firstAnswerRequests > 0 && stub.requests.length > firstAnswerRequests,
+                    `both the answer and the retry reached the model (got ${firstAnswerRequests} then ${stub.requests.length})`
+                );
+                const firstHead = systemPromptOf(stub.requests[0] ?? {});
+                const retryHead = systemPromptOf(stub.requests[firstAnswerRequests] ?? {});
+                expect(firstHead.includes('`create_harness_issue`'), 'the first answer offers harness issues in its head');
+                expect(retryHead === firstHead, 'the retry sends the very same static head');
+            } finally {
+                await stub.close();
+            }
         },
     },
 ];

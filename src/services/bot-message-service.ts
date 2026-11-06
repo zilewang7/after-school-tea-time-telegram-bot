@@ -31,7 +31,6 @@ import { toApiEntities } from '../telegram/api-entities.js';
 import { buildResponseButtons } from '../cmd/menus/index.js';
 import { to, isErr, type Result } from '../shared/result.js';
 import {
-    getCurrentModel,
     registerBotReplyInFlight,
     registerContinuation,
     registerReplyInFlight,
@@ -45,6 +44,7 @@ import { sniffMediaMime } from '../ai/image-generation/image-mime.js';
 import { buildImageCaption } from '../reply/tools/image-message.js';
 import { sendReplyFileMessage } from '../telegram/reply-file-send.js';
 import { sendReplyImageMessage } from '../telegram/reply-image-send.js';
+import { resolveChatModel } from '../config/chat-model.js';
 import type { ContextLinkResolver } from '../telegram/formatters/context-links.js';
 import type { AgentStats, FileDelivery, StickerDelivery } from '../ai/types.js';
 
@@ -105,6 +105,9 @@ export interface BotMessageSession {
     userMessageId: number;
     firstMessageId: number;
 
+    /** The model this version is generated with, as the caller chose it */
+    model: string;
+
     // Message management
     messageIds: number[];
     currentMessageId: number;
@@ -150,6 +153,12 @@ export interface BotMessageSession {
  * Session creation options
  */
 export interface CreateSessionOptions {
+    /**
+     * The model generating this reply, recorded in the metadata and the
+     * version. Passed in rather than looked up, so the record always names
+     * the model the caller actually sent the request to.
+     */
+    model: string;
     isRetry?: boolean;
     existingFirstMessageId?: number;
     /** DB anchor ID — the BotResponse primary key. When set, session.firstMessageId uses this
@@ -185,7 +194,7 @@ export const getActiveSession = (chatId: number, firstMessageId: number): BotMes
 export const createSession = async (
     ctx: Context,
     userMessageId: number,
-    options?: CreateSessionOptions
+    options: CreateSessionOptions
 ): Promise<BotMessageSession | null> => {
     if (!ctx.chat) return null;
 
@@ -193,7 +202,7 @@ export const createSession = async (
     const api = ctx.api;
 
     // For retry, we reuse the existing first message
-    let firstMessageId = options?.dbAnchorMessageId ?? options?.existingFirstMessageId;
+    let firstMessageId = options.dbAnchorMessageId ?? options.existingFirstMessageId;
     let processingMsgId: number;
 
     // Initial status text (matches first entry in streaming-editor statusData)
@@ -202,7 +211,7 @@ export const createSession = async (
     // Build stop button for processing state
     const stopButton = buildResponseButtons(ButtonState.PROCESSING);
 
-    if (options?.isRetry && options.existingFirstMessageId) {
+    if (options.isRetry && options.existingFirstMessageId) {
         // Edit existing first message with stop button
         processingMsgId = options.existingFirstMessageId;
         const editor = createMessageEditor(api, chatId, processingMsgId);
@@ -234,8 +243,8 @@ export const createSession = async (
 
     // Get existing version count if retry
     let versionCount = 0;
-    const dbLookupId = options?.dbAnchorMessageId ?? options?.existingFirstMessageId;
-    if (options?.isRetry && dbLookupId) {
+    const dbLookupId = options.dbAnchorMessageId ?? options.existingFirstMessageId;
+    if (options.isRetry && dbLookupId) {
         const existing = await getBotResponse(chatId, dbLookupId);
         if (existing) {
             versionCount = existing.getVersions().length;
@@ -250,6 +259,7 @@ export const createSession = async (
         chatId,
         userMessageId,
         firstMessageId: resolvedFirstMessageId,
+        model: options.model,
         messageIds: [processingMsgId],
         currentMessageId: processingMsgId,
         editor,
@@ -259,7 +269,7 @@ export const createSession = async (
         groundingData: [],
         agentStats: undefined,
         streamController,
-        isRetry: options?.isRetry ?? false,
+        isRetry: options.isRetry ?? false,
         versionCount,
         isFinalized: false,
         api,
@@ -305,11 +315,11 @@ export const createSession = async (
     registerBotReplyInFlight(chatId, resolvedFirstMessageId);
 
     // Initialize database record for new response (not retry)
-    if (!options?.isRetry) {
+    if (!options.isRetry) {
         const metadata: ResponseMetadata = {
-            model: getCurrentModel(),
+            model: options.model,
             hasImage: false,
-            commandType: options?.commandType,
+            commandType: options.commandType,
         };
         await createBotResponse(chatId, resolvedFirstMessageId, userMessageId, metadata);
     } else {
@@ -416,6 +426,7 @@ const finalizeSession = async (
     const version: ResponseVersion = {
         versionId: session.versionCount + 1,
         createdAt: new Date().toISOString(),
+        model: session.model,
         messageIds: [...session.messageIds],
         currentMessageId: session.currentMessageId,
         text: session.textBuffer,
@@ -470,14 +481,16 @@ const finalizeSession = async (
             editedWhileProcessing,
         });
 
-        // Update metadata if the reply carries an attachment
-        if (session.images.length > 0 || sticker !== undefined || file !== undefined) {
-            const metadata = response.getMetadata();
-            metadata.hasImage = true;
-            if (sticker !== undefined) metadata.hasSticker = true;
-            if (file !== undefined) metadata.hasFile = true;
-            response.setMetadata(metadata);
-        }
+        // The metadata names the model of the latest version (a retry may
+        // use another one) and whether the reply ever carried an attachment
+        const carriesAttachment = session.images.length > 0 || sticker !== undefined || file !== undefined;
+        response.setMetadata({
+            ...response.getMetadata(),
+            model: session.model,
+            ...(carriesAttachment ? { hasImage: true } : {}),
+            ...(sticker !== undefined ? { hasSticker: true } : {}),
+            ...(file !== undefined ? { hasFile: true } : {}),
+        });
 
         await response.save();
     }
@@ -653,15 +666,19 @@ const isMediaOnlyVersion = (version: ResponseVersion): boolean =>
     !buildVersionMessages(version)[0]?.text;
 
 /**
- * Start a retry for an existing response
+ * Start a retry for an existing response. `options.model` is the model the
+ * new version is generated with; without it, the chat's model right now (never
+ * the one the original version used).
  */
 export const startRetry = async (
     ctx: Context,
-    firstMessageId: number
+    firstMessageId: number,
+    options?: { model?: string }
 ): Promise<BotMessageSession | null> => {
     if (!ctx.chat) return null;
 
     const chatId = ctx.chat.id;
+    const model = options?.model ?? resolveChatModel(chatId);
 
     // Get existing response
     const response = await getBotResponse(chatId, firstMessageId);
@@ -677,6 +694,7 @@ export const startRetry = async (
         // already in the chat instead of failing silently
         console.warn('[bot-message-service] No stored version for retry, regenerating in place:', firstMessageId);
         return createSession(ctx, response.userMessageId, {
+            model,
             isRetry: true,
             existingFirstMessageId: firstMessageId,
         });
@@ -693,6 +711,7 @@ export const startRetry = async (
         }
         // Send a fresh processing message, but keep DB anchor to original firstMessageId
         return createSession(ctx, response.userMessageId, {
+            model,
             isRetry: true,
             dbAnchorMessageId: firstMessageId,
         });
@@ -710,6 +729,7 @@ export const startRetry = async (
 
     // Reuse the existing first text message
     return createSession(ctx, response.userMessageId, {
+        model,
         isRetry: true,
         existingFirstMessageId: firstMessageId,
     });

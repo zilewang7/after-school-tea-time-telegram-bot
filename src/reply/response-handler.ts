@@ -93,6 +93,8 @@ export interface ChatContext {
  * Options for creating chat context
  */
 export interface CreateChatContextOptions {
+    /** Model generating this reply; recorded on the response and its version */
+    model: string;
     /** Command type for retry routing */
     commandType?: CommandType;
 }
@@ -102,7 +104,7 @@ export interface CreateChatContextOptions {
  */
 export const createChatContext = async (
     ctx: Context,
-    options?: CreateChatContextOptions
+    options: CreateChatContextOptions
 ): Promise<ChatContext | null> => {
     if (!ctx.message || !ctx.chat) return null;
 
@@ -115,7 +117,8 @@ export const createChatContext = async (
 
     // Create bot message session (handles processing message creation)
     const session = await createSession(ctx, userMessageId, {
-        commandType: options?.commandType,
+        model: options.model,
+        commandType: options.commandType,
     });
     if (!session) {
         typing.stop();
@@ -134,7 +137,7 @@ export const createChatContext = async (
         session,
         currentButtonState: ButtonState.PROCESSING,
         isFinalized: false,
-        commandType: options?.commandType ?? 'chat',
+        commandType: options.commandType ?? 'chat',
     };
 
     // Create StreamingEditor with idle update callback

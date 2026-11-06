@@ -18,6 +18,12 @@ export const italicText = (text: string): RenderedMessage => ({
     entities: text ? [{ type: 'italic', offset: 0, length: text.length }] : [],
 });
 
+/** Inline code; any characters, backticks included, stay literal */
+export const codeText = (text: string): RenderedMessage => ({
+    text,
+    entities: text ? [{ type: 'code', offset: 0, length: text.length }] : [],
+});
+
 /**
  * Clickable text; Telegram silently drops text_link entities whose scheme is
  * not http(s)/tg, so those degrade to plain text up front.

@@ -1,16 +1,38 @@
 /**
  * Offline cases for per-chat settings: the model fallback chain, the update
  * rules (free model ids, addendum normalization, lock and owner checks), the
- * audit trail and its retention.
+ * audit trail and its retention; then the bot side: `/model` and the `mdl:`
+ * buttons, the reply and retry settings snapshots, and what a paused chat
+ * still answers.
  *
  * Run: npx tsx scripts/offline/chat-settings.mts
  */
 import { expect, reportResults, runCase, setupOfflineDb, type CaseResult } from './harness.mts';
+import {
+    callbackUpdate,
+    contextOf,
+    createFakeBot,
+    createFakeTelegram,
+    lastToastOf,
+    messageUpdate,
+    quietly,
+    startChatCompletionStub,
+    waitUntil,
+    type TelegramCall,
+} from './fake-telegram.mts';
 
 // Before anything reads the env: the fallback chain ends here, and the owner
 // id is read once into the tool config
 process.env.DEFAULT_MODEL = 'env-default-model';
 process.env.OWNER_USER_ID = '4242';
+
+// The reply and retry cases talk to a MiMo-shaped stub; the platform reads its
+// URL once, when the platforms are created
+const MIMO_STUB_PORT = 9171;
+process.env.MIMO_API_URL = `http://127.0.0.1:${MIMO_STUB_PORT}/v1`;
+process.env.MIMO_API_KEY = 'offline-stub';
+// checkIfMentioned compares against this
+process.env.BOT_USER_NAME = 'AfterSchoolTeatimeBot';
 
 await setupOfflineDb();
 const service = await import('../../src/services/chat-settings-service.js');
@@ -20,6 +42,14 @@ const { listSettingsAudit } = await import('../../src/db/queries/settings-audit.
 const { SettingsAudit } = await import('../../src/db/settingsAuditDTO.js');
 const { ChatSettingsRecord } = await import('../../src/db/chatSettingsDTO.js');
 const { clearExpiredData } = await import('../../src/db/autoSave.js');
+const dbIndex = await import('../../src/db/index.js');
+const { modelConfigs, GEMINI_IMAGE_MODEL, OPENAI_IMAGE_MODEL } = await import('../../src/config/models.js');
+const { formatActionTime } = await import('../../src/cmd/model-menu-text.js');
+const { registerModelCommand } = await import('../../src/cmd/commands/model.js');
+const { registerPicCommands } = await import('../../src/cmd/commands/pic.js');
+const { menuLoad } = await import('../../src/cmd/menu.js');
+const { registerChatHandler, handleReply } = await import('../../src/reply/chat-handler.js');
+const { handleRetryRequest } = await import('../../src/reply/retry-handler.js');
 
 const { ChatSettingsError, updateChatSettings, updateGlobalDefaultModel } = service;
 
@@ -39,6 +69,70 @@ const rejectionOf = async (run: () => Promise<unknown>): Promise<string> => {
 };
 
 const auditOf = (chatId: number) => listSettingsAudit({ scope: `chat:${chatId}`, limit: 100 });
+
+// ---- the bot side: one Bot wired like production, answering offline ----
+
+const { bot, telegram } = createFakeBot();
+registerModelCommand(bot);
+registerPicCommands(bot);
+menuLoad(bot);
+registerChatHandler(bot);
+
+let nextBotMessageId = 70_000;
+const takeBotMessageId = (): number => (nextBotMessageId += 1);
+
+/** A message from `userId` in `chatId`, through the whole bot */
+const sendText = async (chatId: number, userId: number, text: string): Promise<void> => {
+    telegram.reset();
+    await quietly(() => bot.handleUpdate(messageUpdate({ chatId, messageId: takeBotMessageId(), userId, text })));
+};
+
+/** A button press on bot message `messageId` */
+const press = async (chatId: number, userId: number, data: string, messageId = takeBotMessageId()): Promise<void> => {
+    telegram.reset();
+    await quietly(() => bot.handleUpdate(callbackUpdate({ chatId, messageId, userId, data })));
+};
+
+/** Let a detached handler (setTimeout / setImmediate) run */
+const settleHandlers = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 200));
+
+interface SentText {
+    text: string;
+    /** The text under each code entity, in order */
+    codeSpans: string[];
+    hasParseMode: boolean;
+    hasKeyboard: boolean;
+}
+
+const fieldsOf = (value: unknown): Record<string, unknown> =>
+    typeof value === 'object' && value !== null && !Array.isArray(value) ? Object.fromEntries(Object.entries(value)) : {};
+
+const sentTextOf = (call: TelegramCall | undefined): SentText => {
+    const text = typeof call?.payload.text === 'string' ? call.payload.text : '';
+    const entities = Array.isArray(call?.payload.entities) ? call.payload.entities.map(fieldsOf) : [];
+    return {
+        text,
+        codeSpans: entities
+            .filter((entity) => entity.type === 'code')
+            .map((entity) => text.slice(Number(entity.offset), Number(entity.offset) + Number(entity.length))),
+        hasParseMode: call?.payload.parse_mode !== undefined,
+        hasKeyboard: call?.payload.reply_markup !== undefined,
+    };
+};
+
+const lastReply = (): SentText => sentTextOf(telegram.callsOf('sendMessage').at(-1));
+const lastEdit = (): SentText => sentTextOf(telegram.callsOf('editMessageText').at(-1));
+
+/** The callback data of every button the last markup edit showed, row by row */
+const lastKeyboardRows = (): string[][] => {
+    const markup = fieldsOf(telegram.callsOf('editMessageReplyMarkup').at(-1)?.payload.reply_markup);
+    const rows: unknown[] = Array.isArray(markup.inline_keyboard) ? markup.inline_keyboard : [];
+    return rows.map((row) => (Array.isArray(row) ? row : []).map((button) => String(fieldsOf(button).callback_data)));
+};
+
+const FOOTER = '\n\n只对本聊天生效。点击下方按钮快速切换或使用 /model +模型名 手动指定';
+const LOCKED_NOTICE = '本聊天的设置已被机主锁定';
+const PAUSED_NOTICE = '本聊天已暂停';
 
 const cases: { name: string; body: () => Promise<void> }[] = [
     {
@@ -322,6 +416,328 @@ const cases: { name: string; body: () => Promise<void> }[] = [
             expect((await SettingsAudit.findByPk(old.id)) === null, 'a 366-day-old row is gone');
             expect((await SettingsAudit.findByPk(kept.id)) !== null, 'a 300-day-old row stays');
             expect((await SettingsAudit.count()) === before - 1, 'nothing else is touched');
+        },
+    },
+    {
+        name: 'the menu holds the 12 chat models, no image model, then 跟随全局默认 and 收起',
+        body: async () => {
+            expect(modelConfigs.length === 12, `12 entries (got ${modelConfigs.length})`);
+            expect(
+                !modelConfigs.some((model) => model.id === GEMINI_IMAGE_MODEL || model.id === OPENAI_IMAGE_MODEL),
+                'neither image model is in the menu'
+            );
+            expect(
+                GEMINI_IMAGE_MODEL === 'gemini-nano-banana-2.1' && OPENAI_IMAGE_MODEL === 'gpt-image-2.5-dev',
+                'the image constants /picbanana, /picgpt and generate_image use are unchanged'
+            );
+
+            await press(-3000, MEMBER.userId, 'mdl:expand');
+            const rows = lastKeyboardRows();
+            const buttons = rows.flat();
+            expect(
+                buttons.filter((data) => data !== 'mdl:default' && data !== 'mdl:collapse').length === 12,
+                `one button per menu model (got ${JSON.stringify(buttons)})`
+            );
+            expect(
+                JSON.stringify(rows.slice(-2)) === JSON.stringify([['mdl:default'], ['mdl:collapse']]),
+                `跟随全局默认 closes the models, 收起 comes last (got ${JSON.stringify(rows.slice(-2))})`
+            );
+            expect(!buttons.includes(`mdl:${GEMINI_IMAGE_MODEL}`), 'no image model button');
+        },
+    },
+    {
+        name: '/model and mdl: take any id from anyone, refuse an overlong one without echoing it, default follows global',
+        body: async () => {
+            const chatId = -3001;
+            const globalModel = service.getGlobalDefaultModel();
+
+            await sendText(chatId, MEMBER.userId, '/model not-in-menu-free-id');
+            expect(resolveChatModel(chatId) === 'not-in-menu-free-id', 'a member sets an id outside the menu');
+            const switched = lastReply();
+            expect(
+                switched.text.startsWith(`切换为：not-in-menu-free-id\n上一个模型：${globalModel}\n操作时间：`) &&
+                    switched.text.endsWith(FOOTER),
+                `the switch text names both models (got ${JSON.stringify(switched.text)})`
+            );
+            expect(!switched.hasParseMode && switched.hasKeyboard, 'entities instead of parse_mode, keyboard kept');
+
+            await sendText(chatId, OWNER.userId, '/model owner-free-id');
+            expect(resolveChatModel(chatId) === 'owner-free-id', 'the owner follows the same rule');
+
+            await press(chatId, MEMBER.userId, 'mdl:button-free-id');
+            expect(resolveChatModel(chatId) === 'button-free-id', 'a button press sets an unknown id too');
+            expect(lastEdit().text.startsWith('切换为：button-free-id\n上一个模型：owner-free-id'), 'the menu is edited in place');
+            expect(lastToastOf(telegram) === '已切换到 button-free-id', `toast (got ${String(lastToastOf(telegram))})`);
+
+            const overlong = 'x'.repeat(65);
+            await sendText(chatId, MEMBER.userId, `/model ${overlong}`);
+            const refused = lastReply();
+            expect(
+                telegram.callsOf('sendMessage').length === 1 && refused.text === '模型 id 过长',
+                `an overlong id is refused (got ${JSON.stringify(refused.text)})`
+            );
+            expect(!refused.hasParseMode && !refused.text.includes(overlong), 'no parse_mode, the id is not echoed');
+            expect(resolveChatModel(chatId) === 'button-free-id', 'and nothing is saved');
+            await press(chatId, MEMBER.userId, `mdl:${'y'.repeat(65)}`);
+            expect(
+                lastToastOf(telegram) === '模型 id 过长' && telegram.callsOf('editMessageText').length === 0,
+                'a button with an overlong id only toasts'
+            );
+            await sendText(chatId, MEMBER.userId, `/model ${'z'.repeat(64)}`);
+            expect(resolveChatModel(chatId) === 'z'.repeat(64), '64 characters are accepted');
+
+            await sendText(chatId, MEMBER.userId, '/model default');
+            expect(service.getChatSettings(chatId)?.model === null, '/model default clears the chat model');
+            expect(
+                lastReply().text.startsWith(`切换为：${globalModel}（跟随全局默认）\n上一个模型：${'z'.repeat(64)}`),
+                `the switch text marks the global default (got ${JSON.stringify(lastReply().text)})`
+            );
+
+            await sendText(chatId, MEMBER.userId, '/model temporary-model');
+            await press(chatId, MEMBER.userId, 'mdl:default');
+            expect(service.getChatSettings(chatId)?.model === null, 'mdl:default clears it as well');
+            expect(
+                lastToastOf(telegram) === `已改为跟随全局默认（当前 ${globalModel}）`,
+                `the follow-global toast names the model (got ${String(lastToastOf(telegram))})`
+            );
+            expect(lastEdit().text.startsWith(`切换为：${globalModel}（跟随全局默认）`), 'and the menu says so');
+        },
+    },
+    {
+        name: 'the menu text is built from entities: a backtick id goes through and the e2e substrings stay',
+        body: async () => {
+            const chatId = -3002;
+            const odd = 'odd`id*_[x]';
+            const globalModel = service.getGlobalDefaultModel();
+
+            await sendText(chatId, MEMBER.userId, `/model ${odd}`);
+            const switched = lastReply();
+            expect(!switched.hasParseMode, 'no legacy Markdown');
+            expect(switched.text.includes('切换为'), 'the e2e substring 切换为 is there');
+            expect(
+                switched.codeSpans.length === 4 &&
+                    switched.codeSpans[0] === odd &&
+                    switched.codeSpans[1] === globalModel &&
+                    /^\d{2}:\d{2}:\d{2} \S+$/.test(switched.codeSpans[2] ?? '') &&
+                    switched.codeSpans[3] === '/model ',
+                `code entities wrap the new id, the old id, the time and /model (got ${JSON.stringify(switched.codeSpans)})`
+            );
+
+            await sendText(chatId, MEMBER.userId, '/model');
+            const own = lastReply();
+            expect(
+                own.text === `当前模型：${odd}（本聊天单独设置）${FOOTER}`,
+                `the overview marks a chat's own model (got ${JSON.stringify(own.text)})`
+            );
+            expect(
+                JSON.stringify(own.codeSpans) === JSON.stringify([odd, '/model ']) && own.hasKeyboard,
+                `code entities and the collapsed keyboard (got ${JSON.stringify(own.codeSpans)})`
+            );
+
+            await sendText(chatId, MEMBER.userId, '/model default');
+            await sendText(chatId, MEMBER.userId, '/model');
+            expect(
+                lastReply().text === `当前模型：${globalModel}（跟随全局默认）${FOOTER}`,
+                `the overview marks the global default (got ${JSON.stringify(lastReply().text)})`
+            );
+
+            const savedTimeZone = process.env.TZ;
+            delete process.env.TZ;
+            try {
+                const label = formatActionTime(new Date('2026-11-06T11:05:12Z'));
+                expect(label === '19:05:12 Asia/Shanghai', `the time is computed in Asia/Shanghai (got ${label})`);
+            } finally {
+                if (savedTimeZone !== undefined) process.env.TZ = savedTimeZone;
+            }
+        },
+    },
+    {
+        name: 'a locked chat refuses members on /model and the buttons; the owner still changes it',
+        body: async () => {
+            const chatId = -3003;
+            await updateChatSettings({ chatId, patch: { model: 'before-lock', settingsLocked: true }, actor: OWNER });
+
+            await sendText(chatId, MEMBER.userId, '/model member-try');
+            expect(lastReply().text === LOCKED_NOTICE, `a member is refused (got ${JSON.stringify(lastReply().text)})`);
+            await sendText(chatId, MEMBER.userId, '/model default');
+            expect(lastReply().text === LOCKED_NOTICE, '/model default too');
+            await sendText(chatId, MEMBER.userId, `/model ${'x'.repeat(65)}`);
+            expect(lastReply().text === LOCKED_NOTICE, 'the lock is checked before the length');
+            await press(chatId, MEMBER.userId, 'mdl:member-button');
+            expect(
+                lastToastOf(telegram) === LOCKED_NOTICE && telegram.callsOf('editMessageText').length === 0,
+                'a button press only toasts the lock'
+            );
+            expect(resolveChatModel(chatId) === 'before-lock', 'nothing changed');
+
+            await sendText(chatId, MEMBER.userId, '/model');
+            expect(lastReply().text.startsWith('当前模型：before-lock（本聊天单独设置）'), 'members can still look');
+
+            await sendText(chatId, OWNER.userId, '/model owner-after-lock');
+            expect(resolveChatModel(chatId) === 'owner-after-lock', 'the owner changes a locked chat');
+            await press(chatId, OWNER.userId, 'mdl:default');
+            expect(service.getChatSettings(chatId)?.model === null, 'by button as well');
+        },
+    },
+    {
+        name: 'a reply keeps the settings it started with; a retry takes the chat settings at the press, never the old model',
+        body: async () => {
+            const chatId = -3004;
+            const stub = await startChatCompletionStub(MIMO_STUB_PORT, '回复内容');
+            try {
+                await updateChatSettings({
+                    chatId,
+                    patch: { model: 'mimo-v2.6-flash', promptAddendum: '附加提示词甲' },
+                    actor: MEMBER,
+                });
+                const userMessageId = takeBotMessageId();
+                const text = '@AfterSchoolTeatimeBot 你好';
+                await dbIndex.saveMessage({
+                    chatId,
+                    messageId: userMessageId,
+                    userId: MEMBER.userId,
+                    date: new Date(),
+                    userName: 'member',
+                    message: text,
+                });
+                const replyTelegram = createFakeTelegram();
+                const replyContext = contextOf(
+                    messageUpdate({ chatId, messageId: userMessageId, userId: MEMBER.userId, text }),
+                    replyTelegram
+                );
+
+                const release = stub.hold();
+                const replying = quietly(() => handleReply(replyContext, { mention: true }));
+                await waitUntil('the reply request to reach the model', () => stub.requests.length === 1, 15000);
+                // Changed while the reply is being generated
+                await updateChatSettings({
+                    chatId,
+                    patch: { model: 'mimo-v2.6-pro', promptAddendum: '附加提示词乙' },
+                    actor: MEMBER,
+                });
+                release();
+                await replying;
+
+                const firstRequest = stub.requests[0] ?? {};
+                const firstContents = JSON.stringify(firstRequest.messages);
+                expect(
+                    firstRequest.model === 'mimo-v2.6-flash',
+                    `the reply used the model it started with (got ${String(firstRequest.model)})`
+                );
+                expect(
+                    firstContents.includes('附加提示词甲') && !firstContents.includes('附加提示词乙'),
+                    'and the addendum it started with'
+                );
+                const response = await dbIndex.BotResponse.findOne({ where: { chatId, userMessageId } });
+                if (!response) throw new Error('the reply was not recorded');
+                const firstVersions = response.getVersions();
+                expect(
+                    firstVersions.length === 1 && firstVersions[0]?.model === 'mimo-v2.6-flash',
+                    `version 1 records the snapshot model (got ${JSON.stringify(firstVersions.map((version) => version.model))})`
+                );
+                expect(response.getMetadata().model === 'mimo-v2.6-flash', 'so does the metadata');
+
+                // Retry pressed after the change: the chat's model now, not version 1's
+                const retryTelegram = createFakeTelegram();
+                const retryContext = contextOf(
+                    callbackUpdate({ chatId, messageId: response.messageId, userId: MEMBER.userId, data: 'resp:retry' }),
+                    retryTelegram
+                );
+                await quietly(() => handleRetryRequest(retryContext, response.messageId));
+
+                const retryRequest = stub.requests[1] ?? {};
+                expect(
+                    retryRequest.model === 'mimo-v2.6-pro',
+                    `the retry asked the chat's current model (got ${String(retryRequest.model)})`
+                );
+                expect(JSON.stringify(retryRequest.messages).includes('附加提示词乙'), "with the chat's current addendum");
+                const retried = await dbIndex.getBotResponse(chatId, response.messageId);
+                const versionModels = (retried?.getVersions() ?? []).map((version) => version.model);
+                expect(
+                    JSON.stringify(versionModels) === JSON.stringify(['mimo-v2.6-flash', 'mimo-v2.6-pro']),
+                    `each version records its own model (got ${JSON.stringify(versionModels)})`
+                );
+                expect(retried?.getMetadata().model === 'mimo-v2.6-pro', 'the metadata names the latest version');
+            } finally {
+                await stub.close();
+            }
+        },
+    },
+    {
+        name: 'a paused chat: no reply, no /picgrok, no regenerate buttons; /model and version switching still work',
+        body: async () => {
+            const chatId = -3005;
+            await updateChatSettings({ chatId, patch: { paused: true }, actor: MEMBER });
+
+            await sendText(chatId, MEMBER.userId, '@AfterSchoolTeatimeBot 在吗');
+            await waitUntil('the paused reaction', () => telegram.callsOf('setMessageReaction').length === 1);
+            const reaction = JSON.stringify(telegram.callsOf('setMessageReaction')[0]?.payload.reaction);
+            expect(reaction === JSON.stringify([{ type: 'emoji', emoji: '😴' }]), `the trigger gets 😴 (got ${reaction})`);
+            await settleHandlers();
+            expect(
+                telegram.callsOf('sendMessage').length === 0 && telegram.callsOf('sendChatAction').length === 0,
+                'and no reply is started'
+            );
+
+            await sendText(chatId, MEMBER.userId, '/picgrok 一只猫');
+            expect(telegram.callsOf('setMessageReaction').length === 1, '/picgrok gets 😴 as well');
+            expect(
+                telegram.callsOf('sendMessage').length === 0 && telegram.callsOf('sendChatAction').length === 0,
+                'and generates nothing'
+            );
+
+            for (const data of ['gen:reroll:job-1', 'gen:retry:action-1', 'gen:rewrite:action-2']) {
+                await press(chatId, MEMBER.userId, data);
+                expect(
+                    lastToastOf(telegram) === PAUSED_NOTICE && telegram.callsOf('editMessageReplyMarkup').length === 0,
+                    `${data} answers 本聊天已暂停 and keeps its button`
+                );
+            }
+            await press(chatId, MEMBER.userId, 'gen:cancel:job-1');
+            expect(
+                typeof lastToastOf(telegram) === 'string' && lastToastOf(telegram) !== PAUSED_NOTICE,
+                `cancel is answered as usual (got ${String(lastToastOf(telegram))})`
+            );
+
+            const firstMessageId = takeBotMessageId();
+            const versionOf = (versionId: number) => ({
+                versionId,
+                createdAt: new Date().toISOString(),
+                messageIds: [firstMessageId],
+                currentMessageId: firstMessageId,
+                text: `版本 ${versionId}`,
+                wasStoppedByUser: false,
+            });
+            await dbIndex.BotResponse.create({
+                messageId: firstMessageId,
+                chatId,
+                userMessageId: firstMessageId - 1,
+                currentVersionIndex: 1,
+                versions: JSON.stringify([versionOf(1), versionOf(2)]),
+                buttonState: dbIndex.ButtonState.HAS_VERSIONS,
+                metadata: JSON.stringify({ model: 'offline', hasImage: false }),
+            });
+            await press(chatId, MEMBER.userId, 'resp:retry', firstMessageId);
+            await settleHandlers();
+            expect(
+                lastToastOf(telegram) === PAUSED_NOTICE,
+                `the reply retry answers 本聊天已暂停 (got ${String(lastToastOf(telegram))})`
+            );
+            expect(telegram.callsOf('editMessageText').length === 0, 'and regenerates nothing');
+
+            await press(chatId, MEMBER.userId, 'resp:prev', firstMessageId);
+            expect(
+                lastToastOf(telegram) === '切换到版本 1/2',
+                `switching versions is not blocked (got ${String(lastToastOf(telegram))})`
+            );
+            await waitUntil('the version switch edit', () => telegram.callsOf('editMessageText').length > 0);
+
+            await sendText(chatId, MEMBER.userId, '/model');
+            expect(lastReply().text.startsWith('当前模型：'), '/model still answers');
+
+            await updateChatSettings({ chatId, patch: { paused: false }, actor: MEMBER });
+            await press(chatId, MEMBER.userId, 'gen:reroll:job-1');
+            expect(lastToastOf(telegram) !== PAUSED_NOTICE, 'unpaused, the button is handled again');
         },
     },
 ];
