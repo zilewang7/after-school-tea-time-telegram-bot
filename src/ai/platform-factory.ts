@@ -11,6 +11,7 @@ import { MimoPlatform } from './platforms/mimo-platform.js';
 import { AnthropicPlatform } from './platforms/anthropic-platform.js';
 import { applyModelCapabilities } from './message-transformer.js';
 import { isImageOutputModel } from './model-kinds.js';
+import { platformTypeOf } from './platform-routing.js';
 
 // Singleton platform instances - initialized once at module load
 const geminiPlatform = new GeminiPlatform();
@@ -21,17 +22,18 @@ const mimoPlatform = new MimoPlatform();
 const anthropicPlatform = new AnthropicPlatform();
 
 /**
- * Get platform instance based on model name
+ * Get platform instance based on model name (routing rule: platformTypeOf)
  * Uses pre-initialized singleton instances to avoid any runtime overhead
  */
 export const getPlatform = (model: string): IAIPlatform => {
-    return match(model.toLowerCase())
-        .when((m) => m.startsWith('gemini'), () => geminiPlatform)
-        .when((m) => m.startsWith('deepseek'), () => deepseekPlatform)
-        .when((m) => m.startsWith('grok-'), () => grokPlatform)
-        .when((m) => m.startsWith('mimo'), () => mimoPlatform)
-        .when((m) => m.startsWith('claude'), () => anthropicPlatform)
-        .otherwise(() => openaiPlatform);
+    return match(platformTypeOf(model))
+        .with('gemini', () => geminiPlatform)
+        .with('deepseek', () => deepseekPlatform)
+        .with('grok', () => grokPlatform)
+        .with('mimo', () => mimoPlatform)
+        .with('anthropic', () => anthropicPlatform)
+        .with('openai', () => openaiPlatform)
+        .exhaustive();
 };
 
 /**

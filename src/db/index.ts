@@ -12,9 +12,15 @@ import { MessageAttachment } from "./messageAttachmentDTO.js";
 import { CustomEmojiAsset } from "./customEmojiAssetDTO.js";
 import { MessageRevision } from './messageRevisionDTO.js';
 import { HarnessIssue } from './harnessIssueDTO.js';
+// Control panel tables: imported for their side effect of registering with sync
+import './chatDTO.js';
+import './chatMemberSeenDTO.js';
+import './chatSettingsDTO.js';
+import './globalSettingDTO.js';
+import './settingsAuditDTO.js';
 import { getBlob } from "../util.js";
 import { addAsyncFileSaveTask, removeAsyncFileSaveTask, findFirstMessageIdByContinuation } from '../state.js';
-import { backfillAnimationMediaKind, runSchemaMigrations } from './schema-migrations.js';
+import { backfillAnimationMediaKind, backfillPanelRegistry, runSchemaMigrations } from './schema-migrations.js';
 
 // sync database (the imports above ensure every table is registered before sync)
 // Exported so callers can await schema readiness instead of racing the migration;
@@ -28,7 +34,8 @@ export const dbReady = enableWriteAheadLog()
     .then(() => sequelize.sync())
     // Data fixes need the tables, so they run after sync (a fresh database has
     // no rows for them, an existing one is scanned once)
-    .then(() => backfillAnimationMediaKind());
+    .then(() => backfillAnimationMediaKind())
+    .then(() => backfillPanelRegistry());
 dbReady.catch((error: unknown) => {
     console.error('[db] schema sync failed:', error);
 });

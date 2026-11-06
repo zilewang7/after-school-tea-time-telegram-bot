@@ -197,6 +197,15 @@ export const runSchemaMigrations = async (): Promise<void> => {
        VALUES ('20261104_harness_issues', :appliedAt)`,
       { replacements: { appliedAt: new Date().toISOString() }, transaction }
     );
+    // The control panel's tables (chats, chat_members_seen, chat_settings,
+    // global_settings, settings_audit) are new: sync creates them from their
+    // DTOs, this row records the feature. Their first rows come from
+    // backfillPanelRegistry below.
+    await sequelize.query(
+      `INSERT OR IGNORE INTO schema_migrations (name, appliedAt)
+       VALUES ('20261106_miniapp_panel', :appliedAt)`,
+      { replacements: { appliedAt: new Date().toISOString() }, transaction }
+    );
   });
 };
 
@@ -233,6 +242,62 @@ export const backfillAnimationMediaKind = async (): Promise<void> => {
           AND fileUniqueId IN (
               SELECT DISTINCT fileUniqueId FROM telegram_messages WHERE mediaHint = 'an animation'
           )`,
+      { transaction }
+    );
+    await sequelize.query(
+      `INSERT OR IGNORE INTO schema_migrations (name, appliedAt)
+       VALUES (:name, :appliedAt)`,
+      { replacements: { name, appliedAt: new Date().toISOString() }, transaction }
+    );
+  });
+};
+
+/**
+ * Seed the panel's chat registry from the messages already stored, once.
+ *
+ * Without it, a chat with no new message since the panel shipped could not be
+ * opened by anyone (the owner included), and old group members would start with
+ * an empty chat list. Only the last 7 days of messages exist, so only chats and
+ * speakers active in that window are seeded; titles stay NULL until the chat's
+ * next message. Chats that only have bot rows are covered through
+ * bot_responses. Senders that are not people are skipped: luoxu backfill (0),
+ * the Telegram service account (777000), GroupAnonymousBot (1087968824) and
+ * every account the roster knows to be a bot.
+ *
+ * Runs after sequelize.sync() (the tables are new); INSERT OR IGNORE keeps it
+ * from touching rows autoSave already wrote.
+ */
+export const backfillPanelRegistry = async (): Promise<void> => {
+  const name = '20261106_miniapp_panel_backfill';
+  const applied = await sequelize.query<{ name: string }>(
+    'SELECT name FROM schema_migrations WHERE name = :name',
+    { type: QueryTypes.SELECT, replacements: { name } }
+  );
+  if (applied.length > 0) return;
+
+  await sequelize.transaction(async (transaction) => {
+    await sequelize.query(
+      `INSERT OR IGNORE INTO chats (chatId, type, title, username, firstSeenAt, lastSeenAt)
+       SELECT chatId,
+              CASE WHEN chatId > 0 THEN 'private'
+                   WHEN chatId <= -1000000000000 THEN 'supergroup'
+                   ELSE 'group' END,
+              NULL, NULL, MIN(seenAt), MAX(seenAt)
+         FROM (SELECT chatId, date AS seenAt FROM telegram_messages
+               UNION ALL
+               SELECT chatId, createdAt AS seenAt FROM bot_responses)
+        GROUP BY chatId`,
+      { transaction }
+    );
+    await sequelize.query(
+      `INSERT OR IGNORE INTO chat_members_seen (chatId, userId, firstSeenAt, lastSeenAt, messageCount)
+       SELECT m.chatId, m.userId, MIN(m.date), MAX(m.date), COUNT(*)
+         FROM telegram_messages m
+         LEFT JOIN telegram_users u ON u.userId = m.userId
+        WHERE m.chatId < 0 AND m.fromBotSelf = 0 AND m.userId IS NOT NULL
+          AND m.userId NOT IN (0, 777000, 1087968824)
+          AND COALESCE(u.isBot, 0) = 0
+        GROUP BY m.chatId, m.userId`,
       { transaction }
     );
     await sequelize.query(

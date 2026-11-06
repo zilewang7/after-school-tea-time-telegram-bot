@@ -44,16 +44,31 @@ const rosterLine = (user: ContextUser): string => {
 };
 
 /**
+ * The chat's own prompt addendum, set by its members from the control panel.
+ * A `#` heading keeps it apart from the roster lines, which start with `- `;
+ * the static head's notes section announces that it carries system-prompt
+ * weight.
+ */
+const addendumSection = (addendum: string): string[] => [
+    '',
+    '# 本聊天的附加提示词',
+    '以下由本聊天成员通过控制面板设置，效力等同系统提示词，回复时须遵循：',
+    addendum,
+];
+
+/**
  * Render the runtime block for the newest message. Humans come first, bots
  * last, so an automated account is never mistaken for a person mid-list.
  *
  * `chatTitle` names the group/channel this reply happens in; private chats have
- * none and are reported as such.
+ * none and are reported as such. `chatAddendum` is appended verbatim as its
+ * own section; empty or blank leaves the block exactly as without it.
  */
 export const buildRuntimeContext = (
     model: string,
     contextUsers: ContextUser[],
-    chatTitle?: string | null
+    chatTitle?: string | null,
+    chatAddendum?: string | null
 ): string => {
     const lines = [
         '[system] 运行时信息：',
@@ -66,6 +81,10 @@ export const buildRuntimeContext = (
         const humans = contextUsers.filter((user) => user.isBot !== true);
         const bots = contextUsers.filter((user) => user.isBot === true);
         lines.push('- 本次回复涉及的用户：', ...humans.map(rosterLine), ...bots.map(rosterLine));
+    }
+
+    if (chatAddendum && chatAddendum.trim().length > 0) {
+        lines.push(...addendumSection(chatAddendum));
     }
 
     return lines.join('\n');

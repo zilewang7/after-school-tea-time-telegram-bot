@@ -8,12 +8,12 @@ import { replyLoad } from './reply/index.js';
 import { autoClear, autoSave, autoUpdate } from './db/autoSave.js';
 import { dbReady } from './db/index.js';
 import { menuLoad } from './cmd/menu.js';
-import { getAppState } from './state.js';
 import { initMcpClients } from './ai/mcp/index.js';
 import { isTestInstance, getAllowedChatIds, isChatAllowed } from './config/instance.js';
 import { registerSenderGate } from './config/sender-gate.js';
 import { startCustomEmojiRecovery } from './services/custom-emoji-service.js';
 import { reconcileInterruptedResponses } from './services/bot-message-service.js';
+import { getGlobalDefaultModel, loadChatSettingsCache } from './services/chat-settings-service.js';
 
 if (!process.env.BOT_TOKEN) {
     throw new Error('BOT_TOKEN must be provided');
@@ -42,10 +42,6 @@ const botConfig = localApiRoot
         },
       }
     : undefined;
-
-// initialize app state
-const appState = getAppState();
-console.log(`Initial model: ${appState.currentModel}`);
 
 const bot = new Bot(process.env.BOT_TOKEN, botConfig);
 
@@ -133,6 +129,10 @@ async function main() {
     // alters the multi-GB message table; writes still must not race DDL.
     await dbReady;
     console.log('[db] Schema ready');
+    // Per-chat and global settings are read synchronously from memory by the
+    // reply path, so they must be loaded before the first update
+    await loadChatSettingsCache();
+    console.log(`Initial model: ${getGlobalDefaultModel()}`);
     // No session survives a restart: replies still marked as streaming were cut
     // off, so they get their stop button replaced by a retry that works
     await reconcileInterruptedResponses(bot.api).catch((error: unknown) => {

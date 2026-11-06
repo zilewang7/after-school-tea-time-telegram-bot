@@ -147,4 +147,5 @@ export const buildCapabilitiesSection = (options: CapabilityOptions): string => 
 
 export const NOTES_SECTION = `# 注意
 
-- 用户可能编辑自己已发出的消息，或切换你生成的消息的版本`;
+- 用户可能编辑自己已发出的消息，或切换你生成的消息的版本
+- 你要回复的那条消息末尾的运行时信息里可能有「本聊天的附加提示词」一节：由本聊天成员通过控制面板设置，与本提示词同等效力`;

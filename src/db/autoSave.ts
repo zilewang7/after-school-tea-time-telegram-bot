@@ -41,6 +41,8 @@ import { to } from 'await-to-js';
 import { readFile, unlink } from 'node:fs/promises';
 import type { Message as TgMessage, MessageEntity, MessageOrigin, RichBlock, RichMessage, User } from 'grammy/types';
 import { upsertTelegramUser } from './queries/user-queries.js';
+import { harvestChatRegistry } from './queries/panel-registry.js';
+import { SettingsAudit } from './settingsAuditDTO.js';
 import { entitiesToMarkdown, richBlocksToMarkdown } from 'telegram-md-entities';
 import { extractCustomEmojiOccurrences } from '../services/custom-emoji-extractor.js';
 import { acquireCustomEmojiAttachments } from '../services/custom-emoji-service.js';
@@ -1078,6 +1080,7 @@ export const autoSave = (bot: Bot) => {
                         )
                     );
                 harvestRosterUsers(ctx.message);
+                harvestChatRegistry(ctx.message);
                 const forwardOrigin = resolveForwardOrigin(ctx.message?.forward_origin);
                 // Original sender's id (privacy-protected forwards have none);
                 // lets the context roster resolve who the forward came from
@@ -1487,6 +1490,7 @@ export const clearExpiredData = async (): Promise<void> => {
         const now = new Date();
         const oneWeekAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
         const oneDayAgo = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+        const oneYearAgo = new Date(now.getTime() - 365 * 24 * 60 * 60 * 1000);
 
         // 每一处都是「先按索引选 id（只读），再按主键分批删」，避免一条语句长时间独占写锁
         // 使用 UTC 时间，确保一致性
@@ -1590,8 +1594,18 @@ export const clearExpiredData = async (): Promise<void> => {
             (chunk) => TgMessageLinkCache.destroy({ where: { url: { [Op.in]: chunk } } })
         );
 
+        // 控制面板的设置审计保留 365 天
+        const staleAuditRows = await SettingsAudit.findAll({
+            where: { createdAt: { [Op.lt]: oneYearAgo } },
+            attributes: ['id'],
+        });
+        const settingsAuditResult = await mutateInChunks(
+            staleAuditRows.map((row) => row.id),
+            (chunk) => SettingsAudit.destroy({ where: { id: { [Op.in]: chunk } } })
+        );
+
         const elapsedMs = Date.now() - startedAt;
-        const summary = `Cleared ${messageResult} messages, ${attachmentResult} attachments, ${revisionResult} revisions, ${messageLinkResult} message links, ${botResponseResult} bot responses before ${oneWeekAgo.toISOString()}; cleared media bytes of ${mediaClearedCount} messages before ${oneDayAgo.toISOString()}; deleted ${staleGcsRows.length} GCS refs; evicted ${mediaCacheResult} media cache entries, ${emojiAssetResult} emoji assets, ${linkPreviewResult} link previews, ${tgLinkResult} tg message link snapshots (${elapsedMs}ms)`;
+        const summary = `Cleared ${messageResult} messages, ${attachmentResult} attachments, ${revisionResult} revisions, ${messageLinkResult} message links, ${botResponseResult} bot responses before ${oneWeekAgo.toISOString()}; cleared media bytes of ${mediaClearedCount} messages before ${oneDayAgo.toISOString()}; deleted ${staleGcsRows.length} GCS refs; evicted ${mediaCacheResult} media cache entries, ${emojiAssetResult} emoji assets, ${linkPreviewResult} link previews, ${tgLinkResult} tg message link snapshots; cleared ${settingsAuditResult} settings audit rows before ${oneYearAgo.toISOString()} (${elapsedMs}ms)`;
         if (elapsedMs > CLEANUP_SLOW_MS) {
             console.warn(`[autoClear] slow cleanup — ${summary}`);
         } else {

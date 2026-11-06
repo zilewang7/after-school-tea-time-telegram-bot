@@ -7,6 +7,7 @@
  */
 import { match, P } from 'ts-pattern';
 import { GEMINI_IMAGE_MODEL, OPENAI_IMAGE_MODEL } from '../config/models.js';
+import { platformTypeOf } from './platform-routing.js';
 
 /**
  * Models whose output is an image. Matched by explicit id first, because the
@@ -26,6 +27,17 @@ export const isImageOutputModel = (model: string): boolean =>
         .with(P.string.includes('image'), () => true)
         .with(P.string.includes('nano-banana'), () => true)
         .otherwise(() => false);
+
+/**
+ * Models whose chat system prompt is thrown away: on Gemini an image model's
+ * systemInstruction is replaced wholesale by the image-generation instruction,
+ * so the static head (and its note announcing the chat's prompt addendum) never
+ * arrives. The addendum is then left out of the runtime block, where it would
+ * read as part of the image description. OpenAI's image model keeps the full
+ * static head and gets the addendum as usual.
+ */
+export const replacesChatSystemPrompt = (model: string): boolean =>
+    isImageOutputModel(model) && platformTypeOf(model) === 'gemini';
 
 /**
  * Gemini models verified to accept function declarations alongside the built-in
