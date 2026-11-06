@@ -28,6 +28,8 @@ export const describeFailure = (error: unknown): string => {
                 return `查询语法有误（${error.detail}），可简化后重试。`;
             case 'not-indexed':
                 return '这个聊天没有归档索引。';
+            case 'missing':
+                return '这条消息在归档里读不到了（可能已删除）。';
             case 'unavailable':
                 return `检索服务暂时不可用（${error.detail}）。`;
         }

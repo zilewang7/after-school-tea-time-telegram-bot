@@ -16,14 +16,22 @@ import {
     type HistoryRawMessage,
     type HistorySearchOutcome,
 } from '../../services/luoxu-history-service.js';
-import { parseDateBound, parseHistoryReference, parseHistorySearchArgs } from './history-args.js';
+import {
+    parseDateBound,
+    parseHistoryReference,
+    parseHistorySearchArgs,
+    HISTORY_DEFAULT_LIMIT,
+    HISTORY_MAX_LIMIT,
+} from './history-args.js';
 import {
     attachmentSummary,
     firstLineOf,
+    formatArchiveStatus,
     htmlToText,
     isInsideFolded,
     keywordWindow,
     renderSearchList,
+    searchListBudget,
     stripFoldedBlocks,
     type SearchListRow,
 } from './history-text.js';
@@ -44,8 +52,10 @@ import { SEARCH_HISTORY_TOOL_NAME } from './tool-names.js';
 const DESCRIPTION =
     '检索本聊天的历史归档（luoxu 的全文索引，覆盖更早的消息、链接预览正文、Instant View 全文与图片 OCR 文本）。' +
     '返回按时间从新到旧的命中列表，每条带 hN 编号、时间、发送者、#N 或 t.me 链接、消息首行与命中处的上下文片段；不含正文全文，需要时用 read_history 读。' +
-    '事实：最多只返回最新的 50 条命中（不是相关性排序）；query 支持空格 AND、OR、"短语"、-排除、括号，中文不需要分词；省略 query 时按时间列出最近的消息；' +
-    '用 sender / from / to 收窄，用 before 翻到更早的一页。';
+    `事实：默认返回最新 ${HISTORY_DEFAULT_LIMIT} 条命中，limit 最多 ${HISTORY_MAX_LIMIT} 条（不是相关性排序）；` +
+    'query 支持空格 AND、OR、"短语"、-排除、括号，中文不需要分词；省略 query 时按时间列出最近的消息；' +
+    '用 sender / from / to 收窄，用 before 翻到更早的一页。' +
+    '返回的头部会带本群归档的消息数与时间范围。';
 
 const INPUT_SCHEMA = {
     type: 'object',
@@ -73,8 +83,8 @@ const INPUT_SCHEMA = {
         limit: {
             type: 'integer',
             minimum: 1,
-            maximum: 20,
-            description: '列表条数，默认 10。',
+            maximum: HISTORY_MAX_LIMIT,
+            description: `返回条数，默认 ${HISTORY_DEFAULT_LIMIT}，最多 ${HISTORY_MAX_LIMIT}。`,
         },
         scope: {
             type: 'string',
@@ -85,7 +95,29 @@ const INPUT_SCHEMA = {
 };
 
 const MAX_GROUPS_PER_LIST = 4;
-const MAX_LIST_CHARS = 6000;
+
+type SearchAttempt =
+    | { readonly ok: true; readonly outcome: HistorySearchOutcome }
+    | { readonly ok: false; readonly error: unknown };
+
+/**
+ * The archive coverage line. It rides its own (cached) request and must never
+ * fail the search itself: a missing line is better than a failed search.
+ */
+const archiveStatusOf = async (
+    options: HistoryToolOptions,
+    scope: 'chat' | 'all',
+    signal: AbortSignal,
+    timeZone: string
+): Promise<string | null> => {
+    try {
+        const stats = await options.service.stats(scope === 'all' ? null : options.channelId, { signal });
+        return formatArchiveStatus({ scope, groups: stats.groups, timeZone });
+    } catch (error) {
+        console.warn(`[search_history] /stats failed: ${describeFailure(error)}`);
+        return null;
+    }
+};
 
 const resolveSenderId = async (
     options: HistoryToolOptions,
@@ -243,20 +275,26 @@ export const createSearchHistoryTool = (options: HistoryToolOptions): ToolHandle
             );
             const end = ends.length > 0 ? Math.min(...ends) : null;
 
-            let outcome: HistorySearchOutcome;
-            try {
-                outcome = await options.service.search({
+            // Coverage rides its own cached request, in parallel with the search
+            const statusPromise = archiveStatusOf(options, searchArgs.scope, signal, timeZone);
+            const searched = await options.service
+                .search({
                     channelId: searchArgs.scope === 'all' ? null : options.channelId,
                     query: searchArgs.query,
                     senderId: sender.senderId,
                     start,
                     end,
+                    limit: searchArgs.limit,
                     signal,
                     timeoutMs: HISTORY_SEARCH_TIMEOUT_MS,
-                });
-            } catch (error) {
-                return historyToolError(describeFailure(error));
-            }
+                })
+                .then(
+                    (outcome): SearchAttempt => ({ ok: true, outcome }),
+                    (error: unknown): SearchAttempt => ({ ok: false, error })
+                );
+            const status = await statusPromise;
+            if (!searched.ok) return historyToolError(describeFailure(searched.error));
+            const outcome = searched.outcome;
 
             const hits = outcome.hits.slice(0, searchArgs.limit);
             const scopeLabel = searchArgs.scope === 'all' ? '全部归档群' : '本群';
@@ -269,9 +307,8 @@ export const createSearchHistoryTool = (options: HistoryToolOptions): ToolHandle
             ].filter((part): part is string => part !== null);
 
             if (hits.length === 0) {
-                return historyToolSuccess(
-                    `历史检索：${conditions.join('，')}，范围=${scopeLabel}，没有找到匹配的历史消息。`
-                );
+                const empty = `历史检索：${conditions.join('，')}，范围=${scopeLabel}，没有找到匹配的历史消息。`;
+                return historyToolSuccess(status === null ? empty : `${empty}\n${status}`);
             }
 
             const currentChannel = options.channelId;
@@ -329,14 +366,15 @@ export const createSearchHistoryTool = (options: HistoryToolOptions): ToolHandle
                     ...(searchArgs.query ? { query: searchArgs.query } : {}),
                     scopeLabel,
                     shown: rows.length,
-                    matched: outcome.hasMore ? '50+' : String(rows.length),
+                    matched: outcome.hasMore ? `${searchArgs.limit}+` : String(rows.length),
                     hasMore: outcome.hasMore,
                     ...(last ? { beforeHint: `h${last.entry.h}` } : {}),
                     showGroup: searchArgs.scope === 'all',
+                    ...(status === null ? {} : { status }),
                 },
                 rows,
                 timeZone,
-                MAX_LIST_CHARS
+                searchListBudget(searchArgs.limit)
             );
             return historyToolSuccess(text);
         },

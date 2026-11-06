@@ -21,6 +21,11 @@ import {
     type StickerSetApi,
 } from '../../services/sticker-set-service.js';
 import { transcodeVideoToMp4 } from '../../services/tgs-client.js';
+import {
+    formatHistoryImageResult,
+    loadHistoryImage,
+    type HistoryImageOptions,
+} from './history-image.js';
 import { imageToolError } from './image-tool-result.js';
 import { formatFetchResult, mediaToolErrors } from './image-tool-text.js';
 import {
@@ -45,13 +50,33 @@ const DESCRIPTION =
     "默认读取原图；传 view='thumbnail' 则读取缩略图。GIF 动图会转换为视频以展示完整动作。" +
     '读取后返回编号 imgN，可用于 send_image 或 generate_image 的 web_references。';
 
+const HISTORY_DESCRIPTION =
+    '也可传入 history（历史检索结果里的编号，如 h3，或 t.me 消息链接）读取归档消息里的图：' +
+    '消息自己的照片与贴纸、网页预览图、Instant View 配图都算，动图与视频给的是首帧；' +
+    '用 image 选这条消息的第几张（从 1 开始，省略=第一张）。';
+
 const STICKER_DESCRIPTION =
     '也可传入 sticker（贴纸包内序号 01–72、画面名称，或 send_sticker 目录里的整行如 \'30刘海遮眼低落\'）预览贴纸；' +
     '返回编号 stN，之后可用 send_sticker(sticker=…) 发出，或作为 generate_image 的 web_references。';
 
-const inputSchemaOf = (hasSticker: boolean) => ({
+const inputSchemaOf = (hasSticker: boolean, hasHistory: boolean) => ({
     type: 'object',
     properties: {
+        ...(hasHistory
+            ? {
+                  history: {
+                      type: 'string',
+                      description:
+                          "历史检索结果里的编号（如 'h3'）或 https://t.me/c/... 消息链接，读那条归档消息的图",
+                  },
+                  image: {
+                      type: 'integer',
+                      minimum: 1,
+                      description:
+                          '这条消息的第几张图，从 1 开始（消息附件在前，网页预览图与 Instant View 配图在后）；省略=第一张',
+                  },
+              }
+            : {}),
         search_id: { type: 'string', description: "搜索结果里的候选编号，形如 's3'" },
         image_id: { type: 'string', description: "已经读取过的图编号，形如 'img1'" },
         url: { type: 'string', description: 'http(s) 图片直链，可以是任意公开地址' },
@@ -90,6 +115,8 @@ export interface FetchImageToolOptions {
     readonly canSeeAnimated?: boolean;
     /** Sticker previews; absent = this turn has no sticker tool */
     readonly sticker?: { readonly setName: string; readonly api: StickerSetApi };
+    /** The archive lane; absent = this turn has no history tools */
+    readonly history?: HistoryImageOptions;
 }
 
 /** Production wiring; tests pass their own */
@@ -139,6 +166,8 @@ export const describeFetchImageRequest = (args: Readonly<Record<string, unknown>
     };
     const sticker = textOf('sticker');
     if (sticker !== undefined) return `sticker=${sticker}`;
+    const history = textOf('history');
+    if (history !== undefined) return `history=${history}`;
     const searchId = textOf('search_id');
     if (searchId !== undefined) return `search_id=${searchId}`;
     const imageId = textOf('image_id');
@@ -162,17 +191,22 @@ const reject = (request: string, message: string): ToolResult => {
 export const createFetchImageTool = (options: FetchImageToolOptions): ToolHandler => {
     const { state, dependencies } = options;
     const canSeeAnimated = options.canSeeAnimated === true;
+    const descriptionOf = (): string => {
+        const parts = [DESCRIPTION];
+        if (options.history !== undefined) parts.push(HISTORY_DESCRIPTION);
+        if (options.sticker !== undefined) parts.push(STICKER_DESCRIPTION);
+        return parts.join('');
+    };
 
     return {
         definition: {
             name: FETCH_IMAGE_TOOL_NAME,
-            description:
-                options.sticker === undefined ? DESCRIPTION : `${DESCRIPTION}${STICKER_DESCRIPTION}`,
-            inputSchema: inputSchemaOf(options.sticker !== undefined),
+            description: descriptionOf(),
+            inputSchema: inputSchemaOf(options.sticker !== undefined, options.history !== undefined),
         },
         statusText: '🖼 正在读图…',
         chatAction: 'typing',
-        execute: async (rawArgs) => {
+        execute: async (rawArgs, signal) => {
             const request = describeFetchImageRequest(rawArgs);
             const parsed = parseFetchImageArgs(rawArgs);
             if (!parsed.ok) return reject(request, parsed.error);
@@ -190,6 +224,48 @@ export const createFetchImageTool = (options: FetchImageToolOptions): ToolHandle
                     isError: false,
                     images: [],
                     record: null,
+                };
+            }
+
+            if (args.history !== undefined) {
+                if (!options.history) return reject(request, '这一轮没有历史归档工具，读不了归档里的图。');
+                const resolved = await loadHistoryImage(
+                    options.history,
+                    args.history,
+                    args.image,
+                    args.view,
+                    signal
+                );
+                if (!resolved.ok) return reject(request, resolved.error);
+                const { image } = resolved;
+
+                const id = nextFetchedImageId(state);
+                state.fetched.set(id, {
+                    id,
+                    data: image.data,
+                    mimeType: image.mimeType,
+                    still: { data: image.data, mimeType: image.mimeType },
+                    sourcePage: image.sourcePage,
+                    title: `${image.reference} ${image.label}`,
+                    imageUrl: image.sourcePage,
+                });
+
+                return {
+                    content: formatHistoryImageResult(id, image),
+                    isError: false,
+                    images: [],
+                    modelImages: [
+                        {
+                            data: image.data,
+                            mimeType: image.mimeType,
+                            caption: `${image.reference} 第 ${image.index}/${image.total} 张（${image.label}）`,
+                        },
+                    ],
+                    record: {
+                        provider: 'mcp',
+                        searchQueries: [`${FETCH_IMAGE_TOOL_NAME}: ${image.reference}`],
+                        citations: [{ uri: image.sourcePage, title: `${image.reference} ${image.label}` }],
+                    },
                 };
             }
 

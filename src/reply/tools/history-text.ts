@@ -13,6 +13,7 @@
 import type { HistoryEntry } from './history-state.js';
 import type {
     HistoryForward,
+    HistoryGroupStats,
     HistoryMedia,
     HistoryRawEntity,
 } from '../../services/luoxu-history-service.js';
@@ -323,7 +324,55 @@ export interface SearchListHeader {
     readonly beforeHint?: string;
     /** Cross-group results: show the group on every row */
     readonly showGroup: boolean;
+    /** Archive coverage line, when luoxu could report it */
+    readonly status?: string;
 }
+
+/** Room for one row, so asking for more hits is not silently cut by the budget */
+const LIST_CHARS_PER_ROW = 240;
+const MIN_LIST_CHARS = 6000;
+const MAX_LIST_CHARS = 48_000;
+
+/** The character budget that fits `limit` rows of the compact list */
+export const searchListBudget = (limit: number): number =>
+    Math.max(MIN_LIST_CHARS, Math.min(limit * LIST_CHARS_PER_ROW, MAX_LIST_CHARS));
+
+export interface ArchiveStatusInput {
+    /** `chat` = this chat only, `all` = every archived group */
+    readonly scope: 'chat' | 'all';
+    readonly groups: readonly HistoryGroupStats[];
+    readonly timeZone: string;
+}
+
+/**
+ * One line saying how big the archive is and how far back it goes, so "no
+ * hits" can be told apart from "the archive never covered this".
+ *
+ * Only facts: count, range, zone. Returns null when luoxu reported nothing.
+ */
+export const formatArchiveStatus = (input: ArchiveStatusInput): string | null => {
+    if (input.groups.length === 0) return null;
+
+    let total = 0;
+    let first: number | null = null;
+    let last: number | null = null;
+    for (const group of input.groups) {
+        total += group.messages;
+        if (group.firstTimestamp !== null) {
+            first = first === null ? group.firstTimestamp : Math.min(first, group.firstTimestamp);
+        }
+        if (group.lastTimestamp !== null) {
+            last = last === null ? group.lastTimestamp : Math.max(last, group.lastTimestamp);
+        }
+    }
+
+    const label = input.scope === 'all' ? `全部归档：${input.groups.length} 个群，` : '本群归档：';
+    const range =
+        first === null || last === null
+            ? ''
+            : `，${formatHistoryTime(first, input.timeZone)} 至 ${formatHistoryTime(last, input.timeZone)}`;
+    return `${label}${total} 条消息${range}（时区 ${input.timeZone}）`;
+};
 
 const formatRow = (row: SearchListRow, timeZone: string, showGroup: boolean): string[] => {
     const time = formatHistoryTime(row.entry.timestamp, timeZone);
@@ -358,6 +407,10 @@ export const renderSearchList = (
     );
     const lines: string[] = [head];
     let used = head.length;
+    if (header.status) {
+        lines.push(header.status);
+        used += header.status.length + 1;
+    }
     for (const row of rows) {
         const rowLines = formatRow(row, timeZone, header.showGroup);
         const rowText = rowLines.join('\n');

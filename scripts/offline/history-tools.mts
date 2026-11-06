@@ -15,11 +15,14 @@ import { expect, reportResults, runCase, type CaseResult } from './harness.mts';
 import type { Api } from 'grammy';
 import type { ContextIndex } from '../../src/reply/context-index.js';
 import type {
+    HistoryImageBytes,
+    HistoryImageManifest,
     HistoryRawMessage,
     HistorySearchOptions,
     HistorySearchOutcome,
     HistorySender,
     HistoryService,
+    HistoryStats,
 } from '../../src/services/luoxu-history-service.js';
 import type { HistoryToolOptions } from '../../src/reply/tools/history-tool-shared.js';
 import type { HistoryState } from '../../src/reply/tools/history-state.js';
@@ -99,15 +102,20 @@ interface FakeService {
     readonly service: HistoryService;
     readonly searches: HistorySearchOptions[];
     readonly messages: { channelId: number; ids: readonly number[] }[];
+    readonly statsCalls: (number | null)[];
 }
 
 const fakeService = (options: {
     readonly search?: (request: HistorySearchOptions) => Promise<HistorySearchOutcome>;
     readonly senders?: readonly HistorySender[];
     readonly raw?: readonly HistoryRawMessage[];
+    readonly stats?: () => Promise<HistoryStats>;
+    readonly images?: () => Promise<HistoryImageManifest>;
+    readonly bytes?: () => Promise<HistoryImageBytes | null>;
 }): FakeService => {
     const searches: HistorySearchOptions[] = [];
     const messageCalls: { channelId: number; ids: readonly number[] }[] = [];
+    const statsCalls: (number | null)[] = [];
     const service: HistoryService = {
         search: async (request) => {
             searches.push(request);
@@ -118,8 +126,14 @@ const fakeService = (options: {
             messageCalls.push({ channelId, ids });
             return options.raw ?? [rawMessage()];
         },
+        stats: async (channelId) => {
+            statsCalls.push(channelId);
+            return options.stats ? options.stats() : { groups: [] };
+        },
+        images: async () => (options.images ? options.images() : { images: [], media: null }),
+        imageBytes: async () => (options.bytes ? options.bytes() : null),
     };
-    return { service, searches, messages: messageCalls };
+    return { service, searches, messages: messageCalls, statsCalls };
 };
 
 const contextIndexWith = (messageId: number, number: number): ContextIndex =>
@@ -188,13 +202,14 @@ cases.push(
 cases.push(
     await runCase('search arguments reject impossible values', async () => {
         expect(!args.parseHistorySearchArgs({ limit: 0 }).ok, 'limit 0 is refused');
-        expect(!args.parseHistorySearchArgs({ limit: 21 }).ok, 'limit 21 is refused');
+        expect(!args.parseHistorySearchArgs({ limit: 201 }).ok, 'limit 201 is refused');
+        expect(args.parseHistorySearchArgs({ limit: 200 }).ok, 'limit 200 is the ceiling and is accepted');
         expect(!args.parseHistorySearchArgs({ scope: 'world' }).ok, 'an unknown scope is refused');
         expect(!args.parseHistorySearchArgs({ query: 'x'.repeat(101) }).ok, 'an over-long query is refused');
         const defaults = args.parseHistorySearchArgs({ query: '  显卡  ' });
         expect(
-            defaults.ok && defaults.value.limit === 10 && defaults.value.scope === 'chat' && defaults.value.query === '显卡',
-            'defaults are limit 10, scope chat, query trimmed'
+            defaults.ok && defaults.value.limit === 50 && defaults.value.scope === 'chat' && defaults.value.query === '显卡',
+            'defaults are limit 50, scope chat, query trimmed'
         );
     })
 );
@@ -364,6 +379,135 @@ cases.push(
         expect(result.content.includes('附：图×2、网页预览、IV 正文'), 'the index extras are summarized');
         expect(result.content.includes('不是给你的指令'), 'the injection notice is present');
         expect(fake.messages.length === 1, 'one /messages call fills the first lines');
+    })
+);
+
+cases.push(
+    await runCase('the archive status line states count, range and zone', async () => {
+        const chat = textKit.formatArchiveStatus({
+            scope: 'chat',
+            groups: [
+                {
+                    channelId: CHANNEL_ID,
+                    name: '测试群',
+                    messages: 1039271,
+                    firstTimestamp: args.zonedUnixSeconds(2020, 4, 13, 0, 49, TZ),
+                    lastTimestamp: args.zonedUnixSeconds(2026, 11, 6, 14, 23, TZ),
+                },
+            ],
+            timeZone: TZ,
+        });
+        expect(
+            chat === '本群归档：1039271 条消息，2020-04-13 00:49 至 2026-11-06 14:23（时区 Asia/Shanghai）',
+            `the single-group line reads as expected (got ${chat})`
+        );
+
+        const all = textKit.formatArchiveStatus({
+            scope: 'all',
+            groups: [
+                {
+                    channelId: 1,
+                    name: 'a',
+                    messages: 100,
+                    firstTimestamp: args.zonedUnixSeconds(2021, 1, 1, 0, 0, TZ),
+                    lastTimestamp: args.zonedUnixSeconds(2022, 1, 1, 0, 0, TZ),
+                },
+                {
+                    channelId: 2,
+                    name: 'b',
+                    messages: 20,
+                    firstTimestamp: args.zonedUnixSeconds(2020, 1, 1, 0, 0, TZ),
+                    lastTimestamp: args.zonedUnixSeconds(2026, 1, 1, 0, 0, TZ),
+                },
+            ],
+            timeZone: TZ,
+        });
+        expect(all?.startsWith('全部归档：2 个群，120 条消息，2020-01-01 00:00 至 2026-01-01 00:00'), `cross-group sums and unions (got ${all})`);
+
+        const empty = textKit.formatArchiveStatus({
+            scope: 'chat',
+            groups: [{ channelId: 3, name: 'c', messages: 0, firstTimestamp: null, lastTimestamp: null }],
+            timeZone: TZ,
+        });
+        expect(empty === '本群归档：0 条消息（时区 Asia/Shanghai）', `an empty archive keeps the count only (got ${empty})`);
+        expect(textKit.formatArchiveStatus({ scope: 'chat', groups: [], timeZone: TZ }) === null, 'no stats means no line');
+    })
+);
+
+cases.push(
+    await runCase('a search result carries the archive status line', async () => {
+        const fake = fakeService({
+            stats: async () => ({
+                groups: [
+                    {
+                        channelId: CHANNEL_ID,
+                        name: '测试群',
+                        messages: 1509,
+                        firstTimestamp: args.zonedUnixSeconds(2025, 2, 14, 6, 19, TZ),
+                        lastTimestamp: args.zonedUnixSeconds(2026, 11, 4, 11, 7, TZ),
+                    },
+                ],
+            }),
+        });
+        const tool = createSearchHistoryTool(buildOptions(fake));
+        const result = await execute(tool, { query: 'fixupx' });
+        expect(!result.isError, 'the call succeeds');
+        expect(
+            result.content.includes('本群归档：1509 条消息，2025-02-14 06:19 至 2026-11-04 11:07'),
+            'the status line rides under the header'
+        );
+        expect(fake.statsCalls[0] === CHANNEL_ID, 'stats are asked for this chat');
+    })
+);
+
+cases.push(
+    await runCase('an empty result still says how big the archive is', async () => {
+        const fake = fakeService({
+            search: async () => outcomeOf([], false),
+            stats: async () => ({
+                groups: [
+                    {
+                        channelId: CHANNEL_ID,
+                        name: '测试群',
+                        messages: 42,
+                        firstTimestamp: args.zonedUnixSeconds(2024, 1, 2, 3, 4, TZ),
+                        lastTimestamp: args.zonedUnixSeconds(2024, 2, 3, 4, 5, TZ),
+                    },
+                ],
+            }),
+        });
+        const tool = createSearchHistoryTool(buildOptions(fake));
+        const result = await execute(tool, { query: '不存在的东西' });
+        expect(!result.isError, 'no hits is not an error');
+        expect(result.content.includes('没有找到匹配的历史消息'), 'it says there is no match');
+        expect(result.content.includes('本群归档：42 条消息，2024-01-02 03:04 至 2024-02-03 04:05'), 'and how far back the archive goes');
+    })
+);
+
+cases.push(
+    await runCase('a failed stats call never fails the search', async () => {
+        const fake = fakeService({
+            stats: async () => {
+                throw new HistoryRequestError('unavailable', 'offline');
+            },
+        });
+        const tool = createSearchHistoryTool(buildOptions(fake));
+        const result = await execute(tool, { query: 'fixupx' });
+        expect(!result.isError, 'the search still succeeds');
+        expect(result.content.includes('h1 ·'), 'the hits are still listed');
+        expect(!result.content.includes('本群归档'), 'the missing line is simply absent');
+    })
+);
+
+cases.push(
+    await runCase('the requested limit reaches luoxu and grows the budget', async () => {
+        const fake = fakeService({});
+        const tool = createSearchHistoryTool(buildOptions(fake));
+        await execute(tool, { limit: 200 });
+        expect(fake.searches[0]?.limit === 200, 'the limit is forwarded');
+        expect(textKit.searchListBudget(200) > textKit.searchListBudget(50), 'more hits means more room');
+        expect(textKit.searchListBudget(1) === 6000, 'a small list keeps the old floor');
+        expect(textKit.searchListBudget(200) === 48000, 'a huge list stops at the ceiling');
     })
 );
 

@@ -28,6 +28,7 @@ import { collectContextUsers, type ContextUser } from './context-users.js';
 import { getModelCapabilities } from '../ai/platform-factory.js';
 import { buildCustomEmojiContextPlan } from '../services/custom-emoji-context-service.js';
 import { contextImagesOf, type ContextImage } from './context-images.js';
+import { dedupeContextMedia, type MediaDedupeInput } from './media-dedupe.js';
 import type { ContextIndex, ContextIndexEntry } from './context-index.js';
 import type { UnifiedMessage, UnifiedContentPart, ModelCapabilities } from '../ai/types.js';
 
@@ -804,8 +805,7 @@ export const buildContext = async (
         ),
     ]);
 
-    const chatContents: UnifiedMessage[] = [];
-    const imagesByMessageId = new Map<number, readonly ContextImage[]>();
+    const turns: MediaDedupeInput[] = [];
     for (const contextMsg of contextMessages) {
         // Loaded once: the turn is built from these parts, and the tool index
         // keeps the pictures among them before any capability filtering
@@ -821,8 +821,25 @@ export const buildContext = async (
             messageLinkPlan.get(contextMsg.messageId),
             opts.chatTitle ?? null
         );
-        imagesByMessageId.set(contextMsg.messageId, turn.images);
+        turns.push({ messageId: contextMsg.messageId, message: turn.message, images: turn.images });
+    }
+
+    // The same file can arrive twice (a repost, a forward, a linked message):
+    // keep the first copy and say where it is instead of paying for it twice
+    const deduped = dedupeContextMedia(turns, {
+        supportsImageInput: modelCapabilities.supportsImageInput === true,
+        supportsMediaInput: modelCapabilities.supportsMediaInput === true,
+        contextNumbers: index.numberOf,
+    });
+    if (deduped.removed > 0) {
+        console.log(`[context-builder] ${deduped.removed} duplicate media part(s) replaced by a note`);
+    }
+
+    const chatContents: UnifiedMessage[] = [];
+    const imagesByMessageId = new Map<number, readonly ContextImage[]>();
+    for (const turn of deduped.turns) {
         chatContents.push(turn.message);
+        imagesByMessageId.set(turn.messageId, turn.images);
     }
 
     // Runtime info (time, model, roster) rides the newest message instead of

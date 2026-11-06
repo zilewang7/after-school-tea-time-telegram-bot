@@ -110,6 +110,10 @@ export interface FetchImageArgs {
     readonly url: string | undefined;
     /** A sticker pack index or actual picture name; `st1` re-reads a preview */
     readonly sticker: string | undefined;
+    /** `h3` or a t.me message link: a picture of an archived message */
+    readonly history: string | undefined;
+    /** 1-based position among that message's images */
+    readonly image: number;
     readonly view: 'original' | 'thumbnail';
 }
 
@@ -140,20 +144,29 @@ export const parseFetchImageArgs = (
     const image = parseOptionalText(args.image_id, 'image_id', 16);
     const url = parseUrl(args.url);
     const sticker = parseOptionalText(args.sticker, 'sticker', 40);
+    const history = parseOptionalText(args.history, 'history', 200);
+    const imageIndex = parseImageIndex(args.image);
     const view = parseFetchView(args.view);
 
-    const problems = problemsOf([search, image, url, sticker, view]);
+    const problems = problemsOf([search, image, url, sticker, history, imageIndex, view]);
     if (problems.length > 0) return { ok: false, error: `参数有误：\n${problems.map((p) => `- ${p}`).join('\n')}` };
 
     const searchId = search.ok ? search.value : '';
     const imageId = image.ok ? image.value : '';
     const urlText = url.ok ? url.value : '';
     const stickerText = sticker.ok ? sticker.value : '';
-    if (countGiven([searchId, imageId, urlText, stickerText]) !== 1) {
-        return { ok: false, error: '参数有误：\n- search_id、image_id、url、sticker 必须传且只传一个' };
+    const historyText = history.ok ? history.value : '';
+    if (countGiven([searchId, imageId, urlText, stickerText, historyText]) !== 1) {
+        return {
+            ok: false,
+            error: '参数有误：\n- search_id、image_id、url、sticker、history 必须传且只传一个',
+        };
     }
     if ((searchId !== '' && !idPattern.test(searchId)) || (imageId !== '' && !idPattern.test(imageId))) {
         return { ok: false, error: '参数有误：\n- 图片编号要形如 s1 或 img1' };
+    }
+    if (!isAbsent(args.image) && historyText === '') {
+        return { ok: false, error: '参数有误：\n- image 只能和 history 一起用' };
     }
 
     return {
@@ -163,6 +176,8 @@ export const parseFetchImageArgs = (
             imageId: imageId === '' ? undefined : imageId,
             url: urlText === '' ? undefined : urlText,
             sticker: stickerText === '' ? undefined : stickerText,
+            history: historyText === '' ? undefined : historyText,
+            image: imageIndex.ok ? imageIndex.value : 1,
             view: view.ok ? view.value : 'original',
         },
     };

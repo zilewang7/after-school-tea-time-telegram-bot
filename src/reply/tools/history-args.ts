@@ -5,9 +5,15 @@
  * a fetch: everything here is a pure function of the raw JSON arguments and a
  * time zone. Errors are returned as model-facing sentences, not thrown.
  */
+import {
+    HISTORY_DEFAULT_SEARCH_LIMIT,
+    HISTORY_MAX_SEARCH_LIMIT,
+} from '../../services/luoxu-history-service.js';
 
-export const HISTORY_DEFAULT_LIMIT = 10;
-export const HISTORY_MAX_LIMIT = 20;
+/** How many hits one search returns when the model does not say (luoxu's default) */
+export const HISTORY_DEFAULT_LIMIT = HISTORY_DEFAULT_SEARCH_LIMIT;
+/** Most hits one search may ask for (luoxu's ceiling) */
+export const HISTORY_MAX_LIMIT = HISTORY_MAX_SEARCH_LIMIT;
 export const HISTORY_DEFAULT_MINUTES = 10;
 export const HISTORY_MAX_MINUTES = 120;
 export const HISTORY_MAX_REFS = 10;

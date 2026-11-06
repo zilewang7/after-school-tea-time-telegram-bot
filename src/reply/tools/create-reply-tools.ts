@@ -55,6 +55,14 @@ export const createReplyTools = (
     const mediaState = createReplyMediaState();
     const historyState = createHistoryState();
     const harnessIssueState = createHarnessIssueState();
+    // One luoxu client per reply: the history tools and fetch_image's archive
+    // lane read the same archive, so they share the client (and its cache).
+    const historyWiring: HistoryWiring = {
+        service: createHistoryService({ baseUrl: config.historyBaseUrl }),
+        channelId: toLuoxuChannelId(context.chatId),
+        ownerUserId: numericId(config.owner.userId),
+        botUserId: numericId(process.env.BOT_USER_ID),
+    };
 
     const handlers: ToolHandler[] = [
         ...buildMcpToolHandlers(availability.mcpServers, RESERVED_TOOL_NAMES, availability.isMcpToolEnabled),
@@ -106,6 +114,17 @@ export const createReplyTools = (
                                 },
                             }
                           : {}),
+                      ...(availability.history
+                          ? {
+                                history: {
+                                    state: historyState,
+                                    service: historyWiring.service,
+                                    channelId: historyWiring.channelId,
+                                    ownerUserId: historyWiring.ownerUserId,
+                                    requesterUserId: context.requester.userId,
+                                },
+                            }
+                          : {}),
                   }),
               ]
             : []),
@@ -123,8 +142,8 @@ export const createReplyTools = (
         ...(availability.file ? [createSendFileTool({ state: mediaState })] : []),
         ...(availability.history
             ? [
-                  createSearchHistoryTool(historyOptions(historyState, context, config)),
-                  createReadHistoryTool(historyOptions(historyState, context, config)),
+                  createSearchHistoryTool(historyOptions(historyState, context, historyWiring)),
+                  createReadHistoryTool(historyOptions(historyState, context, historyWiring)),
               ]
             : []),
         ...(availability.harnessIssues
@@ -145,6 +164,15 @@ const numericId = (value: string | null | undefined): number | null => {
     return Number.isFinite(parsed) ? parsed : null;
 };
 
+/** Everything the history tools read: one client, one chat mapping, two ids */
+interface HistoryWiring {
+    readonly service: ReturnType<typeof createHistoryService>;
+    /** luoxu channel id of this chat; null when luoxu does not index it */
+    readonly channelId: number | null;
+    readonly ownerUserId: number | null;
+    readonly botUserId: number | null;
+}
+
 /**
  * The two history tools share one per-reply id space and one luoxu client.
  * `channelId` is null for chats luoxu does not index (private chats), which the
@@ -153,12 +181,12 @@ const numericId = (value: string | null | undefined): number | null => {
 const historyOptions = (
     state: ReturnType<typeof createHistoryState>,
     context: ReplyToolContext,
-    config: ReturnType<typeof getToolConfig>
+    wiring: HistoryWiring
 ): Parameters<typeof createSearchHistoryTool>[0] => ({
     state,
     context,
-    service: createHistoryService({ baseUrl: config.historyBaseUrl }),
-    channelId: toLuoxuChannelId(context.chatId),
-    ownerUserId: numericId(config.owner.userId),
-    botUserId: numericId(process.env.BOT_USER_ID),
+    service: wiring.service,
+    channelId: wiring.channelId,
+    ownerUserId: wiring.ownerUserId,
+    botUserId: wiring.botUserId,
 });

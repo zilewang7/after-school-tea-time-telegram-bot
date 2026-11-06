@@ -50,6 +50,7 @@ export const buildFormatSection = (options: { includeOcrNote: boolean }): string
 - \`[system] 链接预览：…\` 为系统自动抓取的消息内链接预览（站点、标题、描述及可能的正文与图片）；
   预览图片与消息自带附件均归属该消息，工具按出现顺序索引（消息附件在前，链接预览图片在后）
 - \`[system] 消息链接预览：…\` 为系统抓取的 \`t.me/…\` 消息链接目标及其被回复消息；其中的作者、时间与编号均属于原消息而非当前上下文，其附带图片同样排在发链接消息自身的附件之后
+- \`[system] the same media as #3 — not attached again\` 表示这条消息的图片/视频/文件与 #3 是同一个文件，系统没有重复附上，看 #3 的即可
 ${options.includeOcrNote ? OCR_FALLBACK_NOTE : ''}- 你自己的历史回复开头的 \`[#5]\` 为系统附加的上下文编号
 - 正文中提及上下文内已存在的消息编号（如 #5）会被系统渲染为可点击的跳转链接
 - 不要把 \`#N\`、\`||防剧透||\` 用 \`等宽代码\` 包起来：反引号内的内容按原文展示，编号不会变成链接、防剧透不会生效；链接、提及与其它 Markdown 样式同理
@@ -119,8 +120,9 @@ const stickerLine = (canPreview: boolean): string =>
 const FILE_LINE =
     '- 可以用 `send_file` 把长文本（Markdown、代码、CSV 等）写成文件发到聊天（单份上限 10 MB）';
 
-const HISTORY_LINE =
-    '- 可以用 `search_history` 检索本聊天的历史归档（关键词 / 时间 / 发言人；含链接预览、Instant View 与图片 OCR 文本），用 `read_history` 读整条原文或某条消息前后的对话';
+const historyLine = (canFetchImages: boolean): string =>
+    '- 可以用 `search_history` 检索本聊天的历史归档（关键词 / 时间 / 发言人；含链接预览、Instant View 与图片 OCR 文本），用 `read_history` 读整条原文或某条消息前后的对话' +
+    (canFetchImages ? "；归档消息里的图可以用 `fetch_image(history='hN')` 读取。" : '。');
 
 const HARNESS_ISSUE_LINE =
     '- 当你准备结束思考时才调用 issue 工具：如果本轮使用 harness 时遇到工具不好用、描述不清、缺能力或格式别扭，先 `list_harness_issues` 查重，再用 `create_harness_issue` 记录；没有就跳过。记录本身不要出现在回复正文里。';
@@ -138,7 +140,7 @@ export const buildCapabilitiesSection = (options: CapabilityOptions): string => 
     if (options.imageGenerate) lines.push(IMAGE_EDIT_LINE);
     if (options.stickerTools) lines.push(stickerLine(options.imageFetch));
     if (options.fileTools) lines.push(FILE_LINE);
-    if (options.historyTools) lines.push(HISTORY_LINE);
+    if (options.historyTools) lines.push(historyLine(options.imageFetch));
     if (options.harnessIssues) lines.push(HARNESS_ISSUE_LINE);
     return lines.join('\n');
 };
