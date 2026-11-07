@@ -23,6 +23,7 @@ import {
     parseHistorySearchArgs,
     HISTORY_DEFAULT_LIMIT,
     HISTORY_MAX_LIMIT,
+    HISTORY_MAX_QUERY_CHARS,
 } from './history-args.js';
 import {
     attachmentLine,
@@ -63,7 +64,7 @@ const INPUT_SCHEMA = {
     properties: {
         query: {
             type: 'string',
-            description: '关键词，例如 "显卡 推荐"、RAG OR 检索、"Agent Memory"。省略则按时间列最近消息。',
+            description: `关键词，例如 "显卡 推荐"、RAG OR 检索、"Agent Memory"；上限 ${HISTORY_MAX_QUERY_CHARS} 字符。省略则按时间列最近消息。`,
         },
         sender: {
             type: 'string',

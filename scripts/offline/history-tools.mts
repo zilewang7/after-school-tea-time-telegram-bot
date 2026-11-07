@@ -169,6 +169,18 @@ const buildOptions = (
 const execute = async (tool: ToolHandler, raw: Readonly<Record<string, unknown>>) =>
     tool.execute(raw, new AbortController().signal);
 
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+    typeof value === 'object' && value !== null && !Array.isArray(value);
+
+/** The model-facing description of one property in a tool's JSON schema */
+const propertyDescriptionOf = (schema: Readonly<Record<string, unknown>>, name: string): string => {
+    const properties = schema.properties;
+    if (!isRecord(properties)) return '';
+    const property = properties[name];
+    if (!isRecord(property)) return '';
+    return typeof property.description === 'string' ? property.description : '';
+};
+
 const cases: CaseResult[] = [];
 
 cases.push(
@@ -211,6 +223,17 @@ cases.push(
         expect(
             defaults.ok && defaults.value.limit === 10 && defaults.value.scope === 'chat' && defaults.value.query === '显卡',
             'defaults are limit 10, scope chat, query trimmed'
+        );
+    })
+);
+
+cases.push(
+    await runCase('the search_history query description states its length ceiling', async () => {
+        const tool = createSearchHistoryTool(buildOptions(fakeService({})));
+        const description = propertyDescriptionOf(tool.definition.inputSchema, 'query');
+        expect(
+            description.includes(`上限 ${args.HISTORY_MAX_QUERY_CHARS} 字符`),
+            'the query description names the 100-character ceiling'
         );
     })
 );
