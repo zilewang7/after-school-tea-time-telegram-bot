@@ -8,6 +8,7 @@
  * docs/2026-1010-1905-设计-Gemini上下文缓存与提示词分层.md). Keep everything that
  * changes between requests in here, never in builder.ts.
  */
+import { formatUserDisplayName } from '../../shared/user-display-name.js';
 import type { ContextUser } from '../types.js';
 
 const formatCurrentTime = (): string => {
@@ -35,7 +36,7 @@ const formatCurrentTime = (): string => {
  * static head explains the marker, so it stays short here.
  */
 const rosterLine = (user: ContextUser): string => {
-    const name = user.lastName ? `${user.firstName} ${user.lastName}` : user.firstName;
+    const name = formatUserDisplayName(user);
     const id = user.userId === undefined ? 'id 未知' : `id ${user.userId}`;
     const handle = user.username ? `@${user.username}` : '无 username';
     const marker = user.isBot === true ? '[bot] ' : '';

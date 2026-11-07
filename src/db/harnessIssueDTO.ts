@@ -8,12 +8,14 @@ import {
 import { sequelize } from './config.js';
 
 /**
- * One friction point the model itself logged about the harness it was using:
- * a tool description that misled it, a parameter it needed and did not get, an
- * error message that made it retry, a context format it had to work around.
+ * One friction point logged about the harness: by the model itself (a tool
+ * description that misled it, a parameter it needed and did not get, an error
+ * message that made it retry, a context format it had to work around) or by a
+ * person from the control panel.
  *
- * `status` is the only mutable column and is changed by people, not the bot:
- * open → triaged → fixed / wontfix / duplicate. The bot only ever inserts.
+ * `status` and `note` are changed by people (the owner, from the panel):
+ * open → triaged → fixed / wontfix / duplicate. The model's tool only ever
+ * inserts.
  */
 export class HarnessIssue extends Model<
   InferAttributes<HarnessIssue>,
@@ -32,6 +34,12 @@ export class HarnessIssue extends Model<
   declare toolName: CreationOptional<string | null>;
   // Where it was reported from, for follow-up questions
   declare chatId: CreationOptional<number | null>;
+  // The maintainer's handling note (the owner writes it from the panel)
+  declare note: CreationOptional<string | null>;
+  // model | user: who filed it
+  declare source: CreationOptional<string>;
+  // Telegram user id of the person who filed it; only for source = 'user'
+  declare createdBy: CreationOptional<number | null>;
   declare createdAt: CreationOptional<Date>;
   declare updatedAt: CreationOptional<Date>;
 }
@@ -70,6 +78,22 @@ HarnessIssue.init({
     defaultValue: null,
   },
   chatId: {
+    type: DataTypes.INTEGER,
+    allowNull: true,
+    defaultValue: null,
+  },
+  // The next three exist on older databases through migrateHarnessIssuePanelColumns
+  note: {
+    type: DataTypes.TEXT,
+    allowNull: true,
+    defaultValue: null,
+  },
+  source: {
+    type: DataTypes.STRING,
+    allowNull: false,
+    defaultValue: 'model',
+  },
+  createdBy: {
     type: DataTypes.INTEGER,
     allowNull: true,
     defaultValue: null,

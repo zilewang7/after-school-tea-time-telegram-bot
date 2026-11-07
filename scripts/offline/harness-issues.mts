@@ -134,7 +134,7 @@ const cases: { name: string; body: () => Promise<void> }[] = [
                 kind: 'improvement',
                 severity: 'high',
             });
-            const tool = createListHarnessIssuesTool();
+            const tool = createListHarnessIssuesTool({ chatId: -100123 });
             const result = await call(tool, { status: 'open' });
             expect(!result.isError, 'the list call succeeds');
             expect(
@@ -149,7 +149,7 @@ const cases: { name: string; body: () => Promise<void> }[] = [
         name: 'the list reports whole-list counts so an empty answer needs no second call',
         body: async () => {
             await clearHarnessIssues();
-            const tool = createListHarnessIssuesTool();
+            const tool = createListHarnessIssuesTool({ chatId: -100123 });
 
             const empty = await call(tool, { status: 'open' });
             expect(

@@ -10,6 +10,7 @@
  * Built without I/O: offline cases drive it through `app.request()` with a
  * fake membership lookup and a scratch static root.
  */
+import type { Api } from 'grammy';
 import { Hono, type Context } from 'hono';
 import { bodyLimit } from 'hono/body-limit';
 import { createMembershipChecker, type MembershipLookup } from './access/membership.js';
@@ -17,6 +18,7 @@ import type { PanelEnv } from './context.js';
 import { errorBody, PANEL_MESSAGES } from './errors.js';
 import { createAuthMiddleware } from './middleware/auth.js';
 import { handlePanelError } from './middleware/error-handler.js';
+import { createIssueQuota, DEFAULT_ISSUE_QUOTA, type IssueQuotaLimits } from './middleware/issue-quota.js';
 import { createRateLimit } from './middleware/rate-limit.js';
 import { requestLog } from './middleware/request-log.js';
 import { securityHeaders } from './middleware/security-headers.js';
@@ -26,6 +28,7 @@ import { registerChatSettingsRoute } from './routes/chat-settings.js';
 import { registerChatRoutes } from './routes/chats.js';
 import { registerGlobalRoutes } from './routes/global.js';
 import { registerHealthRoute } from './routes/health.js';
+import { registerIssueRoutes } from './routes/issues.js';
 import { registerMeRoute } from './routes/me.js';
 import { registerSettingsPreviewRoute } from './routes/settings-preview.js';
 import { registerStaticRoutes } from './static.js';
@@ -45,6 +48,10 @@ export interface PanelAppOptions {
     rateLimit?: { limit: number; windowMs: number };
     /** Ceiling of one API handler (default 30s) */
     handlerTimeoutMs?: number;
+    /** The bot's own Api (autoRetry attached) for the group notice of a panel issue; absent = no notices */
+    botApi?: Api;
+    /** Issues one user may file from the panel per window (default 5 per hour) */
+    issueQuota?: IssueQuotaLimits;
 }
 
 const BODY_LIMIT_BYTES = 32 * 1024;
@@ -86,6 +93,10 @@ export const createPanelApp = (options: PanelAppOptions): Hono<PanelEnv> => {
     registerSettingsPreviewRoute(app);
     registerGlobalRoutes(app);
     registerAuditRoute(app);
+    registerIssueRoutes(app, {
+        botApi: options.botApi ?? null,
+        quota: createIssueQuota({ ...(options.issueQuota ?? DEFAULT_ISSUE_QUOTA), now }),
+    });
 
     // Method-bound rather than app.all, so the request log can tell it from middleware
     app.on(HTTP_METHODS, '/api/*', apiNotFound);
