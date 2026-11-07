@@ -1,7 +1,7 @@
 import { Link } from 'react-router';
 import { useChatScope } from '../../../context/chat-scope-context';
 import { useMe } from '../../../context/me-context';
-import { chatIssueNewPath } from '../../../routing/paths';
+import { chatIssueNewPath, ISSUE_NEW_CHAT_PICKER_PATH } from '../../../routing/paths';
 import { IssueFilterBar } from './issue-filter-bar';
 import { IssueListView } from './issue-list-view';
 import { useIssueList } from './use-issue-list';
@@ -32,7 +32,13 @@ export const HomeIssuesTab = () => {
 
     return (
         <section className="section">
-            <IssueFilterBar filters={state.filters} stats={state.data?.stats ?? null} chats={me.chats} onChange={setFilters} />
+            <div className="filter-bar-with-action">
+                <IssueFilterBar filters={state.filters} stats={state.data?.stats ?? null} chats={me.chats} onChange={setFilters} />
+                {/* The form needs a chat, so this link asks which one first */}
+                <Link className="link-action" to={ISSUE_NEW_CHAT_PICKER_PATH}>
+                    提 issue
+                </Link>
+            </div>
             <IssueListView state={state} showChat onLoadMore={loadMore} onRetry={retry} />
         </section>
     );

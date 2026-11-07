@@ -30,6 +30,9 @@ export const replyPath = (chatId: number, firstMessageId: number): string =>
 /** An issue's detail page; it lives outside the chat layer because an issue may belong to no chat */
 export const issuePath = (issueId: number): string => `/issues/${issueId}`;
 
+/** The chat picker in front of the chat-scoped new-issue form */
+export const ISSUE_NEW_CHAT_PICKER_PATH = '/issues/new';
+
 /** The new-issue form of a chat */
 export const chatIssueNewPath = (chatId: number): string => `/c/${chatId}/issues/new`;
 

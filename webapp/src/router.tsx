@@ -40,6 +40,14 @@ export const createAppRouter = (launch: LaunchState) =>
                     path: 'issues/:issueId',
                     Component: lazyPage(() => import('./pages/issues/issue-detail/issue-detail-route'), 'IssueDetailRoute'),
                 },
+                // The home issue list has no chat scope, so filing starts with a chat picker
+                {
+                    path: 'issues/new',
+                    Component: lazyPage(
+                        () => import('./pages/issues/issue-new/issue-new-chat-picker-page'),
+                        'IssueNewChatPickerPage'
+                    ),
+                },
                 // [F4 slot end]
                 {
                     path: 'c/:chatId',
