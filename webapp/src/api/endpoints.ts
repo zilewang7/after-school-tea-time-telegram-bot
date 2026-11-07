@@ -1,12 +1,16 @@
-import { createRequester } from './client';
+import { createRequester, createTextRequester } from './client';
 import type {
     AddendumPreviewResponse,
     AuditResponse,
     ChatDetailResponse,
     ChatSettingsPatch,
     ChatSettingsResponse,
+    ConversationListResponse,
+    ConversationTreeResponse,
+    ExcludedMessageResponse,
     GlobalSettingsResponse,
     HealthResponse,
+    IncludedMessageResponse,
     IssueCreateRequest,
     IssueKind,
     IssueListResponse,
@@ -14,11 +18,19 @@ import type {
     IssueResponse,
     IssueSource,
     IssueStatus,
+    LinkSpliceResponse,
     MeResponse,
+    ModelView,
+    ReplyDetail,
+    StatsRangeKey,
+    StatsResponse,
+    StatusResponse,
 } from './types';
 
 export const AUDIT_PAGE_SIZE = 50;
 const ISSUE_PAGE_SIZE = 20;
+/** Conversations per page, like the server's default */
+export const CONVERSATION_PAGE_SIZE = 20;
 
 export interface AuditQuery {
     // null = global view (owner only)
@@ -34,6 +46,14 @@ export interface IssueListQuery {
     chatId: number | null;
     offset: number;
 }
+
+/** GET …/model-view query; null leaves the default (the chat's model, the newest user message) */
+export interface ModelViewQuery {
+    at: number | null;
+    asModel: string | null;
+}
+
+export type ExportFormat = 'md' | 'json';
 
 const auditPath = ({ chatId, beforeId }: AuditQuery): string => {
     const params = new URLSearchParams();
@@ -58,8 +78,43 @@ const chatPath = (chatId: number): string => `/api/chats/${chatId}`;
 
 const issueApiPath = (issueId: number): string => `/api/issues/${issueId}`;
 
+const conversationListPath = (chatId: number, before: string | null): string => {
+    const params = new URLSearchParams();
+    params.set('limit', String(CONVERSATION_PAGE_SIZE));
+    if (before !== null) params.set('before', before);
+    return `${chatPath(chatId)}/conversations?${params.toString()}`;
+};
+
+const conversationPath = (chatId: number, rootId: number): string =>
+    `${chatPath(chatId)}/conversations/${rootId}`;
+
+const modelViewPath = (chatId: number, rootId: number, { at, asModel }: ModelViewQuery): string => {
+    const params = new URLSearchParams();
+    if (at !== null) params.set('at', String(at));
+    if (asModel !== null) params.set('asModel', asModel);
+    const query = params.toString();
+    return `${conversationPath(chatId, rootId)}/model-view${query === '' ? '' : `?${query}`}`;
+};
+
+const replyPath = (chatId: number, firstMessageId: number): string =>
+    `${chatPath(chatId)}/replies/${firstMessageId}`;
+
+const exclusionPath = (chatId: number, messageId: number): string =>
+    `${chatPath(chatId)}/messages/${messageId}/exclusion`;
+
+const exportPath = (chatId: number, rootId: number, format: ExportFormat): string =>
+    `${conversationPath(chatId, rootId)}/export?format=${format}`;
+
+const statsPath = (chatId: number | null, range: StatsRangeKey): string => {
+    const params = new URLSearchParams();
+    if (chatId !== null) params.set('chatId', String(chatId));
+    params.set('range', range);
+    return `/api/stats?${params.toString()}`;
+};
+
 export const createApi = (initData: string) => {
     const request = createRequester(initData);
+    const requestText = createTextRequester(initData);
     return {
         getHealth: (signal?: AbortSignal) => request<HealthResponse>({ method: 'GET', path: '/api/health', signal }),
         getMe: (signal?: AbortSignal) => request<MeResponse>({ method: 'GET', path: '/api/me', signal }),
@@ -89,6 +144,53 @@ export const createApi = (initData: string) => {
         // Owner only
         patchIssue: (issueId: number, patch: IssuePatch) =>
             request<IssueResponse>({ method: 'PATCH', path: issueApiPath(issueId), body: patch }),
+
+        // Conversations (phase 2)
+        getConversations: (chatId: number, before: string | null, signal?: AbortSignal) =>
+            request<ConversationListResponse>({
+                method: 'GET',
+                path: conversationListPath(chatId, before),
+                signal,
+            }),
+        getConversationTree: (chatId: number, rootId: number, signal?: AbortSignal) =>
+            request<ConversationTreeResponse>({
+                method: 'GET',
+                path: conversationPath(chatId, rootId),
+                signal,
+            }),
+        // Members only; 403 for observers
+        getModelView: (chatId: number, rootId: number, query: ModelViewQuery, signal?: AbortSignal) =>
+            request<ModelView>({ method: 'GET', path: modelViewPath(chatId, rootId, query), signal }),
+        getReply: (chatId: number, firstMessageId: number, signal?: AbortSignal) =>
+            request<ReplyDetail>({ method: 'GET', path: replyPath(chatId, firstMessageId), signal }),
+        // Members only; idempotent, so a repeat answers 200 too
+        setExclusion: (chatId: number, messageId: number, excluded: boolean) =>
+            excluded
+                ? request<ExcludedMessageResponse>({
+                      method: 'PUT',
+                      path: exclusionPath(chatId, messageId),
+                  })
+                : request<IncludedMessageResponse>({
+                      method: 'DELETE',
+                      path: exclusionPath(chatId, messageId),
+                  }),
+        // Members only; 1–20 links, a rootId that is not a root is 404
+        spliceConversation: (chatId: number, rootId: number, links: readonly string[]) =>
+            request<LinkSpliceResponse>({
+                method: 'POST',
+                path: `${conversationPath(chatId, rootId)}/links`,
+                body: { links },
+            }),
+        // Members only; the body is the exported file (5 MB cap)
+        exportConversation: (chatId: number, rootId: number, format: ExportFormat) =>
+            requestText({ method: 'GET', path: exportPath(chatId, rootId, format) }),
+
+        // Statistics and live status (phase 3)
+        // chatId null = every chat (owner only)
+        getStats: (chatId: number | null, range: StatsRangeKey, signal?: AbortSignal) =>
+            request<StatsResponse>({ method: 'GET', path: statsPath(chatId, range), signal }),
+        getStatus: (signal?: AbortSignal) =>
+            request<StatusResponse>({ method: 'GET', path: '/api/status', signal }),
     };
 };
 

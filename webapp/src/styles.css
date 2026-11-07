@@ -538,7 +538,8 @@ details.audit-change[open] {
     cursor: pointer;
 }
 
-.chip[aria-checked='true'] {
+.chip[aria-checked='true'],
+.chip[aria-selected='true'] {
     border-color: var(--color-button);
     background: var(--color-button);
     color: var(--color-button-text);
@@ -630,4 +631,671 @@ a.button {
     overflow: hidden;
     -webkit-mask-image: linear-gradient(to bottom, #000 70%, transparent);
     mask-image: linear-gradient(to bottom, #000 70%, transparent);
+}
+
+/* Conversations (phase 2) */
+
+.tab-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--color-accent);
+}
+
+.conversation-list {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    transition: opacity 0.15s;
+}
+
+/* Old rows stay on screen, dimmed, while a background refresh runs */
+.conversation-list.refreshing {
+    opacity: 0.5;
+    pointer-events: none;
+}
+
+.list-title-main {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+/* The live reply banner on top of the conversation list */
+.generating-banner {
+    border-left: 3px solid var(--color-accent);
+}
+
+.generating-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    padding: 8px 0;
+}
+
+.generating-main {
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+
+.generating-dot {
+    display: inline-block;
+    width: 8px;
+    height: 8px;
+    margin-right: 6px;
+    border-radius: 50%;
+    background: var(--color-accent);
+    animation: generating-pulse 1.4s ease-in-out infinite;
+}
+
+@keyframes generating-pulse {
+    0%,
+    100% {
+        opacity: 1;
+    }
+    50% {
+        opacity: 0.35;
+    }
+}
+
+/* The conversation tree */
+.tree {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.tree-node {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    padding-left: 8px;
+    border-left: 2px solid var(--color-separator);
+}
+
+.tree-node.excluded {
+    border-left-style: dashed;
+    opacity: 0.65;
+}
+
+.tree-node-head {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px;
+}
+
+.tree-number {
+    font-weight: 600;
+    color: var(--color-hint);
+    font-variant-numeric: tabular-nums;
+}
+
+.tree-author {
+    font-weight: 500;
+}
+
+.tree-date {
+    margin-left: auto;
+}
+
+.tree-annotations {
+    font-size: 12px;
+}
+
+.tree-node-body {
+    color: inherit;
+    text-decoration: none;
+}
+
+/* A long bot reply in the tree starts folded; the reply detail has the whole text */
+.tree-node-text {
+    margin: 0;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    max-height: 9.5em;
+    overflow: hidden;
+    -webkit-mask-image: linear-gradient(to bottom, #000 80%, transparent);
+    mask-image: linear-gradient(to bottom, #000 80%, transparent);
+}
+
+.quote {
+    margin: 0;
+    padding: 4px 8px;
+    border-left: 3px solid var(--color-separator);
+    color: var(--color-hint);
+    font-size: 14px;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+}
+
+/* The 「⋯」 menu of a tree node */
+.node-menu {
+    position: relative;
+    margin-left: auto;
+}
+
+.node-menu > summary {
+    list-style: none;
+    cursor: pointer;
+    padding: 0 6px;
+    color: var(--color-hint);
+    font-size: 18px;
+    line-height: 1;
+}
+
+.node-menu > summary::-webkit-details-marker {
+    display: none;
+}
+
+.node-menu-popup {
+    position: absolute;
+    right: 0;
+    top: 24px;
+    z-index: 10;
+    display: flex;
+    flex-direction: column;
+    min-width: 176px;
+    padding: 4px;
+    border: 1px solid var(--color-separator);
+    border-radius: 8px;
+    background: var(--color-bg);
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.25);
+}
+
+.node-menu-popup button,
+.node-menu-popup a {
+    padding: 8px 10px;
+    border: none;
+    border-radius: 6px;
+    background: none;
+    color: var(--color-text);
+    font: inherit;
+    font-size: 14px;
+    text-align: left;
+    text-decoration: none;
+    cursor: pointer;
+}
+
+.node-menu-popup button:disabled {
+    opacity: 0.5;
+}
+
+/* 树 | 模型视角 */
+.segment-control {
+    display: flex;
+    gap: 4px;
+    padding: 3px;
+    border-radius: 10px;
+    background: var(--color-section-bg);
+}
+
+.segment {
+    flex: 1;
+    padding: 8px;
+    border: none;
+    border-radius: 8px;
+    background: none;
+    color: var(--color-text);
+    font: inherit;
+    font-size: 14px;
+    cursor: pointer;
+}
+
+.segment[aria-selected='true'] {
+    background: var(--color-button);
+    color: var(--color-button-text);
+}
+
+/* Folded blocks: thinking, tool records, the static head */
+.collapsible {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.collapsible-summary {
+    display: flex;
+    justify-content: space-between;
+    gap: 8px;
+    cursor: pointer;
+    color: var(--color-link);
+    font-size: 14px;
+}
+
+.collapsible-body {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+/* The runtime block and the chat addendum inside the model view's last user turn */
+.runtime-highlight {
+    margin: 0;
+    padding: 8px 10px;
+    border-left: 3px solid var(--color-accent);
+    border-radius: 0 8px 8px 0;
+    background: var(--color-page-bg);
+    font-size: 14px;
+}
+
+.model-turns {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+
+.model-turn {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    padding-top: 8px;
+    border-top: 1px solid var(--color-separator);
+}
+
+.model-turn:first-child {
+    padding-top: 0;
+    border-top: none;
+}
+
+.model-turn-head {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.tool-names {
+    font: 13px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    overflow-wrap: anywhere;
+}
+
+.list.compact > li {
+    padding: 3px 0;
+    font-size: 13px;
+}
+
+.list.compact > li + li {
+    border-top: none;
+}
+
+.search-block {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.tool-call {
+    font: 12px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    overflow-wrap: anywhere;
+}
+
+/* Statistics (phase 3) */
+
+.range-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+}
+
+.stats-view {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    transition: opacity 0.15s;
+}
+
+/* Another range loads over these rows: dim them instead of a skeleton */
+.stats-view.refreshing {
+    opacity: 0.55;
+    pointer-events: none;
+}
+
+.kpi-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+}
+
+.kpi-card {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    padding: 10px 12px;
+    border-radius: var(--radius);
+    background: var(--color-section-bg);
+}
+
+.kpi-label {
+    font-size: 12px;
+    color: var(--color-section-header);
+}
+
+.kpi-value {
+    font-size: 22px;
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+}
+
+/* Charts: hand-written SVG / bars, one series palette, a legend and a table (design §7) */
+
+.chart-card {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding: 12px;
+    border-radius: var(--radius);
+    background: var(--color-section-bg);
+}
+
+.chart-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+}
+
+.chart-title {
+    margin: 0;
+    font-size: 15px;
+    font-weight: 600;
+}
+
+.chart-toggle {
+    padding: 4px;
+    border: none;
+    background: none;
+    color: var(--color-link);
+    font: inherit;
+    font-size: 13px;
+    cursor: pointer;
+}
+
+.chart-plot {
+    position: relative;
+    width: 100%;
+}
+
+.chart-svg {
+    display: block;
+}
+
+.chart-grid {
+    stroke: var(--color-separator);
+    stroke-width: 1;
+}
+
+.chart-hit {
+    fill: transparent;
+    cursor: pointer;
+}
+
+.chart-axis-label {
+    fill: var(--color-hint);
+    font-size: 10px;
+}
+
+.chart-tooltip {
+    position: absolute;
+    top: 0;
+    z-index: 2;
+    transform: translateX(-50%);
+    padding: 6px 8px;
+    border: 1px solid var(--color-separator);
+    border-radius: 8px;
+    background: var(--color-bg);
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.25);
+    font-size: 13px;
+    white-space: nowrap;
+    pointer-events: none;
+}
+
+.chart-tooltip-wide {
+    min-width: 140px;
+    white-space: normal;
+}
+
+.chart-tooltip-title {
+    font-weight: 600;
+}
+
+.chart-tooltip-line {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.chart-legend {
+    list-style: none;
+    margin: 6px 0 0;
+    padding: 0;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px 12px;
+    font-size: 13px;
+    color: var(--color-hint);
+}
+
+.chart-legend li {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.legend-dot {
+    flex: none;
+    width: 10px;
+    height: 10px;
+    border-radius: 3px;
+    background: var(--series-color, var(--segment-color, var(--series-neutral)));
+}
+
+.chart-table-scroll {
+    overflow-x: auto;
+}
+
+.chart-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 13px;
+}
+
+.chart-table th,
+.chart-table td {
+    padding: 4px 6px;
+    text-align: right;
+    white-space: nowrap;
+}
+
+.chart-table thead th {
+    color: var(--color-hint);
+    font-weight: 500;
+}
+
+.chart-table tbody th {
+    text-align: left;
+    font-weight: 400;
+}
+
+.chart-table tbody tr + tr {
+    border-top: 1px solid var(--color-separator);
+}
+
+.rank-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.rank-row {
+    display: grid;
+    grid-template-columns: minmax(72px, 30%) 1fr auto;
+    gap: 4px 8px;
+    align-items: center;
+}
+
+.rank-label {
+    font-size: 13px;
+}
+
+.rank-track {
+    height: 10px;
+    border-radius: 3px;
+    background: var(--color-page-bg);
+    overflow: hidden;
+}
+
+.rank-bar {
+    display: block;
+    height: 100%;
+    border-radius: 3px;
+    background: var(--color-button);
+}
+
+.rank-value {
+    font-size: 13px;
+    font-variant-numeric: tabular-nums;
+}
+
+.rank-detail {
+    grid-column: 1 / -1;
+}
+
+.token-bar {
+    display: flex;
+    gap: 2px;
+    height: 16px;
+    border-radius: 4px;
+    overflow: hidden;
+}
+
+.token-segment {
+    height: 100%;
+    background: var(--segment-color, var(--color-hint));
+}
+
+/* A model's two-line row in the statistics */
+.model-stats-row {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    padding: 8px 0;
+}
+
+.model-stats-head {
+    display: flex;
+    justify-content: space-between;
+    gap: 8px;
+    font-weight: 500;
+}
+
+.model-stats-cost {
+    flex: none;
+    font-variant-numeric: tabular-nums;
+}
+
+/* Live status (phase 3) */
+
+.status-row {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    padding: 8px 0;
+}
+
+/* Series palette: fixed per platform, light and dark steps; a legend and the table carry the meaning */
+
+:root {
+    --series-gemini: #2563eb;
+    --series-openai: #ea580c;
+    --series-anthropic: #0d9488;
+    --series-deepseek: #ca8a04;
+    --series-grok: #db2777;
+    --series-mimo: #16a34a;
+    --series-other: #6b7280;
+    --series-neutral: #64748b;
+    --token-uncached: #64748b;
+    --token-cached: #0891b2;
+    --token-write: #7c3aed;
+    --token-output: #d97706;
+}
+
+:root[data-color-scheme='dark'] {
+    --series-gemini: #60a5fa;
+    --series-openai: #fb923c;
+    --series-anthropic: #2dd4bf;
+    --series-deepseek: #facc15;
+    --series-grok: #f472b6;
+    --series-mimo: #4ade80;
+    --series-other: #9ca3af;
+    --series-neutral: #94a3b8;
+    --token-uncached: #94a3b8;
+    --token-cached: #22d3ee;
+    --token-write: #a78bfa;
+    --token-output: #fbbf24;
+}
+
+.series-gemini {
+    --series-color: var(--series-gemini);
+}
+
+.series-openai {
+    --series-color: var(--series-openai);
+}
+
+.series-anthropic {
+    --series-color: var(--series-anthropic);
+}
+
+.series-deepseek {
+    --series-color: var(--series-deepseek);
+}
+
+.series-grok {
+    --series-color: var(--series-grok);
+}
+
+.series-mimo {
+    --series-color: var(--series-mimo);
+}
+
+.series-other {
+    --series-color: var(--series-other);
+}
+
+.series-neutral {
+    --series-color: var(--series-neutral);
+}
+
+.chart-bar,
+.chart-segment {
+    fill: var(--series-color, var(--series-neutral));
+}
+
+.token-uncached {
+    --segment-color: var(--token-uncached);
+}
+
+.token-cached {
+    --segment-color: var(--token-cached);
+}
+
+.token-write {
+    --segment-color: var(--token-write);
+}
+
+.token-output {
+    --segment-color: var(--token-output);
 }

@@ -31,6 +31,20 @@ const homeSettingsTab: TabDefinition = {
 export const HOME_TABS: readonly TabDefinition[] = [
     chatListTab,
     // [F3 slot] 状态 (id 'status', path 'status') and 统计 (id 'stats', path 'stats'), owner only
+    {
+        id: 'status',
+        label: '状态',
+        path: 'status',
+        isVisible: ({ isOwner }) => isOwner,
+        page: lazyPage(() => import('../pages/status/status-tab'), 'HomeStatusTab'),
+    },
+    {
+        id: 'stats',
+        label: '统计',
+        path: 'stats',
+        isVisible: ({ isOwner }) => isOwner,
+        page: lazyPage(() => import('../pages/stats/stats-tabs'), 'HomeStatsTab'),
+    },
     // [F3 slot end]
     // [F4 slot] Issue (id 'issues', path 'issues')
     {

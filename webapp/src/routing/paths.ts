@@ -16,6 +16,17 @@ export const chatSettingsToolsPath = (chatId: number): string => `/c/${chatId}/s
 
 export const chatSettingsAuditPath = (chatId: number): string => `/c/${chatId}/settings/audit`;
 
+/** The conversation list tab (the chat's default tab) */
+export const chatConversationsPath = (chatId: number): string => chatTabPath(chatId, 'conv');
+
+/** One conversation's tree and model view */
+export const conversationPath = (chatId: number, rootId: number): string => `/c/${chatId}/conv/${rootId}`;
+
+/** One bot reply's detail (versions and metrics) */
+export const replyPath = (chatId: number, firstMessageId: number): string =>
+    `/c/${chatId}/replies/${firstMessageId}`;
+
+
 /** An issue's detail page; it lives outside the chat layer because an issue may belong to no chat */
 export const issuePath = (issueId: number): string => `/issues/${issueId}`;
 

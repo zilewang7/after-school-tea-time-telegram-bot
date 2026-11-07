@@ -11,6 +11,8 @@ const chatParentOf = (chatId: string, rest: readonly string[], chatTabs: Readonl
     const [first] = rest;
     // "/c/:id" itself only redirects to a tab
     if (first === undefined) return HOME_PATH;
+    // A reply belongs to a conversation: its logical parent is the conversation list
+    if (first === 'replies') return `/c/${chatId}/conv`;
     // A drill-down under a segment that is not a tab: the chat's default tab
     if (!chatTabs.has(first)) return `/c/${chatId}`;
     // A tab goes up to home; a page below a tab goes back to that tab

@@ -12,7 +12,12 @@ export type ApiFailure =
 
 export type ApiResult<T> = { ok: true; data: T } | { ok: false; failure: ApiFailure };
 
-export type HttpMethod = 'GET' | 'POST' | 'PATCH';
+/** A file download: the body as text plus what the server named it */
+export type TextResult =
+    | { ok: true; text: string; fileName: string | null; contentType: string | null }
+    | { ok: false; failure: ApiFailure };
+
+export type HttpMethod = 'GET' | 'POST' | 'PATCH' | 'PUT' | 'DELETE';
 
 export interface RequestOptions {
     method: HttpMethod;
@@ -22,6 +27,7 @@ export interface RequestOptions {
 }
 
 export type Requester = <T>(options: RequestOptions) => Promise<ApiResult<T>>;
+export type TextRequester = (options: RequestOptions) => Promise<TextResult>;
 
 // 502/503 from Traefik while the bot restarts; 52x/530 from Cloudflare when the origin is down
 const UNREACHABLE_STATUSES: ReadonlySet<number> = new Set([502, 503, 520, 521, 522, 523, 530]);
@@ -84,34 +90,87 @@ const toFailure = async (response: Response): Promise<ApiFailure> => {
     };
 };
 
+const requestHeaders = (initData: string, body: unknown, accept: string): Record<string, string> => {
+    const headers: Record<string, string> = {
+        Accept: accept,
+        // initData only ever travels in this header, never in the URL
+        'X-Init-Data': initData,
+    };
+    if (body !== undefined) headers['Content-Type'] = 'application/json';
+    return headers;
+};
+
+/** fetch with the panel's headers; null when the request never got an answer */
+const send = async (
+    initData: string,
+    { method, path, body, signal }: RequestOptions,
+    accept: string
+): Promise<Response | null> => {
+    try {
+        return await fetch(path, {
+            method,
+            headers: requestHeaders(initData, body, accept),
+            body: body === undefined ? undefined : JSON.stringify(body),
+            cache: 'no-store',
+            signal,
+        });
+    } catch {
+        return null;
+    }
+};
+
+/** A JSON body; a cut-off or unparsable body is a network failure, as it may be half a write */
 export const createRequester = (initData: string): Requester => {
-    const request = async <T>({ method, path, body, signal }: RequestOptions): Promise<ApiResult<T>> => {
-        const headers: Record<string, string> = {
-            Accept: 'application/json',
-            // initData only ever travels in this header, never in the URL
-            'X-Init-Data': initData,
-        };
-        if (body !== undefined) headers['Content-Type'] = 'application/json';
-
-        let response: Response;
-        try {
-            response = await fetch(path, {
-                method,
-                headers,
-                body: body === undefined ? undefined : JSON.stringify(body),
-                cache: 'no-store',
-                signal,
-            });
-        } catch {
-            return { ok: false, failure: { kind: 'network' } };
-        }
+    const request = async <T>(options: RequestOptions): Promise<ApiResult<T>> => {
+        const response = await send(initData, options, 'application/json');
+        if (response === null) return { ok: false, failure: { kind: 'network' } };
         recordServerDate(response.headers.get('Date'));
-
         if (!response.ok) return { ok: false, failure: await toFailure(response) };
-
         try {
             const data: T = await response.json();
             return { ok: true, data };
+        } catch {
+            return { ok: false, failure: { kind: 'network' } };
+        }
+    };
+    return request;
+};
+
+const FILE_NAME_PATTERN = /filename\*=UTF-8''([^;]+)|filename="?([^";]+)"?/i;
+
+/** The name of a downloaded file: `filename*=UTF-8''…` first, then the plain `filename` */
+const fileNameOf = (header: string | null): string | null => {
+    if (header === null) return null;
+    const matched = FILE_NAME_PATTERN.exec(header);
+    const encoded = matched?.[1];
+    const plain = matched?.[2];
+    if (encoded !== undefined) {
+        try {
+            return decodeURIComponent(encoded);
+        } catch {
+            return encoded;
+        }
+    }
+    return plain ?? null;
+};
+
+/**
+ * A download (the conversation export): the body as text. The server answers
+ * with an attachment, so the name and type come from its headers.
+ */
+export const createTextRequester = (initData: string): TextRequester => {
+    const request = async (options: RequestOptions): Promise<TextResult> => {
+        const response = await send(initData, options, 'text/markdown, application/json;q=0.9, */*;q=0.8');
+        if (response === null) return { ok: false, failure: { kind: 'network' } };
+        recordServerDate(response.headers.get('Date'));
+        if (!response.ok) return { ok: false, failure: await toFailure(response) };
+        try {
+            return {
+                ok: true,
+                text: await response.text(),
+                fileName: fileNameOf(response.headers.get('Content-Disposition')),
+                contentType: response.headers.get('Content-Type'),
+            };
         } catch {
             return { ok: false, failure: { kind: 'network' } };
         }

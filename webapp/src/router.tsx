@@ -53,6 +53,20 @@ export const createAppRouter = (launch: LaunchState) =>
                         { path: 'settings/tools', element: <ChatToolsPage /> },
                         { path: 'settings/audit', element: <ChatAuditRoute /> },
                         // [F2 slot] conv/:rootId, replies/:firstMessageId
+                        {
+                            path: 'conv/:rootId',
+                            Component: lazyPage(
+                                () => import('./pages/conversations/conversation-detail/conversation-detail-route'),
+                                'ConversationDetailRoute'
+                            ),
+                        },
+                        {
+                            path: 'replies/:firstMessageId',
+                            Component: lazyPage(
+                                () => import('./pages/conversations/reply-detail/reply-detail-route'),
+                                'ReplyDetailRoute'
+                            ),
+                        },
                         // [F2 slot end]
                         // [F3 slot]
                         // [F3 slot end]

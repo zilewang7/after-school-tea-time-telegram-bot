@@ -59,6 +59,34 @@ export const describeIssueReadFailure = (failure: ApiFailure): string =>
         .with({ kind: 'http', status: 404 }, () => ISSUE_NOT_FOUND_MESSAGE)
         .otherwise(describeReadFailure);
 
+/** A failed POST …/links: the root may have been cleaned up, and bad links are reported by the server */
+export const describeSpliceFailure = (failure: ApiFailure): WriteFailureView =>
+    match(failure)
+        .with({ kind: 'http', status: 404 }, () => ({
+            message: '这个会话的根消息不存在或已被清理',
+            suggestRefresh: true,
+        }))
+        .with({ kind: 'http', status: 400 }, ({ message }) => ({
+            message: message ?? '链接格式不正确',
+            suggestRefresh: false,
+        }))
+        .otherwise(describeWriteFailure);
+
+/** A failed exclude / restore: 400 is the album sub-image rule, 404 a message we no longer have */
+export const describeExclusionFailure = (failure: ApiFailure): WriteFailureView =>
+    match(failure)
+        .with({ kind: 'http', status: P.union(400, 404) }, ({ message }) => ({
+            message: message ?? '这条消息不存在或不能这样处理',
+            suggestRefresh: false,
+        }))
+        .otherwise(describeWriteFailure);
+
+/** A failed export; 413 means the conversation is over the 5 MB cap */
+export const describeExportFailure = (failure: ApiFailure): string =>
+    match(failure)
+        .with({ kind: 'http', status: 413 }, () => '会话太大，导出超过 5 MB')
+        .otherwise(describeReadFailure);
+
 const SECONDS_PER_MINUTE = 60;
 
 const issueQuotaMessage = (retryAfterSeconds: number | null): string =>
