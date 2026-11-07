@@ -1,6 +1,7 @@
 import { Link } from 'react-router';
 import type { ChatSummary } from '../../api';
-import { accessLabel, chatTitleOf, chatTypeLabel, formatDateTime } from '../../format';
+import { ChatName } from '../../components/chat-name';
+import { accessLabel, chatTypeLabel, formatDateTime } from '../../format';
 
 interface ChatListItemProps {
     chat: ChatSummary;
@@ -15,7 +16,9 @@ export const ChatListItem = ({ chat, globalDefaultModel }: ChatListItemProps) =>
         <li>
             <Link className="list-link" to={`/c/${chat.chatId}`}>
                 <span className="list-title">
-                    <span className="truncate">{chatTitleOf(chat.title, chat.chatId)}</span>
+                    <span className="truncate">
+                        <ChatName chat={chat} />
+                    </span>
                     <span className="chevron" aria-hidden="true">
                         ›
                     </span>

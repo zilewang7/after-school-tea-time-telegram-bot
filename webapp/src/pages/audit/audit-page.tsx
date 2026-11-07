@@ -3,7 +3,7 @@ import { match } from 'ts-pattern';
 import { ErrorView, LoadingView } from '../../components/status-views';
 import { useMe } from '../../context/me-context';
 import { useApi } from '../../context/panel-context';
-import { chatTitleOf } from '../../format';
+import { chatLabelOf } from '../../format';
 import { useApiQuery } from '../../hooks/use-api-query';
 import { AuditList } from './audit-list';
 
@@ -24,7 +24,7 @@ export const AuditPage = ({ chatId }: AuditPageProps) => {
     const subtitle = useMemo(() => {
         if (chatId === null) return '全部聊天与全局';
         const chat = me.chats.find((candidate) => candidate.chatId === chatId);
-        return chatTitleOf(chat?.title ?? null, chatId);
+        return chat === undefined ? `聊天 ${chatId}` : chatLabelOf(chat);
     }, [chatId, me.chats]);
 
     return (

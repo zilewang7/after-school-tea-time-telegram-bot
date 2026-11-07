@@ -37,6 +37,7 @@ export interface ChatIdentity {
     title?: string;
     username?: string;
     first_name?: string;
+    last_name?: string;
 }
 
 export interface PanelUserIdentity {
@@ -71,9 +72,15 @@ const normalizeChatType = (type: string, chatId: number): ChatType =>
         .with('private', 'group', 'supergroup', 'channel', (known) => known)
         .otherwise(() => chatTypeFromId(chatId));
 
-/** A private chat is titled with the user's first name, everything else with its title */
-const chatTitleOf = (chat: ChatIdentity, type: ChatType): string | null =>
-    (type === 'private' ? chat.first_name : chat.title) ?? null;
+/** "First Last", or just the first name */
+const fullNameOf = (firstName: string, lastName: string | undefined): string =>
+    lastName === undefined || lastName === '' ? firstName : `${firstName} ${lastName}`;
+
+/** A private chat is titled with the user's full name, everything else with its title */
+const chatTitleOf = (chat: ChatIdentity, type: ChatType): string | null => {
+    if (type !== 'private') return chat.title ?? null;
+    return chat.first_name === undefined ? null : fullNameOf(chat.first_name, chat.last_name);
+};
 
 const toChatRow = (record: ChatRecord): ChatRow => ({
     chatId: record.chatId,
@@ -259,6 +266,30 @@ export const spokeWithinDays = async (chatId: number, userId: number, days: numb
     return row !== null;
 };
 
+/** Chats known only by id: seeded by the first-deploy backfill and not named since */
+export const listUntitledChats = async (): Promise<ChatRow[]> => {
+    const records = await ChatRecord.findAll({ where: { title: null }, order: [['chatId', 'ASC']] });
+    return records.map(toChatRow);
+};
+
+/**
+ * Name an untitled chat from a Chat object fetched for the purpose (getChat,
+ * or the roster for a private chat). Only rows still without a title are
+ * written: a message harvested meanwhile carries fresher data. False when the
+ * object holds no name to give.
+ */
+export const fillChatName = async (chat: ChatIdentity): Promise<boolean> => {
+    const type = normalizeChatType(chat.type, chat.id);
+    const title = chatTitleOf(chat, type);
+    if (title === null) return false;
+    await sequelize.query(
+        `UPDATE chats SET type = :type, title = :title, username = :username
+         WHERE chatId = :chatId AND title IS NULL`,
+        { replacements: { chatId: chat.id, type, title, username: chat.username ?? null } }
+    );
+    return true;
+};
+
 /** Private chats already ensured by this process, so repeat requests skip the write */
 const ensuredPrivateChats = new Set<number>();
 
@@ -270,6 +301,7 @@ const ensuredPrivateChats = new Set<number>();
 export const ensurePrivateChatRow = async (user: {
     id: number;
     first_name: string;
+    last_name?: string;
     username?: string;
 }): Promise<void> => {
     if (ensuredPrivateChats.has(user.id)) return;
@@ -284,7 +316,7 @@ export const ensurePrivateChatRow = async (user: {
         {
             replacements: {
                 chatId: user.id,
-                title: user.first_name,
+                title: fullNameOf(user.first_name, user.last_name),
                 username: user.username ?? null,
                 now,
             },

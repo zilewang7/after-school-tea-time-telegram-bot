@@ -20,6 +20,7 @@ const { ChatRecord } = await import('../../src/db/chatDTO.js');
 const { ChatMemberSeen } = await import('../../src/db/chatMemberSeenDTO.js');
 const { backfillPanelRegistry } = await import('../../src/db/schema-migrations.js');
 const registry = await import('../../src/db/queries/panel-registry.js');
+const { fillMissingChatNames } = await import('../../src/panel/chat-names.js');
 
 const PRIVATE_CHAT_ID = 5001;
 const SMALL_GROUP_ID = -4001;
@@ -261,6 +262,104 @@ const cases: { name: string; body: () => Promise<void> }[] = [
 
             await registry.ensurePrivateChatRow({ id: 5002, first_name: 'Robert' });
             expect((await registry.findChat(5002))?.title === 'Bob', 'a named row keeps its data');
+
+            await registry.ensurePrivateChatRow({ id: 8002, first_name: 'Grace', last_name: 'Hopper' });
+            expect((await registry.findChat(8002))?.title === 'Grace Hopper', 'initData with a last name gives the full name');
+        },
+    },
+    {
+        name: 'a private chat is titled with the full name, a group with its title',
+        body: async () => {
+            registry.harvestChatRegistry(
+                groupMessage(
+                    { id: 8101, type: 'private', first_name: 'Heidi', last_name: 'Klum', username: 'heidi_k' },
+                    { id: 8101, is_bot: false, first_name: 'Heidi', last_name: 'Klum' }
+                )
+            );
+            await waitFor('the private chat row', async () => (await registry.findChat(8101)) !== null);
+            const privateChat = await registry.findChat(8101);
+            expect(
+                privateChat?.title === 'Heidi Klum' && privateChat.username === 'heidi_k',
+                `first and last name, and the username (got ${privateChat?.title} @${privateChat?.username})`
+            );
+            await registry.upsertChatNow({ id: 8102, type: 'private', first_name: 'Ivan' });
+            expect((await registry.findChat(8102))?.title === 'Ivan', 'no last name: just the first name');
+        },
+    },
+    {
+        name: 'untitled chats are named once: getChat first, the roster for a private chat, failures retried next start',
+        body: async () => {
+            const NAMED_BY_LOOKUP = -1005550000001;
+            const ROSTER_PRIVATE = 8201;
+            const SILENT_PRIVATE = 8202;
+            const BROKEN_GROUP = -4555;
+            const ALREADY_NAMED = -1005550000002;
+            const insertUntitled = (chatId: number, type: string): Promise<unknown> =>
+                sequelize.query(
+                    `INSERT INTO chats (chatId, type, title, username, firstSeenAt, lastSeenAt)
+                     VALUES (:chatId, :type, NULL, NULL, :now, :now)`,
+                    { replacements: { chatId, type, now: new Date() } }
+                );
+            // Earlier cases left untitled rows of their own; name those out of the way first
+            for (const leftover of await registry.listUntitledChats()) {
+                await registry.fillChatName({ id: leftover.chatId, type: leftover.type, title: 'earlier', first_name: 'earlier' });
+            }
+            await insertUntitled(NAMED_BY_LOOKUP, 'group');
+            await insertUntitled(ROSTER_PRIVATE, 'private');
+            await insertUntitled(SILENT_PRIVATE, 'private');
+            await insertUntitled(BROKEN_GROUP, 'group');
+            await registry.upsertChatNow({ id: ALREADY_NAMED, type: 'supergroup', title: '已有名字' });
+            await TelegramUser.create({
+                userId: ROSTER_PRIVATE,
+                firstName: 'Judy',
+                lastName: 'Chen',
+                username: 'judy_c',
+                isBot: false,
+                updatedAt: new Date(),
+            });
+
+            const looked: number[] = [];
+            const lookup = async (chatId: number, signal: AbortSignal) => {
+                looked.push(chatId);
+                if (chatId === NAMED_BY_LOOKUP) {
+                    // A group upgraded to a supergroup since the backfill guessed its type
+                    return { type: 'supergroup', title: '查得到的群', username: 'found_group' };
+                }
+                if (chatId === ROSTER_PRIVATE) {
+                    // Never answers: the deadline aborts it and the roster takes over
+                    return new Promise<never>((_resolve, reject) => {
+                        signal.addEventListener('abort', () => reject(new Error('aborted')));
+                    });
+                }
+                throw new Error('Bad Request: chat not found');
+            };
+            await fillMissingChatNames(lookup, { gapMs: 0, timeoutMs: 100 });
+
+            const found = await registry.findChat(NAMED_BY_LOOKUP);
+            expect(
+                found?.title === '查得到的群' && found.username === 'found_group' && found.type === 'supergroup',
+                `getChat names the group and corrects its type (got ${JSON.stringify(found)})`
+            );
+            const fromRoster = await registry.findChat(ROSTER_PRIVATE);
+            expect(
+                fromRoster?.title === 'Judy Chen' && fromRoster.username === 'judy_c',
+                `a timed-out private lookup falls back to the roster (got ${fromRoster?.title} @${fromRoster?.username})`
+            );
+            expect((await registry.findChat(SILENT_PRIVATE))?.title === null, 'a private chat nobody knows stays untitled');
+            expect((await registry.findChat(BROKEN_GROUP))?.title === null, 'a group getChat refuses stays untitled');
+            expect(!looked.includes(ALREADY_NAMED), 'a named chat is never looked up');
+
+            looked.length = 0;
+            await fillMissingChatNames(lookup, { gapMs: 0, timeoutMs: 100 });
+            expect(
+                JSON.stringify([...looked].sort((left, right) => left - right)) ===
+                    JSON.stringify([BROKEN_GROUP, SILENT_PRIVATE]),
+                `the next start only retries the ones still untitled (got ${JSON.stringify(looked)})`
+            );
+
+            // A harvested message wins over a stale lookup: only untitled rows are filled
+            await registry.fillChatName({ id: NAMED_BY_LOOKUP, type: 'supergroup', title: '旧名字' });
+            expect((await registry.findChat(NAMED_BY_LOOKUP))?.title === '查得到的群', 'a titled row is never overwritten');
         },
     },
     {

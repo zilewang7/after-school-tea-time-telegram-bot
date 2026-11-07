@@ -31,7 +31,26 @@ export const chatTypeLabel = (type: ChatType): string => CHAT_TYPE_LABELS[type];
 
 export const accessLabel = (access: ChatAccess): string => ACCESS_LABELS[access];
 
-export const chatTitleOf = (title: string | null, chatId: number): string => title ?? `chat ${chatId}`;
+/** What a chat's name is built from; a ChatSummary or the dashboard's chat header fits */
+export interface ChatNameSource {
+    chatId: number;
+    type: ChatType;
+    title: string | null;
+    username: string | null;
+}
+
+/** Group title or the user's name; a chat not named yet falls back to its type and id */
+export const chatNameOf = (chat: ChatNameSource): string => chat.title ?? `${chatTypeLabel(chat.type)} ${chat.chatId}`;
+
+/** "@username" when the chat has a public username */
+export const chatUsernameOf = (chat: ChatNameSource): string | null =>
+    chat.username === null || chat.username === '' ? null : `@${chat.username}`;
+
+/** Name followed by the @username, for plain-text places */
+export const chatLabelOf = (chat: ChatNameSource): string => {
+    const username = chatUsernameOf(chat);
+    return username === null ? chatNameOf(chat) : `${chatNameOf(chat)} ${username}`;
+};
 
 export const auditKeyLabel = (key: string): string => AUDIT_KEY_LABELS[key] ?? key;
 
@@ -66,7 +85,7 @@ export const auditScopeLabel = (scope: string, chats: readonly ChatSummary[]): s
         .with(P.string.startsWith('chat:'), (chatScope) => {
             const chatId = Number(chatScope.slice('chat:'.length));
             const chat = chats.find((candidate) => candidate.chatId === chatId);
-            return chat === undefined ? chatScope : chatTitleOf(chat.title, chat.chatId);
+            return chat === undefined ? chatScope : chatLabelOf(chat);
         })
         .with(P.string.startsWith('issue:'), (issueScope) => `issue #${issueScope.slice('issue:'.length)}`)
         .otherwise((unknownScope) => unknownScope);

@@ -18,7 +18,10 @@ export interface ChatSettingsView {
 export interface ChatHeaderView {
     chatId: number;
     type: ChatType;
+    /** Group title, or the private chat user's full name; null until named */
     title: string | null;
+    /** Public @username of the group or user, without the @ */
+    username: string | null;
     access: VisibleAccess;
 }
 
@@ -39,6 +42,7 @@ export const toChatHeaderView = (chat: ChatRow, access: VisibleAccess): ChatHead
     chatId: chat.chatId,
     type: chat.type,
     title: chat.title,
+    username: chat.username,
     access,
 });
 

@@ -187,6 +187,13 @@ p {
 
 /* Text */
 
+/* The @username after a chat's name */
+.chat-username {
+    margin-left: 0.4em;
+    font-weight: normal;
+    color: var(--color-hint);
+}
+
 .hint {
     font-size: 13px;
     color: var(--color-hint);

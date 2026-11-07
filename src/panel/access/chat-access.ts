@@ -49,7 +49,12 @@ export const resolveChatAccess = async (
 ): Promise<ChatAccess> => {
     if (!isChatAllowed(chatId)) return 'none';
     if (chatId === user.id) {
-        await ensurePrivateChatRow({ id: user.id, first_name: user.firstName, username: user.username ?? undefined });
+        await ensurePrivateChatRow({
+            id: user.id,
+            first_name: user.firstName,
+            last_name: user.lastName ?? undefined,
+            username: user.username ?? undefined,
+        });
         return 'member';
     }
     const chat = await findChat(chatId);

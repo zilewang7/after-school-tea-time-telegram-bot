@@ -89,7 +89,7 @@ const makeApp = (staticRoot = STATIC_ROOT, handlerTimeoutMs?: number): PanelApp 
         ...(handlerTimeoutMs !== undefined ? { handlerTimeoutMs } : {}),
     });
 
-await registry.upsertChatNow({ id: GROUP_MAIN, type: 'supergroup', title: 'Main' });
+await registry.upsertChatNow({ id: GROUP_MAIN, type: 'supergroup', title: 'Main', username: 'main_group' });
 await registry.upsertChatNow({ id: GROUP_LEFT, type: 'supergroup', title: 'Left' });
 await registry.upsertChatNow({ id: GROUP_THROTTLED, type: 'supergroup', title: 'Throttled' });
 await loadChatSettingsCache();
@@ -370,7 +370,8 @@ const cases: { name: string; body: () => Promise<void> }[] = [
             const body = await jsonOf(response);
             expect(response.status === 200, '200');
             expect(
-                JSON.stringify(body.chat) === JSON.stringify({ chatId: GROUP_MAIN, type: 'supergroup', title: 'Main', access: 'member' }),
+                JSON.stringify(body.chat) ===
+                    JSON.stringify({ chatId: GROUP_MAIN, type: 'supergroup', title: 'Main', username: 'main_group', access: 'member' }),
                 `chat header (got ${JSON.stringify(body.chat)})`
             );
             expect(
@@ -505,9 +506,10 @@ const cases: { name: string; body: () => Promise<void> }[] = [
             const main = body.chats.find((chat: any) => chat.chatId === GROUP_MAIN);
             expect(
                 JSON.stringify(Object.keys(main).sort()) ===
-                    JSON.stringify(['access', 'chatId', 'lastActivityAt', 'model', 'modelSource', 'openIssues', 'paused', 'settingsLocked', 'title', 'type']),
+                    JSON.stringify(['access', 'chatId', 'lastActivityAt', 'model', 'modelSource', 'openIssues', 'paused', 'settingsLocked', 'title', 'type', 'username']),
                 'chat row keys'
             );
+            expect(main.title === 'Main' && main.username === 'main_group', 'the row names the group and its @username');
             expect(main.model === null && main.modelSource === 'global', 'a chat following the global default');
 
             await patchSettings(app, ALICE.id, ALICE, { model: 'mine' });

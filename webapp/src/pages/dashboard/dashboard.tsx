@@ -1,5 +1,5 @@
 import type { ChatDetailResponse, ChatSettings } from '../../api';
-import { chatTitleOf } from '../../format';
+import { ChatName } from '../../components/chat-name';
 import { ChatSettingsForm } from './chat-settings-form';
 import { IdentityLine } from './identity-line';
 import { RecentAudit } from './recent-audit';
@@ -22,7 +22,9 @@ export const Dashboard = ({ detail, isOwner, models, justSaved, onSaved, onReloa
     return (
         <>
             <header className="page-header">
-                <h1>{chatTitleOf(chat.title, chat.chatId)}</h1>
+                <h1>
+                    <ChatName chat={chat} />
+                </h1>
                 <IdentityLine type={chat.type} access={chat.access} locked={settings.settingsLocked} />
             </header>
             <ChatSettingsForm

@@ -142,6 +142,10 @@ export const panelCases: E2eCase[] = [
                 `the Direct Link's start_param lands on the test group as a member (got ${JSON.stringify(fieldOf(me.body, 'startTarget'))})`
             );
             expect(fieldOf(listedChat(me), 'access') === 'member', 'the test group is listed with member access');
+            expect(
+                typeof fieldOf(listedChat(me), 'title') === 'string' && fieldOf(listedChat(me), 'username') !== undefined,
+                `the test group is listed by name, with its username field (got ${JSON.stringify(listedChat(me))})`
+            );
             const models = listOf(fieldOf(me.body, 'models'));
             expect(
                 models.includes('deepseek-flash') &&
@@ -152,8 +156,11 @@ export const panelCases: E2eCase[] = [
 
             const dashboard = await panelRequest(CHAT_PATH, asUser(member));
             expect(
-                dashboard.status === 200 && fieldOf(dashboard.body, 'chat', 'access') === 'member',
-                `the dashboard opens (got ${describe(dashboard)})`
+                dashboard.status === 200 &&
+                    fieldOf(dashboard.body, 'chat', 'access') === 'member' &&
+                    typeof fieldOf(dashboard.body, 'chat', 'title') === 'string' &&
+                    fieldOf(dashboard.body, 'chat', 'username') !== undefined,
+                `the dashboard opens with the group's name (got ${describe(dashboard)})`
             );
             const previousModel = fieldOf(dashboard.body, 'settings', 'model');
             const switched = await patchSettings(asUser(member), {

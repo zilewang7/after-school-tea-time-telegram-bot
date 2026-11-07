@@ -12,6 +12,7 @@ import { serve, type ServerType } from '@hono/node-server';
 import { Api, type ApiClientOptions } from 'grammy';
 import { botApiMembershipLookup } from './access/membership.js';
 import { createPanelApp } from './app.js';
+import { botApiChatNameLookup, fillMissingChatNames } from './chat-names.js';
 import { setPanelRunning } from './panel-state.js';
 import { DEFAULT_STATIC_ROOT } from './static.js';
 import { readCodeVersion } from './version.js';
@@ -22,7 +23,7 @@ export interface StartPanelOptions {
      * notifications, phase 4; unused before). Membership lookups never use it.
      */
     api: Api;
-    /** The bot's client config (apiRoot / proxy), reused by the lookup Api */
+    /** The bot's client config (apiRoot / proxy), reused by the lookup Api (membership, chat names) */
     clientConfig?: ApiClientOptions;
 }
 
@@ -80,16 +81,21 @@ export const startPanel = async (options: StartPanelOptions): Promise<void> => {
     if (activeServer !== null) return;
 
     // No autoRetry here: a 429 must surface as "unavailable", not be slept on
-    const membershipApi = new Api(process.env.BOT_TOKEN, options.clientConfig);
+    const lookupApi = new Api(process.env.BOT_TOKEN, options.clientConfig);
     const app = createPanelApp({
         botToken: process.env.BOT_TOKEN,
-        membershipLookup: botApiMembershipLookup(membershipApi),
+        membershipLookup: botApiMembershipLookup(lookupApi),
         staticRoot: DEFAULT_STATIC_ROOT,
         startedAt: new Date(),
         version: await readCodeVersion(),
     });
     activeServer = await listen(app.fetch, port);
     setPanelRunning(activeServer !== null);
+    if (activeServer === null) return;
+    // In the background: chats still known only by id get their names
+    void fillMissingChatNames(botApiChatNameLookup(lookupApi)).catch((error: unknown) => {
+        console.error('[panel] naming untitled chats failed:', error);
+    });
 };
 
 /** Close the server and drop open connections, waiting at most 3s */

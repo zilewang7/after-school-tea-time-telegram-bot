@@ -38,7 +38,10 @@ export interface PanelUser {
 export interface ChatSummary {
     chatId: number;
     type: ChatType;
+    // Group title, or the private chat user's full name; null until the bot learns it
     title: string | null;
+    // Public username of the group or user, without the @
+    username: string | null;
     access: ChatAccess;
     model: string | null;
     modelSource: 'chat' | 'global';
@@ -87,7 +90,7 @@ export interface ChatAuditEntry {
 }
 
 export interface ChatDetailResponse {
-    chat: { chatId: number; type: ChatType; title: string | null; access: ChatAccess };
+    chat: { chatId: number; type: ChatType; title: string | null; username: string | null; access: ChatAccess };
     settings: ChatSettings;
     effectiveModel: string;
     globalDefaultModel: string;

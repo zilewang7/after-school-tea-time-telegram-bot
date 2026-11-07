@@ -9,7 +9,10 @@ import { currentChatSettings } from './chat-view.js';
 export interface ChatListItem {
     chatId: number;
     type: ChatType;
+    /** Group title, or the private chat user's full name; null until named */
     title: string | null;
+    /** Public @username of the group or user, without the @ */
+    username: string | null;
     access: VisibleAccess;
     /** The chat's own model; null = follows the global default */
     model: string | null;
@@ -30,6 +33,7 @@ export const toChatListItem = (
         chatId: chat.chatId,
         type: chat.type,
         title: chat.title,
+        username: chat.username,
         access,
         model: settings.model,
         modelSource: settings.model === null ? 'global' : 'chat',
