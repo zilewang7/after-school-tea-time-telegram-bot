@@ -6,7 +6,7 @@ interface TableColumn {
 }
 
 const tableColumns = async (
-  tableName: 'message_attachments' | 'link_preview_cache' | 'media_cache',
+  tableName: 'message_attachments' | 'link_preview_cache' | 'media_cache' | 'harness_issues',
   transaction: Transaction
 ): Promise<Set<string>> => {
   const columns = await sequelize.query<TableColumn>(
@@ -17,7 +17,7 @@ const tableColumns = async (
 };
 
 const ensureColumn = async (
-  tableName: 'message_attachments' | 'link_preview_cache' | 'media_cache',
+  tableName: 'message_attachments' | 'link_preview_cache' | 'media_cache' | 'harness_issues',
   columnName: string,
   definition: string,
   transaction: Transaction
@@ -160,6 +160,25 @@ const migrateMediaCacheDurationSeconds = async (transaction: Transaction): Promi
   await ensureColumn('media_cache', 'durationSeconds', 'INTEGER', transaction);
 };
 
+/**
+ * The control panel's three harness_issues columns: the owner's handling note,
+ * who filed the issue (model | user; every existing row was filed by the
+ * model) and the filing person's id. Same shape as the media_cache column
+ * above: skipped on a fresh database, where sync creates the table from the
+ * DTO with all three; on an existing one each column is added once, so a
+ * restart finds them and does nothing.
+ */
+const migrateHarnessIssuePanelColumns = async (transaction: Transaction): Promise<void> => {
+  const tables = await sequelize.query<{ name: string }>(
+    "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'harness_issues'",
+    { type: QueryTypes.SELECT, transaction }
+  );
+  if (tables.length === 0) return;
+  await ensureColumn('harness_issues', 'note', 'TEXT', transaction);
+  await ensureColumn('harness_issues', 'source', "VARCHAR(255) NOT NULL DEFAULT 'model'", transaction);
+  await ensureColumn('harness_issues', 'createdBy', 'INTEGER', transaction);
+};
+
 /** Apply additive, idempotent DDL without altering the large message table. */
 export const runSchemaMigrations = async (): Promise<void> => {
   await sequelize.query(`
@@ -173,6 +192,7 @@ export const runSchemaMigrations = async (): Promise<void> => {
     await migrateCustomEmojiSchema(transaction);
     await migratePreviewOcrRevision(transaction);
     await migrateMediaCacheDurationSeconds(transaction);
+    await migrateHarnessIssuePanelColumns(transaction);
     await sequelize.query(
       `INSERT OR IGNORE INTO schema_migrations (name, appliedAt)
        VALUES ('20260908_custom_emoji_phase1', :appliedAt)`,
@@ -204,6 +224,12 @@ export const runSchemaMigrations = async (): Promise<void> => {
     await sequelize.query(
       `INSERT OR IGNORE INTO schema_migrations (name, appliedAt)
        VALUES ('20261106_miniapp_panel', :appliedAt)`,
+      { replacements: { appliedAt: new Date().toISOString() }, transaction }
+    );
+    // harness_issues gained note / source / createdBy (migrateHarnessIssuePanelColumns)
+    await sequelize.query(
+      `INSERT OR IGNORE INTO schema_migrations (name, appliedAt)
+       VALUES ('20261107_harness_issue_panel_columns', :appliedAt)`,
       { replacements: { appliedAt: new Date().toISOString() }, transaction }
     );
   });

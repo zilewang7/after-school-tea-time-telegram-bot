@@ -19,8 +19,8 @@ import { readCodeVersion } from './version.js';
 
 export interface StartPanelOptions {
     /**
-     * The bot's own Api (autoRetry attached), for the panel's sends (group
-     * notifications, phase 4; unused before). Membership lookups never use it.
+     * The bot's own Api (autoRetry attached), for the panel's sends: the group
+     * notice of an issue filed in the panel. Membership lookups never use it.
      */
     api: Api;
     /** The bot's client config (apiRoot / proxy), reused by the lookup Api (membership, chat names) */
@@ -88,6 +88,7 @@ export const startPanel = async (options: StartPanelOptions): Promise<void> => {
         staticRoot: DEFAULT_STATIC_ROOT,
         startedAt: new Date(),
         version: await readCodeVersion(),
+        botApi: options.api,
     });
     activeServer = await listen(app.fetch, port);
     setPanelRunning(activeServer !== null);

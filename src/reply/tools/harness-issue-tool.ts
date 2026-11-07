@@ -4,8 +4,13 @@
  * `list_harness_issues` is the dedupe step, `create_harness_issue` the write.
  * Neither touches the chat: the model records friction for the maintainer, not
  * a report for the user, and the reply's own text must not mention it.
+ *
+ * The list also holds issues people filed from the control panel; the model
+ * sees only those of the chat it replies in, marked `[user]`.
  */
+import { match } from 'ts-pattern';
 import type { ToolHandler, ToolResult } from '../../ai/tools/tool-types.js';
+import { parseHarnessIssueInput, type HarnessIssueInputProblem } from '../../services/harness-issue-input.js';
 import {
     createHarnessIssue,
     listHarnessIssues,
@@ -15,9 +20,7 @@ import {
     HARNESS_ISSUE_SEVERITIES,
     HARNESS_ISSUE_STATUSES,
     HARNESS_ISSUE_TITLE_MAX,
-    type HarnessIssueKind,
     type HarnessIssueRecord,
-    type HarnessIssueSeverity,
     type HarnessIssueStats,
     type HarnessIssueStatusFilter,
 } from '../../services/harness-issue-service.js';
@@ -50,7 +53,8 @@ const trimToNull = (value: string | null): string | null => {
 
 const formatRecord = (record: HarnessIssueRecord): string => {
     const severity = record.severity ? `[${record.severity}]` : '';
-    return `#${record.id} [${record.status}][${record.kind}]${severity} ${record.title}`;
+    const filedByPerson = record.source === 'user' ? '[user]' : '';
+    return `#${record.id} [${record.status}][${record.kind}]${severity}${filedByPerson} ${record.title}`;
 };
 
 /**
@@ -123,16 +127,28 @@ const CREATE_INPUT_SCHEMA = {
     required: ['title', 'body', 'kind'],
 };
 
-const isKind = (value: string): value is HarnessIssueKind =>
-    (HARNESS_ISSUE_KINDS as readonly string[]).includes(value);
-
-const isSeverity = (value: string): value is HarnessIssueSeverity =>
-    (HARNESS_ISSUE_SEVERITIES as readonly string[]).includes(value);
-
 const isStatusFilter = (value: string): value is HarnessIssueStatusFilter =>
     value === 'open' || value === 'closed' || value === 'all';
 
-export const createListHarnessIssuesTool = (): ToolHandler => ({
+/** The shared input check's refusals, worded for the model */
+const inputProblemMessage = (problem: HarnessIssueInputProblem): string =>
+    match(problem)
+        .with('missing', () => 'title、body、kind 都是必填。')
+        .with('title_too_long', () => `title 超过 ${HARNESS_ISSUE_TITLE_MAX} 字，请压缩成一句话。`)
+        .with('body_too_long', () => `body 超过 ${HARNESS_ISSUE_BODY_MAX} 字，请只保留现象与建议。`)
+        .with('bad_kind', () => 'kind 必须是 bug / improvement / feature。')
+        .with('bad_severity', () => 'severity 必须是 low / medium / high。')
+        .exhaustive();
+
+export interface ListHarnessIssuesToolOptions {
+    /**
+     * The chat the reply happens in: issues people filed on other chats stay
+     * invisible to the model, rows, keyword hits and counts alike
+     */
+    readonly chatId: number;
+}
+
+export const createListHarnessIssuesTool = (options: ListHarnessIssuesToolOptions): ToolHandler => ({
     definition: {
         name: LIST_HARNESS_ISSUES_TOOL_NAME,
         description: LIST_DESCRIPTION,
@@ -152,6 +168,7 @@ export const createListHarnessIssuesTool = (): ToolHandler => ({
                 status: statusArg,
                 ...(query === undefined ? {} : { query }),
                 ...(limit === undefined ? {} : { limit }),
+                visibleInChatId: options.chatId,
             });
             const filterLabel = query === undefined ? `status=${statusArg}` : `status=${statusArg}, query=${query}`;
             const lines =
@@ -181,25 +198,11 @@ export const createCreateHarnessIssueTool = (
         inputSchema: CREATE_INPUT_SCHEMA,
     },
     execute: async (args) => {
-        const title = trimToNull(stringOf(args, 'title'));
-        const body = trimToNull(stringOf(args, 'body'));
-        const kind = trimToNull(stringOf(args, 'kind'));
-        if (title === null || body === null || kind === null) {
-            return failed('title、body、kind 都是必填。');
+        const parsed = parseHarnessIssueInput(args);
+        if (!parsed.ok) {
+            return failed(inputProblemMessage(parsed.problem));
         }
-        if (title.length > HARNESS_ISSUE_TITLE_MAX) {
-            return failed(`title 超过 ${HARNESS_ISSUE_TITLE_MAX} 字，请压缩成一句话。`);
-        }
-        if (body.length > HARNESS_ISSUE_BODY_MAX) {
-            return failed(`body 超过 ${HARNESS_ISSUE_BODY_MAX} 字，请只保留现象与建议。`);
-        }
-        if (!isKind(kind)) {
-            return failed('kind 必须是 bug / improvement / feature。');
-        }
-        const severityArg = trimToNull(stringOf(args, 'severity'));
-        if (severityArg !== null && !isSeverity(severityArg)) {
-            return failed('severity 必须是 low / medium / high。');
-        }
+        const { title, body, kind, severity } = parsed.value;
         if (!options.state.canCreate()) {
             return failed(
                 `本条回复已经记录了 ${MAX_HARNESS_ISSUES_PER_REPLY} 条 issue，请合并后再提。`
@@ -212,7 +215,7 @@ export const createCreateHarnessIssueTool = (
                 title,
                 body,
                 kind,
-                ...(severityArg === null ? {} : { severity: severityArg }),
+                ...(severity === null ? {} : { severity }),
                 ...(toolName === null ? {} : { toolName: toolName.slice(0, 64) }),
                 chatId: options.chatId,
             });

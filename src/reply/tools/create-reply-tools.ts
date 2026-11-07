@@ -148,7 +148,7 @@ export const createReplyTools = (
             : []),
         ...(availability.harnessIssues
             ? [
-                  createListHarnessIssuesTool(),
+                  createListHarnessIssuesTool({ chatId: context.chatId }),
                   createCreateHarnessIssueTool({ state: harnessIssueState, chatId: context.chatId }),
               ]
             : []),
