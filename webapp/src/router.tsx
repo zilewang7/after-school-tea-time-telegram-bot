@@ -36,6 +36,10 @@ export const createAppRouter = (launch: LaunchState) =>
                 // [F3 slot]
                 // [F3 slot end]
                 // [F4 slot] issues/:id
+                {
+                    path: 'issues/:issueId',
+                    Component: lazyPage(() => import('./pages/issues/issue-detail/issue-detail-route'), 'IssueDetailRoute'),
+                },
                 // [F4 slot end]
                 {
                     path: 'c/:chatId',
@@ -53,6 +57,10 @@ export const createAppRouter = (launch: LaunchState) =>
                         // [F3 slot]
                         // [F3 slot end]
                         // [F4 slot] issues/new
+                        {
+                            path: 'issues/new',
+                            Component: lazyPage(() => import('./pages/issues/issue-new/issue-new-page'), 'IssueNewPage'),
+                        },
                         // [F4 slot end]
                         // Phase 1 URL, possibly still in lastRoute
                         { path: 'audit', element: <LegacyChatAuditRedirect /> },

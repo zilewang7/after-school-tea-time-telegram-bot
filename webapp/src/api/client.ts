@@ -6,8 +6,9 @@ export type ApiFailure =
     | { kind: 'network' }
     // The proxy answered for a bot that is down or restarting; serverMessage is set when the bot itself sent a JSON 503
     | { kind: 'unreachable'; status: number; serverMessage: string | null }
-    // The bot answered with an error status; code and message come from { error: { code, message } }
-    | { kind: 'http'; status: number; code: ApiErrorCode | null; message: string | null };
+    // The bot answered with an error status; code and message come from { error: { code, message } }.
+    // retryAfterSeconds comes from Retry-After (429), null when absent.
+    | { kind: 'http'; status: number; code: ApiErrorCode | null; message: string | null; retryAfterSeconds: number | null };
 
 export type ApiResult<T> = { ok: true; data: T } | { ok: false; failure: ApiFailure };
 
@@ -61,6 +62,14 @@ const readErrorBody = async (response: Response): Promise<ParsedErrorBody | null
     return { code, message };
 };
 
+const DELAY_SECONDS_PATTERN = /^\d{1,7}$/;
+
+// The panel API sends Retry-After as delay seconds; the HTTP-date form is not used
+const retryAfterSecondsOf = (header: string | null): number | null => {
+    const value = header?.trim() ?? '';
+    return DELAY_SECONDS_PATTERN.test(value) ? Number(value) : null;
+};
+
 const toFailure = async (response: Response): Promise<ApiFailure> => {
     const errorBody = await readErrorBody(response);
     if (UNREACHABLE_STATUSES.has(response.status)) {
@@ -71,6 +80,7 @@ const toFailure = async (response: Response): Promise<ApiFailure> => {
         status: response.status,
         code: errorBody?.code ?? null,
         message: errorBody?.message ?? null,
+        retryAfterSeconds: retryAfterSecondsOf(response.headers.get('Retry-After')),
     };
 };
 

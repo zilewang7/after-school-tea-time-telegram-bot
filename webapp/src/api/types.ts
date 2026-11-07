@@ -1,4 +1,4 @@
-// Mirrors the panel HTTP API contract (phase 1). Paths live under /api.
+// Mirrors the panel HTTP API contract (phases 1 and 4). Paths live under /api.
 
 export type ChatType = 'private' | 'group' | 'supergroup' | 'channel';
 export type ChatAccess = 'member' | 'observer';
@@ -129,4 +129,89 @@ export interface AuditEntry extends ChatAuditEntry {
 
 export interface AuditResponse {
     entries: AuditEntry[];
+}
+
+// Issues (phase 4)
+
+export type IssueKind = 'bug' | 'improvement' | 'feature';
+export type IssueSeverity = 'low' | 'medium' | 'high';
+export type IssueStatus = 'open' | 'triaged' | 'fixed' | 'wontfix' | 'duplicate';
+export type IssueSource = 'model' | 'user';
+/**
+ * The requester's access to an issue's chat, i.e. whether the chat opens:
+ * `none` (the owner sees every issue, even where the chat stays closed) and
+ * `unavailable` (Telegram rate-limited the membership lookup) do not open it.
+ */
+export type IssueChatAccess = ChatAccess | 'none' | 'unavailable';
+
+export interface IssueChat {
+    chatId: number;
+    // null when the chat is not in the bot's registry
+    type: ChatType | null;
+    title: string | null;
+    username: string | null;
+}
+
+export interface IssueCreator {
+    userId: number;
+    // First + last name, or 「用户 <id>」 when unknown
+    name: string;
+}
+
+export interface IssueSummary {
+    id: number;
+    // Strings like the server stores them; the known values are IssueStatus / IssueKind / IssueSeverity
+    status: string;
+    kind: string;
+    severity: string | null;
+    title: string;
+    source: IssueSource;
+    toolName: string | null;
+    // null when filed on no chat (only the owner sees those)
+    chat: IssueChat | null;
+    // The filing person; null for the model's issues
+    createdBy: IssueCreator | null;
+    hasNote: boolean;
+    createdAt: string;
+    updatedAt: string;
+}
+
+export interface IssueDetail extends IssueSummary {
+    body: string;
+    // The owner's handling note
+    note: string | null;
+    // null without a chat
+    chatAccess: IssueChatAccess | null;
+}
+
+export interface IssueStats {
+    // Every status counted under every filter except the status filter
+    total: number;
+    byStatus: Record<IssueStatus, number>;
+}
+
+export interface IssueListResponse {
+    issues: IssueSummary[];
+    // Issues matching every filter: what the pages add up to
+    matched: number;
+    nextOffset: number | null;
+    stats: IssueStats;
+}
+
+export interface IssueResponse {
+    issue: IssueDetail;
+}
+
+export interface IssueCreateRequest {
+    chatId: number;
+    kind: IssueKind;
+    severity?: IssueSeverity;
+    title: string;
+    body: string;
+}
+
+export interface IssuePatch {
+    status?: IssueStatus;
+    // null clears the note
+    note?: string | null;
 }

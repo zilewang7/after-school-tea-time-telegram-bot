@@ -1,4 +1,6 @@
 import { ChatSettingsTab } from '../pages/chat-settings/chat-settings-tab';
+import { ChatOpenIssuesBadge } from '../pages/issues/issue-tab-badges';
+import { lazyPage } from './lazy-page';
 import type { TabDefinition } from './tab-types';
 
 const chatSettingsTab: TabDefinition = {
@@ -25,5 +27,13 @@ export const CHAT_TABS: readonly TabDefinition[] = [
     // [F3 slot] 统计 (id 'stats', path 'stats')
     // [F3 slot end]
     // [F4 slot] Issue (id 'issues', path 'issues')
+    {
+        id: 'issues',
+        label: 'Issue',
+        path: 'issues',
+        isVisible: () => true,
+        page: lazyPage(() => import('../pages/issues/issue-list/issue-tabs'), 'ChatIssuesTab'),
+        badge: ChatOpenIssuesBadge,
+    },
     // [F4 slot end]
 ];

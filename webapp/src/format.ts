@@ -1,5 +1,6 @@
 import { match, P } from 'ts-pattern';
 import type { ChatAccess, ChatSummary, ChatType, PanelUser } from './api';
+import { issueStatusLabel } from './issues/issue-labels';
 
 const CHAT_TYPE_LABELS: Record<ChatType, string> = {
     private: '私聊',
@@ -69,6 +70,14 @@ export const formatDateTime = (iso: string): string => {
     return date.getFullYear() === new Date().getFullYear() ? dayAndTime : `${date.getFullYear()}-${dayAndTime}`;
 };
 
+/** "11-06" in the device time zone; the year is added when it is not the current one */
+export const formatDate = (iso: string): string => {
+    const date = new Date(iso);
+    if (Number.isNaN(date.getTime())) return iso;
+    const day = `${pad2(date.getMonth() + 1)}-${pad2(date.getDate())}`;
+    return date.getFullYear() === new Date().getFullYear() ? day : `${date.getFullYear()}-${day}`;
+};
+
 /** Human-readable audit value; null means "unset", whose meaning depends on the key */
 export const formatAuditValue = (key: string, value: string | null): string =>
     match({ key, value })
@@ -77,6 +86,8 @@ export const formatAuditValue = (key: string, value: string | null): string =>
         .with({ value: P.nullish }, () => '（空）')
         .with({ key: P.union('paused', 'settingsLocked'), value: 'true' }, () => '开')
         .with({ key: P.union('paused', 'settingsLocked'), value: 'false' }, () => '关')
+        // An issue's status change (scope issue:<id>)
+        .with({ key: 'status', value: P.string }, ({ value: status }) => issueStatusLabel(status))
         .with({ value: P.string }, ({ value: text }) => text)
         .exhaustive();
 

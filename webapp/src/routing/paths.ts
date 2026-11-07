@@ -19,6 +19,9 @@ export const chatSettingsAuditPath = (chatId: number): string => `/c/${chatId}/s
 /** An issue's detail page; it lives outside the chat layer because an issue may belong to no chat */
 export const issuePath = (issueId: number): string => `/issues/${issueId}`;
 
+/** The new-issue form of a chat */
+export const chatIssueNewPath = (chatId: number): string => `/c/${chatId}/issues/new`;
+
 /** Pathname split into its non-empty segments: "/c/1/settings" -> ["c", "1", "settings"] */
 export const pathSegmentsOf = (pathname: string): string[] =>
     pathname.split('/').filter((segment) => segment !== '');
