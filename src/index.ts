@@ -14,6 +14,7 @@ import { registerSenderGate } from './config/sender-gate.js';
 import { startCustomEmojiRecovery } from './services/custom-emoji-service.js';
 import { reconcileInterruptedResponses } from './services/bot-message-service.js';
 import { getGlobalDefaultModel, loadChatSettingsCache } from './services/chat-settings-service.js';
+import { startPanel, stopPanel } from './panel/index.js';
 
 if (!process.env.BOT_TOKEN) {
     throw new Error('BOT_TOKEN must be provided');
@@ -117,6 +118,7 @@ const shutdown = async (signal: string): Promise<void> => {
         }
         console.log('[process] Test-instance command cleanup done');
     }
+    await stopPanel();
     await bot.stop().catch(() => undefined);
     process.exit(0);
 };
@@ -141,6 +143,8 @@ async function main() {
     startCustomEmojiRecovery(bot);
     await initMcpClients();
     console.log('[mcp] Initialization complete');
+    // Listening before "Bot started" is logged: e2e treats that line as ready
+    await startPanel({ api: bot.api, clientConfig: botConfig?.client });
     // Test instance: never react to updates queued while it was offline
     // (it shares a group with the production bot)
     // onStart fires when long polling actually begins; the promise bot.start()

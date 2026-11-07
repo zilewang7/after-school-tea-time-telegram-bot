@@ -76,6 +76,12 @@ declare global {
             LUOXU_PREVIEW_URL?: string
             /** Sliding batch window for merging a burst of triggers (default 500ms) */
             MENTION_BATCH_WINDOW_MS?: string
+            /** Control panel HTTP port; unset = no panel server (set in compose, never in .env) */
+            WEBAPP_PORT?: string
+            /** Public URL of the panel, for the private-chat web_app button */
+            WEBAPP_PUBLIC_URL?: string
+            /** BotFather short name of the Mini App, for group Direct Links (default panel) */
+            WEBAPP_BOT_SHORT_NAME?: string
         }
     }
 }
