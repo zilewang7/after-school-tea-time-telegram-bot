@@ -349,7 +349,11 @@ const buildPreviewText = (preview: CachedLinkPreview): string => {
  */
 export const getLinkPreviewParts = async (
     text: string | null | undefined,
-    options: { includeOcrFallback?: boolean } = {}
+    options: {
+        includeOcrFallback?: boolean;
+        /** false: the text parts only, no media bytes are read (the panel's tree view) */
+        withMedia?: boolean;
+    } = {}
 ): Promise<UnifiedContentPart[]> => {
     if (!isLuoxuPreviewEnabled()) return [];
     const url = extractFirstUrl(text);
@@ -363,6 +367,7 @@ export const getLinkPreviewParts = async (
     if (options.includeOcrFallback && preview.ocrText) {
         parts.push({ type: 'text', text: buildOcrFallbackPart(preview.ocrText) });
     }
+    if (options.withMedia === false) return parts;
 
     for (const item of preview.mediaItems) {
         const cached = await getCachedMedia(item.mediaKey);

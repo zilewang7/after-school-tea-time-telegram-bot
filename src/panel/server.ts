@@ -89,6 +89,8 @@ export const startPanel = async (options: StartPanelOptions): Promise<void> => {
         startedAt: new Date(),
         version: await readCodeVersion(),
         botApi: options.api,
+        chatLookup: botApiChatNameLookup(lookupApi),
+        toolApi: lookupApi,
     });
     activeServer = await listen(app.fetch, port);
     setPanelRunning(activeServer !== null);

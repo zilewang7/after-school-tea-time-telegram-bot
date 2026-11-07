@@ -3,13 +3,14 @@
  * Handles both Message table (user messages) and BotResponse table (bot messages)
  */
 import { Op } from '@sequelize/core';
-import { getMessage, getBotResponse, findBotResponseByMessageId } from '../index.js';
+import { getMessage, getBotResponse, findBotResponseByMessageId, BotResponse } from '../index.js';
 import { getCachedMedia } from '../../services/media-cache-service.js';
 import { backfillMessages, isMessageBackfillEnabled } from '../../services/message-backfill-service.js';
 import { isRecentSummonCommand } from '../../reply/commands/chat-command-parser.js';
 import { isVideoMediaHint } from '../../reply/media-hint.js';
 import { Message } from '../messageDTO.js';
 import { MessageLink } from '../messageLinkDTO.js';
+import { listExcludedMessageIds } from './context-exclusions.js';
 import type { UnifiedContentPart } from '../../ai/types.js';
 
 const botUserName = process.env.BOT_NAME || 'Bot';
@@ -48,6 +49,12 @@ export interface ContextMessage {
      * tree is assembled, never stored.
      */
     mediaOmitted: boolean;
+    /**
+     * A chat member took this message out of the model's context (panel).
+     * Only set when a caller asks to keep excluded messages (the panel's tree
+     * view); the reply path never sees them at all.
+     */
+    excludedFromContext?: boolean;
 }
 
 /**
@@ -295,20 +302,51 @@ export const getContextMessageOrRecover = async (
     return getContextMessage(chatId, messageId);
 };
 
+/** How a reply chain is read */
+export interface RootLookupOptions {
+    /**
+     * false: a missing row is a dead end, never backfilled from luoxu (the
+     * panel reads trees without writing). Default true.
+     */
+    recover?: boolean;
+    /**
+     * Rows already read, by message id, shared across several lookups of one
+     * batch (the panel's conversation list climbs many chains of one chat).
+     * Only meant for read-only lookups.
+     */
+    cache?: Map<number, ContextMessage | null>;
+}
+
+/** getContextMessage through the batch cache, when there is one */
+const readChainLink = async (
+    chatId: number,
+    messageId: number,
+    cache: Map<number, ContextMessage | null> | undefined
+): Promise<ContextMessage | null> => {
+    if (cache === undefined) return getContextMessage(chatId, messageId);
+    const known = cache.get(messageId);
+    if (known !== undefined) return known;
+    const read = await getContextMessage(chatId, messageId);
+    cache.set(messageId, read);
+    return read;
+};
+
 /**
  * Find the root message of a reply chain
  */
 export const findRootMessage = async (
     chatId: number,
-    messageId: number
+    messageId: number,
+    options: RootLookupOptions = {}
 ): Promise<ContextMessage | null> => {
+    const recover = options.recover ?? true;
     let currentMessage: ContextMessage | null = null;
 
     const findRoot = async (msgId: number): Promise<ContextMessage | null> => {
         // Only the ids the chain points at are recovered: a reply target is
         // known to exist, so a missing row is a hole worth repairing.
-        const msg = msgId === messageId
-            ? await getContextMessage(chatId, msgId)
+        const msg = msgId === messageId || !recover
+            ? await readChainLink(chatId, msgId, options.cache)
             : await getContextMessageOrRecover(chatId, msgId);
 
         if (msg?.replyToId) {
@@ -335,7 +373,8 @@ const collectDescendants = async (
     chatId: number,
     rootId: number,
     collected: ContextMessage[],
-    visited: Set<number>
+    visited: Set<number>,
+    recover: boolean
 ): Promise<void> => {
     let level = [rootId];
     // Already-collected `/chat` rows: their links decide which children keep
@@ -356,8 +395,10 @@ const collectDescendants = async (
             try {
                 // A child id comes either from a reply row (which exists by
                 // definition) or from a /chat link, whose target may have been
-                // lost — recover that one too.
-                const msg = await getContextMessageOrRecover(chatId, childId);
+                // lost — recover that one too (unless the caller only reads).
+                const msg = recover
+                    ? await getContextMessageOrRecover(chatId, childId)
+                    : await getContextMessage(chatId, childId);
                 if (msg) {
                     collected.push(msg);
                     commandByMessageId.set(childId, msg.chatCommand);
@@ -382,19 +423,48 @@ const collectDescendants = async (
 };
 
 /**
+ * The chat's excluded message ids (panel). A failed read must not cost the
+ * reply itself, so it degrades to "nothing excluded" with a log line.
+ */
+export const loadContextExclusions = async (chatId: number): Promise<ReadonlySet<number>> => {
+    try {
+        return await listExcludedMessageIds(chatId);
+    } catch (error) {
+        console.error('[context-queries] context exclusions unavailable, none applied:', error);
+        return new Set();
+    }
+};
+
+export interface RepliesHistoryOptions {
+    /** Leave out the message the history was asked for */
+    excludeSelf?: boolean;
+    /** false: read-only walk, missing rows are never backfilled (panel). Default true */
+    recover?: boolean;
+    /**
+     * Keep the messages excluded from the context, flagged with
+     * `excludedFromContext` (the panel's tree view). Default false: they are
+     * left out.
+     */
+    includeExcluded?: boolean;
+    /** The chat's exclusions, when the caller has already read them */
+    exclusions?: ReadonlySet<number>;
+}
+
+/**
  * Get the complete reply history for a message
  * Returns all messages in the reply chain, sorted by messageId
  */
 export const getRepliesHistory = async (
     chatId: number,
     messageId: number,
-    options: { excludeSelf?: boolean } = {}
+    options: RepliesHistoryOptions = {}
 ): Promise<ContextMessage[]> => {
-    const { excludeSelf } = options;
+    const { excludeSelf, includeExcluded = false } = options;
+    const recover = options.recover ?? true;
     const messageList: ContextMessage[] = [];
 
     // Find the root message
-    const rootMessage = await findRootMessage(chatId, messageId);
+    const rootMessage = await findRootMessage(chatId, messageId, { recover });
     if (!rootMessage) return [];
 
     messageList.push(rootMessage);
@@ -404,7 +474,8 @@ export const getRepliesHistory = async (
         chatId,
         rootMessage.messageId,
         messageList,
-        new Set([rootMessage.messageId])
+        new Set([rootMessage.messageId]),
+        recover
     );
 
     // The message a `/chat r` walked back from is the newest of that burst, so
@@ -431,10 +502,102 @@ export const getRepliesHistory = async (
         return true;
     });
 
-    // Sort by messageId
-    filtered.sort((a, b) => a.messageId - b.messageId);
+    // Messages excluded from the context go after deduplication and before
+    // sorting. The walk above is unaffected: their replies and whatever their
+    // links brought in are still collected.
+    const exclusions = options.exclusions ?? (await loadContextExclusions(chatId));
+    const kept = filtered.filter((msg) => {
+        if (!exclusions.has(msg.messageId)) return true;
+        if (!includeExcluded) return false;
+        msg.excludedFromContext = true;
+        return true;
+    });
 
-    return filtered;
+    // Sort by messageId
+    kept.sort((a, b) => a.messageId - b.messageId);
+
+    return kept;
+};
+
+/* ------------------------------------------------------------------ *
+ * Bot replies of a chat, for the panel
+ * ------------------------------------------------------------------ */
+
+/**
+ * A reply without its versions: the versions column carries every image and
+ * file of every version as base64, so listings read only these columns.
+ */
+export interface ReplyHead {
+    /** First message id */
+    messageId: number;
+    userMessageId: number;
+    createdAt: Date;
+    /** Last write: finalize, version switch, button state */
+    updatedAt: Date;
+}
+
+const REPLY_HEAD_ATTRIBUTES: Array<'messageId' | 'userMessageId' | 'createdAt' | 'updatedAt'> = [
+    'messageId',
+    'userMessageId',
+    'createdAt',
+    'updatedAt',
+];
+
+const toReplyHead = (response: BotResponse): ReplyHead => {
+    const createdAt = response.createdAt ?? new Date(0);
+    return {
+        messageId: response.messageId,
+        userMessageId: response.userMessageId,
+        createdAt,
+        updatedAt: response.updatedAt ?? createdAt,
+    };
+};
+
+/** Every reply of a chat created at or after `since`, oldest first, without versions */
+export const listReplyHeadsSince = async (chatId: number, since: Date): Promise<ReplyHead[]> =>
+    (
+        await BotResponse.findAll({
+            where: { chatId, createdAt: { [Op.gte]: since } },
+            attributes: REPLY_HEAD_ATTRIBUTES,
+            order: [['messageId', 'ASC']],
+        })
+    ).map(toReplyHead);
+
+/** The replies answering any of `userMessageIds`, oldest first, without versions */
+export const listReplyHeadsForUserMessages = async (
+    chatId: number,
+    userMessageIds: readonly number[]
+): Promise<ReplyHead[]> => {
+    if (!userMessageIds.length) return [];
+    return (
+        await BotResponse.findAll({
+            where: { chatId, userMessageId: { [Op.in]: [...userMessageIds] } },
+            attributes: REPLY_HEAD_ATTRIBUTES,
+            order: [['messageId', 'ASC']],
+        })
+    ).map(toReplyHead);
+};
+
+/**
+ * One reply by its first message id, only when it belongs to `chatId`: the
+ * table's primary key is the message id alone, so another chat's reply can
+ * carry the same id and must not be served instead.
+ */
+export const findBotResponseInChat = async (chatId: number, firstMessageId: number): Promise<BotResponse | null> => {
+    const response = await BotResponse.findByPk(firstMessageId);
+    return response !== null && response.chatId === chatId ? response : null;
+};
+
+/** The stored replies with these first message ids, oldest first */
+export const listBotResponsesByIds = async (
+    chatId: number,
+    firstMessageIds: readonly number[]
+): Promise<BotResponse[]> => {
+    if (!firstMessageIds.length) return [];
+    return BotResponse.findAll({
+        where: { chatId, messageId: { [Op.in]: [...firstMessageIds] } },
+        order: [['messageId', 'ASC']],
+    });
 };
 
 /**

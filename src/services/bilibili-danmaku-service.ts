@@ -311,13 +311,32 @@ export const loadArchivedDanmakuBlock = async (
 const toPart = (block: string | null): UnifiedContentPart | null =>
     block === null ? null : { type: 'text', text: block };
 
+/** What an offline read (the panel's dry run) shows when nothing is cached */
+export const DRY_RUN_PREVIEW_PLACEHOLDER = '[dry-run: 预览未缓存]';
+
+export interface DanmakuPartOptions {
+    /**
+     * Never fetch, remember or store anything (panel dry run): where the live
+     * path would go to the network, the archive snapshot is read instead, and
+     * with no snapshot the part is DRY_RUN_PREVIEW_PLACEHOLDER.
+     */
+    offline?: boolean;
+}
+
+/** Offline stand-in for a live fetch: the stored snapshot, else the placeholder */
+const readSnapshotOrPlaceholder = async (ref: BilibiliVideoRef): Promise<UnifiedContentPart> => {
+    const archived = await loadArchivedDanmakuBlock(ref).catch(() => null);
+    return { type: 'text', text: archived ?? DRY_RUN_PREVIEW_PLACEHOLDER };
+};
+
 /**
  * The context-builder entry point: the danmaku text part for one message, or
  * null when the message is not a bilifeed video / has no danmaku anywhere.
  * A dead or empty live fetch falls back to the archive snapshot.
  */
 export const getBilibiliDanmakuPart = async (
-    msg: DanmakuSourceMessage
+    msg: DanmakuSourceMessage,
+    options: DanmakuPartOptions = {}
 ): Promise<UnifiedContentPart | null> => {
     if (!isBilifeedVideoMessage(msg)) return null;
     const ref = extractBilibiliVideoRef(msg.text);
@@ -329,6 +348,7 @@ export const getBilibiliDanmakuPart = async (
         return toPart(cached.block);
     }
     if (Date.now() < coolDownUntil) return null;
+    if (options.offline === true) return readSnapshotOrPlaceholder(ref);
 
     try {
         const entries = await fetchDanmakuEntries(ref);
