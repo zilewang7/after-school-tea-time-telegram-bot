@@ -4,11 +4,14 @@
  *   - test container up: docker compose --profile test up -d k-on-bot-test
  *     (and ~/dockers/watch-first-bot NOT running — same token)
  *
- * Run: pnpm test:e2e:bot         — quick suite (reply/markdown/store//model)
+ * Run: pnpm test:e2e:bot         — quick suite (reply/markdown/store//model/panel)
  *      pnpm test:e2e:bot:full    — quick + slow edit-flow cases
  *      pnpm test:e2e:bot:tools   — quick + client tool cases (tool-cases.mts:
  *                                  Gemini tool loops, two real pictures)
  *      `--full --tools` runs everything; `--only=tools:` just the tool cases
+ *
+ * The model is stored per chat: a run starts and ends with `/model default`,
+ * so the test group follows the global default (DEFAULT_MODEL) in between runs.
  */
 import {
     BOT_USER_ID,
@@ -34,11 +37,13 @@ import {
 } from './harness.mts';
 import {
     SkippedCase,
+    resetModelToDefault,
     skip,
     switchModelWithKeyboard,
     waitForVisibleMessage,
     type E2eCase,
 } from './suite-helpers.mts';
+import { panelCases } from './panel-cases.mts';
 import { toolCases } from './tool-cases.mts';
 
 /** Fixture image whose only content is this exact string */
@@ -519,9 +524,30 @@ const cases: E2eCase[] = [
             );
         },
     },
+    // The control panel API (phase 1); each case restores what it changed
+    ...panelCases,
+    {
+        name: '/model default puts the group back on the global default',
+        body: async () => {
+            const confirmation = await resetModelToDefault();
+            expect(
+                confirmation.includes('跟随全局默认'),
+                `the confirmation says it follows the global default (got: ${confirmation.replace(/\n/g, ' ').slice(0, 80)})`
+            );
+        },
+    },
     // Last, and only with --tools: they switch the model away from SUITE_MODEL
     ...toolCases,
 ];
+
+/** `/model default` around the run; a failure here is reported, the cases still decide the outcome */
+const resetModelAround = async (when: string): Promise<void> => {
+    try {
+        await resetModelToDefault();
+    } catch (error) {
+        console.warn(`⚠ /model default ${when} the run failed: ${error instanceof Error ? error.message : String(error)}`);
+    }
+};
 
 /** `--only=vid,pic` — comma separated substrings of the case names */
 const onlyPatterns = (): string[] => {
@@ -554,11 +580,14 @@ const main = async (): Promise<void> => {
     const suiteLabel = `${runFull ? 'FULL' : 'QUICK'}${runTools ? ' + TOOLS' : ''}`;
     console.log(`Running ${suiteLabel} suite: ${selected.length}/${cases.length} cases`);
 
+    // A model left by an aborted run would otherwise apply to cases picked with --only
+    await resetModelAround('before');
     const results: CaseResult[] = [];
     for (const testCase of selected) {
         results.push(await runCase(testCase.name, testCase.body));
         await sleep(CASE_GAP_MS);
     }
+    await resetModelAround('after');
 
     console.log('\n==== e2e summary ====');
     for (const result of results) {

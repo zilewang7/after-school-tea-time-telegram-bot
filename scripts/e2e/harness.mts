@@ -23,7 +23,8 @@ export const TEST_GROUP = 2311128579;
 export const TEST_CHAT_ID = -1002311128579;
 export const TEST_DB_PATH = join(repoRoot, 'database.test.sqlite');
 
-const readEnvValue = (key: string): string => {
+/** A key of .env.test (the test bot's own env file) */
+export const readEnvValue = (key: string): string => {
     const content = readFileSync(join(repoRoot, '.env.test'), 'utf8');
     const line = content
         .split('\n')
@@ -119,6 +120,7 @@ interface BotResponseRow {
     userMessageId: number;
     buttonState: string;
     versions: string;
+    metadata?: string | null;
 }
 
 const queryOne = <T,>(sql: string, params: unknown[]): Promise<T | undefined> =>
@@ -202,6 +204,10 @@ export interface FinalBotResponse {
     image?: StoredImage;
     imageCaption?: string;
     toolUsage: ToolUsageEntry[];
+    /** The model this version was generated with (absent on rows older than the per-chat model) */
+    model?: string;
+    /** bot_responses.metadata.model: the model of the latest version */
+    metadataModel?: string;
 }
 
 // The stored versions are JSON this harness did not write: read field by
@@ -232,6 +238,18 @@ const imageOf = (imageBase64: unknown): StoredImage | undefined => {
     return { bytes: data.length, sha256: createHash('sha256').update(data).digest('hex') };
 };
 
+/** JSON written by the DTO layer, possibly encoded twice like versions */
+const decodeStoredJson = (raw: string | null | undefined): unknown => {
+    if (raw === null || raw === undefined || raw === '') return undefined;
+    const decoded: unknown = JSON.parse(raw);
+    return typeof decoded === 'string' ? JSON.parse(decoded) : decoded;
+};
+
+const metadataModelOf = (raw: string | null | undefined): string | undefined => {
+    const metadata = decodeStoredJson(raw);
+    return isRecord(metadata) ? optionalString(metadata.model) : undefined;
+};
+
 const toFinalResponse = (row: BotResponseRow): FinalBotResponse => {
     // versions is stored double-JSON-encoded by the DTO layer
     const decoded: unknown = JSON.parse(row.versions);
@@ -253,6 +271,8 @@ const toFinalResponse = (row: BotResponseRow): FinalBotResponse => {
         image: imageOf(last.imageBase64),
         imageCaption: optionalString(last.imageCaption),
         toolUsage: toolUsageOf(last.agentStats),
+        model: optionalString(last.model),
+        metadataModel: metadataModelOf(row.metadata),
     };
 };
 
@@ -267,7 +287,7 @@ export const waitForBotResponse = async (
     const deadline = Date.now() + timeoutMs;
     while (Date.now() < deadline) {
         const row = await queryOne<BotResponseRow>(
-            'SELECT messageId, userMessageId, buttonState, versions FROM bot_responses WHERE chatId = ? AND userMessageId = ?',
+            'SELECT messageId, userMessageId, buttonState, versions, metadata FROM bot_responses WHERE chatId = ? AND userMessageId = ?',
             [TEST_CHAT_ID, userMessageId]
         );
         if (row && row.buttonState !== 'processing') return toFinalResponse(row);
@@ -310,6 +330,35 @@ export const waitForStoredMessage = async (
         await new Promise((resolve) => setTimeout(resolve, 1000));
     }
     throw new Error(`Timed out waiting for stored message ${messageId}`);
+};
+
+/** Whether the bot started a response to this message at all (a row exists in any state) */
+export const hasBotResponse = async (userMessageId: number): Promise<boolean> =>
+    (await queryOne<{ messageId: number }>(
+        'SELECT messageId FROM bot_responses WHERE chatId = ? AND userMessageId = ?',
+        [TEST_CHAT_ID, userMessageId]
+    )) !== undefined;
+
+/** Who sent a stored message, as the bot's own roster knows them */
+export interface StoredSender {
+    userId: number;
+    firstName: string;
+    lastName: string | null;
+    username: string | null;
+}
+
+/** The sender of a stored group message (wait for it to be stored first) */
+export const readStoredSender = async (messageId: number): Promise<StoredSender | undefined> => {
+    const message = await queryOne<{ userId: number | null }>(
+        'SELECT userId FROM telegram_messages WHERE chatId = ? AND messageId = ?',
+        [TEST_CHAT_ID, messageId]
+    );
+    if (!message || message.userId === null) return undefined;
+    const user = await queryOne<{ firstName: string; lastName: string | null; username: string | null }>(
+        'SELECT firstName, lastName, username FROM telegram_users WHERE userId = ?',
+        [message.userId]
+    );
+    return user ? { userId: message.userId, ...user } : undefined;
 };
 
 /** Poll until autoSave stores OCR text for a message; returns it. Throws on timeout. */

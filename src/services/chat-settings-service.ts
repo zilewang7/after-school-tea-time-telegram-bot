@@ -47,6 +47,7 @@ export {
     MODEL_ID_MAX_LENGTH,
     PROMPT_ADDENDUM_MAX_CODE_POINTS,
     countCodePoints,
+    normalizePromptAddendum,
     type ChatSettingKey,
     type ChatSettingsErrorCode,
     type ChatSettingsPatch,
@@ -110,6 +111,12 @@ const runSerialized = <T>(scope: string, task: () => Promise<T>): Promise<T> => 
     return current;
 };
 
+/** The caller loaded another version than the current one (optimistic concurrency) */
+const isStaleEdit = (current: ChatSettings, expectedUpdatedAt: Date | null | undefined): boolean =>
+    expectedUpdatedAt !== undefined &&
+    expectedUpdatedAt !== null &&
+    current.updatedAt.getTime() !== expectedUpdatedAt.getTime();
+
 /** Writes before startup's load (a script, a test) still diff against the database */
 const ensureCacheLoaded = async (): Promise<void> => {
     if (!isChatSettingsCacheLoaded()) await loadChatSettingsCache();
@@ -152,13 +159,17 @@ const persistChatSettings = async (
  * Change some of a chat's settings. Throws ChatSettingsError: `locked` when
  * the chat is locked and the actor is not the owner (checked first),
  * `forbidden` when a non-owner touches settingsLocked, `invalid` for a
- * malformed value. Unchanged keys are dropped; with nothing left, nothing is
+ * malformed value, `conflict` when `expectedUpdatedAt` is given and no longer
+ * matches (checked inside the write queue, so two editors of one version
+ * cannot both win). Unchanged keys are dropped; with nothing left, nothing is
  * written and changedKeys is empty.
  */
 export const updateChatSettings = (input: {
     chatId: number;
     patch: ChatSettingsPatch;
     actor: SettingsActor;
+    /** The updatedAt the editor saw; a chat never saved reads as the epoch */
+    expectedUpdatedAt?: Date | null;
 }): Promise<ChatSettingsUpdateResult> =>
     runSerialized(chatAuditScope(input.chatId), async () => {
         await ensureCacheLoaded();
@@ -166,6 +177,9 @@ export const updateChatSettings = (input: {
         const resolution = resolveChatSettingsPatch(current, input.patch, input.actor.isOwner);
         if (resolution.kind === 'rejected') {
             throw new ChatSettingsError(resolution.code, resolution.message);
+        }
+        if (isStaleEdit(current, input.expectedUpdatedAt)) {
+            throw new ChatSettingsError('conflict', '设置已被他人修改，请刷新后重试');
         }
         if (resolution.changes.length === 0) {
             return { settings: current, changedKeys: [] };

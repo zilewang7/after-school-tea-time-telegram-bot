@@ -21,7 +21,8 @@ export type ChatSettingKey = keyof ChatSettingsPatch;
 /** Fixed order of keys in results and audit rows */
 const CHAT_SETTING_KEYS: readonly ChatSettingKey[] = ['model', 'promptAddendum', 'paused', 'settingsLocked'];
 
-export type ChatSettingsErrorCode = 'invalid' | 'forbidden' | 'locked';
+/** `conflict`: the caller edited a version that someone else has since replaced */
+export type ChatSettingsErrorCode = 'invalid' | 'forbidden' | 'locked' | 'conflict';
 
 /** The values a patch can change */
 export interface ChatSettingValues {

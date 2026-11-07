@@ -373,6 +373,41 @@ const cases: { name: string; body: () => Promise<void> }[] = [
         },
     },
     {
+        name: 'two editors of the same version: the second gets a conflict, decided inside the write queue',
+        body: async () => {
+            const chatId = -2015;
+            // Never saved: both editors loaded the epoch version
+            const seen = service.defaultChatSettings(chatId).updatedAt;
+            const outcomes = await Promise.all([
+                rejectionOf(() =>
+                    updateChatSettings({ chatId, patch: { promptAddendum: '甲' }, actor: MEMBER, expectedUpdatedAt: seen })
+                ),
+                rejectionOf(() =>
+                    updateChatSettings({ chatId, patch: { promptAddendum: '乙' }, actor: MEMBER, expectedUpdatedAt: seen })
+                ),
+            ]);
+            expect(
+                outcomes[0] === 'none' && outcomes[1] === 'conflict',
+                `the first wins, the second is refused (got ${outcomes.join(', ')})`
+            );
+            expect(service.getChatSettings(chatId)?.promptAddendum === '甲', 'the first edit is kept');
+            const current = service.getChatSettings(chatId)?.updatedAt ?? null;
+            expect(
+                (await rejectionOf(() =>
+                    updateChatSettings({ chatId, patch: { promptAddendum: '丙' }, actor: MEMBER, expectedUpdatedAt: current })
+                )) === 'none',
+                'an editor of the current version saves'
+            );
+            expect(
+                (await rejectionOf(() =>
+                    updateChatSettings({ chatId, patch: { paused: true }, actor: MEMBER, expectedUpdatedAt: null })
+                )) === 'none',
+                'without an expected version there is no check'
+            );
+            expect((await auditOf(chatId)).length === 3, 'the refused edit wrote no audit row');
+        },
+    },
+    {
         name: 'a reload reads back what was written',
         body: async () => {
             await updateGlobalDefaultModel('reloaded-default', OWNER);

@@ -13,7 +13,7 @@ import { replacesChatSystemPrompt } from '../../ai/model-kinds.js';
 import { buildRuntimeContext } from '../../ai/system-prompt/runtime-context.js';
 import type { ContextUser } from '../../ai/types.js';
 import { resolveChatModel } from '../../config/chat-model.js';
-import { normalizePromptAddendum } from '../../services/chat-settings-rules.js';
+import { normalizePromptAddendum } from '../../services/chat-settings-service.js';
 import { countCodePoints } from '../../services/chat-settings-service.js';
 import { requireChatAccess } from '../access/require-access.js';
 import { requireAuth, type PanelEnv } from '../context.js';

@@ -24,6 +24,20 @@ services:
       - GOOGLE_APPLICATION_CREDENTIALS=/app/k-on-bot/gcp-sa.json
       # Link previews via luoxu's MTProto client (empty → feature off).
       - LUOXU_PREVIEW_URL=${LUOXU_PREVIEW_URL:-}
+      # Mini App control panel (docs/2026-1106-2321). Kept out of .env on
+      # purpose: the test instance inherits .env via dotenv and must not point
+      # at the production domain. The port must match the Traefik label below.
+      - WEBAPP_PORT=8080
+      - WEBAPP_PUBLIC_URL=https://miniapp.heimaois.me
+      - WEBAPP_BOT_SHORT_NAME=panel
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=traefik-net"
+      - "traefik.http.routers.k-on-bot-panel.rule=Host(`miniapp.heimaois.me`)"
+      - "traefik.http.routers.k-on-bot-panel.entrypoints=websecure"
+      - "traefik.http.routers.k-on-bot-panel.tls.certresolver=myresolver"
+      - "traefik.http.routers.k-on-bot-panel.service=k-on-bot-panel"
+      - "traefik.http.services.k-on-bot-panel.loadbalancer.server.port=8080"
     volumes:
       - ./database.sqlite:/app/k-on-bot/database.sqlite
       - ./.env:/app/k-on-bot/.env:ro
@@ -58,9 +72,25 @@ services:
       # Keep pnpm's store inside the container: it runs as root and would
       # otherwise create root-owned files in the mounted working tree.
       - npm_config_store_dir=/tmp/pnpm-store
+      # Mini App control panel, test domain (see the k-on-bot service above).
+      - WEBAPP_PORT=8080
+      - WEBAPP_PUBLIC_URL=https://miniapp-test.heimaois.me
+      - WEBAPP_BOT_SHORT_NAME=panel
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=traefik-net"
+      - "traefik.http.routers.k-on-bot-test-panel.rule=Host(`miniapp-test.heimaois.me`)"
+      - "traefik.http.routers.k-on-bot-test-panel.entrypoints=websecure"
+      - "traefik.http.routers.k-on-bot-test-panel.tls.certresolver=myresolver"
+      - "traefik.http.routers.k-on-bot-test-panel.service=k-on-bot-test-panel"
+      - "traefik.http.services.k-on-bot-test-panel.loadbalancer.server.port=8080"
     volumes:
       - .:/app/k-on-bot
       - k-on-bot-test-node-modules:/app/k-on-bot/node_modules
+      # The webapp's deps and build output stay in volumes too, so the root
+      # container never writes them into the mounted working tree.
+      - k-on-bot-test-webapp-node-modules:/app/k-on-bot/webapp/node_modules
+      - k-on-bot-test-webapp-dist:/app/k-on-bot/webapp/dist
       # matches the package.json "link:../../projects/telegram-md-entities"
       - /home/ubuntu/projects/telegram-md-entities:/projects/telegram-md-entities:ro
     command:
@@ -129,3 +159,5 @@ networks:
 volumes:
   telegram-bot-api-data:
   k-on-bot-test-node-modules:
+  k-on-bot-test-webapp-node-modules:
+  k-on-bot-test-webapp-dist:

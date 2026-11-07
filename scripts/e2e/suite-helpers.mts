@@ -88,21 +88,11 @@ let switchedModel: string | undefined;
  * press the model. Returns the menu message id.
  */
 export const switchModelWithKeyboard = async (model: string): Promise<number> => {
-    const before = await readGroupMessages(0, 1);
-    const lastId = before[before.length - 1]?.id ?? 0;
+    const lastId = await latestGroupMessageId();
     await sendAsUser(`/model@${BOT_USERNAME}`);
 
-    const findBotMessage = async (contains: string): Promise<DriverMessage | undefined> => {
-        for (let attempt = 0; attempt < 20; attempt++) {
-            await sleep(1500);
-            const visible = await readGroupMessages(lastId);
-            const found = visible.find(
-                (m) => m.sender_id === BOT_USER_ID && m.text.includes(contains)
-            );
-            if (found) return found;
-        }
-        return undefined;
-    };
+    const findBotMessage = (contains: string): Promise<DriverMessage | undefined> =>
+        findBotMessageAfter(lastId, contains);
 
     const menu = await findBotMessage('当前模型');
     if (!menu) throw new Error('the model menu never arrived');
@@ -127,3 +117,37 @@ export const switchModelWithKeyboard = async (model: string): Promise<number> =>
 export const ensureModel = async (model: string): Promise<void> => {
     if (switchedModel !== model) await switchModelWithKeyboard(model);
 };
+
+/** Id of the newest message in the test group, 0 when it reads empty */
+const latestGroupMessageId = async (): Promise<number> => {
+    const before = await readGroupMessages(0, 1);
+    return before[before.length - 1]?.id ?? 0;
+};
+
+/** The first bot message after `lastId` containing `contains`, polled for ~30s */
+const findBotMessageAfter = async (lastId: number, contains: string): Promise<DriverMessage | undefined> => {
+    for (let attempt = 0; attempt < 20; attempt++) {
+        await sleep(1500);
+        const visible = await readGroupMessages(lastId);
+        const found = visible.find((m) => m.sender_id === BOT_USER_ID && m.text.includes(contains));
+        if (found) return found;
+    }
+    return undefined;
+};
+
+/**
+ * Typed `/model <request>`; returns the confirmation text. `default` puts the
+ * chat back on the global default. The model is stored per chat now, so it
+ * outlives the run unless a run puts it back.
+ */
+export const setModelByCommand = async (request: string): Promise<string> => {
+    const lastId = await latestGroupMessageId();
+    await sendAsUser(`/model@${BOT_USERNAME} ${request}`);
+    const confirmation = await findBotMessageAfter(lastId, '切换为');
+    if (!confirmation) throw new Error(`the bot never confirmed /model ${request}`);
+    switchedModel = request === 'default' ? undefined : request;
+    return confirmation.text;
+};
+
+/** `/model default`: the test group follows the global default again */
+export const resetModelToDefault = (): Promise<string> => setModelByCommand('default');

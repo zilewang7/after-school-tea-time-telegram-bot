@@ -9,8 +9,8 @@ import {
     registerPicCommands,
     registerModelCommand,
     registerContextCommand,
+    registerPanelCommand,
 } from "./commands/index.js";
-import { registerPanelCommand } from "./commands/panel.js";
 
 const COMMANDS: BotCommand[] = [
     { command: "start", description: "开始" },
