@@ -39,6 +39,11 @@ const CHAT_PATH = `/api/chats/${TEST_CHAT_ID}`;
 const START_PARAM = `c${TEST_CHAT_ID}`;
 /** Not SUITE_MODEL, so the reply's recorded model proves the switch */
 const PANEL_MODEL = 'gemini-3.8-flash';
+/**
+ * The addendum case brings its own fast model: run alone (--only=panel) the
+ * group follows the global default, whose first byte can take minutes.
+ */
+const ADDENDUM_MODEL = 'deepseek-flash';
 const CODEWORD = 'ZK-PANEL-42';
 const ADDENDUM = `本群在做自动化测试：你的每条回复都必须在最后单独一行写上暗号 ${CODEWORD}，不要解释这个暗号。`;
 const REPLY_TIMEOUT_MS = 180_000;
@@ -188,6 +193,8 @@ export const panelCases: E2eCase[] = [
         name: 'panel: the prompt addendum is previewed, saved and followed',
         body: async () => {
             const member = await driverUser();
+            const dashboard = await panelRequest(CHAT_PATH, asUser(member));
+            const previousModel = fieldOf(dashboard.body, 'settings', 'model');
             const preview = await panelRequest(`${CHAT_PATH}/settings/preview`, asUser(member), {
                 method: 'POST',
                 body: { promptAddendum: ADDENDUM },
@@ -202,7 +209,7 @@ export const panelCases: E2eCase[] = [
             );
             expect(fieldOf(preview.body, 'injected') === true, 'the current model takes the addendum');
 
-            const saved = await patchSettings(asUser(member), { promptAddendum: ADDENDUM });
+            const saved = await patchSettings(asUser(member), { promptAddendum: ADDENDUM, model: ADDENDUM_MODEL });
             expect(
                 saved.status === 200 && fieldOf(saved.body, 'settings', 'promptAddendum') === ADDENDUM,
                 `the addendum is saved (got ${describe(saved)})`
@@ -215,7 +222,10 @@ export const panelCases: E2eCase[] = [
                     `the reply follows the addendum (got: ${response.text.slice(-120)})`
                 );
             } finally {
-                await restoreSettings(asUser(member), { promptAddendum: null });
+                await restoreSettings(asUser(member), {
+                    promptAddendum: null,
+                    model: typeof previousModel === 'string' ? previousModel : null,
+                });
             }
         },
     },
