@@ -31,6 +31,8 @@ export interface StatsRequest {
     readonly chatId: number | null;
     readonly range: StatsRangeKey;
     readonly now: Date;
+    /** Only these bot replies (one conversation's); undefined = every reply of the scope */
+    readonly firstMessageIds?: readonly number[];
 }
 
 const toCostGroupView = ({ group, costUsd, pricing }: PricedUsageGroup): CostGroupView => ({
@@ -74,9 +76,16 @@ const chatDirectoryFor = async (chatId: number | null): Promise<Map<number, Chat
     chatId === null ? new Map((await listChats()).map((chat) => [chat.chatId, chat])) : null;
 
 export const buildStats = async (request: StatsRequest): Promise<StatsResponse> => {
-    const earliest = request.range === 'all' ? await findEarliestReplyMetricStart(request.chatId) : null;
+    const earliest =
+        request.range === 'all'
+            ? await findEarliestReplyMetricStart(request.chatId, request.firstMessageIds)
+            : null;
     const window = resolveStatsWindow(request.range, request.now, earliest);
-    const metricWindow: MetricWindow = { since: window.since, chatId: request.chatId };
+    const metricWindow: MetricWindow = {
+        since: window.since,
+        chatId: request.chatId,
+        ...(request.firstMessageIds === undefined ? {} : { firstMessageIds: request.firstMessageIds }),
+    };
     const [rows, groups, chats] = await Promise.all([
         findReplyMetricsInWindow(metricWindow),
         aggregateUsageByModelRoute(metricWindow),

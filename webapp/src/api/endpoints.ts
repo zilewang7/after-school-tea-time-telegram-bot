@@ -158,6 +158,13 @@ export const createApi = (initData: string) => {
                 path: conversationPath(chatId, rootId),
                 signal,
             }),
+        // The conversation tab's statistics: the tree's whole life, no range picker
+        getConversationStats: (chatId: number, rootId: number, signal?: AbortSignal) =>
+            request<StatsResponse>({
+                method: 'GET',
+                path: `${conversationPath(chatId, rootId)}/stats`,
+                signal,
+            }),
         // Members only; 403 for observers
         getModelView: (chatId: number, rootId: number, query: ModelViewQuery, signal?: AbortSignal) =>
             request<ModelView>({ method: 'GET', path: modelViewPath(chatId, rootId, query), signal }),

@@ -26,6 +26,8 @@ const GROUP_MAIN = -1001300000001;
 const GROUP_OTHER = -1001300000002;
 /** Alice and Bob spoke here; Alice is a member, Bob left */
 const GROUP_CALC = -1001300000003;
+/** One conversation tree for the conversation statistics */
+const GROUP_CONV = -1001300000004;
 
 process.env.OWNER_USER_ID = String(OWNER_ID);
 process.env.DEFAULT_MODEL = 'env-default-model';
@@ -35,6 +37,7 @@ await setupOfflineDb();
 const registry = await import('../../src/db/queries/panel-registry.js');
 const { ChatMemberSeen } = await import('../../src/db/chatMemberSeenDTO.js');
 const dbIndex = await import('../../src/db/index.js');
+const { Message } = await import('../../src/db/messageDTO.js');
 const { loadChatSettingsCache } = await import('../../src/services/chat-settings-service.js');
 const { createPanelApp } = await import('../../src/panel/app.js');
 const { insertReplyMetric } = await import('../../src/db/queries/reply-metrics.js');
@@ -59,7 +62,9 @@ const grammyError = (code: number, description: string): GrammyError =>
 const lookups: string[] = [];
 const fakeLookup: MembershipLookup = async (chatId, userId) => {
     lookups.push(`${chatId}:${userId}`);
-    if (userId === ALICE.id && (chatId === GROUP_MAIN || chatId === GROUP_CALC)) return { status: 'member' };
+    if (userId === ALICE.id && (chatId === GROUP_MAIN || chatId === GROUP_CALC || chatId === GROUP_CONV)) {
+        return { status: 'member' };
+    }
     if (userId === BOB.id && chatId === GROUP_CALC) return { status: 'left' };
     throw grammyError(400, 'Bad Request: user not found');
 };
@@ -193,6 +198,79 @@ const CALC_ROWS: ReplyMetricInput[] = [1000, 2000, 3000, 4000].map((firstChunkMs
 });
 for (const row of [...MAIN_ROWS, ...OTHER_ROWS, ...CALC_ROWS]) await insertReplyMetric(row);
 
+// One conversation tree for the conversation statistics: two replies inside it
+// and one reply of the same chat outside it
+await registry.upsertChatNow({ id: GROUP_CONV, type: 'supergroup', title: 'Conv' });
+
+const seedTreeMessage = (messageId: number, fields: { fromBot?: boolean; replyToId: number | null; text: string }) =>
+    Message.create({
+        chatId: GROUP_CONV,
+        messageId,
+        fromBotSelf: fields.fromBot === true,
+        userId: fields.fromBot === true ? 7777 : ALICE.id,
+        date: new Date(),
+        userName: fields.fromBot === true ? 'Bot' : 'Alice',
+        text: fields.text,
+        quoteText: null,
+        file: null,
+        fileMime: null,
+        fileUniqueId: null,
+        replyToId: fields.replyToId,
+        chatCommand: null,
+        modelParts: null,
+        mediaHint: null,
+        forwardOrigin: null,
+        forwardFromId: null,
+        viaBot: null,
+        ocrText: null,
+    });
+
+const convRoot = takeMessageId();
+const convBot1 = takeMessageId();
+const convUser2 = takeMessageId();
+const convBot2 = takeMessageId();
+const convOutsideBot = takeMessageId();
+await seedTreeMessage(convRoot, { replyToId: null, text: '会话根' });
+await seedTreeMessage(convBot1, { fromBot: true, replyToId: convRoot, text: '树内回复一' });
+await seedTreeMessage(convUser2, { replyToId: convBot1, text: '树内追问' });
+await seedTreeMessage(convBot2, { fromBot: true, replyToId: convUser2, text: '树内回复二' });
+await seedTreeMessage(convOutsideBot, { fromBot: true, replyToId: null, text: '同一聊天但不在树里' });
+
+await insertReplyMetric(
+    metricRow({
+        chatId: GROUP_CONV,
+        userMessageId: convRoot,
+        firstMessageId: convBot1,
+        rounds: 2,
+        toolCalls: 1,
+        toolUsage: [{ name: 'search_history', count: 1, failed: 0 }],
+    })
+);
+await insertReplyMetric(
+    metricRow({
+        chatId: GROUP_CONV,
+        userMessageId: convUser2,
+        firstMessageId: convBot2,
+        outcome: 'error',
+        errorKind: 'timeout',
+        errorSummary: 'timed out',
+        promptTokens: null,
+        outputTokens: null,
+        firstChunkAt: null,
+        startedAt: new Date(Date.now() - 5 * DAY_MS),
+    })
+);
+await insertReplyMetric(
+    metricRow({
+        chatId: GROUP_CONV,
+        userMessageId: 1,
+        firstMessageId: convOutsideBot,
+        model: 'deepseek-flash',
+        platform: 'deepseek',
+        startedAt: new Date(Date.now() - 2 * DAY_MS),
+    })
+);
+
 /** Ids and names that must never reach a statistics response */
 const PERSONAL_MARKERS = [String(ALICE.id), String(BOB.id), '9999', 'Alice', 'Liddell', 'Bob', 'triggerUserId'];
 const leaksPersonalData = (body: unknown): string | undefined => PERSONAL_MARKERS.find((marker) => json(body).includes(marker));
@@ -298,7 +376,7 @@ const cases: { name: string; body: () => Promise<void> }[] = [
             const chats = owner.body.chats;
             expect(
                 json(chats.map((chat: any) => [chat.chatId, chat.title, chat.replies])) ===
-                    json([[GROUP_MAIN, 'Main', 6], [GROUP_CALC, 'Calc', 4], [GROUP_OTHER, 'Other', 1]]),
+                    json([[GROUP_MAIN, 'Main', 6], [GROUP_CALC, 'Calc', 4], [GROUP_CONV, 'Conv', 3], [GROUP_OTHER, 'Other', 1]]),
                 `per-chat rows, most replies first (got ${json(chats)})`
             );
             expect(
@@ -443,6 +521,37 @@ const cases: { name: string; body: () => Promise<void> }[] = [
 
             const stranger = await quietly(() => call('/api/status', BOB));
             expect(stranger.status === 200 && stranger.body.active.length === 0 && stranger.body.recentErrors.length === 0, 'a stranger sees nothing live');
+        },
+    },
+    {
+        name: "a conversation's statistics: only the tree's replies, its whole life, observers included",
+        body: async () => {
+            const path = `/api/chats/${GROUP_CONV}/conversations/${convRoot}/stats`;
+            const member = await quietly(() => call(path, ALICE));
+            expect(member.status === 200, `200 for a member (got ${member.status} ${json(member.body).slice(0, 160)})`);
+            const body = member.body;
+            expect(body.chatId === GROUP_CONV && body.range === 'all' && body.bucket === 'day', "the tree's whole life, bucketed by day");
+            expect(body.kpis.replies === 2, `only the two replies of the tree (got ${body.kpis.replies})`);
+            expect(
+                body.kpis.errorReplies === 1 && json(body.outcomes) === json({ ok: 1, error: 1, stopped: 0, empty: 0 }),
+                'outcomes of the tree only'
+            );
+            expect(
+                json(body.models.map((row: any) => row.model)) === json(['gemini-4-argon']),
+                `the outside reply's model is left out (got ${json(body.models.map((row: any) => row.model))})`
+            );
+            expect(body.chats === null, 'no chat ranking for one conversation');
+            expect(leaksPersonalData(body) === undefined, `no user id or name (found ${leaksPersonalData(body)})`);
+            expect(body.from <= body.to && body.series.buckets.length > 0, 'the series spans the tree');
+
+            const observer = await quietly(() => call(path, OWNER));
+            expect(
+                observer.status === 200 && json(withoutClock(observer.body)) === json(withoutClock(member.body)),
+                'an observer sees the same statistics'
+            );
+
+            const missing = await quietly(() => call(`/api/chats/${GROUP_CONV}/conversations/999999999/stats`, ALICE));
+            expect(missing.status === 404, `an unknown root is a 404 (got ${missing.status})`);
         },
     },
     {

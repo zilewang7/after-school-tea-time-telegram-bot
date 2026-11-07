@@ -1,12 +1,13 @@
 import { useCallback, useMemo, useState } from 'react';
 import type { ConversationTreeResponse } from '../../../api';
+import { ConversationStatsPanel } from './conversation-stats-panel';
 import { ExportMenu } from './export-menu';
 import { LinksForm } from './links-form';
 import { ModelViewPanel } from './model-view-panel';
 import { TreeView } from './tree-view';
 
-/** 树 / 模型视角: a local segment, not a route (tab switches own the URL) */
-export type ConversationSegment = 'tree' | 'model';
+/** 树 / 模型视角 / 统计: a local segment, not a route (tab switches own the URL) */
+export type ConversationSegment = 'tree' | 'model' | 'stats';
 
 type OpenPanel = 'none' | 'links' | 'export';
 
@@ -22,7 +23,7 @@ interface ConversationDetailViewProps {
     chatModel: string | null;
 }
 
-/** One conversation: the tree, its model view, and the member-only actions */
+/** One conversation: the tree, its model view, its statistics, and the member-only actions */
 export const ConversationDetailView = ({
     chatId,
     tree,
@@ -57,18 +58,29 @@ export const ConversationDetailView = ({
                 >
                     树
                 </button>
+                {member && (
+                    <button
+                        type="button"
+                        role="tab"
+                        aria-selected={segment === 'model'}
+                        className="segment"
+                        onClick={() => onSegmentChange('model')}
+                    >
+                        模型视角
+                    </button>
+                )}
                 <button
                     type="button"
                     role="tab"
-                    aria-selected={segment === 'model'}
+                    aria-selected={segment === 'stats'}
                     className="segment"
-                    onClick={() => onSegmentChange('model')}
+                    onClick={() => onSegmentChange('stats')}
                 >
-                    模型视角
+                    统计
                 </button>
             </div>
         ),
-        [segment, onSegmentChange]
+        [segment, onSegmentChange, member]
     );
 
     if (segment === 'model' && member) {
@@ -86,9 +98,18 @@ export const ConversationDetailView = ({
         );
     }
 
+    if (segment === 'stats') {
+        return (
+            <>
+                {segments}
+                <ConversationStatsPanel chatId={chatId} rootId={tree.rootId} />
+            </>
+        );
+    }
+
     return (
         <>
-            {member && segments}
+            {segments}
             {member && (
                 <div className="filter-row">
                     <button type="button" className="button secondary" onClick={toggleLinks}>

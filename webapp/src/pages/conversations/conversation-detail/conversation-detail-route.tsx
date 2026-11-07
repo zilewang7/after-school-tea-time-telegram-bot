@@ -33,10 +33,10 @@ const ConversationDetailPage = ({ chatId, rootId }: ConversationDetailPageProps)
 
     const [segment, setSegment] = useState<ConversationSegment>('tree');
     const member = tree?.access === 'member';
-    // Observers have no model view; leaving the chat cannot keep it selected
+    // Observers have no model view; leaving the chat cannot keep it selected (统计 stays available)
     useEffect(() => {
-        if (tree !== null && !member) setSegment('tree');
-    }, [tree, member]);
+        if (tree !== null && !member && segment === 'model') setSegment('tree');
+    }, [tree, member, segment]);
 
     const title = useMemo(() => {
         const rootNode = tree?.nodes.find((node) => node.messageId === tree.rootId);

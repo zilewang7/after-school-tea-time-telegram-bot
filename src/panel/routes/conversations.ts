@@ -1,6 +1,7 @@
 /**
  * GET /api/chats/:chatId/conversations?before=&limit= — the conversation list.
  * GET /api/chats/:chatId/conversations/:rootId — one conversation's tree.
+ * GET /api/chats/:chatId/conversations/:rootId/stats — that tree's statistics.
  *
  * Members and observers; observers get user messages as placeholders (the
  * server decides, design §6.2). Read-only: no backfill, no media bytes.
@@ -9,6 +10,7 @@ import type { Hono } from 'hono';
 import { requireChatAccess } from '../access/require-access.js';
 import { requireAuth, type PanelEnv } from '../context.js';
 import { invalid, parseChatId, parseOptionalPositiveInteger } from '../request.js';
+import { buildConversationStats } from '../stats/build-conversation-stats.js';
 import { buildConversationListView, parseConversationCursor } from '../views/conversation-list.js';
 import { buildConversationTreeView } from '../views/conversation-tree.js';
 import type { ConversationRouteDeps } from './conversation-deps.js';
@@ -45,5 +47,15 @@ export const registerConversationRoutes = (app: Hono<PanelEnv>, deps: Conversati
         const rootId = parseMessageIdParam(context.req.param('rootId'), 'rootId');
         await requireConversationRoot(chatId, rootId);
         return context.json({ access, ...(await buildConversationTreeView(chat, access, rootId)) });
+    });
+
+    app.get('/api/chats/:chatId/conversations/:rootId/stats', async (context) => {
+        const auth = requireAuth(context);
+        const chatId = parseChatId(context.req.param('chatId'));
+        await requireChatAccess(auth, chatId);
+
+        const rootId = parseMessageIdParam(context.req.param('rootId'), 'rootId');
+        await requireConversationRoot(chatId, rootId);
+        return context.json(await buildConversationStats(chatId, rootId, new Date(deps.now())));
     });
 };

@@ -27,6 +27,11 @@ export {
 export interface MetricWindow {
     readonly since: Date;
     readonly chatId: number | null;
+    /**
+     * Only these bot replies (first message ids): one conversation tree's
+     * statistics. undefined = every reply of the scope.
+     */
+    readonly firstMessageIds?: readonly number[];
 }
 
 /**
@@ -62,12 +67,19 @@ const parseRows = (rows: readonly unknown[]): ReplyMetricRecord[] =>
     });
 
 /** The window's WHERE clause; the chat form keeps to the (chatId, startedAt) index */
-const windowCondition = (window: MetricWindow): string =>
-    window.chatId === null ? 'startedAt >= :since' : 'chatId = :chatId AND startedAt >= :since';
+const windowCondition = (window: MetricWindow): string => {
+    const scope = window.chatId === null ? 'startedAt >= :since' : 'chatId = :chatId AND startedAt >= :since';
+    if (window.firstMessageIds === undefined) return scope;
+    // Raw replacements do not expand arrays on sqlite; json_each turns the id list into rows
+    return `${scope} AND firstMessageId IN (SELECT value FROM json_each(:firstMessageIdsJson))`;
+};
 
 const windowReplacements = (window: MetricWindow): Record<string, unknown> => ({
     since: window.since,
     chatId: window.chatId,
+    ...(window.firstMessageIds === undefined
+        ? {}
+        : { firstMessageIdsJson: JSON.stringify(window.firstMessageIds) }),
 });
 
 /** Every attempt of one reply, by version then insertion order */
@@ -144,10 +156,21 @@ export const aggregateUsageByModelRoute = async (window: MetricWindow): Promise<
 };
 
 /** When the first row of a chat (or of every chat) started; null without rows */
-export const findEarliestReplyMetricStart = async (chatId: number | null): Promise<Date | null> => {
+export const findEarliestReplyMetricStart = async (
+    chatId: number | null,
+    firstMessageIds?: readonly number[]
+): Promise<Date | null> => {
+    const conditions: string[] = [];
+    const replacements: Record<string, unknown> = { chatId };
+    if (chatId !== null) conditions.push('chatId = :chatId');
+    if (firstMessageIds !== undefined) {
+        conditions.push('firstMessageId IN (SELECT value FROM json_each(:firstMessageIdsJson))');
+        replacements.firstMessageIdsJson = JSON.stringify(firstMessageIds);
+    }
+    const where = conditions.length === 0 ? '' : ` WHERE ${conditions.join(' AND ')}`;
     const rows: unknown[] = await sequelize.query(
-        `SELECT MIN(startedAt) AS earliest FROM reply_metrics${chatId === null ? '' : ' WHERE chatId = :chatId'}`,
-        { replacements: { chatId }, type: QueryTypes.SELECT }
+        `SELECT MIN(startedAt) AS earliest FROM reply_metrics${where}`,
+        { replacements, type: QueryTypes.SELECT }
     );
     const first = rows[0];
     return isJsonObject(first) ? storedDateOf(first.earliest) : null;
