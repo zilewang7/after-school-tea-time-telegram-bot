@@ -3,6 +3,7 @@
  */
 import type { ChatRow, ChatType } from '../../db/queries/panel-registry.js';
 import { defaultChatSettings, getChatSettings, type ChatSettings } from '../../services/chat-settings-service.js';
+import type { ToolOverrides } from '../../services/tool-overrides.js';
 import type { VisibleAccess } from '../types.js';
 
 export interface ChatSettingsView {
@@ -10,6 +11,8 @@ export interface ChatSettingsView {
     promptAddendum: string | null;
     paused: boolean;
     settingsLocked: boolean;
+    /** The panel's per-chat tool switches; null = every group follows the env */
+    toolOverrides: ToolOverrides | null;
     /** ISO time; the epoch when the chat has never been changed */
     updatedAt: string;
     updatedBy: number | null;
@@ -34,6 +37,7 @@ export const toSettingsView = (settings: ChatSettings): ChatSettingsView => ({
     promptAddendum: settings.promptAddendum,
     paused: settings.paused,
     settingsLocked: settings.settingsLocked,
+    toolOverrides: settings.toolOverrides,
     updatedAt: settings.updatedAt.toISOString(),
     updatedBy: settings.updatedBy,
 });

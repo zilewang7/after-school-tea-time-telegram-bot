@@ -26,6 +26,8 @@ export class ChatSettingsRecord extends Model<
   declare paused: CreationOptional<boolean>;
   // Owner-only switch: members become read-only
   declare settingsLocked: CreationOptional<boolean>;
+  // Canonical JSON of the panel's per-chat tool switches; NULL = follow the env
+  declare toolOverrides: CreationOptional<string | null>;
   declare updatedAt: Date;
   // Telegram user id of the last writer
   declare updatedBy: CreationOptional<number | null>;
@@ -55,6 +57,11 @@ ChatSettingsRecord.init({
     type: DataTypes.BOOLEAN,
     allowNull: false,
     defaultValue: false,
+  },
+  toolOverrides: {
+    type: DataTypes.TEXT,
+    allowNull: true,
+    defaultValue: null,
   },
   updatedAt: {
     type: DataTypes.DATE,

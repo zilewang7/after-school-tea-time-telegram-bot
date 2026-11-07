@@ -6,7 +6,7 @@ interface TableColumn {
 }
 
 const tableColumns = async (
-  tableName: 'message_attachments' | 'link_preview_cache' | 'media_cache' | 'harness_issues',
+  tableName: 'message_attachments' | 'link_preview_cache' | 'media_cache' | 'harness_issues' | 'chat_settings',
   transaction: Transaction
 ): Promise<Set<string>> => {
   const columns = await sequelize.query<TableColumn>(
@@ -17,7 +17,7 @@ const tableColumns = async (
 };
 
 const ensureColumn = async (
-  tableName: 'message_attachments' | 'link_preview_cache' | 'media_cache' | 'harness_issues',
+  tableName: 'message_attachments' | 'link_preview_cache' | 'media_cache' | 'harness_issues' | 'chat_settings',
   columnName: string,
   definition: string,
   transaction: Transaction
@@ -179,6 +179,20 @@ const migrateHarnessIssuePanelColumns = async (transaction: Transaction): Promis
   await ensureColumn('harness_issues', 'createdBy', 'INTEGER', transaction);
 };
 
+/**
+ * The panel's per-chat tool switches: canonical JSON in a nullable column, so
+ * an existing database needs the column added once (a fresh one gets it from
+ * the DTO at sync time, which runs after this).
+ */
+const migrateChatSettingsToolOverrides = async (transaction: Transaction): Promise<void> => {
+  const tables = await sequelize.query<{ name: string }>(
+    "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'chat_settings'",
+    { type: QueryTypes.SELECT, transaction }
+  );
+  if (tables.length === 0) return;
+  await ensureColumn('chat_settings', 'toolOverrides', 'TEXT', transaction);
+};
+
 /** Apply additive, idempotent DDL without altering the large message table. */
 export const runSchemaMigrations = async (): Promise<void> => {
   await sequelize.query(`
@@ -193,6 +207,7 @@ export const runSchemaMigrations = async (): Promise<void> => {
     await migratePreviewOcrRevision(transaction);
     await migrateMediaCacheDurationSeconds(transaction);
     await migrateHarnessIssuePanelColumns(transaction);
+    await migrateChatSettingsToolOverrides(transaction);
     await sequelize.query(
       `INSERT OR IGNORE INTO schema_migrations (name, appliedAt)
        VALUES ('20260908_custom_emoji_phase1', :appliedAt)`,
@@ -230,6 +245,12 @@ export const runSchemaMigrations = async (): Promise<void> => {
     await sequelize.query(
       `INSERT OR IGNORE INTO schema_migrations (name, appliedAt)
        VALUES ('20261107_harness_issue_panel_columns', :appliedAt)`,
+      { replacements: { appliedAt: new Date().toISOString() }, transaction }
+    );
+    // chat_settings gained toolOverrides (migrateChatSettingsToolOverrides)
+    await sequelize.query(
+      `INSERT OR IGNORE INTO schema_migrations (name, appliedAt)
+       VALUES ('20261108_chat_settings_tool_overrides', :appliedAt)`,
       { replacements: { appliedAt: new Date().toISOString() }, transaction }
     );
   });

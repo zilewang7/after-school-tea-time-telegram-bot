@@ -352,6 +352,93 @@ const cases: { name: string; body: () => Promise<void> }[] = [
         },
     },
     {
+        name: 'tool switches: members flip every group but sms; the row and the audit keep canonical JSON',
+        body: async () => {
+            const { normalizeToolOverrides, parseStoredToolOverrides } = await import('../../src/services/tool-overrides.js');
+            const chatId = -2012;
+
+            const flipped = await updateChatSettings({
+                chatId,
+                patch: { toolOverrides: { history: true, sticker: false } },
+                actor: MEMBER,
+            });
+            expect(JSON.stringify(flipped.changedKeys) === JSON.stringify(['toolOverrides']), 'one key changed');
+            expect(
+                JSON.stringify(flipped.settings.toolOverrides) === JSON.stringify({ sticker: false, history: true }),
+                `canonical order, only the set keys (got ${JSON.stringify(flipped.settings.toolOverrides)})`
+            );
+            const row = await ChatSettingsRecord.findByPk(chatId);
+            expect(
+                row?.toolOverrides === '{"sticker":false,"history":true}',
+                `stored as canonical JSON (got ${row?.toolOverrides})`
+            );
+
+            const smsRefused = await rejectionOf(() =>
+                updateChatSettings({
+                    chatId,
+                    patch: { toolOverrides: { sticker: false, history: true, sms: true } },
+                    actor: MEMBER,
+                })
+            );
+            expect(smsRefused === 'forbidden', `a member cannot flip sms (got ${smsRefused})`);
+            expect(
+                JSON.stringify(service.getChatSettings(chatId)?.toolOverrides) === JSON.stringify({ sticker: false, history: true }),
+                'the refused patch changed nothing'
+            );
+
+            const smsByOwner = await updateChatSettings({
+                chatId,
+                patch: { toolOverrides: { sticker: false, history: true, sms: true } },
+                actor: OWNER,
+            });
+            expect(smsByOwner.settings.toolOverrides?.sms === true, 'the owner flips sms');
+
+            const repeat = await updateChatSettings({
+                chatId,
+                patch: { toolOverrides: { sms: true, history: true, sticker: false } },
+                actor: OWNER,
+            });
+            expect(repeat.changedKeys.length === 0, 'the same switches in another key order change nothing');
+
+            const keepsSms = await updateChatSettings({
+                chatId,
+                patch: { toolOverrides: { sms: true, sticker: true } },
+                actor: MEMBER,
+            });
+            expect(
+                keepsSms.settings.toolOverrides?.sms === true && keepsSms.settings.toolOverrides?.history === undefined,
+                'a member keeps sms while another group drops back to the env'
+            );
+
+            const cleared = await updateChatSettings({ chatId, patch: { toolOverrides: null }, actor: OWNER });
+            expect(cleared.settings.toolOverrides === null, 'null clears every override');
+            const empty = await updateChatSettings({ chatId, patch: { toolOverrides: {} }, actor: MEMBER });
+            expect(empty.changedKeys.length === 0 && empty.settings.toolOverrides === null, '{} is the same as null');
+
+            const rows = await auditOf(chatId);
+            const overridesRows = rows.filter((entry) => entry.key === 'toolOverrides');
+            expect(overridesRows.length === 4, `one audit row per accepted change (got ${overridesRows.length})`);
+            expect(
+                overridesRows[0]?.oldValue === '{"sms":true,"sticker":true}' && overridesRows[0].newValue === null,
+                `the newest audit is the clear (got ${overridesRows[0]?.oldValue} → ${overridesRows[0]?.newValue})`
+            );
+            expect(
+                overridesRows[3]?.oldValue === null && overridesRows[3].newValue === '{"sticker":false,"history":true}',
+                "the oldest one is the member's first flip"
+            );
+
+            // Shape checks live in the pure normalizer (the panel's 400s use the same function)
+            expect(normalizeToolOverrides({ nonsense: true }).ok === false, 'unknown group keys are refused');
+            expect(normalizeToolOverrides({ sticker: 'yes' }).ok === false, 'non-boolean values are refused');
+            expect(normalizeToolOverrides([]).ok === false, 'arrays are refused');
+            expect(normalizeToolOverrides({}).ok === true, 'an empty object is accepted');
+            expect(JSON.stringify(normalizeToolOverrides({}).value) === 'null', 'and means "follow the env"');
+            expect(parseStoredToolOverrides('{"file":true}')?.file === true, 'stored JSON reads back');
+            const unreadable = await quietly(async () => parseStoredToolOverrides('not json'));
+            expect(unreadable === null, 'a hand-edited value reads as no overrides');
+        },
+    },
+    {
         name: 'concurrent patches of one chat both land',
         body: async () => {
             const chatId = -2008;
@@ -417,12 +504,12 @@ const cases: { name: string; body: () => Promise<void> }[] = [
             expect(service.isChatSettingsLocked(-2005) && service.isChatPaused(-2005), 'flags survive a reload');
             expect(
                 JSON.stringify(service.snapshotReplySettings(-2008)) ===
-                    JSON.stringify({ model: 'concurrent-model', promptAddendum: '并发' }),
-                'the snapshot is model + addendum'
+                    JSON.stringify({ model: 'concurrent-model', promptAddendum: '并发', toolOverrides: null }),
+                'the snapshot is model + addendum + tool switches'
             );
             expect(
                 JSON.stringify(service.snapshotReplySettings(-2999)) ===
-                    JSON.stringify({ model: 'reloaded-default', promptAddendum: null }),
+                    JSON.stringify({ model: 'reloaded-default', promptAddendum: null, toolOverrides: null }),
                 'a chat without settings snapshots the global default'
             );
         },

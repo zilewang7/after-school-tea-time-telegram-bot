@@ -24,16 +24,17 @@ export const registerChatRoutes = (app: Hono<PanelEnv>): void => {
         const { chat, access } = await requireChatAccess(auth, chatId);
 
         const effectiveModel = resolveChatModel(chatId);
+        const settings = currentChatSettings(chatId);
         const recentAudit = await listSettingsAudit({ scope: chatAuditScope(chatId), limit: RECENT_AUDIT_LIMIT });
         const recentAuditViews = await toAuditEntryViews(recentAudit);
         const summary = await buildChatSummary(chatId, new Date());
 
         return context.json({
             chat: toChatHeaderView(chat, access),
-            settings: toSettingsView(currentChatSettings(chatId)),
+            settings: toSettingsView(settings),
             effectiveModel,
             globalDefaultModel: getGlobalDefaultModel(),
-            tools: buildToolMatrix(effectiveModel, chatId),
+            tools: buildToolMatrix(effectiveModel, chatId, settings.toolOverrides),
             summary,
             recentAudit: recentAuditViews.map(withoutScope),
         });

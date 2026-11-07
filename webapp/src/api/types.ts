@@ -69,14 +69,41 @@ export interface ChatSettings {
     promptAddendum: string | null;
     paused: boolean;
     settingsLocked: boolean;
+    // The panel's per-chat tool switches; null = every group follows the env
+    toolOverrides: ToolOverrides | null;
     updatedAt: string | null;
     updatedBy: number | null;
 }
 
-export interface ToolAvailability {
-    name: string;
+/** A panel tool switch group, the same nine keys the server uses */
+export type ToolGroupKey =
+    | 'sms'
+    | 'image'
+    | 'imageSearch'
+    | 'imageFetch'
+    | 'imageReverseSearch'
+    | 'sticker'
+    | 'file'
+    | 'history'
+    | 'harnessIssues';
+
+/** Per-chat tool switches: true = on, false = off, missing key = follow the env whitelist */
+export type ToolOverrides = Partial<Record<ToolGroupKey, boolean>>;
+
+export interface ToolGroupEntry {
+    key: ToolGroupKey;
+    // The tool names this group registers
+    tools: string[];
+    // Offered to a plain turn with the chat's current settings
     enabled: boolean;
+    // Offered if every switch followed the env again
+    defaultEnabled: boolean;
+    // The panel's switch; null = follow the env whitelist
+    override: boolean | null;
+    // Why it is off; null when enabled
     reason: string | null;
+    // Off for a reason a switch cannot fix (env switch, URL, model capability)
+    blocked: boolean;
 }
 
 export interface ChatAuditEntry {
@@ -94,7 +121,7 @@ export interface ChatDetailResponse {
     settings: ChatSettings;
     effectiveModel: string;
     globalDefaultModel: string;
-    tools: ToolAvailability[];
+    tools: ToolGroupEntry[];
     // Last 7 days; null when the chat had no reply in the window (shown in the 统计 tab)
     summary: ChatSummaryView | null;
     recentAudit: ChatAuditEntry[];
@@ -105,6 +132,8 @@ export interface ChatSettingsPatch {
     promptAddendum?: string | null;
     paused?: boolean;
     settingsLocked?: boolean;
+    // Replaces the whole switch object; null clears every override
+    toolOverrides?: ToolOverrides | null;
     expectedUpdatedAt?: string;
 }
 

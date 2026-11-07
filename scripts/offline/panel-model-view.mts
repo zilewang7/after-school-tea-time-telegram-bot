@@ -261,6 +261,26 @@ const cases: { name: string; body: () => Promise<void> }[] = [
         },
     },
     {
+        name: 'the panel tool switches change the declared tools and the capability lines',
+        body: async () => {
+            const owner = { userId: OWNER_ID, isOwner: true };
+            const before = (await get(`${C1}/model-view`)).body;
+            expect(
+                before.tools.includes('generate_image') && before.systemPrompt.includes('`generate_image`'),
+                'baseline: the image group is declared and named'
+            );
+            await updateChatSettings({ chatId: GROUP, patch: { toolOverrides: { image: false } }, actor: owner });
+            try {
+                const after = (await get(`${C1}/model-view`)).body;
+                expect(!after.tools.includes('generate_image'), `the switch removes the tool (got ${after.tools.join(', ')})`);
+                expect(!after.systemPrompt.includes('`generate_image`'), 'and its capability line');
+                expect(after.tools.length < before.tools.length, 'the rest of the tools is unchanged');
+            } finally {
+                await updateChatSettings({ chatId: GROUP, patch: { toolOverrides: null }, actor: owner });
+            }
+        },
+    },
+    {
         name: 'a hand-typed Gemini image model shows the generation instruction, without the addendum',
         body: async () => {
             const { status, body: view } = await get(`${C1}/model-view?asModel=${IMAGE_MODEL}`);

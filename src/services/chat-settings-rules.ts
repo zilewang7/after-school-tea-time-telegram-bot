@@ -3,6 +3,13 @@
  * normalized and validated, and which keys actually change. No I/O, so the
  * service only persists what this decides.
  */
+import {
+    canonicalToolOverridesJson,
+    normalizeToolOverrides,
+    toolOverridesEqual,
+    type ToolOverrides,
+} from './tool-overrides.js';
+
 export const MODEL_ID_MAX_LENGTH = 64;
 export const PROMPT_ADDENDUM_MAX_CODE_POINTS = 2000;
 
@@ -14,12 +21,20 @@ export interface ChatSettingsPatch {
     paused?: boolean;
     /** Owner only */
     settingsLocked?: boolean;
+    /** Per-chat tool switches; null = every group follows the env. Only the owner may touch `sms` */
+    toolOverrides?: ToolOverrides | null;
 }
 
 export type ChatSettingKey = keyof ChatSettingsPatch;
 
 /** Fixed order of keys in results and audit rows */
-const CHAT_SETTING_KEYS: readonly ChatSettingKey[] = ['model', 'promptAddendum', 'paused', 'settingsLocked'];
+const CHAT_SETTING_KEYS: readonly ChatSettingKey[] = [
+    'model',
+    'promptAddendum',
+    'paused',
+    'settingsLocked',
+    'toolOverrides',
+];
 
 /** `conflict`: the caller edited a version that someone else has since replaced */
 export type ChatSettingsErrorCode = 'invalid' | 'forbidden' | 'locked' | 'conflict';
@@ -30,11 +45,12 @@ export interface ChatSettingValues {
     promptAddendum: string | null;
     paused: boolean;
     settingsLocked: boolean;
+    toolOverrides: ToolOverrides | null;
 }
 
 export interface ChatSettingChange {
     key: ChatSettingKey;
-    /** Audit format: model id / full text / 'true' | 'false'; null = unset */
+    /** Audit format: model id / full text / 'true' | 'false' / canonical overrides JSON; null = unset */
     oldValue: string | null;
     newValue: string | null;
 }
@@ -81,10 +97,25 @@ export const normalizePromptAddendum = (raw: unknown): Normalized<string | null>
 const normalizeFlag = (raw: unknown, key: ChatSettingKey): Normalized<boolean> =>
     typeof raw === 'boolean' ? { ok: true, value: raw } : { ok: false, message: `${key} 必须是布尔值` };
 
-const auditValueOf = (value: string | boolean | null): string | null =>
-    typeof value === 'boolean' ? String(value) : value;
-
 const unchanged = <T>(value: T): Normalized<T> => ({ ok: true, value });
+
+/** Every key's audit text: booleans as 'true' / 'false', overrides as canonical JSON */
+const auditValuesOf = (values: ChatSettingValues): Record<ChatSettingKey, string | null> => ({
+    model: values.model,
+    promptAddendum: values.promptAddendum,
+    paused: String(values.paused),
+    settingsLocked: String(values.settingsLocked),
+    toolOverrides: canonicalToolOverridesJson(values.toolOverrides),
+});
+
+/** Whether one key's value actually changes (overrides compare as canonical JSON) */
+const CHANGED: Record<ChatSettingKey, (current: ChatSettingValues, next: ChatSettingValues) => boolean> = {
+    model: (current, next) => current.model !== next.model,
+    promptAddendum: (current, next) => current.promptAddendum !== next.promptAddendum,
+    paused: (current, next) => current.paused !== next.paused,
+    settingsLocked: (current, next) => current.settingsLocked !== next.settingsLocked,
+    toolOverrides: (current, next) => !toolOverridesEqual(current.toolOverrides, next.toolOverrides),
+};
 
 /** Normalize every key present in the patch; absent keys keep `current`. The first bad value wins */
 const applyPatchValues = (current: ChatSettingValues, patch: ChatSettingsPatch): Normalized<ChatSettingValues> => {
@@ -100,6 +131,10 @@ const applyPatchValues = (current: ChatSettingValues, patch: ChatSettingsPatch):
         ? unchanged(current.settingsLocked)
         : normalizeFlag(patch.settingsLocked, 'settingsLocked');
     if (!settingsLocked.ok) return settingsLocked;
+    const toolOverrides = patch.toolOverrides === undefined
+        ? unchanged(current.toolOverrides)
+        : normalizeToolOverrides(patch.toolOverrides);
+    if (!toolOverrides.ok) return toolOverrides;
     return {
         ok: true,
         value: {
@@ -107,16 +142,22 @@ const applyPatchValues = (current: ChatSettingValues, patch: ChatSettingsPatch):
             promptAddendum: promptAddendum.value,
             paused: paused.value,
             settingsLocked: settingsLocked.value,
+            toolOverrides: toolOverrides.value,
         },
     };
 };
+
+/** The SMS switch sends a real SMS to the owner, so only the owner may change it */
+const smsChanged = (current: ToolOverrides | null, next: ToolOverrides | null): boolean =>
+    (current?.sms ?? null) !== (next?.sms ?? null);
 
 /**
  * Decide a patch against the current values. Checks run in this order:
  * 1. the chat is locked and the actor is not the owner → locked (before any
  *    value is looked at);
  * 2. a non-owner touches settingsLocked → forbidden;
- * 3. a value is malformed → invalid.
+ * 3. a value is malformed → invalid;
+ * 4. a non-owner changes the sms switch → forbidden.
  * Keys whose normalized value equals the current one are not changes.
  */
 export const resolveChatSettingsPatch = (
@@ -134,12 +175,14 @@ export const resolveChatSettingsPatch = (
     if (!applied.ok) return { kind: 'rejected', code: 'invalid', message: applied.message };
 
     const next = applied.value;
+    if (!actorIsOwner && smsChanged(current.toolOverrides, next.toolOverrides)) {
+        return { kind: 'rejected', code: 'forbidden', message: '只有机主可以开关本聊天的短信工具' };
+    }
+
+    const oldValues = auditValuesOf(current);
+    const newValues = auditValuesOf(next);
     const changes = CHAT_SETTING_KEYS
-        .filter((key) => next[key] !== current[key])
-        .map((key) => ({
-            key,
-            oldValue: auditValueOf(current[key]),
-            newValue: auditValueOf(next[key]),
-        }));
+        .filter((key) => CHANGED[key](current, next))
+        .map((key) => ({ key, oldValue: oldValues[key], newValue: newValues[key] }));
     return { kind: 'resolved', next, changes };
 };

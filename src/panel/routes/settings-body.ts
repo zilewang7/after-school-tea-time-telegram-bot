@@ -6,10 +6,11 @@
  */
 import { match } from 'ts-pattern';
 import type { ChatSettingKey, ChatSettingsPatch } from '../../services/chat-settings-service.js';
+import { normalizeToolOverrides } from '../../services/tool-overrides.js';
 import type { JsonRecord } from '../json.js';
 import { checkBodyKeys, invalid } from '../request.js';
 
-const SETTING_KEYS: readonly ChatSettingKey[] = ['model', 'promptAddendum', 'paused', 'settingsLocked'];
+const SETTING_KEYS: readonly ChatSettingKey[] = ['model', 'promptAddendum', 'paused', 'settingsLocked', 'toolOverrides'];
 const EXPECTED_UPDATED_AT_KEY = 'expectedUpdatedAt';
 const ALLOWED_KEYS: ReadonlySet<string> = new Set<string>([...SETTING_KEYS, EXPECTED_UPDATED_AT_KEY]);
 
@@ -63,6 +64,12 @@ export const toChatSettingsPatch = (body: JsonRecord, shape: SettingsPatchShape)
             })
             .with('settingsLocked', () => {
                 patch.settingsLocked = booleanValue(value, key);
+            })
+            .with('toolOverrides', () => {
+                // Unknown group keys and non-boolean values are 400s here, before the service
+                const normalized = normalizeToolOverrides(value);
+                if (!normalized.ok) throw invalid(normalized.message);
+                patch.toolOverrides = normalized.value;
             })
             .exhaustive();
     }

@@ -101,7 +101,8 @@ export const buildModelView = async (request: ModelViewRequest): Promise<ModelVi
     const { tools, availability } = createReplyTools(
         model,
         toolContextOf(chat, target.userMessage, built, request.toolApi),
-        { carriesLargeMedia: largeMedia }
+        { carriesLargeMedia: largeMedia },
+        settings.toolOverrides
     );
     const systemPromptReplaced = replacesChatSystemPrompt(model);
 

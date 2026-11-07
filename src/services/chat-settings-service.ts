@@ -32,6 +32,7 @@ import {
     type ChatSettingsErrorCode,
     type ChatSettingsPatch,
 } from './chat-settings-rules.js';
+import { canonicalToolOverridesJson, type ToolOverrides } from './tool-overrides.js';
 
 export {
     loadChatSettingsCache,
@@ -52,11 +53,23 @@ export {
     type ChatSettingsErrorCode,
     type ChatSettingsPatch,
 } from './chat-settings-rules.js';
+export {
+    TOOL_GROUP_KEYS,
+    NO_TOOL_OVERRIDES,
+    canonicalToolOverridesJson,
+    normalizeToolOverrides,
+    parseStoredToolOverrides,
+    toolOverrideOf,
+    type ToolGroupKey,
+    type ToolOverrides,
+} from './tool-overrides.js';
 
 /** What one reply uses, taken once when the reply starts */
 export interface ReplySettingsSnapshot {
     model: string;
     promptAddendum: string | null;
+    /** The per-chat tool switches at the same moment; null = follow the env */
+    toolOverrides: ToolOverrides | null;
 }
 
 export interface SettingsActor {
@@ -83,6 +96,7 @@ export class ChatSettingsError extends Error {
 export const snapshotReplySettings = (chatId: number): ReplySettingsSnapshot => ({
     model: resolveChatModel(chatId),
     promptAddendum: getChatSettings(chatId)?.promptAddendum ?? null,
+    toolOverrides: getChatSettings(chatId)?.toolOverrides ?? null,
 });
 
 /** What a chat without a settings row behaves as; updatedAt is the epoch, updatedBy null */
@@ -92,6 +106,7 @@ export const defaultChatSettings = (chatId: number): ChatSettings => ({
     promptAddendum: null,
     paused: false,
     settingsLocked: false,
+    toolOverrides: null,
     updatedAt: new Date(0),
     updatedBy: null,
 });
@@ -135,6 +150,7 @@ const persistChatSettings = async (
                 promptAddendum: settings.promptAddendum,
                 paused: settings.paused,
                 settingsLocked: settings.settingsLocked,
+                toolOverrides: canonicalToolOverridesJson(settings.toolOverrides),
                 updatedAt: settings.updatedAt,
                 updatedBy: settings.updatedBy,
             },
@@ -158,11 +174,11 @@ const persistChatSettings = async (
 /**
  * Change some of a chat's settings. Throws ChatSettingsError: `locked` when
  * the chat is locked and the actor is not the owner (checked first),
- * `forbidden` when a non-owner touches settingsLocked, `invalid` for a
- * malformed value, `conflict` when `expectedUpdatedAt` is given and no longer
- * matches (checked inside the write queue, so two editors of one version
- * cannot both win). Unchanged keys are dropped; with nothing left, nothing is
- * written and changedKeys is empty.
+ * `forbidden` when a non-owner touches settingsLocked or the sms tool switch,
+ * `invalid` for a malformed value, `conflict` when `expectedUpdatedAt` is given
+ * and no longer matches (checked inside the write queue, so two editors of one
+ * version cannot both win). Unchanged keys are dropped; with nothing left,
+ * nothing is written and changedKeys is empty.
  */
 export const updateChatSettings = (input: {
     chatId: number;

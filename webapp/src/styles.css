@@ -495,6 +495,37 @@ p {
     flex-basis: 100%;
 }
 
+/* One tool group on the tools page: title + tools on the left, switch on the right */
+.tool-group-row {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    padding: 10px 0;
+}
+
+.tool-group-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+}
+
+.tool-group-title {
+    font-weight: 500;
+}
+
+.tool-group-reason {
+    color: var(--color-hint);
+}
+
+/* 「面板已关闭 · 恢复跟随环境」 */
+.tool-group-override {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+}
+
 .audit-entry {
     display: flex;
     flex-direction: column;

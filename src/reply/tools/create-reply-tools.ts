@@ -17,6 +17,7 @@ import { findTelegramUserIdByUsername } from '../../db/queries/user-queries.js';
 import { fetchImageBytes } from '../../services/image-fetch-service.js';
 import { searchImages } from '../../services/image-search-service.js';
 import { createHistoryService } from '../../services/luoxu-history-service.js';
+import type { ToolOverrides } from '../../services/tool-overrides.js';
 import { toLuoxuChannelId } from '../../services/luoxu-preview-service.js';
 import { createFetchImageTool, PRODUCTION_FETCH_DEPENDENCIES } from './fetch-image-tool.js';
 import { createGenerateImageTool } from './generate-image-tool.js';
@@ -48,10 +49,12 @@ export interface ReplyTools {
 export const createReplyTools = (
     model: string,
     context: ReplyToolContext,
-    request?: ToolRequestTraits
+    request?: ToolRequestTraits,
+    /** The chat's panel switches, taken with the rest of the reply settings */
+    toolOverrides: ToolOverrides | null = null
 ): ReplyTools => {
     const config = getToolConfig();
-    const availability = resolveToolAvailability(model, context.chatId, config, request);
+    const availability = resolveToolAvailability(model, context.chatId, config, request, toolOverrides);
     const capabilities = getModelCapabilities(model);
     const mediaState = createReplyMediaState();
     const historyState = createHistoryState();

@@ -325,7 +325,8 @@ export const handleReply = async (
     const { tools, availability } = createReplyTools(
         model,
         buildReplyToolContext({ chat: ctx.chat, triggerMessage: msg, contextIndex, signal, api: ctx.api }),
-        { carriesLargeMedia: carriesLargeMedia(chatContents) }
+        { carriesLargeMedia: carriesLargeMedia(chatContents) },
+        settings.toolOverrides
     );
 
     // Send to AI and get stream

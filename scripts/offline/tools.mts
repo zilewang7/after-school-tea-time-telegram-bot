@@ -1008,6 +1008,112 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
         },
     },
     {
+        name: 'the panel switches override the chat whitelists, never the env or the model',
+        body: async () => {
+            const { resolveToolAvailability } = replyTools;
+            const { readToolConfig } = toolConfig;
+
+            const baseline = resolveToolAvailability('gemini-4-argon', WHITELISTED_CHAT_ID);
+            const outside = resolveToolAvailability('gemini-4-argon', OTHER_CHAT_ID);
+            expect(baseline.image && !outside.image, 'baseline: the image group only in the whitelisted chat');
+
+            const offInWhitelist = resolveToolAvailability('gemini-4-argon', WHITELISTED_CHAT_ID, undefined, undefined, {
+                image: false,
+            });
+            expect(
+                !offInWhitelist.image && offInWhitelist.imageSearch && offInWhitelist.sendImage,
+                'a panel off switch stops drawing; searching still delivers through send_image'
+            );
+
+            const onElsewhere = resolveToolAvailability('gemini-4-argon', OTHER_CHAT_ID, undefined, undefined, {
+                image: true,
+            });
+            expect(onElsewhere.image && onElsewhere.sendImage, 'a panel on switch opens a chat outside TOOL_CHAT_IDS');
+            expect(onElsewhere.sms === false, 'and leaves the other groups alone');
+
+            const generateOff = readToolConfig({
+                TOOL_CHAT_IDS: String(OTHER_CHAT_ID),
+                DISABLED_TOOLS: 'generate_image',
+            });
+            const forcedOff = resolveToolAvailability('gemini-4-argon', OTHER_CHAT_ID, generateOff, undefined, {
+                image: true,
+            });
+            expect(!forcedOff.image, 'DISABLED_TOOLS stays a hard prerequisite');
+
+            const imageToolsOff = readToolConfig({ TOOL_CHAT_IDS: String(WHITELISTED_CHAT_ID), IMAGE_TOOLS: '0' });
+            const searchForcedOff = resolveToolAvailability(
+                'gemini-4-argon',
+                WHITELISTED_CHAT_ID,
+                imageToolsOff,
+                undefined,
+                { imageSearch: true }
+            );
+            expect(!searchForcedOff.imageSearch, 'IMAGE_TOOLS=0 stays a hard prerequisite for searching');
+
+            const sendImageOff = readToolConfig({
+                TOOL_CHAT_IDS: String(WHITELISTED_CHAT_ID),
+                DISABLED_TOOLS: 'send_image',
+            });
+            const noDelivery = resolveToolAvailability('gemini-4-argon', WHITELISTED_CHAT_ID, sendImageOff, undefined, {
+                image: true,
+                imageSearch: true,
+            });
+            expect(
+                !noDelivery.image && !noDelivery.imageSearch && !noDelivery.sendImage,
+                'a disabled send_image closes drawing and searching'
+            );
+
+            const textModel = resolveToolAvailability('deepseek-reasoning', WHITELISTED_CHAT_ID, undefined, undefined, {
+                imageFetch: true,
+            });
+            expect(!textModel.imageFetch, 'a model that cannot see images never gets fetch_image');
+
+            const imageModel = resolveToolAvailability(GEMINI_IMAGE_MODEL, WHITELISTED_CHAT_ID, undefined, undefined, {
+                image: true,
+                sms: true,
+            });
+            expect(!imageModel.image && !imageModel.sms, 'a model without client tools ignores every switch');
+
+            const historyConfig = readToolConfig({
+                TOOL_CHAT_IDS: String(WHITELISTED_CHAT_ID),
+                HISTORY_CHAT_IDS: String(OTHER_CHAT_ID),
+                LUOXU_PREVIEW_URL: 'http://luoxu.invalid',
+            });
+            expect(
+                resolveToolAvailability('gemini-4-argon', WHITELISTED_CHAT_ID, historyConfig).history === false &&
+                    resolveToolAvailability('gemini-4-argon', WHITELISTED_CHAT_ID, historyConfig, undefined, { history: true })
+                        .history,
+                'history follows its own whitelist and switch'
+            );
+            expect(
+                resolveToolAvailability('gemini-4-argon', OTHER_CHAT_ID, historyConfig).history &&
+                    resolveToolAvailability('gemini-4-argon', OTHER_CHAT_ID, historyConfig, undefined, { history: false })
+                        .history === false,
+                'and can be switched off where it was on'
+            );
+
+            const historyToolsOff = readToolConfig({
+                TOOL_CHAT_IDS: String(WHITELISTED_CHAT_ID),
+                HISTORY_CHAT_IDS: String(OTHER_CHAT_ID),
+                HISTORY_TOOLS: '0',
+                LUOXU_PREVIEW_URL: 'http://luoxu.invalid',
+            });
+            expect(
+                resolveToolAvailability('gemini-4-argon', OTHER_CHAT_ID, historyToolsOff, undefined, { history: true })
+                    .history === false,
+                'HISTORY_TOOLS=0 stays a hard prerequisite'
+            );
+
+            const turn = replyTools.createReplyTools('gemini-4-argon', toolContext(OTHER_CHAT_ID), undefined, {
+                image: true,
+            });
+            expect(
+                turn.availability.image && turn.tools.definitions.some((definition) => definition.name === 'generate_image'),
+                'createReplyTools passes the switches through'
+            );
+        },
+    },
+    {
         name: 'tool settings parse from the env with safe defaults',
         body: async () => {
             const { readToolConfig } = toolConfig;

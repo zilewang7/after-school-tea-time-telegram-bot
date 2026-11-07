@@ -1,6 +1,7 @@
 import { match, P } from 'ts-pattern';
 import type { ChatAccess, ChatSummary, ChatType, PanelUser } from './api';
 import { issueStatusLabel } from './issues/issue-labels';
+import { parseToolOverridesJson, TOOL_GROUP_ORDER, toolGroupLabelOf } from './tool-groups';
 
 const CHAT_TYPE_LABELS: Record<ChatType, string> = {
     private: '私聊',
@@ -20,6 +21,7 @@ const AUDIT_KEY_LABELS: Partial<Record<string, string>> = {
     paused: '暂停',
     settingsLocked: '锁定设置',
     defaultModel: '全局默认模型',
+    toolOverrides: '工具开关',
     exclude: '排除消息',
     include: '恢复消息',
     link: '拼接对话',
@@ -78,11 +80,24 @@ export const formatDate = (iso: string): string => {
     return date.getFullYear() === new Date().getFullYear() ? day : `${date.getFullYear()}-${day}`;
 };
 
+/** "历史检索开，贴纸关" from the audit's canonical JSON; null = following the env */
+const formatToolOverridesValue = (value: string | null): string => {
+    const overrides = parseToolOverridesJson(value);
+    if (overrides === null) return '跟随环境配置';
+    const parts = TOOL_GROUP_ORDER.flatMap((key) => {
+        const state = overrides[key];
+        return state === undefined ? [] : [`${toolGroupLabelOf(key)}${state ? '开' : '关'}`];
+    });
+    return parts.length === 0 ? '跟随环境配置' : parts.join('，');
+};
+
 /** Human-readable audit value; null means "unset", whose meaning depends on the key */
 export const formatAuditValue = (key: string, value: string | null): string =>
     match({ key, value })
         .with({ key: 'model', value: P.nullish }, () => '跟随全局默认')
         .with({ key: 'defaultModel', value: P.nullish }, () => '环境变量默认')
+        // Tool switches: null (and unreadable JSON) means every group follows the env
+        .with({ key: 'toolOverrides' }, ({ value: overridesText }) => formatToolOverridesValue(overridesText))
         .with({ value: P.nullish }, () => '（空）')
         .with({ key: P.union('paused', 'settingsLocked'), value: 'true' }, () => '开')
         .with({ key: P.union('paused', 'settingsLocked'), value: 'false' }, () => '关')

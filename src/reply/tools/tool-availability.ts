@@ -1,17 +1,21 @@
 /**
  * Which tools one turn gets — the only place DISABLED_TOOLS is applied.
  *
- * Decided from the model, the chat and startup configuration — never from
- * what the messages say — so the same model in the same chat always declares
- * the same tools, byte for byte (implicit prompt caching), and the system
- * prompt line about SMS is present exactly when the tool is. One exception
- * keeps that last promise: a platform that sends requests carrying large
- * media without client tools (Gemini) gets none for such a turn.
+ * Decided from the model, the chat, startup configuration and the chat's panel
+ * switches — never from what the messages say — so the same model in the same
+ * chat with the same settings always declares the same tools, byte for byte
+ * (implicit prompt caching), and the system prompt line about SMS is present
+ * exactly when the tool is. The panel's per-chat switches override only the
+ * chat whitelists; env kill switches, URLs, model capabilities and the test
+ * instance's SMS guard remain hard prerequisites. One exception keeps the
+ * byte-stability promise: a platform that sends requests carrying large media
+ * without client tools (Gemini) gets none for such a turn.
  */
 import { getModelCapabilities, getPlatform } from '../../ai/platform-factory.js';
 import { listMcpServers } from '../../ai/mcp/index.js';
 import { isTestInstance } from '../../config/instance.js';
 import { getToolConfig, type ToolConfig } from '../../config/tool-config.js';
+import { toolOverrideOf, type ToolGroupKey, type ToolOverrides } from '../../services/tool-overrides.js';
 import {
     FETCH_IMAGE_TOOL_NAME,
     GENERATE_IMAGE_TOOL_NAME,
@@ -81,7 +85,8 @@ export const resolveToolAvailability = (
     model: string,
     chatId: number,
     config: ToolConfig = getToolConfig(),
-    request: ToolRequestTraits = PLAIN_REQUEST
+    request: ToolRequestTraits = PLAIN_REQUEST,
+    overrides: ToolOverrides | null = null
 ): ToolAvailability => {
     const capabilities = getModelCapabilities(model);
     if (capabilities.supportsClientTools !== true) return NO_TOOLS;
@@ -99,59 +104,69 @@ export const resolveToolAvailability = (
         .filter((server) => server.tools.some((tool) => isEnabled(tool.name)))
         .map((server) => server.name);
 
-    // The tools with side effects are only offered in the whitelisted chats
-    const chatAllowed = config.toolChatIds.has(chatId);
+    // The one layer the panel may override: which chats are offered the tools
+    // with side effects. Everything else below stays a hard prerequisite.
+    const sideEffectGate = (key: ToolGroupKey): boolean =>
+        toolOverrideOf(overrides, key) ?? config.toolChatIds.has(chatId);
     // The test instance inherits the production env, so it must opt in to SMS
     const smsInstanceAllowed = !isTestInstance() || config.ownerSmsAllowTest;
 
     // History is read-only, so it follows its own chat list rather than the
     // side-effecting TOOL_CHAT_IDS: bilibili-archive chats can still be searched.
     const historyAllowed =
+        (toolOverrideOf(overrides, 'history') ?? config.historyChatIds.has(chatId)) &&
         config.historyTools &&
         config.historyBaseUrl !== '' &&
-        config.historyChatIds.has(chatId) &&
         isEnabled(SEARCH_HISTORY_TOOL_NAME) &&
         isEnabled(READ_HISTORY_TOOL_NAME);
 
     // Media tools follow generate_image's scope: same chats, same switch.
     // send_image is the only way a picture reaches the chat — a drawn one
     // included — so it is offered whenever searching or drawing is.
-    const wantsSendImage = chatAllowed && isEnabled(SEND_IMAGE_TOOL_NAME);
+    const sendImageEnabled = isEnabled(SEND_IMAGE_TOOL_NAME);
     const wantsSearchImages =
-        chatAllowed && config.imageTools && config.imageSearchUrl !== '' && isEnabled(SEARCH_IMAGES_TOOL_NAME);
-    const wantsGenerateImage = chatAllowed && isEnabled(GENERATE_IMAGE_TOOL_NAME);
-    const imageSearch = wantsSearchImages && wantsSendImage;
-    const image = wantsGenerateImage && wantsSendImage;
+        sideEffectGate('imageSearch') &&
+        config.imageTools &&
+        config.imageSearchUrl !== '' &&
+        isEnabled(SEARCH_IMAGES_TOOL_NAME);
+    const wantsGenerateImage = sideEffectGate('image') && isEnabled(GENERATE_IMAGE_TOOL_NAME);
+    const imageSearch = wantsSearchImages && sendImageEnabled;
+    const image = wantsGenerateImage && sendImageEnabled;
 
     return {
         mcpServers,
         isMcpToolEnabled: isEnabled,
         sms:
-            chatAllowed &&
+            sideEffectGate('sms') &&
             config.ownerSmsUrl !== '' &&
             smsInstanceAllowed &&
             isEnabled(SEND_SMS_TOOL_NAME),
         image,
         imageSearch,
-        sendImage: wantsSendImage && (image || imageSearch),
+        sendImage: sendImageEnabled && (image || imageSearch),
         imageReverseSearch:
-            chatAllowed &&
+            sideEffectGate('imageReverseSearch') &&
             config.imageTools &&
             config.imageReverseSearch &&
             isEnabled(SEARCH_BY_IMAGE_TOOL_NAME),
-        // Reading a picture is only useful to a model that can see it
-        imageFetch: imageSearch && capabilities.supportsImageInput && isEnabled(FETCH_IMAGE_TOOL_NAME),
+        // Reading a picture is only useful to a model that can see it; the panel
+        // may switch it off, but cannot switch it on without search_images
+        imageFetch:
+            imageSearch &&
+            toolOverrideOf(overrides, 'imageFetch') !== false &&
+            capabilities.supportsImageInput &&
+            isEnabled(FETCH_IMAGE_TOOL_NAME),
         sticker:
-            chatAllowed &&
+            sideEffectGate('sticker') &&
             config.stickerTools &&
             config.stickerSetName !== '' &&
             isEnabled(SEND_STICKER_TOOL_NAME),
-        file: chatAllowed && config.fileTools && isEnabled(SEND_FILE_TOOL_NAME),
+        file: sideEffectGate('file') && config.fileTools && isEnabled(SEND_FILE_TOOL_NAME),
         history: historyAllowed,
         // Self-reporting is chat-scoped like the other side-effecting tools: it
         // writes a row, and the row is about this deployment, not the user.
         harnessIssues:
-            chatAllowed &&
+            sideEffectGate('harnessIssues') &&
             config.harnessIssues &&
             isEnabled(LIST_HARNESS_ISSUES_TOOL_NAME) &&
             isEnabled(CREATE_HARNESS_ISSUE_TOOL_NAME),

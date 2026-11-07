@@ -9,6 +9,7 @@
  */
 import { ChatSettingsRecord } from '../db/chatSettingsDTO.js';
 import { GlobalSetting } from '../db/globalSettingDTO.js';
+import { parseStoredToolOverrides, type ToolOverrides } from './tool-overrides.js';
 
 export interface ChatSettings {
     chatId: number;
@@ -18,6 +19,8 @@ export interface ChatSettings {
     promptAddendum: string | null;
     paused: boolean;
     settingsLocked: boolean;
+    /** The panel's per-chat tool switches; null = every group follows the env */
+    toolOverrides: ToolOverrides | null;
     updatedAt: Date;
     /** Telegram user id of the last writer */
     updatedBy: number | null;
@@ -40,6 +43,7 @@ const toChatSettings = (record: ChatSettingsRecord): ChatSettings => ({
     promptAddendum: record.promptAddendum ?? null,
     paused: record.paused === true,
     settingsLocked: record.settingsLocked === true,
+    toolOverrides: parseStoredToolOverrides(record.toolOverrides ?? null),
     updatedAt: record.updatedAt,
     updatedBy: record.updatedBy ?? null,
 });

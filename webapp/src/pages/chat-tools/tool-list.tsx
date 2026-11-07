@@ -1,20 +1,32 @@
-import type { ToolAvailability } from '../../api';
+import type { ToolGroupEntry, ToolGroupKey } from '../../api';
+import { ToolGroupRow } from './tool-group-row';
 
 interface ToolListProps {
-    tools: readonly ToolAvailability[];
+    groups: readonly ToolGroupEntry[];
+    // The chat is not locked, or the viewer is the owner
+    canToggle: boolean;
+    isOwner: boolean;
+    savingKey: ToolGroupKey | null;
+    onChange: (group: ToolGroupEntry, next: boolean) => void;
+    onReset: (group: ToolGroupEntry) => void;
 }
 
-/** Read-only: which tools the current model can use in this chat, and why not */
-export const ToolList = ({ tools }: ToolListProps) => {
-    if (tools.length === 0) return <p className="placeholder">没有工具</p>;
+/** One row per tool group: its tools, why it is off, and the panel switch */
+export const ToolList = ({ groups, canToggle, isOwner, savingKey, onChange, onReset }: ToolListProps) => {
+    if (groups.length === 0) return <p className="placeholder">没有工具</p>;
     return (
         <ul className="list">
-            {tools.map((tool) => (
-                <li key={tool.name} className="tool-row">
-                    <span className="tool-name">{tool.name}</span>
-                    <span className={tool.enabled ? 'badge success' : 'badge'}>{tool.enabled ? '开' : '关'}</span>
-                    {tool.reason !== null && <span className="hint tool-reason">{tool.reason}</span>}
-                </li>
+            {groups.map((group) => (
+                <ToolGroupRow
+                    key={group.key}
+                    group={group}
+                    canToggle={canToggle}
+                    isOwner={isOwner}
+                    saving={savingKey === group.key}
+                    disabled={savingKey !== null}
+                    onChange={onChange}
+                    onReset={onReset}
+                />
             ))}
         </ul>
     );

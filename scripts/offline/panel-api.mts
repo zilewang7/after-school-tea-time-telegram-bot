@@ -23,6 +23,7 @@ const OWNER: InitDataUserInput = { id: OWNER_ID, first_name: 'Owner' };
 const GROUP_MAIN = -1001000000001;
 const GROUP_LEFT = -1001000000002;
 const GROUP_THROTTLED = -1001000000003;
+const GROUP_TOOLS = -1001000000004;
 
 process.env.OWNER_USER_ID = String(OWNER_ID);
 process.env.DEFAULT_MODEL = 'env-default-model';
@@ -59,6 +60,7 @@ const grammyError = (code: number, description: string): GrammyError =>
 const memberships = new Map<string, 'member' | 'left' | 'throttled' | 'slow'>([
     [`${GROUP_MAIN}:${ALICE.id}`, 'member'],
     [`${GROUP_MAIN}:${BOB.id}`, 'left'],
+    [`${GROUP_TOOLS}:${ALICE.id}`, 'member'],
     [`${GROUP_LEFT}:${ALICE.id}`, 'left'],
     [`${GROUP_THROTTLED}:${ALICE.id}`, 'throttled'],
     [`${GROUP_LEFT}:${BOB.id}`, 'slow'],
@@ -92,6 +94,7 @@ const makeApp = (staticRoot = STATIC_ROOT, handlerTimeoutMs?: number): PanelApp 
 await registry.upsertChatNow({ id: GROUP_MAIN, type: 'supergroup', title: 'Main', username: 'main_group' });
 await registry.upsertChatNow({ id: GROUP_LEFT, type: 'supergroup', title: 'Left' });
 await registry.upsertChatNow({ id: GROUP_THROTTLED, type: 'supergroup', title: 'Throttled' });
+await registry.upsertChatNow({ id: GROUP_TOOLS, type: 'supergroup', title: 'Tools' });
 await loadChatSettingsCache();
 
 // ---- request helpers --------------------------------------------------------
@@ -300,6 +303,9 @@ const cases: { name: string; body: () => Promise<void> }[] = [
                 ['addendum over 2000 code points', { promptAddendum: '😀'.repeat(2001) }],
                 ['addendum of the wrong type', { promptAddendum: ['a'] }],
                 ['paused as a string', { paused: 'true' }],
+                ['an unknown tool group', { toolOverrides: { nonsense: true } }],
+                ['a tool switch of the wrong type', { toolOverrides: { sticker: 'yes' } }],
+                ['tool switches as an array', { toolOverrides: [] }],
             ];
             for (const [label, body] of invalidBodies) {
                 await expectError(await patchSettings(app, GROUP_MAIN, ALICE, body), 400, 'invalid', label);
@@ -395,21 +401,35 @@ const cases: { name: string; body: () => Promise<void> }[] = [
             );
             expect(
                 JSON.stringify(Object.keys(body.settings).sort()) ===
-                    JSON.stringify(['model', 'paused', 'promptAddendum', 'settingsLocked', 'updatedAt', 'updatedBy']),
+                    JSON.stringify(['model', 'paused', 'promptAddendum', 'settingsLocked', 'toolOverrides', 'updatedAt', 'updatedBy']),
                 'settings keys'
             );
             expect(body.settings.model === 'my-own-model-v9' && body.effectiveModel === 'my-own-model-v9', 'effective model is the chat model');
             expect(body.globalDefaultModel === 'env-default-model', 'global default from the env');
             expect(body.summary === null, 'summary is null until reply_metrics exists');
-            expect(Array.isArray(body.tools) && body.tools.length === 12, `12 built-in tools (got ${body.tools?.length})`);
+            expect(Array.isArray(body.tools) && body.tools.length === 9, `9 tool groups (got ${body.tools?.length})`);
             expect(
                 body.tools.every(
                     (tool: any) =>
-                        typeof tool.name === 'string' &&
+                        typeof tool.key === 'string' &&
+                        Array.isArray(tool.tools) &&
+                        tool.tools.every((name: unknown) => typeof name === 'string') &&
                         typeof tool.enabled === 'boolean' &&
+                        typeof tool.defaultEnabled === 'boolean' &&
+                        (tool.override === null || typeof tool.override === 'boolean') &&
+                        typeof tool.blocked === 'boolean' &&
                         (tool.enabled ? tool.reason === null : typeof tool.reason === 'string')
                 ),
-                'each tool has name, enabled and a reason when off'
+                'each group has its tools, the effective and default state, the override and a reason when off'
+            );
+            expect(
+                JSON.stringify(body.tools.map((tool: any) => tool.key)) ===
+                    JSON.stringify(['sms', 'image', 'imageSearch', 'imageFetch', 'imageReverseSearch', 'sticker', 'file', 'history', 'harnessIssues']),
+                'groups come in the fixed order'
+            );
+            expect(
+                body.tools.every((tool: any) => tool.override === null),
+                'nothing is overridden before the panel says so'
             );
             expect(body.recentAudit.length === 5, 'the latest five changes');
             const latest = body.recentAudit[0];
@@ -425,6 +445,49 @@ const cases: { name: string; body: () => Promise<void> }[] = [
             await SettingsAudit.create({ actorId: 777, scope: `chat:${GROUP_MAIN}`, key: 'paused', oldValue: 'false', newValue: 'true', createdAt: new Date() });
             const withStranger = await jsonOf(await call(app, `/api/chats/${GROUP_MAIN}`, { user: ALICE }));
             expect(withStranger.recentAudit[0].actorName === '用户 777', 'an unknown actor reads as 用户 <id>');
+        },
+    },
+    {
+        name: 'PATCH settings: tool switches — members flip groups, the sms switch is the owner’s',
+        body: async () => {
+            // Fresh rate-limit windows: this case adds a handful of requests to the shared budget
+            clockMs += 60_000;
+            const before = await auditCount(GROUP_TOOLS);
+            const flipped = await patchSettings(app, GROUP_TOOLS, ALICE, { toolOverrides: { file: true, image: false } });
+            const flippedBody = await jsonOf(flipped);
+            expect(flipped.status === 200, 'a member may switch tool groups');
+            expect(
+                JSON.stringify(flippedBody.settings.toolOverrides) === JSON.stringify({ image: false, file: true }),
+                `canonical JSON with only the set keys (got ${JSON.stringify(flippedBody.settings.toolOverrides)})`
+            );
+            expect((await auditCount(GROUP_TOOLS)) === before + 1, 'one audit row');
+
+            const dashboard = await jsonOf(await call(app, `/api/chats/${GROUP_TOOLS}`, { user: ALICE }));
+            const byKey = (key: string) => dashboard.tools.find((tool: any) => tool.key === key);
+            expect(byKey('file').override === true && byKey('file').enabled === true, 'a panel on switch enables a tool outside the env whitelist');
+            expect(byKey('image').override === false && byKey('image').enabled === false, 'a panel off switch disables a group');
+            expect(byKey('image').reason === '已由面板关闭', `the off reason names the panel (got ${byKey('image').reason})`);
+            expect(byKey('sticker').override === null, 'untouched groups still follow the env');
+
+            await expectError(
+                await patchSettings(app, GROUP_TOOLS, ALICE, { toolOverrides: { image: false, file: true, sms: true } }),
+                403,
+                'forbidden',
+                'a member flipping sms'
+            );
+            expect((await auditCount(GROUP_TOOLS)) === before + 1, 'the refused patch wrote nothing');
+
+            const ownerFlip = await patchSettings(app, GROUP_TOOLS, OWNER, { toolOverrides: { image: false, file: true, sms: true } });
+            expect(ownerFlip.status === 200, 'the owner may flip sms');
+
+            const keepSms = await patchSettings(app, GROUP_TOOLS, ALICE, { toolOverrides: { sms: true, history: true } });
+            expect(keepSms.status === 200, 'a member keeps the sms value and flips another group');
+
+            const cleared = await patchSettings(app, GROUP_TOOLS, OWNER, { toolOverrides: null });
+            const clearedBody = await jsonOf(cleared);
+            expect(cleared.status === 200 && clearedBody.settings.toolOverrides === null, 'null clears every override');
+            expect((await auditCount(GROUP_TOOLS)) === before + 4, 'one audit row per accepted change');
+            clockMs += 60_000;
         },
     },
     {
