@@ -4,6 +4,7 @@
  * also refreshes; an id it does not know reads as 「用户 <id>」.
  */
 import { findTelegramUsersByIds } from '../../db/queries/user-queries.js';
+import { formatUserDisplayName } from '../../shared/user-display-name.js';
 
 export type DisplayNames = ReadonlyMap<number, string>;
 
@@ -15,8 +16,7 @@ export const lookupDisplayNames = async (userIds: readonly number[]): Promise<Di
     const users = await findTelegramUsersByIds(distinctIds);
     const names = new Map<number, string>();
     for (const user of users) {
-        const fullName = user.lastName ? `${user.firstName} ${user.lastName}` : user.firstName;
-        const trimmed = fullName.trim();
+        const trimmed = formatUserDisplayName(user).trim();
         if (trimmed.length > 0) names.set(user.userId, trimmed);
     }
     return names;
