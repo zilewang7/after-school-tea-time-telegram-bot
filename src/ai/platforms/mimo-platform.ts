@@ -25,6 +25,12 @@ import {
     createChatToolCallCollector,
 } from './chat-completions/chat-completions-tool-round.js';
 import type { ReasoningChunkDelta } from '../../types/api-extensions.js';
+import {
+    INCLUDE_USAGE_STREAM_OPTIONS,
+    usageOfChunk,
+} from './chat-completions/chat-completions-usage.js';
+import { normalizeChatCompletionsUsage } from '../usage/normalize-chat-completions.js';
+import type { RoundUsage, UsageSink } from '../usage/usage-types.js';
 import type {
     PlatformType,
     UnifiedMessage,
@@ -42,6 +48,7 @@ interface MimoToolRound {
     readonly toolCalls: readonly ToolCall[];
     /** The provider answered with its moderation notice instead */
     readonly blocked: boolean;
+    readonly usage: RoundUsage | null;
 }
 
 /**
@@ -94,7 +101,7 @@ export class MimoPlatform extends BasePlatform {
         messages: UnifiedMessage[],
         config: PlatformConfig
     ): Promise<AsyncIterable<StreamChunk>> {
-        const { model, systemPrompt, timeout = 85000, maxRetries = 3, signal, tools } = config;
+        const { model, systemPrompt, timeout = 85000, maxRetries = 3, signal, tools, usageSink } = config;
 
         this.logMessageContents(messages);
         console.log(`[mimo] Using model: ${model}`);
@@ -109,10 +116,10 @@ export class MimoPlatform extends BasePlatform {
         );
 
         if (tools && tools.definitions.length > 0) {
-            return this.sendMessageWithTools(openaiMessages, model, tools, timeout, maxRetries, signal);
+            return this.sendMessageWithTools(openaiMessages, model, tools, timeout, maxRetries, signal, usageSink);
         }
 
-        return this.sendMessageDirect(openaiMessages, model, timeout, maxRetries, signal);
+        return this.sendMessageDirect(openaiMessages, model, timeout, maxRetries, signal, usageSink);
     }
 
     private getRequestBody(model: string) {
@@ -128,18 +135,20 @@ export class MimoPlatform extends BasePlatform {
         model: string,
         timeout: number,
         maxRetries: number,
-        signal?: AbortSignal
+        signal?: AbortSignal,
+        usageSink?: UsageSink
     ): AsyncIterable<StreamChunk> {
         const stream = await this.sendWithRetry(
             () => this.client.chat.completions.create({
                 ...this.getRequestBody(model),
                 messages,
                 stream: true,
+                stream_options: INCLUDE_USAGE_STREAM_OPTIONS,
             }, { signal }),
             { timeout, maxRetries, signal }
         );
 
-        yield* this.processStream(stream as Stream<ChatCompletionChunk>);
+        yield* this.processStream(stream as Stream<ChatCompletionChunk>, usageSink);
     }
 
     /**
@@ -153,7 +162,8 @@ export class MimoPlatform extends BasePlatform {
         tools: TurnTools,
         timeout: number,
         maxRetries: number,
-        signal?: AbortSignal
+        signal?: AbortSignal,
+        usageSink?: UsageSink
     ): AsyncGenerator<StreamChunk, void, undefined> {
         const chatTools = toChatCompletionTools(tools.definitions);
         const currentMessages = [...initialMessages];
@@ -173,6 +183,7 @@ export class MimoPlatform extends BasePlatform {
                         tools: chatTools,
                         ...(final ? { tool_choice: 'none' as const } : {}),
                         stream: true,
+                        stream_options: INCLUDE_USAGE_STREAM_OPTIONS,
                     }, { signal }),
                     { timeout, maxRetries, signal }
                 );
@@ -186,6 +197,7 @@ export class MimoPlatform extends BasePlatform {
                     console.warn('[mimo] the request was blocked by the provider content filter');
                     throw buildMimoContentFilterError();
                 }
+                usageSink?.addRound(collected.usage);
                 return collected;
             },
             appendRound: (round, executedCalls) => {
@@ -214,9 +226,11 @@ export class MimoPlatform extends BasePlatform {
         let reasoning = '';
         let heldNotice = '';
         let blocked = false;
+        let usage: unknown;
         const chunks: StreamChunk[] = [];
 
         for await (const chunk of stream) {
+            usage = usageOfChunk(chunk) ?? usage;
             const choice = chunk.choices[0];
             const delta: ReasoningChunkDelta | undefined = choice?.delta;
 
@@ -253,18 +267,28 @@ export class MimoPlatform extends BasePlatform {
             chunks.push({ type: 'text', content: heldNotice });
         }
 
-        return { toolCalls: toolCallCollector.toolCalls(round), text, reasoning, chunks, blocked };
+        return {
+            toolCalls: toolCallCollector.toolCalls(round),
+            text,
+            reasoning,
+            chunks,
+            blocked,
+            usage: normalizeChatCompletionsUsage(usage),
+        };
     }
 
     /**
      * Process stream for direct (non-tool) messages
      */
     private async *processStream(
-        stream: Stream<ChatCompletionChunk>
+        stream: Stream<ChatCompletionChunk>,
+        usageSink: UsageSink | undefined
     ): AsyncIterable<StreamChunk> {
         let heldNotice = '';
+        let usage: unknown;
 
         for await (const chunk of stream) {
+            usage = usageOfChunk(chunk) ?? usage;
             const choice = chunk.choices[0];
             const delta: ReasoningChunkDelta | undefined = choice?.delta;
 
@@ -294,6 +318,7 @@ export class MimoPlatform extends BasePlatform {
         if (heldNotice) {
             yield { type: 'text', content: heldNotice };
         }
+        usageSink?.addRound(normalizeChatCompletionsUsage(usage));
 
         yield { type: 'done' };
     }

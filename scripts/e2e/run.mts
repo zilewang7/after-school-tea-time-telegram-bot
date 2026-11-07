@@ -45,6 +45,7 @@ import {
 } from './suite-helpers.mts';
 import { panelCases } from './panel-cases.mts';
 import { panelPhase2Cases } from './panel-phase2-cases.mts';
+import { panelPhase3Cases } from './panel-phase3-cases.mts';
 import { panelPhase4Cases } from './panel-phase4-cases.mts';
 import { toolCases } from './tool-cases.mts';
 
@@ -529,6 +530,7 @@ const cases: E2eCase[] = [
     // The control panel API (phase 1); each case restores what it changed
     ...panelCases,
     ...panelPhase2Cases,
+    ...panelPhase3Cases,
     ...panelPhase4Cases,
     {
         name: '/model default puts the group back on the global default',

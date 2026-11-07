@@ -17,6 +17,7 @@ import {
     toToolResultBlocks,
     type AnthropicRound,
 } from './anthropic/anthropic-tool-round.js';
+import type { UsageSink } from '../usage/usage-types.js';
 import type {
     PlatformType,
     UnifiedMessage,
@@ -33,6 +34,7 @@ interface RequestOptions {
     timeout: number;
     maxRetries: number;
     signal?: AbortSignal;
+    usageSink?: UsageSink;
 }
 
 export class AnthropicPlatform extends BasePlatform {
@@ -76,13 +78,13 @@ export class AnthropicPlatform extends BasePlatform {
         messages: UnifiedMessage[],
         config: PlatformConfig
     ): Promise<AsyncIterable<StreamChunk>> {
-        const { model, systemPrompt, timeout = 85000, maxRetries = 3, signal, tools } = config;
+        const { model, systemPrompt, timeout = 85000, maxRetries = 3, signal, tools, usageSink } = config;
 
         this.logMessageContents(messages);
         console.log(`[anthropic] Using model: ${model}`);
 
         const anthropicMessages = transformToAnthropic(messages);
-        const options: RequestOptions = { model, systemPrompt, timeout, maxRetries, signal };
+        const options: RequestOptions = { model, systemPrompt, timeout, maxRetries, signal, usageSink };
 
         if (tools && tools.definitions.length > 0) {
             return this.sendMessageWithTools(anthropicMessages, tools, options);
@@ -135,7 +137,10 @@ export class AnthropicPlatform extends BasePlatform {
             ),
             { timeout, maxRetries, signal }
         );
-        return collectAnthropicRound(stream);
+        const round = await collectAnthropicRound(stream);
+        // Both paths (with and without tools) collect every round here
+        options.usageSink?.addRound(round.usage);
+        return round;
     }
 
     private async *sendWithoutTools(

@@ -125,6 +125,7 @@ export class GrokPlatform extends BasePlatform {
             startedAt,
             signal,
             supportsImageInput: this.getModelCapabilities(model).supportsImageInput,
+            usageSink: config.usageSink,
             openContinuation: (continuation) =>
                 this.sendWithRetry(() => this.createResponseStream(continuation, signal), retryOptions),
         });

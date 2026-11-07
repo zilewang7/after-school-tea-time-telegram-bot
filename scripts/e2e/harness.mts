@@ -513,3 +513,36 @@ export function expectPresent<T>(value: T | undefined, description: string): ass
 
 export const sleep = (ms: number): Promise<void> =>
     new Promise((resolve) => setTimeout(resolve, ms));
+
+/** One reply_metrics row as the phase 3 usage probes read it */
+export interface StoredReplyMetric {
+    versionId: number;
+    model: string;
+    platform: string;
+    route: string | null;
+    commandType: string;
+    outcome: string;
+    errorKind: string | null;
+    errorSummary: string | null;
+    rounds: number | null;
+    promptTokens: number | null;
+    cachedTokens: number | null;
+    cacheWriteTokens: number | null;
+    outputTokens: number | null;
+    thoughtsTokens: number | null;
+    imageOutputTokens: number | null;
+    contextMessages: number | null;
+    contextImages: number | null;
+    requestStartedAt: string | null;
+    firstChunkAt: string | null;
+}
+
+/** Every reply_metrics row of one reply in the test group, by version (read only) */
+export const readReplyMetrics = (firstMessageId: number): Promise<StoredReplyMetric[]> =>
+    queryAll<StoredReplyMetric>(
+        `SELECT versionId, model, platform, route, commandType, outcome, errorKind, errorSummary, rounds,
+                promptTokens, cachedTokens, cacheWriteTokens, outputTokens, thoughtsTokens, imageOutputTokens,
+                contextMessages, contextImages, requestStartedAt, firstChunkAt
+         FROM reply_metrics WHERE chatId = ? AND firstMessageId = ? ORDER BY versionId, id`,
+        [TEST_CHAT_ID, firstMessageId]
+    );

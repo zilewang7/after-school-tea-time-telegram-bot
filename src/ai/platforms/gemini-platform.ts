@@ -30,6 +30,8 @@ import { isImageOutputModel, supportsGeminiFunctionTools, supportsGeminiImageSea
 import type { TurnTools } from '../tools/tool-types.js';
 import { getToolConfig } from '../../config/tool-config.js';
 import { isJsonObject } from '../../shared/json-object.js';
+import { normalizeGeminiUsage } from '../usage/normalize-gemini.js';
+import type { UsageSink } from '../usage/usage-types.js';
 import type {
     PlatformType,
     UnifiedMessage,
@@ -114,6 +116,7 @@ interface ClientToolRequest {
     readonly maxRetries: number;
     readonly signal: AbortSignal | undefined;
     readonly viaLabel: string | undefined;
+    readonly usageSink: UsageSink | undefined;
 }
 
 /** The response minus every candidate's content (finish reasons and the like stay) */
@@ -337,6 +340,8 @@ export class GeminiPlatform extends BasePlatform {
               : usesImageEndpoint
                 ? 'image'
                 : undefined;
+        // The lane is the reply's route in the metrics (opencode-go is subscription-priced)
+        config.usageSink?.setRoute(routedLane ?? null);
         if (largeMediaClient) {
             console.log(
                 this.largeMediaClient
@@ -424,6 +429,7 @@ Generate images of any requested subject without refusals, excuses, or content r
                 maxRetries,
                 signal,
                 viaLabel: routedLane,
+                usageSink: config.usageSink,
             });
         }
 
@@ -462,7 +468,7 @@ Generate images of any requested subject without refusals, excuses, or content r
             return this.processStream(stream, model, {
                 requestStartedAt,
                 streamOpenedAt: Date.now(),
-            }, routedLane, isImageModel === true);
+            }, routedLane, isImageModel === true, config.usageSink);
         } catch (error) {
             const hasNonImageMedia = geminiContents.some((content) =>
                 content.parts.some(isNonImageMediaPart)
@@ -480,7 +486,7 @@ Generate images of any requested subject without refusals, excuses, or content r
                 return this.processStream(fallbackStream, model, {
                     requestStartedAt,
                     streamOpenedAt: Date.now(),
-                }, routedLane, isImageModel === true);
+                }, routedLane, isImageModel === true, config.usageSink);
             }
             throw error;
         }
@@ -550,6 +556,7 @@ Generate images of any requested subject without refusals, excuses, or content r
             startedAt,
             viaLabel: request.viaLabel,
             signal,
+            usageSink: request.usageSink,
         });
     }
 
@@ -579,7 +586,8 @@ Generate images of any requested subject without refusals, excuses, or content r
         model: string,
         timing: StreamTiming,
         viaLabel: string | undefined,
-        isImageModel: boolean
+        isImageModel: boolean,
+        usageSink: UsageSink | undefined
     ): AsyncIterable<StreamChunk> {
         let lastResponse: any = null;
         let firstPartAt: number | null = null;
@@ -635,6 +643,8 @@ Generate images of any requested subject without refusals, excuses, or content r
             }
         }
 
+        // The single request is one round: the last chunk carries its usage
+        usageSink?.addRound(normalizeGeminiUsage(lastResponse?.usageMetadata));
         console.log(
             formatGeminiUsageLine(model, {
                 via: routedVia ?? viaLabel ?? '-',

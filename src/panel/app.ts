@@ -39,6 +39,8 @@ import { registerConversationRoutes } from './routes/conversations.js';
 import { registerExclusionRoutes } from './routes/exclusions.js';
 import { registerModelViewRoute } from './routes/model-view.js';
 import { registerReplyRoute } from './routes/replies.js';
+import { registerStatsRoute } from './routes/stats.js';
+import { registerStatusRoute } from './routes/status.js';
 import { registerStaticRoutes } from './static.js';
 
 export interface PanelAppOptions {
@@ -128,6 +130,8 @@ export const createPanelApp = (options: PanelAppOptions): Hono<PanelEnv> => {
     registerConversationLinksRoute(app, conversationDeps);
     registerReplyRoute(app);
     registerExclusionRoutes(app);
+    registerStatsRoute(app);
+    registerStatusRoute(app, { startedAt: options.startedAt, version: options.version });
 
     // Method-bound rather than app.all, so the request log can tell it from middleware
     app.on(HTTP_METHODS, '/api/*', apiNotFound);

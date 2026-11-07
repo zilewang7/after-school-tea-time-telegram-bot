@@ -34,6 +34,7 @@ const { BotResponse, ButtonState } = await import('../../src/db/index.js');
 const { upsertTelegramUser } = await import('../../src/db/queries/user-queries.js');
 const { loadChatSettingsCache } = await import('../../src/services/chat-settings-service.js');
 const { createPanelApp } = await import('../../src/panel/app.js');
+const { insertReplyMetric } = await import('../../src/db/queries/reply-metrics.js');
 
 type MembershipLookup = import('../../src/panel/access/membership.js').MembershipLookup;
 type PanelApp = ReturnType<typeof createPanelApp>;
@@ -316,7 +317,7 @@ const cases: { name: string; body: () => Promise<void> }[] = [
                     second.attachments[0].sizeBytes === 308,
                 `attachments by kind and size only (got ${JSON.stringify(second.attachments)})`
             );
-            expect(second.hasModelParts === true && second.metrics === null && first.metrics === null, 'modelParts as a flag, metrics null until phase 3');
+            expect(second.hasModelParts === true && second.metrics === null && first.metrics === null, 'modelParts as a flag, no metrics without a reply_metrics row');
             expect(
                 JSON.stringify(second.tools.calls) === JSON.stringify(['search_history: 吃什么']) &&
                     second.tools.sources.length === 1 &&
@@ -332,6 +333,70 @@ const cases: { name: string; body: () => Promise<void> }[] = [
 
             const crossed = await call(`/api/chats/${GROUP}/replies/${otherReplyId}`, ALICE);
             expect(crossed.status === 404, `another chat's reply is a 404 here (got ${crossed.status})`);
+        },
+    },
+    {
+        name: 'reply details carry each version\'s reply_metrics row; observers get it without the trigger user',
+        body: async () => {
+            const startedAt = new Date(Date.now() - 60_000);
+            await insertReplyMetric({
+                chatId: GROUP,
+                userMessageId: rootId,
+                firstMessageId: replyId,
+                versionId: 2,
+                triggerUserId: ALICE.id,
+                model: 'gemini-4-argon',
+                platform: 'gemini',
+                route: null,
+                commandType: 'chat',
+                isRetry: true,
+                startedAt,
+                requestStartedAt: new Date(startedAt.getTime() + 400),
+                firstChunkAt: new Date(startedAt.getTime() + 2400),
+                finishedAt: new Date(startedAt.getTime() + 9000),
+                outcome: 'ok',
+                errorKind: null,
+                errorSummary: null,
+                rounds: 2,
+                toolCalls: 1,
+                toolFailures: 0,
+                toolUsage: [{ name: 'search_history', count: 1, failed: 0 }],
+                promptTokens: 1200,
+                cachedTokens: 800,
+                cacheWriteTokens: null,
+                outputTokens: 90,
+                thoughtsTokens: 40,
+                imageOutputTokens: null,
+                contextMessages: 4,
+                contextImages: 0,
+                textChars: 12,
+                thinkingChars: 0,
+                hasImage: false,
+                imageCount: 0,
+                hasSticker: false,
+                hasFile: false,
+            });
+
+            const observed = await jsonOf(await call(`/api/chats/${GROUP}/replies/${replyId}`, OWNER));
+            const [observedFirst, observedSecond] = observed.versions;
+            expect(observedFirst.metrics === null, 'a version without a row still has no metrics');
+            expect(
+                observedSecond.metrics?.versionId === 2 &&
+                    observedSecond.metrics.firstChunkMs === 2000 &&
+                    observedSecond.metrics.promptTokens === 1200 &&
+                    observedSecond.metrics.rounds === 2,
+                `the version's row is attached (got ${JSON.stringify(observedSecond.metrics)})`
+            );
+            expect(
+                !('triggerUserId' in observedSecond.metrics) && !JSON.stringify(observed).includes(String(ALICE.id)),
+                'the observer gets no trigger user id anywhere'
+            );
+
+            const member = await jsonOf(await call(`/api/chats/${GROUP}/replies/${replyId}`, ALICE));
+            expect(
+                member.versions[1].metrics?.triggerUserId === ALICE.id,
+                `members see who triggered the attempt (got ${JSON.stringify(member.versions[1].metrics)})`
+            );
         },
     },
     {

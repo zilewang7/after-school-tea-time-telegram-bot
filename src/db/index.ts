@@ -19,6 +19,7 @@ import './chatSettingsDTO.js';
 import './globalSettingDTO.js';
 import './settingsAuditDTO.js';
 import './contextExclusionDTO.js';
+import './replyMetricDTO.js';
 import { getBlob } from "../util.js";
 import { addAsyncFileSaveTask, removeAsyncFileSaveTask, findFirstMessageIdByContinuation } from '../state.js';
 import { backfillAnimationMediaKind, backfillPanelRegistry, runSchemaMigrations } from './schema-migrations.js';

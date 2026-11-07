@@ -50,6 +50,7 @@ import type {
     ToolStatus,
 } from '../ai/types.js';
 import { getToolConfig } from '../config/tool-config.js';
+import { noteStreamChunk } from '../services/reply-metrics-draft.js';
 import { findStickerByPackIndex } from '../services/sticker-catalog.js';
 import { downloadStickerPreview } from '../services/sticker-set-service.js';
 
@@ -390,6 +391,8 @@ const createContinuationMessage = async (
 const showToolStatus = (chatContext: ChatContext, status: ToolStatus | undefined): void => {
     chatContext.editor.setStatus(status?.text);
     chatContext.typing.setAction(status?.chatAction ?? 'typing');
+    // The panel's live status shows the same line
+    chatContext.session.statusLine = status?.text ?? null;
 };
 
 /**
@@ -434,6 +437,8 @@ export const processStream = async (
             break;
         }
 
+        // First-chunk time and raw thinking length for the reply metrics
+        noteStreamChunk(session.metrics, chunk);
         state = processChunk(chunk, state, stripLeadingLabel);
         const toolStatusChanged = state.toolStatus !== shownToolStatus;
         if (toolStatusChanged) {

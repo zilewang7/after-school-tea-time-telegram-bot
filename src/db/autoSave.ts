@@ -44,6 +44,7 @@ import { upsertTelegramUser } from './queries/user-queries.js';
 import { harvestChatRegistry } from './queries/panel-registry.js';
 import { SettingsAudit } from './settingsAuditDTO.js';
 import { purgeOrphanedExclusions } from './queries/context-exclusions.js';
+import { recordCleanupRun } from '../services/cleanup-status.js';
 import { entitiesToMarkdown, richBlocksToMarkdown } from 'telegram-md-entities';
 import { extractCustomEmojiOccurrences } from '../services/custom-emoji-extractor.js';
 import { acquireCustomEmojiAttachments } from '../services/custom-emoji-service.js';
@@ -1611,6 +1612,7 @@ export const clearExpiredData = async (): Promise<void> => {
 
         const elapsedMs = Date.now() - startedAt;
         const summary = `Cleared ${messageResult} messages, ${attachmentResult} attachments, ${revisionResult} revisions, ${messageLinkResult} message links, ${botResponseResult} bot responses before ${oneWeekAgo.toISOString()}; dropped ${exclusionResult} orphaned context exclusions; cleared media bytes of ${mediaClearedCount} messages before ${oneDayAgo.toISOString()}; deleted ${staleGcsRows.length} GCS refs; evicted ${mediaCacheResult} media cache entries, ${emojiAssetResult} emoji assets, ${linkPreviewResult} link previews, ${tgLinkResult} tg message link snapshots; cleared ${settingsAuditResult} settings audit rows before ${oneYearAgo.toISOString()} (${elapsedMs}ms)`;
+        recordCleanupRun(summary, elapsedMs);
         if (elapsedMs > CLEANUP_SLOW_MS) {
             console.warn(`[autoClear] slow cleanup — ${summary}`);
         } else {

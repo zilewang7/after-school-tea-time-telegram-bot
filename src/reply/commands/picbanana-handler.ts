@@ -15,6 +15,7 @@ import {
     handleResponseError,
 } from './../response-handler.js';
 import type { UnifiedContentPart } from '../../ai/types.js';
+import { markRequestStarted, recordReferenceImages } from '../../services/reply-metrics-draft.js';
 
 /**
  * Picbanana command data
@@ -98,13 +99,17 @@ export const handlePicbananaCommand = async (
 
     // Build context from parts
     const messages = buildContextFromParts(contentParts);
+    const { metrics } = chatContext.session;
+    recordReferenceImages(metrics, commandData.referenceImages.length);
 
     // Send to Gemini image model; 429s are ridden out until an image comes back
+    markRequestStarted(metrics);
     const streamResult = await to(
         sendMessage(messages, {
             model: GEMINI_IMAGE_MODEL,
             maxRetries: 50,
             signal: chatContext.session.streamController.signal,
+            usageSink: metrics.usage,
         })
     );
 

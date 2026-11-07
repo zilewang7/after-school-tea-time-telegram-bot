@@ -2,6 +2,7 @@
  * AI Platform unified types
  */
 import type { TurnTools } from './tools/tool-types.js';
+import type { UsageSink } from './usage/usage-types.js';
 
 // Platform type identifier
 export type PlatformType = 'openai' | 'gemini' | 'deepseek' | 'grok' | 'mimo' | 'anthropic';
@@ -233,6 +234,8 @@ export interface PlatformConfig {
     tools?: TurnTools;
     /** Image model output knobs (aspect ratio, size, instruction) */
     imageOutput?: ImageOutputOptions;
+    /** The reply's usage collector: the platform reports each round as it finishes */
+    usageSink?: UsageSink;
 }
 
 // Model capabilities

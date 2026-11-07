@@ -34,6 +34,10 @@ import {
     collectResponsesRound,
     type ResponsesRound,
 } from './openai/responses-tool-round.js';
+import { normalizeImagesUsage } from '../usage/normalize-images.js';
+import { normalizeResponsesUsage } from '../usage/normalize-responses.js';
+import type { UsageSink } from '../usage/usage-types.js';
+import { isJsonObject } from '../../shared/json-object.js';
 import type {
     PlatformType,
     UnifiedMessage,
@@ -158,7 +162,7 @@ export class OpenAIPlatform extends BasePlatform {
             { timeout, maxRetries, signal }
         );
 
-        return this.processStream(stream);
+        return this.processStream(stream, config.usageSink);
     }
 
     private isReasoningModel(model: string): boolean {
@@ -261,7 +265,7 @@ export class OpenAIPlatform extends BasePlatform {
         config: PlatformConfig,
         tools: TurnTools
     ): AsyncGenerator<StreamChunk, void, undefined> {
-        const { model, systemPrompt, timeout = 85000, maxRetries = 3, signal } = config;
+        const { model, systemPrompt, timeout = 85000, maxRetries = 3, signal, usageSink } = config;
 
         this.logMessageContents(messages);
         console.log(`[openai] Using model: ${model} with ${tools.definitions.length} tool(s)`);
@@ -283,7 +287,9 @@ export class OpenAIPlatform extends BasePlatform {
                     () => this.createResponseStream(request, signal),
                     { timeout, maxRetries, signal }
                 );
-                return collectResponsesRound(stream, roundIndex);
+                const round = await collectResponsesRound(stream, roundIndex);
+                usageSink?.addRound(normalizeResponsesUsage(round.completedResponse?.usage));
+                return round;
             },
             appendRound: (round, executedCalls) => {
                 currentInput = [...currentInput, ...buildToolRoundMessages(round.text, executedCalls)];
@@ -346,7 +352,8 @@ export class OpenAIPlatform extends BasePlatform {
     }
 
     private async *processStream(
-        stream: Stream<ResponseStreamEvent>
+        stream: Stream<ResponseStreamEvent>,
+        usageSink: UsageSink | undefined
     ): AsyncIterable<StreamChunk> {
         let completedResponse: Response | null = null;
 
@@ -384,6 +391,7 @@ export class OpenAIPlatform extends BasePlatform {
                 throw new Error(event.message || 'OpenAI stream error');
             }
         }
+        usageSink?.addRound(normalizeResponsesUsage(completedResponse?.usage));
 
         // Extract images from completed response output items
         if (completedResponse?.output) {
@@ -405,7 +413,7 @@ export class OpenAIPlatform extends BasePlatform {
         messages: UnifiedMessage[],
         config: PlatformConfig
     ): AsyncIterable<StreamChunk> {
-        const { model, systemPrompt, timeout = 85000, maxRetries = 3, signal } = config;
+        const { model, systemPrompt, timeout = 85000, maxRetries = 3, signal, usageSink } = config;
 
         this.logMessageContents(messages);
         console.log(`[openai] Image chat mode: proxy ${model} through ${OPENAI_IMAGE_CHAT_BASE_MODEL} with tool`);
@@ -459,7 +467,15 @@ export class OpenAIPlatform extends BasePlatform {
             { timeout, maxRetries, signal }
         );
 
-        yield* this.processImageChatStream(stream, model, referenceImages, input, request.instructions ?? '', signal);
+        yield* this.processImageChatStream(
+            stream,
+            model,
+            referenceImages,
+            input,
+            request.instructions ?? '',
+            signal,
+            usageSink
+        );
     }
 
     private async *processImageChatStream(
@@ -468,7 +484,8 @@ export class OpenAIPlatform extends BasePlatform {
         referenceImages: string[],
         originalInput: EasyInputMessage[],
         instructions: string,
-        signal?: AbortSignal
+        signal?: AbortSignal,
+        usageSink?: UsageSink
     ): AsyncIterable<StreamChunk> {
         let completedResponse: Response | null = null;
         let functionCallArgs = '';
@@ -529,6 +546,8 @@ export class OpenAIPlatform extends BasePlatform {
             }
         }
 
+        // Reported now: the continuation below replaces completedResponse
+        usageSink?.addRound(normalizeResponsesUsage(completedResponse?.usage));
         console.log('[openai] Image chat stream done:', { hasFunctionCall, functionCallName, argsLength: functionCallArgs.length, assistantTextLength: assistantText.length });
 
         if (hasFunctionCall && functionCallName === 'generate_image') {
@@ -551,7 +570,13 @@ export class OpenAIPlatform extends BasePlatform {
                     allImages: referenceImages.map((img, i) => `[${i}] ${Math.round(img.length * 3 / 4 / 1024)}KB`),
                     imageModel,
                 });
-                const imageBuffer = await this.executeImageGeneration(imageModel, args.prompt, selectedImages, signal);
+                const imageBuffer = await this.executeImageGeneration(
+                    imageModel,
+                    args.prompt,
+                    selectedImages,
+                    signal,
+                    usageSink
+                );
                 yield { type: 'image', imageData: imageBuffer };
                 toolOutput = 'Image generated and sent to the user successfully.';
                 toolSuccess = true;
@@ -586,6 +611,8 @@ export class OpenAIPlatform extends BasePlatform {
                 };
 
                 const continueStream = await this.createResponseStream(continueRequest, signal);
+                let continuationResponse: Response | null = null;
+                let continuationFailed = false;
 
                 for await (const event of continueStream) {
                     if (event.type === 'response.output_text.delta' && event.delta) {
@@ -602,16 +629,22 @@ export class OpenAIPlatform extends BasePlatform {
                     }
                     if (event.type === 'response.completed') {
                         completedResponse = event.response;
+                        continuationResponse = event.response;
                         continue;
                     }
                     if (event.type === 'response.failed') {
                         console.error('[openai] Tool callback response failed:', event.response.error);
+                        continuationFailed = true;
                         break;
                     }
                     if (event.type === 'error') {
                         console.error('[openai] Tool callback stream error:', event.message);
+                        continuationFailed = true;
                         break;
                     }
+                }
+                if (!continuationFailed) {
+                    usageSink?.addRound(normalizeResponsesUsage(continuationResponse?.usage));
                 }
             } catch (error) {
                 console.error('[openai] Tool result callback failed:', error);
@@ -650,7 +683,8 @@ export class OpenAIPlatform extends BasePlatform {
         imageModel: string,
         prompt: string,
         referenceImages: string[],
-        signal?: AbortSignal
+        signal?: AbortSignal,
+        usageSink?: UsageSink
     ): Promise<Buffer> {
         const imageFiles = await Promise.all(
             referenceImages.map((img, i) => {
@@ -687,6 +721,9 @@ export class OpenAIPlatform extends BasePlatform {
             maxRetries: 10,
             signal,
         });
+        // The GPT image models report token usage here; whether the relay passes it on is unconfirmed
+        const responseRecord: unknown = response;
+        usageSink?.addRound(normalizeImagesUsage(isJsonObject(responseRecord) ? responseRecord.usage : undefined));
 
         return this.extractImageBuffer(response);
     }
@@ -719,7 +756,7 @@ export class OpenAIPlatform extends BasePlatform {
         messages: UnifiedMessage[],
         config: PlatformConfig
     ): AsyncIterable<StreamChunk> {
-        const { model, signal } = config;
+        const { model, signal, usageSink } = config;
 
         this.logMessageContents(messages);
         console.log('[openai] Generating image with model:', model);
@@ -741,7 +778,7 @@ export class OpenAIPlatform extends BasePlatform {
 
         console.log('[openai] Image generation:', { prompt, referenceImageCount: referenceImages.length });
 
-        const imgBuffer = await this.executeImageGeneration(model, prompt, referenceImages, signal);
+        const imgBuffer = await this.executeImageGeneration(model, prompt, referenceImages, signal, usageSink);
         yield { type: 'image' as const, imageData: imgBuffer };
         yield { type: 'done' };
     }

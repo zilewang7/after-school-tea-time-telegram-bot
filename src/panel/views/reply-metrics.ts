@@ -1,25 +1,32 @@
 /**
- * Per-version reply metrics of the reply detail view.
- *
- * PHASE 3 HOOK: reply_metrics does not exist yet, so every version shows
- * `metrics: null` ("无指标"). Phase 3 replaces `loadReplyMetrics` with a read
- * of every reply_metrics row of (chatId, firstMessageId) — index
- * reply_metrics_chat_first — keyed by versionId, and replaces
- * `ReplyMetricsView` with the real shape. For observers it must drop
- * triggerUserId and any other per-person column, keeping only timings,
- * tokens, tools, outcome and errorKind (design §6.2 回复详情).
+ * Per-version reply metrics of the reply detail view: the reply_metrics row
+ * each version wrote (the newest one, should a version ever have written
+ * several). Versions without a row were generated before metrics existed, or
+ * their write failed, and show `metrics: null` ("无指标"). Observers get the
+ * rows without triggerUserId (listReplyMetricsByReply redacts them).
  */
 import type { VisibleAccess } from '../types.js';
+import { listReplyMetricsByReply, type ReplyMetricView } from './reply-metrics-view.js';
 
-/** One version's metrics as the API returns them (phase 3 defines the fields) */
-export type ReplyMetricsView = Readonly<Record<string, unknown>>;
+/** One version's metrics as the API returns them */
+export type ReplyMetricsView = ReplyMetricView;
 
 /** versionId → that version's metrics */
 export type ReplyMetricsByVersion = ReadonlyMap<number, ReplyMetricsView>;
 
-/** Phase 3: read reply_metrics here, redacted for observers. Until then nothing is recorded. */
+const newestOf = (rows: readonly ReplyMetricView[]): ReplyMetricView | null =>
+    rows.reduce<ReplyMetricView | null>((newest, row) => (newest === null || row.id > newest.id ? row : newest), null);
+
 export const loadReplyMetrics = async (
-    _chatId: number,
-    _firstMessageId: number,
-    _access: VisibleAccess
-): Promise<ReplyMetricsByVersion | null> => null;
+    chatId: number,
+    firstMessageId: number,
+    access: VisibleAccess
+): Promise<ReplyMetricsByVersion> => {
+    const rowsByVersion = await listReplyMetricsByReply(chatId, firstMessageId, { access });
+    const newestByVersion = new Map<number, ReplyMetricsView>();
+    for (const [versionId, rows] of rowsByVersion) {
+        const newest = newestOf(rows);
+        if (newest !== null) newestByVersion.set(versionId, newest);
+    }
+    return newestByVersion;
+};

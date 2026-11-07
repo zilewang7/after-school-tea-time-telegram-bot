@@ -55,7 +55,7 @@ export interface ReplyVersionView {
     wasStoppedByUser: boolean;
     attachments: AttachmentView[];
     hasModelParts: boolean;
-    /** reply_metrics of this version; null until phase 3, and for versions without a row */
+    /** reply_metrics of this version; null for versions without a row */
     metrics: ReplyMetricsView | null;
 }
 

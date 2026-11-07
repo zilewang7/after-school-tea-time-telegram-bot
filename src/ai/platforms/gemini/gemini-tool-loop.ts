@@ -52,6 +52,8 @@ import {
     formatGeminiUsageLine,
     type GeminiRequestUsage,
 } from './gemini-usage-log.js';
+import { normalizeGeminiUsage } from '../../usage/normalize-gemini.js';
+import type { UsageSink } from '../../usage/usage-types.js';
 
 /** A function call Gemini could not produce: retried once as the final round */
 const FAILED_CALL_FINISH_REASONS: ReadonlySet<FinishReason> = new Set([
@@ -72,6 +74,8 @@ export interface GeminiToolLoopOptions {
     /** The lane the platform picked, for the usage lines */
     readonly viaLabel: string | undefined;
     readonly signal?: AbortSignal;
+    /** Gets every round's usage as soon as the round has streamed */
+    readonly usageSink?: UsageSink;
 }
 
 /**
@@ -122,7 +126,7 @@ const doneChunk = (lastChunk: GenerateContentResponse | null, tally: ToolUsageTa
 export async function* runGeminiToolLoop(
     options: GeminiToolLoopOptions
 ): AsyncGenerator<StreamChunk, void, undefined> {
-    const { model, tools, firstRound, openRound, startedAt, viaLabel, signal } = options;
+    const { model, tools, firstRound, openRound, startedAt, viaLabel, signal, usageSink } = options;
     const deadlineMs = options.deadlineMs ?? TOOL_LOOP_DEADLINE_MS;
     const deadlineAt = startedAt + deadlineMs;
     const tally = createToolUsageTally();
@@ -143,6 +147,7 @@ export async function* runGeminiToolLoop(
         lastChunk = round.lastChunk;
         groundings.push(...round.groundings);
         roundUsages.push(round.usage);
+        usageSink?.addRound(normalizeGeminiUsage(round.usage.usage));
         console.log(
             formatGeminiUsageLine(model, round.usage, {
                 roundNumber,
