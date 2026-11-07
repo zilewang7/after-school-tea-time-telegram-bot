@@ -50,3 +50,34 @@ export const describeWriteFailure = (failure: ApiFailure): WriteFailureView =>
             suggestRefresh: false,
         }))
         .exhaustive();
+
+const ISSUE_NOT_FOUND_MESSAGE = '找不到这个 issue，或你没有权限查看';
+
+/** A failed issue read; hidden and missing issues are the same 404 */
+export const describeIssueReadFailure = (failure: ApiFailure): string =>
+    match(failure)
+        .with({ kind: 'http', status: 404 }, () => ISSUE_NOT_FOUND_MESSAGE)
+        .otherwise(describeReadFailure);
+
+const SECONDS_PER_MINUTE = 60;
+
+const issueQuotaMessage = (retryAfterSeconds: number | null): string =>
+    retryAfterSeconds === null
+        ? '提交过于频繁，请稍后再试'
+        : `提交过于频繁，请 ${Math.max(1, Math.ceil(retryAfterSeconds / SECONDS_PER_MINUTE))} 分钟后再试`;
+
+/** A failed POST /api/issues; there is nothing to refresh, so the outcome-unknown cases point to the list */
+export const describeIssueCreateFailure = (failure: ApiFailure): WriteFailureView =>
+    match(failure)
+        .with({ kind: 'http', status: 429 }, ({ retryAfterSeconds }) => ({
+            message: issueQuotaMessage(retryAfterSeconds),
+            suggestRefresh: false,
+        }))
+        .with(
+            { kind: 'network' },
+            { kind: 'unreachable', serverMessage: P.nullish },
+            { kind: 'http', status: P.union(504, 524) },
+            { kind: 'http', code: 'timeout' },
+            () => ({ message: '未确认是否已提交，请到 Issue 列表核对', suggestRefresh: false })
+        )
+        .otherwise(describeWriteFailure);

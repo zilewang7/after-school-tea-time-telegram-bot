@@ -1,4 +1,5 @@
 import { ChatListPage } from '../pages/chat-list/chat-list-page';
+import { HomeOpenIssuesBadge } from '../pages/issues/issue-tab-badges';
 import { lazyPage } from './lazy-page';
 import type { TabDefinition } from './tab-types';
 
@@ -32,6 +33,15 @@ export const HOME_TABS: readonly TabDefinition[] = [
     // [F3 slot] 状态 (id 'status', path 'status') and 统计 (id 'stats', path 'stats'), owner only
     // [F3 slot end]
     // [F4 slot] Issue (id 'issues', path 'issues')
+    {
+        id: 'issues',
+        label: 'Issue',
+        path: 'issues',
+        // Everyone: non-owners see the issues of the chats they are a member of
+        isVisible: () => true,
+        page: lazyPage(() => import('../pages/issues/issue-list/issue-tabs'), 'HomeIssuesTab'),
+        badge: HomeOpenIssuesBadge,
+    },
     // [F4 slot end]
     homeSettingsTab,
 ];

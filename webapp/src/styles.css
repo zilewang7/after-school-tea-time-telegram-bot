@@ -518,3 +518,116 @@ details.audit-change[open] {
     flex-direction: column;
     gap: 4px;
 }
+
+/* Choice chips (filters and single-choice fields) */
+
+.chips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+}
+
+.chip {
+    padding: 5px 12px;
+    border: 1px solid var(--color-separator);
+    border-radius: 999px;
+    background: var(--color-bg);
+    color: var(--color-text);
+    font: inherit;
+    font-size: 14px;
+    cursor: pointer;
+}
+
+.chip[aria-checked='true'] {
+    border-color: var(--color-button);
+    background: var(--color-button);
+    color: var(--color-button-text);
+}
+
+.chip:disabled {
+    opacity: 0.5;
+    cursor: default;
+}
+
+/* Issues */
+
+/* A Link styled as a button (「提 issue」) */
+a.button {
+    display: inline-block;
+    text-decoration: none;
+}
+
+.filter-bar {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.filter-row {
+    display: flex;
+    gap: 8px;
+}
+
+.filter-row > .field {
+    flex: 1;
+    min-width: 0;
+}
+
+.issue-list {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    transition: opacity 0.15s;
+}
+
+/* Old rows stay on screen, dimmed, while new filters load */
+.issue-list.refreshing {
+    opacity: 0.5;
+    pointer-events: none;
+}
+
+.issue-title {
+    min-width: 0;
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+    overflow: hidden;
+    overflow-wrap: anywhere;
+}
+
+.issue-text-input {
+    min-height: 96px;
+    resize: vertical;
+    line-height: 1.5;
+}
+
+.facts {
+    display: grid;
+    grid-template-columns: auto 1fr;
+    gap: 6px 12px;
+    margin: 0;
+}
+
+.facts dt {
+    color: var(--color-hint);
+    font-size: 14px;
+}
+
+.facts dd {
+    margin: 0;
+    min-width: 0;
+    overflow-wrap: anywhere;
+}
+
+.prewrap {
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+}
+
+/* A long issue body starts folded, fading out at the bottom */
+.prewrap.folded {
+    max-height: 14em;
+    overflow: hidden;
+    -webkit-mask-image: linear-gradient(to bottom, #000 70%, transparent);
+    mask-image: linear-gradient(to bottom, #000 70%, transparent);
+}
