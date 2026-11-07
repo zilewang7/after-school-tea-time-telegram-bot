@@ -43,6 +43,7 @@ import type { Message as TgMessage, MessageEntity, MessageOrigin, RichBlock, Ric
 import { upsertTelegramUser } from './queries/user-queries.js';
 import { harvestChatRegistry } from './queries/panel-registry.js';
 import { SettingsAudit } from './settingsAuditDTO.js';
+import { purgeOrphanedExclusions } from './queries/context-exclusions.js';
 import { entitiesToMarkdown, richBlocksToMarkdown } from 'telegram-md-entities';
 import { extractCustomEmojiOccurrences } from '../services/custom-emoji-extractor.js';
 import { acquireCustomEmojiAttachments } from '../services/custom-emoji-service.js';
@@ -1527,6 +1528,10 @@ export const clearExpiredData = async (): Promise<void> => {
             (chunk) => BotResponse.destroy({ where: { messageId: { [Op.in]: chunk } } })
         );
 
+        // 面板排除记录随所属消息失效：超过 7 天且消息行与回复行都已删除才清理
+        // （bot 行的 date 每次收尾 / 切换版本都会重置，单独按 7 天过期会让被排除的回复溜回上下文）
+        const exclusionResult = await purgeOrphanedExclusions(oneWeekAgo);
+
         // 媒体字节超过 1 天即清空，保留文字上下文（回复树仍按 id 引用旧消息）
         const messagesWithStaleBytes = await Message.findAll({
             where: {
@@ -1605,7 +1610,7 @@ export const clearExpiredData = async (): Promise<void> => {
         );
 
         const elapsedMs = Date.now() - startedAt;
-        const summary = `Cleared ${messageResult} messages, ${attachmentResult} attachments, ${revisionResult} revisions, ${messageLinkResult} message links, ${botResponseResult} bot responses before ${oneWeekAgo.toISOString()}; cleared media bytes of ${mediaClearedCount} messages before ${oneDayAgo.toISOString()}; deleted ${staleGcsRows.length} GCS refs; evicted ${mediaCacheResult} media cache entries, ${emojiAssetResult} emoji assets, ${linkPreviewResult} link previews, ${tgLinkResult} tg message link snapshots; cleared ${settingsAuditResult} settings audit rows before ${oneYearAgo.toISOString()} (${elapsedMs}ms)`;
+        const summary = `Cleared ${messageResult} messages, ${attachmentResult} attachments, ${revisionResult} revisions, ${messageLinkResult} message links, ${botResponseResult} bot responses before ${oneWeekAgo.toISOString()}; dropped ${exclusionResult} orphaned context exclusions; cleared media bytes of ${mediaClearedCount} messages before ${oneDayAgo.toISOString()}; deleted ${staleGcsRows.length} GCS refs; evicted ${mediaCacheResult} media cache entries, ${emojiAssetResult} emoji assets, ${linkPreviewResult} link previews, ${tgLinkResult} tg message link snapshots; cleared ${settingsAuditResult} settings audit rows before ${oneYearAgo.toISOString()} (${elapsedMs}ms)`;
         if (elapsedMs > CLEANUP_SLOW_MS) {
             console.warn(`[autoClear] slow cleanup — ${summary}`);
         } else {

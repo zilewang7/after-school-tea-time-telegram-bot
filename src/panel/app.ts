@@ -10,9 +10,11 @@
  * Built without I/O: offline cases drive it through `app.request()` with a
  * fake membership lookup and a scratch static root.
  */
+import { Api } from 'grammy';
 import { Hono, type Context } from 'hono';
 import { bodyLimit } from 'hono/body-limit';
 import { createMembershipChecker, type MembershipLookup } from './access/membership.js';
+import type { ChatNameLookup } from './chat-names.js';
 import type { PanelEnv } from './context.js';
 import { errorBody, PANEL_MESSAGES } from './errors.js';
 import { createAuthMiddleware } from './middleware/auth.js';
@@ -28,6 +30,13 @@ import { registerGlobalRoutes } from './routes/global.js';
 import { registerHealthRoute } from './routes/health.js';
 import { registerMeRoute } from './routes/me.js';
 import { registerSettingsPreviewRoute } from './routes/settings-preview.js';
+import type { ConversationRouteDeps } from './routes/conversation-deps.js';
+import { registerConversationExportRoute } from './routes/conversation-export.js';
+import { registerConversationLinksRoute } from './routes/conversation-links.js';
+import { registerConversationRoutes } from './routes/conversations.js';
+import { registerExclusionRoutes } from './routes/exclusions.js';
+import { registerModelViewRoute } from './routes/model-view.js';
+import { registerReplyRoute } from './routes/replies.js';
 import { registerStaticRoutes } from './static.js';
 
 export interface PanelAppOptions {
@@ -45,6 +54,16 @@ export interface PanelAppOptions {
     rateLimit?: { limit: number; windowMs: number };
     /** Ceiling of one API handler (default 30s) */
     handlerTimeoutMs?: number;
+    /**
+     * getChat on the panel's own Api (conversation links refresh a stale
+     * username with it); tests pass a fake. Absent: the stored username only.
+     */
+    chatLookup?: ChatNameLookup;
+    /**
+     * The panel's own Api. The model view hands it to the tool constructors,
+     * which never call it there; default: a client for botToken (no I/O).
+     */
+    toolApi?: Api;
 }
 
 const BODY_LIMIT_BYTES = 32 * 1024;
@@ -86,6 +105,19 @@ export const createPanelApp = (options: PanelAppOptions): Hono<PanelEnv> => {
     registerSettingsPreviewRoute(app);
     registerGlobalRoutes(app);
     registerAuditRoute(app);
+
+    // Conversations (phase 2)
+    const conversationDeps: ConversationRouteDeps = {
+        toolApi: options.toolApi ?? new Api(options.botToken),
+        chatLookup: options.chatLookup ?? null,
+        now,
+    };
+    registerConversationRoutes(app, conversationDeps);
+    registerModelViewRoute(app, conversationDeps);
+    registerConversationExportRoute(app, conversationDeps);
+    registerConversationLinksRoute(app, conversationDeps);
+    registerReplyRoute(app);
+    registerExclusionRoutes(app);
 
     // Method-bound rather than app.all, so the request log can tell it from middleware
     app.on(HTTP_METHODS, '/api/*', apiNotFound);

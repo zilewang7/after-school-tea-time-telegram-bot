@@ -5,12 +5,12 @@
 import { match } from 'ts-pattern';
 import { Message } from '../db/messageDTO.js';
 import {
-    getRepliesHistory,
     getContextMessage,
     getFileContentsOfMessage,
     toContextMessage,
     type ContextMessage,
 } from '../db/queries/context-queries.js';
+import { assembleContextMessages, isSubImage, type ContextNumbering } from './context-assembly.js';
 import { getLinkPreviewParts } from '../services/luoxu-preview-service.js';
 import {
     getTgMessageLinkPreviewParts,
@@ -34,6 +34,14 @@ import { dedupeContextMedia, type MediaDedupeInput } from './media-dedupe.js';
 import type { ContextIndex, ContextIndexEntry } from './context-index.js';
 import type { UnifiedMessage, UnifiedContentPart, ModelCapabilities } from '../ai/types.js';
 
+// The side-effect-free half of buildContext, shared with the panel's tree view
+export {
+    assembleContextMessages,
+    type AssembleContextOptions,
+    type AssembledContext,
+    type ContextNumbering,
+} from './context-assembly.js';
+
 /** Sticker kinds as recorded by autoSave when the media was captured */
 const STICKER_KINDS = new Set(['sticker', 'video_sticker', 'animated_sticker', 'animated_sticker_still']);
 /** Stickers that are short video clips rather than a single still frame */
@@ -43,19 +51,8 @@ const ANIMATED_STICKER_KINDS = new Set(['video_sticker', 'animated_sticker']);
 const REPLY_EXCERPT_CHARS = 40;
 const QUOTE_EXCERPT_CHARS = 300;
 
-/**
- * How many replied-to messages may be pulled into the context when they are not
- * part of the assembled tree. Bounded because each one drags its media along.
- */
-const MAX_PULLED_REPLY_TARGETS = 8;
-
-/**
- * Media-group members other than the first carry no content of their own — their
- * media is attached to the group's first message, which is the one in context.
- */
-const SUB_IMAGE_PATTERN = /sub image of \[\w+\]/;
-const isSubImage = (msg: ContextMessage): boolean =>
-    Boolean(msg.text && SUB_IMAGE_PATTERN.test(msg.text));
+/** What a reply to an excluded or unknown message reads as */
+const UNSEEN_REPLY_TARGET = '[replying to a message you cannot see]';
 
 const isSticker = (part: UnifiedContentPart): boolean =>
     Boolean(part.mediaKind && STICKER_KINDS.has(part.mediaKind));
@@ -186,34 +183,6 @@ const oneLineExcerpt = (text: string, maxChars: number): string => {
 };
 
 /**
- * Numbering of one assembled context: a `#N` label for every message plus a
- * lookup of everything in the context, so a reply can point at a number instead
- * of a truncated excerpt.
- */
-interface ContextNumbering {
-    /** messageId → display number; every message in the context has one */
-    numberOf: Map<number, number>;
-    /** Every message in the assembled context, by message id */
-    byId: Map<number, ContextMessage>;
-}
-
-/**
- * Number every message in context order, the bot's own replies included, so it
- * can point at what it said itself (`我在 #5 说过`) instead of describing it.
- */
-const buildContextNumbering = (messages: ContextMessage[]): ContextNumbering => {
-    const numberOf = new Map<number, number>();
-    const byId = new Map<number, ContextMessage>();
-
-    for (const message of messages) {
-        byId.set(message.messageId, message);
-        numberOf.set(message.messageId, numberOf.size + 1);
-    }
-
-    return { numberOf, byId };
-};
-
-/**
  * Publish `#N → messageId` for the display layer, which turns the `#N` the
  * model writes back into clickable message links. Display-only: the reply that
  * gets persisted keeps the plain numbers.
@@ -235,54 +204,16 @@ const publishContextNumbering = (
 };
 
 /**
- * Pull in messages that are replied to but missing from the assembled tree
- * (e.g. a /chat-added message answering something outside the reply chain), so
- * the reply can be referenced by number rather than by excerpt. One level only,
- * capped, chronological order preserved (message ids grow with time, so the
- * current message stays last).
- */
-const withMissingReplyTargets = async (
-    chatId: number,
-    messages: ContextMessage[],
-    excludeMessageIds: number[]
-): Promise<ContextMessage[]> => {
-    const present = new Set(messages.map((message) => message.messageId));
-    const excluded = new Set(excludeMessageIds);
-
-    const missingIds = [
-        ...new Set(
-            messages
-                .map((message) => message.replyToId)
-                .filter((id): id is number => id !== null && !present.has(id) && !excluded.has(id))
-        ),
-    ];
-    if (!missingIds.length) return messages;
-
-    if (missingIds.length > MAX_PULLED_REPLY_TARGETS) {
-        console.log(
-            `[context-builder] ${missingIds.length - MAX_PULLED_REPLY_TARGETS} replied-to message(s) left out of context (cap ${MAX_PULLED_REPLY_TARGETS})`
-        );
-    }
-
-    const pulled: ContextMessage[] = [];
-    for (const messageId of missingIds.slice(0, MAX_PULLED_REPLY_TARGETS)) {
-        const target = await getContextMessage(chatId, messageId);
-        // Sub-images stay out: their media already rides on the group's first message
-        if (target && !isSubImage(target)) pulled.push(target);
-    }
-    if (!pulled.length) return messages;
-
-    return [...messages, ...pulled].sort((a, b) => a.messageId - b.messageId);
-};
-
-/**
  * Render `[replying to …]` for one reply target: by context number when the
- * target is in the context, otherwise by a short excerpt of it.
+ * target is in the context, otherwise by a short excerpt of it. An excluded
+ * target is never quoted: the model only learns that something it cannot see
+ * was answered.
  */
 const renderReplyTarget = async (
     chatId: number,
     replyToId: number,
-    index: ContextNumbering
+    index: ContextNumbering,
+    exclusions: ReadonlySet<number>
 ): Promise<string> => {
     const target = index.byId.get(replyToId);
 
@@ -297,7 +228,10 @@ const renderReplyTarget = async (
             : `[replying to #${targetNumber} ${target.userName}${mediumNote}]`;
     }
 
+    if (exclusions.has(replyToId)) return UNSEEN_REPLY_TARGET;
     const replyMsg = await getContextMessage(chatId, replyToId);
+    // A continuation id resolves to its reply's first message, the excluded id
+    if (replyMsg && exclusions.has(replyMsg.messageId)) return UNSEEN_REPLY_TARGET;
     if (replyMsg && isSubImage(replyMsg)) {
         return `[replying to one of ${replyMsg.userName}'s attached media]`;
     }
@@ -311,7 +245,7 @@ const renderReplyTarget = async (
     if (replyMsg && medium) {
         return `[replying to ${replyMsg.userName}: ${medium}]`;
     }
-    return '[replying to a message you cannot see]';
+    return UNSEEN_REPLY_TARGET;
 };
 
 /**
@@ -373,7 +307,8 @@ const renderChatCommandAnnotation = (
  */
 const buildReplyAnnotations = async (
     msg: ContextMessage,
-    index: ContextNumbering
+    index: ContextNumbering,
+    exclusions: ReadonlySet<number>
 ): Promise<string[]> => {
     const annotations: string[] = [];
 
@@ -382,7 +317,7 @@ const buildReplyAnnotations = async (
         const annotation = renderChatCommandAnnotation(msg, index);
         if (annotation) annotations.push(annotation);
     } else if (msg.replyToId) {
-        annotations.push(await renderReplyTarget(msg.chatId, msg.replyToId, index));
+        annotations.push(await renderReplyTarget(msg.chatId, msg.replyToId, index, exclusions));
     }
 
     if (msg.quoteText) {
@@ -393,17 +328,14 @@ const buildReplyAnnotations = async (
 };
 
 /**
- * Render the model-facing header: `#N 用户名 [annotation…]`, without the colon.
- * All metadata (context number, forward origin, reply context, attached media)
- * becomes a prefix / square-bracket annotations after the name. The colon is
- * added by renderUserText, and only when there is a body to follow it.
+ * The square-bracket annotations of a user message's header, in header order:
+ * forward origin, inline bot, reply context, attached media.
  */
-const renderMessageHeader = (
+const headerAnnotationsOf = (
     msg: ContextMessage,
-    contextNumber: number | undefined,
     replyAnnotations: string[],
     mediaVisible: boolean
-): string => {
+): string[] => {
     const annotations: string[] = [];
     if (msg.forwardOrigin) {
         annotations.push(`[forwarded from ${msg.forwardOrigin}]`);
@@ -423,9 +355,36 @@ const renderMessageHeader = (
         const invisible = !mediaVisible && !hint.includes('you cannot see it');
         annotations.push(`[sent ${hint}${invisible ? ' — not visible to you' : ''}]`);
     }
+    return annotations;
+};
+
+/**
+ * Render the model-facing header: `#N 用户名 [annotation…]`, without the colon.
+ * All metadata (context number, forward origin, reply context, attached media)
+ * becomes a prefix / square-bracket annotations after the name. The colon is
+ * added by renderUserText, and only when there is a body to follow it.
+ */
+const renderMessageHeader = (
+    msg: ContextMessage,
+    contextNumber: number | undefined,
+    replyAnnotations: string[],
+    mediaVisible: boolean
+): string => {
+    const annotations = headerAnnotationsOf(msg, replyAnnotations, mediaVisible);
     const numberPrefix = contextNumber === undefined ? '' : `#${contextNumber} `;
     return `${numberPrefix}${msg.userName}${annotations.length ? ' ' + annotations.join(' ') : ''}`;
 };
+
+/**
+ * The header annotations of one user message as the model reads them in the
+ * given context, for the panel's tree view. Media are taken as visible: the
+ * tree is not built for one model and never loads media bytes.
+ */
+export const describeMessageAnnotations = async (
+    msg: ContextMessage,
+    context: { numbering: ContextNumbering; exclusions: ReadonlySet<number> }
+): Promise<string[]> =>
+    headerAnnotationsOf(msg, await buildReplyAnnotations(msg, context.numbering, context.exclusions), true);
 
 /**
  * Assemble the text part of a user message: header + content + EOF marker.
@@ -549,6 +508,21 @@ const buildAssistantMessage = (
     };
 };
 
+/** What one turn is built from besides the message and its files */
+interface TurnInputs {
+    capabilities: ModelCapabilities;
+    index: ContextNumbering;
+    /** The chat's excluded messages: never quoted as reply targets */
+    exclusions: ReadonlySet<number>;
+    customEmojiAnnotation?: string;
+    customEmojiAtlasParts: UnifiedContentPart[];
+    answeredElsewhereNumber?: number;
+    messageLinkPlan?: TgMessageLinkPlan;
+    chatTitle: string | null;
+    /** Panel model view: previews come from caches only, never the network */
+    dryRun: boolean;
+}
+
 /**
  * Build the user turn: media parts + rendered header/text + link preview +
  * capability-aware media nudges.
@@ -556,15 +530,18 @@ const buildAssistantMessage = (
 const buildUserMessage = async (
     msg: ContextMessage,
     fileContents: UnifiedContentPart[],
-    capabilities: ModelCapabilities,
-    index: ContextNumbering,
-    customEmojiAnnotation?: string,
-    customEmojiAtlasParts: UnifiedContentPart[] = [],
-    answeredElsewhereNumber?: number,
-    messageLinkPlan?: TgMessageLinkPlan,
-    chatTitle?: string | null
+    inputs: TurnInputs
 ): Promise<BuiltTurn> => {
-    const replyAnnotations = await buildReplyAnnotations(msg, index);
+    const {
+        capabilities,
+        index,
+        customEmojiAnnotation,
+        customEmojiAtlasParts,
+        answeredElsewhereNumber,
+        messageLinkPlan,
+        chatTitle,
+    } = inputs;
+    const replyAnnotations = await buildReplyAnnotations(msg, index, inputs.exclusions);
     const mediaVisible = mediaVisibleToModel(fileContents, capabilities);
 
     const header = renderMessageHeader(
@@ -607,7 +584,7 @@ const buildUserMessage = async (
     parts.push(...messageLinkParts);
 
     // Viewer danmaku for a bilibili video shared through @bilifeedbot.
-    const danmakuPart = await getBilibiliDanmakuPart(msg);
+    const danmakuPart = await getBilibiliDanmakuPart(msg, { offline: inputs.dryRun });
     if (danmakuPart) {
         parts.push(danmakuPart);
     }
@@ -648,27 +625,11 @@ const buildUserMessage = async (
 const buildMessageContent = async (
     msg: ContextMessage,
     fileContents: UnifiedContentPart[],
-    capabilities: ModelCapabilities,
-    index: ContextNumbering,
-    customEmojiAnnotation?: string,
-    customEmojiAtlasParts: UnifiedContentPart[] = [],
-    answeredElsewhereNumber?: number,
-    messageLinkPlan?: TgMessageLinkPlan,
-    chatTitle?: string | null
+    inputs: TurnInputs
 ): Promise<BuiltTurn> =>
     msg.fromBotSelf
-        ? buildAssistantMessage(msg, fileContents, index)
-        : buildUserMessage(
-            msg,
-            fileContents,
-            capabilities,
-            index,
-            customEmojiAnnotation,
-            customEmojiAtlasParts,
-            answeredElsewhereNumber,
-            messageLinkPlan,
-            chatTitle
-        );
+        ? buildAssistantMessage(msg, fileContents, inputs.index)
+        : buildUserMessage(msg, fileContents, inputs);
 
 /**
  * Options for building context
@@ -689,6 +650,14 @@ export interface BuildContextOptions {
     chatAddendum?: string | null;
     /** Message IDs to exclude from context (e.g., current bot response when retrying) */
     excludeMessageIds?: number[];
+    /**
+     * The panel's model view: build exactly what a retry would send, without
+     * any side effect. The tree is read without luoxu backfill, the `#N`
+     * numbering is not published (it would overwrite a running reply's), and
+     * previews come from caches and snapshots only — never the network.
+     * Media are still read as usual (that renews their cache entries).
+     */
+    dryRun?: boolean;
 }
 
 /** Distinguish the options object from a bare ModelCapabilities argument. */
@@ -701,7 +670,8 @@ const isBuildContextOptions = (
         'excludeMessageIds' in value ||
         'model' in value ||
         'chatTitle' in value ||
-        'chatAddendum' in value);
+        'chatAddendum' in value ||
+        'dryRun' in value);
 
 /** Assembled context: the model-facing turns plus the user roster they involve */
 export interface BuiltContext {
@@ -774,24 +744,19 @@ export const buildContext = async (
     // Get capabilities for current model if not provided
     const model = opts.model ?? getGlobalDefaultModel();
     const modelCapabilities = opts.capabilities ?? getModelCapabilities(model);
-    const excludeMessageIds = opts.excludeMessageIds ?? [];
+    const dryRun = opts.dryRun === true;
 
-    // Get history messages (excluding current message). Resolved fresh here (not
-    // reused from a caller snapshot) so any media that finished downloading
-    // during an upstream wait is reflected — fileUniqueId is read up to date.
-    const historyMessages = await getRepliesHistory(chatId, messageId, {
-        excludeSelf: true,
+    // The reply tree, the current message closing it, and the replied-to
+    // messages the tree misses. Resolved fresh here (not reused from a caller
+    // snapshot) so any media that finished downloading during an upstream wait
+    // is reflected — fileUniqueId is read up to date.
+    const assembled = await assembleContextMessages(chatId, messageId, {
+        trigger: toContextMessage(msg),
+        excludeMessageIds: opts.excludeMessageIds ?? [],
+        recover: !dryRun,
     });
-
-    // The current message closes the context (its id is the newest, so it stays
-    // last through the chronological sort below).
-    const assembled = [
-        ...historyMessages.filter((historyMsg) => !excludeMessageIds.includes(historyMsg.messageId)),
-        toContextMessage(msg),
-    ];
-
-    const contextMessages = await withMissingReplyTargets(chatId, assembled, excludeMessageIds);
-    const index = buildContextNumbering(contextMessages);
+    const contextMessages = assembled.messages;
+    const index = assembled.numbering;
     // Newest-first budget: keeps the current exchange covered when a long
     // history carries many pasted links.
     const messageLinkPlan = planTgMessageLinkPreviews(
@@ -803,7 +768,7 @@ export const buildContext = async (
                 text: contextMessage.text,
             }))
     );
-    publishContextNumbering(chatId, messageId, index);
+    if (!dryRun) publishContextNumbering(chatId, messageId, index);
     const repliesInFlightElsewhere = findRepliesInFlightElsewhere(chatId, messageId, index);
 
     const [contextUsers, customEmojiPlan] = await Promise.all([
@@ -820,17 +785,17 @@ export const buildContext = async (
         // Loaded once: the turn is built from these parts, and the tool index
         // keeps the pictures among them before any capability filtering
         const fileContents = await loadMessageFiles(contextMsg);
-        const turn = await buildMessageContent(
-            contextMsg,
-            fileContents,
-            modelCapabilities,
+        const turn = await buildMessageContent(contextMsg, fileContents, {
+            capabilities: modelCapabilities,
             index,
-            customEmojiPlan.annotations.get(contextMsg.messageId),
-            contextMsg.messageId === messageId ? customEmojiPlan.atlasParts : [],
-            repliesInFlightElsewhere.get(contextMsg.messageId),
-            messageLinkPlan.get(contextMsg.messageId),
-            opts.chatTitle ?? null
-        );
+            exclusions: assembled.exclusions,
+            customEmojiAnnotation: customEmojiPlan.annotations.get(contextMsg.messageId),
+            customEmojiAtlasParts: contextMsg.messageId === messageId ? customEmojiPlan.atlasParts : [],
+            answeredElsewhereNumber: repliesInFlightElsewhere.get(contextMsg.messageId),
+            messageLinkPlan: messageLinkPlan.get(contextMsg.messageId),
+            chatTitle: opts.chatTitle ?? null,
+            dryRun,
+        });
         turns.push({ messageId: contextMsg.messageId, message: turn.message, images: turn.images });
     }
 

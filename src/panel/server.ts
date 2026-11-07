@@ -88,6 +88,8 @@ export const startPanel = async (options: StartPanelOptions): Promise<void> => {
         staticRoot: DEFAULT_STATIC_ROOT,
         startedAt: new Date(),
         version: await readCodeVersion(),
+        chatLookup: botApiChatNameLookup(lookupApi),
+        toolApi: lookupApi,
     });
     activeServer = await listen(app.fetch, port);
     setPanelRunning(activeServer !== null);
