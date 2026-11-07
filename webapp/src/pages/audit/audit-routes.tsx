@@ -1,18 +1,19 @@
+import { useMemo } from 'react';
+import { useChatScope } from '../../context/chat-scope-context';
 import { useMe } from '../../context/me-context';
-import { useChatIdParam } from '../../hooks/use-chat-id-param';
-import { NotFoundPage } from '../not-found-page';
+import { chatLabelOf } from '../../format';
 import { AuditPage } from './audit-page';
 
-/** /c/:chatId/audit */
+/** /c/:chatId/settings/audit */
 export const ChatAuditRoute = () => {
-    const chatId = useChatIdParam();
-    if (chatId === null) return <NotFoundPage />;
-    return <AuditPage key={chatId} chatId={chatId} />;
+    const { chatId, header } = useChatScope();
+    const subtitle = useMemo(() => (header === null ? '本聊天' : chatLabelOf(header.name)), [header]);
+    return <AuditPage key={chatId} chatId={chatId} subtitle={subtitle} />;
 };
 
-/** /audit (owner only) */
+/** /settings/audit (owner only) */
 export const GlobalAuditRoute = () => {
     const { me } = useMe();
     if (!me.isOwner) return <p className="placeholder">仅机主可以查看全部设置改动</p>;
-    return <AuditPage chatId={null} />;
+    return <AuditPage chatId={null} subtitle="全部聊天与全局" />;
 };

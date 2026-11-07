@@ -1,5 +1,6 @@
 import { match, P } from 'ts-pattern';
 import type { StartTarget } from './api';
+import { chatPath, issuePath } from './routing/paths';
 import { readStorage } from './storage';
 import { readStartParam } from './telegram';
 import type { TelegramWebApp } from './telegram';
@@ -27,10 +28,11 @@ export const captureLaunchState = (webApp: TelegramWebApp): LaunchState => {
 
 const routeOfStartTarget = (startTarget: StartTarget | null): string | null =>
     match(startTarget)
-        // `unavailable` too: the dashboard gets the same 503 and retries until the lookup works
-        .with({ kind: 'chat', access: P.union('member', 'observer', 'unavailable') }, ({ chatId }) => `/c/${chatId}`)
-        // Phase 1 has no issue pages yet, so an issue link opens the chat it belongs to
-        .with({ kind: 'issue', chatId: P.number, access: P.union('member', 'observer') }, ({ chatId }) => `/c/${chatId}`)
+        // `unavailable` too: the chat's page gets the same 503 and retries until the lookup works.
+        // "/c/:id" then opens the chat's remembered or default tab.
+        .with({ kind: 'chat', access: P.union('member', 'observer', 'unavailable') }, ({ chatId }) => chatPath(chatId))
+        // Whatever the access: the issue page asks the server, which answers 404 when the issue is hidden
+        .with({ kind: 'issue' }, ({ issueId }) => issuePath(issueId))
         .otherwise(() => null);
 
 /**

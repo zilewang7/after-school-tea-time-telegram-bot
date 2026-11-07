@@ -1,18 +1,19 @@
-import { useCallback, useMemo } from 'react';
+import { useCallback } from 'react';
 import { match } from 'ts-pattern';
 import { ErrorView, LoadingView } from '../../components/status-views';
 import { useMe } from '../../context/me-context';
 import { useApi } from '../../context/panel-context';
-import { chatLabelOf } from '../../format';
 import { useApiQuery } from '../../hooks/use-api-query';
 import { AuditList } from './audit-list';
 
 interface AuditPageProps {
     // null = all settings changes (owner only)
     chatId: number | null;
+    // Which chat (or "all") the list covers
+    subtitle: string;
 }
 
-export const AuditPage = ({ chatId }: AuditPageProps) => {
+export const AuditPage = ({ chatId, subtitle }: AuditPageProps) => {
     const api = useApi();
     const { me } = useMe();
     const loadFirstPage = useCallback(
@@ -20,12 +21,6 @@ export const AuditPage = ({ chatId }: AuditPageProps) => {
         [api, chatId]
     );
     const { state, reload } = useApiQuery(loadFirstPage);
-
-    const subtitle = useMemo(() => {
-        if (chatId === null) return '全部聊天与全局';
-        const chat = me.chats.find((candidate) => candidate.chatId === chatId);
-        return chat === undefined ? `聊天 ${chatId}` : chatLabelOf(chat);
-    }, [chatId, me.chats]);
 
     return (
         <>

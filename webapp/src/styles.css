@@ -19,6 +19,10 @@
     --safe-right: max(env(safe-area-inset-right, 0px), var(--tg-safe-area-inset-right, 0px));
     --safe-bottom: max(env(safe-area-inset-bottom, 0px), var(--tg-safe-area-inset-bottom, 0px));
     --safe-left: max(env(safe-area-inset-left, 0px), var(--tg-safe-area-inset-left, 0px));
+    /* Fullscreen (Bot API 8.0): Telegram's own buttons float below the status bar */
+    --content-safe-top: var(--tg-content-safe-area-inset-top, 0px);
+    /* Where page content starts and sticky bars stick; 0 outside fullscreen */
+    --sticky-top: calc(var(--safe-top) + var(--content-safe-top));
 
     --radius: 12px;
     color-scheme: light dark;
@@ -51,7 +55,20 @@ p {
 
 .app {
     min-height: 100vh;
-    padding: var(--safe-top) var(--safe-right) var(--safe-bottom) var(--safe-left);
+    padding: var(--sticky-top) var(--safe-right) var(--safe-bottom) var(--safe-left);
+}
+
+/* Solid strip behind the status bar and Telegram's buttons in fullscreen, so scrolled rows do not show through */
+.app::before {
+    content: '';
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    z-index: 20;
+    height: var(--sticky-top);
+    background: var(--color-page-bg);
+    pointer-events: none;
 }
 
 .page {
@@ -76,7 +93,7 @@ p {
 
 .banner {
     position: sticky;
-    top: 0;
+    top: var(--sticky-top);
     z-index: 10;
     padding: 8px 12px;
     background: var(--color-warning);
@@ -91,6 +108,93 @@ p {
     align-items: center;
     justify-content: center;
     color: var(--color-hint);
+}
+
+/* Tab layers: a header that scrolls away, then a sticky tab bar */
+
+.layer-header {
+    margin: 4px 4px 0;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    min-width: 0;
+}
+
+.layer-header h1 {
+    margin: 0;
+    font-size: 20px;
+    font-weight: 600;
+}
+
+.tab-bar {
+    position: sticky;
+    top: var(--sticky-top);
+    z-index: 5;
+    /* Full width inside .page's padding, and closer to the header than the usual gap */
+    margin: -6px -12px 0;
+    background: var(--color-page-bg);
+    border-bottom: 1px solid var(--color-separator);
+}
+
+.tab-scroller {
+    position: relative;
+    display: flex;
+    gap: 4px;
+    padding: 0 8px;
+    overflow-x: auto;
+    scrollbar-width: none;
+}
+
+.tab-scroller::-webkit-scrollbar {
+    display: none;
+}
+
+.tab {
+    flex: none;
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    padding: 10px 8px 11px;
+    border: none;
+    background: none;
+    color: var(--color-hint);
+    font: inherit;
+    font-weight: 500;
+    white-space: nowrap;
+    cursor: pointer;
+}
+
+.tab[aria-selected='true'] {
+    color: var(--color-accent);
+}
+
+.tab[aria-selected='true']::after {
+    content: '';
+    position: absolute;
+    left: 6px;
+    right: 6px;
+    bottom: 0;
+    height: 3px;
+    border-radius: 3px 3px 0 0;
+    background: var(--color-accent);
+}
+
+.tab-count {
+    min-width: 18px;
+    padding: 0 5px;
+    border-radius: 9px;
+    font-size: 12px;
+    font-weight: 600;
+    line-height: 18px;
+    text-align: center;
+    background: var(--color-hint);
+    color: var(--color-bg);
+}
+
+.tab[aria-selected='true'] .tab-count {
+    background: var(--color-accent);
+    color: var(--color-button-text);
 }
 
 /* Sections and lists */
@@ -152,16 +256,11 @@ p {
     white-space: nowrap;
 }
 
-.badges,
-.identity-line {
+.badges {
     display: flex;
     flex-wrap: wrap;
     align-items: center;
     gap: 6px;
-}
-
-.identity-line {
-    margin: 0 4px;
 }
 
 .badge {
@@ -378,15 +477,7 @@ p {
     cursor: default;
 }
 
-/* Tool matrix and audit */
-
-.tool-matrix > summary {
-    cursor: pointer;
-}
-
-.tool-matrix[open] > summary {
-    margin-bottom: 8px;
-}
+/* Tool list and audit */
 
 .tool-row {
     display: flex;

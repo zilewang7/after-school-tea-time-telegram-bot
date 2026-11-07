@@ -1,11 +1,9 @@
 import type { ChatDetailResponse, ChatSettings } from '../../api';
-import { ChatName } from '../../components/chat-name';
 import { ChatSettingsForm } from './chat-settings-form';
-import { IdentityLine } from './identity-line';
 import { RecentAudit } from './recent-audit';
-import { ToolMatrix } from './tool-matrix';
+import { ToolSummaryRow } from './tool-summary-row';
 
-interface DashboardProps {
+interface ChatSettingsViewProps {
     detail: ChatDetailResponse;
     isOwner: boolean;
     models: readonly string[];
@@ -14,19 +12,13 @@ interface DashboardProps {
     onReload: () => void;
 }
 
-export const Dashboard = ({ detail, isOwner, models, justSaved, onSaved, onReload }: DashboardProps) => {
+export const ChatSettingsView = ({ detail, isOwner, models, justSaved, onSaved, onReload }: ChatSettingsViewProps) => {
     const { chat, settings } = detail;
     // Locking only binds non-owners
     const writable = !settings.settingsLocked || isOwner;
 
     return (
         <>
-            <header className="page-header">
-                <h1>
-                    <ChatName chat={chat} />
-                </h1>
-                <IdentityLine type={chat.type} access={chat.access} locked={settings.settingsLocked} />
-            </header>
             <ChatSettingsForm
                 // Re-created from server state after every save or refresh, so the draft never drifts from it
                 key={settings.updatedAt ?? 'never-saved'}
@@ -41,8 +33,8 @@ export const Dashboard = ({ detail, isOwner, models, justSaved, onSaved, onReloa
                 onSaved={onSaved}
                 onReload={onReload}
             />
-            {/* The 7-day summary block stays hidden while summary is null (phases 1-2) */}
-            <ToolMatrix tools={detail.tools} />
+            {/* The 7-day summary lives in the 统计 tab, not here */}
+            <ToolSummaryRow chatId={chat.chatId} tools={detail.tools} />
             <RecentAudit chatId={chat.chatId} entries={detail.recentAudit} />
         </>
     );

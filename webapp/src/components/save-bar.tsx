@@ -1,8 +1,11 @@
 import type { WriteFailureView } from '../api';
 import { EXPIRED_WRITE_NOTICE, useInitDataExpired } from '../hooks/use-init-data-expired';
 import { useSaveMainButton } from '../hooks/use-save-main-button';
+import { useClosingConfirmation } from '../hooks/use-telegram-guards';
 
 export type SaveStatus = { kind: 'idle' } | { kind: 'saving' } | { kind: 'failed'; view: WriteFailureView };
+
+const DEFAULT_ACTION_LABEL = '保存';
 
 interface SaveBarProps {
     writable: boolean;
@@ -14,11 +17,17 @@ interface SaveBarProps {
     savedMessage: string;
     // What saving will do, shown while there are unsaved changes
     pendingHint: string | null;
+    // Button and MainButton text; 「保存」 unless given
+    actionLabel?: string;
     onSave: () => void;
-    onRefresh: () => void;
+    // Re-reads the server state after a failure that may have saved anyway; null offers no refresh button
+    onRefresh: (() => void) | null;
 }
 
-/** In-page save button mirrored by Telegram's MainButton, with the initData age notice and save outcome */
+/**
+ * In-page save button mirrored by Telegram's MainButton, with the initData age notice and save outcome.
+ * While there are unsaved changes, closing the panel asks for confirmation first.
+ */
 export const SaveBar = ({
     writable,
     dirty,
@@ -27,12 +36,14 @@ export const SaveBar = ({
     justSaved,
     savedMessage,
     pendingHint,
+    actionLabel = DEFAULT_ACTION_LABEL,
     onSave,
     onRefresh,
 }: SaveBarProps) => {
     const expired = useInitDataExpired();
     const saving = status.kind === 'saving';
-    useSaveMainButton({ writable, dirty, valid, saving, expired, onSave });
+    useSaveMainButton({ writable, dirty, valid, saving, expired, label: actionLabel, onSave });
+    useClosingConfirmation(writable && dirty);
 
     if (!writable) return null;
     return (
@@ -44,12 +55,12 @@ export const SaveBar = ({
                 disabled={!dirty || !valid || saving || expired}
                 onClick={onSave}
             >
-                {saving ? '保存中…' : '保存'}
+                {saving ? `${actionLabel}中…` : actionLabel}
             </button>
             {status.kind === 'failed' && (
                 <div className="save-failure">
                     <p className="error-text">{status.view.message}</p>
-                    {status.view.suggestRefresh && (
+                    {status.view.suggestRefresh && onRefresh !== null && (
                         <button type="button" className="button secondary" onClick={onRefresh}>
                             刷新
                         </button>

@@ -2,36 +2,33 @@ import { useCallback, useState } from 'react';
 import { match } from 'ts-pattern';
 import type { ChatSettings } from '../../api';
 import { ErrorView, LoadingView } from '../../components/status-views';
+import { useChatScope } from '../../context/chat-scope-context';
 import { useMe } from '../../context/me-context';
-import { useApi } from '../../context/panel-context';
-import { useApiQuery } from '../../hooks/use-api-query';
-import { Dashboard } from './dashboard';
+import { useSuccessHaptic } from '../../hooks/use-telegram-feedback';
+import { ChatSettingsView } from './chat-settings-view';
 
-interface DashboardPageProps {
-    chatId: number;
-}
-
-/** Loads one chat's dashboard and applies saved settings back into it */
-export const DashboardPage = ({ chatId }: DashboardPageProps) => {
-    const api = useApi();
+/** /c/:chatId/settings: the chat's settings, from the chat scope's shared detail */
+export const ChatSettingsTab = () => {
     const { me, refreshMe } = useMe();
-    const loadChat = useCallback((signal: AbortSignal) => api.getChat(chatId, signal), [api, chatId]);
-    const { state, reload, refresh, update } = useApiQuery(loadChat);
+    const { detail } = useChatScope();
+    const { state, reload, refresh, update } = detail;
     const [justSaved, setJustSaved] = useState(false);
+    const notifySaved = useSuccessHaptic();
 
     const handleSaved = useCallback(
         (settings: ChatSettings) => {
-            update((detail) => ({
-                ...detail,
+            update((chatDetail) => ({
+                ...chatDetail,
                 settings,
-                effectiveModel: settings.model ?? detail.globalDefaultModel,
+                effectiveModel: settings.model ?? chatDetail.globalDefaultModel,
             }));
             setJustSaved(true);
+            notifySaved();
             // Tools and recent audit depend on the new settings; the chat list shows them too
             refresh();
             refreshMe();
         },
-        [update, refresh, refreshMe]
+        [update, notifySaved, refresh, refreshMe]
     );
 
     const handleReload = useCallback(() => {
@@ -43,7 +40,7 @@ export const DashboardPage = ({ chatId }: DashboardPageProps) => {
         .with({ status: 'loading' }, () => <LoadingView />)
         .with({ status: 'error' }, ({ failure }) => <ErrorView failure={failure} onRetry={handleReload} />)
         .with({ status: 'success' }, ({ data }) => (
-            <Dashboard
+            <ChatSettingsView
                 detail={data}
                 isOwner={me.isOwner}
                 models={me.models}

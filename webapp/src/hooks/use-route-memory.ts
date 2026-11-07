@@ -19,6 +19,7 @@ export const useRouteMemory = (launch: LaunchState, me: MeResponse | null): void
         if (me === null || launchHandled.current) return;
         launchHandled.current = true;
         const target = launchRouteOf(launch, me.startTarget);
-        if (target !== null && target !== location.pathname) void navigate(target);
+        // Replace, so a page opened by start_param or lastRoute has no history and Back goes to its parent
+        if (target !== null && target !== location.pathname) void navigate(target, { replace: true });
     }, [launch, me, location.pathname, navigate]);
 };

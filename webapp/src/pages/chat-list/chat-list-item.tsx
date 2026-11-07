@@ -2,6 +2,7 @@ import { Link } from 'react-router';
 import type { ChatSummary } from '../../api';
 import { ChatName } from '../../components/chat-name';
 import { accessLabel, chatTypeLabel, formatDateTime } from '../../format';
+import { chatPath } from '../../routing/paths';
 
 interface ChatListItemProps {
     chat: ChatSummary;
@@ -14,7 +15,8 @@ export const ChatListItem = ({ chat, globalDefaultModel }: ChatListItemProps) =>
 
     return (
         <li>
-            <Link className="list-link" to={`/c/${chat.chatId}`}>
+            {/* "/c/:id" opens the chat's remembered or default tab */}
+            <Link className="list-link" to={chatPath(chat.chatId)}>
                 <span className="list-title">
                     <span className="truncate">
                         <ChatName chat={chat} />

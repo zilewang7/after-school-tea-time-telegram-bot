@@ -1,51 +1,53 @@
-import { useMemo } from 'react';
+import { useCallback, useMemo, useState } from 'react';
+import type { ChangeEvent } from 'react';
 import { match } from 'ts-pattern';
 import type { StartTarget } from '../../api';
-import { NavListItem } from '../../components/nav-list-item';
 import { useMe } from '../../context/me-context';
-import { userDisplayName } from '../../format';
 import { ChatListItem } from './chat-list-item';
+import { CHAT_SEARCH_THRESHOLD, filterChats } from './chat-search';
 
-const OwnerEntries = () => (
-    <section className="section">
-        <h2 className="section-title">全局</h2>
-        <ul className="list">
-            <NavListItem to="/global" label="全局设置" />
-            <NavListItem to="/audit" label="全部设置改动" />
-        </ul>
-    </section>
-);
-
-/** What to say when the start link could not be followed; the server already resolved it */
+/** What to say when a chat start link could not be followed; the server already resolved it */
 const startNoticeOf = (startTarget: StartTarget | null): string | null =>
     match(startTarget)
-        .with({ access: 'unavailable' }, () => '暂时无法确认你是否是该聊天的成员，请稍后再试')
-        .with({ kind: 'issue', access: 'none' }, () => '该 issue 不存在或你无权查看')
+        .with({ kind: 'chat', access: 'unavailable' }, () => '暂时无法确认你是否是该聊天的成员，请稍后再试')
         .with({ kind: 'chat', access: 'none' }, () => '你不是该聊天的成员')
+        // Issue links always open the issue page, which explains a hidden issue itself
         .otherwise(() => null);
 
+/** "/" (home tab 聊天): every chat this user can open, most recently active first */
 export const ChatListPage = () => {
     const { me } = useMe();
     const startNotice = useMemo(() => startNoticeOf(me.startTarget), [me.startTarget]);
+    const [query, setQuery] = useState('');
+    const searchable = me.chats.length > CHAT_SEARCH_THRESHOLD;
+    const shownChats = useMemo(() => (searchable ? filterChats(me.chats, query) : me.chats), [searchable, me.chats, query]);
+
+    const handleQueryChange = useCallback((event: ChangeEvent<HTMLInputElement>) => setQuery(event.target.value), []);
 
     return (
         <>
-            <header className="page-header">
-                <h1>控制面板</h1>
-                <p className="hint">
-                    {userDisplayName(me.user)}
-                    {me.isOwner ? ' · 机主' : ''}
-                </p>
-            </header>
             {startNotice !== null && <p className="notice warning">{startNotice}</p>}
-            {me.isOwner && <OwnerEntries />}
             <section className="section">
-                <h2 className="section-title">聊天</h2>
-                {me.chats.length === 0 ? (
+                {searchable && (
+                    <input
+                        className="field"
+                        type="search"
+                        value={query}
+                        placeholder="搜索聊天：名字、@username 或 id"
+                        autoCapitalize="off"
+                        autoCorrect="off"
+                        spellCheck={false}
+                        aria-label="搜索聊天"
+                        onChange={handleQueryChange}
+                    />
+                )}
+                {me.chats.length === 0 && (
                     <p className="placeholder">还没有可以查看的聊天。在群里发 /panel 可以从群里打开面板。</p>
-                ) : (
+                )}
+                {me.chats.length > 0 && shownChats.length === 0 && <p className="placeholder">没有匹配的聊天</p>}
+                {shownChats.length > 0 && (
                     <ul className="list">
-                        {me.chats.map((chat) => (
+                        {shownChats.map((chat) => (
                             <ChatListItem key={chat.chatId} chat={chat} globalDefaultModel={me.globalDefaultModel} />
                         ))}
                     </ul>

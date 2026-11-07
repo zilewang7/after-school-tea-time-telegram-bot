@@ -1,9 +1,14 @@
+import { useCallback } from 'react';
 import type { ChatSettings } from '../../api';
 import { ModelPicker } from '../../components/model-picker';
 import { SaveBar } from '../../components/save-bar';
 import { ToggleRow } from '../../components/toggle-row';
+import { useConfirm } from '../../hooks/use-telegram-feedback';
 import { AddendumEditor } from './addendum-editor';
 import { useChatSettingsForm } from './use-chat-settings-form';
+
+const LOCK_CONFIRM_MESSAGE = '锁定后，只有机主能修改本聊天的设置。确定锁定？';
+const UNLOCK_CONFIRM_MESSAGE = '解除锁定后，本聊天的成员都能修改设置。确定解除？';
 
 interface ChatSettingsFormProps {
     chatId: number;
@@ -34,10 +39,26 @@ export const ChatSettingsForm = ({
     const form = useChatSettingsForm({ chatId, settings, models, writable, onSaved });
     // Frozen while saving: a successful save rebuilds the form from the server, which would drop later typing
     const disabled = !writable || form.saving;
+    const confirm = useConfirm();
+    const { setSettingsLocked } = form;
+
+    // The switch only moves once the owner confirms; saving still takes the MainButton
+    const handleLockChange = useCallback(
+        (locked: boolean) => {
+            // Undoing an unsaved change needs no confirmation
+            if (locked === settings.settingsLocked) {
+                setSettingsLocked(locked);
+                return;
+            }
+            void confirm(locked ? LOCK_CONFIRM_MESSAGE : UNLOCK_CONFIRM_MESSAGE).then((confirmed) => {
+                if (confirmed) setSettingsLocked(locked);
+            });
+        },
+        [settings.settingsLocked, confirm, setSettingsLocked]
+    );
 
     return (
         <section className="section">
-            <h2 className="section-title">设置</h2>
             {!writable && <p className="notice warning">设置已被机主锁定</p>}
 
             <div className="field-group">
@@ -79,7 +100,7 @@ export const ChatSettingsForm = ({
                     description="锁定后只有机主能改本聊天的设置"
                     checked={form.settingsLocked}
                     disabled={form.saving}
-                    onChange={form.setSettingsLocked}
+                    onChange={handleLockChange}
                 />
             )}
 

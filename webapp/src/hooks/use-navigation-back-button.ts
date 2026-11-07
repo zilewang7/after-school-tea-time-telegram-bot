@@ -1,29 +1,33 @@
 import { useMemo } from 'react';
 import { useLocation, useNavigate } from 'react-router';
-import { match, P } from 'ts-pattern';
+import { canGoBackInApp, parentPathOf } from '../routing/back-target';
+import type { LayerTabPaths } from '../routing/back-target';
+import { CHAT_TABS } from '../tabs/chat-tabs';
+import { HOME_TABS } from '../tabs/home-tabs';
 import { useBackButton } from './use-back-button';
 
-/**
- * Logical parent of a page, so Back works the same whether the page was reached by
- * navigation, a start link or Telegram's "reload page".
- */
-const parentPathOf = (pathname: string): string | null => {
-    const segments = pathname.split('/').filter((segment) => segment !== '');
-    return match(segments)
-        .with([], () => null)
-        .with(['c', P.string, P.string], ([, chatId]) => `/c/${chatId}`)
-        .otherwise(() => '/');
+const TAB_PATHS: LayerTabPaths = {
+    home: new Set(HOME_TABS.map((tab) => tab.path)),
+    chat: new Set(CHAT_TABS.map((tab) => tab.path)),
 };
 
-/** Telegram's BackButton navigates to the parent page and is hidden on the chat list */
+/**
+ * Telegram's BackButton, hidden on home tabs. It steps back through in-app
+ * history, so a drill-down returns to the very list it came from (tab switches
+ * replace entries, so that is one layer up); a page opened directly goes to
+ * its logical parent instead.
+ */
 export const useNavigationBackButton = (): void => {
-    const location = useLocation();
+    const { pathname } = useLocation();
     const navigate = useNavigate();
-    const parentPath = parentPathOf(location.pathname);
+    const parentPath = parentPathOf(pathname, TAB_PATHS);
 
-    const goToParent = useMemo(
-        () => (parentPath === null ? null : () => void navigate(parentPath)),
-        [parentPath, navigate]
-    );
-    useBackButton(goToParent);
+    const goBack = useMemo(() => {
+        if (parentPath === null) return null;
+        return () => {
+            if (canGoBackInApp(window.history.state)) void navigate(-1);
+            else void navigate(parentPath, { replace: true });
+        };
+    }, [parentPath, navigate]);
+    useBackButton(goBack);
 };

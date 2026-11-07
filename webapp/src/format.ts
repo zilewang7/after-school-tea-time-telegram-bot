@@ -31,16 +31,18 @@ export const chatTypeLabel = (type: ChatType): string => CHAT_TYPE_LABELS[type];
 
 export const accessLabel = (access: ChatAccess): string => ACCESS_LABELS[access];
 
-/** What a chat's name is built from; a ChatSummary or the dashboard's chat header fits */
+/** What a chat's name is built from; a ChatSummary or the chat detail's header fits */
 export interface ChatNameSource {
     chatId: number;
-    type: ChatType;
+    // null when the bot does not know the chat (e.g. an issue's chat missing from the registry)
+    type: ChatType | null;
     title: string | null;
     username: string | null;
 }
 
 /** Group title or the user's name; a chat not named yet falls back to its type and id */
-export const chatNameOf = (chat: ChatNameSource): string => chat.title ?? `${chatTypeLabel(chat.type)} ${chat.chatId}`;
+export const chatNameOf = (chat: ChatNameSource): string =>
+    chat.title ?? `${chat.type === null ? '聊天' : chatTypeLabel(chat.type)} ${chat.chatId}`;
 
 /** "@username" when the chat has a public username */
 export const chatUsernameOf = (chat: ChatNameSource): string | null =>

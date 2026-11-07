@@ -1,10 +1,13 @@
 import { useCallback, useState } from 'react';
 import { match } from 'ts-pattern';
 import type { GlobalSettingsResponse } from '../../api';
+import { NavListItem } from '../../components/nav-list-item';
 import { ErrorView, LoadingView } from '../../components/status-views';
 import { useMe } from '../../context/me-context';
 import { useApi } from '../../context/panel-context';
 import { useApiQuery } from '../../hooks/use-api-query';
+import { useSuccessHaptic } from '../../hooks/use-telegram-feedback';
+import { GLOBAL_AUDIT_PATH } from '../../routing/paths';
 import { GlobalSettingsForm } from './global-settings-form';
 
 const GlobalSettingsSection = () => {
@@ -13,15 +16,17 @@ const GlobalSettingsSection = () => {
     const loadGlobal = useCallback((signal: AbortSignal) => api.getGlobal(signal), [api]);
     const { state, reload, update } = useApiQuery(loadGlobal);
     const [justSaved, setJustSaved] = useState(false);
+    const notifySaved = useSuccessHaptic();
 
     const handleSaved = useCallback(
         (global: GlobalSettingsResponse) => {
             update(() => global);
             setJustSaved(true);
+            notifySaved();
             // The chat list shows the global default for chats that follow it
             refreshMe();
         },
-        [update, refreshMe]
+        [update, notifySaved, refreshMe]
     );
 
     const handleReload = useCallback(() => {
@@ -46,15 +51,14 @@ const GlobalSettingsSection = () => {
         .exhaustive();
 };
 
-/** /global (owner only) */
-export const GlobalPage = () => {
-    const { me } = useMe();
-    return (
-        <>
-            <header className="page-header">
-                <h1>全局设置</h1>
-            </header>
-            {me.isOwner ? <GlobalSettingsSection /> : <p className="placeholder">仅机主可以修改全局设置</p>}
-        </>
-    );
-};
+/** /settings (owner only; the tab is hidden from everyone else) */
+export const HomeSettingsTab = () => (
+    <>
+        <GlobalSettingsSection />
+        <section className="section">
+            <ul className="list">
+                <NavListItem to={GLOBAL_AUDIT_PATH} label="全部改动" />
+            </ul>
+        </section>
+    </>
+);
