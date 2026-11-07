@@ -1,3 +1,4 @@
+import { recordServerDate } from './server-clock';
 import type { ApiErrorCode } from './types';
 
 export type ApiFailure =
@@ -94,6 +95,7 @@ export const createRequester = (initData: string): Requester => {
         } catch {
             return { ok: false, failure: { kind: 'network' } };
         }
+        recordServerDate(response.headers.get('Date'));
 
         if (!response.ok) return { ok: false, failure: await toFailure(response) };
 

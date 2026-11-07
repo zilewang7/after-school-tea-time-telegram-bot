@@ -2,7 +2,8 @@
 
 export type ChatType = 'private' | 'group' | 'supergroup' | 'channel';
 export type ChatAccess = 'member' | 'observer';
-export type StartTargetAccess = ChatAccess | 'none';
+/** `unavailable`: Telegram rate-limited the membership lookup; the chat's own page retries */
+export type StartTargetAccess = ChatAccess | 'none' | 'unavailable';
 
 export type ApiErrorCode =
     | 'invalid'

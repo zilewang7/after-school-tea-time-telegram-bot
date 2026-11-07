@@ -27,7 +27,7 @@ export const GlobalSettingsForm = ({ global, models, justSaved, onSaved, onReloa
                     draft={form.modelDraft}
                     unsetLabel={global.source === 'panel' ? '恢复为环境变量 DEFAULT_MODEL' : null}
                     error={form.modelError}
-                    disabled={false}
+                    disabled={form.saving}
                     onChange={form.setModelDraft}
                 />
                 <p className="hint">

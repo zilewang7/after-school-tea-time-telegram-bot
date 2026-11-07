@@ -43,6 +43,7 @@ export const useGlobalSettingsForm = ({ global, models, onSaved }: GlobalSetting
         modelError: resolvedModel.ok ? null : resolvedModel.error,
         dirty,
         valid,
+        saving,
         saveStatus,
         save,
     };

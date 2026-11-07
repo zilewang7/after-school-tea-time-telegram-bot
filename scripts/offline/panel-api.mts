@@ -532,6 +532,25 @@ const cases: { name: string; body: () => Promise<void> }[] = [
                 'a forged / foreign target reads as none'
             );
             expect(!bob.chats.some((chat: any) => chat.chatId === GROUP_MAIN), 'and is not listed');
+            // An issue link tells a non-member nothing: existing and missing issues read the same
+            const bobIssue = await jsonOf(await call(app, '/api/me', { user: BOB, startParam: `i${closed.id}` }));
+            expect(
+                JSON.stringify(bobIssue.startTarget) ===
+                    JSON.stringify({ kind: 'issue', chatId: null, issueId: closed.id, access: 'none' }),
+                `a non-member does not learn the issue's chat (got ${JSON.stringify(bobIssue.startTarget)})`
+            );
+            const missingIssue = await jsonOf(await call(app, '/api/me', { user: BOB, startParam: 'i987654' }));
+            expect(
+                JSON.stringify(missingIssue.startTarget) ===
+                    JSON.stringify({ kind: 'issue', chatId: null, issueId: 987654, access: 'none' }),
+                `a missing issue reads the same (got ${JSON.stringify(missingIssue.startTarget)})`
+            );
+            const throttled = await jsonOf(await call(app, '/api/me', { user: ALICE, startParam: `c${GROUP_THROTTLED}` }));
+            expect(
+                JSON.stringify(throttled.startTarget) ===
+                    JSON.stringify({ kind: 'chat', chatId: GROUP_THROTTLED, access: 'unavailable' }),
+                `a rate-limited lookup is unavailable, not "not a member" (got ${JSON.stringify(throttled.startTarget)})`
+            );
             const junk = await jsonOf(await call(app, '/api/me', { user: BOB, startParam: 'hello' }));
             expect(junk.startTarget === null, 'a meaningless start_param is ignored');
 

@@ -32,7 +32,8 @@ export const ChatSettingsForm = ({
     onReload,
 }: ChatSettingsFormProps) => {
     const form = useChatSettingsForm({ chatId, settings, models, writable, onSaved });
-    const disabled = !writable;
+    // Frozen while saving: a successful save rebuilds the form from the server, which would drop later typing
+    const disabled = !writable || form.saving;
 
     return (
         <section className="section">
@@ -77,7 +78,7 @@ export const ChatSettingsForm = ({
                     label="锁定设置"
                     description="锁定后只有机主能改本聊天的设置"
                     checked={form.settingsLocked}
-                    disabled={false}
+                    disabled={form.saving}
                     onChange={form.setSettingsLocked}
                 />
             )}

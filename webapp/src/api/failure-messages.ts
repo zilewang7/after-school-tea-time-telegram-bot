@@ -35,6 +35,11 @@ export const describeWriteFailure = (failure: ApiFailure): WriteFailureView =>
             message: serverMessage,
             suggestRefresh: false,
         }))
+        // The server stopped waiting (or Cloudflare did), not the write: it may still land
+        .with({ kind: 'http', status: P.union(504, 524) }, { kind: 'http', code: 'timeout' }, () => ({
+            message: '未确认是否已保存，请刷新后核对',
+            suggestRefresh: true,
+        }))
         .with({ kind: 'http', status: 401 }, () => ({ message: REOPEN_PANEL_MESSAGE, suggestRefresh: false }))
         .with({ kind: 'http', status: 409 }, () => ({ message: '设置已被别人修改，请刷新', suggestRefresh: true }))
         .with({ kind: 'http', code: 'locked' }, () => ({ message: '设置已被机主锁定', suggestRefresh: true }))

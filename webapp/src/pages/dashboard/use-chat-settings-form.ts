@@ -114,6 +114,7 @@ export const useChatSettingsForm = ({ chatId, settings, models, writable, onSave
         setSettingsLocked,
         dirty,
         valid,
+        saving,
         saveStatus,
         save,
     };

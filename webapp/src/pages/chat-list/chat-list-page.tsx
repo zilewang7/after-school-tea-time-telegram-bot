@@ -1,3 +1,6 @@
+import { useMemo } from 'react';
+import { match } from 'ts-pattern';
+import type { StartTarget } from '../../api';
 import { NavListItem } from '../../components/nav-list-item';
 import { useMe } from '../../context/me-context';
 import { userDisplayName } from '../../format';
@@ -13,10 +16,17 @@ const OwnerEntries = () => (
     </section>
 );
 
+/** What to say when the start link could not be followed; the server already resolved it */
+const startNoticeOf = (startTarget: StartTarget | null): string | null =>
+    match(startTarget)
+        .with({ access: 'unavailable' }, () => '暂时无法确认你是否是该聊天的成员，请稍后再试')
+        .with({ kind: 'issue', access: 'none' }, () => '该 issue 不存在或你无权查看')
+        .with({ kind: 'chat', access: 'none' }, () => '你不是该聊天的成员')
+        .otherwise(() => null);
+
 export const ChatListPage = () => {
     const { me } = useMe();
-    // The start link pointed at a chat this user cannot open; the server already resolved that
-    const startDenied = me.startTarget !== null && me.startTarget.access === 'none';
+    const startNotice = useMemo(() => startNoticeOf(me.startTarget), [me.startTarget]);
 
     return (
         <>
@@ -27,7 +37,7 @@ export const ChatListPage = () => {
                     {me.isOwner ? ' · 机主' : ''}
                 </p>
             </header>
-            {startDenied && <p className="notice warning">你不是该聊天的成员</p>}
+            {startNotice !== null && <p className="notice warning">{startNotice}</p>}
             {me.isOwner && <OwnerEntries />}
             <section className="section">
                 <h2 className="section-title">聊天</h2>

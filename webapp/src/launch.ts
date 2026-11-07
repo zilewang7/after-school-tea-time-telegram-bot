@@ -27,7 +27,8 @@ export const captureLaunchState = (webApp: TelegramWebApp): LaunchState => {
 
 const routeOfStartTarget = (startTarget: StartTarget | null): string | null =>
     match(startTarget)
-        .with({ kind: 'chat', access: P.union('member', 'observer') }, ({ chatId }) => `/c/${chatId}`)
+        // `unavailable` too: the dashboard gets the same 503 and retries until the lookup works
+        .with({ kind: 'chat', access: P.union('member', 'observer', 'unavailable') }, ({ chatId }) => `/c/${chatId}`)
         // Phase 1 has no issue pages yet, so an issue link opens the chat it belongs to
         .with({ kind: 'issue', chatId: P.number, access: P.union('member', 'observer') }, ({ chatId }) => `/c/${chatId}`)
         .otherwise(() => null);
