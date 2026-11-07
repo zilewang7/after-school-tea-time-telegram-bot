@@ -12,16 +12,16 @@ export const ChatIssuesTab = () => {
     const { state, setFilters, loadMore, retry } = useIssueList(chatId);
 
     return (
-        <>
-            {/* A plain button: the MainButton is reserved for submitting the form */}
-            <Link className="button primary" to={chatIssueNewPath(chatId)}>
-                提 issue
-            </Link>
-            <section className="section">
+        <section className="section">
+            <div className="filter-bar-with-action">
                 <IssueFilterBar filters={state.filters} stats={state.data?.stats ?? null} chats={null} onChange={setFilters} />
-                <IssueListView state={state} showChat={false} onLoadMore={loadMore} onRetry={retry} />
-            </section>
-        </>
+                {/* A plain link: the MainButton is reserved for submitting the form */}
+                <Link className="link-action" to={chatIssueNewPath(chatId)}>
+                    提 issue
+                </Link>
+            </div>
+            <IssueListView state={state} showChat={false} onLoadMore={loadMore} onRetry={retry} />
+        </section>
     );
 };
 

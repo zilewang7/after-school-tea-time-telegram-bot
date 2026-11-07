@@ -552,7 +552,7 @@ details.audit-change[open] {
 
 /* Issues */
 
-/* A Link styled as a button (「提 issue」) */
+/* A Link styled as a button */
 a.button {
     display: inline-block;
     text-decoration: none;
@@ -562,6 +562,30 @@ a.button {
     display: flex;
     flex-direction: column;
     gap: 8px;
+}
+
+/* A filter bar with a link action in the blank top-right corner of its first row */
+.filter-bar-with-action {
+    display: flex;
+    align-items: flex-start;
+    gap: 12px;
+}
+
+.filter-bar-with-action > .filter-bar {
+    flex: 1;
+    min-width: 0;
+}
+
+.link-action {
+    flex: none;
+    /* Keeps the link text on the same baseline as the first chip row */
+    padding: 4px 0;
+    color: var(--color-link);
+    font-size: 14px;
+    font-weight: 500;
+    line-height: 20px;
+    text-decoration: none;
+    white-space: nowrap;
 }
 
 .filter-row {
