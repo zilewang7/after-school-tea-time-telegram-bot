@@ -15,6 +15,7 @@ import {
     handleResponseError,
 } from './../response-handler.js';
 import type { UnifiedContentPart } from '../../ai/types.js';
+import { markRequestStarted, recordReferenceImages } from '../../services/reply-metrics-draft.js';
 
 /**
  * Picgpt command data
@@ -98,12 +99,16 @@ export const handlePicgptCommand = async (
 
     // Build context from parts
     const messages = buildContextFromParts(contentParts);
+    const { metrics } = chatContext.session;
+    recordReferenceImages(metrics, commandData.referenceImages.length);
 
     // Send to OpenAI image model
+    markRequestStarted(metrics);
     const streamResult = await to(
         sendMessage(messages, {
             model: OPENAI_IMAGE_MODEL,
             signal: chatContext.session.streamController.signal,
+            usageSink: metrics.usage,
         })
     );
 

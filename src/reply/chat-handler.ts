@@ -50,6 +50,7 @@ import { chatTitleOf } from '../telegram/chat-title.js';
 import { snapshotReplySettings } from '../services/chat-settings-service.js';
 import { buildStaticPromptOptions } from './static-prompt-options.js';
 import { stopIfChatPaused } from './chat-pause.js';
+import { markRequestStarted, recordContextSize } from '../services/reply-metrics-draft.js';
 
 /** A `/chat <link>` splice only gets a reaction back, never a message */
 const acknowledgeSilently = async (ctx: Context): Promise<void> => {
@@ -312,6 +313,7 @@ export const handleReply = async (
         return;
     }
     const { messages: chatContents, contextIndex } = ctxResult[1];
+    recordContextSize(chatContext.session.metrics, contextIndex);
 
     // Argon rides the OpenCode Go subscription, which wants one stable session id
     // per conversation: the reply-tree root identifies exactly that.
@@ -327,6 +329,7 @@ export const handleReply = async (
     );
 
     // Send to AI and get stream
+    markRequestStarted(chatContext.session.metrics);
     const streamResult = await to(
         sendMessage(chatContents, {
             model,
@@ -334,6 +337,7 @@ export const handleReply = async (
             ...(openCodeGoSession ? { sessionId: openCodeGoSession } : {}),
             signal,
             tools,
+            usageSink: chatContext.session.metrics.usage,
         })
     );
     if (isErr(streamResult)) {

@@ -8,6 +8,8 @@ import { isJsonObject } from '../../../shared/json-object.js';
 import { isStillImage } from '../../tools/tool-model-images.js';
 import { toolResultText, type ExecutedToolCall, type ToolCall } from '../../tools/index.js';
 import type { StreamChunk } from '../../types.js';
+import { normalizeAnthropicUsage } from '../../usage/normalize-anthropic.js';
+import type { RoundUsage } from '../../usage/usage-types.js';
 
 export interface AnthropicRound {
     /**
@@ -18,6 +20,8 @@ export interface AnthropicRound {
     readonly toolCalls: readonly ToolCall[];
     readonly stopReason: string | null;
     readonly chunks: readonly StreamChunk[];
+    /** The round's tokens; null when the stream reported none */
+    readonly usage: RoundUsage | null;
 }
 
 type StreamEvent = Anthropic.RawMessageStreamEvent;
@@ -34,6 +38,10 @@ interface RoundAccumulator {
     readonly toolInputJsonById: Map<string, string>;
     readonly chunks: StreamChunk[];
     stopReason: string | null;
+    /** message_start's usage (input counts), read loosely */
+    startUsage: unknown;
+    /** The latest message_delta usage (cumulative output) */
+    deltaUsage: unknown;
 }
 
 const createRoundAccumulator = (): RoundAccumulator => ({
@@ -43,6 +51,8 @@ const createRoundAccumulator = (): RoundAccumulator => ({
     toolInputJsonById: new Map(),
     chunks: [],
     stopReason: null,
+    startUsage: undefined,
+    deltaUsage: undefined,
 });
 
 /**
@@ -140,8 +150,13 @@ const onBlockStop = (accumulator: RoundAccumulator, event: StreamEventOf<'conten
     }
 };
 
+const onMessageStart = (accumulator: RoundAccumulator, event: StreamEventOf<'message_start'>): void => {
+    accumulator.startUsage = event.message.usage;
+};
+
 const onMessageDelta = (accumulator: RoundAccumulator, event: StreamEventOf<'message_delta'>): void => {
     accumulator.stopReason = event.delta.stop_reason ?? accumulator.stopReason;
+    accumulator.deltaUsage = event.usage ?? accumulator.deltaUsage;
     if (event.delta.stop_reason === 'refusal') {
         console.warn('[anthropic] Response stopped with refusal');
     }
@@ -168,6 +183,7 @@ export const collectAnthropicRound = async (
 
     for await (const event of stream) {
         match(event)
+            .with({ type: 'message_start' }, (startEvent) => onMessageStart(accumulator, startEvent))
             .with({ type: 'content_block_start' }, (startEvent) => onBlockStart(accumulator, startEvent))
             .with({ type: 'content_block_delta' }, (deltaEvent) => onBlockDelta(accumulator, deltaEvent))
             .with({ type: 'content_block_stop' }, (stopEvent) => onBlockStop(accumulator, stopEvent))
@@ -180,6 +196,7 @@ export const collectAnthropicRound = async (
         toolCalls: toolCallsOf(accumulator),
         stopReason: accumulator.stopReason,
         chunks: accumulator.chunks,
+        usage: normalizeAnthropicUsage(accumulator.startUsage, accumulator.deltaUsage),
     };
 };
 

@@ -28,6 +28,8 @@ import { registerGlobalRoutes } from './routes/global.js';
 import { registerHealthRoute } from './routes/health.js';
 import { registerMeRoute } from './routes/me.js';
 import { registerSettingsPreviewRoute } from './routes/settings-preview.js';
+import { registerStatsRoute } from './routes/stats.js';
+import { registerStatusRoute } from './routes/status.js';
 import { registerStaticRoutes } from './static.js';
 
 export interface PanelAppOptions {
@@ -86,6 +88,8 @@ export const createPanelApp = (options: PanelAppOptions): Hono<PanelEnv> => {
     registerSettingsPreviewRoute(app);
     registerGlobalRoutes(app);
     registerAuditRoute(app);
+    registerStatsRoute(app);
+    registerStatusRoute(app, { startedAt: options.startedAt, version: options.version });
 
     // Method-bound rather than app.all, so the request log can tell it from middleware
     app.on(HTTP_METHODS, '/api/*', apiNotFound);

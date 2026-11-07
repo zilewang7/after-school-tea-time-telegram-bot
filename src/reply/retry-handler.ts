@@ -26,6 +26,11 @@ import { snapshotReplySettings } from '../services/chat-settings-service.js';
 import { buildStaticPromptOptions } from './static-prompt-options.js';
 import { to } from '../shared/result.js';
 import {
+    markRequestStarted,
+    recordContextSize,
+    recordReferenceImages,
+} from '../services/reply-metrics-draft.js';
+import {
     createChatContextForRetry,
     processStream,
     sendFinalResponse,
@@ -120,13 +125,16 @@ const handlePicbananaRetry = async (
 
     // Build context from parts
     const messages = buildContextFromParts(contentParts);
+    recordReferenceImages(session.metrics, referenceImages.length);
 
     // Send to Gemini image model; like the live command, ride out 429s until an image comes back
+    markRequestStarted(session.metrics);
     const [streamErr, stream] = await to(
         sendMessage(messages, {
             model: GEMINI_IMAGE_MODEL,
             maxRetries: 50,
             signal: session.streamController.signal,
+            usageSink: session.metrics.usage,
         })
     );
     if (streamErr) {
@@ -204,12 +212,15 @@ const handlePicgptRetry = async (
 
     // Build context from parts
     const messages = buildContextFromParts(contentParts);
+    recordReferenceImages(session.metrics, referenceImages.length);
 
     // Send to OpenAI image model
+    markRequestStarted(session.metrics);
     const [streamErr, stream] = await to(
         sendMessage(messages, {
             model: OPENAI_IMAGE_MODEL,
             signal: session.streamController.signal,
+            usageSink: session.metrics.usage,
         })
     );
     if (streamErr) {
@@ -282,6 +293,7 @@ const handleChatRetry = async (
         return;
     }
     const { messages: chatContents, contextIndex } = builtContext;
+    recordContextSize(session.metrics, contextIndex);
 
     // Argon rides the OpenCode Go subscription: reuse the same session id the
     // original turn used, so a retry stays inside the same upstream session.
@@ -298,6 +310,7 @@ const handleChatRetry = async (
     );
 
     // Send to AI
+    markRequestStarted(session.metrics);
     const [streamErr, stream] = await to(
         sendMessage(chatContents, {
             model,
@@ -305,6 +318,7 @@ const handleChatRetry = async (
             ...(openCodeGoSession ? { sessionId: openCodeGoSession } : {}),
             signal,
             tools,
+            usageSink: session.metrics.usage,
         })
     );
     if (streamErr) {

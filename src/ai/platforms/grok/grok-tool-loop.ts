@@ -23,7 +23,10 @@ import {
     type TurnTools,
 } from '../../tools/index.js';
 import type { StreamChunk } from '../../types.js';
+import { normalizeResponsesUsage } from '../../usage/normalize-responses.js';
+import type { UsageSink } from '../../usage/usage-types.js';
 import { createGrokAgentStats } from './grok-agent-stats.js';
+import { fieldOf } from './grok-response-fields.js';
 import { extractGrokGrounding } from './grok-grounding.js';
 import {
     buildContinuationRequest,
@@ -52,6 +55,8 @@ export interface GrokToolLoopOptions {
     readonly openContinuation: (request: GrokResponseRequest) => Promise<AsyncIterable<ResponseStreamEvent>>;
     /** The model can see pictures, so tool images are replayed */
     readonly supportsImageInput: boolean;
+    /** Gets every round's usage as soon as the round has streamed */
+    readonly usageSink?: UsageSink;
 }
 
 /** The calls that may run: those naming a tool the accepted request offered */
@@ -92,6 +97,8 @@ export async function* runGrokToolLoop(
         const round = yield* streamGrokRound(stream, { roundIndex: roundCount, separator });
         roundCount++;
         lastResponse = round.response;
+        // A round without a closing response still counts, with no usage
+        options.usageSink?.addRound(normalizeResponsesUsage(fieldOf(round.response, 'usage')));
 
         if (round.response) {
             stats.addResponse(round.response);

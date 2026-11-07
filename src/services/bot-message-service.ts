@@ -47,6 +47,10 @@ import { sendReplyImageMessage } from '../telegram/reply-image-send.js';
 import { resolveChatModel } from '../config/chat-model.js';
 import type { ContextLinkResolver } from '../telegram/formatters/context-links.js';
 import type { AgentStats, FileDelivery, StickerDelivery } from '../ai/types.js';
+import { classifyErrorKind, summarizeErrorMessage, type ErrorKind } from '../shared/error-kind.js';
+import { createReplyMetricsDraft, type ReplyMetricsDraft } from './reply-metrics-draft.js';
+import { recordReplyMetric } from './reply-metric-record.js';
+import { pushRecentReplyError } from './recent-reply-errors.js';
 
 /**
  * Stream controller for aborting streams
@@ -92,6 +96,8 @@ export interface FinalizeOptions {
     modelParts?: any;
     wasStoppedByUser?: boolean;
     errorMessage?: string;
+    /** What kind of failure errorMessage is, for the reply metrics */
+    errorKind?: ErrorKind;
     /** Caption the reply's image went out with */
     imageCaption?: string;
 }
@@ -136,6 +142,11 @@ export interface BotMessageSession {
 
     // Context
     api: Api;
+
+    /** Timings, context size and usage of this attempt, written to reply_metrics at finalize */
+    metrics: ReplyMetricsDraft;
+    /** The tool status the editor shows right now; null while no tool runs */
+    statusLine: string | null;
 
     // Operations
     appendText: (text: string) => void;
@@ -188,6 +199,9 @@ export const getActiveSession = (chatId: number, firstMessageId: number): BotMes
     return activeSessions.get(key) ?? null;
 };
 
+/** Every reply still being generated, for the panel's live status (read only) */
+export const listActiveSessions = (): readonly BotMessageSession[] => [...activeSessions.values()];
+
 /**
  * Create a new bot message session
  */
@@ -200,6 +214,12 @@ export const createSession = async (
 
     const chatId = ctx.chat.id;
     const api = ctx.api;
+    // Taken first: the attempt's clock includes the placeholder and the context build
+    const metrics = createReplyMetricsDraft({
+        model: options.model,
+        commandType: options.commandType ?? 'chat',
+        triggerUserId: ctx.from?.id ?? null,
+    });
 
     // For retry, we reuse the existing first message
     let firstMessageId = options.dbAnchorMessageId ?? options.existingFirstMessageId;
@@ -273,6 +293,8 @@ export const createSession = async (
         versionCount,
         isFinalized: false,
         api,
+        metrics,
+        statusLine: null,
 
         appendText: (text: string) => {
             session.textBuffer += text;
@@ -402,6 +424,7 @@ const finalizeSession = async (
         return;
     }
     session.isFinalized = true;
+    const finishedAt = new Date();
 
     const sessionKey = getSessionKey(session.chatId, session.firstMessageId);
 
@@ -533,6 +556,16 @@ const finalizeSession = async (
             unregisterContinuation(session.chatId, msgId);
         }
     }
+
+    // After the cleanup, and never throwing: a failed metrics write costs the
+    // panel one row, not the reply its finalize
+    await recordReplyMetric(session, {
+        versionId: version.versionId,
+        errorMessage: options?.errorMessage,
+        errorKind: options?.errorKind,
+        wasStoppedByUser: options?.wasStoppedByUser ?? false,
+        finishedAt,
+    });
 };
 
 /**
@@ -545,8 +578,20 @@ const finalizeSession = async (
 const handleSessionError = async (session: BotMessageSession, error: Error): Promise<void> => {
     console.error('[bot-message-service] Session error:', error);
 
+    // No request out yet means the reply failed while reading or building
+    const errorKind = classifyErrorKind(error, { beforeRequest: session.metrics.requestStartedAt === null });
+    pushRecentReplyError({
+        at: new Date(),
+        chatId: session.chatId,
+        model: session.model,
+        errorKind,
+        errorSummary: summarizeErrorMessage(error.message),
+        firstMessageId: session.firstMessageId,
+    });
+
     await finalizeSession(session, {
         errorMessage: error.message,
+        errorKind,
     });
 };
 
