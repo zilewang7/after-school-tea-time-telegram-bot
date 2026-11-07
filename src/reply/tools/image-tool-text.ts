@@ -139,6 +139,26 @@ export const formatFetchResult = (input: {
     ].join('\n');
 };
 
+/** What fetch_image says after an avatar arrives */
+export const formatAvatarResult = (input: {
+    readonly id: string;
+    readonly label: string;
+    readonly mimeType: string;
+    readonly dataLength: number;
+    readonly view: 'original' | 'thumbnail';
+}): string => {
+    const tier = input.view === 'thumbnail' ? '160 档缩略图' : '640 档';
+    return [
+        `已读取 ${input.id}：${input.label}（${tier} ${input.mimeType}，${Math.round(input.dataLength / 1024)}KB）。`,
+        `可以直接作为 generate_image 的参考图（web_references），或 send_image(image_id='${input.id}') 发出。`,
+    ].join('\n');
+};
+
+/** A repeated avatar read: the bytes are already in the conversation */
+export const formatAvatarReuse = (id: string, label: string): string =>
+    `已经读过 ${id}（${label}），就在上面的对话里，不用重复读取。\n` +
+    `可以直接 send_image(image_id='${id}') 发出，或作为 generate_image 的参考图。`;
+
 /** What send_image says once the picture is on its way */
 export const formatSendResult = (input: {
     readonly candidateId?: string;

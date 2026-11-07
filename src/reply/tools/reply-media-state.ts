@@ -115,6 +115,8 @@ export interface ReplyMediaState {
     readonly generated: Map<string, GeneratedImage>;
     /** `st1`, … → pack index of a sticker the model has previewed */
     readonly fetchedStickers: Map<string, number>;
+    /** `target+view` → `imgN`: the same avatar is only resolved and downloaded once */
+    readonly readAvatars: Map<string, string>;
     /** Thumbnails attached so far; only the first window of the reply is small */
     thumbnailCount: number;
     /** Set by the image this reply will deliver */
@@ -133,6 +135,7 @@ export const createReplyMediaState = (): ReplyMediaState => ({
     fetched: new Map(),
     generated: new Map(),
     fetchedStickers: new Map(),
+    readAvatars: new Map(),
     thumbnailCount: 0,
     hasReplyImage: false,
     hasReplySticker: false,

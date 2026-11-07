@@ -13,6 +13,10 @@ export interface ContextIndexEntry {
     readonly messageId: number;
     /** One of the bot's own replies */
     readonly fromBot: boolean;
+    /** Author's Telegram user id; null/absent on rows stored before ids were recorded */
+    readonly authorUserId?: number | null;
+    /** Author's display name as this context renders it */
+    readonly authorName?: string;
     /** The message's pictures as the turn shows them: attachments first, then link previews */
     readonly images: readonly ContextImage[];
     /** = images.length; kept so callers don't count everywhere */

@@ -112,6 +112,8 @@ export interface FetchImageArgs {
     readonly sticker: string | undefined;
     /** `h3` or a t.me message link: a picture of an archived message */
     readonly history: string | undefined;
+    /** An avatar target: `me`, `chat`, `#3`, `@handle`, a numeric id or a t.me link */
+    readonly avatar: string | undefined;
     /** 1-based position among that message's images */
     readonly image: number;
     readonly view: 'original' | 'thumbnail';
@@ -145,10 +147,11 @@ export const parseFetchImageArgs = (
     const url = parseUrl(args.url);
     const sticker = parseOptionalText(args.sticker, 'sticker', 40);
     const history = parseOptionalText(args.history, 'history', 200);
+    const avatar = parseOptionalText(args.avatar, 'avatar', 200);
     const imageIndex = parseImageIndex(args.image);
     const view = parseFetchView(args.view);
 
-    const problems = problemsOf([search, image, url, sticker, history, imageIndex, view]);
+    const problems = problemsOf([search, image, url, sticker, history, avatar, imageIndex, view]);
     if (problems.length > 0) return { ok: false, error: `参数有误：\n${problems.map((p) => `- ${p}`).join('\n')}` };
 
     const searchId = search.ok ? search.value : '';
@@ -156,10 +159,11 @@ export const parseFetchImageArgs = (
     const urlText = url.ok ? url.value : '';
     const stickerText = sticker.ok ? sticker.value : '';
     const historyText = history.ok ? history.value : '';
-    if (countGiven([searchId, imageId, urlText, stickerText, historyText]) !== 1) {
+    const avatarText = avatar.ok ? avatar.value : '';
+    if (countGiven([searchId, imageId, urlText, stickerText, historyText, avatarText]) !== 1) {
         return {
             ok: false,
-            error: '参数有误：\n- search_id、image_id、url、sticker、history 必须传且只传一个',
+            error: '参数有误：\n- search_id、image_id、url、sticker、history、avatar 必须传且只传一个',
         };
     }
     if ((searchId !== '' && !idPattern.test(searchId)) || (imageId !== '' && !idPattern.test(imageId))) {
@@ -177,6 +181,7 @@ export const parseFetchImageArgs = (
             url: urlText === '' ? undefined : urlText,
             sticker: stickerText === '' ? undefined : stickerText,
             history: historyText === '' ? undefined : historyText,
+            avatar: avatarText === '' ? undefined : avatarText,
             image: imageIndex.ok ? imageIndex.value : 1,
             view: view.ok ? view.value : 'original',
         },

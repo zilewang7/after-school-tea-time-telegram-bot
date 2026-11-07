@@ -12,6 +12,8 @@ export * from './reply-media-state.js';
 export * from './search-images-tool.js';
 export * from './search-by-image-tool.js';
 export * from './fetch-image-tool.js';
+export * from './avatar-args.js';
+export * from './avatar-lane.js';
 export * from './send-image-tool.js';
 export * from './send-sticker-tool.js';
 export * from './history-state.js';

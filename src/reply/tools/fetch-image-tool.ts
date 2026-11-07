@@ -28,6 +28,7 @@ import {
 } from './history-image.js';
 import { imageToolError } from './image-tool-result.js';
 import { formatFetchResult, mediaToolErrors } from './image-tool-text.js';
+import { readAvatar, type AvatarLaneOptions } from './avatar-lane.js';
 import {
     candidateCaption,
     downloadCandidateMedia,
@@ -59,7 +60,11 @@ const STICKER_DESCRIPTION =
     '也可传入 sticker（贴纸包内序号 01–72、画面名称，或 send_sticker 目录里的整行如 \'30刘海遮眼低落\'）预览贴纸；' +
     '返回编号 stN，之后可用 send_sticker(sticker=…) 发出，或作为 generate_image 的 web_references。';
 
-const inputSchemaOf = (hasSticker: boolean, hasHistory: boolean) => ({
+const AVATAR_DESCRIPTION =
+    "也可传入 avatar 读取头像：'me'（我自己）、'chat'（当前聊天）、'#N'（上下文 #N 的作者，含其它 bot）、" +
+    "'@username'、数字 id（正数=用户，负数=群/频道）或 t.me 链接；view='thumbnail' 取小尺寸。";
+
+const inputSchemaOf = (hasSticker: boolean, hasHistory: boolean, hasAvatar: boolean) => ({
     type: 'object',
     properties: {
         ...(hasHistory
@@ -86,6 +91,16 @@ const inputSchemaOf = (hasSticker: boolean, hasHistory: boolean) => ({
                       type: 'string',
                       description:
                           "贴纸包内序号（01–72）、画面名称，或 send_sticker 目录里的整行，如 '07'、'吃冰棒'、'30刘海遮眼低落'",
+                  },
+              }
+            : {}),
+        ...(hasAvatar
+            ? {
+                  avatar: {
+                      type: 'string',
+                      description:
+                          "头像目标：'me'（我自己）、'chat'（当前聊天）、'#3'（上下文编号）、'@username'、" +
+                          '数字 id（正数=用户，负数=群/频道）或 t.me 链接',
                   },
               }
             : {}),
@@ -117,6 +132,8 @@ export interface FetchImageToolOptions {
     readonly sticker?: { readonly setName: string; readonly api: StickerSetApi };
     /** The archive lane; absent = this turn has no history tools */
     readonly history?: HistoryImageOptions;
+    /** The avatar lane; absent = this turn cannot read avatars */
+    readonly avatar?: AvatarLaneOptions;
 }
 
 /** Production wiring; tests pass their own */
@@ -168,6 +185,8 @@ export const describeFetchImageRequest = (args: Readonly<Record<string, unknown>
     if (sticker !== undefined) return `sticker=${sticker}`;
     const history = textOf('history');
     if (history !== undefined) return `history=${history}`;
+    const avatar = textOf('avatar');
+    if (avatar !== undefined) return `avatar=${avatar}`;
     const searchId = textOf('search_id');
     if (searchId !== undefined) return `search_id=${searchId}`;
     const imageId = textOf('image_id');
@@ -195,6 +214,7 @@ export const createFetchImageTool = (options: FetchImageToolOptions): ToolHandle
         const parts = [DESCRIPTION];
         if (options.history !== undefined) parts.push(HISTORY_DESCRIPTION);
         if (options.sticker !== undefined) parts.push(STICKER_DESCRIPTION);
+        if (options.avatar !== undefined) parts.push(AVATAR_DESCRIPTION);
         return parts.join('');
     };
 
@@ -202,7 +222,11 @@ export const createFetchImageTool = (options: FetchImageToolOptions): ToolHandle
         definition: {
             name: FETCH_IMAGE_TOOL_NAME,
             description: descriptionOf(),
-            inputSchema: inputSchemaOf(options.sticker !== undefined, options.history !== undefined),
+            inputSchema: inputSchemaOf(
+                options.sticker !== undefined,
+                options.history !== undefined,
+                options.avatar !== undefined
+            ),
         },
         statusText: '🖼 正在读图…',
         chatAction: 'typing',
@@ -318,6 +342,13 @@ export const createFetchImageTool = (options: FetchImageToolOptions): ToolHandle
                     modelImages: [{ data: preview.data, mimeType: preview.mimeType, caption }],
                     record: null,
                 };
+            }
+
+            if (args.avatar !== undefined) {
+                if (options.avatar === undefined) return reject(request, '这一轮没有配置头像读取。');
+                const lane = await readAvatar(args.avatar, args.view, state, options.avatar, signal);
+                if (!lane.ok) return reject(request, lane.error);
+                return lane.result;
             }
 
             const candidate =

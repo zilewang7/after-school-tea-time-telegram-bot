@@ -690,10 +690,14 @@ const buildToolContextIndex = (
     const contextIndex = new Map<number, ContextIndexEntry>();
     for (const [messageId, number] of numbering.numberOf) {
         const images = imagesByMessageId.get(messageId) ?? [];
+        const message = numbering.byId.get(messageId);
         contextIndex.set(number, {
             number,
             messageId,
-            fromBot: numbering.byId.get(messageId)?.fromBotSelf ?? false,
+            fromBot: message?.fromBotSelf ?? false,
+            // The author is what `avatar='#N'` means
+            authorUserId: message?.userId ?? null,
+            ...(message === undefined ? {} : { authorName: message.userName }),
             images,
             imageCount: images.length,
         });

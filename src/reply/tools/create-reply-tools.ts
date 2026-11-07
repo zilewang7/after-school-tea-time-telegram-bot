@@ -13,6 +13,7 @@ import { buildMcpToolHandlers } from '../../ai/tools/mcp-tool-handlers.js';
 import { createTurnTools } from '../../ai/tools/turn-tools.js';
 import type { ToolHandler, TurnTools } from '../../ai/tools/tool-types.js';
 import { getToolConfig } from '../../config/tool-config.js';
+import { findTelegramUserIdByUsername } from '../../db/queries/user-queries.js';
 import { fetchImageBytes } from '../../services/image-fetch-service.js';
 import { searchImages } from '../../services/image-search-service.js';
 import { createHistoryService } from '../../services/luoxu-history-service.js';
@@ -125,6 +126,15 @@ export const createReplyTools = (
                                 },
                             }
                           : {}),
+                      avatar: {
+                          chatId: context.chatId,
+                          botUserId: numericId(process.env.BOT_USER_ID),
+                          contextIndex: context.contextIndex,
+                          dependencies: {
+                              api: context.api,
+                              lookupUsername: findTelegramUserIdByUsername,
+                          },
+                      },
                   }),
               ]
             : []),

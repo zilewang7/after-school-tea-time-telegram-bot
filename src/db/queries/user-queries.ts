@@ -61,3 +61,13 @@ export const findTelegramUsersByUsernames = async (usernames: string[]): Promise
         where: { username: { [Op.in]: usernames.map((name) => name.toLowerCase()) } },
     });
 };
+
+/**
+ * One @handle → the user id the roster knows, or null. Used where a handle has
+ * to become a numeric id without a Telegram call (fetch_image's avatar lane).
+ */
+export const findTelegramUserIdByUsername = async (username: string): Promise<number | null> => {
+    const wanted = username.toLowerCase();
+    const rows = await findTelegramUsersByUsernames([wanted]);
+    return rows.find((row) => row.username === wanted)?.userId ?? null;
+};

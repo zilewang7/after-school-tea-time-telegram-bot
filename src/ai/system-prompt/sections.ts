@@ -107,7 +107,7 @@ const IMAGE_REVERSE_LINE =
     '- 可以用 `search_by_image` 以图搜图：将图片上传至 Yandex，返回包含该图的网页、其他尺寸、相似图与识别标签（动图取首帧，单图上限 8MB）。';
 
 const IMAGE_FETCH_LINE =
-    '- 可以用 `fetch_image` 读取上下文中的图片原图、贴纸或已搜到的候选图以查看细节。';
+    '- 可以用 `fetch_image` 读取上下文中的图片原图、贴纸或已搜到的候选图以查看细节，也可以用 `fetch_image(avatar=…)` 取群聊、用户、频道或自己（`me`）的头像。';
 
 /** Editing a picture the conversation already shows: reference it, never redraw it from memory */
 const IMAGE_EDIT_LINE =
