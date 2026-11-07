@@ -12,12 +12,12 @@
  */
 import { Api } from 'grammy';
 import { Hono, type Context } from 'hono';
-import { bodyLimit } from 'hono/body-limit';
 import { createMembershipChecker, type MembershipLookup } from './access/membership.js';
 import type { ChatNameLookup } from './chat-names.js';
 import type { PanelEnv } from './context.js';
 import { errorBody, PANEL_MESSAGES } from './errors.js';
 import { createAuthMiddleware } from './middleware/auth.js';
+import { createBodyLimit } from './middleware/body-limit.js';
 import { handlePanelError } from './middleware/error-handler.js';
 import { createIssueQuota, DEFAULT_ISSUE_QUOTA, type IssueQuotaLimits } from './middleware/issue-quota.js';
 import { createRateLimit } from './middleware/rate-limit.js';
@@ -98,9 +98,9 @@ export const createPanelApp = (options: PanelAppOptions): Hono<PanelEnv> => {
 
     app.use(
         '/api/*',
-        bodyLimit({
+        createBodyLimit({
             maxSize: BODY_LIMIT_BYTES,
-            onError: (context) => context.json(errorBody('too_large', PANEL_MESSAGES.tooLarge), 413),
+            onTooLarge: (context) => context.json(errorBody('too_large', PANEL_MESSAGES.tooLarge), 413),
         })
     );
     app.use('/api/*', createAuthMiddleware({ botToken: options.botToken, checker, now }));

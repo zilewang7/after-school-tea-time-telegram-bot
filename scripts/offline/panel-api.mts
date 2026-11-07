@@ -131,6 +131,25 @@ const call = (app: PanelApp, path: string, options: CallOptions = {}): Promise<R
     return Promise.resolve(app.request(path, { method: options.method ?? 'GET', headers, body }));
 };
 
+/** A request whose body is a stream and carries no content-length, like a chunked upload or a real body-less DELETE */
+const streamRequest = (
+    path: string,
+    options: { method: string; user: InitDataUserInput; body: string | null }
+): Request => {
+    const headers = new Headers({ 'X-Init-Data': initDataFor(options.user), 'Content-Type': 'application/json' });
+    const text = options.body;
+    const body =
+        text === null
+            ? new ReadableStream<Uint8Array>({ start: (controller) => controller.close() })
+            : new ReadableStream<Uint8Array>({
+                  start: (controller) => {
+                      controller.enqueue(new TextEncoder().encode(text));
+                      controller.close();
+                  },
+              });
+    return new Request(`http://localhost${path}`, { method: options.method, headers, body, duplex: 'half' } as RequestInit);
+};
+
 /** The response body as JSON, or a marker when it is not JSON */
 const jsonOf = async (response: Response): Promise<any> => {
     const text = await response.text();
@@ -633,6 +652,35 @@ const cases: { name: string; body: () => Promise<void> }[] = [
             clockMs += 60_000;
             expect((await call(limitedApp, '/api/global', { user: OWNER })).status === 200, 'a new window starts after 60s');
             clockMs = Date.now();
+        },
+    },
+    {
+        name: 'body limit: a body-less DELETE and a chunked upload are not 500s',
+        body: async () => {
+            // A real HTTP DELETE reaches the server as an empty stream without a
+            // content-length; @hono/node-server's Request subclass could not be
+            // cloned by hono's own bodyLimit, so these requests answered 500.
+            const previewPath = `/api/chats/${GROUP_MAIN}/settings/preview`;
+            const chunkedBody = JSON.stringify({ promptAddendum: 'chunked' });
+            const chunked = await app.request(
+                streamRequest(previewPath, { method: 'POST', user: ALICE, body: chunkedBody })
+            );
+            expect(chunked.status === 200, `a chunked upload passes (got ${chunked.status})`);
+            expect((await jsonOf(chunked)).injected === true, 'its body arrived at the handler');
+
+            const tooLarge = await app.request(
+                streamRequest(previewPath, {
+                    method: 'POST',
+                    user: ALICE,
+                    body: JSON.stringify({ promptAddendum: 'x'.repeat(40_000) }),
+                })
+            );
+            expect(tooLarge.status === 413, `a chunked body over 32 KB is 413 (got ${tooLarge.status})`);
+
+            const bodyless = await app.request(
+                streamRequest(`/api/chats/${GROUP_MAIN}/messages/1/exclusion`, { method: 'DELETE', user: ALICE, body: null })
+            );
+            expect(bodyless.status === 404, `a body-less DELETE reaches its route (got ${bodyless.status})`);
         },
     },
     {
