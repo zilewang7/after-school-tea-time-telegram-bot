@@ -51,7 +51,7 @@ import {
 } from './history-tool-shared.js';
 import { SEARCH_HISTORY_TOOL_NAME } from './tool-names.js';
 
-const DESCRIPTION =
+const BASE_DESCRIPTION =
     '检索本聊天的历史归档（luoxu 的全文索引，覆盖更早的消息、链接预览正文、Instant View 全文与图片 OCR 文本）。' +
     '返回按时间从新到旧的命中列表，每条带 hN 编号、时间、发送者、#N 或 t.me 链接、消息首行与命中处的上下文片段；不含正文全文，需要时用 read_history 读。' +
     `事实：默认返回最新 ${HISTORY_DEFAULT_LIMIT} 条命中，limit 最多 ${HISTORY_MAX_LIMIT} 条（不是相关性排序）；` +
@@ -59,7 +59,7 @@ const DESCRIPTION =
     '用 sender / from / to 收窄，用 before 翻到更早的一页。' +
     '返回的头部会带本群归档的消息数与时间范围。';
 
-const INPUT_SCHEMA = {
+const inputSchemaOf = (channelId: number | null): Readonly<Record<string, unknown>> => ({
     type: 'object',
     properties: {
         query: {
@@ -68,7 +68,7 @@ const INPUT_SCHEMA = {
         },
         sender: {
             type: 'string',
-            description: '只找某个发言人：名字（模糊）或 Telegram uid。',
+            description: '只找某个发言人：名字（模糊）或 Telegram uid；跨群检索只能用 uid。',
         },
         from: {
             type: 'string',
@@ -91,10 +91,18 @@ const INPUT_SCHEMA = {
         scope: {
             type: 'string',
             enum: ['chat', 'all'],
-            description: 'chat（默认）= 本聊天；all = 全部归档群（仅机主可用）。',
+            description:
+                channelId === null
+                    ? '固定用 all：当前是机主私聊，没有本群归档，只能检索全部归档群。'
+                    : 'chat（默认）= 本聊天；all = 全部归档群（仅机主可用）。',
         },
     },
-};
+});
+
+const descriptionOf = (channelId: number | null): string =>
+    channelId === null
+        ? `${BASE_DESCRIPTION}当前是机主私聊：没有本群归档，scope 默认且只能是 all（全部归档群）。`
+        : `${BASE_DESCRIPTION}范围默认本聊天；机主可以用 scope="all" 跨全部归档群。`;
 
 const MAX_GROUPS_PER_LIST = 4;
 
@@ -238,17 +246,19 @@ const summarizeSearchArgs = (args: Readonly<Record<string, unknown>>): string =>
 
 export const createSearchHistoryTool = (options: HistoryToolOptions): ToolHandler => {
     const timeZone = historyTimeZoneOf(options);
+    // The owner's private chat has no luoxu channel, so its searches are cross-group
+    const defaultScope: 'chat' | 'all' = options.channelId === null ? 'all' : 'chat';
 
     const handler: ToolHandler = {
         definition: {
             name: SEARCH_HISTORY_TOOL_NAME,
-            description: DESCRIPTION,
-            inputSchema: INPUT_SCHEMA,
+            description: descriptionOf(options.channelId),
+            inputSchema: inputSchemaOf(options.channelId),
         },
         statusText: '🔍 正在翻聊天记录…',
         chatAction: 'typing',
         execute: async (args, signal): Promise<ToolResult> => {
-            const parsed = parseHistorySearchArgs(args);
+            const parsed = parseHistorySearchArgs(args, defaultScope);
             if (!parsed.ok) return historyToolError(parsed.error);
             const searchArgs = parsed.value;
 
@@ -256,7 +266,7 @@ export const createSearchHistoryTool = (options: HistoryToolOptions): ToolHandle
                 return historyToolError('跨群检索仅机主可用。');
             }
             if (searchArgs.scope === 'chat' && options.channelId === null) {
-                return historyToolError('这个聊天没有归档索引。');
+                return historyToolError('当前是私聊，没有本群归档；scope 只能用 all。');
             }
 
             const sender = searchArgs.sender

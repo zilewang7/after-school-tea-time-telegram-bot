@@ -48,7 +48,14 @@ const asString = (value: unknown): string | null =>
 const asInteger = (value: unknown): number | null =>
     typeof value === 'number' && Number.isInteger(value) ? value : null;
 
-export const parseHistorySearchArgs = (raw: Readonly<Record<string, unknown>>): ParseResult<HistorySearchArgs> => {
+/**
+ * `defaultScope` is `all` in the owner's private chat: that chat has no archive
+ * of its own, so the model means "every archived group" unless it says otherwise.
+ */
+export const parseHistorySearchArgs = (
+    raw: Readonly<Record<string, unknown>>,
+    defaultScope: 'chat' | 'all' = 'chat'
+): ParseResult<HistorySearchArgs> => {
     const query = asString(raw.query);
     if (query && Array.from(query).length > HISTORY_MAX_QUERY_CHARS) {
         return fail(`query 太长（上限 ${HISTORY_MAX_QUERY_CHARS} 字符）`);
@@ -57,7 +64,7 @@ export const parseHistorySearchArgs = (raw: Readonly<Record<string, unknown>>): 
     if (limitRaw === null || limitRaw < 1 || limitRaw > HISTORY_MAX_LIMIT) {
         return fail(`limit 需要是 1–${HISTORY_MAX_LIMIT} 的整数`);
     }
-    const scopeRaw = raw.scope === undefined ? 'chat' : asString(raw.scope);
+    const scopeRaw = raw.scope === undefined ? defaultScope : asString(raw.scope);
     if (scopeRaw !== 'chat' && scopeRaw !== 'all') {
         return fail("scope 只能是 'chat'（本聊天）或 'all'（全部归档群，仅机主）");
     }

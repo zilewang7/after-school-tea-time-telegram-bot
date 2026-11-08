@@ -40,6 +40,8 @@ const { createReadHistoryTool } = await import('../../src/reply/tools/read-histo
 const { HistoryRequestError } = await import('../../src/services/luoxu-history-service.js');
 const { buildReplyToolContext } = await import('../../src/reply/tools/reply-tool-context.js');
 const { toLuoxuChannelId } = await import('../../src/services/luoxu-channel-id.js');
+const { resolveToolAvailability } = await import('../../src/reply/tools/tool-availability.js');
+const { readToolConfig } = await import('../../src/config/tool-config.js');
 
 const CHAT_ID = -1002311128579;
 const CHANNEL_ID = 2311128579;
@@ -770,6 +772,108 @@ cases.push(
         );
         expect(squeezed.includes('因长度省略'), 'a squeezed list states the truncation');
         expect(squeezed.length <= 400, 'and stays near its budget');
+    })
+);
+
+cases.push(
+    await runCase('the owner private chat is offered the history tools, other private chats are not', async () => {
+        const config = readToolConfig({
+            HISTORY_CHAT_IDS: '-1001415974153',
+            HISTORY_TOOLS: '1',
+            LUOXU_PREVIEW_URL: 'http://luoxu:9008/luoxu',
+            TOOL_CHAT_IDS: '-1001415974153',
+            OWNER_USER_ID: String(OWNER_ID),
+        });
+        expect(
+            resolveToolAvailability('gemini-4-argon', OWNER_ID, config).history,
+            'the owner DM gets search_history / read_history without an env entry'
+        );
+        expect(
+            resolveToolAvailability('gemini-4-argon', -1001415974153, config).history,
+            'an archived group keeps them'
+        );
+        expect(
+            !resolveToolAvailability('gemini-4-argon', 111222333, config).history,
+            'a stranger private chat does not'
+        );
+    })
+);
+
+cases.push(
+    await runCase('a private-chat search defaults to all archived groups', async () => {
+        const fake = fakeService({});
+        const options = buildOptions(fake, {
+            chatId: OWNER_ID,
+            channelId: null,
+            requesterId: OWNER_ID,
+        });
+        const tool = createSearchHistoryTool(options);
+        const result = await execute(tool, { query: 'Agent' });
+
+        expect(!result.isError, 'the search runs without an explicit scope');
+        expect(fake.searches.at(-1)?.channelId === null, 'luoxu is asked for every group');
+        expect(fake.statsCalls.at(-1) === null, 'the coverage line counts every group');
+        expect(result.content.includes('全部归档群'), 'the answer names the cross-group scope');
+        expect(
+            tool.definition.description.includes('机主私聊'),
+            'the description states the private-chat scope'
+        );
+        const scopeDescription = propertyDescriptionOf(tool.definition.inputSchema, 'scope');
+        expect(
+            scopeDescription.includes('全部归档群'),
+            'the scope property says what all means here'
+        );
+    })
+);
+
+cases.push(
+    await runCase('a private chat cannot read #N and refuses non-owner cross-group search', async () => {
+        const fake = fakeService({});
+        const ownerOptions = buildOptions(fake, {
+            chatId: OWNER_ID,
+            channelId: null,
+            requesterId: OWNER_ID,
+        });
+        const search = createSearchHistoryTool(ownerOptions);
+        const explicitChat = await execute(search, { scope: 'chat' });
+        expect(explicitChat.isError, 'the chat scope is refused without an archive');
+        expect(explicitChat.content.includes('私聊'), 'the error explains the private chat');
+
+        const strangerOptions = buildOptions(fake, {
+            chatId: 111222333,
+            channelId: null,
+            requesterId: 111222333,
+        });
+        const stranger = createSearchHistoryTool(strangerOptions);
+        const all = await execute(stranger, { scope: 'all' });
+        expect(all.isError && all.content.includes('仅机主'), 'cross-group search stays owner-only');
+    })
+);
+
+cases.push(
+    await runCase('hN from a private-chat search reads the original group message', async () => {
+        const fake = fakeService({});
+        const options = buildOptions(fake, {
+            chatId: OWNER_ID,
+            channelId: null,
+            requesterId: OWNER_ID,
+        });
+        const search = createSearchHistoryTool(options);
+        const read = createReadHistoryTool(options);
+
+        const listed = await execute(search, { query: 'Agent' });
+        expect(!listed.isError, 'the search registers h1');
+        const full = await execute(read, { ids: ['h1'] });
+        expect(!full.isError, `h1 reads in the private chat: ${full.content.slice(0, 80)}`);
+        expect(fake.messages.length > 0, 'the raw text is fetched from the hit channel');
+        expect(fake.messages.at(-1)?.channelId === CHANNEL_ID, 'from the group that owns h1');
+
+        const hashReference = await execute(read, { ids: ['#12'] });
+        expect(hashReference.isError, '#N has no archive in a private chat');
+        expect(
+            hashReference.content.includes('私聊'),
+            'the #N error points at the private chat'
+        );
     })
 );
 

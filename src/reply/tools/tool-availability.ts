@@ -129,8 +129,15 @@ export const resolveToolAvailability = (
 
     // History is read-only, so it follows its own chat list rather than the
     // side-effecting TOOL_CHAT_IDS: bilibili-archive chats can still be searched.
+    // The owner's private chat has no archive of its own but may search every
+    // archived group (scope=all), so it gets the tools without an env entry.
+    const ownerDmChat =
+        config.owner.userId !== null &&
+        chatId > 0 &&
+        Number.parseInt(config.owner.userId, 10) === chatId;
     const historyAllowed =
-        (toolOverrideOf(overrides, 'history') ?? config.historyChatIds.has(chatId)) &&
+        (toolOverrideOf(overrides, 'history') ??
+            (config.historyChatIds.has(chatId) || ownerDmChat)) &&
         config.historyTools &&
         config.historyBaseUrl !== '' &&
         isEnabled(SEARCH_HISTORY_TOOL_NAME) &&

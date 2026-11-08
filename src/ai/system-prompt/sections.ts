@@ -123,7 +123,7 @@ const FILE_LINE =
     '- 可以用 `send_file` 把长文本（Markdown、代码、CSV 等）写成文件发到聊天（单份上限 10 MB）';
 
 const historyLine = (canFetchImages: boolean): string =>
-    '- 可以用 `search_history` 检索本聊天的历史归档（关键词 / 时间 / 发言人；含链接预览、Instant View 与图片 OCR 文本），用 `read_history` 读整条原文或某条消息前后的对话' +
+    '- 可以用 `search_history` 检索历史归档（本聊天；机主私聊时为全部归档群）中的消息（关键词 / 时间 / 发言人；含链接预览、Instant View 与图片 OCR 文本），用 `read_history` 读整条原文或某条消息前后的对话' +
     (canFetchImages ? "；归档消息里的图可以用 `fetch_image(history='hN')` 读取。" : '。');
 
 const WIDGET_LINE =

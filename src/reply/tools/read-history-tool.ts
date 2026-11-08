@@ -37,10 +37,15 @@ import {
 } from './history-tool-shared.js';
 import { READ_HISTORY_TOOL_NAME } from './tool-names.js';
 
-const DESCRIPTION =
+const BASE_DESCRIPTION =
     '读取历史归档里某条消息的完整索引文本（含网页预览、Instant View 正文、图片 OCR），或读取某条消息前后一段时间内的对话。' +
     `ids 接受 hN（本回复中出现过的编号）、#N（上下文里的编号）与 https://t.me/c/... 链接，一次最多 ${HISTORY_MAX_REFS} 条；around 接受同样的引用，minutes 默认 10 分钟。` +
     'bot 自己的回复以折叠块形式带思考过程与工具记录，默认省略为一行（保留首行 50 字），folded=true 时原样返回。';
+
+const descriptionOf = (channelId: number | null): string =>
+    channelId === null
+        ? `${BASE_DESCRIPTION}当前是机主私聊：hN 来自 search_history（可跨群），#N 不适用；t.me 链接可读任意归档群。`
+        : BASE_DESCRIPTION;
 
 const INPUT_SCHEMA = {
     type: 'object',
@@ -124,7 +129,11 @@ const resolveReference = async (
     if (reference.kind === 'context') {
         const target = options.context.contextIndex.get(reference.number);
         if (!target) return { error: `本轮上下文里没有 #${reference.number}。` };
-        if (options.channelId === null) return { error: '这个聊天没有归档索引。' };
+        if (options.channelId === null) {
+            return {
+                error: '当前是私聊，没有本群归档；用 search_history 返回的 hN 读取跨群消息。',
+            };
+        }
         return ensureEntry(options, options.channelId, target.messageId, signal);
     }
     if (!isOwner(options) && reference.channelId !== options.channelId) {
@@ -351,7 +360,7 @@ const summarizeReadArgs = (args: Readonly<Record<string, unknown>>): string =>
 const handlerOf = (options: HistoryToolOptions): ToolHandler => ({
     definition: {
         name: READ_HISTORY_TOOL_NAME,
-        description: DESCRIPTION,
+        description: descriptionOf(options.channelId),
         inputSchema: INPUT_SCHEMA,
     },
     statusText: '📖 正在读聊天记录…',
