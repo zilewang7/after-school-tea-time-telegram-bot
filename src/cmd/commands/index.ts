@@ -5,3 +5,4 @@ export { registerPicCommands } from "./pic.js";
 export { registerModelCommand } from "./model.js";
 export { registerContextCommand } from "./context.js";
 export { registerPanelCommand } from "./panel.js";
+export { registerWidgetCommands } from "./widget.js";

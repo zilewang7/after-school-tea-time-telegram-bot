@@ -19,7 +19,7 @@
  * Round trips cost more than image tokens here (see the design doc).
  */
 import type { SniffedMediaMime } from '../../ai/image-generation/image-mime.js';
-import type { FileDelivery } from '../../ai/types.js';
+import type { FileDelivery, WidgetDelivery } from '../../ai/types.js';
 import type { SendKind } from '../../services/image-search-service.js';
 
 /** Thumbnails in the reply's very first window */
@@ -92,7 +92,7 @@ export interface GeneratedImage {
 
 /** One attachment per reply: an image, a sticker or a file */
 export const ONE_ATTACHMENT_PER_REPLY =
-    '这条回复已经有一个附件（图片/贴纸/文件），每条回复只能发一个。';
+    '这条回复已经有一个附件（图片/贴纸/文件/组件），每条回复只能发一个。';
 
 /**
  * The file this reply is writing with send_file. Parts are appended in call
@@ -127,6 +127,10 @@ export interface ReplyMediaState {
     fileDraft?: ReplyFileDraft;
     /** Set by the file this reply will deliver */
     hasReplyFile: boolean;
+    /** The chat UI card this reply will deliver; absent until send_widget is called */
+    widget?: WidgetDelivery;
+    /** Set by the widget this reply will deliver */
+    hasReplyWidget: boolean;
 }
 
 export const createReplyMediaState = (): ReplyMediaState => ({
@@ -140,6 +144,7 @@ export const createReplyMediaState = (): ReplyMediaState => ({
     hasReplyImage: false,
     hasReplySticker: false,
     hasReplyFile: false,
+    hasReplyWidget: false,
 });
 
 /** UTF-8 size of everything written into the draft so far */

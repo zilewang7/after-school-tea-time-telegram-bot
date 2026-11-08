@@ -25,6 +25,18 @@
  * - HISTORY_TOOLS=0: no search_history / read_history (luoxu's archive)
  * - HISTORY_CHAT_IDS: chats whose history luoxu archives, comma-separated
  * - HARNESS_ISSUES=0: no list_harness_issues / create_harness_issue
+ * - WIDGET_ENABLE=1: offer send_widget / get_ui_guide (Phase 0 default off; the
+ *   readiness probe and the switch make it safe to turn on when Telegram
+ *   opens widgets for group chats and the self-hosted Bot API is 10.4)
+ * - WIDGET_CHAT_IDS: chats offered the widget tools (empty = TOOL_CHAT_IDS)
+ * - WIDGET_ALLOW_HTML=1: additionally allow the model to write full widget
+ *   HTML; default only the A2UI subset is accepted
+ * - WIDGET_API_ROOT: Bot API root used for widget calls (cloud, or local after
+ *   the self-hosted server is 10.4)
+ * - WIDGET_READY_CHECK=0: no startup readiness probe
+ * - WIDGET_MAX_HTML_BYTES / WIDGET_MAX_GZIP_BYTES: server limits, kept as
+ *   configuration so a future Telegram change only touches .env
+ * - WIDGET_PROBE_CHAT_ID: chat the owner /widget_probe sends a throwaway widget to
  */
 import { parseChatIdList } from './chat-id-list.js';
 
@@ -68,6 +80,24 @@ export interface ToolConfig {
     readonly historyBaseUrl: string;
     readonly ownerSmsAllowTest: boolean;
     readonly owner: OwnerIdentity;
+    /** WIDGET_ENABLE is 1: send_widget / get_ui_guide may be offered */
+    readonly widgetEnabled: boolean;
+    /** Chats offered the widget tools; empty = toolChatIds */
+    readonly widgetChatIds: ReadonlySet<number>;
+    /** WIDGET_ALLOW_HTML is 1: the model may write full widget HTML */
+    readonly widgetAllowHtml: boolean;
+    /** Bot API root for widget calls (cloud API, or local once it is 10.4) */
+    readonly widgetApiRoot: string;
+    /** WIDGET_READY_CHECK is not 0: probe the widget methods at startup */
+    readonly widgetReadyCheck: boolean;
+    /** Chat /widget_probe sends a throwaway widget to; null when unset */
+    readonly widgetProbeChatId: number | null;
+    /** Server limit: widget HTML bytes before compression */
+    readonly widgetMaxHtmlBytes: number;
+    /** Server limit: widget HTML bytes after zlib level 9 */
+    readonly widgetMaxGzipBytes: number;
+    /** Snapshot version of the guides get_ui_guide returns */
+    readonly widgetGuideVersion: number;
 }
 
 /** Stands in for OWNER_DISPLAY_NAME when it is not set */
@@ -83,6 +113,18 @@ const splitList = (raw: string | undefined): string[] =>
 const optionalValue = (raw: string | undefined): string | null => raw?.trim() || null;
 
 const DEFAULT_IMAGE_SEARCH_URL = 'http://searxng:8080';
+
+/** A positive integer env value; anything else keeps the default */
+const parsePositiveInt = (raw: string | undefined, fallback: number): number => {
+    const parsed = Number.parseInt((raw ?? '').trim(), 10);
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+};
+
+/** A single chat id env value (may be negative); null when unset or invalid */
+const parseOptionalChatId = (raw: string | undefined): number | null => {
+    const parsed = Number.parseInt((raw ?? '').trim(), 10);
+    return Number.isFinite(parsed) ? parsed : null;
+};
 
 /** 0 / 1 / 2; anything else keeps the moderate default */
 const parseSafesearch = (raw: string | undefined): 0 | 1 | 2 => {
@@ -121,6 +163,15 @@ export const readToolConfig = (env: NodeJS.ProcessEnv = process.env): ToolConfig
     harnessIssues: env.HARNESS_ISSUES !== '0',
     historyChatIds: new Set(parseChatIdList(env.HISTORY_CHAT_IDS)),
     historyBaseUrl: optionalValue(env.LUOXU_PREVIEW_URL) ?? '',
+    widgetEnabled: env.WIDGET_ENABLE === '1',
+    widgetChatIds: new Set(parseChatIdList(env.WIDGET_CHAT_IDS)),
+    widgetAllowHtml: env.WIDGET_ALLOW_HTML === '1',
+    widgetApiRoot: optionalValue(env.WIDGET_API_ROOT) ?? 'https://api.telegram.org',
+    widgetReadyCheck: env.WIDGET_READY_CHECK !== '0',
+    widgetProbeChatId: parseOptionalChatId(env.WIDGET_PROBE_CHAT_ID),
+    widgetMaxHtmlBytes: parsePositiveInt(env.WIDGET_MAX_HTML_BYTES, 32768),
+    widgetMaxGzipBytes: parsePositiveInt(env.WIDGET_MAX_GZIP_BYTES, 4096),
+    widgetGuideVersion: parsePositiveInt(env.WIDGET_GUIDE_VERSION, 1),
     owner: readOwner(env),
 });
 

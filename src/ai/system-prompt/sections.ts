@@ -96,6 +96,8 @@ export interface CapabilityOptions {
     readonly historyTools: boolean;
     /** list_harness_issues / create_harness_issue are offered */
     readonly harnessIssues: boolean;
+    /** send_widget / get_ui_guide are offered */
+    readonly widget: boolean;
 }
 
 const searchImageLines = (canDraw: boolean): string[] => [
@@ -124,6 +126,9 @@ const historyLine = (canFetchImages: boolean): string =>
     '- 可以用 `search_history` 检索本聊天的历史归档（关键词 / 时间 / 发言人；含链接预览、Instant View 与图片 OCR 文本），用 `read_history` 读整条原文或某条消息前后的对话' +
     (canFetchImages ? "；归档消息里的图可以用 `fetch_image(history='hN')` 读取。" : '。');
 
+const WIDGET_LINE =
+    '- 可以用 `send_widget` 把一张聊天内 UI 卡片作为这条回复的附件发出（组件 JSON 用 mode="a2ui"，完整 HTML 用 mode="html"）；第一次使用前先调 `get_ui_guide` 取对应模式的完整规范。';
+
 const HARNESS_ISSUE_LINE =
     '- 当你准备结束思考时才调用 issue 工具：如果本轮使用 harness 时遇到工具不好用、描述不清、缺能力或格式别扭，先 `list_harness_issues` 查重，再用 `create_harness_issue` 记录；没有就跳过。记录本身不要出现在回复正文里。';
 
@@ -142,6 +147,7 @@ export const buildCapabilitiesSection = (options: CapabilityOptions): string => 
     if (options.fileTools) lines.push(FILE_LINE);
     if (options.historyTools) lines.push(historyLine(options.imageFetch));
     if (options.harnessIssues) lines.push(HARNESS_ISSUE_LINE);
+    if (options.widget) lines.push(WIDGET_LINE);
     return lines.join('\n');
 };
 

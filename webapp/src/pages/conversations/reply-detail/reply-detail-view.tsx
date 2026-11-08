@@ -16,7 +16,14 @@ const attachmentsTextOf = (version: ReplyVersion): string | null => {
     if (version.attachments.length === 0) return null;
     return version.attachments
         .map((attachment) => {
-            const kind = attachment.kind === 'image' ? '图片' : attachment.kind === 'sticker' ? '贴纸' : '文件';
+            const kind =
+                attachment.kind === 'image'
+                    ? '图片'
+                    : attachment.kind === 'sticker'
+                      ? '贴纸'
+                      : attachment.kind === 'widget'
+                        ? '组件'
+                        : '文件';
             const mime = attachment.mimeType ?? '类型未知';
             return `${kind} · ${mime} · ${formatBytes(attachment.sizeBytes)}`;
         })

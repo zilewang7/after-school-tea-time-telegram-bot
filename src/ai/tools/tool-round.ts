@@ -128,6 +128,9 @@ export async function* runToolRound(
         for (const file of result.files ?? []) {
             yield { type: 'file', file };
         }
+        for (const widget of result.widgets ?? []) {
+            yield { type: 'widget', widget };
+        }
         if (result.record !== null) {
             yield { type: 'grounding', groundingMetadata: result.record };
         }

@@ -32,6 +32,8 @@ import { createSearchImagesTool, THUMBNAIL_LIMITS } from './search-images-tool.j
 import { createSendFileTool } from './send-file-tool.js';
 import { createSendImageTool } from './send-image-tool.js';
 import { createSendStickerTool } from './send-sticker-tool.js';
+import { createSendWidgetTool } from './send-widget-tool.js';
+import { createUiGuideTool } from './ui-guide-tool.js';
 import { createSendSmsTool } from './send-sms-tool.js';
 import type { ReplyToolContext } from './reply-tool-context.js';
 import {
@@ -153,6 +155,19 @@ export const createReplyTools = (
               ]
             : []),
         ...(availability.file ? [createSendFileTool({ state: mediaState })] : []),
+        ...(availability.widget
+            ? [
+                  createSendWidgetTool({
+                      state: mediaState,
+                      limits: {
+                          allowHtml: config.widgetAllowHtml,
+                          maxHtmlBytes: config.widgetMaxHtmlBytes,
+                          maxGzipBytes: config.widgetMaxGzipBytes,
+                      },
+                  }),
+              ]
+            : []),
+        ...(availability.widgetGuide ? [createUiGuideTool()] : []),
         ...(availability.history
             ? [
                   createSearchHistoryTool(historyOptions(historyState, context, historyWiring)),

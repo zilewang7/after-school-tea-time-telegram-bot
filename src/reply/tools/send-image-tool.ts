@@ -247,7 +247,7 @@ export const createSendImageTool = (options: SendImageToolOptions): ToolHandler 
         statusText: '📤 正在发图…',
         chatAction: 'upload_photo',
         execute: async (rawArgs) => {
-            if (state.hasReplyImage || state.hasReplySticker || state.hasReplyFile) {
+            if (state.hasReplyImage || state.hasReplySticker || state.hasReplyFile || state.hasReplyWidget) {
                 return imageToolError(ONE_ATTACHMENT_PER_REPLY);
             }
 

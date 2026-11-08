@@ -10,6 +10,7 @@ import {
     registerModelCommand,
     registerContextCommand,
     registerPanelCommand,
+    registerWidgetCommands,
 } from "./commands/index.js";
 
 const COMMANDS: BotCommand[] = [
@@ -53,4 +54,6 @@ export const cmdLoad = async (bot: Bot) => {
     registerModelCommand(bot);
     registerContextCommand(bot);
     registerPanelCommand(bot);
+    // Owner-only, hidden from the command menu: widget readiness and probe
+    registerWidgetCommands(bot);
 };

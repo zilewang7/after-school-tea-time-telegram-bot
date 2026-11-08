@@ -4,6 +4,7 @@
  */
 import { match } from 'ts-pattern';
 import type { Context } from 'grammy';
+import type { InlineKeyboardMarkup } from 'grammy/types';
 import { to, isErr } from '../shared/result.js';
 import { formatErrorForUser } from '../shared/errors.js';
 import {
@@ -22,6 +23,8 @@ import {
 import { runApiCall } from '../telegram/edit-coordinator.js';
 import { sendReplyFileMessage } from '../telegram/reply-file-send.js';
 import { sendReplyImageMessage } from '../telegram/reply-image-send.js';
+import { sendReplyWidgetMessage } from '../telegram/reply-widget-send.js';
+import { editWidgetReplyMarkup } from '../telegram/widget-api.js';
 import { toApiEntities } from '../telegram/api-entities.js';
 import { buildMessageLinkResolver } from '../telegram/message-link.js';
 import { createContextLabelStripper, stripContextLabel } from './context-label.js';
@@ -48,6 +51,7 @@ import type {
     ResponseState,
     StickerDelivery,
     ToolStatus,
+    WidgetDelivery,
 } from '../ai/types.js';
 import { getToolConfig } from '../config/tool-config.js';
 import { noteStreamChunk } from '../services/reply-metrics-draft.js';
@@ -68,6 +72,8 @@ const IMAGE_NOT_SENT_TEXT = '[image failed to send]';
 const STICKER_NOT_SENT_TEXT = '[sticker failed to send]';
 /** Shown in place of a reply that was only a file Telegram would not take */
 const FILE_NOT_SENT_TEXT = '[file failed to send]';
+/** Shown in place of a reply that was only a widget Telegram would not take */
+const WIDGET_NOT_SENT_TEXT = '[widget failed to send]';
 
 /**
  * Chat context for response handling
@@ -219,6 +225,11 @@ export const processChunk = (
             ...state,
             // One file per reply: a later call carries the whole content, so it wins
             files: file ? [file] : state.files,
+        }))
+        .with({ type: 'widget' }, ({ widget }) => ({
+            ...state,
+            // One widget per reply: the last prepared card wins
+            widgets: widget ? [widget] : state.widgets,
         }))
         .with({ type: 'grounding' }, ({ groundingMetadata }) => ({
             ...state,
@@ -414,6 +425,7 @@ export const processStream = async (
         images: [],
         stickers: [],
         files: [],
+        widgets: [],
         groundingData: [],
         agentStats: undefined,
         modelParts: undefined,
@@ -624,6 +636,7 @@ export const processStream = async (
         imageCaption: state.imageCaption,
         stickers: state.stickers,
         files: state.files,
+        widgets: state.widgets,
         groundingData: state.groundingData,
         agentStats: state.agentStats,
         modelParts: state.modelParts,
@@ -780,16 +793,77 @@ const deliverReplySticker = async (
 };
 
 /**
- * Send the reply's one attachment: a file, a sticker or its first image. The
- * tools keep these exclusive, so the order only decides the unlikely case of a
- * stored response carrying two. Returns whether anything went out.
+ * Send the reply's chat UI card after its text. The widget HTML is final and
+ * cannot be edited later, so the exact bytes are kept on the session for the
+ * stored version and for version switching; a failed send costs the reply only
+ * the card, like a failed image.
+ */
+const deliverReplyWidget = async (
+    chatContext: ChatContext,
+    widget: WidgetDelivery | undefined,
+    captionFields: ImageCaptionFields
+): Promise<boolean> => {
+    const { session } = chatContext;
+    if (!widget) return false;
+    const sent = await sendReplyWidgetMessage({
+        chatId: chatContext.chatId,
+        widget,
+        captionFields,
+        target: { reply_parameters: { message_id: chatContext.userMessageId } },
+    });
+    if (isErr(sent)) return false;
+    session.messageIds.push(sent[1]);
+    session.currentMessageId = sent[1];
+    if (session.widget === undefined) session.widget = widget;
+    session.widgetMessageId = sent[1];
+    return true;
+};
+
+/**
+ * Buttons on the last message; a widget message can only be edited through the
+ * cloud client that sent it, so a local failure falls back once.
+ */
+const editCurrentMessageButtons = async (
+    chatContext: ChatContext,
+    buttons: InlineKeyboardMarkup | undefined
+): Promise<void> => {
+    if (buttons === undefined) return;
+    const { ctx, chatId, session } = chatContext;
+    const [error] = await to(
+        runApiCall(chatId, () =>
+            ctx.api.editMessageReplyMarkup(chatId, session.currentMessageId, {
+                reply_markup: buttons,
+            })
+        )
+    );
+    if (error === null) return;
+    if (session.widget === undefined) {
+        console.error('[response-handler] Failed to add buttons to media:', error);
+        return;
+    }
+    const [widgetError] = await to(
+        editWidgetReplyMarkup(chatId, session.currentMessageId, buttons)
+    );
+    if (widgetError !== null) {
+        console.error('[response-handler] Failed to add buttons to widget:', widgetError);
+    }
+};
+
+/**
+ * Send the reply's one attachment: a file, a sticker, its first image or its
+ * widget. The tools keep these exclusive, so the order only decides the
+ * unlikely case of a stored response carrying two. Returns whether anything
+ * went out.
  */
 const deliverReplyMedia = async (
     chatContext: ChatContext,
     response: AIResponse,
     imageCaptionFields: ImageCaptionFields,
-    fileCaptionFields: ImageCaptionFields
+    fileCaptionFields: ImageCaptionFields,
+    widgetCaptionFields: ImageCaptionFields
 ): Promise<boolean> => {
+    const widget = response.widgets?.[0];
+    if (widget) return deliverReplyWidget(chatContext, widget, widgetCaptionFields);
     const file = response.files?.[0];
     if (file) return deliverReplyFile(chatContext, file, fileCaptionFields);
     const sticker = response.stickers?.[0];
@@ -832,6 +906,8 @@ export const sendFinalResponse = async (
     const imageCaptionFields = buildImageCaption(response.imageCaption, resolveContextLink);
     // The file's caption rides on the file itself, so a version switch keeps it
     const fileCaptionFields = buildImageCaption(response.files?.[0]?.caption, resolveContextLink);
+    // The widget's caption sits below the card; the HTML itself is final
+    const widgetCaptionFields = buildImageCaption(response.widgets?.[0]?.caption, resolveContextLink);
     const finalizeOptions = {
         modelParts: response.modelParts,
         wasStoppedByUser,
@@ -879,9 +955,16 @@ export const sendFinalResponse = async (
         if (
             (response.files?.length ?? 0) > 0 ||
             response.images.length > 0 ||
-            (response.stickers?.length ?? 0) > 0
+            (response.stickers?.length ?? 0) > 0 ||
+            (response.widgets?.length ?? 0) > 0
         ) {
-            await deliverReplyMedia(chatContext, response, imageCaptionFields, fileCaptionFields);
+            await deliverReplyMedia(
+                chatContext,
+                response,
+                imageCaptionFields,
+                fileCaptionFields,
+                widgetCaptionFields
+            );
         }
 
         // Finalize session (saves to both Message and BotResponse tables)
@@ -902,16 +985,7 @@ export const sendFinalResponse = async (
                 botResponse?.getVersions().length ?? 1
             );
 
-            const [editErr] = await to(
-                runApiCall(chatId, () =>
-                    ctx.api.editMessageReplyMarkup(chatId, session.currentMessageId, {
-                        reply_markup: finalButtons,
-                    })
-                )
-            );
-            if (editErr) {
-                console.error('[response-handler] Failed to add buttons to split message:', editErr);
-            }
+            await editCurrentMessageButtons(chatContext, finalButtons);
         } else {
             await healEditDetectedButtons(chatContext);
         }
@@ -922,7 +996,8 @@ export const sendFinalResponse = async (
     const hasImages = response.images.length > 0;
     const hasStickers = (response.stickers?.length ?? 0) > 0;
     const hasFile = (response.files?.length ?? 0) > 0;
-    const hasMedia = hasImages || hasStickers || hasFile;
+    const hasWidget = (response.widgets?.length ?? 0) > 0;
+    const hasMedia = hasImages || hasStickers || hasFile || hasWidget;
 
     // Check if this is an image generation context
     const isImageGenerationContext = chatContext.commandType === 'picbanana'
@@ -945,10 +1020,13 @@ export const sendFinalResponse = async (
         hasImages,
         hasStickers,
         hasFile,
+        hasWidget,
         imageCount: response.images.length,
         stickerCount: response.stickers?.length ?? 0,
         fileName: response.files?.[0]?.name,
         fileBytes: response.files?.[0]?.data.length,
+        widgetMode: response.widgets?.[0]?.mode,
+        widgetZlibBytes: response.widgets?.[0]?.zlibBytes,
         textLength: response.text.length,
         thinkingLength: response.thinkingText.length,
         messageCount: session.messageIds.length,
@@ -972,7 +1050,8 @@ export const sendFinalResponse = async (
             chatContext,
             response,
             imageCaptionFields,
-            fileCaptionFields
+            fileCaptionFields,
+            widgetCaptionFields
         );
 
         if (!hasText) {
@@ -983,11 +1062,13 @@ export const sendFinalResponse = async (
                 session.messageIds = session.messageIds.filter(id => id !== processingMessageId);
             } else {
                 // Nothing went out: the processing message stays and says so
-                const notSentText = hasFile
-                    ? FILE_NOT_SENT_TEXT
-                    : hasStickers
-                      ? STICKER_NOT_SENT_TEXT
-                      : IMAGE_NOT_SENT_TEXT;
+                const notSentText = hasWidget
+                    ? WIDGET_NOT_SENT_TEXT
+                    : hasFile
+                      ? FILE_NOT_SENT_TEXT
+                      : hasStickers
+                        ? STICKER_NOT_SENT_TEXT
+                        : IMAGE_NOT_SENT_TEXT;
                 await editor.updateContent(notSentText, { isFinal: true });
             }
         }
@@ -1011,16 +1092,7 @@ export const sendFinalResponse = async (
             );
 
             // Edit the last message (the attachment, unless it did not go out) to add buttons
-            const [editErr] = await to(
-                runApiCall(chatId, () =>
-                    ctx.api.editMessageReplyMarkup(chatId, session.currentMessageId, {
-                        reply_markup: finalButtons,
-                    })
-                )
-            );
-            if (editErr) {
-                console.error('[response-handler] Failed to add buttons to media:', editErr);
-            }
+            await editCurrentMessageButtons(chatContext, finalButtons);
         } else {
             await healEditDetectedButtons(chatContext);
         }

@@ -145,7 +145,7 @@ export interface ImageOutputOptions {
 }
 
 // Stream chunk types
-export type StreamChunkType = 'text' | 'thinking' | 'image' | 'sticker' | 'file' | 'grounding' | 'status' | 'done';
+export type StreamChunkType = 'text' | 'thinking' | 'image' | 'sticker' | 'file' | 'widget' | 'grounding' | 'status' | 'done';
 
 /**
  * A sticker the reply will send: the pack position, the actual picture name,
@@ -161,6 +161,26 @@ export interface StickerDelivery {
     readonly emoji: string;
     readonly fileId: string;
     readonly fileUniqueId: string;
+}
+
+/**
+ * A chat UI card the reply will send as a Telegram HTML widget: the model wrote
+ * the A2UI surface or the full HTML with send_widget. The HTML is compiled or
+ * prechecked once, here, and the delivery layer only sends it.
+ */
+export interface WidgetDelivery {
+    /** a2ui = compiled from the model's surface JSON; html = written by the model */
+    readonly mode: 'a2ui' | 'html';
+    /** Final self-contained widget HTML (already size-checked) */
+    readonly html: string;
+    /** Optional caption shown below the card */
+    readonly caption?: string;
+    /** UTF-8 bytes of html */
+    readonly htmlBytes: number;
+    /** zlib level 9 bytes, the number the server enforces */
+    readonly zlibBytes: number;
+    /** The original A2UI surface, kept so a later turn can read or revise it */
+    readonly surface?: unknown;
 }
 
 /**
@@ -191,6 +211,8 @@ export interface StreamChunk {
     sticker?: StickerDelivery;
     /** The file this reply will send (one per reply, replaces an earlier one) */
     file?: FileDelivery;
+    /** The chat UI card this reply will send (one per reply, replaces an earlier one) */
+    widget?: WidgetDelivery;
     groundingMetadata?: GroundingData;
     /** Tool status; a status chunk without it clears the status */
     status?: ToolStatus;
@@ -209,6 +231,8 @@ export interface AIResponse {
     stickers?: StickerDelivery[];
     /** Files this reply sends (delivery keeps the last) */
     files?: FileDelivery[];
+    /** Chat UI cards this reply sends (delivery keeps the first) */
+    widgets?: WidgetDelivery[];
     groundingData?: GroundingData[];
     agentStats?: AgentStats;
     modelParts?: unknown[];
@@ -302,6 +326,8 @@ export interface ResponseState {
     stickers: StickerDelivery[];
     /** Files collected so far; only the last (newest content) is delivered */
     files: FileDelivery[];
+    /** Chat UI card collected so far; only the last one is delivered */
+    widgets: WidgetDelivery[];
     /** Status of the running tool; display only, never persisted */
     toolStatus?: ToolStatus;
     groundingData: GroundingData[];

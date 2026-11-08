@@ -75,7 +75,7 @@ export const createSendFileTool = (options: SendFileToolOptions): ToolHandler =>
         statusText: '📄 正在写文件…',
         chatAction: 'upload_document',
         execute: async (rawArgs) => {
-            if (state.hasReplyImage || state.hasReplySticker) {
+            if (state.hasReplyImage || state.hasReplySticker || state.hasReplyWidget) {
                 return reject(ONE_ATTACHMENT_PER_REPLY);
             }
 

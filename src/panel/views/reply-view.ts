@@ -37,7 +37,7 @@ export interface ReplySummaryView {
 }
 
 export interface AttachmentView {
-    kind: 'image' | 'sticker' | 'file';
+    kind: 'image' | 'sticker' | 'file' | 'widget';
     /** Sniffed from the bytes for images, as stored for files; null when unknown */
     mimeType: string | null;
     sizeBytes: number;
@@ -123,6 +123,13 @@ const attachmentsOf = (version: ResponseVersion): AttachmentView[] => {
             kind: version.sticker !== undefined ? 'sticker' : 'image',
             mimeType: sniffMediaMime(head),
             sizeBytes: base64ByteLength(version.imageBase64),
+        });
+    }
+    if (version.widget !== undefined) {
+        attachments.push({
+            kind: 'widget',
+            mimeType: 'text/html',
+            sizeBytes: version.widget.htmlBytes,
         });
     }
     if (version.file !== undefined) {

@@ -29,6 +29,8 @@ import {
     READ_HISTORY_TOOL_NAME,
     LIST_HARNESS_ISSUES_TOOL_NAME,
     CREATE_HARNESS_ISSUE_TOOL_NAME,
+    SEND_WIDGET_TOOL_NAME,
+    GET_UI_GUIDE_TOOL_NAME,
 } from './tool-names.js';
 
 /** What the turn's request carries, as far as tool availability cares */
@@ -64,6 +66,10 @@ export interface ToolAvailability {
     readonly history: boolean;
     /** list_harness_issues / create_harness_issue are offered */
     readonly harnessIssues: boolean;
+    /** send_widget is offered (WIDGET_ENABLE + widget chat whitelist) */
+    readonly widget: boolean;
+    /** get_ui_guide is offered (only together with send_widget) */
+    readonly widgetGuide: boolean;
 }
 
 const NO_TOOLS: ToolAvailability = {
@@ -79,6 +85,8 @@ const NO_TOOLS: ToolAvailability = {
     file: false,
     history: false,
     harnessIssues: false,
+    widget: false,
+    widgetGuide: false,
 };
 
 export const resolveToolAvailability = (
@@ -95,6 +103,14 @@ export const resolveToolAvailability = (
 
     const isEnabled = (name: string): boolean => !config.disabledTools.has(name);
     const platformType = getPlatform(model).type;
+    // Widget tools are off unless WIDGET_ENABLE=1 and the chat is whitelisted;
+    // an empty WIDGET_CHAT_IDS follows the normal tool whitelist.
+    const widgetChats = config.widgetChatIds.size > 0 ? config.widgetChatIds : config.toolChatIds;
+    const widget =
+        config.widgetEnabled &&
+        widgetChats.has(chatId) &&
+        isEnabled(SEND_WIDGET_TOOL_NAME) &&
+        isEnabled(GET_UI_GUIDE_TOOL_NAME);
 
     // A server is out when excluded for this platform, disabled by its key, or
     // left with no enabled tool
@@ -170,5 +186,7 @@ export const resolveToolAvailability = (
             config.harnessIssues &&
             isEnabled(LIST_HARNESS_ISSUES_TOOL_NAME) &&
             isEnabled(CREATE_HARNESS_ISSUE_TOOL_NAME),
+        widget,
+        widgetGuide: widget,
     };
 };

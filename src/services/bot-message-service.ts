@@ -43,10 +43,12 @@ import { decideFinalButtonState } from './final-button-state.js';
 import { sniffMediaMime } from '../ai/image-generation/image-mime.js';
 import { buildImageCaption } from '../reply/tools/image-message.js';
 import { sendReplyFileMessage } from '../telegram/reply-file-send.js';
+import { sendReplyWidgetMessage } from '../telegram/reply-widget-send.js';
+import { editWidgetReplyMarkup } from '../telegram/widget-api.js';
 import { sendReplyImageMessage } from '../telegram/reply-image-send.js';
 import { resolveChatModel } from '../config/chat-model.js';
 import type { ContextLinkResolver } from '../telegram/formatters/context-links.js';
-import type { AgentStats, FileDelivery, StickerDelivery } from '../ai/types.js';
+import type { AgentStats, FileDelivery, StickerDelivery, WidgetDelivery } from '../ai/types.js';
 import { classifyErrorKind, summarizeErrorMessage, type ErrorKind } from '../shared/error-kind.js';
 import { createReplyMetricsDraft, type ReplyMetricsDraft } from './reply-metrics-draft.js';
 import { recordReplyMetric } from './reply-metric-record.js';
@@ -129,6 +131,10 @@ export interface BotMessageSession {
     stickerBytes?: Buffer;
     /** The file this reply sent, when it sent one instead of an image or sticker */
     file?: FileDelivery;
+    /** The chat UI card this reply sent, when it sent one instead of other media */
+    widget?: WidgetDelivery;
+    /** Telegram message id of the widget message */
+    widgetMessageId?: number;
     groundingData: any[];
     agentStats?: AgentStats;
 
@@ -436,6 +442,7 @@ const finalizeSession = async (
     const image = session.images[0];
     const sticker = session.sticker;
     const file = session.file;
+    const widget = session.widget;
     // Picture bytes: an image, or the sticker's webp. A file has its own slot.
     // The row keeps picture bytes only: a file is named by its mediaHint, its
     // bytes live in the version (for a version switch), never in the prompt.
@@ -459,6 +466,21 @@ const finalizeSession = async (
         errorMessage: options?.errorMessage,
         modelParts: options?.modelParts,
         wasStoppedByUser: options?.wasStoppedByUser ?? false,
+        ...(widget === undefined
+            ? {}
+            : {
+                  widget: {
+                      mode: widget.mode,
+                      html: widget.html,
+                      ...(widget.caption !== undefined ? { caption: widget.caption } : {}),
+                      ...(session.widgetMessageId !== undefined
+                          ? { messageId: session.widgetMessageId }
+                          : {}),
+                      htmlBytes: widget.htmlBytes,
+                      zlibBytes: widget.zlibBytes,
+                      ...(widget.surface === undefined ? {} : { surface: widget.surface }),
+                  },
+              }),
         imageBase64: pictureBuffer?.toString('base64'),
         imageCaption: sticker !== undefined || file !== undefined ? undefined : imageCaption,
         ...(sticker === undefined
@@ -506,13 +528,15 @@ const finalizeSession = async (
 
         // The metadata names the model of the latest version (a retry may
         // use another one) and whether the reply ever carried an attachment
-        const carriesAttachment = session.images.length > 0 || sticker !== undefined || file !== undefined;
+        const carriesAttachment =
+            session.images.length > 0 || sticker !== undefined || file !== undefined || widget !== undefined;
         response.setMetadata({
             ...response.getMetadata(),
             model: session.model,
             ...(carriesAttachment ? { hasImage: true } : {}),
             ...(sticker !== undefined ? { hasSticker: true } : {}),
             ...(file !== undefined ? { hasFile: true } : {}),
+            ...(widget !== undefined ? { hasWidget: true } : {}),
         });
 
         await response.save();
@@ -530,8 +554,15 @@ const finalizeSession = async (
             text: session.textBuffer,
             wasStoppedByUser: options?.wasStoppedByUser ?? false,
             // "has an attachment": its caption joins the stored text
-            hasImage: pictureBuffer !== undefined || file !== undefined,
-            imageCaption: sticker !== undefined ? undefined : file !== undefined ? fileCaption : imageCaption,
+            hasImage: pictureBuffer !== undefined || file !== undefined || widget !== undefined,
+            imageCaption:
+                sticker !== undefined
+                    ? undefined
+                    : file !== undefined
+                      ? fileCaption
+                      : widget !== undefined
+                        ? widget.caption
+                        : imageCaption,
         }),
         modelParts: options?.modelParts ?? null,
         file: pictureBuffer ?? null,
@@ -540,6 +571,8 @@ const finalizeSession = async (
             ? { mediaHint: 'sticker' }
             : file !== undefined
               ? { mediaHint: `a file: ${file.name}, ${file.mimeType}` }
+              : widget !== undefined
+                ? { mediaHint: 'a widget' }
               : pictureBuffer !== undefined
                 ? { mediaHint: 'a picture' }
                 : {}),
@@ -707,7 +740,7 @@ const buildVersionMessages = (
  * or tool records above the image, in a text message that can be edited.
  */
 const isMediaOnlyVersion = (version: ResponseVersion): boolean =>
-    Boolean(version.imageBase64 || version.fileBase64 || version.sticker) &&
+    Boolean(version.imageBase64 || version.fileBase64 || version.sticker || version.widget) &&
     !buildVersionMessages(version)[0]?.text;
 
 /**
@@ -819,7 +852,8 @@ export const switchVersion = async (
         !content.text &&
         !newVersion.imageBase64 &&
         !newVersion.fileBase64 &&
-        newVersion.sticker === undefined
+        newVersion.sticker === undefined &&
+        newVersion.widget === undefined
     ) {
         content = plainText('[Empty response]');
     }
@@ -833,11 +867,13 @@ export const switchVersion = async (
     const imageBuffer = newVersion.imageBase64 ? Buffer.from(newVersion.imageBase64, 'base64') : null;
     const sticker = newVersion.sticker;
     const storedFile = newVersion.file;
+    const storedWidget = newVersion.widget;
     const fileBuffer = newVersion.fileBase64 ? Buffer.from(newVersion.fileBase64, 'base64') : null;
 
     // A re-sent image keeps the caption it first went out with
     const captionFields = buildImageCaption(newVersion.imageCaption, resolveContextLink);
     const fileCaptionFields = buildImageCaption(storedFile?.caption, resolveContextLink);
+    const widgetCaptionFields = buildImageCaption(storedWidget?.caption, resolveContextLink);
     // Same sender as the first delivery: a GIF version switch stays an animation
     const sendVersionImage = (image: Buffer) =>
         sendReplyImageMessage({
@@ -886,14 +922,41 @@ export const switchVersion = async (
             runApiCall: (operation) => runApiCall(chatId, operation),
         });
     };
+    // A widget version re-sends the stored HTML; the card itself is immutable
+    const sendVersionWidget = async (): Promise<Result<number>> => {
+        if (storedWidget === undefined) {
+            return [new Error('version has no widget'), undefined];
+        }
+        return sendReplyWidgetMessage({
+            chatId,
+            widget: {
+                mode: storedWidget.mode,
+                html: storedWidget.html,
+                ...(storedWidget.caption !== undefined ? { caption: storedWidget.caption } : {}),
+                htmlBytes: storedWidget.htmlBytes,
+                zlibBytes: storedWidget.zlibBytes,
+                ...(storedWidget.surface === undefined ? {} : { surface: storedWidget.surface }),
+            },
+            captionFields: widgetCaptionFields,
+            target: {
+                reply_parameters: { message_id: response.userMessageId },
+                reply_markup: versionButtons,
+            },
+        });
+    };
     const sendVersionMedia = async (): Promise<Result<number>> => {
+        if (storedWidget !== undefined) return sendVersionWidget();
         if (fileBuffer !== null) return sendVersionFile();
         if (sticker !== undefined) return sendVersionSticker();
         if (imageBuffer !== null) return sendVersionImage(imageBuffer);
         return [new Error('version has no media'), undefined];
     };
 
-    const hasMedia = imageBuffer !== null || fileBuffer !== null || sticker !== undefined;
+    const hasMedia =
+        imageBuffer !== null ||
+        fileBuffer !== null ||
+        sticker !== undefined ||
+        storedWidget !== undefined;
     const hasContent = Boolean(content.text);
     const newIsMediaOnly = hasMedia && !hasContent;
     const oldIsMediaOnly = isMediaOnlyVersion(oldVersion);
@@ -1069,7 +1132,9 @@ export const switchVersion = async (
                     ? undefined
                     : storedFile !== undefined
                       ? storedFile.caption
-                      : newVersion.imageCaption,
+                      : storedWidget !== undefined
+                        ? storedWidget.caption
+                        : newVersion.imageCaption,
         }),
         modelParts: newVersion.modelParts ?? null,
         file: imageBuffer,
@@ -1078,9 +1143,11 @@ export const switchVersion = async (
             ? { mediaHint: 'sticker' }
             : storedFile !== undefined
               ? { mediaHint: `a file: ${storedFile.name}, ${storedFile.mimeType}` }
-              : imageBuffer
-                ? { mediaHint: 'a picture' }
-                : {}),
+              : storedWidget !== undefined
+                ? { mediaHint: 'a widget' }
+                : imageBuffer
+                  ? { mediaHint: 'a picture' }
+                  : {}),
     });
 
     return true;
@@ -1118,7 +1185,9 @@ export const refreshToFinalState = async (
 
     // Media messages can't be edited to text: pair chunks with text messages only.
     // When a visual attachment exists it is the last message (currentMessageId) and carries the buttons.
-    const hasMedia = Boolean(version.imageBase64 || version.fileBase64 || version.sticker);
+    const hasMedia = Boolean(
+        version.imageBase64 || version.fileBase64 || version.sticker || version.widget
+    );
     const textMessageIds = hasMedia
         ? version.messageIds.filter((id) => id !== version.currentMessageId)
         : version.messageIds;
@@ -1186,7 +1255,16 @@ export const refreshToFinalState = async (
                 })
             )
         );
-        if (markupErr && !markupErr.message.includes('message is not modified')) {
+        if (markupErr && version.widget !== undefined) {
+            // A widget message can only be edited through the client that sent it
+            const [widgetErr] = await to(
+                editWidgetReplyMarkup(chatId, version.currentMessageId, buttons)
+            );
+            if (widgetErr !== null) {
+                console.warn('[bot-message-service] Refresh: widget markup update failed:', widgetErr);
+                allDelivered = false;
+            }
+        } else if (markupErr && !markupErr.message.includes('message is not modified')) {
             console.warn('[bot-message-service] Refresh: markup update failed:', markupErr.message);
             allDelivered = false;
         }

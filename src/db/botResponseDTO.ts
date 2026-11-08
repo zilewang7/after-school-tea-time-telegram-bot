@@ -53,6 +53,28 @@ export interface StoredFile {
 }
 
 /**
+ * A chat UI card a version sent, enough to re-send it after a version switch
+ * and to let a later turn read what the chat already shows. The HTML is final:
+ * Telegram has no edit-message-html method.
+ */
+export interface StoredWidget {
+    /** a2ui = compiled from the model's surface; html = written by the model */
+    mode: 'a2ui' | 'html';
+    /** Final self-contained widget HTML */
+    html: string;
+    /** Caption it went out with; absent when it had none */
+    caption?: string;
+    /** Telegram message id of the widget message */
+    messageId?: number;
+    /** UTF-8 bytes of html */
+    htmlBytes: number;
+    /** zlib level 9 bytes, the number the server enforces */
+    zlibBytes: number;
+    /** The original A2UI surface, when mode is a2ui */
+    surface?: unknown;
+}
+
+/**
  * Single version of a response
  */
 export interface ResponseVersion {
@@ -90,6 +112,8 @@ export interface ResponseVersion {
     file?: StoredFile;
     /** File bytes as base64 (version switching re-uploads them) */
     fileBase64?: string;
+    /** Set when the attachment was a chat UI card */
+    widget?: StoredWidget;
 }
 
 /**
@@ -109,6 +133,8 @@ export interface ResponseMetadata {
     hasSticker?: boolean;
     /** Whether the attachment is a file */
     hasFile?: boolean;
+    /** Whether the attachment is a chat UI card */
+    hasWidget?: boolean;
     /** Command type that generated this response */
     commandType?: CommandType;
     /** Input token count */

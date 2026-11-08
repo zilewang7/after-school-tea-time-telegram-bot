@@ -1,0 +1,141 @@
+/**
+ * Offline cases for the two widget tools — send_widget and get_ui_guide
+ * (no containers, no network).
+ *
+ * The tools are pure: send_widget compiles/prechecks a payload into the reply's
+ * media state, get_ui_guide returns a version-fixed document. Delivery is not
+ * exercised here (that needs Telegram); the point is the state machine, the
+ * one-attachment guard and the model-facing error messages.
+ *
+ * Run: npx tsx scripts/offline/widget-tools.mts
+ */
+import { expect, reportResults, runCase, type CaseResult } from './harness.mts';
+import type { ToolHandler } from '../../src/ai/tools/tool-types.js';
+
+const { createSendWidgetTool } = await import('../../src/reply/tools/send-widget-tool.js');
+const { createUiGuideTool } = await import('../../src/reply/tools/ui-guide-tool.js');
+const { createReplyMediaState, ONE_ATTACHMENT_PER_REPLY } = await import(
+    '../../src/reply/tools/reply-media-state.js'
+);
+
+const LIMITS = { allowHtml: false, maxHtmlBytes: 32768, maxGzipBytes: 4096 };
+
+const columnSurface = (): Record<string, unknown> => ({
+    version: '1.0',
+    createSurface: {
+        surfaceId: 'main',
+        catalogId: 'tg-card-v1',
+        components: [
+            { id: 'root', component: 'Column', children: ['title', 'stats'] },
+            { id: 'title', component: 'Text', text: '# 群聊日报', variant: 'h3' },
+            { id: 'stats', component: 'Row', children: ['a', 'b'] },
+            { id: 'a', component: 'Text', text: '消息 **10**' },
+            { id: 'b', component: 'Text', text: '活跃 **3**' },
+        ],
+    },
+});
+
+const run = async (tool: ToolHandler, args: Record<string, unknown>) =>
+    tool.execute(args, new AbortController().signal);
+
+const results: CaseResult[] = [];
+
+results.push(
+    await runCase('send_widget compiles an A2UI surface into the reply attachment', async () => {
+        const state = createReplyMediaState();
+        const tool = createSendWidgetTool({ state, limits: LIMITS });
+        const result = await run(tool, { mode: 'a2ui', surface: columnSurface(), caption: '日报' });
+
+        expect(!result.isError, 'the tool accepts a valid surface');
+        expect(state.hasReplyWidget, 'the one-attachment flag is set');
+        expect(state.widget?.mode === 'a2ui', 'the delivery is an A2UI card');
+        expect(state.widget?.html.includes('<div'), 'the compiled HTML is stored');
+        expect(state.widget?.caption === '日报', 'the caption is stored');
+        expect(state.widget?.surface !== undefined, 'the surface is kept for a later read');
+        expect(result.content.includes('压缩后'), 'the model reads the measured size');
+    })
+);
+
+results.push(
+    await runCase('a second send_widget is refused by the one-attachment rule', async () => {
+        const state = createReplyMediaState();
+        const tool = createSendWidgetTool({ state, limits: LIMITS });
+        const first = await run(tool, { mode: 'a2ui', surface: columnSurface() });
+        expect(!first.isError, 'the first card is accepted');
+
+        const second = await run(tool, { mode: 'a2ui', surface: columnSurface() });
+        expect(second.isError, 'the second card is refused');
+        expect(second.content === ONE_ATTACHMENT_PER_REPLY, 'the shared attachment message is used');
+    })
+);
+
+results.push(
+    await runCase('an earlier picture blocks send_widget the same way', async () => {
+        const state = createReplyMediaState();
+        state.hasReplyImage = true;
+        const tool = createSendWidgetTool({ state, limits: LIMITS });
+        const result = await run(tool, { mode: 'a2ui', surface: columnSurface() });
+        expect(result.isError, 'the card is refused');
+        expect(result.content === ONE_ATTACHMENT_PER_REPLY, 'the shared message explains it');
+        expect(state.widget === undefined, 'nothing was stored');
+    })
+);
+
+results.push(
+    await runCase('an unsupported A2UI component comes back as an actionable error', async () => {
+        const state = createReplyMediaState();
+        const tool = createSendWidgetTool({ state, limits: LIMITS });
+        const result = await run(tool, {
+            mode: 'a2ui',
+            surface: {
+                components: [
+                    { id: 'root', component: 'Column', children: ['img'] },
+                    { id: 'img', component: 'Image', url: 'data:image/png;base64,AA' },
+                ],
+            },
+        });
+        expect(result.isError, 'the surface is refused');
+        expect(result.content.includes('Image'), 'the error names the component');
+        expect(state.widget === undefined, 'nothing was stored');
+    })
+);
+
+results.push(
+    await runCase('HTML mode is refused unless WIDGET_ALLOW_HTML is on', async () => {
+        const state = createReplyMediaState();
+        const tool = createSendWidgetTool({ state, limits: LIMITS });
+        const refused = await run(tool, { mode: 'html', html: '<div>hi</div>' });
+        expect(refused.isError, 'html mode is refused by default');
+        expect(refused.content.includes('A2UI'), 'the error points at the A2UI mode');
+
+        const htmlState = createReplyMediaState();
+        const htmlTool = createSendWidgetTool({
+            state: htmlState,
+            limits: { ...LIMITS, allowHtml: true },
+        });
+        const accepted = await run(htmlTool, { mode: 'html', html: '<div>hi</div>' });
+        expect(!accepted.isError, 'html mode is accepted when enabled');
+        expect(htmlState.widget?.mode === 'html', 'the delivery is an html card');
+        expect(htmlState.widget?.surface === undefined, 'html mode keeps no surface');
+    })
+);
+
+results.push(
+    await runCase('get_ui_guide returns the version-fixed documents', async () => {
+        const tool = createUiGuideTool();
+        const a2ui = await run(tool, { kind: 'a2ui' });
+        expect(!a2ui.isError && a2ui.content.length > 2000, 'the A2UI guide is long enough to be useful');
+        expect(a2ui.content.includes('tg-card-v1'), 'the A2UI guide names the catalog');
+        expect(a2ui.content.includes('version 1'), 'the guide version is announced');
+
+        const htmlGuide = await run(tool, { kind: 'html' });
+        expect(!htmlGuide.isError && htmlGuide.content.length > 5000, 'the HTML guide is long enough');
+        expect(htmlGuide.content.includes('32768'), 'the HTML guide states the raw limit');
+        expect(htmlGuide.content.includes('4096'), 'the HTML guide states the compressed limit');
+
+        const invalid = await run(tool, { kind: 'markdown' });
+        expect(invalid.isError, 'an unknown kind is refused');
+    })
+);
+
+reportResults(results);

@@ -80,7 +80,7 @@ export const createSendStickerTool = (options: SendStickerToolOptions): ToolHand
         statusText: '🩷 正在发贴纸…',
         chatAction: 'choose_sticker',
         execute: async (rawArgs, signal) => {
-            if (state.hasReplyImage || state.hasReplySticker || state.hasReplyFile) {
+            if (state.hasReplyImage || state.hasReplySticker || state.hasReplyFile || state.hasReplyWidget) {
                 return reject(ONE_ATTACHMENT_PER_REPLY);
             }
 

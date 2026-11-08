@@ -11,6 +11,7 @@ import type {
     StickerDelivery,
     ToolChatAction,
     ToolStatus,
+    WidgetDelivery,
 } from '../types.js';
 
 export type { ToolChatAction, ToolStatus } from '../types.js';
@@ -64,6 +65,8 @@ export interface ToolResult {
     readonly stickers?: readonly StickerDelivery[];
     /** Files that become part of the bot reply (only the last one is delivered) */
     readonly files?: readonly FileDelivery[];
+    /** Chat UI cards that become part of the bot reply (one per reply) */
+    readonly widgets?: readonly WidgetDelivery[];
     /** Images only the model sees, replayed after the tool result */
     readonly modelImages?: readonly ToolModelImage[];
     /** Record for the merged Tools/Sources block; null = usage count only */

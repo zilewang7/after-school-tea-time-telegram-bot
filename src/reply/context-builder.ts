@@ -80,6 +80,7 @@ const MEDIUM_LABELS: ReadonlyArray<readonly [string, string]> = [
     ['a picture', 'a picture'],
     ['some pictures', 'some pictures'],
     ['a file: ', 'a file'],
+    ['a widget', 'a widget'],
     ['a video note', 'a video note'],
     ['a video', 'a video'],
     ['an animation', 'an animation'],
@@ -486,15 +487,18 @@ const buildAssistantMessage = (
     const numberLabel = contextNumber === undefined ? '' : `[#${contextNumber}]\n`;
     // The file message itself, named (the bytes are not replayed)
     const fileNote = msg.mediaHint?.startsWith('a file: ') ? `[sent ${msg.mediaHint}]\n` : '';
+    // A card's HTML is never replayed either; the caption (stored as text) and
+    // this one fact line are what the model reads back
+    const widgetNote = msg.mediaHint?.startsWith('a widget') ? '[sent a widget]\n' : '';
 
     const parts: UnifiedContentPart[] = [...fileContents];
 
     // An attachment-only reply still needs the label, so the model can refer to it
     const body =
         stripLeakedWireFormat(msg.text ?? '') ||
-        (fileContents.length || fileNote ? '' : missingAssistantText(msg, contextNumber));
-    if (numberLabel || fileNote || body) {
-        parts.push({ type: 'text', text: `${numberLabel}${fileNote}${body}` });
+        (fileContents.length || fileNote || widgetNote ? '' : missingAssistantText(msg, contextNumber));
+    if (numberLabel || fileNote || widgetNote || body) {
+        parts.push({ type: 'text', text: `${numberLabel}${fileNote}${widgetNote}${body}` });
     }
 
     return {
