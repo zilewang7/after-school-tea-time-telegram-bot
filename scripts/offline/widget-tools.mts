@@ -52,6 +52,8 @@ results.push(
         expect(state.widget?.html.includes('<div'), 'the compiled HTML is stored');
         expect(state.widget?.caption === '日报', 'the caption is stored');
         expect(state.widget?.surface !== undefined, 'the surface is kept for a later read');
+        expect(result.widgets?.length === 1, 'the tool result carries the widget chunk');
+        expect(result.widgets?.[0] === state.widget, 'the chunk is the prepared delivery');
         expect(result.content.includes('压缩后'), 'the model reads the measured size');
     })
 );
@@ -117,6 +119,7 @@ results.push(
         expect(!accepted.isError, 'html mode is accepted when enabled');
         expect(htmlState.widget?.mode === 'html', 'the delivery is an html card');
         expect(htmlState.widget?.surface === undefined, 'html mode keeps no surface');
+        expect(accepted.widgets?.length === 1, 'the html card also travels as a chunk');
     })
 );
 

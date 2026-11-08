@@ -107,7 +107,8 @@ export const createSendWidgetTool = (options: SendWidgetToolOptions): ToolHandle
                 if (!checked.ok) {
                     return reject(`编译产物未通过预检：${checked.message}`);
                 }
-                state.widget = widgetDeliveryOf('a2ui', compiled.html, caption, rawArgs.surface);
+                const widget = widgetDeliveryOf('a2ui', compiled.html, caption, rawArgs.surface);
+                state.widget = widget;
                 state.hasReplyWidget = true;
                 return {
                     content:
@@ -116,6 +117,7 @@ export const createSendWidgetTool = (options: SendWidgetToolOptions): ToolHandle
                         (caption ? `caption：${caption}` : ''),
                     isError: false,
                     images: [],
+                    widgets: [widget],
                     record: null,
                 };
             }
@@ -128,7 +130,8 @@ export const createSendWidgetTool = (options: SendWidgetToolOptions): ToolHandle
             if (!checked.ok) {
                 return reject(checked.message);
             }
-            state.widget = widgetDeliveryOf('html', htmlRaw, caption, undefined);
+            const widget = widgetDeliveryOf('html', htmlRaw, caption, undefined);
+            state.widget = widget;
             state.hasReplyWidget = true;
             return {
                 content:
@@ -137,6 +140,7 @@ export const createSendWidgetTool = (options: SendWidgetToolOptions): ToolHandle
                     (caption ? `caption：${caption}` : ''),
                 isError: false,
                 images: [],
+                widgets: [widget],
                 record: null,
             };
         },
