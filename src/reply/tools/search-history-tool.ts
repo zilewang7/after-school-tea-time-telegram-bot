@@ -57,7 +57,7 @@ const BASE_DESCRIPTION =
     `事实：默认返回最新 ${HISTORY_DEFAULT_LIMIT} 条命中，limit 最多 ${HISTORY_MAX_LIMIT} 条（不是相关性排序）；` +
     'query 支持空格 AND、OR、"短语"、-排除、括号，中文不需要分词；省略 query 时按时间列出最近的消息；' +
     '用 sender / from / to 收窄，用 before 翻到更早的一页。' +
-    '返回的头部会带本群归档的消息数与时间范围。';
+    '返回的头部会带归档覆盖的消息数与时间范围（跨群时为全部归档群合计）。';
 
 const inputSchemaOf = (channelId: number | null): Readonly<Record<string, unknown>> => ({
     type: 'object',
@@ -233,11 +233,14 @@ const buildRow = (
     };
 };
 
-const summarizeSearchArgs = (args: Readonly<Record<string, unknown>>): string =>
+const summarizeSearchArgs = (
+    args: Readonly<Record<string, unknown>>,
+    defaultScope: 'chat' | 'all'
+): string =>
     JSON.stringify({
         query: args.query ?? null,
         sender: args.sender ?? null,
-        scope: args.scope ?? 'chat',
+        scope: args.scope ?? defaultScope,
         from: args.from ?? null,
         to: args.to ?? null,
         before: args.before ?? null,
@@ -391,5 +394,7 @@ export const createSearchHistoryTool = (options: HistoryToolOptions): ToolHandle
             return historyToolSuccess(text);
         },
     };
-    return withHistoryLogging(handler, options.context.chatId, summarizeSearchArgs);
+    return withHistoryLogging(handler, options.context.chatId, (args) =>
+        summarizeSearchArgs(args, defaultScope)
+    );
 };
