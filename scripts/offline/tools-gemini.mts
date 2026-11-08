@@ -214,6 +214,9 @@ const groundingOf = (queries: string[], uris: string[], renderedContent?: string
 
 const executions: Array<{ name: string; args: Readonly<Record<string, unknown>> }> = [];
 
+/** Set by a deadline case: runs inside a tool handler, so the time is charged */
+let afterToolExecution: (() => void) | null = null;
+
 const okResult = (content: string): ToolResult => ({ content, isError: false, images: [], record: null });
 
 const objectSchema = (properties: Record<string, unknown>) => ({
@@ -230,6 +233,7 @@ const lookupA: ToolHandler = {
     },
     execute: async (args) => {
         executions.push({ name: 'lookup_a', args });
+        afterToolExecution?.();
         return {
             content: `key of ${String(args.topic)} is K-7731`,
             isError: false,
@@ -247,6 +251,7 @@ const lookupB: ToolHandler = {
     },
     execute: async (args) => {
         executions.push({ name: 'lookup_b', args });
+        afterToolExecution?.();
         return okResult(`code word under ${String(args.key)} is AZALEA-42`);
     },
 };
@@ -259,11 +264,26 @@ const brokenTool: ToolHandler = {
     },
     execute: async (args) => {
         executions.push({ name: 'broken_tool', args });
+        afterToolExecution?.();
         return { content: 'service unavailable', isError: true, images: [], record: null };
     },
 };
 
 const turnTools = createTurnTools([lookupA, lookupB, brokenTool]);
+
+const productExecutions: string[] = [];
+const sendFileTool: ToolHandler = {
+    definition: {
+        name: 'send_file',
+        description: 'Send a text file',
+        inputSchema: objectSchema({}),
+    },
+    execute: async () => {
+        productExecutions.push('send_file');
+        return okResult('file sent');
+    },
+};
+const turnToolsWithProduct = createTurnTools([lookupA, lookupB, brokenTool, sendFileTool]);
 
 // ---- helpers ----
 
@@ -367,6 +387,7 @@ const withFakeClock = async (body: (jump: (milliseconds: number) => void) => Pro
         });
     } finally {
         Date.now = realNow;
+        afterToolExecution = null;
     }
 };
 
@@ -374,11 +395,14 @@ const withFakeClock = async (body: (jump: (milliseconds: number) => void) => Pro
 const lookupRound = (index: number): ScriptedReply =>
     sse(roundEvents([[thoughtPart(`round ${index}`)], [callPart('lookup_a', { topic: `t${index}` }, `l${index}`, `call_l${index}`), textPart('')]]));
 
-/** Round 1 calls lookup_a and the reply runs past its deadline meanwhile */
-const callThenDeadline = (jump: (milliseconds: number) => void): ScriptedReply =>
-    sse(roundEvents([[callPart('lookup_a', { topic: 'falcon' }, 'd1', 'call_d1'), textPart('')]]), () => {
+/** Round 1 calls lookup_a, whose run time uses up the tool budget */
+const callThenDeadline = (jump: (milliseconds: number) => void): ScriptedReply => {
+    afterToolExecution = () => {
+        afterToolExecution = null;
         jump(TOOL_LOOP_DEADLINE_MS + 1_000);
-    });
+    };
+    return sse(roundEvents([[callPart('lookup_a', { topic: 'falcon' }, 'd1', 'call_d1'), textPart('')]]));
+};
 
 const functionCallingOffResponse = (name: string, id?: string) => ({
     functionResponse: { ...(id ? { id } : {}), name, response: { error: FUNCTION_CALLING_OFF_ERROR } },
@@ -940,12 +964,15 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
                 const round2 = [[callPart('lookup_b', { key: 'K-7731' }, 'd2a', 'call_d2a'), callPart('broken_tool', {}, 'd2b'), textPart('')]];
                 reset([
                     sse(roundEvents([[callPart('lookup_a', { topic: 'falcon' }, 'd1', 'call_d1'), textPart('')]])),
-                    // The deadline passes while round 2 streams
-                    sse(roundEvents(round2), () => {
-                        jump(TOOL_LOOP_DEADLINE_MS + 1_000);
-                    }),
+                    sse(roundEvents(round2)),
                     sse(roundEvents([[textPart('Out of time, here is what I have.')]])),
                 ]);
+                // Round 2's second tool call uses up the tool budget
+                let toolRuns = 0;
+                afterToolExecution = () => {
+                    toolRuns += 1;
+                    if (toolRuns === 2) jump(TOOL_LOOP_DEADLINE_MS + 1_000);
+                };
 
                 const { chunks, lines } = await runTurn({ tools: turnTools });
 
@@ -976,7 +1003,7 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
                 expect(
                     lines.some(
                         (line) =>
-                            line.includes(`deadline (${Math.round(TOOL_LOOP_DEADLINE_MS / 1000)}s) passed`) &&
+                            line.includes(`Tool budget (${Math.round(TOOL_LOOP_DEADLINE_MS / 1000)}s of tool time) used up`) &&
                             line.includes('notice on the round 2 responses')
                     ),
                     'the deadline and the notice are logged'
@@ -1088,13 +1115,16 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
                     sse(roundEvents([[callPart('lookup_a', { topic: `t${index}` }, `x${index}`, `call_x${index}`), textPart('')]]));
                 reset([
                     ...Array.from({ length: toolRounds }, (_, index) => toolRound(index + 1)),
-                    // The deadline passes while the fifth tool round streams
-                    sse(roundEvents([[callPart('lookup_b', { key: 'K' }, 'x5', 'call_x5'), textPart('')]]), () => {
-                        jump(TOOL_LOOP_DEADLINE_MS + 1_000);
-                    }),
+                    sse(roundEvents([[callPart('lookup_b', { key: 'K' }, 'x5', 'call_x5'), textPart('')]])),
                     sse(roundEvents([[callPart('lookup_b', { key: 'K' }, 'x6', 'call_x6'), textPart('')]])),
                     sse(roundEvents([[textPart('Here is what the lookups found.')]])),
                 ]);
+                // The fifth tool call uses the whole budget up
+                let toolRuns = 0;
+                afterToolExecution = () => {
+                    toolRuns += 1;
+                    if (toolRuns === toolRounds + 1) jump(TOOL_LOOP_DEADLINE_MS + 1_000);
+                };
 
                 const { chunks } = await runTurn({ tools: turnTools });
 
@@ -1377,6 +1407,43 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
             );
             const images = image.chunks.filter((chunk) => chunk.type === 'image');
             expect(images.length === 1 && images[0]?.imageData?.toString() === 'final', 'and still yields only the final image');
+        },
+    },
+        {
+        name: 'after the tool budget: a product-only round still runs send_file, then the answer',
+        body: async () => {
+            await withFakeClock(async (jump) => {
+                reset([
+                    sse(roundEvents([[callPart('lookup_a', { topic: 'falcon' }, 'd1', 'call_d1'), textPart('')]])),
+                    sse(roundEvents([[callPart('send_file', {}, 's1', 'call_s1'), textPart('')]])),
+                    sse(roundEvents([[textPart('File sent, here is the answer.')]])),
+                ]);
+                productExecutions.length = 0;
+                let toolRuns = 0;
+                afterToolExecution = () => {
+                    toolRuns += 1;
+                    // Round 1's lookup uses up the whole tool budget
+                    if (toolRuns === 1) jump(TOOL_LOOP_DEADLINE_MS + 1_000);
+                };
+
+                const { chunks, lines } = await runTurn({ tools: turnToolsWithProduct });
+
+                expect(recordedRequests.length === 3, `three requests (got ${recordedRequests.length})`);
+                expect(
+                    !isModeNone(recordedRequests[1]) && !isModeNone(recordedRequests[2]),
+                    'the product round keeps function calling on'
+                );
+                expect(json(productExecutions) === json(['send_file']), `send_file ran once (got ${json(productExecutions)})`);
+                expect(
+                    JSON.stringify(contentsOf(recordedRequests[2])).includes('只能再调用产物工具'),
+                    'the product round notice says only product tools can run'
+                );
+                expect(textOf(chunks) === 'File sent, here is the answer.', `the answer streams (got ${json(textOf(chunks))})`);
+                expect(
+                    lines.some((line) => line.includes('Tool budget') && line.includes('product tools only from here')),
+                    `the product mode is logged (got ${json(lines)})`
+                );
+            });
         },
     },
     {

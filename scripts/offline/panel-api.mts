@@ -407,7 +407,7 @@ const cases: { name: string; body: () => Promise<void> }[] = [
             expect(body.settings.model === 'my-own-model-v9' && body.effectiveModel === 'my-own-model-v9', 'effective model is the chat model');
             expect(body.globalDefaultModel === 'env-default-model', 'global default from the env');
             expect(body.summary === null, 'summary is null until reply_metrics exists');
-            expect(Array.isArray(body.tools) && body.tools.length === 9, `9 tool groups (got ${body.tools?.length})`);
+            expect(Array.isArray(body.tools) && body.tools.length === 10, `10 tool groups (got ${body.tools?.length})`);
             expect(
                 body.tools.every(
                     (tool: any) =>
@@ -424,7 +424,7 @@ const cases: { name: string; body: () => Promise<void> }[] = [
             );
             expect(
                 JSON.stringify(body.tools.map((tool: any) => tool.key)) ===
-                    JSON.stringify(['sms', 'image', 'imageSearch', 'imageFetch', 'imageReverseSearch', 'sticker', 'file', 'history', 'harnessIssues']),
+                    JSON.stringify(['sms', 'image', 'imageSearch', 'imageFetch', 'imageReverseSearch', 'sticker', 'file', 'history', 'harnessIssues', 'widget']),
                 'groups come in the fixed order'
             );
             expect(

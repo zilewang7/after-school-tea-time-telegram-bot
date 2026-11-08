@@ -2,11 +2,14 @@
  * One round of client tool calls, shared by every platform's tool loop.
  */
 import type { AgentToolUsage, StreamChunk } from '../types.js';
+import { isProductToolName } from '../../reply/tools/tool-names.js';
 import type { ToolCall, ToolResult, TurnTools } from './tool-types.js';
 
 export interface ExecutedToolCall {
     readonly call: ToolCall;
     readonly result: ToolResult;
+    /** Wall time the handler itself took; non-product time is charged to the budget */
+    readonly durationMs: number;
 }
 
 /**
@@ -15,22 +18,38 @@ export interface ExecutedToolCall {
  * no round cap to announce — the clock is the bound — but the round that used
  * the clock up says the next step has to be the answer.
  */
-export const toolRoundNotice = (toolCalls: number, finalRound: boolean): string =>
-    finalRound
+export const toolRoundNotice = (
+    toolCalls: number,
+    finalRound: boolean,
+    productRound = false
+): string => {
+    if (productRound) {
+        return (
+            `[工具轮次] 本次回复已调用工具 ${toolCalls} 次；时间已用完，只能再调用产物工具` +
+            '（generate_image / send_image / send_sticker / send_file / send_widget），之后必须文字收尾。'
+        );
+    }
+    return finalRound
         ? `[工具轮次] 本次回复已调用工具 ${toolCalls} 次；本次调用后不能再调用工具，下一步仅输出文字回复。`
         : `[工具轮次] 本次回复已调用工具 ${toolCalls} 次。`;
+};
 
 const secondsOf = (ms: number): number => Math.max(0, Math.round(ms / 1000));
 
 /**
- * The same budget as a clock: a tool round can take a minute on a big
- * picture-heavy prompt, so the model needs to know how much wall clock is left
- * to spend on looking before it must send (live 1106627/1941: it believed it
- * had rounds left and ran into the tight deadline instead).
+ * The tool budget as the model sees it: tool time spent (the only thing that
+ * counts) next to the reply's actual wall time, so it can tell a slow provider
+ * from its own tool use. Product-tool time is not charged, so a reply can
+ * still hand its picture/card/file over after the budget is gone.
  */
-export const toolTimeNotice = (timing: { elapsedMs: number; deadlineMs: number }): string =>
-    `[时间] 已用 ${secondsOf(timing.elapsedMs)}s / 共 ${secondsOf(timing.deadlineMs)}s，` +
-    `还剩 ${secondsOf(timing.deadlineMs - timing.elapsedMs)}s。`;
+export const toolTimeNotice = (timing: {
+    readonly elapsedMs: number;
+    readonly toolTimeMs: number;
+    readonly deadlineMs: number;
+}): string =>
+    `[时间] 工具实际耗时 ${secondsOf(timing.toolTimeMs)}s / 预算 ${secondsOf(timing.deadlineMs)}s` +
+    `（还剩 ${secondsOf(timing.deadlineMs - timing.toolTimeMs)}s）；本次回复实际已用 ` +
+    `${secondsOf(timing.elapsedMs)}s。`;
 
 /** What a tool result tells the model about the tool loop it is in */
 export interface ToolBudget {
@@ -38,7 +57,12 @@ export interface ToolBudget {
     readonly toolCalls: number;
     /** The clock makes the next round the final, tool-less one */
     readonly finalRound: boolean;
+    /** Past the budget: only product tools can run, and then it is the answer */
+    readonly productRound?: boolean;
+    /** Reply wall time, for the model to see (never the budget) */
     readonly elapsedMs: number;
+    /** Tool time spent so far, the number the budget is compared with */
+    readonly toolTimeMs: number;
     readonly deadlineMs: number;
 }
 
@@ -47,15 +71,30 @@ export const withToolBudget = (
     executedCalls: readonly ExecutedToolCall[],
     budget: ToolBudget
 ): ExecutedToolCall[] =>
-    executedCalls.map(({ call, result }) => ({
+    executedCalls.map(({ call, result, durationMs }) => ({
         call,
+        durationMs,
         result: {
             ...result,
             content:
-                `${result.content}\n\n${toolRoundNotice(budget.toolCalls, budget.finalRound)}\n` +
+                `${result.content}\n\n${
+                    toolRoundNotice(budget.toolCalls, budget.finalRound, budget.productRound === true)
+                }\n` +
                 toolTimeNotice(budget),
         },
     }));
+
+/**
+ * Tool time the reply's budget should charge for: every non-product call's
+ * handler time. Product tools (drawing and handing over) are free on purpose —
+ * a reply must never be unable to send what it made because the model spent
+ * its budget looking. Bounded by the per-reply product limits.
+ */
+export const toolTimeSpentMs = (executedCalls: readonly ExecutedToolCall[]): number =>
+    executedCalls.reduce(
+        (total, executed) => (isProductToolName(executed.call.name) ? total : total + executed.durationMs),
+        0
+    );
 
 /** Per-reply call counts for agentStats.toolUsage */
 export interface ToolUsageTally {
@@ -112,7 +151,9 @@ export async function* runToolRound(
             statusShown = true;
         }
 
+        const startedAt = Date.now();
         const result = await tools.execute(call, signal);
+        const durationMs = Date.now() - startedAt;
         if (counted && result.isError) tally.fail(call.name);
         for (const image of result.images) {
             yield {
@@ -135,7 +176,7 @@ export async function* runToolRound(
             yield { type: 'grounding', groundingMetadata: result.record };
         }
 
-        executedCalls.push({ call, result });
+        executedCalls.push({ call, result, durationMs });
     }
 
     if (statusShown) {

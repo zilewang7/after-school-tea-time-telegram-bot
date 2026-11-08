@@ -103,12 +103,15 @@ export const resolveToolAvailability = (
 
     const isEnabled = (name: string): boolean => !config.disabledTools.has(name);
     const platformType = getPlatform(model).type;
-    // Widget tools are off unless WIDGET_ENABLE=1 and the chat is whitelisted;
-    // an empty WIDGET_CHAT_IDS follows the normal tool whitelist.
+    // Widget tools are off unless WIDGET_ENABLE=1, the chat is whitelisted (an
+    // empty WIDGET_CHAT_IDS follows the normal tool whitelist) and it is a
+    // private chat: Telegram still rejects widgets in groups. The panel may
+    // override the whitelist part, never the env switch or the chat kind.
     const widgetChats = config.widgetChatIds.size > 0 ? config.widgetChatIds : config.toolChatIds;
     const widget =
         config.widgetEnabled &&
-        widgetChats.has(chatId) &&
+        chatId > 0 &&
+        (toolOverrideOf(overrides, 'widget') ?? widgetChats.has(chatId)) &&
         isEnabled(SEND_WIDGET_TOOL_NAME) &&
         isEnabled(GET_UI_GUIDE_TOOL_NAME);
 

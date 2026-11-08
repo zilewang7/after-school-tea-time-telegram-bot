@@ -27,13 +27,22 @@ import { match, P } from 'ts-pattern';
 import { FinishReason, type GenerateContentResponse } from '@google/genai';
 import type { GroundingData, StreamChunk } from '../../types.js';
 import { createRoundTextSeparator } from '../../tools/round-text-separator.js';
-import { finalRoundReason, TOOL_LOOP_DEADLINE_MS } from '../../tools/tool-loop.js';
+import {
+    budgetExhaustedReason,
+    createToolTimeClock,
+    PRODUCT_TOOL_ROUNDS_MAX,
+    TOOL_LOOP_DEADLINE_MS,
+    TOOL_LOOP_WALL_MS,
+} from '../../tools/tool-loop.js';
 import {
     createToolUsageTally,
     runToolRound,
+    toolTimeSpentMs,
     withToolBudget,
     type ToolUsageTally,
 } from '../../tools/tool-round.js';
+import { filterTurnTools } from '../../tools/turn-tools.js';
+import { isProductToolName } from '../../../reply/tools/tool-names.js';
 import type { TurnTools } from '../../tools/tool-types.js';
 import type { FirstGeminiRound, OpenGeminiRound } from './gemini-first-round.js';
 import { mergeGroundingData } from './gemini-grounding.js';
@@ -71,6 +80,8 @@ export interface GeminiToolLoopOptions {
     readonly startedAt: number;
     /** Defaults to TOOL_LOOP_DEADLINE_MS */
     readonly deadlineMs?: number;
+    /** Defaults to TOOL_LOOP_WALL_MS */
+    readonly wallMs?: number;
     /** The lane the platform picked, for the usage lines */
     readonly viaLabel: string | undefined;
     readonly signal?: AbortSignal;
@@ -128,7 +139,12 @@ export async function* runGeminiToolLoop(
 ): AsyncGenerator<StreamChunk, void, undefined> {
     const { model, tools, firstRound, openRound, startedAt, viaLabel, signal, usageSink } = options;
     const deadlineMs = options.deadlineMs ?? TOOL_LOOP_DEADLINE_MS;
-    const deadlineAt = startedAt + deadlineMs;
+    const wallMs = options.wallMs ?? TOOL_LOOP_WALL_MS;
+    const clock = createToolTimeClock(deadlineMs, wallMs, startedAt);
+    const productTools = filterTurnTools(tools, (name) => isProductToolName(name));
+    const hasProductTools = productTools.definitions.length > 0;
+    let productMode = false;
+    let productRounds = 0;
     const tally = createToolUsageTally();
     const separator = createRoundTextSeparator();
     const toolRounds: GeminiToolRound[] = [];
@@ -166,6 +182,45 @@ export async function* runGeminiToolLoop(
             break;
         }
 
+        if (productMode) {
+            // Past the budget: only product tools run, and the reply then answers
+            if (outcome !== 'calls') {
+                request = { ...request, tools: firstRound.request.tools, final: true };
+                productMode = false;
+                opened = await openRound(request);
+                continue;
+            }
+            productRounds += 1;
+            const productCalls = toToolCalls(round.functionCalls, roundNumber);
+            const productExecuted = yield* runToolRound(productTools, productCalls, tally, signal);
+            executedCallCount += productExecuted.length;
+            const capReached = productRounds >= PRODUCT_TOOL_ROUNDS_MAX;
+            const answeredProducts = withToolBudget(productExecuted, {
+                toolCalls: executedCallCount,
+                finalRound: capReached,
+                productRound: true,
+                elapsedMs: Date.now() - startedAt,
+                toolTimeMs: clock.toolTimeMs,
+                deadlineMs,
+            });
+            toolRounds.push({
+                modelParts: round.parts,
+                responseParts: buildFunctionResponseParts(
+                    round.functionCalls,
+                    answeredProducts.map((executedCall) => executedCall.result),
+                    { lastToolRound: capReached }
+                ),
+            });
+            request = {
+                contents: buildRoundContents(firstRound.request.contents, toolRounds),
+                tools: firstRound.request.tools,
+                final: capReached,
+            };
+            productMode = !capReached;
+            opened = await openRound(request);
+            continue;
+        }
+
         if (outcome === 'failed-call') {
             console.warn(
                 `[gemini] round ${roundNumber} ended with ${round.finishReason}, forcing final answer`
@@ -194,21 +249,27 @@ export async function* runGeminiToolLoop(
                 signal
             );
             executedCallCount += executedCalls.length;
+            clock.toolTimeMs += toolTimeSpentMs(executedCalls);
             if (signal?.aborted) break;
 
-            // Judged after the calls ran: they may have used up the deadline
-            const finalReason = finalRoundReason(deadlineAt, deadlineMs);
-            if (finalReason !== null) {
+            // Judged after the calls ran: they may have used up the budget
+            const exhausted = budgetExhaustedReason(clock);
+            if (exhausted !== null) {
                 console.log(
-                    `[gemini] ${finalReason}, forcing final answer (notice on the round ${roundNumber} responses)`
+                    `[gemini] ${exhausted}, ` +
+                        (hasProductTools ? 'product tools only from here' : 'forcing final answer') +
+                        ` (notice on the round ${roundNumber} responses)`
                 );
+                productMode = hasProductTools;
             }
             // The call count rides in each result, like every other fact the
-            // model has to plan around; the final-round notice stays separate.
+            // model has to plan around; the last-round notice stays separate.
             const answeredCalls = withToolBudget(executedCalls, {
                 toolCalls: executedCallCount,
-                finalRound: finalReason !== null,
+                finalRound: exhausted !== null && !hasProductTools,
+                productRound: exhausted !== null && hasProductTools,
                 elapsedMs: Date.now() - startedAt,
+                toolTimeMs: clock.toolTimeMs,
                 deadlineMs,
             });
             toolRounds.push({
@@ -216,13 +277,13 @@ export async function* runGeminiToolLoop(
                 responseParts: buildFunctionResponseParts(
                     round.functionCalls,
                     answeredCalls.map((executedCall) => executedCall.result),
-                    { lastToolRound: finalReason !== null }
+                    { lastToolRound: exhausted !== null && !hasProductTools }
                 ),
             });
             request = {
                 contents: buildRoundContents(firstRound.request.contents, toolRounds),
                 tools: firstRound.request.tools,
-                final: finalReason !== null,
+                final: exhausted !== null && !hasProductTools,
             };
         }
 

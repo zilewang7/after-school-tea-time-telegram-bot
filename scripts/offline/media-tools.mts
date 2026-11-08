@@ -399,22 +399,24 @@ const cases = [
         },
     },
     {
-        name: 'the calls made so far and the wall clock are appended to what the model reads',
+        name: 'the calls made so far and the tool clock are appended to what the model reads',
         body: async (): Promise<void> => {
             const { toolRoundNotice, toolTimeNotice, withToolBudget } = await import(
                 '../../src/ai/tools/tool-round.js'
             );
             const base: ToolResult = { content: 'sunny in Paris', isError: false, images: [], record: null };
             const call: ToolCall = { id: 'call_1', name: 'lookup', argumentsJson: '{}' };
-            const [decorated] = withToolBudget([{ call, result: base }], {
+            const [decorated] = withToolBudget([{ call, result: base, durationMs: 40_000 }], {
                 toolCalls: 7,
                 finalRound: false,
                 elapsedMs: 95_000,
+                toolTimeMs: 40_000,
                 deadlineMs: 300_000,
             });
             expect(
                 decorated?.result.content ===
-                    `sunny in Paris\n\n${toolRoundNotice(7, false)}\n${toolTimeNotice({ elapsedMs: 95_000, deadlineMs: 300_000 })}`,
+                    `sunny in Paris\n\n${toolRoundNotice(7, false)}\n` +
+                        toolTimeNotice({ elapsedMs: 95_000, toolTimeMs: 40_000, deadlineMs: 300_000 }),
                 `both facts ride in the result (got ${decorated?.result.content})`
             );
             expect(
@@ -426,12 +428,20 @@ const cases = [
                 'the last round keeps the count and says the next step must be the answer'
             );
             expect(
-                toolTimeNotice({ elapsedMs: 95_000, deadlineMs: 300_000 }).includes('95s / 共 300s') &&
-                    toolTimeNotice({ elapsedMs: 95_000, deadlineMs: 300_000 }).includes('还剩 205s'),
-                'the clock says how long the reply has been running and how long is left'
+                toolRoundNotice(7, true, true).includes('只能再调用产物工具'),
+                'the product round says only product tools can still run'
             );
             expect(
-                toolTimeNotice({ elapsedMs: 400_000, deadlineMs: 300_000 }).includes('还剩 0s'),
+                toolTimeNotice({ elapsedMs: 95_000, toolTimeMs: 40_000, deadlineMs: 300_000 }).includes(
+                    '工具实际耗时 40s / 预算 300s'
+                ) &&
+                    toolTimeNotice({ elapsedMs: 95_000, toolTimeMs: 40_000, deadlineMs: 300_000 }).includes(
+                        '还剩 260s'
+                    ),
+                'the tool clock says how much tool time is left, not the reply wall clock'
+            );
+            expect(
+                toolTimeNotice({ elapsedMs: 400_000, toolTimeMs: 400_000, deadlineMs: 300_000 }).includes('还剩 0s'),
                 'an overrun never shows negative time'
             );
         },

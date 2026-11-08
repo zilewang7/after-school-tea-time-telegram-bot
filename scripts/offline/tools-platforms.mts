@@ -125,6 +125,23 @@ const brokenTool: ToolHandler = {
     },
 };
 
+
+/** A product tool: its time is never charged to the tool budget */
+const sendFileTool: ToolHandler = {
+    definition: {
+        name: 'send_file',
+        description: 'Send a text file',
+        inputSchema: { type: 'object', properties: {} },
+    },
+    execute: async () => {
+        productExecutions.push('send_file');
+        return { content: 'file sent', isError: false, images: [], record: null };
+    },
+};
+
+const productExecutions: string[] = [];
+const productTurnTools = createTurnTools([weatherTool, sendFileTool]);
+
 const turnTools = createTurnTools([weatherTool, brokenTool]);
 
 // ---- helpers ----
@@ -409,7 +426,7 @@ const expectDeadlineFinal = async (spec: DeadlineFinalSpec): Promise<void> => {
             `${spec.label}: the final request takes the tools away (got ${json(Object.keys(finalRequest))})`
         );
         expect(
-            lines.some((line) => line.includes(`Tool loop deadline (${Math.round(TOOL_LOOP_DEADLINE_MS / 1000)}s) passed`)),
+            lines.some((line) => line.includes(`Tool budget (${Math.round(TOOL_LOOP_DEADLINE_MS / 1000)}s of tool time) used up`)),
             `${spec.label}: the reason is logged (got ${json(lines)})`
         );
         const finalRequestJson = JSON.stringify(finalRequest);
@@ -1120,42 +1137,49 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
         },
     },
     {
-        name: 'the shared tool loop gives up tools once the deadline has passed',
+        name: 'the shared tool loop charges tool time, not the reply wall clock',
         body: async () => {
-            resetStub([]);
-            const finalFlags: boolean[] = [];
-            const { result: chunks, lines } = await captureConsole(async () =>
-                drain(
-                    runToolLoop({
-                        tools: turnTools,
-                        deadlineMs: 50,
-                        logPrefix: '[offline]',
-                        sendRound: async (roundIndex, final) => {
-                            finalFlags.push(final);
-                            if (final) return { chunks: [{ type: 'text', content: 'Out of time.' }], toolCalls: [] };
-                            // The first round eats the whole budget
-                            await new Promise((resolve) => setTimeout(resolve, 80));
-                            return {
-                                chunks: [{ type: 'text', content: 'Let me check.' }],
-                                toolCalls: [{ id: `call_${roundIndex}`, name: 'lookup_weather', argumentsJson: '{"city":"Oslo"}' }],
-                            };
-                        },
-                        appendRound: () => undefined,
-                    })
-                )
-            );
-            expect(json(finalFlags) === json([false, true]), `after the deadline the next round is the final one (got ${json(finalFlags)})`);
-            expect(executions.length === 1, 'the call made before the deadline still runs');
-            expect(
-                textOf(chunks) === 'Let me check.\n\nOut of time.',
-                `the rounds show a blank line apart (got ${json(textOf(chunks))})`
-            );
-            expect(lines.some((line) => line.includes('[offline] Tool loop deadline (0s) passed')), `the reason is logged (got ${json(lines)})`);
-            const done = chunks.at(-1);
-            expect(
-                done?.type === 'done' && json(done.agentStats?.toolUsage) === json([{ name: 'lookup_weather', count: 1 }]),
-                `one done with the tally (got ${json(done)})`
-            );
+            // A slow round (the 80ms sleep) is not charged; only the tool call's
+            // own time is. The fake clock jumps inside the tool handler.
+            await withFakeClock(async (jump) => {
+                resetStub([]);
+                afterToolExecution = () => jump(TOOL_LOOP_DEADLINE_MS + 1_000);
+                const finalFlags: boolean[] = [];
+                const { result: chunks, lines } = await captureConsole(async () =>
+                    drain(
+                        runToolLoop({
+                            tools: turnTools,
+                            logPrefix: '[offline]',
+                            sendRound: async (roundIndex, final) => {
+                                finalFlags.push(final);
+                                if (final) return { chunks: [{ type: 'text', content: 'Out of time.' }], toolCalls: [] };
+                                // A slow provider round: must not eat the budget
+                                await new Promise((resolve) => setTimeout(resolve, 80));
+                                return {
+                                    chunks: [{ type: 'text', content: 'Let me check.' }],
+                                    toolCalls: [{ id: `call_${roundIndex}`, name: 'lookup_weather', argumentsJson: '{"city":"Oslo"}' }],
+                                };
+                            },
+                            appendRound: () => undefined,
+                        })
+                    )
+                );
+                expect(json(finalFlags) === json([false, true]), `after the tool budget is gone the next round is final (got ${json(finalFlags)})`);
+                expect(executions.length === 1, 'the call made before the budget was gone still runs');
+                expect(
+                    textOf(chunks) === 'Let me check.\n\nOut of time.',
+                    `the rounds show a blank line apart (got ${json(textOf(chunks))})`
+                );
+                expect(
+                    lines.some((line) => line.includes(`Tool budget (${Math.round(TOOL_LOOP_DEADLINE_MS / 1000)}s of tool time) used up`)),
+                    `the reason is logged (got ${json(lines)})`
+                );
+                const done = chunks.at(-1);
+                expect(
+                    done?.type === 'done' && json(done.agentStats?.toolUsage) === json([{ name: 'lookup_weather', count: 1 }]),
+                    `one done with the tally (got ${json(done)})`
+                );
+            });
         },
     },
     {

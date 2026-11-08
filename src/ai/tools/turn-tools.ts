@@ -63,6 +63,24 @@ const runHandler = async (
     }
 };
 
+/**
+ * A view of the same tools that only offers those the predicate keeps: a call
+ * naming another tool is answered with the usual unknown-tool error and never
+ * reaches the real handler. Used for the product-only rounds after the budget.
+ */
+export const filterTurnTools = (tools: TurnTools, predicate: (name: string) => boolean): TurnTools => {
+    const kept = tools.definitions.filter((definition) => predicate(definition.name));
+    const keptNames = new Set(kept.map((definition) => definition.name));
+    return {
+        definitions: kept,
+        execute: async (call, signal) =>
+            keptNames.has(call.name)
+                ? tools.execute(call, signal)
+                : { content: `Unknown tool ${call.name}`, isError: true, images: [], record: null },
+        statusOf: tools.statusOf,
+    };
+};
+
 export const createTurnTools = (handlers: readonly ToolHandler[]): TurnTools => {
     const handlersByName = indexHandlersByName(handlers);
 

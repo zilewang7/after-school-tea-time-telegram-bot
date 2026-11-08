@@ -27,6 +27,8 @@ import {
     SEND_IMAGE_TOOL_NAME,
     SEND_SMS_TOOL_NAME,
     SEND_STICKER_TOOL_NAME,
+    SEND_WIDGET_TOOL_NAME,
+    GET_UI_GUIDE_TOOL_NAME,
 } from '../../reply/tools/tool-names.js';
 
 export interface ToolGroupEntry {
@@ -55,6 +57,7 @@ const GROUP_TOOLS: Record<ToolGroupKey, readonly string[]> = {
     file: [SEND_FILE_TOOL_NAME],
     history: [SEARCH_HISTORY_TOOL_NAME, READ_HISTORY_TOOL_NAME],
     harnessIssues: [LIST_HARNESS_ISSUES_TOOL_NAME, CREATE_HARNESS_ISSUE_TOOL_NAME],
+    widget: [SEND_WIDGET_TOOL_NAME, GET_UI_GUIDE_TOOL_NAME],
 };
 
 const ENABLED_OF: Record<ToolGroupKey, (availability: ToolAvailability) => boolean> = {
@@ -67,11 +70,13 @@ const ENABLED_OF: Record<ToolGroupKey, (availability: ToolAvailability) => boole
     file: (availability) => availability.file,
     history: (availability) => availability.history,
     harnessIssues: (availability) => availability.harnessIssues,
+    widget: (availability) => availability.widget,
 };
 
 /** Facts every reason check reads */
 interface ReasonContext {
     config: ToolConfig;
+    chatId: number;
     /** The availability with the current switches, for dependency reasons */
     availability: ToolAvailability;
     supportsImageInput: boolean;
@@ -136,11 +141,20 @@ const HARD_REASONS: Record<ToolGroupKey, readonly ReasonCheck[]> = {
         disabledByName(LIST_HARNESS_ISSUES_TOOL_NAME),
         disabledByName(CREATE_HARNESS_ISSUE_TOOL_NAME),
     ],
+    widget: [
+        ({ chatId }) => (chatId > 0 ? null : '群聊暂不支持聊天卡片（Telegram 服务端限制）'),
+        ({ config }) => (config.widgetEnabled ? null : 'WIDGET_ENABLE 为 0'),
+        disabledByName(SEND_WIDGET_TOOL_NAME),
+        disabledByName(GET_UI_GUIDE_TOOL_NAME),
+    ],
 };
 
 /** Why the env whitelist keeps a group off; the panel switch may turn it on */
-const whitelistReasonOf = (key: ToolGroupKey): string =>
-    key === 'history' ? '本聊天不在 HISTORY_CHAT_IDS 中' : '本聊天不在 TOOL_CHAT_IDS 中';
+const whitelistReasonOf = (key: ToolGroupKey): string => {
+    if (key === 'history') return '本聊天不在 HISTORY_CHAT_IDS 中';
+    if (key === 'widget') return '本聊天不在 WIDGET_CHAT_IDS / TOOL_CHAT_IDS 中';
+    return '本聊天不在 TOOL_CHAT_IDS 中';
+};
 
 const firstReason = (checks: readonly ReasonCheck[], context: ReasonContext): string | null => {
     for (const check of checks) {
@@ -171,6 +185,7 @@ export const buildToolMatrix = (
     const envAvailability = resolveToolAvailability(model, chatId, config);
     const context: ReasonContext = {
         config,
+        chatId,
         availability,
         supportsImageInput: capabilities.supportsImageInput,
         testInstance: isTestInstance(),

@@ -20,6 +20,8 @@ export const TOOL_GROUP_KEYS = [
     'file',
     'history',
     'harnessIssues',
+    // Phase 0 gray: the whole widget pair is one switch
+    'widget',
 ] as const;
 
 export type ToolGroupKey = (typeof TOOL_GROUP_KEYS)[number];

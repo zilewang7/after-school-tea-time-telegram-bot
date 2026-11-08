@@ -118,6 +118,20 @@ const brokenTool: ToolHandler = {
 
 const turnTools = createTurnTools([weatherTool, brokenTool]);
 
+const productExecutions: string[] = [];
+const sendFileTool: ToolHandler = {
+    definition: {
+        name: 'send_file',
+        description: 'Send a text file',
+        inputSchema: { type: 'object', properties: {} },
+    },
+    execute: async () => {
+        productExecutions.push('send_file');
+        return { content: 'file sent', isError: false, images: [], record: null };
+    },
+};
+const productTurnTools = createTurnTools([weatherTool, brokenTool, sendFileTool]);
+
 // ---- helpers ----
 
 const reset = (responder: Responder): void => {
@@ -602,7 +616,7 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
                     `the last tool result counts the calls and says the next step is the answer (got ${json(finalRequest?.body)})`
                 );
                 expect(
-                    lines.some((line) => line.includes(`deadline (${Math.round(TOOL_LOOP_DEADLINE_MS / 1000)}s) passed`)),
+                    lines.some((line) => line.includes(`Tool budget (${Math.round(TOOL_LOOP_DEADLINE_MS / 1000)}s of tool time) used up`)),
                     `the reason is logged (got ${json(lines)})`
                 );
                 const done = chunks.at(-1);
@@ -611,6 +625,52 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
                         done?.type === 'done' &&
                         json(done.agentStats?.toolUsage) === json([{ name: 'lookup_weather', count: toolRounds }]),
                     `the answer streams and the tally covers every round (got ${json(done?.agentStats)})`
+                );
+            } finally {
+                Date.now = realNow;
+                afterToolExecution = null;
+            }
+        },
+    },
+        {
+        name: 'after the tool budget: a product round still runs send_file, then the answer',
+        body: async () => {
+            const realNow = Date.now.bind(Date);
+            let offsetMs = 0;
+            Date.now = () => realNow() + offsetMs;
+            try {
+                reset(
+                    scripted(
+                        toolRound('resp_1', 'call_1'),
+                        toolRound('resp_2', 'call_2', 'send_file', '{}'),
+                        answerRound('resp_3', 'File sent, here is the answer.')
+                    )
+                );
+                productExecutions.length = 0;
+                afterToolExecution = () => {
+                    afterToolExecution = null;
+                    // Round 1's lookup uses up the whole tool budget
+                    offsetMs += TOOL_LOOP_DEADLINE_MS + 1_000;
+                };
+
+                const { result: chunks, lines } = await captureConsole(async () =>
+                    drain(await sendGrok(MODEL, productTurnTools))
+                );
+
+                expect(recordedRequests.length === 3, `three requests (got ${recordedRequests.length})`);
+                expect(
+                    !('tool_choice' in recordedRequests[1]!.body) && !('tool_choice' in recordedRequests[2]!.body),
+                    'the product rounds keep the tools on'
+                );
+                expect(json(productExecutions) === json(['send_file']), `send_file ran once (got ${json(productExecutions)})`);
+                expect(
+                    JSON.stringify(recordedRequests[2]?.body ?? {}).includes('只能再调用产物工具'),
+                    'the product round notice says only product tools can run'
+                );
+                expect(textOf(chunks) === 'File sent, here is the answer.', `the answer streams (got ${json(textOf(chunks))})`);
+                expect(
+                    lines.some((line) => line.includes('Tool budget') && line.includes('product tools only from here')),
+                    `the product mode is logged (got ${json(lines)})`
                 );
             } finally {
                 Date.now = realNow;
@@ -653,7 +713,7 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
             );
 
             expect(continuations.length === 1 && continuations[0]?.tool_choice === 'none', `the next round is the final one (got ${json(continuations)})`);
-            expect(lines.some((line) => line.includes('deadline (0s) passed')), 'the deadline is logged');
+            expect(lines.some((line) => line.includes('Tool budget (0s of tool time) used up')), 'the budget is logged');
             expect(executions.length === 1 && textOf(chunks) === 'Out of time.', 'the call ran before the final answer');
         },
     },

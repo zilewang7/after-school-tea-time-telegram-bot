@@ -85,7 +85,8 @@ export type ToolGroupKey =
     | 'sticker'
     | 'file'
     | 'history'
-    | 'harnessIssues';
+    | 'harnessIssues'
+    | 'widget';
 
 /** Per-chat tool switches: true = on, false = off, missing key = follow the env whitelist */
 export type ToolOverrides = Partial<Record<ToolGroupKey, boolean>>;

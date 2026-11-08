@@ -12,11 +12,20 @@
 import { expect, reportResults, runCase, type CaseResult } from './harness.mts';
 import type { ToolHandler } from '../../src/ai/tools/tool-types.js';
 
+// Tool availability reads model capabilities, and the platforms refuse to load
+// without credentials; nothing here sends a request.
+for (const key of ['GEMINI_API_KEY', 'OPENAI_API_KEY', 'DEEPSEEK_API_KEY', 'GROK_API_KEY', 'MIMO_API_KEY']) {
+    process.env[key] ||= 'offline-placeholder';
+}
+
 const { createSendWidgetTool } = await import('../../src/reply/tools/send-widget-tool.js');
 const { createUiGuideTool } = await import('../../src/reply/tools/ui-guide-tool.js');
 const { createReplyMediaState, ONE_ATTACHMENT_PER_REPLY } = await import(
     '../../src/reply/tools/reply-media-state.js'
 );
+const { readToolConfig } = await import('../../src/config/tool-config.js');
+const { resolveToolAvailability } = await import('../../src/reply/tools/tool-availability.js');
+const { normalizeToolOverrides } = await import('../../src/services/tool-overrides.js');
 
 const LIMITS = { allowHtml: false, maxHtmlBytes: 32768, maxGzipBytes: 4096 };
 
@@ -138,6 +147,40 @@ results.push(
 
         const invalid = await run(tool, { kind: 'markdown' });
         expect(invalid.isError, 'an unknown kind is refused');
+    })
+);
+
+results.push(
+    await runCase('the panel switch turns the widget pair on and off, but never opens groups', async () => {
+        const config = readToolConfig({
+            WIDGET_ENABLE: '1',
+            WIDGET_CHAT_IDS: '603421700',
+            TOOL_CHAT_IDS: '603421700',
+            OWNER_USER_ID: '603421700',
+        });
+        const enabled = resolveToolAvailability('gemini-4-argon', 603421700, config);
+        expect(enabled.widget && enabled.widgetGuide, 'the whitelisted private chat gets both tools');
+
+        const normalized = normalizeToolOverrides({ widget: false });
+        expect(normalized.ok && normalized.value?.widget === false, 'widget is a known panel group');
+        const disabled = resolveToolAvailability(
+            'gemini-4-argon',
+            603421700,
+            config,
+            undefined,
+            normalized.ok ? normalized.value : null
+        );
+        expect(!disabled.widget && !disabled.widgetGuide, 'the panel switch can turn both off');
+
+        const groupOverride = normalizeToolOverrides({ widget: true });
+        const group = resolveToolAvailability(
+            'gemini-4-argon',
+            -1001415974153,
+            config,
+            undefined,
+            groupOverride.ok ? groupOverride.value : null
+        );
+        expect(!group.widget, 'a group chat stays off even when the panel asks for it');
     })
 );
 

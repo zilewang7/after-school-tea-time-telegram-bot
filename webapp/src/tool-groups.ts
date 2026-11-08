@@ -15,6 +15,7 @@ export const TOOL_GROUP_ORDER: readonly ToolGroupKey[] = [
     'file',
     'history',
     'harnessIssues',
+    'widget',
 ];
 
 const TOOL_GROUP_LABELS: Record<ToolGroupKey, string> = {
@@ -27,6 +28,7 @@ const TOOL_GROUP_LABELS: Record<ToolGroupKey, string> = {
     file: '发送文件',
     history: '历史检索',
     harnessIssues: 'Issue 工具',
+    widget: '聊天卡片',
 };
 
 export const toolGroupLabelOf = (key: ToolGroupKey): string => TOOL_GROUP_LABELS[key];
@@ -41,6 +43,7 @@ const TOOL_GROUP_HINTS: Partial<Record<ToolGroupKey, string>> = {
     file: '开启后本聊天可以把长文本写成文件发出',
     history: '开启后本聊天可以检索 luoxu 的历史归档',
     harnessIssues: '开启后模型可以把使用中遇到的问题记成 issue',
+    widget: '开启后模型可在回复里附一张 A2UI/HTML 卡片（当前仅私聊可用）',
 };
 
 export const toolGroupHintOf = (key: ToolGroupKey): string | null => TOOL_GROUP_HINTS[key] ?? null;
