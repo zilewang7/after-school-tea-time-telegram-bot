@@ -21,6 +21,7 @@ import { collectReferenceImages } from './reference-images.js';
 import { parsePicCommand, type PicCommandSpec } from './pic-command-parser.js';
 import { buildGenerationRequest } from './pic-request-builder.js';
 import { runGeneration } from './generation-runner.js';
+import { sendBotNotice } from '../../services/bot-notice-service.js';
 
 const HELP_HEADER = [
     '🎨 生图用法',
@@ -49,12 +50,10 @@ const buildHelpText = async (): Promise<string> => {
 
 const replyWith = async (ctx: Context, text: string): Promise<void> => {
     if (!ctx.message) return;
-    await to(
-        ctx.reply(text, {
-            reply_parameters: { message_id: ctx.message.message_id },
-            parse_mode: 'Markdown',
-        })
-    );
+    await sendBotNotice(ctx, text, {
+        reply_parameters: { message_id: ctx.message.message_id },
+        parse_mode: 'Markdown',
+    });
 };
 
 /** Whether this message is a pic command at all (chat-handler's routing gate) */

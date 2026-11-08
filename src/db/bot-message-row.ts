@@ -13,8 +13,11 @@ export interface BotMessageRow {
     readonly chatId: number;
     /** A reply is stored under its first message id alone */
     readonly messageId: number;
-    /** The user message the reply answers */
-    readonly replyToId: number;
+    /**
+     * The user message the reply answers. A notice sent outside a reply (the
+     * bot has no message to point at) passes null.
+     */
+    readonly replyToId: number | null;
     readonly date: Date;
     readonly text: string | null;
     /** Provider parts replayed with the turn (a JSON column, typed as string by the DTO) */

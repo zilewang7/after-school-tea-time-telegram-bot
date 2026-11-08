@@ -1,8 +1,10 @@
 import { Bot } from "grammy";
+import { sendBotNotice } from "../../services/bot-notice-service.js";
 
 export const registerHelpCommand = (bot: Bot) => {
     bot.command("help", (ctx) =>
-        ctx.reply(
+        sendBotNotice(
+            ctx,
             `在与 bot 对话之前，有必要理解一下前提：
     1. bot 的回复都是基于消息会话的上下文
     2. 没有回复 bot 而是直接发送的消息是一个新的会话，上下文中只有你发送的这条消息

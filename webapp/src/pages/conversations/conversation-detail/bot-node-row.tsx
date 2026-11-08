@@ -68,6 +68,7 @@ export const BotNodeRow = ({ row, node, chatId, member, pending, onExclude, onRe
                 {row.parentNumber !== null && <span className="hint">↳ 回复 #{row.parentNumber}</span>}
                 <span className="tree-author">bot</span>
                 {versionLabel !== null && <span className="badge">{versionLabel}</span>}
+                {reply.versionCount === 0 && <span className="badge">提示</span>}
                 {reply.model !== null && <span className="hint">{reply.model}</span>}
                 {reply.wasStoppedByUser && <span className="badge">已停止</span>}
                 {node.excluded && <span className="badge warning">已排除</span>}
@@ -77,13 +78,25 @@ export const BotNodeRow = ({ row, node, chatId, member, pending, onExclude, onRe
                 )}
             </div>
 
-            <Link className="tree-node-body" to={detailPath}>
-                {reply.text === null || reply.text === '' ? (
-                    <p className="hint">（无正文，点开看版本详情）</p>
-                ) : (
-                    <p className="tree-node-text">{reply.text}</p>
-                )}
-            </Link>
+            {/* A notice (/model's switch text, /chat's help) has no versions to
+                open: its detail route would 404, so the text is not a link */}
+            {reply.versionCount === 0 ? (
+                <div className="tree-node-body">
+                    {reply.text === null || reply.text === '' ? (
+                        <p className="hint">（无正文）</p>
+                    ) : (
+                        <p className="tree-node-text">{reply.text}</p>
+                    )}
+                </div>
+            ) : (
+                <Link className="tree-node-body" to={detailPath}>
+                    {reply.text === null || reply.text === '' ? (
+                        <p className="hint">（无正文，点开看版本详情）</p>
+                    ) : (
+                        <p className="tree-node-text">{reply.text}</p>
+                    )}
+                </Link>
+            )}
 
             {thinkingText !== null && thinkingText !== '' && (
                 <CollapsibleSection title="思考" summary={`${thinkingLength} 字`}>

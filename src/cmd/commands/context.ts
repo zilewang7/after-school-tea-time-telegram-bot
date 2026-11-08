@@ -1,6 +1,15 @@
 import { Bot } from "grammy";
 import { getRepliesHistory } from "../../reply/index.js";
 
+/**
+ * Text that goes inside a MarkdownV2 code span: a backtick would end the span
+ * early and a backslash escapes the next character, so both are replaced. The
+ * bot's own notices quote command syntax (`/chat`, `/model`), which made this
+ * path break as soon as a notice joined the tree.
+ */
+const codeSpanSafe = (text: string): string =>
+    text.replace(/[`\\]/g, (char) => (char === "`" ? "'" : "/"));
+
 export const registerContextCommand = (bot: Bot) => {
     bot.command("context", async (ctx) => {
         try {
@@ -47,7 +56,7 @@ export const registerContextCommand = (bot: Bot) => {
 
                     replyText +=
                         ">" +
-                        `\\>\`${msg.userName}:${shortMsg}\`` +
+                        `\\>\`${codeSpanSafe(msg.userName)}:${codeSpanSafe(shortMsg)}\`` +
                         (isSupergroup
                             ? `[前往](https://t.me/c/${chatId}/${msg.messageId})`
                             : "");

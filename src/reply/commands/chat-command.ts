@@ -29,6 +29,7 @@ import {
     type CandidateMessage,
 } from './chat-command-selection.js';
 import type { TelegramMessageLink } from './telegram-message-link.js';
+import { sendBotNotice } from '../../services/bot-notice-service.js';
 
 /** Never attach more than this many messages to one reply */
 const MAX_ATTACHED_MESSAGES = 100;
@@ -60,7 +61,7 @@ const HELP_TEXT = `\`/chat\` 仅在需要添加上下文时使用，如无此需
 
 用法:
 在回复消息时添加参数, 最后可以加上你要告诉 ai 的内容
-\`/chat [数字|a]\` 将被回复的消息及后面的\`[数字]\`条消息的上下文添加到会话中，如果是 a（或 all）则将后面的所有消息都添加到会话中
+\`/chat [数字|a]\` 将被回复的消息及后面的\`[数字]\`条消息的上下文添加到会话中，如果是 a（或 all）则将后面的所有消息都添加到会话中（bot 自己的消息，包括 /model、/help、/chat 这类命令回复，同样算消息、会一起进入上下文）
 \`/chat r\` 收集最近一波聊天：从被回复的消息往上（不回复任何消息时从最新一条往上），相邻两条消息间隔超过 20 分钟就停止，最多 ${MAX_ATTACHED_MESSAGES} 条（超出自动截取，不报错）。其中的视频与圆形视频消息只留一行标注、不带画面（GIF 动图不受影响；要看某条视频请直接回复它）
 \`/chat [数字|a|r]\` -[可选参数] 第二个参数为可选参数，筛选后不会影响要添加的消息条数
     \`s\`(single) 仅被回复的人的消息
@@ -125,7 +126,7 @@ const handleSequentialSelection = async (
     const selected = selectAttachedMessageIds(candidates, selection, userScope, commandMessageId);
 
     if (selected.length > MAX_ATTACHED_MESSAGES) {
-        await ctx.reply(`共查询到 ${selected.length} 条消息，超出${MAX_ATTACHED_MESSAGES}条，太多了！`);
+        await sendBotNotice(ctx, `共查询到 ${selected.length} 条消息，超出${MAX_ATTACHED_MESSAGES}条，太多了！`);
         return { type: 'too-many', matched: selected.length };
     }
 
@@ -146,7 +147,7 @@ const handleLinkSelection = async (
     const result = await attachLinkedConversations(chat, commandMessageId, targetMessageId, links);
     const problems = describeLinkProblems(result);
     if (problems !== null) {
-        await ctx.reply(problems);
+        await sendBotNotice(ctx, problems);
     }
     return result.attachedRoots > 0
         ? { type: 'linked', attached: result.attachedRoots }
@@ -170,7 +171,7 @@ export const dealChatCommand = async (ctx: Context): Promise<ChatCommandOutcome>
     if (parsed.type === 'none') return { type: 'not-a-command' };
 
     const showHelp = async (): Promise<ChatCommandOutcome> => {
-        await ctx.reply(HELP_TEXT, { parse_mode: 'Markdown' });
+        await sendBotNotice(ctx, HELP_TEXT, { parse_mode: 'Markdown' });
         return { type: 'help-shown' };
     };
     if (parsed.type === 'invalid') return showHelp();

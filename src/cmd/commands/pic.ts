@@ -10,6 +10,7 @@ import OpenAI from 'openai';
 import { to, isErr } from '../../shared/result.js';
 import { removeSpecificText } from '../../util.js';
 import { stopIfChatPaused } from '../../reply/chat-pause.js';
+import { sendBotNotice, updateBotNotice } from '../../services/bot-notice-service.js';
 
 // Grok agent for image generation
 const grokAgent = new OpenAI({
@@ -50,9 +51,12 @@ const generatePicgrokImage = async (
 
         if (isErr(editResult)) {
             await to(ctx.api.deleteMessage(chatId, processingReplyId));
-            await ctx.reply(errorMsg, {
+            await sendBotNotice(ctx, errorMsg, {
                 reply_parameters: { message_id: userMessageId },
             });
+        } else {
+            // The placeholder now carries the error: record it as the notice it became
+            await updateBotNotice(ctx, processingReplyId, errorMsg, userMessageId);
         }
         return;
     }
@@ -62,7 +66,12 @@ const generatePicgrokImage = async (
     const imageUrl = response.data?.[0]?.url;
     if (!imageUrl) {
         const errorMsg = '生成图片失败：No image URL in response';
-        await ctx.api.editMessageText(chatId, processingReplyId, errorMsg);
+        const [editError] = await to(
+            ctx.api.editMessageText(chatId, processingReplyId, errorMsg)
+        );
+        if (editError === null) {
+            await updateBotNotice(ctx, processingReplyId, errorMsg, userMessageId);
+        }
         return;
     }
 
@@ -110,9 +119,11 @@ const handlePicgrokCommand = async (ctx: Context, prompt: string): Promise<void>
 
         if (isErr(editResult)) {
             await to(ctx.api.deleteMessage(chatId, processingReply.message_id));
-            await ctx.reply(errorMsg, {
+            await sendBotNotice(ctx, errorMsg, {
                 reply_parameters: { message_id: userMessageId },
             });
+        } else {
+            await updateBotNotice(ctx, processingReply.message_id, errorMsg, userMessageId);
         }
     });
 };
@@ -139,7 +150,7 @@ export const registerPicCommands = (bot: Bot): void => {
 
         const prompt = extractPrompt(ctx);
         if (!prompt) {
-            await ctx.reply('请输入图片描述');
+            await sendBotNotice(ctx, '请输入图片描述');
             return;
         }
         await handlePicgrokCommand(ctx, prompt);

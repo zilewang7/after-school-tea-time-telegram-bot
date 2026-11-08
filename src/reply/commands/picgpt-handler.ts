@@ -16,6 +16,7 @@ import {
 } from './../response-handler.js';
 import type { UnifiedContentPart } from '../../ai/types.js';
 import { markRequestStarted, recordReferenceImages } from '../../services/reply-metrics-draft.js';
+import { sendBotNotice } from '../../services/bot-notice-service.js';
 
 /**
  * Picgpt command data
@@ -47,7 +48,7 @@ export const checkPicgptCommand = async (
     const prompt = matchResult[2]?.trim() || '';
 
     if (!prompt) {
-        await ctx.reply('请提供图片描述');
+        await sendBotNotice(ctx, '请提供图片描述');
         return [false];
     }
 

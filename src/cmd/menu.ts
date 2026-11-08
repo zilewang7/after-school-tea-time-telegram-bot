@@ -20,6 +20,7 @@ import {
 } from '../services/chat-settings-service.js';
 import { toApiEntities } from '../telegram/api-entities.js';
 import { to } from '../shared/result.js';
+import { sendBotNotice, updateBotNotice } from '../services/bot-notice-service.js';
 import {
     formatActionTime,
     renderModelOverview,
@@ -107,7 +108,7 @@ const applyModelChange = async (
 };
 
 const replyWithModelText = async (ctx: Context, text: RenderedMessage): Promise<void> => {
-    await ctx.reply(text.text, {
+    await sendBotNotice(ctx, text.text, {
         entities: toApiEntities(text.entities),
         reply_markup: buildCollapsedModelKeyboard(),
     });
@@ -123,7 +124,7 @@ export const changeModel = async (ctx: Context, requested: string): Promise<void
     if (!ctx.chat || !ctx.from) return;
     const outcome = await applyModelChange(ctx.chat.id, ctx.from.id, requested);
     await match(outcome)
-        .with({ kind: 'refused' }, ({ notice }) => ctx.reply(notice))
+        .with({ kind: 'refused' }, ({ notice }) => sendBotNotice(ctx, notice))
         .with({ kind: 'changed' }, ({ text }) => replyWithModelText(ctx, text))
         .exhaustive();
 };
@@ -148,6 +149,13 @@ const handleModelButton = async (ctx: Context, requested: string): Promise<void>
     );
     if (editError) {
         console.warn('[menu] model menu edit failed:', editError.message);
+    } else {
+        // The menu message itself is the record of the switch: keep its stored
+        // text in step, or a context would quote the model state from before
+        const menuMessageId = ctx.callbackQuery?.message?.message_id;
+        if (menuMessageId !== undefined) {
+            await updateBotNotice(ctx, menuMessageId, outcome.text.text);
+        }
     }
     await ctx.answerCallbackQuery({ text: outcome.toast });
 };
