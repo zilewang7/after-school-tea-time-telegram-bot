@@ -58,7 +58,11 @@ interface WidgetRawApi extends RawApi {
 
 const buildCloudClient = (apiRoot: string): Api<WidgetRawApi> => {
     const proxyUrl = process.env.BOT_PROXY;
-    const client: ApiClientOptions = proxyUrl
+    // Only the cloud API is reached through the SOCKS proxy: the local Bot API
+    // is an http URL on the docker network, and a socks5h request for that
+    // hostname through WARP hangs until the fetch timeout.
+    const useProxy = proxyUrl !== undefined && apiRoot.startsWith('https://');
+    const client: ApiClientOptions = useProxy
         ? {
               apiRoot,
               baseFetchConfig: { agent: new SocksProxyAgent(proxyUrl), compress: true },
@@ -69,6 +73,30 @@ const buildCloudClient = (apiRoot: string): Api<WidgetRawApi> => {
     // a burst of edits after a scheduled state refresh must not throw.
     api.config.use(autoRetry({ maxRetryAttempts: 2, maxDelaySeconds: 30 }));
     return api;
+};
+
+const REQUEST_TIMEOUT_MS = 20_000;
+const PROBE_TIMEOUT_MS = 10_000;
+
+/** grammY's raw method signal type clashes with the global AbortSignal; race instead */
+const withTimeout = async <T>(
+    promise: Promise<T>,
+    timeoutMs: number,
+    label: string
+): Promise<T> => {
+    let timer: NodeJS.Timeout | undefined;
+    const timeout = new Promise<never>((_, reject) => {
+        timer = setTimeout(
+            () => reject(new Error(`${label} timed out after ${timeoutMs}ms`)),
+            timeoutMs
+        );
+        timer.unref();
+    });
+    try {
+        return await Promise.race([promise, timeout]);
+    } finally {
+        if (timer !== undefined) clearTimeout(timer);
+    }
 };
 
 let widgetApi: Api<WidgetRawApi> | undefined;
@@ -89,7 +117,9 @@ const messageIdOf = (message: Message | true): number | undefined =>
 
 /** Send one widget message; the caller owns the session and the version data */
 export const sendWidgetViaApi = async (args: SendWidgetArgs): Promise<Result<number>> => {
-    const [error, sent] = await to(getWidgetApi().raw.sendWidget(args));
+    const [error, sent] = await to(
+        withTimeout(getWidgetApi().raw.sendWidget(args), REQUEST_TIMEOUT_MS, 'sendWidget')
+    );
     if (error !== null) return [error, undefined];
     const messageId = messageIdOf(sent);
     return messageId === undefined
@@ -104,7 +134,13 @@ export const sendWidgetViaApi = async (args: SendWidgetArgs): Promise<Result<num
 export const editWidgetDataViaApi = async (
     args: EditWidgetDataArgs
 ): Promise<Result<true>> => {
-    const [error] = await to(getWidgetApi().raw.editMessageWidgetData(args));
+    const [error] = await to(
+        withTimeout(
+            getWidgetApi().raw.editMessageWidgetData(args),
+            REQUEST_TIMEOUT_MS,
+            'editMessageWidgetData'
+        )
+    );
     return error !== null ? [error, undefined] : [null, true];
 };
 
@@ -118,11 +154,15 @@ export const editWidgetReplyMarkup = async (
     replyMarkup: InlineKeyboardMarkup
 ): Promise<Result<true>> => {
     const [error] = await to(
-        getWidgetApi().raw.editMessageReplyMarkup({
-            chat_id: chatId,
-            message_id: messageId,
-            reply_markup: replyMarkup,
-        })
+        withTimeout(
+            getWidgetApi().raw.editMessageReplyMarkup({
+                chat_id: chatId,
+                message_id: messageId,
+                reply_markup: replyMarkup,
+            }),
+            REQUEST_TIMEOUT_MS,
+            'editMessageReplyMarkup'
+        )
     );
     return error !== null ? [error, undefined] : [null, true];
 };
@@ -142,7 +182,11 @@ export const probeWidgetApiRoot = async (
     try {
         const api = buildCloudClient(apiRoot);
         // Intentionally invalid: chat_id is missing, so nothing is sent
-        await api.raw.sendWidget({ html: PROBE_WIDGET_HTML });
+        await withTimeout(
+            api.raw.sendWidget({ html: PROBE_WIDGET_HTML }),
+            PROBE_TIMEOUT_MS,
+            'sendWidget probe'
+        );
         // A real success would mean the probe sent something; treat it as available
         return { available: true, detail: 'method answered' };
     } catch (error) {
@@ -175,7 +219,11 @@ export const probeWidgetChat = async (
         return { ok: false, detail: description };
     }
     const [deleteError] = await to(
-        getWidgetApi().raw.deleteMessage({ chat_id: chatId, message_id: messageId })
+        withTimeout(
+            getWidgetApi().raw.deleteMessage({ chat_id: chatId, message_id: messageId }),
+            REQUEST_TIMEOUT_MS,
+            'deleteMessage'
+        )
     );
     if (deleteError !== null) {
         return {
