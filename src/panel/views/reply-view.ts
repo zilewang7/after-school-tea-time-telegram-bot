@@ -10,6 +10,7 @@
 import { sniffMediaMime } from '../../ai/image-generation/image-mime.js';
 import type { AgentStats } from '../../ai/types.js';
 import { getMessage, type BotResponse, type ResponseVersion } from '../../db/index.js';
+import type { SignedWidgetSigner } from '../share/signed-widget.js';
 import { findRootMessage, type ContextMessage } from '../../db/queries/context-queries.js';
 import { isBotReplyInFlight } from '../../state.js';
 import type { VisibleAccess } from '../types.js';
@@ -41,6 +42,26 @@ export interface AttachmentView {
     /** Sniffed from the bytes for images, as stored for files; null when unknown */
     mimeType: string | null;
     sizeBytes: number;
+    /** Widget only: how it went out (native card in private chats, Mini App link in groups) */
+    deliveredAs?: 'widget' | 'link';
+    /** Widget only: the version carries a 600px rendered PNG */
+    hasImage?: boolean;
+}
+
+/** One version's chat UI card, as the panel's iframe shows it (design §5.5) */
+export interface ReplyWidgetView {
+    mode: 'a2ui' | 'html';
+    htmlBytes: number;
+    zlibBytes: number;
+    deliveredAs: 'widget' | 'link';
+    /** Short-lived signed URL of the widget document (`/w/…`) */
+    viewUrl: string;
+    /** Short-lived signed URL of its 600px PNG */
+    imageUrl: string;
+    /** Active share link of this version, when there is one */
+    shareUrl: string | null;
+    /** ISO expiry of viewUrl/imageUrl */
+    expiresAt: string;
 }
 
 export interface ReplyVersionView {
@@ -54,6 +75,8 @@ export interface ReplyVersionView {
     errorMessage: string | null;
     wasStoppedByUser: boolean;
     attachments: AttachmentView[];
+    /** The chat UI card this version sent; absent without a widget or a signer */
+    widget?: ReplyWidgetView;
     hasModelParts: boolean;
     /** reply_metrics of this version; null for versions without a row */
     metrics: ReplyMetricsView | null;
@@ -130,6 +153,8 @@ const attachmentsOf = (version: ResponseVersion): AttachmentView[] => {
             kind: 'widget',
             mimeType: 'text/html',
             sizeBytes: version.widget.htmlBytes,
+            deliveredAs: version.widget.deliveredAs ?? 'widget',
+            hasImage: typeof version.widget.imageBase64 === 'string' && version.widget.imageBase64 !== '',
         });
     }
     if (version.file !== undefined) {
@@ -150,24 +175,61 @@ const hasModelParts = (version: ResponseVersion): boolean => {
     return Array.isArray(parts) ? parts.length > 0 : parts !== undefined && parts !== null;
 };
 
+/**
+ * What the panel needs to sign widget iframe URLs and to show an existing
+ * share link. Absent for the markdown export, which carries no URLs.
+ */
+export interface ReplyDetailOptions {
+    signer?: SignedWidgetSigner;
+    /** Active share URL per version id */
+    shareUrlsByVersion?: ReadonlyMap<number, string>;
+}
+
+const widgetViewOf = (
+    version: ResponseVersion,
+    response: BotResponse,
+    options: ReplyDetailOptions
+): ReplyWidgetView | undefined => {
+    const widget = version.widget;
+    if (widget === undefined || options.signer === undefined) return undefined;
+    const target = { chatId: response.chatId, firstMessageId: response.messageId, versionId: version.versionId };
+    const document = options.signer.sign({ ...target, kind: 'doc' });
+    const image = options.signer.sign({ ...target, kind: 'img' });
+    return {
+        mode: widget.mode,
+        htmlBytes: widget.htmlBytes,
+        zlibBytes: widget.zlibBytes,
+        deliveredAs: widget.deliveredAs ?? 'widget',
+        viewUrl: document.path,
+        imageUrl: image.path,
+        shareUrl: options.shareUrlsByVersion?.get(version.versionId) ?? widget.shareUrl ?? null,
+        expiresAt: document.expiresAt,
+    };
+};
+
 const toVersionView = (
     version: ResponseVersion,
     response: BotResponse,
-    metrics: ReplyMetricsView | null
-): ReplyVersionView => ({
-    versionId: version.versionId,
-    createdAt: textOrNull(version.createdAt) ?? '',
-    model: modelOfVersion(version, response),
-    text: typeof version.text === 'string' ? version.text : '',
-    thinkingText: textOrNull(version.thinkingText),
-    tools: buildToolRecordsView(version.agentStats, version.groundingData),
-    agentStats: parseAgentStats(version.agentStats),
-    errorMessage: textOrNull(version.errorMessage),
-    wasStoppedByUser: version.wasStoppedByUser === true,
-    attachments: attachmentsOf(version),
-    hasModelParts: hasModelParts(version),
-    metrics,
-});
+    metrics: ReplyMetricsView | null,
+    options: ReplyDetailOptions
+): ReplyVersionView => {
+    const widget = widgetViewOf(version, response, options);
+    return {
+        versionId: version.versionId,
+        createdAt: textOrNull(version.createdAt) ?? '',
+        model: modelOfVersion(version, response),
+        text: typeof version.text === 'string' ? version.text : '',
+        thinkingText: textOrNull(version.thinkingText),
+        tools: buildToolRecordsView(version.agentStats, version.groundingData),
+        agentStats: parseAgentStats(version.agentStats),
+        errorMessage: textOrNull(version.errorMessage),
+        wasStoppedByUser: version.wasStoppedByUser === true,
+        attachments: attachmentsOf(version),
+        ...(widget === undefined ? {} : { widget }),
+        hasModelParts: hasModelParts(version),
+        metrics,
+    };
+};
 
 /** The conversation root of a reply: through its trigger, else through its own row */
 const rootIdOfReply = async (response: BotResponse): Promise<number | null> => {
@@ -180,7 +242,8 @@ const rootIdOfReply = async (response: BotResponse): Promise<number | null> => {
 /** Every version of one reply, read-only */
 export const buildReplyDetailView = async (
     response: BotResponse,
-    access: VisibleAccess
+    access: VisibleAccess,
+    options: ReplyDetailOptions = {}
 ): Promise<ReplyDetailView> => {
     const versions = response.getVersions();
     const metricsByVersion = await loadReplyMetrics(response.chatId, response.messageId, access);
@@ -195,7 +258,7 @@ export const buildReplyDetailView = async (
         versionCount: versions.length,
         currentVersion: current === null ? null : response.currentVersionIndex + 1,
         versions: versions.map((version) =>
-            toVersionView(version, response, metricsByVersion?.get(version.versionId) ?? null)
+            toVersionView(version, response, metricsByVersion?.get(version.versionId) ?? null, options)
         ),
     };
     if (access === 'observer') return detail;

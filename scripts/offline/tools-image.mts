@@ -48,6 +48,10 @@ process.env.STICKER_SET_NAME = 'ColorfulHachimi';
 // Link previews come from the URL-addressed cache only; this switch is what
 // makes the context builder read it at all (nothing here ever fetches)
 process.env.LUOXU_PREVIEW_URL = 'http://offline.invalid';
+// The widget link fallback needs both switches; the renderer is a container,
+// so the card image is put on the session by the widget case below
+process.env.WIDGET_RENDER_URL = '';
+process.env.WIDGET_GROUP_FALLBACK = '1';
 
 const db = await setupOfflineDb();
 const { Message, putCachedMedia } = db;
@@ -59,6 +63,8 @@ const { resolveImageReferences } = await import('../../src/reply/tools/image-ref
 const { buildImageCaption, IMAGE_CAPTION_MAX_LENGTH } = await import('../../src/reply/tools/image-message.js');
 const { ONE_ATTACHMENT_PER_REPLY } = await import('../../src/reply/tools/reply-media-state.js');
 const { buildReplyToolContext } = await import('../../src/reply/tools/reply-tool-context.js');
+const { widgetDeliveryOf } = await import('../../src/telegram/widget-precheck.js');
+const { WIDGET_LINK_LABEL } = await import('../../src/reply/widget-link-fallback.js');
 const { createReplyMediaState } = await import('../../src/reply/tools/reply-media-state.js');
 const imageGeneration = await import('../../src/ai/image-generation/index.js');
 const { GEMINI_IMAGE_MODEL, OPENAI_IMAGE_MODEL } = await import('../../src/config/models.js');
@@ -2009,6 +2015,44 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
             expect(
                 images.length === 1 && images[0]?.equals(JPEG_BYTES) === true,
                 'the first frame becomes the reference'
+            );
+        },
+    },
+    {
+        name: 'a widget reply stores its rendered card and the group link fallback',
+        body: async () => {
+            const chatId = -1009999999995;
+            const { telegram, chatContext } = await startChat(chatId);
+            const widget = widgetDeliveryOf('a2ui', '<div class="tw-root">今日日报</div>', '日报', {
+                components: [],
+            });
+            // Offline there is no renderer: stand in for the 600px card image
+            chatContext.session.widgetImageBase64 = PNG_BYTES.toString('base64');
+            const response: AIResponse = {
+                text: '卡片来了',
+                thinkingText: '',
+                images: [],
+                widgets: [widget],
+            };
+            syncSession(chatContext, response);
+            await captureConsole(() => responseHandler.sendFinalResponse(chatContext, response));
+
+            const stored = await dbIndex.getBotResponse(chatId, chatContext.session.firstMessageId);
+            const version = stored?.getVersions().at(-1);
+            const row = await rowOf(chatId, chatContext.session.firstMessageId);
+            const linkMessage = callsOf(telegram, 'sendMessage').at(-1);
+            expect(
+                version?.widget?.imageBase64 === PNG_BYTES.toString('base64'),
+                'the version keeps the rendered card'
+            );
+            expect(version?.widget?.deliveredAs === 'link', 'the group got the link fallback');
+            expect(
+                row?.file?.equals(PNG_BYTES) === true && row.fileMime === 'image/png' && row.mediaHint === 'a widget',
+                `the bot row carries the card image (got ${json({ mime: row?.fileMime, hint: row?.mediaHint, bytes: row?.file?.length })})`
+            );
+            expect(
+                linkMessage?.payload.text === `日报\n${WIDGET_LINK_LABEL}`,
+                `the group receives one text message with the link (got ${json(linkMessage?.payload.text)})`
             );
         },
     },

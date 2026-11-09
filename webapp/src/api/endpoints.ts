@@ -22,6 +22,11 @@ import type {
     MeResponse,
     ModelView,
     ReplyDetail,
+    ShareCreateRequest,
+    ShareKind,
+    ShareLookupResponse,
+    ShareResponse,
+    ShareRevokeResponse,
     StatsRangeKey,
     StatsResponse,
     StatusResponse,
@@ -51,6 +56,15 @@ export interface IssueListQuery {
 export interface ModelViewQuery {
     at: number | null;
     asModel: string | null;
+}
+
+/** GET /api/shares query: exactly the target a share belongs to; null leaves a field out */
+export interface ShareQuery {
+    kind: ShareKind;
+    chatId: number;
+    firstMessageId: number | null;
+    rootId: number | null;
+    versionId: number | null;
 }
 
 export type ExportFormat = 'md' | 'json';
@@ -111,6 +125,18 @@ const statsPath = (chatId: number | null, range: StatsRangeKey): string => {
     params.set('range', range);
     return `/api/stats?${params.toString()}`;
 };
+
+const shareQueryPath = ({ kind, chatId, firstMessageId, rootId, versionId }: ShareQuery): string => {
+    const params = new URLSearchParams();
+    params.set('kind', kind);
+    params.set('chatId', String(chatId));
+    if (firstMessageId !== null) params.set('firstMessageId', String(firstMessageId));
+    if (rootId !== null) params.set('rootId', String(rootId));
+    if (versionId !== null) params.set('versionId', String(versionId));
+    return `/api/shares?${params.toString()}`;
+};
+
+const shareRevokePath = (token: string): string => `/api/shares/${encodeURIComponent(token)}/revoke`;
 
 export const createApi = (initData: string) => {
     const request = createRequester(initData);
@@ -198,6 +224,16 @@ export const createApi = (initData: string) => {
             request<StatsResponse>({ method: 'GET', path: statsPath(chatId, range), signal }),
         getStatus: (signal?: AbortSignal) =>
             request<StatusResponse>({ method: 'GET', path: '/api/status', signal }),
+
+        // Shares (phase 5): public pages for one reply or one conversation
+        // Idempotent: an active link for the same target is returned as is
+        createShare: (input: ShareCreateRequest) =>
+            request<ShareResponse>({ method: 'POST', path: '/api/shares', body: input }),
+        getShare: (query: ShareQuery, signal?: AbortSignal) =>
+            request<ShareLookupResponse>({ method: 'GET', path: shareQueryPath(query), signal }),
+        // The creator or the owner only
+        revokeShare: (token: string) =>
+            request<ShareRevokeResponse>({ method: 'POST', path: shareRevokePath(token) }),
     };
 };
 

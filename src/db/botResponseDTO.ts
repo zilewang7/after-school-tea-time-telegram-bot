@@ -72,6 +72,12 @@ export interface StoredWidget {
     zlibBytes: number;
     /** The original A2UI surface, when mode is a2ui */
     surface?: unknown;
+    /** 600px-wide rendered PNG (base64); absent when the renderer was unavailable */
+    imageBase64?: string;
+    /** Delivered as the native widget (private chat) or as a Mini App link fallback (groups) */
+    deliveredAs?: 'widget' | 'link';
+    /** Share page URL used by the link fallback's preview (groups only) */
+    shareUrl?: string;
 }
 
 /**

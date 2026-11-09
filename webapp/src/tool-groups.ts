@@ -1,5 +1,5 @@
 /**
- * The nine tool groups of the panel's per-chat switches: labels and the
+ * The ten tool groups of the panel's per-chat switches: labels and the
  * canonical order (the server returns the groups in the same order). Also the
  * parser for the audit's canonical JSON value.
  */
@@ -43,7 +43,7 @@ const TOOL_GROUP_HINTS: Partial<Record<ToolGroupKey, string>> = {
     file: '开启后本聊天可以把长文本写成文件发出',
     history: '开启后本聊天可以检索 luoxu 的历史归档',
     harnessIssues: '开启后模型可以把使用中遇到的问题记成 issue',
-    widget: '开启后模型可在回复里附一张 A2UI/HTML 卡片（当前仅私聊可用）',
+    widget: '开启后模型可在回复里附一张 A2UI/HTML 卡片（群聊会发一条带预览的 Mini App 链接）',
 };
 
 export const toolGroupHintOf = (key: ToolGroupKey): string | null => TOOL_GROUP_HINTS[key] ?? null;

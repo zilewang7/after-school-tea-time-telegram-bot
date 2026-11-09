@@ -23,8 +23,13 @@ import {
 import { runApiCall } from '../telegram/edit-coordinator.js';
 import { sendReplyFileMessage } from '../telegram/reply-file-send.js';
 import { sendReplyImageMessage } from '../telegram/reply-image-send.js';
-import { sendReplyWidgetMessage } from '../telegram/reply-widget-send.js';
+import {
+    sendReplyWidgetLinkMessage,
+    sendReplyWidgetMessage,
+} from '../telegram/reply-widget-send.js';
 import { editWidgetReplyMarkup } from '../telegram/widget-api.js';
+import { isWidgetRenderConfigured, renderWidgetPng } from '../widget-image/index.js';
+import { ensureSystemReplyShare } from '../panel/share/share-link-service.js';
 import { toApiEntities } from '../telegram/api-entities.js';
 import { buildMessageLinkResolver } from '../telegram/message-link.js';
 import { createContextLabelStripper, stripContextLabel } from './context-label.js';
@@ -44,6 +49,13 @@ import { renderThinkingQuote } from '../telegram/formatters/quoted-render.js';
 import { buildFinalMessages, type FinalMessageChunk } from '../telegram/formatters/final-message-builder.js';
 import { splitRawByFits, splitAtLastNewline } from '../telegram/formatters/smart-splitter.js';
 import { buildImageCaption, type ImageCaptionFields } from './tools/image-message.js';
+import {
+    buildWidgetLinkMessage,
+    isWidgetNotAllowedError,
+    miniAppReplyLink,
+    miniAppShortName,
+    resolveWidgetDelivery,
+} from './widget-link-fallback.js';
 import type {
     StreamChunk,
     AIResponse,
@@ -793,30 +805,170 @@ const deliverReplySticker = async (
 };
 
 /**
- * Send the reply's chat UI card after its text. The widget HTML is final and
- * cannot be edited later, so the exact bytes are kept on the session for the
- * stored version and for version switching; a failed send costs the reply only
- * the card, like a failed image.
+ * The 600px card image, when the renderer is configured. Failure is never
+ * fatal: the card itself still goes out, and the image is only what a later
+ * context and the share preview get from it.
+ */
+const renderWidgetImage = async (widget: WidgetDelivery): Promise<Buffer | null> => {
+    if (!isWidgetRenderConfigured()) return null;
+    const rendered = await renderWidgetPng(widget.html, { width: 600 });
+    return rendered?.png ?? null;
+};
+
+/**
+ * The reply's share page, created (or reused) for the version being delivered.
+ * The preview snapshot travels with the call: the version is not stored yet,
+ * so the share service cannot read it from the database. null = no share page;
+ * the link still goes out without the large preview.
+ */
+const ensureWidgetShareUrl = async (
+    chatContext: ChatContext,
+    widget: WidgetDelivery
+): Promise<string | null> => {
+    const { ctx, chatId, session } = chatContext;
+    const [error, share] = await to(
+        ensureSystemReplyShare({
+            chatId,
+            firstMessageId: session.firstMessageId,
+            versionId: session.versionCount + 1,
+            preview: {
+                widgetHtml: widget.html,
+                ...(session.widgetImageBase64 !== undefined
+                    ? { widgetImageBase64: session.widgetImageBase64 }
+                    : {}),
+                caption: widget.caption ?? null,
+                chatTitle: ctx.chat?.title ?? null,
+            },
+        })
+    );
+    if (error !== null) {
+        console.error('[response-handler] widget share page failed:', error);
+        return null;
+    }
+    return share?.url ?? null;
+};
+
+/**
+ * The group form of a widget: one text message whose Mini App link opens this
+ * reply, with the share page as its large preview. A message Telegram refuses
+ * with the preview is retried without it by the sender.
+ */
+const deliverReplyWidgetLink = async (
+    chatContext: ChatContext,
+    widget: WidgetDelivery,
+    captionFields: ImageCaptionFields,
+    shareUrl: string | null
+): Promise<boolean> => {
+    const { ctx, chatId, session } = chatContext;
+    const botUsername = ctx.me.username;
+    if (botUsername === undefined || botUsername.length === 0) {
+        console.warn('[response-handler] widget link fallback needs the bot username, card not sent');
+        return false;
+    }
+
+    const message = buildWidgetLinkMessage({
+        caption: captionFields,
+        ...(shareUrl !== null ? { shareUrl } : {}),
+        miniAppLink: miniAppReplyLink({
+            botUsername,
+            shortName: miniAppShortName(),
+            chatId,
+            firstMessageId: session.firstMessageId,
+        }),
+        replyToMessageId: chatContext.userMessageId,
+    });
+    const sent = await sendReplyWidgetLinkMessage({ chatId, api: ctx.api, message });
+    if (isErr(sent)) return false;
+
+    session.messageIds.push(sent[1]);
+    session.currentMessageId = sent[1];
+    if (session.widget === undefined) session.widget = widget;
+    session.widgetMessageId = sent[1];
+    session.widgetDeliveredAs = 'link';
+    if (shareUrl !== null) session.widgetShareUrl = shareUrl;
+    return true;
+};
+
+/**
+ * Send the reply's chat UI card after its text.
+ *
+ * A private chat takes the native widget. Groups (and a private chat whose
+ * server refuses widgets) take the link fallback: the same card rendered into
+ * a 600px PNG for storage, then a text message that opens the card in the Mini
+ * App and previews its share page. The widget HTML is final and cannot be
+ * edited later, so the exact bytes are kept on the session for the stored
+ * version and for version switching; a failed send costs the reply only the
+ * card, like a failed image.
  */
 const deliverReplyWidget = async (
     chatContext: ChatContext,
     widget: WidgetDelivery | undefined,
     captionFields: ImageCaptionFields
 ): Promise<boolean> => {
-    const { session } = chatContext;
+    const { ctx, session } = chatContext;
     if (!widget) return false;
-    const sent = await sendReplyWidgetMessage({
-        chatId: chatContext.chatId,
+
+    const config = getToolConfig();
+    // Rendered first: the image is part of the version and the bot row in
+    // either shape, and a render failure only drops the image
+    const image = await renderWidgetImage(widget);
+    const chatType = ctx.chat?.type;
+    const initialPlan = resolveWidgetDelivery({
+        chatType,
+        groupFallback: config.widgetGroupFallback,
+        shareEnabled: config.shareEnabled,
+        renderOk: image !== null,
+        shareOk: false,
+    });
+    if (initialPlan.kind === 'none') {
+        console.warn('[response-handler] no widget delivery path for this chat, card not sent');
+        return false;
+    }
+    if (initialPlan.keepImage && image !== null) {
+        session.widgetImageBase64 = image.toString('base64');
+    }
+
+    let serverRejected = false;
+    if (initialPlan.kind === 'widget') {
+        const sent = await sendReplyWidgetMessage({
+            chatId: chatContext.chatId,
+            widget,
+            captionFields,
+            target: { reply_parameters: { message_id: chatContext.userMessageId } },
+        });
+        if (!isErr(sent)) {
+            session.messageIds.push(sent[1]);
+            session.currentMessageId = sent[1];
+            if (session.widget === undefined) session.widget = widget;
+            session.widgetMessageId = sent[1];
+            session.widgetDeliveredAs = 'widget';
+            return true;
+        }
+        if (!isWidgetNotAllowedError(sent[0])) return false;
+        // The server no longer takes widgets here: fall through to the link
+        serverRejected = true;
+        console.warn('[response-handler] server refused the widget, falling back to a Mini App link');
+    }
+
+    const shareUrl = await ensureWidgetShareUrl(chatContext, widget);
+    const linkPlan = resolveWidgetDelivery({
+        chatType,
+        groupFallback: config.widgetGroupFallback,
+        shareEnabled: config.shareEnabled,
+        renderOk: image !== null,
+        shareOk: shareUrl !== null,
+        serverRejected,
+    });
+    if (linkPlan.kind !== 'link') {
+        console.warn('[response-handler] widget link fallback is not configured, card not sent');
+        return false;
+    }
+    return deliverReplyWidgetLink(
+        chatContext,
         widget,
         captionFields,
-        target: { reply_parameters: { message_id: chatContext.userMessageId } },
-    });
-    if (isErr(sent)) return false;
-    session.messageIds.push(sent[1]);
-    session.currentMessageId = sent[1];
-    if (session.widget === undefined) session.widget = widget;
-    session.widgetMessageId = sent[1];
-    return true;
+        linkPlan.withPreview ? shareUrl : null
+    );
 };
 
 /**
@@ -837,7 +989,8 @@ const editCurrentMessageButtons = async (
         )
     );
     if (error === null) return;
-    if (session.widget === undefined) {
+    // A link-fallback message is a normal text message: no widget client needed
+    if (session.widget === undefined || session.widgetDeliveredAs === 'link') {
         console.error('[response-handler] Failed to add buttons to media:', error);
         return;
     }
@@ -1027,6 +1180,7 @@ export const sendFinalResponse = async (
         fileBytes: response.files?.[0]?.data.length,
         widgetMode: response.widgets?.[0]?.mode,
         widgetZlibBytes: response.widgets?.[0]?.zlibBytes,
+        widgetDeliveredAs: session.widgetDeliveredAs,
         textLength: response.text.length,
         thinkingLength: response.thinkingText.length,
         messageCount: session.messageIds.length,

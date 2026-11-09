@@ -9,6 +9,7 @@ import { backfillMessages, isMessageBackfillEnabled } from '../../services/messa
 import { isRecentSummonCommand } from '../../reply/commands/chat-command-parser.js';
 import { isVideoMediaHint } from '../../reply/media-hint.js';
 import { Message } from '../messageDTO.js';
+import type { StoredWidget } from '../botResponseDTO.js';
 import { MessageLink } from '../messageLinkDTO.js';
 import { listExcludedMessageIds } from './context-exclusions.js';
 import type { UnifiedContentPart } from '../../ai/types.js';
@@ -517,6 +518,58 @@ export const getRepliesHistory = async (
     kept.sort((a, b) => a.messageId - b.messageId);
 
     return kept;
+};
+
+/* ------------------------------------------------------------------ *
+ * Widgets a context replays
+ * ------------------------------------------------------------------ */
+
+/** What a context replay needs of a stored widget: its mode and A2UI source */
+export interface WidgetSurfaceInfo {
+    readonly mode: 'a2ui' | 'html';
+    /** The A2UI source the model sent, when mode is a2ui */
+    readonly surface?: unknown;
+}
+
+/** Runtime guard: the versions column is JSON that can predate or outlive the type */
+const isStoredWidget = (value: unknown): value is StoredWidget =>
+    typeof value === 'object' &&
+    value !== null &&
+    'mode' in value &&
+    (value.mode === 'a2ui' || value.mode === 'html');
+
+/**
+ * The widget each of these bot messages carried, keyed by the reply's first
+ * message id (the row a bot reply is stored under).
+ *
+ * Only the widget rows of a context are asked for, and only the current version
+ * is read: the versions column also carries every image and file of every
+ * version as base64, so nothing is loaded for messages without a card.
+ * Missing or malformed entries are skipped, never thrown.
+ */
+export const loadWidgetSurfaces = async (
+    chatId: number,
+    messageIds: readonly number[]
+): Promise<Map<number, WidgetSurfaceInfo>> => {
+    const byMessageId = new Map<number, WidgetSurfaceInfo>();
+    if (!messageIds.length) return byMessageId;
+
+    const responses = await BotResponse.findAll({
+        where: { chatId, messageId: { [Op.in]: [...new Set(messageIds)] } },
+        attributes: ['messageId', 'currentVersionIndex', 'versions'],
+    });
+
+    for (const response of responses) {
+        const version = response.getVersions()[response.currentVersionIndex];
+        const widget: unknown = version?.widget;
+        if (!isStoredWidget(widget)) continue;
+        byMessageId.set(response.messageId, {
+            mode: widget.mode,
+            ...(widget.surface === undefined ? {} : { surface: widget.surface }),
+        });
+    }
+
+    return byMessageId;
 };
 
 /* ------------------------------------------------------------------ *

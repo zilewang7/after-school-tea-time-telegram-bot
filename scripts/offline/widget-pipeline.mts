@@ -11,7 +11,7 @@
  */
 import { Api } from 'grammy';
 import { takeMessageId, expect, reportResults, runCase, setupOfflineDb, type CaseResult } from './harness.mts';
-import { contextOf, createFakeTelegram, messageUpdate } from './fake-telegram.mts';
+import { contextOf, createFakeTelegram, messageUpdate, quietly } from './fake-telegram.mts';
 import type { StreamChunk } from '../../src/ai/types.js';
 
 const db = await setupOfflineDb();
@@ -20,6 +20,9 @@ const { widgetDeliveryOf } = await import('../../src/telegram/widget-precheck.js
 
 const CHAT_ID = 603421700;
 const USER_ID = 603421700;
+/** A 1x1 PNG: what the delivery layer would put on the session after rendering */
+const PNG_BASE64 =
+    'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9ZlZkAAAAASUVORK5CYII=';
 
 const startReply = async (): Promise<import('../../src/reply/response-handler.js').ChatContext> => {
     const ctx = contextOf(
@@ -81,6 +84,37 @@ results.push(
 results.push(
     await runCase('the fake Telegram Api stands in for the real one', async () => {
         expect(typeof Api === 'function' && typeof responseHandler.processStream === 'function', 'imports resolve');
+    })
+);
+
+results.push(
+    await runCase('a delivered widget version stores its image and delivery shape', async () => {
+        const chatContext = await startReply();
+        const widget = card();
+        await responseHandler.processStream(
+            streamOf([
+                { type: 'text', content: '卡片来了' },
+                { type: 'widget', widget },
+            ]),
+            chatContext,
+            0
+        );
+        // The delivery layer fills these before finalize; this pins the storage side
+        chatContext.session.widget = widget;
+        chatContext.session.widgetImageBase64 = PNG_BASE64;
+        chatContext.session.widgetDeliveredAs = 'link';
+        chatContext.session.widgetShareUrl = 'https://miniapp.example/s/tok';
+        await quietly(() => chatContext.session.finalize());
+
+        const { getBotResponse } = await import('../../src/db/index.js');
+        const stored = await getBotResponse(chatContext.chatId, chatContext.session.firstMessageId);
+        const version = stored?.getVersions().at(-1);
+        expect(version?.widget?.imageBase64 === PNG_BASE64, 'the rendered card is stored on the version');
+        expect(version?.widget?.deliveredAs === 'link', 'the delivery shape is stored');
+        expect(
+            version?.widget?.shareUrl === 'https://miniapp.example/s/tok',
+            'the share page is stored for a version switch'
+        );
     })
 );
 

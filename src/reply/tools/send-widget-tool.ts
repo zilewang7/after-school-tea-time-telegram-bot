@@ -24,7 +24,7 @@ import {
 const DESCRIPTION =
     '把一张聊天内 UI 卡片作为这条回复的附件发到聊天（每条回复最多一个附件）。' +
     '先用 get_ui_guide 取对应模式的完整规范。' +
-    'mode="a2ui"：日常信息卡（卡片/文本/列表/表格/图表/按钮视觉），传 A2UI 子集 surface JSON；服务端编译成卡片，体积小、样式稳定。' +
+    'mode="a2ui"：日常信息卡（卡片/文本/列表/表格/图表/按钮视觉），surface 传 A2UI 子集 surface 的 minified JSON 字符串；服务端编译成卡片，体积小、样式稳定。' +
     'mode="html"：声明式组件表达不了的自定义视觉/动效，传一份自包含 HTML（需服务端开启 HTML 模式）。' +
     '可选 caption 显示在卡片下方。卡片发出后不可修改。';
 
@@ -37,8 +37,11 @@ const INPUT_SCHEMA = {
             description: 'a2ui=组件 JSON（推荐）；html=自包含 HTML（需开启）',
         },
         surface: {
+            // A JSON object argument loses its nested fields on some platforms
+            // (harness issue #5); the tool takes the surface as a JSON string.
+            type: 'string',
             description:
-                'mode=a2ui 时必填：A2UI v1.0 surface（JSON 对象或字符串），形状见 get_ui_guide(kind="a2ui")',
+                'mode=a2ui 时必填：A2UI surface 的 minified JSON 字符串（形状见 get_ui_guide(kind="a2ui")）',
         },
         html: {
             type: 'string',
@@ -71,6 +74,20 @@ const modeOf = (raw: unknown): 'a2ui' | 'html' | null =>
 
 const captionOf = (raw: unknown): string | undefined =>
     typeof raw === 'string' && raw.trim().length > 0 ? raw.trim() : undefined;
+
+/**
+ * The surface as the version stores it: the tool takes a JSON string (issue
+ * #5), while a later context replays it as JSON. Parsing here keeps the stored
+ * value the same whether the model passed a string or an object.
+ */
+const surfaceForStorage = (raw: unknown): unknown => {
+    if (typeof raw !== 'string') return raw;
+    try {
+        return JSON.parse(raw);
+    } catch {
+        return raw;
+    }
+};
 
 export const createSendWidgetTool = (options: SendWidgetToolOptions): ToolHandler => {
     const { state, limits } = options;
@@ -107,7 +124,7 @@ export const createSendWidgetTool = (options: SendWidgetToolOptions): ToolHandle
                 if (!checked.ok) {
                     return reject(`编译产物未通过预检：${checked.message}`);
                 }
-                const widget = widgetDeliveryOf('a2ui', compiled.html, caption, rawArgs.surface);
+                const widget = widgetDeliveryOf('a2ui', compiled.html, caption, surfaceForStorage(rawArgs.surface));
                 state.widget = widget;
                 state.hasReplyWidget = true;
                 return {

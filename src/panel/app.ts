@@ -12,6 +12,7 @@
  */
 import { Api } from 'grammy';
 import { Hono, type Context } from 'hono';
+import { getToolConfig } from '../config/tool-config.js';
 import { createMembershipChecker, type MembershipLookup } from './access/membership.js';
 import type { ChatNameLookup } from './chat-names.js';
 import type { PanelEnv } from './context.js';
@@ -39,8 +40,12 @@ import { registerConversationRoutes } from './routes/conversations.js';
 import { registerExclusionRoutes } from './routes/exclusions.js';
 import { registerModelViewRoute } from './routes/model-view.js';
 import { registerReplyRoute } from './routes/replies.js';
+import { registerShareRoutes } from './routes/shares.js';
 import { registerStatsRoute } from './routes/stats.js';
 import { registerStatusRoute } from './routes/status.js';
+import { registerSharePublicRoutes } from './share/public-routes.js';
+import { createWidgetSigner } from './share/signed-widget.js';
+import { registerSignedWidgetRoute } from './share/signed-widget-routes.js';
 import { registerStaticRoutes } from './static.js';
 
 export interface PanelAppOptions {
@@ -72,6 +77,11 @@ export interface PanelAppOptions {
      * which never call it there; default: a client for botToken (no I/O).
      */
     toolApi?: Api;
+    /**
+     * SHARE_ENABLED is not 0: the public share pages and the share API exist
+     * (design §5.6/§7.4). Default: the env.
+     */
+    shareEnabled?: boolean;
 }
 
 const BODY_LIMIT_BYTES = 32 * 1024;
@@ -88,6 +98,8 @@ export const createPanelApp = (options: PanelAppOptions): Hono<PanelEnv> => {
     const now = options.now ?? Date.now;
     const checker = createMembershipChecker({ lookup: options.membershipLookup, now });
     const rateLimit = options.rateLimit ?? DEFAULT_RATE_LIMIT;
+    const shareEnabled = options.shareEnabled ?? getToolConfig().shareEnabled;
+    const widgetSigner = createWidgetSigner({ botToken: options.botToken, now });
     const app = new Hono<PanelEnv>();
 
     app.onError(handlePanelError);
@@ -128,13 +140,20 @@ export const createPanelApp = (options: PanelAppOptions): Hono<PanelEnv> => {
     registerModelViewRoute(app, conversationDeps);
     registerConversationExportRoute(app, conversationDeps);
     registerConversationLinksRoute(app, conversationDeps);
-    registerReplyRoute(app);
+    registerReplyRoute(app, { signer: widgetSigner });
     registerExclusionRoutes(app);
     registerStatsRoute(app);
     registerStatusRoute(app, { startedAt: options.startedAt, version: options.version });
+    // SHARE_ENABLED=0: no share API, so these paths fall through to the JSON 404
+    if (shareEnabled) registerShareRoutes(app);
 
     // Method-bound rather than app.all, so the request log can tell it from middleware
     app.on(HTTP_METHODS, '/api/*', apiNotFound);
+
+    // Signed widget resources (panel iframes) and the public share pages, both
+    // before the static catch-all so /w and /s never serve the SPA.
+    registerSignedWidgetRoute(app, { signer: widgetSigner });
+    registerSharePublicRoutes(app, { enabled: shareEnabled, now });
 
     registerStaticRoutes(app, options.staticRoot);
     // Methods outside HTTP_METHODS reach nothing above

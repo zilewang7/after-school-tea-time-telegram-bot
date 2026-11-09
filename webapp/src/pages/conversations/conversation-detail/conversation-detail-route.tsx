@@ -4,11 +4,13 @@ import { ErrorView, LoadingView } from '../../../components/status-views';
 import { useChatScope } from '../../../context/chat-scope-context';
 import { useMe } from '../../../context/me-context';
 import { useApi } from '../../../context/panel-context';
-import { formatDateTime } from '../../../format';
+import { chatNameOf, formatDateTime } from '../../../format';
 import { useApiQuery } from '../../../hooks/use-api-query';
 import { useChatIdParam } from '../../../hooks/use-chat-id-param';
 import { useRootIdParam } from '../../../hooks/use-message-id-param';
 import { usePolling } from '../../../hooks/use-polling';
+import { ShareBar } from '../../../share/share-bar';
+import type { ShareTarget } from '../../../share/share-link';
 import { NotFoundPage } from '../../not-found-page';
 import { ConversationDetailView } from './conversation-detail-view';
 import type { ConversationSegment } from './conversation-detail-view';
@@ -21,7 +23,7 @@ interface ConversationDetailPageProps {
 const ConversationDetailPage = ({ chatId, rootId }: ConversationDetailPageProps) => {
     const api = useApi();
     const { me } = useMe();
-    const { detail } = useChatScope();
+    const { detail, header } = useChatScope();
     const loadTree = useCallback(
         (signal: AbortSignal) => api.getConversationTree(chatId, rootId, signal),
         [api, chatId, rootId]
@@ -51,11 +53,29 @@ const ConversationDetailPage = ({ chatId, rootId }: ConversationDetailPageProps)
 
     const handleChanged = useCallback(() => refresh(), [refresh]);
 
+    const chatName = useMemo(
+        () => (header === null ? `聊天 ${chatId}` : chatNameOf(header.name)),
+        [header, chatId]
+    );
+    // Members only: the server refuses a conversation share from observers
+    const shareTarget = useMemo<ShareTarget>(
+        () => ({ kind: 'conversation', chatId, rootId }),
+        [chatId, rootId]
+    );
+
     return (
         <>
             <header className="page-header">
                 <h1>{title}</h1>
                 {tree !== null && tree.generating && <p className="hint">正在生成…</p>}
+                {member && (
+                    <ShareBar
+                        target={shareTarget}
+                        chatName={chatName}
+                        versionLabel={null}
+                        confirmMessage="链接公开，任何拿到链接的人都能查看这段对话"
+                    />
+                )}
             </header>
             {match(state)
                 .with({ status: 'loading' }, () => <LoadingView />)

@@ -5,6 +5,7 @@ import { ChatScopeRoute } from './layers/chat-scope';
 import { ChatTabsLayout } from './layers/chat-tabs-layout';
 import { HomeLayer } from './layers/home-layer';
 import type { LaunchState } from './launch';
+import { NoAccessPage } from './pages/no-access-page';
 import { NotFoundPage } from './pages/not-found-page';
 import { GLOBAL_AUDIT_PATH, GLOBAL_SETTINGS_PATH } from './routing/paths';
 import { CHAT_TABS } from './tabs/chat-tabs';
@@ -49,6 +50,8 @@ export const createAppRouter = (launch: LaunchState) =>
                     ),
                 },
                 // [F4 slot end]
+                // A startapp reply link the requester cannot open
+                { path: 'no-access', element: <NoAccessPage /> },
                 {
                     path: 'c/:chatId',
                     element: <ChatScopeRoute />,

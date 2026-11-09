@@ -1,17 +1,23 @@
 /**
  * The signed `start_param` of initData (`?startapp=` of a Direct Link):
- * `c<chatId>` opens a chat, `i<issueId>` an issue. Anything else, empty
- * included, is ignored.
+ * `c<chatId>` opens a chat, `i<issueId>` an issue, `r<chatId>_<firstMessageId>`
+ * one bot reply (the group widget fallback's deep link, design §5.10). Anything
+ * else, empty included, is ignored.
  *
  * It is only a hint for where to land, never a permission: whatever it names
  * still goes through resolveChatAccess.
  */
 import { match } from 'ts-pattern';
 
-export type StartParamTarget = { kind: 'chat'; chatId: number } | { kind: 'issue'; issueId: number };
+export type StartParamTarget =
+    | { kind: 'chat'; chatId: number }
+    | { kind: 'issue'; issueId: number }
+    | { kind: 'reply'; chatId: number; firstMessageId: number };
 
 const CHAT_PATTERN = /^c(-?\d{1,20})$/;
 const ISSUE_PATTERN = /^i(\d{1,10})$/;
+/** Group ids are negative and `-` is allowed in a start_param; reply ids are positive */
+const REPLY_PATTERN = /^r(-?\d{1,20})_(\d{1,12})$/;
 
 /** A safe integer from a digit string; null when it overflows */
 const safeIntegerOf = (digits: string): number | null => {
@@ -31,6 +37,14 @@ export const parseStartParam = (raw: string | null | undefined): StartParamTarge
         const issueId = safeIntegerOf(issueMatch[1]);
         return issueId === null ? null : { kind: 'issue', issueId };
     }
+    const replyMatch = REPLY_PATTERN.exec(raw);
+    if (replyMatch?.[1] !== undefined && replyMatch[2] !== undefined) {
+        const chatId = safeIntegerOf(replyMatch[1]);
+        const firstMessageId = safeIntegerOf(replyMatch[2]);
+        if (chatId === null || chatId === 0) return null;
+        if (firstMessageId === null || firstMessageId < 1) return null;
+        return { kind: 'reply', chatId, firstMessageId };
+    }
     return null;
 };
 
@@ -46,5 +60,6 @@ export const resolveHintChatId = async (
     return match(target)
         .with({ kind: 'chat' }, (chatTarget) => Promise.resolve(chatTarget.chatId))
         .with({ kind: 'issue' }, (issueTarget) => lookupIssueChatId(issueTarget.issueId))
+        .with({ kind: 'reply' }, (replyTarget) => Promise.resolve(replyTarget.chatId))
         .exhaustive();
 };

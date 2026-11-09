@@ -1,41 +1,53 @@
 import { useMemo, useState } from 'react';
 import { Link } from 'react-router';
-import type { ReplyDetail, ReplyVersion } from '../../../api';
+import { match } from 'ts-pattern';
+import type { ReplyAttachment, ReplyDetail, ReplyVersion } from '../../../api';
 import { CollapsibleSection } from '../../../components/collapsible-section';
 import { FoldableText } from '../../../components/foldable-text';
 import { formatDateTime } from '../../../format';
 import { formatBytes } from '../../../format-metrics';
 import { conversationPath } from '../../../routing/paths';
+import { ShareBar } from '../../../share/share-bar';
+import type { ShareTarget } from '../../../share/share-link';
 import { ReplyMetricsPanel } from './reply-metrics-panel';
 import { ReplyToolsPanel } from './reply-tools-panel';
 import { ReplyVersionPicker } from './reply-version-picker';
+import { WidgetView } from './widget-view';
 
 const THINKING_SUMMARY_CHARS = 10000;
 
-const attachmentsTextOf = (version: ReplyVersion): string | null => {
-    if (version.attachments.length === 0) return null;
-    return version.attachments
-        .map((attachment) => {
-            const kind =
-                attachment.kind === 'image'
-                    ? '图片'
-                    : attachment.kind === 'sticker'
-                      ? '贴纸'
-                      : attachment.kind === 'widget'
-                        ? '组件'
-                        : '文件';
-            const mime = attachment.mimeType ?? '类型未知';
-            return `${kind} · ${mime} · ${formatBytes(attachment.sizeBytes)}`;
-        })
+const attachmentLabelOf = (kind: ReplyAttachment['kind']): string =>
+    match(kind)
+        .with('image', () => '图片')
+        .with('sticker', () => '贴纸')
+        .with('file', () => '文件')
+        .with('widget', () => '组件')
+        .exhaustive();
+
+/** Attachments listed as text; the widget itself renders as a card below the body */
+const listedAttachmentsOf = (version: ReplyVersion): ReplyAttachment[] =>
+    version.attachments.filter((attachment) => attachment.kind !== 'widget');
+
+const attachmentsTextOf = (attachments: readonly ReplyAttachment[]): string =>
+    attachments
+        .map(
+            (attachment) =>
+                `${attachmentLabelOf(attachment.kind)} · ${attachment.mimeType ?? '类型未知'} · ${formatBytes(attachment.sizeBytes)}`
+        )
         .join('\n');
-};
 
 interface ReplyBodyProps {
     version: ReplyVersion;
 }
 
 const ReplyBody = ({ version }: ReplyBodyProps) => {
-    const attachments = useMemo(() => attachmentsTextOf(version), [version]);
+    const attachments = useMemo(() => listedAttachmentsOf(version), [version]);
+    const attachmentsText = useMemo(() => attachmentsTextOf(attachments), [attachments]);
+    // The rendered PNG is what a failed iframe falls back to
+    const widgetHasImage = useMemo(
+        () => version.attachments.some((attachment) => attachment.kind === 'widget' && attachment.hasImage === true),
+        [version.attachments]
+    );
     const thinkingLength = useMemo(
         () => (version.thinkingText === null ? 0 : Array.from(version.thinkingText).length),
         [version.thinkingText]
@@ -70,9 +82,11 @@ const ReplyBody = ({ version }: ReplyBodyProps) => {
                 </CollapsibleSection>
             )}
 
-            {attachments !== null && (
-                <CollapsibleSection title="附件" summary={`${version.attachments.length} 个`}>
-                    <p className="prewrap hint">{attachments}</p>
+            {version.widget !== undefined && <WidgetView widget={version.widget} hasImage={widgetHasImage} />}
+
+            {attachments.length > 0 && (
+                <CollapsibleSection title="附件" summary={`${attachments.length} 个`}>
+                    <p className="prewrap hint">{attachmentsText}</p>
                 </CollapsibleSection>
             )}
 
@@ -85,11 +99,13 @@ const ReplyBody = ({ version }: ReplyBodyProps) => {
 
 interface ReplyDetailViewProps {
     chatId: number;
+    // The chat's name, for the share text
+    chatName: string;
     reply: ReplyDetail;
 }
 
 /** One bot reply: version chips, metrics and the full version body */
-export const ReplyDetailView = ({ chatId, reply }: ReplyDetailViewProps) => {
+export const ReplyDetailView = ({ chatId, chatName, reply }: ReplyDetailViewProps) => {
     const defaultVersion = reply.currentVersion ?? reply.versionCount;
     const [selected, setSelected] = useState<number | null>(defaultVersion >= 1 ? defaultVersion : null);
 
@@ -104,6 +120,14 @@ export const ReplyDetailView = ({ chatId, reply }: ReplyDetailViewProps) => {
     const conversationLink = useMemo(
         () => (reply.rootId === null ? null : conversationPath(chatId, reply.rootId)),
         [chatId, reply.rootId]
+    );
+    // A reply share pins the selected version
+    const shareTarget = useMemo<ShareTarget | null>(
+        () =>
+            version === null
+                ? null
+                : { kind: 'reply', chatId, firstMessageId: reply.firstMessageId, versionId: version.versionId },
+        [chatId, reply.firstMessageId, version]
     );
 
     if (reply.versions.length === 0) {
@@ -125,6 +149,16 @@ export const ReplyDetailView = ({ chatId, reply }: ReplyDetailViewProps) => {
                     current={reply.currentVersion}
                     onSelect={setSelected}
                 />
+                {version !== null && selected !== null && shareTarget !== null && (
+                    // Keyed by version: each version has its own share link and state
+                    <ShareBar
+                        key={version.versionId}
+                        target={shareTarget}
+                        chatName={chatName}
+                        versionLabel={selected}
+                        confirmMessage={null}
+                    />
+                )}
                 {version === null ? (
                     <p className="placeholder">选择一个版本</p>
                 ) : (

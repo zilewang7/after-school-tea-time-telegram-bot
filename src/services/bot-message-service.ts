@@ -17,6 +17,7 @@ import {
     type StoredSticker,
     type CommandType,
 } from '../db/index.js';
+import type { StoredWidget } from '../db/botResponseDTO.js';
 import {
     createMessageEditor,
     type MessageEditor,
@@ -43,9 +44,19 @@ import { decideFinalButtonState } from './final-button-state.js';
 import { sniffMediaMime } from '../ai/image-generation/image-mime.js';
 import { buildImageCaption } from '../reply/tools/image-message.js';
 import { sendReplyFileMessage } from '../telegram/reply-file-send.js';
-import { sendReplyWidgetMessage } from '../telegram/reply-widget-send.js';
+import {
+    sendReplyWidgetLinkMessage,
+    sendReplyWidgetMessage,
+} from '../telegram/reply-widget-send.js';
 import { editWidgetReplyMarkup } from '../telegram/widget-api.js';
 import { sendReplyImageMessage } from '../telegram/reply-image-send.js';
+import { isWidgetRenderConfigured, renderWidgetPng } from '../widget-image/index.js';
+import { ensureSystemReplyShare } from '../panel/share/share-link-service.js';
+import {
+    buildWidgetLinkMessage,
+    miniAppReplyLink,
+    miniAppShortName,
+} from '../reply/widget-link-fallback.js';
 import { resolveChatModel } from '../config/chat-model.js';
 import type { ContextLinkResolver } from '../telegram/formatters/context-links.js';
 import type { AgentStats, FileDelivery, StickerDelivery, WidgetDelivery } from '../ai/types.js';
@@ -135,6 +146,12 @@ export interface BotMessageSession {
     widget?: WidgetDelivery;
     /** Telegram message id of the widget message */
     widgetMessageId?: number;
+    /** The 600px rendered card image (PNG, base64) for storage and the next context */
+    widgetImageBase64?: string;
+    /** How the card reached the chat: native widget (private) or the Mini App link fallback */
+    widgetDeliveredAs?: 'widget' | 'link';
+    /** Share page URL the link fallback's preview points at */
+    widgetShareUrl?: string;
     groundingData: any[];
     agentStats?: AgentStats;
 
@@ -443,11 +460,17 @@ const finalizeSession = async (
     const sticker = session.sticker;
     const file = session.file;
     const widget = session.widget;
+    const widgetImage =
+        session.widgetImageBase64 !== undefined
+            ? Buffer.from(session.widgetImageBase64, 'base64')
+            : undefined;
     // Picture bytes: an image, or the sticker's webp. A file has its own slot.
     // The row keeps picture bytes only: a file is named by its mediaHint, its
     // bytes live in the version (for a version switch), never in the prompt.
+    // A card's rendered PNG takes the same slot, so the next context sees it.
     const pictureBuffer = sticker ? session.stickerBytes : image;
-    const mediaMime = pictureBuffer ? sniffMediaMime(pictureBuffer) : null;
+    const rowPicture = pictureBuffer ?? widgetImage;
+    const mediaMime = rowPicture ? sniffMediaMime(rowPicture) : null;
     // Only the delivered attachment has a caption; stickers have none
     const imageCaption = image && options?.imageCaption ? options.imageCaption : undefined;
     const fileCaption = file?.caption;
@@ -479,6 +502,15 @@ const finalizeSession = async (
                       htmlBytes: widget.htmlBytes,
                       zlibBytes: widget.zlibBytes,
                       ...(widget.surface === undefined ? {} : { surface: widget.surface }),
+                      ...(session.widgetImageBase64 !== undefined
+                          ? { imageBase64: session.widgetImageBase64 }
+                          : {}),
+                      ...(session.widgetDeliveredAs !== undefined
+                          ? { deliveredAs: session.widgetDeliveredAs }
+                          : {}),
+                      ...(session.widgetShareUrl !== undefined
+                          ? { shareUrl: session.widgetShareUrl }
+                          : {}),
                   },
               }),
         imageBase64: pictureBuffer?.toString('base64'),
@@ -565,7 +597,7 @@ const finalizeSession = async (
                         : imageCaption,
         }),
         modelParts: options?.modelParts ?? null,
-        file: pictureBuffer ?? null,
+        file: rowPicture ?? null,
         fileMime: mediaMime,
         ...(sticker !== undefined
             ? { mediaHint: 'sticker' }
@@ -573,7 +605,7 @@ const finalizeSession = async (
               ? { mediaHint: `a file: ${file.name}, ${file.mimeType}` }
               : widget !== undefined
                 ? { mediaHint: 'a widget' }
-              : pictureBuffer !== undefined
+              : rowPicture !== undefined
                 ? { mediaHint: 'a picture' }
                 : {}),
     });
@@ -814,6 +846,20 @@ export const startRetry = async (
 };
 
 /**
+ * The rendered 600px card image of a stored widget version. A version stored
+ * without one (the renderer was down when it went out) renders now and keeps
+ * the result, so a later switch does not pay for it again.
+ */
+const widgetImageOf = async (widget: StoredWidget): Promise<Buffer | null> => {
+    if (widget.imageBase64 !== undefined) return Buffer.from(widget.imageBase64, 'base64');
+    if (!isWidgetRenderConfigured()) return null;
+    const rendered = await renderWidgetPng(widget.html, { width: 600 });
+    if (rendered === null) return null;
+    widget.imageBase64 = rendered.png.toString('base64');
+    return rendered.png;
+};
+
+/**
  * Switch to a different version
  */
 export const switchVersion = async (
@@ -869,6 +915,14 @@ export const switchVersion = async (
     const storedFile = newVersion.file;
     const storedWidget = newVersion.widget;
     const fileBuffer = newVersion.fileBase64 ? Buffer.from(newVersion.fileBase64, 'base64') : null;
+    // The card's rendered PNG is part of the version (the bot row replays it);
+    // a version stored without one renders now, and the switch fails if it
+    // cannot — the alternative is a version whose card the next turn cannot see.
+    const widgetImage = storedWidget === undefined ? null : await widgetImageOf(storedWidget);
+    if (storedWidget !== undefined && widgetImage === null) {
+        console.error('[bot-message-service] widget version has no image and the renderer is unavailable');
+        return false;
+    }
 
     // A re-sent image keeps the caption it first went out with
     const captionFields = buildImageCaption(newVersion.imageCaption, resolveContextLink);
@@ -922,11 +976,51 @@ export const switchVersion = async (
             runApiCall: (operation) => runApiCall(chatId, operation),
         });
     };
-    // A widget version re-sends the stored HTML; the card itself is immutable
+    // The link fallback again: reuse the stored share page, or make it now
+    const sendVersionWidgetLink = async (widget: StoredWidget): Promise<Result<number>> => {
+        const botUsername = ctx.me.username;
+        if (botUsername === undefined || botUsername.length === 0) {
+            return [new Error('no bot username for the Mini App link'), undefined];
+        }
+        let shareUrl: string | null = widget.shareUrl ?? null;
+        if (shareUrl === null) {
+            const [error, share] = await to(
+                ensureSystemReplyShare({
+                    chatId,
+                    firstMessageId,
+                    versionId: newVersion.versionId,
+                })
+            );
+            if (error !== null) {
+                console.error('[bot-message-service] share page for the widget link failed:', error);
+            }
+            shareUrl = share?.url ?? null;
+        }
+        const message = buildWidgetLinkMessage({
+            caption: widgetCaptionFields,
+            ...(shareUrl !== null ? { shareUrl } : {}),
+            miniAppLink: miniAppReplyLink({
+                botUsername,
+                shortName: miniAppShortName(),
+                chatId,
+                firstMessageId,
+            }),
+            replyToMessageId: response.userMessageId,
+        });
+        return sendReplyWidgetLinkMessage({
+            chatId,
+            api: ctx.api,
+            message,
+            replyMarkup: versionButtons,
+        });
+    };
+    // A widget version re-sends the stored card: the native widget in a private
+    // chat, the Mini App link in a group (or after a server refusal)
     const sendVersionWidget = async (): Promise<Result<number>> => {
         if (storedWidget === undefined) {
             return [new Error('version has no widget'), undefined];
         }
+        if (storedWidget.deliveredAs === 'link') return sendVersionWidgetLink(storedWidget);
         return sendReplyWidgetMessage({
             chatId,
             widget: {
@@ -1118,6 +1212,7 @@ export const switchVersion = async (
 
     // Also overwrite the Message row with the new version's content, so the
     // context reads this version only — never its text next to another's image
+    const rowPicture = imageBuffer ?? widgetImage;
     await writeBotMessageRow({
         chatId,
         messageId: firstMessageId,
@@ -1137,8 +1232,8 @@ export const switchVersion = async (
                         : newVersion.imageCaption,
         }),
         modelParts: newVersion.modelParts ?? null,
-        file: imageBuffer,
-        fileMime: imageBuffer ? sniffMediaMime(imageBuffer) : null,
+        file: rowPicture,
+        fileMime: rowPicture ? sniffMediaMime(rowPicture) : null,
         ...(newVersion.sticker !== undefined
             ? { mediaHint: 'sticker' }
             : storedFile !== undefined
@@ -1255,8 +1350,8 @@ export const refreshToFinalState = async (
                 })
             )
         );
-        if (markupErr && version.widget !== undefined) {
-            // A widget message can only be edited through the client that sent it
+        if (markupErr && version.widget !== undefined && version.widget.deliveredAs !== 'link') {
+            // A native widget message can only be edited through the client that sent it
             const [widgetErr] = await to(
                 editWidgetReplyMarkup(chatId, version.currentMessageId, buttons)
             );

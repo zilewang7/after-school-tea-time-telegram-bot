@@ -29,6 +29,16 @@ const { normalizeToolOverrides } = await import('../../src/services/tool-overrid
 
 const LIMITS = { allowHtml: false, maxHtmlBytes: 32768, maxGzipBytes: 4096 };
 
+/** One property of a tool's input schema, as a plain record */
+const schemaPropertyOf = (tool: ToolHandler, name: string): Record<string, unknown> => {
+    const properties = tool.definition.inputSchema.properties;
+    if (typeof properties !== 'object' || properties === null) return {};
+    const property = Object.fromEntries(Object.entries(properties))[name];
+    return typeof property === 'object' && property !== null
+        ? Object.fromEntries(Object.entries(property))
+        : {};
+};
+
 const columnSurface = (): Record<string, unknown> => ({
     version: '1.0',
     createSurface: {
@@ -181,6 +191,28 @@ results.push(
             groupOverride.ok ? groupOverride.value : null
         );
         expect(!group.widget, 'a group chat stays off even when the panel asks for it');
+    })
+);
+
+results.push(
+    await runCase('the surface parameter is a minified JSON string (harness issue #5)', async () => {
+        const tool = createSendWidgetTool({ state: createReplyMediaState(), limits: LIMITS });
+        const surfaceSchema = schemaPropertyOf(tool, 'surface');
+        expect(surfaceSchema.type === 'string', 'surface is declared as a string, not an untyped value');
+        expect(
+            /minified/i.test(String(surfaceSchema.description ?? '')),
+            'the description asks for minified JSON'
+        );
+
+        // A JSON string is accepted and stored as JSON for a later context
+        const state = createReplyMediaState();
+        const stringTool = createSendWidgetTool({ state, limits: LIMITS });
+        const result = await run(stringTool, { mode: 'a2ui', surface: JSON.stringify(columnSurface()) });
+        expect(!result.isError, 'the minified JSON string compiles');
+        expect(
+            typeof state.widget?.surface === 'object' && state.widget.surface !== null,
+            'the stored surface is JSON, so a later context replays it as JSON'
+        );
     })
 );
 

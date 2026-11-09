@@ -12,7 +12,7 @@ import { initMcpClients } from './ai/mcp/index.js';
 import { isTestInstance, getAllowedChatIds, isChatAllowed } from './config/instance.js';
 import { registerSenderGate } from './config/sender-gate.js';
 import { startCustomEmojiRecovery } from './services/custom-emoji-service.js';
-import { logWidgetReadiness } from './telegram/widget-readiness.js';
+import { logWidgetReadiness, logWidgetRendererReadiness } from './telegram/widget-readiness.js';
 import { reconcileInterruptedResponses } from './services/bot-message-service.js';
 import { getGlobalDefaultModel, loadChatSettingsCache } from './services/chat-settings-service.js';
 import { startPanel, stopPanel } from './panel/index.js';
@@ -143,8 +143,10 @@ async function main() {
     });
     startCustomEmojiRecovery(bot);
     // Phase 0 trigger visibility: log whether the widget methods exist on the
-    // configured Bot API roots. Fire-and-forget; never delays startup.
+    // configured Bot API roots and whether the card renderer answers. Both are
+    // fire-and-forget; a missing renderer only warns and never delays startup.
     void logWidgetReadiness();
+    void logWidgetRendererReadiness();
     await initMcpClients();
     console.log('[mcp] Initialization complete');
     // Listening before "Bot started" is logged: e2e treats that line as ready

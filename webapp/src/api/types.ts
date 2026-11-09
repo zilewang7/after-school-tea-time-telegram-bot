@@ -53,7 +53,9 @@ export interface ChatSummary {
 
 export type StartTarget =
     | { kind: 'chat'; chatId: number; access: StartTargetAccess }
-    | { kind: 'issue'; issueId: number; chatId: number | null; access: StartTargetAccess };
+    | { kind: 'issue'; issueId: number; chatId: number | null; access: StartTargetAccess }
+    // A `startapp=r<chatId>_<firstMessageId>` link; `none` means the reply stays hidden
+    | { kind: 'reply'; chatId: number; firstMessageId: number; access: StartTargetAccess };
 
 export interface MeResponse {
     user: PanelUser;
@@ -475,11 +477,36 @@ export interface ReplyMetric {
     triggerUserId?: number | null;
 }
 
+/** How a widget reached the chat: the native bubble (private) or a link with a preview card (groups) */
+export type WidgetDeliveredAs = 'widget' | 'link';
+
 /** An attachment described by kind and size only; no bytes reach the panel */
 export interface ReplyAttachment {
-    kind: 'image' | 'sticker' | 'file';
+    kind: 'image' | 'sticker' | 'file' | 'widget';
     mimeType: string | null;
     sizeBytes: number;
+    // Widget attachments only: native Telegram widget or a Mini App link in groups
+    deliveredAs?: WidgetDeliveredAs;
+    // Widget attachments only: a rendered PNG exists, so the image link works
+    hasImage?: boolean;
+}
+
+/**
+ * One version's widget, as the panel shows it. The HTML never reaches the panel:
+ * `viewUrl` / `imageUrl` are signed same-origin paths valid for ~10 minutes.
+ */
+export interface ReplyWidget {
+    mode: 'a2ui' | 'html';
+    htmlBytes: number;
+    zlibBytes: number;
+    deliveredAs: WidgetDeliveredAs;
+    // '/w/<payload>.<sig>', relative, no query; append ?theme=light|dark
+    viewUrl: string;
+    // '/w/<payload>.<sig>', relative; answers image/png
+    imageUrl: string;
+    // Absolute share page URL when this version already has a share link
+    shareUrl?: string | null;
+    expiresAt: string;
 }
 
 export interface ReplyVersion {
@@ -493,6 +520,8 @@ export interface ReplyVersion {
     errorMessage: string | null;
     wasStoppedByUser: boolean;
     attachments: ReplyAttachment[];
+    // The rendered card and its signed viewing URLs; undefined for versions without a widget
+    widget?: ReplyWidget;
     hasModelParts: boolean;
     // reply_metrics of this version; null for versions without a row ("无指标")
     metrics: ReplyMetric | null;
@@ -833,4 +862,51 @@ export interface StatusResponse {
     active: ActiveReply[];
     // Newest first, at most 50
     recentErrors: StatusError[];
+}
+
+// Shares (phase 5): a public page for one reply or one whole conversation
+
+export type ShareKind = 'reply' | 'conversation';
+/** `system`: created by the bot for a group's widget link fallback, not by a person */
+export type ShareSource = 'user' | 'system';
+
+export interface ShareLink {
+    token: string;
+    // Absolute public page URL, ready to send
+    url: string;
+    kind: ShareKind;
+    chatId: number;
+    firstMessageId: number | null;
+    rootId: number | null;
+    versionId: number | null;
+    createdAt: string;
+    // 0 for a system share
+    createdBy: number;
+    source: ShareSource;
+    canRevoke: boolean;
+    viewCount: number;
+}
+
+/** POST /api/shares: the target to share; versionId pins a reply version (default: the current one) */
+export interface ShareCreateRequest {
+    kind: ShareKind;
+    chatId: number;
+    firstMessageId?: number;
+    rootId?: number;
+    versionId?: number;
+}
+
+/** POST /api/shares answers with the active link, creating or reusing it */
+export interface ShareResponse {
+    share: ShareLink;
+}
+
+/** GET /api/shares: the target's active link, null when it has none (or it was revoked) */
+export interface ShareLookupResponse {
+    share: ShareLink | null;
+}
+
+/** POST /api/shares/:token/revoke; only the outcome matters to the panel */
+export interface ShareRevokeResponse {
+    ok: boolean;
 }

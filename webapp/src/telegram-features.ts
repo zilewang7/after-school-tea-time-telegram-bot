@@ -3,12 +3,34 @@
 import type { TelegramWebApp } from './telegram';
 
 const HAPTICS_VERSION = '6.1';
+const OPEN_TELEGRAM_LINK_VERSION = '6.1';
 const POPUP_VERSION = '6.2';
 const CLOSING_CONFIRMATION_VERSION = '6.2';
 const VERTICAL_SWIPES_VERSION = '7.7';
 
 export const supportsVersion = (webApp: TelegramWebApp, version: string): boolean =>
     typeof webApp.isVersionAtLeast === 'function' && webApp.isVersionAtLeast(version);
+
+/** How a share link was opened: Telegram's own share sheet, or a new browser tab */
+export type ShareOpenResult = 'telegram' | 'window';
+
+/**
+ * Telegram's share sheet for a t.me/share/url link (Bot API 6.1+). Older
+ * clients, or a client refusing the URL, fall back to a new tab; either way the
+ * caller keeps showing the link so it can be copied.
+ */
+export const openShareSheet = (webApp: TelegramWebApp, shareUrl: string): ShareOpenResult => {
+    if (supportsVersion(webApp, OPEN_TELEGRAM_LINK_VERSION) && typeof webApp.openTelegramLink === 'function') {
+        try {
+            webApp.openTelegramLink(shareUrl);
+            return 'telegram';
+        } catch {
+            // An old client may warn instead of opening; the fallback below still works
+        }
+    }
+    window.open(shareUrl, '_blank', 'noopener,noreferrer');
+    return 'window';
+};
 
 export const notifySuccessHaptic = (webApp: TelegramWebApp): void => {
     if (supportsVersion(webApp, HAPTICS_VERSION)) webApp.HapticFeedback.notificationOccurred('success');

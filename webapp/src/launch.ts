@@ -1,6 +1,6 @@
 import { match, P } from 'ts-pattern';
 import type { StartTarget } from './api';
-import { chatPath, issuePath } from './routing/paths';
+import { chatPath, issuePath, NO_ACCESS_PATH, replyPath } from './routing/paths';
 import { readStorage } from './storage';
 import { readStartParam } from './telegram';
 import type { TelegramWebApp } from './telegram';
@@ -33,6 +33,12 @@ const routeOfStartTarget = (startTarget: StartTarget | null): string | null =>
         .with({ kind: 'chat', access: P.union('member', 'observer', 'unavailable') }, ({ chatId }) => chatPath(chatId))
         // Whatever the access: the issue page asks the server, which answers 404 when the issue is hidden
         .with({ kind: 'issue' }, ({ issueId }) => issuePath(issueId))
+        // A reply link lands on the reply itself; `unavailable` opens it too, where the 503 retries
+        .with({ kind: 'reply', access: P.union('member', 'observer', 'unavailable') }, ({ chatId, firstMessageId }) =>
+            replyPath(chatId, firstMessageId)
+        )
+        // `none`: the reply stays hidden, so say so instead of opening a page that answers 403
+        .with({ kind: 'reply', access: 'none' }, () => NO_ACCESS_PATH)
         .otherwise(() => null);
 
 /**

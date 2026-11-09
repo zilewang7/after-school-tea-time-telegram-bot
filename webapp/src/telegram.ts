@@ -60,6 +60,10 @@ export interface TelegramWebApp {
     MainButton: TelegramMainButton;
     // 6.1
     HapticFeedback: TelegramHapticFeedback;
+    // 6.1; t.me links only (the share sheet). Feature-detect: old clients lack it
+    openTelegramLink(url: string): void;
+    // Opens a page in the client's browser; `try_instant_view` arrived later, so it is optional
+    openLink(url: string, options?: { try_instant_view?: boolean }): void;
     onEvent(eventType: 'themeChanged', handler: () => void): void;
     offEvent(eventType: 'themeChanged', handler: () => void): void;
 }

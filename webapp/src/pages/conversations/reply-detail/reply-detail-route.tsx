@@ -1,7 +1,9 @@
-import { useCallback } from 'react';
+import { useCallback, useMemo } from 'react';
 import { match } from 'ts-pattern';
 import { ErrorView, LoadingView } from '../../../components/status-views';
+import { useChatScope } from '../../../context/chat-scope-context';
 import { useApi } from '../../../context/panel-context';
+import { chatNameOf } from '../../../format';
 import { useApiQuery } from '../../../hooks/use-api-query';
 import { useChatIdParam } from '../../../hooks/use-chat-id-param';
 import { useFirstMessageIdParam } from '../../../hooks/use-message-id-param';
@@ -15,11 +17,16 @@ interface ReplyDetailPageProps {
 
 const ReplyDetailPage = ({ chatId, firstMessageId }: ReplyDetailPageProps) => {
     const api = useApi();
+    const { header } = useChatScope();
     const loadReply = useCallback(
         (signal: AbortSignal) => api.getReply(chatId, firstMessageId, signal),
         [api, chatId, firstMessageId]
     );
     const { state, reload } = useApiQuery(loadReply);
+    const chatName = useMemo(
+        () => (header === null ? `聊天 ${chatId}` : chatNameOf(header.name)),
+        [header, chatId]
+    );
 
     return (
         <>
@@ -30,7 +37,7 @@ const ReplyDetailPage = ({ chatId, firstMessageId }: ReplyDetailPageProps) => {
                 .with({ status: 'loading' }, () => <LoadingView />)
                 .with({ status: 'error' }, ({ failure }) => <ErrorView failure={failure} onRetry={reload} />)
                 .with({ status: 'success' }, ({ data }) => (
-                    <ReplyDetailView chatId={chatId} reply={data} />
+                    <ReplyDetailView chatId={chatId} chatName={chatName} reply={data} />
                 ))
                 .exhaustive()}
         </>

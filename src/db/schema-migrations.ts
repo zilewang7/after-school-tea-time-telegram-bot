@@ -193,6 +193,51 @@ const migrateChatSettingsToolOverrides = async (transaction: Transaction): Promi
   await ensureColumn('chat_settings', 'toolOverrides', 'TEXT', transaction);
 };
 
+/**
+ * The share links of the control panel (design §6.1): one row per public
+ * /s/<token> page. A system share (createdBy 0, source 'system') is the bot's
+ * own link fallback in groups; user shares come from the panel.
+ *
+ * There is no sequelize model for this table on purpose: the panel reads and
+ * writes it through raw SQL, so the migration is its only schema definition and
+ * sequelize.sync() never rebuilds it.
+ */
+const migrateShareLinks = async (transaction: Transaction): Promise<void> => {
+  await sequelize.query(`
+    CREATE TABLE IF NOT EXISTS share_links (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      token VARCHAR(255) NOT NULL UNIQUE,
+      kind VARCHAR(255) NOT NULL,
+      chatId INTEGER NOT NULL,
+      firstMessageId INTEGER,
+      rootId INTEGER,
+      versionId INTEGER,
+      createdBy INTEGER NOT NULL,
+      source VARCHAR(255) NOT NULL DEFAULT 'user',
+      createdAt DATETIME NOT NULL,
+      revokedAt DATETIME,
+      previewImageBase64 TEXT,
+      previewWidth INTEGER,
+      previewHeight INTEGER,
+      previewSource VARCHAR(255),
+      viewCount INTEGER NOT NULL DEFAULT 0,
+      lastViewedAt DATETIME
+    )
+  `, { transaction });
+  await sequelize.query(
+    'CREATE UNIQUE INDEX IF NOT EXISTS share_links_token ON share_links (token)',
+    { transaction }
+  );
+  await sequelize.query(
+    'CREATE INDEX IF NOT EXISTS share_links_target ON share_links (kind, chatId, firstMessageId, rootId, versionId, revokedAt)',
+    { transaction }
+  );
+  await sequelize.query(
+    'CREATE INDEX IF NOT EXISTS share_links_created_by ON share_links (createdBy, createdAt)',
+    { transaction }
+  );
+};
+
 /** Apply additive, idempotent DDL without altering the large message table. */
 export const runSchemaMigrations = async (): Promise<void> => {
   await sequelize.query(`
@@ -208,6 +253,7 @@ export const runSchemaMigrations = async (): Promise<void> => {
     await migrateMediaCacheDurationSeconds(transaction);
     await migrateHarnessIssuePanelColumns(transaction);
     await migrateChatSettingsToolOverrides(transaction);
+    await migrateShareLinks(transaction);
     await sequelize.query(
       `INSERT OR IGNORE INTO schema_migrations (name, appliedAt)
        VALUES ('20260908_custom_emoji_phase1', :appliedAt)`,
@@ -251,6 +297,12 @@ export const runSchemaMigrations = async (): Promise<void> => {
     await sequelize.query(
       `INSERT OR IGNORE INTO schema_migrations (name, appliedAt)
        VALUES ('20261108_chat_settings_tool_overrides', :appliedAt)`,
+      { replacements: { appliedAt: new Date().toISOString() }, transaction }
+    );
+    // share_links is a brand-new table, created by migrateShareLinks above
+    await sequelize.query(
+      `INSERT OR IGNORE INTO schema_migrations (name, appliedAt)
+       VALUES ('20261109_share_links', :appliedAt)`,
       { replacements: { appliedAt: new Date().toISOString() }, transaction }
     );
   });

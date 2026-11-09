@@ -4,6 +4,9 @@ export const HOME_PATH = '/';
 export const GLOBAL_SETTINGS_PATH = '/settings';
 export const GLOBAL_AUDIT_PATH = '/settings/audit';
 
+/** Where a startapp reply link lands when the requester cannot see the reply */
+export const NO_ACCESS_PATH = '/no-access';
+
 /** A home tab; '' is the chat list at "/" */
 export const homeTabPath = (tabPath: string): string => (tabPath === '' ? HOME_PATH : `/${tabPath}`);
 

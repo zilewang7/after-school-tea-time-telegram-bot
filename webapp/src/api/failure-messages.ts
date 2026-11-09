@@ -51,6 +51,23 @@ export const describeWriteFailure = (failure: ApiFailure): WriteFailureView =>
         }))
         .exhaustive();
 
+/** A failed share create or revoke; the server's own wording wins (e.g. observers share replies only) */
+export const describeShareFailure = (failure: ApiFailure): WriteFailureView =>
+    match(failure)
+        .with({ kind: 'http', status: 403 }, ({ message }) => ({
+            message: message ?? '没有权限分享',
+            suggestRefresh: false,
+        }))
+        .with({ kind: 'http', status: 404 }, ({ message }) => ({
+            message: message ?? '分享目标不存在或已被清理',
+            suggestRefresh: true,
+        }))
+        .with({ kind: 'http', status: 400 }, ({ message }) => ({
+            message: message ?? '分享参数不正确',
+            suggestRefresh: false,
+        }))
+        .otherwise(describeWriteFailure);
+
 const ISSUE_NOT_FOUND_MESSAGE = '找不到这个 issue，或你没有权限查看';
 
 /** A failed issue read; hidden and missing issues are the same 404 */

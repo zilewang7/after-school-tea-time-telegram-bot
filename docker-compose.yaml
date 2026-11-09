@@ -53,6 +53,8 @@ services:
     # plain cmcc-mcp.heimao.icu stays direct for China Mobile's callback.
     networks:
       - traefik-net
+      # Internal-only network for the widget render sidecar (no internet there)
+      - widget-render-net
 
   # Dev/test instance (@WatchFirstBot): runs the LOCAL working tree (no git
   # clone), its own node_modules volume (musl vs host glibc), its own sqlite
@@ -102,6 +104,7 @@ services:
     working_dir: /app/k-on-bot
     networks:
       - traefik-net
+      - widget-render-net
 
   # Converts Telegram .tgs animated stickers to .webm for multimodal models.
   # Opt-in via COMPOSE_PROFILES (default includes 'tgs' in .env.example).
@@ -131,6 +134,32 @@ services:
     networks:
       - traefik-net
 
+  # Renders widget HTML to PNG (Chromium + CJK fonts, no npm deps).
+  # Internal network only: it serves k-on-bot, never the internet, and has no
+  # secrets. Used for the bot's own context image, group-chat link previews and
+  # share-page preview cards. Safe to leave running: idle CPU is ~0.
+  widget-render:
+    container_name: widget-render
+    restart: always
+    build:
+      context: ./widget-render
+    init: true
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 256
+    mem_limit: 1g
+    cpus: 1.5
+    tmpfs:
+      - /tmp:size=268435456,mode=1777
+    environment:
+      - TZ=Asia/Shanghai
+      - PORT=8099
+    networks:
+      - widget-render-net
+
   # Self-hosted Telegram Bot API (--local): getFile up to 2GB, returns on-disk
   # paths shared via telegram-bot-api-data. Opt-in via COMPOSE_PROFILES=bigfile in
   # .env — then a plain `docker compose up -d` starts it (no --profile flag needed).
@@ -155,6 +184,9 @@ services:
 networks:
   traefik-net:
     external: true
+  # No gateway to the internet: Chromium can only talk to the bot container
+  widget-render-net:
+    internal: true
 
 volumes:
   telegram-bot-api-data:

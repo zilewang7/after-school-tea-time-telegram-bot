@@ -1354,3 +1354,55 @@ a.button {
 .token-output {
     --segment-color: var(--token-output);
 }
+
+/* A reply's widget: the signed document inside a sandboxed iframe, framed like a card */
+
+.widget-card {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.widget-frame {
+    display: block;
+    width: 100%;
+    border: 1px solid var(--color-separator);
+    border-radius: var(--radius);
+    background: var(--color-bg);
+}
+
+.widget-fallback {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 8px;
+    padding: 12px;
+    border: 1px dashed var(--color-separator);
+    border-radius: var(--radius);
+    background: var(--color-page-bg);
+}
+
+/* Sharing: a bar under the version picker / in the conversation header */
+
+.share-bar {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.page-header .share-bar {
+    margin: 8px 4px 0;
+}
+
+.share-url {
+    padding: 8px 10px;
+    border-radius: 8px;
+    background: var(--color-page-bg);
+    font: 13px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    overflow-wrap: anywhere;
+}
+
+.button.danger {
+    color: var(--color-destructive);
+}
+

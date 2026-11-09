@@ -41,6 +41,8 @@ export const buildFormatSection = (options: { includeOcrNote: boolean }): string
   - \`[sent a picture]\`（或 video/sticker/audio…）— 消息附带的媒体；
     含 failed / too large / not visible 时表示该媒体对当前模型不可见；
     贴纸标注中的 \`pack emoji\` 仅为贴纸包元数据（常由 Telegram 自动分配，未必与画面相关）
+  - \`[sent a widget]\` — 这条回复发过一张聊天卡片：卡片渲染图作为该回合的图片回放；
+    A2UI 模式还会在其后给出 \`[a2ui surface] {…}\` 行（当时提交的 surface 源码，超过 4000 字符时截断并标注 \`…（已截断）\`），HTML 模式只有渲染图、不回放源码
 - 冒号后为消息正文；仅含媒体或仅用 \`/chat\` 召唤的消息无冒号与正文
 - \`<<EOF\` 为消息结束标记
 - 独立的 \`[system] …\` 段落为系统注入的元数据，非用户发言

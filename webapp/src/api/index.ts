@@ -1,13 +1,21 @@
 export type { ApiFailure, ApiResult, TextResult } from './client';
 export { getConnectivityBanner, subscribeConnectivity } from './connectivity';
 export { AUDIT_PAGE_SIZE, CONVERSATION_PAGE_SIZE, createApi } from './endpoints';
-export type { AuditQuery, ExportFormat, IssueListQuery, ModelViewQuery, PanelApi } from './endpoints';
+export type {
+    AuditQuery,
+    ExportFormat,
+    IssueListQuery,
+    ModelViewQuery,
+    PanelApi,
+    ShareQuery,
+} from './endpoints';
 export {
     describeExclusionFailure,
     describeExportFailure,
     describeIssueCreateFailure,
     describeIssueReadFailure,
     describeReadFailure,
+    describeShareFailure,
     describeSpliceFailure,
     describeWriteFailure,
     REOPEN_PANEL_MESSAGE,

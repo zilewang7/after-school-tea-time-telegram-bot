@@ -99,6 +99,14 @@ declare global {
             WEBAPP_PUBLIC_URL?: string
             /** BotFather short name of the Mini App, for group Direct Links (default panel) */
             WEBAPP_BOT_SHORT_NAME?: string
+            /** Base URL of the widget-render sidecar; empty = rendering off (default http://widget-render:8099) */
+            WIDGET_RENDER_URL?: string
+            /** '1' lets groups use send_widget through the Mini App link fallback */
+            WIDGET_GROUP_FALLBACK?: string
+            /** '0' turns off the public share pages and the share API */
+            SHARE_ENABLED?: string
+            /** HMAC secret for signed widget URLs (default: derived from BOT_TOKEN) */
+            WEBAPP_SHARE_SECRET?: string
         }
     }
 }

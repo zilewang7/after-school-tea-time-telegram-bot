@@ -7,8 +7,10 @@ import { Message } from '../db/messageDTO.js';
 import {
     getContextMessage,
     getFileContentsOfMessage,
+    loadWidgetSurfaces,
     toContextMessage,
     type ContextMessage,
+    type WidgetSurfaceInfo,
 } from '../db/queries/context-queries.js';
 import { assembleContextMessages, isSubImage, type ContextNumbering } from './context-assembly.js';
 import { getLinkPreviewParts } from '../services/luoxu-preview-service.js';
@@ -50,6 +52,13 @@ const ANIMATED_STICKER_KINDS = new Set(['video_sticker', 'animated_sticker']);
 /** One-line excerpt caps for the header annotations */
 const REPLY_EXCERPT_CHARS = 40;
 const QUOTE_EXCERPT_CHARS = 300;
+
+/**
+ * Cap on one replayed A2UI surface. A card's source is replayed so a later turn
+ * can revise it, not to be re-read whole; bigger surfaces are cut and marked.
+ */
+const A2UI_SURFACE_MAX_CHARS = 4000;
+const A2UI_SURFACE_TRUNCATED_MARK = '…（已截断）';
 
 /** What a reply to an excluded or unknown message reads as */
 const UNSEEN_REPLY_TARGET = '[replying to a message you cannot see]';
@@ -461,6 +470,52 @@ const missingAssistantText = (
 };
 
 /**
+ * Minified JSON of a stored surface. send_widget accepts either a JSON string
+ * or an object, so both shapes reach the database; a string is normalized
+ * through JSON.parse so the replay never shows escaped quotes.
+ */
+const surfaceJsonOf = (surface: unknown): string | null => {
+    if (typeof surface === 'string') {
+        const trimmed = surface.trim();
+        if (!trimmed) return null;
+        try {
+            return JSON.stringify(JSON.parse(trimmed)) ?? null;
+        } catch {
+            return trimmed;
+        }
+    }
+    try {
+        return JSON.stringify(surface) ?? null;
+    } catch {
+        return null;
+    }
+};
+
+/**
+ * The `[a2ui surface] …` line replayed right after `[sent a widget]`: the A2UI
+ * source the card was built from, so a later turn can revise or reuse it.
+ * HTML mode replays no source (size, and the HTML is not worth re-reading).
+ */
+export const renderA2uiSurfaceNote = (widget: WidgetSurfaceInfo | undefined): string => {
+    if (
+        widget === undefined ||
+        widget.mode !== 'a2ui' ||
+        widget.surface === undefined ||
+        widget.surface === null
+    ) {
+        return '';
+    }
+    const json = surfaceJsonOf(widget.surface);
+    if (json === null) return '';
+    const chars = Array.from(json);
+    const body =
+        chars.length > A2UI_SURFACE_MAX_CHARS
+            ? `${chars.slice(0, A2UI_SURFACE_MAX_CHARS).join('')}${A2UI_SURFACE_TRUNCATED_MARK}`
+            : json;
+    return `[a2ui surface] ${body}\n`;
+};
+
+/**
  * Build the assistant turn for one of the bot's own messages.
  *
  * The context number is prefixed as `[#5]` on its own line — deliberately a
@@ -470,7 +525,7 @@ const missingAssistantText = (
 const buildAssistantMessage = (
     msg: ContextMessage,
     fileContents: UnifiedContentPart[],
-    index: ContextNumbering
+    inputs: TurnInputs
 ): BuiltTurn => {
     // Parse modelParts if available
     const modelParts = (() => {
@@ -483,13 +538,18 @@ const buildAssistantMessage = (
         }
     })();
 
-    const contextNumber = index.numberOf.get(msg.messageId);
+    const contextNumber = inputs.index.numberOf.get(msg.messageId);
     const numberLabel = contextNumber === undefined ? '' : `[#${contextNumber}]\n`;
     // The file message itself, named (the bytes are not replayed)
     const fileNote = msg.mediaHint?.startsWith('a file: ') ? `[sent ${msg.mediaHint}]\n` : '';
-    // A card's HTML is never replayed either; the caption (stored as text) and
-    // this one fact line are what the model reads back
+    // A card's HTML is never replayed either. What the model reads back is the
+    // rendered PNG (the row's file, attached as an image part by
+    // loadMessageFiles), the caption (stored as text), this fact line and, for
+    // A2UI mode, the source surface it was built from.
     const widgetNote = msg.mediaHint?.startsWith('a widget') ? '[sent a widget]\n' : '';
+    const surfaceNote = widgetNote
+        ? renderA2uiSurfaceNote(inputs.widgetSurfaces.get(msg.messageId))
+        : '';
 
     const parts: UnifiedContentPart[] = [...fileContents];
 
@@ -498,7 +558,7 @@ const buildAssistantMessage = (
         stripLeakedWireFormat(msg.text ?? '') ||
         (fileContents.length || fileNote || widgetNote ? '' : missingAssistantText(msg, contextNumber));
     if (numberLabel || fileNote || widgetNote || body) {
-        parts.push({ type: 'text', text: `${numberLabel}${fileNote}${widgetNote}${body}` });
+        parts.push({ type: 'text', text: `${numberLabel}${fileNote}${widgetNote}${surfaceNote}${body}` });
     }
 
     return {
@@ -522,6 +582,8 @@ interface TurnInputs {
     customEmojiAtlasParts: UnifiedContentPart[];
     answeredElsewhereNumber?: number;
     messageLinkPlan?: TgMessageLinkPlan;
+    /** The widget each bot message of the context carried, by message id */
+    widgetSurfaces: ReadonlyMap<number, WidgetSurfaceInfo>;
     chatTitle: string | null;
     /** Panel model view: previews come from caches only, never the network */
     dryRun: boolean;
@@ -632,7 +694,7 @@ const buildMessageContent = async (
     inputs: TurnInputs
 ): Promise<BuiltTurn> =>
     msg.fromBotSelf
-        ? buildAssistantMessage(msg, fileContents, inputs.index)
+        ? buildAssistantMessage(msg, fileContents, inputs)
         : buildUserMessage(msg, fileContents, inputs);
 
 /**
@@ -779,12 +841,23 @@ export const buildContext = async (
     if (!dryRun) publishContextNumbering(chatId, messageId, index);
     const repliesInFlightElsewhere = findRepliesInFlightElsewhere(chatId, messageId, index);
 
-    const [contextUsers, customEmojiPlan] = await Promise.all([
+    const [contextUsers, customEmojiPlan, widgetSurfaces] = await Promise.all([
         collectContextUsers(contextMessages),
         buildCustomEmojiContextPlan(
             chatId,
             contextMessages.map((contextMessage) => contextMessage.messageId),
             modelCapabilities.supportsImageInput
+        ),
+        // Only the cards in this context are read; their rendered PNG needs no
+        // query (it is the bot row's file), the A2UI source does
+        loadWidgetSurfaces(
+            chatId,
+            contextMessages
+                .filter(
+                    (contextMessage) =>
+                        contextMessage.fromBotSelf && contextMessage.mediaHint?.startsWith('a widget')
+                )
+                .map((contextMessage) => contextMessage.messageId)
         ),
     ]);
 
@@ -801,6 +874,7 @@ export const buildContext = async (
             customEmojiAtlasParts: contextMsg.messageId === messageId ? customEmojiPlan.atlasParts : [],
             answeredElsewhereNumber: repliesInFlightElsewhere.get(contextMsg.messageId),
             messageLinkPlan: messageLinkPlan.get(contextMsg.messageId),
+            widgetSurfaces,
             chatTitle: opts.chatTitle ?? null,
             dryRun,
         });
