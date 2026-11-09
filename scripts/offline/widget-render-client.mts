@@ -1,6 +1,6 @@
 /**
- * Offline cases for the widget render client, the page wrapper and the share
- * card (no containers, no network).
+ * Offline cases for the widget render client and the page wrapper (no
+ * containers, no network).
  *
  * A fake fetch stands in for the widget-render sidecar, so every branch —
  * success, timeout, wrong content type, oversized body, bad magic, cache hit —
@@ -21,9 +21,6 @@ const {
     widgetRenderHealth,
 } = await import('../../src/widget-image/render-client.js');
 const { widgetDocument, isCompleteHtmlDocument } = await import('../../src/widget-image/widget-page.js');
-const { buildShareCardHtml, renderShareCard, SHARE_CARD_WIDTH, SHARE_CARD_HEIGHT } = await import(
-    '../../src/widget-image/share-card.js'
-);
 const widgetImage = await import('../../src/widget-image/index.js');
 
 const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
@@ -224,6 +221,14 @@ results.push(
         expect(light.startsWith('<!doctype html>'), 'a fragment becomes a complete document');
         expect(light.includes('--tg-theme-bg-color:#ffffff'), 'the light palette is injected');
         expect(!light.includes('k-on-bot:widget-height'), 'no reporter unless asked for');
+        expect(
+            light.includes('html,body{margin:0!important;padding:0!important}'),
+            'the fragment body padding is stripped'
+        );
+        expect(
+            light.indexOf('html,body{margin:0!important;padding:0!important}') > light.indexOf('<div class="widget">'),
+            'the strip comes after the widget markup so it wins'
+        );
 
         const dark = widgetDocument('<div class="widget">hi</div>', { theme: 'dark', reportHeight: true });
         expect(dark.includes('--tg-theme-bg-color:#17212b'), 'the dark palette is injected');
@@ -242,63 +247,11 @@ results.push(
 );
 
 results.push(
-    await runCase('the share card picks widget over image over text and escapes labels', async () => {
-        expect(SHARE_CARD_WIDTH === 1200 && SHARE_CARD_HEIGHT === 630, 'the card is 1200x630');
-
-        const html = buildShareCardHtml({
-            title: '来自「K-ON 群」的分享',
-            subtitle: '第一行 <b>不该被解释</b>',
-            footer: 'K-ON 群 · 2026-11-09 13:00',
-            widgetPng: pngHeader(1200, 300, 1024),
-            imagePng: pngHeader(600, 400, 512),
-            textExcerpt: '这段文本不该出现',
-        });
-        expect(html.includes('width:1200px;height:630px'), 'the document is a fixed 1200x630 page');
-        expect(html.includes('k-on-bot · 对话分享'), 'the brand line is part of the template');
-        expect(html.includes('data:image/png;base64,'), 'the snapshot is inlined as a data URI');
-        expect((html.match(/data:image\/png;base64,/g) ?? []).length === 1, 'only the preferred image is inlined');
-        expect(!html.includes('class="excerpt"'), 'the text excerpt is not used when an image exists');
-        expect(html.includes('&lt;b&gt;不该被解释&lt;/b&gt;'), 'model/user text is HTML-escaped');
-        expect(html.includes('来自「K-ON 群」的分享'), 'the title is rendered as-is when safe');
-
-        const imageOnly = buildShareCardHtml({ title: '图', imagePng: pngHeader(600, 400, 512) });
-        expect(imageOnly.includes('data:image/png;base64,'), 'an image attachment is the second choice');
-
-        const textOnly = buildShareCardHtml({ title: '文', textExcerpt: '只有文字的分享内容' });
-        expect(textOnly.includes('class="excerpt"'), 'the excerpt is used when there is no image');
-        expect(textOnly.includes('只有文字的分享内容'), 'the excerpt text is rendered');
-        expect(!textOnly.includes('data:image/png;base64,'), 'no image is inlined without one');
-
-        const longExcerpt = buildShareCardHtml({ title: '长', textExcerpt: '字'.repeat(400) });
-        expect(longExcerpt.includes('…'), 'a long excerpt is truncated with an ellipsis');
-
-        const oversizedWidget = Buffer.alloc(200 * 1024, 1);
-        PNG_SIGNATURE.copy(oversizedWidget, 0);
-        const fallback = buildShareCardHtml({
-            title: '大图',
-            widgetPng: oversizedWidget,
-            imagePng: pngHeader(600, 400, 512),
-        });
-        expect(fallback.includes('data:image/png;base64,'), 'an oversized snapshot falls back to the attachment');
-    })
-);
-
-results.push(
-    await runCase('renderShareCard degrades to null without a renderer', async () => {
-        const result = await renderShareCard({ title: '分享', textExcerpt: '正文' });
-        expect(result === null, 'no renderer means no preview card (caller falls back to the 600 image)');
-    })
-);
-
-results.push(
     await runCase('the index module re-exports the public API', async () => {
         expect(typeof widgetImage.renderWidgetPng === 'function', 'renderWidgetPng is re-exported');
         expect(typeof widgetImage.isWidgetRenderConfigured === 'function', 'isWidgetRenderConfigured is re-exported');
         expect(typeof widgetImage.widgetRenderHealth === 'function', 'widgetRenderHealth is re-exported');
         expect(typeof widgetImage.widgetDocument === 'function', 'widgetDocument is re-exported');
-        expect(typeof widgetImage.buildShareCardHtml === 'function', 'buildShareCardHtml is re-exported');
-        expect(typeof widgetImage.renderShareCard === 'function', 'renderShareCard is re-exported');
-        expect(widgetImage.SHARE_CARD_WIDTH === 1200, 'the card width constant is re-exported');
     })
 );
 

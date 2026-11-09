@@ -123,6 +123,14 @@ const HEIGHT_REPORTER_SCRIPT = `(function () {
     }, 250);
 })();`;
 
+/**
+ * The fragment styles its own body with the padding a Telegram bubble would
+ * otherwise provide. Our iframes and renders draw the frame themselves, so that
+ * padding shows up as a white band around the card: strip it. Appended after
+ * the fragment so it wins over the fragment's own body rules.
+ */
+const EDGE_TO_EDGE_CSS = 'html,body{margin:0!important;padding:0!important}';
+
 const resolveTheme = (theme: WidgetTheme | undefined): WidgetTheme => (theme === 'dark' ? 'dark' : 'light');
 
 /**
@@ -138,6 +146,6 @@ export const widgetDocument = (html: string, options: WidgetDocumentOptions = {}
     return (
         '<!doctype html><html lang="zh-CN"><head><meta charset="utf-8">' +
         '<meta name="viewport" content="width=device-width, initial-scale=1">' +
-        `<style>${style}</style>${reporter}</head><body>${html}</body></html>`
+        `<style>${style}</style>${reporter}</head><body>${html}<style>${EDGE_TO_EDGE_CSS}</style></body></html>`
     );
 };
