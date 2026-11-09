@@ -212,7 +212,7 @@ const cases: { name: string; body: () => Promise<void> }[] = [
         },
     },
     {
-        name: 'the preview URL keeps the render, drops the text OG and reveals the card',
+        name: 'the preview URL is the render to Telegram and the page to a browser',
         body: async () => {
             const messageId = takeMessageId();
             const share = await replyShare(GROUP, messageId, [
@@ -227,38 +227,55 @@ const cases: { name: string; body: () => Promise<void> }[] = [
                 height: 428,
                 source: 'widget',
             });
-            const response = await app.request(`/s/${share.token}?preview=1`);
-            const html = await textOf(response);
-            expect(response.status === 200, '200');
+
+            const crawler = await app.request(`/s/${share.token}/preview`, {
+                headers: { 'user-agent': 'TelegramBot (like TwitterBot)' },
+            });
+            expect(crawler.status === 200, 'the crawler gets 200');
+            expect(crawler.headers.get('Content-Type') === 'image/png', 'the crawler gets the render, so the preview is the picture');
+            expect(
+                Buffer.from(await crawler.arrayBuffer()).equals(Buffer.from('widget-render-bytes')),
+                'the stored bytes'
+            );
+
+            const browser = await app.request(`/s/${share.token}/preview`, {
+                headers: { 'user-agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X)' },
+            });
+            const html = await textOf(browser);
+            expect(browser.status === 200, 'a browser gets 200');
+            expect(browser.headers.get('Content-Type')?.startsWith('text/html') === true, 'a browser gets the page');
+            expect(html.includes('const reveal = true;'), 'the page reveals the card');
+            expect(html.includes('一段正文'), 'the page renders the content');
             expect(
                 html.includes(`<meta property="og:image" content="https://miniapp.test/s/${share.token}/og.png">`),
-                'og:image stays, so the preview is the widget render'
+                'the image tags stay, as the fallback if the UA is ever missed'
             );
-            expect(html.includes('<meta property="og:image:height" content="428">'), 'the render size stays');
-            expect(!html.includes('og:title'), 'no og:title');
-            expect(!html.includes('og:description'), 'no og:description');
-            expect(!html.includes('og:site_name'), 'no og:site_name');
-            expect(!html.includes('og:url'), 'no og:url');
-            expect(html.includes('<title>查看卡片</title>'), 'one short title line');
-            expect(html.includes('const reveal = true;'), 'the page reveals the card');
-            expect(html.includes("querySelector('figure.widget')"), 'the card is the reveal target');
-            expect(html.includes('一段正文'), 'the page itself still renders');
+            expect(!html.includes('og:title'), 'no text OG to repeat the caption');
+            expect(!html.includes('og:site_name'), 'no site line');
+
+            await new Promise((resolve) => setTimeout(resolve, 120));
+            const row = await store.findShareRowByToken(share.token);
+            expect(row?.viewCount === 0, `neither fetch is a reader view (got ${String(row?.viewCount)})`);
 
             const canonical = await textOf(await app.request(`/s/${share.token}`));
-            expect(canonical.includes('og:title'), 'the share page keeps its text OG');
             expect(canonical.includes('const reveal = false;'), 'the share page itself does not jump');
+            expect(canonical.includes('og:title'), 'and keeps its text OG');
         },
     },
     {
-        name: 'a preview fetch is not counted as a reader view',
+        name: 'the preview URL without a render is 404 to the crawler, the page to a browser',
         body: async () => {
             const messageId = takeMessageId();
-            const share = await replyShare(GROUP, messageId, [versionOf(1)]);
-            await seedPreview(share.token, Buffer.from('card').toString('base64'));
-            await textOf(await app.request(`/s/${share.token}?preview=1`));
-            await new Promise((resolve) => setTimeout(resolve, 120));
-            const row = await store.findShareRowByToken(share.token);
-            expect(row?.viewCount === 0, `the crawler fetch is not a view (got ${String(row?.viewCount)})`);
+            const share = await replyShare(GROUP, messageId, [versionOf(1, { text: '纯文本' })]);
+            const crawler = await app.request(`/s/${share.token}/preview`, {
+                headers: { 'user-agent': 'TelegramBot (like TwitterBot)' },
+            });
+            expect(crawler.status === 404, 'nothing to preview');
+            const browser = await app.request(`/s/${share.token}/preview`);
+            expect(browser.status === 200, 'a browser still gets the page');
+            const html = await textOf(browser);
+            expect(html.includes('纯文本'), 'the content is there');
+            expect(!html.includes('og:image'), 'and no image tag');
         },
     },
     {

@@ -121,6 +121,10 @@ const widgetDocumentResponse = (document: string): Response =>
         },
     });
 
+/** Telegram's link-preview crawler; every other client is a reader's browser */
+const TELEGRAM_CRAWLER_PATTERN = /TelegramBot/i;
+const isTelegramCrawler = (userAgent: string): boolean => TELEGRAM_CRAWLER_PATTERN.test(userAgent);
+
 const MESSAGE_ID_PATTERN = /^\d{1,15}$/;
 const INDEX_PATTERN = /^\d{1,3}$/;
 
@@ -148,17 +152,13 @@ export const registerSharePublicRoutes = (app: Hono<PanelEnv>, options: SharePub
         return null;
     };
 
-    // GET /s/<token>: the SSR page (design §5.7). `?preview=1` is the URL the
-    // bot's group fallback previews (design §18): same page, minimal OG, and it
-    // reveals the widget, since that preview is the reader's way in.
+    // GET /s/<token>: the SSR page (design §5.7)
     app.get('/s/:token', async (context) => {
         const blocked = blockedBy(context);
         if (blocked !== null) return blocked;
         const share = await loadPublicShare(context.req.param('token'));
         if (share === null) return notFoundResponse(context);
-        const previewMode = context.req.query('preview') === '1';
-        // Telegram's crawler fetches the preview URL; that is not a reader
-        if (!previewMode) recordSharePageView(share.row.token);
+        recordSharePageView(share.row.token);
         const baseUrl = baseUrlOfRequest(context.req.url);
         // The footer button opens the share itself in the Mini App; the webapp
         // sends a member on to the reply/chat page and everyone else stays here
@@ -175,7 +175,37 @@ export const registerSharePublicRoutes = (app: Hono<PanelEnv>, options: SharePub
                 content: share.content,
                 preview,
                 miniAppLink,
-                ...(previewMode ? { mode: 'preview' as const } : {}),
+            })
+        );
+    });
+
+    // GET /s/<token>/preview: what the group fallback's link preview points at
+    // (design §18). Telegram's crawler is answered with the widget render, so the
+    // message preview is only the picture; a browser gets the page itself with
+    // the card revealed, because tapping that preview is a reader's way in. A UA
+    // that is not the crawler falls back to the page, which still works.
+    app.get('/s/:token/preview', async (context) => {
+        const blocked = blockedBy(context);
+        if (blocked !== null) return blocked;
+        const share = await loadPublicShare(context.req.param('token'));
+        if (share === null) return notFoundResponse(context);
+        if (isTelegramCrawler(context.req.header('user-agent') ?? '')) {
+            if (share.row.previewImageBase64 === null) return context.text('Not Found', 404);
+            return pngResponse(Buffer.from(share.row.previewImageBase64, 'base64'), 'no-store');
+        }
+        const baseUrl = baseUrlOfRequest(context.req.url);
+        const preview =
+            share.row.previewImageBase64 === null
+                ? null
+                : { width: share.row.previewWidth, height: share.row.previewHeight };
+        return pageResponse(
+            renderSharePage({
+                token: share.row.token,
+                baseUrl,
+                content: share.content,
+                preview,
+                miniAppLink: miniAppShareLink(share.row.token),
+                mode: 'preview',
             })
         );
     });
