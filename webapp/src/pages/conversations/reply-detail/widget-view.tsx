@@ -2,12 +2,15 @@ import { useCallback, useMemo, useState } from 'react';
 import { serverNowMs } from '../../../api';
 import type { ReplyWidget } from '../../../api';
 import { useWebApp } from '../../../context/panel-context';
-import { useWidgetHeight, widgetFrameUrlOf } from './use-widget-height';
+import { useScrollIntoViewOnce } from '../../../hooks/use-scroll-into-view';
+import { useWidgetHeight, widgetFrameUrlOf } from '../../../hooks/use-widget-height';
 
 interface WidgetViewProps {
     widget: ReplyWidget;
     // A rendered PNG exists; only then the image fallback link works
     hasImage: boolean;
+    // Scroll the card into view once, e.g. when a share link opened this reply
+    autoFocus?: boolean;
 }
 
 /**
@@ -15,9 +18,10 @@ interface WidgetViewProps {
  * own height reports. No allow-same-origin, so model-written JS cannot reach
  * the panel's origin (localStorage there throws, as documented).
  */
-export const WidgetView = ({ widget, hasImage }: WidgetViewProps) => {
+export const WidgetView = ({ widget, hasImage, autoFocus = false }: WidgetViewProps) => {
     const webApp = useWebApp();
-    const { height, iframeRef } = useWidgetHeight();
+    const { height, reported, iframeRef } = useWidgetHeight();
+    const { ref: cardRef } = useScrollIntoViewOnce(autoFocus, reported);
     const [failed, setFailed] = useState(false);
 
     const frameUrl = useMemo(
@@ -35,7 +39,7 @@ export const WidgetView = ({ widget, hasImage }: WidgetViewProps) => {
     const frameFailed = failed || expired;
 
     return (
-        <div className="widget-card">
+        <div className="widget-card" ref={cardRef}>
             <p className="badges">
                 <span className="badge accent">卡片</span>
                 <span className="badge">{modeLabel}</span>

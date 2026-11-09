@@ -55,7 +55,9 @@ export type StartTarget =
     | { kind: 'chat'; chatId: number; access: StartTargetAccess }
     | { kind: 'issue'; issueId: number; chatId: number | null; access: StartTargetAccess }
     // A `startapp=r<chatId>_<firstMessageId>` link; `none` means the reply stays hidden
-    | { kind: 'reply'; chatId: number; firstMessageId: number; access: StartTargetAccess };
+    | { kind: 'reply'; chatId: number; firstMessageId: number; access: StartTargetAccess }
+    // A `startapp=s<token>` link: the public page; access is decided by the page itself
+    | { kind: 'share'; token: string };
 
 export interface MeResponse {
     user: PanelUser;
@@ -909,4 +911,78 @@ export interface ShareLookupResponse {
 /** POST /api/shares/:token/revoke; only the outcome matters to the panel */
 export interface ShareRevokeResponse {
     ok: boolean;
+}
+
+// Public shares: the read-only content of one share, for the Mini App page (no initData)
+
+/** A widget as the public page sees it: no HTML, only the caption; the iframe loads the document */
+export interface PublicShareWidget {
+    caption: string | null;
+}
+
+export interface PublicShareFile {
+    name: string;
+    mimeType: string;
+    sizeBytes: number;
+}
+
+/** A reply share's pinned version */
+export interface PublicShareReply {
+    firstMessageId: number;
+    versionId: number;
+    // 1-based position among the reply's versions
+    versionNumber: number;
+    createdAt: string;
+    model: string | null;
+    text: string;
+    widget: PublicShareWidget | null;
+    hasImage: boolean;
+    imageMimeType: string | null;
+    file: PublicShareFile | null;
+}
+
+/**
+ * One bubble of a conversation share. User bubbles carry `authorName`; bot
+ * bubbles carry `file`; both may carry an image or a widget. `authorName` and
+ * `file` are therefore optional rather than a discriminated union.
+ */
+export interface PublicShareBubble {
+    kind: 'user' | 'bot';
+    messageId: number;
+    createdAt: string;
+    // The user's display name; absent on bot bubbles
+    authorName?: string;
+    text: string;
+    mediaHint: string | null;
+    widget: PublicShareWidget | null;
+    hasImage: boolean;
+    imageMimeType?: string | null;
+    file?: PublicShareFile | null;
+}
+
+export interface PublicShareConversation {
+    rootId: number;
+    // Oldest first
+    bubbles: PublicShareBubble[];
+}
+
+/**
+ * A share's content: the same data the SSR page renders. Exactly one of
+ * `reply` / `conversation` is present, matching `kind`; both are optional
+ * because the page must still render something if the server omits it.
+ */
+export interface PublicShare {
+    token: string;
+    kind: ShareKind;
+    chatId: number;
+    chatTitle: string | null;
+    // When the share was created, not when the reply was generated
+    createdAt: string;
+    reply?: PublicShareReply;
+    conversation?: PublicShareConversation;
+}
+
+/** GET /api/public/shares/:token */
+export interface PublicShareResponse {
+    share: PublicShare;
 }

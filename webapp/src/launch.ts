@@ -1,6 +1,6 @@
 import { match, P } from 'ts-pattern';
 import type { StartTarget } from './api';
-import { chatPath, issuePath, NO_ACCESS_PATH, replyPath } from './routing/paths';
+import { chatPath, issuePath, NO_ACCESS_PATH, replyPath, sharePath } from './routing/paths';
 import { readStorage } from './storage';
 import { readStartParam } from './telegram';
 import type { TelegramWebApp } from './telegram';
@@ -39,6 +39,8 @@ const routeOfStartTarget = (startTarget: StartTarget | null): string | null =>
         )
         // `none`: the reply stays hidden, so say so instead of opening a page that answers 403
         .with({ kind: 'reply', access: 'none' }, () => NO_ACCESS_PATH)
+        // A share link: the page itself decides between the read-only view and the panel page
+        .with({ kind: 'share' }, ({ token }) => sharePath(token))
         .otherwise(() => null);
 
 /**
@@ -49,4 +51,16 @@ export const launchRouteOf = (launch: LaunchState, startTarget: StartTarget | nu
     if (launch.initialPathname !== '/') return null;
     if (launch.startParam !== null) return routeOfStartTarget(startTarget);
     return launch.savedRoute;
+};
+
+// One launch navigation per page load. /share/:token sits outside AppShell (it must
+// render without /api/me), so its member redirect remounts AppShell: without this flag
+// the start_param target would run again and bounce the member back to the share page.
+let launchNavigationTaken = false;
+
+/** True the first time only; later calls mean the launch decision was already applied */
+export const takeLaunchNavigation = (): boolean => {
+    if (launchNavigationTaken) return false;
+    launchNavigationTaken = true;
+    return true;
 };

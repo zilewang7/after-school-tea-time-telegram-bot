@@ -1,4 +1,4 @@
-import { createRequester, createTextRequester } from './client';
+import { createPublicRequester, createRequester, createTextRequester } from './client';
 import type {
     AddendumPreviewResponse,
     AuditResponse,
@@ -21,6 +21,7 @@ import type {
     LinkSpliceResponse,
     MeResponse,
     ModelView,
+    PublicShareResponse,
     ReplyDetail,
     ShareCreateRequest,
     ShareKind,
@@ -138,9 +139,14 @@ const shareQueryPath = ({ kind, chatId, firstMessageId, rootId, versionId }: Sha
 
 const shareRevokePath = (token: string): string => `/api/shares/${encodeURIComponent(token)}/revoke`;
 
+/** The public JSON of one share; the token is the whole permission */
+const publicSharePath = (token: string): string => `/api/public/shares/${encodeURIComponent(token)}`;
+
 export const createApi = (initData: string) => {
     const request = createRequester(initData);
     const requestText = createTextRequester(initData);
+    // No initData: the public share API must answer anyone holding the link
+    const requestPublic = createPublicRequester();
     return {
         getHealth: (signal?: AbortSignal) => request<HealthResponse>({ method: 'GET', path: '/api/health', signal }),
         getMe: (signal?: AbortSignal) => request<MeResponse>({ method: 'GET', path: '/api/me', signal }),
@@ -234,6 +240,10 @@ export const createApi = (initData: string) => {
         // The creator or the owner only
         revokeShare: (token: string) =>
             request<ShareRevokeResponse>({ method: 'POST', path: shareRevokePath(token) }),
+
+        // Public shares (phase 5 increment): the read-only Mini App page's content
+        getPublicShare: (token: string, signal?: AbortSignal) =>
+            requestPublic<PublicShareResponse>({ method: 'GET', path: publicSharePath(token), signal }),
     };
 };
 

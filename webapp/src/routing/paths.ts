@@ -29,6 +29,19 @@ export const conversationPath = (chatId: number, rootId: number): string => `/c/
 export const replyPath = (chatId: number, firstMessageId: number): string =>
     `/c/${chatId}/replies/${firstMessageId}`;
 
+/** Query marker: the reply page scrolls its widget card into view */
+export const FOCUS_WIDGET_PARAM = 'focus';
+export const FOCUS_WIDGET_VALUE = 'widget';
+
+/** The reply page of a share that has a widget: land on the card, not the top of the reply */
+export const replyWidgetFocusPath = (chatId: number, firstMessageId: number): string =>
+    `${replyPath(chatId, firstMessageId)}?${FOCUS_WIDGET_PARAM}=${FOCUS_WIDGET_VALUE}`;
+
+/**
+ * A share's read-only page; the token is the permission, so it opens for
+ * someone who is not in the chat (or not a member of the panel's chats at all).
+ */
+export const sharePath = (token: string): string => `/share/${encodeURIComponent(token)}`;
 
 /** An issue's detail page; it lives outside the chat layer because an issue may belong to no chat */
 export const issuePath = (issueId: number): string => `/issues/${issueId}`;

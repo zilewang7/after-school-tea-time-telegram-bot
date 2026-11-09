@@ -70,6 +70,12 @@ export const describeShareFailure = (failure: ApiFailure): WriteFailureView =>
 
 const ISSUE_NOT_FOUND_MESSAGE = '找不到这个 issue，或你没有权限查看';
 
+/** A failed public share read; unknown, revoked and malformed tokens all answer the same 404 */
+export const describePublicShareFailure = (failure: ApiFailure): string =>
+    match(failure)
+        .with({ kind: 'http', status: 404 }, () => '分享不存在或已被撤销')
+        .otherwise(describeReadFailure);
+
 /** A failed issue read; hidden and missing issues are the same 404 */
 export const describeIssueReadFailure = (failure: ApiFailure): string =>
     match(failure)

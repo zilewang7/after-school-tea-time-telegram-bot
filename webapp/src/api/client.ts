@@ -91,11 +91,9 @@ const toFailure = async (response: Response): Promise<ApiFailure> => {
 };
 
 const requestHeaders = (initData: string, body: unknown, accept: string): Record<string, string> => {
-    const headers: Record<string, string> = {
-        Accept: accept,
-        // initData only ever travels in this header, never in the URL
-        'X-Init-Data': initData,
-    };
+    const headers: Record<string, string> = { Accept: accept };
+    // initData only ever travels in this header, never in the URL; the public API has none
+    if (initData !== '') headers['X-Init-Data'] = initData;
     if (body !== undefined) headers['Content-Type'] = 'application/json';
     return headers;
 };
@@ -135,6 +133,13 @@ export const createRequester = (initData: string): Requester => {
     };
     return request;
 };
+
+/**
+ * A JSON requester without initData: the public share API takes the token in
+ * the path as its permission, so the read-only page works for someone who is
+ * not in the chat (and needs no signed session at all).
+ */
+export const createPublicRequester = (): Requester => createRequester('');
 
 const FILE_NAME_PATTERN = /filename\*=UTF-8''([^;]+)|filename="?([^";]+)"?/i;
 

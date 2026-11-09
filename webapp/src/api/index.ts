@@ -14,6 +14,7 @@ export {
     describeExportFailure,
     describeIssueCreateFailure,
     describeIssueReadFailure,
+    describePublicShareFailure,
     describeReadFailure,
     describeShareFailure,
     describeSpliceFailure,

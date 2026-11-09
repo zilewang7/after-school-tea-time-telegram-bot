@@ -1,7 +1,7 @@
-import { useEffect, useRef } from 'react';
+import { useEffect } from 'react';
 import { useLocation, useNavigate } from 'react-router';
 import type { MeResponse } from '../api';
-import { LAST_ROUTE_KEY, launchRouteOf } from '../launch';
+import { LAST_ROUTE_KEY, launchRouteOf, takeLaunchNavigation } from '../launch';
 import type { LaunchState } from '../launch';
 import { writeStorage } from '../storage';
 
@@ -9,17 +9,17 @@ import { writeStorage } from '../storage';
 export const useRouteMemory = (launch: LaunchState, me: MeResponse | null): void => {
     const location = useLocation();
     const navigate = useNavigate();
-    const launchHandled = useRef(false);
 
     useEffect(() => {
         writeStorage(LAST_ROUTE_KEY, location.pathname);
     }, [location.pathname]);
 
     useEffect(() => {
-        if (me === null || launchHandled.current) return;
-        launchHandled.current = true;
+        if (me === null) return;
         const target = launchRouteOf(launch, me.startTarget);
+        if (target === null || target === location.pathname) return;
+        if (!takeLaunchNavigation()) return;
         // Replace, so a page opened by start_param or lastRoute has no history and Back goes to its parent
-        if (target !== null && target !== location.pathname) void navigate(target, { replace: true });
+        void navigate(target, { replace: true });
     }, [launch, me, location.pathname, navigate]);
 };

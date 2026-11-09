@@ -1,5 +1,7 @@
+import { Suspense } from 'react';
 import { createBrowserRouter, Navigate } from 'react-router';
 import { AppShell } from './components/app-shell';
+import { LoadingView } from './components/status-views';
 import { ChatIndexRedirect, LegacyChatAuditRedirect } from './layers/chat-redirects';
 import { ChatScopeRoute } from './layers/chat-scope';
 import { ChatTabsLayout } from './layers/chat-tabs-layout';
@@ -16,6 +18,7 @@ import { tabRoutesOf } from './tabs/tab-routes';
 const GlobalAuditRoute = lazyPage(() => import('./pages/audit/audit-routes'), 'GlobalAuditRoute');
 const ChatAuditRoute = lazyPage(() => import('./pages/audit/audit-routes'), 'ChatAuditRoute');
 const ChatToolsPage = lazyPage(() => import('./pages/chat-tools/chat-tools-page'), 'ChatToolsPage');
+const ShareRoute = lazyPage(() => import('./pages/share/share-route'), 'ShareRoute');
 
 /**
  * History routing only: Telegram puts #tgWebAppData in the URL hash, so hash routing would clobber it.
@@ -97,6 +100,16 @@ export const createAppRouter = (launch: LaunchState) =>
                 { path: 'audit', element: <Navigate replace to={GLOBAL_AUDIT_PATH} /> },
                 { path: '*', element: <NotFoundPage /> },
             ],
+        },
+        // The public share page stands alone: it must render even when /api/me fails,
+        // and it has no tab layers, no /api/me gate and no action bars.
+        {
+            path: '/share/:token',
+            element: (
+                <Suspense fallback={<LoadingView />}>
+                    <ShareRoute />
+                </Suspense>
+            ),
         },
     ]);
 

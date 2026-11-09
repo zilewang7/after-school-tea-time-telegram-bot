@@ -38,9 +38,11 @@ const attachmentsTextOf = (attachments: readonly ReplyAttachment[]): string =>
 
 interface ReplyBodyProps {
     version: ReplyVersion;
+    // A share opened this reply: land on the widget card
+    focusWidget: boolean;
 }
 
-const ReplyBody = ({ version }: ReplyBodyProps) => {
+const ReplyBody = ({ version, focusWidget }: ReplyBodyProps) => {
     const attachments = useMemo(() => listedAttachmentsOf(version), [version]);
     const attachmentsText = useMemo(() => attachmentsTextOf(attachments), [attachments]);
     // The rendered PNG is what a failed iframe falls back to
@@ -82,7 +84,9 @@ const ReplyBody = ({ version }: ReplyBodyProps) => {
                 </CollapsibleSection>
             )}
 
-            {version.widget !== undefined && <WidgetView widget={version.widget} hasImage={widgetHasImage} />}
+            {version.widget !== undefined && (
+                <WidgetView widget={version.widget} hasImage={widgetHasImage} autoFocus={focusWidget} />
+            )}
 
             {attachments.length > 0 && (
                 <CollapsibleSection title="附件" summary={`${attachments.length} 个`}>
@@ -102,10 +106,12 @@ interface ReplyDetailViewProps {
     // The chat's name, for the share text
     chatName: string;
     reply: ReplyDetail;
+    // A share opened this reply: land on the widget card
+    focusWidget: boolean;
 }
 
 /** One bot reply: version chips, metrics and the full version body */
-export const ReplyDetailView = ({ chatId, chatName, reply }: ReplyDetailViewProps) => {
+export const ReplyDetailView = ({ chatId, chatName, reply, focusWidget }: ReplyDetailViewProps) => {
     const defaultVersion = reply.currentVersion ?? reply.versionCount;
     const [selected, setSelected] = useState<number | null>(defaultVersion >= 1 ? defaultVersion : null);
 
@@ -181,7 +187,7 @@ export const ReplyDetailView = ({ chatId, chatName, reply }: ReplyDetailViewProp
             {version !== null && (
                 <section className="section">
                     <h2 className="section-title">正文</h2>
-                    <ReplyBody version={version} />
+                    <ReplyBody version={version} focusWidget={focusWidget} />
                 </section>
             )}
 

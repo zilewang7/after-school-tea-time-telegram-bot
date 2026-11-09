@@ -33,6 +33,8 @@ const isHeightMessage = (data: unknown): data is HeightMessage => {
 export interface WidgetFrame {
     // CSS pixels; starts at the default until the wrapper reports its own height
     height: number;
+    // The wrapper has reported at least once; the height above is then the card's own
+    reported: boolean;
     iframeRef: RefObject<HTMLIFrameElement | null>;
 }
 
@@ -44,6 +46,7 @@ export interface WidgetFrame {
 export const useWidgetHeight = (): WidgetFrame => {
     const iframeRef = useRef<HTMLIFrameElement | null>(null);
     const [height, setHeight] = useState(DEFAULT_WIDGET_HEIGHT);
+    const [reported, setReported] = useState(false);
 
     useEffect(() => {
         const handleMessage = (event: MessageEvent<unknown>) => {
@@ -51,10 +54,11 @@ export const useWidgetHeight = (): WidgetFrame => {
             if (frame === null || event.source !== frame.contentWindow) return;
             if (!isHeightMessage(event.data)) return;
             setHeight(clampWidgetHeight(event.data.height));
+            setReported(true);
         };
         window.addEventListener('message', handleMessage);
         return () => window.removeEventListener('message', handleMessage);
     }, []);
 
-    return useMemo(() => ({ height, iframeRef }), [height]);
+    return useMemo(() => ({ height, reported, iframeRef }), [height, reported]);
 };
