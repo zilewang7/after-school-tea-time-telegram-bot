@@ -51,11 +51,13 @@ import {
 import { editWidgetReplyMarkup } from '../telegram/widget-api.js';
 import { sendReplyImageMessage } from '../telegram/reply-image-send.js';
 import { isWidgetRenderConfigured, renderWidgetPng } from '../widget-image/index.js';
-import { ensureSystemReplyShare } from '../panel/share/share-link-service.js';
+import { ensureSystemReplyShare, findActiveShare, previewImageUrlOf } from '../panel/share/share-link-service.js';
+import type { ShareLinkRecord } from '../panel/share/share-types.js';
+import { shareTokenOfUrl } from '../panel/share/share-urls.js';
 import {
     buildWidgetLinkMessage,
-    miniAppReplyLink,
     miniAppShortName,
+    widgetMiniAppLink,
 } from '../reply/widget-link-fallback.js';
 import { resolveChatModel } from '../config/chat-model.js';
 import type { ContextLinkResolver } from '../telegram/formatters/context-links.js';
@@ -976,15 +978,19 @@ export const switchVersion = async (
             runApiCall: (operation) => runApiCall(chatId, operation),
         });
     };
-    // The link fallback again: reuse the stored share page, or make it now
+    // The link fallback again: reuse the stored share page (its token is what
+    // the Mini App link needs), or make the share now. A stored page without a
+    // widget render is refreshed, so the link can preview the card image.
     const sendVersionWidgetLink = async (widget: StoredWidget): Promise<Result<number>> => {
         const botUsername = ctx.me.username;
         if (botUsername === undefined || botUsername.length === 0) {
             return [new Error('no bot username for the Mini App link'), undefined];
         }
-        let shareUrl: string | null = widget.shareUrl ?? null;
-        if (shareUrl === null) {
-            const [error, share] = await to(
+        let share: ShareLinkRecord | null = null;
+        const storedToken = widget.shareUrl === undefined ? null : shareTokenOfUrl(widget.shareUrl);
+        if (storedToken !== null) share = await findActiveShare(storedToken);
+        if (share === null || previewImageUrlOf(share) === null) {
+            const [error, ensured] = await to(
                 ensureSystemReplyShare({
                     chatId,
                     firstMessageId,
@@ -994,16 +1000,19 @@ export const switchVersion = async (
             if (error !== null) {
                 console.error('[bot-message-service] share page for the widget link failed:', error);
             }
-            shareUrl = share?.url ?? null;
+            const ensuredShare = ensured ?? null;
+            if (ensuredShare !== null) share = ensuredShare;
         }
+        const previewImageUrl = share === null ? null : previewImageUrlOf(share);
         const message = buildWidgetLinkMessage({
             caption: widgetCaptionFields,
-            ...(shareUrl !== null ? { shareUrl } : {}),
-            miniAppLink: miniAppReplyLink({
+            ...(previewImageUrl === null ? {} : { previewImageUrl }),
+            miniAppLink: widgetMiniAppLink({
                 botUsername,
                 shortName: miniAppShortName(),
                 chatId,
                 firstMessageId,
+                shareToken: share?.token ?? null,
             }),
             replyToMessageId: response.userMessageId,
         });

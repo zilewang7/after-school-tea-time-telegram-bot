@@ -25,7 +25,7 @@ const BASE64_SNIFF_CHARS = 24;
 export interface ShareWidgetContent {
     html: string;
     caption: string | null;
-    /** 600px render stored with the version; used by the preview card only */
+    /** 600px render stored with the version; the share preview no longer uses it */
     imageBase64: string | null;
 }
 
@@ -51,7 +51,7 @@ export interface ShareReplyContent {
     hasImage: boolean;
     imageMimeType: string | null;
     file: ShareFileContent | null;
-    /** Server-side only: what the preview card is drawn from */
+    /** Server-side only: the snapshot the preview image is rendered from */
     preview: PreviewSnapshot;
 }
 
@@ -208,7 +208,7 @@ const botBubbleOf = (message: ContextMessage, response: BotResponse | undefined)
     };
 };
 
-/** The card content of a conversation: its newest bot reply that can be drawn */
+/** The preview snapshot of a conversation: its newest bot reply that has a widget */
 const previewSnapshotOfConversation = (
     chatTitle: string | null,
     ordered: readonly ContextMessage[],
@@ -219,10 +219,9 @@ const previewSnapshotOfConversation = (
         const version = responses.get(message.messageId)?.getCurrentVersion() ?? null;
         if (version === null) continue;
         const widget = widgetOf(version);
-        if (widget !== null || hasImageOf(version) || (typeof version.text === 'string' && version.text !== '')) {
-            return previewSnapshotOfReply(chatTitle, version, widget);
-        }
+        if (widget !== null) return previewSnapshotOfReply(chatTitle, version, widget);
     }
+    // No widget anywhere: the snapshot is text only, so the page has no image
     const newestText = [...ordered].reverse().find((message) => (message.text ?? '') !== '');
     return {
         chatTitle,

@@ -1,7 +1,7 @@
 /**
- * Where the panel should land, from the signed start_param: a chat, an issue
- * or one bot reply, with the requester's access to the chat behind it. Only a
- * hint: the target's own endpoint checks access again.
+ * Where the panel should land, from the signed start_param: a chat, an issue,
+ * one bot reply, or a public share, with the requester's access to the chat
+ * behind it. Only a hint: the target's own endpoint checks access again.
  *
  * It never tells a requester more than their own link says: an issue whose
  * chat they cannot open reads exactly like a missing one (no chatId, `none`),
@@ -10,6 +10,9 @@
  * A reply target is returned even with `access: 'none'` — the webapp shows a
  * no-permission page rather than guessing; a reply that does not exist falls
  * back to its chat page.
+ *
+ * A share target carries no access at all: the webapp reads it through the
+ * public share API, whose token is the only permission.
  */
 import { match } from 'ts-pattern';
 import { MembershipUnavailableError, type ChatAccessResolver } from '../access/chat-access.js';
@@ -25,7 +28,8 @@ export type StartTargetAccess = ChatAccess | 'unavailable';
 export type StartTargetView =
     | { kind: 'chat'; chatId: number; access: StartTargetAccess }
     | { kind: 'issue'; chatId: number | null; issueId: number; access: StartTargetAccess }
-    | { kind: 'reply'; chatId: number; firstMessageId: number; access: StartTargetAccess };
+    | { kind: 'reply'; chatId: number; firstMessageId: number; access: StartTargetAccess }
+    | { kind: 'share'; token: string };
 
 /** Whether a reply of that chat is stored; lets a stale deep link land on the chat instead */
 export type ReplyExistsLookup = (chatId: number, firstMessageId: number) => Promise<boolean>;
@@ -84,5 +88,10 @@ export const buildStartTarget = (
         .with({ kind: 'chat' }, (chatTarget) => chatTargetOf(chatTarget.chatId, resolver))
         .with({ kind: 'issue' }, (issueTarget) => issueTargetOf(issueTarget.issueId, hintChatId, resolver))
         .with({ kind: 'reply' }, (replyTarget) => replyTargetOf(replyTarget, resolver, replyExists))
+        .with(
+            { kind: 'share' },
+            (shareTarget): Promise<StartTargetView> =>
+                Promise.resolve({ kind: 'share', token: shareTarget.token })
+        )
         .exhaustive();
 };

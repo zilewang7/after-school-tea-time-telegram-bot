@@ -1,14 +1,14 @@
 /**
  * The share service of the panel (design §5.6): create, reuse, look up and
- * revoke share links, and keep their 1200×630 preview card ready.
+ * revoke share links, and keep their preview image (the widget render) ready.
  *
  * Two entry points matter outside the panel:
  * - `ensureSystemReplyShare` is called by the bot's group link fallback while
  *   it delivers a widget. That version is not finalized yet, so a system share
  *   accepts the pending version id and takes an optional content snapshot for
- *   the preview card. It never throws: a null means "send the link without a
+ *   the preview image. It never throws: a null means "send the link without a
  *   preview" (design §9).
- * - `ensurePreviewImage` makes sure a link has its card before it is sent.
+ * - `ensurePreviewImage` makes sure a link has its image before it is sent.
  *
  * Reuse rule: one active row per target (+ version for replies), whoever
  * created it, so every member who shares the same reply gets the same URL.
@@ -38,7 +38,7 @@ import {
 import { isShareToken } from './token.js';
 import { shareUrlOf } from './share-urls.js';
 
-/** One preview card costs two renders; a cold sidecar takes ~1.6s each */
+/** One widget render for the preview; a cold sidecar takes ~1.6s */
 const PREVIEW_BUDGET_MS = 8_000;
 
 /** Page views are counted at most once per link per 10 minutes */
@@ -85,7 +85,7 @@ const storePreview = async (token: string, snapshot: PreviewSnapshot): Promise<b
         await updateSharePreview(token, image);
         return true;
     } catch (error) {
-        logFailure(`rendering the preview card of ${token} failed`, error);
+        logFailure(`rendering the preview image of ${token} failed`, error);
         return false;
     }
 };
@@ -135,7 +135,7 @@ const snapshotOfSystemPreview = (preview: SystemSharePreviewInput | undefined): 
 /**
  * The bot's own share of one reply version (group link fallback). Reuses the
  * active row, otherwise creates one with `createdBy=0, source='system'` and
- * renders its preview card. Never throws; null = no share page available.
+ * renders its preview image. Never throws; null = no share page available.
  */
 export const ensureSystemReplyShare = async (input: SystemReplyShareInput): Promise<ShareLinkRecord | null> => {
     try {
@@ -185,7 +185,7 @@ export const ensureSystemReplyShare = async (input: SystemReplyShareInput): Prom
     }
 };
 
-/** Make sure an active link has its preview card; false when it cannot be made */
+/** Make sure an active link has its preview image; false when it cannot be made */
 export const ensurePreviewImage = async (token: string): Promise<boolean> => {
     try {
         if (!isShareToken(token)) return false;
@@ -196,7 +196,7 @@ export const ensurePreviewImage = async (token: string): Promise<boolean> => {
         if (content === null) return false;
         return await storePreview(token, content.preview);
     } catch (error) {
-        logFailure(`ensuring the preview card of ${token} failed`, error);
+        logFailure(`ensuring the preview image of ${token} failed`, error);
         return false;
     }
 };
@@ -264,7 +264,7 @@ export type CreateUserShareResult =
 
 /**
  * A panel user's share: reuse the active row of the same target, else create
- * one and render its preview card. The caller has already checked chat access.
+ * one and render its preview image. The caller has already checked chat access.
  */
 export const createUserShare = async (input: CreateUserShareInput): Promise<CreateUserShareResult> => {
     const target = await resolveShareTarget(input);
@@ -348,8 +348,6 @@ export const revokeShare = async (
 export interface PublicShare {
     row: ShareRow;
     content: ShareContent;
-    /** Whether /s/<token>/og.png has bytes to serve */
-    hasPreview: boolean;
 }
 
 export const loadPublicShare = async (token: string): Promise<PublicShare | null> => {
@@ -358,8 +356,12 @@ export const loadPublicShare = async (token: string): Promise<PublicShare | null
     if (row === null || row.revokedAt !== null) return null;
     const content = await loadShareContent(row);
     if (content === null) return null;
-    return { row, content, hasPreview: row.previewImageBase64 !== null };
+    return { row, content };
 };
+
+/** The og.png Telegram previews for a share page; null when no widget render was stored */
+export const previewImageUrlOf = (share: ShareLinkRecord): string | null =>
+    share.previewWidth === null || share.previewHeight === null ? null : `${share.url}/og.png`;
 
 /** Count one page view (throttled; failures are not the page's problem) */
 export const recordSharePageView = (token: string): void => {

@@ -1,10 +1,13 @@
 /**
  * Where share links point: the public panel URL for `/s/<token>`, and the
- * Telegram Mini App Direct Link used by the reply deep link (design §5.10).
+ * Telegram Mini App Direct Link the share page's footer button uses
+ * (`startapp=s<token>`, design §5.10). The bot's group link fallback keeps its
+ * own pure builders (reply/widget-link-fallback.ts), so its cases need no env.
  *
- * Both read the env per call rather than once: offline cases set them, and the
+ * The env is read per call rather than once: offline cases set it, and the
  * production values come from compose (WEBAPP_PUBLIC_URL, BOT_USER_NAME).
  */
+import { isShareToken } from './token.js';
 
 /** BotFather short name of the Mini App when WEBAPP_BOT_SHORT_NAME is unset (as /panel) */
 const DEFAULT_SHORT_NAME = 'panel';
@@ -17,6 +20,12 @@ export const sharePathOf = (token: string): string => `/s/${token}`;
 
 /** The absolute public URL of one share */
 export const shareUrlOf = (token: string): string => `${webappPublicUrl()}${sharePathOf(token)}`;
+
+/** The token of one of our own share URLs (absolute or relative); null for anything else */
+export const shareTokenOfUrl = (url: string): string | null => {
+    const lastSegment = url.split('/').at(-1) ?? '';
+    return isShareToken(lastSegment) ? lastSegment : null;
+};
 
 /** Absolute URL from a request's own origin, for the OG tags when WEBAPP_PUBLIC_URL is unset */
 export const baseUrlOfRequest = (requestUrl: string): string => {
@@ -36,9 +45,5 @@ const miniAppDirectLink = (startParam: string): string | null => {
     return `https://t.me/${botUserName}/${shortName}?startapp=${startParam}`;
 };
 
-/** `t.me/<bot>/<panel>?startapp=r<chatId>_<firstMessageId>`; null without a bot username */
-export const miniAppReplyLink = (chatId: number, firstMessageId: number): string | null =>
-    miniAppDirectLink(`r${chatId}_${firstMessageId}`);
-
-/** The same link for a chat (`startapp=c<chatId>`), used by conversation shares */
-export const miniAppChatLink = (chatId: number): string | null => miniAppDirectLink(`c${chatId}`);
+/** `t.me/<bot>/<panel>?startapp=s<token>`: the public share, in the Mini App; null without a bot username */
+export const miniAppShareLink = (token: string): string | null => miniAppDirectLink(`s${token}`);

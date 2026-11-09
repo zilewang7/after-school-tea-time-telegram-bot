@@ -188,6 +188,30 @@ const cases: { name: string; body: () => Promise<void> }[] = [
         },
     },
     {
+        name: 'og:image uses the stored widget render size',
+        body: async () => {
+            const messageId = takeMessageId();
+            const share = await replyShare(GROUP, messageId, [versionOf(1)]);
+            await store.updateSharePreview(share.token, {
+                base64: Buffer.from('widget-render-bytes').toString('base64'),
+                width: 1200,
+                height: 428,
+                source: 'widget',
+            });
+            const html = await textOf(await app.request(`/s/${share.token}`));
+            expect(html.includes('<meta property="og:image:width" content="1200">'), 'the real width');
+            expect(html.includes('<meta property="og:image:height" content="428">'), 'the real render height');
+            expect(!html.includes('content="630"'), 'no fixed 630');
+            expect(html.includes('<meta name="twitter:image"'), 'twitter:image');
+            const image = await app.request(`/s/${share.token}/og.png`);
+            expect(image.status === 200, 'og.png serves the render');
+            expect(
+                Buffer.from(await image.arrayBuffer()).equals(Buffer.from('widget-render-bytes')),
+                'the stored bytes'
+            );
+        },
+    },
+    {
         name: 'a share without a preview card omits og:image',
         body: async () => {
             const messageId = takeMessageId();

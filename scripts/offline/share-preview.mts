@@ -1,21 +1,56 @@
 /**
- * Offline cases for the 1200×630 preview card (design §5.7): which content it
- * picks (widget > image > text), its texts and truncation, the card template's
- * own priority/escaping (the pure builder from src/widget-image), and the
- * degraded path when the render sidecar is off.
+ * Offline cases for a share's preview image (design §5.7): the widget render
+ * Telegram previews, its 1200px light-theme render, the shares that have no
+ * image (no widget), the failure path, and the stored card the page reads back.
  *
- * No docker and no network: the sidecar client is disabled
- * (WIDGET_RENDER_URL=''), so renderShareCard returns null without a fetch.
+ * A local stub stands in for the widget-render sidecar: it answers /render with
+ * a PNG whose IHDR carries the requested width and a fixed content height, so
+ * the cases can assert the real dimensions without a browser.
  *
  * Run: npx tsx scripts/offline/share-preview.mts
  */
+import { createServer } from 'node:http';
+import type { AddressInfo } from 'node:net';
 import { expect, reportResults, runCase, setupOfflineDb, type CaseResult } from './harness.mts';
 
 process.env.WEBAPP_PUBLIC_URL = 'https://miniapp.test';
-process.env.WIDGET_RENDER_URL = '';
 process.env.OWNER_USER_ID = '4242';
 process.env.BOT_USER_ID = '9999';
 delete process.env.ALLOWED_CHAT_IDS;
+
+/** A 1×1 PNG; the stub patches its IHDR to the size it wants to report */
+const PNG_1PX =
+    'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
+const CONTENT_HEIGHT = 428;
+
+const pngOf = (width: number, height: number): Buffer => {
+    const png = Buffer.from(PNG_1PX, 'base64');
+    png.writeUInt32BE(width, 16);
+    png.writeUInt32BE(height, 20);
+    return png;
+};
+
+const renderRequests: string[] = [];
+let failRenders = false;
+const stubServer = createServer((request, response) => {
+    const chunks: Buffer[] = [];
+    request.on('data', (chunk: Buffer) => chunks.push(chunk));
+    request.on('end', () => {
+        const url = request.url ?? '';
+        renderRequests.push(url);
+        if (!url.startsWith('/render') || failRenders) {
+            response.writeHead(500, { 'Content-Type': 'text/plain' });
+            response.end('render failed');
+            return;
+        }
+        const width = Number(new URL(url, 'http://127.0.0.1').searchParams.get('width') ?? '600');
+        const png = pngOf(width, CONTENT_HEIGHT);
+        response.writeHead(200, { 'Content-Type': 'image/png', 'Content-Length': png.length });
+        response.end(png);
+    });
+});
+await new Promise<void>((ready) => stubServer.listen(0, '127.0.0.1', ready));
+process.env.WIDGET_RENDER_URL = `http://127.0.0.1:${(stubServer.address() as AddressInfo).port}`;
 
 await setupOfflineDb();
 const db = await import('../../src/db/index.js');
@@ -23,13 +58,13 @@ const previewCard = await import('../../src/panel/share/preview-card.js');
 const service = await import('../../src/panel/share/share-link-service.js');
 const store = await import('../../src/panel/share/share-store.js');
 const content = await import('../../src/panel/share/share-content.js');
-const widgetImage = await import('../../src/widget-image/index.js');
 
 const CHAT_ID = -1001000000001;
+const BOT_USER_ID = 9999;
 const CREATOR = { userId: 5001, isOwner: false };
 
-const PNG_1PX =
-    'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
+let nextMessageId = 6000;
+const newMessageId = (): number => (nextMessageId += 1);
 
 type ResponseVersion = import('../../src/db/index.js').ResponseVersion;
 type PreviewSnapshot = import('../../src/panel/share/share-types.js').PreviewSnapshot;
@@ -41,6 +76,24 @@ const snapshotOf = (overrides: Partial<PreviewSnapshot> = {}): PreviewSnapshot =
     ...overrides,
 });
 
+const widgetOf = (caption?: string) => ({
+    mode: 'a2ui' as const,
+    html: `<div class="tw-root">${caption ?? '卡片'}</div>`,
+    htmlBytes: 40,
+    zlibBytes: 20,
+    ...(caption === undefined ? {} : { caption }),
+});
+
+const versionOf = (versionId: number, overrides: Partial<ResponseVersion> = {}): ResponseVersion => ({
+    versionId,
+    createdAt: '2026-11-09T12:00:00.000Z',
+    messageIds: [800 + versionId],
+    currentMessageId: 800 + versionId,
+    text: `第 ${versionId} 版正文`,
+    wasStoppedByUser: false,
+    ...overrides,
+});
+
 const makeReply = async (messageId: number, versions: ResponseVersion[]): Promise<void> => {
     const response = await db.createBotResponse(CHAT_ID, messageId, 400, { model: 'offline-model', hasImage: false });
     response.setVersions(versions);
@@ -48,99 +101,70 @@ const makeReply = async (messageId: number, versions: ResponseVersion[]): Promis
     await response.save();
 };
 
-let nextMessageId = 6000;
-const takeMessageId = (): number => (nextMessageId += 1);
+const saveMessage = async (messageId: number, userId: number, text: string, replyToId?: number): Promise<void> => {
+    await db.saveMessage({
+        chatId: CHAT_ID,
+        messageId,
+        userId,
+        date: new Date('2026-11-09T12:00:00.000Z'),
+        userName: userId === BOT_USER_ID ? 'k-on-bot' : 'Alice',
+        message: text,
+        ...(replyToId === undefined ? {} : { replyToId }),
+    });
+};
 
 const cases: { name: string; body: () => Promise<void> }[] = [
     {
-        name: 'the card picks widget over image over text',
+        name: 'a widget renders its preview at 1200px in the light theme',
         body: async () => {
-            expect(previewCard.previewSourceOf(snapshotOf({ widgetHtml: '<div>w</div>' })) === 'widget', 'widget html');
+            const requestsBefore = renderRequests.length;
+            const image = await previewCard.renderPreviewImage(snapshotOf({ widgetHtml: '<div>w</div>' }));
+            expect(image !== null, 'rendered');
+            if (image === null) return;
             expect(
-                previewCard.previewSourceOf(snapshotOf({ widgetImageBase64: PNG_1PX })) === 'widget',
-                'stored widget render'
+                image.width === 1200 && image.height === CONTENT_HEIGHT,
+                `the rendered size (got ${image.width}x${image.height})`
             );
-            expect(previewCard.previewSourceOf(snapshotOf({ imageBase64: PNG_1PX })) === 'image', 'image attachment');
-            expect(previewCard.previewSourceOf(snapshotOf()) === 'text', 'text only');
-            expect(previewCard.previewSourceOf(snapshotOf({ text: '' })) === null, 'nothing to draw');
+            expect(image.source === 'widget', 'the source is the widget');
+            expect(Buffer.from(image.base64, 'base64').length > 0, 'the PNG is stored as base64');
+            const request = renderRequests[requestsBefore] ?? '';
+            expect(
+                request.includes('width=1200') && request.includes('scale=1') && request.includes('theme=light'),
+                `the render request (got ${request})`
+            );
         },
     },
     {
-        name: 'the card texts name the chat, the time and an excerpt',
+        name: 'a share without a widget has no preview image',
         body: async () => {
-            const input = previewCard.buildShareCardInput(snapshotOf({ text: '第一行\n第二行' }));
-            expect(input.title === '来自「主群」的分享', `title (got ${input.title})`);
-            expect(input.subtitle === '第一行 第二行', 'subtitle collapses whitespace');
-            expect(input.footer === '主群 · 2026-11-09 21:30', `footer (got ${input.footer})`);
-            expect(input.textExcerpt === '第一行 第二行', 'excerpt');
-            const untitled = previewCard.buildShareCardInput(snapshotOf({ chatTitle: null }));
-            expect(untitled.title === '来自 k-on-bot 的分享', 'a share without a chat title');
-            expect(untitled.footer === '2026-11-09 21:30', 'footer without a title');
+            const requestsBefore = renderRequests.length;
+            expect(await previewCard.renderPreviewImage(snapshotOf()) === null, 'text only, no image');
+            expect(
+                await previewCard.renderPreviewImage(snapshotOf({ imageBase64: PNG_1PX })) === null,
+                'an image attachment is not the widget preview'
+            );
+            expect(renderRequests.length === requestsBefore, 'nothing was rendered');
         },
     },
     {
-        name: 'the excerpt is cut at 180 characters',
+        name: 'a failed widget render leaves the share without an image',
         body: async () => {
-            const longText = '字'.repeat(400);
-            const input = previewCard.buildShareCardInput(snapshotOf({ text: longText }));
-            expect(input.textExcerpt !== undefined && Array.from(input.textExcerpt).length === 180, '180 chars');
-            expect(input.textExcerpt?.endsWith('…') === true, 'an ellipsis marks the cut');
-            expect(input.subtitle !== undefined && Array.from(input.subtitle).length <= 60, 'subtitle cut at 60');
+            failRenders = true;
+            try {
+                expect(
+                    await previewCard.renderPreviewImage(snapshotOf({ widgetHtml: '<div>a different card</div>' })) === null,
+                    'no image on failure'
+                );
+            } finally {
+                failRenders = false;
+            }
         },
     },
     {
-        name: 'a widget caption becomes the subtitle when there is no text',
+        name: 'a reply share stores the widget render as its preview',
         body: async () => {
-            const input = previewCard.buildShareCardInput(snapshotOf({ text: '', caption: '卡片说明' }));
-            expect(input.subtitle === '卡片说明', 'caption subtitle');
-        },
-    },
-    {
-        name: 'the card template inlines the widget snapshot and escapes its texts',
-        body: async () => {
-            const html = widgetImage.buildShareCardHtml({
-                title: '<script>alert(1)</script>',
-                subtitle: '副标题',
-                footer: '主群 · 2026-11-09 21:30',
-                widgetPng: Buffer.from(PNG_1PX, 'base64'),
-                textExcerpt: '不应出现的正文',
-            });
-            expect(html.includes('width:1200px') && html.includes('height:630px'), 'the card is 1200×630');
-            expect(html.includes('data:image/png;base64,'), 'the widget snapshot is inlined');
-            expect(!html.includes('不应出现的正文'), 'the widget wins over the excerpt');
-            expect(html.includes('&lt;script&gt;alert(1)&lt;/script&gt;'), 'the title is escaped');
-            expect(!html.includes('<script>alert(1)</script>'), 'no raw script');
-        },
-    },
-    {
-        name: 'the card template falls back to the image, then the text',
-        body: async () => {
-            const withImage = widgetImage.buildShareCardHtml({
-                title: 't',
-                imagePng: Buffer.from(PNG_1PX, 'base64'),
-                textExcerpt: '正文摘录',
-            });
-            expect(withImage.includes('data:image/png;base64,'), 'the image is inlined');
-            expect(!withImage.includes('正文摘录'), 'the excerpt loses to the image');
-            const textOnly = widgetImage.buildShareCardHtml({ title: 't', textExcerpt: '正文摘录' });
-            expect(textOnly.includes('正文摘录'), 'the excerpt shows when nothing else does');
-        },
-    },
-    {
-        name: 'renderShareCard and renderPreviewImage are null without the renderer',
-        body: async () => {
-            const rendered = await widgetImage.renderShareCard({ title: 't', textExcerpt: 'x' });
-            expect(rendered === null, 'no renderer, no card');
-            expect(await previewCard.renderPreviewImage(snapshotOf()) === null, 'no preview image');
-        },
-    },
-    {
-        name: 'a stored preview card is read back and not re-rendered',
-        body: async () => {
-            const messageId = takeMessageId();
-            await makeReply(messageId, [
-                { versionId: 1, createdAt: '2026-11-09T12:00:00.000Z', messageIds: [1], currentMessageId: 1, text: 'x', wasStoppedByUser: false },
-            ]);
+            const messageId = newMessageId();
+            await makeReply(messageId, [versionOf(1, { text: '一张卡片', widget: widgetOf('说明') })]);
             const created = await service.createUserShare({
                 kind: 'reply',
                 chatId: CHAT_ID,
@@ -149,7 +173,120 @@ const cases: { name: string; body: () => Promise<void> }[] = [
             });
             expect(created.ok, 'created');
             if (!created.ok) return;
-            expect(created.share.previewWidth === null, 'no card yet');
+            expect(created.share.previewWidth === 1200, `width stored (got ${created.share.previewWidth})`);
+            expect(created.share.previewHeight === CONTENT_HEIGHT, 'the real height is stored');
+
+            const row = await store.findShareRowByToken(created.share.token);
+            expect(row?.previewImageBase64 !== null, 'the PNG bytes are stored');
+            expect(row?.previewWidth === 1200 && row.previewHeight === CONTENT_HEIGHT, 'row dimensions');
+            expect(row?.previewSource === 'widget', 'the source is the widget');
+            expect(await service.ensurePreviewImage(created.share.token), 'a stored preview satisfies ensure');
+            const active = await service.findActiveShare(created.share.token);
+            expect(
+                active?.previewWidth === 1200 && active.previewHeight === CONTENT_HEIGHT,
+                'the record carries the size'
+            );
+        },
+    },
+    {
+        name: 'a reply without a widget has no preview',
+        body: async () => {
+            const messageId = newMessageId();
+            await makeReply(messageId, [versionOf(1)]);
+            const created = await service.createUserShare({
+                kind: 'reply',
+                chatId: CHAT_ID,
+                firstMessageId: messageId,
+                createdBy: CREATOR.userId,
+            });
+            expect(created.ok, 'created');
+            if (!created.ok) return;
+            expect(created.share.previewWidth === null, 'no image');
+            expect(await service.ensurePreviewImage(created.share.token) === false, 'ensure reports the missing image');
+        },
+    },
+    {
+        name: 'a conversation share previews the newest widget in its tree',
+        body: async () => {
+            const rootId = newMessageId();
+            const botId = newMessageId();
+            await saveMessage(rootId, CREATOR.userId, '问题');
+            await saveMessage(botId, BOT_USER_ID, '', rootId);
+            const response = await db.createBotResponse(CHAT_ID, botId, rootId, {
+                model: 'offline-model',
+                hasImage: false,
+            });
+            response.setVersions([versionOf(1, { text: '回答', widget: widgetOf('会话卡片') })]);
+            response.currentVersionIndex = 0;
+            await response.save();
+
+            const created = await service.createUserShare({
+                kind: 'conversation',
+                chatId: CHAT_ID,
+                rootId,
+                createdBy: CREATOR.userId,
+            });
+            expect(created.ok, 'created');
+            if (!created.ok) return;
+            expect(
+                created.share.previewWidth === 1200 && created.share.previewHeight === CONTENT_HEIGHT,
+                'the widget render is stored'
+            );
+            const loaded = await content.loadConversationShareContent(CHAT_ID, rootId);
+            expect(loaded?.preview.widgetHtml !== undefined, 'the snapshot carries the widget HTML');
+        },
+    },
+    {
+        name: 'a conversation share skips newer bot replies without a widget',
+        body: async () => {
+            const rootId = newMessageId();
+            const widgetBotId = newMessageId();
+            const textBotId = newMessageId();
+            await saveMessage(rootId, CREATOR.userId, '问题');
+            await saveMessage(widgetBotId, BOT_USER_ID, '', rootId);
+            const widgetResponse = await db.createBotResponse(CHAT_ID, widgetBotId, rootId, {
+                model: 'offline-model',
+                hasImage: false,
+            });
+            widgetResponse.setVersions([versionOf(1, { text: '带卡片的回答', widget: widgetOf('卡片') })]);
+            widgetResponse.currentVersionIndex = 0;
+            await widgetResponse.save();
+            // A newer bot reply with text only: the widget above is still the preview
+            await saveMessage(textBotId, BOT_USER_ID, '', widgetBotId);
+            const textResponse = await db.createBotResponse(CHAT_ID, textBotId, widgetBotId, {
+                model: 'offline-model',
+                hasImage: false,
+            });
+            textResponse.setVersions([versionOf(1, { text: '后来只有文字' })]);
+            textResponse.currentVersionIndex = 0;
+            await textResponse.save();
+
+            const created = await service.createUserShare({
+                kind: 'conversation',
+                chatId: CHAT_ID,
+                rootId,
+                createdBy: CREATOR.userId,
+            });
+            expect(created.ok, 'created');
+            if (!created.ok) return;
+            expect(created.share.previewWidth === 1200, 'the older widget render is still the image');
+            const loaded = await content.loadConversationShareContent(CHAT_ID, rootId);
+            expect(loaded?.preview.widgetHtml !== undefined, 'the widget bubble supplies the snapshot');
+        },
+    },
+    {
+        name: 'a stored preview image is read back and not re-rendered',
+        body: async () => {
+            const messageId = newMessageId();
+            await makeReply(messageId, [versionOf(1, { widget: widgetOf() })]);
+            const created = await service.createUserShare({
+                kind: 'reply',
+                chatId: CHAT_ID,
+                firstMessageId: messageId,
+                createdBy: CREATOR.userId,
+            });
+            expect(created.ok, 'created');
+            if (!created.ok) return;
             const card = Buffer.from('card-bytes');
             await store.updateSharePreview(created.share.token, {
                 base64: card.toString('base64'),
@@ -166,45 +303,19 @@ const cases: { name: string; body: () => Promise<void> }[] = [
         },
     },
     {
-        name: 'the system share degrades to no card when rendering is off',
+        name: 'the reply content carries the widget HTML the preview needs',
         body: async () => {
-            const messageId = takeMessageId();
-            await makeReply(messageId, [
-                { versionId: 1, createdAt: '2026-11-09T12:00:00.000Z', messageIds: [1], currentMessageId: 1, text: 'x', wasStoppedByUser: false },
-            ]);
-            const share = await service.ensureSystemReplyShare({
-                chatId: CHAT_ID,
-                firstMessageId: messageId,
-                versionId: 1,
-                preview: { widgetHtml: '<div>w</div>', widgetImageBase64: PNG_1PX, chatTitle: '主群' },
-            });
-            expect(share !== null, 'the link still exists');
-            expect(share?.previewWidth === null, 'no preview card');
-            expect(await service.ensurePreviewImage(share?.token ?? '') === false, 'ensure reports the failure');
-        },
-    },
-    {
-        name: 'the reply content carries the snapshot the card needs',
-        body: async () => {
-            const messageId = takeMessageId();
-            await makeReply(messageId, [
-                {
-                    versionId: 1,
-                    createdAt: '2026-11-09T12:00:00.000Z',
-                    messageIds: [1],
-                    currentMessageId: 1,
-                    text: '带图的回复',
-                    wasStoppedByUser: false,
-                    imageBase64: PNG_1PX,
-                },
-            ]);
+            const messageId = newMessageId();
+            await makeReply(messageId, [versionOf(1, { widget: widgetOf('卡片说明') })]);
             const loaded = await content.loadReplyShareContent(CHAT_ID, messageId, null);
-            expect(loaded?.preview.imageBase64 === PNG_1PX, 'the image bytes reach the snapshot');
-            expect(previewCard.previewSourceOf(loaded?.preview ?? snapshotOf()) === 'image', 'source image');
+            expect(loaded?.widget?.caption === '卡片说明', 'the widget content');
+            expect(loaded?.preview.widgetHtml !== undefined, 'the snapshot carries the HTML');
+            expect(loaded?.preview.widgetImageBase64 === undefined, 'no stored 600px render needed');
         },
     },
 ];
 
 const results: CaseResult[] = [];
 for (const testCase of cases) results.push(await runCase(testCase.name, testCase.body));
+stubServer.close();
 reportResults(results);

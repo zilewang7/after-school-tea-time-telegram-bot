@@ -173,7 +173,7 @@ export const markShareRevoked = async (token: string, revokedAt: string): Promis
     return row !== null && row.revokedAt === revokedAt;
 };
 
-/** Store the rendered preview card of an active link */
+/** Store the rendered preview image of an active link */
 export const updateSharePreview = async (token: string, preview: PreviewImage): Promise<void> => {
     await sequelize.query(
         `UPDATE share_links

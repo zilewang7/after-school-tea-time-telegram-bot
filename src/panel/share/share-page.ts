@@ -1,8 +1,8 @@
 /**
  * The public share page (design §5.7): a plain server-rendered HTML document,
  * no framework, no third-party resources. Telegram's crawler does not run JS,
- * so everything the preview card needs (title, description, og:image at
- * 1200×630) is in the initial HTML.
+ * so everything its preview needs (title, description, and the widget render as
+ * og:image when there is one) is in the initial HTML.
  *
  * Security: every user/model string is escaped, markdown only maps the
  * whitelisted entities (markdown-html.ts), widgets only load in a sandboxed
@@ -154,13 +154,20 @@ const HEIGHT_SCRIPT = `
 </script>
 `.trim();
 
+/** The stored `/s/<token>/og.png` and its pixel size */
+export interface SharePreviewInput {
+    /** Pixel size of the stored image; null when the row predates the dimensions */
+    width: number | null;
+    height: number | null;
+}
+
 export interface SharePageInput {
     token: string;
     /** Absolute public origin, no trailing slash (OG URLs must be absolute) */
     baseUrl: string;
     content: ShareContent;
-    /** Whether /s/<token>/og.png has a 1200×630 card to serve */
-    hasPreview: boolean;
+    /** The widget render `/s/<token>/og.png` serves; null = the page has no image */
+    preview: SharePreviewInput | null;
     /** Mini App deep link, when BOT_USER_NAME is configured */
     miniAppLink: string | null;
 }
@@ -196,17 +203,27 @@ const conversationMeta = (content: ShareConversationContent): PageMeta => {
 const metaOf = (content: ShareContent): PageMeta =>
     content.kind === 'reply' ? replyMeta(content) : conversationMeta(content);
 
+/** The image tags: the widget render and its real size, nothing else */
+const ogImageTags = (imageUrl: string, preview: SharePreviewInput | null): string[] => {
+    if (preview === null) return [];
+    const dimensions =
+        preview.width === null || preview.height === null
+            ? []
+            : [
+                  `<meta property="og:image:width" content="${preview.width}">`,
+                  `<meta property="og:image:height" content="${preview.height}">`,
+              ];
+    return [
+        `<meta property="og:image" content="${escapeHtml(imageUrl)}">`,
+        ...dimensions,
+        `<meta name="twitter:image" content="${escapeHtml(imageUrl)}">`,
+    ];
+};
+
 const headOf = (input: SharePageInput, meta: PageMeta): string => {
     const shareUrl = `${input.baseUrl}/s/${input.token}`;
     const imageUrl = `${shareUrl}/og.png`;
-    const ogImage = input.hasPreview
-        ? [
-              `<meta property="og:image" content="${escapeHtml(imageUrl)}">`,
-              '<meta property="og:image:width" content="1200">',
-              '<meta property="og:image:height" content="630">',
-              `<meta name="twitter:image" content="${escapeHtml(imageUrl)}">`,
-          ]
-        : [];
+    const ogImage = ogImageTags(imageUrl, input.preview);
     return [
         '<!doctype html>',
         '<html lang="zh-CN">',

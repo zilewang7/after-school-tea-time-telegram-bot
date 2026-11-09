@@ -12,7 +12,7 @@ export type ShareKind = 'reply' | 'conversation';
 /** Who created the row: a panel user, or the bot's group link fallback */
 export type ShareSource = 'user' | 'system';
 
-/** Which content the 1200×630 preview card shows (raw-widget = the stored 600px render, not a fresh 1200 one) */
+/** What a stored preview image came from; new rows only store 'widget' (rows keep old values) */
 export type PreviewSource = 'widget' | 'image' | 'text' | 'raw-widget';
 
 /** A share link as the panel API shows it (the record contract of design §5.6) */
@@ -78,25 +78,25 @@ export const SHARE_CREATE_FAILURES = {
 
 export type ShareCreateFailure = (typeof SHARE_CREATE_FAILURES)[keyof typeof SHARE_CREATE_FAILURES];
 
-/** The content a 1200×630 preview card is built from */
+/** What a share's preview image is rendered from: only `widgetHtml` draws one */
 export interface PreviewSnapshot {
-    /** Group title, shown in the card footer */
+    /** Group title; not part of the image any more (kept for older stored cards) */
     chatTitle: string | null;
     /** ISO time of the shared content */
     createdAt: string;
     /** Plain text of the reply (or of the conversation's newest bot reply) */
     text: string;
-    /** Final widget HTML, when the shared content has a widget */
+    /** Final widget HTML; the only field that produces a preview image */
     widgetHtml?: string;
-    /** 600px rendered widget PNG (base64), a fallback when the 1200 render fails */
+    /** 600px rendered widget PNG (base64); older stored cards used it, never the render */
     widgetImageBase64?: string;
-    /** Widget caption, used as the card subtitle when there is no text */
+    /** Widget caption; not part of the image */
     caption?: string | null;
-    /** Image attachment bytes (base64) */
+    /** Image attachment bytes (base64); not part of the image */
     imageBase64?: string;
 }
 
-/** A rendered preview card, ready to store */
+/** A rendered preview image, ready to store */
 export interface PreviewImage {
     base64: string;
     width: number;

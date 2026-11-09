@@ -43,6 +43,7 @@ import { registerReplyRoute } from './routes/replies.js';
 import { registerShareRoutes } from './routes/shares.js';
 import { registerStatsRoute } from './routes/stats.js';
 import { registerStatusRoute } from './routes/status.js';
+import { registerPublicShareApiRoutes } from './share/public-api.js';
 import { registerSharePublicRoutes } from './share/public-routes.js';
 import { createWidgetSigner } from './share/signed-widget.js';
 import { registerSignedWidgetRoute } from './share/signed-widget-routes.js';
@@ -107,6 +108,11 @@ export const createPanelApp = (options: PanelAppOptions): Hono<PanelEnv> => {
     app.use('*', securityHeaders);
 
     registerHealthRoute(app, { startedAt: options.startedAt, version: options.version });
+
+    // The public share JSON authenticates with its token, not initData, so it
+    // sits in front of the /api middleware stack like /api/health. With
+    // SHARE_ENABLED=0 it answers the same JSON 404 an unknown token gets.
+    registerPublicShareApiRoutes(app, { enabled: shareEnabled, now });
 
     app.use(
         '/api/*',

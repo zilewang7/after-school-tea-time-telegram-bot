@@ -64,7 +64,6 @@ const { buildImageCaption, IMAGE_CAPTION_MAX_LENGTH } = await import('../../src/
 const { ONE_ATTACHMENT_PER_REPLY } = await import('../../src/reply/tools/reply-media-state.js');
 const { buildReplyToolContext } = await import('../../src/reply/tools/reply-tool-context.js');
 const { widgetDeliveryOf } = await import('../../src/telegram/widget-precheck.js');
-const { WIDGET_LINK_LABEL } = await import('../../src/reply/widget-link-fallback.js');
 const { createReplyMediaState } = await import('../../src/reply/tools/reply-media-state.js');
 const imageGeneration = await import('../../src/ai/image-generation/index.js');
 const { GEMINI_IMAGE_MODEL, OPENAI_IMAGE_MODEL } = await import('../../src/config/models.js');
@@ -2050,9 +2049,19 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
                 row?.file?.equals(PNG_BYTES) === true && row.fileMime === 'image/png' && row.mediaHint === 'a widget',
                 `the bot row carries the card image (got ${json({ mime: row?.fileMime, hint: row?.mediaHint, bytes: row?.file?.length })})`
             );
+            const linkPayload = linkMessage?.payload ?? {};
+            const linkEntities = Array.isArray(linkPayload.entities) ? linkPayload.entities.map(asRecord) : [];
+            const linkEntity = linkEntities.find((entity) => entity.type === 'text_link');
             expect(
-                linkMessage?.payload.text === `日报\n${WIDGET_LINK_LABEL}`,
-                `the group receives one text message with the link (got ${json(linkMessage?.payload.text)})`
+                linkPayload.text === '日报',
+                `the group receives the caption itself (got ${json(linkPayload.text)})`
+            );
+            expect(
+                linkEntity?.offset === 0 &&
+                    linkEntity.length === '日报'.length &&
+                    typeof linkEntity.url === 'string' &&
+                    linkEntity.url.includes('?startapp=s'),
+                `the caption is the Mini App share link (got ${json(linkEntity)})`
             );
         },
     },

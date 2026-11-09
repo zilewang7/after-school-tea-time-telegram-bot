@@ -48,6 +48,8 @@ const PNG_BYTES = Buffer.from(
     'base64'
 );
 const widgetRequests: string[] = [];
+/** Simulates the preview render failing while the 600px card render still works */
+let failWideRender = false;
 const stubServer = createServer((request, response) => {
     const chunks: Buffer[] = [];
     request.on('data', (chunk: Buffer) => chunks.push(chunk));
@@ -55,6 +57,11 @@ const stubServer = createServer((request, response) => {
         const url = request.url ?? '';
         widgetRequests.push(url);
         if (url.startsWith('/render')) {
+            if (failWideRender && url.includes('width=1200')) {
+                response.writeHead(500, { 'Content-Type': 'text/plain' });
+                response.end('render failed');
+                return;
+            }
             response.writeHead(200, { 'Content-Type': 'image/png', 'Content-Length': PNG_BYTES.length });
             response.end(PNG_BYTES);
             return;
@@ -99,6 +106,7 @@ process.env.WIDGET_RENDER_URL = stubRoot;
 const db = await setupOfflineDb();
 const responseHandler = await import('../../src/reply/response-handler.js');
 const botMessageService = await import('../../src/services/bot-message-service.js');
+const shareService = await import('../../src/panel/share/share-link-service.js');
 const dbIndex = await import('../../src/db/index.js');
 const { Message } = await import('../../src/db/messageDTO.js');
 const { widgetDeliveryOf } = await import('../../src/telegram/widget-precheck.js');
@@ -110,6 +118,7 @@ const {
     isWidgetNotAllowedError,
     miniAppReplyLink,
     resolveWidgetDelivery,
+    widgetMiniAppLink,
 } = await import('../../src/reply/widget-link-fallback.js');
 const { buildImageCaption } = await import('../../src/reply/tools/image-message.js');
 const { sendReplyWidgetLinkMessage } = await import('../../src/telegram/reply-widget-send.js');
@@ -309,7 +318,28 @@ results.push(
 );
 
 results.push(
-    await runCase('the link message is the caption plus one text link', async () => {
+    await runCase('a link message prefers the public share and falls back to the reply', async () => {
+        const base = {
+            botUsername: 'AfterSchoolTeatimeBot',
+            shortName: 'panel',
+            chatId: -1001415974153,
+            firstMessageId: 1234,
+        };
+        const shared = widgetMiniAppLink({ ...base, shareToken: 'AbCdEfGhIjKlMnOpQrStUvWx' });
+        expect(
+            shared === 'https://t.me/AfterSchoolTeatimeBot/panel?startapp=sAbCdEfGhIjKlMnOpQrStUvWx',
+            `the share page is what non-members can open (got ${shared})`
+        );
+        const withoutShare = widgetMiniAppLink({ ...base, shareToken: null });
+        expect(
+            withoutShare === 'https://t.me/AfterSchoolTeatimeBot/panel?startapp=r-1001415974153_1234',
+            `without a share page the reply deep link is used (got ${withoutShare})`
+        );
+    })
+);
+
+results.push(
+    await runCase('the link message is the caption itself, or one short line', async () => {
         const miniAppLink = 'https://t.me/bot/panel?startapp=r-100_7';
         const plain = buildWidgetLinkMessage({ miniAppLink, replyToMessageId: 7 });
         expect(plain.text === WIDGET_LINK_LABEL, 'without a caption only the link line goes out');
@@ -321,36 +351,53 @@ results.push(
             'the text_link covers the whole label'
         );
         expect(plain.replyParameters?.message_id === 7, 'the message replies to the trigger');
-        expect(plain.linkPreviewOptions === undefined, 'no share page, no forced preview');
+        expect(plain.linkPreviewOptions === undefined, 'no widget render, no forced preview');
 
         const captionFields = buildImageCaption('**今日**日报');
         const captioned = buildWidgetLinkMessage({
             caption: captionFields,
-            shareUrl: 'https://miniapp.example/s/tok',
+            previewImageUrl: 'https://miniapp.example/s/tok/og.png',
             miniAppLink,
         });
-        const captionText = captioned.text.slice(0, captioned.text.length - WIDGET_LINK_LABEL.length - 1);
-        expect(
-            captionText === '今日日报' && captioned.text.endsWith(`\n${WIDGET_LINK_LABEL}`),
-            `the link line follows the rendered caption (got ${JSON.stringify(captioned.text)})`
-        );
+        expect(captioned.text === '今日日报', `the caption is the whole message (got ${JSON.stringify(captioned.text)})`);
         const captionEntities = entitiesOf(captioned).filter((entity) => entity.type !== 'text_link');
         expect(
-            captionEntities.length > 0 && captionEntities.every((entity) => entity.offset + entity.length <= captionText.length),
-            'the caption keeps its own entities inside the caption'
+            captionEntities.some(
+                (entity) => entity.type === 'bold' && entity.offset === 0 && entity.length === '今日'.length
+            ),
+            'the caption keeps its own formatting at the same offsets'
         );
         const captionLink = entitiesOf(captioned).find((entity) => entity.type === 'text_link');
         expect(
-            captionLink?.offset === captionText.length + 1 &&
-                captionLink.length === WIDGET_LINK_LABEL.length &&
+            captionLink?.offset === 0 &&
+                captionLink.length === captioned.text.length &&
                 captionLink.url === miniAppLink,
-            `the text_link is placed after the caption (got ${JSON.stringify(captionLink)})`
+            `the text_link covers the whole caption (got ${JSON.stringify(captionLink)})`
         );
         expect(
-            captioned.linkPreviewOptions?.url === 'https://miniapp.example/s/tok' &&
+            captioned.linkPreviewOptions?.url === 'https://miniapp.example/s/tok/og.png' &&
                 captioned.linkPreviewOptions.prefer_large_media === true &&
                 captioned.linkPreviewOptions.show_above_text === true,
-            'the share page is previewed as a large card above the text'
+            'the widget render is previewed as a large card above the text'
+        );
+
+        const blocky = buildWidgetLinkMessage({
+            caption: {
+                caption: '引用\n代码',
+                caption_entities: [
+                    { type: 'blockquote', offset: 0, length: 2 },
+                    { type: 'pre', offset: 3, length: 2 },
+                    { type: 'italic', offset: 0, length: 2 },
+                ],
+            },
+            miniAppLink,
+        });
+        const blockyTypes = entitiesOf(blocky)
+            .map((entity) => entity.type)
+            .sort();
+        expect(
+            blockyTypes.join(',') === 'italic,text_link',
+            `a whole-text link drops the entities it would shadow (got ${blockyTypes.join(',')})`
         );
     })
 );
@@ -396,14 +443,8 @@ results.push(
         if (!linkCall) throw new Error('no text message went out');
         const payload = linkCall.payload;
         expect(
-            payload.text === `今日日报\n${WIDGET_LINK_LABEL}`,
-            `the caption and the link line go out as one text message (got ${JSON.stringify(payload.text)})`
-        );
-        const linkEntity = entitiesOf(payload).find((entity) => entity.type === 'text_link');
-        expect(
-            linkEntity?.url ===
-                `https://t.me/AfterSchoolTeatimeBot/panel?startapp=r${GROUP_CHAT_ID}_${chatContext.session.firstMessageId}`,
-            `the text_link opens the Mini App on this reply (got ${JSON.stringify(linkEntity)})`
+            payload.text === '今日日报',
+            `the caption is the whole message, no extra link line (got ${JSON.stringify(payload.text)})`
         );
         expect(
             asRecord(payload.reply_parameters).message_id === userMessageId,
@@ -414,21 +455,31 @@ results.push(
             widgetRequests.some((url) => url.startsWith('/render?width=600')),
             'the 600px card was rendered before delivery'
         );
+        expect(
+            widgetRequests.some((url) => url.startsWith('/render?width=1200')),
+            'the share preview was rendered at the page width'
+        );
 
         const stored = await dbIndex.getBotResponse(GROUP_CHAT_ID, chatContext.session.firstMessageId);
         const version = stored?.getVersions().at(-1);
         expect(version?.widget?.deliveredAs === 'link', 'the version records the link delivery');
         expect(version?.widget?.imageBase64 === PNG_BASE64, 'the rendered card is stored on the version');
-        // The share service may be unavailable offline: then the message goes
-        // out without the forced preview, and no share URL is stored
-        if (version?.widget?.shareUrl !== undefined) {
-            expect(
-                asRecord(payload.link_preview_options).url === version.widget.shareUrl,
-                'the preview points at the reply share page'
-            );
-        } else {
-            expect(payload.link_preview_options === undefined, 'no share page, no forced preview');
-        }
+        const shareUrl = version?.widget?.shareUrl;
+        expect(shareUrl !== undefined, 'the reply share page was created for the link');
+        const shareToken = shareUrl === undefined ? null : shareUrl.split('/').at(-1);
+        const linkEntity = entitiesOf(payload).find((entity) => entity.type === 'text_link');
+        expect(
+            linkEntity?.url === `https://t.me/AfterSchoolTeatimeBot/panel?startapp=s${shareToken}`,
+            `the text_link opens the public share in the Mini App (got ${JSON.stringify(linkEntity)})`
+        );
+        expect(
+            linkEntity?.offset === 0 && linkEntity.length === payload.text.length,
+            'the text_link covers the whole caption'
+        );
+        expect(
+            asRecord(payload.link_preview_options).url === `${shareUrl}/og.png`,
+            `the preview points at the widget render (got ${JSON.stringify(payload.link_preview_options)})`
+        );
 
         const row = await rowOf(GROUP_CHAT_ID, chatContext.session.firstMessageId);
         expect(
@@ -436,6 +487,47 @@ results.push(
             'the bot row carries the rendered card PNG'
         );
         expect(row?.mediaHint === 'a widget', 'the row still says the attachment is a widget');
+    })
+);
+
+results.push(
+    await runCase('a link message without a widget render has no forced preview', async () => {
+        failWideRender = true;
+        try {
+            const { telegram, chatContext } = await startReply(GROUP_CHAT_ID);
+            // A document no other case rendered, so the renderer cache cannot help
+            const widget = widgetDeliveryOf('a2ui', '<div class="tw-root">无法预览的卡片</div>', '无法预览的卡片', {
+                components: [],
+            });
+            const response: AIResponse = {
+                text: '卡片来了',
+                thinkingText: '',
+                images: [],
+                widgets: [widget],
+            };
+            chatContext.session.textBuffer = response.text;
+            await quietly(() => responseHandler.sendFinalResponse(chatContext, response));
+
+            const linkCall = telegram.callsOf('sendMessage').at(-1);
+            if (!linkCall) throw new Error('no text message went out');
+            const payload = linkCall.payload;
+            expect(payload.text === '无法预览的卡片', 'the caption still goes out');
+            expect(
+                payload.link_preview_options === undefined,
+                `no og.png, no forced preview (got ${JSON.stringify(payload.link_preview_options)})`
+            );
+            const stored = await dbIndex.getBotResponse(GROUP_CHAT_ID, chatContext.session.firstMessageId);
+            const version = stored?.getVersions().at(-1);
+            expect(version?.widget?.shareUrl !== undefined, 'the share page itself still exists');
+            const shareToken = version?.widget?.shareUrl?.split('/').at(-1) ?? null;
+            const linkEntity = entitiesOf(payload).find((entity) => entity.type === 'text_link');
+            expect(
+                linkEntity?.url === `https://t.me/AfterSchoolTeatimeBot/panel?startapp=s${shareToken}`,
+                'the link still opens the share page'
+            );
+        } finally {
+            failWideRender = false;
+        }
     })
 );
 
@@ -464,11 +556,10 @@ results.push(
 );
 
 results.push(
-    await runCase('switching to a link version re-sends the link message', async () => {
+    await runCase('switching to a link version re-sends the stored share link', async () => {
         const telegram = createFakeTelegram();
         const firstMessageId = takeMessageId();
         const userMessageId = takeMessageId();
-        const shareUrl = 'https://miniapp.example/s/abc';
         const linkWidget = (caption: string) => ({
             mode: 'a2ui',
             html: `<div class="tw-root">${caption}</div>`,
@@ -477,7 +568,6 @@ results.push(
             zlibBytes: 20,
             imageBase64: PNG_BASE64,
             deliveredAs: 'link',
-            shareUrl,
         });
         await seedResponse({
             chatId: GROUP_CHAT_ID,
@@ -486,6 +576,22 @@ results.push(
             versions: [{ widget: linkWidget('第一版') }, { widget: linkWidget('第二版') }],
             currentVersionIndex: 0,
         });
+
+        // The second version already has its share page (and widget render)
+        const share = await shareService.ensureSystemReplyShare({
+            chatId: GROUP_CHAT_ID,
+            firstMessageId,
+            versionId: 2,
+        });
+        if (share === null) throw new Error('the share page was not created');
+        const seeded = await dbIndex.getBotResponse(GROUP_CHAT_ID, firstMessageId);
+        if (seeded === null) throw new Error('the seeded response is gone');
+        const versions = seeded.getVersions();
+        const secondVersion = versions[1];
+        if (secondVersion === undefined) throw new Error('the second version is gone');
+        versions[1] = { ...secondVersion, widget: { ...linkWidget('第二版'), shareUrl: share.url } };
+        seeded.setVersions(versions);
+        await seeded.save();
 
         const ctx = contextOf(
             messageUpdate({ chatId: GROUP_CHAT_ID, messageId: userMessageId, userId: OWNER_USER_ID, text: '切换' }),
@@ -499,23 +605,69 @@ results.push(
         const linkCall = telegram.callsOf('sendMessage').at(-1);
         if (!linkCall) throw new Error('the link message was not sent again');
         expect(
-            linkCall.payload.text === `第二版\n${WIDGET_LINK_LABEL}`,
-            `the new version's caption goes out (got ${JSON.stringify(linkCall.payload.text)})`
+            linkCall.payload.text === '第二版',
+            `the new version's caption goes out alone (got ${JSON.stringify(linkCall.payload.text)})`
         );
         expect(
-            asRecord(linkCall.payload.link_preview_options).url === shareUrl,
-            'the stored share page is reused as the preview'
+            asRecord(linkCall.payload.link_preview_options).url === `${share.url}/og.png`,
+            `the stored widget render is previewed as a large image (got ${JSON.stringify(linkCall.payload.link_preview_options)})`
         );
         const linkEntity = entitiesOf(linkCall.payload).find((entity) => entity.type === 'text_link');
         expect(
-            linkEntity?.url ===
-                `https://t.me/AfterSchoolTeatimeBot/panel?startapp=r${GROUP_CHAT_ID}_${firstMessageId}`,
-            'the link still opens this reply in the Mini App'
+            linkEntity?.url === `https://t.me/AfterSchoolTeatimeBot/panel?startapp=s${share.token}`,
+            'the link opens the stored share page in the Mini App'
         );
         expect(linkCall.payload.reply_markup !== undefined, 'the version buttons ride on the link message');
 
         const stored = await dbIndex.getBotResponse(GROUP_CHAT_ID, firstMessageId);
         expect(stored?.currentVersionIndex === 1, 'the response now shows the second version');
+    })
+);
+
+results.push(
+    await runCase('switching to a link version makes the share page it is missing', async () => {
+        const telegram = createFakeTelegram();
+        const firstMessageId = takeMessageId();
+        const userMessageId = takeMessageId();
+        const linkWidget = (caption: string) => ({
+            mode: 'a2ui',
+            html: `<div class="tw-root">${caption}</div>`,
+            caption,
+            htmlBytes: 40,
+            zlibBytes: 20,
+            imageBase64: PNG_BASE64,
+            deliveredAs: 'link',
+        });
+        await seedResponse({
+            chatId: GROUP_CHAT_ID,
+            firstMessageId,
+            userMessageId,
+            versions: [{ widget: linkWidget('第一版') }, { widget: linkWidget('第二版') }],
+            currentVersionIndex: 0,
+        });
+
+        const ctx = contextOf(
+            messageUpdate({ chatId: GROUP_CHAT_ID, messageId: userMessageId, userId: OWNER_USER_ID, text: '切换' }),
+            telegram
+        );
+        expect(await quietly(() => botMessageService.switchVersion(ctx, firstMessageId, 'next')), 'switched');
+
+        const linkCall = telegram.callsOf('sendMessage').at(-1);
+        if (!linkCall) throw new Error('the link message was not sent again');
+        // No WEBAPP_PUBLIC_URL offline: the created share URL is the relative /s/<token>/og.png
+        const previewUrl = asRecord(linkCall.payload.link_preview_options).url;
+        const createdUrl = typeof previewUrl === 'string' ? previewUrl : '';
+        const segments = createdUrl.split('/');
+        const shareToken = segments.at(-2) ?? '';
+        expect(
+            /^[A-Za-z0-9_-]{24}$/.test(shareToken) && createdUrl.endsWith('/og.png'),
+            `a share page with its widget render was created (got ${JSON.stringify(previewUrl)})`
+        );
+        const linkEntity = entitiesOf(linkCall.payload).find((entity) => entity.type === 'text_link');
+        expect(
+            linkEntity?.url === `https://t.me/AfterSchoolTeatimeBot/panel?startapp=s${shareToken}`,
+            'the link opens the created share page'
+        );
     })
 );
 
@@ -584,7 +736,7 @@ results.push(
         api.config.use(transformer as Transformer);
 
         const message = buildWidgetLinkMessage({
-            shareUrl: 'https://miniapp.example/s/tok',
+            previewImageUrl: 'https://miniapp.example/s/tok/og.png',
             miniAppLink: 'https://t.me/bot/panel?startapp=r1_2',
         });
         const sent = await quietly(() => sendReplyWidgetLinkMessage({ chatId: 1, api, message }));
@@ -622,21 +774,29 @@ results.push(
         );
         const linkCall = telegram.callsOf('sendMessage').at(-1);
         expect(
-            linkCall?.payload.text === `私聊卡片\n${WIDGET_LINK_LABEL}`,
-            `the refusal downgraded to the link message (got ${JSON.stringify(linkCall?.payload.text)})`
+            linkCall?.payload.text === '私聊卡片',
+            `the refusal downgraded to the caption itself (got ${JSON.stringify(linkCall?.payload.text)})`
+        );
+        const stored = await dbIndex.getBotResponse(PRIVATE_CHAT_ID, chatContext.session.firstMessageId);
+        const version = stored?.getVersions().at(-1);
+        expect(version?.widget?.deliveredAs === 'link', 'the version records the downgraded delivery');
+        const shareUrl = version?.widget?.shareUrl;
+        expect(shareUrl !== undefined, 'the share page was created for the link');
+        const shareToken = shareUrl === undefined ? null : shareUrl.split('/').at(-1);
+        expect(
+            asRecord(linkCall?.payload.link_preview_options).url === `${shareUrl}/og.png`,
+            'the widget render previews the link'
         );
         const linkEntity = entitiesOf(linkCall?.payload ?? {}).find(
             (entity) => entity.type === 'text_link'
         );
         expect(
-            linkEntity?.url ===
-                `https://t.me/AfterSchoolTeatimeBot/panel?startapp=r${PRIVATE_CHAT_ID}_${chatContext.session.firstMessageId}`,
-            `the link opens the private chat's reply in the Mini App (got ${JSON.stringify(linkEntity)})`
+            linkEntity?.url === `https://t.me/AfterSchoolTeatimeBot/panel?startapp=s${shareToken}`,
+            `the link opens the public share in the Mini App (got ${JSON.stringify(linkEntity)})`
         );
-        const stored = await dbIndex.getBotResponse(PRIVATE_CHAT_ID, chatContext.session.firstMessageId);
         expect(
-            stored?.getVersions().at(-1)?.widget?.deliveredAs === 'link',
-            'the version records the downgraded delivery'
+            linkEntity?.offset === 0 && linkEntity.length === '私聊卡片'.length,
+            'the text_link covers the whole caption'
         );
     })
 );

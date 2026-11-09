@@ -9,12 +9,12 @@
  */
 import type { Context, Hono } from 'hono';
 import type { PanelEnv } from '../context.js';
-import { loadPublicShare, recordSharePageView } from './share-link-service.js';
+import { ensurePreviewImage, loadPublicShare, recordSharePageView } from './share-link-service.js';
 import { loadShareMedia } from './share-media.js';
 import { renderShareNotFoundPage, renderSharePage } from './share-page.js';
 import { findShareRowByToken } from './share-store.js';
 import { widgetsOfContent } from './share-content.js';
-import { baseUrlOfRequest, miniAppChatLink, miniAppReplyLink } from './share-urls.js';
+import { baseUrlOfRequest, miniAppShareLink } from './share-urls.js';
 import { widgetDocumentOf } from './signed-widget.js';
 import type { WidgetTheme } from '../../widget-image/index.js';
 
@@ -32,8 +32,8 @@ export const SHARE_PAGE_CSP = [
 
 const NOINDEX = 'noindex, nofollow';
 
-/** Requests per IP per window (design §5.6) */
-const DEFAULT_RATE_LIMIT = { limit: 120, windowMs: 60_000 };
+/** Requests per IP per window (design §5.6); the public share API reuses it */
+export const PUBLIC_RATE_LIMIT = { limit: 120, windowMs: 60_000 } as const;
 /** Above this many tracked addresses, finished windows are swept */
 const SWEEP_THRESHOLD = 1000;
 
@@ -139,7 +139,7 @@ export interface SharePublicRouteOptions {
 
 export const registerSharePublicRoutes = (app: Hono<PanelEnv>, options: SharePublicRouteOptions): void => {
     const now = options.now ?? Date.now;
-    const allow = createPublicRateLimiter({ ...(options.rateLimit ?? DEFAULT_RATE_LIMIT), now });
+    const allow = createPublicRateLimiter({ ...(options.rateLimit ?? PUBLIC_RATE_LIMIT), now });
 
     /** null when the request may proceed; the response to send otherwise */
     const blockedBy = (context: Context<PanelEnv>): Response | null => {
@@ -156,31 +156,42 @@ export const registerSharePublicRoutes = (app: Hono<PanelEnv>, options: SharePub
         if (share === null) return notFoundResponse(context);
         recordSharePageView(share.row.token);
         const baseUrl = baseUrlOfRequest(context.req.url);
-        const content = share.content;
-        const miniAppLink =
-            content.kind === 'reply'
-                ? miniAppReplyLink(content.chatId, content.firstMessageId)
-                : miniAppChatLink(content.chatId);
+        // The footer button opens the share itself in the Mini App; the webapp
+        // sends a member on to the reply/chat page and everyone else stays here
+        const miniAppLink = miniAppShareLink(share.row.token);
+        // Only a stored widget render is an og:image; text shares preview as text
+        const preview =
+            share.row.previewImageBase64 === null
+                ? null
+                : { width: share.row.previewWidth, height: share.row.previewHeight };
         return pageResponse(
             renderSharePage({
                 token: share.row.token,
                 baseUrl,
-                content,
-                hasPreview: share.hasPreview,
+                content: share.content,
+                preview,
                 miniAppLink,
             })
         );
     });
 
-    // GET /s/<token>/og.png: the stored 1200×630 card; 404 when it could not be rendered
+    // GET /s/<token>/og.png: the stored widget render; 404 when there is none.
+    // A missing image is drawn on the first fetch, so a link created while the
+    // renderer was down (and a row created before the image meant "the widget
+    // itself") still previews once the crawler asks for it.
     app.get('/s/:token/og.png', async (context) => {
         const blocked = blockedBy(context);
         if (blocked !== null) return blocked;
-        const row = await findShareRowByToken(context.req.param('token'));
-        if (row === null || row.revokedAt !== null || row.previewImageBase64 === null) {
-            return context.text('Not Found', 404);
+        const token = context.req.param('token');
+        const row = await findShareRowByToken(token);
+        if (row === null || row.revokedAt !== null) return context.text('Not Found', 404);
+        if (row.previewImageBase64 === null) {
+            const rendered = await ensurePreviewImage(token);
+            if (!rendered) return context.text('Not Found', 404);
         }
-        return pngResponse(Buffer.from(row.previewImageBase64, 'base64'), 'public, max-age=300');
+        const fresh = row.previewImageBase64 === null ? await findShareRowByToken(token) : row;
+        if (fresh === null || fresh.previewImageBase64 === null) return context.text('Not Found', 404);
+        return pngResponse(Buffer.from(fresh.previewImageBase64, 'base64'), 'public, max-age=300');
     });
 
     // GET /s/<token>/widget/<index>: the document a share page's iframe loads

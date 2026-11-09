@@ -29,7 +29,8 @@ import {
 } from '../telegram/reply-widget-send.js';
 import { editWidgetReplyMarkup } from '../telegram/widget-api.js';
 import { isWidgetRenderConfigured, renderWidgetPng } from '../widget-image/index.js';
-import { ensureSystemReplyShare } from '../panel/share/share-link-service.js';
+import { ensureSystemReplyShare, previewImageUrlOf } from '../panel/share/share-link-service.js';
+import type { ShareLinkRecord } from '../panel/share/share-types.js';
 import { toApiEntities } from '../telegram/api-entities.js';
 import { buildMessageLinkResolver } from '../telegram/message-link.js';
 import { createContextLabelStripper, stripContextLabel } from './context-label.js';
@@ -52,9 +53,9 @@ import { buildImageCaption, type ImageCaptionFields } from './tools/image-messag
 import {
     buildWidgetLinkMessage,
     isWidgetNotAllowedError,
-    miniAppReplyLink,
     miniAppShortName,
     resolveWidgetDelivery,
+    widgetMiniAppLink,
 } from './widget-link-fallback.js';
 import type {
     StreamChunk,
@@ -819,12 +820,13 @@ const renderWidgetImage = async (widget: WidgetDelivery): Promise<Buffer | null>
  * The reply's share page, created (or reused) for the version being delivered.
  * The preview snapshot travels with the call: the version is not stored yet,
  * so the share service cannot read it from the database. null = no share page;
- * the link still goes out without the large preview.
+ * the link still goes out without the large preview and with the reply's own
+ * deep link.
  */
-const ensureWidgetShareUrl = async (
+const ensureWidgetShare = async (
     chatContext: ChatContext,
     widget: WidgetDelivery
-): Promise<string | null> => {
+): Promise<ShareLinkRecord | null> => {
     const { ctx, chatId, session } = chatContext;
     const [error, share] = await to(
         ensureSystemReplyShare({
@@ -845,19 +847,20 @@ const ensureWidgetShareUrl = async (
         console.error('[response-handler] widget share page failed:', error);
         return null;
     }
-    return share?.url ?? null;
+    return share;
 };
 
 /**
- * The group form of a widget: one text message whose Mini App link opens this
- * reply, with the share page as its large preview. A message Telegram refuses
- * with the preview is retried without it by the sender.
+ * The group form of a widget: one text message whose Mini App link opens the
+ * reply's public share (or the reply itself when the share page failed), with
+ * the share page as its large preview. A message Telegram refuses with the
+ * preview is retried without it by the sender.
  */
 const deliverReplyWidgetLink = async (
     chatContext: ChatContext,
     widget: WidgetDelivery,
     captionFields: ImageCaptionFields,
-    shareUrl: string | null
+    share: ShareLinkRecord | null
 ): Promise<boolean> => {
     const { ctx, chatId, session } = chatContext;
     const botUsername = ctx.me.username;
@@ -866,14 +869,16 @@ const deliverReplyWidgetLink = async (
         return false;
     }
 
+    const previewImageUrl = share === null ? null : previewImageUrlOf(share);
     const message = buildWidgetLinkMessage({
         caption: captionFields,
-        ...(shareUrl !== null ? { shareUrl } : {}),
-        miniAppLink: miniAppReplyLink({
+        ...(previewImageUrl === null ? {} : { previewImageUrl }),
+        miniAppLink: widgetMiniAppLink({
             botUsername,
             shortName: miniAppShortName(),
             chatId,
             firstMessageId: session.firstMessageId,
+            shareToken: share?.token ?? null,
         }),
         replyToMessageId: chatContext.userMessageId,
     });
@@ -885,7 +890,7 @@ const deliverReplyWidgetLink = async (
     if (session.widget === undefined) session.widget = widget;
     session.widgetMessageId = sent[1];
     session.widgetDeliveredAs = 'link';
-    if (shareUrl !== null) session.widgetShareUrl = shareUrl;
+    if (share !== null) session.widgetShareUrl = share.url;
     return true;
 };
 
@@ -950,13 +955,13 @@ const deliverReplyWidget = async (
         console.warn('[response-handler] server refused the widget, falling back to a Mini App link');
     }
 
-    const shareUrl = await ensureWidgetShareUrl(chatContext, widget);
+    const share = await ensureWidgetShare(chatContext, widget);
     const linkPlan = resolveWidgetDelivery({
         chatType,
         groupFallback: config.widgetGroupFallback,
         shareEnabled: config.shareEnabled,
         renderOk: image !== null,
-        shareOk: shareUrl !== null,
+        shareOk: share !== null,
         serverRejected,
     });
     if (linkPlan.kind !== 'link') {
@@ -967,7 +972,7 @@ const deliverReplyWidget = async (
         chatContext,
         widget,
         captionFields,
-        linkPlan.withPreview ? shareUrl : null
+        linkPlan.withPreview ? share : null
     );
 };
 
