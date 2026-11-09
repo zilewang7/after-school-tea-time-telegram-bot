@@ -359,9 +359,14 @@ export const loadPublicShare = async (token: string): Promise<PublicShare | null
     return { row, content };
 };
 
-/** The og.png Telegram previews for a share page; null when no widget render was stored */
-export const previewImageUrlOf = (share: ShareLinkRecord): string | null =>
-    share.previewWidth === null || share.previewHeight === null ? null : `${share.url}/og.png`;
+/**
+ * The URL the group fallback's link preview points at (design §18): the share
+ * page in its preview mode. The preview therefore shows the widget render, but
+ * clicking it opens the page (which reveals the card) instead of a bare image
+ * file. Null when no widget render was stored, i.e. no preview to force.
+ */
+export const previewLinkUrlOf = (share: ShareLinkRecord): string | null =>
+    share.previewWidth === null || share.previewHeight === null ? null : `${share.url}?preview=1`;
 
 /** Count one page view (throttled; failures are not the page's problem) */
 export const recordSharePageView = (token: string): void => {

@@ -212,6 +212,56 @@ const cases: { name: string; body: () => Promise<void> }[] = [
         },
     },
     {
+        name: 'the preview URL keeps the render, drops the text OG and reveals the card',
+        body: async () => {
+            const messageId = takeMessageId();
+            const share = await replyShare(GROUP, messageId, [
+                versionOf(1, {
+                    text: '一段正文',
+                    widget: { mode: 'a2ui', html: '<div>卡片</div>', htmlBytes: 12, zlibBytes: 20 },
+                }),
+            ]);
+            await store.updateSharePreview(share.token, {
+                base64: Buffer.from('widget-render-bytes').toString('base64'),
+                width: 1200,
+                height: 428,
+                source: 'widget',
+            });
+            const response = await app.request(`/s/${share.token}?preview=1`);
+            const html = await textOf(response);
+            expect(response.status === 200, '200');
+            expect(
+                html.includes(`<meta property="og:image" content="https://miniapp.test/s/${share.token}/og.png">`),
+                'og:image stays, so the preview is the widget render'
+            );
+            expect(html.includes('<meta property="og:image:height" content="428">'), 'the render size stays');
+            expect(!html.includes('og:title'), 'no og:title');
+            expect(!html.includes('og:description'), 'no og:description');
+            expect(!html.includes('og:site_name'), 'no og:site_name');
+            expect(!html.includes('og:url'), 'no og:url');
+            expect(html.includes('<title>查看卡片</title>'), 'one short title line');
+            expect(html.includes('const reveal = true;'), 'the page reveals the card');
+            expect(html.includes("querySelector('figure.widget')"), 'the card is the reveal target');
+            expect(html.includes('一段正文'), 'the page itself still renders');
+
+            const canonical = await textOf(await app.request(`/s/${share.token}`));
+            expect(canonical.includes('og:title'), 'the share page keeps its text OG');
+            expect(canonical.includes('const reveal = false;'), 'the share page itself does not jump');
+        },
+    },
+    {
+        name: 'a preview fetch is not counted as a reader view',
+        body: async () => {
+            const messageId = takeMessageId();
+            const share = await replyShare(GROUP, messageId, [versionOf(1)]);
+            await seedPreview(share.token, Buffer.from('card').toString('base64'));
+            await textOf(await app.request(`/s/${share.token}?preview=1`));
+            await new Promise((resolve) => setTimeout(resolve, 120));
+            const row = await store.findShareRowByToken(share.token);
+            expect(row?.viewCount === 0, `the crawler fetch is not a view (got ${String(row?.viewCount)})`);
+        },
+    },
+    {
         name: 'a share without a preview card omits og:image',
         body: async () => {
             const messageId = takeMessageId();

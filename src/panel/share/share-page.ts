@@ -4,6 +4,11 @@
  * so everything its preview needs (title, description, and the widget render as
  * og:image when there is one) is in the initial HTML.
  *
+ * Two modes share one body: the page itself (`page`), and `preview`, the URL the
+ * bot's group fallback previews (design §18). The preview mode drops the text OG
+ * so the message preview is only the widget render, and it scrolls the card into
+ * view on load, because clicking that preview is how a group reader gets here.
+ *
  * Security: every user/model string is escaped, markdown only maps the
  * whitelisted entities (markdown-html.ts), widgets only load in a sandboxed
  * iframe from our own origin, media only from the share's own media route.
@@ -26,6 +31,12 @@ const mediaSrc = (token: string, messageId: number, slot: 'image' | 'file'): str
 
 const OG_DESCRIPTION_MAX = 170;
 const BOT_NAME = 'k-on-bot';
+
+/** The preview mode page's only text: one short line, since the message already has the caption */
+const PREVIEW_TITLE = '查看卡片';
+
+/** `page` = the share page itself; `preview` = the minimal-OG URL the group fallback previews */
+export type SharePageMode = 'page' | 'preview';
 
 const formatTime = (iso: string): string => {
     const date = new Date(iso);
@@ -137,19 +148,42 @@ figcaption { color: var(--muted); font-size: 13px; margin-top: 6px; }
 .not-found p { color: var(--muted); margin: 0; }
 `.trim();
 
-/** The iframe height report handler; our own script, never the widget's */
-const HEIGHT_SCRIPT = `
+/**
+ * The iframe height report handler; our own script, never the widget's. In
+ * preview mode it also scrolls the card into view once, after the frame has
+ * reported its height (a fixed timer covers a frame that never reports).
+ */
+const heightScript = (revealWidget: boolean): string => `
 <script>
 (() => {
   const frames = Array.from(document.querySelectorAll('iframe.widget'));
   const clamp = (value) => Math.max(120, Math.min(1600, Math.round(value)));
+  const reveal = ${revealWidget ? 'true' : 'false'};
+  let revealed = false;
+  let userMoved = false;
+  const markUserMoved = () => { userMoved = true; };
+  addEventListener('wheel', markUserMoved, { passive: true });
+  addEventListener('touchmove', markUserMoved, { passive: true });
+  const revealWidget = () => {
+    if (revealed || userMoved) return;
+    const figure = document.querySelector('figure.widget');
+    if (!figure) return;
+    revealed = true;
+    figure.scrollIntoView({ block: 'start', behavior: 'smooth' });
+  };
   addEventListener('message', (event) => {
     const data = event.data;
     if (!data || data.type !== 'k-on-bot:widget-height') return;
+    let resized = false;
     for (const frame of frames) {
-      if (frame.contentWindow === event.source) frame.style.height = clamp(Number(data.height)) + 'px';
+      if (frame.contentWindow === event.source) {
+        frame.style.height = clamp(Number(data.height)) + 'px';
+        resized = true;
+      }
     }
+    if (resized && reveal) setTimeout(revealWidget, 60);
   });
+  if (reveal) setTimeout(revealWidget, 1500);
 })();
 </script>
 `.trim();
@@ -170,6 +204,8 @@ export interface SharePageInput {
     preview: SharePreviewInput | null;
     /** Mini App deep link, when BOT_USER_NAME is configured */
     miniAppLink: string | null;
+    /** Defaults to `page` */
+    mode?: SharePageMode;
 }
 
 interface PageMeta {
@@ -220,16 +256,40 @@ const ogImageTags = (imageUrl: string, preview: SharePreviewInput | null): strin
     ];
 };
 
+const HEAD_START = [
+    '<!doctype html>',
+    '<html lang="zh-CN">',
+    '<head>',
+    '<meta charset="utf-8">',
+    '<meta name="viewport" content="width=device-width, initial-scale=1">',
+].join('');
+
+const HEAD_END = ['</head>', '<body>'].join('');
+
+/**
+ * The preview mode head: the image tags only. The fallback message's text is the
+ * card's caption already, so a title/description/site here would repeat it under
+ * the picture; Telegram then shows the widget render and nothing else.
+ */
+const previewHeadOf = (ogImage: string[]): string =>
+    [
+        HEAD_START,
+        `<title>${PREVIEW_TITLE}</title>`,
+        '<meta name="robots" content="noindex,nofollow">',
+        '<meta property="og:type" content="article">',
+        ...ogImage,
+        '<meta name="twitter:card" content="summary_large_image">',
+        `<style>${STYLE}</style>`,
+        HEAD_END,
+    ].join('');
+
 const headOf = (input: SharePageInput, meta: PageMeta): string => {
     const shareUrl = `${input.baseUrl}/s/${input.token}`;
     const imageUrl = `${shareUrl}/og.png`;
     const ogImage = ogImageTags(imageUrl, input.preview);
+    if (input.mode === 'preview') return previewHeadOf(ogImage);
     return [
-        '<!doctype html>',
-        '<html lang="zh-CN">',
-        '<head>',
-        '<meta charset="utf-8">',
-        '<meta name="viewport" content="width=device-width, initial-scale=1">',
+        HEAD_START,
         `<title>${escapeHtml(meta.title)}</title>`,
         `<meta name="description" content="${escapeHtml(meta.description)}">`,
         '<meta name="robots" content="noindex,nofollow">',
@@ -243,8 +303,7 @@ const headOf = (input: SharePageInput, meta: PageMeta): string => {
         `<meta name="twitter:title" content="${escapeHtml(meta.title)}">`,
         `<meta name="twitter:description" content="${escapeHtml(meta.description)}">`,
         `<style>${STYLE}</style>`,
-        '</head>',
-        '<body>',
+        HEAD_END,
     ].join('');
 };
 
@@ -378,7 +437,7 @@ export const renderSharePage = (input: SharePageInput): string => {
         '</main>',
         footerOf(input, input.content),
         '</div>',
-        HEIGHT_SCRIPT,
+        heightScript(input.mode === 'preview'),
         '</body>',
         '</html>',
     ].join('');

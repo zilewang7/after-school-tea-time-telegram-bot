@@ -148,13 +148,17 @@ export const registerSharePublicRoutes = (app: Hono<PanelEnv>, options: SharePub
         return null;
     };
 
-    // GET /s/<token>: the SSR page (design §5.7)
+    // GET /s/<token>: the SSR page (design §5.7). `?preview=1` is the URL the
+    // bot's group fallback previews (design §18): same page, minimal OG, and it
+    // reveals the widget, since that preview is the reader's way in.
     app.get('/s/:token', async (context) => {
         const blocked = blockedBy(context);
         if (blocked !== null) return blocked;
         const share = await loadPublicShare(context.req.param('token'));
         if (share === null) return notFoundResponse(context);
-        recordSharePageView(share.row.token);
+        const previewMode = context.req.query('preview') === '1';
+        // Telegram's crawler fetches the preview URL; that is not a reader
+        if (!previewMode) recordSharePageView(share.row.token);
         const baseUrl = baseUrlOfRequest(context.req.url);
         // The footer button opens the share itself in the Mini App; the webapp
         // sends a member on to the reply/chat page and everyone else stays here
@@ -171,6 +175,7 @@ export const registerSharePublicRoutes = (app: Hono<PanelEnv>, options: SharePub
                 content: share.content,
                 preview,
                 miniAppLink,
+                ...(previewMode ? { mode: 'preview' as const } : {}),
             })
         );
     });

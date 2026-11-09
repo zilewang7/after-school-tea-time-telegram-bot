@@ -1,7 +1,7 @@
 /**
  * The group-chat form of a widget: one text message that opens the card in the
  * Mini App. It carries the caption as its own text (a short line when the model
- * wrote none) and previews the widget render when one was stored.
+ * wrote none) and previews the share page, whose og:image is the widget render.
  *
  * Telegram accepts widgets only in private chats, so a group gets a link
  * instead. Everything that decides that shape is a pure function here, so the
@@ -112,8 +112,8 @@ export const widgetMiniAppLink = (input: WidgetMiniAppLinkInput): string =>
 export interface WidgetLinkMessageInput {
     /** The caption the card would have gone out with, already rendered and fitted */
     readonly caption?: ImageCaptionFields;
-    /** `/s/<token>/og.png` of the widget render; absent = no forced large preview */
-    readonly previewImageUrl?: string;
+    /** The share page in preview mode; absent = no forced large preview */
+    readonly previewUrl?: string;
     readonly miniAppLink: string;
     readonly replyToMessageId?: number;
 }
@@ -121,7 +121,7 @@ export interface WidgetLinkMessageInput {
 export interface WidgetLinkMessage {
     readonly text: string;
     readonly entities: MessageEntity[];
-    /** The large widget-render preview; absent = Telegram's own card for the t.me link */
+    /** The large share-page preview; absent = Telegram's own card for the t.me link */
     readonly linkPreviewOptions?: LinkPreviewOptions;
     readonly replyParameters?: { readonly message_id: number };
 }
@@ -170,10 +170,10 @@ export const buildWidgetLinkMessage = (input: WidgetLinkMessageInput): WidgetLin
     return {
         text,
         entities,
-        ...(input.previewImageUrl !== undefined && input.previewImageUrl.length > 0
+        ...(input.previewUrl !== undefined && input.previewUrl.length > 0
             ? {
                   linkPreviewOptions: {
-                      url: input.previewImageUrl,
+                      url: input.previewUrl,
                       prefer_large_media: true,
                       show_above_text: true,
                   } satisfies LinkPreviewOptions,

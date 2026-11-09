@@ -356,7 +356,7 @@ results.push(
         const captionFields = buildImageCaption('**今日**日报');
         const captioned = buildWidgetLinkMessage({
             caption: captionFields,
-            previewImageUrl: 'https://miniapp.example/s/tok/og.png',
+            previewUrl: 'https://miniapp.example/s/tok?preview=1',
             miniAppLink,
         });
         expect(captioned.text === '今日日报', `the caption is the whole message (got ${JSON.stringify(captioned.text)})`);
@@ -375,7 +375,7 @@ results.push(
             `the text_link covers the whole caption (got ${JSON.stringify(captionLink)})`
         );
         expect(
-            captioned.linkPreviewOptions?.url === 'https://miniapp.example/s/tok/og.png' &&
+            captioned.linkPreviewOptions?.url === 'https://miniapp.example/s/tok?preview=1' &&
                 captioned.linkPreviewOptions.prefer_large_media === true &&
                 captioned.linkPreviewOptions.show_above_text === true,
             'the widget render is previewed as a large card above the text'
@@ -477,7 +477,7 @@ results.push(
             'the text_link covers the whole caption'
         );
         expect(
-            asRecord(payload.link_preview_options).url === `${shareUrl}/og.png`,
+            asRecord(payload.link_preview_options).url === `${shareUrl}?preview=1`,
             `the preview points at the widget render (got ${JSON.stringify(payload.link_preview_options)})`
         );
 
@@ -514,7 +514,7 @@ results.push(
             expect(payload.text === '无法预览的卡片', 'the caption still goes out');
             expect(
                 payload.link_preview_options === undefined,
-                `no og.png, no forced preview (got ${JSON.stringify(payload.link_preview_options)})`
+                `no share preview, no forced preview (got ${JSON.stringify(payload.link_preview_options)})`
             );
             const stored = await dbIndex.getBotResponse(GROUP_CHAT_ID, chatContext.session.firstMessageId);
             const version = stored?.getVersions().at(-1);
@@ -609,7 +609,7 @@ results.push(
             `the new version's caption goes out alone (got ${JSON.stringify(linkCall.payload.text)})`
         );
         expect(
-            asRecord(linkCall.payload.link_preview_options).url === `${share.url}/og.png`,
+            asRecord(linkCall.payload.link_preview_options).url === `${share.url}?preview=1`,
             `the stored widget render is previewed as a large image (got ${JSON.stringify(linkCall.payload.link_preview_options)})`
         );
         const linkEntity = entitiesOf(linkCall.payload).find((entity) => entity.type === 'text_link');
@@ -654,13 +654,13 @@ results.push(
 
         const linkCall = telegram.callsOf('sendMessage').at(-1);
         if (!linkCall) throw new Error('the link message was not sent again');
-        // No WEBAPP_PUBLIC_URL offline: the created share URL is the relative /s/<token>/og.png
+        // No WEBAPP_PUBLIC_URL offline: the created share URL is the relative /s/<token>
         const previewUrl = asRecord(linkCall.payload.link_preview_options).url;
         const createdUrl = typeof previewUrl === 'string' ? previewUrl : '';
-        const segments = createdUrl.split('/');
-        const shareToken = segments.at(-2) ?? '';
+        // ".../s/<token>?preview=1"
+        const shareToken = createdUrl.split('?')[0]?.split('/').at(-1) ?? '';
         expect(
-            /^[A-Za-z0-9_-]{24}$/.test(shareToken) && createdUrl.endsWith('/og.png'),
+            /^[A-Za-z0-9_-]{24}$/.test(shareToken) && createdUrl.endsWith('?preview=1'),
             `a share page with its widget render was created (got ${JSON.stringify(previewUrl)})`
         );
         const linkEntity = entitiesOf(linkCall.payload).find((entity) => entity.type === 'text_link');
@@ -736,7 +736,7 @@ results.push(
         api.config.use(transformer as Transformer);
 
         const message = buildWidgetLinkMessage({
-            previewImageUrl: 'https://miniapp.example/s/tok/og.png',
+            previewUrl: 'https://miniapp.example/s/tok?preview=1',
             miniAppLink: 'https://t.me/bot/panel?startapp=r1_2',
         });
         const sent = await quietly(() => sendReplyWidgetLinkMessage({ chatId: 1, api, message }));
@@ -784,7 +784,7 @@ results.push(
         expect(shareUrl !== undefined, 'the share page was created for the link');
         const shareToken = shareUrl === undefined ? null : shareUrl.split('/').at(-1);
         expect(
-            asRecord(linkCall?.payload.link_preview_options).url === `${shareUrl}/og.png`,
+            asRecord(linkCall?.payload.link_preview_options).url === `${shareUrl}?preview=1`,
             'the widget render previews the link'
         );
         const linkEntity = entitiesOf(linkCall?.payload ?? {}).find(

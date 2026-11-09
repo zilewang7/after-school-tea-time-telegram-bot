@@ -114,7 +114,7 @@ try {
         const page = row.webpage;
         const verdict =
             page && page !== 'pending' && page !== 'empty'
-                ? `type=${page.type} large=${String(page.large)} photo=${JSON.stringify(page.photo)} url=${page.url}`
+                ? `type=${page.type} large=${String(page.large)} photo=${JSON.stringify(page.photo)} site=${JSON.stringify(page.site)} title=${JSON.stringify(page.title)} description=${JSON.stringify(page.description)} url=${page.url}`
                 : `webpage=${String(page)}`;
         console.log(`${row.text}\n  ${verdict}`);
     }

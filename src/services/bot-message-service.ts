@@ -51,7 +51,7 @@ import {
 import { editWidgetReplyMarkup } from '../telegram/widget-api.js';
 import { sendReplyImageMessage } from '../telegram/reply-image-send.js';
 import { isWidgetRenderConfigured, renderWidgetPng } from '../widget-image/index.js';
-import { ensureSystemReplyShare, findActiveShare, previewImageUrlOf } from '../panel/share/share-link-service.js';
+import { ensureSystemReplyShare, findActiveShare, previewLinkUrlOf } from '../panel/share/share-link-service.js';
 import type { ShareLinkRecord } from '../panel/share/share-types.js';
 import { shareTokenOfUrl } from '../panel/share/share-urls.js';
 import {
@@ -989,7 +989,7 @@ export const switchVersion = async (
         let share: ShareLinkRecord | null = null;
         const storedToken = widget.shareUrl === undefined ? null : shareTokenOfUrl(widget.shareUrl);
         if (storedToken !== null) share = await findActiveShare(storedToken);
-        if (share === null || previewImageUrlOf(share) === null) {
+        if (share === null || previewLinkUrlOf(share) === null) {
             const [error, ensured] = await to(
                 ensureSystemReplyShare({
                     chatId,
@@ -1003,10 +1003,10 @@ export const switchVersion = async (
             const ensuredShare = ensured ?? null;
             if (ensuredShare !== null) share = ensuredShare;
         }
-        const previewImageUrl = share === null ? null : previewImageUrlOf(share);
+        const previewUrl = share === null ? null : previewLinkUrlOf(share);
         const message = buildWidgetLinkMessage({
             caption: widgetCaptionFields,
-            ...(previewImageUrl === null ? {} : { previewImageUrl }),
+            ...(previewUrl === null ? {} : { previewUrl }),
             miniAppLink: widgetMiniAppLink({
                 botUsername,
                 shortName: miniAppShortName(),

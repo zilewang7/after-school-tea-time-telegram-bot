@@ -29,7 +29,7 @@ import {
 } from '../telegram/reply-widget-send.js';
 import { editWidgetReplyMarkup } from '../telegram/widget-api.js';
 import { isWidgetRenderConfigured, renderWidgetPng } from '../widget-image/index.js';
-import { ensureSystemReplyShare, previewImageUrlOf } from '../panel/share/share-link-service.js';
+import { ensureSystemReplyShare, previewLinkUrlOf } from '../panel/share/share-link-service.js';
 import type { ShareLinkRecord } from '../panel/share/share-types.js';
 import { toApiEntities } from '../telegram/api-entities.js';
 import { buildMessageLinkResolver } from '../telegram/message-link.js';
@@ -869,10 +869,10 @@ const deliverReplyWidgetLink = async (
         return false;
     }
 
-    const previewImageUrl = share === null ? null : previewImageUrlOf(share);
+    const previewUrl = share === null ? null : previewLinkUrlOf(share);
     const message = buildWidgetLinkMessage({
         caption: captionFields,
-        ...(previewImageUrl === null ? {} : { previewImageUrl }),
+        ...(previewUrl === null ? {} : { previewUrl }),
         miniAppLink: widgetMiniAppLink({
             botUsername,
             shortName: miniAppShortName(),
