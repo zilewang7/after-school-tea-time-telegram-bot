@@ -96,8 +96,6 @@ export interface ToolConfig {
     readonly widgetMaxHtmlBytes: number;
     /** Server limit: widget HTML bytes after zlib level 9 */
     readonly widgetMaxGzipBytes: number;
-    /** Snapshot version of the guides get_ui_guide returns */
-    readonly widgetGuideVersion: number;
     /**
      * Base URL of the widget-render sidecar; empty = rendering disabled.
      * Defaults to the compose service; set WIDGET_RENDER_URL= (empty) to turn it off.
@@ -180,7 +178,6 @@ export const readToolConfig = (env: NodeJS.ProcessEnv = process.env): ToolConfig
     widgetProbeChatId: parseOptionalChatId(env.WIDGET_PROBE_CHAT_ID),
     widgetMaxHtmlBytes: parsePositiveInt(env.WIDGET_MAX_HTML_BYTES, 32768),
     widgetMaxGzipBytes: parsePositiveInt(env.WIDGET_MAX_GZIP_BYTES, 4096),
-    widgetGuideVersion: parsePositiveInt(env.WIDGET_GUIDE_VERSION, 1),
     // Undefined keeps the compose default; an explicitly empty value disables rendering
     widgetRenderUrl:
         env.WIDGET_RENDER_URL === undefined

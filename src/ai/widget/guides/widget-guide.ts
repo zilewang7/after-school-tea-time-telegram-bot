@@ -11,13 +11,13 @@
 export const WIDGET_GUIDE_HTML_TITLE = "Telegram Widget · HTML 模式规范";
 
 export const WIDGET_GUIDE_HTML_TEXT = `Telegram Widget · HTML 模式规范
-guide=html · version 1 · 来源：TelegramMessenger/widget-sandbox 官方文档内部快照（widget profile 1 / SDK v1 / widget-sandbox 0.6.1，快照 2026-11-08）
+guide=html · version 2 · 来源：TelegramMessenger/widget-sandbox 官方文档内部快照（widget profile 1 / SDK v1 / widget-sandbox 0.6.1，快照 2026-11-08）
 
 ## 0. 这份文本是什么、产出什么
 
 - 模型调用 get_ui_guide(kind='html') 得到本文；读完按本文写出**一份自包含 HTML**，用 send_widget(mode='html', html=…) 提交，bot 用 Bot API 10.4 的 sendWidget 以「widget 消息」发出，客户端在聊天气泡里渲染。
 - widget = 一个自包含 HTML（inline \`<style>\` 与 inline \`<script>\`），零网络、零外部资源、无输入控件。每个客户端渲染前按 profile 1 白名单剔除超范围特性（剔除不报错，剩下的照常渲染），按白名单写即可跨客户端一致。
-- Phase 0 只做**纯静态展示**：发送后 HTML 永不改变；bot 侧不接点击、不改状态、不回答 request。按零 JS 的静态 HTML 设计。
+- Phase 0 的边界是「有没有 bot 参与」：发送后 HTML 永不改变，bot 侧不接点击、不改状态、不回答 request；但 widget 自己的 inline \`<script>\` 照常运行，**纯客户端本地交互（点击改 DOM、\`<details>\` 折叠、本地小游戏）可用**（见 §7.1）。写不写脚本由你按需求判断：轻量点击彩蛋、展开收起、本地小游戏都可以（§7.1），日常展示卡片不加 JS 也完全正常。
 - 发送参数（width / height / caption 等）由 bot 侧控制；模型只负责 HTML 内容本身的布局与体积预算。
 - A2UI 模式（get_ui_guide(kind='a2ui')）只输出 tg-card-v1 的 A2UI JSON、由 bot 侧固定编译器转成 widget；需要自由布局、精确样式、自绘 SVG 时用本文的 HTML 模式。HTML 模式由服务端开关控制（WIDGET_ALLOW_HTML）；被关闭时 send_widget 返回可行动错误，按错误提示改成 A2UI surface。
 
@@ -57,7 +57,7 @@ guide=html · version 1 · 来源：TelegramMessenger/widget-sandbox 官方文�
 
 **CSS**：flex、grid、\`display:table/table-row/table-cell\`、relative/absolute/fixed 定位（fixed 相对气泡）、盒模型、border/圆角、box-shadow、outline、opacity、linear/radial/conic 渐变（含 repeating）、2D transform（rotate/scale/translate/skew）、transition、\`@keyframes\`、CSS 变量与 \`var()\`、\`calc()/min()/max()/clamp()\`、rgb()/hsl()/hex/\`light-dark()\`、\`::before/::after\`、\`:hover\`（仅鼠标）、\`:active\`、\`:not/:is/:where\`、结构伪类（\`:first-child\`、\`:nth-child()\` 等）、\`[disabled]/:disabled\`、\`@media\` 的 width/aspect-ratio/orientation/prefers-color-scheme/prefers-reduced-motion、\`@supports\`、单行 ellipsis、\`touch-action\`、\`pointer-events\`、\`user-select\`、\`env(safe-area-inset-*)\`、\`aspect-ratio\`、\`overflow:hidden\`、\`visibility\`、z-index、\`filter/backdrop-filter\` 的 \`blur()/brightness()/drop-shadow()\`、SVG 上的 CSS 动画。
 
-**JS**（Phase 0 不需要，静态 HTML 可完全省略）：ES2023 解释器（无 JIT）、Promise/async、setTimeout/setInterval、requestAnimationFrame、DOM 查询与构建、MutationObserver/ResizeObserver、布局读取（getBoundingClientRect/getComputedStyle/offsetWidth 等是到渲染层的往返，循环里要缓存）、matchMedia、canvas 2D、\`new Image()\`+data:、Web Animations、Intl、crypto.getRandomValues、TextEncoder、URL、structuredClone、localStorage/sessionStorage、CSS.supports。元素 id 不是全局变量，用 \`document.getElementById('x')\`。
+**JS**（本地交互可用，静态卡片可省略）：ES2023 解释器（无 JIT）、Promise/async、setTimeout/setInterval、requestAnimationFrame、DOM 查询与构建、MutationObserver/ResizeObserver、布局读取（getBoundingClientRect/getComputedStyle/offsetWidth 等是到渲染层的往返，循环里要缓存）、matchMedia、canvas 2D、\`new Image()\`+data:、Web Animations、Intl、crypto.getRandomValues、TextEncoder、URL、structuredClone、localStorage/sessionStorage、CSS.supports。元素 id 不是全局变量，用 \`document.getElementById('x')\`。
 
 ## 4. 禁用清单（profile 1 之外，移除后不报错）
 
@@ -76,18 +76,28 @@ guide=html · version 1 · 来源：TelegramMessenger/widget-sandbox 官方文�
 - 图片只接受 \`data:\` 的 PNG / JPEG / GIF / WebP，单张最多 1024×1024 像素（更大显示占位图）；data: 图片几乎压不动，会直接吃掉 4096 B 预算，静态展示优先用 inline SVG、CSS 渐变或字符（emoji）绘制。
 - \`data:image/svg+xml\` 形式的 \`<img>\` 被拒绝；需要 SVG 就内联写 \`<svg>\`。
 
-## 6. 输入与手势（Phase 0 只有展示，没有点击行为）
+## 6. 输入与手势（点击可用，但没有键盘与纵向拖动）
 
 - 到达 widget 的只有 tap（click）与 pointer 事件（down/move/up/cancel、enter/leave）以及鼠标兼容事件；没有 touchstart/touchend、没有键盘、没有滚轮与滚动事件。双击归 widget（两次 click 后 dblclick）。
 - **垂直拖动永远是聊天的**（气泡在 widget 上滚动）；长按与横向拖动按元素用 \`touch-action\` 认领：\`auto\`（默认）长按归聊天菜单、横滑归聊天回复；\`pan-y\` 横拖归 widget；\`none\` 横拖与长按都归 widget。左侧前 20 px 永不认领（系统返回手势）。
-- 需要交互控件时的写法是 \`touch-action:none\` 给按钮/画布、\`pan-y\` 给横向滑杆；但 Phase 0 没有可用的点击响应通道（见 §7），所以**只做展示，不写 pointer 事件处理与 request()**。按钮视觉可以画，点击不会发生任何事。
+- 交互控件按 \`touch-action\` 认领：\`none\` 给按钮/画布（长按与横拖都归 widget）、\`pan-y\` 给横向滑杆；纯展示的按钮不挂事件。**本地点击是真实发生的**（\`click\` 里改 DOM 立即生效，见 §7.1）；只有需要 bot 应答的 \`request()\` 不可用（见 §7）。动作挂 \`click\`，不要挂 \`pointerdown\`（它可能变成聊天的滚动）。
 
 ## 7. state 与 request 的现状（Phase 0）
 
 - 发送后 HTML 不可变。唯一的可变量是状态：\`chatData\`（本聊天内该消息的状态）与 \`publicData\`（共享状态，转发件共享），各 ≤1024 字节 UTF-8 字符串，由 bot 用 \`editMessageWidgetData\` 写入；变化触发 \`chatDataChanged\` / \`publicDataChanged\`，widget 自行从状态重绘。
 - **Phase 0 bot 不写状态**：没有状态写入流程，不要把内容设计成「等状态变化后重绘」，也不要写 JSON.parse(TW.chatData) 之类的状态读取。
 - \`TelegramWidget.request(data)\`（1–64 字节，点击触发，bot 用 \`answerWidgetQuery\` ≤1024 字节应答，15 秒超时，每用户 5 次/5 秒，同时只能一个请求在飞）依赖入站 \`widget_query\` update：k-on-bot 当前用自托管 Bot API 10.2，收不到该 update；Phase 0 不接交互。因此不要写 \`request()\`、不要写 onclick 依赖点击结果、不要用定时器轮询。
-- 结论：**输出零 JS、零交互的静态 HTML**，也不涉及状态/JSON 的体积与兼容坑。
+- 结论：需要 bot 应答的交互（\`request()\`、\`chatData\`/\`publicData\` 回写、等 bot 改状态再重绘）在 Phase 0 全部不可用；**纯本地交互不受这条限制**，见 §7.1。
+
+### 7.1 本地交互（不经过 bot，可用）
+
+- 什么时候写：由你判断。轻量点击彩蛋、展开收起、本地小游戏都可以；加 JS 的代价是体积（算进 4096 预算）与静态预览只看到首帧，觉得值得就加。
+- 能力：inline \`<script>\` 在客户端沙盒里运行，\`click\`/\`pointer\` 事件、DOM 改写、canvas 2D、\`localStorage\`/\`sessionStorage\`、\`setTimeout\`/\`requestAnimationFrame\`、Web Animations 都可用。
+- 首帧必须可读：分享预览与 bot 上下文里的渲染图只看到第一帧，关键信息不要等点击或动画才出现；首帧同步画出来。
+- 游戏边界：没有键盘、没有纵向拖动（做不了纵向滑杆/摇杆/画板），用点击按钮或横向拖动；高度 ≤600 px 且不能滚动；单任务 ≤500 ms、每秒 CPU 预算 300 ms、单任务最多 128 次布局读取（循环里缓存）、节点 ≤2000、同时运行的脚本动画 ≤64。
+- 状态：widget 可能被销毁重建，本地状态（最高分、已翻开的格子）存 \`localStorage\` 并在加载时恢复；\`localStorage\` 每条消息每设备 4 KB，\`setItem\` 包 \`try/catch\`（预览环境里可能直接抛 SecurityError），转发件为空。
+- 体积：JS 也算进 32768/4096 预算，小游戏控制在 raw ≤8 KB。
+- 投递：私聊直接渲染成 widget；群聊暂不支持 widget 消息，bot 改发带预览的分享链接，点开在 Mini App 里同样能交互。
 
 ## 8. 常用模式
 
@@ -160,7 +170,7 @@ th{color:var(--tg-theme-hint-color);font-weight:500}
 </details>
 \`\`\`
 
-### 8.5 按钮视觉（Phase 0 无点击行为）
+### 8.5 按钮：纯展示 vs 本地交互
 
 未加样式的 \`<button>\` 就是客户端原生按钮外观；要视觉统一也可以用 div 画：
 
@@ -175,7 +185,15 @@ button{border:0;border-radius:8px;padding:8px 14px;background:var(--tg-theme-but
 </style>
 \`\`\`
 
-Phase 0 点击没有响应（§7）：不要在按钮上挂 onclick / request()；纯展示时优先 \`<div class="btn">\` 之类无按钮语义的视觉块，或直接不画按钮。
+纯展示卡片用 \`<div class="btn">\` 之类视觉块即可；想加点点击彩蛋就挂事件（真 \`<button>\` + \`click\` + \`touch-action:none\`），不挂也没有问题：
+
+\`\`\`html
+<button id="b" style="touch-action:none">翻开 🎁</button> <span id="o" class="hint">点一下试试</span>
+<script>
+var n = 0, b = document.getElementById('b'), o = document.getElementById('o');
+b.addEventListener('click', function () { o.textContent = ++n % 2 ? '🍓 +10' : '🍵 +5'; });
+</script>
+\`\`\`
 
 ### 8.6 状态徽标 / 高亮
 
@@ -230,7 +248,7 @@ summary{color:var(--tg-theme-link-color)}
 - 压缩率的决定因素：**重复的 CSS、重复的结构、短类名**压缩最好；**data: 图片与各不相同的长文本**几乎压不动；中文正文 UTF-8 每字 3 字节，压缩收益有限。省字节的写法：样式集中成几条类而非逐个元素 style；重复块用同一类名；不写注释与死代码；长文案压成短句、细节放 \`<details>\`；图片用 SVG/渐变/emoji 而非 data:。
 - 经验参考（官方 harness 实测）：§9 的示例约 30 个元素、1.6 KB raw → 761 B zlib9（约 47%）；20 行左右的列表 zlib9 约 1.1 KB。
 - 实操：raw ≤8 KB 的卡片/列表基本安全；10 KB 以上先按「去注释、合并重复类、删未用规则」砍一遍再交给 send_widget —— bot 侧会量 raw 与 zlib9 两个真实数字，超 4096 会拒发并报出差距，按差距删内容即可。
-- 运行时限额（超了 widget 停在最后一帧显示 "Widget stopped"，或抛异常）：文档节点（元素/文本/注释）≤2000、单个文本值 ≤32K 字符、全文档文本 ≤48K 字符、单个属性/内联样式 ≤8K、CSS 规则 ≤400、@keyframes ≤32、同时运行的脚本动画 ≤64。静态展示只要不堆几千行就不会碰到。
+- 运行时限额（超了 widget 停在最后一帧显示 "Widget stopped"，或抛异常）：文档节点（元素/文本/注释）≤2000、单个文本值 ≤32K 字符、全文档文本 ≤48K 字符、单个属性/内联样式 ≤8K、CSS 规则 ≤400、@keyframes ≤32、同时运行的脚本动画 ≤64。静态展示或小游戏只要不堆几千行就不会碰到。
 
 ## 11. 常见失败形态（都是客户端静默处理，不会报错）
 
@@ -240,6 +258,6 @@ summary{color:var(--tg-theme-link-color)}
 - 写死白底黑字 → 深色主题下不可读；用 \`--tg-theme-*\` 变量。
 - form/input → 控件连同子树被删除；需要输入就回落到普通文字消息提问。
 - \`position:sticky\`、\`text-shadow\`、\`:has()\`、\`clip-path\`、3D transform → 声明被删，无效果。
-- 依赖 \`request()\` / \`onclick\` → Phase 0 没有入站点击通道，不会发生任何事。
+- 依赖 \`request()\` / \`chatData\` / \`publicData\` → Phase 0 没有入站通道，请求一律失败；本地 \`onclick\` 改 DOM 不受影响（§7.1）。
 - 主题变量名写错（如 \`--tg-theme-link-key\`）→ 被忽略，颜色回退到继承值。
 `;

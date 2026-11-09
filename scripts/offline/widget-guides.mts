@@ -17,7 +17,7 @@ import { expect, reportResults, runCase, type CaseResult } from './harness.mts';
  * A change outside these ranges means the text was cut or bloat crept in.
  */
 const HTML_GUIDE_MIN_CHARS = 8192;
-const HTML_GUIDE_MAX_CHARS = 14336;
+const HTML_GUIDE_MAX_CHARS = 16384;
 const A2UI_GUIDE_MIN_CHARS = 4096;
 const A2UI_GUIDE_MAX_CHARS = 12000;
 
@@ -45,7 +45,7 @@ cases.push(
     await runCase('the html guide is present, well-formed and inside its size budget', async () => {
         const guide = getWidgetGuide('html');
         expect(guide.kind === 'html', 'kind is html');
-        expect(guide.version === 1, 'version is 1');
+        expect(guide.version === 2, 'version is 2');
         expect(guide.version === WIDGET_GUIDE_VERSION, 'version matches WIDGET_GUIDE_VERSION');
         expect(guide.title.trim().length > 0, 'title is non-empty');
         expect(guide.title.includes('HTML'), 'title names the HTML mode');
@@ -113,10 +113,30 @@ cases.push(
             '<script src>',
             'send_widget(mode=\'html\'',
             'Phase 0',
-            '纯静态展示',
             'TelegramMessenger/widget-sandbox',
             '快照',
         ]);
+    })
+);
+
+cases.push(
+    await runCase('the html guide splits bot roundtrip from local interaction (issue #6)', async () => {
+        const { text } = getWidgetGuide('html');
+        // The v1 text said "JS and taps work" in the profile list and "output zero
+        // JS, clicks do nothing" in the Phase 0 notes; the model burned minutes
+        // between the two. v2 states the boundary explicitly.
+        expectIncludes(text, [
+            '本地交互',
+            '不经过 bot',
+            '纯客户端本地交互',
+            'request()',
+            'chatData',
+            'click',
+            'localStorage',
+            'touch-action:none',
+        ]);
+        expect(!text.includes('输出零 JS、零交互'), 'the blanket zero-JS conclusion is gone');
+        expect(!text.includes('点击不会发生任何事'), 'clicks are no longer described as dead');
     })
 );
 
@@ -141,7 +161,7 @@ cases.push(
     await runCase('the a2ui guide is present, well-formed and inside its size budget', async () => {
         const guide = getWidgetGuide('a2ui');
         expect(guide.kind === 'a2ui', 'kind is a2ui');
-        expect(guide.version === 1, 'version is 1');
+        expect(guide.version === 2, 'version is 2');
         expect(guide.version === WIDGET_GUIDE_VERSION, 'version matches WIDGET_GUIDE_VERSION');
         expect(guide.title.trim().length > 0, 'title is non-empty');
         expect(guide.title.includes('A2UI'), 'title names the A2UI mode');
@@ -211,7 +231,7 @@ cases.push(
         expect(html.text !== a2ui.text, 'the two texts differ');
         expect(html.kind !== a2ui.kind, 'the kinds differ');
         expect(html.version === a2ui.version, 'both guides share one version');
-        expect(html.version === WIDGET_GUIDE_VERSION && WIDGET_GUIDE_VERSION === 1, 'the shared version is 1');
+        expect(html.version === WIDGET_GUIDE_VERSION && WIDGET_GUIDE_VERSION === 2, 'the shared version is 2');
         expect(getWidgetGuide('html') === html, 'lookups are stable for html');
         expect(getWidgetGuide('a2ui') === a2ui, 'lookups are stable for a2ui');
     })

@@ -10,14 +10,14 @@
 export const WIDGET_GUIDE_A2UI_TITLE = "Telegram Widget · A2UI 模式规范（catalog: tg-card-v1）";
 
 export const WIDGET_GUIDE_A2UI_TEXT = `Telegram Widget · A2UI 模式规范（自定义 catalog: tg-card-v1）
-guide=a2ui · version 1 · 来源：A2UI v1.0（a2ui-project/a2ui，Apache-2.0）的 Telegram 子集 + TelegramMessenger/widget-sandbox 文档内部快照（widget profile 1，快照 2026-11-08）
+guide=a2ui · version 2 · 来源：A2UI v1.0（a2ui-project/a2ui，Apache-2.0）的 Telegram 子集 + TelegramMessenger/widget-sandbox 文档内部快照（widget profile 1，快照 2026-11-08）
 
 ## 0. 这份文本是什么、产出什么
 
 - 模型调用 get_ui_guide(kind='a2ui') 得到本文；读完按本文写**一个 A2UI v1.0 surface JSON**，用 send_widget(mode='a2ui', surface=…) 提交。bot 侧固定编译器把它编译成一份自包含 widget HTML（零 JS、主题变量着色、模型文本全部 HTML 转义），再作为 Telegram widget 消息发出。
 - 模型不写 HTML/CSS/JS，只组合下面白名单里的组件与 props；布局与样式由编译器固定。
 - Phase 0 只做**纯静态展示**：HTML 发出后不可变、不接点击、不回写状态；Button 只渲染外观。
-- A2UI 适合结构化展示：卡片、键值、列表、表格、柱状图、趋势线。需要自由布局、精确配色、自绘 SVG、动画时改用 HTML 模式（get_ui_guide(kind='html')）。
+- A2UI 适合结构化展示：卡片、键值、列表、表格、柱状图、趋势线。需要自由布局、精确配色、自绘 SVG、动画，或**本地交互（点击改 DOM、小游戏）**时改用 HTML 模式（get_ui_guide(kind='html')）。
 
 ## 1. 输入形状
 

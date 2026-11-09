@@ -11,8 +11,12 @@ import { WIDGET_GUIDE_HTML_TEXT, WIDGET_GUIDE_HTML_TITLE } from './widget-guide.
 /**
  * Version of the guide snapshot. Bump when either text changes (or the
  * upstream widget-sandbox snapshot is refreshed); the get_ui_guide tool logs it.
+ *
+ * v2: split bot roundtrip (`request()`/state, unavailable in Phase 0) from
+ * local sandbox interaction (inline script + click, supported by profile 1);
+ * the v1 text said both "JS and taps work" and "output zero JS" (issue #6).
  */
-export const WIDGET_GUIDE_VERSION = 1;
+export const WIDGET_GUIDE_VERSION = 2;
 
 const GUIDES: Readonly<Record<WidgetGuideKind, WidgetGuide>> = Object.freeze({
     html: Object.freeze({

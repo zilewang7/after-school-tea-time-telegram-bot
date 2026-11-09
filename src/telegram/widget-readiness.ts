@@ -14,6 +14,7 @@
  */
 import { GrammyError } from 'grammy';
 import { getToolConfig } from '../config/tool-config.js';
+import { WIDGET_GUIDE_VERSION } from '../ai/widget/guides/index.js';
 import { isWidgetRenderConfigured, widgetRenderHealth } from '../widget-image/index.js';
 import { probeWidgetApiRoot, probeWidgetChat, sendWidgetViaApi } from './widget-api.js';
 import { isErr } from '../shared/result.js';
@@ -149,7 +150,7 @@ export const formatWidgetStatus = async (): Promise<string> => {
         `renderer=${rendererStatusOf(renderer)} (${renderer.detail})`,
         `groupFallback=${config.widgetGroupFallback ? 'on' : 'off'}`,
         `share=${config.shareEnabled ? 'on' : 'off'}`,
-        `guide version=${config.widgetGuideVersion}`,
+        `guide version=${WIDGET_GUIDE_VERSION}`,
     ];
     return lines.join('\n');
 };
