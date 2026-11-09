@@ -47,6 +47,12 @@ services:
       - ./gcp-sa.json:/app/k-on-bot/gcp-sa.json:ro
       # Shared with telegram-bot-api so k-on-bot can read files downloaded to disk.
       - telegram-bot-api-data:/var/lib/telegram-bot-api
+      # A recreate (needed for every .env change) starts from the image, so
+      # node_modules and pnpm's store would otherwise be reinstalled from
+      # scratch — including compiling sqlite3, which has no prebuild reachable
+      # from this host (see Dockerfile). Both live in volumes instead.
+      - k-on-bot-node-modules:/app/k-on-bot/node_modules
+      - k-on-bot-pnpm-store:/root/.local/share/pnpm/store
     command: ["/bin/bash", "/app/k-on-bot/build.sh"]
     working_dir: /app/k-on-bot
     # SMS MCP uses the CF-optimised hostname (cmcc-mcp-cf.heimao.icu);
@@ -190,6 +196,8 @@ networks:
 
 volumes:
   telegram-bot-api-data:
+  k-on-bot-node-modules:
+  k-on-bot-pnpm-store:
   k-on-bot-test-node-modules:
   k-on-bot-test-webapp-node-modules:
   k-on-bot-test-webapp-dist:
