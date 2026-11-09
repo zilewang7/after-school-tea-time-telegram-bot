@@ -48,7 +48,7 @@ const PNG_BYTES = Buffer.from(
     'base64'
 );
 const widgetRequests: string[] = [];
-/** Simulates the preview render failing while the 600px card render still works */
+/** Simulates the preview render (600px at 2x) failing while the 600px card render still works */
 let failWideRender = false;
 const stubServer = createServer((request, response) => {
     const chunks: Buffer[] = [];
@@ -57,7 +57,7 @@ const stubServer = createServer((request, response) => {
         const url = request.url ?? '';
         widgetRequests.push(url);
         if (url.startsWith('/render')) {
-            if (failWideRender && url.includes('width=1200')) {
+            if (failWideRender && url.includes('scale=2')) {
                 response.writeHead(500, { 'Content-Type': 'text/plain' });
                 response.end('render failed');
                 return;
@@ -452,12 +452,12 @@ results.push(
         );
 
         expect(
-            widgetRequests.some((url) => url.startsWith('/render?width=600')),
+            widgetRequests.some((url) => url.startsWith('/render?width=600&scale=1')),
             'the 600px card was rendered before delivery'
         );
         expect(
-            widgetRequests.some((url) => url.startsWith('/render?width=1200')),
-            'the share preview was rendered at the page width'
+            widgetRequests.some((url) => url.startsWith('/render?width=600&scale=2')),
+            'the share preview is the same layout at 2x'
         );
 
         const stored = await dbIndex.getBotResponse(GROUP_CHAT_ID, chatContext.session.firstMessageId);

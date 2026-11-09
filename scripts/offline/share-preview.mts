@@ -1,11 +1,12 @@
 /**
- * Offline cases for a share's preview image (design §5.7): the widget render
- * Telegram previews, its 1200px light-theme render, the shares that have no
- * image (no widget), the failure path, and the stored card the page reads back.
+ * Offline cases for a share's preview image (design §5.7/§16): the widget's own
+ * render at its 600px layout width, 2x, in the light theme; the shares that have
+ * no image (no widget), the failure path, and the stored image the page reads
+ * back.
  *
  * A local stub stands in for the widget-render sidecar: it answers /render with
- * a PNG whose IHDR carries the requested width and a fixed content height, so
- * the cases can assert the real dimensions without a browser.
+ * a PNG whose IHDR carries width*scale and a fixed content height, so the cases
+ * can assert the real dimensions without a browser.
  *
  * Run: npx tsx scripts/offline/share-preview.mts
  */
@@ -22,6 +23,9 @@ delete process.env.ALLOWED_CHAT_IDS;
 const PNG_1PX =
     'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
 const CONTENT_HEIGHT = 428;
+/** 600 CSS px at 2x, as the client reports the PNG it parsed */
+const PREVIEW_WIDTH = 1200;
+const PREVIEW_HEIGHT = CONTENT_HEIGHT * 2;
 
 const pngOf = (width: number, height: number): Buffer => {
     const png = Buffer.from(PNG_1PX, 'base64');
@@ -43,8 +47,9 @@ const stubServer = createServer((request, response) => {
             response.end('render failed');
             return;
         }
-        const width = Number(new URL(url, 'http://127.0.0.1').searchParams.get('width') ?? '600');
-        const png = pngOf(width, CONTENT_HEIGHT);
+        const params = new URL(url, 'http://127.0.0.1').searchParams;
+        const width = Number(params.get('width') ?? '600') * Number(params.get('scale') ?? '1');
+        const png = pngOf(width, CONTENT_HEIGHT * Number(params.get('scale') ?? '1'));
         response.writeHead(200, { 'Content-Type': 'image/png', 'Content-Length': png.length });
         response.end(png);
     });
@@ -115,21 +120,21 @@ const saveMessage = async (messageId: number, userId: number, text: string, repl
 
 const cases: { name: string; body: () => Promise<void> }[] = [
     {
-        name: 'a widget renders its preview at 1200px in the light theme',
+        name: 'a widget renders its preview at its own width, 2x, in the light theme',
         body: async () => {
             const requestsBefore = renderRequests.length;
             const image = await previewCard.renderPreviewImage(snapshotOf({ widgetHtml: '<div>w</div>' }));
             expect(image !== null, 'rendered');
             if (image === null) return;
             expect(
-                image.width === 1200 && image.height === CONTENT_HEIGHT,
+                image.width === PREVIEW_WIDTH && image.height === PREVIEW_HEIGHT,
                 `the rendered size (got ${image.width}x${image.height})`
             );
             expect(image.source === 'widget', 'the source is the widget');
             expect(Buffer.from(image.base64, 'base64').length > 0, 'the PNG is stored as base64');
             const request = renderRequests[requestsBefore] ?? '';
             expect(
-                request.includes('width=1200') && request.includes('scale=1') && request.includes('theme=light'),
+                request.includes('width=600') && request.includes('scale=2') && request.includes('theme=light'),
                 `the render request (got ${request})`
             );
         },
@@ -173,17 +178,17 @@ const cases: { name: string; body: () => Promise<void> }[] = [
             });
             expect(created.ok, 'created');
             if (!created.ok) return;
-            expect(created.share.previewWidth === 1200, `width stored (got ${created.share.previewWidth})`);
-            expect(created.share.previewHeight === CONTENT_HEIGHT, 'the real height is stored');
+            expect(created.share.previewWidth === PREVIEW_WIDTH, `width stored (got ${created.share.previewWidth})`);
+            expect(created.share.previewHeight === PREVIEW_HEIGHT, 'the real height is stored');
 
             const row = await store.findShareRowByToken(created.share.token);
             expect(row?.previewImageBase64 !== null, 'the PNG bytes are stored');
-            expect(row?.previewWidth === 1200 && row.previewHeight === CONTENT_HEIGHT, 'row dimensions');
+            expect(row?.previewWidth === PREVIEW_WIDTH && row.previewHeight === PREVIEW_HEIGHT, 'row dimensions');
             expect(row?.previewSource === 'widget', 'the source is the widget');
             expect(await service.ensurePreviewImage(created.share.token), 'a stored preview satisfies ensure');
             const active = await service.findActiveShare(created.share.token);
             expect(
-                active?.previewWidth === 1200 && active.previewHeight === CONTENT_HEIGHT,
+                active?.previewWidth === PREVIEW_WIDTH && active.previewHeight === PREVIEW_HEIGHT,
                 'the record carries the size'
             );
         },
@@ -229,7 +234,7 @@ const cases: { name: string; body: () => Promise<void> }[] = [
             expect(created.ok, 'created');
             if (!created.ok) return;
             expect(
-                created.share.previewWidth === 1200 && created.share.previewHeight === CONTENT_HEIGHT,
+                created.share.previewWidth === PREVIEW_WIDTH && created.share.previewHeight === PREVIEW_HEIGHT,
                 'the widget render is stored'
             );
             const loaded = await content.loadConversationShareContent(CHAT_ID, rootId);
@@ -269,7 +274,7 @@ const cases: { name: string; body: () => Promise<void> }[] = [
             });
             expect(created.ok, 'created');
             if (!created.ok) return;
-            expect(created.share.previewWidth === 1200, 'the older widget render is still the image');
+            expect(created.share.previewWidth === PREVIEW_WIDTH, 'the older widget render is still the image');
             const loaded = await content.loadConversationShareContent(CHAT_ID, rootId);
             expect(loaded?.preview.widgetHtml !== undefined, 'the widget bubble supplies the snapshot');
         },

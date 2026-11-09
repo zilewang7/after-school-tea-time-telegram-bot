@@ -10,15 +10,20 @@
 import { isWidgetRenderConfigured, renderWidgetPng } from '../../widget-image/index.js';
 import type { PreviewImage, PreviewSnapshot } from './share-types.js';
 
-/** The image is the widget itself, not a composed card; 1200 is the large-photo width */
-const PREVIEW_WIDTH = 1200;
+/**
+ * The image is the widget itself, not a composed card. Telegram caps a widget
+ * bubble at 600px, so that is the layout width; 2x keeps the text crisp in the
+ * photo preview.
+ */
+const PREVIEW_WIDTH = 600;
+const PREVIEW_SCALE = 2;
 
 /** Render the share's preview image; null when there is no widget or rendering failed */
 export const renderPreviewImage = async (snapshot: PreviewSnapshot): Promise<PreviewImage | null> => {
     if (!isWidgetRenderConfigured()) return null;
     const html = snapshot.widgetHtml;
     if (html === undefined) return null;
-    const rendered = await renderWidgetPng(html, { width: PREVIEW_WIDTH, scale: 1, theme: 'light' });
+    const rendered = await renderWidgetPng(html, { width: PREVIEW_WIDTH, scale: PREVIEW_SCALE, theme: 'light' });
     if (rendered === null) return null;
     return {
         base64: rendered.png.toString('base64'),
