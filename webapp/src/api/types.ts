@@ -62,10 +62,26 @@ export type StartTarget =
 export interface MeResponse {
     user: PanelUser;
     isOwner: boolean;
+    /** Which credential the server accepted: the Mini App's initData or a web session cookie */
+    authenticatedBy: 'telegram' | 'web';
     globalDefaultModel: string;
     models: string[];
     chats: ChatSummary[];
     startTarget: StartTarget | null;
+}
+
+/** The login page's public facts: is web login on, and where the Telegram entries are */
+export interface WebConfigResponse {
+    webLoginEnabled: boolean;
+    botUsername: string | null;
+    miniAppUrl: string | null;
+}
+
+/** A redeemed code: the server also sets the session cookie */
+export interface WebLoginResponse {
+    user: PanelUser;
+    isOwner: boolean;
+    expiresAt: string;
 }
 
 export interface ChatSettings {

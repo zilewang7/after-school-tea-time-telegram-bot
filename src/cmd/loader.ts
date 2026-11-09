@@ -11,6 +11,7 @@ import {
     registerContextCommand,
     registerPanelCommand,
     registerWidgetCommands,
+    registerWebCommand,
 } from "./commands/index.js";
 
 const COMMANDS: BotCommand[] = [
@@ -26,6 +27,7 @@ const COMMANDS: BotCommand[] = [
     { command: "picgpt", description: `使用 OpenAI ${OPENAI_IMAGE_MODEL} 根据提示词生成图片(支持图生图)` },
     { command: "model", description: "查看/切换本聊天的模型" },
     { command: "panel", description: "打开控制面板" },
+    { command: "web", description: "获取网页版身份码（私聊）" },
     {
         command: "chat",
         description:
@@ -54,6 +56,7 @@ export const cmdLoad = async (bot: Bot) => {
     registerModelCommand(bot);
     registerContextCommand(bot);
     registerPanelCommand(bot);
+    registerWebCommand(bot);
     // Owner-only, hidden from the command menu: widget readiness and probe
     registerWidgetCommands(bot);
 };

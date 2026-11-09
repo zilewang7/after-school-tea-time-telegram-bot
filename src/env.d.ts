@@ -50,6 +50,8 @@ declare global {
             /** Server limits; defaults 32768 / 4096 */
             WIDGET_MAX_HTML_BYTES?: string
             WIDGET_MAX_GZIP_BYTES?: string
+            /** '0' disables the browser login (/web) and its routes */
+            WEB_LOGIN?: string
             /** '0' leaves Gemini with its built-in search tools only */
             GEMINI_CLIENT_TOOLS?: string
             /** Telegram user id of the owner send_sms_to_owner reaches */

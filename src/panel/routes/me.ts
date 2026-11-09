@@ -36,6 +36,7 @@ export const registerMeRoute = (app: Hono<PanelEnv>): void => {
                 username: auth.user.username,
             },
             isOwner: auth.user.isOwner,
+            authenticatedBy: auth.authenticatedBy,
             globalDefaultModel: getGlobalDefaultModel(),
             // Read per request: the menu list is not frozen at startup
             models: modelConfigs.map((model) => model.id),

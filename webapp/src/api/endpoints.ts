@@ -31,6 +31,8 @@ import type {
     StatsRangeKey,
     StatsResponse,
     StatusResponse,
+    WebConfigResponse,
+    WebLoginResponse,
 } from './types';
 
 export const AUDIT_PAGE_SIZE = 50;
@@ -149,6 +151,11 @@ export const createApi = (initData: string) => {
     const requestPublic = createPublicRequester();
     return {
         getHealth: (signal?: AbortSignal) => request<HealthResponse>({ method: 'GET', path: '/api/health', signal }),
+        getWebConfig: (signal?: AbortSignal) =>
+            requestPublic<WebConfigResponse>({ method: 'GET', path: '/api/public/web-config', signal }),
+        // The login route creates the credential, so it carries none; the response sets the cookie
+        webLogin: (code: string) => request<WebLoginResponse>({ method: 'POST', path: '/api/auth/code', body: { code } }),
+        webLogout: () => request<{ ok: boolean }>({ method: 'POST', path: '/api/auth/logout' }),
         getMe: (signal?: AbortSignal) => request<MeResponse>({ method: 'GET', path: '/api/me', signal }),
         getChat: (chatId: number, signal?: AbortSignal) =>
             request<ChatDetailResponse>({ method: 'GET', path: chatPath(chatId), signal }),

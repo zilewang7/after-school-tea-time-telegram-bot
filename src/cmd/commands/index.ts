@@ -6,3 +6,4 @@ export { registerModelCommand } from "./model.js";
 export { registerContextCommand } from "./context.js";
 export { registerPanelCommand } from "./panel.js";
 export { registerWidgetCommands } from "./widget.js";
+export { registerWebCommand } from "./web.js";

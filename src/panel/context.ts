@@ -13,6 +13,8 @@ export interface RequestAuth {
     access: ChatAccessResolver;
     /** The signed start_param, unparsed; null when absent */
     startParam: string | null;
+    /** Which credential proved the user: the Mini App's initData or a web session cookie */
+    authenticatedBy: 'telegram' | 'web';
 }
 
 export interface PanelEnv {

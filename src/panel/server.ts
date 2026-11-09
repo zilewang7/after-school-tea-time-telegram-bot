@@ -13,6 +13,7 @@ import { Api, type ApiClientOptions } from 'grammy';
 import { botApiMembershipLookup } from './access/membership.js';
 import { createPanelApp } from './app.js';
 import { botApiChatNameLookup, fillMissingChatNames } from './chat-names.js';
+import { getWebAuthRuntime, startWebAuthMaintenance } from './auth/web-auth-runtime.js';
 import { setPanelRunning } from './panel-state.js';
 import { DEFAULT_STATIC_ROOT } from './static.js';
 import { readCodeVersion } from './version.js';
@@ -32,6 +33,8 @@ const STOP_TIMEOUT_MS = 3000;
 const MAX_PORT = 65535;
 
 let activeServer: ServerType | null = null;
+/** Expired-code / expired-session sweeper; started with the server, stopped with it */
+let stopWebAuthMaintenance: (() => void) | null = null;
 
 /** undefined = unset; null = set but not a usable port */
 const parsePort = (raw: string | undefined): number | null | undefined => {
@@ -91,10 +94,12 @@ export const startPanel = async (options: StartPanelOptions): Promise<void> => {
         botApi: options.api,
         chatLookup: botApiChatNameLookup(lookupApi),
         toolApi: lookupApi,
+        webAuth: getWebAuthRuntime(),
     });
     activeServer = await listen(app.fetch, port);
     setPanelRunning(activeServer !== null);
     if (activeServer === null) return;
+    stopWebAuthMaintenance = startWebAuthMaintenance(getWebAuthRuntime());
     // In the background: chats still known only by id get their names
     void fillMissingChatNames(botApiChatNameLookup(lookupApi)).catch((error: unknown) => {
         console.error('[panel] naming untitled chats failed:', error);
@@ -107,6 +112,8 @@ export const stopPanel = async (): Promise<void> => {
     if (server === null) return;
     activeServer = null;
     setPanelRunning(false);
+    stopWebAuthMaintenance?.();
+    stopWebAuthMaintenance = null;
 
     let timer: NodeJS.Timeout | undefined;
     const closed = new Promise<void>((resolve) => {

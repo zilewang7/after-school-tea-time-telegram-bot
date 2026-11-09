@@ -47,3 +47,11 @@ const miniAppDirectLink = (startParam: string): string | null => {
 
 /** `t.me/<bot>/<panel>?startapp=s<token>`: the public share, in the Mini App; null without a bot username */
 export const miniAppShareLink = (token: string): string | null => miniAppDirectLink(`s${token}`);
+
+/** `t.me/<bot>/<panel>`: the panel's Mini App entry, no start_param; null without a bot username */
+export const miniAppPanelLink = (): string | null => {
+    const botUserName = (process.env.BOT_USER_NAME ?? '').trim();
+    if (botUserName === '') return null;
+    const shortName = (process.env.WEBAPP_BOT_SHORT_NAME ?? '').trim() || DEFAULT_SHORT_NAME;
+    return `https://t.me/${botUserName}/${shortName}`;
+};

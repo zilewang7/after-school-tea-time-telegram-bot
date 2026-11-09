@@ -238,6 +238,29 @@ const migrateShareLinks = async (transaction: Transaction): Promise<void> => {
   );
 };
 
+/**
+ * Browser sessions for the panel's web login (design §6.2): one row per
+ * `kob_web` cookie. Only the sha256 of the cookie value is stored, so a
+ * database leak is not a set of usable sessions.
+ *
+ * Raw SQL only, like share_links: no sequelize model, so sync() never rebuilds it.
+ */
+const migratePanelWebSessions = async (transaction: Transaction): Promise<void> => {
+  await sequelize.query(`
+    CREATE TABLE IF NOT EXISTS panel_web_sessions (
+      tokenHash VARCHAR(255) PRIMARY KEY,
+      userId INTEGER NOT NULL,
+      createdAt DATETIME NOT NULL,
+      lastSeenAt DATETIME NOT NULL,
+      expiresAt DATETIME NOT NULL
+    )
+  `, { transaction });
+  await sequelize.query(
+    'CREATE INDEX IF NOT EXISTS panel_web_sessions_user ON panel_web_sessions (userId, expiresAt)',
+    { transaction }
+  );
+};
+
 /** Apply additive, idempotent DDL without altering the large message table. */
 export const runSchemaMigrations = async (): Promise<void> => {
   await sequelize.query(`
@@ -254,6 +277,7 @@ export const runSchemaMigrations = async (): Promise<void> => {
     await migrateHarnessIssuePanelColumns(transaction);
     await migrateChatSettingsToolOverrides(transaction);
     await migrateShareLinks(transaction);
+    await migratePanelWebSessions(transaction);
     await sequelize.query(
       `INSERT OR IGNORE INTO schema_migrations (name, appliedAt)
        VALUES ('20260908_custom_emoji_phase1', :appliedAt)`,
@@ -303,6 +327,12 @@ export const runSchemaMigrations = async (): Promise<void> => {
     await sequelize.query(
       `INSERT OR IGNORE INTO schema_migrations (name, appliedAt)
        VALUES ('20261109_share_links', :appliedAt)`,
+      { replacements: { appliedAt: new Date().toISOString() }, transaction }
+    );
+    // panel_web_sessions is a brand-new table, created by migratePanelWebSessions above
+    await sequelize.query(
+      `INSERT OR IGNORE INTO schema_migrations (name, appliedAt)
+       VALUES ('20261109_panel_web_sessions', :appliedAt)`,
       { replacements: { appliedAt: new Date().toISOString() }, transaction }
     );
   });

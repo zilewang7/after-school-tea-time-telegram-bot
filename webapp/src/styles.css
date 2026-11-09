@@ -102,13 +102,6 @@ p {
     font-size: 14px;
 }
 
-.outside-telegram {
-    min-height: 100vh;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    color: var(--color-hint);
-}
 
 /* Tab layers: a header that scrolls away, then a sticky tab bar */
 
@@ -1493,4 +1486,58 @@ a.button {
 .share-footer {
     margin: 4px 4px 0;
     text-align: center;
+}
+
+/* Browser login (design §8.3): the page a plain browser gets instead of the Telegram-only notice */
+
+.web-login {
+    max-width: 520px;
+    margin: 0 auto;
+    padding: 32px 16px 48px;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+}
+
+.web-login-title {
+    margin: 0;
+    font-size: 22px;
+    font-weight: 600;
+    color: var(--color-text);
+}
+
+.web-login-section {
+    margin-top: 12px;
+}
+
+.web-login-form {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.web-login-label {
+    font-size: 13px;
+    color: var(--color-hint);
+}
+
+.web-login-input {
+    font: inherit;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    padding: 10px 12px;
+    border-radius: 10px;
+    border: 1px solid var(--color-separator);
+    background: var(--color-page-bg);
+    color: var(--color-text);
+}
+
+.web-login-input:focus {
+    outline: 2px solid var(--color-accent);
+    outline-offset: 1px;
+}
+
+.web-login .button {
+    text-align: center;
+    text-decoration: none;
 }

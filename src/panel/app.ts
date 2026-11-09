@@ -44,6 +44,8 @@ import { registerShareRoutes } from './routes/shares.js';
 import { registerStatsRoute } from './routes/stats.js';
 import { registerStatusRoute } from './routes/status.js';
 import { registerPublicShareApiRoutes } from './share/public-api.js';
+import { getWebAuthRuntime, type WebAuthRuntime } from './auth/web-auth-runtime.js';
+import { registerPublicWebAuthRoutes, registerWebLogoutRoute } from './routes/web-auth.js';
 import { registerSharePublicRoutes } from './share/public-routes.js';
 import { createWidgetSigner } from './share/signed-widget.js';
 import { registerSignedWidgetRoute } from './share/signed-widget-routes.js';
@@ -83,6 +85,11 @@ export interface PanelAppOptions {
      * (design §5.6/§7.4). Default: the env.
      */
     shareEnabled?: boolean;
+    /**
+     * Browser login runtime (design §5.4); default: the process-wide singleton.
+     * Offline cases pass their own stores so codes and sessions are inspectable.
+     */
+    webAuth?: WebAuthRuntime;
 }
 
 const BODY_LIMIT_BYTES = 32 * 1024;
@@ -100,6 +107,11 @@ export const createPanelApp = (options: PanelAppOptions): Hono<PanelEnv> => {
     const checker = createMembershipChecker({ lookup: options.membershipLookup, now });
     const rateLimit = options.rateLimit ?? DEFAULT_RATE_LIMIT;
     const shareEnabled = options.shareEnabled ?? getToolConfig().shareEnabled;
+    const webAuth = options.webAuth ?? getWebAuthRuntime();
+    const bodyLimit = createBodyLimit({
+        maxSize: BODY_LIMIT_BYTES,
+        onTooLarge: (context) => context.json(errorBody('too_large', PANEL_MESSAGES.tooLarge), 413),
+    });
     const widgetSigner = createWidgetSigner({ botToken: options.botToken, now });
     const app = new Hono<PanelEnv>();
 
@@ -114,18 +126,26 @@ export const createPanelApp = (options: PanelAppOptions): Hono<PanelEnv> => {
     // SHARE_ENABLED=0 it answers the same JSON 404 an unknown token gets.
     registerPublicShareApiRoutes(app, { enabled: shareEnabled, now });
 
+    // The web login creates the credential, so it sits in front of the auth
+    // middleware; its tiny JSON body still goes through the same limit.
+    app.use('/api/auth/code', bodyLimit);
+    registerPublicWebAuthRoutes(app, webAuth);
+
+    app.use('/api/*', bodyLimit);
     app.use(
         '/api/*',
-        createBodyLimit({
-            maxSize: BODY_LIMIT_BYTES,
-            onTooLarge: (context) => context.json(errorBody('too_large', PANEL_MESSAGES.tooLarge), 413),
+        createAuthMiddleware({
+            botToken: options.botToken,
+            checker,
+            now,
+            webSessions: webAuth.enabled ? webAuth.sessions : null,
         })
     );
-    app.use('/api/*', createAuthMiddleware({ botToken: options.botToken, checker, now }));
     app.use('/api/*', createRateLimit({ ...rateLimit, now }));
     app.use('/api/*', createHandlerTimeout(options.handlerTimeoutMs ?? DEFAULT_HANDLER_TIMEOUT_MS));
 
     registerMeRoute(app);
+    registerWebLogoutRoute(app, webAuth);
     registerChatRoutes(app);
     registerChatSettingsRoute(app);
     registerSettingsPreviewRoute(app);
