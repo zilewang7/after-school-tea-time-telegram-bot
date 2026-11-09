@@ -37,8 +37,8 @@ import type { ToolCall, TurnTools } from './tool-types.js';
  * a slow provider: one googleSearch round can stall for minutes (or a 429
  * retry), and the model then got only a couple of tool calls before the final
  * round took its tools away. The clock now measures the tool calls themselves
- * (product tools excluded), so the same 600s buys the same exploration no
- * matter how slow the model or the search backend is.
+ * (product and harness issue tools excluded), so the same 600s buys the same
+ * exploration no matter how slow the model or the search backend is.
  */
 export const TOOL_LOOP_DEADLINE_MS = 600_000;
 

@@ -33,6 +33,21 @@ export const PRODUCT_TOOL_NAMES: ReadonlySet<string> = new Set([
 
 export const isProductToolName = (name: string): boolean => PRODUCT_TOOL_NAMES.has(name);
 
+/**
+ * Tools whose handler time does not count against the reply's tool budget.
+ * The product tools are free because a reply must never end unable to hand
+ * over what it made. The harness issue tools are free because they are how the
+ * model reports a tool that wasted its time — charging for the report would
+ * punish exactly the replies that found the problem.
+ */
+export const TIME_FREE_TOOL_NAMES: ReadonlySet<string> = new Set([
+    ...PRODUCT_TOOL_NAMES,
+    LIST_HARNESS_ISSUES_TOOL_NAME,
+    CREATE_HARNESS_ISSUE_TOOL_NAME,
+]);
+
+export const isTimeFreeToolName = (name: string): boolean => TIME_FREE_TOOL_NAMES.has(name);
+
 /** Built-in names an MCP tool may never take */
 export const RESERVED_TOOL_NAMES: readonly string[] = [
     SEND_SMS_TOOL_NAME,

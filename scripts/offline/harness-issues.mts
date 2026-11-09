@@ -189,6 +189,24 @@ const cases: { name: string; body: () => Promise<void> }[] = [
             );
         },
     },
+    {
+        name: 'recording an issue does not charge the reply tool budget',
+        body: async () => {
+            const { toolTimeSpentMs } = await import('../../src/ai/tools/tool-round.js');
+            const executed = (name: string, durationMs: number) => ({
+                call: { id: name, name, argumentsJson: '{}' },
+                result: { content: '', isError: false, images: [], record: null },
+                durationMs,
+            });
+            const charged = toolTimeSpentMs([
+                executed('search_history', 1200),
+                executed('list_harness_issues', 300),
+                executed('create_harness_issue', 400),
+                executed('send_widget', 900),
+            ]);
+            expect(charged === 1200, `only search_history is charged (got ${charged}ms)`);
+        },
+    },
 ];
 
 const results: CaseResult[] = [];

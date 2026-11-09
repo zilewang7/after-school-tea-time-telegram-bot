@@ -2,7 +2,7 @@
  * One round of client tool calls, shared by every platform's tool loop.
  */
 import type { AgentToolUsage, StreamChunk } from '../types.js';
-import { isProductToolName } from '../../reply/tools/tool-names.js';
+import { isTimeFreeToolName } from '../../reply/tools/tool-names.js';
 import type { ToolCall, ToolResult, TurnTools } from './tool-types.js';
 
 export interface ExecutedToolCall {
@@ -85,14 +85,16 @@ export const withToolBudget = (
     }));
 
 /**
- * Tool time the reply's budget should charge for: every non-product call's
- * handler time. Product tools (drawing and handing over) are free on purpose —
- * a reply must never be unable to send what it made because the model spent
- * its budget looking. Bounded by the per-reply product limits.
+ * Tool time the reply's budget should charge for: every call's handler time
+ * except the free ones. Product tools (drawing and handing over) are free on
+ * purpose — a reply must never be unable to send what it made because the
+ * model spent its budget looking. The harness issue tools are free too: they
+ * are how the model reports a tool that wasted its time. Both are bounded by
+ * their own per-reply limits.
  */
 export const toolTimeSpentMs = (executedCalls: readonly ExecutedToolCall[]): number =>
     executedCalls.reduce(
-        (total, executed) => (isProductToolName(executed.call.name) ? total : total + executed.durationMs),
+        (total, executed) => (isTimeFreeToolName(executed.call.name) ? total : total + executed.durationMs),
         0
     );
 
