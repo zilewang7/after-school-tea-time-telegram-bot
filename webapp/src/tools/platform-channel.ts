@@ -68,7 +68,7 @@ const channelCopyOf = (platform: ClientPlatform, htmlSupported: boolean): Channe
         return {
             recommended: htmlSupported ? 'rich-html' : 'plain',
             dialect: 'telegram',
-            note: '桌面版支持富文本粘贴：复制后到输入框粘贴即可；代码块语言会丢失，折叠引用会退化为普通引用。',
+            note: '桌面版支持富文本粘贴：复制后到输入框粘贴即可；代码块语言会丢失，折叠引用会按普通引用导入，粘贴后可在输入框里手动切换成折叠。',
         };
     }
     return {

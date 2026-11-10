@@ -147,7 +147,7 @@ export const ForwardPanel = ({ plan }: ForwardPanelProps) => {
                         <input type="checkbox" checked={collapsedQuotes} onChange={handleQuoteToggle} />
                         <span className="tools-quote-toggle-label">折叠引用</span>
                         <span className="hint">
-                            把所有引用统一成可折叠引用；Desktop 客户端不支持折叠，粘贴时会变回普通引用。
+                            把所有引用统一成可折叠引用；Desktop 粘贴时会按普通引用导入，粘贴后可在输入框里手动把引用切换成折叠样式。
                         </span>
                     </label>
                 )}
