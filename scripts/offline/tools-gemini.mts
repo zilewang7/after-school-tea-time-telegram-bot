@@ -1301,11 +1301,22 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
         },
     },
     {
+        name: 'a Gemini model verified against mixed tools before the deny-list keeps its client tools',
+        body: async () => {
+            reset([sse(roundEvents([[textPart('Plain answer.')]]))]);
+
+            const { chunks } = await runTurn({ model: 'gemini-3.1-pro-preview', tools: turnTools });
+
+            expect(declarationNamesOf(recordedRequests[0]).includes('lookup_b'), 'the tools are declared');
+            expect(textOf(chunks) === 'Plain answer.', 'a text-only round still answers');
+        },
+    },
+    {
         name: 'a model known to accept search tools only gets none of the client tools',
         body: async () => {
             reset([sse(roundEvents([[textPart('Plain answer.')]]))]);
 
-            const { chunks, lines } = await runTurn({ model: 'gemini-3.1-pro-preview', tools: turnTools });
+            const { chunks, lines } = await runTurn({ model: 'gemini-2.5-flash', tools: turnTools });
 
             expect(declarationNamesOf(recordedRequests[0]).length === 0, 'nothing is declared');
             expect(json(recordedRequests[0]?.body.tools) === BUILT_IN_TOOLS_JSON, 'the built-in tools alone are sent');

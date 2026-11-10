@@ -40,18 +40,19 @@ export const replacesChatSystemPrompt = (model: string): boolean =>
     isImageOutputModel(model) && platformTypeOf(model) === 'gemini';
 
 /**
- * Gemini models verified to accept function declarations alongside the built-in
- * search tools (2026-10-16, own Vertex project; gemini-4-carbon verified
- * 2026-11-11: two-round loop with reply, thinking and flat text all pass).
- * Everything older answers "Multiple tools are supported only when they are all
- * search tools" with 400, so they are denied by name instead of the new ones
- * having to be admitted one by one.
+ * Gemini chat models that only accept the built-in search tools: every 2.x
+ * answers "Multiple tools are supported only when they are all search tools"
+ * with 400. Newer ids (3.1-pro-preview, 3.8-flash, 4-argon, 4-carbon — all
+ * verified on our own Vertex project) accept function declarations alongside
+ * googleSearch, so the default is to offer client tools and only the known
+ * refusals are denied by name; a model released tomorrow works without a code
+ * change. An id that turns out to refuse mixed tools is caught at round 1 and
+ * the platform retries the same request without the declarations.
  */
 const GEMINI_SEARCH_ONLY_MODELS: ReadonlySet<string> = new Set([
     'gemini-2.5-flash',
     'gemini-2.5-pro',
     'gemini-2.5-flash-lite',
-    'gemini-3.1-pro-preview',
 ]);
 
 export const supportsGeminiFunctionTools = (model: string): boolean => {
