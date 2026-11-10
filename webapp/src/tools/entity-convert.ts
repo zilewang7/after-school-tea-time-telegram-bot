@@ -10,6 +10,16 @@ import { entitiesToClipboardHtml } from './clipboard-html';
 import { parseClipboardHtml, trimBlockEntityNewlines } from './clipboard-parse';
 import type { ClipboardConversion, ClipboardPayload, ClipboardTarget, RenderedMarkdown } from './types';
 
+/**
+ * Telegram keeps at most about 100 entities per message and drops the rest
+ * silently. The UI warns a little below the cap because the server adds its
+ * own entities for links, mentions and the like.
+ */
+export const MESSAGE_ENTITY_LIMIT = 100;
+
+/** Warn from here: server-side auto entities eat into the headroom */
+export const MESSAGE_ENTITY_WARN_LIMIT = 90;
+
 /** Lenient markdown -> plain text plus Bot API entities */
 export const markdownToRendered = (markdown: string): RenderedMarkdown => {
     const rendered = renderMarkdown(markdown);

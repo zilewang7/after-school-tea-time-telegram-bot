@@ -1,7 +1,13 @@
 import { useCallback, useMemo, useState } from 'react';
 import type { ChangeEvent } from 'react';
 import { match } from 'ts-pattern';
-import { markdownToRendered, renderedToClipboardPayload, withQuoteStyle } from '../../../tools/entity-convert';
+import {
+    MESSAGE_ENTITY_LIMIT,
+    MESSAGE_ENTITY_WARN_LIMIT,
+    markdownToRendered,
+    renderedToClipboardPayload,
+    withQuoteStyle,
+} from '../../../tools/entity-convert';
 import { renderedToIosMarkdown, renderedToTelegramMarkdown } from '../../../tools/telegram-markdown';
 import type { ChannelPlan } from '../../../tools/types';
 import { ChannelActions } from './channel-actions';
@@ -41,14 +47,12 @@ export const ForwardPanel = ({ plan }: ForwardPanelProps) => {
         if (preview.kind !== 'ready') return null;
         const textLength = preview.rendered.text.length;
         const parts = Math.ceil(textLength / TELEGRAM_MAX_LENGTH);
+        const entities = preview.rendered.entities.length;
+        const entityRisk = entities >= MESSAGE_ENTITY_WARN_LIMIT;
         if (parts > 1) {
-            return { label: `${textLength} 字符 · 约 ${parts} 条`, over: true, parts };
+            return { label: `${textLength} 字符 · 约 ${parts} 条`, over: true, parts, entities, entityRisk };
         }
-        return {
-            label: `${textLength} 字符 · ${preview.rendered.entities.length} 个实体`,
-            over: false,
-            parts,
-        };
+        return { label: `${textLength} 字符 · ${entities} 个实体`, over: false, parts, entities, entityRisk };
     }, [preview]);
 
     const handleQuoteToggle = useCallback(
@@ -155,6 +159,13 @@ export const ForwardPanel = ({ plan }: ForwardPanelProps) => {
                     <p className="hint">
                         超过 {TELEGRAM_MAX_LENGTH} 字符，发送时客户端会自动拆成约 {previewMeta.parts} 条消息，不用手动分条；
                         拆分点处的格式会在每条消息里各自重新开始。
+                    </p>
+                )}
+                {previewMeta !== null && previewMeta.entityRisk && (
+                    <p className="notice warning">
+                        {previewMeta.over
+                            ? `实体 ${previewMeta.entities} 个，接近 Telegram 单条消息的实体上限（约 ${MESSAGE_ENTITY_LIMIT} 个）；拆成约 ${previewMeta.parts} 条发送时每条分别计数，是否被吞取决于拆分位置。`
+                            : `实体 ${previewMeta.entities} 个，接近 Telegram 单条消息的实体上限（约 ${MESSAGE_ENTITY_LIMIT} 个）；超出的部分发送时可能被静默丢掉。`}
                     </p>
                 )}
                 <ChannelActions actions={actions} />
