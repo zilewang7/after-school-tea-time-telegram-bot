@@ -125,3 +125,25 @@
     color: var(--color-warning);
     font-weight: 600;
 }
+
+/* Quote-style switch under the preview: only shown when the message has quotes */
+.tools-quote-toggle {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+    font-size: 13px;
+    cursor: pointer;
+}
+
+.tools-quote-toggle input {
+    width: 16px;
+    height: 16px;
+    margin: 0;
+    accent-color: var(--color-button);
+    cursor: pointer;
+}
+
+.tools-quote-toggle-label {
+    font-weight: 600;
+}

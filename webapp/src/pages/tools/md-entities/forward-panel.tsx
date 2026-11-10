@@ -1,6 +1,7 @@
 import { useCallback, useMemo, useState } from 'react';
+import type { ChangeEvent } from 'react';
 import { match } from 'ts-pattern';
-import { markdownToRendered, renderedToClipboardPayload } from '../../../tools/entity-convert';
+import { markdownToRendered, renderedToClipboardPayload, withQuoteStyle } from '../../../tools/entity-convert';
 import { renderedToIosMarkdown, renderedToTelegramMarkdown } from '../../../tools/telegram-markdown';
 import type { ChannelPlan } from '../../../tools/types';
 import { ChannelActions } from './channel-actions';
@@ -31,7 +32,8 @@ interface ForwardPanelProps {
 /** Direction 1: markdown -> Telegram entities, live preview and clipboard channels */
 export const ForwardPanel = ({ plan }: ForwardPanelProps) => {
     const [markdown, setMarkdown] = useState(SAMPLE_MARKDOWN);
-    const preview = useForwardPreview(markdown);
+    const [collapsedQuotes, setCollapsedQuotes] = useState(false);
+    const preview = useForwardPreview(markdown, collapsedQuotes);
     const { status, copyRich, copyPlainText, reportFailure } = useCopyActions();
     const hasContent = markdown.trim() !== '';
     // Telegram counts the sent text, not the markdown source: a long link URL must not inflate it
@@ -49,27 +51,33 @@ export const ForwardPanel = ({ plan }: ForwardPanelProps) => {
         };
     }, [preview]);
 
+    const handleQuoteToggle = useCallback(
+        (event: ChangeEvent<HTMLInputElement>) => setCollapsedQuotes(event.target.checked),
+        []
+    );
+
     const handleCopyRich = useCallback(() => {
         if (markdown.trim() === '') return;
         try {
-            const payload = renderedToClipboardPayload(markdownToRendered(markdown), plan.target);
+            const rendered = withQuoteStyle(markdownToRendered(markdown), collapsedQuotes);
+            const payload = renderedToClipboardPayload(rendered, plan.target);
             copyRich(payload.html, payload.plainText);
         } catch {
             reportFailure('转换失败：这段 Markdown 无法生成富文本。');
         }
-    }, [markdown, plan.target, copyRich, reportFailure]);
+    }, [markdown, plan.target, collapsedQuotes, copyRich, reportFailure]);
 
     const handleCopyMarkdown = useCallback(() => {
         if (markdown.trim() === '') return;
         try {
-            const rendered = markdownToRendered(markdown);
+            const rendered = withQuoteStyle(markdownToRendered(markdown), collapsedQuotes);
             const text =
                 plan.markdownDialect === 'ios' ? renderedToIosMarkdown(rendered) : renderedToTelegramMarkdown(rendered);
             copyPlainText(text, `Markdown 文本（${dialectLabelOf(plan)}）`);
         } catch {
             reportFailure('转换失败：这段 Markdown 无法生成 Markdown 文本。');
         }
-    }, [markdown, plan, copyPlainText, reportFailure]);
+    }, [markdown, plan, collapsedQuotes, copyPlainText, reportFailure]);
 
     const handleCopyPlain = useCallback(() => {
         if (markdown.trim() === '') return;
@@ -134,6 +142,15 @@ export const ForwardPanel = ({ plan }: ForwardPanelProps) => {
                         </>
                     ))
                     .exhaustive()}
+                {preview.kind === 'ready' && preview.hasQuote && (
+                    <label className="tools-quote-toggle">
+                        <input type="checkbox" checked={collapsedQuotes} onChange={handleQuoteToggle} />
+                        <span className="tools-quote-toggle-label">折叠引用</span>
+                        <span className="hint">
+                            把所有引用统一成可折叠引用；Desktop 客户端不支持折叠，粘贴时会变回普通引用。
+                        </span>
+                    </label>
+                )}
                 {previewMeta !== null && previewMeta.over && (
                     <p className="hint">
                         超过 {TELEGRAM_MAX_LENGTH} 字符，发送时客户端会自动拆成约 {previewMeta.parts} 条消息，不用手动分条；

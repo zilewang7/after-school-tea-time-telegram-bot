@@ -5,6 +5,7 @@
  * Reverse: clipboard HTML -> text + entities -> markdown.
  */
 import { entitiesToMarkdown, renderMarkdown, toPreviewHtml } from 'telegram-md-entities';
+import type { MessageEntity } from 'telegram-md-entities';
 import { entitiesToClipboardHtml } from './clipboard-html';
 import { parseClipboardHtml, trimBlockEntityNewlines } from './clipboard-parse';
 import type { ClipboardConversion, ClipboardPayload, ClipboardTarget, RenderedMarkdown } from './types';
@@ -14,6 +15,19 @@ export const markdownToRendered = (markdown: string): RenderedMarkdown => {
     const rendered = renderMarkdown(markdown);
     return { text: rendered.text, entities: rendered.entities };
 };
+
+/** Force every quote in a rendered message to one kind (normal or collapsible) */
+export const withQuoteStyle = (rendered: RenderedMarkdown, collapsed: boolean): RenderedMarkdown => ({
+    text: rendered.text,
+    entities: rendered.entities.map((entity): MessageEntity => {
+        if (entity.type !== 'blockquote' && entity.type !== 'expandable_blockquote') return entity;
+        return { ...entity, type: collapsed ? 'expandable_blockquote' : 'blockquote' };
+    }),
+});
+
+/** True when the message contains at least one quote */
+export const hasQuote = (rendered: RenderedMarkdown): boolean =>
+    rendered.entities.some((entity) => entity.type === 'blockquote' || entity.type === 'expandable_blockquote');
 
 /** Rendered message -> the flavors a rich copy writes to the clipboard */
 export const renderedToClipboardPayload = (

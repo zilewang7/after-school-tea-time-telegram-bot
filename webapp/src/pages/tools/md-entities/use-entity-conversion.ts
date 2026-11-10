@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { markdownToRendered, renderedToPreviewHtml } from '../../../tools/entity-convert';
+import { hasQuote, markdownToRendered, renderedToPreviewHtml, withQuoteStyle } from '../../../tools/entity-convert';
 import type { RenderedMarkdown } from '../../../tools/types';
 
 /** Live-preview debounce: renderMarkdown costs ~11ms per 4 KB, typing must not wait for it */
@@ -17,21 +17,30 @@ const useDebouncedValue = <TValue,>(value: TValue, delayMs: number): TValue => {
 export type ForwardPreview =
     | { kind: 'empty' }
     | { kind: 'failed' }
-    | { kind: 'ready'; rendered: RenderedMarkdown; previewHtml: string };
+    | { kind: 'ready'; rendered: RenderedMarkdown; previewHtml: string; hasQuote: boolean };
 
 /**
  * Markdown -> entities + preview HTML, debounced so the editor stays
  * responsive on long input. Copy actions convert the current value directly.
  */
-export const useForwardPreview = (markdown: string): ForwardPreview => {
+export const useForwardPreview = (
+    markdown: string,
+    collapsedQuotes: boolean
+): ForwardPreview => {
     const debounced = useDebouncedValue(markdown, PREVIEW_DEBOUNCE_MS);
     return useMemo<ForwardPreview>(() => {
         if (debounced.trim() === '') return { kind: 'empty' };
         try {
-            const rendered = markdownToRendered(debounced);
-            return { kind: 'ready', rendered, previewHtml: renderedToPreviewHtml(rendered) };
+            const base = markdownToRendered(debounced);
+            const rendered = withQuoteStyle(base, collapsedQuotes);
+            return {
+                kind: 'ready',
+                rendered,
+                previewHtml: renderedToPreviewHtml(rendered),
+                hasQuote: hasQuote(base),
+            };
         } catch {
             return { kind: 'failed' };
         }
-    }, [debounced]);
+    }, [debounced, collapsedQuotes]);
 };
