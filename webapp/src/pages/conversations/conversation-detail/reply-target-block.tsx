@@ -1,12 +1,16 @@
 import type { ReplyTarget } from '../../../api';
 
-const labelOf = (target: ReplyTarget): string =>
-    target.authorName ?? (target.number === null ? '一条消息' : `#${target.number}`);
+// The panel numbers every message (`#N`), so name the target by both when known
+const labelOf = (target: ReplyTarget): string => {
+    const number = target.number === null ? null : `#${target.number}`;
+    if (number !== null && target.authorName !== null) return `${number} ${target.authorName}`;
+    return number ?? target.authorName ?? '一条消息';
+};
 
 const snippetOf = (target: ReplyTarget): string | null =>
     target.snippet ?? (target.mediaHint === null ? null : `[${target.mediaHint}]`);
 
-/** The message a bubble answers: `↳ 回复 黑猫：…` */
+/** The message a bubble answers: `↳ 回复 #2 黑猫：…` */
 export const ReplyTargetBlock = ({ target }: { target: ReplyTarget }) => {
     const snippet = snippetOf(target);
     return (
