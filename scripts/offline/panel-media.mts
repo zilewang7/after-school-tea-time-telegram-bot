@@ -31,6 +31,7 @@ const registry = await import('../../src/db/queries/panel-registry.js');
 const db = await import('../../src/db/index.js');
 const service = await import('../../src/panel/share/share-link-service.js');
 const { putCachedMedia } = await import('../../src/services/media-cache-service.js');
+const { saveMessageLinks } = await import('../../src/db/queries/context-queries.js');
 const { createMediaSigner, SIGNED_MEDIA_TTL_SECONDS } = await import('../../src/panel/share/signed-media.js');
 const { createPanelApp } = await import('../../src/panel/app.js');
 const { signInitData } = await import('../lib/init-data.mts');
@@ -390,6 +391,44 @@ const cases: { name: string; body: () => Promise<void> }[] = [
             expect(preview.status === 200 && (await bytesOf(preview)).equals(PNG_BYTES), 'the share media route serves the preview');
             expect((await app.request(`/s/${token}/media/${rootId}/preview?i=5`)).status === 404, 'an unknown preview index is a 404');
             expect((await app.request(`/s/${token}/media/${rootId}/file`)).status === 404, 'a picture is not served in the file slot');
+        },
+    },
+    {
+        name: 'a conversation share serves a message /chat pulled into the tree',
+        body: async () => {
+            const rootId = takeMessageId();
+            await saveMessage(GROUP, rootId, ALICE.id, '这段对话里有一张外链消息');
+            const linkedId = takeMessageId();
+            await saveMessage(GROUP, linkedId, ALICE.id, '被拉进来的图', {
+                fileUniqueId: 'photo-linked-1',
+                fileMime: 'image/png',
+                mediaHint: 'a picture',
+            });
+            await putCachedMedia({
+                fileUniqueId: 'photo-linked-1',
+                mime: 'image/png',
+                kind: 'photo',
+                data: PNG_BYTES,
+                sizeBytes: PNG_BYTES.length,
+            });
+            await saveMessageLinks(GROUP, rootId, [linkedId]);
+
+            const created = await service.createUserShare({
+                kind: 'conversation',
+                chatId: GROUP,
+                rootId,
+                createdBy: ALICE.id,
+            });
+            if (!created.ok) throw new Error(`could not create the share: ${created.reason}`);
+            const token = created.share.token;
+
+            const view = await jsonOf(await app.request(`/api/public/shares/${token}`));
+            const bubbles = view.share?.conversation?.bubbles ?? [];
+            const linked = bubbles.find((bubble: any) => bubble.messageId === linkedId);
+            expect(linked !== undefined, 'the linked message is a bubble of the share');
+            expect(linked.media?.kind === 'image', 'the bubble carries its picture');
+            const served = await app.request(`/s/${token}/media/${linkedId}/image`);
+            expect(served.status === 200 && (await bytesOf(served)).equals(PNG_BYTES), 'the linked message media is served');
         },
     },
 ];

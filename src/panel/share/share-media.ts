@@ -6,7 +6,7 @@
  */
 import { getMessage } from '../../db/index.js';
 import { listExcludedMessageIds } from '../../db/queries/context-exclusions.js';
-import { findBotResponseInChat, findRootMessage } from '../../db/queries/context-queries.js';
+import { findBotResponseInChat, listConversationMessageIds } from '../../db/queries/context-queries.js';
 import {
     loadLinkPreviewMediaDescriptors,
     resolveCachedMediaByKey,
@@ -28,10 +28,27 @@ const withinSlot = (media: ResolvedMedia | null, slot: ShareMediaSlot): Resolved
     return (media.kind === 'file') === (slot === 'file') ? media : null;
 };
 
-/** Whether a message belongs to the conversation a conversation share exposes */
+/** Conversation membership is asked once per attachment: cache the id set briefly */
+const CONVERSATION_ID_TTL_MS = 60_000;
+const CONVERSATION_ID_CACHE_MAX = 100;
+const conversationIds = new Map<string, { ids: ReadonlySet<number>; expiresAt: number }>();
+
+/**
+ * Whether a message belongs to the conversation a share exposes: replies at any
+ * depth plus the `/chat` pulls the page shows as bubbles. Same walk the page's
+ * content comes from, so a bubble that renders can always load its media.
+ */
 const belongsToConversation = async (chatId: number, rootId: number, messageId: number): Promise<boolean> => {
-    const chainRoot = await findRootMessage(chatId, messageId, { recover: false });
-    return chainRoot?.messageId === rootId;
+    const key = `${chatId}:${rootId}`;
+    const cached = conversationIds.get(key);
+    const ids = cached !== undefined && cached.expiresAt > Date.now()
+        ? cached.ids
+        : await listConversationMessageIds(chatId, rootId);
+    if (cached === undefined || cached.expiresAt <= Date.now()) {
+        if (conversationIds.size >= CONVERSATION_ID_CACHE_MAX) conversationIds.clear();
+        conversationIds.set(key, { ids, expiresAt: Date.now() + CONVERSATION_ID_TTL_MS });
+    }
+    return ids.has(messageId);
 };
 
 /**

@@ -424,6 +424,26 @@ const collectDescendants = async (
 };
 
 /**
+ * Every message id a reply tree contains: its replies at every depth plus the
+ * `/chat` pulls hanging off any of them. Ids only — no row bodies and no media
+ * bytes — so a share's media route can check membership cheaply.
+ *
+ * The set can name a row that no longer exists (a lost `/chat` target); callers
+ * that need content still read the row and degrade on null.
+ */
+export const listConversationMessageIds = async (chatId: number, rootId: number): Promise<Set<number>> => {
+    const visited = new Set<number>([rootId]);
+    let level = [rootId];
+    while (level.length > 0) {
+        const childIds = await findChildMessageIds(chatId, level);
+        const nextLevel = childIds.filter((childId) => !visited.has(childId));
+        for (const childId of nextLevel) visited.add(childId);
+        level = nextLevel;
+    }
+    return visited;
+};
+
+/**
  * The chat's excluded message ids (panel). A failed read must not cost the
  * reply itself, so it degrades to "nothing excluded" with a log line.
  */
