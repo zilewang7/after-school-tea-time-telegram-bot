@@ -105,3 +105,9 @@
     max-height: 240px;
     overflow: auto;
 }
+
+/* Over one Telegram message: the client splits it on send, so this is amber, not red */
+.tools-over-limit {
+    color: var(--color-warning);
+    font-weight: 600;
+}

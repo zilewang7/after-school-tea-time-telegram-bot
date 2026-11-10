@@ -1,6 +1,5 @@
 import { useCallback } from 'react';
 import type { ChangeEvent } from 'react';
-import { LengthCounter } from '../../../components/length-counter';
 
 /** Telegram's single-message text limit (UTF-16 code units) */
 export const TELEGRAM_MAX_LENGTH = 4096;
@@ -25,7 +24,9 @@ export const MarkdownEditor = ({ value, onChange }: MarkdownEditorProps) => {
                 <label className="field-label" htmlFor="tools-markdown-input">
                     Markdown
                 </label>
-                <LengthCounter length={value.length} max={TELEGRAM_MAX_LENGTH} />
+                <span className={parts > 1 ? 'tools-over-limit' : 'hint'}>
+                    {value.length}/{TELEGRAM_MAX_LENGTH}
+                </span>
             </div>
             <textarea
                 id="tools-markdown-input"
@@ -38,7 +39,8 @@ export const MarkdownEditor = ({ value, onChange }: MarkdownEditorProps) => {
             />
             {parts > 1 && (
                 <p className="hint">
-                    超过 Telegram 单条上限 {TELEGRAM_MAX_LENGTH} 字符（约 {parts} 条），发送时可能需要手动分条。
+                    超过 {TELEGRAM_MAX_LENGTH} 字符，发送时客户端会自动拆成约 {parts} 条消息，不用手动分条；
+                    拆分点处的格式会在每条消息里各自重新开始。
                 </p>
             )}
         </div>
