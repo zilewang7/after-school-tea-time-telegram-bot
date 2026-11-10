@@ -12,6 +12,7 @@ import {
     findRootMessage,
     getRepliesHistory,
     listBotResponsesByIds,
+    listContextMessagesByIds,
     type ContextMessage,
 } from '../../db/queries/context-queries.js';
 import type { BotResponse } from '../../db/index.js';
@@ -22,6 +23,7 @@ import { describeMessageAnnotations } from '../../reply/context-builder.js';
 import { getRepliesInFlight, isBotReplyInFlight } from '../../state.js';
 import type { VisibleAccess } from '../types.js';
 import { runtimeChatTitleOf } from './chat-view.js';
+import { plainExcerptOf } from './excerpt.js';
 import { buildLinkPreviewTexts } from './message-previews.js';
 import { toReplySummaryView } from './reply-view.js';
 import { placeTreeMessages } from './tree-edges.js';
@@ -33,6 +35,7 @@ import {
     toMemberUserNode,
     toObserverUserNode,
     type MemberNodeExtras,
+    type ReplyTargetView,
     type TreeNode,
 } from './tree-nodes.js';
 
@@ -126,6 +129,77 @@ export const isConversationGenerating = (chatId: number, messages: readonly Cont
 
 const EMPTY_EXTRAS: MemberNodeExtras = { annotations: [], linkPreview: null, username: null };
 
+/** One-line cap of a reply target's excerpt */
+const REPLY_SNIPPET_MAX = 120;
+
+/** What a reply target contributes to the panel's reply block */
+interface ReplyTargetSource {
+    kind: 'user' | 'bot';
+    authorName: string;
+    text: string | null;
+    mediaHint: string | null;
+}
+
+const botTextOf = (response: BotResponse | undefined): string | null => {
+    const text = response?.getCurrentVersion()?.text ?? null;
+    return typeof text === 'string' && text !== '' ? text : null;
+};
+
+const replyTargetSourceOf = (message: ContextMessage, response: BotResponse | undefined): ReplyTargetSource => ({
+    kind: message.fromBotSelf ? 'bot' : 'user',
+    authorName: message.fromBotSelf ? 'bot' : message.userName,
+    text: message.fromBotSelf ? (botTextOf(response) ?? message.text) : message.text,
+    mediaHint: message.mediaHint,
+});
+
+/**
+ * The reply target of every message of the tree, keyed by the replying message.
+ * Targets inside the tree come from the tree (already read); targets outside it
+ * (a reply to something older than this conversation) are read in one batch.
+ * Only members may see them: the target can be a user message the flat view
+ * does not redact.
+ */
+const loadReplyTargets = async (
+    chatId: number,
+    messages: readonly ContextMessage[],
+    numberOf: ReadonlyMap<number, number>,
+    responses: ReadonlyMap<number, BotResponse>
+): Promise<Map<number, ReplyTargetView>> => {
+    const trees = new Map<number, ContextMessage>(messages.map((message) => [message.messageId, message]));
+    const missing = [
+        ...new Set(
+            messages.flatMap((message) => (message.replyToId === null ? [] : [message.replyToId]))
+        ),
+    ].filter((messageId) => !trees.has(messageId));
+    const external = await listContextMessagesByIds(chatId, missing);
+    for (const message of external) trees.set(message.messageId, message);
+    const externalBotIds = external.filter((message) => message.fromBotSelf).map((message) => message.messageId);
+    const externalResponses = new Map<number, BotResponse>(
+        externalBotIds.length === 0
+            ? []
+            : (await listBotResponsesByIds(chatId, externalBotIds)).map((response) => [response.messageId, response])
+    );
+
+    const views = new Map<number, ReplyTargetView>();
+    for (const message of messages) {
+        const target = message.replyToId === null ? undefined : trees.get(message.replyToId);
+        if (target === undefined) continue;
+        const source = replyTargetSourceOf(
+            target,
+            responses.get(target.messageId) ?? externalResponses.get(target.messageId)
+        );
+        views.set(message.messageId, {
+            messageId: target.messageId,
+            number: numberOf.get(target.messageId) ?? null,
+            kind: source.kind,
+            authorName: source.authorName,
+            snippet: plainExcerptOf(source.text, REPLY_SNIPPET_MAX),
+            mediaHint: source.mediaHint,
+        });
+    }
+    return views;
+};
+
 const loadPreviewMediaViews = async (
     signer: SignedMediaSigner,
     chatId: number,
@@ -169,6 +243,10 @@ export const buildConversationTreeView = async (
     const previewMediaByMessageId = access === 'member' && mediaSigner !== undefined
         ? await loadPreviewMediaViews(mediaSigner, chatId, userMessages)
         : new Map();
+    // A reply target can be a user message, so only members get it at all
+    const replyTargets = access === 'member'
+        ? await loadReplyTargets(chatId, messages, assembled.numbering.numberOf, responses)
+        : new Map<number, ReplyTargetView>();
 
     const nodes = messages.map((message): TreeNode => {
         const placement = placements.get(message.messageId) ?? { parentId: null, edge: null };
@@ -177,7 +255,8 @@ export const buildConversationTreeView = async (
             return toBotNode(
                 message,
                 position,
-                toReplySummaryView(responses.get(message.messageId), message, mediaSigner)
+                toReplySummaryView(responses.get(message.messageId), message, mediaSigner),
+                replyTargets.get(message.messageId) ?? null
             );
         }
         if (memberExtras === null) return toObserverUserNode(message, position);
@@ -187,7 +266,8 @@ export const buildConversationTreeView = async (
             memberExtras.get(message.messageId) ?? EMPTY_EXTRAS,
             chat,
             mediaByMessageId.get(message.messageId) ?? null,
-            previewMediaByMessageId.get(message.messageId) ?? []
+            previewMediaByMessageId.get(message.messageId) ?? [],
+            replyTargets.get(message.messageId) ?? null
         );
     });
 

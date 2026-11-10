@@ -22,6 +22,7 @@ import {
     type ShareConversationContent,
     type ShareMedia,
     type ShareReplyContent,
+    type ShareReplyTarget,
     type ShareWidgetContent,
 } from './share-content.js';
 import type { ShareRow } from './share-types.js';
@@ -51,6 +52,14 @@ export interface PublicShareReplyView {
     media: PublicShareMediaView | null;
 }
 
+/** The message a bubble answers, when it is part of the shared conversation */
+export interface PublicShareReplyTargetView {
+    messageId: number;
+    authorName: string;
+    snippet: string | null;
+    mediaHint: string | null;
+}
+
 export interface PublicShareBubbleView {
     kind: 'user' | 'bot';
     messageId: number;
@@ -58,6 +67,10 @@ export interface PublicShareBubbleView {
     /** User bubbles only */
     authorName?: string;
     text: string;
+    /** User bubbles only: the part of another message this one quotes */
+    quote?: string | null;
+    /** User bubbles only: readable text of the captured web preview */
+    previewText?: string | null;
     /** User bubbles only; bot bubbles carry `null` */
     mediaHint: string | null;
     widget: PublicShareWidgetView | null;
@@ -65,6 +78,8 @@ export interface PublicShareBubbleView {
     media: PublicShareMediaView | null;
     /** Link-preview pictures / clips captured for the bubble's first URL */
     previewMedia: PublicShareMediaView[];
+    /** The bubble this one answers; null when it is outside the share */
+    replyTo: PublicShareReplyTargetView | null;
 }
 
 export interface PublicShareConversationView {
@@ -103,6 +118,16 @@ const replyViewOf = (content: ShareReplyContent): PublicShareReplyView => ({
     media: mediaViewOf(content.media),
 });
 
+const replyTargetViewOf = (target: ShareReplyTarget | null): PublicShareReplyTargetView | null =>
+    target === null
+        ? null
+        : {
+              messageId: target.messageId,
+              authorName: target.authorName,
+              snippet: target.snippet,
+              mediaHint: target.mediaHint,
+          };
+
 const bubbleViewOf = (bubble: ShareBubble): PublicShareBubbleView => {
     if (bubble.kind === 'user') {
         return {
@@ -111,6 +136,8 @@ const bubbleViewOf = (bubble: ShareBubble): PublicShareBubbleView => {
             createdAt: bubble.createdAt,
             authorName: bubble.authorName,
             text: bubble.text,
+            quote: bubble.quote,
+            previewText: bubble.previewText,
             mediaHint: bubble.mediaHint,
             widget: null,
             media: mediaViewOf(bubble.media),
@@ -118,6 +145,7 @@ const bubbleViewOf = (bubble: ShareBubble): PublicShareBubbleView => {
                 const view = mediaViewOf(preview);
                 return view === null ? [] : [view];
             }),
+            replyTo: replyTargetViewOf(bubble.replyTo),
         };
     }
     return {
@@ -129,6 +157,7 @@ const bubbleViewOf = (bubble: ShareBubble): PublicShareBubbleView => {
         widget: widgetViewOf(bubble.widget),
         media: mediaViewOf(bubble.media),
         previewMedia: [],
+        replyTo: replyTargetViewOf(bubble.replyTo),
     };
 };
 

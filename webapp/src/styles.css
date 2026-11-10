@@ -824,6 +824,16 @@ a.button {
     overflow-wrap: anywhere;
 }
 
+/* The message a flat/tree bubble answers */
+.flat-reply-to {
+    margin: 0;
+    padding: 2px 8px;
+    border-left: 3px solid var(--color-separator);
+    color: var(--color-hint);
+    font-size: 13px;
+    overflow-wrap: anywhere;
+}
+
 
 /* One attachment of a message: picture, looping sticker, clip, audio or file */
 .media-attachment {
@@ -1545,6 +1555,39 @@ a.button {
     font-size: 13px;
     font-weight: 600;
     overflow-wrap: anywhere;
+}
+
+/* The message a share bubble answers */
+.share-reply-to {
+    margin: 0;
+    padding: 2px 8px;
+    border-left: 3px solid var(--color-separator);
+    color: var(--color-hint);
+    font-size: 13px;
+    overflow-wrap: anywhere;
+}
+
+.share-reply-to-author {
+    color: var(--color-text);
+    font-weight: 600;
+}
+
+/* The captured web preview text of a share bubble */
+.share-preview-text {
+    padding: 6px 10px;
+    border: 1px solid var(--color-separator);
+    border-radius: var(--radius);
+    background: var(--color-bg);
+    font-size: 13px;
+    color: var(--color-hint);
+}
+
+.share-preview-text > summary {
+    cursor: pointer;
+}
+
+.share-preview-text > p {
+    margin-top: 6px;
 }
 
 .share-footer {

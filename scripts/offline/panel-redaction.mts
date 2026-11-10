@@ -237,7 +237,8 @@ const cases: { name: string; body: () => Promise<void> }[] = [
                     bot.reply.toolSummary[0]?.failed === 1,
                 `the bot node is complete for the observer (got ${JSON.stringify(bot)})`
             );
-            expect(keysOf(bot).join(',') === 'date,edge,excluded,kind,messageId,number,parentId,reply', 'the bot node has the documented fields');
+            expect(keysOf(bot).join(',') === 'date,edge,excluded,kind,messageId,number,parentId,reply,replyTo', 'the bot node has the documented fields');
+            expect(bot.replyTo === null, 'an observer gets no reply target (it can be a redacted user message)');
         },
     },
     {
@@ -271,8 +272,25 @@ const cases: { name: string; body: () => Promise<void> }[] = [
                 `a reply to the bot reads as the model reads it (got ${JSON.stringify(helper?.annotations)})`
             );
             expect(
-                keysOf(root).length === 18 && root.media === null && root.previewMedia.length === 0,
-                `a member's user node has 18 fields and no media here (got ${keysOf(root).join(', ')})`
+                keysOf(root).length === 19 && root.media === null && root.previewMedia.length === 0,
+                `a member's user node has 19 fields and no media here (got ${keysOf(root).join(', ')})`
+            );
+            expect(root.replyTo === null, 'the root answers nothing');
+            const followUp = tree.nodes.find((node: any) => node.messageId === followUpId);
+            expect(
+                followUp?.replyTo?.messageId === helperId &&
+                    followUp.replyTo.number === 3 &&
+                    followUp.replyTo.authorName === 'Helper' &&
+                    followUp.replyTo.snippet === 'HELPER-SECRET 我也要',
+                `a member sees who the message answers (got ${JSON.stringify(followUp?.replyTo)})`
+            );
+            const bot = tree.nodes.find((node: any) => node.kind === 'bot');
+            expect(
+                bot?.replyTo?.messageId === rootId &&
+                    bot.replyTo.number === 1 &&
+                    bot.replyTo.authorName === 'Alice' &&
+                    bot.replyTo.snippet === 'ROOT-SECRET 今天吃什么',
+                `a member sees who the bot answered (got ${JSON.stringify(bot?.replyTo)})`
             );
         },
     },

@@ -31,6 +31,20 @@ export interface AuthorView {
     username: string | null;
 }
 
+/** The message a node answers, resolved for the flat view's reply block */
+export interface ReplyTargetView {
+    messageId: number;
+    /** `#N` when the target is in this conversation's context; null otherwise */
+    number: number | null;
+    kind: 'user' | 'bot';
+    /** null when redacted (observer) or unknown */
+    authorName: string | null;
+    /** One-line excerpt of the target's text; null when it has none */
+    snippet: string | null;
+    /** The target's media, when it has no text to quote */
+    mediaHint: string | null;
+}
+
 export interface ObserverUserNode extends NodePosition {
     kind: 'user';
     redacted: true;
@@ -50,6 +64,8 @@ export interface MemberUserNode extends NodePosition {
     linkPreview: string | null;
     ocrText: string | null;
     excluded: boolean;
+    /** The message this one answers, when it can be resolved */
+    replyTo: ReplyTargetView | null;
     /** The message's own media (image / sticker / video / file), when still stored */
     media: MediaView | null;
     /** The captured link preview's pictures / clips, when still stored */
@@ -61,6 +77,8 @@ export interface MemberUserNode extends NodePosition {
 export interface BotNode extends NodePosition {
     kind: 'bot';
     excluded: boolean;
+    /** Members only: observers get null (the target is usually a redacted user message) */
+    replyTo: ReplyTargetView | null;
     reply: ReplySummaryView;
 }
 
@@ -109,7 +127,8 @@ export const toMemberUserNode = (
     extras: MemberNodeExtras,
     chat: Pick<ChatRow, 'chatId' | 'type'>,
     media: MediaView | null,
-    previewMedia: MediaView[]
+    previewMedia: MediaView[],
+    replyTo: ReplyTargetView | null
 ): MemberUserNode => ({
     messageId: message.messageId,
     number: position.number,
@@ -126,12 +145,18 @@ export const toMemberUserNode = (
     linkPreview: extras.linkPreview,
     ocrText: message.ocrText,
     excluded: isExcluded(message),
+    replyTo,
     media,
     previewMedia,
     telegramLink: telegramLinkOf(chat, message.messageId),
 });
 
-export const toBotNode = (message: ContextMessage, position: TreeNodePosition, reply: ReplySummaryView): BotNode => ({
+export const toBotNode = (
+    message: ContextMessage,
+    position: TreeNodePosition,
+    reply: ReplySummaryView,
+    replyTo: ReplyTargetView | null
+): BotNode => ({
     messageId: message.messageId,
     number: position.number,
     date: message.date.toISOString(),
@@ -139,5 +164,6 @@ export const toBotNode = (message: ContextMessage, position: TreeNodePosition, r
     edge: position.edge,
     kind: 'bot',
     excluded: isExcluded(message),
+    replyTo,
     reply,
 });

@@ -300,6 +300,20 @@ export interface MediaAttachment {
     url: string;
 }
 
+/** The message a node answers, as the flat view's reply block shows it */
+export interface ReplyTarget {
+    messageId: number;
+    // `#N` when the target is in this conversation's context; null otherwise
+    number: number | null;
+    kind: 'user' | 'bot';
+    // null when redacted or unknown
+    authorName: string | null;
+    // One-line excerpt of the target's text; null when it has none
+    snippet: string | null;
+    // The target's media, when it has no text to quote
+    mediaHint: string | null;
+}
+
 /** What an observer keeps of a user message: id, time, tree position and the excluded flag */
 export interface ObserverUserNode extends TreeNodePosition {
     kind: 'user';
@@ -320,6 +334,8 @@ export interface MemberUserNode extends TreeNodePosition {
     linkPreview: string | null;
     ocrText: string | null;
     excluded: boolean;
+    // The message this one answers, when it can be resolved
+    replyTo: ReplyTarget | null;
     // The message's own attachment, when the 7-day retention still has it
     media: MediaAttachment | null;
     // Pictures / clips Telegram crawled for the message's first URL
@@ -331,6 +347,8 @@ export interface MemberUserNode extends TreeNodePosition {
 export interface BotNode extends TreeNodePosition {
     kind: 'bot';
     excluded: boolean;
+    // Members only: observers get null
+    replyTo: ReplyTarget | null;
     reply: ReplySummary;
 }
 
@@ -978,6 +996,14 @@ export interface PublicShareReply {
     media: PublicShareMedia | null;
 }
 
+/** The message a bubble answers, when it is part of the shared conversation */
+export interface PublicShareReplyTarget {
+    messageId: number;
+    authorName: string;
+    snippet: string | null;
+    mediaHint: string | null;
+}
+
 /**
  * One bubble of a conversation share. User bubbles carry `authorName`; both
  * kinds may carry one attachment or a widget, so those stay optional rather
@@ -990,11 +1016,17 @@ export interface PublicShareBubble {
     // The user's display name; absent on bot bubbles
     authorName?: string;
     text: string;
+    // User bubbles only: the part of another message this one quotes
+    quote?: string | null;
+    // User bubbles only: readable text of the captured web preview
+    previewText?: string | null;
     mediaHint: string | null;
     widget: PublicShareWidget | null;
     media: PublicShareMedia | null;
     // Link-preview pictures / clips captured for the bubble's first URL
     previewMedia: PublicShareMedia[];
+    // The bubble this one answers; null when it is outside the share
+    replyTo: PublicShareReplyTarget | null;
 }
 
 export interface PublicShareConversation {

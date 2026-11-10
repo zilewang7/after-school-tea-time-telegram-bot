@@ -2,10 +2,12 @@ import { useMemo } from 'react';
 import { Link } from 'react-router';
 import { match } from 'ts-pattern';
 import type { BotNode, ConversationTreeResponse, MemberUserNode, ObserverUserNode, TreeNode } from '../../../api';
+import { CollapsibleSection } from '../../../components/collapsible-section';
 import { FoldableText } from '../../../components/foldable-text';
 import { MediaAttachmentView } from '../../../components/media-attachment-view';
 import { formatDateTime } from '../../../format';
 import { replyPath } from '../../../routing/paths';
+import { ReplyTargetBlock } from './reply-target-block';
 
 interface FlatViewProps {
     chatId: number;
@@ -24,13 +26,24 @@ const MemberBubble = ({ node }: { node: MemberUserNode }) => (
             {node.excluded && <span className="badge warning">已排除</span>}
             <span className="hint tree-date">{formatDateTime(node.date)}</span>
         </p>
+        {node.replyTo !== null && <ReplyTargetBlock target={node.replyTo} />}
+        {node.quote !== null && <blockquote className="quote">{node.quote}</blockquote>}
         {node.text !== null && node.text !== '' && <FoldableText text={node.text} foldLines={12} foldChars={800} />}
         {node.media !== null && <MediaAttachmentView media={node.media} />}
         {node.previewMedia.map((preview) => (
             <MediaAttachmentView key={preview.url} media={preview} />
         ))}
         {node.media === null && node.mediaHint !== null && <p className="hint">[{node.mediaHint}]</p>}
-        {node.quote !== null && <blockquote className="quote">{node.quote}</blockquote>}
+        {node.linkPreview !== null && (
+            <CollapsibleSection title="网页预览" summary={null}>
+                <FoldableText text={node.linkPreview} foldLines={10} />
+            </CollapsibleSection>
+        )}
+        {node.ocrText !== null && node.ocrText !== '' && (
+            <CollapsibleSection title="图片文字" summary={null}>
+                <FoldableText text={node.ocrText} foldLines={10} />
+            </CollapsibleSection>
+        )}
     </article>
 );
 
@@ -63,6 +76,7 @@ const BotBubble = ({ node, chatId }: { node: BotNode; chatId: number }) => {
                 {node.excluded && <span className="badge warning">已排除</span>}
                 <span className="hint tree-date">{formatDateTime(node.date)}</span>
             </p>
+            {node.replyTo !== null && <ReplyTargetBlock target={node.replyTo} />}
             {reply.versionCount === 0 ? (
                 text === null ? <p className="hint">（无正文）</p> : <FoldableText text={text} foldLines={12} foldChars={800} />
             ) : (

@@ -29,6 +29,8 @@ process.env.WEBAPP_PUBLIC_URL = 'https://miniapp.test';
 process.env.BOT_USER_NAME = 'k_on_test_bot';
 process.env.WIDGET_RENDER_URL = '';
 process.env.BOT_USER_ID = String(BOT_USER_ID);
+// The captured web preview reads only the cache, never the network
+process.env.LUOXU_PREVIEW_URL = 'http://luoxu.test';
 delete process.env.ALLOWED_CHAT_IDS;
 
 await setupOfflineDb();
@@ -108,7 +110,7 @@ const saveMessage = async (
     messageId: number,
     userId: number,
     text: string,
-    options: { replyToId?: number; file?: Buffer; fileMime?: string } = {}
+    options: { replyToId?: number; file?: Buffer; fileMime?: string; quoteText?: string } = {}
 ): Promise<void> => {
     await db.saveMessage({
         chatId,
@@ -120,6 +122,7 @@ const saveMessage = async (
         ...(options.replyToId === undefined ? {} : { replyToId: options.replyToId }),
         ...(options.file === undefined ? {} : { fileBuffer: options.file }),
         ...(options.fileMime === undefined ? {} : { fileMime: options.fileMime }),
+        ...(options.quoteText === undefined ? {} : { quoteText: options.quoteText }),
     });
 };
 
@@ -263,6 +266,8 @@ const cases: { name: string; body: () => Promise<void> }[] = [
             const userMedia = asRecord(userBubble.media);
             expect(userMedia.kind === 'image' && userMedia.mimeType === 'image/png', 'the user image');
             expect(userBubble.widget === null, 'a user bubble has no widget');
+            expect(userBubble.quote === null && userBubble.previewText === null, 'no quote or preview text here');
+            expect(userBubble.replyTo === null, 'the root answers nothing');
 
             const botBubble = bubbles[1] ?? {};
             expect(botBubble.kind === 'bot' && botBubble.messageId === botId, 'the bot bubble');
@@ -270,6 +275,84 @@ const cases: { name: string; body: () => Promise<void> }[] = [
             expect(botBubble.mediaHint === null, 'a bot bubble has no media hint');
             expect(asRecord(botBubble.widget).caption === '会话说明', 'the bot widget caption');
             expect(botBubble.media === null, 'no media on this bot bubble');
+            const botReplyTo = asRecord(botBubble.replyTo);
+            expect(
+                botReplyTo.messageId === rootId && botReplyTo.authorName === 'Alice' && botReplyTo.snippet === '用户的问题',
+                `the bot bubble names the message it answers (got ${JSON.stringify(botBubble.replyTo)})`
+            );
+        },
+    },
+    {
+        name: 'sensitive ids never reach the public JSON or the share page',
+        body: async () => {
+            const rootId = takeMessageId();
+            const botId = takeMessageId();
+            const link = 'https://t.me/c/1415974153/1118043';
+            await saveMessage(GROUP, rootId, ALICE.id, `看 [黑猫](tg://user?id=841282418) 发的 ${link}`, {
+                quoteText: 'tg://user?id=42 的原话',
+            });
+            await db.LinkPreviewCache.upsert({
+                url: link,
+                status: 'ready',
+                siteName: 'TG',
+                title: '预览标题',
+                description: '预览描述',
+                previewType: 'article',
+                author: null,
+                embedUrl: null,
+                fullText: null,
+                mediaItems: null,
+                ocrText: null,
+                ocrSourceTimestamp: null,
+                ocrSourceUpdateId: null,
+                lastUsedAt: new Date(),
+            });
+            await saveMessage(GROUP, botId, BOT_USER_ID, '', { replyToId: rootId });
+            const response = await db.createBotResponse(GROUP, botId, rootId, {
+                model: 'offline-model',
+                hasImage: false,
+            });
+            response.setVersions([
+                versionOf(1, { text: '回 [黑猫](tg://user?id=603421700)，顺便看 https://t.me/+InviteHash99' }),
+            ]);
+            response.currentVersionIndex = 0;
+            await response.save();
+            const created = await service.createUserShare({
+                kind: 'conversation',
+                chatId: GROUP,
+                rootId,
+                createdBy: ALICE.id,
+            });
+            if (!created.ok) throw new Error(`could not create the share: ${created.reason}`);
+
+            const apiText = await (await app.request(`/api/public/shares/${created.share.token}`)).text();
+            expect(!apiText.includes('841282418'), 'no mention id in the public JSON');
+            expect(!apiText.includes('603421700'), 'no mention id of a bot reply in the public JSON');
+            expect(!apiText.includes('1415974153'), 'no internal chat id in the public JSON');
+            expect(!apiText.includes('InviteHash99'), 'no invite hash in the public JSON');
+            expect(apiText.includes('[data-deletion]'), 'the JSON carries the placeholder');
+
+            const page = await (await app.request(`/s/${created.share.token}`)).text();
+            expect(!page.includes('841282418') && !page.includes('603421700'), 'no mention ids in the page');
+            expect(!page.includes('1415974153') && !page.includes('InviteHash99'), 'no internal id or invite hash in the page');
+            expect(page.includes('[data-deletion]'), 'the page carries the placeholder');
+            expect(page.includes('网页预览') && page.includes('预览标题'), 'the captured web preview text is shown');
+            expect(page.includes('↳ 回复') && page.includes('黑猫'), 'the reply block names who was answered');
+            expect(page.includes('tg://user?id=[data-deletion] 的原话'), 'the quote is redacted');
+
+            const body = await jsonOf(await app.request(`/api/public/shares/${created.share.token}`));
+            const bubbles = asRecord(asRecord(body.share).conversation).bubbles as Record<string, unknown>[];
+            const userBubble = asRecord(bubbles[0]);
+            expect(
+                typeof userBubble.previewText === 'string' &&
+                    userBubble.previewText.includes('预览标题') &&
+                    userBubble.previewText.includes('[data-deletion]'),
+                `the preview text is public but redacted (got ${JSON.stringify(userBubble.previewText)})`
+            );
+            expect(
+                typeof userBubble.quote === 'string' && userBubble.quote.includes('[data-deletion]'),
+                'the quote is public but redacted'
+            );
         },
     },
     {

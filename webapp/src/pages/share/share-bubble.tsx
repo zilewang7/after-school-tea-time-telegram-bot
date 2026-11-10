@@ -1,4 +1,4 @@
-import type { PublicShareBubble } from '../../api';
+import type { PublicShareBubble, PublicShareReplyTarget } from '../../api';
 import { FoldableText } from '../../components/foldable-text';
 import { formatDateTime } from '../../format';
 import { ShareMediaAttachment } from './share-attachments';
@@ -8,6 +8,20 @@ const BOT_AUTHOR_NAME = 'k-on-bot';
 
 const authorNameOf = (bubble: PublicShareBubble): string =>
     bubble.kind === 'bot' ? BOT_AUTHOR_NAME : (bubble.authorName ?? '用户');
+
+const targetSnippetOf = (target: PublicShareReplyTarget): string | null =>
+    target.snippet ?? (target.mediaHint === null ? null : `[${target.mediaHint}]`);
+
+/** The message a bubble answers: `↳ 回复 黑猫：…` */
+const ReplyTargetLine = ({ target }: { target: PublicShareReplyTarget }) => {
+    const snippet = targetSnippetOf(target);
+    return (
+        <p className="share-reply-to">
+            ↳ 回复 <span className="share-reply-to-author">{target.authorName}</span>
+            {snippet === null ? '' : `：${snippet}`}
+        </p>
+    );
+};
 
 interface ShareBubbleProps {
     token: string;
@@ -21,6 +35,8 @@ interface ShareBubbleProps {
 /** One message of a conversation share: author, text and its attachment */
 export const ShareBubble = ({ token, bubble, widgetIndex, autoFocusWidget = false }: ShareBubbleProps) => {
     const authorName = authorNameOf(bubble);
+    const quote = bubble.quote ?? null;
+    const previewText = bubble.previewText ?? null;
 
     return (
         <article className={`share-bubble ${bubble.kind}`}>
@@ -28,6 +44,8 @@ export const ShareBubble = ({ token, bubble, widgetIndex, autoFocusWidget = fals
                 <span className="share-bubble-author">{authorName}</span>
                 <span className="hint">{formatDateTime(bubble.createdAt)}</span>
             </p>
+            {bubble.replyTo !== null && <ReplyTargetLine target={bubble.replyTo} />}
+            {quote !== null && quote !== '' && <blockquote className="quote">{quote}</blockquote>}
             {bubble.text === '' ? (
                 <p className="hint">（无正文）</p>
             ) : (
@@ -47,6 +65,12 @@ export const ShareBubble = ({ token, bubble, widgetIndex, autoFocusWidget = fals
                 />
             ))}
             {bubble.media === null && bubble.mediaHint !== null && <p className="hint">[{bubble.mediaHint}]</p>}
+            {previewText !== null && previewText !== '' && (
+                <details className="share-preview-text">
+                    <summary className="hint">网页预览</summary>
+                    <FoldableText text={previewText} foldLines={10} foldChars={800} />
+                </details>
+            )}
             {bubble.widget !== null && widgetIndex !== null && (
                 <ShareWidgetView
                     token={token}

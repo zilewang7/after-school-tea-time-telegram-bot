@@ -19,6 +19,7 @@ import type {
     ShareConversationContent,
     ShareMedia,
     ShareReplyContent,
+    ShareReplyTarget,
     ShareUserBubble,
     ShareWidgetContent,
 } from './share-content.js';
@@ -122,6 +123,12 @@ body {
 .md blockquote.expandable { border-left-style: dashed; }
 .md .tg-spoiler { background: var(--muted); color: transparent; border-radius: 4px; padding: 0 2px; }
 .md .tg-spoiler:hover { color: inherit; background: var(--card-soft); }
+.reply-to { margin: 0 0 6px; color: var(--muted); font-size: 13px; overflow-wrap: anywhere; }
+.reply-to-author { color: var(--text); font-weight: 600; }
+.quote { margin: 0 0 6px; padding: 2px 10px; border-left: 3px solid var(--line); color: var(--muted); white-space: pre-wrap; overflow-wrap: anywhere; }
+.preview-text { margin-top: 10px; padding: 6px 10px; border: 1px solid var(--line); border-radius: 10px; background: var(--card-soft); font-size: 13px; }
+.preview-text summary { color: var(--muted); cursor: pointer; }
+.preview-text-body { margin-top: 6px; color: var(--muted); white-space: pre-wrap; overflow-wrap: anywhere; }
 figure { margin: 10px 0 0; }
 figure img, figure video {
   display: block; max-width: 100%; height: auto; border-radius: 10px; border: 1px solid var(--line);
@@ -364,6 +371,33 @@ const mediaFigure = (
 const textBlock = (markdown: string, emptyLabel: string): string =>
     markdown === '' ? `<div class="md empty">${escapeHtml(emptyLabel)}</div>` : `<div class="md">${markdownToHtml(markdown)}</div>`;
 
+/** The message a bubble answers: `↳ 回复 黑猫：…` */
+const replyTargetBlock = (target: ShareReplyTarget | null): string => {
+    if (target === null) return '';
+    const snippet = target.snippet ?? (target.mediaHint === null ? '' : `[${target.mediaHint}]`);
+    return [
+        '<p class="reply-to">↳ 回复 ',
+        `<span class="reply-to-author">${escapeHtml(target.authorName)}</span>`,
+        snippet === '' ? '' : `：${escapeHtml(snippet)}`,
+        '</p>',
+    ].join('');
+};
+
+/** The part of another message the author quoted */
+const quoteBlock = (quote: string | null): string =>
+    quote === null || quote === '' ? '' : `<blockquote class="quote">${escapeHtml(quote)}</blockquote>`;
+
+/** The readable text of the captured web preview */
+const previewTextBlock = (previewText: string | null): string =>
+    previewText === null || previewText === ''
+        ? ''
+        : [
+              '<details class="preview-text">',
+              '<summary>网页预览</summary>',
+              `<div class="preview-text-body">${escapeHtml(previewText)}</div>`,
+              '</details>',
+          ].join('');
+
 /** One bot reply bubble; `widgetIndex` is the iframe order on this page */
 const botBubble = (
     token: string,
@@ -372,7 +406,8 @@ const botBubble = (
     text: string,
     widget: ShareWidgetContent | null,
     media: ShareMedia | null,
-    widgetIndex: number | null
+    widgetIndex: number | null,
+    replyTo: ShareReplyTarget | null
 ): string => {
     const attachments: string[] = [];
     if (widget !== null && widgetIndex !== null) attachments.push(widgetFigure(token, widgetIndex, widget));
@@ -380,6 +415,7 @@ const botBubble = (
     return [
         '<article class="bubble bot">',
         `<div class="bubble-head"><span class="author">${BOT_NAME}</span><span class="time">${escapeHtml(formatTime(createdAt))}</span></div>`,
+        replyTargetBlock(replyTo),
         textBlock(text, '（无正文）'),
         ...attachments,
         '</article>',
@@ -400,8 +436,11 @@ const userBubble = (token: string, bubble: ShareUserBubble): string => {
     return [
         '<article class="bubble user">',
         `<div class="bubble-head"><span class="author">${escapeHtml(bubble.authorName)}</span><span class="time">${escapeHtml(formatTime(bubble.createdAt))}</span></div>`,
+        replyTargetBlock(bubble.replyTo),
+        quoteBlock(bubble.quote),
         textBlock(bubble.text, '（无正文）'),
         media,
+        previewTextBlock(bubble.previewText),
         '</article>',
     ].join('');
 };
@@ -415,7 +454,8 @@ const renderReplyBody = (input: SharePageInput, content: ShareReplyContent): str
         content.text,
         content.widget,
         content.media,
-        content.widget === null ? null : 0
+        content.widget === null ? null : 0,
+        null
     );
 
 /** The conversation page: bubbles in message order, widgets numbered as they appear */
@@ -432,7 +472,8 @@ const renderConversationBody = (input: SharePageInput, content: ShareConversatio
                 bubble.text,
                 bubble.widget,
                 bubble.media,
-                index
+                index,
+                bubble.replyTo
             );
         })
         .join('');

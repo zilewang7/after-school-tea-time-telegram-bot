@@ -23,6 +23,9 @@ import {
     versionMediaDescriptorOf,
     type MediaDescriptor,
 } from '../media/media-content.js';
+import { getLinkPreviewParts } from '../../services/luoxu-preview-service.js';
+import { plainExcerptOf } from '../views/excerpt.js';
+import { redactShareContent } from './share-redaction.js';
 import type { PreviewSnapshot } from './share-types.js';
 
 export interface ShareWidgetContent {
@@ -53,12 +56,29 @@ export interface ShareReplyContent {
     preview: PreviewSnapshot;
 }
 
+/** The message a bubble replies to, when that message is part of the same share */
+export interface ShareReplyTarget {
+    messageId: number;
+    /** 'bot' on bot messages, the stored display name on user messages */
+    authorName: string;
+    /** One-line excerpt of the target's text; null when it has none */
+    snippet: string | null;
+    /** The target's media, when it has no text to quote */
+    mediaHint: string | null;
+}
+
 export interface ShareUserBubble {
     kind: 'user';
     messageId: number;
     createdAt: string;
     authorName: string;
     text: string;
+    /** The part of the target message the author quoted */
+    quote: string | null;
+    /** Readable text of the web preview captured for the message's first URL */
+    previewText: string | null;
+    /** The message this one replies to; null when it is outside the share */
+    replyTo: ShareReplyTarget | null;
     mediaHint: string | null;
     /** The message's own attachment, when the 7-day retention still has it */
     media: ShareMedia | null;
@@ -72,6 +92,8 @@ export interface ShareBotBubble {
     createdAt: string;
     text: string;
     widget: ShareWidgetContent | null;
+    /** The message this reply answers; null when it is outside the share */
+    replyTo: ShareReplyTarget | null;
     /** The current version's attachment, when it has one */
     media: ShareMedia | null;
 }
@@ -102,6 +124,69 @@ const widgetOf = (version: ResponseVersion): ShareWidgetContent | null => {
 
 const hasImageOf = (version: ResponseVersion): boolean =>
     typeof version.imageBase64 === 'string' && version.imageBase64 !== '';
+
+/** The author name a bot bubble carries on the share pages */
+const BOT_AUTHOR_NAME = 'k-on-bot';
+
+/** One-line cap of a reply target's excerpt */
+const REPLY_SNIPPET_MAX = 120;
+/** Cap of the captured web-preview text a share bubble shows */
+const PREVIEW_TEXT_MAX = 1200;
+
+/** The text a bubble shows for a stored message: its version's text for bot replies */
+const messageTextOf = (message: ContextMessage, response: BotResponse | undefined): string | null => {
+    if (message.fromBotSelf) {
+        const version = response?.getCurrentVersion() ?? null;
+        return typeof version?.text === 'string' && version.text !== '' ? version.text : message.text;
+    }
+    return message.text;
+};
+
+const authorNameOf = (message: ContextMessage): string =>
+    message.fromBotSelf ? BOT_AUTHOR_NAME : message.userName;
+
+/**
+ * The message a bubble answers, resolved inside the share only: a reply to a
+ * message outside the shared tree is not shown, so the share never reveals
+ * content it does not display.
+ */
+const replyTargetOf = (
+    message: ContextMessage,
+    messageById: ReadonlyMap<number, ContextMessage>,
+    responseById: ReadonlyMap<number, BotResponse>
+): ShareReplyTarget | null => {
+    if (message.replyToId === null) return null;
+    const target = messageById.get(message.replyToId);
+    if (target === undefined) return null;
+    return {
+        messageId: target.messageId,
+        authorName: authorNameOf(target),
+        snippet: plainExcerptOf(messageTextOf(target, responseById.get(target.messageId)), REPLY_SNIPPET_MAX),
+        mediaHint: target.mediaHint,
+    };
+};
+
+/** The `[system]` marker the model sees is noise on a public page */
+const humanizePreviewText = (text: string): string => {
+    const lines = text
+        .split('\n')
+        .filter((line) => line !== '[system] 链接预览：')
+        .map((line) => (line.startsWith('[system] ') ? line.slice('[system] '.length) : line));
+    const joined = lines.join('\n').trim();
+    return joined.length <= PREVIEW_TEXT_MAX ? joined : `${joined.slice(0, PREVIEW_TEXT_MAX - 1)}…`;
+};
+
+/** Readable captured web-preview text per user message; only the URL preview, never t.me snapshots */
+const loadPreviewTexts = async (messages: readonly ContextMessage[]): Promise<Map<number, string>> => {
+    const texts = new Map<number, string>();
+    for (const message of messages) {
+        const parts = await getLinkPreviewParts(message.text, { withMedia: false });
+        const joined = parts.flatMap((part) => (part.type === 'text' && part.text ? [part.text] : [])).join('\n\n');
+        const humanized = humanizePreviewText(joined);
+        if (humanized !== '') texts.set(message.messageId, humanized);
+    }
+    return texts;
+};
 
 /** The pinned version, or the current one when the pinned id no longer exists */
 export const selectVersion = (response: BotResponse, versionId: number | null): { version: ResponseVersion; number: number } | null => {
@@ -167,19 +252,28 @@ export const loadReplyShareContent = async (
 const userBubbleOf = (
     message: ContextMessage,
     media: ShareMedia | null,
-    previewMedia: readonly ShareMedia[]
+    previewMedia: readonly ShareMedia[],
+    previewText: string | null,
+    replyTo: ShareReplyTarget | null
 ): ShareUserBubble => ({
     kind: 'user',
     messageId: message.messageId,
     createdAt: message.date.toISOString(),
     authorName: message.userName,
     text: message.text ?? '',
+    quote: message.quoteText,
+    previewText,
+    replyTo,
     mediaHint: message.mediaHint,
     media,
     previewMedia: [...previewMedia],
 });
 
-const botBubbleOf = (message: ContextMessage, response: BotResponse | undefined): ShareBotBubble => {
+const botBubbleOf = (
+    message: ContextMessage,
+    response: BotResponse | undefined,
+    replyTo: ShareReplyTarget | null
+): ShareBotBubble => {
     const version = response?.getCurrentVersion() ?? null;
     return {
         kind: 'bot',
@@ -187,6 +281,7 @@ const botBubbleOf = (message: ContextMessage, response: BotResponse | undefined)
         createdAt: message.date.toISOString(),
         text: version !== null && typeof version.text === 'string' ? version.text : (message.text ?? ''),
         widget: version === null ? null : widgetOf(version),
+        replyTo,
         media: version === null ? null : versionMediaDescriptorOf(version),
     };
 };
@@ -238,26 +333,42 @@ export const loadConversationShareContent = async (
 
     const chat = await findChat(chatId);
     const chatTitle = chat?.title ?? null;
+    const messageById = new Map(ordered.map((message) => [message.messageId, message]));
+    const previewTexts = await loadPreviewTexts(userMessages);
     return {
         kind: 'conversation',
         chatId,
         chatTitle,
         rootId,
-        bubbles: ordered.map((message) =>
-            message.fromBotSelf
-                ? botBubbleOf(message, responseById.get(message.messageId))
+        bubbles: ordered.map((message) => {
+            const replyTo = replyTargetOf(message, messageById, responseById);
+            return message.fromBotSelf
+                ? botBubbleOf(message, responseById.get(message.messageId), replyTo)
                 : userBubbleOf(
                     message,
                     userMedia.get(message.messageId) ?? null,
-                    userPreviewMedia.get(message.messageId) ?? []
-                )
-        ),
+                    userPreviewMedia.get(message.messageId) ?? [],
+                    previewTexts.get(message.messageId) ?? null,
+                    replyTo
+                );
+        }),
         preview: previewSnapshotOfConversation(chatTitle, ordered, responseById),
     };
 };
 
-/** A share's page content, by its stored target */
+/** A share's page content, by its stored target; ids inside Telegram links are redacted */
 export const loadShareContent = async (input: {
+    kind: 'reply' | 'conversation';
+    chatId: number;
+    firstMessageId: number | null;
+    rootId: number | null;
+    versionId: number | null;
+}): Promise<ShareContent | null> => {
+    const content = await loadRawShareContent(input);
+    return content === null ? null : redactShareContent(content);
+};
+
+const loadRawShareContent = async (input: {
     kind: 'reply' | 'conversation';
     chatId: number;
     firstMessageId: number | null;

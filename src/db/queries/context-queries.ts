@@ -287,6 +287,22 @@ export const getContextMessage = async (
 };
 
 /**
+ * Stored message rows by id, in one query: reply targets that fall outside the
+ * panel's tree (a message answering something older than the conversation).
+ * Ids with no row are simply absent from the result, never an error.
+ */
+export const listContextMessagesByIds = async (
+    chatId: number,
+    messageIds: readonly number[]
+): Promise<ContextMessage[]> => {
+    if (messageIds.length === 0) return [];
+    const rows = await Message.findAll({
+        where: { chatId, messageId: { [Op.in]: [...messageIds] } },
+    });
+    return rows.map(toContextMessage);
+};
+
+/**
  * Read a message, and if its row is missing, try to recover it from Telegram
  * first. A hole here truncates the whole chain above it, which is how a reply to
  * a message we failed to store ends up with no context at all.

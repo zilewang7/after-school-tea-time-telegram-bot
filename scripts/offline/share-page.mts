@@ -392,6 +392,7 @@ const cases: { name: string; body: () => Promise<void> }[] = [
             const html = await textOf(await app.request(`/s/${created.share.token}`));
             expect(html.includes('用户的问题') && html.includes('Alice'), 'the user bubble');
             expect(html.includes('bot 的回答'), 'the bot bubble');
+            expect(html.includes('↳ 回复') && html.includes('Alice'), 'the bot bubble names the message it answers');
             expect(html.includes(`src="/s/${created.share.token}/widget/0"`), 'the conversation widget');
             expect(html.includes('2 条消息') || html.includes('对话分享'), 'conversation meta');
             expect(
