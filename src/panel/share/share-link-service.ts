@@ -256,10 +256,15 @@ export const resolveShareTarget = async (input: ShareTargetInput): Promise<Share
 
 export interface CreateUserShareInput extends ShareTargetInput {
     createdBy: number;
+    /**
+     * Whether reusing an existing link may render its missing preview image;
+     * the bot commands pass false (design §4.6), the panel keeps the default.
+     */
+    ensurePreviewOnReuse?: boolean;
 }
 
 export type CreateUserShareResult =
-    | { ok: true; share: ShareLinkRecord }
+    | { ok: true; share: ShareLinkRecord; created: boolean }
     | { ok: false; reason: ShareCreateFailure };
 
 /**
@@ -272,9 +277,11 @@ export const createUserShare = async (input: CreateUserShareInput): Promise<Crea
 
     const existing = await findActiveShareRow(target.filter);
     if (existing !== null) {
-        if (existing.previewImageBase64 === null) await ensurePreviewImage(existing.token);
+        if (input.ensurePreviewOnReuse !== false && existing.previewImageBase64 === null) {
+            await ensurePreviewImage(existing.token);
+        }
         const fresh = await findShareRowByToken(existing.token);
-        return { ok: true, share: recordOf(fresh ?? existing) };
+        return { ok: true, share: recordOf(fresh ?? existing), created: false };
     }
 
     const row = await insertShareRow({
@@ -285,7 +292,7 @@ export const createUserShare = async (input: CreateUserShareInput): Promise<Crea
     });
     await ensurePreviewImage(row.token);
     const fresh = await findShareRowByToken(row.token);
-    return { ok: true, share: recordOf(fresh ?? row) };
+    return { ok: true, share: recordOf(fresh ?? row), created: true };
 };
 
 /** The active share behind a token; null for unknown, revoked or malformed tokens */

@@ -17,6 +17,7 @@ export const registerHelpCommand = (bot: Bot) => {
     1. 直接 @${process.env.BOT_USER_NAME} 向 bot 提问
     2. 回复别人消息时加上 @${process.env.BOT_USER_NAME} 来帮他提问
     3. 直接回复 bot 消息以在相关消息上下文中对话
+    4. 回复一条消息并发送 /share 可以分享它所在的整个会话（包含 /chat 拼进来的同群消息）；回复 bot 的回复并发送 /shareone 只分享那条回复。链接公开，拿到链接的人都能查看。
 `
         )
     );

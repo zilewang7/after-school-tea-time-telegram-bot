@@ -727,6 +727,9 @@ export const autoUpdate = (bot: Bot) => {
                 || renderTextWithEntities(editedMsg.caption, editedMsg.caption_entities)
                 || renderRichMessage(editedMsg.rich_message)
                 || '';
+            // An edit into a /share command never becomes a stored message: the
+            // command message must stay out of telegram_messages (design §3.5)
+            if (SHARE_COMMAND_PATTERN().test(newText)) return;
             const resolvedEditedMedia = resolveCapturedMedia(editedMsg)
                 ?? resolveRichMessageMedia(editedMsg.rich_message);
             const newQuoteText = renderTextWithEntities(
@@ -1004,18 +1007,33 @@ const addEditDetectedButton = async (api: Api, chatId: number, response: BotResp
     }
 };
 
+/** Escape regex metacharacters so a bot username is matched literally */
+const escapeRegExp = (value: string): string => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+/**
+ * `/share` and `/shareone`, optionally addressed to the bot (`@name`) and with
+ * trailing whitespace. Case-sensitive on purpose: grammy only treats the exact
+ * command spelling as a command, so `/SHARE` stays an ordinary stored message.
+ * With no BOT_USER_NAME the addressed form matches nothing.
+ */
+export const SHARE_COMMAND_PATTERN = (): RegExp => {
+    const botUserName = escapeRegExp((process.env.BOT_USER_NAME ?? '').trim());
+    const addressed = botUserName === '' ? '' : `(?:@${botUserName})?`;
+    return new RegExp(`^/share(?:one)?${addressed}\\s*$`);
+};
+
+/** Command messages kept out of telegram_messages; `/context` keeps its exact match */
+export const unsavedCommandText = (text: string, excludeList: string[]): boolean =>
+    excludeList.includes(text) || SHARE_COMMAND_PATTERN().test(text);
+
 // 自动保存消息到数据库
 export const autoSave = (bot: Bot) => {
     const chatLookup = buildChatLookup(bot);
     // 使用中间件
     bot.use(async (ctx, next) => {
-        const excludeList = ['/context'];
+        const excludeList = ['/context', `/context@${process.env.BOT_USER_NAME ?? ''}`];
 
-        excludeList.forEach((item) => {
-            excludeList.push(item + `@${process.env.BOT_USER_NAME}`);
-        })
-
-        if (ctx.chat?.id && ctx.message?.message_id && ctx.from?.id && !excludeList.includes(ctx.message.text || '')) {
+        if (ctx.chat?.id && ctx.message?.message_id && ctx.from?.id && !unsavedCommandText(ctx.message.text || '', excludeList)) {
             let replyToId = ctx.message.reply_to_message?.message_id;
             let isSubImage = false;
             let registeredPrimaryTask: { chatId: number; messageId: number; taskId: string } | undefined;

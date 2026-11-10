@@ -105,6 +105,8 @@ declare global {
             WIDGET_GROUP_FALLBACK?: string
             /** '0' turns off the public share pages and the share API */
             SHARE_ENABLED?: string
+            /** '0' turns off the /share and /shareone commands */
+            SHARE_COMMAND?: string
             /** HMAC secret for signed widget URLs (default: derived from BOT_TOKEN) */
             WEBAPP_SHARE_SECRET?: string
         }

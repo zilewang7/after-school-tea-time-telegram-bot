@@ -2,6 +2,7 @@ import { Bot } from "grammy";
 import type { BotCommand } from "grammy/types";
 import { isTestInstance, getAllowedChatIds } from "../config/instance.js";
 import { OPENAI_IMAGE_MODEL } from "../config/models.js";
+import { shareCommandEnabled } from "../config/share-command.js";
 import {
     registerStartCommand,
     registerHelpCommand,
@@ -12,6 +13,7 @@ import {
     registerPanelCommand,
     registerWidgetCommands,
     registerWebCommand,
+    registerShareCommand,
 } from "./commands/index.js";
 
 const COMMANDS: BotCommand[] = [
@@ -36,17 +38,28 @@ const COMMANDS: BotCommand[] = [
     { command: "context", description: "查看当前上下文结构" },
 ];
 
+/** Offered only while the share command is enabled */
+const SHARE_COMMANDS: BotCommand[] = [
+    { command: "share", description: "分享会话：回复一条消息，生成公开分享链接" },
+    { command: "shareone", description: "分享单条回复：回复 bot 的消息，生成公开分享链接" },
+];
+
+/** The command menu; the test instance registers this same list per chat */
+const commandMenuOf = (): BotCommand[] =>
+    shareCommandEnabled() ? [...COMMANDS, ...SHARE_COMMANDS] : COMMANDS;
+
 export const cmdLoad = async (bot: Bot) => {
+    const commands = commandMenuOf();
     if (isTestInstance()) {
         // Register only inside the allowed test chats: members of shared
         // groups never see the test bot's commands when they type "/"
         for (const chatId of getAllowedChatIds() ?? []) {
-            bot.api.setMyCommands(COMMANDS, {
+            bot.api.setMyCommands(commands, {
                 scope: { type: 'chat', chat_id: chatId },
             });
         }
     } else {
-        bot.api.setMyCommands(COMMANDS);
+        bot.api.setMyCommands(commands);
     }
 
     registerStartCommand(bot);
@@ -57,6 +70,9 @@ export const cmdLoad = async (bot: Bot) => {
     registerContextCommand(bot);
     registerPanelCommand(bot);
     registerWebCommand(bot);
+    // Always registered so a disabled command answers OFF_TEXT instead of
+    // falling through to the AI reply path; only the menu entry is gated.
+    registerShareCommand(bot);
     // Owner-only, hidden from the command menu: widget readiness and probe
     registerWidgetCommands(bot);
 };
