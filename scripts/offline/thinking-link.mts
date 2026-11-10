@@ -433,6 +433,53 @@ results.push(
 );
 
 results.push(
+    await runCase('a body that splits while streaming keeps the last message as current', async () => {
+        const started = await startReply();
+        // 8 paragraphs is ~4,900 rendered characters: the body alone overflows one
+        // message, so the streaming loop opens a second continuation for it
+        const longBody = Array.from(
+            { length: 8 },
+            (_, index) => `第${index}段：${'内容'.repeat(300)}`
+        ).join('\n\n');
+        const response = await quietly(() =>
+            responseHandler.processStream(
+                streamOf([
+                    ...thinkingSteps(longThinking()),
+                    { waitMs: 1200 },
+                    { chunk: { type: 'text', content: longBody } },
+                ]),
+                started.chatContext,
+                0
+            )
+        );
+        started.chatContext.typing.stop();
+        const firstMessageId = started.chatContext.session.firstMessageId;
+        expect(
+            started.chatContext.session.thinkingLink?.emitted === true,
+            'the link message went out before the body'
+        );
+        expect(
+            started.chatContext.session.messageIds.length >= 3,
+            `the long body opened another message (got ${started.chatContext.session.messageIds.length})`
+        );
+
+        await quietly(() => responseHandler.sendFinalResponse(started.chatContext, response));
+
+        const stored = await dbIndex.getBotResponse(started.chatContext.chatId, firstMessageId);
+        const version = stored?.getVersions().at(-1);
+        const lastMessageId = version?.messageIds.at(-1);
+        expect(
+            lastMessageId !== undefined && lastMessageId !== firstMessageId,
+            'the stored layout ends with a body message'
+        );
+        expect(
+            version?.currentMessageId === lastMessageId,
+            `the version points at its real last message (got ${version?.currentMessageId} vs ${lastMessageId})`
+        );
+    })
+);
+
+results.push(
     await runCase('a stored link version replays the link message first', async () => {
         const { telegram, chatContext, response } = await runLinkReply();
         const firstMessageId = chatContext.session.firstMessageId;

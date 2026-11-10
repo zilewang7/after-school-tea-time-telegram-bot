@@ -450,6 +450,10 @@ const createContinuationMessage = async (
 
     const newMessage = sendResult[1];
     session.messageIds.push(newMessage.message_id);
+    // The continuation is the reply's last message from now on: terminal buttons
+    // (retry / version switch) and the stored `currentMessageId` belong to it,
+    // not to the message that just closed
+    session.currentMessageId = newMessage.message_id;
     registerContinuation(chatId, newMessage.message_id, session.firstMessageId);
 
     // Create new StreamingEditor for the continuation message
@@ -567,10 +571,6 @@ const emitThinkingLink = async (
     }
 
     link.emitted = true;
-    // The continuation is now the reply's last message: the terminal buttons
-    // and the stored version's currentMessageId belong to the body, not to the
-    // link message the user opens for the thinking
-    chatContext.session.currentMessageId = continuationId;
     // A running tool's status line follows the body to the new message
     chatContext.editor.setStatus(shownToolStatus?.text);
     console.log(`[thinking-link] emitted chat=${chatContext.chatId} first=${chatContext.session.firstMessageId}`);
