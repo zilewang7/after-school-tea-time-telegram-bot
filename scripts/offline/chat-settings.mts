@@ -541,9 +541,13 @@ const cases: { name: string; body: () => Promise<void> }[] = [
         },
     },
     {
-        name: 'the menu holds the 12 chat models, no image model, then 跟随全局默认 and 收起',
+        name: 'the menu holds the 13 chat models, no image model, then 跟随全局默认 and 收起',
         body: async () => {
-            expect(modelConfigs.length === 12, `12 entries (got ${modelConfigs.length})`);
+            expect(modelConfigs.length === 13, `13 entries (got ${modelConfigs.length})`);
+            expect(
+                modelConfigs.some((model) => model.id === 'gemini-4-carbon'),
+                'gemini-4-carbon is offered'
+            );
             expect(
                 !modelConfigs.some((model) => model.id === GEMINI_IMAGE_MODEL || model.id === OPENAI_IMAGE_MODEL),
                 'neither image model is in the menu'
@@ -557,7 +561,7 @@ const cases: { name: string; body: () => Promise<void> }[] = [
             const rows = lastKeyboardRows();
             const buttons = rows.flat();
             expect(
-                buttons.filter((data) => data !== 'mdl:default' && data !== 'mdl:collapse').length === 12,
+                buttons.filter((data) => data !== 'mdl:default' && data !== 'mdl:collapse').length === modelConfigs.length,
                 `one button per menu model (got ${JSON.stringify(buttons)})`
             );
             expect(

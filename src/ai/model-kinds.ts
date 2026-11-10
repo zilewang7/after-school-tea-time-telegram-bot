@@ -41,18 +41,23 @@ export const replacesChatSystemPrompt = (model: string): boolean =>
 
 /**
  * Gemini models verified to accept function declarations alongside the built-in
- * search tools (2026-10-16, own Vertex project). Everything older answers
- * "Multiple tools are supported only when they are all search tools" with 400,
- * so the list is an allow-list rather than a version range.
+ * search tools (2026-10-16, own Vertex project; gemini-4-carbon verified
+ * 2026-11-11: two-round loop with reply, thinking and flat text all pass).
+ * Everything older answers "Multiple tools are supported only when they are all
+ * search tools" with 400, so they are denied by name instead of the new ones
+ * having to be admitted one by one.
  */
-const GEMINI_FUNCTION_TOOL_MODELS: ReadonlySet<string> = new Set([
-    'gemini-4-argon',
-    'gemini-3.8-flash',
+const GEMINI_SEARCH_ONLY_MODELS: ReadonlySet<string> = new Set([
+    'gemini-2.5-flash',
+    'gemini-2.5-pro',
+    'gemini-2.5-flash-lite',
     'gemini-3.1-pro-preview',
 ]);
 
-export const supportsGeminiFunctionTools = (model: string): boolean =>
-    GEMINI_FUNCTION_TOOL_MODELS.has(model.toLowerCase());
+export const supportsGeminiFunctionTools = (model: string): boolean => {
+    const id = model.toLowerCase();
+    return isImageOutputModel(id) === false && GEMINI_SEARCH_ONLY_MODELS.has(id) === false;
+};
 
 /**
  * Image models that can ground a generation in real web images

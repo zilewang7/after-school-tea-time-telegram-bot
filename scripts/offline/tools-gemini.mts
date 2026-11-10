@@ -1276,6 +1276,44 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
         },
     },
     {
+        name: 'a Gemini 4 model released after the deny-list was written still gets the client tools',
+        body: async () => {
+            reset([
+                sse(roundEvents([[callPart('lookup_b', { key: 'K-7731' }, 'w1', 'call_w1'), textPart('')]])),
+                sse(roundEvents([[textPart('Sunny in Paris.')]])),
+            ]);
+            executions.length = 0;
+
+            const { chunks, lines } = await runTurn({ model: 'gemini-4-carbon', tools: turnTools });
+
+            expect(declarationNamesOf(recordedRequests[0]).includes('lookup_b'), 'the tool is declared on round 1');
+            expect(
+                json(asArray(recordedRequests[0]?.body.tools).map((tool) => Object.keys(asRecord(tool)))) ===
+                    json([['googleSearch'], ['urlContext'], ['functionDeclarations']]),
+                `search, urlContext and the functions ride together (got ${json(recordedRequests[0]?.body.tools)})`
+            );
+            expect(executions.length === 1, `the call ran once (got ${executions.length})`);
+            expect(
+                lines.some((line) => line.includes('gemini-4-carbon offers') && line.includes('client tool(s)')),
+                `the loop is logged (got ${json(lines.filter((line) => line.includes('gemini-4-carbon')).slice(0, 4))})`
+            );
+            expect(textOf(chunks) === 'Sunny in Paris.', `the answer streams (got ${json(textOf(chunks))})`);
+        },
+    },
+    {
+        name: 'a model known to accept search tools only gets none of the client tools',
+        body: async () => {
+            reset([sse(roundEvents([[textPart('Plain answer.')]]))]);
+
+            const { chunks, lines } = await runTurn({ model: 'gemini-3.1-pro-preview', tools: turnTools });
+
+            expect(declarationNamesOf(recordedRequests[0]).length === 0, 'nothing is declared');
+            expect(json(recordedRequests[0]?.body.tools) === BUILT_IN_TOOLS_JSON, 'the built-in tools alone are sent');
+            expect(!lines.some((line) => line.includes('client tool(s)')), 'and the loop never starts');
+            expect(textOf(chunks) === 'Plain answer.', 'the single request still answers');
+        },
+    },
+    {
         name: 'gs:// media: no function declarations, byte for byte the request without tools',
         body: async () => {
             const messages: UnifiedMessage[] = [
