@@ -323,6 +323,22 @@ const contextLinkResolverFor = (
     buildMessageLinkResolver(chatContext.chatId, chatContext.userMessageId);
 
 /**
+ * How much of the full thinking the link-mode preview reads from. Link mode
+ * never splits the message, so the display buffer does reach its flood cap and
+ * turns into its omission placeholder; the preview must show the real CoT tail
+ * instead, and only the last two sections are rendered out of this window.
+ */
+const LINK_PREVIEW_TAIL_CHARS = 4000;
+
+/** The real tail of the thinking, cut at a paragraph boundary */
+const linkPreviewTailOf = (state: ResponseState): string => {
+    if (state.fullThinking.length <= LINK_PREVIEW_TAIL_CHARS) return state.fullThinking;
+    const tail = state.fullThinking.slice(-LINK_PREVIEW_TAIL_CHARS);
+    const start = tail.indexOf('\n\n');
+    return start === -1 ? tail : tail.slice(start + 2);
+};
+
+/**
  * Format current state for display (without status text - handled by
  * StreamingEditor). While processing, markdown renders in streaming mode
  * (unclosed constructs show as their intended formatting) and thinking shows
@@ -341,7 +357,7 @@ const formatStateForDisplay = (
         return linkifyContextNumbers(
             renderThinkingLinkStreaming(
                 thinkingLink,
-                formatThinkingPreviewForLink(state.thinkingBuffer)
+                formatThinkingPreviewForLink(linkPreviewTailOf(state))
             ),
             resolveContextLink
         );

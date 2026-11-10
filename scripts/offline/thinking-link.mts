@@ -778,6 +778,64 @@ results.push(
     })
 );
 
+results.push(
+    await runCase('the streaming preview reads the real tail past the display flood cap', async () => {
+        const started = await startReply();
+        // One chunk past the 10k display cap: the display buffer degrades to its
+        // omission note at once while the full thinking keeps everything, and
+        // link mode never splits the message. A second small chunk forces a render.
+        const sections = Array.from(
+            { length: 20 },
+            (_, index) => `**S${index}**\n\n${'推理'.repeat(350)}`
+        );
+        sections.push('**TailSection**\n\n最后一段真实推理内容');
+        const thinking = sections.join('\n\n');
+        await quietly(() =>
+            responseHandler.processStream(
+                streamOf([
+                    { chunk: { type: 'thinking', content: thinking } },
+                    { chunk: { type: 'thinking', content: '**StillThinking**\n\n补充一段' } },
+                ]),
+                started.chatContext,
+                0
+            )
+        );
+        started.chatContext.typing.stop();
+
+        expect(
+            thinking.length > 10000,
+            `the sample crosses the display flood cap (got ${thinking.length})`
+        );
+        expect(
+            started.chatContext.currentState?.thinkingBuffer.startsWith('[reasoning truncated') ===
+                true,
+            'the display buffer did degrade to the placeholder'
+        );
+        const link = started.chatContext.session.thinkingLink;
+        expect(link !== undefined && link.emitted === false, 'the long thinking is in link mode');
+
+        const linkEdits = (): string[] =>
+            started.telegram
+                .callsOf('editMessageText')
+                .map((call) => payloadText(call.payload))
+                .filter((text) => text.startsWith(THINKING_LINK_LABEL));
+        // The edit coordinator paces the calls, so the last renders land a bit later
+        await waitUntil(
+            'a link edit to show the newest section',
+            () => linkEdits().some((text) => text.includes('TailSection')),
+            8000
+        );
+        const lastEdit = linkEdits().at(-1) ?? '';
+        expect(lastEdit.includes('TailSection'), 'the preview shows the newest real section');
+        expect(lastEdit.includes('最后一段真实推理内容'), 'and its text');
+        expect(
+            linkEdits().every((text) => !text.includes('reasoning truncated')),
+            'the flood omission note never reaches the link preview'
+        );
+        expect(lastEdit.length < 2100, `the preview stays bounded (got ${lastEdit.length})`);
+    })
+);
+
 // Close the scratch database and exit: the streams leave timers behind
 const { sequelize } = await import('../../src/db/config.js');
 await sequelize.close();
