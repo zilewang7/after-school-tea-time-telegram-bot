@@ -2,7 +2,8 @@
  * Offline cases for the `r<chatId>_<firstMessageId>` start_param (design
  * §5.10): its parsing, the chat hint it resolves to, and the reply start
  * target GET /api/me returns — member, none, unavailable, and the fall back to
- * the chat page when the reply is gone.
+ * the chat page when the reply is gone. Also the `t<token>` thinking prefix
+ * (design §6.2): token-as-permission, no chat hint and no membership lookup.
  *
  * Run: npx tsx scripts/offline/start-param.mts
  */
@@ -19,6 +20,8 @@ const ALICE: InitDataUserInput = { id: 5001, first_name: 'Alice' };
 const BOB: InitDataUserInput = { id: 5002, first_name: 'Bob' };
 const GROUP = -1001000000001;
 const GROUP_THROTTLED = -1001000000003;
+/** The 24 character base64url token a thinking link carries */
+const THINKING_TOKEN = 'AbCdEfGhIjKlMnOpQrStUvWx';
 
 process.env.OWNER_USER_ID = String(OWNER_ID);
 process.env.WEBAPP_PUBLIC_URL = 'https://miniapp.test';
@@ -30,10 +33,12 @@ await setupOfflineDb();
 const registry = await import('../../src/db/queries/panel-registry.js');
 const db = await import('../../src/db/index.js');
 const startParam = await import('../../src/panel/auth/start-param.js');
+const { buildStartTarget } = await import('../../src/panel/views/start-target.js');
 const { createPanelApp } = await import('../../src/panel/app.js');
 const { signInitData } = await import('../lib/init-data.mts');
 
 type MembershipLookup = import('../../src/panel/access/membership.js').MembershipLookup;
+type ChatAccessResolver = import('../../src/panel/access/chat-access.js').ChatAccessResolver;
 type PanelApp = ReturnType<typeof createPanelApp>;
 
 const scratch = mkdtempSync(join(tmpdir(), 'k-on-bot-start-param-'));
@@ -189,6 +194,85 @@ const cases: { name: string; body: () => Promise<void> }[] = [
         body: async () => {
             const body = await jsonOf(await call(app, '/api/me', ALICE, 'hello'));
             expect(body.startTarget === null, 'null target');
+        },
+    },
+    {
+        name: 'the thinking start_param parses public CoT tokens',
+        body: async () => {
+            expect(
+                JSON.stringify(startParam.parseStartParam(`t${THINKING_TOKEN}`)) ===
+                    JSON.stringify({ kind: 'thinking', token: THINKING_TOKEN }),
+                'a 24 character token'
+            );
+            expect(
+                JSON.stringify(startParam.parseStartParam('tabcdefghijklmnop')) ===
+                    JSON.stringify({ kind: 'thinking', token: 'abcdefghijklmnop' }),
+                'a 16 character token'
+            );
+            expect(
+                JSON.stringify(startParam.parseStartParam('tAbC_d-efGh1234567890')) ===
+                    JSON.stringify({ kind: 'thinking', token: 'AbC_d-efGh1234567890' }),
+                'base64url punctuation is kept'
+            );
+            expect(startParam.parseStartParam(`s${THINKING_TOKEN}`)?.kind === 'share', 'share links still parse');
+            expect(startParam.parseStartParam(`c${GROUP}`)?.kind === 'chat', 'chat links still parse');
+        },
+    },
+    {
+        name: 'malformed thinking start_params are ignored',
+        body: async () => {
+            const tooShort = `t${'a'.repeat(15)}`;
+            const tooLong = `t${'a'.repeat(65)}`;
+            for (const raw of [
+                't',
+                'tabc',
+                tooShort,
+                tooLong,
+                'tAbCdEfGhIjKlMnOp!',
+                'TAbCdEfGhIjKlMnOp',
+                'tabcdefghijklmnop=',
+                'thinking',
+            ]) {
+                expect(startParam.parseStartParam(raw) === null, `"${raw}" is ignored`);
+            }
+        },
+    },
+    {
+        name: 'a thinking target carries no chat hint',
+        body: async () => {
+            const hint = await startParam.resolveHintChatId(
+                { kind: 'thinking', token: THINKING_TOKEN },
+                async () => null
+            );
+            expect(hint === null, 'no hint chat');
+        },
+    },
+    {
+        name: 'a thinking target resolves without any membership lookup',
+        body: async () => {
+            const resolver: ChatAccessResolver = {
+                user: { id: ALICE.id, firstName: 'Alice', lastName: null, username: null, isOwner: false },
+                resolve: async () => {
+                    throw new Error('a thinking target must not look up chat access');
+                },
+            };
+            const target = await buildStartTarget({ kind: 'thinking', token: THINKING_TOKEN }, null, resolver);
+            expect(
+                JSON.stringify(target) === JSON.stringify({ kind: 'thinking', token: THINKING_TOKEN }),
+                `thinking view (got ${JSON.stringify(target)})`
+            );
+        },
+    },
+    {
+        name: '/api/me returns a thinking start target for anyone holding the token',
+        body: async () => {
+            for (const user of [ALICE, BOB]) {
+                const body = await jsonOf(await call(app, '/api/me', user, `t${THINKING_TOKEN}`));
+                expect(
+                    JSON.stringify(body.startTarget) === JSON.stringify({ kind: 'thinking', token: THINKING_TOKEN }),
+                    `${user.first_name} gets the thinking view (got ${JSON.stringify(body.startTarget)})`
+                );
+            }
         },
     },
 ];

@@ -1648,3 +1648,78 @@ a.button {
     text-align: center;
     text-decoration: none;
 }
+
+/* A long CoT's public page: a standalone reader, no tab layers and no actions */
+
+.thinking-header {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    margin: 4px 4px 0;
+}
+
+.thinking-title {
+    margin: 0;
+    font-size: 20px;
+    font-weight: 600;
+}
+
+.thinking-meta {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+    font-size: 13px;
+    color: var(--color-hint);
+}
+
+.thinking-model {
+    padding: 1px 8px;
+    border-radius: 999px;
+    background: var(--color-section-bg);
+    color: var(--color-accent);
+    font: 12px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+.thinking-status {
+    color: var(--color-hint);
+}
+
+.thinking-status.is-generating {
+    color: var(--color-warning);
+}
+
+.thinking-status.is-done {
+    color: var(--color-success);
+}
+
+.thinking-note {
+    margin: 0 4px;
+}
+
+.thinking-body {
+    margin: 0 4px;
+    padding: 12px;
+    border: 1px solid var(--color-separator);
+    border-radius: var(--radius);
+    background: var(--color-section-bg);
+}
+
+.thinking-text {
+    margin: 0;
+    font: 14px/1.6 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    color: var(--color-text);
+}
+
+.thinking-footer {
+    display: flex;
+    justify-content: center;
+    margin-top: 4px;
+}
+
+.thinking-footer .button {
+    align-self: center;
+    text-decoration: none;
+}

@@ -19,6 +19,7 @@ import { inlineCitations } from './inline-citations.js';
 import { plainText } from './entity-text.js';
 import { renderThinkingQuote } from './quoted-render.js';
 import { linkifyContextNumbers, type ContextLinkResolver } from './context-links.js';
+import { toThinkingLinkChunk, type ThinkingLinkRef } from './thinking-link.js';
 
 /** Safe per-message length budget (below Telegram's 4096 hard limit) */
 const TELEGRAM_MAX_LENGTH = 4000;
@@ -37,6 +38,12 @@ const withCitations = (text: string, grounding: GroundingData | undefined): stri
 export interface FinalMessageBuildOptions {
     text: string;
     thinking?: string;
+    /**
+     * Long-CoT link message: leads the reply and replaces the thinking quote.
+     * The streaming phase may have emitted it already, in which case the caller
+     * drops the first chunk.
+     */
+    thinkingLink?: ThinkingLinkRef;
     groundingData?: GroundingData[];
     agentStats?: AgentStats;
     wasStoppedByUser?: boolean;
@@ -93,9 +100,22 @@ const applyLinkPreviewPolicy = (
 export const buildFinalMessages = (
     options: FinalMessageBuildOptions
 ): FinalMessageChunk[] => {
+    const bodyChunks = buildBodyChunks(options);
+    // The link message leads the reply. It never goes through the split: it is
+    // one fixed line, and its own preview card must survive the body's policy.
+    return options.thinkingLink
+        ? [toThinkingLinkChunk(options.thinkingLink), ...bodyChunks]
+        : bodyChunks;
+};
+
+/** Body chunks: answer text, [stopped] marker, tool / search records */
+const buildBodyChunks = (
+    options: FinalMessageBuildOptions
+): FinalMessageChunk[] => {
     const {
         text,
         thinking,
+        thinkingLink,
         groundingData,
         agentStats,
         wasStoppedByUser,
@@ -109,7 +129,16 @@ export const buildFinalMessages = (
     // place the superscript markers in the body
     const searchGrounding = (groundingData ?? []).find(isSearchGroundingStep);
 
-    if (thinking) {
+    // Records of the run: the merged tool-call blocks, plus Gemini's search
+    // grounding in its own dedicated block
+    const googleSearchBlocks = buildGoogleSearchBlocks(groundingData ?? []);
+    const recordSections = [
+        ...buildToolRecordSections(agentStats, groundingData ?? []),
+        ...googleSearchBlocks.map((block) => block.message),
+    ];
+
+    // In link mode the thinking lives behind the link, never in the body
+    if (thinking && !thinkingLink) {
         parts.push(renderThinkingQuote(thinking, { expandable: true }));
     }
 
@@ -118,17 +147,15 @@ export const buildFinalMessages = (
         parts.push(renderMarkdown(withCitations(text, searchGrounding)));
     }
 
-    if (wasStoppedByUser) {
+    // A bare stopped reply has no place for the marker: the link message must
+    // stay a pure link (design §4.4). With a body the marker rides on it.
+    const stoppedMarkerFits =
+        wasStoppedByUser === true &&
+        (thinkingLink === undefined || Boolean(text) || recordSections.length > 0);
+    if (stoppedMarkerFits) {
         parts.push('\n\n', plainText('[stopped]'));
     }
 
-    // Records of the run: the merged tool-call blocks, plus Gemini's search
-    // grounding in its own dedicated block
-    const googleSearchBlocks = buildGoogleSearchBlocks(groundingData ?? []);
-    const recordSections = [
-        ...buildToolRecordSections(agentStats, groundingData ?? []),
-        ...googleSearchBlocks.map((block) => block.message),
-    ];
     for (const section of recordSections) {
         parts.push('\n', section);
     }

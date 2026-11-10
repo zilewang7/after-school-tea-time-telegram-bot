@@ -57,7 +57,9 @@ export type StartTarget =
     // A `startapp=r<chatId>_<firstMessageId>` link; `none` means the reply stays hidden
     | { kind: 'reply'; chatId: number; firstMessageId: number; access: StartTargetAccess }
     // A `startapp=s<token>` link: the public page; access is decided by the page itself
-    | { kind: 'share'; token: string };
+    | { kind: 'share'; token: string }
+    // A `startapp=t<token>` link: the public long-CoT page; the token is the permission
+    | { kind: 'thinking'; token: string };
 
 export interface MeResponse {
     user: PanelUser;
@@ -1054,4 +1056,31 @@ export interface PublicShare {
 /** GET /api/public/shares/:token */
 export interface PublicShareResponse {
     share: PublicShare;
+}
+
+export type PublicThinkingStatus = 'generating' | 'done' | 'interrupted' | 'unavailable';
+
+/**
+ * GET /api/public/thinking/:token: one thinking link's CoT (design §5.4).
+ * With `after`, `delta` carries only the new tail; without it, `text` is the
+ * whole CoT and `next` is the offset to poll from.
+ */
+export interface PublicThinkingResponse {
+    token: string;
+    model: string | null;
+    // ISO
+    createdAt: string;
+    // Whether the thinking stream has ended
+    done: boolean;
+    status: PublicThinkingStatus;
+    // One line for a stopped or failed version; null when there is nothing to say
+    errorMessage: string | null;
+    // The whole CoT when `after` is absent
+    text: string;
+    // The new tail when `after` is given
+    delta?: string;
+    // The offset to pass as `after` on the next poll
+    next: number;
+    // `after` was out of range: replace the whole text instead of appending
+    reset?: boolean;
 }

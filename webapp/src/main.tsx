@@ -50,8 +50,8 @@ const renderBootError = (): void => {
  * initData, which is exactly the browser case.
  */
 const bootstrapBrowser = async (): Promise<void> => {
-    // A share link is public read-only content: no session, no login page
-    if (window.location.pathname.startsWith('/share/')) {
+    // A share or thinking link is public read-only content: no session, no login page
+    if (window.location.pathname.startsWith('/share/') || window.location.pathname.startsWith('/think/')) {
         startPanel(createBrowserWebApp());
         return;
     }

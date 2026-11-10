@@ -261,6 +261,30 @@ const migratePanelWebSessions = async (transaction: Transaction): Promise<void> 
   );
 };
 
+/**
+ * The long-thinking view links (design §5.1): one row per reply version, whose
+ * 24-character token is the only permission the public page and its JSON check.
+ * A version that re-renders reuses its row through the unique target index.
+ *
+ * Raw SQL only, like share_links: no sequelize model, so sync() never rebuilds it.
+ */
+const migrateThinkingLinks = async (transaction: Transaction): Promise<void> => {
+  await sequelize.query(`
+    CREATE TABLE IF NOT EXISTS thinking_links (
+      token TEXT PRIMARY KEY,
+      chatId INTEGER NOT NULL,
+      firstMessageId INTEGER NOT NULL,
+      versionId INTEGER NOT NULL,
+      model TEXT,
+      createdAt DATETIME NOT NULL
+    )
+  `, { transaction });
+  await sequelize.query(
+    'CREATE UNIQUE INDEX IF NOT EXISTS thinking_links_target ON thinking_links (chatId, firstMessageId, versionId)',
+    { transaction }
+  );
+};
+
 /** Apply additive, idempotent DDL without altering the large message table. */
 export const runSchemaMigrations = async (): Promise<void> => {
   await sequelize.query(`
@@ -278,6 +302,7 @@ export const runSchemaMigrations = async (): Promise<void> => {
     await migrateChatSettingsToolOverrides(transaction);
     await migrateShareLinks(transaction);
     await migratePanelWebSessions(transaction);
+    await migrateThinkingLinks(transaction);
     await sequelize.query(
       `INSERT OR IGNORE INTO schema_migrations (name, appliedAt)
        VALUES ('20260908_custom_emoji_phase1', :appliedAt)`,
@@ -333,6 +358,12 @@ export const runSchemaMigrations = async (): Promise<void> => {
     await sequelize.query(
       `INSERT OR IGNORE INTO schema_migrations (name, appliedAt)
        VALUES ('20261109_panel_web_sessions', :appliedAt)`,
+      { replacements: { appliedAt: new Date().toISOString() }, transaction }
+    );
+    // thinking_links is a brand-new table, created by migrateThinkingLinks above
+    await sequelize.query(
+      `INSERT OR IGNORE INTO schema_migrations (name, appliedAt)
+       VALUES ('20261111_thinking_links', :appliedAt)`,
       { replacements: { appliedAt: new Date().toISOString() }, transaction }
     );
   });

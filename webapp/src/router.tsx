@@ -19,6 +19,7 @@ const GlobalAuditRoute = lazyPage(() => import('./pages/audit/audit-routes'), 'G
 const ChatAuditRoute = lazyPage(() => import('./pages/audit/audit-routes'), 'ChatAuditRoute');
 const ChatToolsPage = lazyPage(() => import('./pages/chat-tools/chat-tools-page'), 'ChatToolsPage');
 const ShareRoute = lazyPage(() => import('./pages/share/share-route'), 'ShareRoute');
+const ThinkingRoute = lazyPage(() => import('./pages/thinking/thinking-route'), 'ThinkingRoute');
 
 /**
  * History routing only: Telegram puts #tgWebAppData in the URL hash, so hash routing would clobber it.
@@ -108,6 +109,15 @@ export const createAppRouter = (launch: LaunchState) =>
             element: (
                 <Suspense fallback={<LoadingView />}>
                     <ShareRoute />
+                </Suspense>
+            ),
+        },
+        // A thinking link's public CoT view, standalone for the same reasons
+        {
+            path: '/think/:token',
+            element: (
+                <Suspense fallback={<LoadingView />}>
+                    <ThinkingRoute />
                 </Suspense>
             ),
         },

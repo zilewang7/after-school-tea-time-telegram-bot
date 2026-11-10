@@ -9,6 +9,7 @@ import { to, isErr } from '../shared/result.js';
 import { formatErrorForUser } from '../shared/errors.js';
 import {
     createSession,
+    liveThinkingKeyOf,
     type BotMessageSession,
 } from '../services/index.js';
 import { buildResponseButtons } from '../cmd/menus/index.js';
@@ -45,11 +46,26 @@ import {
 } from 'telegram-md-entities';
 import type { RenderedMessage } from 'telegram-md-entities';
 import { buildErrorDisplay } from '../telegram/formatters/error-display.js';
-import { formatThinkingForStreaming } from '../telegram/formatters/thinking-display.js';
+import {
+    formatThinkingForStreaming,
+    formatThinkingPreviewForLink,
+    thinkingOverflowsMessage,
+} from '../telegram/formatters/thinking-display.js';
+import {
+    renderThinkingLinkMessage,
+    renderThinkingLinkStreaming,
+    thinkingLinkPreviewOptions,
+} from '../telegram/formatters/thinking-link.js';
 import { renderThinkingQuote } from '../telegram/formatters/quoted-render.js';
 import { buildFinalMessages, type FinalMessageChunk } from '../telegram/formatters/final-message-builder.js';
 import { splitRawByFits, splitAtLastNewline } from '../telegram/formatters/smart-splitter.js';
 import { buildImageCaption, type ImageCaptionFields } from './tools/image-message.js';
+import {
+    appendLiveThinking,
+    beginThinkingLink,
+    thinkingLinkEnabled,
+    type ThinkingLinkRef,
+} from '../panel/thinking/thinking-link-service.js';
 import {
     buildWidgetLinkMessage,
     isWidgetNotAllowedError,
@@ -76,6 +92,16 @@ const MESSAGE_LENGTH_LIMIT = 3900;
  *  final pass re-renders per message so a little headroom is enough) */
 const MESSAGE_ENTITY_LIMIT = 85;
 const THINKING_BUFFER_LIMIT = 10000;
+/**
+ * The full thinking kept on the version (the thinking page's fallback after a
+ * restart): the display buffer above stays small, this one is what gets stored.
+ */
+const FULL_THINKING_LIMIT = 200000;
+/** Appended once when FULL_THINKING_LIMIT is hit; later chunks are dropped */
+const FULL_THINKING_TRUNCATION_MARK = '\n\n…（思考过程超过 20 万字，已截断）';
+/** Link-mode trigger: the rendered thinking reaches the message budget minus the
+ *  status-line headroom, exactly where the legacy split switch fires */
+const THINKING_LINK_LENGTH_TRIGGER = MESSAGE_LENGTH_LIMIT - 50;
 /** Below this remaining budget, move the whole text to the continuation
  *  instead of squeezing a tiny tail that would be chopped mid-sentence */
 const MIN_TAIL_TEXT_BUDGET = 500;
@@ -204,14 +230,24 @@ export const processChunk = (
         .with({ type: 'thinking' }, ({ content }) => {
             const appended = content ?? '';
             let newThinkingBuffer = state.thinkingBuffer + appended;
-            let newFullThinking = state.fullThinking + appended;
             let truncatedChars = state.thinkingTruncatedChars;
 
+            // Display buffer: bounded so a long CoT cannot flood the message
             if (newThinkingBuffer.length > THINKING_BUFFER_LIMIT) {
                 truncatedChars += newThinkingBuffer.length;
-                const placeholder = `[reasoning truncated, ${truncatedChars} chars omitted to avoid telegram flood]\n`;
-                newThinkingBuffer = placeholder;
-                newFullThinking = placeholder;
+                newThinkingBuffer = `[reasoning truncated, ${truncatedChars} chars omitted to avoid telegram flood]\n`;
+            }
+
+            // Full buffer: what the version stores and the thinking page reads.
+            // Once the cap is hit, the truncation mark is appended and the rest
+            // is dropped (the same cap the live stream keeps).
+            let newFullThinking = state.fullThinking;
+            if (newFullThinking.length < FULL_THINKING_LIMIT) {
+                newFullThinking += appended;
+                if (newFullThinking.length > FULL_THINKING_LIMIT) {
+                    newFullThinking =
+                        newFullThinking.slice(0, FULL_THINKING_LIMIT) + FULL_THINKING_TRUNCATION_MARK;
+                }
             }
 
             return {
@@ -297,7 +333,20 @@ const formatStateForDisplay = (
     state: ResponseState,
     isProcessing: boolean,
     resolveContextLink?: ContextLinkResolver,
+    thinkingLink?: ThinkingLinkRef,
 ): RenderedMessage => {
+    // Link mode: the CoT lives behind the link, so the message only shows the
+    // fixed-height link + last-two-sections preview instead of a quote
+    if (thinkingLink !== undefined && !state.textBuffer) {
+        return linkifyContextNumbers(
+            renderThinkingLinkStreaming(
+                thinkingLink,
+                formatThinkingPreviewForLink(state.thinkingBuffer)
+            ),
+            resolveContextLink
+        );
+    }
+
     const parts: (RenderedMessage | string)[] = [];
 
     if (state.thinkingBuffer) {
@@ -420,6 +469,98 @@ const showToolStatus = (chatContext: ChatContext, status: ToolStatus | undefined
 };
 
 /**
+ * Where the link-mode decision stands for one chunk: still waiting for the
+ * thinking to overflow, active, or no longer possible for this reply.
+ */
+type ThinkingLinkActivation = 'waiting' | 'active' | 'failed';
+
+/**
+ * Activate link mode when the thinking alone already fills a message: create
+ * (or reuse) the version's link and remember it on the session. A disabled
+ * switch is filtered by the caller; a failed row keeps the legacy split path.
+ */
+const activateThinkingLink = async (
+    chatContext: ChatContext,
+    state: ResponseState,
+    resolveContextLink?: ContextLinkResolver
+): Promise<ThinkingLinkActivation> => {
+    const { chatId, session } = chatContext;
+    // The display buffer loses its tail past its own limit; measure the full
+    // thinking then, so a single big chunk cannot hide the overflow
+    const measured = state.thinkingTruncatedChars > 0 ? state.fullThinking : state.thinkingBuffer;
+    if (
+        !thinkingOverflowsMessage(
+            measured,
+            { maxLength: THINKING_LINK_LENGTH_TRIGGER, maxEntities: MESSAGE_ENTITY_LIMIT },
+            resolveContextLink
+        )
+    ) {
+        return 'waiting';
+    }
+
+    const ref = await beginThinkingLink({
+        chatId,
+        firstMessageId: session.firstMessageId,
+        versionId: session.versionCount + 1,
+        model: session.model,
+    });
+    if (ref === null) {
+        console.warn('[thinking-link] link creation failed, keeping the legacy thinking split');
+        return 'failed';
+    }
+
+    session.thinkingLink = { ...ref, key: liveThinkingKeyOf(session), emitted: false };
+    console.log(
+        `[thinking-link] active chat=${chatId} first=${session.firstMessageId} version=${session.versionCount + 1}`
+    );
+    return 'active';
+};
+
+/**
+ * The answer has started: finalize the streaming message as the pure link (its
+ * preview card included, no reply_markup so the stop button goes away), then
+ * open the continuation the body streams into.
+ */
+const emitThinkingLink = async (
+    chatContext: ChatContext,
+    shownToolStatus: ToolStatus | undefined
+): Promise<boolean> => {
+    const link = chatContext.session.thinkingLink;
+    if (link === undefined) return false;
+
+    const { editor } = chatContext;
+    // Stop the spinner before the final edit and drop the queued streaming state
+    editor.stop();
+    const message = renderThinkingLinkMessage(link);
+    const delivered = await editor.updateContent(message.text, {
+        entities: message.entities,
+        linkPreviewOptions: thinkingLinkPreviewOptions(link),
+        isFinal: true,
+    });
+    if (!delivered) {
+        console.warn('[thinking-link] the link message edit did not go through');
+    }
+
+    const continuationId = await createContinuationMessage(chatContext);
+    if (continuationId === null) {
+        // The link message is already final; the legacy final delivery still
+        // replays the body, so the reply is not lost
+        console.error('[thinking-link] continuation message failed; the link stays the first message');
+        return false;
+    }
+
+    link.emitted = true;
+    // The continuation is now the reply's last message: the terminal buttons
+    // and the stored version's currentMessageId belong to the body, not to the
+    // link message the user opens for the thinking
+    chatContext.session.currentMessageId = continuationId;
+    // A running tool's status line follows the body to the new message
+    chatContext.editor.setStatus(shownToolStatus?.text);
+    console.log(`[thinking-link] emitted chat=${chatContext.chatId} first=${chatContext.session.firstMessageId}`);
+    return true;
+};
+
+/**
  * Process AI stream and update message in real-time
  */
 export const processStream = async (
@@ -454,6 +595,12 @@ export const processStream = async (
     const stripLeadingLabel = createContextLabelStripper();
     // The tool status on screen; never synced to the session, so never stored
     let shownToolStatus: ToolStatus | undefined;
+    // Link mode is decided once per stream: the switch, the live-thinking key,
+    // and whether an attempt already failed (then the legacy path owns the reply)
+    const linkFeatureOn = thinkingLinkEnabled();
+    const attemptKey = liveThinkingKeyOf(session);
+    let linkActivationFailed = false;
+    let linkEmitAttempted = false;
 
     for await (const chunk of stream) {
         // Check if stream was aborted (user clicked stop)
@@ -464,11 +611,51 @@ export const processStream = async (
 
         // First-chunk time and raw thinking length for the reply metrics
         noteStreamChunk(session.metrics, chunk);
+
+        // The full thinking goes to the in-memory stream from the very first
+        // chunk: the page can be open before the version (and token) exists
+        if (linkFeatureOn && chunk.type === 'thinking' && chunk.content) {
+            appendLiveThinking(attemptKey, chunk.content);
+        }
+
         state = processChunk(chunk, state, stripLeadingLabel);
         const toolStatusChanged = state.toolStatus !== shownToolStatus;
         if (toolStatusChanged) {
             shownToolStatus = state.toolStatus;
             showToolStatus(chatContext, shownToolStatus);
+        }
+
+        // Link mode: the thinking itself fills a whole message when the answer
+        // has not started yet (the legacy split keeps owning the started case)
+        if (
+            session.thinkingLink === undefined &&
+            !linkActivationFailed &&
+            state.textBuffer === '' &&
+            linkFeatureOn
+        ) {
+            const activation = await activateThinkingLink(chatContext, state, resolveContextLink);
+            if (activation === 'failed') linkActivationFailed = true;
+        }
+
+        // Once the link message went out, later thinking only feeds the page and
+        // the stored version: it must not reappear in the body message
+        if (session.thinkingLink?.emitted === true && state.thinkingBuffer !== '') {
+            state = { ...state, thinkingBuffer: '' };
+        }
+
+        // The first body chunk finalizes the message as the link and continues
+        // in a new one. A failed attempt leaves the legacy final delivery to
+        // replay the link chunk, so it is not retried every chunk.
+        if (
+            session.thinkingLink !== undefined &&
+            !session.thinkingLink.emitted &&
+            state.textBuffer !== '' &&
+            !linkEmitAttempted
+        ) {
+            linkEmitAttempted = true;
+            if (await emitThinkingLink(chatContext, shownToolStatus)) {
+                state = { ...state, thinkingBuffer: '' };
+            }
         }
 
         // Sync complete text to session buffers (not the display buffers)
@@ -482,13 +669,23 @@ export const processStream = async (
         chatContext.currentState = state;
 
         // Format current display (without status - StreamingEditor handles it)
-        const rendered = formatStateForDisplay(state, true, resolveContextLink);
+        const linkForDisplay =
+            session.thinkingLink !== undefined && !session.thinkingLink.emitted
+                ? session.thinkingLink
+                : undefined;
+        const rendered = formatStateForDisplay(state, true, resolveContextLink, linkForDisplay);
+
+        // A pending link message is bounded by design: the message-budget split
+        // only applies to the legacy shape (and to the body once the link is out)
+        const linkPending =
+            session.thinkingLink !== undefined && !session.thinkingLink.emitted;
 
         // Check if we need to switch to a new message: both budgets matter —
         // some buffer for the status text; entities past ~100 are dropped
         if (
-            rendered.text.length >= MESSAGE_LENGTH_LIMIT - 50 ||
-            rendered.entities.length >= MESSAGE_ENTITY_LIMIT
+            !linkPending &&
+            (rendered.text.length >= MESSAGE_LENGTH_LIMIT - 50 ||
+                rendered.entities.length >= MESSAGE_ENTITY_LIMIT)
         ) {
             console.log('[response-handler] Message budget exceeded, switching to continuation...');
 
@@ -1052,14 +1249,20 @@ export const sendFinalResponse = async (
     const wasStoppedByUser = session.streamController.isAborted();
     const resolveContextLink = contextLinkResolverFor(chatContext);
 
-    const finalChunks = buildFinalMessages({
+    const builtChunks = buildFinalMessages({
         text: response.text,
         thinking: response.thinkingText,
+        // Link mode: the reply leads with the link message instead of the CoT
+        thinkingLink: session.thinkingLink,
         agentStats: response.agentStats,
         wasStoppedByUser,
         groundingData: response.groundingData,
         resolveContextLink,
     });
+    // A link message emitted during streaming is already in the chat: its chunk
+    // must not be re-delivered, it only leads the stored layout
+    const finalChunks =
+        session.thinkingLink?.emitted === true ? builtChunks.slice(1) : builtChunks;
     // Only the first image is delivered, and it carries the reply's image caption
     const imageCaptionFields = buildImageCaption(response.imageCaption, resolveContextLink);
     // The file's caption rides on the file itself, so a version switch keeps it
@@ -1359,9 +1562,17 @@ export const handleResponseError = async (
     const partialText = chatContext.currentState?.textBuffer ?? session.textBuffer;
     const partialThinking = chatContext.currentState?.thinkingBuffer ?? session.thinkingBuffer;
 
+    // A link message that has not gone out yet becomes the error message's
+    // prefix; once it went out, the error belongs to the body message alone
+    const pendingLink =
+        session.thinkingLink !== undefined && !session.thinkingLink.emitted
+            ? session.thinkingLink
+            : undefined;
+
     const errorRendered = buildErrorDisplay({
         text: partialText,
-        thinking: partialThinking,
+        thinking: pendingLink === undefined ? partialThinking : undefined,
+        thinkingLink: pendingLink,
         errorMessage: formatErrorForUser(error),
         resolveContextLink: contextLinkResolverFor(chatContext),
     });
@@ -1386,6 +1597,9 @@ export const handleResponseError = async (
     const delivered = await editor.updateContent(errorRendered.text, {
         entities: errorRendered.entities,
         replyMarkup: errorButtons,
+        ...(pendingLink === undefined
+            ? {}
+            : { linkPreviewOptions: thinkingLinkPreviewOptions(pendingLink) }),
         isFinal: true,
     });
     if (!delivered) {

@@ -1,7 +1,8 @@
 /**
  * Where the panel should land, from the signed start_param: a chat, an issue,
- * one bot reply, or a public share, with the requester's access to the chat
- * behind it. Only a hint: the target's own endpoint checks access again.
+ * one bot reply, a public share, or a public long-CoT view, with the
+ * requester's access to the chat behind it. Only a hint: the target's own
+ * endpoint checks access again.
  *
  * It never tells a requester more than their own link says: an issue whose
  * chat they cannot open reads exactly like a missing one (no chatId, `none`),
@@ -11,8 +12,8 @@
  * no-permission page rather than guessing; a reply that does not exist falls
  * back to its chat page.
  *
- * A share target carries no access at all: the webapp reads it through the
- * public share API, whose token is the only permission.
+ * A share or thinking target carries no access at all: the webapp reads it
+ * through its public API, whose token is the only permission.
  */
 import { match } from 'ts-pattern';
 import { MembershipUnavailableError, type ChatAccessResolver } from '../access/chat-access.js';
@@ -29,7 +30,8 @@ export type StartTargetView =
     | { kind: 'chat'; chatId: number; access: StartTargetAccess }
     | { kind: 'issue'; chatId: number | null; issueId: number; access: StartTargetAccess }
     | { kind: 'reply'; chatId: number; firstMessageId: number; access: StartTargetAccess }
-    | { kind: 'share'; token: string };
+    | { kind: 'share'; token: string }
+    | { kind: 'thinking'; token: string };
 
 /** Whether a reply of that chat is stored; lets a stale deep link land on the chat instead */
 export type ReplyExistsLookup = (chatId: number, firstMessageId: number) => Promise<boolean>;
@@ -92,6 +94,11 @@ export const buildStartTarget = (
             { kind: 'share' },
             (shareTarget): Promise<StartTargetView> =>
                 Promise.resolve({ kind: 'share', token: shareTarget.token })
+        )
+        .with(
+            { kind: 'thinking' },
+            (thinkingTarget): Promise<StartTargetView> =>
+                Promise.resolve({ kind: 'thinking', token: thinkingTarget.token })
         )
         .exhaustive();
 };

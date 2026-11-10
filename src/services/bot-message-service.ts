@@ -66,6 +66,21 @@ import { classifyErrorKind, summarizeErrorMessage, type ErrorKind } from '../sha
 import { createReplyMetricsDraft, type ReplyMetricsDraft } from './reply-metrics-draft.js';
 import { recordReplyMetric } from './reply-metric-record.js';
 import { pushRecentReplyError } from './recent-reply-errors.js';
+import {
+    finishLiveThinking,
+    thinkingAttemptKeyOf,
+    thinkingLinkEnabled,
+    thinkingLinkRefOfVersion,
+    type ThinkingLinkRef,
+} from '../panel/thinking/thinking-link-service.js';
+
+/**
+ * The long-thinking link of a reply being generated, once its streaming loop
+ * activated the link mode (design §4.2). `key` is the live-stream key of the
+ * attempt; `emitted` means the message already went out as the pure link and the
+ * body continues in another message.
+ */
+export type SessionThinkingLink = ThinkingLinkRef & { key: string; emitted: boolean };
 
 /**
  * Stream controller for aborting streams
@@ -156,6 +171,13 @@ export interface BotMessageSession {
     widgetShareUrl?: string;
     groundingData: any[];
     agentStats?: AgentStats;
+
+    /**
+     * The long-thinking link this reply is showing instead of its thinking
+     * quote. Set by the streaming loop when the thinking alone fills a message;
+     * absent means the reply keeps the legacy split behaviour.
+     */
+    thinkingLink?: SessionThinkingLink;
 
     // Stream control
     streamController: StreamController;
@@ -437,6 +459,28 @@ const botRowTextOf = (reply: {
 };
 
 /**
+ * The live-thinking key of the version this session is about to store. The same
+ * key the panel reads: chat, first message and the 1-based version id.
+ */
+export const liveThinkingKeyOf = (session: BotMessageSession): string =>
+    thinkingAttemptKeyOf({
+        chatId: session.chatId,
+        firstMessageId: session.firstMessageId,
+        versionId: session.versionCount + 1,
+    });
+
+/** Close the attempt's live thinking; a failure costs the page its status, not the reply */
+const finishLiveThinkingOf = (session: BotMessageSession): void => {
+    // The live stream is only written by the enabled feature
+    if (!thinkingLinkEnabled()) return;
+    try {
+        finishLiveThinking(liveThinkingKeyOf(session));
+    } catch (error) {
+        console.warn('[bot-message-service] finishing the live thinking failed:', error);
+    }
+};
+
+/**
  * Finalize session - save to database and cleanup
  */
 const finalizeSession = async (
@@ -450,6 +494,10 @@ const finalizeSession = async (
     }
     session.isFinalized = true;
     const finishedAt = new Date();
+
+    // The page of a link opened during generation must stop showing "generating"
+    // even when the reply ends in an error or a stop
+    finishLiveThinkingOf(session);
 
     const sessionKey = getSessionKey(session.chatId, session.firstMessageId);
 
@@ -486,6 +534,9 @@ const finalizeSession = async (
         currentMessageId: session.currentMessageId,
         text: session.textBuffer,
         thinkingText: session.thinkingBuffer || undefined,
+        ...(session.thinkingLink === undefined
+            ? {}
+            : { thinkingLinkToken: session.thinkingLink.token }),
         groundingData: session.groundingData.length ? session.groundingData : undefined,
         agentStats: session.agentStats,
         errorMessage: options?.errorMessage,
@@ -749,6 +800,9 @@ const buildVersionMessages = (
     const chunks = buildFinalMessages({
         text: version.text || '',
         thinking: version.thinkingText,
+        // A version that showed the link replays it as the reply's first message;
+        // a version from before the feature has no token and renders as it always did
+        thinkingLink: thinkingLinkRefOfVersion(version) ?? undefined,
         agentStats: version.agentStats,
         groundingData: version.groundingData,
         wasStoppedByUser: version.wasStoppedByUser,

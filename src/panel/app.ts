@@ -52,6 +52,8 @@ import { registerSignedMediaRoute } from './share/signed-media-routes.js';
 import { createWidgetSigner } from './share/signed-widget.js';
 import { registerSignedWidgetRoute } from './share/signed-widget-routes.js';
 import { registerStaticRoutes } from './static.js';
+import { thinkingLinkEnabled } from './thinking/thinking-config.js';
+import { registerPublicThinkingApiRoutes, registerThinkingPublicRoutes } from './thinking/thinking-routes.js';
 
 export interface PanelAppOptions {
     botToken: string;
@@ -92,6 +94,11 @@ export interface PanelAppOptions {
      * Offline cases pass their own stores so codes and sessions are inspectable.
      */
     webAuth?: WebAuthRuntime;
+    /**
+     * THINKING_LINK is on and WEBAPP_PUBLIC_URL is set: the fast thinking page and
+     * its public API exist (design §10). Default: the env.
+     */
+    thinkingEnabled?: boolean;
 }
 
 const BODY_LIMIT_BYTES = 32 * 1024;
@@ -109,6 +116,7 @@ export const createPanelApp = (options: PanelAppOptions): Hono<PanelEnv> => {
     const checker = createMembershipChecker({ lookup: options.membershipLookup, now });
     const rateLimit = options.rateLimit ?? DEFAULT_RATE_LIMIT;
     const shareEnabled = options.shareEnabled ?? getToolConfig().shareEnabled;
+    const thinkingEnabled = options.thinkingEnabled ?? thinkingLinkEnabled();
     const webAuth = options.webAuth ?? getWebAuthRuntime();
     const bodyLimit = createBodyLimit({
         maxSize: BODY_LIMIT_BYTES,
@@ -129,6 +137,9 @@ export const createPanelApp = (options: PanelAppOptions): Hono<PanelEnv> => {
     // sits in front of the /api middleware stack like /api/health. With
     // SHARE_ENABLED=0 it answers the same JSON 404 an unknown token gets.
     registerPublicShareApiRoutes(app, { enabled: shareEnabled, now });
+    // The thinking JSON also authenticates with its token (design §5.4), so it sits
+    // in front of the /api middleware stack too; off answers an unknown-token 404.
+    registerPublicThinkingApiRoutes(app, { enabled: thinkingEnabled, now });
 
     // The web login creates the credential, so it sits in front of the auth
     // middleware; its tiny JSON body still goes through the same limit.
@@ -186,6 +197,9 @@ export const createPanelApp = (options: PanelAppOptions): Hono<PanelEnv> => {
     registerSignedWidgetRoute(app, { signer: widgetSigner });
     registerSignedMediaRoute(app, { signer: mediaSigner });
     registerSharePublicRoutes(app, { enabled: shareEnabled, now });
+    // /t/<token> is SSR like /s/<token>: registered before the static catch-all so
+    // it never serves the SPA
+    registerThinkingPublicRoutes(app, { enabled: thinkingEnabled, now });
 
     registerStaticRoutes(app, options.staticRoot);
     // Methods outside HTTP_METHODS reach nothing above

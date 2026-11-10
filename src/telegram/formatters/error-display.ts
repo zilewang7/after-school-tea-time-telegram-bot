@@ -15,6 +15,7 @@ import {
 import type { RenderedMessage } from 'telegram-md-entities';
 import { italicText } from './entity-text.js';
 import { renderThinkingQuote } from './quoted-render.js';
+import { renderThinkingLinkMessage, type ThinkingLinkRef } from './thinking-link.js';
 import { truncateForTelegram } from './text-utils.js';
 import { linkifyContextNumbers, type ContextLinkResolver } from './context-links.js';
 
@@ -27,6 +28,8 @@ export interface ErrorDisplayInput {
     text?: string;
     /** Partial thinking/reasoning text streamed before the error */
     thinking?: string;
+    /** Long-CoT link message replaces the thinking quote in the partial prefix */
+    thinkingLink?: ThinkingLinkRef;
     /** User-facing error description (already localized) */
     errorMessage: string;
     /** Makes the `#N` context references clickable (display-only) */
@@ -46,12 +49,16 @@ const clampToBudget = (message: RenderedMessage): RenderedMessage => {
 
 /**
  * Partial content (collapsed thinking quote + strict-rendered text) with the
- * error line appended. Degrades to the bare error line when nothing streamed.
+ * error line appended. In link mode the thinking quote gives way to the link
+ * message. Degrades to the bare error line when nothing streamed.
  */
 export const buildErrorDisplay = (input: ErrorDisplayInput): RenderedMessage => {
     const parts: (RenderedMessage | string)[] = [];
 
-    if (input.thinking) {
+    if (input.thinkingLink) {
+        parts.push(renderThinkingLinkMessage(input.thinkingLink));
+        if (input.text) parts.push('\n\n');
+    } else if (input.thinking) {
         parts.push(renderThinkingQuote(input.thinking, { expandable: true }));
         if (input.text) parts.push('\n');
     }

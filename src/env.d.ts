@@ -107,6 +107,8 @@ declare global {
             SHARE_ENABLED?: string
             /** '0' turns off the /share and /shareone commands */
             SHARE_COMMAND?: string
+            /** '0' turns off the long-thinking link pages and the link mode */
+            THINKING_LINK?: string
             /** HMAC secret for signed widget URLs (default: derived from BOT_TOKEN) */
             WEBAPP_SHARE_SECRET?: string
         }

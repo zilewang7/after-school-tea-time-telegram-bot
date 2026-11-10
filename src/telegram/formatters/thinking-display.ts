@@ -13,6 +13,7 @@ import { concatMessages } from 'telegram-md-entities';
 import type { RenderedMessage } from 'telegram-md-entities';
 import { renderQuotedMarkdown } from './quoted-render.js';
 import { normalizeThinkingIndent } from './thinking-markdown.js';
+import { linkifyContextNumbers, type ContextLinkResolver } from './context-links.js';
 
 /** Above this size a paragraph is cut at a newline / sentence boundary */
 const SEGMENT_SOFT_LIMIT = 400;
@@ -139,5 +140,49 @@ export const formatThinkingForStreaming = (
         renderQuotedMarkdown(collapsed, { expandable: true, streaming: true }),
         '\n',
         renderQuotedMarkdown(preview, { expandable: false, streaming: true })
+    );
+};
+
+/**
+ * Preview under the "view the full thinking" link: the last two sections as one
+ * plain blockquote. No collapsed section at all — the linked page holds the
+ * whole CoT, and the message is meant to keep a constant height.
+ */
+export const formatThinkingPreviewForLink = (thinking: string): RenderedMessage => {
+    // Normalized once, for the same list-level reason as formatThinkingForStreaming
+    const segments = segmentThinking(normalizeThinkingIndent(thinking));
+    if (!segments.length) return { text: '', entities: [] };
+
+    const preview = segments.slice(-PREVIEW_SEGMENT_COUNT).join('\n\n');
+    return renderQuotedMarkdown(preview, { expandable: false, streaming: true });
+};
+
+/** What counts as "the thinking already fills a whole message" */
+export interface ThinkingOverflowLimits {
+    /** Rendered text length that triggers link mode (message budget minus headroom) */
+    maxLength: number;
+    /** Rendered entity count that triggers link mode */
+    maxEntities: number;
+}
+
+/**
+ * Whether the thinking, rendered the way the streaming message shows it, would
+ * overflow one Telegram message. Callers pass the same budgets the streaming
+ * loop uses, so link mode and the legacy split switch at the same point.
+ * Linkified like the real display, so the measured entity count is the one the
+ * message would carry.
+ */
+export const thinkingOverflowsMessage = (
+    thinking: string,
+    limits: ThinkingOverflowLimits,
+    resolveContextLink?: ContextLinkResolver
+): boolean => {
+    const rendered = linkifyContextNumbers(
+        formatThinkingForStreaming(thinking, { answerStarted: false }),
+        resolveContextLink
+    );
+    return (
+        rendered.text.length >= limits.maxLength ||
+        rendered.entities.length >= limits.maxEntities
     );
 };

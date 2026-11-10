@@ -46,6 +46,15 @@ export const replyWidgetFocusPath = (chatId: number, firstMessageId: number): st
  */
 export const sharePath = (token: string): string => `/share/${encodeURIComponent(token)}`;
 
+/**
+ * A thinking link's public Mini App page; same token-as-permission model as a
+ * share, so it also opens outside the panel.
+ */
+export const thinkingPath = (token: string): string => `/think/${encodeURIComponent(token)}`;
+
+/** The thinking link's fast SSR page (no Telegram needed), same origin as the panel */
+export const thinkingFastPagePath = (token: string): string => `/t/${encodeURIComponent(token)}`;
+
 /** An issue's detail page; it lives outside the chat layer because an issue may belong to no chat */
 export const issuePath = (issueId: number): string => `/issues/${issueId}`;
 

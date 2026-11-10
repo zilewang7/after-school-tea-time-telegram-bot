@@ -1,6 +1,13 @@
 import { match, P } from 'ts-pattern';
 import type { StartTarget } from './api';
-import { chatPath, issuePath, NO_ACCESS_PATH, replyPath, sharePath } from './routing/paths';
+import {
+    chatPath,
+    issuePath,
+    NO_ACCESS_PATH,
+    replyPath,
+    sharePath,
+    thinkingPath,
+} from './routing/paths';
 import { readStorage } from './storage';
 import { readStartParam } from './telegram';
 import type { TelegramWebApp } from './telegram';
@@ -41,6 +48,8 @@ const routeOfStartTarget = (startTarget: StartTarget | null): string | null =>
         .with({ kind: 'reply', access: 'none' }, () => NO_ACCESS_PATH)
         // A share link: the page itself decides between the read-only view and the panel page
         .with({ kind: 'share' }, ({ token }) => sharePath(token))
+        // A thinking link: the public CoT view, no membership involved
+        .with({ kind: 'thinking' }, ({ token }) => thinkingPath(token))
         .otherwise(() => null);
 
 /**

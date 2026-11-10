@@ -98,6 +98,11 @@ export interface ResponseVersion {
     text: string;
     /** Thinking content */
     thinkingText?: string;
+    /**
+     * Token of the long-thinking link this version shows as its first message
+     * instead of the thinking quote; absent on versions from before it existed.
+     */
+    thinkingLinkToken?: string;
     /** Grounding/search data */
     groundingData?: any[];
     /** Agent stats / tool usage summary */

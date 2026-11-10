@@ -22,6 +22,7 @@ import type {
     MeResponse,
     ModelView,
     PublicShareResponse,
+    PublicThinkingResponse,
     ReplyDetail,
     ShareCreateRequest,
     ShareKind,
@@ -144,6 +145,12 @@ const shareRevokePath = (token: string): string => `/api/shares/${encodeURICompo
 /** The public JSON of one share; the token is the whole permission */
 const publicSharePath = (token: string): string => `/api/public/shares/${encodeURIComponent(token)}`;
 
+/** The public JSON of one thinking link; `after` asks for the tail past that offset only */
+const publicThinkingPath = (token: string, after: number | null): string => {
+    const path = `/api/public/thinking/${encodeURIComponent(token)}`;
+    return after === null ? path : `${path}?after=${String(after)}`;
+};
+
 export const createApi = (initData: string) => {
     const request = createRequester(initData);
     const requestText = createTextRequester(initData);
@@ -251,6 +258,13 @@ export const createApi = (initData: string) => {
         // Public shares (phase 5 increment): the read-only Mini App page's content
         getPublicShare: (token: string, signal?: AbortSignal) =>
             requestPublic<PublicShareResponse>({ method: 'GET', path: publicSharePath(token), signal }),
+        // A public long-CoT view; `after` is the offset of the last received character
+        getPublicThinking: (token: string, after: number | null, signal?: AbortSignal) =>
+            requestPublic<PublicThinkingResponse>({
+                method: 'GET',
+                path: publicThinkingPath(token, after),
+                signal,
+            }),
     };
 };
 
