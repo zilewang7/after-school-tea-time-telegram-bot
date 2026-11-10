@@ -1,0 +1,46 @@
+/**
+ * The two conversion directions, as the UI uses them.
+ *
+ * Forward: markdown -> rendered entities -> clipboard HTML (+ plain text).
+ * Reverse: clipboard HTML -> text + entities -> markdown.
+ */
+import { entitiesToMarkdown, renderMarkdown, toPreviewHtml } from 'telegram-md-entities';
+import { entitiesToClipboardHtml } from './clipboard-html';
+import { parseClipboardHtml, trimBlockEntityNewlines } from './clipboard-parse';
+import type { ClipboardConversion, ClipboardPayload, ClipboardTarget, RenderedMarkdown } from './types';
+
+/** Lenient markdown -> plain text plus Bot API entities */
+export const markdownToRendered = (markdown: string): RenderedMarkdown => {
+    const rendered = renderMarkdown(markdown);
+    return { text: rendered.text, entities: rendered.entities };
+};
+
+/** Rendered message -> the flavors a rich copy writes to the clipboard */
+export const renderedToClipboardPayload = (
+    rendered: RenderedMarkdown,
+    target: ClipboardTarget
+): ClipboardPayload => ({
+    html: entitiesToClipboardHtml(rendered.text, rendered.entities, target),
+    plainText: rendered.text,
+});
+
+/** Telegram-like preview bubble for the tool page (complete HTML, styles included) */
+export const renderedToPreviewHtml = (rendered: RenderedMarkdown): string => toPreviewHtml(rendered);
+
+/** Clipboard HTML from any Telegram client -> markdown for the user to reuse */
+export const clipboardHtmlToMarkdown = (html: string): ClipboardConversion => {
+    const parsed = parseClipboardHtml(html);
+    // The clients cannot agree on a collapsed quote and the tool's markdown output
+    // has no such construct either: render it as a normal quote.
+    const markdownEntities = trimBlockEntityNewlines(parsed.text, parsed.entities).map((entity) =>
+        entity.type === 'expandable_blockquote' ? { ...entity, type: 'blockquote' as const } : entity
+    );
+    const markdown = entitiesToMarkdown({ text: parsed.text, entities: markdownEntities });
+    return {
+        markdown,
+        text: parsed.text,
+        entities: markdownEntities,
+        ignoredTags: parsed.ignoredTags,
+        source: parsed.source,
+    };
+};

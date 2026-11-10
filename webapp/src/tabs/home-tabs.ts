@@ -57,5 +57,15 @@ export const HOME_TABS: readonly TabDefinition[] = [
         badge: HomeOpenIssuesBadge,
     },
     // [F4 slot end]
+    // [F5 slot] 工具 (id 'tools', path 'tools'): the clipboard converter, everyone
+    {
+        id: 'tools',
+        label: '工具',
+        path: 'tools',
+        // Everyone: a local-only utility that touches no chat data
+        isVisible: () => true,
+        page: lazyPage(() => import('../pages/tools/tools-tab'), 'ToolsTab'),
+    },
+    // [F5 slot end]
     homeSettingsTab,
 ];

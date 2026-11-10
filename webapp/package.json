@@ -12,6 +12,7 @@
     "react": "^19.3.1",
     "react-dom": "^19.3.1",
     "react-router": "^7.18.5",
+    "telegram-md-entities": "^0.7.3",
     "ts-pattern": "^5.9.2"
   },
   "devDependencies": {

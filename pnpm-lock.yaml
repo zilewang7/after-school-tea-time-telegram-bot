@@ -106,6 +106,9 @@ importers:
       react-router:
         specifier: ^7.18.5
         version: 7.18.5(react-dom@19.3.1(react@19.3.1))(react@19.3.1)
+      telegram-md-entities:
+        specifier: ^0.7.3
+        version: 0.7.3(micromark-util-types@2.0.2)(micromark@4.0.2)
       ts-pattern:
         specifier: ^5.9.2
         version: 5.9.2
@@ -4077,7 +4080,7 @@ snapshots:
       micromark-util-chunked: 2.0.1
       micromark-util-classify-character: 2.0.1
       micromark-util-resolve-all: 2.0.1
-      ts-pattern: 5.9.0
+      ts-pattern: 5.9.2
     transitivePeerDependencies:
       - micromark
       - micromark-util-types

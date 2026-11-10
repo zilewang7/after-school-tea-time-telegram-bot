@@ -1,0 +1,107 @@
+/*
+ * Clipboard converter page styles.
+ *
+ * Global colors, radii and spacing come from styles.css (:root variables);
+ * every selector here is prefixed `tools-` so this file cannot collide with
+ * the shared stylesheet.
+ */
+
+.tools-textarea {
+    min-height: 140px;
+    resize: vertical;
+    line-height: 1.5;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 13px;
+}
+
+.tools-paste-zone {
+    min-height: 96px;
+    resize: vertical;
+    line-height: 1.5;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 13px;
+}
+
+.tools-preview {
+    padding: 8px;
+    border-radius: 10px;
+    background: var(--color-page-bg);
+    overflow-x: auto;
+}
+
+.tools-actions {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+
+.tools-action {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+}
+
+.tools-action-button {
+    width: 100%;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+}
+
+.tools-action-badge {
+    padding: 0 6px;
+    border: 1px solid currentColor;
+    border-radius: 999px;
+    font-size: 11px;
+    font-weight: 400;
+    opacity: 0.75;
+}
+
+.tools-platform-row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 4px 10px;
+}
+
+.tools-platform-label {
+    font-size: 13px;
+    color: var(--color-hint);
+}
+
+.tools-platform-value {
+    font-weight: 600;
+}
+
+.tools-check-list {
+    margin: 0;
+    padding-left: 18px;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    font-size: 14px;
+}
+
+.tools-chip-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+}
+
+.tools-chip {
+    padding: 2px 8px;
+    border-radius: 999px;
+    background: var(--color-page-bg);
+    color: var(--color-text);
+    font-size: 12px;
+}
+
+.tools-ignored {
+    overflow-wrap: anywhere;
+}
+
+.tools-plain-text {
+    max-height: 240px;
+    overflow: auto;
+}

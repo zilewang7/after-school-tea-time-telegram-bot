@@ -42,6 +42,8 @@ export interface TelegramWebApp {
     colorScheme: 'light' | 'dark';
     // Bot API version of the client, e.g. "8.0"
     version: string;
+    // 'android' | 'ios' | 'tdesktop' | 'macos' | 'web' | ... (SDK: platform)
+    platform?: string;
     isVersionAtLeast(version: string): boolean;
     ready(): void;
     expand(): void;
