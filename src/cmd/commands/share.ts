@@ -22,7 +22,7 @@ import { plainExcerptOf } from '../../panel/views/excerpt.js';
 export type ShareCommandKind = 'conversation' | 'reply';
 
 /** Why the replied-to message could not become a share target */
-export type ShareCommandFailure = 'not_stored' | 'not_bot_reply' | 'bot_reply_expired';
+export type ShareCommandFailure = 'not_stored' | 'not_bot_reply' | 'bot_reply_expired' | 'reply_pending';
 
 /** Cap of the conversation root excerpt, in characters */
 const ROOT_SUMMARY_MAX = 30;
@@ -54,6 +54,7 @@ export const shareCommandFailureText = (reason: ShareCommandFailure): string =>
         .with('not_stored', () => '找不到被回复的消息（可能已超出 7 天保留期），无法分享。')
         .with('not_bot_reply', () => '被回复的消息不是我的回复；用 /share 可以分享它所在的整个会话。')
         .with('bot_reply_expired', () => '这条回复已超出保留期或无法定位；用 /share 可以分享它所在的整个会话。')
+        .with('reply_pending', () => '这条回复还在生成中，等它完成后再分享。')
         .exhaustive();
 
 export const shareCreateFailureText = (reason: ShareCreateFailure): string =>
@@ -142,6 +143,8 @@ export const resolveShareTargetForCommand = async (input: ResolveShareTargetInpu
         if (botReply === null) {
             return { ok: false, reason: input.repliedFromBot ? 'bot_reply_expired' : 'not_bot_reply' };
         }
+        // Still streaming: bot_responses has no version to pin yet
+        if (botReply.getCurrentVersion() === null) return { ok: false, reason: 'reply_pending' };
         return { ok: true, kind: 'reply', firstMessageId: botReply.messageId };
     }
 

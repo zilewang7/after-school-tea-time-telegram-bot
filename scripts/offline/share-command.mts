@@ -837,6 +837,38 @@ const cases: { name: string; body: () => Promise<void> }[] = [
             );
         },
     },
+    {
+        name: 'a reply that is still generating cannot be shared alone yet',
+        body: async () => {
+            const chatId = takeChatId();
+            const sender = takeUserId();
+            const rootId = takeMessageId();
+            await saveUserMessage(chatId, rootId, 8001, '会话的根消息');
+            const firstMessageId = takeMessageId();
+            await saveBotMessage(chatId, firstMessageId, rootId, '生成中的占位消息');
+            // Streaming: the row exists but no version has been finalized yet
+            await saveBotReply({ chatId, firstMessageId, userMessageId: rootId, versions: [] });
+
+            const { bot, telegram } = commandBot();
+            await drive(
+                bot,
+                replyUpdate({
+                    chatId,
+                    messageId: takeMessageId(),
+                    userId: sender,
+                    text: '/shareone',
+                    replyToMessageId: firstMessageId,
+                })
+            );
+            const text = lastReplyText(telegram);
+            expect(
+                text.includes('还在生成中'),
+                `a pending reply is refused kindly (got ${JSON.stringify(text)})`
+            );
+            const rows = await countShareRows(chatId);
+            expect(rows === 0, `a pending reply creates no link (got ${rows} rows)`);
+        },
+    },
 ];
 
 const results: CaseResult[] = [];

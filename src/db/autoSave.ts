@@ -1012,14 +1012,15 @@ const escapeRegExp = (value: string): string => value.replace(/[.*+?^${}()|[\]\\
 
 /**
  * `/share` and `/shareone`, optionally addressed to the bot (`@name`) and with
- * trailing whitespace. Case-sensitive on purpose: grammy only treats the exact
- * command spelling as a command, so `/SHARE` stays an ordinary stored message.
- * With no BOT_USER_NAME the addressed form matches nothing.
+ * any arguments after whitespace. Case-sensitive on purpose: grammy only treats
+ * the exact command spelling as a command, so `/SHARE` stays an ordinary stored
+ * message. With no BOT_USER_NAME the addressed form matches nothing.
  */
 export const SHARE_COMMAND_PATTERN = (): RegExp => {
     const botUserName = escapeRegExp((process.env.BOT_USER_NAME ?? '').trim());
     const addressed = botUserName === '' ? '' : `(?:@${botUserName})?`;
-    return new RegExp(`^/share(?:one)?${addressed}\\s*$`);
+    // grammy consumes `/share <anything>` as our command, so it is never stored
+    return new RegExp(`^/share(?:one)?${addressed}(?:\\s[\\s\\S]*)?$`);
 };
 
 /** Command messages kept out of telegram_messages; `/context` keeps its exact match */
