@@ -46,7 +46,10 @@ export const registerConversationRoutes = (app: Hono<PanelEnv>, deps: Conversati
 
         const rootId = parseMessageIdParam(context.req.param('rootId'), 'rootId');
         await requireConversationRoot(chatId, rootId);
-        return context.json({ access, ...(await buildConversationTreeView(chat, access, rootId)) });
+        return context.json({
+            access,
+            ...(await buildConversationTreeView(chat, access, rootId, { mediaSigner: deps.mediaSigner })),
+        });
     });
 
     app.get('/api/chats/:chatId/conversations/:rootId/stats', async (context) => {

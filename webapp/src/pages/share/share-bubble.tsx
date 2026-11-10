@@ -1,7 +1,7 @@
 import type { PublicShareBubble } from '../../api';
 import { FoldableText } from '../../components/foldable-text';
 import { formatDateTime } from '../../format';
-import { ShareFileLink, ShareImage } from './share-attachments';
+import { ShareMediaAttachment } from './share-attachments';
 import { ShareWidgetView } from './share-widget-view';
 
 const BOT_AUTHOR_NAME = 'k-on-bot';
@@ -18,10 +18,9 @@ interface ShareBubbleProps {
     autoFocusWidget?: boolean;
 }
 
-/** One message of a conversation share: author, text, media hint and its attachments */
+/** One message of a conversation share: author, text and its attachment */
 export const ShareBubble = ({ token, bubble, widgetIndex, autoFocusWidget = false }: ShareBubbleProps) => {
     const authorName = authorNameOf(bubble);
-    const file = bubble.file ?? null;
 
     return (
         <article className={`share-bubble ${bubble.kind}`}>
@@ -34,8 +33,20 @@ export const ShareBubble = ({ token, bubble, widgetIndex, autoFocusWidget = fals
             ) : (
                 <FoldableText text={bubble.text} foldLines={10} foldChars={600} />
             )}
-            {bubble.mediaHint !== null && <p className="hint">[{bubble.mediaHint}]</p>}
-            {bubble.hasImage && <ShareImage token={token} messageId={bubble.messageId} alt="图片" />}
+            {bubble.media !== null && (
+                <ShareMediaAttachment token={token} messageId={bubble.messageId} media={bubble.media} />
+            )}
+            {bubble.previewMedia.map((preview, index) => (
+                <ShareMediaAttachment
+                    key={`${preview.kind}:${preview.sizeBytes ?? 0}:${index}`}
+                    token={token}
+                    messageId={bubble.messageId}
+                    media={preview}
+                    slot="preview"
+                    index={index}
+                />
+            ))}
+            {bubble.media === null && bubble.mediaHint !== null && <p className="hint">[{bubble.mediaHint}]</p>}
             {bubble.widget !== null && widgetIndex !== null && (
                 <ShareWidgetView
                     token={token}
@@ -44,7 +55,6 @@ export const ShareBubble = ({ token, bubble, widgetIndex, autoFocusWidget = fals
                     autoFocus={autoFocusWidget}
                 />
             )}
-            {file !== null && <ShareFileLink token={token} messageId={bubble.messageId} file={file} />}
         </article>
     );
 };

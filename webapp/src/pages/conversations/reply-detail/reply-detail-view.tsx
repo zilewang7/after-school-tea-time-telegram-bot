@@ -3,6 +3,7 @@ import { Link } from 'react-router';
 import { match } from 'ts-pattern';
 import type { ReplyAttachment, ReplyDetail, ReplyVersion } from '../../../api';
 import { CollapsibleSection } from '../../../components/collapsible-section';
+import { MediaAttachmentView } from '../../../components/media-attachment-view';
 import { FoldableText } from '../../../components/foldable-text';
 import { formatDateTime } from '../../../format';
 import { formatBytes } from '../../../format-metrics';
@@ -62,6 +63,8 @@ const ReplyBody = ({ version, focusWidget }: ReplyBodyProps) => {
                 <FoldableText text={version.text} foldLines={12} foldChars={900} />
             )}
 
+            {version.media !== null && <MediaAttachmentView media={version.media} />}
+
             {version.thinkingText !== null && version.thinkingText !== '' && (
                 <CollapsibleSection
                     title="思考"
@@ -88,7 +91,7 @@ const ReplyBody = ({ version, focusWidget }: ReplyBodyProps) => {
                 <WidgetView widget={version.widget} hasImage={widgetHasImage} autoFocus={focusWidget} />
             )}
 
-            {attachments.length > 0 && (
+            {version.media === null && attachments.length > 0 && (
                 <CollapsibleSection title="附件" summary={`${attachments.length} 个`}>
                     <p className="prewrap hint">{attachmentsText}</p>
                 </CollapsibleSection>

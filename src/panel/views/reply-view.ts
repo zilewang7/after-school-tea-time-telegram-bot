@@ -8,13 +8,16 @@
  * server, and `modelParts` is reduced to whether there were any.
  */
 import { sniffMediaMime } from '../../ai/image-generation/image-mime.js';
+import { versionMediaDescriptorOf } from '../media/media-content.js';
 import type { AgentStats } from '../../ai/types.js';
 import { getMessage, type BotResponse, type ResponseVersion } from '../../db/index.js';
 import type { SignedWidgetSigner } from '../share/signed-widget.js';
+import type { SignedMediaSigner } from '../share/signed-media.js';
 import { findRootMessage, type ContextMessage } from '../../db/queries/context-queries.js';
 import { isBotReplyInFlight } from '../../state.js';
 import type { VisibleAccess } from '../types.js';
 import { base64ByteLength } from './byte-size.js';
+import { toMediaView, type MediaView } from './media-view.js';
 import { loadReplyMetrics, type ReplyMetricsView } from './reply-metrics.js';
 import {
     buildToolRecordsView,
@@ -35,6 +38,8 @@ export interface ReplySummaryView {
     toolSummary: ToolUsageView[];
     errorMessage: string | null;
     wasStoppedByUser: boolean;
+    /** The current version's image / sticker / file, when the panel can show it */
+    media: MediaView | null;
 }
 
 export interface AttachmentView {
@@ -75,6 +80,8 @@ export interface ReplyVersionView {
     errorMessage: string | null;
     wasStoppedByUser: boolean;
     attachments: AttachmentView[];
+    /** The version's image / sticker / file bytes, served by its signed `/m/…` URL */
+    media: MediaView | null;
     /** The chat UI card this version sent; absent without a widget or a signer */
     widget?: ReplyWidgetView;
     hasModelParts: boolean;
@@ -108,8 +115,24 @@ export const modelOfVersion = (version: ResponseVersion, response: BotResponse):
     return typeof metadataModel === 'string' && metadataModel !== '' ? metadataModel : null;
 };
 
+/** The signed media of one version, or null when it has none the panel can show */
+export const mediaViewOfVersion = (
+    signer: SignedMediaSigner | undefined,
+    chatId: number,
+    messageId: number,
+    version: ResponseVersion
+): MediaView | null => {
+    if (signer === undefined) return null;
+    const descriptor = versionMediaDescriptorOf(version);
+    return descriptor === null ? null : toMediaView(signer, chatId, messageId, version.versionId, descriptor);
+};
+
 /** The tree node's summary of the current version; a bot row without bot_responses keeps its text */
-export const toReplySummaryView = (response: BotResponse | undefined, message: ContextMessage): ReplySummaryView => {
+export const toReplySummaryView = (
+    response: BotResponse | undefined,
+    message: ContextMessage,
+    mediaSigner?: SignedMediaSigner
+): ReplySummaryView => {
     if (response === undefined) {
         return {
             firstMessageId: message.messageId,
@@ -121,6 +144,7 @@ export const toReplySummaryView = (response: BotResponse | undefined, message: C
             toolSummary: [],
             errorMessage: null,
             wasStoppedByUser: false,
+            media: null,
         };
     }
     const versions = response.getVersions();
@@ -135,6 +159,7 @@ export const toReplySummaryView = (response: BotResponse | undefined, message: C
         toolSummary: current === null ? [] : toToolUsageViews(parseAgentStats(current.agentStats)),
         errorMessage: current === null ? null : textOrNull(current.errorMessage),
         wasStoppedByUser: current?.wasStoppedByUser === true,
+        media: current === null ? null : mediaViewOfVersion(mediaSigner, response.chatId, response.messageId, current),
     };
 };
 
@@ -181,6 +206,8 @@ const hasModelParts = (version: ResponseVersion): boolean => {
  */
 export interface ReplyDetailOptions {
     signer?: SignedWidgetSigner;
+    /** Signs the `/m/…` URLs of each version's media */
+    mediaSigner?: SignedMediaSigner;
     /** Active share URL per version id */
     shareUrlsByVersion?: ReadonlyMap<number, string>;
 }
@@ -225,6 +252,7 @@ const toVersionView = (
         errorMessage: textOrNull(version.errorMessage),
         wasStoppedByUser: version.wasStoppedByUser === true,
         attachments: attachmentsOf(version),
+        media: mediaViewOfVersion(options.mediaSigner, response.chatId, response.messageId, version),
         ...(widget === undefined ? {} : { widget }),
         hasModelParts: hasModelParts(version),
         metrics,

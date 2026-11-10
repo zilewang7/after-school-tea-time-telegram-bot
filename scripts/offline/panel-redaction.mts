@@ -270,7 +270,10 @@ const cases: { name: string; body: () => Promise<void> }[] = [
                 helper?.annotations?.includes('[replying to your reply #2]'),
                 `a reply to the bot reads as the model reads it (got ${JSON.stringify(helper?.annotations)})`
             );
-            expect(keysOf(root).length === 16, `a member's user node has 16 fields (got ${keysOf(root).join(', ')})`);
+            expect(
+                keysOf(root).length === 18 && root.media === null && root.previewMedia.length === 0,
+                `a member's user node has 18 fields and no media here (got ${keysOf(root).join(', ')})`
+            );
         },
     },
     {

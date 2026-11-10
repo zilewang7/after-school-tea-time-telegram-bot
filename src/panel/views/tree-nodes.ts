@@ -10,6 +10,7 @@ import type { ContextMessage } from '../../db/queries/context-queries.js';
 import type { ChatRow } from '../../db/queries/panel-registry.js';
 import type { ReplySummaryView } from './reply-view.js';
 import type { TreeEdge } from './tree-edges.js';
+import type { MediaView } from './media-view.js';
 
 /** Where a node sits; observers keep exactly this much of a user message */
 interface NodePosition {
@@ -49,6 +50,10 @@ export interface MemberUserNode extends NodePosition {
     linkPreview: string | null;
     ocrText: string | null;
     excluded: boolean;
+    /** The message's own media (image / sticker / video / file), when still stored */
+    media: MediaView | null;
+    /** The captured link preview's pictures / clips, when still stored */
+    previewMedia: MediaView[];
     /** Supergroups only: t.me/c/<internal id>/<message id> */
     telegramLink: string | null;
 }
@@ -102,7 +107,9 @@ export const toMemberUserNode = (
     message: ContextMessage,
     position: TreeNodePosition,
     extras: MemberNodeExtras,
-    chat: Pick<ChatRow, 'chatId' | 'type'>
+    chat: Pick<ChatRow, 'chatId' | 'type'>,
+    media: MediaView | null,
+    previewMedia: MediaView[]
 ): MemberUserNode => ({
     messageId: message.messageId,
     number: position.number,
@@ -119,6 +126,8 @@ export const toMemberUserNode = (
     linkPreview: extras.linkPreview,
     ocrText: message.ocrText,
     excluded: isExcluded(message),
+    media,
+    previewMedia,
     telegramLink: telegramLinkOf(chat, message.messageId),
 });
 

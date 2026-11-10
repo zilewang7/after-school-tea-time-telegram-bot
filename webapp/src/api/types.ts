@@ -288,6 +288,18 @@ interface TreeNodePosition {
     edge: TreeEdge | null;
 }
 
+export type MediaKind = 'image' | 'video' | 'audio' | 'sticker' | 'file';
+
+/** One attachment the panel renders; `url` is a short-lived signed `/m/…` path */
+export interface MediaAttachment {
+    kind: MediaKind;
+    mimeType: string;
+    sizeBytes: number | null;
+    // Download name for documents
+    fileName: string | null;
+    url: string;
+}
+
 /** What an observer keeps of a user message: id, time, tree position and the excluded flag */
 export interface ObserverUserNode extends TreeNodePosition {
     kind: 'user';
@@ -308,6 +320,10 @@ export interface MemberUserNode extends TreeNodePosition {
     linkPreview: string | null;
     ocrText: string | null;
     excluded: boolean;
+    // The message's own attachment, when the 7-day retention still has it
+    media: MediaAttachment | null;
+    // Pictures / clips Telegram crawled for the message's first URL
+    previewMedia: MediaAttachment[];
     // Supergroups only: t.me/c/<internal id>/<message id>
     telegramLink: string | null;
 }
@@ -432,6 +448,8 @@ export interface ReplySummary {
     toolSummary: ToolUsageView[];
     errorMessage: string | null;
     wasStoppedByUser: boolean;
+    // The current version's attachment, when the panel can show it
+    media: MediaAttachment | null;
 }
 
 export type ReplyOutcome = 'ok' | 'error' | 'stopped' | 'empty';
@@ -538,6 +556,8 @@ export interface ReplyVersion {
     errorMessage: string | null;
     wasStoppedByUser: boolean;
     attachments: ReplyAttachment[];
+    // The version's attachment bytes, served by its signed /m/… URL
+    media: MediaAttachment | null;
     // The rendered card and its signed viewing URLs; undefined for versions without a widget
     widget?: ReplyWidget;
     hasModelParts: boolean;
@@ -936,10 +956,13 @@ export interface PublicShareWidget {
     caption: string | null;
 }
 
-export interface PublicShareFile {
-    name: string;
+/** One attachment of a share; the URL is built from the share token and the message id */
+export interface PublicShareMedia {
+    kind: MediaKind;
     mimeType: string;
-    sizeBytes: number;
+    sizeBytes: number | null;
+    // Download name for documents
+    fileName: string | null;
 }
 
 /** A reply share's pinned version */
@@ -952,15 +975,13 @@ export interface PublicShareReply {
     model: string | null;
     text: string;
     widget: PublicShareWidget | null;
-    hasImage: boolean;
-    imageMimeType: string | null;
-    file: PublicShareFile | null;
+    media: PublicShareMedia | null;
 }
 
 /**
- * One bubble of a conversation share. User bubbles carry `authorName`; bot
- * bubbles carry `file`; both may carry an image or a widget. `authorName` and
- * `file` are therefore optional rather than a discriminated union.
+ * One bubble of a conversation share. User bubbles carry `authorName`; both
+ * kinds may carry one attachment or a widget, so those stay optional rather
+ * than forming a discriminated union.
  */
 export interface PublicShareBubble {
     kind: 'user' | 'bot';
@@ -971,9 +992,9 @@ export interface PublicShareBubble {
     text: string;
     mediaHint: string | null;
     widget: PublicShareWidget | null;
-    hasImage: boolean;
-    imageMimeType?: string | null;
-    file?: PublicShareFile | null;
+    media: PublicShareMedia | null;
+    // Link-preview pictures / clips captured for the bubble's first URL
+    previewMedia: PublicShareMedia[];
 }
 
 export interface PublicShareConversation {

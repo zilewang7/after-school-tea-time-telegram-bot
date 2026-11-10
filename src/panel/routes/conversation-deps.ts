@@ -8,6 +8,7 @@ import type { Api } from 'grammy';
 import type { Context } from 'hono';
 import type { ChatNameLookup } from '../chat-names.js';
 import type { PanelEnv } from '../context.js';
+import type { SignedMediaSigner } from '../share/signed-media.js';
 import { PanelError } from '../errors.js';
 
 export interface ConversationRouteDeps {
@@ -16,6 +17,8 @@ export interface ConversationRouteDeps {
     chatLookup: ChatNameLookup | null;
     /** Clock in ms */
     now: () => number;
+    /** Signs the `/m/…` URLs of the media a panel page shows */
+    mediaSigner: SignedMediaSigner;
 }
 
 /**

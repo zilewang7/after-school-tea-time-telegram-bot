@@ -1,13 +1,14 @@
 import { useCallback, useMemo, useState } from 'react';
 import type { ConversationTreeResponse } from '../../../api';
 import { ConversationStatsPanel } from './conversation-stats-panel';
+import { FlatView } from './flat-view';
 import { ExportMenu } from './export-menu';
 import { LinksForm } from './links-form';
 import { ModelViewPanel } from './model-view-panel';
 import { TreeView } from './tree-view';
 
 /** 树 / 模型视角 / 统计: a local segment, not a route (tab switches own the URL) */
-export type ConversationSegment = 'tree' | 'model' | 'stats';
+export type ConversationSegment = 'tree' | 'flat' | 'model' | 'stats';
 
 type OpenPanel = 'none' | 'links' | 'export';
 
@@ -58,6 +59,15 @@ export const ConversationDetailView = ({
                 >
                     树
                 </button>
+                <button
+                    type="button"
+                    role="tab"
+                    aria-selected={segment === 'flat'}
+                    className="segment"
+                    onClick={() => onSegmentChange('flat')}
+                >
+                    平铺
+                </button>
                 {member && (
                     <button
                         type="button"
@@ -82,6 +92,22 @@ export const ConversationDetailView = ({
         ),
         [segment, onSegmentChange, member]
     );
+
+    if (segment === 'flat') {
+        return (
+            <>
+                {segments}
+                <section className="section">
+                    {tree.generating && (
+                        <p className="hint">
+                            <span className="generating-dot" aria-hidden="true" /> 有回复正在生成，每 5 秒自动刷新
+                        </p>
+                    )}
+                    <FlatView chatId={chatId} tree={tree} />
+                </section>
+            </>
+        );
+    }
 
     if (segment === 'model' && member) {
         return (

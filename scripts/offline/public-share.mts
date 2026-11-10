@@ -206,11 +206,10 @@ const cases: { name: string; body: () => Promise<void> }[] = [
             expect(reply.model === 'gemini-4-argon', 'model');
             expect(reply.text === '一段**加粗**的正文', 'the raw markdown text');
             expect(asRecord(reply.widget).caption === '卡片说明', 'the widget caption only');
-            expect(reply.hasImage === true, 'hasImage');
-            expect(reply.imageMimeType === 'image/png', 'the sniffed image mime');
-            expect(asRecord(reply.file).name === 'report.md', 'the file name');
-            expect(asRecord(reply.file).mimeType === 'text/markdown', 'the file mime');
-            expect(asRecord(reply.file).sizeBytes === 128, 'the file size');
+            const media = asRecord(reply.media);
+            expect(media.kind === 'image', 'the image attachment');
+            expect(media.mimeType === 'image/png', 'the sniffed image mime');
+            expect(media.fileName === null, 'visual media has no file name');
 
             // Server-side only facts never leave the process
             expect(!raw.includes('不应外发的 HTML'), 'no widget HTML');
@@ -261,7 +260,8 @@ const cases: { name: string; body: () => Promise<void> }[] = [
             const userBubble = bubbles[0] ?? {};
             expect(userBubble.kind === 'user' && userBubble.messageId === rootId, 'the user bubble');
             expect(userBubble.authorName === 'Alice', 'the display name');
-            expect(userBubble.hasImage === true, 'the user image');
+            const userMedia = asRecord(userBubble.media);
+            expect(userMedia.kind === 'image' && userMedia.mimeType === 'image/png', 'the user image');
             expect(userBubble.widget === null, 'a user bubble has no widget');
 
             const botBubble = bubbles[1] ?? {};
@@ -269,7 +269,7 @@ const cases: { name: string; body: () => Promise<void> }[] = [
             expect(botBubble.text === 'bot 的回答', 'the bot text');
             expect(botBubble.mediaHint === null, 'a bot bubble has no media hint');
             expect(asRecord(botBubble.widget).caption === '会话说明', 'the bot widget caption');
-            expect(botBubble.imageMimeType === null && botBubble.file === null, 'no image/file on this bot bubble');
+            expect(botBubble.media === null, 'no media on this bot bubble');
         },
     },
     {

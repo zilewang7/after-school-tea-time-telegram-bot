@@ -25,6 +25,9 @@ import { runtimeChatTitleOf } from './chat-view.js';
 import { buildLinkPreviewTexts } from './message-previews.js';
 import { toReplySummaryView } from './reply-view.js';
 import { placeTreeMessages } from './tree-edges.js';
+import { loadMessageMediaViews, toPreviewMediaViews, type MediaView } from './media-view.js';
+import { loadLinkPreviewMediaDescriptors } from '../media/media-content.js';
+import type { SignedMediaSigner } from '../share/signed-media.js';
 import {
     toBotNode,
     toMemberUserNode,
@@ -123,10 +126,29 @@ export const isConversationGenerating = (chatId: number, messages: readonly Cont
 
 const EMPTY_EXTRAS: MemberNodeExtras = { annotations: [], linkPreview: null, username: null };
 
+const loadPreviewMediaViews = async (
+    signer: SignedMediaSigner,
+    chatId: number,
+    messages: readonly ContextMessage[]
+): Promise<Map<number, MediaView[]>> => {
+    const descriptors = await loadLinkPreviewMediaDescriptors(messages);
+    const views = new Map<number, MediaView[]>();
+    for (const [messageId, previews] of descriptors) {
+        views.set(messageId, toPreviewMediaViews(signer, chatId, messageId, previews));
+    }
+    return views;
+};
+
+export interface ConversationTreeOptions {
+    /** Signs the `/m/…` URLs of every media the tree shows */
+    mediaSigner: SignedMediaSigner;
+}
+
 export const buildConversationTreeView = async (
     chat: ChatRow,
     access: VisibleAccess,
-    rootId: number
+    rootId: number,
+    options?: ConversationTreeOptions
 ): Promise<ConversationTreeView> => {
     const chatId = chat.chatId;
     const assembled = await assembleConversation(chatId, rootId);
@@ -137,15 +159,36 @@ export const buildConversationTreeView = async (
         (await listBotResponsesByIds(chatId, botIds)).map((response) => [response.messageId, response])
     );
     const memberExtras = access === 'member' ? await buildMemberExtras(chat, assembled, messages) : null;
+    // Observers see redacted user nodes, and the markdown export carries no URLs:
+    // media is signed only when a caller asked for a panel tree.
+    const mediaSigner = options?.mediaSigner;
+    const userMessages = messages.filter((message) => !message.fromBotSelf);
+    const mediaByMessageId = access === 'member' && mediaSigner !== undefined
+        ? await loadMessageMediaViews(mediaSigner, chatId, userMessages)
+        : new Map();
+    const previewMediaByMessageId = access === 'member' && mediaSigner !== undefined
+        ? await loadPreviewMediaViews(mediaSigner, chatId, userMessages)
+        : new Map();
 
     const nodes = messages.map((message): TreeNode => {
         const placement = placements.get(message.messageId) ?? { parentId: null, edge: null };
         const position = { number: assembled.numbering.numberOf.get(message.messageId) ?? null, ...placement };
         if (message.fromBotSelf) {
-            return toBotNode(message, position, toReplySummaryView(responses.get(message.messageId), message));
+            return toBotNode(
+                message,
+                position,
+                toReplySummaryView(responses.get(message.messageId), message, mediaSigner)
+            );
         }
         if (memberExtras === null) return toObserverUserNode(message, position);
-        return toMemberUserNode(message, position, memberExtras.get(message.messageId) ?? EMPTY_EXTRAS, chat);
+        return toMemberUserNode(
+            message,
+            position,
+            memberExtras.get(message.messageId) ?? EMPTY_EXTRAS,
+            chat,
+            mediaByMessageId.get(message.messageId) ?? null,
+            previewMediaByMessageId.get(message.messageId) ?? []
+        );
     });
 
     return {

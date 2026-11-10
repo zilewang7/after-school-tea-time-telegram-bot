@@ -2,6 +2,7 @@ import { useCallback, useMemo } from 'react';
 import { Link } from 'react-router';
 import type { BotNode, ToolUsageView } from '../../../api';
 import { CollapsibleSection } from '../../../components/collapsible-section';
+import { MediaAttachmentView } from '../../../components/media-attachment-view';
 import { FoldableText } from '../../../components/foldable-text';
 import { formatDateTime } from '../../../format';
 import { replyPath } from '../../../routing/paths';
@@ -97,6 +98,8 @@ export const BotNodeRow = ({ row, node, chatId, member, pending, onExclude, onRe
                     )}
                 </Link>
             )}
+
+            {reply.media !== null && <MediaAttachmentView media={reply.media} compact />}
 
             {thinkingText !== null && thinkingText !== '' && (
                 <CollapsibleSection title="思考" summary={`${thinkingLength} 字`}>

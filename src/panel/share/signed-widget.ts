@@ -64,7 +64,8 @@ export const WIDGET_DOC_CSP = [
     "form-action 'none'",
 ].join('; ');
 
-const secretOf = (botToken: string, configuredSecret: string | undefined): Buffer => {
+/** HMAC key for the share family of signed URLs; the media signer derives its own key from it */
+export const shareSecretOf = (botToken: string, configuredSecret: string | undefined): Buffer => {
     const secret = (configuredSecret ?? process.env.WEBAPP_SHARE_SECRET ?? '').trim();
     if (secret !== '') return Buffer.from(secret, 'utf8');
     return createHmac('sha256', botToken).update(SECRET_CONTEXT).digest();
@@ -92,7 +93,7 @@ export interface WidgetSignerOptions {
 
 export const createWidgetSigner = (options: WidgetSignerOptions): SignedWidgetSigner => {
     const now = options.now ?? Date.now;
-    const secret = secretOf(options.botToken, options.secret);
+    const secret = shareSecretOf(options.botToken, options.secret);
 
     const signatureOf = (encodedPayload: string): Buffer =>
         createHmac('sha256', secret).update(encodedPayload).digest();

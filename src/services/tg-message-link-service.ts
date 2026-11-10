@@ -50,8 +50,8 @@ const INLINE_MAX_BYTES = 20 * 1024 * 1024;
 /** Memory/bandwidth cap for one linked media item */
 const MEDIA_MAX_BYTES = 200 * 1024 * 1024;
 
-/** gs:// references older than this are likely deleted (mirrors the preview path) */
-const MEDIA_URI_TTL_MS = 24 * 60 * 60 * 1000;
+/** gs:// references older than this are deleted by autoClear (mirrors the preview path) */
+const MEDIA_URI_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 
 const MESSAGES_TIMEOUT_MS = 5000;
 const MEDIA_TIMEOUT_MS = 60000;

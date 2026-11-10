@@ -11,6 +11,7 @@ import type { Context, Hono } from 'hono';
 import type { PanelEnv } from '../context.js';
 import { ensurePreviewImage, loadPublicShare, recordSharePageView } from './share-link-service.js';
 import { loadShareMedia } from './share-media.js';
+import { serveMedia } from '../media/media-content.js';
 import { renderShareNotFoundPage, renderSharePage } from './share-page.js';
 import { findShareRowByToken } from './share-store.js';
 import { widgetsOfContent } from './share-content.js';
@@ -23,6 +24,7 @@ export const SHARE_PAGE_CSP = [
     "default-src 'none'",
     "style-src 'unsafe-inline'",
     "img-src 'self' data:",
+    "media-src 'self'",
     "frame-src 'self'",
     "script-src 'unsafe-inline'",
     "base-uri 'none'",
@@ -251,15 +253,11 @@ export const registerSharePublicRoutes = (app: Hono<PanelEnv>, options: SharePub
         if (messageId === null) return context.text('Not Found', 404);
         const row = await findShareRowByToken(context.req.param('token'));
         if (row === null || row.revokedAt !== null) return context.text('Not Found', 404);
-        const media = await loadShareMedia(row, messageId, context.req.param('slot'));
+        const rawIndex = context.req.query('i');
+        const previewIndex = rawIndex === undefined ? 0 : Number(rawIndex);
+        if (!Number.isSafeInteger(previewIndex) || previewIndex < 0) return context.text('Not Found', 404);
+        const media = await loadShareMedia(row, messageId, context.req.param('slot'), previewIndex);
         if (media === null) return context.text('Not Found', 404);
-        return new Response(new Uint8Array(media.data), {
-            status: 200,
-            headers: {
-                'Content-Type': media.mimeType,
-                'Cache-Control': 'private, max-age=600',
-                'X-Robots-Tag': NOINDEX,
-            },
-        });
+        return serveMedia(context, media);
     });
 };

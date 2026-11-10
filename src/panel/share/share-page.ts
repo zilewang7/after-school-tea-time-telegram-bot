@@ -17,7 +17,7 @@ import { escapeHtml, markdownExcerpt, markdownToHtml } from './markdown-html.js'
 import type {
     ShareContent,
     ShareConversationContent,
-    ShareFileContent,
+    ShareMedia,
     ShareReplyContent,
     ShareUserBubble,
     ShareWidgetContent,
@@ -26,7 +26,7 @@ import type {
 /** Where the iframe loads its document from (relative: the page is same-origin) */
 const widgetSrc = (token: string, index: number): string => `/s/${token}/widget/${index}`;
 
-const mediaSrc = (token: string, messageId: number, slot: 'image' | 'file'): string =>
+const mediaSrc = (token: string, messageId: number, slot: 'image' | 'file' | 'preview'): string =>
     `/s/${token}/media/${messageId}/${slot}`;
 
 const OG_DESCRIPTION_MAX = 170;
@@ -123,7 +123,11 @@ body {
 .md .tg-spoiler { background: var(--muted); color: transparent; border-radius: 4px; padding: 0 2px; }
 .md .tg-spoiler:hover { color: inherit; background: var(--card-soft); }
 figure { margin: 10px 0 0; }
-figure img { display: block; max-width: 100%; height: auto; border-radius: 10px; border: 1px solid var(--line); }
+figure img, figure video {
+  display: block; max-width: 100%; height: auto; border-radius: 10px; border: 1px solid var(--line);
+}
+figure video { background: #000; }
+figure audio { display: block; width: 100%; margin-top: 10px; }
 figure iframe {
   display: block; width: 100%; min-height: 120px; height: 600px; border: 1px solid var(--line);
   border-radius: 10px; background: transparent;
@@ -317,15 +321,45 @@ const widgetFigure = (token: string, index: number, widget: ShareWidgetContent):
     ].join('');
 };
 
-const imageFigure = (token: string, messageId: number, alt: string): string =>
-    [
-        '<figure class="image">',
-        `<img src="${escapeHtml(mediaSrc(token, messageId, 'image'))}" alt="${escapeHtml(alt)}" loading="lazy">`,
-        '</figure>',
-    ].join('');
+const mediaSrcOf = (token: string, messageId: number, media: ShareMedia): string =>
+    mediaSrc(token, messageId, media.kind === 'file' ? 'file' : 'image');
 
-const fileChip = (file: ShareFileContent): string =>
-    `<div class="file">📎 ${escapeHtml(file.name)} · ${escapeHtml(formatSize(file.sizeBytes))}</div>`;
+/** One captured link-preview attachment (its own media route slot + index) */
+const previewFigure = (token: string, messageId: number, media: ShareMedia, index: number): string =>
+    mediaFigure(token, messageId, media, { slot: 'preview', index });
+
+/** One attachment: pictures, looping stickers, playable clips / audio, or a download chip */
+const mediaFigure = (
+    token: string,
+    messageId: number,
+    media: ShareMedia,
+    target: { slot: 'preview'; index: number } | null = null
+): string => {
+    const src = escapeHtml(
+        target === null
+            ? mediaSrcOf(token, messageId, media)
+            : mediaSrc(token, messageId, 'preview') + `?i=${target.index}`
+    );
+    if (media.kind === 'image') {
+        return ['<figure class="image">', `<img src="${src}" alt="图片" loading="lazy">`, '</figure>'].join('');
+    }
+    if (media.kind === 'sticker') {
+        return [
+            '<figure class="image">',
+            `<video src="${src}" autoplay loop muted playsinline preload="metadata"></video>`,
+            '</figure>',
+        ].join('');
+    }
+    if (media.kind === 'video') {
+        return ['<figure class="image">', `<video src="${src}" controls playsinline preload="metadata"></video>`, '</figure>'].join('');
+    }
+    if (media.kind === 'audio') {
+        return ['<figure class="image">', `<audio src="${src}" controls preload="metadata"></audio>`, '</figure>'].join('');
+    }
+    const name = media.fileName ?? '文件';
+    const size = media.sizeBytes === null ? '' : ` · ${formatSize(media.sizeBytes)}`;
+    return `<a class="file" href="${src}" download="${escapeHtml(name)}">📎 ${escapeHtml(name)}${escapeHtml(size)}</a>`;
+};
 
 const textBlock = (markdown: string, emptyLabel: string): string =>
     markdown === '' ? `<div class="md empty">${escapeHtml(emptyLabel)}</div>` : `<div class="md">${markdownToHtml(markdown)}</div>`;
@@ -337,14 +371,12 @@ const botBubble = (
     createdAt: string,
     text: string,
     widget: ShareWidgetContent | null,
-    hasImage: boolean,
-    file: ShareFileContent | null,
+    media: ShareMedia | null,
     widgetIndex: number | null
 ): string => {
     const attachments: string[] = [];
     if (widget !== null && widgetIndex !== null) attachments.push(widgetFigure(token, widgetIndex, widget));
-    if (hasImage) attachments.push(imageFigure(token, messageId, '图片附件'));
-    if (file !== null) attachments.push(fileChip(file));
+    if (media !== null) attachments.push(mediaFigure(token, messageId, media));
     return [
         '<article class="bubble bot">',
         `<div class="bubble-head"><span class="author">${BOT_NAME}</span><span class="time">${escapeHtml(formatTime(createdAt))}</span></div>`,
@@ -355,9 +387,15 @@ const botBubble = (
 };
 
 const userBubble = (token: string, bubble: ShareUserBubble): string => {
+    const previews = bubble.previewMedia
+        .map((preview, index) => previewFigure(token, bubble.messageId, preview, index))
+        .join('');
     const media = [
-        bubble.hasImage ? imageFigure(token, bubble.messageId, '图片') : '',
-        bubble.mediaHint === null ? '' : `<span class="media-hint">[${escapeHtml(bubble.mediaHint)}]</span>`,
+        bubble.media === null ? '' : mediaFigure(token, bubble.messageId, bubble.media),
+        previews,
+        bubble.media !== null || bubble.mediaHint === null
+            ? ''
+            : `<span class="media-hint">[${escapeHtml(bubble.mediaHint)}]</span>`,
     ].join('');
     return [
         '<article class="bubble user">',
@@ -376,8 +414,7 @@ const renderReplyBody = (input: SharePageInput, content: ShareReplyContent): str
         content.createdAt,
         content.text,
         content.widget,
-        content.hasImage,
-        content.file,
+        content.media,
         content.widget === null ? null : 0
     );
 
@@ -394,8 +431,7 @@ const renderConversationBody = (input: SharePageInput, content: ShareConversatio
                 bubble.createdAt,
                 bubble.text,
                 bubble.widget,
-                bubble.hasImage,
-                bubble.file,
+                bubble.media,
                 index
             );
         })

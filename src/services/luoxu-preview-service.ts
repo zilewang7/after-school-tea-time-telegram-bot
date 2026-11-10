@@ -36,9 +36,9 @@ const INLINE_MAX_BYTES = 20 * 1024 * 1024;
 // documents can theoretically reach 2GB). Mirrors the bigfile MAX_MEDIA_BYTES.
 const PREVIEW_MEDIA_MAX_BYTES = 200 * 1024 * 1024;
 
-// gs:// references older than this are likely deleted (autoClear + bucket
-// lifecycle), so we stop offering them to the model. Mirrors context-queries.
-const MEDIA_URI_TTL_MS = 24 * 60 * 60 * 1000;
+// gs:// references older than this are deleted by autoClear, so we stop
+// offering them to the model. Mirrors context-queries.
+const MEDIA_URI_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 
 const URL_PATTERN = /https?:\/\/[^\s<>"'()\[\]]+/;
 

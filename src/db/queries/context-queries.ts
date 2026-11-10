@@ -659,7 +659,7 @@ export const listBotResponsesByIds = async (
  * the legacy per-message `file` BLOB for older data / cache misses.
  * Returns null when the message carries no file.
  */
-const MEDIA_URI_TTL_MS = 24 * 60 * 60 * 1000; // 1 day — matches autoClear + bucket lifecycle
+const MEDIA_URI_TTL_MS = 7 * 24 * 60 * 60 * 1000; // 7 days — matches autoClear retention
 
 /** Resolved media: inline bytes, a gs:// reference, or an expired GCS object. */
 interface ResolvedMedia {
@@ -677,8 +677,8 @@ const resolveFileBytes = async (msg: Message): Promise<ResolvedMedia | null> => 
         const cached = await getCachedMedia(msg.fileUniqueId);
         if (cached) {
             if (cached.fileUri) {
-                // Large media in GCS. Past the TTL the bucket lifecycle has (or soon
-                // will) delete it, so mark expired rather than feed a dead gs://.
+                // Large media in GCS. Past the TTL autoClear has (or soon will) delete
+                // the object, so mark expired rather than feed a dead gs://.
                 const ageMs = Date.now() - new Date(cached.createdAt).getTime();
                 if (ageMs > MEDIA_URI_TTL_MS) {
                     return { expired: true, sizeBytes: cached.sizeBytes, durationSeconds: cached.durationSeconds, mime: cached.mime, kind: cached.kind };
@@ -747,7 +747,7 @@ export const getFileContentsOfMessage = async (
     // - inline bytes → image part (images / legacy null-mime) or media part
     return files.map((f): UnifiedContentPart => {
         if (f.expired) {
-            return { type: 'text', text: '[system] media expired (older than 1 day), not available' };
+            return { type: 'text', text: '[system] media expired (older than 7 days), not available' };
         }
         if (f.fileUri) {
             return {

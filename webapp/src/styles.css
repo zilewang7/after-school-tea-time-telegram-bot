@@ -824,6 +824,93 @@ a.button {
     overflow-wrap: anywhere;
 }
 
+
+/* One attachment of a message: picture, looping sticker, clip, audio or file */
+.media-attachment {
+    margin: 4px 0 0;
+    max-width: 100%;
+}
+
+.media-image,
+.media-video,
+.media-sticker {
+    display: block;
+    max-width: 100%;
+    max-height: 420px;
+    border: 1px solid var(--color-separator);
+    border-radius: var(--radius);
+    background: #000;
+}
+
+.media-image {
+    height: auto;
+    object-fit: contain;
+}
+
+.media-attachment.compact .media-image,
+.media-attachment.compact .media-video,
+.media-attachment.compact .media-sticker {
+    max-width: min(100%, 320px);
+    max-height: 220px;
+}
+
+.media-audio {
+    width: 100%;
+}
+
+.media-file {
+    display: inline-flex;
+    align-items: center;
+    align-self: flex-start;
+    gap: 8px;
+    max-width: 100%;
+    padding: 8px 12px;
+    border: 1px solid var(--color-separator);
+    border-radius: 10px;
+    background: var(--color-page-bg);
+    font-size: 14px;
+    text-decoration: none;
+    overflow-wrap: anywhere;
+}
+
+/* The flat (share-style) conversation view: chronological chat bubbles, no indentation */
+.flat-conversation {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+
+.flat-bubble {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding: 10px 12px;
+    border: 1px solid var(--color-separator);
+    border-radius: var(--radius);
+    background: var(--color-bg);
+}
+
+.flat-bubble.user {
+    background: var(--color-page-bg);
+}
+
+.flat-bubble.excluded {
+    border-style: dashed;
+    opacity: 0.65;
+}
+
+.flat-bubble-head {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 6px;
+}
+
+.flat-text-link {
+    color: inherit;
+    text-decoration: none;
+}
+
 /* The 「⋯」 menu of a tree node */
 .node-menu {
     position: relative;
@@ -1457,29 +1544,6 @@ a.button {
 .share-bubble-author {
     font-size: 13px;
     font-weight: 600;
-    overflow-wrap: anywhere;
-}
-
-.share-image {
-    display: block;
-    max-width: 100%;
-    height: auto;
-    border: 1px solid var(--color-separator);
-    border-radius: var(--radius);
-}
-
-.share-file {
-    display: inline-flex;
-    align-items: center;
-    align-self: flex-start;
-    gap: 8px;
-    max-width: 100%;
-    padding: 8px 12px;
-    border: 1px solid var(--color-separator);
-    border-radius: 10px;
-    background: var(--color-page-bg);
-    font-size: 14px;
-    text-decoration: none;
     overflow-wrap: anywhere;
 }
 

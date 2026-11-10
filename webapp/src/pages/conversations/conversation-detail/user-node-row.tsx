@@ -2,6 +2,7 @@ import { useCallback, useMemo } from 'react';
 import type { ReactNode } from 'react';
 import type { MemberUserNode, ObserverUserNode } from '../../../api';
 import { CollapsibleSection } from '../../../components/collapsible-section';
+import { MediaAttachmentView } from '../../../components/media-attachment-view';
 import { FoldableText } from '../../../components/foldable-text';
 import { formatDateTime } from '../../../format';
 import { NodeMenu } from './node-menu';
@@ -79,7 +80,11 @@ export const UserNodeRow = ({ row, node, member, pending, onExclude, onRestore }
             {node.quote !== null && <blockquote className="quote">{node.quote}</blockquote>}
 
             {node.text !== null && node.text !== '' && <FoldableText text={node.text} />}
-            {node.mediaHint !== null && <p className="hint">[{node.mediaHint}]</p>}
+            {node.media !== null && <MediaAttachmentView media={node.media} compact />}
+            {node.previewMedia.map((preview) => (
+                <MediaAttachmentView key={preview.url} media={preview} compact />
+            ))}
+            {node.media === null && node.mediaHint !== null && <p className="hint">[{node.mediaHint}]</p>}
             {node.linkPreview !== null && (
                 <CollapsibleSection title="网页预览" summary={null}>
                     <FoldableText text={node.linkPreview} foldLines={10} />

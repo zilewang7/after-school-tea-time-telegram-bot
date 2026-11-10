@@ -20,7 +20,7 @@ import {
     type ShareBubble,
     type ShareContent,
     type ShareConversationContent,
-    type ShareFileContent,
+    type ShareMedia,
     type ShareReplyContent,
     type ShareWidgetContent,
 } from './share-content.js';
@@ -31,10 +31,13 @@ export interface PublicShareWidgetView {
     caption: string | null;
 }
 
-export interface PublicShareFileView {
-    name: string;
+/** One attachment of the shared content; the bytes come from the share's media route */
+export interface PublicShareMediaView {
+    kind: 'image' | 'video' | 'audio' | 'sticker' | 'file';
     mimeType: string;
-    sizeBytes: number;
+    sizeBytes: number | null;
+    /** Download name for documents */
+    fileName: string | null;
 }
 
 export interface PublicShareReplyView {
@@ -45,9 +48,7 @@ export interface PublicShareReplyView {
     model: string | null;
     text: string;
     widget: PublicShareWidgetView | null;
-    hasImage: boolean;
-    imageMimeType: string | null;
-    file: PublicShareFileView | null;
+    media: PublicShareMediaView | null;
 }
 
 export interface PublicShareBubbleView {
@@ -60,11 +61,10 @@ export interface PublicShareBubbleView {
     /** User bubbles only; bot bubbles carry `null` */
     mediaHint: string | null;
     widget: PublicShareWidgetView | null;
-    hasImage: boolean;
-    /** Bot bubbles only */
-    imageMimeType?: string | null;
-    /** Bot bubbles only */
-    file?: PublicShareFileView | null;
+    /** The bubble's attachment, when the retention still has it */
+    media: PublicShareMediaView | null;
+    /** Link-preview pictures / clips captured for the bubble's first URL */
+    previewMedia: PublicShareMediaView[];
 }
 
 export interface PublicShareConversationView {
@@ -87,8 +87,10 @@ export interface PublicShareView {
 const widgetViewOf = (widget: ShareWidgetContent | null): PublicShareWidgetView | null =>
     widget === null ? null : { caption: widget.caption };
 
-const fileViewOf = (file: ShareFileContent | null): PublicShareFileView | null =>
-    file === null ? null : { name: file.name, mimeType: file.mimeType, sizeBytes: file.sizeBytes };
+const mediaViewOf = (media: ShareMedia | null): PublicShareMediaView | null =>
+    media === null
+        ? null
+        : { kind: media.kind, mimeType: media.mimeType, sizeBytes: media.sizeBytes, fileName: media.fileName };
 
 const replyViewOf = (content: ShareReplyContent): PublicShareReplyView => ({
     firstMessageId: content.firstMessageId,
@@ -98,9 +100,7 @@ const replyViewOf = (content: ShareReplyContent): PublicShareReplyView => ({
     model: content.model,
     text: content.text,
     widget: widgetViewOf(content.widget),
-    hasImage: content.hasImage,
-    imageMimeType: content.imageMimeType,
-    file: fileViewOf(content.file),
+    media: mediaViewOf(content.media),
 });
 
 const bubbleViewOf = (bubble: ShareBubble): PublicShareBubbleView => {
@@ -113,7 +113,11 @@ const bubbleViewOf = (bubble: ShareBubble): PublicShareBubbleView => {
             text: bubble.text,
             mediaHint: bubble.mediaHint,
             widget: null,
-            hasImage: bubble.hasImage,
+            media: mediaViewOf(bubble.media),
+            previewMedia: bubble.previewMedia.flatMap((preview) => {
+                const view = mediaViewOf(preview);
+                return view === null ? [] : [view];
+            }),
         };
     }
     return {
@@ -123,9 +127,8 @@ const bubbleViewOf = (bubble: ShareBubble): PublicShareBubbleView => {
         text: bubble.text,
         mediaHint: null,
         widget: widgetViewOf(bubble.widget),
-        hasImage: bubble.hasImage,
-        imageMimeType: bubble.imageMimeType,
-        file: fileViewOf(bubble.file),
+        media: mediaViewOf(bubble.media),
+        previewMedia: [],
     };
 };
 

@@ -17,10 +17,13 @@ import {
 } from '../../db/queries/context-queries.js';
 import { findChat } from '../../db/queries/panel-registry.js';
 import type { BotResponse, ResponseVersion } from '../../db/index.js';
-import { sniffMediaMime } from '../../ai/image-generation/image-mime.js';
+import {
+    loadLinkPreviewMediaDescriptors,
+    loadMessageMediaDescriptors,
+    versionMediaDescriptorOf,
+    type MediaDescriptor,
+} from '../media/media-content.js';
 import type { PreviewSnapshot } from './share-types.js';
-
-const BASE64_SNIFF_CHARS = 24;
 
 export interface ShareWidgetContent {
     html: string;
@@ -29,11 +32,8 @@ export interface ShareWidgetContent {
     imageBase64: string | null;
 }
 
-export interface ShareFileContent {
-    name: string;
-    mimeType: string;
-    sizeBytes: number;
-}
+/** The attachment facts a share page renders; the media route serves the bytes */
+export type ShareMedia = MediaDescriptor;
 
 export interface ShareReplyContent {
     kind: 'reply';
@@ -47,10 +47,8 @@ export interface ShareReplyContent {
     model: string | null;
     text: string;
     widget: ShareWidgetContent | null;
-    /** The version sent an image; bytes are served by the media route */
-    hasImage: boolean;
-    imageMimeType: string | null;
-    file: ShareFileContent | null;
+    /** The version's attachment (image / sticker / video / file); bytes via the media route */
+    media: ShareMedia | null;
     /** Server-side only: the snapshot the preview image is rendered from */
     preview: PreviewSnapshot;
 }
@@ -62,8 +60,10 @@ export interface ShareUserBubble {
     authorName: string;
     text: string;
     mediaHint: string | null;
-    /** The message carries an inline image the media route can serve */
-    hasImage: boolean;
+    /** The message's own attachment, when the 7-day retention still has it */
+    media: ShareMedia | null;
+    /** Pictures / clips Telegram crawled for the message's first URL */
+    previewMedia: ShareMedia[];
 }
 
 export interface ShareBotBubble {
@@ -72,9 +72,8 @@ export interface ShareBotBubble {
     createdAt: string;
     text: string;
     widget: ShareWidgetContent | null;
-    hasImage: boolean;
-    imageMimeType: string | null;
-    file: ShareFileContent | null;
+    /** The current version's attachment, when it has one */
+    media: ShareMedia | null;
 }
 
 export type ShareBubble = ShareUserBubble | ShareBotBubble;
@@ -91,11 +90,6 @@ export interface ShareConversationContent {
 
 export type ShareContent = ShareReplyContent | ShareConversationContent;
 
-const imageMimeOfBase64 = (base64: string): string | null => {
-    const head = Buffer.from(base64.slice(0, BASE64_SNIFF_CHARS), 'base64');
-    return sniffMediaMime(head);
-};
-
 const widgetOf = (version: ResponseVersion): ShareWidgetContent | null => {
     const widget = version.widget;
     if (widget === undefined) return null;
@@ -104,12 +98,6 @@ const widgetOf = (version: ResponseVersion): ShareWidgetContent | null => {
         caption: widget.caption ?? null,
         imageBase64: widget.imageBase64 !== undefined && widget.imageBase64 !== '' ? widget.imageBase64 : null,
     };
-};
-
-const fileOf = (version: ResponseVersion): ShareFileContent | null => {
-    const file = version.file;
-    if (file === undefined) return null;
-    return { name: file.name, mimeType: file.mimeType, sizeBytes: file.sizeBytes };
 };
 
 const hasImageOf = (version: ResponseVersion): boolean =>
@@ -160,7 +148,6 @@ export const loadReplyShareContent = async (
     const chat = await findChat(chatId);
     const chatTitle = chat?.title ?? null;
     const widget = widgetOf(version);
-    const imageBase64 = hasImageOf(version) ? (version.imageBase64 ?? '') : '';
     return {
         kind: 'reply',
         chatId,
@@ -172,39 +159,35 @@ export const loadReplyShareContent = async (
         model: typeof version.model === 'string' && version.model !== '' ? version.model : null,
         text: typeof version.text === 'string' ? version.text : '',
         widget,
-        hasImage: imageBase64 !== '',
-        imageMimeType: imageBase64 === '' ? null : imageMimeOfBase64(imageBase64),
-        file: fileOf(version),
+        media: versionMediaDescriptorOf(version),
         preview: previewSnapshotOfReply(chatTitle, version, widget),
     };
 };
 
-const userBubbleOf = (message: ContextMessage): ShareUserBubble => ({
+const userBubbleOf = (
+    message: ContextMessage,
+    media: ShareMedia | null,
+    previewMedia: readonly ShareMedia[]
+): ShareUserBubble => ({
     kind: 'user',
     messageId: message.messageId,
     createdAt: message.date.toISOString(),
     authorName: message.userName,
     text: message.text ?? '',
     mediaHint: message.mediaHint,
-    hasImage:
-        message.file !== null &&
-        message.file.length > 0 &&
-        (message.fileMime ?? '').toLowerCase().startsWith('image/'),
+    media,
+    previewMedia: [...previewMedia],
 });
 
 const botBubbleOf = (message: ContextMessage, response: BotResponse | undefined): ShareBotBubble => {
     const version = response?.getCurrentVersion() ?? null;
-    const widget = version === null ? null : widgetOf(version);
-    const imageBase64 = version !== null && hasImageOf(version) ? (version.imageBase64 ?? '') : '';
     return {
         kind: 'bot',
         messageId: message.messageId,
         createdAt: message.date.toISOString(),
         text: version !== null && typeof version.text === 'string' ? version.text : (message.text ?? ''),
-        widget,
-        hasImage: imageBase64 !== '',
-        imageMimeType: imageBase64 === '' ? null : imageMimeOfBase64(imageBase64),
-        file: version === null ? null : fileOf(version),
+        widget: version === null ? null : widgetOf(version),
+        media: version === null ? null : versionMediaDescriptorOf(version),
     };
 };
 
@@ -249,6 +232,9 @@ export const loadConversationShareContent = async (
     const botMessageIds = ordered.filter((message) => message.fromBotSelf).map((message) => message.messageId);
     const responses = await listBotResponsesByIds(chatId, botMessageIds);
     const responseById = new Map(responses.map((response) => [response.messageId, response]));
+    const userMessages = ordered.filter((message) => !message.fromBotSelf);
+    const userMedia = await loadMessageMediaDescriptors(userMessages);
+    const userPreviewMedia = await loadLinkPreviewMediaDescriptors(userMessages);
 
     const chat = await findChat(chatId);
     const chatTitle = chat?.title ?? null;
@@ -258,7 +244,13 @@ export const loadConversationShareContent = async (
         chatTitle,
         rootId,
         bubbles: ordered.map((message) =>
-            message.fromBotSelf ? botBubbleOf(message, responseById.get(message.messageId)) : userBubbleOf(message)
+            message.fromBotSelf
+                ? botBubbleOf(message, responseById.get(message.messageId))
+                : userBubbleOf(
+                    message,
+                    userMedia.get(message.messageId) ?? null,
+                    userPreviewMedia.get(message.messageId) ?? []
+                )
         ),
         preview: previewSnapshotOfConversation(chatTitle, ordered, responseById),
     };

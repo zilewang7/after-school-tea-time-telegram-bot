@@ -1491,7 +1491,6 @@ export const clearExpiredData = async (): Promise<void> => {
     try {
         const now = new Date();
         const oneWeekAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
-        const oneDayAgo = new Date(now.getTime() - 24 * 60 * 60 * 1000);
         const oneYearAgo = new Date(now.getTime() - 365 * 24 * 60 * 60 * 1000);
 
         // 每一处都是「先按索引选 id（只读），再按主键分批删」，避免一条语句长时间独占写锁
@@ -1533,10 +1532,10 @@ export const clearExpiredData = async (): Promise<void> => {
         // （bot 行的 date 每次收尾 / 切换版本都会重置，单独按 7 天过期会让被排除的回复溜回上下文）
         const exclusionResult = await purgeOrphanedExclusions(oneWeekAgo);
 
-        // 媒体字节超过 1 天即清空，保留文字上下文（回复树仍按 id 引用旧消息）
+        // 媒体字节跟随消息行保留 7 天：面板/分享要能展示，上下文也还能回放
         const messagesWithStaleBytes = await Message.findAll({
             where: {
-                date: { [Op.lt]: oneDayAgo.toISOString() },
+                date: { [Op.lt]: oneWeekAgo.toISOString() },
                 file: { [Op.ne]: null },
             },
             attributes: ['chatId', 'messageId'],
@@ -1549,9 +1548,9 @@ export const clearExpiredData = async (): Promise<void> => {
             )
         );
 
-        // GCS 大文件引用超 1 天：删 GCS 对象 + 删缓存行（对齐媒体字节 1 天清空）
+        // GCS 大文件引用保留 7 天：删 GCS 对象 + 删缓存行（与消息行/媒体字节同周期）
         const staleGcsRows = await MediaCache.findAll({
-            where: { fileUri: { [Op.ne]: null }, createdAt: { [Op.lt]: oneDayAgo } },
+            where: { fileUri: { [Op.ne]: null }, createdAt: { [Op.lt]: oneWeekAgo } },
         });
         for (const row of staleGcsRows) {
             if (row.fileUri) await deleteGcsObject(row.fileUri);
@@ -1611,7 +1610,7 @@ export const clearExpiredData = async (): Promise<void> => {
         );
 
         const elapsedMs = Date.now() - startedAt;
-        const summary = `Cleared ${messageResult} messages, ${attachmentResult} attachments, ${revisionResult} revisions, ${messageLinkResult} message links, ${botResponseResult} bot responses before ${oneWeekAgo.toISOString()}; dropped ${exclusionResult} orphaned context exclusions; cleared media bytes of ${mediaClearedCount} messages before ${oneDayAgo.toISOString()}; deleted ${staleGcsRows.length} GCS refs; evicted ${mediaCacheResult} media cache entries, ${emojiAssetResult} emoji assets, ${linkPreviewResult} link previews, ${tgLinkResult} tg message link snapshots; cleared ${settingsAuditResult} settings audit rows before ${oneYearAgo.toISOString()} (${elapsedMs}ms)`;
+        const summary = `Cleared ${messageResult} messages, ${attachmentResult} attachments, ${revisionResult} revisions, ${messageLinkResult} message links, ${botResponseResult} bot responses before ${oneWeekAgo.toISOString()}; dropped ${exclusionResult} orphaned context exclusions; cleared media bytes of ${mediaClearedCount} messages before ${oneWeekAgo.toISOString()}; deleted ${staleGcsRows.length} GCS refs; evicted ${mediaCacheResult} media cache entries, ${emojiAssetResult} emoji assets, ${linkPreviewResult} link previews, ${tgLinkResult} tg message link snapshots; cleared ${settingsAuditResult} settings audit rows before ${oneYearAgo.toISOString()} (${elapsedMs}ms)`;
         recordCleanupRun(summary, elapsedMs);
         if (elapsedMs > CLEANUP_SLOW_MS) {
             console.warn(`[autoClear] slow cleanup — ${summary}`);

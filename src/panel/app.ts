@@ -47,6 +47,8 @@ import { registerPublicShareApiRoutes } from './share/public-api.js';
 import { getWebAuthRuntime, type WebAuthRuntime } from './auth/web-auth-runtime.js';
 import { registerPublicWebAuthRoutes, registerWebLogoutRoute } from './routes/web-auth.js';
 import { registerSharePublicRoutes } from './share/public-routes.js';
+import { createMediaSigner } from './share/signed-media.js';
+import { registerSignedMediaRoute } from './share/signed-media-routes.js';
 import { createWidgetSigner } from './share/signed-widget.js';
 import { registerSignedWidgetRoute } from './share/signed-widget-routes.js';
 import { registerStaticRoutes } from './static.js';
@@ -113,6 +115,8 @@ export const createPanelApp = (options: PanelAppOptions): Hono<PanelEnv> => {
         onTooLarge: (context) => context.json(errorBody('too_large', PANEL_MESSAGES.tooLarge), 413),
     });
     const widgetSigner = createWidgetSigner({ botToken: options.botToken, now });
+    // Chat media the panel shows (images / stickers / video / files)
+    const mediaSigner = createMediaSigner({ botToken: options.botToken, now });
     const app = new Hono<PanelEnv>();
 
     app.onError(handlePanelError);
@@ -161,12 +165,13 @@ export const createPanelApp = (options: PanelAppOptions): Hono<PanelEnv> => {
         toolApi: options.toolApi ?? new Api(options.botToken),
         chatLookup: options.chatLookup ?? null,
         now,
+        mediaSigner,
     };
     registerConversationRoutes(app, conversationDeps);
     registerModelViewRoute(app, conversationDeps);
     registerConversationExportRoute(app, conversationDeps);
     registerConversationLinksRoute(app, conversationDeps);
-    registerReplyRoute(app, { signer: widgetSigner });
+    registerReplyRoute(app, { signer: widgetSigner, mediaSigner });
     registerExclusionRoutes(app);
     registerStatsRoute(app);
     registerStatusRoute(app, { startedAt: options.startedAt, version: options.version });
@@ -179,6 +184,7 @@ export const createPanelApp = (options: PanelAppOptions): Hono<PanelEnv> => {
     // Signed widget resources (panel iframes) and the public share pages, both
     // before the static catch-all so /w and /s never serve the SPA.
     registerSignedWidgetRoute(app, { signer: widgetSigner });
+    registerSignedMediaRoute(app, { signer: mediaSigner });
     registerSharePublicRoutes(app, { enabled: shareEnabled, now });
 
     registerStaticRoutes(app, options.staticRoot);

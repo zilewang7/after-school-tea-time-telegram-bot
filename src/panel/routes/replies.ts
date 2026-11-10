@@ -15,12 +15,15 @@ import { requireAuth, type PanelEnv } from '../context.js';
 import { PanelError } from '../errors.js';
 import { parseChatId } from '../request.js';
 import { findActiveReplyShareUrls } from '../share/share-link-service.js';
+import type { SignedMediaSigner } from '../share/signed-media.js';
 import type { SignedWidgetSigner } from '../share/signed-widget.js';
 import { buildReplyDetailView } from '../views/reply-view.js';
 import { CONVERSATION_MESSAGES, parseMessageIdParam } from './conversation-params.js';
 
 export interface ReplyRouteOptions {
     signer: SignedWidgetSigner;
+    /** Signs the `/m/…` URLs of the versions' media */
+    mediaSigner: SignedMediaSigner;
 }
 
 export const registerReplyRoute = (app: Hono<PanelEnv>, options: ReplyRouteOptions): void => {
@@ -34,7 +37,11 @@ export const registerReplyRoute = (app: Hono<PanelEnv>, options: ReplyRouteOptio
         if (response === null) throw new PanelError('not_found', CONVERSATION_MESSAGES.replyNotFound);
         const shareUrlsByVersion = await findActiveReplyShareUrls(chatId, firstMessageId);
         return context.json(
-            await buildReplyDetailView(response, access, { signer: options.signer, shareUrlsByVersion })
+            await buildReplyDetailView(response, access, {
+                signer: options.signer,
+                mediaSigner: options.mediaSigner,
+                shareUrlsByVersion,
+            })
         );
     });
 };

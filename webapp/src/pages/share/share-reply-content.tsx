@@ -1,7 +1,7 @@
 import type { PublicShareReply } from '../../api';
 import { FoldableText } from '../../components/foldable-text';
 import { formatDateTime } from '../../format';
-import { ShareFileLink, ShareImage } from './share-attachments';
+import { ShareMediaAttachment } from './share-attachments';
 import { ShareWidgetView } from './share-widget-view';
 
 interface ShareReplyContentProps {
@@ -25,9 +25,8 @@ export const ShareReplyContent = ({ token, reply }: ShareReplyContentProps) => (
         {reply.widget !== null && (
             <ShareWidgetView token={token} index={0} caption={reply.widget.caption} autoFocus />
         )}
-        {reply.hasImage && <ShareImage token={token} messageId={reply.firstMessageId} alt="图片附件" />}
-        {reply.file !== null && (
-            <ShareFileLink token={token} messageId={reply.firstMessageId} file={reply.file} />
+        {reply.media !== null && (
+            <ShareMediaAttachment token={token} messageId={reply.firstMessageId} media={reply.media} />
         )}
     </section>
 );
