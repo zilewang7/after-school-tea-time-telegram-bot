@@ -49,10 +49,18 @@ export const ForwardPanel = ({ plan }: ForwardPanelProps) => {
         const parts = Math.ceil(textLength / TELEGRAM_MAX_LENGTH);
         const entities = preview.rendered.entities.length;
         const entityRisk = entities >= MESSAGE_ENTITY_WARN_LIMIT;
+        const entityOver = entities > MESSAGE_ENTITY_LIMIT;
         if (parts > 1) {
-            return { label: `${textLength} 字符 · 约 ${parts} 条`, over: true, parts, entities, entityRisk };
+            return { label: `${textLength} 字符 · 约 ${parts} 条`, over: true, parts, entities, entityRisk, entityOver };
         }
-        return { label: `${textLength} 字符 · ${entities} 个实体`, over: false, parts, entities, entityRisk };
+        return {
+            label: `${textLength} 字符 · ${entities} 个实体`,
+            over: false,
+            parts,
+            entities,
+            entityRisk,
+            entityOver,
+        };
     }, [preview]);
 
     const handleQuoteToggle = useCallback(
@@ -164,8 +172,8 @@ export const ForwardPanel = ({ plan }: ForwardPanelProps) => {
                 {previewMeta !== null && previewMeta.entityRisk && (
                     <p className="notice warning">
                         {previewMeta.over
-                            ? `实体 ${previewMeta.entities} 个，接近 Telegram 单条消息的实体上限（约 ${MESSAGE_ENTITY_LIMIT} 个）；拆成约 ${previewMeta.parts} 条发送时每条分别计数，是否被吞取决于拆分位置。`
-                            : `实体 ${previewMeta.entities} 个，接近 Telegram 单条消息的实体上限（约 ${MESSAGE_ENTITY_LIMIT} 个）；超出的部分发送时可能被静默丢掉。`}
+                            ? `实体 ${previewMeta.entities} 个，${previewMeta.entityOver ? '超出' : '接近'} Telegram 单条消息的实体上限（约 ${MESSAGE_ENTITY_LIMIT} 个）；拆成约 ${previewMeta.parts} 条发送时每条分别计数，是否被吞取决于拆分位置。`
+                            : `实体 ${previewMeta.entities} 个，${previewMeta.entityOver ? '超出' : '接近'} Telegram 单条消息的实体上限（约 ${MESSAGE_ENTITY_LIMIT} 个）；超出的部分发送时可能被静默丢掉。`}
                     </p>
                 )}
                 <ChannelActions actions={actions} />
