@@ -57,6 +57,7 @@ import {
     thinkingLinkPreviewOptions,
 } from '../telegram/formatters/thinking-link.js';
 import { renderThinkingQuote } from '../telegram/formatters/quoted-render.js';
+import { disabledLinkPreview } from '../telegram/link-preview.js';
 import { buildFinalMessages, type FinalMessageChunk } from '../telegram/formatters/final-message-builder.js';
 import { splitRawByFits, splitAtLastNewline } from '../telegram/formatters/smart-splitter.js';
 import { buildImageCaption, type ImageCaptionFields } from './tools/image-message.js';
@@ -843,6 +844,11 @@ export const processStream = async (
             await chatContext.editor.updateContent(rendered.text, {
                 entities: rendered.entities,
                 replyMarkup: buttons,
+                // The link shape carries the Mini App deep link as a text_link:
+                // left alone, Telegram renders its own bot-app card above the
+                // text. The card belongs to the final edit, pointing at the fast
+                // page, so a streaming link message keeps it disabled.
+                ...(linkForDisplay === undefined ? {} : { linkPreviewOptions: disabledLinkPreview }),
             });
             lastUpdateTime = Date.now();
         }

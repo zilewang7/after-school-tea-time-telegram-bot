@@ -242,9 +242,16 @@ results.push(
             !entityList.some((entity) => entity.type === 'pre'),
             'no block entity nests inside the preview quote'
         );
+        // The deep link is a text_link; without this Telegram would render its
+        // own bot-app card above the streaming text
+        const streamingPreview = objectOf(streamingEdit?.payload.link_preview_options);
         expect(
-            streamingEdit?.payload.link_preview_options === undefined,
+            streamingPreview.is_disabled === true,
             'no preview card while the thinking still streams'
+        );
+        expect(
+            streamingPreview.url === undefined,
+            'the streaming edit never asks for the fast-page card'
         );
 
         // The live stream holds the thinking from the first chunk

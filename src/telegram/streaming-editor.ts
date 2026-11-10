@@ -67,7 +67,7 @@ export interface UpdateContentOptions {
     /** Entities matching the content (offsets stay valid: status is appended after) */
     entities?: readonly RenderedEntity[];
     replyMarkup?: any;
-    /** Link preview for the final content; undefined keeps Telegram's default */
+    /** Link preview for the content (streaming updates keep it); undefined keeps Telegram's default */
     linkPreviewOptions?: LinkPreviewOptions;
     /** If true, don't append status text (for final messages) */
     isFinal?: boolean;
@@ -129,6 +129,8 @@ interface EditorState {
     /** Latest submitted content, without the status line */
     currentContent: string | null;
     currentEntities: readonly RenderedEntity[] | undefined;
+    /** Link preview the latest content carries (kept by the status refreshes) */
+    currentLinkPreview: LinkPreviewOptions | undefined;
     spinnerTimer: ReturnType<typeof setInterval> | null;
 }
 
@@ -145,6 +147,7 @@ export const createStreamingEditor = (options: StreamingEditorOptions): Streamin
         statusOverride: undefined,
         currentContent: null,
         currentEntities: undefined,
+        currentLinkPreview: undefined,
         spinnerTimer: null,
     };
 
@@ -201,6 +204,7 @@ export const createStreamingEditor = (options: StreamingEditorOptions): Streamin
         void submitEdit(api, chatId, messageId, text, {
             entities: state.currentEntities,
             replyMarkup: buttons,
+            linkPreviewOptions: state.currentLinkPreview,
             priority,
         });
     };
@@ -227,12 +231,14 @@ export const createStreamingEditor = (options: StreamingEditorOptions): Streamin
 
             state.currentContent = content;
             state.currentEntities = opts?.entities;
+            state.currentLinkPreview = opts?.linkPreviewOptions;
             const text = `${content}\n${getStatusText()}`;
 
             // Fire-and-forget: the coordinator always flushes the newest state
             void submitEdit(api, chatId, messageId, text, {
                 entities: opts?.entities,
                 replyMarkup: opts?.replyMarkup,
+                linkPreviewOptions: opts?.linkPreviewOptions,
                 priority: 'content',
             });
             return true;
