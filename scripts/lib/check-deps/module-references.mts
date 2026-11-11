@@ -1,0 +1,83 @@
+import type { ExportDeclaration, ImportDeclaration, Node, SourceFile, Statement } from 'typescript';
+import { ts } from './typescript.mts';
+import { lineOf } from './parse-source.mts';
+
+/** One `import … from`, `export … from` or `import()` of a module */
+export interface ModuleReference {
+    specifier: string;
+    line: number;
+    /** `import()`: a runtime dependency, but loaded late, so it cannot form a load cycle */
+    dynamic: boolean;
+    /** Only types cross (`import type`, `export type … from`): nothing is loaded at runtime */
+    typeOnly: boolean;
+}
+
+/** `import type …`, or `import { type A, type B }` where every name is a type */
+const isTypeOnlyImport = (declaration: ImportDeclaration): boolean => {
+    const clause = declaration.importClause;
+    if (clause === undefined) return false;
+    if (clause.isTypeOnly) return true;
+    if (clause.name !== undefined) return false;
+    const bindings = clause.namedBindings;
+    if (bindings === undefined || !ts.isNamedImports(bindings)) return false;
+    return bindings.elements.length > 0 && bindings.elements.every((element) => element.isTypeOnly);
+};
+
+/** `export type … from`, or `export { type A } from` where every name is a type */
+const isTypeOnlyExport = (declaration: ExportDeclaration): boolean => {
+    if (declaration.isTypeOnly) return true;
+    const clause = declaration.exportClause;
+    if (clause === undefined || !ts.isNamedExports(clause)) return false;
+    return clause.elements.length > 0 && clause.elements.every((element) => element.isTypeOnly);
+};
+
+const staticReference = (sourceFile: SourceFile, statement: Statement): ModuleReference | undefined => {
+    const line = lineOf(sourceFile, statement);
+    if (ts.isImportDeclaration(statement)) {
+        if (!ts.isStringLiteral(statement.moduleSpecifier)) return undefined;
+        const typeOnly = isTypeOnlyImport(statement);
+        return { specifier: statement.moduleSpecifier.text, line, dynamic: false, typeOnly };
+    }
+    if (ts.isExportDeclaration(statement)) {
+        const moduleSpecifier = statement.moduleSpecifier;
+        if (moduleSpecifier === undefined || !ts.isStringLiteral(moduleSpecifier)) return undefined;
+        return { specifier: moduleSpecifier.text, line, dynamic: false, typeOnly: isTypeOnlyExport(statement) };
+    }
+    return undefined;
+};
+
+/** `import('./x.js')` with a literal path; a computed path cannot be followed */
+const dynamicSpecifier = (node: Node): string | undefined => {
+    if (!ts.isCallExpression(node) || node.expression.kind !== ts.SyntaxKind.ImportKeyword) return undefined;
+    const argument = node.arguments[0];
+    if (argument === undefined || !ts.isStringLiteralLike(argument)) return undefined;
+    return argument.text;
+};
+
+/** Cheap text test before the tree walk; a match in a comment only costs the walk */
+const MAY_HAVE_DYNAMIC_IMPORT = /\bimport\s*\(/;
+
+const collectDynamicReferences = (sourceFile: SourceFile, node: Node, references: ModuleReference[]): void => {
+    const specifier = dynamicSpecifier(node);
+    if (specifier !== undefined) {
+        references.push({ specifier, line: lineOf(sourceFile, node), dynamic: true, typeOnly: false });
+    }
+    ts.forEachChild(node, (child) => collectDynamicReferences(sourceFile, child, references));
+};
+
+/**
+ * Every `import`, `export … from` and `import()` of another module. Type-only
+ * ones are marked: they vanish from the emitted code, so they cannot form a
+ * load cycle, but they are still a dependency on the other module's layer.
+ * `typeof import('x')` is a type query, not a call, and is not collected.
+ */
+export const moduleReferencesOf = (sourceFile: SourceFile): ModuleReference[] => {
+    const references: ModuleReference[] = [];
+    for (const statement of sourceFile.statements) {
+        const reference = staticReference(sourceFile, statement);
+        if (reference !== undefined) references.push(reference);
+    }
+    // Most files have no import() at all; skipping their walk saves a tenth of a cold run
+    if (MAY_HAVE_DYNAMIC_IMPORT.test(sourceFile.text)) collectDynamicReferences(sourceFile, sourceFile, references);
+    return references;
+};
