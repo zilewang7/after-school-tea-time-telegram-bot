@@ -46,7 +46,9 @@ const VECTOR_HASH = 'c9238cc3017b4eda998d0aa5cb38307337db17a56b6c658d0b1783aa25b
 const VECTOR_HASH_WITHOUT_SIGNATURE = '0d53b695b0d2f04d8a3e881ccc5e8d9d78946b90ba054e43ed6eb448d481c18e';
 
 const vectorRaw = (hash: string): string => {
-    const fields = new URLSearchParams(VECTOR_FIELDS);
+    // Appended one by one: the constructor's pair-list parameter differs between @types/node versions
+    const fields = new URLSearchParams();
+    for (const [name, value] of VECTOR_FIELDS) fields.append(name, value);
     fields.set('hash', hash);
     return fields.toString();
 };

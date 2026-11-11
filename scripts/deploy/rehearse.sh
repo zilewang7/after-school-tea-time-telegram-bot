@@ -4,6 +4,7 @@
 # throwaway containers, so a change to them is never tried out on production.
 #
 #   bash scripts/deploy/rehearse.sh           run every scenario
+#   bash scripts/deploy/rehearse.sh --tests   also run the offline suite inside the container
 #   bash scripts/deploy/rehearse.sh --clean   also remove the rehearsal image and volumes
 #
 # It builds an image from the Dockerfile, then plays "origin" with a local
@@ -18,7 +19,8 @@
 #   5. origin unreachable starts the code it has
 #   6. the compiled bot   every module loads on this image, sqlite included, and
 #                         the database path default only applies inside a container
-#   7. an image without pm2 (one built before pm2 moved into the Dockerfile)
+#   7. the offline suite  only with --tests: the image's Node and libc run every case
+#   8. an image without pm2 (one built before pm2 moved into the Dockerfile)
 #                         pm2 is installed at start instead of failing in a loop
 # And with the real pm2: a stop signal reaches the app, which gets the time
 # pm2.config.cjs grants it to finish.
@@ -38,6 +40,16 @@ WORK=$(mktemp -d "${TMPDIR:-/tmp}/k-on-bot-rehearsal-XXXXXX")
 ORIGIN="$WORK/origin"
 GIT_REPO=https://github.com/zilewang7/after-school-tea-time-telegram-bot.git
 START_TIMEOUT_SECONDS=${START_TIMEOUT_SECONDS:-1200}
+
+RUN_TESTS=0
+CLEAN_AFTERWARDS=0
+for argument in "$@"; do
+    case "$argument" in
+        --tests) RUN_TESTS=1 ;;
+        --clean) CLEAN_AFTERWARDS=1 ;;
+        *) echo "usage: bash scripts/deploy/rehearse.sh [--tests] [--clean]"; exit 2 ;;
+    esac
+done
 
 failures=0
 pass() { echo "  ok    $*"; }
@@ -181,7 +193,16 @@ check "the container is marked by /.dockerenv" 'in_container test -f /.dockerenv
 check "without DB_PATH the production file is the default inside a container" 'in_container node --input-type=module -e "$IMPORT_DB_CONFIG" > /dev/null 2>&1'
 check "the test instance must name its database" '! in_container env TEST_INSTANCE=1 node --input-type=module -e "$IMPORT_DB_CONFIG" > /dev/null 2>&1'
 
-step "7. an image without pm2"
+step "7. the offline suite on this image"
+if [ "$RUN_TESTS" -eq 1 ]; then
+    TEST_OUTPUT=$(in_container pnpm run --silent test:offline -j 2 2>&1)
+    echo "$TEST_OUTPUT" | grep -v '^PASS  ' | sed 's/^/    /'
+    check "every offline case passes on $(in_container node -v)" 'echo "$TEST_OUTPUT" | grep -q "^OK: "'
+else
+    echo "  skipped (run with --tests)"
+fi
+
+step "8. an image without pm2"
 in_container git remote set-url origin /origin.git
 # Neither the stand-in nor the pm2 of the image: what a container created from
 # an image older than this Dockerfile looks like
@@ -198,7 +219,7 @@ check "the missing pm2 is reported" 'echo "$LAST_LOGS" | grep -q "pm2 is not in 
 check "pm2 was installed and started the bot" 'echo "$LAST_LOGS" | grep -q "PM2.*App \[k-on-bot"'
 docker rm -f "$CONTAINER" > /dev/null 2>&1
 
-step "8. a stop signal reaches the app through init and the real pm2"
+step "9. a stop signal reaches the app through init and the real pm2"
 # A stand-in app that needs 3s to shut down: longer than pm2's default 1.6s,
 # shorter than the kill_timeout in pm2.config.cjs.
 cat > "$WORK/signal/app.js" <<'EOF'
@@ -228,7 +249,7 @@ check "the app received the signal" 'echo "$SIGNAL_LOGS" | grep -q "stand-in app
 check "the app was allowed to finish (3s shutdown)" 'echo "$SIGNAL_LOGS" | grep -q "stand-in app\] clean exit"'
 check "the stop took ${stop_seconds}s, well inside the 20s grace period" '[ "$stop_seconds" -lt 15 ]'
 
-if [ "${1:-}" = "--clean" ]; then
+if [ "$CLEAN_AFTERWARDS" -eq 1 ]; then
     cleanup
     docker volume rm "$MODULES_VOLUME" "$STORE_VOLUME" > /dev/null 2>&1
     docker rmi "$IMAGE" > /dev/null 2>&1
