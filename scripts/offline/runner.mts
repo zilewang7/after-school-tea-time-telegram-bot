@@ -3,6 +3,7 @@
  * reports every failure instead of stopping at the first one.
  *
  *   pnpm test:offline                    every file
+ *   pnpm test:offline run tools          the files run.mts and tools.mts
  *   pnpm test:offline panel share        files whose name contains "panel" or "share"
  *   pnpm test:offline -j 2               two files at a time (default 3)
  *   pnpm test:offline --grep "atlas"     only the cases whose name contains the text
@@ -83,14 +84,26 @@ const parseArguments = (argv: string[]): RunnerOptions => {
 const isManual = (path: string): boolean =>
     readFileSync(path, 'utf8').split('\n', MARKER_SEARCH_LINES).some((line) => line.trim() === MANUAL_MARKER);
 
+/**
+ * A filter that names a test file (`run`, `run.mts`, `scripts/offline/run.mts`)
+ * selects that file alone; any other filter selects by substring.
+ */
+const matchesFilter = (entry: string, filter: string, entries: readonly string[]): boolean => {
+    const exactName = `${basename(filter, '.mts')}.mts`;
+    return entries.includes(exactName) ? entry === exactName : entry.includes(filter);
+};
+
 /** Test files as paths relative to the repository root */
-const discoverTestFiles = (nameFilters: string[]): string[] =>
-    readdirSync(TEST_DIRECTORY)
-        .filter((entry) => entry.endsWith('.mts') && !NOT_TESTS.has(entry))
-        .filter((entry) => nameFilters.length === 0 || nameFilters.some((filter) => entry.includes(filter)))
+const discoverTestFiles = (nameFilters: string[]): string[] => {
+    const entries = readdirSync(TEST_DIRECTORY).filter((entry) => entry.endsWith('.mts') && !NOT_TESTS.has(entry));
+    return entries
+        .filter(
+            (entry) => nameFilters.length === 0 || nameFilters.some((filter) => matchesFilter(entry, filter, entries))
+        )
         .map((entry) => join(TEST_DIRECTORY, entry))
         .filter((path) => !isManual(path))
         .map((path) => relative(REPOSITORY_ROOT, path));
+};
 
 type Durations = Record<string, number>;
 

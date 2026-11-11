@@ -1,8 +1,0 @@
-{
-  "name": "k-on-bot-typecheck",
-  "private": true,
-  "description": "Holds the native TypeScript 7 compiler. Only `pnpm typecheck` uses it; the build keeps the 5.x compiler of the root package.",
-  "devDependencies": {
-    "typescript": "7.0.2"
-  }
-}

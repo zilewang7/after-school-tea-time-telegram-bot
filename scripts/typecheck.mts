@@ -4,7 +4,7 @@
  *   pnpm typecheck             every project
  *   pnpm typecheck scripts     only the projects whose name contains the text
  *
- * Uses the native TypeScript 7 compiler from tools/typecheck when it is
+ * Uses the native TypeScript 7 compiler from tools/checks when it is
  * installed (a few seconds per project). Without it, the 5.x compiler the
  * build uses does the same job with an incremental cache.
  *
@@ -33,7 +33,7 @@ const PROJECTS: readonly Project[] = [
     { name: 'webapp', config: 'webapp/tsconfig.json' },
 ];
 
-const NATIVE_COMPILER = join(REPOSITORY_ROOT, 'tools', 'typecheck', 'node_modules', '.bin', 'tsc');
+const NATIVE_COMPILER = join(REPOSITORY_ROOT, 'tools', 'checks', 'node_modules', '.bin', 'tsc');
 const BUILD_COMPILER = join(REPOSITORY_ROOT, 'node_modules', '.bin', 'tsc');
 const CACHE_DIRECTORY = join(REPOSITORY_ROOT, 'node_modules', '.cache', 'tsc');
 

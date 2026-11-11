@@ -7,9 +7,9 @@
  * Imports nothing from src, so a test file can import it before
  * setupOfflineDb.
  */
-import { createServer } from 'node:http';
 import { Api, Bot, Context, type Transformer } from 'grammy';
 import type { Chat, MessageEntity, Update, User, UserFromGetMe } from 'grammy/types';
+import type { StubServer } from './support/stub-server.mts';
 
 export interface TelegramCall {
     readonly method: string;
@@ -180,14 +180,17 @@ const chunkOf = (delta: Record<string, unknown>, finishReason: string | null = n
 });
 
 /**
- * An OpenAI-style streaming endpoint (what MiMo speaks) on 127.0.0.1:port.
- * Every request is answered with `replyText` and a normal stop.
+ * Makes `server` an OpenAI-style streaming endpoint (what MiMo speaks). Every
+ * request is answered with `replyText` and a normal stop, until close().
+ *
+ * The server itself is started once per test file (see support/stub-server.mts)
+ * because `src` snapshots the endpoint URL at import.
  */
-export const startChatCompletionStub = async (port: number, replyText = '好的'): Promise<ChatCompletionStub> => {
+export const startChatCompletionStub = async (server: StubServer, replyText = '好的'): Promise<ChatCompletionStub> => {
     const requests: Record<string, unknown>[] = [];
     let gate: Promise<void> = Promise.resolve();
 
-    const server = createServer((request, response) => {
+    server.handle((request, response) => {
         const body: Buffer[] = [];
         request.on('data', (chunk: Buffer) => body.push(chunk));
         request.on('end', () => {
@@ -205,7 +208,6 @@ export const startChatCompletionStub = async (port: number, replyText = '好的'
             });
         });
     });
-    await new Promise<void>((ready) => server.listen(port, '127.0.0.1', ready));
 
     return {
         requests,
@@ -219,11 +221,9 @@ export const startChatCompletionStub = async (port: number, replyText = '好的'
                 gate = Promise.resolve();
             };
         },
-        close: () =>
-            new Promise<void>((done) => {
-                server.closeAllConnections();
-                server.close(() => done());
-            }),
+        close: async () => {
+            server.reset();
+        },
     };
 };
 
