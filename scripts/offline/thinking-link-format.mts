@@ -116,7 +116,7 @@ results.push(
         const line = '共 7,689 词，发出约拆成 16 段';
         const withSummary = renderThinkingLinkMessage(LINK_REF, summary);
         expect(
-            withSummary.text === `${THINKING_LINK_LABEL}\n\n${line}`,
+            withSummary.text === `${THINKING_LINK_LABEL}\n${line}`,
             `the stats line sits under the link (got ${JSON.stringify(withSummary.text)})`
         );
         expect(withSummary.entities.length === 2, `the link and the stats line (got ${withSummary.entities.length})`);
@@ -128,7 +128,7 @@ results.push(
         const statsLine = withSummary.entities.find((entity) => entity.type === 'italic');
         expect(
             statsLine !== undefined &&
-                statsLine.offset === THINKING_LINK_LABEL.length + 2 &&
+                statsLine.offset === THINKING_LINK_LABEL.length + 1 &&
                 statsLine.length === line.length,
             'the stats are an italic line directly under the link'
         );
@@ -181,7 +181,7 @@ results.push(
         const streaming = renderThinkingLinkStreaming(LINK_REF, preview);
 
         expect(
-            streaming.text === `${THINKING_LINK_LABEL}\n\n${preview.text}`,
+            streaming.text === `${THINKING_LINK_LABEL}\n${preview.text}`,
             `link, blank line, then the preview (got ${JSON.stringify(streaming.text.slice(0, 40))})`
         );
         const labelLink = streaming.entities.find((entity) => entity.type === 'text_link');
@@ -197,7 +197,7 @@ results.push(
         expect(quote?.type === 'blockquote', 'the preview is a plain (never expandable) blockquote');
         expect(
             quote !== undefined &&
-                quote.offset === THINKING_LINK_LABEL.length + 2 &&
+                quote.offset === THINKING_LINK_LABEL.length + 1 &&
                 quote.length === preview.text.length,
             'the quote covers exactly the preview under the link'
         );
@@ -525,7 +525,7 @@ results.push(
             errorMessage: 'boom',
         });
         expect(
-            withStats.text === `${THINKING_LINK_LABEL}\n\n共 1,234 词，发出约拆成 3 段\n\n⚠ boom`,
+            withStats.text === `${THINKING_LINK_LABEL}\n共 1,234 词，发出约拆成 3 段\n\n⚠ boom`,
             `link, stats, then the error (got ${JSON.stringify(withStats.text)})`
         );
         expect(

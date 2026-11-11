@@ -100,20 +100,22 @@ export const renderThinkingLinkMessage = (
         ],
     };
     if (summary === undefined) return link;
-    return concatMessages(link, '\n\n', italicText(thinkingLinkSummaryLine(summary)));
+    // Directly on the next line: the stats are the link's subtitle, not a
+    // separate paragraph
+    return concatMessages(link, '\n', italicText(thinkingLinkSummaryLine(summary)));
 };
 
 /**
- * Streaming link message: the link, a blank line, then the caller-rendered
- * thinking preview (a bare blockquote — see formatThinkingPreviewForLink), so
- * the message height stays stable while the CoT grows.
+ * Streaming link message: the link, then the caller-rendered thinking preview
+ * (a bare blockquote — see formatThinkingPreviewForLink) on the very next line,
+ * so the message keeps a roughly constant height while the CoT grows.
  */
 export const renderThinkingLinkStreaming = (
     ref: ThinkingLinkRef,
     preview: RenderedMessage
 ): RenderedMessage =>
     preview.text
-        ? concatMessages(renderThinkingLinkMessage(ref), '\n\n', preview)
+        ? concatMessages(renderThinkingLinkMessage(ref), '\n', preview)
         : renderThinkingLinkMessage(ref);
 
 /** Terminal chunk for buildFinalMessages / version replay, preview card included */

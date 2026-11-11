@@ -162,8 +162,8 @@ const STATS_LINE_PATTERN = /^共 [\d,]+ 词，发出约拆成 \d+ 段$/;
 
 /** The stats line of a link message, if the text starts with the label */
 const statsLineOf = (text: string): string | undefined => {
-    if (!text.startsWith(`${THINKING_LINK_LABEL}\n\n`)) return undefined;
-    return text.slice(THINKING_LINK_LABEL.length + 2).split('\n', 1)[0];
+    if (!text.startsWith(`${THINKING_LINK_LABEL}\n`)) return undefined;
+    return text.slice(THINKING_LINK_LABEL.length + 1).split('\n', 1)[0];
 };
 
 /** Whether a link edit is the terminal shape (label + stats line, nothing else) */
@@ -172,7 +172,7 @@ const isFinishedLinkText = (text: string): boolean => {
     return (
         line !== undefined &&
         STATS_LINE_PATTERN.test(line) &&
-        text.length === THINKING_LINK_LABEL.length + 2 + line.length
+        text.length === THINKING_LINK_LABEL.length + 1 + line.length
     );
 };
 
