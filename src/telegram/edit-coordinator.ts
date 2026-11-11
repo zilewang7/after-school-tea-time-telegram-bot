@@ -51,7 +51,8 @@ interface CoordinatorConfig {
     fallback429PenaltyMs: number;
 }
 
-const config: CoordinatorConfig = {
+/** Production pacing. The four durations are multiplied by the time scale below. */
+const BASE_CONFIG: CoordinatorConfig = {
     maxCallsPerWindow: 20,
     windowMs: 60_000,
     burstCount: 10,
@@ -60,6 +61,40 @@ const config: CoordinatorConfig = {
     transientMaxAttempts: 10,
     transientPenaltyMs: 2_000,
     fallback429PenaltyMs: 30_000,
+};
+
+/**
+ * Multiplier for the pacing durations (EDIT_COORDINATOR_TIME_SCALE), so the
+ * offline suite does not sit through real 500ms gaps between calls.
+ *
+ * Anything but a finite positive number means 1: an empty string parses to 0,
+ * which would switch pacing off in production, and a non-number would make the
+ * drain loop spin.
+ */
+export const parseTimeScale = (raw: string | undefined): number => {
+    const parsed = Number(raw);
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : 1;
+};
+
+const scaledDuration = (durationMs: number, scale: number): number =>
+    Math.max(1, Math.round(durationMs * scale));
+
+/**
+ * The config in force right now. Read on every use rather than once at import,
+ * so a test can change the scale after this module is loaded. The durations are
+ * scaled, not the sleeps: the pacing loop compares the clock against the next
+ * allowed time, so shortening only the sleep would not shorten the wait.
+ */
+const currentConfig = (): CoordinatorConfig => {
+    const scale = parseTimeScale(process.env.EDIT_COORDINATOR_TIME_SCALE);
+    if (scale === 1) return BASE_CONFIG;
+    return {
+        ...BASE_CONFIG,
+        windowMs: scaledDuration(BASE_CONFIG.windowMs, scale),
+        burstIntervalMs: scaledDuration(BASE_CONFIG.burstIntervalMs, scale),
+        transientPenaltyMs: scaledDuration(BASE_CONFIG.transientPenaltyMs, scale),
+        fallback429PenaltyMs: scaledDuration(BASE_CONFIG.fallback429PenaltyMs, scale),
+    };
 };
 
 interface DesiredState {
@@ -151,6 +186,7 @@ const acquireCallSlot = (coordinator: ChatCoordinator): Promise<() => void> => {
  * Earliest time the next API call is allowed, honoring window budget and penalty
  */
 const nextAllowedAt = (coordinator: ChatCoordinator): number => {
+    const config = currentConfig();
     const now = Date.now();
     const windowStart = now - config.windowMs;
     coordinator.callTimestamps = coordinator.callTimestamps.filter(
@@ -212,7 +248,7 @@ const getRetryPenaltyMs = (error: unknown): number => {
     if (matched?.[1]) {
         return (Number(matched[1]) + 1) * 1000;
     }
-    return config.fallback429PenaltyMs;
+    return currentConfig().fallback429PenaltyMs;
 };
 
 const applyPenalty = (coordinator: ChatCoordinator, penaltyMs: number): void => {
@@ -307,7 +343,7 @@ const handleEditError = (
         const penaltyMs = getRetryPenaltyMs(error);
         applyPenalty(coordinator, penaltyMs);
         entry.attempts++;
-        const cap = state.isFinal ? config.finalMaxAttempts : config.transientMaxAttempts;
+        const cap = state.isFinal ? BASE_CONFIG.finalMaxAttempts : BASE_CONFIG.transientMaxAttempts;
         console.warn(
             `[edit-coordinator] 429 on edit (chat ${coordinator.chatId}, msg ${entry.messageId}), ` +
             `backing off ${Math.round(penaltyMs / 1000)}s, attempt ${entry.attempts}/${cap}`
@@ -363,8 +399,8 @@ const handleEditError = (
 
     // Network / unknown errors: transient, retry with a small penalty
     entry.attempts++;
-    applyPenalty(coordinator, config.transientPenaltyMs);
-    const cap = state.isFinal ? config.finalMaxAttempts : config.transientMaxAttempts;
+    applyPenalty(coordinator, currentConfig().transientPenaltyMs);
+    const cap = state.isFinal ? BASE_CONFIG.finalMaxAttempts : BASE_CONFIG.transientMaxAttempts;
     console.warn(
         `[edit-coordinator] Edit network error (attempt ${entry.attempts}/${cap}):`,
         message

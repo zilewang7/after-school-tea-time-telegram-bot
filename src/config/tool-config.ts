@@ -39,6 +39,7 @@
  * - WIDGET_PROBE_CHAT_ID: chat the owner /widget_probe sends a throwaway widget to
  */
 import { parseChatIdList } from './chat-id-list.js';
+import type { EnvSource } from './env-source.js';
 
 export interface OwnerIdentity {
     /** Telegram user id; null when not configured */
@@ -139,7 +140,7 @@ const parseSafesearch = (raw: string | undefined): 0 | 1 | 2 => {
     return parsed === 0 || parsed === 2 ? parsed : 1;
 };
 
-const readOwner = (env: NodeJS.ProcessEnv): OwnerIdentity => {
+const readOwner = (env: EnvSource): OwnerIdentity => {
     const displayName = optionalValue(env.OWNER_DISPLAY_NAME) ?? DEFAULT_OWNER_NAME;
     const shortName = optionalValue(env.OWNER_SHORT_NAME);
     return {
@@ -151,7 +152,7 @@ const readOwner = (env: NodeJS.ProcessEnv): OwnerIdentity => {
 };
 
 /** The settings in `env`; exported for tests, the app goes through getToolConfig */
-export const readToolConfig = (env: NodeJS.ProcessEnv = process.env): ToolConfig => ({
+export const readToolConfig = (env: EnvSource = process.env): ToolConfig => ({
     toolChatIds: new Set(parseChatIdList(env.TOOL_CHAT_IDS)),
     disabledTools: new Set(splitList(env.DISABLED_TOOLS)),
     geminiClientTools: env.GEMINI_CLIENT_TOOLS !== '0',

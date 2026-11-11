@@ -965,11 +965,9 @@ results.push(
     })
 );
 
-// Close the scratch database and exit: the streams leave timers behind
+// The streams leave timers behind; reportResults ends the process regardless
 const { sequelize } = await import('../../src/db/config.js');
 await sequelize.close();
 void db;
 
 reportResults(results);
-
-setTimeout(() => process.exit(0), 100);

@@ -5,9 +5,10 @@
  *
  * Run: pnpm test:lock
  *
- * Kept out of `pnpm test:offline` because it spawns a second process and spends
- * a few seconds deliberately blocked.
+ * Kept out of `pnpm test:offline` (the marker below) because it spawns a second
+ * process and spends a few seconds deliberately blocked.
  */
+// offline: manual
 import { spawn } from 'node:child_process';
 import {
     setupOfflineDb,
@@ -122,5 +123,5 @@ results.push(await runCase('a message still lands while another writer holds the
     );
 }));
 
-reportResults(results);
 await sequelize.close();
+reportResults(results);

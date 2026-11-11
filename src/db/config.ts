@@ -1,3 +1,4 @@
+import { existsSync } from 'node:fs';
 import { Sequelize } from '@sequelize/core';
 import { SqliteDialect } from '@sequelize/sqlite3';
 
@@ -9,9 +10,32 @@ import { SqliteDialect } from '@sequelize/sqlite3';
  */
 const BUSY_TIMEOUT_MS = 30_000;
 
+const PRODUCTION_DB_FILE = 'database.sqlite';
+
+/**
+ * Where the database lives. DB_PATH wins; without it the production file is
+ * used, and only inside the production container.
+ *
+ * Anywhere else an unset DB_PATH is a mistake that used to open the production
+ * file from the host: the container keeps its write-ahead log on its own
+ * filesystem, so a second process on the host sees a stale file and can corrupt
+ * it. Scripts get a scratch database by importing scripts/offline/harness.mts
+ * first; the test instance sets DB_PATH in compose.
+ */
+const resolveStoragePath = (): string => {
+    const configured = process.env.DB_PATH;
+    if (configured) return configured;
+    const insideContainer = existsSync('/.dockerenv');
+    if (insideContainer && process.env.TEST_INSTANCE !== '1') return PRODUCTION_DB_FILE;
+    throw new Error(
+        'DB_PATH is not set. Outside the production container the database path must be explicit: ' +
+            'import scripts/offline/harness.mts before anything from src/ to get a scratch database.'
+    );
+};
+
 export const sequelize = new Sequelize({
     dialect: SqliteDialect,
-    storage: process.env.DB_PATH || 'database.sqlite',
+    storage: resolveStoragePath(),
 });
 
 /**

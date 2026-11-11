@@ -313,5 +313,5 @@ cases.push(
 );
 
 const results = await Promise.all(cases);
-reportResults(results);
 rmSync(tempDirectory, { recursive: true, force: true });
+reportResults(results);

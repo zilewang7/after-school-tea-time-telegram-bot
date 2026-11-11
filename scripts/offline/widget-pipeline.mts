@@ -123,7 +123,5 @@ const { sequelize } = await import('../../src/db/config.js');
 await sequelize.close();
 void db.Message;
 
+// The stream leaves sockets/timers behind in this harness; reportResults ends the process regardless
 reportResults(results);
-
-// The stream leaves sockets/timers behind in this harness; exit once the summary is out
-setTimeout(() => process.exit(0), 100);

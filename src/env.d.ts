@@ -111,6 +111,12 @@ declare global {
             THINKING_LINK?: string
             /** HMAC secret for signed widget URLs (default: derived from BOT_TOKEN) */
             WEBAPP_SHARE_SECRET?: string
+            /** Multiplier for the Telegram call pacing; tests only, unset in production */
+            EDIT_COORDINATOR_TIME_SCALE?: string
+            /** Database file; the default is used only inside the production container */
+            DB_PATH?: string
+            /** '1' marks the dev/test instance */
+            TEST_INSTANCE?: string
         }
     }
 }

@@ -4,12 +4,14 @@
  * - GROUNDING_CITATIONS=0: no superscript source markers in the reply text;
  *   the GoogleSearch footer keeps its sources
  */
+import type { EnvSource } from './env-source.js';
+
 export interface RenderConfig {
     readonly groundingCitations: boolean;
 }
 
 /** The settings in `env`; exported for tests, the app goes through getRenderConfig */
-export const readRenderConfig = (env: NodeJS.ProcessEnv = process.env): RenderConfig => ({
+export const readRenderConfig = (env: EnvSource = process.env): RenderConfig => ({
     groundingCitations: env.GROUNDING_CITATIONS !== '0',
 });
 

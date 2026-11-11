@@ -1,7 +1,10 @@
 /**
  * One-shot migration: retire `telegram_messages.replies`, add `chatCommand`.
  *
- *   pnpm tsx scripts/migrate/2026-0803-message-links.mts [--db path] [--no-vacuum]
+ *   npx tsx scripts/migrate/2026-0803-message-links.mts --db <path> [--no-vacuum]
+ *
+ * `--db` has no default on purpose: on the host, `database.sqlite` in the
+ * repository root is the production file that the running container has open.
  *
  * Run with the bot stopped. The `message_links` table itself is created by the
  * app's own `sequelize.sync()` on the next start — only the column changes need
@@ -16,11 +19,11 @@ import { DatabaseSync } from 'node:sqlite';
 import { statSync } from 'node:fs';
 
 const args = process.argv.slice(2);
-const dbPath = args.includes('--db') ? args[args.indexOf('--db') + 1] : 'database.sqlite';
+const dbPath = args.includes('--db') ? args[args.indexOf('--db') + 1] : undefined;
 const skipVacuum = args.includes('--no-vacuum');
 
 if (!dbPath) {
-    console.error('usage: tsx scripts/migrate/2026-0803-message-links.mts [--db path] [--no-vacuum]');
+    console.error('usage: npx tsx scripts/migrate/2026-0803-message-links.mts --db <path> [--no-vacuum]');
     process.exit(1);
 }
 
