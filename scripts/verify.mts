@@ -15,7 +15,7 @@
  * `pnpm test:offline <name>`, which run on the working tree.
  */
 import { spawnSync } from 'node:child_process';
-import { appendFileSync, existsSync, mkdirSync, readFileSync, rmSync, symlinkSync } from 'node:fs';
+import { appendFileSync, existsSync, lstatSync, mkdirSync, readFileSync, rmSync, symlinkSync, unlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -59,11 +59,27 @@ const createExport = (commit: string, directory: string): void => {
     }
 };
 
+/**
+ * Removes one borrowed link. `unlink`, never a recursive remove: whatever
+ * happens, the installed packages the link points at must stay.
+ */
+const removeLink = (path: string): void => {
+    const entry = lstatSync(path, { throwIfNoEntry: false });
+    if (entry?.isSymbolicLink() === true) unlinkSync(path);
+};
+
+/** Best effort: a leftover export costs disk space, not correctness, and the next run prunes it */
 const removeExport = (directory: string): void => {
-    // The links first: `worktree remove` refuses a directory with untracked files
-    for (const installed of INSTALLED_DIRECTORIES) rmSync(join(directory, installed), { force: true });
-    const removed = spawnSync('git', ['worktree', 'remove', '--force', directory], { cwd: REPOSITORY_ROOT });
-    if (removed.status !== 0) rmSync(directory, { recursive: true, force: true });
+    try {
+        // The links first: `worktree remove` refuses a directory with untracked files
+        for (const installed of INSTALLED_DIRECTORIES) removeLink(join(directory, installed));
+        const removed = spawnSync('git', ['worktree', 'remove', '--force', directory], { cwd: REPOSITORY_ROOT });
+        // Only without the links, so a recursive remove can never reach the installed packages
+        const linksGone = INSTALLED_DIRECTORIES.every((installed) => !existsSync(join(directory, installed)));
+        if (removed.status !== 0 && linksGone) rmSync(directory, { recursive: true, force: true });
+    } catch (error) {
+        console.error(`could not remove ${directory}: ${error instanceof Error ? error.message : String(error)}`);
+    }
 };
 
 /** Runs one package.json script inside the export; true when it passed */
