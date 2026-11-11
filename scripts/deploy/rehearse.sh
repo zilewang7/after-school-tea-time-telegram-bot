@@ -70,7 +70,10 @@ logs_since_start() { docker logs --since "$1" "$CONTAINER" 2>&1; }
 # Waits until the start script handed over: by default to the stand-in for pm2,
 # which then reports itself; $2 names another log line to wait for
 wait_for_start() {
-    local since=$1 handed_over=${2:-\[stand-in pm2\]} deadline=$(( $(date +%s) + START_TIMEOUT_SECONDS ))
+    local since=$1 handed_over=${2:-} deadline=$(( $(date +%s) + START_TIMEOUT_SECONDS ))
+    # Assigned on its own line: as a default inside the expansion the backslashes would be eaten
+    # and the pattern would turn into a bracket expression that matches any line
+    [ -n "$handed_over" ] || handed_over='\[stand-in pm2\]'
     until logs_since_start "$since" | grep -q "$handed_over"; do
         if [ "$(docker inspect -f '{{.State.Running}}' "$CONTAINER" 2>/dev/null)" != "true" ]; then
             echo "  container exited:"; logs_since_start "$since" | tail -20; return 1
