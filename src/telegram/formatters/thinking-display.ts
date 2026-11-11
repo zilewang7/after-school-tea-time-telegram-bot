@@ -143,17 +143,47 @@ export const formatThinkingForStreaming = (
     );
 };
 
+/** Whether the CoT is written as blank-line paragraphs (Gemini's usual shape) */
+const hasParagraphs = (text: string): boolean => /\n{2,}/.test(text);
+
+/** Share of a chopped preview that stays visible: a run of blocks reads heavier than prose */
+const CHOPPED_PREVIEW_SHARE = 3 / 5;
+
+/** How far the share cut may walk into the preview to start at a sentence edge */
+const CHOPPED_PREVIEW_EDGE_CHARS = 200;
+
+/**
+ * Keep the newest share of a chopped preview, starting just after the first
+ * sentence end inside the kept window: cutting at an arbitrary character would
+ * begin the preview mid-sentence, which is exactly how a paragraph-free CoT
+ * already looks.
+ */
+const shortenChoppedPreview = (preview: string): string => {
+    const target = Math.floor(preview.length * CHOPPED_PREVIEW_SHARE);
+    const window = preview.slice(Math.max(0, preview.length - target));
+    const head = window.slice(0, CHOPPED_PREVIEW_EDGE_CHARS);
+    const [edge] = [...head.matchAll(SENTENCE_END_PATTERN)];
+    const start = edge === undefined ? 0 : (edge.index ?? 0) + edge[0].length;
+    return window.slice(start).trimStart();
+};
+
 /**
  * Preview under the "view the full thinking" link: the last two sections as one
  * plain blockquote. No collapsed section at all — the linked page holds the
  * whole CoT, and the message is meant to keep a constant height.
+ *
+ * A CoT streamed as one run (no blank-line paragraphs) has no natural section
+ * ends: its preview is a stack of equal-sized chopped blocks that reads much
+ * heavier than the same amount of prose, so it keeps only a part of it.
  */
 export const formatThinkingPreviewForLink = (thinking: string): RenderedMessage => {
     // Normalized once, for the same list-level reason as formatThinkingForStreaming
-    const segments = segmentThinking(normalizeThinkingIndent(thinking));
+    const markdown = normalizeThinkingIndent(thinking);
+    const segments = segmentThinking(markdown);
     if (!segments.length) return { text: '', entities: [] };
 
-    const preview = segments.slice(-PREVIEW_SEGMENT_COUNT).join('\n\n');
+    const sections = segments.slice(-PREVIEW_SEGMENT_COUNT).join('\n\n');
+    const preview = hasParagraphs(markdown) ? sections : shortenChoppedPreview(sections);
     return renderQuotedMarkdown(preview, { expandable: false, streaming: true });
 };
 

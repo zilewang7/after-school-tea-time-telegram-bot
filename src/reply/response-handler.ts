@@ -55,9 +55,9 @@ import {
     renderThinkingLinkMessage,
     renderThinkingLinkStreaming,
     thinkingLinkPreviewOptions,
+    thinkingLinkSummaryOf,
 } from '../telegram/formatters/thinking-link.js';
 import { renderThinkingQuote } from '../telegram/formatters/quoted-render.js';
-import { disabledLinkPreview } from '../telegram/link-preview.js';
 import { buildFinalMessages, type FinalMessageChunk } from '../telegram/formatters/final-message-builder.js';
 import { splitRawByFits, splitAtLastNewline } from '../telegram/formatters/smart-splitter.js';
 import { buildImageCaption, type ImageCaptionFields } from './tools/image-message.js';
@@ -538,13 +538,15 @@ const activateThinkingLink = async (
 };
 
 /**
- * The answer has started: finalize the streaming message as the pure link (its
- * preview card included, no reply_markup so the stop button goes away), then
- * open the continuation the body streams into.
+ * The thinking is done: finalize the streaming message as the link plus the
+ * italic line about the CoT it hides (its preview card included, no
+ * reply_markup so the stop button goes away), then open the continuation the
+ * body streams into.
  */
 const emitThinkingLink = async (
     chatContext: ChatContext,
-    shownToolStatus: ToolStatus | undefined
+    shownToolStatus: ToolStatus | undefined,
+    thinking: string
 ): Promise<boolean> => {
     const link = chatContext.session.thinkingLink;
     if (link === undefined) return false;
@@ -552,7 +554,7 @@ const emitThinkingLink = async (
     const { editor } = chatContext;
     // Stop the spinner before the final edit and drop the queued streaming state
     editor.stop();
-    const message = renderThinkingLinkMessage(link);
+    const message = renderThinkingLinkMessage(link, thinkingLinkSummaryOf(thinking) ?? undefined);
     const delivered = await editor.updateContent(message.text, {
         entities: message.entities,
         linkPreviewOptions: thinkingLinkPreviewOptions(link),
@@ -670,7 +672,7 @@ export const processStream = async (
             !linkEmitAttempted
         ) {
             linkEmitAttempted = true;
-            if (await emitThinkingLink(chatContext, shownToolStatus)) {
+            if (await emitThinkingLink(chatContext, shownToolStatus, state.fullThinking)) {
                 state = { ...state, thinkingBuffer: '' };
             }
         }
@@ -846,9 +848,11 @@ export const processStream = async (
                 replyMarkup: buttons,
                 // The link shape carries the Mini App deep link as a text_link:
                 // left alone, Telegram renders its own bot-app card above the
-                // text. The card belongs to the final edit, pointing at the fast
-                // page, so a streaming link message keeps it disabled.
-                ...(linkForDisplay === undefined ? {} : { linkPreviewOptions: disabledLinkPreview }),
+                // text. Pin the fast-page card instead, so the reader sees where
+                // the link leads while the CoT is still being generated.
+                ...(linkForDisplay === undefined
+                    ? {}
+                    : { linkPreviewOptions: thinkingLinkPreviewOptions(linkForDisplay) }),
             });
             lastUpdateTime = Date.now();
         }
@@ -1273,7 +1277,13 @@ export const sendFinalResponse = async (
 
     const builtChunks = buildFinalMessages({
         text: response.text,
-        thinking: response.thinkingText,
+        // The link message's stats must count the whole CoT, while the stream
+        // only returns its 10k display buffer: in link mode the session holds
+        // the full thinking (the body ignores `thinking` when a link exists)
+        thinking:
+            session.thinkingLink === undefined
+                ? response.thinkingText
+                : session.thinkingBuffer,
         // Link mode: the reply leads with the link message instead of the CoT
         thinkingLink: session.thinkingLink,
         agentStats: response.agentStats,
@@ -1595,6 +1605,11 @@ export const handleResponseError = async (
         text: partialText,
         thinking: pendingLink === undefined ? partialThinking : undefined,
         thinkingLink: pendingLink,
+        // The stats line counts the full thinking, not the display buffer
+        thinkingLinkSummary:
+            pendingLink === undefined
+                ? undefined
+                : thinkingLinkSummaryOf(session.thinkingBuffer || partialThinking) ?? undefined,
         errorMessage: formatErrorForUser(error),
         resolveContextLink: contextLinkResolverFor(chatContext),
     });

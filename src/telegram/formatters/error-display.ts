@@ -15,7 +15,11 @@ import {
 import type { RenderedMessage } from 'telegram-md-entities';
 import { italicText } from './entity-text.js';
 import { renderThinkingQuote } from './quoted-render.js';
-import { renderThinkingLinkMessage, type ThinkingLinkRef } from './thinking-link.js';
+import {
+    renderThinkingLinkMessage,
+    type ThinkingLinkRef,
+    type ThinkingLinkSummary,
+} from './thinking-link.js';
 import { truncateForTelegram } from './text-utils.js';
 import { linkifyContextNumbers, type ContextLinkResolver } from './context-links.js';
 
@@ -30,6 +34,8 @@ export interface ErrorDisplayInput {
     thinking?: string;
     /** Long-CoT link message replaces the thinking quote in the partial prefix */
     thinkingLink?: ThinkingLinkRef;
+    /** Stats of the thinking the link hides (the italic line under the link) */
+    thinkingLinkSummary?: ThinkingLinkSummary;
     /** User-facing error description (already localized) */
     errorMessage: string;
     /** Makes the `#N` context references clickable (display-only) */
@@ -56,7 +62,7 @@ export const buildErrorDisplay = (input: ErrorDisplayInput): RenderedMessage => 
     const parts: (RenderedMessage | string)[] = [];
 
     if (input.thinkingLink) {
-        parts.push(renderThinkingLinkMessage(input.thinkingLink));
+        parts.push(renderThinkingLinkMessage(input.thinkingLink, input.thinkingLinkSummary));
         if (input.text) parts.push('\n\n');
     } else if (input.thinking) {
         parts.push(renderThinkingQuote(input.thinking, { expandable: true }));

@@ -91,6 +91,7 @@ results.push(
             thinkingLinkPreviewOptions,
         } = await import('../../src/telegram/formatters/thinking-link.js');
 
+        // Without a summary the message is the bare link (an unmeasurable CoT)
         const message = renderThinkingLinkMessage(LINK_REF);
         expect(message.text === THINKING_LINK_LABEL, `the visible text is the label (got ${JSON.stringify(message.text)})`);
         expect(message.entities.length === 1, `exactly one entity (got ${message.entities.length})`);
@@ -108,6 +109,63 @@ results.push(
         expect(
             thinkingLinkPreviewOptions(LINK_REF).url === chunk.linkPreviewOptions?.url,
             'the shared preview options are the chunk ones'
+        );
+
+        // With the stats of the hidden CoT: link, blank line, italic line
+        const summary = { words: 7689, segments: 16 };
+        const line = '共 7,689 词，发出约拆成 16 段';
+        const withSummary = renderThinkingLinkMessage(LINK_REF, summary);
+        expect(
+            withSummary.text === `${THINKING_LINK_LABEL}\n\n${line}`,
+            `the stats line sits under the link (got ${JSON.stringify(withSummary.text)})`
+        );
+        expect(withSummary.entities.length === 2, `the link and the stats line (got ${withSummary.entities.length})`);
+        const labelLink = withSummary.entities.find((entity) => entity.type === 'text_link');
+        expect(
+            labelLink?.url === LINK_REF.miniAppUrl && labelLink.length === THINKING_LINK_LABEL.length,
+            'the text link still covers only the label'
+        );
+        const statsLine = withSummary.entities.find((entity) => entity.type === 'italic');
+        expect(
+            statsLine !== undefined &&
+                statsLine.offset === THINKING_LINK_LABEL.length + 2 &&
+                statsLine.length === line.length,
+            'the stats are an italic line directly under the link'
+        );
+        const summarizedChunk = toThinkingLinkChunk(LINK_REF, summary);
+        expect(
+            summarizedChunk.text === withSummary.text &&
+                summarizedChunk.linkPreviewOptions?.url === LINK_REF.fastPageUrl,
+            'the chunk keeps the stats line and the card'
+        );
+    })
+);
+
+results.push(
+    await runCase('the stats line counts the CoT and the messages it would have taken', async () => {
+        const { thinkingLinkSummaryLine, thinkingLinkSummaryOf } =
+            await import('../../src/telegram/formatters/thinking-link.js');
+
+        expect(thinkingLinkSummaryOf('') === null, 'an empty CoT has no stats');
+        expect(thinkingLinkSummaryOf('  \n\t ') === null, 'nor does a blank one');
+
+        const short = thinkingLinkSummaryOf('one two three four');
+        expect(short?.words === 4, `four words are counted (got ${JSON.stringify(short)})`);
+        expect(short?.segments === 1, 'a short CoT fits one message');
+        expect(
+            thinkingLinkSummaryLine({ words: 4, segments: 1 }) === '共 4 词，发出约拆成 1 段',
+            'the line states both numbers'
+        );
+
+        // A CoT far past one message: the count is of the messages the layout
+        // before the link would have split it into (the final split's budgets)
+        const long = 'word '.repeat(20000).trim();
+        const summary = thinkingLinkSummaryOf(long);
+        expect(summary?.words === 20000, `every word counts (got ${summary?.words})`);
+        expect(summary?.segments === 25, `100k chars take 25 messages (got ${summary?.segments})`);
+        expect(
+            thinkingLinkSummaryLine({ words: 20000, segments: 25 }) === '共 20,000 词，发出约拆成 25 段',
+            'large counts carry thousands separators'
         );
     })
 );
@@ -203,6 +261,35 @@ results.push(
 );
 
 results.push(
+    await runCase('a paragraph-free CoT previews only the newest three fifths of it', async () => {
+        const { formatThinkingPreviewForLink, segmentThinking } =
+            await import('../../src/telegram/formatters/thinking-display.js');
+
+        // One long run with no blank lines: sectionThinking has to chop it
+        const run = '推理推理推理推理推理'.repeat(500);
+        const choppedSections = segmentThinking(run).slice(-2).join('\n\n');
+        const preview = formatThinkingPreviewForLink(run);
+        expect(segmentThinking(run).length > 2, 'the run really is a stack of chopped sections');
+        const share = preview.text.length / choppedSections.length;
+        expect(
+            share > 0.55 && share < 0.65,
+            `the paragraph-free preview keeps about 3/5 (got ${preview.text.length}/${choppedSections.length})`
+        );
+        expect(preview.text.endsWith(run.slice(-20)), 'it still shows the newest text');
+
+        // A paragraph CoT keeps its last two natural sections whole
+        const paragraphs = `${'甲'.repeat(800)}\n\n${'乙'.repeat(800)}`;
+        const naturalSections = segmentThinking(paragraphs).slice(-2).join('\n\n');
+        const naturalPreview = formatThinkingPreviewForLink(paragraphs);
+        expect(
+            naturalPreview.text.length === naturalSections.length,
+            `a paragraph CoT is not shortened (got ${naturalPreview.text.length}/${naturalSections.length})`
+        );
+        expect(naturalPreview.text.includes('乙'.repeat(20)), 'and it still ends at the newest paragraph');
+    })
+);
+
+results.push(
     await runCase('link mode triggers once the rendered thinking fills a message', async () => {
         const { formatThinkingForStreaming, thinkingOverflowsMessage } =
             await import('../../src/telegram/formatters/thinking-display.js');
@@ -281,8 +368,17 @@ results.push(
         const chunks = buildFinalMessages({ text: '正文在这里', thinking, thinkingLink: LINK_REF });
 
         expect(chunks.length === 2, `link message + one body message (got ${chunks.length})`);
-        expect(chunks[0]?.text === THINKING_LINK_LABEL, 'the first chunk is the link message');
-        expect(chunks[0]?.entities.length === 1 && chunks[0]?.entities[0]?.type === 'text_link', 'and it is one link');
+        const linkChunkText = chunks[0]?.text ?? '';
+        expect(
+            linkChunkText.startsWith(THINKING_LINK_LABEL) && linkChunkText.includes('词'),
+            `the first chunk is the link plus its stats (got ${JSON.stringify(linkChunkText)})`
+        );
+        expect(
+            chunks[0]?.entities.length === 2 &&
+                chunks[0]?.entities[0]?.type === 'text_link' &&
+                chunks[0]?.entities[1]?.type === 'italic',
+            'the link, then the italic stats line'
+        );
         expect(
             chunks[0]?.linkPreviewOptions?.url === LINK_REF.fastPageUrl,
             'its preview card opens the fast page'
@@ -297,7 +393,7 @@ results.push(
         const thinkingOnly = buildFinalMessages({ text: '', thinking, thinkingLink: LINK_REF });
         expect(
             thinkingOnly.length === 1 &&
-                thinkingOnly[0]?.text === THINKING_LINK_LABEL &&
+                thinkingOnly[0]?.text.startsWith(THINKING_LINK_LABEL) === true &&
                 thinkingOnly[0]?.linkPreviewOptions?.url === LINK_REF.fastPageUrl,
             'a thinking-only reply is just the link message (with its card)'
         );
@@ -310,8 +406,8 @@ results.push(
             wasStoppedByUser: true,
         });
         expect(
-            stoppedEarly.length === 1 && stoppedEarly[0]?.text === THINKING_LINK_LABEL,
-            'a bare stop leaves the link message pure'
+            stoppedEarly.length === 1 && stoppedEarly[0]?.text.startsWith(THINKING_LINK_LABEL) === true,
+            'a bare stop leaves the link message as the link and its stats'
         );
         const stoppedWithBody = buildFinalMessages({
             text: '正文',
@@ -420,6 +516,27 @@ results.push(
                 errorLine.offset === THINKING_LINK_LABEL.length + 2 &&
                 errorLine.length === '⚠ boom'.length,
             'the error line is the italic tail'
+        );
+
+        // With the CoT's stats the line sits between the link and the error
+        const withStats = buildErrorDisplay({
+            thinkingLink: LINK_REF,
+            thinkingLinkSummary: { words: 1234, segments: 3 },
+            errorMessage: 'boom',
+        });
+        expect(
+            withStats.text === `${THINKING_LINK_LABEL}\n\n共 1,234 词，发出约拆成 3 段\n\n⚠ boom`,
+            `link, stats, then the error (got ${JSON.stringify(withStats.text)})`
+        );
+        expect(
+            withStats.entities.filter((entity) => entity.type === 'italic').length === 2,
+            'the stats and the error line are both italic'
+        );
+        expect(
+            withStats.entities.every(
+                (entity) => entity.type === 'text_link' || entity.type === 'italic'
+            ),
+            'no thinking quote appears in link mode'
         );
 
         // Thinking passed alongside the link is ignored: it lives behind the link

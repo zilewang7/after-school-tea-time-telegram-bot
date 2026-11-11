@@ -157,6 +157,25 @@ const entitiesOf = (
     });
 };
 
+/** The terminal shape's dimensions line: `共 7,689 词，发出约拆成 16 段` */
+const STATS_LINE_PATTERN = /^共 [\d,]+ 词，发出约拆成 \d+ 段$/;
+
+/** The stats line of a link message, if the text starts with the label */
+const statsLineOf = (text: string): string | undefined => {
+    if (!text.startsWith(`${THINKING_LINK_LABEL}\n\n`)) return undefined;
+    return text.slice(THINKING_LINK_LABEL.length + 2).split('\n', 1)[0];
+};
+
+/** Whether a link edit is the terminal shape (label + stats line, nothing else) */
+const isFinishedLinkText = (text: string): boolean => {
+    const line = statsLineOf(text);
+    return (
+        line !== undefined &&
+        STATS_LINE_PATTERN.test(line) &&
+        text.length === THINKING_LINK_LABEL.length + 2 + line.length
+    );
+};
+
 /** The link-mode flow up to (and including) the body start */
 const runLinkReply = async (
     options: { readonly tailThinking?: string } = {}
@@ -242,17 +261,17 @@ results.push(
             !entityList.some((entity) => entity.type === 'pre'),
             'no block entity nests inside the preview quote'
         );
-        // The deep link is a text_link; without this Telegram would render its
-        // own bot-app card above the streaming text
+        // The deep link is a text_link; left alone Telegram would draw its own
+        // bot-app card above the streaming text. The fast-page card is pinned
+        // from the first link edit, so the reader sees where it leads while the
+        // CoT is still generating.
         const streamingPreview = objectOf(streamingEdit?.payload.link_preview_options);
         expect(
-            streamingPreview.is_disabled === true,
-            'no preview card while the thinking still streams'
+            streamingPreview.url === link?.fastPageUrl,
+            'the streaming link message already carries the fast-page card'
         );
-        expect(
-            streamingPreview.url === undefined,
-            'the streaming edit never asks for the fast-page card'
-        );
+        expect(streamingPreview.show_above_text === false, 'the card sits below the streaming preview');
+        expect(streamingPreview.is_disabled !== true, 'the card is not disabled while streaming');
 
         // The live stream holds the thinking from the first chunk
         const attemptKey = linkService.thinkingAttemptKeyOf({
@@ -295,10 +314,13 @@ results.push(
         const editsOnFirst = telegram
             .callsOf('editMessageText')
             .filter((call) => call.payload.chat_id === chatContext.chatId && call.payload.message_id === firstMessageId);
-        const finalLinkEdits = editsOnFirst.filter(
-            (call) => payloadText(call.payload) === THINKING_LINK_LABEL
+        const finalLinkEdits = editsOnFirst.filter((call) =>
+            isFinishedLinkText(payloadText(call.payload))
         );
-        expect(finalLinkEdits.length >= 1, 'the streaming message was finalized as the pure link');
+        expect(
+            finalLinkEdits.length >= 1,
+            'the streaming message was finalized as the link plus its stats'
+        );
         const cardEdit = finalLinkEdits.find(
             (call) => linkPreviewOf(call.payload).url === link?.fastPageUrl
         );
@@ -506,10 +528,10 @@ results.push(
         const firstEdits = edits.filter((call) => call.payload.message_id === firstMessageId);
         const linkEdit = firstEdits.find(
             (call) =>
-                payloadText(call.payload) === THINKING_LINK_LABEL &&
+                isFinishedLinkText(payloadText(call.payload)) &&
                 linkPreviewOf(call.payload).url === link?.fastPageUrl
         );
-        expect(linkEdit !== undefined, 'the link message is rebuilt first, preview card included');
+        expect(linkEdit !== undefined, 'the link message is rebuilt first, stats and card included');
         expect(
             edits.some((call) => payloadText(call.payload).includes('答案来了')),
             'the body message follows the link'
@@ -552,6 +574,10 @@ results.push(
         expect(
             errorText.startsWith(THINKING_LINK_LABEL) && errorText.includes('⚠'),
             `the message is the link then the error line (got ${JSON.stringify(errorText.slice(0, 60))})`
+        );
+        expect(
+            STATS_LINE_PATTERN.test(statsLineOf(errorText) ?? ''),
+            `the stats line sits between the link and the error (got ${JSON.stringify(statsLineOf(errorText))})`
         );
         expect(
             linkPreviewOf(errorEdit ?? {}).url === link?.fastPageUrl,
@@ -603,7 +629,7 @@ results.push(
         const edits = started.telegram.callsOf('editMessageText');
         const finalLink = edits
             .map((call) => call.payload)
-            .filter((payload) => payloadText(payload) === THINKING_LINK_LABEL)
+            .filter((payload) => isFinishedLinkText(payloadText(payload)))
             .at(-1);
         expect(finalLink !== undefined, 'the stopped reply still shows the link message');
         expect(
@@ -642,7 +668,7 @@ results.push(
         const edits = started.telegram.callsOf('editMessageText');
         const finalLink = edits
             .map((call) => call.payload)
-            .filter((payload) => payloadText(payload) === THINKING_LINK_LABEL)
+            .filter((payload) => isFinishedLinkText(payloadText(payload)))
             .at(-1);
         expect(finalLink !== undefined, 'the whole reply is the link message');
         expect(
@@ -658,6 +684,55 @@ results.push(
         const version = stored?.getVersions().at(-1);
         expect(version?.text === '', 'a thinking-only reply stores no body text');
         expect(version?.thinkingLinkToken === link?.token, 'the token is stored');
+    })
+);
+
+results.push(
+    await runCase('a thinking-only link reply counts the whole CoT past the display cap', async () => {
+        const started = await startReply();
+        // ~17k chars: past the 10k display cap, so the stream's returned thinking
+        // is the omission placeholder; the stats must still count the whole CoT
+        const thinking = Array.from(
+            { length: 24 },
+            (_, index) => `**S${index}**\n\n${'推理'.repeat(350)}`
+        ).join('\n\n');
+        const response = await quietly(() =>
+            responseHandler.processStream(
+                streamOf([{ chunk: { type: 'thinking', content: thinking } }, { waitMs: 300 }]),
+                started.chatContext,
+                0
+            )
+        );
+        const link = started.chatContext.session.thinkingLink;
+        expect(link !== undefined && link.emitted === false, 'the long thinking is in link mode');
+        expect(
+            started.chatContext.currentState?.thinkingBuffer.startsWith('[reasoning truncated') === true,
+            'the display buffer degraded to its placeholder'
+        );
+        expect(
+            response.thinkingText.startsWith('[reasoning truncated'),
+            'the stream returns the display buffer, not the full thinking'
+        );
+        expect(
+            started.chatContext.session.thinkingBuffer.length === thinking.length,
+            'the session keeps the full thinking'
+        );
+
+        started.telegram.reset();
+        await quietly(() => responseHandler.sendFinalResponse(started.chatContext, response));
+
+        const { thinkingLinkSummaryOf } = await import('../../src/telegram/formatters/thinking-link.js');
+        const summary = thinkingLinkSummaryOf(thinking);
+        const expected = `共 ${summary?.words.toLocaleString('zh-CN')} 词，发出约拆成 ${summary?.segments} 段`;
+        const finalLink = started.telegram
+            .callsOf('editMessageText')
+            .map((call) => payloadText(call.payload))
+            .filter((text) => isFinishedLinkText(text))
+            .at(-1) ?? '';
+        expect(
+            statsLineOf(finalLink) === expected,
+            `the stats count the whole CoT (got ${JSON.stringify(statsLineOf(finalLink))} vs ${JSON.stringify(expected)})`
+        );
     })
 );
 
@@ -691,7 +766,7 @@ results.push(
         );
         const edits = started.telegram.callsOf('editMessageText');
         expect(
-            strings(edits.map((call) => call.payload.text)).includes(THINKING_LINK_LABEL),
+            strings(edits.map((call) => call.payload.text)).some((text) => isFinishedLinkText(text)),
             'the processing message stays as the link'
         );
         const imageCalls =

@@ -19,12 +19,12 @@ import { inlineCitations } from './inline-citations.js';
 import { plainText } from './entity-text.js';
 import { renderThinkingQuote } from './quoted-render.js';
 import { linkifyContextNumbers, type ContextLinkResolver } from './context-links.js';
-import { toThinkingLinkChunk, type ThinkingLinkRef } from './thinking-link.js';
-
-/** Safe per-message length budget (below Telegram's 4096 hard limit) */
-const TELEGRAM_MAX_LENGTH = 4000;
-/** Per-message entity budget (the server silently drops entities past ~100) */
-const TELEGRAM_MAX_ENTITIES = 90;
+import { TELEGRAM_MAX_ENTITIES, TELEGRAM_MAX_LENGTH } from './message-budget.js';
+import {
+    toThinkingLinkChunk,
+    thinkingLinkSummaryOf,
+    type ThinkingLinkRef,
+} from './thinking-link.js';
 
 /**
  * Display-only superscript markers: the stored reply text stays clean, so a
@@ -102,9 +102,14 @@ export const buildFinalMessages = (
 ): FinalMessageChunk[] => {
     const bodyChunks = buildBodyChunks(options);
     // The link message leads the reply. It never goes through the split: it is
-    // one fixed line, and its own preview card must survive the body's policy.
+    // one fixed link plus the italic stats of the CoT it hides, and its own
+    // preview card must survive the body's policy.
+    const summary =
+        options.thinkingLink === undefined || options.thinking === undefined
+            ? undefined
+            : thinkingLinkSummaryOf(options.thinking) ?? undefined;
     return options.thinkingLink
-        ? [toThinkingLinkChunk(options.thinkingLink), ...bodyChunks]
+        ? [toThinkingLinkChunk(options.thinkingLink, summary), ...bodyChunks]
         : bodyChunks;
 };
 
