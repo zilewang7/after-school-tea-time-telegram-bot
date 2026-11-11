@@ -19,9 +19,13 @@ runs from the same directory. Most rules below exist because of that.
    needs the database). The harness points the database at a scratch file.
    `src/db/config.ts` throws when `DB_PATH` is unset outside the container.
 3. **Run files with `npx tsx <file>`**, never `pnpm tsx`.
-4. **Ask the owner before anything that touches production**: `docker compose
-   restart|up|down|build`, pushing to `master` (a restart deploys it), editing
-   `.env` or `docker-compose.yaml` on the host. The bot serves real people.
+4. **The owner's release decision replaces the per-command ask.** Once the owner
+   has approved a release, pushing to `master` and running `docker compose
+   restart|up|down|build` (and editing `.env` or `docker-compose.yaml` on the
+   host) are that release's steps: `pnpm verify`, `pnpm deploy:check` (in-flight
+   replies, verified tree, stop signal) and `pnpm deploy:check --wait` decide
+   whether the moment is safe. Never change production without an approved
+   release; the bot serves real people.
 5. **Never print or copy secrets**: `.env`, `.env.test`, `gcp-sa.json`.
 6. **A new production env variable also goes into `.env.test` with an empty
    value** when the test instance must not use it: the test container inherits
@@ -154,7 +158,8 @@ it does not, a restart is still safe, a recreate is not.
 
 1. `pnpm verify`, push, then `pnpm deploy:check`. It must say READY: the
    restart kills the process, so wait while a reply is being generated.
-2. Ask the owner, then restart.
+2. Restart: the owner's release decision already covers it; `deploy:check`
+   says whether a reply is in flight.
 3. `pnpm deploy:check --wait`. The `version` of `/api/health` is the commit
    the running build came from; if a build fails the previous build keeps
    running and this command says so.
