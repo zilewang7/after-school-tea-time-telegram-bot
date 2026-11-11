@@ -202,6 +202,8 @@ const cases: { name: string; body: () => Promise<void> }[] = [
                 executed('search_history', 1200),
                 executed('list_harness_issues', 300),
                 executed('create_harness_issue', 400),
+                executed('get_ui_guide', 500),
+                executed('send_file', 100),
                 executed('send_widget', 900),
             ]);
             expect(charged === 1200, `only search_history is charged (got ${charged}ms)`);

@@ -17,7 +17,7 @@ import {
     createRoundTextSeparator,
     createToolTimeClock,
     createToolUsageTally,
-    PRODUCT_TOOL_ROUNDS_MAX,
+    FREE_TOOL_ROUNDS_MAX,
     runToolRound,
     toolTimeSpentMs,
     withToolBudget,
@@ -27,7 +27,7 @@ import {
     type TurnTools,
 } from '../../tools/index.js';
 import { filterTurnTools } from '../../tools/turn-tools.js';
-import { isProductToolName } from '../../../reply/tools/tool-names.js';
+import { isTimeFreeToolName } from '../../../reply/tools/tool-names.js';
 import type { StreamChunk } from '../../types.js';
 import { normalizeResponsesUsage } from '../../usage/normalize-responses.js';
 import type { UsageSink } from '../../usage/usage-types.js';
@@ -90,16 +90,16 @@ export async function* runGrokToolLoop(
     const deadlineMs = options.deadlineMs ?? TOOL_LOOP_DEADLINE_MS;
     const wallMs = options.wallMs ?? TOOL_LOOP_WALL_MS;
     const clock = createToolTimeClock(deadlineMs, wallMs, options.startedAt);
-    const productTools = filterTurnTools(tools, (name) => isProductToolName(name));
-    const hasProductTools = productTools.definitions.length > 0;
+    const freeTools = filterTurnTools(tools, (name) => isTimeFreeToolName(name));
+    const hasFreeTools = freeTools.definitions.length > 0;
     const clientToolNames = new Set(functionToolNames(acceptedRequest.tools));
     const separator = createRoundTextSeparator();
     const tally = createToolUsageTally();
     const stats = createGrokAgentStats(isGrokMultiAgentModel(model));
 
     let stream = options.firstStream;
-    let mode: 'normal' | 'product' | 'final' = 'normal';
-    let productRounds = 0;
+    let mode: 'normal' | 'free' | 'final' = 'normal';
+    let freeRounds = 0;
     let roundCount = 0;
     let executedCallCount = 0;
     let lastResponse: Response | null = null;
@@ -133,16 +133,16 @@ export async function* runGrokToolLoop(
             break;
         }
 
-        if (mode === 'product') {
-            productRounds += 1;
-            const productExecuted = yield* runToolRound(productTools, round.functionCalls, tally, signal);
-            executedCallCount += productExecuted.length;
+        if (mode === 'free') {
+            freeRounds += 1;
+            const freeExecuted = yield* runToolRound(freeTools, round.functionCalls, tally, signal);
+            executedCallCount += freeExecuted.length;
             if (signal?.aborted) break;
-            const capReached = productRounds >= PRODUCT_TOOL_ROUNDS_MAX;
-            const answeredProducts = withToolBudget(productExecuted, {
+            const capReached = freeRounds >= FREE_TOOL_ROUNDS_MAX;
+            const answeredFreeCalls = withToolBudget(freeExecuted, {
                 toolCalls: executedCallCount,
                 finalRound: capReached,
-                productRound: true,
+                freeRound: true,
                 elapsedMs: Date.now() - options.startedAt,
                 toolTimeMs: clock.toolTimeMs,
                 deadlineMs,
@@ -151,12 +151,12 @@ export async function* runGrokToolLoop(
                 buildContinuationRequest(
                     acceptedRequest,
                     round.response.id,
-                    buildFunctionCallOutputs(round.functionCalls, answeredProducts),
+                    buildFunctionCallOutputs(round.functionCalls, answeredFreeCalls),
                     capReached,
-                    options.supportsImageInput ? buildModelImagesInput(answeredProducts) : []
+                    options.supportsImageInput ? buildModelImagesInput(answeredFreeCalls) : []
                 )
             );
-            mode = capReached ? 'final' : 'product';
+            mode = capReached ? 'final' : 'free';
             continue;
         }
 
@@ -176,16 +176,16 @@ export async function* runGrokToolLoop(
         if (exhausted !== null) {
             console.log(
                 `[grok] ${exhausted}, ` +
-                    (hasProductTools ? 'product tools only from here' : 'forcing final answer')
+                    (hasFreeTools ? 'no-cost tools only from here' : 'forcing final answer')
             );
-            mode = hasProductTools ? 'product' : 'final';
+            mode = hasFreeTools ? 'free' : 'final';
         } else {
             mode = 'normal';
         }
         const answeredCalls = withToolBudget(executedCalls, {
             toolCalls: executedCallCount,
             finalRound: mode === 'final',
-            productRound: mode === 'product',
+            freeRound: mode === 'free',
             elapsedMs: Date.now() - options.startedAt,
             toolTimeMs: clock.toolTimeMs,
             deadlineMs,

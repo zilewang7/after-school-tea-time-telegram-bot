@@ -881,7 +881,10 @@ results.push(
 );
 
 results.push(
-    await runCase('the full thinking keeps 200k while the display buffer stays at 10k', async () => {
+    await runCase('the full thinking keeps the shared cap while the display buffer stays at 10k', async () => {
+        const { THINKING_MAX_CHARS, THINKING_TRUNCATION_MARK } = await import(
+            '../../src/shared/thinking-limits.js'
+        );
         const emptyState: ResponseState = {
             textBuffer: '',
             thinkingBuffer: '',
@@ -912,15 +915,19 @@ results.push(
         expect(state.fullThinking.length === 15000, 'the full thinking keeps every character');
 
         state = responseHandler.processChunk(
-            { type: 'thinking', content: 'b'.repeat(200000) },
+            { type: 'thinking', content: 'b'.repeat(THINKING_MAX_CHARS) },
             state,
             keep
         );
         expect(
-            state.fullThinking.length > 200000 && state.fullThinking.length < 200200,
-            `the full thinking is cut at 200k once (got ${state.fullThinking.length})`
+            state.fullThinking.length > THINKING_MAX_CHARS &&
+                state.fullThinking.length < THINKING_MAX_CHARS + 200,
+            `the full thinking is cut at the shared cap once (got ${state.fullThinking.length})`
         );
-        expect(state.fullThinking.includes('已截断'), 'with a truncation mark');
+        expect(
+            state.fullThinking.endsWith(THINKING_TRUNCATION_MARK),
+            'with the shared truncation mark'
+        );
 
         state = responseHandler.processChunk(
             { type: 'thinking', content: 'c'.repeat(10) },

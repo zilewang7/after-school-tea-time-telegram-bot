@@ -36,6 +36,14 @@ export const THINKING_PAGE_CSP = [
 /** How often the generating page asks for the new tail (design §6.1) */
 const POLL_INTERVAL_MS = 700;
 
+/**
+ * Past this length a finished thinking is shown as plain pre-wrapped text: the
+ * markdown renderer's cost grows faster than the text, and a 500k-char CoT
+ * would block the bot's event loop for seconds on every view (the crawler hits
+ * the page too). The text itself stays complete; only its formatting is dropped.
+ */
+export const MARKDOWN_RENDER_MAX_CHARS = 200_000;
+
 const STYLE = `
 :root {
   color-scheme: light dark;
@@ -188,6 +196,9 @@ const bodyOf = (document: ThinkingDocument): string => {
         ].join('');
     }
     if (document.text === '') return emptyBodyOf(document.status);
+    if (document.text.length > MARKDOWN_RENDER_MAX_CHARS) {
+        return `<pre class="thinking">${escapeHtml(document.text)}</pre>`;
+    }
     return `<div class="md">${markdownToHtml(document.text)}</div>`;
 };
 

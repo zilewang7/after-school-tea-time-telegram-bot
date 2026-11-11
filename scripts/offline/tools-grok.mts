@@ -118,19 +118,21 @@ const brokenTool: ToolHandler = {
 
 const turnTools = createTurnTools([weatherTool, brokenTool]);
 
-const productExecutions: string[] = [];
-const sendFileTool: ToolHandler = {
+const freeExecutions: string[] = [];
+const freeTool = (name: string, content: string): ToolHandler => ({
     definition: {
-        name: 'send_file',
-        description: 'Send a text file',
+        name,
+        description: `The ${name} free tool`,
         inputSchema: { type: 'object', properties: {} },
     },
     execute: async () => {
-        productExecutions.push('send_file');
-        return { content: 'file sent', isError: false, images: [], record: null };
+        freeExecutions.push(name);
+        return { content, isError: false, images: [], record: null };
     },
-};
-const productTurnTools = createTurnTools([weatherTool, brokenTool, sendFileTool]);
+});
+const sendFileTool = freeTool('send_file', 'file sent');
+const listIssuesTool = freeTool('list_harness_issues', 'no open issues');
+const freeTurnTools = createTurnTools([weatherTool, brokenTool, sendFileTool, listIssuesTool]);
 
 // ---- helpers ----
 
@@ -633,7 +635,7 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
         },
     },
         {
-        name: 'after the tool budget: a product round still runs send_file, then the answer',
+        name: 'after the tool budget: a no-cost round still runs the free tools, then the answer',
         body: async () => {
             const realNow = Date.now.bind(Date);
             let offsetMs = 0;
@@ -642,11 +644,12 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
                 reset(
                     scripted(
                         toolRound('resp_1', 'call_1'),
-                        toolRound('resp_2', 'call_2', 'send_file', '{}'),
-                        answerRound('resp_3', 'File sent, here is the answer.')
+                        toolRound('resp_2', 'call_2', 'list_harness_issues', '{}'),
+                        toolRound('resp_3', 'call_3', 'send_file', '{}'),
+                        answerRound('resp_4', 'File sent, here is the answer.')
                     )
                 );
-                productExecutions.length = 0;
+                freeExecutions.length = 0;
                 afterToolExecution = () => {
                     afterToolExecution = null;
                     // Round 1's lookup uses up the whole tool budget
@@ -654,23 +657,26 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
                 };
 
                 const { result: chunks, lines } = await captureConsole(async () =>
-                    drain(await sendGrok(MODEL, productTurnTools))
+                    drain(await sendGrok(MODEL, freeTurnTools))
                 );
 
-                expect(recordedRequests.length === 3, `three requests (got ${recordedRequests.length})`);
+                expect(recordedRequests.length === 4, `four requests (got ${recordedRequests.length})`);
                 expect(
                     !('tool_choice' in recordedRequests[1]!.body) && !('tool_choice' in recordedRequests[2]!.body),
-                    'the product rounds keep the tools on'
+                    'the no-cost rounds keep the tools on'
                 );
-                expect(json(productExecutions) === json(['send_file']), `send_file ran once (got ${json(productExecutions)})`);
                 expect(
-                    JSON.stringify(recordedRequests[2]?.body ?? {}).includes('只能再调用产物工具'),
-                    'the product round notice says only product tools can run'
+                    json(freeExecutions) === json(['list_harness_issues', 'send_file']),
+                    `the issue and product tools both ran (got ${json(freeExecutions)})`
+                );
+                expect(
+                    JSON.stringify(recordedRequests[2]?.body ?? {}).includes('只能再调用不产生开销的工具'),
+                    'the no-cost round notice says only the free tools can run'
                 );
                 expect(textOf(chunks) === 'File sent, here is the answer.', `the answer streams (got ${json(textOf(chunks))})`);
                 expect(
-                    lines.some((line) => line.includes('Tool budget') && line.includes('product tools only from here')),
-                    `the product mode is logged (got ${json(lines)})`
+                    lines.some((line) => line.includes('Tool budget') && line.includes('no-cost tools only from here')),
+                    `the no-cost mode is logged (got ${json(lines)})`
                 );
             } finally {
                 Date.now = realNow;

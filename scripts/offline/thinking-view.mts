@@ -40,6 +40,7 @@ const service = await import('../../src/panel/thinking/thinking-link-service.js'
 const stream = await import('../../src/panel/thinking/thinking-stream.js');
 const store = await import('../../src/panel/thinking/thinking-store.js');
 const routes = await import('../../src/panel/thinking/thinking-routes.js');
+const page = await import('../../src/panel/thinking/thinking-page.js');
 const { createPanelApp } = await import('../../src/panel/app.js');
 
 type MembershipLookup = import('../../src/panel/access/membership.js').MembershipLookup;
@@ -297,6 +298,24 @@ const cases: { name: string; body: () => Promise<void> }[] = [
         },
     },
     {
+        name: 'a thinking past the markdown render cap stays complete but loses its formatting',
+        body: async () => {
+            const attempt = newAttempt();
+            const ref = requireRef(await begin(attempt));
+            // Longer than the render cap: the page must not spend seconds
+            // rendering markdown for a CoT this long, but every character shows
+            const long = `**加粗**\n\n${'推理'.repeat(page.MARKDOWN_RENDER_MAX_CHARS)}`;
+            service.appendLiveThinking(attempt.key, long);
+            service.finishLiveThinking(attempt.key);
+
+            const html = await (await app.request(`/t/${ref.token}`)).text();
+            expect(!html.includes('<strong>加粗</strong>'), 'the long page drops markdown formatting');
+            expect(html.includes('**加粗**'), 'the text itself is still shown');
+            expect(html.includes('推理推理推理'), 'the long body is there');
+            expect(html.includes('<pre class="thinking">'), 'it renders as plain pre-wrapped text');
+        },
+    },
+    {
         name: 'the API serves the full text and incremental deltas',
         body: async () => {
             const attempt = newAttempt();
@@ -529,11 +548,11 @@ const cases: { name: string; body: () => Promise<void> }[] = [
             service.finishLiveThinking(attempt.key);
             expect(stream.thinkingStream.read(attempt.key)?.done === true, 'the contract finishes the shared stream');
 
-            // The 200k cap itself, on the process-wide stream
+            // The shared cap itself, on the process-wide stream
             const bigAttempt = newAttempt();
             service.appendLiveThinking(bigAttempt.key, 'x'.repeat(stream.THINKING_STREAM_MAX_LENGTH + 1));
             const big = stream.thinkingStream.read(bigAttempt.key);
-            expect(big !== null && big.truncated === true, 'the shared stream cuts at 200k');
+            expect(big !== null && big.truncated === true, 'the shared stream cuts at the shared cap');
             expect(
                 big !== null &&
                     big.text.length ===

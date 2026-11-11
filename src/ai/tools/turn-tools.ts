@@ -66,7 +66,7 @@ const runHandler = async (
 /**
  * A view of the same tools that only offers those the predicate keeps: a call
  * naming another tool is answered with the usual unknown-tool error and never
- * reaches the real handler. Used for the product-only rounds after the budget.
+ * reaches the real handler. Used for the no-cost rounds after the budget.
  */
 export const filterTurnTools = (tools: TurnTools, predicate: (name: string) => boolean): TurnTools => {
     const kept = tools.definitions.filter((definition) => predicate(definition.name));

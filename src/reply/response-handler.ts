@@ -7,6 +7,7 @@ import type { Context } from 'grammy';
 import type { InlineKeyboardMarkup } from 'grammy/types';
 import { to, isErr } from '../shared/result.js';
 import { formatErrorForUser } from '../shared/errors.js';
+import { THINKING_MAX_CHARS, THINKING_TRUNCATION_MARK } from '../shared/thinking-limits.js';
 import {
     createSession,
     liveThinkingKeyOf,
@@ -93,13 +94,6 @@ const MESSAGE_LENGTH_LIMIT = 3900;
  *  final pass re-renders per message so a little headroom is enough) */
 const MESSAGE_ENTITY_LIMIT = 85;
 const THINKING_BUFFER_LIMIT = 10000;
-/**
- * The full thinking kept on the version (the thinking page's fallback after a
- * restart): the display buffer above stays small, this one is what gets stored.
- */
-const FULL_THINKING_LIMIT = 200000;
-/** Appended once when FULL_THINKING_LIMIT is hit; later chunks are dropped */
-const FULL_THINKING_TRUNCATION_MARK = '\n\n…（思考过程超过 20 万字，已截断）';
 /** Link-mode trigger: the rendered thinking reaches the message budget minus the
  *  status-line headroom, exactly where the legacy split switch fires */
 const THINKING_LINK_LENGTH_TRIGGER = MESSAGE_LENGTH_LIMIT - 50;
@@ -243,11 +237,11 @@ export const processChunk = (
             // Once the cap is hit, the truncation mark is appended and the rest
             // is dropped (the same cap the live stream keeps).
             let newFullThinking = state.fullThinking;
-            if (newFullThinking.length < FULL_THINKING_LIMIT) {
+            if (newFullThinking.length < THINKING_MAX_CHARS) {
                 newFullThinking += appended;
-                if (newFullThinking.length > FULL_THINKING_LIMIT) {
+                if (newFullThinking.length > THINKING_MAX_CHARS) {
                     newFullThinking =
-                        newFullThinking.slice(0, FULL_THINKING_LIMIT) + FULL_THINKING_TRUNCATION_MARK;
+                        newFullThinking.slice(0, THINKING_MAX_CHARS) + THINKING_TRUNCATION_MARK;
                 }
             }
 

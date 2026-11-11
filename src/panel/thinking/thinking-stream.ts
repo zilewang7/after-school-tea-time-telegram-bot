@@ -10,13 +10,14 @@
  * One instance is the whole process (the panel runs in the bot process); the
  * factory exists so offline cases can drive a deterministic clock and caps.
  */
+import { THINKING_MAX_CHARS, THINKING_TRUNCATION_MARK } from '../../shared/thinking-limits.js';
 import type { ThinkingStreamEntry } from './thinking-types.js';
 
 /** The full thinking of one reply; the bot stores the same cap on the version */
-export const THINKING_STREAM_MAX_LENGTH = 200_000;
+export const THINKING_STREAM_MAX_LENGTH = THINKING_MAX_CHARS;
 
 /** Appended once when the cap is hit; the page shows it as part of the text */
-export const THINKING_TRUNCATION_MARK = '\n\n…（思考过程超过 20 万字，已截断）';
+export { THINKING_TRUNCATION_MARK };
 
 /** Entries are dropped this long after their last append (design: 2 hours) */
 const DEFAULT_TTL_MS = 2 * 60 * 60 * 1000;

@@ -271,19 +271,29 @@ const brokenTool: ToolHandler = {
 
 const turnTools = createTurnTools([lookupA, lookupB, brokenTool]);
 
-const productExecutions: string[] = [];
-const sendFileTool: ToolHandler = {
+const freeExecutions: string[] = [];
+const freeTool = (name: string, content: string): ToolHandler => ({
     definition: {
-        name: 'send_file',
-        description: 'Send a text file',
+        name,
+        description: `The ${name} free tool`,
         inputSchema: objectSchema({}),
     },
     execute: async () => {
-        productExecutions.push('send_file');
-        return okResult('file sent');
+        freeExecutions.push(name);
+        return okResult(content);
     },
-};
-const turnToolsWithProduct = createTurnTools([lookupA, lookupB, brokenTool, sendFileTool]);
+});
+const sendFileTool = freeTool('send_file', 'file sent');
+const listIssuesTool = freeTool('list_harness_issues', 'no open issues');
+const uiGuideTool = freeTool('get_ui_guide', 'the widget guide');
+const turnToolsWithFree = createTurnTools([
+    lookupA,
+    lookupB,
+    brokenTool,
+    sendFileTool,
+    listIssuesTool,
+    uiGuideTool,
+]);
 
 // ---- helpers ----
 
@@ -1459,15 +1469,26 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
         },
     },
         {
-        name: 'after the tool budget: a product-only round still runs send_file, then the answer',
+        name: 'after the tool budget: a no-cost round still runs the free tools, then the answer',
         body: async () => {
             await withFakeClock(async (jump) => {
                 reset([
                     sse(roundEvents([[callPart('lookup_a', { topic: 'falcon' }, 'd1', 'call_d1'), textPart('')]])),
-                    sse(roundEvents([[callPart('send_file', {}, 's1', 'call_s1'), textPart('')]])),
+                    sse(
+                        roundEvents([
+                            [
+                                callPart('send_file', {}, 's1', 'call_s1'),
+                                callPart('list_harness_issues', {}, 's2', 'call_s2'),
+                                callPart('get_ui_guide', {}, 's3', 'call_s3'),
+                                // A charged tool is no longer offered: it must not run
+                                callPart('lookup_a', { topic: 'again' }, 'd2', 'call_d2'),
+                                textPart(''),
+                            ],
+                        ])
+                    ),
                     sse(roundEvents([[textPart('File sent, here is the answer.')]])),
                 ]);
-                productExecutions.length = 0;
+                freeExecutions.length = 0;
                 let toolRuns = 0;
                 afterToolExecution = () => {
                     toolRuns += 1;
@@ -1475,22 +1496,30 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
                     if (toolRuns === 1) jump(TOOL_LOOP_DEADLINE_MS + 1_000);
                 };
 
-                const { chunks, lines } = await runTurn({ tools: turnToolsWithProduct });
+                const { chunks, lines } = await runTurn({ tools: turnToolsWithFree });
 
                 expect(recordedRequests.length === 3, `three requests (got ${recordedRequests.length})`);
                 expect(
                     !isModeNone(recordedRequests[1]) && !isModeNone(recordedRequests[2]),
-                    'the product round keeps function calling on'
+                    'the no-cost round keeps function calling on'
                 );
-                expect(json(productExecutions) === json(['send_file']), `send_file ran once (got ${json(productExecutions)})`);
                 expect(
-                    JSON.stringify(contentsOf(recordedRequests[2])).includes('只能再调用产物工具'),
-                    'the product round notice says only product tools can run'
+                    json(freeExecutions) === json(['send_file', 'list_harness_issues', 'get_ui_guide']),
+                    `the product, issue and guide tools all ran (got ${json(freeExecutions)})`
+                );
+                expect(
+                    executions.length === 1,
+                    `a charged tool is not executed in the no-cost round (got ${json(executions)})`
+                );
+                expect(
+                    JSON.stringify(contentsOf(recordedRequests[2])).includes('只能再调用不产生开销的工具') &&
+                        JSON.stringify(contentsOf(recordedRequests[2])).includes('Unknown tool lookup_a'),
+                    'the notice lists the no-cost tools and the charged call is answered as unknown'
                 );
                 expect(textOf(chunks) === 'File sent, here is the answer.', `the answer streams (got ${json(textOf(chunks))})`);
                 expect(
-                    lines.some((line) => line.includes('Tool budget') && line.includes('product tools only from here')),
-                    `the product mode is logged (got ${json(lines)})`
+                    lines.some((line) => line.includes('Tool budget') && line.includes('no-cost tools only from here')),
+                    `the no-cost mode is logged (got ${json(lines)})`
                 );
             });
         },

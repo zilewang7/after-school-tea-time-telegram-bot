@@ -1167,6 +1167,93 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
         },
     },
     {
+        name: 'after the tool budget: the no-cost tools still run, a charged one does not',
+        body: async () => {
+            await withFakeClock(async (jump) => {
+                resetStub([]);
+                let weatherRuns = 0;
+                afterToolExecution = () => {
+                    weatherRuns += 1;
+                    // Round 1's lookup uses up the whole tool budget
+                    if (weatherRuns === 1) jump(TOOL_LOOP_DEADLINE_MS + 1_000);
+                };
+                const freeExecutions: string[] = [];
+                const freeTool = (name: string): ToolHandler => ({
+                    definition: { name, description: name, inputSchema: { type: 'object', properties: {} } },
+                    execute: async () => {
+                        freeExecutions.push(name);
+                        return { content: `${name} done`, isError: false, images: [], record: null };
+                    },
+                });
+                const toolsWithFree = createTurnTools([
+                    weatherTool,
+                    freeTool('list_harness_issues'),
+                    freeTool('get_ui_guide'),
+                    freeTool('send_file'),
+                ]);
+                let round = 0;
+                const finalFlags: boolean[] = [];
+                const appendedResults: string[][] = [];
+                const { result: chunks, lines } = await captureConsole(async () =>
+                    drain(
+                        runToolLoop({
+                            tools: toolsWithFree,
+                            logPrefix: '[offline]',
+                            sendRound: async (_roundIndex, final) => {
+                                round += 1;
+                                finalFlags.push(final);
+                                if (round === 1) {
+                                    return {
+                                        chunks: [{ type: 'text', content: 'Looking.' }],
+                                        toolCalls: [{ id: 'c1', name: 'lookup_weather', argumentsJson: '{"city":"Oslo"}' }],
+                                    };
+                                }
+                                if (round === 2) {
+                                    return {
+                                        chunks: [],
+                                        toolCalls: [
+                                            { id: 'c2', name: 'list_harness_issues', argumentsJson: '{}' },
+                                            { id: 'c3', name: 'get_ui_guide', argumentsJson: '{}' },
+                                            { id: 'c4', name: 'send_file', argumentsJson: '{}' },
+                                            // No longer offered: must be answered, never run
+                                            { id: 'c5', name: 'lookup_weather', argumentsJson: '{"city":"Rome"}' },
+                                        ],
+                                    };
+                                }
+                                return { chunks: [{ type: 'text', content: 'Done.' }], toolCalls: [] };
+                            },
+                            appendRound: (_round, executedCalls) => {
+                                appendedResults.push(executedCalls.map((executed) => executed.result.content));
+                            },
+                        })
+                    )
+                );
+                expect(
+                    json(freeExecutions) === json(['list_harness_issues', 'get_ui_guide', 'send_file']),
+                    `the issue, guide and product tools all ran after the budget (got ${json(freeExecutions)})`
+                );
+                expect(executions.length === 1, `the charged tool did not run again (got ${json(executions)})`);
+                const freeResults = appendedResults[1] ?? [];
+                expect(
+                    freeResults.length === 4 && freeResults[3]?.includes('Unknown tool lookup_weather') === true,
+                    `the charged call is answered as unknown (got ${json(freeResults)})`
+                );
+                expect(
+                    freeResults.every((content) => content.includes('只能再调用不产生开销的工具')),
+                    'every no-cost round result carries the no-cost notice'
+                );
+                expect(
+                    lines.some((line) => line.includes('no-cost tools only from here')),
+                    `the no-cost mode is logged (got ${json(lines)})`
+                );
+                expect(
+                    json(finalFlags) === json([false, false, false]) && textOf(chunks) === 'Looking.\n\nDone.',
+                    `the free rounds keep the tools on and the answer streams (got ${json({ finalFlags, text: textOf(chunks) })})`
+                );
+            });
+        },
+    },
+    {
         name: 'consecutive rounds show their text a blank line apart',
         body: async () => {
             const separator = createRoundTextSeparator();

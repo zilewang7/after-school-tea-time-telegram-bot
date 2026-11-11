@@ -47,19 +47,47 @@ const countWords = (text: string): number => {
 };
 
 /**
+ * A CoT longer than this is measured from its beginning and scaled up. The
+ * markdown renderer's cost grows faster than its input, so rendering a 500k
+ * character CoT just to count its messages would block the reply for seconds;
+ * the line already says "约拆成", so a scaled count is honest.
+ */
+const SUMMARY_SAMPLE_CHARS = 20_000;
+
+/** The measured part of a CoT and how many times it fits into the whole */
+interface SummarySample {
+    readonly text: string;
+    readonly scale: number;
+}
+
+/** The first SUMMARY_SAMPLE_CHARS, cut back to a paragraph boundary */
+const summarySampleOf = (thinking: string): SummarySample => {
+    if (thinking.length <= SUMMARY_SAMPLE_CHARS) return { text: thinking, scale: 1 };
+    const window = thinking.slice(0, SUMMARY_SAMPLE_CHARS);
+    const cut = window.lastIndexOf('\n\n');
+    const text = cut <= 0 ? window : window.slice(0, cut);
+    return { text, scale: thinking.length / text.length };
+};
+
+/**
  * The stats of a finished thinking: its word count, plus the number of messages
  * the layout before the link would have taken (the same render and budgets the
- * final split uses). Null when there is nothing to count, or when measuring
- * fails — the link message then simply keeps its label-only shape.
+ * final split uses; scaled up from a sample for a very long CoT). Null when
+ * there is nothing to count, or when measuring fails — the link message then
+ * simply keeps its label-only shape.
  */
 export const thinkingLinkSummaryOf = (thinking: string): ThinkingLinkSummary | null => {
     if (thinking.trim() === '') return null;
     try {
-        const segments = splitMessage(renderThinkingQuote(thinking, { expandable: true }), {
+        const sample = summarySampleOf(thinking);
+        const sampleSegments = splitMessage(renderThinkingQuote(sample.text, { expandable: true }), {
             maxLength: TELEGRAM_MAX_LENGTH,
             maxEntities: TELEGRAM_MAX_ENTITIES,
         }).length;
-        return { words: countWords(thinking), segments: Math.max(1, segments) };
+        return {
+            words: countWords(thinking),
+            segments: Math.max(1, Math.round(sampleSegments * sample.scale)),
+        };
     } catch (error) {
         console.warn('[thinking-link] measuring the thinking failed:', error);
         return null;

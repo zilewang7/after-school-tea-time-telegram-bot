@@ -20,8 +20,8 @@ export const CREATE_HARNESS_ISSUE_TOOL_NAME = 'create_harness_issue';
 /**
  * The "product" tools: they produce or deliver what the reply exists to hand
  * over (a picture, a sticker, a file, a card). Their run time does not count
- * against the reply's tool clock, and once the clock is up the model still gets
- * a product-only round, so a reply never ends unable to hand over what it made.
+ * against the reply's tool clock, and once the clock is up they stay callable,
+ * so a reply never ends unable to hand over what it made.
  */
 export const PRODUCT_TOOL_NAMES: ReadonlySet<string> = new Set([
     GENERATE_IMAGE_TOOL_NAME,
@@ -31,19 +31,22 @@ export const PRODUCT_TOOL_NAMES: ReadonlySet<string> = new Set([
     SEND_WIDGET_TOOL_NAME,
 ]);
 
-export const isProductToolName = (name: string): boolean => PRODUCT_TOOL_NAMES.has(name);
-
 /**
  * Tools whose handler time does not count against the reply's tool budget.
- * The product tools are free because a reply must never end unable to hand
- * over what it made. The harness issue tools are free because they are how the
- * model reports a tool that wasted its time — charging for the report would
- * punish exactly the replies that found the problem.
+ *
+ * They cost the reply nothing: the product tools hand over what the reply made
+ * (a picture, a sticker, a file, a card), the harness issue tools only write a
+ * local row, and `get_ui_guide` only reads a static guide (the prerequisite for
+ * a card). None of them spends the budget on looking around, so the reply is
+ * never unable to deliver or to report a problem because its clock ran out.
+ * The same set is what a post-budget round still offers; the round count there
+ * (FREE_TOOL_ROUNDS_MAX) is the bound.
  */
 export const TIME_FREE_TOOL_NAMES: ReadonlySet<string> = new Set([
     ...PRODUCT_TOOL_NAMES,
     LIST_HARNESS_ISSUES_TOOL_NAME,
     CREATE_HARNESS_ISSUE_TOOL_NAME,
+    GET_UI_GUIDE_TOOL_NAME,
 ]);
 
 export const isTimeFreeToolName = (name: string): boolean => TIME_FREE_TOOL_NAMES.has(name);

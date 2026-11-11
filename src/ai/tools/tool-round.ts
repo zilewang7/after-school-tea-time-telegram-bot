@@ -8,7 +8,7 @@ import type { ToolCall, ToolResult, TurnTools } from './tool-types.js';
 export interface ExecutedToolCall {
     readonly call: ToolCall;
     readonly result: ToolResult;
-    /** Wall time the handler itself took; non-product time is charged to the budget */
+    /** Wall time the handler itself took; charged to the budget unless the tool is free */
     readonly durationMs: number;
 }
 
@@ -21,12 +21,13 @@ export interface ExecutedToolCall {
 export const toolRoundNotice = (
     toolCalls: number,
     finalRound: boolean,
-    productRound = false
+    freeRound = false
 ): string => {
-    if (productRound) {
+    if (freeRound) {
         return (
-            `[工具轮次] 本次回复已调用工具 ${toolCalls} 次；时间已用完，只能再调用产物工具` +
-            '（generate_image / send_image / send_sticker / send_file / send_widget），之后必须文字收尾。'
+            `[工具轮次] 本次回复已调用工具 ${toolCalls} 次；时间已用完，只能再调用不产生开销的工具` +
+            '（产物工具 generate_image / send_image / send_sticker / send_file / send_widget，' +
+            '以及 get_ui_guide / list_harness_issues / create_harness_issue），之后必须文字收尾。'
         );
     }
     return finalRound
@@ -39,7 +40,7 @@ const secondsOf = (ms: number): number => Math.max(0, Math.round(ms / 1000));
 /**
  * The tool budget as the model sees it: tool time spent (the only thing that
  * counts) next to the reply's actual wall time, so it can tell a slow provider
- * from its own tool use. Product-tool time is not charged, so a reply can
+ * from its own tool use. No-cost-tool time is not charged, so a reply can
  * still hand its picture/card/file over after the budget is gone.
  */
 export const toolTimeNotice = (timing: {
@@ -57,8 +58,8 @@ export interface ToolBudget {
     readonly toolCalls: number;
     /** The clock makes the next round the final, tool-less one */
     readonly finalRound: boolean;
-    /** Past the budget: only product tools can run, and then it is the answer */
-    readonly productRound?: boolean;
+    /** Past the budget: only no-cost tools can run, and then it is the answer */
+    readonly freeRound?: boolean;
     /** Reply wall time, for the model to see (never the budget) */
     readonly elapsedMs: number;
     /** Tool time spent so far, the number the budget is compared with */
@@ -78,7 +79,7 @@ export const withToolBudget = (
             ...result,
             content:
                 `${result.content}\n\n${
-                    toolRoundNotice(budget.toolCalls, budget.finalRound, budget.productRound === true)
+                    toolRoundNotice(budget.toolCalls, budget.finalRound, budget.freeRound === true)
                 }\n` +
                 toolTimeNotice(budget),
         },
@@ -86,11 +87,11 @@ export const withToolBudget = (
 
 /**
  * Tool time the reply's budget should charge for: every call's handler time
- * except the free ones. Product tools (drawing and handing over) are free on
- * purpose — a reply must never be unable to send what it made because the
- * model spent its budget looking. The harness issue tools are free too: they
- * are how the model reports a tool that wasted its time. Both are bounded by
- * their own per-reply limits.
+ * except the free ones. No-cost tools are free on purpose: the product tools
+ * hand over what the reply made, the harness issue tools report a tool that
+ * wasted the model's time, and get_ui_guide reads a static guide — a reply must
+ * never be unable to deliver or report because it spent its budget looking.
+ * All of them are bounded by their own per-reply limits.
  */
 export const toolTimeSpentMs = (executedCalls: readonly ExecutedToolCall[]): number =>
     executedCalls.reduce(

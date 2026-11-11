@@ -11,13 +11,14 @@
  * look around. A large absolute wall cap still bounds the whole reply.
  *
  * Once the tool budget is used up (or the absolute wall is reached), up to
- * PRODUCT_TOOL_ROUNDS_MAX product-only rounds are allowed: only generate_image
- * / send_image / send_sticker / send_file / send_widget run, so a reply never
- * ends unable to hand over what it made. Then the final, tool-less round
- * answers.
+ * FREE_TOOL_ROUNDS_MAX no-cost rounds are allowed: only the tools that cost
+ * the reply nothing run — the product tools (generate_image / send_image /
+ * send_sticker / send_file / send_widget), the harness issue tools and
+ * get_ui_guide — so a reply never ends unable to hand over what it made or to
+ * report a tool that wasted its time. Then the final, tool-less round answers.
  */
 import type { StreamChunk } from '../types.js';
-import { isProductToolName } from '../../reply/tools/tool-names.js';
+import { isTimeFreeToolName } from '../../reply/tools/tool-names.js';
 import { createRoundTextSeparator } from './round-text-separator.js';
 import {
     createToolUsageTally,
@@ -37,8 +38,8 @@ import type { ToolCall, TurnTools } from './tool-types.js';
  * a slow provider: one googleSearch round can stall for minutes (or a 429
  * retry), and the model then got only a couple of tool calls before the final
  * round took its tools away. The clock now measures the tool calls themselves
- * (product and harness issue tools excluded), so the same 600s buys the same
- * exploration no matter how slow the model or the search backend is.
+ * (the no-cost tools are excluded), so the same 600s buys the same exploration
+ * no matter how slow the model or the search backend is.
  */
 export const TOOL_LOOP_DEADLINE_MS = 600_000;
 
@@ -49,8 +50,8 @@ export const TOOL_LOOP_DEADLINE_MS = 600_000;
  */
 export const TOOL_LOOP_WALL_MS = 20 * 60_000;
 
-/** How many product-only rounds are allowed once the budget is used up */
-export const PRODUCT_TOOL_ROUNDS_MAX = 3;
+/** How many no-cost rounds are allowed once the budget is used up */
+export const FREE_TOOL_ROUNDS_MAX = 3;
 
 export interface CollectedToolRound {
     /** The round's text and thinking chunks, in stream order */
@@ -81,7 +82,7 @@ export interface ToolLoopOptions<Round extends CollectedToolRound> {
 /** Tool time and wall time of one reply; both are checked before a round */
 export interface ToolTimeClock {
     readonly startedAt: number;
-    /** Tool-time budget; only time inside non-product tool calls is added */
+    /** Tool-time budget; only time inside charged tool calls is added */
     readonly deadlineMs: number;
     /** Absolute wall cap, independent of the tool budget */
     readonly wallMs: number;
@@ -94,7 +95,7 @@ export const createToolTimeClock = (
     startedAt: number = Date.now()
 ): ToolTimeClock => ({ startedAt, deadlineMs, wallMs, toolTimeMs: 0 });
 
-/** Why the next round has to be the product-only/final one, or null */
+/** Why the next round has to be the no-cost/final one, or null */
 export const budgetExhaustedReason = (clock: ToolTimeClock): string | null => {
     if (clock.toolTimeMs >= clock.deadlineMs) {
         return `Tool budget (${Math.round(clock.deadlineMs / 1000)}s of tool time) used up`;
@@ -105,11 +106,11 @@ export const budgetExhaustedReason = (clock: ToolTimeClock): string | null => {
     return null;
 };
 
-const productToolsOf = (tools: TurnTools): TurnTools =>
-    filterTurnTools(tools, (name) => isProductToolName(name));
+const freeToolsOf = (tools: TurnTools): TurnTools =>
+    filterTurnTools(tools, (name) => isTimeFreeToolName(name));
 
-const hasProductToolsOf = (tools: TurnTools): boolean =>
-    tools.definitions.some((definition) => isProductToolName(definition.name));
+const hasFreeToolsOf = (tools: TurnTools): boolean =>
+    tools.definitions.some((definition) => isTimeFreeToolName(definition.name));
 
 const doneChunk = (rawResponse: unknown, tally: ToolUsageTally): StreamChunk => {
     const toolUsage = tally.snapshot();
@@ -129,11 +130,11 @@ export async function* runToolLoop<Round extends CollectedToolRound>(
     const clock = createToolTimeClock(deadlineMs, wallMs);
     const tally = createToolUsageTally();
     const separator = createRoundTextSeparator();
-    const productTools = productToolsOf(tools);
-    const hasProductTools = hasProductToolsOf(tools);
+    const freeTools = freeToolsOf(tools);
+    const hasFreeTools = hasFreeToolsOf(tools);
     let executedCallCount = 0;
-    let productMode = false;
-    let productRounds = 0;
+    let freeMode = false;
+    let freeRounds = 0;
     let forceFinal = false;
 
     for (let roundIndex = 0; ; roundIndex++) {
@@ -143,21 +144,21 @@ export async function* runToolLoop<Round extends CollectedToolRound>(
             return;
         }
 
-        let mode: 'normal' | 'product' | 'final' = 'normal';
+        let mode: 'normal' | 'free' | 'final' = 'normal';
         if (forceFinal) {
             mode = 'final';
-        } else if (productMode) {
-            mode = 'product';
+        } else if (freeMode) {
+            mode = 'free';
         } else {
             const exhausted = budgetExhaustedReason(clock);
             if (exhausted !== null) {
                 console.log(
                     `${logPrefix} ${exhausted}, ` +
-                        (hasProductTools ? 'product tools only from here' : 'forcing final answer')
+                        (hasFreeTools ? 'no-cost tools only from here' : 'forcing final answer')
                 );
-                if (hasProductTools) {
-                    productMode = true;
-                    mode = 'product';
+                if (hasFreeTools) {
+                    freeMode = true;
+                    mode = 'free';
                 } else {
                     mode = 'final';
                 }
@@ -179,13 +180,13 @@ export async function* runToolLoop<Round extends CollectedToolRound>(
             return;
         }
 
-        const activeTools = mode === 'product' ? productTools : tools;
+        const activeTools = mode === 'free' ? freeTools : tools;
         const executedCalls = yield* runToolRound(activeTools, round.toolCalls, tally, signal);
         executedCallCount += executedCalls.length;
         if (mode === 'normal') clock.toolTimeMs += toolTimeSpentMs(executedCalls);
-        if (mode === 'product') {
-            productRounds += 1;
-            if (productRounds >= PRODUCT_TOOL_ROUNDS_MAX) forceFinal = true;
+        if (mode === 'free') {
+            freeRounds += 1;
+            if (freeRounds >= FREE_TOOL_ROUNDS_MAX) forceFinal = true;
         }
 
         const exhaustedAfter = budgetExhaustedReason(clock);
@@ -194,8 +195,8 @@ export async function* runToolLoop<Round extends CollectedToolRound>(
             round,
             withToolBudget(executedCalls, {
                 toolCalls: executedCallCount,
-                finalRound: exhaustedAfter !== null && !hasProductTools,
-                productRound: mode === 'product' || (exhaustedAfter !== null && hasProductTools),
+                finalRound: exhaustedAfter !== null && !hasFreeTools,
+                freeRound: mode === 'free' || (exhaustedAfter !== null && hasFreeTools),
                 elapsedMs: Date.now() - clock.startedAt,
                 toolTimeMs: clock.toolTimeMs,
                 deadlineMs,

@@ -433,8 +433,10 @@ const cases = [
                 'the last round keeps the count and says the next step must be the answer'
             );
             expect(
-                toolRoundNotice(7, true, true).includes('只能再调用产物工具'),
-                'the product round says only product tools can still run'
+                toolRoundNotice(7, true, true).includes('只能再调用不产生开销的工具') &&
+                    toolRoundNotice(7, true, true).includes('list_harness_issues') &&
+                    toolRoundNotice(7, true, true).includes('get_ui_guide'),
+                'the no-cost round says which tools can still run'
             );
             expect(
                 toolTimeNotice({ elapsedMs: 95_000, toolTimeMs: 40_000, deadlineMs: 300_000 }).includes(
