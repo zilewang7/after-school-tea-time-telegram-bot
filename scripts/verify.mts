@@ -15,7 +15,17 @@
  * `pnpm test:offline <name>`, which run on the working tree.
  */
 import { spawnSync } from 'node:child_process';
-import { appendFileSync, existsSync, lstatSync, mkdirSync, readFileSync, rmSync, symlinkSync, unlinkSync } from 'node:fs';
+import {
+    appendFileSync,
+    existsSync,
+    lstatSync,
+    mkdirSync,
+    readdirSync,
+    readFileSync,
+    rmSync,
+    symlinkSync,
+    unlinkSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -29,6 +39,9 @@ const STEPS = ['typecheck', 'lint', 'check-deps', 'test:offline'] as const;
 
 /** Installed packages are not part of a commit: the export borrows this checkout's */
 const INSTALLED_DIRECTORIES = ['node_modules', 'webapp/node_modules', 'tools/checks/node_modules'] as const;
+
+/** pnpm keeps a copy of the lockfile it installed from next to the packages */
+const INSTALLED_LOCKFILE = join(REPOSITORY_ROOT, 'node_modules', '.pnpm', 'lock.yaml');
 
 const git = (args: string[], cwd: string = REPOSITORY_ROOT): string => {
     const outcome = spawnSync('git', args, { cwd, encoding: 'utf8' });
@@ -46,9 +59,19 @@ const alreadyVerified = (tree: string): boolean => {
         .some((line) => line.startsWith(`${tree} `));
 };
 
+/**
+ * The borrowed packages must be the ones the commit locks. Otherwise a commit
+ * that changes dependencies is tested against the old ones, and would get a
+ * record all the same.
+ */
+const installedPackagesMatch = (commit: string): boolean => {
+    if (!existsSync(INSTALLED_LOCKFILE)) return false;
+    return readFileSync(INSTALLED_LOCKFILE, 'utf8').trim() === git(['show', `${commit}:pnpm-lock.yaml`]);
+};
+
 const createExport = (commit: string, directory: string): void => {
     mkdirSync(EXPORT_PARENT, { recursive: true });
-    // Forget exports whose directory a killed run left registered
+    // Forget exports whose directory is gone but still registered
     git(['worktree', 'prune']);
     git(['worktree', 'add', '--detach', directory, commit]);
     for (const installed of INSTALLED_DIRECTORIES) {
@@ -68,7 +91,7 @@ const removeLink = (path: string): void => {
     if (entry?.isSymbolicLink() === true) unlinkSync(path);
 };
 
-/** Best effort: a leftover export costs disk space, not correctness, and the next run prunes it */
+/** Best effort: a leftover export costs disk space, not correctness; the next run removes it */
 const removeExport = (directory: string): void => {
     try {
         // The links first: `worktree remove` refuses a directory with untracked files
@@ -80,6 +103,33 @@ const removeExport = (directory: string): void => {
     } catch (error) {
         console.error(`could not remove ${directory}: ${error instanceof Error ? error.message : String(error)}`);
     }
+};
+
+const isRunning = (pid: number): boolean => {
+    try {
+        process.kill(pid, 0);
+        return true;
+    } catch (error) {
+        // EPERM: the process exists and belongs to someone else
+        return error instanceof Error && 'code' in error && error.code === 'EPERM';
+    }
+};
+
+/**
+ * Removes the exports of runs that were killed before their own cleanup. An
+ * export is named `<commit>-<pid>`; one whose process is gone is abandoned.
+ */
+const removeAbandonedExports = (): void => {
+    if (!existsSync(EXPORT_PARENT)) return;
+    for (const name of readdirSync(EXPORT_PARENT)) {
+        const pid = Number(name.slice(name.lastIndexOf('-') + 1));
+        if (Number.isInteger(pid) && pid > 0 && !isRunning(pid)) removeExport(join(EXPORT_PARENT, name));
+    }
+};
+
+const prePushHookEnabled = (): boolean => {
+    const configured = spawnSync('git', ['config', '--get', 'core.hooksPath'], { cwd: REPOSITORY_ROOT, encoding: 'utf8' });
+    return configured.stdout.trim() === '.githooks';
 };
 
 /** Runs one package.json script inside the export; true when it passed */
@@ -98,7 +148,8 @@ const runStep = (step: string, directory: string): boolean => {
 const main = (): number => {
     const force = process.argv.includes('--force');
     const commit = git(['rev-parse', 'HEAD']);
-    const tree = git(['rev-parse', 'HEAD^{tree}']);
+    // Of that commit, not of HEAD again: another session may commit in between
+    const tree = git(['rev-parse', `${commit}^{tree}`]);
     const shortCommit = commit.slice(0, 7);
 
     if (!force && alreadyVerified(tree)) {
@@ -110,14 +161,21 @@ const main = (): number => {
         console.log(`verifying commit ${shortCommit}; ${uncommitted} uncommitted changes are not part of it`);
     }
 
+    if (!installedPackagesMatch(commit)) {
+        console.log(
+            `the installed packages are not the ones ${shortCommit} locks (pnpm-lock.yaml differs from the last install).\n` +
+                'Run `pnpm install` in the main checkout (never in a worktree), then verify again.'
+        );
+        return 1;
+    }
+
+    removeAbandonedExports();
     const directory = join(EXPORT_PARENT, `${shortCommit}-${process.pid}`);
     createExport(commit, directory);
-    for (const signal of ['SIGINT', 'SIGTERM'] as const) {
-        process.once(signal, () => {
-            removeExport(directory);
-            process.exit(130);
-        });
-    }
+    // No signal handlers: every step blocks this process, so they could not run
+    // before the end anyway. Ctrl-C reaches the step as well, which fails and
+    // lets `finally` clean up; a run that is killed outright leaves its export
+    // to removeAbandonedExports of the next one.
     try {
         const failedStep = STEPS.find((step) => !runStep(step, directory));
         if (failedStep !== undefined) {
@@ -130,6 +188,9 @@ const main = (): number => {
 
     appendFileSync(recordPath(), `${tree} ${commit} ${new Date().toISOString()}\n`);
     console.log(`\nverified ${shortCommit}; it can be pushed`);
+    if (!prePushHookEnabled()) {
+        console.log('note: the pre-push hook is off in this clone; turn it on once with `git config core.hooksPath .githooks`');
+    }
     return 0;
 };
 

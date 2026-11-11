@@ -1,0 +1,4 @@
+# The image copies nothing from the build context: it clones the repository
+# (Dockerfile). Without this file the context is the whole checkout, with the
+# production database and .env in it.
+*

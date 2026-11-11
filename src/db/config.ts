@@ -33,6 +33,8 @@ const resolveStoragePath = (): string => {
     );
 };
 
+const MAX_TIMER_MS = 2 ** 31 - 1;
+
 /**
  * How long the pool keeps an unused connection open. Unset in production, where
  * the pool default (ten seconds) applies. The offline harness sets a few
@@ -41,7 +43,8 @@ const resolveStoragePath = (): string => {
  */
 const readPoolIdleMs = (): number | undefined => {
     const parsed = Number(process.env.DB_POOL_IDLE_MS);
-    return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
+    // A timer takes at most this many milliseconds; beyond it Node falls back to 1
+    return Number.isInteger(parsed) && parsed > 0 && parsed <= MAX_TIMER_MS ? parsed : undefined;
 };
 
 const poolIdleMs = readPoolIdleMs();
@@ -51,6 +54,35 @@ export const sequelize = new Sequelize({
     storage: resolveStoragePath(),
     ...(poolIdleMs === undefined ? {} : { pool: { idle: poolIdleMs, evict: poolIdleMs } }),
 });
+
+/** How long the shutdown waits for statements that are still running */
+const CLOSE_TIMEOUT_MS = 5_000;
+
+/**
+ * Closes every connection. SQLite then merges the write-ahead log into the
+ * database file and deletes the log.
+ *
+ * Production mounts the database file alone, so the log lives in the
+ * container's own layer. A recreated container (every .env change, every image
+ * rebuild) starts without it, and a write that was only in the log is gone. A
+ * shutdown that ends with this call leaves nothing in the log.
+ *
+ * Resolves to whether the database closed in time.
+ */
+export const closeDatabase = async (): Promise<boolean> => {
+    let timer: NodeJS.Timeout | undefined;
+    const timedOut = new Promise<boolean>((resolve) => {
+        timer = setTimeout(() => resolve(false), CLOSE_TIMEOUT_MS);
+    });
+    try {
+        return await Promise.race([sequelize.close().then(() => true), timedOut]);
+    } catch (error) {
+        console.warn('[db] closing the database failed:', error);
+        return false;
+    } finally {
+        clearTimeout(timer);
+    }
+};
 
 /**
  * The one part of the raw driver handle we need. Sequelize types the hook's

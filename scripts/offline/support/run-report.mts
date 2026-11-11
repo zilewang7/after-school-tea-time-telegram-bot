@@ -18,13 +18,13 @@ export interface FileReport {
     name: string;
     passedCases: number;
     failedCases: FailedCase[];
-    /** Cases that started, counted from the log */
+    /** Cases that started, counted from the lines runCase writes */
     startedCases: number;
     /** The file ended without printing a summary: it crashed or was killed */
     incomplete: boolean;
     /** Why the file failed although no case in its summary did; undefined otherwise */
     outsideCases: string | undefined;
-    /** The harness had to end the file: something it started was still running long after the summary */
+    /** The harness had to end the file, which fails it: something it started was still running long after the summary */
     lingered: boolean;
     /** The last lines of the log, shown when there is no summary to go by */
     logTail: string[];
@@ -68,10 +68,13 @@ const failureOutsideCases = (
     run: FileRun,
     incomplete: boolean,
     failedCases: number,
-    unreportedCases: number
+    unreportedCases: number,
+    lingered: boolean
 ): string | undefined => {
     if (run.timedOut || incomplete || failedCases > 0) return undefined;
-    if (unreportedCases !== 0) return `${unreportedCases} cases ran but are not in the summary`;
+    if (unreportedCases > 0) return `${unreportedCases} cases ran but are not in the summary`;
+    if (unreportedCases < 0) return `the summary lists ${-unreportedCases} more cases than runCase started`;
+    if (lingered) return 'still running long after its summary: something a case started was never ended, see the log';
     if (run.exitCode !== 0) return `exit code ${run.exitCode ?? 'none'} after a clean summary: an error outside the cases`;
     return undefined;
 };
@@ -89,6 +92,7 @@ export const reportOf = (run: FileRun): FileReport => {
     const incomplete = summaryIndex === -1;
     const passedCases = summaryLines.filter((line) => line.startsWith('PASS  ')).length;
     const startedCases = lines.filter((line) => line.startsWith(CASE_START)).length;
+    const lingered = lines.some((line) => line.startsWith(LINGER_MARKER));
 
     return {
         run,
@@ -97,15 +101,16 @@ export const reportOf = (run: FileRun): FileReport => {
         failedCases,
         startedCases,
         incomplete,
-        outsideCases: failureOutsideCases(run, incomplete, failedCases.length, startedCases - passedCases),
-        lingered: lines.some((line) => line.startsWith(LINGER_MARKER)),
+        outsideCases: failureOutsideCases(run, incomplete, failedCases.length, startedCases - passedCases, lingered),
+        lingered,
         logTail: lines.filter((line) => line !== '').slice(-LOG_TAIL_LINES),
         ok:
             run.exitCode === 0 &&
             !run.timedOut &&
             !incomplete &&
             failedCases.length === 0 &&
-            startedCases === passedCases,
+            startedCases === passedCases &&
+            !lingered,
     };
 };
 
@@ -114,10 +119,7 @@ const seconds = (durationMs: number): string => `${(durationMs / 1000).toFixed(1
 /** One line per file, printed as soon as the file is done */
 export const fileLine = (report: FileReport): string => {
     const duration = seconds(report.run.durationMs);
-    if (report.ok) {
-        const lingered = report.lingered ? ', had to be ended: something was left running, see the log' : '';
-        return `PASS  ${report.name}  (${report.passedCases} cases, ${duration}${lingered})`;
-    }
+    if (report.ok) return `PASS  ${report.name}  (${report.passedCases} cases, ${duration})`;
     if (report.run.timedOut) return `FAIL  ${report.name}  (timed out after ${duration})`;
     if (report.incomplete) return `FAIL  ${report.name}  (exit code ${report.run.exitCode ?? 'none'}, no summary, ${duration})`;
     if (report.outsideCases !== undefined) return `FAIL  ${report.name}  (${report.outsideCases}, ${duration})`;

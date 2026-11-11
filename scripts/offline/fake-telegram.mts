@@ -78,13 +78,18 @@ export const BOT_ME: UserFromGetMe = {
 export const createFakeTelegram = (): FakeTelegram => recordInto(new Api('0:offline-token'));
 
 const refuseBotApiCall: Transformer = (_previous, method) => {
+    // The code under test usually catches a failed Bot API call (a tool hands
+    // the error to the model, a preview only warns), so the error alone would
+    // go unnoticed. The exit code fails the file whatever the caller does.
+    console.error(`[offline] unexpected Bot API call: ${method}`);
+    process.exitCode = 1;
     throw new Error(`unexpected Bot API call in an offline test: ${method}`);
 };
 
 /**
  * A client for a fixture whose code under test is not supposed to call
  * Telegram. A bare `new Api(token)` would send the call to api.telegram.org;
- * this one fails it on the spot, naming the method.
+ * this one fails the call on the spot, naming the method, and fails the file.
  */
 export const createUnusedApi = (): Api => {
     const api = new Api('0:offline-token');

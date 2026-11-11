@@ -989,10 +989,10 @@ results.push(
     })
 );
 
-// The streams leave timers behind; reportResults ends the process regardless
 const { sequelize } = await import('../../src/db/config.js');
 await sequelize.close();
 void db;
 
+// The replies' spinner and typing timers still run: without this the file would not end on its own and fail
 endOpenReplies();
 reportResults(results);

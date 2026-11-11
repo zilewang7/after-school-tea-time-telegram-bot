@@ -2,13 +2,13 @@ import type { ExportDeclaration, ImportDeclaration, Node, SourceFile, Statement 
 import { ts } from './typescript.mts';
 import { lineOf } from './parse-source.mts';
 
-/** One `import … from`, `export … from` or `import()` of a module */
+/** One `import … from`, `export … from`, `import()` or `import('…')` type of a module */
 export interface ModuleReference {
     specifier: string;
     line: number;
     /** `import()`: a runtime dependency, but loaded late, so it cannot form a load cycle */
     dynamic: boolean;
-    /** Only types cross (`import type`, `export type … from`): nothing is loaded at runtime */
+    /** Only types cross (`import type`, `export type … from`, `import('…').T`): nothing is loaded at runtime */
     typeOnly: boolean;
 }
 
@@ -54,22 +54,35 @@ const dynamicSpecifier = (node: Node): string | undefined => {
     return argument.text;
 };
 
-/** Cheap text test before the tree walk; a match in a comment only costs the walk */
-const MAY_HAVE_DYNAMIC_IMPORT = /\bimport\s*\(/;
+/** `import('./x.js').T` or `typeof import('./x.js')` in a type position */
+const inlineTypeSpecifier = (node: Node): string | undefined => {
+    if (!ts.isImportTypeNode(node) || !ts.isLiteralTypeNode(node.argument)) return undefined;
+    const literal = node.argument.literal;
+    return ts.isStringLiteralLike(literal) ? literal.text : undefined;
+};
 
-const collectDynamicReferences = (sourceFile: SourceFile, node: Node, references: ModuleReference[]): void => {
-    const specifier = dynamicSpecifier(node);
-    if (specifier !== undefined) {
-        references.push({ specifier, line: lineOf(sourceFile, node), dynamic: true, typeOnly: false });
+/** Cheap text test before the tree walk; a match in a comment only costs the walk */
+const MAY_HAVE_IMPORT_CALL = /\bimport\s*\(/;
+
+/** The references that are not statements: `import()` calls and `import('…')` types anywhere in the file */
+const collectNestedReferences = (sourceFile: SourceFile, node: Node, references: ModuleReference[]): void => {
+    const loaded = dynamicSpecifier(node);
+    if (loaded !== undefined) {
+        references.push({ specifier: loaded, line: lineOf(sourceFile, node), dynamic: true, typeOnly: false });
     }
-    ts.forEachChild(node, (child) => collectDynamicReferences(sourceFile, child, references));
+    const typed = inlineTypeSpecifier(node);
+    if (typed !== undefined) {
+        references.push({ specifier: typed, line: lineOf(sourceFile, node), dynamic: false, typeOnly: true });
+    }
+    ts.forEachChild(node, (child) => collectNestedReferences(sourceFile, child, references));
 };
 
 /**
- * Every `import`, `export … from` and `import()` of another module. Type-only
- * ones are marked: they vanish from the emitted code, so they cannot form a
- * load cycle, but they are still a dependency on the other module's layer.
- * `typeof import('x')` is a type query, not a call, and is not collected.
+ * Every `import`, `export … from`, `import()` and `import('…')` type of another
+ * module. Type-only ones are marked: they vanish from the emitted code, so they
+ * cannot form a load cycle, but they are still a dependency on the other
+ * module's layer. `import('x').T` and `typeof import('x')` are type-only: the
+ * same dependency as an `import type`, written in place.
  */
 export const moduleReferencesOf = (sourceFile: SourceFile): ModuleReference[] => {
     const references: ModuleReference[] = [];
@@ -77,7 +90,7 @@ export const moduleReferencesOf = (sourceFile: SourceFile): ModuleReference[] =>
         const reference = staticReference(sourceFile, statement);
         if (reference !== undefined) references.push(reference);
     }
-    // Most files have no import() at all; skipping their walk saves a tenth of a cold run
-    if (MAY_HAVE_DYNAMIC_IMPORT.test(sourceFile.text)) collectDynamicReferences(sourceFile, sourceFile, references);
+    // Most files have no import( at all; skipping their walk saves a tenth of a cold run
+    if (MAY_HAVE_IMPORT_CALL.test(sourceFile.text)) collectNestedReferences(sourceFile, sourceFile, references);
     return references;
 };

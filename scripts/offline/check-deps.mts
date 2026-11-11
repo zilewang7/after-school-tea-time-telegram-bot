@@ -93,6 +93,8 @@ results.push(
                 'src/services/d.ts': `export { type A } from './a.js';\nexport type * from './c.js';\nimport { e } from './e.js';\nexport const d = e;\n`,
                 'src/services/e.ts': `export const e = async (): Promise<unknown> => import('./d.js');\n`,
                 'src/services/f.ts': `import { a } from './a.js';\nexport type Loaded = typeof import('./a.js');\nexport const f = a;\n`,
+                'src/services/g.ts': `import { h } from './h.js';\nexport interface G { name: string }\nexport const g = h;\n`,
+                'src/services/h.ts': `export const h = (value: import('./g.js').G): string => value.name;\n`,
             }),
         );
         expect(findings.cycleCount === 0, 'no cycle: every way back is type-only or dynamic');
@@ -147,13 +149,60 @@ results.push(
         );
         expect(
             keysOf(findings.upwardImports).join('|') ===
-                'src/db/late.ts -> src/reply/answer.ts|src/db/named.ts -> src/reply/answer.ts|src/db/typed.ts -> src/reply/answer.ts',
-            'the dynamic import and both type-only forms are reported',
+                'src/db/late.ts -> src/reply/answer.ts|src/db/named.ts -> src/reply/answer.ts (type)|src/db/typed.ts -> src/reply/answer.ts (type)',
+            'the dynamic import and both type-only forms are reported; a type-only edge has its own key',
         );
         const typed = findings.upwardImports.find((violation) => violation.path === 'src/db/typed.ts');
         expect(typed?.message.includes('imports a type from') === true, 'a type-only import is named as such');
         expect(typed?.message.includes('move the type down') === true, 'and the advice is about the type');
         expect(findings.cycleCount === 0, 'a dynamic import is no cycle');
+    }),
+);
+
+results.push(
+    await runCase('a type written in place with import() is an upward type import too', () => {
+        const findings = analyzeSources(
+            sourcesOf({
+                ...CLEAN_TREE,
+                'src/db/inline.ts': `export type Answer = import('../reply/answer.js').Answer;\n`,
+                'src/db/query.ts': `\nexport type Module = typeof import('../reply/answer.js');\n`,
+            }),
+        );
+        expect(
+            keysOf(findings.upwardImports).join('|') ===
+                'src/db/inline.ts -> src/reply/answer.ts (type)|src/db/query.ts -> src/reply/answer.ts (type)',
+            'both forms are reported as type-only upward imports',
+        );
+        const query = findings.upwardImports.find((violation) => violation.path === 'src/db/query.ts');
+        expect(query?.line === 2, 'located at the line of the type');
+    }),
+);
+
+results.push(
+    await runCase('a type import the baseline allows does not allow a value import of the same file', () => {
+        const typeOnly = analyzeSources(
+            sourcesOf({
+                ...CLEAN_TREE,
+                'src/db/typed.ts': `import type { answer } from '../reply/answer.js';\nexport type Answer = typeof answer;\n`,
+            }),
+        );
+        const baseline = { ...EMPTY_BASELINE, upwardImports: keysOf(typeOnly.upwardImports) };
+        expect(findNewViolations(typeOnly, baseline).length === 0, 'the type import is in the baseline');
+
+        const both = analyzeSources(
+            sourcesOf({
+                ...CLEAN_TREE,
+                'src/db/typed.ts': `import type { answer } from '../reply/answer.js';\nimport { answer as run } from '../reply/answer.js';\nexport type Answer = typeof answer;\nexport const again = run;\n`,
+            }),
+        );
+        expect(
+            keysOf(both.upwardImports).join('|') === 'src/db/typed.ts -> src/reply/answer.ts',
+            'with both in one file the value import is the one reported',
+        );
+        const upgraded = findNewViolations(both, baseline);
+        expect(upgraded.length === 1, 'and it is new against the baseline');
+        expect(upgraded[0]?.line === 2, 'located at the value import');
+        expect(upgraded[0]?.message.includes('move the code it needs down') === true, 'with the advice for a value import');
     }),
 );
 

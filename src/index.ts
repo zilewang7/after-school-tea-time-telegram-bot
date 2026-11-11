@@ -7,6 +7,7 @@ import { cmdLoad } from './cmd/index.js';
 import { replyLoad } from './reply/index.js';
 import { autoClear, autoSave, autoUpdate } from './db/autoSave.js';
 import { dbReady } from './db/index.js';
+import { closeDatabase } from './db/config.js';
 import { menuLoad } from './cmd/menu.js';
 import { initMcpClients } from './ai/mcp/index.js';
 import { isTestInstance, getAllowedChatIds, isChatAllowed } from './config/instance.js';
@@ -121,6 +122,10 @@ const shutdown = async (signal: string): Promise<void> => {
     }
     await stopPanel();
     await bot.stop().catch(() => undefined);
+    // Last, after everything that may still write. See closeDatabase for why
+    // the write-ahead log must not outlive the process.
+    const closed = await closeDatabase();
+    console.log(closed ? '[process] database closed' : '[process] database did not close in time');
     process.exit(0);
 };
 process.once('SIGTERM', () => void shutdown('SIGTERM'));

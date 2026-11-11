@@ -57,16 +57,19 @@ directly.
 
 A test file ends when the work its cases started has ended, so an error thrown
 after the last case still fails the file. A file that is still running 3 s
-after its summary is ended and marked in the run output: run it with
-`OFFLINE_DEBUG_HANDLES=1` to see which timer or server was left running, where
-it was created and during which case.
+after its summary is ended and fails: run it with `OFFLINE_DEBUG_HANDLES=1` to
+see which timer or server was left running, where it was created and during
+which case.
 
 ## Working loop
 
 - While editing: `pnpm check` and the test files you touched. Not the whole suite.
 - Before pushing: commit, then `pnpm verify`. It tests a clean export of
   `HEAD`, so other sessions' uncommitted edits do not affect the result. The
-  pre-push hook refuses a push to `master` whose tree has no passing record.
+  pre-push hook refuses a push to `master` whose tree has no passing record
+  (a new clone turns it on once: `git config core.hooksPath .githooks`).
+  A commit that changes `pnpm-lock.yaml` is verified in the main checkout,
+  after `pnpm install` there: verify refuses to test it with other packages.
 - A new test file is any `scripts/offline/<name>.mts`; the runner finds it.
   Nothing to register. Helpers go in `scripts/offline/support/`. A file that
   must not run with the suite says `// offline: manual` in its header.
@@ -80,7 +83,7 @@ it was created and during which case.
   `trackReply()` and the file calls `endOpenReplies()` at the end
   (`fake-telegram.mts`). A fixture that needs a Bot API client the code must
   not use takes `createUnusedApi()`, never a bare `new Api(token)`, which
-  would call Telegram.
+  would call Telegram. A call to the unused client fails the file.
 - `src` reads most env variables at import. A test sets the env first and
   imports `src` afterwards with `await import(…)`.
 
@@ -140,7 +143,13 @@ every container start, so the release is `docker compose restart k-on-bot`
 labels or env needs `docker compose up -d k-on-bot` instead: `restart` does not
 re-read them, and recreating costs about a minute. A change to the
 `Dockerfile` (Node, pnpm or pm2 version) needs the image rebuilt as well:
-`docker compose up -d --build k-on-bot`.
+`docker compose up -d --build k-on-bot`, after
+`bash scripts/deploy/rehearse.sh --from-production` passed.
+
+Recreating throws away the container's own files. The database's write-ahead
+log is one of them (only `database.sqlite` is mounted): the bot merges it into
+the file when it is stopped through `docker compose`, so never end the
+container with `docker kill` or `docker rm -f`.
 
 1. `pnpm verify`, push, then `pnpm deploy:check`. It must say READY: the
    restart kills the process, so wait while a reply is being generated.

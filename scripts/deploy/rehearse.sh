@@ -6,10 +6,20 @@
 #   bash scripts/deploy/rehearse.sh           run every scenario
 #   bash scripts/deploy/rehearse.sh --tests   also run the offline suite inside the container
 #   bash scripts/deploy/rehearse.sh --clean   also remove the rehearsal image and volumes
+#   bash scripts/deploy/rehearse.sh --from-production
+#                                             start from a copy of production's packages
 #
 # It builds an image from the Dockerfile, then plays "origin" with a local
-# clone of the commit checked out here (it must be committed). Nothing of
-# production is mounted: no database, no .env, no production volume.
+# clone of the commit checked out here (it must be committed). Without
+# --from-production nothing of production is mounted: no database, no .env,
+# no production volume.
+#
+# --from-production is for a change of the image (Node, pnpm): a recreated
+# production container meets the packages its old image installed, and with no
+# earlier build to fall back to a failed install there keeps the bot down. The
+# flag copies production's node_modules and pnpm store volumes (mounted
+# read-only for the copy, packages only) into the rehearsal volumes, so the
+# first start below is the one production is about to make.
 #
 # Scenarios, in one container that is restarted like production is:
 #   1. first start        full install and build
@@ -36,6 +46,9 @@ CONTAINER=k-on-bot-rehearsal
 SIGNAL_CONTAINER=k-on-bot-rehearsal-signal
 MODULES_VOLUME=k-on-bot-rehearsal-node-modules
 STORE_VOLUME=k-on-bot-rehearsal-pnpm-store
+# Named by compose after the directory of the main checkout
+PRODUCTION_MODULES_VOLUME=${PRODUCTION_MODULES_VOLUME:-k-on-bot_k-on-bot-node-modules}
+PRODUCTION_STORE_VOLUME=${PRODUCTION_STORE_VOLUME:-k-on-bot_k-on-bot-pnpm-store}
 WORK=$(mktemp -d "${TMPDIR:-/tmp}/k-on-bot-rehearsal-XXXXXX")
 ORIGIN="$WORK/origin"
 GIT_REPO=https://github.com/zilewang7/after-school-tea-time-telegram-bot.git
@@ -43,11 +56,13 @@ START_TIMEOUT_SECONDS=${START_TIMEOUT_SECONDS:-1200}
 
 RUN_TESTS=0
 CLEAN_AFTERWARDS=0
+FROM_PRODUCTION=0
 for argument in "$@"; do
     case "$argument" in
         --tests) RUN_TESTS=1 ;;
         --clean) CLEAN_AFTERWARDS=1 ;;
-        *) echo "usage: bash scripts/deploy/rehearse.sh [--tests] [--clean]"; exit 2 ;;
+        --from-production) FROM_PRODUCTION=1 ;;
+        *) echo "usage: bash scripts/deploy/rehearse.sh [--tests] [--clean] [--from-production]"; exit 2 ;;
     esac
 done
 
@@ -66,6 +81,9 @@ trap cleanup EXIT
 in_origin() { git -C "$ORIGIN" "$@"; }
 in_container() { docker exec "$CONTAINER" "$@"; }
 logs_since_start() { docker logs --since "$1" "$CONTAINER" 2>&1; }
+# To the nanosecond: rounded down to a second, the window would reach back to the
+# hand-over line of the start before, and the wait would end before this start began
+timestamp_now() { date -u +%Y-%m-%dT%H:%M:%S.%NZ; }
 
 # Waits until the start script handed over: by default to the stand-in for pm2,
 # which then reports itself; $2 names another log line to wait for
@@ -85,10 +103,17 @@ wait_for_start() {
 
 restart_and_wait() {
     local since
-    since=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+    since=$(timestamp_now)
     docker restart -t 5 "$CONTAINER" > /dev/null
     wait_for_start "$since" || fail "the container did not reach the start of the bot"
     LAST_LOGS=$(logs_since_start "$since")
+}
+
+# Replaces the volume "$2" with the content of "$1", which is only read
+copy_volume() {
+    docker volume inspect "$1" > /dev/null 2>&1 || return 1
+    docker volume rm "$2" > /dev/null 2>&1
+    docker run --rm -v "$1:/from:ro" -v "$2:/to" "$IMAGE" sh -c 'cp -a /from/. /to/'
 }
 
 dist_file_count() { in_container sh -c 'find dist -type f | wc -l' | tr -d ' '; }
@@ -117,11 +142,20 @@ step "building the image"
 docker build --quiet -t "$IMAGE" --build-arg "GIT_REPO=$GIT_REPO" "$REPOSITORY_ROOT" > /dev/null || { echo "image build failed"; exit 1; }
 pass "image built: node $(docker run --rm "$IMAGE" node -v), pnpm $(docker run --rm "$IMAGE" pnpm -v), pm2 $(docker run --rm "$IMAGE" pm2 -v | tail -1)"
 
-step "1. first start"
 docker rm -f "$CONTAINER" > /dev/null 2>&1
-since=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+if [ "$FROM_PRODUCTION" -eq 1 ]; then
+    step "copying production's packages into the rehearsal volumes"
+    copy_volume "$PRODUCTION_MODULES_VOLUME" "$MODULES_VOLUME" || { echo "could not copy $PRODUCTION_MODULES_VOLUME"; exit 1; }
+    copy_volume "$PRODUCTION_STORE_VOLUME" "$STORE_VOLUME" || { echo "could not copy $PRODUCTION_STORE_VOLUME"; exit 1; }
+    pass "copied (production's volumes were mounted read-only)"
+fi
+
+step "1. first start"
+since=$(timestamp_now)
 # The image holds a clone of GitHub master. Point it at the local origin and
 # take the first step by hand, then build.sh does what it does in production.
+# Only on the first start: a restart runs this command again, and scenario 5
+# needs the remote to stay broken.
 docker run -d --init --name "$CONTAINER" \
     -v "$ORIGIN/.git:/origin.git:ro" \
     -v "$WORK/bin:/rehearsal-bin:ro" \
@@ -130,8 +164,9 @@ docker run -d --init --name "$CONTAINER" \
     -e DEPLOY_BRANCH=rehearsal \
     -e PATH=/rehearsal-bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
     "$IMAGE" /bin/bash -c "git config --global --add safe.directory '*' \
-        && git remote set-url origin /origin.git \
-        && git fetch --quiet origin rehearsal && git reset --quiet --hard FETCH_HEAD \
+        && { [ -f /rehearsal-prepared ] || { git remote set-url origin /origin.git \
+            && git fetch --quiet origin rehearsal && git reset --quiet --hard FETCH_HEAD \
+            && touch /rehearsal-prepared; }; } \
         && exec /bin/bash build.sh" > /dev/null || exit 1
 wait_for_start "$since" || { fail "first start"; exit 1; }
 LAST_LOGS=$(logs_since_start "$since")
@@ -148,6 +183,7 @@ if [ "$failures" -gt 0 ]; then
 fi
 COLD_FILE_COUNT=$(dist_file_count)
 echo "  dist holds $COLD_FILE_COUNT files"
+echo "  $(echo "$LAST_LOGS" | grep '\[deploy\] built')"
 
 step "2. restart without a new commit"
 restart_and_wait
@@ -218,7 +254,7 @@ in_container git remote set-url origin /origin.git
 rm -f "$WORK/bin/pm2-runtime"
 in_container npm uninstall -g pm2 > /dev/null 2>&1
 check "pm2 is gone" '! in_container sh -c "command -v pm2-runtime" > /dev/null 2>&1'
-since=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+since=$(timestamp_now)
 docker restart -t 5 "$CONTAINER" > /dev/null
 # The real pm2 starts the real bot, which has no token here and exits; all
 # that matters is that pm2 was installed and took over

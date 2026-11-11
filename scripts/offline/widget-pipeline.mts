@@ -130,6 +130,6 @@ const { sequelize } = await import('../../src/db/config.js');
 await sequelize.close();
 void db.Message;
 
-// The stream leaves sockets/timers behind in this harness; reportResults ends the process regardless
+// The replies' spinner and typing timers still run: without this the file would not end on its own and fail
 endOpenReplies();
 reportResults(results);

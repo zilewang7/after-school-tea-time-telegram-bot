@@ -30,9 +30,10 @@ const SCRATCH_DIRECTORY = scratchDirectoryOf(process.pid);
 const OFFLINE_DB_PATH = join(SCRATCH_DIRECTORY, 'database.sqlite');
 
 /**
- * How long a file may keep running after its summary before it is ended. Work
- * the cases left behind normally finishes within milliseconds; what is still
- * alive after this is a leak (a server never closed, an interval never cleared).
+ * How long a file may keep running after its summary before it is ended and
+ * fails. Work the cases left behind normally finishes within milliseconds; what
+ * is still alive after this is a leak (a server never closed, an interval never
+ * cleared), and an error it would raise later could no longer be seen.
  */
 const LINGER_LIMIT_MS = 3000;
 
@@ -107,7 +108,9 @@ const failureLocation = (error: unknown): string | undefined => {
 
 export const runCase = async (name: string, body: () => void | Promise<void>): Promise<CaseResult> => {
     if (caseFilter !== '' && !name.includes(caseFilter)) return { name, ok: true, skipped: true };
-    console.log(`\n▶ ${name}`);
+    // Written to the stream itself: the runner counts these lines, and a case
+    // that runs at the same time may have replaced console.log to keep quiet
+    process.stdout.write(`\n▶ ${name}\n`);
     if (debugHandles) noteCaseStart(name);
     try {
         await body();
@@ -143,7 +146,7 @@ const describeLiveHandles = (): string => {
     return summary === '' ? 'nothing' : summary;
 };
 
-/** Ends a file that is still running long after its summary */
+/** Ends a file that is still running long after its summary. The file fails: it did not end what it started. */
 const endLingeringProcess = async (): Promise<void> => {
     console.error(`[offline] still running ${LINGER_LIMIT_MS}ms after the summary, ending it; alive: ${describeLiveHandles()}`);
     if (debugHandles) {
@@ -152,7 +155,7 @@ const endLingeringProcess = async (): Promise<void> => {
         console.error('[offline] run the file with OFFLINE_DEBUG_HANDLES=1 to see where they were created');
     }
     await Promise.all([flush(process.stdout), flush(process.stderr)]);
-    process.exit();
+    process.exit(1);
 };
 
 /**
@@ -160,7 +163,8 @@ const endLingeringProcess = async (): Promise<void> => {
  * cases started is finished, the way any Node program does, so an error in that
  * late work (a timer that throws, a promise nobody awaited that rejects) still
  * ends the process with a failure. Do cleanup (closing servers) before the call:
- * whatever stays open keeps the file running until LINGER_LIMIT_MS.
+ * whatever stays open keeps the file running until LINGER_LIMIT_MS, and the
+ * file then fails.
  */
 export const reportResults = (results: CaseResult[]): void => {
     console.log('\n==== offline summary ====');
@@ -170,7 +174,8 @@ export const reportResults = (results: CaseResult[]): void => {
     }
     const skipped = results.filter((result) => result.skipped === true).length;
     if (skipped > 0) console.log(`(${skipped} cases skipped by OFFLINE_GREP)`);
-    process.exitCode = results.some((result) => !result.ok) ? 1 : 0;
+    // Only ever raised: something outside the cases may have failed the file already
+    if (results.some((result) => !result.ok)) process.exitCode = 1;
 
     if (debugHandles) {
         const reportedAt = performance.now();

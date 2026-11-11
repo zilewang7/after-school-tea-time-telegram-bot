@@ -1,6 +1,6 @@
 /**
- * Finds what keeps a finished test file running. Only loaded with
- * OFFLINE_DEBUG_HANDLES=1: tracking every timer and handle slows a run down.
+ * Finds what keeps a finished test file running. The hook is only switched on
+ * with OFFLINE_DEBUG_HANDLES=1: tracking every timer and handle slows a run down.
  */
 import { createHook } from 'node:async_hooks';
 import { relative } from 'node:path';
@@ -20,6 +20,16 @@ interface TrackedResource {
 }
 
 const tracked = new Map<number, TrackedResource>();
+/**
+ * Where each async resource that is still around came from, the short-lived
+ * ones included. A server or a socket is created by Node a tick after the
+ * repository code that asked for it, with no frame of ours on its stack; what
+ * asked for it is its trigger, so the origin is handed down from there.
+ */
+const origins = new Map<number, string>();
+const UNKNOWN_ORIGIN = 'outside the repository';
+/** Deep enough to reach the repository frame below a library's own calls */
+const STACK_DEPTH = 50;
 let currentCase = '';
 
 /** Called by the harness as each case starts */
@@ -27,7 +37,7 @@ export const noteCaseStart = (name: string): void => {
     currentCase = name;
 };
 
-const originOf = (stack: string | undefined): string => {
+const originOf = (stack: string | undefined): string | undefined => {
     for (const line of (stack ?? '').split('\n').slice(1)) {
         const frame = /\(?(?:file:\/\/)?(\/[^():]+):(\d+):\d+\)?$/.exec(line.trim());
         const [, file, lineNumber] = frame ?? [];
@@ -36,22 +46,33 @@ const originOf = (stack: string | undefined): string => {
         if (file.endsWith('/support/live-handles.mts')) continue;
         return `${relative(REPOSITORY_ROOT, file)}:${lineNumber}`;
     }
-    return 'outside the repository';
+    return undefined;
+};
+
+const currentOrigin = (): string | undefined => {
+    const usualDepth = Error.stackTraceLimit;
+    Error.stackTraceLimit = STACK_DEPTH;
+    const stack = new Error().stack;
+    Error.stackTraceLimit = usualDepth;
+    return originOf(stack);
 };
 
 export const trackLiveHandles = (): void => {
     createHook({
-        init(asyncId, type, _triggerAsyncId, resource) {
+        init(asyncId, type, triggerAsyncId, resource) {
+            const origin = currentOrigin() ?? origins.get(triggerAsyncId);
+            if (origin !== undefined) origins.set(asyncId, origin);
             if (IGNORED_TYPES.has(type)) return;
             tracked.set(asyncId, {
                 type,
-                origin: originOf(new Error().stack),
+                origin: origin ?? UNKNOWN_ORIGIN,
                 caseName: currentCase,
                 resource: new WeakRef(resource),
             });
         },
         destroy(asyncId) {
             tracked.delete(asyncId);
+            origins.delete(asyncId);
         },
     }).enable();
 };
