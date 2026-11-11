@@ -11,8 +11,11 @@ export const useRouteMemory = (launch: LaunchState, me: MeResponse | null): void
     const navigate = useNavigate();
 
     useEffect(() => {
+        // Only the Telegram Mini App remembers its route; a browser tab (web
+        // login, public pages) must not reopen on the last page it showed
+        if (!launch.insideTelegram) return;
         writeStorage(LAST_ROUTE_KEY, location.pathname);
-    }, [location.pathname]);
+    }, [launch.insideTelegram, location.pathname]);
 
     useEffect(() => {
         if (me === null) return;

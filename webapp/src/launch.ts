@@ -22,14 +22,22 @@ export interface LaunchState {
     initialPathname: string;
     startParam: string | null;
     savedRoute: string | null;
+    /**
+     * Whether this is a real Telegram Mini App (initData present) rather than
+     * the browser tab (web login or a public page). Only the Mini App remembers
+     * the route the reader was last on; a browser tab opens where it was asked to.
+     */
+    insideTelegram: boolean;
 }
 
 export const captureLaunchState = (webApp: TelegramWebApp): LaunchState => {
-    const savedRoute = readStorage(LAST_ROUTE_KEY);
+    const insideTelegram = webApp.initData !== '';
+    const savedRoute = insideTelegram ? readStorage(LAST_ROUTE_KEY) : null;
     return {
         initialPathname: window.location.pathname,
         startParam: readStartParam(webApp),
         savedRoute: savedRoute !== null && RESTORABLE_ROUTE.test(savedRoute) ? savedRoute : null,
+        insideTelegram,
     };
 };
 
