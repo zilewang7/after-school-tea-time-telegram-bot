@@ -19,14 +19,21 @@
 # earlier build to fall back to a failed install there keeps the bot down. The
 # flag copies production's node_modules and pnpm store volumes (mounted
 # read-only for the copy, packages only) into the rehearsal volumes, so the
-# first start below is the one production is about to make.
+# first start below installs and builds on what production has.
+#
+# What no rehearsal covers: the image holds a clone of GitHub master, and the
+# container starts with the build.sh of that clone. Here the branch is fetched
+# by hand first. After a push, check the image that production will get:
+#   docker compose build k-on-bot
+#   docker run --rm k-on-bot-k-on-bot grep -c scripts/deploy/start.sh build.sh
 #
 # Scenarios, in one container that is restarted like production is:
 #   1. first start        full install and build
 #   2. restart, no change install and webapp build skipped
 #   3. a broken commit    the previous build keeps running, BUILD_COMMIT unchanged
 #   4. the fix            builds again
-#   5. origin unreachable starts the code it has
+#   5. origin unreachable, then an origin that never answers
+#                         starts the code it has; the fetch is given up in time
 #   6. the compiled bot   every module loads on this image, sqlite included, and
 #                         the database path default only applies inside a container
 #   7. the offline suite  only with --tests: the image's Node and libc run every case
@@ -53,6 +60,8 @@ WORK=$(mktemp -d "${TMPDIR:-/tmp}/k-on-bot-rehearsal-XXXXXX")
 ORIGIN="$WORK/origin"
 GIT_REPO=https://github.com/zilewang7/after-school-tea-time-telegram-bot.git
 START_TIMEOUT_SECONDS=${START_TIMEOUT_SECONDS:-1200}
+# Short, so the scenario with a hanging origin does not take a minute
+FETCH_TIMEOUT_SECONDS=10
 
 RUN_TESTS=0
 CLEAN_AFTERWARDS=0
@@ -162,6 +171,7 @@ docker run -d --init --name "$CONTAINER" \
     -v "$MODULES_VOLUME:/app/k-on-bot/node_modules" \
     -v "$STORE_VOLUME:/root/.local/share/pnpm/store" \
     -e DEPLOY_BRANCH=rehearsal \
+    -e DEPLOY_FETCH_TIMEOUT_SECONDS=$FETCH_TIMEOUT_SECONDS \
     -e PATH=/rehearsal-bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
     "$IMAGE" /bin/bash -c "git config --global --add safe.directory '*' \
         && { [ -f /rehearsal-prepared ] || { git remote set-url origin /origin.git \
@@ -219,6 +229,15 @@ in_container git remote set-url origin /nonexistent.git
 restart_and_wait
 check "the failed fetch is logged" 'echo "$LAST_LOGS" | grep -q "fetch of rehearsal failed"'
 check "the bot is started with the build it has" 'echo "$LAST_LOGS" | grep -q "stand-in pm2\].*BUILD_COMMIT=$FIXED_COMMIT"'
+# A remote that is reached and then never answers: git waits on `sleep`
+in_container git config --global protocol.ext.allow always
+in_container git remote set-url origin 'ext::sleep 600'
+hang_started=$(date +%s)
+restart_and_wait
+hang_seconds=$(( $(date +%s) - hang_started ))
+check "a fetch that hangs is given up after ${FETCH_TIMEOUT_SECONDS}s" 'echo "$LAST_LOGS" | grep -q "fetch of rehearsal failed"'
+check "the bot is started with the build it has" 'echo "$LAST_LOGS" | grep -q "stand-in pm2\].*BUILD_COMMIT=$FIXED_COMMIT"'
+check "the whole restart took ${hang_seconds}s" '[ "$hang_seconds" -lt 60 ]'
 
 step "6. the compiled bot loads on this image"
 # Placeholders for what the AI platforms want at import; no token, so the bot

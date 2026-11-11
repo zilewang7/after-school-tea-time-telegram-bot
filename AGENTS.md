@@ -47,7 +47,7 @@ runs from the same directory. Most rules below exist because of that.
 | Write-lock regression | `pnpm test:lock` | ~5 s |
 | e2e against the test bot | `pnpm test:e2e:bot` (`:full`, `:tools`); ask first, one run at a time | minutes |
 | Production data | `npx tsx scripts/prod-query.mts --tables` / `--schema T` / `"SELECT …"` | |
-| Before a release | `pnpm deploy:check` (what ships, verified?, replies in progress) | ~3 s |
+| Before a release | `pnpm deploy:check` (what ships, verified?, replies in progress, does a stop reach the bot) | ~3 s |
 | After a release | `pnpm deploy:check --wait` (waits for the new build, shows the build log) | |
 
 Offline test output: one line per file. The per-assertion log of every file is
@@ -148,8 +148,9 @@ re-read them, and recreating costs about a minute. A change to the
 
 Recreating throws away the container's own files. The database's write-ahead
 log is one of them (only `database.sqlite` is mounted): the bot merges it into
-the file when it is stopped through `docker compose`, so never end the
-container with `docker kill` or `docker rm -f`.
+the file when a stop reaches it, so never end the container with `docker kill`
+or `docker rm -f`. `pnpm deploy:check` says whether a stop reaches the bot; if
+it does not, a restart is still safe, a recreate is not.
 
 1. `pnpm verify`, push, then `pnpm deploy:check`. It must say READY: the
    restart kills the process, so wait while a reply is being generated.

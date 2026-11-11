@@ -8,13 +8,15 @@
  * origin/master, builds and starts. The restart kills the running process, so
  * a reply that is being generated at that moment is cut off. The check before
  * therefore looks for replies in progress, and for a commit on origin/master
- * that has not passed `pnpm verify`.
+ * that has not passed `pnpm verify`. It also says whether a stop reaches the
+ * bot at all, which decides whether the container may be recreated.
  */
 import { spawnSync } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { PRODUCTION_CONTAINER, queryProduction, readLiveHealth } from '../lib/production.mts';
+import { stopSignalProblem } from './stop-signal.mts';
 
 const REPOSITORY_ROOT = fileURLToPath(new URL('../../', import.meta.url));
 const RELEASE_BRANCH = 'master';
@@ -106,6 +108,15 @@ const checkBefore = (target: string): string[] => {
         console.log(`         chat ${String(reply.chatId)} message ${String(reply.messageId)}, last update ${reply.ageSeconds}s ago`);
     }
     if (recent.length > 0) reasons.push('a reply is being generated; a restart would cut it off');
+
+    // Not a reason against a restart, which keeps the container's files
+    const stopProblem = stopSignalProblem();
+    if (stopProblem === undefined) {
+        console.log('stop     reaches the bot: it shuts down and closes the database');
+    } else {
+        console.log(`stop     does NOT reach the bot: ${stopProblem}`);
+        console.log('         a restart is safe; a recreate (up -d) would lose what is in the write-ahead log');
+    }
     return reasons;
 };
 

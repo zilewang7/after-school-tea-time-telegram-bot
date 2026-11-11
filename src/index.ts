@@ -8,6 +8,7 @@ import { replyLoad } from './reply/index.js';
 import { autoClear, autoSave, autoUpdate } from './db/autoSave.js';
 import { dbReady } from './db/index.js';
 import { closeDatabase } from './db/config.js';
+import { settledWithin } from './shared/settled-within.js';
 import { menuLoad } from './cmd/menu.js';
 import { initMcpClients } from './ai/mcp/index.js';
 import { isTestInstance, getAllowedChatIds, isChatAllowed } from './config/instance.js';
@@ -103,6 +104,14 @@ if (!isTestInstance()) {
     });
 }
 
+/**
+ * How long the shutdown waits for bot.stop(), which confirms the last update
+ * with one more getUpdates round trip through the proxy. pm2 kills the process
+ * 15s after the signal (scripts/deploy/pm2.config.cjs): the panel (3s), this
+ * and the database (5s) have to fit into that.
+ */
+const BOT_STOP_TIMEOUT_MS = 6_000;
+
 // Graceful shutdown: the test instance clears its server-side command list so
 // members of shared groups never see stale test-bot commands after it exits.
 let shuttingDown = false;
@@ -121,7 +130,9 @@ const shutdown = async (signal: string): Promise<void> => {
         console.log('[process] Test-instance command cleanup done');
     }
     await stopPanel();
-    await bot.stop().catch(() => undefined);
+    // Bounded, so that a proxy that hangs cannot use up the time the database needs
+    const stopped = await settledWithin(bot.stop(), BOT_STOP_TIMEOUT_MS);
+    if (!stopped) console.log('[process] the bot did not stop in time');
     // Last, after everything that may still write. See closeDatabase for why
     // the write-ahead log must not outlive the process.
     const closed = await closeDatabase();
