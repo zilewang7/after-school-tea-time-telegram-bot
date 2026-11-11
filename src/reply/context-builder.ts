@@ -516,16 +516,18 @@ export const renderA2uiSurfaceNote = (widget: WidgetSurfaceInfo | undefined): st
 };
 
 /**
- * Build the assistant turn for one of the bot's own messages.
+ * Build the text turn of one of the bot's own messages: `[#N]`, the fact lines
+ * about what the reply carried, and its body. The reply's attachment bytes are
+ * never part of this turn — see buildAssistantAttachmentTurn for why.
  *
  * The context number is prefixed as `[#5]` on its own line — deliberately a
  * different shape from the `#5 用户名:` header of user messages, so the model is
  * less tempted to imitate it (the system prompt also forbids it outright).
  */
-const buildAssistantMessage = (
+const buildAssistantTextTurn = (
     msg: ContextMessage,
-    fileContents: UnifiedContentPart[],
-    inputs: TurnInputs
+    inputs: TurnInputs,
+    carriesAttachments: boolean
 ): BuiltTurn => {
     // Parse modelParts if available
     const modelParts = (() => {
@@ -543,20 +545,20 @@ const buildAssistantMessage = (
     // The file message itself, named (the bytes are not replayed)
     const fileNote = msg.mediaHint?.startsWith('a file: ') ? `[sent ${msg.mediaHint}]\n` : '';
     // A card's HTML is never replayed either. What the model reads back is the
-    // rendered PNG (the row's file, attached as an image part by
-    // loadMessageFiles), the caption (stored as text), this fact line and, for
-    // A2UI mode, the source surface it was built from.
+    // rendered PNG (the row's file, replayed by the attachment turn), the
+    // caption (stored as text), this fact line and, for A2UI mode, the source
+    // surface it was built from.
     const widgetNote = msg.mediaHint?.startsWith('a widget') ? '[sent a widget]\n' : '';
     const surfaceNote = widgetNote
         ? renderA2uiSurfaceNote(inputs.widgetSurfaces.get(msg.messageId))
         : '';
 
-    const parts: UnifiedContentPart[] = [...fileContents];
+    const parts: UnifiedContentPart[] = [];
 
     // An attachment-only reply still needs the label, so the model can refer to it
     const body =
         stripLeakedWireFormat(msg.text ?? '') ||
-        (fileContents.length || fileNote || widgetNote ? '' : missingAssistantText(msg, contextNumber));
+        (carriesAttachments || fileNote || widgetNote ? '' : missingAssistantText(msg, contextNumber));
     if (numberLabel || fileNote || widgetNote || body) {
         parts.push({ type: 'text', text: `${numberLabel}${fileNote}${widgetNote}${surfaceNote}${body}` });
     }
@@ -567,7 +569,37 @@ const buildAssistantMessage = (
             content: parts,
             modelParts: modelParts && Array.isArray(modelParts) ? modelParts : undefined,
         },
-        // Our own turns carry their attachments only; link previews are built for user turns
+        images: [],
+    };
+};
+
+/**
+ * The reply's attachment bytes, replayed in their own **user-role** turn.
+ *
+ * Pictures must not ride an assistant turn: Gemini reads assistant inlineData as
+ * images the model itself produced, and a model without an image-output channel
+ * answers such a context by continuing that format — on 2026-11-11
+ * gemini-4-carbon turned eleven replies into nothing but `<end_of_image>`
+ * control tokens because the reply it was following had a sticker replayed on
+ * the assistant side. The bytes are the same either way; only the role changes,
+ * and a user turn is where Gemini accepts input media.
+ */
+const buildAssistantAttachmentTurn = (
+    msg: ContextMessage,
+    fileContents: UnifiedContentPart[],
+    inputs: TurnInputs
+): BuiltTurn => {
+    const contextNumber = inputs.index.numberOf.get(msg.messageId);
+    const note =
+        contextNumber === undefined
+            ? '[system] 以下是你在对话中发出的附件。'
+            : `[system] 以下是你在 #${contextNumber} 那条回复里发出的附件。`;
+    return {
+        message: {
+            role: 'user',
+            content: [{ type: 'text', text: note }, ...fileContents],
+        },
+        // The attachment pictures stay this message's for tools (#N 的第 k 张图)
         images: contextImagesOf(fileContents, 'attachment'),
     };
 };
@@ -692,10 +724,14 @@ const buildMessageContent = async (
     msg: ContextMessage,
     fileContents: UnifiedContentPart[],
     inputs: TurnInputs
-): Promise<BuiltTurn> =>
-    msg.fromBotSelf
-        ? buildAssistantMessage(msg, fileContents, inputs)
-        : buildUserMessage(msg, fileContents, inputs);
+): Promise<BuiltTurn[]> => {
+    if (!msg.fromBotSelf) return [await buildUserMessage(msg, fileContents, inputs)];
+    const textTurn = buildAssistantTextTurn(msg, inputs, fileContents.length > 0);
+    if (fileContents.length === 0) return [textTurn];
+    const attachmentTurn = buildAssistantAttachmentTurn(msg, fileContents, inputs);
+    // A reply that carried nothing but attachments has no text turn to keep
+    return textTurn.message.content.length === 0 ? [attachmentTurn] : [textTurn, attachmentTurn];
+};
 
 /**
  * Options for building context
@@ -866,7 +902,7 @@ export const buildContext = async (
         // Loaded once: the turn is built from these parts, and the tool index
         // keeps the pictures among them before any capability filtering
         const fileContents = await loadMessageFiles(contextMsg);
-        const turn = await buildMessageContent(contextMsg, fileContents, {
+        const builtTurns = await buildMessageContent(contextMsg, fileContents, {
             capabilities: modelCapabilities,
             index,
             exclusions: assembled.exclusions,
@@ -878,7 +914,11 @@ export const buildContext = async (
             chatTitle: opts.chatTitle ?? null,
             dryRun,
         });
-        turns.push({ messageId: contextMsg.messageId, message: turn.message, images: turn.images });
+        // One message can build two turns (a bot reply's text, then its
+        // attachments in a user-role carrier); both belong to the same message
+        for (const built of builtTurns) {
+            turns.push({ messageId: contextMsg.messageId, message: built.message, images: built.images });
+        }
     }
 
     // The same file can arrive twice (a repost, a forward, a linked message):
@@ -893,10 +933,18 @@ export const buildContext = async (
     }
 
     const chatContents: UnifiedMessage[] = [];
+    // The message each turn came from: a message can own two turns, and the
+    // runtime block below must still find the trigger by id, not by position
+    const turnMessageIds: number[] = [];
     const imagesByMessageId = new Map<number, readonly ContextImage[]>();
     for (const turn of deduped.turns) {
         chatContents.push(turn.message);
-        imagesByMessageId.set(turn.messageId, turn.images);
+        turnMessageIds.push(turn.messageId);
+        const previous = imagesByMessageId.get(turn.messageId);
+        imagesByMessageId.set(
+            turn.messageId,
+            previous === undefined ? turn.images : [...previous, ...turn.images]
+        );
     }
 
     // Runtime info (time, model, roster) rides the newest message instead of
@@ -908,10 +956,7 @@ export const buildContext = async (
         type: 'text',
         text: buildRuntimeContext(model, contextUsers, opts.chatTitle ?? null, chatAddendum),
     };
-    const newestIndex = Math.max(
-        0,
-        contextMessages.findIndex((contextMsg) => contextMsg.messageId === messageId)
-    );
+    const newestIndex = Math.max(0, turnMessageIds.indexOf(messageId));
     const withRuntime = chatContents.map((content, contentIndex) =>
         contentIndex === newestIndex
             ? { ...content, content: [...content.content, runtimeBlock] }

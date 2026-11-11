@@ -1886,18 +1886,23 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
             if (!row) throw new Error('the later message row was not stored');
 
             const { result: built } = await captureConsole(() => buildContext(row));
-            const assistantWithSticker = built.messages.find(
-                (turn) =>
-                    turn.role === 'assistant' &&
-                    turn.content.some(
-                        (part) =>
-                            part.type === 'image' &&
-                            Buffer.from(part.imageData ?? '', 'base64').equals(WEBP_BYTES)
-                    )
+            // Pictures never ride an assistant turn: the reply's text is the
+            // assistant turn, its attachment follows in a user-role carrier
+            const stickerIndex = built.messages.findIndex((turn) =>
+                turn.content.some(
+                    (part) =>
+                        part.type === 'image' &&
+                        Buffer.from(part.imageData ?? '', 'base64').equals(WEBP_BYTES)
+                )
+            );
+            expect(stickerIndex > 0, 'the bot sticker reply rides the next context as its webp');
+            expect(
+                built.messages[stickerIndex]?.role === 'user',
+                'the attachment rides a user turn, not the assistant one'
             );
             expect(
-                assistantWithSticker !== undefined,
-                'the bot sticker reply rides the next context as its webp, like a sent photo'
+                built.messages.slice(0, stickerIndex).some((turn) => turn.role === 'assistant'),
+                'the reply itself stays the preceding assistant turn'
             );
         },
     },

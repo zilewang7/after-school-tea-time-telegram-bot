@@ -177,12 +177,22 @@ const contextAfter = async (
     chatId: number,
     replyToId: number,
     capabilities: ModelCapabilities = VISION
-): Promise<{ built: Awaited<ReturnType<typeof buildContext>>; assistant: UnifiedMessage | undefined }> => {
+): Promise<{
+    built: Awaited<ReturnType<typeof buildContext>>;
+    assistant: UnifiedMessage | undefined;
+    /** The turn right after the bot reply: a user-role carrier for its attachments */
+    carrier: UnifiedMessage | undefined;
+}> => {
     const follower = await seedRow({ chatId, replyToId, text: '这张卡片画了什么' });
     const row = await rowOf(chatId, follower);
     if (!row) throw new Error('follower row missing');
     const built = await buildContext(row, { capabilities, model: 'gemini-3.8-flash' });
-    return { built, assistant: built.messages.find((turn) => turn.role === 'assistant') };
+    const assistantIndex = built.messages.findIndex((turn) => turn.role === 'assistant');
+    return {
+        built,
+        assistant: built.messages[assistantIndex],
+        carrier: assistantIndex === -1 ? undefined : built.messages[assistantIndex + 1],
+    };
 };
 
 const textOf = (turn: UnifiedMessage | undefined): string =>
@@ -215,14 +225,25 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
                 widget: { surface },
             });
 
-            const { built, assistant } = await contextAfter(chatId, replyId);
-            const images = imagesOf(assistant);
-            expect(images.length === 1, `the card PNG rides the assistant turn as one image part (got ${images.length})`);
+            const { built, assistant, carrier } = await contextAfter(chatId, replyId);
+            // Pictures never ride an assistant turn: the rendered card follows
+            // the reply's text in a user-role carrier turn
+            expect(
+                imagesOf(assistant).length === 0,
+                `the assistant turn carries no image part (got ${imagesOf(assistant).length})`
+            );
+            expect(carrier?.role === 'user', `the attachment follows in a user turn (got ${carrier?.role})`);
+            const images = imagesOf(carrier);
+            expect(images.length === 1, `the card PNG rides the carrier turn as one image part (got ${images.length})`);
             expect(
                 Buffer.from(images[0]?.imageData ?? '', 'base64').equals(PNG_BYTES),
                 'the image part is the stored render, byte for byte'
             );
             expect(images[0]?.mimeType === 'image/png', `the image part keeps its PNG MIME (got ${images[0]?.mimeType})`);
+            expect(
+                textOf(carrier).includes('附件'),
+                'the carrier names them as the reply\'s own attachments'
+            );
 
             const text = textOf(assistant);
             expect(text.includes('[sent a widget]'), `the fact line is replayed (got ${JSON.stringify(text)})`);
@@ -262,8 +283,8 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
             // The user swipe-replies to the card message, not to the text
             // message: that id resolves only through the version's message ids,
             // and the context must still hold the reply row that carries the PNG
-            const { built, assistant } = await contextAfter(chatId, widgetMessageId);
-            const images = imagesOf(assistant);
+            const { built, assistant, carrier } = await contextAfter(chatId, widgetMessageId);
+            const images = imagesOf(carrier);
             expect(
                 images.length === 1 && Buffer.from(images[0]?.imageData ?? '', 'base64').equals(PNG_BYTES),
                 'the rendered card is replayed when the card message is the reply target'
@@ -346,12 +367,12 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
                 widget: { mode: 'html', html: '<div class="secret-source">hello</div>', htmlBytes: 42, zlibBytes: 30 },
             });
 
-            const { assistant } = await contextAfter(chatId, replyId);
+            const { assistant, carrier } = await contextAfter(chatId, replyId);
             const text = textOf(assistant);
             expect(text.includes('[sent a widget]'), 'the fact line is replayed');
             expect(!text.includes('[a2ui surface]'), 'no A2UI line for an HTML card');
             expect(!text.includes('secret-source'), 'the widget HTML itself never enters the context');
-            expect(imagesOf(assistant).length === 1, 'the rendered picture still rides the turn');
+            expect(imagesOf(carrier).length === 1, 'the rendered picture still rides the context');
         },
     },
     {
