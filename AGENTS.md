@@ -47,7 +47,8 @@ runs from the same directory. Most rules below exist because of that.
 | Write-lock regression | `pnpm test:lock` | ~5 s |
 | e2e against the test bot | `pnpm test:e2e:bot` (`:full`, `:tools`); ask first, one run at a time | minutes |
 | Production data | `npx tsx scripts/prod-query.mts --tables` / `--schema T` / `"SELECT …"` | |
-| Live version | `docker exec k-on-bot wget -qO- http://127.0.0.1:8080/api/health` | |
+| Before a release | `pnpm deploy:check` (what ships, verified?, replies in progress) | ~3 s |
+| After a release | `pnpm deploy:check --wait` (waits for the new build, shows the build log) | |
 
 Offline test output: one line per file. The per-assertion log of every file is
 in the directory printed at the end; a failing case prints its name, message
@@ -113,11 +114,32 @@ baseline): `shared`, `config` → `db` → `services`, `telegram`, `ai` → `rep
   `YYYY-MMDD-HHMM-<title>.md`, whose first paragraph is the goal from the
   user's point of view; the owner reviews it before implementation.
 
-## Deploying
+## Releasing
 
 Production (`k-on-bot` container) fetches `origin/master`, builds and starts on
-every container start. `docker compose restart k-on-bot` is the release; a
-change to compose labels or env needs `up -d` (about a minute of downtime).
-After a restart, compare the `version` in `/api/health` with the commit you
-meant to ship. The test instance (`k-on-bot-test`, compose profile `test`) runs
-the working tree of the main checkout with its own database and bot.
+every container start, so the release is `docker compose restart k-on-bot`
+(a commit that is not pushed does not ship). A change to `.env`, compose
+labels or env needs `docker compose up -d k-on-bot` instead: `restart` does not
+re-read them, and recreating costs about a minute.
+
+1. `pnpm verify`, push, then `pnpm deploy:check`. It must say READY: the
+   restart kills the process, so wait while a reply is being generated.
+2. Ask the owner, then restart.
+3. `pnpm deploy:check --wait`. The `version` of `/api/health` is the commit
+   the running build came from; if a build fails the previous build keeps
+   running and this command says so.
+4. After a live test in a chat, read what the model filed about its tools:
+   `npx tsx scripts/prod-query.mts "SELECT id, kind, toolName, title FROM harness_issues WHERE status = 'open' ORDER BY id DESC LIMIT 10"`.
+
+The test instance (`k-on-bot-test`, compose profile `test`) runs the working
+tree of the main checkout with its own bot, `.env.test` and database; only one
+session can use it at a time. A change to the start scripts (`build.sh`,
+`scripts/deploy/`) is rehearsed with `bash scripts/deploy/rehearse.sh`, never on
+production.
+
+## Easy to forget
+
+- A new tool is also registered in the Mini App tool groups
+  (`webapp/src/tool-groups.ts`), or the panel cannot show or override it.
+- A new dependency in `webapp/` ships with the updated `pnpm-lock.yaml`.
+- One-off scripts live in `tmp/` (git-ignored) and are deleted after use.

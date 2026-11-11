@@ -12,6 +12,7 @@
     "check-deps": "tsx scripts/check-deps.mts",
     "check": "pnpm typecheck && pnpm lint && pnpm check-deps",
     "verify": "tsx scripts/verify.mts",
+    "deploy:check": "tsx scripts/deploy/check.mts",
     "test:offline": "tsx scripts/offline/runner.mts",
     "test:lock": "tsx scripts/offline/lock-check.mts",
     "test:e2e:bot": "tsx scripts/e2e/with-test-bot.mts",
