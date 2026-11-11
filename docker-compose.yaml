@@ -55,6 +55,11 @@ services:
       - k-on-bot-pnpm-store:/root/.local/share/pnpm/store
     command: ["/bin/bash", "/app/k-on-bot/build.sh"]
     working_dir: /app/k-on-bot
+    # An init process as PID 1 passes the stop signal on to pm2, which gives
+    # the bot 15s to shut down (scripts/deploy/pm2.config.cjs); docker has to
+    # wait a little longer than that before it kills.
+    init: true
+    stop_grace_period: 20s
     # SMS MCP uses the CF-optimised hostname (cmcc-mcp-cf.heimao.icu);
     # plain cmcc-mcp.heimao.icu stays direct for China Mobile's callback.
     networks:
@@ -68,7 +73,8 @@ services:
   k-on-bot-test:
     container_name: k-on-bot-test
     profiles: ["test"]
-    image: node:22-alpine
+    # Same Node major as the production image (Dockerfile)
+    image: node:26-alpine
     env_file:
       - ./.env.test
     environment:
@@ -99,13 +105,18 @@ services:
       # container never writes them into the mounted working tree.
       - k-on-bot-test-webapp-node-modules:/app/k-on-bot/webapp/node_modules
       - k-on-bot-test-webapp-dist:/app/k-on-bot/webapp/dist
+      # Same for the server build and the check tools: root-owned files in the
+      # working tree break `pnpm build` and `pnpm install` on the host.
+      - k-on-bot-test-dist:/app/k-on-bot/dist
+      - k-on-bot-test-checks-node-modules:/app/k-on-bot/tools/checks/node_modules
       # matches the package.json "link:../../projects/telegram-md-entities"
       - /home/ubuntu/projects/telegram-md-entities:/projects/telegram-md-entities:ro
     command:
       [
         "/bin/sh",
         "-c",
-        "npm install -g corepack && corepack prepare pnpm@9.4.0 --activate && pnpm install && pnpm build && node dist/index.js",
+        # dist is a volume now: empty it first, so files of deleted sources do not linger
+        "npm install -g pnpm@9.4.0 && pnpm install && rm -rf dist/* && pnpm build && node dist/index.js",
       ]
     working_dir: /app/k-on-bot
     networks:
@@ -201,3 +212,5 @@ volumes:
   k-on-bot-test-node-modules:
   k-on-bot-test-webapp-node-modules:
   k-on-bot-test-webapp-dist:
+  k-on-bot-test-dist:
+  k-on-bot-test-checks-node-modules:

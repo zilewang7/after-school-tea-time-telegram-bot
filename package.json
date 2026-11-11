@@ -11,7 +11,7 @@
     "lint": "tools/checks/node_modules/.bin/oxlint",
     "check-deps": "tsx scripts/check-deps.mts",
     "check": "pnpm typecheck && pnpm lint && pnpm check-deps",
-    "verify": "pnpm check && pnpm test:offline",
+    "verify": "tsx scripts/verify.mts",
     "test:offline": "tsx scripts/offline/runner.mts",
     "test:lock": "tsx scripts/offline/lock-check.mts",
     "test:e2e:bot": "tsx scripts/e2e/with-test-bot.mts",

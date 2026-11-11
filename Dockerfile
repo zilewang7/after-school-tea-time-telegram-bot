@@ -1,6 +1,11 @@
-FROM node:22-alpine
+# Keep the Node major in step with the k-on-bot-test image in docker-compose.yaml
+FROM node:26-alpine
 
 ARG GIT_REPO
+# Pinned so a rebuild never changes the tools under the app. PNPM_VERSION must
+# match "packageManager" in package.json.
+ARG PNPM_VERSION=9.4.0
+ARG PM2_VERSION=7.1.2
 
 WORKDIR /app
 
@@ -12,9 +17,9 @@ RUN apk update \
     && apk add --no-cache git bash python3 make g++ \
     && git clone ${GIT_REPO} -b master --depth=1 k-on-bot
 
-# 安装 corepack 和 pnpm
-RUN npm install -g corepack \
-    && corepack prepare pnpm@latest --activate
+# pnpm and pm2 live in the image: installing them on every container start
+# cost seconds of downtime and failed whenever the registry was unreachable.
+RUN npm install -g pnpm@${PNPM_VERSION} pm2@${PM2_VERSION}
 
 WORKDIR /app/k-on-bot
 

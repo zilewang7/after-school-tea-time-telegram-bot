@@ -1,0 +1,24 @@
+#!/bin/sh
+# Refuses a push to master unless `pnpm verify` passed for exactly the tree
+# being pushed. The hook only looks up the record that scripts/verify.mts
+# writes into the git directory, so it costs nothing.
+#
+# Enable once per clone:  git config core.hooksPath .githooks
+# Owner override:         git push --no-verify
+
+record="$(git rev-parse --git-common-dir)/k-on-bot-verified-trees"
+deleted=0000000000000000000000000000000000000000
+status=0
+
+while read -r local_ref local_sha remote_ref remote_sha; do
+    [ "$remote_ref" = "refs/heads/master" ] || continue
+    [ "$local_sha" = "$deleted" ] && continue
+    tree=$(git rev-parse "$local_sha^{tree}")
+    if ! grep -q "^$tree " "$record" 2>/dev/null; then
+        echo "push refused: $(git rev-parse --short "$local_sha") has not passed 'pnpm verify'." >&2
+        echo "Run 'pnpm verify' on this commit (about 3 minutes), then push again." >&2
+        status=1
+    fi
+done
+
+exit $status
