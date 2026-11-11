@@ -12,6 +12,7 @@ import { MessageAttachment } from "./messageAttachmentDTO.js";
 import { CustomEmojiAsset } from "./customEmojiAssetDTO.js";
 import { MessageRevision } from './messageRevisionDTO.js';
 import { HarnessIssue } from './harnessIssueDTO.js';
+import { WorkspaceFile } from './workspaceFileDTO.js';
 // Control panel tables: imported for their side effect of registering with sync
 import './chatDTO.js';
 import './chatMemberSeenDTO.js';
@@ -294,6 +295,7 @@ export {
     CustomEmojiAsset,
     MessageRevision,
     HarnessIssue,
+    WorkspaceFile,
     ButtonState,
     type ResponseVersion,
     type StoredFile,

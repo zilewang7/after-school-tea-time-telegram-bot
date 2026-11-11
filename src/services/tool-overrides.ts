@@ -22,6 +22,8 @@ export const TOOL_GROUP_KEYS = [
     'harnessIssues',
     // Phase 0 gray: the whole widget pair is one switch
     'widget',
+    // Appended last on purpose: this order is the canonical JSON/audit order
+    'workspace',
 ] as const;
 
 export type ToolGroupKey = (typeof TOOL_GROUP_KEYS)[number];

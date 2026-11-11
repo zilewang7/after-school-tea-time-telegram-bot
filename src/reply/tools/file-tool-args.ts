@@ -5,6 +5,12 @@
  * Pure functions so the offline suite can pin the wording and the table
  * without a Telegram client or a reply.
  */
+import { extensionOf, mimeForFileName } from '../../shared/file-name.js';
+import { normalizeWorkspacePath } from '../../services/workspace-service.js';
+
+// The extension → MIME table and the size format live in the shared layer: the
+// workspace service (layer 2) needs them too, and it must not import reply.
+export { formatBytes, mimeForFileName } from '../../shared/file-name.js';
 
 /**
  * Hard cap of one file: 10 MB. The model's own output budget is the real
@@ -24,51 +30,6 @@ const ILLEGAL_NAME_CHARS = /[<>:"|?*]/g;
 // oxlint-disable-next-line no-control-regex -- matching control characters is the point
 const CONTROL_CHARS = /[\u0000-\u001f\u007f]/g;
 const WHITESPACE_RUN = /\s+/g;
-
-const MIME_BY_EXTENSION: ReadonlyMap<string, string> = new Map([
-    ['md', 'text/markdown'],
-    ['markdown', 'text/markdown'],
-    ['txt', 'text/plain'],
-    ['text', 'text/plain'],
-    ['log', 'text/plain'],
-    ['json', 'application/json'],
-    ['csv', 'text/csv'],
-    ['tsv', 'text/tab-separated-values'],
-    ['html', 'text/html'],
-    ['htm', 'text/html'],
-    ['xml', 'application/xml'],
-    ['yaml', 'application/yaml'],
-    ['yml', 'application/yaml'],
-    ['toml', 'application/toml'],
-    ['js', 'text/javascript'],
-    ['mjs', 'text/javascript'],
-    ['cjs', 'text/javascript'],
-    ['css', 'text/css'],
-    ['py', 'text/x-python'],
-    ['sh', 'application/x-sh'],
-    ['bash', 'application/x-sh'],
-    ['sql', 'application/sql'],
-    ['svg', 'image/svg+xml'],
-    ['ini', 'text/plain'],
-]);
-
-/** The last extension of a name, lowercased; empty when it has none */
-const extensionOf = (name: string): string => {
-    const dot = name.lastIndexOf('.');
-    if (dot <= 0 || dot === name.length - 1) return '';
-    return name.slice(dot + 1).toLowerCase();
-};
-
-/** MIME from the extension; text/plain for anything unknown (the content is text) */
-export const mimeForFileName = (name: string): string =>
-    MIME_BY_EXTENSION.get(extensionOf(name)) ?? 'text/plain';
-
-/** `512 B`, `12.4 KB`, `1.5 MB` — the model and the chat both read this */
-export const formatBytes = (bytes: number): string => {
-    if (bytes < 1024) return `${bytes} B`;
-    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-    return `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
-};
 
 export type FileNameResult =
     | { readonly ok: true; readonly name: string }
@@ -104,7 +65,9 @@ export const sanitizeFileName = (raw: string): FileNameResult => {
     return { ok: true, name: cleaned === '' ? DEFAULT_FILE_NAME : cleaned };
 };
 
-export interface SendFileArgs {
+/** The model wrote the bytes inline with the tool call */
+export interface SendFileContentArgs {
+    readonly mode: 'content';
     readonly fileName: string;
     readonly mimeType: string;
     readonly content: string;
@@ -113,9 +76,26 @@ export interface SendFileArgs {
     readonly caption: string;
 }
 
+/** The bytes come from a workspace file (the draft workflow) */
+export interface SendFileWorkspaceArgs {
+    readonly mode: 'workspace';
+    /** Normalized workspace path */
+    readonly workspacePath: string;
+    /** Sanitized delivery name; null = the path's basename */
+    readonly fileName: string | null;
+    readonly caption: string;
+}
+
+export type SendFileArgs = SendFileContentArgs | SendFileWorkspaceArgs;
+
 export type ParsedSendFileArgs =
     | { readonly ok: true; readonly args: SendFileArgs }
     | { readonly ok: false; readonly error: string };
+
+export interface ParseSendFileOptions {
+    /** The workspace tools are offered this turn, so `workspace_path` is allowed */
+    readonly workspace: boolean;
+}
 
 const isAbsent = (value: unknown): value is null | undefined => value === undefined || value === null;
 
@@ -124,10 +104,73 @@ const parseText = (value: unknown, field: string): { readonly ok: true; readonly
         ? { ok: true, text: value }
         : { ok: false, error: `参数有误：${field} 要传字符串` };
 
-export const parseSendFileArgs = (rawArgs: Readonly<Record<string, unknown>>): ParsedSendFileArgs => {
+export const parseSendFileArgs = (
+    rawArgs: Readonly<Record<string, unknown>>,
+    options: ParseSendFileOptions = { workspace: false }
+): ParsedSendFileArgs => {
+    const caption = rawArgs.caption;
+    if (!isAbsent(caption) && typeof caption !== 'string') {
+        return { ok: false, error: '参数有误：caption 要传字符串' };
+    }
+    const captionText = typeof caption === 'string' ? caption : '';
+
+    // Workspace mode: exactly one of content / workspace_path.
+    const rawWorkspacePath = rawArgs.workspace_path;
+    if (!isAbsent(rawWorkspacePath)) {
+        if (!options.workspace) {
+            return {
+                ok: false,
+                error: 'workspace_path 需要工作区工具开启；当前这条回复没有工作区，请改用 content 直接写内容。',
+            };
+        }
+        if (typeof rawWorkspacePath !== 'string' || rawWorkspacePath.trim() === '') {
+            return { ok: false, error: '参数有误：workspace_path 要传工作区里的相对路径。' };
+        }
+        if (!isAbsent(rawArgs.content)) {
+            return { ok: false, error: 'workspace_path 和 content 只能给一个：从工作区取文件时不要再传 content。' };
+        }
+        if (!isAbsent(rawArgs.append) && typeof rawArgs.append !== 'boolean') {
+            return { ok: false, error: '参数有误：append 要传 true / false' };
+        }
+        if (rawArgs.append === true) {
+            return { ok: false, error: 'workspace_path 模式不能带 append：工作区文件已经是完整内容。' };
+        }
+        const normalized = normalizeWorkspacePath(rawWorkspacePath);
+        if (!normalized.ok) return { ok: false, error: normalized.error };
+
+        if (!isAbsent(rawArgs.file_name) && typeof rawArgs.file_name !== 'string') {
+            return { ok: false, error: '参数有误：file_name 要传文件名，例如 report.md' };
+        }
+        let deliveryName: string | null = null;
+        if (typeof rawArgs.file_name === 'string' && rawArgs.file_name.trim() !== '') {
+            const name = sanitizeFileName(rawArgs.file_name);
+            if (!name.ok) return { ok: false, error: name.error };
+            deliveryName = name.name;
+        }
+        return {
+            ok: true,
+            args: {
+                mode: 'workspace',
+                workspacePath: normalized.path,
+                fileName: deliveryName,
+                caption: captionText,
+            },
+        };
+    }
+
+    // `workspace` selects a conversation only in workspace_path mode; inline
+    // content never touches the workspace, so a stray selector would be ignored.
+    if (!isAbsent(rawArgs.workspace) && rawArgs.workspace !== '') {
+        return {
+            ok: false,
+            error: 'workspace 只用于 workspace_path 模式；内联 content 不会写进工作区，要落草稿请先 workspace_write。',
+        };
+    }
+
+    // Inline mode: the model writes the file content itself.
     const rawName = rawArgs.file_name;
     if (typeof rawName !== 'string' || rawName.trim() === '') {
-        return { ok: false, error: '参数有误：file_name 要传文件名，例如 SKILL.md' };
+        return { ok: false, error: '参数有误：file_name 要传文件名，例如 SKILL.md（从工作区发时改传 workspace_path）' };
     }
     const name = sanitizeFileName(rawName);
     if (!name.ok) return { ok: false, error: name.error };
@@ -143,19 +186,15 @@ export const parseSendFileArgs = (rawArgs: Readonly<Record<string, unknown>>): P
         return { ok: false, error: '参数有误：append 要传 true / false' };
     }
 
-    const caption = rawArgs.caption;
-    if (!isAbsent(caption) && typeof caption !== 'string') {
-        return { ok: false, error: '参数有误：caption 要传字符串' };
-    }
-
     return {
         ok: true,
         args: {
+            mode: 'content',
             fileName: name.name,
             mimeType: mimeForFileName(name.name),
             content: content.text,
             append: append === true,
-            caption: typeof caption === 'string' ? caption : '',
+            caption: captionText,
         },
     };
 };

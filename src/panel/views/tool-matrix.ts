@@ -1,5 +1,5 @@
 /**
- * The panel's tool matrix for one chat: nine tool groups with the tools they
+ * The panel's tool matrix for one chat: the tool groups with the tools they
  * register, the effective state for the chat's current model and settings, the
  * panel's own switch, and — in plain words — why a group is off and whether a
  * switch could help.
@@ -29,6 +29,12 @@ import {
     SEND_STICKER_TOOL_NAME,
     SEND_WIDGET_TOOL_NAME,
     GET_UI_GUIDE_TOOL_NAME,
+    WORKSPACE_WRITE_TOOL_NAME,
+    WORKSPACE_READ_TOOL_NAME,
+    WORKSPACE_LIST_TOOL_NAME,
+    WORKSPACE_EDIT_TOOL_NAME,
+    WORKSPACE_DELETE_TOOL_NAME,
+    WORKSPACE_PREVIEW_TOOL_NAME,
 } from '../../reply/tools/tool-names.js';
 
 export interface ToolGroupEntry {
@@ -58,6 +64,14 @@ const GROUP_TOOLS: Record<ToolGroupKey, readonly string[]> = {
     history: [SEARCH_HISTORY_TOOL_NAME, READ_HISTORY_TOOL_NAME],
     harnessIssues: [LIST_HARNESS_ISSUES_TOOL_NAME, CREATE_HARNESS_ISSUE_TOOL_NAME],
     widget: [SEND_WIDGET_TOOL_NAME, GET_UI_GUIDE_TOOL_NAME],
+    workspace: [
+        WORKSPACE_WRITE_TOOL_NAME,
+        WORKSPACE_READ_TOOL_NAME,
+        WORKSPACE_LIST_TOOL_NAME,
+        WORKSPACE_EDIT_TOOL_NAME,
+        WORKSPACE_DELETE_TOOL_NAME,
+        WORKSPACE_PREVIEW_TOOL_NAME,
+    ],
 };
 
 const ENABLED_OF: Record<ToolGroupKey, (availability: ToolAvailability) => boolean> = {
@@ -71,6 +85,7 @@ const ENABLED_OF: Record<ToolGroupKey, (availability: ToolAvailability) => boole
     history: (availability) => availability.history,
     harnessIssues: (availability) => availability.harnessIssues,
     widget: (availability) => availability.widget,
+    workspace: (availability) => availability.workspace,
 };
 
 /** Facts every reason check reads */
@@ -147,12 +162,21 @@ const HARD_REASONS: Record<ToolGroupKey, readonly ReasonCheck[]> = {
         disabledByName(SEND_WIDGET_TOOL_NAME),
         disabledByName(GET_UI_GUIDE_TOOL_NAME),
     ],
+    workspace: [
+        ({ config }) => (config.workspaceEnabled ? null : 'WORKSPACE_ENABLE 为 0'),
+        disabledByName(WORKSPACE_WRITE_TOOL_NAME),
+        disabledByName(WORKSPACE_READ_TOOL_NAME),
+        disabledByName(WORKSPACE_LIST_TOOL_NAME),
+        disabledByName(WORKSPACE_EDIT_TOOL_NAME),
+        disabledByName(WORKSPACE_DELETE_TOOL_NAME),
+    ],
 };
 
 /** Why the env whitelist keeps a group off; the panel switch may turn it on */
 const whitelistReasonOf = (key: ToolGroupKey): string => {
     if (key === 'history') return '本聊天不在 HISTORY_CHAT_IDS 中';
     if (key === 'widget') return '本聊天不在 WIDGET_CHAT_IDS / TOOL_CHAT_IDS 中';
+    if (key === 'workspace') return '本聊天不在 WORKSPACE_CHAT_IDS / TOOL_CHAT_IDS 中';
     return '本聊天不在 TOOL_CHAT_IDS 中';
 };
 

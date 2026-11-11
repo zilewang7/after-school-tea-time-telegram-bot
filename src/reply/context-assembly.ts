@@ -5,7 +5,11 @@
  * process state, nothing is written), so buildContext and the panel's tree
  * view share it and number the same messages the same way.
  */
+import { Op } from '@sequelize/core';
+import { MessageLink } from '../db/messageLinkDTO.js';
 import {
+    findRootMessage,
+    findRootMessageIds,
     getContextMessage,
     getRepliesHistory,
     loadContextExclusions,
@@ -26,6 +30,33 @@ const SUB_IMAGE_PATTERN = /sub image of \[\w+\]/;
 
 export const isSubImage = (msg: ContextMessage): boolean =>
     Boolean(msg.text && SUB_IMAGE_PATTERN.test(msg.text));
+
+/**
+ * Roots of the other conversations `/chat` spliced into this context.
+ *
+ * `message_links` does not store roots: `/chat <link>` writes the linked
+ * conversation's root, but `/chat r` and `/chat N` write the ids they selected
+ * (any message of another conversation) and the mention batcher writes the
+ * earlier triggers of a burst. Each linked id is therefore resolved to its real
+ * root, batched so a 100-link `/chat r` costs one query per chain level instead
+ * of one walk per message. The context's own rows are passed in as known, so a
+ * spliced message that is already in context costs no query at all.
+ */
+const linkedConversationRootIds = async (
+    chatId: number,
+    messageIds: readonly number[],
+    known: ReadonlyMap<number, ContextMessage | null>,
+    recover: boolean
+): Promise<number[]> => {
+    if (messageIds.length === 0) return [];
+    const links = await MessageLink.findAll({
+        where: { chatId, sourceMessageId: { [Op.in]: [...messageIds] } },
+        attributes: ['linkedMessageId'],
+    });
+    const linkedIds = [...new Set(links.map((link) => link.linkedMessageId))];
+    const roots = await findRootMessageIds(chatId, linkedIds, known, { recover });
+    return [...new Set(roots.values())].sort((left, right) => left - right);
+};
 
 /**
  * Numbering of one assembled context: a `#N` label for every message plus a
@@ -144,6 +175,12 @@ export interface AssembleContextOptions {
 
 export interface AssembledContext {
     triggerId: number;
+    /**
+     * Reply-tree roots represented in this context, the trigger's own
+     * conversation first. Each root is one model workspace; the workspace tools
+     * may address any of them (default: the first).
+     */
+    conversationRootIds: number[];
     /** The model's context in context order: buildContext renders exactly these */
     messages: ContextMessage[];
     /** With includeExcluded: the excluded messages around the context, flagged; otherwise empty */
@@ -206,8 +243,27 @@ export const assembleContextMessages = async (
           )
         : [];
 
+    // The context's own rows are the walk cache: the trigger's root chain is in
+    // there, so finding the current root costs no query.
+    const rootCache = new Map<number, ContextMessage | null>(
+        messages.map((message) => [message.messageId, message])
+    );
+    const currentRoot = await findRootMessage(chatId, triggerId, { recover, cache: rootCache });
+    const currentRootId = currentRoot?.messageId ?? triggerId;
+    const linkedRoots = await linkedConversationRootIds(
+        chatId,
+        messages.map((message) => message.messageId),
+        rootCache,
+        recover
+    );
+    const conversationRootIds = [
+        currentRootId,
+        ...linkedRoots.filter((rootId) => rootId !== currentRootId),
+    ];
+
     return {
         triggerId,
+        conversationRootIds,
         messages,
         excludedMessages: [...flaggedInTree, ...flaggedTargets].sort((a, b) => a.messageId - b.messageId),
         numbering: buildContextNumbering(messages),

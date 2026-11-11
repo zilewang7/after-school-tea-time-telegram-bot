@@ -94,6 +94,10 @@ export interface CapabilityOptions {
     readonly stickerTools: boolean;
     /** send_file is offered */
     readonly fileTools: boolean;
+    /** the workspace file tools are offered this turn */
+    readonly workspace?: boolean;
+    /** workspace_preview is offered (workspace + vision model + render sidecar) */
+    readonly workspacePreview?: boolean;
     /** search_history / read_history are offered */
     readonly historyTools: boolean;
     /** list_harness_issues / create_harness_issue are offered */
@@ -121,15 +125,24 @@ const stickerLine = (canPreview: boolean): string =>
     '- 可以用 `send_sticker` 发送贴纸包中的贴纸（编号与名称见工具描述）' +
     (canPreview ? "，或用 `fetch_image(sticker='…')` 预览贴纸画面。" : '。');
 
-const FILE_LINE =
-    '- 可以用 `send_file` 把长文本（Markdown、代码、CSV 等）写成文件发到聊天（单份上限 10 MB）';
+const fileLine = (workspace: boolean): string =>
+    '- 可以用 `send_file` 把长文本（Markdown、代码、CSV 等）写成文件发到聊天（单份上限 10 MB）' +
+    (workspace ? '；也可以从本会话工作区的文件直接发出（workspace_path）' : '');
+
+const WORKSPACE_LINE =
+    '- 可以用 `workspace_write` / `workspace_read` / `workspace_list` / `workspace_edit` / `workspace_delete` 在按会话保留的「工作区」里写、读、改、删草稿文件（7 天未使用自动清理）。';
+
+const WORKSPACE_PREVIEW_LINE =
+    '- `workspace_preview` 可以把工作区的 HTML/A2UI 草稿渲染成图查看。';
 
 const historyLine = (canFetchImages: boolean): string =>
     '- 可以用 `search_history` 检索历史归档（本聊天；机主私聊时为全部归档群）中的消息（关键词 / 时间 / 发言人；含链接预览、Instant View 与图片 OCR 文本），用 `read_history` 读整条原文或某条消息前后的对话' +
     (canFetchImages ? "；归档消息里的图可以用 `fetch_image(history='hN')` 读取。" : '。');
 
-const WIDGET_LINE =
-    '- 可以用 `send_widget` 把一张聊天内 UI 卡片作为这条回复的附件发出（组件 JSON 用 mode="a2ui"，完整 HTML 用 mode="html"）；第一次使用前先调 `get_ui_guide` 取对应模式的完整规范。';
+const widgetLine = (workspace: boolean): string =>
+    '- 可以用 `send_widget` 把一张聊天内 UI 卡片作为这条回复的附件发出（组件 JSON 用 mode="a2ui"，完整 HTML 用 mode="html"）；第一次使用前先调 `get_ui_guide` 取对应模式的完整规范' +
+    (workspace ? '；也可以从工作区取 HTML/A2UI 内容（workspace_path）' : '') +
+    '。';
 
 const HARNESS_ISSUE_LINE =
     '- 当你准备结束思考时才调用 issue 工具：如果本轮使用 harness 时遇到工具不好用、描述不清、缺能力或格式别扭，先 `list_harness_issues` 查重，再用 `create_harness_issue` 记录；没有就跳过。记录本身不要出现在回复正文里。';
@@ -146,10 +159,12 @@ export const buildCapabilitiesSection = (options: CapabilityOptions): string => 
     if (options.imageFetch) lines.push(IMAGE_FETCH_LINE);
     if (options.imageGenerate) lines.push(IMAGE_EDIT_LINE);
     if (options.stickerTools) lines.push(stickerLine(options.imageFetch));
-    if (options.fileTools) lines.push(FILE_LINE);
+    if (options.fileTools) lines.push(fileLine(options.workspace === true));
+    if (options.workspace === true) lines.push(WORKSPACE_LINE);
+    if (options.workspacePreview === true) lines.push(WORKSPACE_PREVIEW_LINE);
     if (options.historyTools) lines.push(historyLine(options.imageFetch));
     if (options.harnessIssues) lines.push(HARNESS_ISSUE_LINE);
-    if (options.widget) lines.push(WIDGET_LINE);
+    if (options.widget) lines.push(widgetLine(options.workspace === true));
     return lines.join('\n');
 };
 

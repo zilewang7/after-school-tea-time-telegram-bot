@@ -43,6 +43,7 @@ import type { Message as TgMessage, MessageEntity, MessageOrigin, RichBlock, Ric
 import { upsertTelegramUser } from './queries/user-queries.js';
 import { harvestChatRegistry } from './queries/panel-registry.js';
 import { SettingsAudit } from './settingsAuditDTO.js';
+import { WorkspaceFile } from './workspaceFileDTO.js';
 import { purgeOrphanedExclusions } from './queries/context-exclusions.js';
 import { recordCleanupRun } from '../services/cleanup-status.js';
 import { entitiesToMarkdown, richBlocksToMarkdown } from 'telegram-md-entities';
@@ -1618,6 +1619,23 @@ export const clearExpiredData = async (): Promise<void> => {
             (chunk) => TgMessageLinkCache.destroy({ where: { url: { [Op.in]: chunk } } })
         );
 
+        // 模型工作区文件同节奏 LRU 清理。删除条件里再带一次 cutoff：select 与
+        // delete 之间被读/写续期的行不能被误删（与消息清理的重查同一思路）。
+        const staleWorkspaceFiles = await WorkspaceFile.findAll({
+            where: { lastUsedAt: { [Op.lt]: oneWeekAgo } },
+            attributes: ['id'],
+        });
+        // Count what was actually deleted, not what was selected: a row renewed
+        // between the select and the delete survives and must not be reported.
+        let workspaceResult = 0;
+        for (let start = 0; start < staleWorkspaceFiles.length; start += CLEANUP_BATCH_SIZE) {
+            const chunk = staleWorkspaceFiles.slice(start, start + CLEANUP_BATCH_SIZE).map((row) => row.id);
+            workspaceResult += await WorkspaceFile.destroy({
+                where: { id: { [Op.in]: chunk }, lastUsedAt: { [Op.lt]: oneWeekAgo } },
+            });
+            await new Promise((resolve) => setImmediate(resolve));
+        }
+
         // 控制面板的设置审计保留 365 天
         const staleAuditRows = await SettingsAudit.findAll({
             where: { createdAt: { [Op.lt]: oneYearAgo } },
@@ -1629,7 +1647,7 @@ export const clearExpiredData = async (): Promise<void> => {
         );
 
         const elapsedMs = Date.now() - startedAt;
-        const summary = `Cleared ${messageResult} messages, ${attachmentResult} attachments, ${revisionResult} revisions, ${messageLinkResult} message links, ${botResponseResult} bot responses before ${oneWeekAgo.toISOString()}; dropped ${exclusionResult} orphaned context exclusions; cleared media bytes of ${mediaClearedCount} messages before ${oneWeekAgo.toISOString()}; deleted ${staleGcsRows.length} GCS refs; evicted ${mediaCacheResult} media cache entries, ${emojiAssetResult} emoji assets, ${linkPreviewResult} link previews, ${tgLinkResult} tg message link snapshots; cleared ${settingsAuditResult} settings audit rows before ${oneYearAgo.toISOString()} (${elapsedMs}ms)`;
+        const summary = `Cleared ${messageResult} messages, ${attachmentResult} attachments, ${revisionResult} revisions, ${messageLinkResult} message links, ${botResponseResult} bot responses before ${oneWeekAgo.toISOString()}; dropped ${exclusionResult} orphaned context exclusions; cleared media bytes of ${mediaClearedCount} messages before ${oneWeekAgo.toISOString()}; deleted ${staleGcsRows.length} GCS refs; evicted ${mediaCacheResult} media cache entries, ${emojiAssetResult} emoji assets, ${linkPreviewResult} link previews, ${tgLinkResult} tg message link snapshots, ${workspaceResult} workspace files; cleared ${settingsAuditResult} settings audit rows before ${oneYearAgo.toISOString()} (${elapsedMs}ms)`;
         recordCleanupRun(summary, elapsedMs);
         if (elapsedMs > CLEANUP_SLOW_MS) {
             console.warn(`[autoClear] slow cleanup — ${summary}`);

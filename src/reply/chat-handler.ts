@@ -29,6 +29,7 @@ import { getFailedCustomEmojiAttachments } from '../db/queries/message-attachmen
 import { checkIfMentioned, isGroupChat } from '../util.js';
 import { saveMessageLinks } from '../db/queries/context-queries.js';
 import { buildContext } from './context-builder.js';
+import { appendWorkspaceManifestForReply } from './workspace/workspace-manifest.js';
 import { resolveContextRoot } from './context-root.js';
 import { submitToMentionBatch } from './mention-batcher.js';
 import { buildReplyToolContext, createReplyTools } from './tools/index.js';
@@ -312,7 +313,8 @@ export const handleReply = async (
         await handleResponseError(chatContext, ctxResult[0]);
         return;
     }
-    const { messages: chatContents, contextIndex } = ctxResult[1];
+    const built = ctxResult[1];
+    const { messages: chatContents, contextIndex } = built;
     recordContextSize(chatContext.session.metrics, contextIndex);
 
     // Argon rides the OpenCode Go subscription, which wants one stable session id
@@ -322,12 +324,31 @@ export const handleReply = async (
         : null;
 
     const signal = chatContext.session.streamController.signal;
-    const { tools, availability } = createReplyTools(
+    const { tools, availability, workspaceState } = createReplyTools(
         model,
-        buildReplyToolContext({ chat: ctx.chat, triggerMessage: msg, contextIndex, signal, api: ctx.api }),
+        buildReplyToolContext({
+            chat: ctx.chat,
+            triggerMessage: msg,
+            contextIndex,
+            conversationRootIds: built.conversationRootIds,
+            signal,
+            api: ctx.api,
+        }),
         { carriesLargeMedia: carriesLargeMedia(chatContents) },
         settings.toolOverrides
     );
+    // The workspace manifest is volatile, so it rides the trigger message after
+    // the tool snapshot is known (the static prompt stays byte-identical).
+    await appendWorkspaceManifestForReply({
+        messages: chatContents,
+        triggerTurnIndex: built.triggerTurnIndex,
+        workspaceState,
+        conversationRootIds: built.conversationRootIds,
+        contextIndex,
+        enabled: availability.workspace,
+        fileTools: availability.file,
+        widgetTools: availability.widget,
+    });
 
     // Send to AI and get stream
     markRequestStarted(chatContext.session.metrics);

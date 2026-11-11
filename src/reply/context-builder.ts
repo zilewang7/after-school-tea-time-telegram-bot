@@ -782,6 +782,18 @@ export interface BuiltContext {
     contextUsers: ContextUser[];
     /** `#N` → message, for tools that take context numbers */
     contextIndex: ContextIndex;
+    /**
+     * Index of the trigger message in the final `messages` array. A volatile
+     * block (the workspace manifest) is appended there after the tool snapshot
+     * is known; the index is computed after capability merging, because
+     * `requiresMessageMerge` platforms (deepseek-reasoner) shorten the array.
+     */
+    triggerTurnIndex: number;
+    /**
+     * Reply-tree roots represented in this context, the trigger's conversation
+     * first: the workspace tools address one of these.
+     */
+    conversationRootIds: number[];
 }
 
 /** The numbering as tools see it: keyed by `#N`, with each message's pictures */
@@ -830,6 +842,21 @@ const findRepliesInFlightElsewhere = (
     }
 
     return answeredElsewhere;
+};
+
+/**
+ * Index of the message carrying the runtime block, on the final (capability-
+ * filtered, possibly merged) message array. The block is a text part with an
+ * exact, unique string, so locating it is cheaper and safer than tracking the
+ * pre-merge index. Falls back to the last message.
+ */
+const findTriggerTurnIndex = (messages: readonly UnifiedMessage[], runtimeText: string): number => {
+    if (messages.length === 0) return 0;
+    for (let index = messages.length - 1; index >= 0; index -= 1) {
+        const content = messages[index]?.content ?? [];
+        if (content.some((part) => part.type === 'text' && part.text === runtimeText)) return index;
+    }
+    return messages.length - 1;
 };
 
 /**
@@ -963,11 +990,17 @@ export const buildContext = async (
             : content
     );
 
-    // Apply model capabilities (filter images, merge messages if needed)
+    // Apply model capabilities (filter images, merge messages if needed). The
+    // trigger index is located on the FINAL array: a merging platform may have
+    // concatenated adjacent user turns, and the runtime block part survives
+    // that concatenation unchanged.
+    const finalMessages = applyModelCapabilities(withRuntime, modelCapabilities);
     return {
-        messages: applyModelCapabilities(withRuntime, modelCapabilities),
+        messages: finalMessages,
         contextUsers,
         contextIndex: buildToolContextIndex(index, imagesByMessageId),
+        triggerTurnIndex: findTriggerTurnIndex(finalMessages, runtimeBlock.text ?? ''),
+        conversationRootIds: assembled.conversationRootIds,
     };
 };
 

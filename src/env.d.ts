@@ -107,6 +107,15 @@ declare global {
             WIDGET_GROUP_FALLBACK?: string
             /** '0' turns off the public share pages and the share API */
             SHARE_ENABLED?: string
+            /** '1' offers the workspace_* draft tools (default off) */
+            WORKSPACE_ENABLE?: string
+            /** Comma-separated chat ids offered the workspace tools; empty = TOOL_CHAT_IDS */
+            WORKSPACE_CHAT_IDS?: string
+            WORKSPACE_MAX_FILE_BYTES?: string
+            WORKSPACE_MAX_CONVERSATION_BYTES?: string
+            WORKSPACE_MAX_FILES?: string
+            WORKSPACE_MAX_GLOBAL_BYTES?: string
+            WORKSPACE_PREVIEWS_PER_REPLY?: string
             /** '0' turns off the /share and /shareone commands */
             SHARE_COMMAND?: string
             /** '0' turns off the long-thinking link pages and the link mode */

@@ -33,6 +33,17 @@ import { createSendFileTool } from './send-file-tool.js';
 import { createSendImageTool } from './send-image-tool.js';
 import { createSendStickerTool } from './send-sticker-tool.js';
 import { createSendWidgetTool } from './send-widget-tool.js';
+import { createWorkspaceDeleteTool } from './workspace-delete-tool.js';
+import { createWorkspaceEditTool } from './workspace-edit-tool.js';
+import { createWorkspaceListTool } from './workspace-list-tool.js';
+import { createWorkspacePreviewTool } from './workspace-preview-tool.js';
+import { createWorkspaceReadTool } from './workspace-read-tool.js';
+import { createWorkspaceWriteTool } from './workspace-write-tool.js';
+import {
+    createWorkspaceState,
+    WORKSPACE_CALL_LIMITS,
+    type WorkspaceState,
+} from '../workspace/workspace-state.js';
 import { createUiGuideTool } from './ui-guide-tool.js';
 import { createSendSmsTool } from './send-sms-tool.js';
 import type { ReplyToolContext } from './reply-tool-context.js';
@@ -46,6 +57,11 @@ import { RESERVED_TOOL_NAMES } from './tool-names.js';
 export interface ReplyTools {
     readonly tools: TurnTools;
     readonly availability: ToolAvailability;
+    /**
+     * Per-reply workspace tokens and call counters. The manifest builder uses
+     * it to register the other conversations spliced into this context.
+     */
+    readonly workspaceState: WorkspaceState;
 }
 
 export const createReplyTools = (
@@ -59,6 +75,17 @@ export const createReplyTools = (
     const availability = resolveToolAvailability(model, context.chatId, config, request, toolOverrides);
     const capabilities = getModelCapabilities(model);
     const mediaState = createReplyMediaState();
+    const workspaceState = createWorkspaceState({
+        chatId: context.chatId,
+        conversationRootIds: context.conversationRootIds ?? [],
+        quota: {
+            maxFileBytes: config.workspaceMaxFileBytes,
+            maxConversationBytes: config.workspaceMaxConversationBytes,
+            maxFiles: config.workspaceMaxFiles,
+            maxGlobalBytes: config.workspaceMaxGlobalBytes,
+        },
+        callLimits: { ...WORKSPACE_CALL_LIMITS, previews: config.workspacePreviewsPerReply },
+    });
     const historyState = createHistoryState();
     const harnessIssueState = createHarnessIssueState();
     // One luoxu client per reply: the history tools and fetch_image's archive
@@ -154,7 +181,14 @@ export const createReplyTools = (
                   }),
               ]
             : []),
-        ...(availability.file ? [createSendFileTool({ state: mediaState })] : []),
+        ...(availability.file
+            ? [
+                  createSendFileTool({
+                      state: mediaState,
+                      workspace: availability.workspace ? workspaceState : null,
+                  }),
+              ]
+            : []),
         ...(availability.widget
             ? [
                   createSendWidgetTool({
@@ -164,10 +198,32 @@ export const createReplyTools = (
                           maxHtmlBytes: config.widgetMaxHtmlBytes,
                           maxGzipBytes: config.widgetMaxGzipBytes,
                       },
+                      workspace: availability.workspace ? workspaceState : null,
                   }),
               ]
             : []),
         ...(availability.widgetGuide ? [createUiGuideTool()] : []),
+        ...(availability.workspace
+            ? [
+                  createWorkspaceWriteTool({ state: workspaceState }),
+                  createWorkspaceReadTool({ state: workspaceState }),
+                  createWorkspaceListTool({ state: workspaceState }),
+                  createWorkspaceEditTool({ state: workspaceState }),
+                  createWorkspaceDeleteTool({ state: workspaceState }),
+              ]
+            : []),
+        ...(availability.workspacePreview
+            ? [
+                  createWorkspacePreviewTool({
+                      state: workspaceState,
+                      limits: {
+                          allowHtml: config.widgetAllowHtml,
+                          maxHtmlBytes: config.widgetMaxHtmlBytes,
+                          maxGzipBytes: config.widgetMaxGzipBytes,
+                      },
+                  }),
+              ]
+            : []),
         ...(availability.history
             ? [
                   createSearchHistoryTool(historyOptions(historyState, context, historyWiring)),
@@ -182,7 +238,7 @@ export const createReplyTools = (
             : []),
     ];
 
-    return { tools: createTurnTools(handlers), availability };
+    return { tools: createTurnTools(handlers), availability, workspaceState };
 };
 
 /** Telegram ids arrive as strings in the env; a malformed one is simply absent */

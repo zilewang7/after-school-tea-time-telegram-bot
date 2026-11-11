@@ -366,6 +366,13 @@ export const runSchemaMigrations = async (): Promise<void> => {
        VALUES ('20261111_thinking_links', :appliedAt)`,
       { replacements: { appliedAt: new Date().toISOString() }, transaction }
     );
+    // workspace_files is also new: the DTO creates the table at sync time, this
+    // row records the feature (its rows are LRU-cleaned by clearExpiredData).
+    await sequelize.query(
+      `INSERT OR IGNORE INTO schema_migrations (name, appliedAt)
+       VALUES ('20261112_workspace_files', :appliedAt)`,
+      { replacements: { appliedAt: new Date().toISOString() }, transaction }
+    );
   });
 };
 

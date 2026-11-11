@@ -10,6 +10,11 @@
  *   GET  /healthz                                    -> {ok, chromium, uptimeMs, ...}
  *   POST /render?width=600&scale=1&theme=light       -> image/png
  *        body = a complete HTML document (the bot side wraps widget fragments)
+ *
+ * The rendered document is untrusted. Every network scheme is blocked through
+ * the DevTools protocol before navigation, so a page cannot call out from this
+ * container (the internal network has no internet route, but the bot container
+ * itself is reachable from here).
  */
 import { spawn } from 'node:child_process';
 import { readFile, writeFile, rm, mkdtemp } from 'node:fs/promises';
@@ -318,6 +323,16 @@ const renderPage = async (html, options) => {
     try {
         const { sessionId } = await active.cdp.send('Target.attachToTarget', { targetId, flatten: true });
         await active.cdp.send('Page.enable', {}, sessionId);
+        // The rendered document is untrusted (a model-written workspace draft is
+        // not prechecked before preview): block every network scheme so the page
+        // cannot reach the bot container or anything else on the internal
+        // network. Only file:// navigation and data: URIs keep working.
+        await active.cdp.send('Network.enable', {}, sessionId);
+        await active.cdp.send(
+            'Network.setBlockedURLs',
+            { urls: ['http://*', 'https://*', 'ws://*', 'wss://*', 'ftp://*'] },
+            sessionId
+        );
         await active.cdp.send(
             'Emulation.setEmulatedMedia',
             { features: [{ name: 'prefers-color-scheme', value: theme }] },

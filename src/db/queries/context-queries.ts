@@ -328,8 +328,9 @@ export interface RootLookupOptions {
     recover?: boolean;
     /**
      * Rows already read, by message id, shared across several lookups of one
-     * batch (the panel's conversation list climbs many chains of one chat).
-     * Only meant for read-only lookups.
+     * batch (the panel's conversation list climbs many chains of one chat, a
+     * reply's context resolution reuses the context's own rows). A cached null
+     * means "no row" for the rest of the batch.
      */
     cache?: Map<number, ContextMessage | null>;
 }
@@ -360,11 +361,14 @@ export const findRootMessage = async (
     let currentMessage: ContextMessage | null = null;
 
     const findRoot = async (msgId: number): Promise<ContextMessage | null> => {
+        let msg = await readChainLink(chatId, msgId, options.cache);
         // Only the ids the chain points at are recovered: a reply target is
-        // known to exist, so a missing row is a hole worth repairing.
-        const msg = msgId === messageId || !recover
-            ? await readChainLink(chatId, msgId, options.cache)
-            : await getContextMessageOrRecover(chatId, msgId);
+        // known to exist, so a missing row is a hole worth repairing. The
+        // message the caller asked for was already read or recovered by it.
+        if (msg === null && msgId !== messageId && recover) {
+            msg = await getContextMessageOrRecover(chatId, msgId);
+            if (msg !== null && options.cache !== undefined) options.cache.set(msgId, msg);
+        }
 
         if (msg?.replyToId) {
             currentMessage = msg;
@@ -375,6 +379,138 @@ export const findRootMessage = async (
     };
 
     return findRoot(messageId);
+};
+
+/** Ids one root-walk query may carry; keeps the IN list well under SQLite's cap */
+const ROOT_WALK_BATCH = 200;
+
+export interface FindRootMessageIdsOptions {
+    /**
+     * false: a row the Message table does not hold is a dead end, never
+     * backfilled (the panel reads without writing). Default true.
+     */
+    recover?: boolean;
+}
+
+/**
+ * Root message id of each of `messageIds`, in batched reads: one query per
+ * level of the deepest chain instead of one walk per message. `/chat r` and
+ * `/chat N` link up to 100 messages, and resolving each chain separately would
+ * cost a round trip per hop.
+ *
+ * A reply chain may pass through ids the Message table does not hold: a bot
+ * reply's continuation chunk lives only in BotResponse, and a hole may be
+ * backfillable. Such ids are read one by one through getContextMessage (which
+ * knows both tables), so the walk lands on the real root instead of stopping
+ * one hop early. A missing row that still cannot be resolved ends its chain
+ * there — the same degradation as `findRootMessage`.
+ *
+ * `known` holds rows the caller already has (the context's own messages), which
+ * are not read again. The result has one entry per requested id that exists;
+ * ancestors walked on the way are memoized internally but not returned, and an
+ * id with no row at all is left out.
+ */
+export const findRootMessageIds = async (
+    chatId: number,
+    messageIds: readonly number[],
+    known: ReadonlyMap<number, ContextMessage | null> = new Map(),
+    options: FindRootMessageIdsOptions = {}
+): Promise<Map<number, number>> => {
+    const recover = options.recover ?? true;
+    const roots = new Map<number, number>();
+    const targets = [...new Set(messageIds)];
+    if (targets.length === 0) return roots;
+
+    // id → its reply target for rows that exist; `missing` holds ids with no row
+    const parentById = new Map<number, number | null>();
+    const missing = new Set<number>();
+    for (const [id, message] of known) {
+        if (message === null) missing.add(id);
+        else parentById.set(id, message.replyToId);
+    }
+
+    const readRows = async (ids: readonly number[]): Promise<void> => {
+        const unread = ids.filter((id) => !parentById.has(id) && !missing.has(id));
+        for (let start = 0; start < unread.length; start += ROOT_WALK_BATCH) {
+            const chunk = unread.slice(start, start + ROOT_WALK_BATCH);
+            const rows = await Message.findAll({
+                where: { chatId, messageId: { [Op.in]: chunk } },
+                attributes: ['messageId', 'replyToId'],
+            });
+            for (const row of rows) parentById.set(row.messageId, row.replyToId);
+            // Not in the Message table: a bot reply's continuation chunk exists
+            // only in BotResponse, and a hole may be backfillable. Read those
+            // one by one; they are few (one per reply chain, at most).
+            const unresolved = chunk.filter((id) => !parentById.has(id) && !missing.has(id));
+            for (const id of unresolved) {
+                const message = recover
+                    ? await getContextMessageOrRecover(chatId, id)
+                    : await getContextMessage(chatId, id);
+                if (message === null) missing.add(id);
+                else parentById.set(id, message.replyToId);
+            }
+        }
+    };
+
+    // Walk every chain up level by level
+    let frontier = targets;
+    const walked = new Set<number>();
+    while (frontier.length > 0) {
+        await readRows(frontier);
+        const next: number[] = [];
+        for (const id of frontier) {
+            if (walked.has(id)) continue;
+            walked.add(id);
+            const parentId = parentById.get(id);
+            if (parentId === null || parentId === undefined) continue;
+            if (!walked.has(parentId)) next.push(parentId);
+        }
+        frontier = [...new Set(next)];
+    }
+
+    // Resolve down to the known roots, memoizing every node on the way
+    for (const target of targets) {
+        if (roots.has(target)) continue;
+        const path: number[] = [];
+        const onPath = new Set<number>();
+        let current = target;
+        let root: number | null = null;
+        for (;;) {
+            const cached = roots.get(current);
+            if (cached !== undefined) {
+                root = cached;
+                break;
+            }
+            if (onPath.has(current)) {
+                root = current; // cycle: stop at the repeat
+                break;
+            }
+            onPath.add(current);
+            path.push(current);
+            if (missing.has(current)) {
+                // The row is gone: the last message that still exists is the root
+                root = path.length >= 2 ? (path[path.length - 2] ?? current) : current;
+                break;
+            }
+            const parentId = parentById.get(current);
+            if (parentId === null || parentId === undefined) {
+                root = current;
+                break;
+            }
+            current = parentId;
+        }
+        roots.set(root, root);
+        for (const id of path) roots.set(id, root);
+    }
+    const result = new Map<number, number>();
+    for (const target of targets) {
+        // A link to a row that no longer exists names no conversation: leaving it
+        // out keeps the phantom root (and its empty manifest line) away.
+        if (missing.has(target)) continue;
+        const root = roots.get(target);
+        if (root !== undefined) result.set(target, root);
+    }
+    return result;
 };
 
 /**

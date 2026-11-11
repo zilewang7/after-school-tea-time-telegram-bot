@@ -21,6 +21,12 @@ export interface ReplyToolContext {
     readonly requester: ToolRequester;
     /** `#N` → message of this turn's context */
     readonly contextIndex: ContextIndex;
+    /**
+     * Reply-tree roots represented in this context, the trigger's own
+     * conversation first. The workspace tools address one of these; absent in
+     * callers that never offer the workspace tools (tests of other tools).
+     */
+    readonly conversationRootIds?: readonly number[];
     /** Aborts when the reply is stopped */
     readonly signal: AbortSignal;
     /** Bot API client; sticker tools resolve the pack through it */
@@ -39,6 +45,7 @@ export const buildReplyToolContext = (input: {
     readonly chat: Chat;
     readonly triggerMessage: TriggerMessageRow;
     readonly contextIndex: ContextIndex;
+    readonly conversationRootIds?: readonly number[];
     readonly signal: AbortSignal;
     readonly api: Api;
 }): ReplyToolContext => ({
@@ -50,6 +57,7 @@ export const buildReplyToolContext = (input: {
         name: input.triggerMessage.userName,
     },
     contextIndex: input.contextIndex,
+    conversationRootIds: input.conversationRootIds,
     signal: input.signal,
     api: input.api,
 });

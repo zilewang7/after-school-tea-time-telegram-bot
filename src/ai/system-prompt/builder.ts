@@ -36,6 +36,10 @@ export interface StaticPromptOptions {
     readonly stickerTools?: boolean;
     /** send_file is offered this turn */
     readonly fileTools?: boolean;
+    /** the workspace file tools are offered this turn */
+    readonly workspace?: boolean;
+    /** workspace_preview is offered this turn */
+    readonly workspacePreview?: boolean;
     /** search_history / read_history are offered this turn */
     readonly historyTools?: boolean;
     /** list_harness_issues / create_harness_issue are offered this turn */
@@ -59,6 +63,8 @@ export const buildStaticSystemPrompt = (model: string, options: StaticPromptOpti
             imageGenerate: options.imageGenerate === true,
             stickerTools: options.stickerTools === true,
             fileTools: options.fileTools === true,
+            workspace: options.workspace === true,
+            workspacePreview: options.workspacePreview === true,
             historyTools: options.historyTools === true,
             harnessIssues: options.harnessIssues === true,
             widget: options.widget === true,

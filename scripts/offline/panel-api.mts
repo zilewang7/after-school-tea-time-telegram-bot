@@ -407,7 +407,7 @@ const cases: { name: string; body: () => Promise<void> }[] = [
             expect(body.settings.model === 'my-own-model-v9' && body.effectiveModel === 'my-own-model-v9', 'effective model is the chat model');
             expect(body.globalDefaultModel === 'env-default-model', 'global default from the env');
             expect(body.summary === null, 'summary is null until reply_metrics exists');
-            expect(Array.isArray(body.tools) && body.tools.length === 10, `10 tool groups (got ${body.tools?.length})`);
+            expect(Array.isArray(body.tools) && body.tools.length === 11, `11 tool groups (got ${body.tools?.length})`);
             expect(
                 body.tools.every(
                     (tool: any) =>
@@ -424,12 +424,17 @@ const cases: { name: string; body: () => Promise<void> }[] = [
             );
             expect(
                 JSON.stringify(body.tools.map((tool: any) => tool.key)) ===
-                    JSON.stringify(['sms', 'image', 'imageSearch', 'imageFetch', 'imageReverseSearch', 'sticker', 'file', 'history', 'harnessIssues', 'widget']),
+                    JSON.stringify(['sms', 'image', 'imageSearch', 'imageFetch', 'imageReverseSearch', 'sticker', 'file', 'history', 'harnessIssues', 'widget', 'workspace']),
                 'groups come in the fixed order'
             );
             expect(
                 body.tools.every((tool: any) => tool.override === null),
                 'nothing is overridden before the panel says so'
+            );
+            const workspaceGroup = body.tools.find((tool: any) => tool.key === 'workspace');
+            expect(
+                workspaceGroup?.enabled === false && workspaceGroup?.reason === 'WORKSPACE_ENABLE 为 0',
+                `the workspace group is off until WORKSPACE_ENABLE=1 (got ${JSON.stringify(workspaceGroup)})`
             );
             expect(body.recentAudit.length === 5, 'the latest five changes');
             const latest = body.recentAudit[0];

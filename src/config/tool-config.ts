@@ -37,6 +37,12 @@
  * - WIDGET_MAX_HTML_BYTES / WIDGET_MAX_GZIP_BYTES: server limits, kept as
  *   configuration so a future Telegram change only touches .env
  * - WIDGET_PROBE_CHAT_ID: chat the owner /widget_probe sends a throwaway widget to
+ * - WORKSPACE_ENABLE=1: offer the workspace_* draft tools (default off, the
+ *   WIDGET_ENABLE pattern: enable it for the chats in WORKSPACE_CHAT_IDS first)
+ * - WORKSPACE_CHAT_IDS: chats offered the workspace tools (empty = TOOL_CHAT_IDS)
+ * - WORKSPACE_MAX_FILE_BYTES / WORKSPACE_MAX_CONVERSATION_BYTES /
+ *   WORKSPACE_MAX_FILES / WORKSPACE_MAX_GLOBAL_BYTES: workspace quotas
+ * - WORKSPACE_PREVIEWS_PER_REPLY: render previews one reply may request
  */
 import { parseChatIdList } from './chat-id-list.js';
 import type { EnvSource } from './env-source.js';
@@ -106,6 +112,20 @@ export interface ToolConfig {
     readonly widgetGroupFallback: boolean;
     /** SHARE_ENABLED is not 0: the public share pages and the share API are on */
     readonly shareEnabled: boolean;
+    /** WORKSPACE_ENABLE is 1: the model workspace (draft files) tools may be offered */
+    readonly workspaceEnabled: boolean;
+    /** Chats offered the workspace tools; empty = toolChatIds */
+    readonly workspaceChatIds: ReadonlySet<number>;
+    /** One workspace file may not exceed this many bytes */
+    readonly workspaceMaxFileBytes: number;
+    /** One conversation's workspace may not exceed this many bytes */
+    readonly workspaceMaxConversationBytes: number;
+    /** One conversation's workspace may not hold more files than this */
+    readonly workspaceMaxFiles: number;
+    /** All workspaces together may not exceed this many bytes */
+    readonly workspaceMaxGlobalBytes: number;
+    /** Render previews one reply may ask for */
+    readonly workspacePreviewsPerReply: number;
 }
 
 /** Stands in for OWNER_DISPLAY_NAME when it is not set */
@@ -186,6 +206,19 @@ export const readToolConfig = (env: EnvSource = process.env): ToolConfig => ({
             : env.WIDGET_RENDER_URL.trim(),
     widgetGroupFallback: env.WIDGET_GROUP_FALLBACK === '1',
     shareEnabled: env.SHARE_ENABLED !== '0',
+    workspaceEnabled: env.WORKSPACE_ENABLE === '1',
+    workspaceChatIds: new Set(parseChatIdList(env.WORKSPACE_CHAT_IDS)),
+    workspaceMaxFileBytes: parsePositiveInt(env.WORKSPACE_MAX_FILE_BYTES, 1024 * 1024),
+    workspaceMaxConversationBytes: parsePositiveInt(
+        env.WORKSPACE_MAX_CONVERSATION_BYTES,
+        10 * 1024 * 1024
+    ),
+    workspaceMaxFiles: parsePositiveInt(env.WORKSPACE_MAX_FILES, 100),
+    workspaceMaxGlobalBytes: parsePositiveInt(
+        env.WORKSPACE_MAX_GLOBAL_BYTES,
+        1024 * 1024 * 1024
+    ),
+    workspacePreviewsPerReply: parsePositiveInt(env.WORKSPACE_PREVIEWS_PER_REPLY, 6),
     owner: readOwner(env),
 });
 

@@ -16,6 +16,12 @@ export const SEARCH_HISTORY_TOOL_NAME = 'search_history';
 export const READ_HISTORY_TOOL_NAME = 'read_history';
 export const LIST_HARNESS_ISSUES_TOOL_NAME = 'list_harness_issues';
 export const CREATE_HARNESS_ISSUE_TOOL_NAME = 'create_harness_issue';
+export const WORKSPACE_WRITE_TOOL_NAME = 'workspace_write';
+export const WORKSPACE_READ_TOOL_NAME = 'workspace_read';
+export const WORKSPACE_LIST_TOOL_NAME = 'workspace_list';
+export const WORKSPACE_EDIT_TOOL_NAME = 'workspace_edit';
+export const WORKSPACE_DELETE_TOOL_NAME = 'workspace_delete';
+export const WORKSPACE_PREVIEW_TOOL_NAME = 'workspace_preview';
 
 /**
  * The "product" tools: they produce or deliver what the reply exists to hand
@@ -51,6 +57,19 @@ export const TIME_FREE_TOOL_NAMES: ReadonlySet<string> = new Set([
 
 export const isTimeFreeToolName = (name: string): boolean => TIME_FREE_TOOL_NAMES.has(name);
 
+/**
+ * The workspace file tools: one group, always offered together (the static
+ * prompt lists them in one line). `workspace_preview` is separate because it
+ * needs a vision model and the render sidecar.
+ */
+export const WORKSPACE_FILE_TOOL_NAMES: readonly string[] = [
+    WORKSPACE_WRITE_TOOL_NAME,
+    WORKSPACE_READ_TOOL_NAME,
+    WORKSPACE_LIST_TOOL_NAME,
+    WORKSPACE_EDIT_TOOL_NAME,
+    WORKSPACE_DELETE_TOOL_NAME,
+];
+
 /** Built-in names an MCP tool may never take */
 export const RESERVED_TOOL_NAMES: readonly string[] = [
     SEND_SMS_TOOL_NAME,
@@ -67,4 +86,10 @@ export const RESERVED_TOOL_NAMES: readonly string[] = [
     READ_HISTORY_TOOL_NAME,
     LIST_HARNESS_ISSUES_TOOL_NAME,
     CREATE_HARNESS_ISSUE_TOOL_NAME,
+    WORKSPACE_WRITE_TOOL_NAME,
+    WORKSPACE_READ_TOOL_NAME,
+    WORKSPACE_LIST_TOOL_NAME,
+    WORKSPACE_EDIT_TOOL_NAME,
+    WORKSPACE_DELETE_TOOL_NAME,
+    WORKSPACE_PREVIEW_TOOL_NAME,
 ];

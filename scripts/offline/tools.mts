@@ -1310,6 +1310,7 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
                 chat: { id: -100555, type: 'supergroup', title: '主群' },
                 triggerMessage,
                 contextIndex: new Map(),
+                conversationRootIds: [1],
                 signal,
                 api: createFakeTelegram(-100555).api,
             });
@@ -1317,6 +1318,7 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
                 chat: { id: 4242, type: 'private', first_name: '李四' },
                 triggerMessage,
                 contextIndex: new Map(),
+                conversationRootIds: [1],
                 signal,
                 api: createFakeTelegram(4242).api,
             });

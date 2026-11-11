@@ -105,6 +105,8 @@ export interface ReplyFileDraft {
     readonly parts: string[];
     /** First non-empty caption wins */
     caption?: string;
+    /** The parts are a workspace file's complete content, so appending would contradict it */
+    readonly fromWorkspace?: boolean;
 }
 
 export interface ReplyMediaState {

@@ -15,6 +15,8 @@ export const buildStaticPromptOptions = (availability: ToolAvailability): Static
     stickerTools: availability.sticker,
     historyTools: availability.history,
     fileTools: availability.file,
+    workspace: availability.workspace,
+    workspacePreview: availability.workspacePreview,
     harnessIssues: availability.harnessIssues,
     widget: availability.widget,
 });

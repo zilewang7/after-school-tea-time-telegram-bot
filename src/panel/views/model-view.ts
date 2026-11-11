@@ -22,6 +22,7 @@ import type { Message } from '../../db/messageDTO.js';
 import { buildContext, type BuiltContext } from '../../reply/context-builder.js';
 import { buildStaticPromptOptions } from '../../reply/static-prompt-options.js';
 import { createReplyTools } from '../../reply/tools/create-reply-tools.js';
+import { appendWorkspaceManifestForReply } from '../../reply/workspace/workspace-manifest.js';
 import type { ReplyToolContext } from '../../reply/tools/reply-tool-context.js';
 import { snapshotReplySettings } from '../../services/chat-settings-service.js';
 import { runtimeChatTitleOf } from './chat-view.js';
@@ -78,6 +79,7 @@ const toolContextOf = (chat: ChatRow, userMessage: Message, built: BuiltContext,
     triggerMessageId: userMessage.messageId,
     requester: { userId: userMessage.userId, name: userMessage.userName },
     contextIndex: built.contextIndex,
+    conversationRootIds: built.conversationRootIds,
     signal: new AbortController().signal,
     api,
 });
@@ -98,12 +100,24 @@ export const buildModelView = async (request: ModelViewRequest): Promise<ModelVi
         dryRun: true,
     });
     const largeMedia = carriesLargeMedia(built.messages);
-    const { tools, availability } = createReplyTools(
+    const { tools, availability, workspaceState } = createReplyTools(
         model,
         toolContextOf(chat, target.userMessage, built, request.toolApi),
         { carriesLargeMedia: largeMedia },
         settings.toolOverrides
     );
+    // Mirror the real request: the workspace manifest is part of the volatile
+    // tail the model would see, so the panel must show it too.
+    await appendWorkspaceManifestForReply({
+        messages: built.messages,
+        triggerTurnIndex: built.triggerTurnIndex,
+        workspaceState,
+        conversationRootIds: built.conversationRootIds,
+        contextIndex: built.contextIndex,
+        enabled: availability.workspace,
+        fileTools: availability.file,
+        widgetTools: availability.widget,
+    });
     const systemPromptReplaced = replacesChatSystemPrompt(model);
 
     return {

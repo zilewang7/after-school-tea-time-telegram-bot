@@ -19,6 +19,7 @@ import {
     openCodeGoSessionId,
 } from '../ai/index.js';
 import { buildContext, buildContextFromParts } from './context-builder.js';
+import { appendWorkspaceManifestForReply } from './workspace/workspace-manifest.js';
 import { chatTitleOf } from '../telegram/chat-title.js';
 import { resolveContextRoot } from './context-root.js';
 import { buildReplyToolContext, createReplyTools } from './tools/index.js';
@@ -303,12 +304,31 @@ const handleChatRetry = async (
 
     // The requester is the original message's author, not whoever pressed retry
     const signal = session.streamController.signal;
-    const { tools, availability } = createReplyTools(
+    const { tools, availability, workspaceState } = createReplyTools(
         model,
-        buildReplyToolContext({ chat: ctx.chat, triggerMessage: userMessage, contextIndex, signal, api: ctx.api }),
+        buildReplyToolContext({
+            chat: ctx.chat,
+            triggerMessage: userMessage,
+            contextIndex,
+            conversationRootIds: builtContext.conversationRootIds,
+            signal,
+            api: ctx.api,
+        }),
         { carriesLargeMedia: carriesLargeMedia(chatContents) },
         settings.toolOverrides
     );
+    // Same manifest injection as the first answer: the panel and a retry must
+    // send the same volatile tail.
+    await appendWorkspaceManifestForReply({
+        messages: chatContents,
+        triggerTurnIndex: builtContext.triggerTurnIndex,
+        workspaceState,
+        conversationRootIds: builtContext.conversationRootIds,
+        contextIndex,
+        enabled: availability.workspace,
+        fileTools: availability.file,
+        widgetTools: availability.widget,
+    });
 
     // Send to AI
     markRequestStarted(session.metrics);

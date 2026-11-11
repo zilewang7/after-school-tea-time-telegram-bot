@@ -97,7 +97,7 @@ export interface ChatSettings {
     updatedBy: number | null;
 }
 
-/** A panel tool switch group, the same nine keys the server uses */
+/** A panel tool switch group, the same keys the server uses */
 export type ToolGroupKey =
     | 'sms'
     | 'image'
@@ -108,7 +108,8 @@ export type ToolGroupKey =
     | 'file'
     | 'history'
     | 'harnessIssues'
-    | 'widget';
+    | 'widget'
+    | 'workspace';
 
 /** Per-chat tool switches: true = on, false = off, missing key = follow the env whitelist */
 export type ToolOverrides = Partial<Record<ToolGroupKey, boolean>>;

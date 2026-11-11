@@ -31,6 +31,8 @@ import {
     CREATE_HARNESS_ISSUE_TOOL_NAME,
     SEND_WIDGET_TOOL_NAME,
     GET_UI_GUIDE_TOOL_NAME,
+    WORKSPACE_FILE_TOOL_NAMES,
+    WORKSPACE_PREVIEW_TOOL_NAME,
 } from './tool-names.js';
 
 /** What the turn's request carries, as far as tool availability cares */
@@ -70,6 +72,10 @@ export interface ToolAvailability {
     readonly widget: boolean;
     /** get_ui_guide is offered (only together with send_widget) */
     readonly widgetGuide: boolean;
+    /** workspace_write / read / list / edit / delete are offered */
+    readonly workspace: boolean;
+    /** workspace_preview is offered (workspace + a vision model + the render sidecar) */
+    readonly workspacePreview: boolean;
 }
 
 const NO_TOOLS: ToolAvailability = {
@@ -87,6 +93,8 @@ const NO_TOOLS: ToolAvailability = {
     harnessIssues: false,
     widget: false,
     widgetGuide: false,
+    workspace: false,
+    workspacePreview: false,
 };
 
 export const resolveToolAvailability = (
@@ -119,6 +127,22 @@ export const resolveToolAvailability = (
         (toolOverrideOf(overrides, 'widget') ?? widgetChats.has(chatId)) &&
         isEnabled(SEND_WIDGET_TOOL_NAME) &&
         isEnabled(GET_UI_GUIDE_TOOL_NAME);
+
+    // The model workspace (per-conversation draft files) follows WIDGET_ENABLE's
+    // pattern: off by default, then a chat whitelist the panel may override.
+    // Preview additionally needs a model that can see the PNG and the render
+    // sidecar; a text-only model would get a tool whose images it cannot read.
+    const workspaceChats =
+        config.workspaceChatIds.size > 0 ? config.workspaceChatIds : config.toolChatIds;
+    const workspace =
+        config.workspaceEnabled &&
+        (toolOverrideOf(overrides, 'workspace') ?? workspaceChats.has(chatId)) &&
+        WORKSPACE_FILE_TOOL_NAMES.every(isEnabled);
+    const workspacePreview =
+        workspace &&
+        capabilities.supportsImageInput === true &&
+        config.widgetRenderUrl !== '' &&
+        isEnabled(WORKSPACE_PREVIEW_TOOL_NAME);
 
     // A server is out when excluded for this platform, disabled by its key, or
     // left with no enabled tool
@@ -203,5 +227,7 @@ export const resolveToolAvailability = (
             isEnabled(CREATE_HARNESS_ISSUE_TOOL_NAME),
         widget,
         widgetGuide: widget,
+        workspace,
+        workspacePreview,
     };
 };
