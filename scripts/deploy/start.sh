@@ -35,8 +35,10 @@ install_dependencies() {
         return 0
     fi
     log "installing dependencies"
-    # tools/checks holds development-only tools
-    pnpm install --frozen-lockfile --filter '!k-on-bot-checks' || return 1
+    # tools/checks holds development-only tools. The filter alone is not
+    # enough: with pnpm's default dedupe-peer-dependents a filtered install
+    # still installs every project of the workspace.
+    pnpm install --frozen-lockfile --filter '!k-on-bot-checks' --config.dedupe-peer-dependents=false || return 1
     echo "$LOCK_HASH" > "$INSTALL_MARKER"
 }
 
