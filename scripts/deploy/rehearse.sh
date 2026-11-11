@@ -137,6 +137,12 @@ check "BUILD_COMMIT is $GOOD_COMMIT" '[ "$(in_container cat dist/BUILD_COMMIT)" 
 check "server and webapp output exist" 'in_container test -f dist/index.js && in_container test -f webapp/dist/index.html'
 check "the check tools were not installed" '! in_container test -d tools/checks/node_modules/typescript'
 check "pm2 is started through the config" 'echo "$LAST_LOGS" | grep -q "stand-in pm2\] start scripts/deploy/pm2.config.cjs"'
+if [ "$failures" -gt 0 ]; then
+    # Everything below builds on this start: show what happened and stop
+    echo "  the first start did not produce a build; its log:"
+    echo "$LAST_LOGS" | tail -60 | sed 's/^/    /'
+    exit "$failures"
+fi
 COLD_FILE_COUNT=$(dist_file_count)
 echo "  dist holds $COLD_FILE_COUNT files"
 
