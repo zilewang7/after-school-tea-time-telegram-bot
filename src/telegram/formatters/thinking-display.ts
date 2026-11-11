@@ -105,6 +105,38 @@ export const segmentThinking = (raw: string): string[] => {
     return sections;
 };
 
+/** Whether the CoT is written as blank-line paragraphs (Gemini's usual shape) */
+const hasParagraphs = (text: string): boolean => /\n{2,}/.test(text);
+
+/** Share of a chopped preview that stays visible: a run of blocks reads heavier than prose */
+const CHOPPED_PREVIEW_SHARE = 3 / 5;
+
+/** How far the share cut may walk into the preview to start at a sentence edge */
+const CHOPPED_PREVIEW_EDGE_CHARS = 200;
+
+/**
+ * Keep the newest share of a chopped preview, starting at the sentence end
+ * closest to the cut: an arbitrary character would begin the preview
+ * mid-sentence, which is exactly how a paragraph-free CoT already looks.
+ */
+const shortenChoppedPreview = (preview: string): string => {
+    const target = Math.floor(preview.length * CHOPPED_PREVIEW_SHARE);
+    const idealStart = preview.length - target;
+    const from = Math.max(0, idealStart - CHOPPED_PREVIEW_EDGE_CHARS);
+    const to = Math.min(preview.length, idealStart + CHOPPED_PREVIEW_EDGE_CHARS);
+    let start = idealStart;
+    let distance = CHOPPED_PREVIEW_EDGE_CHARS + 1;
+    for (const match of preview.slice(from, to).matchAll(SENTENCE_END_PATTERN)) {
+        const end = from + (match.index ?? 0) + match[0].length;
+        const candidate = Math.abs(end - idealStart);
+        if (candidate < distance) {
+            distance = candidate;
+            start = end;
+        }
+    }
+    return preview.slice(start).trimStart();
+};
+
 export interface ThinkingStreamingOptions {
     /** Answer text has started: the thinking phase is over, collapse it all */
     answerStarted: boolean;
@@ -135,36 +167,15 @@ export const formatThinkingForStreaming = (
     }
 
     const collapsed = segments.slice(0, -PREVIEW_SEGMENT_COUNT).join('\n\n');
-    const preview = segments.slice(-PREVIEW_SEGMENT_COUNT).join('\n\n');
+    const visibleSections = segments.slice(-PREVIEW_SEGMENT_COUNT).join('\n\n');
+    // A paragraph-free CoT has no natural section ends: its visible preview is a
+    // stack of chopped blocks, so only part of it stays; the folded head is whole
+    const preview = hasParagraphs(markdown) ? visibleSections : shortenChoppedPreview(visibleSections);
     return concatMessages(
         renderQuotedMarkdown(collapsed, { expandable: true, streaming: true }),
         '\n',
         renderQuotedMarkdown(preview, { expandable: false, streaming: true })
     );
-};
-
-/** Whether the CoT is written as blank-line paragraphs (Gemini's usual shape) */
-const hasParagraphs = (text: string): boolean => /\n{2,}/.test(text);
-
-/** Share of a chopped preview that stays visible: a run of blocks reads heavier than prose */
-const CHOPPED_PREVIEW_SHARE = 3 / 5;
-
-/** How far the share cut may walk into the preview to start at a sentence edge */
-const CHOPPED_PREVIEW_EDGE_CHARS = 200;
-
-/**
- * Keep the newest share of a chopped preview, starting just after the first
- * sentence end inside the kept window: cutting at an arbitrary character would
- * begin the preview mid-sentence, which is exactly how a paragraph-free CoT
- * already looks.
- */
-const shortenChoppedPreview = (preview: string): string => {
-    const target = Math.floor(preview.length * CHOPPED_PREVIEW_SHARE);
-    const window = preview.slice(Math.max(0, preview.length - target));
-    const head = window.slice(0, CHOPPED_PREVIEW_EDGE_CHARS);
-    const [edge] = [...head.matchAll(SENTENCE_END_PATTERN)];
-    const start = edge === undefined ? 0 : (edge.index ?? 0) + edge[0].length;
-    return window.slice(start).trimStart();
 };
 
 /**

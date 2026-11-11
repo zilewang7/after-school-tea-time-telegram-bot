@@ -3528,6 +3528,34 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
                     .join(',') === 'expandable_blockquote',
                 'once the answer starts the whole thinking collapses'
             );
+
+            // A paragraph-free CoT has no natural section ends: only part of its
+            // visible preview stays, while the folded head stays whole
+            const wallOfText = 'This is one reasoning sentence that keeps going for a while. '
+                .repeat(80)
+                .trim();
+            const wallSections = segmentThinking(wallOfText);
+            expect(
+                wallSections.length > 3,
+                `the wall of text needs a rolling preview (got ${wallSections.length} sections)`
+            );
+            const wallRendered = formatThinkingForStreaming(wallOfText, { answerStarted: false });
+            const wallPreview = wallRendered.entities.find((entity) => entity.type === 'blockquote');
+            const wallVisible = wallSections.slice(-2).join('\n\n');
+            const wallShare = (wallPreview?.length ?? 0) / wallVisible.length;
+            expect(
+                wallShare > 0.5 && wallShare < 0.67,
+                `a paragraph-free preview keeps about 3/5 (got ${wallPreview?.length}/${wallVisible.length})`
+            );
+            expect(
+                wallRendered.text.includes(wallSections.at(-1)?.slice(-40) ?? 'missing'),
+                'and it still ends at the newest text'
+            );
+            const wallFold = wallRendered.text.slice(0, wallPreview?.offset ?? 0).trimEnd();
+            expect(
+                wallFold.length >= wallSections.slice(0, -2).join('\n\n').length - 2,
+                'the folded head keeps every earlier section'
+            );
         },
     },
     {

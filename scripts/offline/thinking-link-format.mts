@@ -300,7 +300,7 @@ results.push(
             formatThinkingForStreaming(thinking, { answerStarted: false }).text.length;
         let under: string | undefined;
         let onBoundary: string | undefined;
-        for (let raw = 3700; raw <= 4000; raw += 1) {
+        for (let raw = 4000; raw <= 4600; raw += 1) {
             const rendered = renderedLength(plainThinking(raw));
             if (rendered === LINK_TRIGGER_LENGTH - 1) under = plainThinking(raw);
             if (rendered === LINK_TRIGGER_LENGTH) onBoundary = plainThinking(raw);
