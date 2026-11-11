@@ -1,4 +1,4 @@
-import { Bot } from "grammy";
+import type { Bot } from "grammy";
 import { sendBotNotice } from "../../services/bot-notice-service.js";
 
 export const registerHelpCommand = (bot: Bot) => {

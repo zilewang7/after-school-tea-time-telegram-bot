@@ -1,4 +1,5 @@
-import { Bot, InlineKeyboard } from "grammy";
+import type { Bot } from "grammy";
+import { InlineKeyboard } from "grammy";
 import type { Chat } from "grammy/types";
 import { match } from "ts-pattern";
 import { upsertChatNow } from "../../db/queries/panel-registry.js";

@@ -6,7 +6,7 @@
  * sendBotNotice): it contains a live credential, and /chat context must not
  * replay it into the model.
  */
-import { Bot } from 'grammy';
+import type { Bot } from 'grammy';
 import { webLoginBotChatLink, webLoginEnabled, webLoginMiniAppLink, webLoginPublicUrl } from '../../config/web-login.js';
 import { isPanelRunning } from '../../panel/panel-state.js';
 import { getWebAuthRuntime } from '../../panel/auth/web-auth-runtime.js';

@@ -1,4 +1,4 @@
-import { Bot } from "grammy";
+import type { Bot } from "grammy";
 import type { BotCommand } from "grammy/types";
 import { isTestInstance, getAllowedChatIds } from "../config/instance.js";
 import { OPENAI_IMAGE_MODEL } from "../config/models.js";

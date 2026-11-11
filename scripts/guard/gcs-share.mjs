@@ -99,7 +99,7 @@ const main = async () => {
             return;
         }
         for (const member of targets) {
-            const result = await revokeServiceAgent({
+            await revokeServiceAgent({
                 serviceAccount: member.replace(/^serviceAccount:/, ''),
                 role,
                 dryRun,

@@ -40,7 +40,7 @@ const PREVIEW_MEDIA_MAX_BYTES = 200 * 1024 * 1024;
 // offering them to the model. Mirrors context-queries.
 const MEDIA_URI_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 
-const URL_PATTERN = /https?:\/\/[^\s<>"'()\[\]]+/;
+const URL_PATTERN = /https?:\/\/[^\s<>"'()[\]]+/;
 
 /** Extract the first http(s) URL from a message text, if any. */
 export const extractFirstUrl = (text: string | null | undefined): string | null => {

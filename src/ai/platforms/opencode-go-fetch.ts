@@ -108,4 +108,4 @@ export const openCodeGoSessionId = (chatId: number, rootMessageId: number): stri
 
 /** Argon (and any of its variants) is served by the Go subscription only */
 export const isOpenCodeGoModel = (model: string): boolean =>
-    /^gemini-4-argon/.test(model.toLowerCase());
+    model.toLowerCase().startsWith('gemini-4-argon');

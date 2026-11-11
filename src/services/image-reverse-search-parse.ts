@@ -99,6 +99,7 @@ const domainOf = (rawUrl: string): string => {
 const cleanUrl = (rawUrl: string): string => {
     try {
         const url = new URL(rawUrl);
+        // oxlint-disable-next-line no-useless-spread -- the copy is needed: deleting while iterating the live params skips the next key
         for (const key of [...url.searchParams.keys()]) {
             if (key.startsWith('utm_')) url.searchParams.delete(key);
         }

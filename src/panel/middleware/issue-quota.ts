@@ -44,7 +44,8 @@ export const createIssueQuota = (options: IssueQuotaOptions): IssueQuota => {
         (slotTimes.get(userId) ?? []).filter((takenAt) => now - takenAt < options.windowMs);
 
     const sweep = (now: number): void => {
-        for (const userId of [...slotTimes.keys()]) {
+        // Deleting the current entry while iterating a Map is safe
+        for (const userId of slotTimes.keys()) {
             if (recentSlots(userId, now).length === 0) slotTimes.delete(userId);
         }
     };

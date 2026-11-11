@@ -3,7 +3,7 @@
  * Builds unified message context from database messages
  */
 import { match } from 'ts-pattern';
-import { Message } from '../db/messageDTO.js';
+import type { Message } from '../db/messageDTO.js';
 import {
     getContextMessage,
     getFileContentsOfMessage,

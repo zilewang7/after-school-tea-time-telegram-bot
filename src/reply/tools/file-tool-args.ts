@@ -21,6 +21,7 @@ export const MAX_FILE_NAME_CHARS = 80;
 
 /** Characters Telegram clients and Windows downloads all accept */
 const ILLEGAL_NAME_CHARS = /[<>:"|?*]/g;
+// oxlint-disable-next-line no-control-regex -- matching control characters is the point
 const CONTROL_CHARS = /[\u0000-\u001f\u007f]/g;
 const WHITESPACE_RUN = /\s+/g;
 

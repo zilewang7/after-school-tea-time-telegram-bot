@@ -43,7 +43,7 @@ const distance = (left: string, right: string): number => {
     const b = Array.from(right);
     const rows = a.length + 1;
     const columns = b.length + 1;
-    const dp = Array.from({ length: rows }, () => new Array<number>(columns).fill(0));
+    const dp = Array.from({ length: rows }, () => Array.from({ length: columns }, () => 0));
     for (let i = 0; i < rows; i += 1) dp[i]![0] = i;
     for (let j = 0; j < columns; j += 1) dp[0]![j] = j;
     for (let i = 1; i < rows; i += 1) {

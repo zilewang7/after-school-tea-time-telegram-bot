@@ -364,7 +364,7 @@ export class GeminiPlatform extends BasePlatform {
             // the budget there is rejected with 400 "Thinking budget is not
             // supported for this model". HIGH keeps the old -1 behaviour of letting
             // the model decide how long it thinks.
-            thinkingConfig: /^gemini-4/.test(model.toLowerCase())
+            thinkingConfig: model.toLowerCase().startsWith('gemini-4')
                 ? { includeThoughts: true, thinkingLevel: ThinkingLevel.HIGH }
                 : {
                       includeThoughts: true,

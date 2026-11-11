@@ -75,11 +75,11 @@ export const createReplyTools = (
         ...(availability.sms ? [createSendSmsTool(context)] : []),
         ...(availability.image
             ? [
-                  createGenerateImageTool(context, mediaState, {
-                      ...(availability.sticker
-                          ? { sticker: { setName: config.stickerSetName, api: context.api } }
-                          : {}),
-                  }),
+                  createGenerateImageTool(
+                      context,
+                      mediaState,
+                      availability.sticker ? { sticker: { setName: config.stickerSetName, api: context.api } } : {}
+                  ),
               ]
             : []),
         ...(availability.imageSearch

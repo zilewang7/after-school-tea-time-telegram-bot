@@ -21,7 +21,7 @@ const countPerBucket = (
     bucketCount: number,
     indexOf: (row: ReplyMetricRecord) => number | undefined
 ): number[] => {
-    const values = new Array<number>(bucketCount).fill(0);
+    const values = Array.from({ length: bucketCount }, () => 0);
     for (const row of rows) {
         const index = indexOf(row);
         if (index !== undefined) values[index] = (values[index] ?? 0) + 1;

@@ -1,4 +1,4 @@
-import { Bot } from "grammy";
+import type { Bot } from "grammy";
 import type { Api } from "grammy";
 import { match } from "ts-pattern";
 import { saveMessage, findBotResponseByMessageId, BotResponse, MediaCache, LinkPreviewCache, MessageLink, ButtonState } from "./index.js";

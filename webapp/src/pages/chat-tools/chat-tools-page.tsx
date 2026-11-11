@@ -21,7 +21,7 @@ const overridesAfterFlip = (
     next: boolean,
     current: ToolOverrides | null
 ): ToolOverrides | null => {
-    const overrides: ToolOverrides = { ...(current ?? {}) };
+    const overrides: ToolOverrides = { ...current };
     if (next === group.defaultEnabled) delete overrides[group.key];
     else overrides[group.key] = next;
     return Object.keys(overrides).length === 0 ? null : overrides;
@@ -71,7 +71,7 @@ export const ChatToolsPage = () => {
     const handleReset = useCallback(
         (group: ToolGroupEntry) => {
             if (detail.state.status !== 'success') return;
-            const overrides: ToolOverrides = { ...(detail.state.data.settings.toolOverrides ?? {}) };
+            const overrides: ToolOverrides = { ...detail.state.data.settings.toolOverrides };
             delete overrides[group.key];
             saveOverrides(Object.keys(overrides).length === 0 ? null : overrides, group.key);
         },

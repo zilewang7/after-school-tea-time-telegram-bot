@@ -2,11 +2,13 @@
  * Bot Response data model
  * Manages bot responses with version history and button states
  */
+import type {
+    InferAttributes,
+    InferCreationAttributes,
+} from '@sequelize/core';
 import {
     DataTypes,
     Model,
-    InferAttributes,
-    InferCreationAttributes,
 } from '@sequelize/core';
 import { sequelize } from './config.js';
 

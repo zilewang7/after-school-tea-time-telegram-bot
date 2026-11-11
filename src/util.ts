@@ -1,7 +1,7 @@
 /**
  * Utility functions
  */
-import { Context } from 'grammy';
+import type { Context } from 'grammy';
 import type { ReactionTypeEmoji } from 'grammy/types';
 
 /**

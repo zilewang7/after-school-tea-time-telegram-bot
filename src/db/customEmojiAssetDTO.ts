@@ -1,8 +1,10 @@
-import {
+import type {
   CreationOptional,
-  DataTypes,
   InferAttributes,
   InferCreationAttributes,
+} from '@sequelize/core';
+import {
+  DataTypes,
   Model,
 } from '@sequelize/core';
 import { sequelize } from './config.js';

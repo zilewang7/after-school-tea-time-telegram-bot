@@ -10,7 +10,7 @@
  * Auth is ADC via GOOGLE_APPLICATION_CREDENTIALS (the mounted service account
  * JSON); the same project's service account can read its own private bucket.
  */
-import { Readable } from 'node:stream';
+import type { Readable } from 'node:stream';
 import { Storage } from '@google-cloud/storage';
 
 const bucketName = process.env.GCS_BUCKET;

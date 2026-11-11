@@ -1,0 +1,39 @@
+{
+    "$schema": "./tools/checks/node_modules/oxlint/configuration_schema.json",
+    "plugins": ["eslint", "typescript", "unicorn", "oxc", "import"],
+    "categories": {
+        "correctness": "error"
+    },
+    "rules": {
+        "import/no-default-export": "error",
+        "eslint/eqeqeq": "error",
+        "typescript/consistent-type-imports": ["error", { "disallowTypeAnnotations": false }]
+    },
+    "overrides": [
+        {
+            "files": ["webapp/src/**"],
+            "plugins": ["react"],
+            "rules": {
+                "react/exhaustive-deps": "error",
+                "react/set-state-in-effect": "off"
+            }
+        },
+        {
+            "files": ["src/ai/widget/guides/a2ui-guide.ts"],
+            "rules": {
+                "eslint/no-useless-escape": "off"
+            }
+        }
+    ],
+    "ignorePatterns": [
+        "**/node_modules/**",
+        "dist/**",
+        "webapp/dist/**",
+        ".claude/**",
+        "tmp/**",
+        "docs/**",
+        "tgs-converter/**",
+        "widget-render/**",
+        "tools/**"
+    ]
+}
