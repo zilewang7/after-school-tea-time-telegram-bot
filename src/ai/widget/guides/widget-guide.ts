@@ -11,7 +11,7 @@
 export const WIDGET_GUIDE_HTML_TITLE = "Telegram Widget · HTML 模式规范";
 
 export const WIDGET_GUIDE_HTML_TEXT = `Telegram Widget · HTML 模式规范
-guide=html · version 2 · 来源：TelegramMessenger/widget-sandbox 官方文档内部快照（widget profile 1 / SDK v1 / widget-sandbox 0.6.1，快照 2026-11-08）
+guide=html · version 3 · 来源：TelegramMessenger/widget-sandbox 官方文档内部快照（widget profile 1 / SDK v1 / widget-sandbox 0.6.1，快照 2026-11-08）
 
 ## 0. 这份文本是什么、产出什么
 

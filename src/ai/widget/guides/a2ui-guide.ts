@@ -10,7 +10,7 @@
 export const WIDGET_GUIDE_A2UI_TITLE = "Telegram Widget · A2UI 模式规范（catalog: tg-card-v1）";
 
 export const WIDGET_GUIDE_A2UI_TEXT = `Telegram Widget · A2UI 模式规范（自定义 catalog: tg-card-v1）
-guide=a2ui · version 2 · 来源：A2UI v1.0（a2ui-project/a2ui，Apache-2.0）的 Telegram 子集 + TelegramMessenger/widget-sandbox 文档内部快照（widget profile 1，快照 2026-11-08）
+guide=a2ui · version 3 · 来源：A2UI v1.0（a2ui-project/a2ui，Apache-2.0）的 Telegram 子集 + TelegramMessenger/widget-sandbox 文档内部快照（widget profile 1，快照 2026-11-08）
 
 ## 0. 这份文本是什么、产出什么
 
@@ -33,7 +33,7 @@ guide=a2ui · version 2 · 来源：A2UI v1.0（a2ui-project/a2ui，Apache-2.0�
 - 上面两种的 minified JSON 字符串（工具参数是字符串时）。
 - JSON 数组（JSONL 合并成数组的形式）：数组里只能有一条 \`createSurface\`，多条会报 invalid-surface。
 
-工具参数形状：send_widget 的 \`surface\` 参数声明为**字符串**，把上面任一形状序列化成 minified JSON **字符串**传进去（如 \`"{\"components\":[…]}"\`）。不要传 JSON 对象：部分平台会把对象的嵌套字段剥成 null（harness issue #5）。编译器本身也接受对象，但工具 schema 只承诺字符串。
+工具参数形状：send_widget 的 \`surface\` 参数声明为**字符串**，把上面任一形状序列化成 minified JSON **字符串**传进去（如 \`"{\\"components\\":[…]}"\`）。不要传 JSON 对象：部分平台会把对象的嵌套字段剥成 null（harness issue #5）。编译器本身也接受对象，但工具 schema 只承诺字符串。
 
 字段规则：
 - \`components\` 必须是非空数组，元素是**扁平邻接表**：\`{"id":"…","component":"组件名", …props}\`；容器用 \`child\`（单个 id 字符串）或 \`children\`（id 数组）引用别的组件，两者只能二选一。
