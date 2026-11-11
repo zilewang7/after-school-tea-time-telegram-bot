@@ -26,6 +26,10 @@ import {
     startChatCompletionStub,
     systemPromptOf,
 } from './fake-telegram.mts';
+import { startStubServer } from './support/stub-server.mts';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import type { User } from 'grammy/types';
 import type { GroundingData, ResponseState, UnifiedMessage } from '../../src/ai/types.js';
 
@@ -33,20 +37,21 @@ import type { GroundingData, ResponseState, UnifiedMessage } from '../../src/ai/
 process.env.IGNORED_SENDER_IDS = '424242';
 
 // Same deal for the backfill service, which snapshots its base URL. The stub
-// server below plays luoxu's /messages endpoint.
-const BACKFILL_PORT = 9137;
+// server below plays luoxu's /messages endpoint. Every stub listens on a port
+// the OS picks, so two runs of this file never collide.
+const backfillStub = await startStubServer();
 
 /** The comfy-forward stub the /pic and /vid cases run against */
-const COMFY_PORT = 9138;
+const comfyStub = await startStubServer();
 
 /** The xAI-shaped stub the storyboard case runs against */
-const GROK_PORT = 9139;
+const grokStub = await startStubServer();
 
 /** The tgs-converter stub the MiMo media case runs against (snapshotted at import) */
-const TGS_PORT = 9140;
+const tgsStub = await startStubServer();
 
 /** The MiMo-shaped stub the content-filter case runs against */
-const MIMO_PORT = 9141;
+const mimoStub = await startStubServer();
 
 /**
  * The chat the retry static-head case replies in. On the tool whitelist (read
@@ -57,14 +62,19 @@ process.env.TOOL_CHAT_IDS = [process.env.TOOL_CHAT_IDS, String(TOOL_WHITELISTED_
 
 // The /chat and /pic parsers decide whether `/cmd@Name` is addressed to us
 process.env.BOT_USER_NAME = 'AfterSchoolTeatimeBot';
-process.env.LUOXU_PREVIEW_URL = `http://127.0.0.1:${BACKFILL_PORT}`;
-process.env.COMFY_FORWARD_URL = `http://127.0.0.1:${COMFY_PORT}`;
-process.env.GROK_API_URL = `http://127.0.0.1:${GROK_PORT}/v1`;
+process.env.LUOXU_PREVIEW_URL = backfillStub.url;
+process.env.COMFY_FORWARD_URL = comfyStub.url;
+// Read on each poll; the production 2 s interval would make the suite wait
+process.env.COMFY_FAST_POLL_MS = '20';
+process.env.GROK_API_URL = `${grokStub.url}/v1`;
 process.env.GROK_API_KEY = 'offline-stub';
-process.env.TGS_CONVERTER_URL = `http://127.0.0.1:${TGS_PORT}`;
-process.env.MIMO_API_URL = `http://127.0.0.1:${MIMO_PORT}/v1`;
+process.env.TGS_CONVERTER_URL = tgsStub.url;
+process.env.MIMO_API_URL = `${mimoStub.url}/v1`;
 process.env.MIMO_API_KEY = 'offline-stub';
 const { shouldIgnoreSender } = await import('../../src/config/sender-gate.js');
+
+/** Files a case writes; per process so concurrent runs never share a path */
+const scratchDirectory = mkdtempSync(join(tmpdir(), 'kon-offline-run-'));
 
 const db: OfflineDb = await setupOfflineDb();
 const { Message, queries } = db;
@@ -789,6 +799,7 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
                 images: [],
                 stickers: [],
     files: [],
+                widgets: [],
                 groundingData: [],
                 agentStats: undefined,
                 modelParts: undefined,
@@ -1254,7 +1265,7 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
             const reject = () =>
                 new GrammyError(
                     "Call to 'editMessageText' failed!",
-                    { error_code: 400, description: 'Bad Request: ENTITIES_TOO_LONG' },
+                    { ok: false, error_code: 400, description: 'Bad Request: ENTITIES_TOO_LONG' },
                     'editMessageText',
                     { ok: false, error_code: 400, description: 'Bad Request: ENTITIES_TOO_LONG' }
                 );
@@ -1773,8 +1784,8 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
         // bot introduce itself as the production one.
         name: 'the system prompt takes the bot identity from the env',
         body: async () => {
-            const { writeFileSync, rmSync } = await import('node:fs');
-            const promptPath = '/tmp/offline-system-prompt.md';
+            const { writeFileSync } = await import('node:fs');
+            const promptPath = join(scratchDirectory, 'offline-system-prompt.md');
             writeFileSync(
                 promptPath,
                 '你的 id 是 @{{BOT_USER_NAME}}，你的用户名是 {{BOT_NAME}}。{{UNKNOWN_VAR}}'
@@ -2022,15 +2033,14 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
                 },
             });
 
-            const newest = messages[messages.length - 1];
-            const lastPart = newest.content[newest.content.length - 1];
+            const lastPart = messages.at(-1)?.content.at(-1);
             expect(
-                lastPart.type === 'text' && lastPart.text.startsWith('[system] 运行时信息'),
+                lastPart?.type === 'text' && (lastPart.text ?? '').startsWith('[system] 运行时信息'),
                 `the runtime block is the last part of the newest message (got ${JSON.stringify(lastPart)})`
             );
             const runtimeParts = messages.flatMap((message) =>
                 message.content.filter(
-                    (part) => part.type === 'text' && part.text.includes('[system] 运行时信息')
+                    (part) => part.type === 'text' && (part.text ?? '').includes('[system] 运行时信息')
                 )
             );
             expect(
@@ -2207,11 +2217,10 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
         // arrive with no context at all.
         name: 'a reply target that was never stored is recovered from history',
         body: async () => {
-            const { createServer } = await import('node:http');
 
             const requestedIds: string[] = [];
             const lostMessageId = takeMessageId();
-            const server = createServer((request, response) => {
+            backfillStub.handle((request, response) => {
                 const query = new URL(request.url ?? '', 'http://localhost').searchParams;
                 const ids = query.get('ids') ?? '';
                 requestedIds.push(ids);
@@ -2231,7 +2240,6 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
                 response.writeHead(200, { 'Content-Type': 'application/json' });
                 response.end(JSON.stringify({ messages }));
             });
-            await new Promise<void>((ready) => server.listen(BACKFILL_PORT, '127.0.0.1', ready));
 
             try {
                 // A reply whose target has no row — the pre-backfill dead end
@@ -2276,7 +2284,7 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
                     'an id that history no longer has is not asked for twice'
                 );
             } finally {
-                await new Promise<void>((closed) => server.close(() => closed()));
+                backfillStub.reset();
             }
         },
     },
@@ -2476,7 +2484,6 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
         // The whole async path the old synchronous /generate could not survive.
         name: 'a pic job is submitted, polled and delivered',
         body: async () => {
-            const { createServer } = await import('node:http');
             const { forgetWorkflows } = await import('../../src/services/comfy-forward-service.js');
             const { runGeneration } = await import(
                 '../../src/reply/commands/generation-runner.js'
@@ -2489,7 +2496,7 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
             /** Statuses handed out in order, so the poller sees a real transition */
             let statuses = ['running', 'succeeded'];
 
-            const server = createServer((request, response) => {
+            comfyStub.handle((request, response) => {
                 const path = request.url ?? '';
                 const json = (body: unknown, status = 200): void => {
                     response.writeHead(status, { 'Content-Type': 'application/json' });
@@ -2543,7 +2550,6 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
                 }
                 json({ error: 'not found' }, 404);
             });
-            await new Promise<void>((ready) => server.listen(COMFY_PORT, '127.0.0.1', ready));
 
             // The runner only touches these methods; a real grammy Api needs a
             // bot token and a network, so a stub stands in for it.
@@ -2641,7 +2647,7 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
                     `a failed job reports why (got ${JSON.stringify(editedTexts)})`
                 );
             } finally {
-                await new Promise<void>((closed) => server.close(() => closed()));
+                comfyStub.reset();
                 forgetWorkflows();
             }
         },
@@ -3172,7 +3178,6 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
     {
         name: 'the storyboard is written by grok, cleaned, and degrades on failure',
         body: async () => {
-            const { createServer } = await import('node:http');
             const {
                 buildSystemPrompt,
                 buildUserMessage,
@@ -3244,7 +3249,7 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
                 },
             };
 
-            const server = createServer((request, response) => {
+            grokStub.handle((request, response) => {
                 const chunks: Buffer[] = [];
                 request.on('data', (chunk: Buffer) => chunks.push(chunk));
                 request.on('end', () => {
@@ -3253,7 +3258,6 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
                     response.end(JSON.stringify(replyWith.body));
                 });
             });
-            await new Promise<void>((ready) => server.listen(GROK_PORT, '127.0.0.1', ready));
 
             try {
                 const storyboard = await enhanceVideoPrompt({
@@ -3300,7 +3304,7 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
                     `a failure is reportable rather than fatal (got ${String(error)})`
                 );
             } finally {
-                await new Promise<void>((closed) => server.close(() => closed()));
+                grokStub.reset();
             }
         },
     },
@@ -3309,7 +3313,6 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
         // end — a video is downloaded from videos/N and goes out as a video.
         name: 'a video job is delivered as a video and stored as one',
         body: async () => {
-            const { createServer } = await import('node:http');
             const { forgetWorkflows } = await import('../../src/services/comfy-forward-service.js');
             const { runGeneration } = await import(
                 '../../src/reply/commands/generation-runner.js'
@@ -3321,7 +3324,7 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
             const MP4_BYTES = Buffer.from('00000018667479706d703432', 'hex');
             let downloadedPath = '';
 
-            const server = createServer((request, response) => {
+            comfyStub.handle((request, response) => {
                 const path = request.url ?? '';
                 const json = (body: unknown, status = 200): void => {
                     response.writeHead(status, { 'Content-Type': 'application/json' });
@@ -3357,7 +3360,6 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
                 }
                 json({ error: 'not found' }, 404);
             });
-            await new Promise<void>((ready) => server.listen(COMFY_PORT, '127.0.0.1', ready));
 
             interface SentVideo { spoiler: boolean; caption: string; streaming: boolean }
             const sentVideos: SentVideo[] = [];
@@ -3434,7 +3436,7 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
                     `and labelled as one for the model (got ${JSON.stringify(stored?.text)})`
                 );
             } finally {
-                await new Promise<void>((closed) => server.close(() => closed()));
+                comfyStub.reset();
                 forgetWorkflows();
             }
         },
@@ -4226,11 +4228,11 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
                 '</i>';
             const entries = parseDanmakuXml(xml);
             expect(
-                entries.length === 2 && entries[1].text === 'A &<B> ! ok',
+                entries.length === 2 && entries[1]?.text === 'A &<B> ! ok',
                 'danmaku lines are parsed and XML entities are decoded'
             );
             expect(
-                entries[0].timeSec === 126.248 && entries[0].weight === 10,
+                entries[0]?.timeSec === 126.248 && entries[0].weight === 10,
                 'appearance time and weight come from the p attribute'
             );
 
@@ -4243,7 +4245,8 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
             const picked = selectDanmaku(many, 3);
             expect(
                 picked.map((entry) => entry.text).join(',') === 'w9,w8,w7' &&
-                    picked[0].timeSec < picked[2].timeSec,
+                    // NaN when an entry is missing, so the comparison fails
+                    (picked[0]?.timeSec ?? Number.NaN) < (picked[2]?.timeSec ?? Number.NaN),
                 'selection keeps the highest-weight danmaku and restores timeline order'
             );
 
@@ -4311,9 +4314,9 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
             const assEntries = parseAssDanmaku(ass);
             expect(
                 assEntries.length === 2 &&
-                    assEntries[0].text === '是不是太正常了' &&
+                    assEntries[0]?.text === '是不是太正常了' &&
                     Math.abs(assEntries[0].timeSec - 126.24) < 0.001 &&
-                    assEntries[1].text === '带逗号,的弹幕',
+                    assEntries[1]?.text === '带逗号,的弹幕',
                 'ASS dialogues parse into timed danmaku with override tags stripped'
             );
         },
@@ -4371,14 +4374,13 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
         // one bad part 400s the whole conversation context.
         name: 'mimo gets real media parts, with webm re-encoded and documents dropped',
         body: async () => {
-            const { createServer } = await import('node:http');
             const { prepareMimoMedia } = await import('../../src/ai/platforms/mimo-media.js');
             const { transformToMimo } = await import('../../src/ai/message-transformer.js');
 
             const mp4Stub = Buffer.from('mimo-transcoded-mp4');
             let converterReply: 'ok' | 'reject' = 'ok';
             let converterUrl = '';
-            const server = createServer((request, response) => {
+            tgsStub.handle((request, response) => {
                 converterUrl = request.url ?? '';
                 request.resume();
                 request.on('end', () => {
@@ -4389,9 +4391,6 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
                     response.writeHead(200, { 'Content-Type': 'video/mp4', 'X-Normalized': '1' });
                     response.end(mp4Stub);
                 });
-            });
-            await new Promise<void>((resolve) => {
-                server.listen(TGS_PORT, '127.0.0.1', () => resolve());
             });
 
             try {
@@ -4541,7 +4540,7 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
                     'a GCS photo stored as media becomes image_url on its signed URL'
                 );
             } finally {
-                server.close();
+                tgsStub.reset();
             }
         },
     },
@@ -4554,7 +4553,6 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
         // which is exactly what happened in production on 2026-09-22.
         name: 'a mimo content filter block fails the turn instead of becoming the reply',
         body: async () => {
-            const { createServer } = await import('node:http');
             const { MimoPlatform } = await import('../../src/ai/platforms/mimo-platform.js');
             const { MIMO_CONTENT_FILTER_NOTICE } = await import('../../src/ai/platforms/mimo-content-filter.js');
 
@@ -4577,7 +4575,7 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
                         ]
                         : [sse(chunkOf({ content: '正常回复' })), sse(chunkOf({}, 'stop'))];
 
-            const server = createServer((request, response) => {
+            mimoStub.handle((request, response) => {
                 request.resume();
                 request.on('end', () => {
                     response.writeHead(200, { 'Content-Type': 'text/event-stream' });
@@ -4588,9 +4586,6 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
                         'data: [DONE]\n\n',
                     ].join(''));
                 });
-            });
-            await new Promise<void>((resolve) => {
-                server.listen(MIMO_PORT, '127.0.0.1', () => resolve());
             });
 
             const runTurn = async (): Promise<{ text: string; error: string | null }> => {
@@ -4635,7 +4630,7 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
                     `a normal reply still streams through untouched (got ${JSON.stringify(normal)})`
                 );
             } finally {
-                server.close();
+                mimoStub.reset();
             }
         },
     },
@@ -4721,7 +4716,7 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
             // shape: the rewritten request must reach the installed fetch as (url, init).
             const originalFetch = globalThis.fetch;
             const calls: Array<{ input: unknown; headers: Headers }> = [];
-            globalThis.fetch = (async (input: unknown, init?: { headers?: HeadersInit }) => {
+            globalThis.fetch = (async (input: unknown, init?: { headers?: ConstructorParameters<typeof Headers>[0] }) => {
                 calls.push({ input, headers: new Headers(init?.headers) });
                 return new Response('data: {}\n\n', { status: 200 });
             }) as typeof fetch;
@@ -4833,7 +4828,6 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
         // stored once and rendered as one quoted block.
         name: 'a linked message is fetched once and injected as a quoted block',
         body: async () => {
-            const { createServer } = await import('node:http');
             const { acquireTgMessageLinkPreviews, getTgMessageLinkPreviewParts } = await import(
                 '../../src/services/tg-message-link-service.js'
             );
@@ -4845,7 +4839,7 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
             const replyId = 700000;
             const url = `https://t.me/c/8888888888/${targetId}`;
             const calls: string[] = [];
-            const server = createServer((request, response) => {
+            backfillStub.handle((request, response) => {
                 const parsed = new URL(request.url ?? '', 'http://localhost');
                 calls.push(parsed.pathname);
                 if (parsed.pathname === '/message-media') {
@@ -4882,7 +4876,6 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
                 response.writeHead(200, { 'Content-Type': 'application/json' });
                 response.end(JSON.stringify({ messages }));
             });
-            await new Promise<void>((ready) => server.listen(BACKFILL_PORT, '127.0.0.1', ready));
 
             try {
                 const context = {
@@ -4926,7 +4919,7 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
                     `a second acquisition reuses the snapshot (calls: ${calls.join(',')})`
                 );
             } finally {
-                await new Promise<void>((closed) => server.close(() => closed()));
+                backfillStub.reset();
             }
         },
     },
@@ -4953,6 +4946,9 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
                 supportsImageOutput: false,
                 supportsSystemPrompt: true,
                 requiresMessageMerge: false,
+                supportsThinking: false,
+                supportsGrounding: false,
+                supportsMediaInput: false,
             });
             const texts = messages.flatMap((message) =>
                 message.content.filter((part) => part.type === 'text').map((part) => part.text ?? '')
@@ -4972,7 +4968,6 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
         // read the link instead of inventing content.
         name: 'an unreachable link degrades to a note',
         body: async () => {
-            const { createServer } = await import('node:http');
             const { acquireTgMessageLinkPreviews, getTgMessageLinkPreviewParts } = await import(
                 '../../src/services/tg-message-link-service.js'
             );
@@ -4980,11 +4975,10 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
                 '../../src/reply/commands/telegram-message-link.js'
             );
 
-            const server = createServer((request, response) => {
+            backfillStub.handle((_request, response) => {
                 response.writeHead(200, { 'Content-Type': 'application/json' });
                 response.end(JSON.stringify({ messages: [] }));
             });
-            await new Promise<void>((ready) => server.listen(BACKFILL_PORT, '127.0.0.1', ready));
 
             try {
                 const text = '看 https://t.me/c/8888888888/799999';
@@ -5008,7 +5002,7 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
                     `the block explains the failure (got ${JSON.stringify(texts)})`
                 );
             } finally {
-                await new Promise<void>((closed) => server.close(() => closed()));
+                backfillStub.reset();
             }
         },
     },
@@ -5017,7 +5011,6 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
         // without attachments.
         name: 'a missing media endpoint degrades to text only',
         body: async () => {
-            const { createServer } = await import('node:http');
             const { acquireTgMessageLinkPreviews, getTgMessageLinkPreviewParts } = await import(
                 '../../src/services/tg-message-link-service.js'
             );
@@ -5026,7 +5019,7 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
             );
 
             const targetId = 700002;
-            const server = createServer((request, response) => {
+            backfillStub.handle((request, response) => {
                 const parsed = new URL(request.url ?? '', 'http://localhost');
                 if (parsed.pathname === '/message-media') {
                     response.writeHead(404);
@@ -5048,7 +5041,6 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
                     }],
                 }));
             });
-            await new Promise<void>((ready) => server.listen(BACKFILL_PORT, '127.0.0.1', ready));
 
             try {
                 const text = `看 https://t.me/c/8888888888/${targetId}`;
@@ -5067,7 +5059,7 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
                     new Map()
                 );
                 expect(
-                    parts.some((part) => part.type === 'text' && part.text.includes('只有文字')),
+                    parts.some((part) => part.type === 'text' && (part.text ?? '').includes('只有文字')),
                     'the text block survives'
                 );
                 expect(
@@ -5075,7 +5067,7 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
                     'no media part is produced when the bytes are unavailable'
                 );
             } finally {
-                await new Promise<void>((closed) => server.close(() => closed()));
+                backfillStub.reset();
             }
         },
     },
@@ -5101,6 +5093,9 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
                 supportsImageOutput: false,
                 supportsSystemPrompt: true,
                 requiresMessageMerge: false,
+                supportsThinking: false,
+                supportsGrounding: false,
+                supportsMediaInput: false,
             });
             const texts = messages.flatMap((message) =>
                 message.content.filter((part) => part.type === 'text').map((part) => part.text ?? '')
@@ -5409,7 +5404,7 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
             const userId = 1001;
             await updateChatSettings({ chatId, patch: { model: 'mimo-v2.6-flash' }, actor: { userId, isOwner: false } });
 
-            const stub = await startChatCompletionStub(MIMO_PORT, '第一版');
+            const stub = await startChatCompletionStub(mimoStub, '第一版');
             try {
                 const userMessageId = takeMessageId();
                 const text = '@AfterSchoolTeatimeBot 在吗';
@@ -5445,4 +5440,6 @@ const results: CaseResult[] = [];
 for (const testCase of cases) {
     results.push(await runCase(testCase.name, testCase.body));
 }
+rmSync(scratchDirectory, { recursive: true, force: true });
+await Promise.all([backfillStub, comfyStub, grokStub, tgsStub, mimoStub].map((stub) => stub.close()));
 reportResults(results);

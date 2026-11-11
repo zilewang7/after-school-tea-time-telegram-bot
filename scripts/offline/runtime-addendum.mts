@@ -107,12 +107,12 @@ const seedExchange = async (chatId: number) => {
 };
 
 const textPartsOf = (messages: UnifiedMessage[]): string[] =>
-    messages.flatMap((message) => message.content.flatMap((part) => (part.type === 'text' ? [part.text] : [])));
+    messages.flatMap((message) => message.content.flatMap((part) => (part.type === 'text' && part.text !== undefined ? [part.text] : [])));
 
 /** The text of the newest message's last part, where the runtime block rides */
 const lastTextOf = (messages: UnifiedMessage[]): string => {
     const lastPart = messages.at(-1)?.content.at(-1);
-    return lastPart?.type === 'text' ? lastPart.text : '';
+    return lastPart?.type === 'text' ? (lastPart.text ?? '') : '';
 };
 
 /** The static head exactly as the reply pipeline builds it for this chat */

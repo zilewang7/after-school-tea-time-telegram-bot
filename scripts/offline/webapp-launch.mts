@@ -7,6 +7,7 @@
  * Run: npx tsx scripts/offline/webapp-launch.mts
  */
 import { expect, reportResults, runCase, type CaseResult } from './harness.mts';
+import type { TelegramWebApp } from '../../webapp/src/telegram.js';
 
 const store = new Map<string, string>();
 
@@ -30,10 +31,45 @@ Object.defineProperty(globalThis, 'window', {
 
 const { captureLaunchState, launchRouteOf } = await import('../../webapp/src/launch.js');
 
-interface FakeWebApp {
-    initData: string;
-    initDataUnsafe: { start_param?: string };
-}
+type FakeWebApp = Pick<TelegramWebApp, 'initData' | 'initDataUnsafe'>;
+
+const doNothing = (): void => {};
+
+/** A full SDK stand-in: launch.ts reads only initData, the rest is inert */
+const fakeWebApp = (fields: FakeWebApp): TelegramWebApp => ({
+    ...fields,
+    themeParams: {},
+    colorScheme: 'light',
+    version: '8.0',
+    isVersionAtLeast: () => true,
+    ready: doNothing,
+    expand: doNothing,
+    close: doNothing,
+    setHeaderColor: doNothing,
+    setBackgroundColor: doNothing,
+    showConfirm: doNothing,
+    enableClosingConfirmation: doNothing,
+    disableClosingConfirmation: doNothing,
+    enableVerticalSwipes: doNothing,
+    disableVerticalSwipes: doNothing,
+    BackButton: { show: doNothing, hide: doNothing, onClick: doNothing, offClick: doNothing },
+    MainButton: {
+        setText: doNothing,
+        show: doNothing,
+        hide: doNothing,
+        enable: doNothing,
+        disable: doNothing,
+        showProgress: doNothing,
+        hideProgress: doNothing,
+        onClick: doNothing,
+        offClick: doNothing,
+    },
+    HapticFeedback: { notificationOccurred: doNothing },
+    openTelegramLink: doNothing,
+    openLink: doNothing,
+    onEvent: doNothing,
+    offEvent: doNothing,
+});
 
 const results: CaseResult[] = [];
 
@@ -41,10 +77,12 @@ results.push(
     await runCase('the Telegram Mini App opens on the route it remembered', async () => {
         store.clear();
         store.set('lastRoute', '/c/123/conv');
-        const launch = captureLaunchState({
-            initData: 'query_id=AA&auth_date=1&hash=deadbeef',
-            initDataUnsafe: {},
-        });
+        const launch = captureLaunchState(
+            fakeWebApp({
+                initData: 'query_id=AA&auth_date=1&hash=deadbeef',
+                initDataUnsafe: {},
+            })
+        );
         expect(launch.insideTelegram === true, 'a non-empty initData means the Mini App');
         expect(launch.savedRoute === '/c/123/conv', `the route is remembered (got ${launch.savedRoute})`);
         expect(
@@ -58,7 +96,7 @@ results.push(
     await runCase('a browser tab never restores the remembered route', async () => {
         store.clear();
         store.set('lastRoute', '/c/123/conv');
-        const launch = captureLaunchState({ initData: '', initDataUnsafe: {} });
+        const launch = captureLaunchState(fakeWebApp({ initData: '', initDataUnsafe: {} }));
         expect(launch.insideTelegram === false, 'an empty initData means the browser');
         expect(launch.savedRoute === null, 'the remembered route is not restored');
         expect(launchRouteOf(launch, null) === null, 'the browser opens where it was asked to');
@@ -69,10 +107,12 @@ results.push(
     await runCase('a start_param still wins over the remembered route', async () => {
         store.clear();
         store.set('lastRoute', '/c/123/conv');
-        const launch = captureLaunchState({
-            initData: 'query_id=AA&auth_date=1&hash=deadbeef',
-            initDataUnsafe: { start_param: 'slytoken' },
-        });
+        const launch = captureLaunchState(
+            fakeWebApp({
+                initData: 'query_id=AA&auth_date=1&hash=deadbeef',
+                initDataUnsafe: { start_param: 'slytoken' },
+            })
+        );
         expect(launch.savedRoute === '/c/123/conv', 'the route is still read inside the Mini App');
         expect(
             launchRouteOf(launch, null) === null,

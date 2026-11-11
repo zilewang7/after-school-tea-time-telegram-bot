@@ -93,7 +93,7 @@ results.push(
         if (!issued.ok) return;
         expect(/^[0-9A-HJKMNP-TV-Z]{8}$/.test(issued.code), 'the code is 8 Crockford characters');
         expect(codes.formatWebLoginCode(issued.code).includes('-'), 'the display form is grouped');
-        expect(codes.normalizeWebLoginCode(issued.code.toLowerCase()), 'lowercase normalizes back');
+        expect(codes.normalizeWebLoginCode(issued.code.toLowerCase()) === issued.code, 'lowercase normalizes back');
 
         expect(store.redeem(issued.code) === ALICE_ID, 'the right code redeems to its user');
         expect(store.redeem(issued.code) === null, 'the same code does not redeem twice');

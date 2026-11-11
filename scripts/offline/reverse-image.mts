@@ -13,6 +13,7 @@ import {
     setupOfflineDb,
     type CaseResult,
 } from './harness.mts';
+import { createUnusedApi } from './fake-telegram.mts';
 import type { ContextIndex, ContextIndexEntry } from '../../src/reply/context-index.js';
 import type { ReplyToolContext } from '../../src/reply/tools/reply-tool-context.js';
 import type { ImageFetch } from '../../src/reply/tools/image-source-download.js';
@@ -87,6 +88,8 @@ const contextOf = (contextIndex: ContextIndex): ReplyToolContext => ({
     requester: { userId: 1, name: 'tester' },
     contextIndex,
     signal: new AbortController().signal,
+    // search_by_image never calls the Bot API; this client fails any call
+    api: createUnusedApi(),
 });
 
 interface SearchCall {
@@ -197,6 +200,11 @@ cases.push(
             imageTools: false,
             imageFetch: false,
             imageGenerate: false,
+            stickerTools: false,
+            fileTools: false,
+            historyTools: false,
+            harnessIssues: false,
+            widget: false,
         };
         const on = buildCapabilitiesSection({ ...capabilities, imageReverseSearch: true });
         expect(on.includes('可以用 `search_by_image` 以图搜图'), 'the prompt line names the capability');

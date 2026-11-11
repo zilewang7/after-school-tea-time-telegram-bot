@@ -60,8 +60,29 @@ const address = converter.address();
 if (!address || typeof address === 'string') throw new Error('converter stub did not bind TCP');
 process.env.TGS_CONVERTER_URL = `http://127.0.0.1:${address.port}`;
 process.env.CUSTOM_EMOJI_ENABLED = '1';
-process.env.CUSTOM_EMOJI_CONTEXT_TIMEOUT_MS = '100';
-process.env.CUSTOM_EMOJI_ACQUISITION_TIMEOUT_MS = '1000';
+
+// Short budgets apply only around the timeout cases, so normal-path cases keep
+// production deadlines and do not fail on a busy machine.
+const withShortTimeouts = async (
+  overrides: Record<string, string>,
+  body: () => Promise<void>
+): Promise<void> => {
+  const previous = new Map<string, string | undefined>();
+  for (const [name, value] of Object.entries(overrides)) {
+    previous.set(name, process.env[name]);
+    process.env[name] = value;
+  }
+  try {
+    await body();
+  } finally {
+    for (const [name, value] of previous) {
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
+  }
+};
+const SHORT_ACQUISITION_TIMEOUT = { CUSTOM_EMOJI_ACQUISITION_TIMEOUT_MS: '1000' };
+const SHORT_CONTEXT_TIMEOUT = { CUSTOM_EMOJI_CONTEXT_TIMEOUT_MS: '100' };
 
 const tempDirectory = await mkdtemp(join(tmpdir(), 'custom-emoji-offline-'));
 const emojiFileA = join(tempDirectory, 'emoji-a.bin');
@@ -82,7 +103,6 @@ const { extractCustomEmojiOccurrences } = await import('../../src/services/custo
 const {
   replaceCustomEmojiAttachments,
   getCustomEmojiAttachmentsForMessages,
-  failPendingCustomEmojiAttachments,
   markCustomEmojiAttachments,
 } = await import('../../src/db/queries/message-attachment-queries.js');
 const {
@@ -479,7 +499,7 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
   },
   {
     name: 'pending emoji acquisition times out and converges to failed',
-    body: async () => {
+    body: () => withShortTimeouts(SHORT_ACQUISITION_TIMEOUT, async () => {
       const messageId = takeMessageId();
       await seedMessage(messageId, 'hung emoji');
       const revision = revisionOf(messageId, 350);
@@ -511,11 +531,11 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
         rows.length === 1 && rows[0]?.status === 'failed',
         'deadline finalization leaves no attachment permanently pending'
       );
-    },
+    }),
   },
   {
     name: 'acquisition deadline aborts the underlying Telegram getFile request',
-    body: async () => {
+    body: () => withShortTimeouts(SHORT_ACQUISITION_TIMEOUT, async () => {
       const messageId = takeMessageId();
       await seedMessage(messageId, 'hung getFile');
       const revision = revisionOf(messageId, 355);
@@ -561,7 +581,7 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
       expect(signalReceived, 'grammY getFile receives an abort signal');
       expect(abortObserved, 'the shared asset deadline reaches grammY getFile');
       expect(rows[0]?.status === 'failed', 'an aborted getFile settles the attachment');
-    },
+    }),
   },
   {
     name: 'startup recovery resolves current pending rows and fails orphaned revisions',
@@ -621,7 +641,7 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
   },
   {
     name: 'atlas timeout fails open with fallback annotations',
-    body: async () => {
+    body: () => withShortTimeouts(SHORT_CONTEXT_TIMEOUT, async () => {
       const messageId = takeMessageId();
       await seedMessage(messageId, 'atlas timeout 🙂');
       const revision = revisionOf(messageId, 370);
@@ -663,7 +683,7 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
       } finally {
         atlasResponseDelayMs = 0;
       }
-    },
+    }),
   },
   {
     name: 'custom emoji schema migrations are idempotent',
@@ -750,7 +770,7 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
         ],
       }]);
       const content = anthropic[0]?.content;
-      expect(Array.isArray(content) && content[0]?.type === 'image' && content[0].source.media_type === 'image/webp', 'Anthropic receives the real WebP MIME');
+      expect(Array.isArray(content) && content[0]?.type === 'image' && content[0].source.type === 'base64' && content[0].source.media_type === 'image/webp', 'Anthropic receives the real WebP MIME');
       expect(Array.isArray(content) && content[1]?.type === 'text', 'unsupported image bytes become a text fallback');
     },
   },

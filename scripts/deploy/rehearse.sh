@@ -16,6 +16,10 @@
 #   3. a broken commit    the previous build keeps running, BUILD_COMMIT unchanged
 #   4. the fix            builds again
 #   5. origin unreachable starts the code it has
+#   6. the compiled bot   every module loads on this image, sqlite included, and
+#                         the database path default only applies inside a container
+#   7. an image without pm2 (one built before pm2 moved into the Dockerfile)
+#                         pm2 is installed at start instead of failing in a loop
 # And with the real pm2: a stop signal reaches the app, which gets the time
 # pm2.config.cjs grants it to finish.
 #
@@ -51,10 +55,11 @@ in_origin() { git -C "$ORIGIN" "$@"; }
 in_container() { docker exec "$CONTAINER" "$@"; }
 logs_since_start() { docker logs --since "$1" "$CONTAINER" 2>&1; }
 
-# Waits until the stand-in for pm2 reports that the start script handed over
+# Waits until the start script handed over: by default to the stand-in for pm2,
+# which then reports itself; $2 names another log line to wait for
 wait_for_start() {
-    local since=$1 deadline=$(( $(date +%s) + START_TIMEOUT_SECONDS ))
-    until logs_since_start "$since" | grep -q '\[stand-in pm2\]'; do
+    local since=$1 handed_over=${2:-\[stand-in pm2\]} deadline=$(( $(date +%s) + START_TIMEOUT_SECONDS ))
+    until logs_since_start "$since" | grep -q "$handed_over"; do
         if [ "$(docker inspect -f '{{.State.Running}}' "$CONTAINER" 2>/dev/null)" != "true" ]; then
             echo "  container exited:"; logs_since_start "$since" | tail -20; return 1
         fi
@@ -158,7 +163,42 @@ restart_and_wait
 check "the failed fetch is logged" 'echo "$LAST_LOGS" | grep -q "fetch of rehearsal failed"'
 check "the bot is started with the build it has" 'echo "$LAST_LOGS" | grep -q "stand-in pm2\].*BUILD_COMMIT=$FIXED_COMMIT"'
 
-step "6. a stop signal reaches the app through init and the real pm2"
+step "6. the compiled bot loads on this image"
+# Placeholders for what the AI platforms want at import; no token, so the bot
+# stops right after every module has loaded.
+BOOT_OUTPUT=$(in_container env DB_PATH=/tmp/rehearsal-boot.sqlite GEMINI_API_KEY=x OPENAI_API_KEY=x \
+    DEEPSEEK_API_KEY=x GROK_API_KEY=x MIMO_API_KEY=x node dist/index.js 2>&1 | tail -30)
+check "every module loads; the bot stops at the missing token" 'echo "$BOOT_OUTPUT" | grep -q "BOT_TOKEN must be provided"'
+echo "$BOOT_OUTPUT" | grep -q "BOT_TOKEN must be provided" || echo "$BOOT_OUTPUT" | sed 's/^/    /'
+SQLITE_VERSION=$(in_container env DB_PATH=/tmp/rehearsal-query.sqlite node --input-type=module -e "
+const { sequelize } = await import('/app/k-on-bot/dist/db/config.js');
+const [rows] = await sequelize.query('SELECT sqlite_version() AS version');
+console.log(rows[0].version);
+await sequelize.close();" 2>&1 | tail -1)
+check "sqlite answers a query (version $SQLITE_VERSION)" 'echo "$SQLITE_VERSION" | grep -Eq "^[0-9]+\.[0-9]+"'
+IMPORT_DB_CONFIG="await import('/app/k-on-bot/dist/db/config.js')"
+check "the container is marked by /.dockerenv" 'in_container test -f /.dockerenv'
+check "without DB_PATH the production file is the default inside a container" 'in_container node --input-type=module -e "$IMPORT_DB_CONFIG" > /dev/null 2>&1'
+check "the test instance must name its database" '! in_container env TEST_INSTANCE=1 node --input-type=module -e "$IMPORT_DB_CONFIG" > /dev/null 2>&1'
+
+step "7. an image without pm2"
+in_container git remote set-url origin /origin.git
+# Neither the stand-in nor the pm2 of the image: what a container created from
+# an image older than this Dockerfile looks like
+rm -f "$WORK/bin/pm2-runtime"
+in_container npm uninstall -g pm2 > /dev/null 2>&1
+check "pm2 is gone" '! in_container sh -c "command -v pm2-runtime" > /dev/null 2>&1'
+since=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+docker restart -t 5 "$CONTAINER" > /dev/null
+# The real pm2 starts the real bot, which has no token here and exits; all
+# that matters is that pm2 was installed and took over
+wait_for_start "$since" 'PM2.*App \[k-on-bot' || fail "pm2 did not take over"
+LAST_LOGS=$(logs_since_start "$since")
+check "the missing pm2 is reported" 'echo "$LAST_LOGS" | grep -q "pm2 is not in this image"'
+check "pm2 was installed and started the bot" 'echo "$LAST_LOGS" | grep -q "PM2.*App \[k-on-bot"'
+docker rm -f "$CONTAINER" > /dev/null 2>&1
+
+step "8. a stop signal reaches the app through init and the real pm2"
 # A stand-in app that needs 3s to shut down: longer than pm2's default 1.6s,
 # shorter than the kill_timeout in pm2.config.cjs.
 cat > "$WORK/signal/app.js" <<'EOF'

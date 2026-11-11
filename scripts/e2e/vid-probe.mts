@@ -28,12 +28,29 @@ const modeFlag = mode === 'auto' ? '' : `-mode=${mode} `;
 const health = await fetch(`${COMFY_FORWARD_URL}/health`).then((r) => r.json());
 console.log('comfy health:', health);
 
-const workflows = await fetch(`${COMFY_FORWARD_URL}/v1/workflows`).then((r) => r.json());
+/** The two fields this probe prints; the server's JSON is checked, not trusted */
+interface ListedWorkflow {
+    readonly id: string;
+    readonly kind: string;
+}
+const isListedWorkflow = (value: unknown): value is ListedWorkflow =>
+    typeof value === 'object' &&
+    value !== null &&
+    'id' in value &&
+    typeof value.id === 'string' &&
+    'kind' in value &&
+    typeof value.kind === 'string';
+
+const workflowsBody: unknown = await fetch(`${COMFY_FORWARD_URL}/v1/workflows`).then((r) => r.json());
+const listedWorkflows =
+    typeof workflowsBody === 'object' && workflowsBody !== null && 'workflows' in workflowsBody
+        ? workflowsBody.workflows
+        : [];
 console.log(
     'video workflows:',
-    (workflows.workflows ?? [])
-        .filter((workflow: { kind: string }) => workflow.kind.endsWith('-to-video'))
-        .map((workflow: { id: string }) => workflow.id)
+    (Array.isArray(listedWorkflows) ? listedWorkflows.filter(isListedWorkflow) : [])
+        .filter((workflow) => workflow.kind.endsWith('-to-video'))
+        .map((workflow) => workflow.id)
 );
 
 const trigger = await sendPhotoAsUser('ocr-sample.png', {

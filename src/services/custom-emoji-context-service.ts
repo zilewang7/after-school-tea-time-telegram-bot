@@ -36,7 +36,8 @@ const contextBytes = positiveIntegerEnv(
   DEFAULT_CONTEXT_BYTES,
   640 * 1024
 );
-const contextPlanTimeoutMs = positiveIntegerEnv(
+// Read per call so a test can shorten the deadline around a single case.
+const contextPlanTimeoutMs = (): number => positiveIntegerEnv(
   'CUSTOM_EMOJI_CONTEXT_TIMEOUT_MS',
   CONTEXT_PLAN_TIMEOUT_MS,
   5000
@@ -248,7 +249,7 @@ export const buildCustomEmojiContextPlan = async (
     return { annotations: new Map(), atlasParts: [] };
   }
 
-  const deadline = Date.now() + contextPlanTimeoutMs;
+  const deadline = Date.now() + contextPlanTimeoutMs();
   let attachmentsByMessage: Map<number, MessageAttachment[]>;
   try {
     attachmentsByMessage = await withDeadline(

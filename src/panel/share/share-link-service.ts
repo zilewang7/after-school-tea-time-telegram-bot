@@ -48,11 +48,19 @@ const logFailure = (message: string, error: unknown): void => {
     console.warn(`[share] ${message}:`, error);
 };
 
-const delay = (ms: number): Promise<null> => new Promise((resolve) => setTimeout(() => resolve(null), ms));
-
 /** Run a preview render under the card budget; null when it takes too long */
-const renderWithinBudget = async (snapshot: PreviewSnapshot): Promise<Awaited<ReturnType<typeof renderPreviewImage>>> =>
-    Promise.race([renderPreviewImage(snapshot), delay(PREVIEW_BUDGET_MS)]);
+const renderWithinBudget = async (snapshot: PreviewSnapshot): Promise<Awaited<ReturnType<typeof renderPreviewImage>>> => {
+    let budgetTimer: NodeJS.Timeout | undefined;
+    const budgetSpent = new Promise<null>((resolve) => {
+        budgetTimer = setTimeout(() => resolve(null), PREVIEW_BUDGET_MS);
+    });
+    try {
+        return await Promise.race([renderPreviewImage(snapshot), budgetSpent]);
+    } finally {
+        // A render that finished in time must not leave the budget timer running
+        clearTimeout(budgetTimer);
+    }
+};
 
 const recordOf = (row: ShareRow): ShareLinkRecord => ({
     token: row.token,

@@ -439,7 +439,10 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
 
             const stickerTool = createSendStickerTool({
                 state: withSticker,
-                context: { api: { getStickerSet: async () => ({ stickers: [] }) }, signal: new AbortController().signal },
+                context: {
+                    api: { getStickerSet: async () => ({ stickers: [] }), getFile: async () => ({}) },
+                    signal: new AbortController().signal,
+                },
                 setName: 'ColorfulHachimi',
             });
             const stickerRefused = await stickerRefusedOf(stickerTool);
@@ -542,7 +545,9 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
                 failing: ['sendDocument'],
             });
             expect(
-                withText.version?.file === undefined && withText.version.fileBase64 === undefined,
+                withText.version !== undefined &&
+                    withText.version.file === undefined &&
+                    withText.version.fileBase64 === undefined,
                 'a failed send stores no file'
             );
             expect(withText.row?.file === null && withText.row.mediaHint === null, 'the row has no file bytes either');

@@ -72,6 +72,8 @@ declare global {
             COMFY_JOB_TIMEOUT_MS?: string
             /** How long to keep polling one video job (default 30min) */
             COMFY_VIDEO_JOB_TIMEOUT_MS?: string
+            /** Job poll interval for the first 30s, in ms (default 2000; the offline tests shorten it) */
+            COMFY_FAST_POLL_MS?: string
             /** Overrides for the comfy-forward HTTP budgets, in ms */
             COMFY_HEALTH_TIMEOUT_MS?: string
             COMFY_SUBMIT_TIMEOUT_MS?: string
@@ -115,6 +117,8 @@ declare global {
             EDIT_COORDINATOR_TIME_SCALE?: string
             /** Database file; the default is used only inside the production container */
             DB_PATH?: string
+            /** How long the pool keeps an idle connection, in ms; tests only, unset in production */
+            DB_POOL_IDLE_MS?: string
             /** '1' marks the dev/test instance */
             TEST_INSTANCE?: string
         }

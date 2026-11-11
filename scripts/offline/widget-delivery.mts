@@ -21,8 +21,16 @@ import {
     takeMessageId,
     type CaseResult,
 } from './harness.mts';
-import { contextOf, createFakeTelegram, messageUpdate, quietly } from './fake-telegram.mts';
+import {
+    contextOf,
+    createFakeTelegram,
+    endOpenReplies,
+    messageUpdate,
+    quietly,
+    trackReply,
+} from './fake-telegram.mts';
 import type { AIResponse } from '../../src/ai/types.js';
+import type { StoredWidget } from '../../src/db/botResponseDTO.js';
 
 // The group link fallback needs both switches on; the renderer and Bot API
 // roots are pointed at the local stub below.
@@ -139,7 +147,7 @@ const PNG_BASE64 = PNG_BYTES.toString('base64');
 const card = (caption?: string) =>
     widgetDeliveryOf('a2ui', '<div class="tw-root">今日日报</div>', caption, { components: [] });
 
-const entitiesOf = (payload: Record<string, unknown>): Record<string, unknown>[] =>
+const entitiesOf = (payload: { readonly entities?: unknown }): Record<string, unknown>[] =>
     Array.isArray(payload.entities) ? payload.entities.map(asRecord) : [];
 
 const rowOf = (chatId: number, messageId: number) => Message.findOne({ where: { chatId, messageId } });
@@ -167,6 +175,7 @@ const startReply = async (chatId: number) => {
         responseHandler.createChatContext(ctx, { model: 'gemini-4-argon' })
     );
     if (!chatContext) throw new Error('the chat context was not created');
+    trackReply(chatContext);
     return { telegram, chatContext, userMessageId };
 };
 
@@ -473,7 +482,7 @@ results.push(
             `the text_link opens the public share in the Mini App (got ${JSON.stringify(linkEntity)})`
         );
         expect(
-            linkEntity?.offset === 0 && linkEntity.length === payload.text.length,
+            linkEntity?.offset === 0 && typeof payload.text === 'string' && linkEntity.length === payload.text.length,
             'the text_link covers the whole caption'
         );
         expect(
@@ -560,7 +569,7 @@ results.push(
         const telegram = createFakeTelegram();
         const firstMessageId = takeMessageId();
         const userMessageId = takeMessageId();
-        const linkWidget = (caption: string) => ({
+        const linkWidget = (caption: string): StoredWidget => ({
             mode: 'a2ui',
             html: `<div class="tw-root">${caption}</div>`,
             caption,
@@ -629,7 +638,7 @@ results.push(
         const telegram = createFakeTelegram();
         const firstMessageId = takeMessageId();
         const userMessageId = takeMessageId();
-        const linkWidget = (caption: string) => ({
+        const linkWidget = (caption: string): StoredWidget => ({
             mode: 'a2ui',
             html: `<div class="tw-root">${caption}</div>`,
             caption,
@@ -683,6 +692,7 @@ results.push(
             responseHandler.createChatContext(ctx, { model: 'gemini-4-argon' })
         );
         if (!chatContext) throw new Error('the chat context was not created');
+        trackReply(chatContext);
         const widget = card('私有卡片');
         const response: AIResponse = {
             text: '卡片来了',
@@ -742,7 +752,8 @@ results.push(
         const sent = await quietly(() => sendReplyWidgetLinkMessage({ chatId: 1, api, message }));
         expect(!isErr(sent) && sent[1] === 9001, 'the retry without the preview went out');
         expect(calls.length === 2, `exactly two attempts (got ${calls.length})`);
-        expect(!('link_preview_options' in calls[1]), 'the retry carries no preview');
+        const retry = calls[1];
+        expect(retry !== undefined && !('link_preview_options' in retry), 'the retry carries no preview');
     })
 );
 
@@ -758,6 +769,7 @@ results.push(
             responseHandler.createChatContext(ctx, { model: 'gemini-4-argon' })
         );
         if (!chatContext) throw new Error('the chat context was not created');
+        trackReply(chatContext);
         const widget = card('私聊卡片');
         const response: AIResponse = {
             text: '卡片来了',
@@ -868,4 +880,5 @@ await sequelize.close();
 void db.Message;
 
 // The stream leaves sockets/timers behind in this harness; reportResults ends the process regardless
+endOpenReplies();
 reportResults(results);

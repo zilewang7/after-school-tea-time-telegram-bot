@@ -33,9 +33,23 @@ const resolveStoragePath = (): string => {
     );
 };
 
+/**
+ * How long the pool keeps an unused connection open. Unset in production, where
+ * the pool default (ten seconds) applies. The offline harness sets a few
+ * milliseconds: the pool's idle timer is otherwise the last thing that keeps a
+ * finished test process alive.
+ */
+const readPoolIdleMs = (): number | undefined => {
+    const parsed = Number(process.env.DB_POOL_IDLE_MS);
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
+};
+
+const poolIdleMs = readPoolIdleMs();
+
 export const sequelize = new Sequelize({
     dialect: SqliteDialect,
     storage: resolveStoragePath(),
+    ...(poolIdleMs === undefined ? {} : { pool: { idle: poolIdleMs, evict: poolIdleMs } }),
 });
 
 /**

@@ -37,7 +37,6 @@ const TOOL_REPLY_TIMEOUT_MS = 300_000;
 const CONTEXT7_TOOL_NAMES: readonly string[] = ['resolve-library-id', 'query-docs', 'get-library-docs'];
 const GENERATE_IMAGE = 'generate_image';
 const SEARCH_IMAGES = 'search_images';
-const FETCH_IMAGE = 'fetch_image';
 const SEND_IMAGE = 'send_image';
 const SEND_SMS = 'send_sms_to_owner';
 

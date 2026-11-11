@@ -64,6 +64,8 @@ const replyUpdate = (input: {
             chat: groupChat(input.chatId),
             from: userOf(input.userId),
             text: 'the replied-to message',
+            // A replied-to message never nests its own reply
+            reply_to_message: undefined,
         };
     }
     return update;

@@ -11,13 +11,15 @@
  * injection, and the search service's one fetch is a stubbed global.
  */
 import { expect, reportResults, runCase, type CaseResult } from './harness.mts';
+import { createUnusedApi } from './fake-telegram.mts';
 
 // The platforms build their clients at import time; nothing here sends a request
 for (const key of ['GEMINI_API_KEY', 'OPENAI_API_KEY', 'DEEPSEEK_API_KEY', 'GROK_API_KEY', 'MIMO_API_KEY']) {
     process.env[key] ||= 'offline-placeholder';
 }
 import type { ExecutedToolCall } from '../../src/ai/tools/tool-round.js';
-import type { ImageSearchOptions, ImageSearchOutcome } from '../../src/services/image-search-service.js';
+import type { ImageSearchOptions, ImageSearchOutcome, SearchedImage } from '../../src/services/image-search-service.js';
+import type { SearchCandidate } from '../../src/reply/tools/reply-media-state.js';
 import type { ToolCall, ToolResult } from '../../src/ai/tools/tool-types.js';
 
 const PNG = Buffer.from(
@@ -28,7 +30,7 @@ const GIF = Buffer.from('GIF89a offline animated bytes');
 const JPEG = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, 0x4a, 0x46, 0x49, 0x46]);
 const MP4 = Buffer.from([0x00, 0x00, 0x00, 0x20, 0x66, 0x74, 0x79, 0x70, 0x69, 0x73, 0x6f, 0x6d]);
 
-const gifCandidate = (): Record<string, unknown> => ({
+const gifCandidate = (): SearchCandidate => ({
     id: 's1',
     searchId: 'q1',
     title: '动图候选',
@@ -68,7 +70,7 @@ const candidateJson = (index: number, overrides: Record<string, unknown> = {}): 
     ...overrides,
 });
 
-const searchedImages = (count: number) =>
+const searchedImages = (count: number): SearchedImage[] =>
     Array.from({ length: count }, (_, index) => ({
         title: `候选 ${index + 1}`,
         sourcePage: `https://example.com/page-${index + 1}`,
@@ -136,6 +138,7 @@ const modelImageResult = (): ToolResult => ({
 const executedWithModelImage = (): ExecutedToolCall => ({
     call: toolCall('search_images', { query: '狗头' }),
     result: modelImageResult(),
+    durationMs: 120,
 });
 
 const cases = [
@@ -257,6 +260,8 @@ const cases = [
                     requester: { userId: 42, name: '张三' },
                     contextIndex: new Map(),
                     signal: AbortSignal.abort(),
+                    // The draw is refused before any Bot API call; this client fails one
+                    api: createUnusedApi(),
                 },
                 state,
                 {

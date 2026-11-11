@@ -384,6 +384,7 @@ results.push(
             fileTools: false,
             historyTools: false,
             harnessIssues: false,
+            widget: false,
         };
         const withFetch = sections.buildCapabilitiesSection({ ...base, imageFetch: true });
         expect(withFetch.includes('fetch_image(avatar=…)'), 'the capability line mentions avatar');

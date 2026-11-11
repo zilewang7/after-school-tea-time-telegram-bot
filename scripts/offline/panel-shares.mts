@@ -9,7 +9,6 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { GrammyError } from 'grammy';
 import { expect, reportResults, runCase, setupOfflineDb, type CaseResult } from './harness.mts';
 import type { InitDataUserInput } from '../lib/init-data.mts';
 
@@ -43,9 +42,6 @@ process.once('exit', () => rmSync(scratch, { recursive: true, force: true }));
 const STATIC_ROOT = join(scratch, 'dist');
 mkdirSync(join(STATIC_ROOT, 'assets'), { recursive: true });
 writeFileSync(join(STATIC_ROOT, 'index.html'), '<!doctype html><title>panel</title>');
-
-const grammyError = (code: number, description: string): GrammyError =>
-    new GrammyError(`(${code}: ${description})`, { ok: false, error_code: code, description }, 'getChatMember', {});
 
 const memberships = new Map<string, 'member' | 'left'>([
     [`${GROUP}:${ALICE.id}`, 'member'],
@@ -122,7 +118,7 @@ interface ApiOptions {
     user?: InitDataUserInput;
 }
 
-const call = (target: PanelApp, path: string, options: ApiOptions = {}): Promise<Response> => {
+const call = async (target: PanelApp, path: string, options: ApiOptions = {}): Promise<Response> => {
     const headers = new Headers({ 'X-Init-Data': initDataFor(options.user ?? ALICE) });
     const body = options.body === undefined ? undefined : JSON.stringify(options.body);
     if (body !== undefined) headers.set('Content-Type', 'application/json');

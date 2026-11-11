@@ -757,6 +757,7 @@ cases.push(
         const rows = hits.slice(0, 3).map((hit) => ({
             entry: {
                 ...hit,
+                indexedHtml: hit.html,
                 h: 1,
                 fromIsBot: false,
             },

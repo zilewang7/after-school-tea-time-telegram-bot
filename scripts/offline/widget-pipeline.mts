@@ -11,7 +11,14 @@
  */
 import { Api } from 'grammy';
 import { takeMessageId, expect, reportResults, runCase, setupOfflineDb, type CaseResult } from './harness.mts';
-import { contextOf, createFakeTelegram, messageUpdate, quietly } from './fake-telegram.mts';
+import {
+    contextOf,
+    createFakeTelegram,
+    endOpenReplies,
+    messageUpdate,
+    quietly,
+    trackReply,
+} from './fake-telegram.mts';
 import type { StreamChunk } from '../../src/ai/types.js';
 
 const db = await setupOfflineDb();
@@ -31,7 +38,7 @@ const startReply = async (): Promise<import('../../src/reply/response-handler.js
     );
     const chatContext = await responseHandler.createChatContext(ctx, { model: 'gemini-4-argon' });
     if (!chatContext) throw new Error('no chat context');
-    return chatContext;
+    return trackReply(chatContext);
 };
 
 const card = () =>
@@ -124,4 +131,5 @@ await sequelize.close();
 void db.Message;
 
 // The stream leaves sockets/timers behind in this harness; reportResults ends the process regardless
+endOpenReplies();
 reportResults(results);

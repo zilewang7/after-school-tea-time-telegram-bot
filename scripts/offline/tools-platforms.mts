@@ -125,23 +125,6 @@ const brokenTool: ToolHandler = {
     },
 };
 
-
-/** A product tool: its time is never charged to the tool budget */
-const sendFileTool: ToolHandler = {
-    definition: {
-        name: 'send_file',
-        description: 'Send a text file',
-        inputSchema: { type: 'object', properties: {} },
-    },
-    execute: async () => {
-        productExecutions.push('send_file');
-        return { content: 'file sent', isError: false, images: [], record: null };
-    },
-};
-
-const productExecutions: string[] = [];
-const productTurnTools = createTurnTools([weatherTool, sendFileTool]);
-
 const turnTools = createTurnTools([weatherTool, brokenTool]);
 
 // ---- helpers ----
@@ -576,6 +559,7 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
                 {
                     call: { id: 'call_x', name: 'broken_tool', argumentsJson: '{}' },
                     result: { content: 'service unavailable', isError: true, images: [], record: null } satisfies ToolResult,
+                    durationMs: 12,
                 },
             ]);
             expect(

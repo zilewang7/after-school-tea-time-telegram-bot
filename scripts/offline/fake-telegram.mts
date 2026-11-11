@@ -77,6 +77,21 @@ export const BOT_ME: UserFromGetMe = {
 
 export const createFakeTelegram = (): FakeTelegram => recordInto(new Api('0:offline-token'));
 
+const refuseBotApiCall: Transformer = (_previous, method) => {
+    throw new Error(`unexpected Bot API call in an offline test: ${method}`);
+};
+
+/**
+ * A client for a fixture whose code under test is not supposed to call
+ * Telegram. A bare `new Api(token)` would send the call to api.telegram.org;
+ * this one fails it on the spot, naming the method.
+ */
+export const createUnusedApi = (): Api => {
+    const api = new Api('0:offline-token');
+    api.config.use(refuseBotApiCall);
+    return api;
+};
+
 /** A Bot that never polls: feed it updates with handleUpdate */
 export const createFakeBot = (): { bot: Bot; telegram: FakeTelegram } => {
     const bot = new Bot('0:offline-token', { botInfo: BOT_ME });
@@ -225,6 +240,33 @@ export const startChatCompletionStub = async (server: StubServer, replyText = 'å
             server.reset();
         },
     };
+};
+
+/** The two timers a reply keeps while it is open */
+interface OpenReply {
+    readonly typing: { stop(): void };
+    readonly editor: { stop(): void };
+}
+
+const openReplies: OpenReply[] = [];
+
+/**
+ * Remembers a reply a case started (the chat context of `createChatContext`).
+ * Many cases drive a reply only part of the way and never reach the code that
+ * ends it, which leaves its spinner and typing timers running.
+ */
+export const trackReply = <Reply extends OpenReply>(reply: Reply): Reply => {
+    openReplies.push(reply);
+    return reply;
+};
+
+/** Stops the timers of every tracked reply; call before `reportResults`, or they keep the file running */
+export const endOpenReplies = (): void => {
+    // `editor` is read here, not when the reply was tracked: a continuation replaces it
+    for (const reply of openReplies.splice(0)) {
+        reply.typing.stop();
+        reply.editor.stop();
+    }
 };
 
 /** The system prompt of a recorded chat completions request */

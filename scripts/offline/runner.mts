@@ -17,7 +17,7 @@
  * output (every assertion) goes to a log file named at the end of the run.
  */
 import { mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { constants, tmpdir } from 'node:os';
 import { basename, join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { killLiveTestProcesses, runFile } from './support/run-file.mts';
@@ -96,6 +96,12 @@ const matchesFilter = (entry: string, filter: string, entries: readonly string[]
 /** Test files as paths relative to the repository root */
 const discoverTestFiles = (nameFilters: string[]): string[] => {
     const entries = readdirSync(TEST_DIRECTORY).filter((entry) => entry.endsWith('.mts') && !NOT_TESTS.has(entry));
+    // A mistyped name must not turn into a green run of the other names
+    const unmatched = nameFilters.filter((filter) => !entries.some((entry) => matchesFilter(entry, filter, entries)));
+    if (unmatched.length > 0) {
+        console.error(`no test file matches: ${unmatched.join(', ')}`);
+        process.exit(2);
+    }
     return entries
         .filter(
             (entry) => nameFilters.length === 0 || nameFilters.some((filter) => matchesFilter(entry, filter, entries))
@@ -169,7 +175,7 @@ const printSummary = (reports: FileReport[], skippedFiles: number, wallMs: numbe
     const passedCases = reports.reduce((total, report) => total + report.passedCases, 0);
     const failedCases = reports.reduce((total, report) => total + report.failedCases.length, 0);
     console.log(
-        `\n${failed.length === 0 ? 'OK' : 'FAILED'}: ${reports.length - failed.length} of ${reports.length} files passed, ` +
+        `\n${failed.length === 0 && passedCases > 0 ? 'OK' : 'FAILED'}: ${reports.length - failed.length} of ${reports.length} files passed, ` +
             `${passedCases} cases passed, ${failedCases} failed, ${(wallMs / 1000).toFixed(0)}s`
     );
     if (skippedFiles > 0) console.log(`${skippedFiles} files were not started (--bail)`);
@@ -197,7 +203,7 @@ const main = async (): Promise<void> => {
     for (const signal of ['SIGINT', 'SIGTERM'] as const) {
         process.once(signal, () => {
             killLiveTestProcesses();
-            process.exit(130);
+            process.exit(128 + constants.signals[signal]);
         });
     }
 
@@ -211,6 +217,13 @@ const main = async (): Promise<void> => {
             reports.filter((report) => report.ok).map((report) => [basename(report.run.file), report.run.durationMs])
         );
         writeFileSync(DURATIONS_PATH, JSON.stringify({ ...durations, ...measured }));
+    }
+    const passedCases = reports.reduce((total, report) => total + report.passedCases, 0);
+    if (passedCases === 0 && reports.every((report) => report.ok)) {
+        // Every file "passed" without running anything: the filter is wrong
+        console.error(options.caseFilter === undefined ? 'no case ran' : `no case name contains "${options.caseFilter}"`);
+        process.exitCode = 1;
+        return;
     }
     process.exitCode = reports.every((report) => report.ok) && reports.length === files.length ? 0 : 1;
 };

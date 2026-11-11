@@ -341,6 +341,9 @@ const emptyState = (): ResponseState => ({
     fullThinking: '',
     thinkingTruncatedChars: 0,
     images: [],
+    stickers: [],
+    files: [],
+    widgets: [],
     groundingData: [],
     agentStats: undefined,
     modelParts: undefined,
@@ -373,6 +376,8 @@ const toolContext = (chatId: number) =>
         triggerMessage: { messageId: 1, userId: 42, userName: '张三', text: '找张狗头表情包' },
         contextIndex: new Map(),
         signal: new AbortController().signal,
+        // Answers locally, so a stray Bot API call can never leave the machine
+        api: createFakeTelegram(chatId).api,
     });
 
 // ---- fake Telegram: a real grammY Api whose transformer answers locally ----
@@ -534,6 +539,12 @@ const probeGeminiClientTools = (env: Record<string, string>): string => {
             HOME: process.env.HOME ?? '',
             GEMINI_API_KEY: 'offline-stub',
             GEMINI_API_URL: 'http://127.0.0.1:9',
+            // Declared required in src/env.d.ts; empty keeps the probe off any real bot or OpenAI endpoint
+            BOT_TOKEN: '',
+            BOT_USER_ID: '',
+            BOT_USER_NAME: '',
+            OPENAI_API_KEY: '',
+            OPENAI_API_URL: '',
             ...env,
         },
     });
@@ -1272,10 +1283,20 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
             );
             const unnamed = { userId: null, displayName: '机主', shortName: null };
             expect(formatOwnerLabel(unnamed, toolLabel) === '机主', 'nothing configured: a bare 机主');
+            const smsOnly = {
+                smsOwner: unnamed,
+                imageTools: false,
+                imageFetch: false,
+                imageReverseSearch: false,
+                imageGenerate: false,
+                stickerTools: false,
+                fileTools: false,
+                historyTools: false,
+                harnessIssues: false,
+                widget: false,
+            };
             expect(
-                buildCapabilitiesSection({ smsOwner: unnamed, imageTools: false, imageFetch: false, imageReverseSearch: false }).endsWith(
-                    '\n- 可以用 `send_sms_to_owner` 给机主发送短信'
-                ),
+                buildCapabilitiesSection(smsOnly).endsWith('\n- 可以用 `send_sms_to_owner` 给机主发送短信'),
                 'and the prompt line reads the same'
             );
         },
@@ -1290,12 +1311,14 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
                 triggerMessage,
                 contextIndex: new Map(),
                 signal,
+                api: createFakeTelegram(-100555).api,
             });
             const privateChat = replyTools.buildReplyToolContext({
                 chat: { id: 4242, type: 'private', first_name: '李四' },
                 triggerMessage,
                 contextIndex: new Map(),
                 signal,
+                api: createFakeTelegram(4242).api,
             });
             expect(group.chatTitle === '主群' && group.chatId === -100555, 'a group carries its title');
             expect(privateChat.chatTitle === undefined && privateChat.chatId === 4242, 'a private chat has no title');

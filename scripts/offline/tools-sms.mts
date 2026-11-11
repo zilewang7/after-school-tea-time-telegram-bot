@@ -17,6 +17,7 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { Client } from '@modelcontextprotocol/sdk/client';
 import { expect, reportResults, runCase, type CaseResult } from './harness.mts';
+import { createUnusedApi } from './fake-telegram.mts';
 import type { McpServerConnection } from '../../src/ai/mcp/index.js';
 
 // ---------------------------------------------------------------------------
@@ -329,9 +330,11 @@ const smsContext = (kind: 'group' | 'private') =>
             kind === 'group'
                 ? { id: GROUP_CHAT_ID, type: 'supergroup', title: '测试群' }
                 : { id: PRIVATE_CHAT_ID, type: 'private', first_name: '张三' },
-        triggerMessage: { messageId: 1, userId: REQUESTER_ID, userName: '张三' },
+        triggerMessage: { messageId: 1, userId: REQUESTER_ID, userName: '张三', text: '帮我给主人发条短信' },
         contextIndex: new Map(),
         signal: new AbortController().signal,
+        // The SMS tool never calls Telegram; this client fails any call
+        api: createUnusedApi(),
     });
 
 const liveSignal = (): AbortSignal => new AbortController().signal;

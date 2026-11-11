@@ -30,6 +30,10 @@ const botInfo: UserFromGetMe = {
     supports_inline_queries: false,
     can_connect_to_business: false,
     has_main_web_app: false,
+    has_topics_enabled: false,
+    allows_users_to_create_topics: false,
+    can_manage_bots: false,
+    supports_join_request_queries: false,
 };
 
 const update: Update = {
@@ -108,7 +112,8 @@ const main = async (): Promise<void> => {
     // saveMessage is awaited inside the middleware, so the row exists now
     const stored = await getMessage(CHAT_ID, MESSAGE_ID);
     if (!stored) throw new Error('rich message row not saved');
-    const text = stored.text;
+    // A missing text fails every content check below instead of crashing
+    const text = stored.text ?? '';
     console.log('--- stored text ---');
     console.log(text);
 
@@ -124,7 +129,7 @@ const main = async (): Promise<void> => {
         supportsMediaInput: false,
     };
     const context = await buildContext(stored, { capabilities: imageOnlyCapabilities });
-    const lastMessage = context.at(-1);
+    const lastMessage = context.messages.at(-1);
     const renderedText = (lastMessage?.content ?? [])
         .filter((part) => part.type === 'text')
         .map((part) => part.text)

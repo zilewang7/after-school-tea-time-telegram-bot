@@ -20,6 +20,7 @@ import {
     waitUntil,
     type TelegramCall,
 } from './fake-telegram.mts';
+import { startStubServer } from './support/stub-server.mts';
 
 // Before anything reads the env: the fallback chain ends here, and the owner
 // id is read once into the tool config
@@ -28,8 +29,8 @@ process.env.OWNER_USER_ID = '4242';
 
 // The reply and retry cases talk to a MiMo-shaped stub; the platform reads its
 // URL once, when the platforms are created
-const MIMO_STUB_PORT = 9171;
-process.env.MIMO_API_URL = `http://127.0.0.1:${MIMO_STUB_PORT}/v1`;
+const mimoStubServer = await startStubServer();
+process.env.MIMO_API_URL = `${mimoStubServer.url}/v1`;
 process.env.MIMO_API_KEY = 'offline-stub';
 // checkIfMentioned compares against this
 process.env.BOT_USER_NAME = 'AfterSchoolTeatimeBot';
@@ -431,8 +432,12 @@ const cases: { name: string; body: () => Promise<void> }[] = [
             expect(normalizeToolOverrides({ nonsense: true }).ok === false, 'unknown group keys are refused');
             expect(normalizeToolOverrides({ sticker: 'yes' }).ok === false, 'non-boolean values are refused');
             expect(normalizeToolOverrides([]).ok === false, 'arrays are refused');
-            expect(normalizeToolOverrides({}).ok === true, 'an empty object is accepted');
-            expect(JSON.stringify(normalizeToolOverrides({}).value) === 'null', 'and means "follow the env"');
+            const emptyOverrides = normalizeToolOverrides({});
+            expect(emptyOverrides.ok === true, 'an empty object is accepted');
+            expect(
+                emptyOverrides.ok === true && JSON.stringify(emptyOverrides.value) === 'null',
+                'and means "follow the env"'
+            );
             expect(parseStoredToolOverrides('{"file":true}')?.file === true, 'stored JSON reads back');
             const unreadable = await quietly(async () => parseStoredToolOverrides('not json'));
             expect(unreadable === null, 'a hand-edited value reads as no overrides');
@@ -709,7 +714,7 @@ const cases: { name: string; body: () => Promise<void> }[] = [
         name: 'a reply keeps the settings it started with; a retry takes the chat settings at the press, never the old model',
         body: async () => {
             const chatId = -3004;
-            const stub = await startChatCompletionStub(MIMO_STUB_PORT, '回复内容');
+            const stub = await startChatCompletionStub(mimoStubServer, '回复内容');
             try {
                 await updateChatSettings({
                     chatId,
@@ -872,4 +877,5 @@ const results: CaseResult[] = [];
 for (const testCase of cases) {
     results.push(await runCase(testCase.name, testCase.body));
 }
+await mimoStubServer.close();
 reportResults(results);

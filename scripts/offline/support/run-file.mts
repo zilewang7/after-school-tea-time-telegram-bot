@@ -2,7 +2,8 @@
  * Runs one offline test file in its own process group and captures its output.
  */
 import { spawn } from 'node:child_process';
-import { createWriteStream } from 'node:fs';
+import { closeSync, openSync } from 'node:fs';
+import { removeScratchDirectoryOf } from './scratch-directory.mts';
 
 export interface FileRun {
     /** Path relative to the repository root */
@@ -25,45 +26,53 @@ export interface RunFileOptions {
 /** Every test process group still running, so an interrupted run can take them down */
 const liveProcessGroups = new Set<number>();
 
-const killProcessGroup = (groupId: number): void => {
+/**
+ * Ends a test and anything it started, and removes the scratch directory the
+ * test could not remove itself. Harmless when the test has already ended.
+ */
+const endProcessGroup = (groupId: number): void => {
     try {
         // A negative pid addresses the whole group: the test and anything it spawned
         process.kill(-groupId, 'SIGKILL');
     } catch {
-        // Already gone
+        // Nothing left in the group
     }
+    // The group id is the pid of the test process, which names its scratch directory
+    removeScratchDirectoryOf(groupId);
 };
 
 export const killLiveTestProcesses = (): void => {
-    for (const groupId of liveProcessGroups) killProcessGroup(groupId);
+    for (const groupId of liveProcessGroups) endProcessGroup(groupId);
 };
 
 export const runFile = (file: string, options: RunFileOptions): Promise<FileRun> =>
     new Promise((resolve) => {
         const startedAt = performance.now();
-        const log = createWriteStream(options.logPath);
         // The log keeps every assertion; the terminal only gets the summary
         const environment: NodeJS.ProcessEnv = { ...process.env, OFFLINE_VERBOSE: '1' };
         if (options.caseFilter !== undefined) environment.OFFLINE_GREP = options.caseFilter;
 
+        // One file descriptor for stdout and stderr: the log then holds the lines
+        // in the order they were written. Two pipes would interleave them by
+        // arrival, and a failure message could land under the wrong case.
+        const logDescriptor = openSync(options.logPath, 'w');
         // `node --import tsx` instead of the tsx binary: the binary starts the
         // test as a grandchild, which a kill of the child would leave running
         const child = spawn(process.execPath, ['--import', 'tsx', file], {
             cwd: options.repositoryRoot,
             env: environment,
             detached: true,
-            stdio: ['ignore', 'pipe', 'pipe'],
+            stdio: ['ignore', logDescriptor, logDescriptor],
         });
+        // The child has its own copies now
+        closeSync(logDescriptor);
         const groupId = child.pid;
         if (groupId !== undefined) liveProcessGroups.add(groupId);
-
-        child.stdout.pipe(log, { end: false });
-        child.stderr.pipe(log, { end: false });
 
         let timedOut = false;
         const timeout = setTimeout(() => {
             timedOut = true;
-            if (groupId !== undefined) killProcessGroup(groupId);
+            if (groupId !== undefined) endProcessGroup(groupId);
         }, options.timeoutMs);
 
         let settled = false;
@@ -71,18 +80,21 @@ export const runFile = (file: string, options: RunFileOptions): Promise<FileRun>
             if (settled) return;
             settled = true;
             clearTimeout(timeout);
-            if (groupId !== undefined) liveProcessGroups.delete(groupId);
-            log.end(() => {
-                resolve({
-                    file,
-                    logPath: options.logPath,
-                    exitCode,
-                    timedOut,
-                    durationMs: performance.now() - startedAt,
-                });
+            if (groupId !== undefined) {
+                // A helper the test started and did not stop must not outlive it
+                endProcessGroup(groupId);
+                liveProcessGroups.delete(groupId);
+            }
+            resolve({
+                file,
+                logPath: options.logPath,
+                exitCode,
+                timedOut,
+                durationMs: performance.now() - startedAt,
             });
         };
-        // 'error' = the process never started; 'close' = it ended and its output is in
+        // 'error' = the process never started; 'exit' = it ended. Not 'close':
+        // nothing is read from the child, so there is no stream to wait for.
         child.once('error', () => settle(null));
-        child.once('close', (exitCode) => settle(exitCode));
+        child.once('exit', (exitCode) => settle(exitCode));
     });

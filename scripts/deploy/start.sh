@@ -88,5 +88,17 @@ else
     fi
 fi
 
-# exec: pm2 must receive the container's stop signal to shut the bot down cleanly
-exec pm2-runtime start scripts/deploy/pm2.config.cjs
+# pm2 comes with the image. A container created from an image that was built
+# before pm2 moved into the Dockerfile does not have it: install it here, as the
+# old start script did on every start, instead of failing in a loop.
+if ! command -v pm2-runtime > /dev/null 2>&1; then
+    log "pm2 is not in this image, installing it; rebuild the image (docker compose build k-on-bot)"
+    npm install -g "pm2@${PM2_VERSION:-7.1.2}" || log "pm2 could not be installed"
+fi
+
+# exec: the process that runs the bot must receive the container's stop signal
+if command -v pm2-runtime > /dev/null 2>&1; then
+    exec pm2-runtime start scripts/deploy/pm2.config.cjs
+fi
+log "starting without pm2: a crash now restarts the container, which builds again"
+exec node dist/index.js

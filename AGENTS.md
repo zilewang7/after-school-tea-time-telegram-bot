@@ -41,7 +41,7 @@ runs from the same directory. Most rules below exist because of that.
 | Whole offline suite | `pnpm test:offline` (3 files at a time; `-j N`) | ~2 min |
 | Type check | `pnpm typecheck` (`src`, `scripts`, `scripts-dom`, `webapp`; a name runs one) | ~12 s |
 | Lint | `pnpm lint` | ~2 s |
-| Dependency guard | `pnpm check-deps` | ~1 s |
+| Dependency guard | `pnpm check-deps` (never writes; `--tighten` after fixing a baseline entry) | ~1 s |
 | All three checks, working tree | `pnpm check` | ~15 s |
 | Everything, on the committed tree | `pnpm verify` (required before pushing `master`) | ~3 min |
 | Write-lock regression | `pnpm test:lock` | ~5 s |
@@ -53,7 +53,13 @@ runs from the same directory. Most rules below exist because of that.
 Offline test output: one line per file. The per-assertion log of every file is
 in the directory printed at the end; a failing case prints its name, message
 and `file:line`. `OFFLINE_VERBOSE=1` shows assertions when running one file
-directly; `OFFLINE_DEBUG_HANDLES=1` lists timers and handles still alive at exit.
+directly.
+
+A test file ends when the work its cases started has ended, so an error thrown
+after the last case still fails the file. A file that is still running 3 s
+after its summary is ended and marked in the run output: run it with
+`OFFLINE_DEBUG_HANDLES=1` to see which timer or server was left running, where
+it was created and during which case.
 
 ## Working loop
 
@@ -69,6 +75,12 @@ directly; `OFFLINE_DEBUG_HANDLES=1` lists timers and handles still alive at exit
 - Tests never use a fixed port or a fixed path under `/tmp`: two suites run at
   the same time. Use `startStubServer()` (`support/stub-server.mts`) and a
   per-process temporary directory.
+- A test ends what it starts before `reportResults`: close servers, clear
+  intervals. A reply started with `createChatContext` goes through
+  `trackReply()` and the file calls `endOpenReplies()` at the end
+  (`fake-telegram.mts`). A fixture that needs a Bot API client the code must
+  not use takes `createUnusedApi()`, never a bare `new Api(token)`, which
+  would call Telegram.
 - `src` reads most env variables at import. A test sets the env first and
   imports `src` afterwards with `await import(…)`.
 
@@ -88,20 +100,26 @@ directly; `OFFLINE_DEBUG_HANDLES=1` lists timers and handles still alive at exit
 | `webapp/` | React + Vite Mini App (own package); `webapp/src/api/` talks to `src/panel` |
 | `scripts/offline/` | Offline tests, `harness.mts`, `fake-telegram.mts`, `runner.mts` |
 | `scripts/e2e/` | Tests that drive the real test bot |
+| `scripts/deploy/` | Container start script, pm2 config, release checks, rehearsal |
+| `scripts/lib/` | Shared by scripts: production queries, the dependency guard's rules |
 | `scripts/guard/` | Host watchdog timers |
 | `tools/checks/` | Check-only tools: TypeScript 7 for `pnpm typecheck`, oxlint |
 | `tgs-converter/`, `widget-render/` | Sidecar containers |
 | `docs/` | Design documents; git-ignored, present only in the main checkout |
 
-Lower layers do not import upper ones (`pnpm check-deps` enforces it against a
-baseline): `shared`, `config` → `db` → `services`, `telegram`, `ai` → `reply`,
-`cmd`, `panel` → `index.ts`.
+Lower layers do not import upper ones, types included (`pnpm check-deps`
+enforces it against a baseline): `shared`, `types`, `config`, `util.ts`,
+`state.ts` → `db` → `services`, `telegram`, `ai`, `widget-image` → `reply`,
+`cmd`, `panel` → `index.ts`. A new directory under `src/` gets a line in the
+table in `scripts/lib/check-deps/layers.mts`.
 
 ## Conventions
 
 - No `export default`. `index.ts` only re-exports. `===` only.
 - No `as` casts unless there is no other way (`as const` is fine); the guard
-  counts them per file and the count may not grow.
+  counts them per file and the count may not grow. After removing a cast or
+  an upward import, run `pnpm check-deps --tighten` and commit the baseline
+  with the fix.
 - Prefer `ts-pattern` for branching on unions. Names are spelled out.
 - Split a large function or component into smaller files.
 - React: `useMemo` / `useCallback` where it matters; hook dependency lists
@@ -120,7 +138,9 @@ Production (`k-on-bot` container) fetches `origin/master`, builds and starts on
 every container start, so the release is `docker compose restart k-on-bot`
 (a commit that is not pushed does not ship). A change to `.env`, compose
 labels or env needs `docker compose up -d k-on-bot` instead: `restart` does not
-re-read them, and recreating costs about a minute.
+re-read them, and recreating costs about a minute. A change to the
+`Dockerfile` (Node, pnpm or pm2 version) needs the image rebuilt as well:
+`docker compose up -d --build k-on-bot`.
 
 1. `pnpm verify`, push, then `pnpm deploy:check`. It must say READY: the
    restart kills the process, so wait while a reply is being generated.

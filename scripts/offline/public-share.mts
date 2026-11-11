@@ -400,7 +400,7 @@ const cases: { name: string; body: () => Promise<void> }[] = [
                 now: () => clockMs,
                 rateLimit: { limit: 2, windowMs: 60_000 },
             });
-            const call = (address: string): Promise<Response> =>
+            const call = async (address: string): Promise<Response> =>
                 limited.request(`/api/public/shares/${share.token}`, { headers: { 'x-forwarded-for': address } });
             expect((await call('1.2.3.4')).status === 200, 'the first request passes');
             expect((await call('1.2.3.4')).status === 200, 'the second request passes');
@@ -483,7 +483,8 @@ const cases: { name: string; body: () => Promise<void> }[] = [
 
             // Without BOT_USER_NAME there is no Mini App to open: no button at all
             const botUserName = process.env.BOT_USER_NAME;
-            delete process.env.BOT_USER_NAME;
+            // Typed as always set; this case removes it at runtime on purpose
+            Reflect.deleteProperty(process.env, 'BOT_USER_NAME');
             const noBotHtml = await (await app.request(`/s/${share.token}`)).text();
             process.env.BOT_USER_NAME = botUserName;
             expect(!noBotHtml.includes('在 Telegram 打开 Mini App'), 'no button without a bot username');

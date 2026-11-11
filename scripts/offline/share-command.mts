@@ -212,9 +212,13 @@ const replyUpdate = (input: ReplyUpdateInput): Update => {
         chat: groupChat(input.chatId),
         from: input.replyFrom ?? BOT_USER,
         text: '被回复的消息',
+        // A replied-to message never nests its own reply
+        reply_to_message: undefined,
     };
     if (input.dropSender === true) {
-        delete message.from;
+        // The Bot API types say a group message always has a sender; this case
+        // fakes the rare one without, so drop the field at runtime only
+        Reflect.deleteProperty(message, 'from');
     } else if (input.sender !== undefined) {
         message.from = input.sender;
     }

@@ -6,7 +6,6 @@
  * Run: npx tsx scripts/offline/animated-sticker.mts
  */
 import type { Message as TgMessage } from 'grammy/types';
-import { createServer, type Server } from 'node:http';
 import {
     OFFLINE_CHAT_ID,
     expect,
@@ -16,10 +15,11 @@ import {
     takeMessageId,
     type CaseResult,
 } from './harness.mts';
+import { startStubServer } from './support/stub-server.mts';
 
-/** The stub converter, snapshotted by tgs-client at import */
-const CONVERTER_PORT = 9153;
-process.env.TGS_CONVERTER_URL = `http://127.0.0.1:${CONVERTER_PORT}`;
+/** The stub converter, snapshotted by tgs-client at import, so it starts before src loads */
+const converter = await startStubServer();
+process.env.TGS_CONVERTER_URL = converter.url;
 
 for (const key of ['GEMINI_API_KEY', 'OPENAI_API_KEY', 'DEEPSEEK_API_KEY', 'GROK_API_KEY', 'MIMO_API_KEY']) {
     process.env[key] ||= 'offline-placeholder';
@@ -43,7 +43,7 @@ type ConverterReply = { convert: 'clip' | 'rejected'; still: 'png' | 'rejected' 
 
 /** One long-lived stub: keep-alive sockets from a previous case would fail */
 const currentReply: ConverterReply = { convert: 'clip', still: 'png' };
-const converter = createServer((request, response) => {
+converter.handle((request, response) => {
     request.resume();
     request.on('end', () => {
         const url = request.url ?? '';
@@ -78,9 +78,8 @@ const converter = createServer((request, response) => {
         response.end('unexpected endpoint');
     });
 });
-await new Promise<void>((resolve) => converter.listen(CONVERTER_PORT, '127.0.0.1', () => resolve()));
 
-const withConverter = async <T>(reply: ConverterReply, body: () => Promise<T>): Promise<T> => {
+const withConverter = async <T,>(reply: ConverterReply, body: () => Promise<T>): Promise<T> => {
     currentReply.convert = reply.convert;
     currentReply.still = reply.still;
     return body();
@@ -235,7 +234,7 @@ cases.push(
     })
 );
 
-await new Promise<void>((resolve) => converter.close(() => resolve()));
+await converter.close();
 await sequelize.close();
 
 reportResults(cases);

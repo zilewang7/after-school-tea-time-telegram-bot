@@ -32,11 +32,11 @@ for (const [label, module] of [['http', http], ['https', https]] as const) {
     Object.assign(module, {
         request: (...args: Parameters<typeof originalRequest>) => {
             outboundRequests.push(`${label}.request ${JSON.stringify(args[0]).slice(0, 120)}`);
-            return originalRequest(...args);
+            return originalRequest.apply(module, args);
         },
         get: (...args: Parameters<typeof originalGet>) => {
             outboundRequests.push(`${label}.get ${JSON.stringify(args[0]).slice(0, 120)}`);
-            return originalGet(...args);
+            return originalGet.apply(module, args);
         },
     });
 }

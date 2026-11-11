@@ -152,7 +152,7 @@ const disabledApp = makeApp(false);
 const initDataFor = (user: InitDataUserInput): string =>
     signInitData({ botToken: BOT_TOKEN, user, authDate: Math.floor(clockMs / 1000) });
 
-const callApi = (target: PanelApp, path: string, user: InitDataUserInput, method = 'GET'): Promise<Response> =>
+const callApi = async (target: PanelApp, path: string, user: InitDataUserInput, method = 'GET'): Promise<Response> =>
     target.request(path, { method, headers: { 'X-Init-Data': initDataFor(user) } });
 
 const textOf = async (response: Response): Promise<string> => response.text();

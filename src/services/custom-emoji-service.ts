@@ -52,23 +52,27 @@ const RECOVERY_INTERVAL_MS = positiveIntegerEnv(
   5 * 60 * 1000,
   60 * 60 * 1000
 );
-const ACQUISITION_TIMEOUT_MS = positiveIntegerEnv(
+// Timeouts are read per use so a test can shorten them around a single case.
+const acquisitionTimeoutMs = (): number => positiveIntegerEnv(
   'CUSTOM_EMOJI_ACQUISITION_TIMEOUT_MS',
   55000,
   60000
 );
-const defaultAssetTimeoutMs = Math.max(
-  250,
-  Math.min(
-    45000,
-    ACQUISITION_TIMEOUT_MS - Math.min(5000, Math.floor(ACQUISITION_TIMEOUT_MS / 4))
-  )
-);
-const ASSET_TIMEOUT_MS = positiveIntegerEnv(
-  'CUSTOM_EMOJI_ASSET_TIMEOUT_MS',
-  defaultAssetTimeoutMs,
-  ACQUISITION_TIMEOUT_MS
-);
+const assetTimeoutMs = (): number => {
+  const acquisitionTimeout = acquisitionTimeoutMs();
+  const defaultAssetTimeout = Math.max(
+    250,
+    Math.min(
+      45000,
+      acquisitionTimeout - Math.min(5000, Math.floor(acquisitionTimeout / 4))
+    )
+  );
+  return positiveIntegerEnv(
+    'CUSTOM_EMOJI_ASSET_TIMEOUT_MS',
+    defaultAssetTimeout,
+    acquisitionTimeout
+  );
+};
 const inFlightAssets = new Map<string, Promise<ResolvedCustomEmojiAsset>>();
 const inFlightRevisions = new Map<string, Promise<void>>();
 
@@ -183,7 +187,7 @@ const withAbort = async <T>(operation: Promise<T>, signal?: AbortSignal): Promis
 
 const createAcquisitionController = (
   parentSignal?: AbortSignal,
-  timeoutMs = ACQUISITION_TIMEOUT_MS
+  timeoutMs = acquisitionTimeoutMs()
 ): { signal: AbortSignal; dispose: () => void } => {
   const controller = new AbortController();
   const abortFromParent = (): void => controller.abort(parentSignal?.reason);
@@ -363,7 +367,7 @@ const resolveOneAsset = (
   if (existing) return existing;
 
   const resolution = (async (): Promise<ResolvedCustomEmojiAsset> => {
-    const controller = createAcquisitionController(undefined, ASSET_TIMEOUT_MS);
+    const controller = createAcquisitionController(undefined, assetTimeoutMs());
     try {
       const cached = await withAbort(readCachedAsset(customEmojiId), controller.signal);
       if (cached) return cached;

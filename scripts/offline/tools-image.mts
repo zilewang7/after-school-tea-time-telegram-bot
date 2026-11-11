@@ -35,11 +35,13 @@ import {
     takeMessageId,
     type CaseResult,
 } from './harness.mts';
+import { createUnusedApi } from './fake-telegram.mts';
 import type { AIResponse, PlatformConfig, ResponseState, StreamChunk, UnifiedMessage } from '../../src/ai/types.js';
 import type { ToolHandler, ToolResult } from '../../src/ai/tools/tool-types.js';
 import type { ResponseVersion, ButtonState } from '../../src/db/botResponseDTO.js';
 import type { ContextIndex } from '../../src/reply/context-index.js';
 import type { AnimationFrameLoader } from '../../src/reply/tools/animation-frame.js';
+import type { ReplyMediaState } from '../../src/reply/tools/reply-media-state.js';
 
 // The bot's own rows are stored as messages of this user
 process.env.BOT_USER_ID = '7777';
@@ -130,6 +132,7 @@ const emptyState = (): ResponseState => ({
     images: [],
     stickers: [],
     files: [],
+    widgets: [],
     groundingData: [],
     agentStats: undefined,
     modelParts: undefined,
@@ -253,6 +256,9 @@ interface GenerateToolOptions {
     readonly loadAnimationFrame?: AnimationFrameLoader;
 }
 
+/** The generate tool reads the pack through `sticker.api`; without one, no Bot API call is expected */
+const offlineApi = createUnusedApi();
+
 const toolFor = (
     contextIndex: ContextIndex,
     model: ImageModel,
@@ -265,6 +271,7 @@ const toolFor = (
             triggerMessage: { messageId: 1, userId: 42, userName: '张三', text: null },
             contextIndex,
             signal,
+            api: options.sticker?.api ?? offlineApi,
         }),
         options.state ?? createReplyMediaState(),
         {
@@ -1181,6 +1188,7 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
 
             // The deadline: a request that never answers is cut off and reported as a timeout
             const hanging = async (_messages: UnifiedMessage[], config: PlatformConfig): Promise<AsyncIterable<StreamChunk>> =>
+                // oxlint-disable-next-line require-yield -- a stream that never yields until it is aborted
                 (async function* (): AsyncGenerator<StreamChunk> {
                     await new Promise((resolve) => config.signal?.addEventListener('abort', resolve, { once: true }));
                     throw new Error('This operation was aborted');

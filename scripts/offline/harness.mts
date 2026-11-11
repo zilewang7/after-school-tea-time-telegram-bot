@@ -15,19 +15,26 @@
  * - OFFLINE_VERBOSE=1        print every passing assertion (the runner sets it
  *                            for the per-file logs)
  * - OFFLINE_GREP=<text>      run only the cases whose name contains the text
- * - OFFLINE_DEBUG_HANDLES=1  before exiting, list what would have kept the
- *                            process alive (leaked timers, sockets, servers)
+ * - OFFLINE_DEBUG_HANDLES=1  after the summary, list what still keeps the
+ *                            process alive (timers, sockets, servers) and
+ *                            where each was created
  */
-import { mkdirSync, rmSync } from 'node:fs';
-import { constants, tmpdir } from 'node:os';
+import { mkdirSync } from 'node:fs';
+import { constants } from 'node:os';
 import { join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { liveHandleOrigins, noteCaseStart, trackLiveHandles } from './support/live-handles.mts';
+import { removeScratchDirectoryOf, scratchDirectoryOf } from './support/scratch-directory.mts';
 
-const SCRATCH_DIRECTORY = join(tmpdir(), `k-on-bot-offline-${process.pid}`);
+const SCRATCH_DIRECTORY = scratchDirectoryOf(process.pid);
 const OFFLINE_DB_PATH = join(SCRATCH_DIRECTORY, 'database.sqlite');
 
-/** How long the exit waits for stdout/stderr to drain before giving up */
-const FLUSH_TIMEOUT_MS = 2000;
+/**
+ * How long a file may keep running after its summary before it is ended. Work
+ * the cases left behind normally finishes within milliseconds; what is still
+ * alive after this is a leak (a server never closed, an interval never cleared).
+ */
+const LINGER_LIMIT_MS = 3000;
 
 // Set as soon as a test file imports the harness. A file that reaches the db
 // layer without setupOfflineDb still gets a database here, not ./database.sqlite
@@ -39,9 +46,11 @@ process.env.DB_PATH = OFFLINE_DB_PATH;
 // tests the pacing itself sets its own value.
 process.env.EDIT_COORDINATOR_TIME_SCALE ||= '0.01';
 
-const removeScratchDirectory = (): void => {
-    rmSync(SCRATCH_DIRECTORY, { recursive: true, force: true });
-};
+// The pool lets go of an unused connection right away. With the default ten
+// seconds its idle timer would be the last thing keeping a finished file alive.
+process.env.DB_POOL_IDLE_MS ||= '50';
+
+const removeScratchDirectory = (): void => removeScratchDirectoryOf(process.pid);
 
 // Registered on import, not in setupOfflineDb: a file that only reaches the db
 // layer through its imports creates the directory too and must not leave it.
@@ -52,6 +61,9 @@ for (const signal of ['SIGINT', 'SIGTERM'] as const) {
 }
 
 const verbose = process.env.OFFLINE_VERBOSE === '1';
+const debugHandles = process.env.OFFLINE_DEBUG_HANDLES === '1';
+// From the start: a handle can only be traced to its origin when it is created
+if (debugHandles) trackLiveHandles();
 const caseFilter = process.env.OFFLINE_GREP ?? '';
 
 /**
@@ -96,6 +108,7 @@ const failureLocation = (error: unknown): string | undefined => {
 export const runCase = async (name: string, body: () => void | Promise<void>): Promise<CaseResult> => {
     if (caseFilter !== '' && !name.includes(caseFilter)) return { name, ok: true, skipped: true };
     console.log(`\n▶ ${name}`);
+    if (debugHandles) noteCaseStart(name);
     try {
         await body();
         return { name, ok: true };
@@ -108,40 +121,46 @@ export const runCase = async (name: string, body: () => void | Promise<void>): P
     }
 };
 
+/** Resolves once everything written to the stream so far is out, or the stream is gone */
 const flush = (stream: NodeJS.WriteStream): Promise<void> =>
     new Promise((resolve) => {
+        if (stream.destroyed || !stream.writable) {
+            resolve();
+            return;
+        }
+        // A reader that went away answers with an error or a close, not with the callback
+        stream.once('error', () => resolve());
+        stream.once('close', () => resolve());
         stream.write('', () => resolve());
     });
 
-const reportLiveHandles = (): void => {
+const describeLiveHandles = (): string => {
     const counts = new Map<string, number>();
     for (const resource of process.getActiveResourcesInfo()) {
         counts.set(resource, (counts.get(resource) ?? 0) + 1);
     }
     const summary = [...counts].map(([resource, count]) => `${resource}×${count}`).join(', ');
-    console.error(`[offline] still alive at exit: ${summary === '' ? 'nothing' : summary}`);
+    return summary === '' ? 'nothing' : summary;
 };
 
-/**
- * End the process once the output is out. Without this a file that touched the
- * database sits idle for ten more seconds: the connection pool keeps a timer
- * until its idle connections expire. A pipe is written asynchronously, so the
- * streams are drained first or a slow reader would lose the summary.
- */
-const exitWhenFlushed = async (exitCode: number): Promise<void> => {
-    // One turn of the event loop, so a rejection that is already queued still
-    // surfaces as a failure instead of being cut off by the exit
-    await new Promise<void>((resolve) => setImmediate(resolve));
-    if (process.env.OFFLINE_DEBUG_HANDLES === '1') reportLiveHandles();
-    // A closed pipe never calls back; the exit code is already set for that case
-    setTimeout(() => process.exit(exitCode), FLUSH_TIMEOUT_MS).unref();
+/** Ends a file that is still running long after its summary */
+const endLingeringProcess = async (): Promise<void> => {
+    console.error(`[offline] still running ${LINGER_LIMIT_MS}ms after the summary, ending it; alive: ${describeLiveHandles()}`);
+    if (debugHandles) {
+        for (const origin of liveHandleOrigins()) console.error(`[offline]   ${origin}`);
+    } else {
+        console.error('[offline] run the file with OFFLINE_DEBUG_HANDLES=1 to see where they were created');
+    }
     await Promise.all([flush(process.stdout), flush(process.stderr)]);
-    process.exit(exitCode);
+    process.exit();
 };
 
 /**
- * Print the summary and end the process. Synchronous code after this call still
- * runs; anything asynchronous after it races the exit, so do cleanup before.
+ * Print the summary. The process then ends on its own as soon as the work the
+ * cases started is finished, the way any Node program does, so an error in that
+ * late work (a timer that throws, a promise nobody awaited that rejects) still
+ * ends the process with a failure. Do cleanup (closing servers) before the call:
+ * whatever stays open keeps the file running until LINGER_LIMIT_MS.
  */
 export const reportResults = (results: CaseResult[]): void => {
     console.log('\n==== offline summary ====');
@@ -151,10 +170,17 @@ export const reportResults = (results: CaseResult[]): void => {
     }
     const skipped = results.filter((result) => result.skipped === true).length;
     if (skipped > 0) console.log(`(${skipped} cases skipped by OFFLINE_GREP)`);
-    const exitCode = results.some((result) => !result.ok) ? 1 : 0;
-    // Set first: if the flush below never completes, the natural exit still fails
-    process.exitCode = exitCode;
-    void exitWhenFlushed(exitCode);
+    process.exitCode = results.some((result) => !result.ok) ? 1 : 0;
+
+    if (debugHandles) {
+        const reportedAt = performance.now();
+        console.error(`[offline] alive at the summary: ${describeLiveHandles()}`);
+        process.once('exit', () => {
+            console.error(`[offline] ended ${Math.round(performance.now() - reportedAt)}ms after the summary`);
+        });
+    }
+    // unref: this timer alone must not keep the process alive
+    setTimeout(() => void endLingeringProcess(), LINGER_LIMIT_MS).unref();
 };
 
 export interface OfflineDb {

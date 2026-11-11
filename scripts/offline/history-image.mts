@@ -33,7 +33,6 @@ const OTHER_CHANNEL_ID = 2311128579;
 const OWNER_ID = 603421700;
 const STRANGER_ID = 424242;
 const MESSAGE_ID = 1115908;
-const TZ = 'Asia/Shanghai';
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -43,13 +42,6 @@ const jpeg = (bytes = 400): Buffer =>
     Buffer.concat([Buffer.from([0xff, 0xd8, 0xff, 0xe0]), Buffer.alloc(bytes)]);
 const png = (): Buffer =>
     Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), Buffer.alloc(64)]);
-const webp = (): Buffer =>
-    Buffer.concat([
-        Buffer.from('RIFF'),
-        Buffer.from([0x10, 0x00, 0x00, 0x00]),
-        Buffer.from('WEBPVP8 '),
-        Buffer.alloc(32),
-    ]);
 /** Not an image: what an mp4 looks like to the sniffer */
 const mp4 = (): Buffer =>
     Buffer.concat([Buffer.from([0x00, 0x00, 0x00, 0x18]), Buffer.from('ftypmp42'), Buffer.alloc(64)]);

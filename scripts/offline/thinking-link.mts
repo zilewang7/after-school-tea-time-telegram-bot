@@ -35,7 +35,15 @@ import {
     takeMessageId,
     type CaseResult,
 } from './harness.mts';
-import { contextOf, createFakeTelegram, messageUpdate, quietly, waitUntil } from './fake-telegram.mts';
+import {
+    contextOf,
+    createFakeTelegram,
+    endOpenReplies,
+    messageUpdate,
+    quietly,
+    trackReply,
+    waitUntil,
+} from './fake-telegram.mts';
 import type { ResponseState, StreamChunk } from '../../src/ai/types.js';
 
 const db = await setupOfflineDb();
@@ -108,6 +116,7 @@ const startReply = async (): Promise<StartedReply> => {
     );
     const chatContext = await responseHandler.createChatContext(ctx, { model: MODEL });
     if (!chatContext) throw new Error('no chat context');
+    trackReply(chatContext);
     return {
         telegram,
         chatContext,
@@ -183,13 +192,13 @@ const runLinkReply = async (
     const started = await startReply();
     const steps: StreamStep[] = [
         ...thinkingSteps(longThinking()),
-        { waitMs: 1200 },
+        { waitMs: 60 },
         { chunk: { type: 'text', content: '答案来了。' } },
     ];
     if (options.tailThinking !== undefined) {
         steps.push({ chunk: { type: 'thinking', content: options.tailThinking } });
     }
-    steps.push({ waitMs: 300 });
+    steps.push({ waitMs: 30 });
     const response = await quietly(() =>
         responseHandler.processStream(streamOf(steps), started.chatContext, 0)
     );
@@ -204,7 +213,7 @@ results.push(
         const started = await startReply();
         const response = await quietly(() =>
             responseHandler.processStream(
-                streamOf([...thinkingSteps(longThinking()), { waitMs: 1200 }]),
+                streamOf([...thinkingSteps(longThinking()), { waitMs: 60 }]),
                 started.chatContext,
                 0
             )
@@ -225,8 +234,16 @@ results.push(
         });
         expect(row?.token === link?.token, 'the thinking_links row carries the session token');
 
+        // Streaming edits are fire-and-forget; the paced coordinator may still hold one
+        await waitUntil(
+            'the streaming link edit to reach the chat',
+            () =>
+                started.telegram
+                    .callsOf('editMessageText')
+                    .some((call) => payloadText(call.payload).startsWith(THINKING_LINK_LABEL)),
+            8000
+        );
         const edits = started.telegram.callsOf('editMessageText');
-        const texts = strings(edits.map((call) => call.payload.text));
         const streamingEdit = edits.find((call) =>
             payloadText(call.payload).startsWith(THINKING_LINK_LABEL)
         );
@@ -467,7 +484,7 @@ results.push(
             responseHandler.processStream(
                 streamOf([
                     ...thinkingSteps(longThinking()),
-                    { waitMs: 1200 },
+                    { waitMs: 60 },
                     { chunk: { type: 'text', content: longBody } },
                 ]),
                 started.chatContext,
@@ -547,7 +564,7 @@ results.push(
                 for (const chunk of thinkingChunks(longThinking())) {
                     yield chunk;
                 }
-                await sleep(1200);
+                await sleep(60);
                 throw new Error('upstream exploded');
             },
         };
@@ -611,7 +628,14 @@ results.push(
                     yield chunk;
                 }
                 // Let the link message reach the chat, then the user hits stop
-                await sleep(1200);
+                await waitUntil(
+                    'the streaming link edit to reach the chat',
+                    () =>
+                        started.telegram
+                            .callsOf('editMessageText')
+                            .some((call) => payloadText(call.payload).startsWith(THINKING_LINK_LABEL)),
+                    8000
+                );
                 started.chatContext.session.streamController.abort();
                 yield { type: 'text', content: '不会显示' };
             },
@@ -654,7 +678,7 @@ results.push(
         const started = await startReply();
         const response = await quietly(() =>
             responseHandler.processStream(
-                streamOf([...thinkingSteps(longThinking()), { waitMs: 1200 }]),
+                streamOf([...thinkingSteps(longThinking()), { waitMs: 60 }]),
                 started.chatContext,
                 0
             )
@@ -698,7 +722,7 @@ results.push(
         ).join('\n\n');
         const response = await quietly(() =>
             responseHandler.processStream(
-                streamOf([{ chunk: { type: 'thinking', content: thinking } }, { waitMs: 300 }]),
+                streamOf([{ chunk: { type: 'thinking', content: thinking } }, { waitMs: 30 }]),
                 started.chatContext,
                 0
             )
@@ -743,7 +767,7 @@ results.push(
             responseHandler.processStream(
                 streamOf([
                     ...thinkingSteps(longThinking()),
-                    { waitMs: 1200 },
+                    { waitMs: 60 },
                     { chunk: { type: 'image', imageData: PNG_BYTES } },
                 ]),
                 started.chatContext,
@@ -790,7 +814,7 @@ results.push(
                     { chunk: { type: 'thinking', content: '先想一小段。' } },
                     { chunk: { type: 'text', content: '答案来了。' } },
                     ...thinkingSteps(longThinking()),
-                    { waitMs: 300 },
+                    { waitMs: 30 },
                 ]),
                 started.chatContext,
                 0
@@ -822,7 +846,7 @@ results.push(
                 responseHandler.processStream(
                     streamOf([
                         ...thinkingSteps(longThinking()),
-                        { waitMs: 400 },
+                        { waitMs: 30 },
                         { chunk: { type: 'text', content: '答案来了。' } },
                     ]),
                     started.chatContext,
@@ -970,4 +994,5 @@ const { sequelize } = await import('../../src/db/config.js');
 await sequelize.close();
 void db;
 
+endOpenReplies();
 reportResults(results);

@@ -31,7 +31,7 @@ import { rememberAction, type GenerationActionFn } from './generation-actions.js
 import { buildCancelButton, buildRerollButton, buildRetryButton } from './generation-buttons.js';
 
 /** Poll fast while the job is likely still queued, then back off */
-const FAST_POLL_MS = 2000;
+const DEFAULT_FAST_POLL_MS = 2000;
 const SLOW_POLL_MS = 5000;
 const FAST_WINDOW_MS = 30_000;
 
@@ -40,6 +40,12 @@ const MAX_CONSECUTIVE_POLL_FAILURES = 3;
 
 /** Progress text only changes on this grid, which keeps the edits sparse */
 const HEARTBEAT_MS = 15_000;
+
+/** Read on each poll, not at import, so a test can shorten it after loading this module */
+const fastPollMs = (): number => {
+    const configured = Number(process.env.COMFY_FAST_POLL_MS);
+    return Number.isFinite(configured) && configured > 0 ? configured : DEFAULT_FAST_POLL_MS;
+};
 
 const pictureJobTimeoutMs = Number(process.env.COMFY_JOB_TIMEOUT_MS ?? 15 * 60 * 1000);
 /**
@@ -164,7 +170,7 @@ const pollUntilDone = async (
         }
 
         const elapsedMs = Date.now() - startedAt;
-        await sleep(elapsedMs < FAST_WINDOW_MS ? FAST_POLL_MS : SLOW_POLL_MS);
+        await sleep(elapsedMs < FAST_WINDOW_MS ? fastPollMs() : SLOW_POLL_MS);
 
         const [pollError, job] = await to(fetchGeneration(jobId));
 

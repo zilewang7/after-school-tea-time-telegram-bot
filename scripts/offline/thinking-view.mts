@@ -219,7 +219,8 @@ const cases: { name: string; body: () => Promise<void> }[] = [
             );
 
             const botUserName = process.env.BOT_USER_NAME;
-            delete process.env.BOT_USER_NAME;
+            // Typed as always set, so `delete` does not type-check; unset it for real
+            Reflect.deleteProperty(process.env, 'BOT_USER_NAME');
             const noBotName = service.thinkingLinkRefOfVersion({ thinkingLinkToken: first.token });
             process.env.BOT_USER_NAME = botUserName;
             expect(
@@ -483,7 +484,7 @@ const cases: { name: string; body: () => Promise<void> }[] = [
                 now: () => clockMs,
                 rateLimit: { limit: 2, windowMs: 60_000 },
             });
-            const call = (address: string): Promise<Response> =>
+            const call = async (address: string): Promise<Response> =>
                 limited.request(`/api/public/thinking/${ref.token}`, { headers: { 'x-forwarded-for': address } });
             expect((await call('1.2.3.4')).status === 200, 'the first request passes');
             expect((await call('1.2.3.4')).status === 200, 'the second request passes');

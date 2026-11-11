@@ -43,7 +43,7 @@ const WEBP = Buffer.concat([Buffer.from('RIFF'), Buffer.alloc(4), Buffer.from('W
 writeFileSync(webpPath, WEBP);
 
 const fakeApi: StickerSetApi = {
-    getStickerSet: async (name: string) => ({
+    getStickerSet: async () => ({
         stickers: STICKER_CATALOG.map((entry) => ({
             file_id: `file-${entry.packIndex}`,
             file_unique_id: entry.fileUniqueId,
@@ -76,6 +76,7 @@ const emptyState = (): ResponseState => ({
     images: [],
     stickers: [],
     files: [],
+    widgets: [],
     groundingData: [],
     isDone: false,
 });

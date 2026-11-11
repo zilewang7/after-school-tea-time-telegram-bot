@@ -702,6 +702,7 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
                         firstStream: streamOf([...streamedFunctionCall(0, 'call_1', 'lookup_weather', '{"city":"Paris"}'), completed(responseObject('resp_1', [call]))]),
                         acceptedRequest,
                         tools: turnTools,
+                        supportsImageInput: true,
                         startedAt: Date.now(),
                         deadlineMs: 0,
                         openContinuation: async (request) => {
