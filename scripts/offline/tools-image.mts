@@ -1474,6 +1474,57 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
         },
     },
     {
+        name: 'a stop in the middle of a round still delivers the sticker, file or widget earlier rounds buffered',
+        body: async () => {
+            // The stop arrives while the model streams: processStream is cut off,
+            // and handleResponseError answers with what the state holds so far
+            const stopWith = async (chatId: number, buffered: Partial<ResponseState>, prepare?: (started: Awaited<ReturnType<typeof startChat>>) => void) => {
+                const started = await startChat(chatId);
+                prepare?.(started);
+                started.chatContext.session.textBuffer = '先发给你';
+                started.chatContext.currentState = { ...emptyState(), textBuffer: '先发给你', fullText: '先发给你', ...buffered };
+                started.chatContext.session.streamController.abort();
+                await captureConsole(() => responseHandler.handleResponseError(started.chatContext, new Error('Aborted')));
+                const version = (await dbIndex.getBotResponse(chatId, started.chatContext.session.firstMessageId))?.getVersions().at(-1);
+                return { ...started, version };
+            };
+
+            const sticker = { packIndex: 7, label: '吃冰棒', emoji: '🍦', fileId: 'file-7', fileUniqueId: 'unique-7' };
+            const withSticker = await stopWith(-1003900000033, { stickers: [sticker] });
+            expect(
+                callsOf(withSticker.telegram, 'sendSticker')[0]?.payload.sticker === 'file-7' &&
+                    withSticker.version?.sticker?.fileId === 'file-7' &&
+                    withSticker.version.wasStoppedByUser,
+                `the buffered sticker goes out with the stopped reply and is stored (got ${json(withSticker.version?.sticker)})`
+            );
+
+            const file = { name: 'notes.md', mimeType: 'text/markdown', data: Buffer.from('# 笔记\n'), caption: '笔记' };
+            const withFile = await stopWith(-1003900000034, { files: [file] });
+            const [document] = callsOf(withFile.telegram, 'sendDocument');
+            expect(
+                fileNameOf(document?.payload.document) === 'notes.md' &&
+                    withFile.version?.file?.name === 'notes.md' &&
+                    withFile.version.fileBase64 === file.data.toString('base64') &&
+                    withFile.version.wasStoppedByUser,
+                `the buffered file goes out with the stopped reply and is stored (got ${json(withFile.version?.file)})`
+            );
+
+            const widget = widgetDeliveryOf('html', '<div class="tw-root">停下时的卡片</div>', '卡片', undefined);
+            const withWidget = await stopWith(-1003900000035, { widgets: [widget] }, (started) => {
+                // Offline there is no renderer: stand in for the 600px card image
+                started.chatContext.session.widgetImageBase64 = PNG_BYTES.toString('base64');
+            });
+            const linkMessage = callsOf(withWidget.telegram, 'sendMessage').at(-1);
+            expect(
+                linkMessage?.payload.text === '卡片' &&
+                    withWidget.version?.widget?.deliveredAs === 'link' &&
+                    withWidget.version.widget.html === widget.html &&
+                    withWidget.version.wasStoppedByUser,
+                `the buffered widget goes out with the stopped reply and is stored (got ${json(withWidget.version?.widget?.deliveredAs)})`
+            );
+        },
+    },
+    {
         name: 'B7: an image Telegram takes neither as a photo nor as a document is not stored',
         body: async () => {
             const bothRefused = ['sendPhoto', 'sendDocument'];

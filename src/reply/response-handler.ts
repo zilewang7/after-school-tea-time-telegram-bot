@@ -40,7 +40,8 @@ import {
     linkifyContextNumbers,
     type ContextLinkResolver,
 } from '../telegram/formatters/context-links.js';
-import { registerContinuation } from '../state.js';
+import { registerBotReplyInFlight, registerContinuation, registerReplyInFlight } from '../state.js';
+import { touchProcessingBotResponse } from '../db/queries/bot-response-heartbeat.js';
 import {
     concatMessages,
     renderMarkdown,
@@ -573,6 +574,41 @@ const emitThinkingLink = async (
     return true;
 };
 
+/** Gap between two heartbeats of a reply being generated */
+export const REPLY_HEARTBEAT_INTERVAL_MS = 60_000;
+
+/**
+ * The heartbeat of a reply that is still streaming; call it on every chunk.
+ *
+ * A reply can run far longer than the in-flight marks live (10 minutes) or
+ * than `deploy:check` trusts a processing row (25 minutes). At most once per
+ * interval it renews both marks and moves the row's updatedAt forward. A
+ * finalized session is left alone, or a finished reply would be marked as
+ * generating again. The row update is not awaited: a failed one only logs.
+ * Exported for the offline tests, which drive it with their own clock.
+ */
+export const createReplyHeartbeat = (
+    session: BotMessageSession,
+    now: () => number = Date.now
+): (() => void) => {
+    let lastBeatAt = now();
+    return () => {
+        const beatAt = now();
+        if (beatAt - lastBeatAt <= REPLY_HEARTBEAT_INTERVAL_MS) return;
+        lastBeatAt = beatAt;
+        if (session.isFinalized) return;
+
+        registerReplyInFlight(session.chatId, session.userMessageId);
+        // The first message is not in messageIds when a retry re-sent it
+        for (const messageId of new Set([session.firstMessageId, ...session.messageIds])) {
+            registerBotReplyInFlight(session.chatId, messageId);
+        }
+        void touchProcessingBotResponse(session.chatId, session.firstMessageId).catch((error: unknown) => {
+            console.warn('[response-handler] heartbeat could not touch the reply row:', error);
+        });
+    };
+};
+
 /**
  * Process AI stream and update message in real-time
  */
@@ -614,6 +650,7 @@ export const processStream = async (
     const attemptKey = liveThinkingKeyOf(session);
     let linkActivationFailed = false;
     let linkEmitAttempted = false;
+    const heartbeat = createReplyHeartbeat(session);
 
     for await (const chunk of stream) {
         // Check if stream was aborted (user clicked stop)
@@ -621,6 +658,10 @@ export const processStream = async (
             console.log('[response-handler] Stream aborted by user');
             break;
         }
+
+        // Any chunk counts, a status line included: a reply waiting on a
+        // retry still shows that it is alive
+        heartbeat();
 
         // First-chunk time and raw thinking length for the reply metrics
         noteStreamChunk(session.metrics, chunk);
@@ -1549,12 +1590,16 @@ export const handleResponseError = async (
 
     if (isAborted) {
         // Treat abort as normal stop, not error
-        // Build response from current state
+        // Build response from current state; the attachments earlier tool
+        // rounds buffered go out with it, as on the normal stop path
         const response = {
             text: chatContext.currentState?.textBuffer || '',
             thinkingText: chatContext.currentState?.thinkingBuffer || '',
             images: chatContext.currentState?.images || [],
             imageCaption: chatContext.currentState?.imageCaption,
+            stickers: chatContext.currentState?.stickers ?? [],
+            files: chatContext.currentState?.files ?? [],
+            widgets: chatContext.currentState?.widgets ?? [],
             groundingData: chatContext.currentState?.groundingData || [],
             agentStats: chatContext.currentState?.agentStats,
             modelParts: chatContext.currentState?.modelParts,
