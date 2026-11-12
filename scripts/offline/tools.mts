@@ -1386,6 +1386,7 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
                 chatId,
                 messageId,
                 idleInterval: 600_000,
+                statusLingerMs: 60,
                 initialContent: '✽ Thinking...',
                 getButtons: () => ({ inline_keyboard: [] }),
             });
@@ -1398,10 +1399,21 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
             );
             editor.setStatus(undefined);
             expect(
-                await waitFor(() => edits().includes('正文\n✽ Thinking...')),
-                `clearing brings the spinner back (got ${json(edits())})`
+                edits().at(-1) === `正文\n${DRAWING.text}`,
+                `clearing is lazy: the finished status is not replaced at once (got ${json(edits())})`
             );
+            expect(
+                await waitFor(() => edits().includes('正文\n✽ Thinking...')),
+                `the spinner comes back after the linger (got ${json(edits())})`
+            );
+            // A status that arrives while a cleared one lingers wins at once
+            editor.setStatus(DRAWING.text);
+            editor.setStatus(undefined);
             editor.setStatus('⚙ 正在调用 x…');
+            expect(
+                await waitFor(() => edits().includes('正文\n⚙ 正在调用 x…')),
+                `a new status replaces the lingering one at once (got ${json(edits())})`
+            );
             await editor.updateContent('最终答案', { isFinal: true });
             expect(edits().at(-1) === '最终答案', `the final render carries no status line (got ${json(edits().at(-1))})`);
             editor.stop();

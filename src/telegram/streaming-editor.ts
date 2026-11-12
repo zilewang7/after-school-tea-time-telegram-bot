@@ -46,6 +46,14 @@ const statusData: StatusEntry[] = [
 const STATUS_ROTATE_MS = 3000;
 
 /**
+ * How long a finished tool's status line stays before the spinner returns.
+ * Clearing it at once made the fast tools (workspace reads/writes run in
+ * milliseconds) flash by unseen; the line now lingers until this timer, a new
+ * status, or new content replaces it.
+ */
+const STATUS_LINGER_MS = 3_000;
+
+/**
  * Options for creating a StreamingEditor
  */
 export interface StreamingEditorOptions {
@@ -54,6 +62,8 @@ export interface StreamingEditorOptions {
     messageId: number;
     /** Base interval for idle status updates (default 2500ms) */
     idleInterval?: number;
+    /** How long a cleared tool status stays on screen (default 3000ms) */
+    statusLingerMs?: number;
     /** Callback for buttons during updates; undefined result = finalized */
     getButtons?: () => any;
     /** Initial content of the message (to skip identical first edits) */
@@ -132,13 +142,15 @@ interface EditorState {
     /** Link preview the latest content carries (kept by the status refreshes) */
     currentLinkPreview: LinkPreviewOptions | undefined;
     spinnerTimer: ReturnType<typeof setInterval> | null;
+    /** Pending lazy clear of a finished tool's status line */
+    statusClearTimer: ReturnType<typeof setTimeout> | null;
 }
 
 /**
  * Create a StreamingEditor instance
  */
 export const createStreamingEditor = (options: StreamingEditorOptions): StreamingEditor => {
-    const { api, chatId, messageId, idleInterval = 2500, getButtons, initialContent } = options;
+    const { api, chatId, messageId, idleInterval = 2500, statusLingerMs = STATUS_LINGER_MS, getButtons, initialContent } = options;
 
     const state: EditorState = {
         stopped: false,
@@ -149,6 +161,7 @@ export const createStreamingEditor = (options: StreamingEditorOptions): Streamin
         currentEntities: undefined,
         currentLinkPreview: undefined,
         spinnerTimer: null,
+        statusClearTimer: null,
     };
 
     if (initialContent) {
@@ -174,6 +187,14 @@ export const createStreamingEditor = (options: StreamingEditorOptions): Streamin
         if (state.spinnerTimer) {
             clearInterval(state.spinnerTimer);
             state.spinnerTimer = null;
+        }
+    };
+
+    /** Drop a pending lazy status clear; a new status or content superseded it */
+    const cancelStatusClear = (): void => {
+        if (state.statusClearTimer !== null) {
+            clearTimeout(state.statusClearTimer);
+            state.statusClearTimer = null;
         }
     };
 
@@ -219,6 +240,7 @@ export const createStreamingEditor = (options: StreamingEditorOptions): Streamin
             if (state.stopped && !opts?.isFinal) return false;
 
             if (opts?.isFinal) {
+                cancelStatusClear();
                 stopSpinner();
                 // Final: await actual delivery (sticky-retried by coordinator)
                 return submitEdit(api, chatId, messageId, content, {
@@ -255,7 +277,23 @@ export const createStreamingEditor = (options: StreamingEditorOptions): Streamin
         },
 
         setStatus: (statusText: string | undefined): void => {
-            if (state.stopped || statusText === state.statusOverride) return;
+            if (state.stopped) return;
+            // A status arriving while a finished one lingers supersedes it
+            if (state.statusClearTimer !== null) cancelStatusClear();
+            if (statusText === state.statusOverride) return;
+            if (statusText === undefined) {
+                // Clearing is lazy: the finished tool's line stays on screen a
+                // moment longer (fast tools would otherwise flash by unseen),
+                // then the spinner returns on its own.
+                state.statusClearTimer = setTimeout(() => {
+                    state.statusClearTimer = null;
+                    state.statusOverride = undefined;
+                    // The spinner resumes with a full interval rather than jumping a word
+                    state.lastStatusRotateTime = Date.now();
+                    submitStatusRefresh('spinner');
+                }, statusLingerMs);
+                return;
+            }
             state.statusOverride = statusText;
             // The spinner resumes with a full interval rather than jumping a word
             state.lastStatusRotateTime = Date.now();
@@ -265,6 +303,7 @@ export const createStreamingEditor = (options: StreamingEditorOptions): Streamin
 
         stop: (): void => {
             state.stopped = true;
+            cancelStatusClear();
             stopSpinner();
             // Drop stale streaming content; a final state usually follows
             discardPendingEdit(chatId, messageId);
@@ -274,6 +313,7 @@ export const createStreamingEditor = (options: StreamingEditorOptions): Streamin
 
         delete: async (): Promise<boolean> => {
             state.stopped = true;
+            cancelStatusClear();
             stopSpinner();
             dropMessageState(chatId, messageId);
 
