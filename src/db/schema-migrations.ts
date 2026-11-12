@@ -5,8 +5,30 @@ interface TableColumn {
   name: string;
 }
 
+/** The existing tables a migration adds columns to */
+type MigratedTable =
+  | 'message_attachments'
+  | 'link_preview_cache'
+  | 'media_cache'
+  | 'harness_issues'
+  | 'chat_settings'
+  | 'reply_metrics';
+
+/**
+ * Whether the table exists yet. Migrations run before sync, so on a fresh
+ * database a table defined by a model does not exist here; sync then creates
+ * it with every column, and the migration has nothing to add.
+ */
+const tableExists = async (tableName: MigratedTable, transaction: Transaction): Promise<boolean> => {
+  const tables = await sequelize.query<{ name: string }>(
+    "SELECT name FROM sqlite_master WHERE type = 'table' AND name = :tableName",
+    { type: QueryTypes.SELECT, replacements: { tableName }, transaction }
+  );
+  return tables.length > 0;
+};
+
 const tableColumns = async (
-  tableName: 'message_attachments' | 'link_preview_cache' | 'media_cache' | 'harness_issues' | 'chat_settings',
+  tableName: MigratedTable,
   transaction: Transaction
 ): Promise<Set<string>> => {
   const columns = await sequelize.query<TableColumn>(
@@ -17,7 +39,7 @@ const tableColumns = async (
 };
 
 const ensureColumn = async (
-  tableName: 'message_attachments' | 'link_preview_cache' | 'media_cache' | 'harness_issues' | 'chat_settings',
+  tableName: MigratedTable,
   columnName: string,
   definition: string,
   transaction: Transaction
@@ -194,6 +216,34 @@ const migrateChatSettingsToolOverrides = async (transaction: Transaction): Promi
 };
 
 /**
+ * The Gemini resume and Priority PayGo columns of reply_metrics: automatic
+ * round retries, the requested tier and the part served at the priority tier,
+ * and the checkpoint facts of a resume. All nullable (NULL = nothing to
+ * report), so old rows need no backfill and rolling the code back needs no
+ * schema change. A fresh database gets them from the model at sync time.
+ */
+const migrateReplyMetricsResumeColumns = async (transaction: Transaction): Promise<void> => {
+  if (!(await tableExists('reply_metrics', transaction))) return;
+  await ensureColumn('reply_metrics', 'roundRetries', 'INTEGER DEFAULT NULL', transaction);
+  await ensureColumn('reply_metrics', 'tierRequested', 'TEXT DEFAULT NULL', transaction);
+  await ensureColumn('reply_metrics', 'priorityRounds', 'INTEGER DEFAULT NULL', transaction);
+  await ensureColumn('reply_metrics', 'priorityPromptTokens', 'INTEGER DEFAULT NULL', transaction);
+  await ensureColumn('reply_metrics', 'priorityCachedTokens', 'INTEGER DEFAULT NULL', transaction);
+  await ensureColumn('reply_metrics', 'priorityOutputTokens', 'INTEGER DEFAULT NULL', transaction);
+  await ensureColumn('reply_metrics', 'resumedRounds', 'INTEGER DEFAULT NULL', transaction);
+  await ensureColumn('reply_metrics', 'checkpointRounds', 'INTEGER DEFAULT NULL', transaction);
+};
+
+/**
+ * The per-chat Priority PayGo switch: a nullable boolean (NULL = follow the
+ * global switch), stored as INTEGER like every sequelize BOOLEAN on sqlite.
+ */
+const migrateChatSettingsGeminiPriority = async (transaction: Transaction): Promise<void> => {
+  if (!(await tableExists('chat_settings', transaction))) return;
+  await ensureColumn('chat_settings', 'geminiPriority', 'INTEGER DEFAULT NULL', transaction);
+};
+
+/**
  * The share links of the control panel (design §6.1): one row per public
  * /s/<token> page. A system share (createdBy 0, source 'system') is the bot's
  * own link fallback in groups; user shares come from the panel.
@@ -303,6 +353,8 @@ export const runSchemaMigrations = async (): Promise<void> => {
     await migrateShareLinks(transaction);
     await migratePanelWebSessions(transaction);
     await migrateThinkingLinks(transaction);
+    await migrateReplyMetricsResumeColumns(transaction);
+    await migrateChatSettingsGeminiPriority(transaction);
     await sequelize.query(
       `INSERT OR IGNORE INTO schema_migrations (name, appliedAt)
        VALUES ('20260908_custom_emoji_phase1', :appliedAt)`,
@@ -371,6 +423,18 @@ export const runSchemaMigrations = async (): Promise<void> => {
     await sequelize.query(
       `INSERT OR IGNORE INTO schema_migrations (name, appliedAt)
        VALUES ('20261112_workspace_files', :appliedAt)`,
+      { replacements: { appliedAt: new Date().toISOString() }, transaction }
+    );
+    // reply_metrics gained the resume and Priority PayGo columns (migrateReplyMetricsResumeColumns)
+    await sequelize.query(
+      `INSERT OR IGNORE INTO schema_migrations (name, appliedAt)
+       VALUES ('20261112_reply_metrics_resume_priority', :appliedAt)`,
+      { replacements: { appliedAt: new Date().toISOString() }, transaction }
+    );
+    // chat_settings gained geminiPriority (migrateChatSettingsGeminiPriority)
+    await sequelize.query(
+      `INSERT OR IGNORE INTO schema_migrations (name, appliedAt)
+       VALUES ('20261112_chat_settings_gemini_priority', :appliedAt)`,
       { replacements: { appliedAt: new Date().toISOString() }, transaction }
     );
   });

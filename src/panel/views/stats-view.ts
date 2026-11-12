@@ -99,6 +99,11 @@ export interface CostGroupUsage {
     readonly unsplitImageOutputTokens: number;
     readonly imagesWithoutUsage: number;
     readonly imageRowsWithoutUsage: number;
+    /** Rounds served at the priority tier, and the priority part of the token sums above */
+    readonly priorityRounds: number;
+    readonly priorityPromptTokens: number;
+    readonly priorityCachedTokens: number;
+    readonly priorityOutputTokens: number;
 }
 
 /** One (model, route) group, design §6.5 */

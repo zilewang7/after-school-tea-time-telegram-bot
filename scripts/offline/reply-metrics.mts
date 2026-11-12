@@ -5,7 +5,10 @@
  * keeping the finished ones after a stop, a failed metrics write that never
  * blocks the finalize, the hourly cleanup leaving the table alone, and the
  * real handlers (chat reply, retry, /picgpt) wiring timings, context size and
- * usage through to the row.
+ * usage through to the row. Then the recovery, Priority PayGo and resume
+ * columns: automatic retries, the requested and served tier, the checkpoint
+ * facts of the draft, NULL when there was nothing, and the priority sums of
+ * the usage aggregate.
  *
  * Run: npx tsx scripts/offline/reply-metrics.mts
  */
@@ -86,13 +89,17 @@ const dbIndex = await import('../../src/db/index.js');
 const { sequelize } = await import('../../src/db/config.js');
 const responseHandler = await import('../../src/reply/response-handler.js');
 const { getActiveSession, listActiveSessions, startRetry } = await import('../../src/services/bot-message-service.js');
-const { markRequestStarted, recordContextSize } = await import('../../src/services/reply-metrics-draft.js');
+const { markRequestStarted, recordCheckpointRounds, recordContextSize, recordResumedRounds } = await import(
+    '../../src/services/reply-metrics-draft.js'
+);
 const { listRecentReplyErrors } = await import('../../src/services/recent-reply-errors.js');
 const { getLastCleanupRun } = await import('../../src/services/cleanup-status.js');
 const { createUsageSink } = await import('../../src/ai/usage/index.js');
 const { classifyErrorKind, summarizeErrorMessage } = await import('../../src/shared/error-kind.js');
 const { AppError } = await import('../../src/shared/errors.js');
-const { findReplyMetricsByReply, insertReplyMetric } = await import('../../src/db/queries/reply-metrics.js');
+const { aggregateUsageByModelRoute, findReplyMetricsByReply, insertReplyMetric } = await import(
+    '../../src/db/queries/reply-metrics.js'
+);
 const { listReplyMetricsByReply } = await import('../../src/panel/views/reply-metrics-view.js');
 const { clearExpiredData } = await import('../../src/db/autoSave.js');
 const { handleReply } = await import('../../src/reply/chat-handler.js');
@@ -102,6 +109,7 @@ const { OPENAI_IMAGE_MODEL } = await import('../../src/config/models.js');
 
 type ChatContext = import('../../src/reply/response-handler.js').ChatContext;
 type ReplyMetricRecord = import('../../src/db/queries/reply-metrics.js').ReplyMetricRecord;
+type ReplyMetricInput = import('../../src/db/queries/reply-metrics.js').ReplyMetricInput;
 type ContextIndexEntry = import('../../src/reply/context-index.js').ContextIndexEntry;
 
 const USER_ID = 5150;
@@ -175,6 +183,70 @@ const roundUsage = (promptTokens: number, outputTokens: number) => ({
     outputTokens,
     thoughtsTokens: null,
     imageOutputTokens: null,
+});
+
+/** The columns added for automatic recovery, Priority PayGo and resume */
+const recoveryColumnsOf = (row: ReplyMetricRecord | undefined) => ({
+    roundRetries: row?.roundRetries,
+    tierRequested: row?.tierRequested,
+    priorityRounds: row?.priorityRounds,
+    priorityPromptTokens: row?.priorityPromptTokens,
+    priorityCachedTokens: row?.priorityCachedTokens,
+    priorityOutputTokens: row?.priorityOutputTokens,
+    resumedRounds: row?.resumedRounds,
+    checkpointRounds: row?.checkpointRounds,
+});
+
+const NO_RECOVERY_COLUMNS = {
+    roundRetries: null,
+    tierRequested: null,
+    priorityRounds: null,
+    priorityPromptTokens: null,
+    priorityCachedTokens: null,
+    priorityOutputTokens: null,
+    resumedRounds: null,
+    checkpointRounds: null,
+};
+
+/** A stored row with every column given; tokens of one round with usage */
+const storedRow = (chatId: number, firstMessageId: number, fields: Partial<ReplyMetricInput>): ReplyMetricInput => ({
+    chatId,
+    userMessageId: firstMessageId - 1,
+    firstMessageId,
+    versionId: 1,
+    triggerUserId: null,
+    model: 'gemini-4-argon',
+    platform: 'gemini',
+    route: null,
+    commandType: 'chat',
+    isRetry: false,
+    startedAt: new Date(Date.now() - 60_000),
+    requestStartedAt: null,
+    firstChunkAt: null,
+    finishedAt: new Date(),
+    outcome: 'ok',
+    errorKind: null,
+    errorSummary: null,
+    rounds: 1,
+    toolCalls: 0,
+    toolFailures: 0,
+    toolUsage: [],
+    promptTokens: 1000,
+    cachedTokens: 400,
+    cacheWriteTokens: null,
+    outputTokens: 100,
+    thoughtsTokens: null,
+    imageOutputTokens: null,
+    contextMessages: 1,
+    contextImages: 0,
+    textChars: 1,
+    thinkingChars: 0,
+    hasImage: false,
+    imageCount: 0,
+    hasSticker: false,
+    hasFile: false,
+    ...NO_RECOVERY_COLUMNS,
+    ...fields,
 });
 
 const cases: { name: string; body: () => Promise<void> }[] = [
@@ -259,6 +331,10 @@ const cases: { name: string; body: () => Promise<void> }[] = [
                 `tool usage (got ${json(row.toolUsage)})`
             );
             expect(!row.hasImage && row.imageCount === 0 && !row.hasSticker && !row.hasFile, 'no attachment');
+            expect(
+                json(recoveryColumnsOf(row)) === json(NO_RECOVERY_COLUMNS),
+                `no retry, no priority, no checkpoint: every new column is NULL (got ${json(recoveryColumnsOf(row))})`
+            );
             expect(getActiveSession(chatContext.chatId, session.firstMessageId) === null, 'the session is gone');
         },
     },
@@ -471,6 +547,221 @@ const cases: { name: string; body: () => Promise<void> }[] = [
         },
     },
     {
+        name: 'recovery and priority: retried attempts, the requested tier and the priority rounds reach the row',
+        body: async () => {
+            const chatContext = await startReply(-1005100000012, { model: 'gemini-4-argon' });
+            const { session } = chatContext;
+            const { usage } = session.metrics;
+            markRequestStarted(session.metrics);
+            async function* stream(): AsyncGenerator<StreamChunk> {
+                usage.setTierRequested('priority');
+                // Round 1 was downgraded to the standard tier after one failed attempt
+                usage.addRecovery();
+                usage.addRound({ ...roundUsage(1000, 50), cachedTokens: 600 }, { servedTier: 'standard' });
+                // Round 2 was served at the priority tier after two failed attempts
+                usage.addRecovery();
+                usage.addRecovery();
+                usage.addRound({ ...roundUsage(1200, 80), cachedTokens: 900 }, { servedTier: 'priority' });
+                // Round 3: priority, without usage (still a round served)
+                usage.addRound(null, { servedTier: 'priority' });
+                yield { type: 'text', content: '好了' };
+                yield { type: 'done' };
+            }
+            await deliver(chatContext, stream());
+            const row = await onlyRow(chatContext);
+            expect(
+                json(recoveryColumnsOf(row)) ===
+                    json({
+                        roundRetries: 3,
+                        tierRequested: 'priority',
+                        priorityRounds: 2,
+                        priorityPromptTokens: 1200,
+                        priorityCachedTokens: 900,
+                        priorityOutputTokens: 80,
+                        resumedRounds: null,
+                        checkpointRounds: null,
+                    }),
+                `retries, tier and the priority part (got ${json(recoveryColumnsOf(row))})`
+            );
+            expect(
+                row.rounds === 3 && row.promptTokens === 2200 && row.cachedTokens === 1500 && row.outputTokens === 130,
+                `the totals still hold every round (got ${json(row)})`
+            );
+
+            const view = (await listReplyMetricsByReply(chatContext.chatId, session.firstMessageId, { access: 'observer' }))
+                .get(1)?.[0];
+            expect(
+                view?.roundRetries === 3 &&
+                    view.tierRequested === 'priority' &&
+                    view.priorityRounds === 2 &&
+                    view.priorityPromptTokens === 1200 &&
+                    view.priorityCachedTokens === 900 &&
+                    view.priorityOutputTokens === 80 &&
+                    view.resumedRounds === null &&
+                    view.checkpointRounds === null,
+                `the reply detail carries them (got ${json(view)})`
+            );
+        },
+    },
+    {
+        name: 'recovery and priority: NULL when there was nothing, and kept on a failed attempt',
+        body: async () => {
+            // Asked for priority, every round downgraded, no retry: only the tier is set
+            const downgraded = await startReply(-1005100000013, { model: 'gemini-4-argon' });
+            markRequestStarted(downgraded.session.metrics);
+            downgraded.session.metrics.usage.setTierRequested('priority');
+            downgraded.session.metrics.usage.addRound(roundUsage(500, 20), { servedTier: 'standard' });
+            async function* answer(): AsyncGenerator<StreamChunk> {
+                yield { type: 'text', content: '标准档' };
+                yield { type: 'done' };
+            }
+            await deliver(downgraded, answer());
+            const downgradedRow = await onlyRow(downgraded);
+            expect(
+                json(recoveryColumnsOf(downgradedRow)) === json({ ...NO_RECOVERY_COLUMNS, tierRequested: 'priority' }),
+                `no priority round: the four priority columns are NULL, roundRetries 0 is NULL (got ${json(recoveryColumnsOf(downgradedRow))})`
+            );
+
+            // The automatic retries gave up: the failed row still counts them
+            const failed = await startReply(-1005100000014, { model: 'gemini-4-argon' });
+            markRequestStarted(failed.session.metrics);
+            failed.session.metrics.usage.addRecovery();
+            failed.session.metrics.usage.addRecovery();
+            const rateLimited = Object.assign(new Error('429 Resource has been exhausted'), { status: 429 });
+            await capture(() => responseHandler.handleResponseError(failed, rateLimited));
+            const failedRow = await onlyRow(failed);
+            expect(
+                failedRow.outcome === 'error' &&
+                    failedRow.roundRetries === 2 &&
+                    failedRow.tierRequested === null &&
+                    failedRow.priorityRounds === null,
+                `the failed row keeps its retries (got ${json(recoveryColumnsOf(failedRow))})`
+            );
+        },
+    },
+    {
+        name: 'resume facts: the draft carries resumedRounds and checkpointRounds into the row',
+        body: async () => {
+            const resumed = await startReply(-1005100000015, { model: 'gemini-4-argon' });
+            expect(
+                resumed.session.metrics.resumedRounds === null && resumed.session.metrics.checkpointRounds === null,
+                'a new draft has neither'
+            );
+            recordResumedRounds(resumed.session.metrics, 4);
+            markRequestStarted(resumed.session.metrics);
+            async function* answer(): AsyncGenerator<StreamChunk> {
+                yield { type: 'text', content: '接着说' };
+                yield { type: 'done' };
+            }
+            await deliver(resumed, answer());
+            const resumedRow = await onlyRow(resumed);
+            expect(
+                resumedRow.resumedRounds === 4 && resumedRow.checkpointRounds === null && resumedRow.outcome === 'ok',
+                `a resumed attempt (got ${json(recoveryColumnsOf(resumedRow))})`
+            );
+
+            // A resume that failed again and saved a newer checkpoint
+            const failedAgain = await startReply(-1005100000016, { model: 'gemini-4-argon' });
+            recordResumedRounds(failedAgain.session.metrics, 2);
+            markRequestStarted(failedAgain.session.metrics);
+            recordCheckpointRounds(failedAgain.session.metrics, 5);
+            await capture(() => responseHandler.handleResponseError(failedAgain, new Error('got status: 500 INTERNAL')));
+            const failedRow = await onlyRow(failedAgain);
+            expect(
+                failedRow.outcome === 'error' && failedRow.resumedRounds === 2 && failedRow.checkpointRounds === 5,
+                `the failed resume keeps both (got ${json(recoveryColumnsOf(failedRow))})`
+            );
+
+            const stopped = await startReply(-1005100000017, { model: 'gemini-4-argon' });
+            markRequestStarted(stopped.session.metrics);
+            async function* stoppedStream(): AsyncGenerator<StreamChunk> {
+                yield { type: 'text', content: '第一轮' };
+                recordCheckpointRounds(stopped.session.metrics, 1);
+                stopped.session.streamController.abort();
+                yield { type: 'text', content: '不会出现' };
+            }
+            await deliver(stopped, stoppedStream());
+            const stoppedRow = await onlyRow(stopped);
+            expect(
+                stoppedRow.outcome === 'stopped' && stoppedRow.checkpointRounds === 1 && stoppedRow.resumedRounds === null,
+                `a stopped attempt with a checkpoint (got ${json(recoveryColumnsOf(stoppedRow))})`
+            );
+        },
+    },
+    {
+        name: 'the usage aggregate sums the priority part: rounds over every row, tokens over rows with usage',
+        body: async () => {
+            const chatId = -1005100000018;
+            const since = new Date(Date.now() - 3_600_000);
+            await insertReplyMetric(
+                storedRow(chatId, 9002, {
+                    tierRequested: 'priority',
+                    rounds: 2,
+                    priorityRounds: 1,
+                    priorityPromptTokens: 600,
+                    priorityCachedTokens: 300,
+                    priorityOutputTokens: 40,
+                })
+            );
+            await insertReplyMetric(
+                storedRow(chatId, 9004, {
+                    tierRequested: 'priority',
+                    priorityRounds: 1,
+                    priorityPromptTokens: 700,
+                    priorityCachedTokens: 0,
+                    priorityOutputTokens: 70,
+                })
+            );
+            // A row without usage: its priority round counts, its tokens do not
+            await insertReplyMetric(
+                storedRow(chatId, 9006, {
+                    promptTokens: null,
+                    outputTokens: null,
+                    cachedTokens: null,
+                    tierRequested: 'priority',
+                    priorityRounds: 1,
+                    priorityPromptTokens: 0,
+                    priorityCachedTokens: 0,
+                    priorityOutputTokens: 0,
+                })
+            );
+            // Not requested: the columns stay NULL and add nothing
+            await insertReplyMetric(storedRow(chatId, 9008, {}));
+            // Another model that never asked: its group sums to zeros
+            await insertReplyMetric(storedRow(chatId, 9010, { model: 'deepseek-flash', platform: 'deepseek' }));
+
+            const groups = await aggregateUsageByModelRoute({ since, chatId });
+            const group = groups.find((entry) => entry.model === 'gemini-4-argon');
+            const plainGroup = groups.find((entry) => entry.model === 'deepseek-flash');
+            expect(groups.length === 2, `one group per model (got ${groups.length})`);
+            expect(
+                group?.replies === 4 &&
+                    group.repliesWithUsage === 3 &&
+                    group.promptTokens === 3000 &&
+                    group.priorityRounds === 3 &&
+                    group.priorityPromptTokens === 1300 &&
+                    group.priorityCachedTokens === 300 &&
+                    group.priorityOutputTokens === 110,
+                `priority sums next to the totals (got ${json(group)})`
+            );
+
+            expect(
+                plainGroup !== undefined &&
+                    plainGroup.priorityRounds === 0 &&
+                    plainGroup.priorityPromptTokens === 0 &&
+                    plainGroup.priorityCachedTokens === 0 &&
+                    plainGroup.priorityOutputTokens === 0,
+                `a group without priority sums to zeros, never null (got ${json(plainGroup)})`
+            );
+
+            const detail = await listReplyMetricsByReply(chatId, 9006, { access: 'observer' });
+            expect(
+                detail.get(1)?.[0]?.priorityRounds === 1 && detail.get(1)?.[0]?.pricing === 'no_usage',
+                'the reply detail of the row without usage keeps its priority round'
+            );
+        },
+    },
+    {
         name: 'the hourly cleanup never touches reply_metrics, and records its summary for the status page',
         body: async () => {
             const chatId = -1005100000009;
@@ -511,6 +802,14 @@ const cases: { name: string; body: () => Promise<void> }[] = [
                 imageCount: 0,
                 hasSticker: false,
                 hasFile: false,
+                roundRetries: null,
+                tierRequested: null,
+                priorityRounds: null,
+                priorityPromptTokens: null,
+                priorityCachedTokens: null,
+                priorityOutputTokens: null,
+                resumedRounds: null,
+                checkpointRounds: null,
             });
             expect(getLastCleanupRun() === null, 'no cleanup has run yet');
             await capture(() => clearExpiredData());

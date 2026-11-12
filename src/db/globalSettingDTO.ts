@@ -10,8 +10,10 @@ import {
 import { sequelize } from './config.js';
 
 /**
- * Global key/value settings changed from the panel by the owner. Only
- * `defaultModel` exists today; a missing row means the env value applies.
+ * Global key/value settings changed from the panel by the owner. A missing row
+ * means the default applies:
+ * - defaultModel: a model id; missing = the env value
+ * - defaultGeminiPriority: 'true' / 'false'; missing = off
  * Held in memory by chat-settings-service, its only writer.
  */
 export class GlobalSetting extends Model<

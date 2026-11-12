@@ -17,6 +17,7 @@ import { sequelize } from './config.js';
  * - model / defaultModel: the model id; NULL = follow global / back to env
  * - promptAddendum / note: the full text or NULL
  * - paused / settingsLocked: 'true' / 'false'
+ * - geminiPriority / defaultGeminiPriority: 'true' / 'false'; NULL = not set
  * - exclude / include: newValue = canonical messageId
  * - link: newValue = JSON { rootId, linkMessageIds, attachedRoots }
  * - create: newValue = JSON { chatId, kind, title }
@@ -30,8 +31,8 @@ export class SettingsAudit extends Model<
   declare actorId: number;
   // chat:<chatId> | global | issue:<issueId>
   declare scope: string;
-  // model | promptAddendum | paused | settingsLocked | exclude | include | link
-  // | defaultModel | create | status | note
+  // model | promptAddendum | paused | settingsLocked | toolOverrides | geminiPriority
+  // | exclude | include | link | defaultModel | defaultGeminiPriority | create | status | note
   declare key: string;
   declare oldValue: CreationOptional<string | null>;
   declare newValue: CreationOptional<string | null>;

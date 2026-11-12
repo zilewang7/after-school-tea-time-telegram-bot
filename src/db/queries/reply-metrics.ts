@@ -17,9 +17,11 @@ import {
 
 export {
     REPLY_OUTCOMES,
+    REQUESTED_TIERS,
     type ReplyMetricInput,
     type ReplyMetricRecord,
     type ReplyOutcome,
+    type RequestedTier,
     type ToolUsageEntry,
 } from './reply-metric-rows.js';
 
@@ -54,6 +56,12 @@ export interface UsageGroupRow {
     /** Images of rows without usage: priced per image where the model has a per-image price */
     readonly imagesWithoutUsage: number;
     readonly imageRowsWithoutUsage: number;
+    /** Rounds served at the priority tier, over every row of the group */
+    readonly priorityRounds: number;
+    /** The priority-tier part of the token sums above, over the same rows (those with usage) */
+    readonly priorityPromptTokens: number;
+    readonly priorityCachedTokens: number;
+    readonly priorityOutputTokens: number;
 }
 
 export const insertReplyMetric = async (input: ReplyMetricInput): Promise<void> => {
@@ -124,6 +132,10 @@ const toUsageGroupRow = (row: unknown): UsageGroupRow | null => {
         unsplitImageOutputTokens: field('unsplitImageOutputTokens'),
         imagesWithoutUsage: field('imagesWithoutUsage'),
         imageRowsWithoutUsage: field('imageRowsWithoutUsage'),
+        priorityRounds: field('priorityRounds'),
+        priorityPromptTokens: field('priorityPromptTokens'),
+        priorityCachedTokens: field('priorityCachedTokens'),
+        priorityOutputTokens: field('priorityOutputTokens'),
     };
 };
 
@@ -142,7 +154,11 @@ export const aggregateUsageByModelRoute = async (window: MetricWindow): Promise<
                 COALESCE(SUM(CASE WHEN hasUsage AND imageOutputTokens IS NULL AND imageCount > 0
                                   THEN outputTokens END), 0)                       AS unsplitImageOutputTokens,
                 SUM(CASE WHEN NOT hasUsage THEN imageCount ELSE 0 END)             AS imagesWithoutUsage,
-                SUM(CASE WHEN NOT hasUsage AND imageCount > 0 THEN 1 ELSE 0 END)   AS imageRowsWithoutUsage
+                SUM(CASE WHEN NOT hasUsage AND imageCount > 0 THEN 1 ELSE 0 END)   AS imageRowsWithoutUsage,
+                COALESCE(SUM(priorityRounds), 0)                                   AS priorityRounds,
+                COALESCE(SUM(CASE WHEN hasUsage THEN priorityPromptTokens END), 0) AS priorityPromptTokens,
+                COALESCE(SUM(CASE WHEN hasUsage THEN priorityCachedTokens END), 0) AS priorityCachedTokens,
+                COALESCE(SUM(CASE WHEN hasUsage THEN priorityOutputTokens END), 0) AS priorityOutputTokens
          FROM (SELECT *, (promptTokens IS NOT NULL AND outputTokens IS NOT NULL) AS hasUsage
                FROM reply_metrics
                WHERE ${windowCondition(window)})

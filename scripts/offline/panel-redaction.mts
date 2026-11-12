@@ -396,6 +396,14 @@ const cases: { name: string; body: () => Promise<void> }[] = [
                 imageCount: 0,
                 hasSticker: false,
                 hasFile: false,
+                roundRetries: null,
+                tierRequested: null,
+                priorityRounds: null,
+                priorityPromptTokens: null,
+                priorityCachedTokens: null,
+                priorityOutputTokens: null,
+                resumedRounds: null,
+                checkpointRounds: null,
             });
 
             const observed = await jsonOf(await call(`/api/chats/${GROUP}/replies/${replyId}`, OWNER));

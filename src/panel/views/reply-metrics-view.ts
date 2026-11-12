@@ -7,7 +7,12 @@
  *
  * Units: times ISO, durations milliseconds, cost USD at list price.
  */
-import type { ReplyMetricRecord, ReplyOutcome, ToolUsageEntry } from '../../db/queries/reply-metrics.js';
+import type {
+    ReplyMetricRecord,
+    ReplyOutcome,
+    RequestedTier,
+    ToolUsageEntry,
+} from '../../db/queries/reply-metrics.js';
 import { findReplyMetricsByReply, type UsageGroupRow } from '../../db/queries/reply-metrics.js';
 import type { ErrorKind } from '../../shared/error-kind.js';
 import { priceUsageGroup, type PricingFlag } from '../stats/cost-estimate.js';
@@ -52,6 +57,19 @@ export interface ReplyMetricView {
     readonly imageCount: number;
     readonly hasSticker: boolean;
     readonly hasFile: boolean;
+    /** Failed round attempts retried automatically; null when none was */
+    readonly roundRetries: number | null;
+    /** 'priority' when the Priority PayGo header went out; null otherwise */
+    readonly tierRequested: RequestedTier | null;
+    /** Rounds served at the priority tier and their tokens; null when none was */
+    readonly priorityRounds: number | null;
+    readonly priorityPromptTokens: number | null;
+    readonly priorityCachedTokens: number | null;
+    readonly priorityOutputTokens: number | null;
+    /** Rounds carried over from a checkpoint; null when the attempt is not a resume */
+    readonly resumedRounds: number | null;
+    /** Rounds the checkpoint saved when this attempt failed or stopped; null when none was saved */
+    readonly checkpointRounds: number | null;
     /** This attempt alone, priced like the statistics; null when unpriced or without usage */
     readonly costUsd: number | null;
     readonly pricing: PricingFlag;
@@ -84,6 +102,11 @@ const asUsageGroup = (row: ReplyMetricRecord): UsageGroupRow => {
             withUsage && row.imageOutputTokens === null && row.imageCount > 0 ? row.outputTokens ?? 0 : 0,
         imagesWithoutUsage: withUsage ? 0 : row.imageCount,
         imageRowsWithoutUsage: !withUsage && row.imageCount > 0 ? 1 : 0,
+        // Same rules as the SQL aggregate: rounds always, tokens only with usage
+        priorityRounds: row.priorityRounds ?? 0,
+        priorityPromptTokens: tokens(row.priorityPromptTokens),
+        priorityCachedTokens: tokens(row.priorityCachedTokens),
+        priorityOutputTokens: tokens(row.priorityOutputTokens),
     };
 };
 
@@ -124,6 +147,14 @@ export const toReplyMetricView = (row: ReplyMetricRecord): ReplyMetricView => {
         imageCount: row.imageCount,
         hasSticker: row.hasSticker,
         hasFile: row.hasFile,
+        roundRetries: row.roundRetries,
+        tierRequested: row.tierRequested,
+        priorityRounds: row.priorityRounds,
+        priorityPromptTokens: row.priorityPromptTokens,
+        priorityCachedTokens: row.priorityCachedTokens,
+        priorityOutputTokens: row.priorityOutputTokens,
+        resumedRounds: row.resumedRounds,
+        checkpointRounds: row.checkpointRounds,
         costUsd: roundUsd(priced.costUsd),
         pricing: priced.pricing,
     };
