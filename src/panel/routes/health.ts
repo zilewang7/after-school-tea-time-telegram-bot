@@ -3,6 +3,7 @@
  */
 import type { Hono } from 'hono';
 import { isChatSettingsCacheLoaded } from '../../services/chat-settings-service.js';
+import { countResumableReplies } from '../../state.js';
 import type { PanelEnv } from '../context.js';
 
 export interface HealthInfo {
@@ -18,6 +19,8 @@ export const registerHealthRoute = (app: Hono<PanelEnv>, info: HealthInfo): void
             startedAt: info.startedAt.toISOString(),
             version: info.version,
             settingsLoaded: isChatSettingsCacheLoaded(),
+            // Kept checkpoints live in memory: a restart drops them (design D3)
+            resumableReplies: countResumableReplies(),
         })
     );
 };

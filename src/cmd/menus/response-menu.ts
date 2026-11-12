@@ -20,7 +20,12 @@ import {
     refreshToFinalState,
 } from '../../services/index.js';
 import { isCallbackChatPaused, PAUSED_CALLBACK_NOTICE } from '../../reply/chat-pause.js';
-import { isReplyRerunClaimed, releaseReplyRerun, tryClaimReplyRerun } from '../../state.js';
+import {
+    isReplyRerunClaimed,
+    releaseReplyRerun,
+    showsResumableVersion,
+    tryClaimReplyRerun,
+} from '../../state.js';
 
 // Callback data prefix for our buttons
 const CALLBACK_PREFIX = 'resp:';
@@ -66,7 +71,9 @@ const refreshButtonsToCurrent = async (
     const currentIndex = response.currentVersionIndex;
     const buttonState = response.buttonState;
 
-    const buttons = buildResponseButtons(buttonState, currentIndex, versions.length);
+    const buttons = buildResponseButtons(buttonState, currentIndex, versions.length, {
+        resumable: showsResumableVersion(response.chatId, response.messageId, versions, currentIndex),
+    });
     const [err] = await to(
         ctx.api.editMessageReplyMarkup(ctx.callbackQuery!.message!.chat.id, messageId, {
             reply_markup: buttons,
@@ -364,6 +371,21 @@ const handleNext = async (ctx: Context): Promise<void> => {
     });
 };
 
+export interface ResponseButtonOptions {
+    /**
+     * The version on screen is a failed or stopped latest version whose
+     * checkpoint is kept: offer "继续" next to "重试"
+     */
+    readonly resumable?: boolean;
+}
+
+/** "继续" in front of the rest of the row, when the version can be continued */
+const keyboardStartingWithContinue = (resumable: boolean): InlineKeyboard => {
+    const keyboard = new InlineKeyboard();
+    if (resumable) keyboard.text('继续', `${CALLBACK_PREFIX}continue`);
+    return keyboard;
+};
+
 /**
  * Build InlineKeyboard based on button state
  * Uses simple callback_data format: resp:action
@@ -371,23 +393,30 @@ const handleNext = async (ctx: Context): Promise<void> => {
 export const buildResponseButtons = (
     buttonState: ButtonState,
     currentVersionIndex: number = 0,
-    totalVersions: number = 1
+    totalVersions: number = 1,
+    options: ResponseButtonOptions = {}
 ): InlineKeyboard | undefined => {
+    const resumable = options.resumable === true;
     return match(buttonState)
         .with(ButtonState.PROCESSING, () =>
             new InlineKeyboard().text('停止', `${CALLBACK_PREFIX}stop`)
         )
         .with(ButtonState.RETRY_ONLY, () =>
-            new InlineKeyboard().text('重试', `${CALLBACK_PREFIX}retry`)
+            keyboardStartingWithContinue(resumable).text('重试', `${CALLBACK_PREFIX}retry`)
         )
+        // An edit does not block continuing (D11): the user picks either
         .with(ButtonState.EDIT_DETECTED, () =>
-            new InlineKeyboard().text('检测到用户编辑，是否重试', `${CALLBACK_PREFIX}retry`)
+            keyboardStartingWithContinue(resumable).text('检测到用户编辑，是否重试', `${CALLBACK_PREFIX}retry`)
         )
         .with(ButtonState.HAS_VERSIONS, () => {
             const kb = new InlineKeyboard();
 
             if (currentVersionIndex > 0) {
                 kb.text('<', `${CALLBACK_PREFIX}prev`);
+            }
+
+            if (resumable) {
+                kb.text('继续', `${CALLBACK_PREFIX}continue`);
             }
 
             kb.text('重试', `${CALLBACK_PREFIX}retry`);

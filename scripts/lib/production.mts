@@ -109,6 +109,8 @@ export interface LiveHealth {
     /** Short commit hash of the running build; null when the bot could not tell */
     version: string | null;
     startedAt: string | null;
+    /** Replies "继续" can pick up right now; null from a build that does not report it */
+    resumableReplies: number | null;
 }
 
 /** What the running bot reports about itself; null while it is not answering */
@@ -125,6 +127,7 @@ export const readLiveHealth = (): LiveHealth | null => {
         return {
             version: typeof body.version === 'string' ? body.version : null,
             startedAt: typeof body.startedAt === 'string' ? body.startedAt : null,
+            resumableReplies: typeof body.resumableReplies === 'number' ? body.resumableReplies : null,
         };
     } catch {
         return null;

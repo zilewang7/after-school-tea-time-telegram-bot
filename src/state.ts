@@ -38,6 +38,16 @@ interface AppStateType {
     // replies a retry or continue is starting or running for:
     // "chatId:firstMessageId" -> claimed-at (ms)
     replyRerunClaims: Map<string, number>;
+    // replies "继续" can pick up: "chatId:firstMessageId" -> version and expiry
+    resumableMarks: Map<string, ResumableMark>;
+}
+
+/** Which version of a reply can be continued from its checkpoint, and until when */
+export interface ResumableMark {
+    /** The failed or stopped version a continue picks up */
+    readonly versionId: number;
+    /** Epoch ms; the mark no longer counts from this moment on */
+    readonly expiresAt: number;
 }
 
 const createInitialState = (): AppStateType => ({
@@ -56,6 +66,7 @@ const createInitialState = (): AppStateType => ({
     repliesInFlight: new Map(),
     botRepliesInFlight: new Map(),
     replyRerunClaims: new Map(),
+    resumableMarks: new Map(),
 });
 
 // singleton instance
@@ -439,3 +450,70 @@ export const releaseReplyRerun = (chatId: number, firstMessageId: number): void 
 /** Whether a retry or continue of this reply is being started or running right now */
 export const isReplyRerunClaimed = (chatId: number, firstMessageId: number): boolean =>
     getAppState().replyRerunClaims.has(`${chatId}:${firstMessageId}`);
+
+// Resumable marks
+// The single truth of whether a reply can be continued. The checkpoint itself
+// lives in the reply layer, which the services layer cannot import: so every
+// finalization clears the reply's mark here, the reply layer sets it again
+// after a failed or stopped finalization kept a checkpoint, and the checkpoint
+// registry hands nothing out whose mark is gone. Expired marks are ignored when
+// read, like the in-flight marks.
+
+const resumableKey = (chatId: number, firstMessageId: number): string => `${chatId}:${firstMessageId}`;
+
+/** This version of the reply can be continued until `mark.expiresAt` */
+export const markReplyResumable = (chatId: number, firstMessageId: number, mark: ResumableMark): void => {
+    getAppState().resumableMarks.set(resumableKey(chatId, firstMessageId), mark);
+};
+
+/**
+ * The reply can no longer be continued. With `versionId`, only a mark on that
+ * version is cleared: a newer one belongs to a later failure.
+ */
+export const clearReplyResumable = (chatId: number, firstMessageId: number, versionId?: number): void => {
+    const marks = getAppState().resumableMarks;
+    const key = resumableKey(chatId, firstMessageId);
+    if (versionId !== undefined && marks.get(key)?.versionId !== versionId) return;
+    marks.delete(key);
+};
+
+/** The reply's mark while it still counts; an expired one is dropped */
+export const resumableMarkOf = (
+    chatId: number,
+    firstMessageId: number,
+    now: number = Date.now()
+): ResumableMark | undefined => {
+    const marks = getAppState().resumableMarks;
+    const key = resumableKey(chatId, firstMessageId);
+    const mark = marks.get(key);
+    if (mark === undefined) return undefined;
+    if (now >= mark.expiresAt) {
+        marks.delete(key);
+        return undefined;
+    }
+    return mark;
+};
+
+/** How many replies can be continued right now (what a restart would drop) */
+export const countResumableReplies = (now: number = Date.now()): number => {
+    const marks = getAppState().resumableMarks;
+    for (const [key, mark] of marks) {
+        if (now >= mark.expiresAt) marks.delete(key);
+    }
+    return marks.size;
+};
+
+/**
+ * Whether a reply's buttons offer "继续": only while the version on screen is
+ * the marked one and also the latest version of the reply.
+ */
+export const showsResumableVersion = (
+    chatId: number,
+    firstMessageId: number,
+    versions: readonly { readonly versionId: number }[],
+    shownIndex: number
+): boolean => {
+    const mark = resumableMarkOf(chatId, firstMessageId);
+    if (mark === undefined || shownIndex !== versions.length - 1) return false;
+    return versions[shownIndex]?.versionId === mark.versionId;
+};
