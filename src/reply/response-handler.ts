@@ -1549,12 +1549,16 @@ export const handleResponseError = async (
 
     if (isAborted) {
         // Treat abort as normal stop, not error
-        // Build response from current state
+        // Build response from current state; the attachments earlier tool
+        // rounds buffered go out with it, as on the normal stop path
         const response = {
             text: chatContext.currentState?.textBuffer || '',
             thinkingText: chatContext.currentState?.thinkingBuffer || '',
             images: chatContext.currentState?.images || [],
             imageCaption: chatContext.currentState?.imageCaption,
+            stickers: chatContext.currentState?.stickers ?? [],
+            files: chatContext.currentState?.files ?? [],
+            widgets: chatContext.currentState?.widgets ?? [],
             groundingData: chatContext.currentState?.groundingData || [],
             agentStats: chatContext.currentState?.agentStats,
             modelParts: chatContext.currentState?.modelParts,
