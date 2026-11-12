@@ -21,6 +21,7 @@ const { listSettingsAudit } = await import('../../src/db/queries/settings-audit.
 const {
     chatGeminiPriorityOptionsOf,
     effectiveGeminiPriorityOf,
+    GEMINI_PRIORITY_APPLIES_HINT,
     GEMINI_PRIORITY_NOT_ALLOWED_HINT,
 } = await import('../../webapp/src/gemini-priority.ts');
 const { auditKeyLabel, formatAuditValue } = await import('../../webapp/src/format.ts');
@@ -127,6 +128,15 @@ results.push(
         expect(
             chatGeminiPriorityOptionsOf(true, true, null)[0]?.label === '跟随全局（当前 开）',
             'the first chip names the global value (on)'
+        );
+    })
+);
+
+results.push(
+    await runCase('the chat page says which replies the switch reaches: Gemini text models on Vertex, not trial turns', async () => {
+        expect(
+            ['Vertex', 'Gemini', '文字模型', '试用用户'].every((term) => GEMINI_PRIORITY_APPLIES_HINT.includes(term)),
+            `the hint names the lane, the models and the trial exception (${GEMINI_PRIORITY_APPLIES_HINT})`
         );
     })
 );
