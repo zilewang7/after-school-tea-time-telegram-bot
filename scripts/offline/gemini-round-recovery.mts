@@ -507,6 +507,10 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
                 recoverLines(exhausted.lines).at(-1)?.includes('round=1 gave up after 4 attempts: kind_limit (phase=open kind=rate_limit)') === true,
                 `giving up is logged (got ${json(recoverLines(exhausted.lines))})`
             );
+            expect(
+                statusTexts(exhausted.chunks).at(-1) === '(clear)',
+                `the retry status is cleared before the error (got ${json(statusTexts(exhausted.chunks))})`
+            );
 
             const hang: ScriptedReply = { status: 0, contentType: 'text/event-stream', body: '', hangUntilAborted: true };
             reset([hang, hang, hang, answer('never sent')]);

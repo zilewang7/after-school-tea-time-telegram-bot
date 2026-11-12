@@ -208,6 +208,8 @@ export async function* runRecoverableRound(
             if (decision.reason !== 'stopped') {
                 console.warn(formatGiveUpLine(facts, decision.reason, failure.error));
             }
+            // The error line replaces the retry status, which must not linger
+            if (statusShown) yield clearedStatus();
             // The last error as it was thrown: its kind and wording reach the user unchanged
             throw failure.error;
         }
