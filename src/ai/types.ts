@@ -260,6 +260,12 @@ export interface PlatformConfig {
     imageOutput?: ImageOutputOptions;
     /** The reply's usage collector: the platform reports each round as it finishes */
     usageSink?: UsageSink;
+    /**
+     * Ask for Vertex Priority PayGo (served at the priority tier when there is
+     * capacity, silently at the standard tier otherwise). Only Gemini on our
+     * own Vertex reads it; every other lane ignores the field.
+     */
+    serviceTier?: 'priority';
 }
 
 // Model capabilities

@@ -2,7 +2,12 @@
  * The per-reply usage collector. A field stays null until some round reports
  * it, then it is the sum of what the rounds reported.
  */
-import type { ReplyUsageTotals, RoundUsage, UsageSink } from './usage-types.js';
+import type {
+    PriorityUsageTotals,
+    ReplyUsageTotals,
+    RoundUsage,
+    UsageSink,
+} from './usage-types.js';
 
 type UsageField = keyof RoundUsage;
 
@@ -31,10 +36,22 @@ export const createUsageSink = (): UsageSink => {
     };
     let rounds = 0;
     let route: string | null = null;
+    let roundRetries = 0;
+    let tierRequested: 'priority' | null = null;
+    let priority: PriorityUsageTotals | null = null;
 
     return {
-        addRound: (usage) => {
+        addRound: (usage, meta) => {
             rounds += 1;
+            if (meta?.servedTier === 'priority') {
+                // A priority round without usage still counts as a round served
+                priority = {
+                    rounds: (priority?.rounds ?? 0) + 1,
+                    promptTokens: (priority?.promptTokens ?? 0) + (usage?.promptTokens ?? 0),
+                    cachedTokens: (priority?.cachedTokens ?? 0) + (usage?.cachedTokens ?? 0),
+                    outputTokens: (priority?.outputTokens ?? 0) + (usage?.outputTokens ?? 0),
+                };
+            }
             if (usage === null) return;
             for (const field of USAGE_FIELDS) {
                 sums[field] = addCount(sums[field], usage[field]);
@@ -43,6 +60,12 @@ export const createUsageSink = (): UsageSink => {
         setRoute: (lane) => {
             route = lane;
         },
-        totals: (): ReplyUsageTotals => ({ ...sums, rounds, route }),
+        addRecovery: () => {
+            roundRetries += 1;
+        },
+        setTierRequested: (tier) => {
+            tierRequested = tier;
+        },
+        totals: (): ReplyUsageTotals => ({ ...sums, rounds, route, roundRetries, tierRequested, priority }),
     };
 };

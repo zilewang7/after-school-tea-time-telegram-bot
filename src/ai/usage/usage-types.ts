@@ -20,12 +20,39 @@ export interface RoundUsage {
     readonly imageOutputTokens: number | null;
 }
 
+/**
+ * The tier a round was actually served at (Vertex `usageMetadata.trafficType`).
+ * A priority request is silently downgraded when there is no capacity, so
+ * this is what gets billed, not what was asked for.
+ */
+export type ServedTier = 'standard' | 'priority';
+
+/** Facts about a finished round that are not counts to add up */
+export interface RoundMeta {
+    readonly servedTier?: ServedTier;
+}
+
+/** The part of a reply's usage that was served at the priority tier */
+export interface PriorityUsageTotals {
+    readonly rounds: number;
+    readonly promptTokens: number;
+    readonly cachedTokens: number;
+    /** Reasoning included, as in RoundUsage */
+    readonly outputTokens: number;
+}
+
 /** A whole reply: every round added up */
 export interface ReplyUsageTotals extends RoundUsage {
     /** Rounds reported, with or without usage */
     readonly rounds: number;
     /** The lane that served the reply (Gemini); null elsewhere */
     readonly route: string | null;
+    /** Failed round attempts that were retried automatically */
+    readonly roundRetries: number;
+    /** 'priority' when the Priority PayGo header went out with the requests; null otherwise */
+    readonly tierRequested: 'priority' | null;
+    /** What the rounds served at the priority tier add up to; null when none was */
+    readonly priority: PriorityUsageTotals | null;
 }
 
 /**
@@ -35,8 +62,12 @@ export interface ReplyUsageTotals extends RoundUsage {
  */
 export interface UsageSink {
     /** One finished round; null when it carried no usage */
-    addRound(usage: RoundUsage | null): void;
+    addRound(usage: RoundUsage | null, meta?: RoundMeta): void;
     /** The lane the platform routed the reply to */
     setRoute(route: string | null): void;
+    /** One failed round attempt is being retried automatically */
+    addRecovery(): void;
+    /** The platform attached the Priority PayGo request header */
+    setTierRequested(tier: 'priority'): void;
     totals(): ReplyUsageTotals;
 }
