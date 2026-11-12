@@ -16,7 +16,7 @@ export const modelConfigs: ModelConfig[] = [
     { id: "gpt-6-astra", name: "gpt-6-astra" },
     { id: "claude-sonnet-5", name: "claude-sonnet-5" },
     { id: "claude-opus-5-5", name: "claude-opus-5-5" },
-    { id: "gemini-3.8-flash", name: "gemini-3.8-flash" },
+    { id: "gemini-4-hydrogen", name: "gemini-4-hydrogen" },
     { id: "gemini-4-argon", name: "gemini-4-argon" },
     { id: "gemini-4-carbon", name: "gemini-4-carbon" },
     { id: "deepseek-flash", name: "deepseek-flash" },

@@ -63,7 +63,17 @@ export const MODEL_PRICES: Readonly<Record<string, ModelPrice>> = {
         sourceUrl: ANTHROPIC_PRICING,
         checkedOn: '2026-11-07',
     },
-    // Promotional through 2026-12-31; from 2027-01-01: 1.50 / 0.15 / 7.50
+    // Vertex has not published a price for Hydrogen yet (2026-11-12): this is
+    // the 3.8 Flash promotional price, kept until the official number exists
+    'gemini-4-hydrogen': {
+        inputPerM: 0.75,
+        cachedInputPerM: 0.075,
+        outputPerM: 3.75,
+        sourceUrl: GEMINI_PRICING,
+        checkedOn: '2026-11-12',
+    },
+    // No longer offered; replies made before the switch still estimate at this
+    // price (promotional through 2026-12-31; from 2027-01-01: 1.50 / 0.15 / 7.50)
     'gemini-3.8-flash': {
         inputPerM: 0.75,
         cachedInputPerM: 0.075,

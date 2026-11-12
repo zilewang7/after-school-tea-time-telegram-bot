@@ -21,6 +21,9 @@ export const AccessStatusCard = ({ application, trialModel }: AccessStatusCardPr
                     <p className="hint">
                         你当前是体验用户：模型固定为 {trialModel}，MCP 外部工具与付费生图不可用。
                     </p>
+                    <p className="hint">
+                        完整功能仅限机主、机主群聊的成员和已通过准入的用户；如果你在机主的群聊里，权限会自动恢复，无需申请。
+                    </p>
                 </>
             ))
             .with({ status: 'pending' }, ({ createdAt }) => (

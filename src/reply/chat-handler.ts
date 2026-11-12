@@ -276,11 +276,12 @@ export const handleReply = async (
     const userMessageId = ctx.message.message_id;
     // Taken once: a settings change during the media wait or the stream only
     // affects later replies. The trigger user decides the tier and, for a trial
-    // user, replaces the chat's model with the cheap one (design D1-B/D2).
+    // user, replaces the chat's model with the cheap one (design D1-C/D2).
     const settings = snapshotReplySettings(chatId);
-    const triggerAccess = resolveTriggerAccess(
+    const triggerAccess = await resolveTriggerAccess(
         ctx.from?.id ?? null,
-        ctx.from ? formatUserDisplayName({ firstName: ctx.from.first_name, lastName: ctx.from.last_name }) : null
+        ctx.from ? formatUserDisplayName({ firstName: ctx.from.first_name, lastName: ctx.from.last_name }) : null,
+        chatId
     );
     const access = triggerAccess.tier;
     const model = effectiveReplyModel(access, settings.model);
@@ -439,7 +440,7 @@ export const registerChatHandler = (bot: Bot): void => {
                     // media wait (the paid commands would never run anyway)
                     const generationCommand = generationCommandName(text);
                     if (generationCommand !== null) {
-                        const access = resolveAccessTier(ctx.from?.id ?? null);
+                        const access = await resolveAccessTier(ctx.from?.id ?? null, ctx.chat?.id ?? null);
                         if (await refuseTrialGeneration(ctx, access, generationCommand)) return;
                     }
                     // These read reference images during the check, so wait for

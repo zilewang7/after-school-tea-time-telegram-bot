@@ -6,8 +6,8 @@
 import type { Hono } from 'hono';
 import { resolveChatModel } from '../../config/chat-model.js';
 import { chatAuditScope, listSettingsAudit } from '../../db/queries/settings-audit.js';
-import { resolveAccessTier } from '../../services/access-tier.js';
 import { getGlobalDefaultModel } from '../../services/chat-settings-service.js';
+import { resolvePanelAccessTier } from '../access/panel-tier.js';
 import { requireChatAccess } from '../access/require-access.js';
 import { requireAuth, type PanelEnv } from '../context.js';
 import { parseChatId } from '../request.js';
@@ -29,13 +29,14 @@ export const registerChatRoutes = (app: Hono<PanelEnv>): void => {
         const recentAudit = await listSettingsAudit({ scope: chatAuditScope(chatId), limit: RECENT_AUDIT_LIMIT });
         const recentAuditViews = await toAuditEntryViews(recentAudit);
         const summary = await buildChatSummary(chatId, new Date());
+        const tier = await resolvePanelAccessTier(auth);
 
         return context.json({
             chat: toChatHeaderView(chat, access),
             settings: toSettingsView(settings),
             effectiveModel,
             globalDefaultModel: getGlobalDefaultModel(),
-            tools: buildToolMatrix(effectiveModel, chatId, settings.toolOverrides, resolveAccessTier(auth.user.id)),
+            tools: buildToolMatrix(effectiveModel, chatId, settings.toolOverrides, tier),
             summary,
             recentAudit: recentAuditViews.map(withoutScope),
         });

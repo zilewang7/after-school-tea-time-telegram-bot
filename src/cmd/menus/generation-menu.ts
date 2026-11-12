@@ -104,7 +104,7 @@ export const registerGenerationCallbacks = (bot: Bot): void => {
 
         // A reroll/retry/rewrite starts a new generation: a trial user may not
         // run the comfy commands in the first place (design D3)
-        if (generatesAgain(callback.action) && resolveAccessTier(ctx.from?.id ?? null) === 'trial') {
+        if (generatesAgain(callback.action) && (await resolveAccessTier(ctx.from?.id ?? null, ctx.chat?.id ?? null)) === 'trial') {
             await ctx.answerCallbackQuery({ text: TRIAL_CALLBACK_REFUSAL_TEXT });
             return;
         }

@@ -19,7 +19,6 @@ import {
     notifyApplicantOfRevoke,
     notifyOwnerOfApplication,
 } from '../../services/access-application-notify.js';
-import { resolveAccessTier } from '../../services/access-tier.js';
 import { isUserAdmitted } from '../../services/user-access-cache.js';
 import {
     AccessApplicationError,
@@ -31,6 +30,7 @@ import {
     revokeUserAccess,
     type AccessApplicationErrorCode,
 } from '../../services/user-access-service.js';
+import { resolvePanelAccessTier } from '../access/panel-tier.js';
 import { requireAuth, requireOwner, type PanelEnv } from '../context.js';
 import { PanelError, type PanelErrorCode } from '../errors.js';
 import { readJsonObject } from '../request.js';
@@ -82,7 +82,8 @@ export const registerAccessApplicationRoutes = (app: Hono<PanelEnv>, deps: Acces
         const body = await readJsonObject(context);
         const fields = parseAccessCreateBody(body);
         if (!accessTiersEnabled()) throw new PanelError('conflict', '体验用户分级未启用');
-        if (resolveAccessTier(auth.user.id) !== 'trial') {
+        const applicantTier = await resolvePanelAccessTier(auth);
+        if (applicantTier !== 'trial') {
             throw new PanelError('conflict', '你已拥有完整权限，无需申请');
         }
         // The Mini App has no chat scope: the applicant's private chat is the

@@ -119,7 +119,7 @@ const replyWithModelText = async (ctx: Context, text: RenderedMessage): Promise<
 
 export const sendModelMsg = async (ctx: Context): Promise<void> => {
     if (!ctx.chat) return;
-    if (resolveAccessTier(ctx.from?.id ?? null) === 'trial') {
+    if ((await resolveAccessTier(ctx.from?.id ?? null, ctx.chat.id)) === 'trial') {
         await sendBotNotice(ctx, TRIAL_MODEL_REFUSAL_TEXT);
         return;
     }
@@ -129,7 +129,7 @@ export const sendModelMsg = async (ctx: Context): Promise<void> => {
 /** `/model <id>`; `requested` is already trimmed and non-empty */
 export const changeModel = async (ctx: Context, requested: string): Promise<void> => {
     if (!ctx.chat || !ctx.from) return;
-    if (resolveAccessTier(ctx.from.id) === 'trial') {
+    if ((await resolveAccessTier(ctx.from.id, ctx.chat.id)) === 'trial') {
         await sendBotNotice(ctx, TRIAL_MODEL_REFUSAL_TEXT);
         return;
     }
@@ -146,7 +146,7 @@ const handleModelButton = async (ctx: Context, requested: string): Promise<void>
         await ctx.answerCallbackQuery();
         return;
     }
-    if (resolveAccessTier(ctx.from.id) === 'trial') {
+    if ((await resolveAccessTier(ctx.from.id, ctx.chat.id)) === 'trial') {
         await ctx.answerCallbackQuery({ text: TRIAL_CALLBACK_REFUSAL_TEXT });
         return;
     }

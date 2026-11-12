@@ -184,11 +184,14 @@ export const createAccessApplication = async (
     input: CreateAccessApplicationInput
 ): Promise<AccessApplicationRecord> => {
     const fields = normalizeAccessApplicationFields({ identity: input.identity, purpose: input.purpose });
+    // Needs a membership lookup: resolved before the transaction so no API call
+    // runs inside it
+    const applicantTier = await resolveAccessTier(input.userId, input.chatId);
     const record = await runSerialized(ACCESS_WRITE_SCOPE, () =>
         withBusyRetry(
             () =>
                 sequelize.transaction(async (transaction) => {
-                    if (resolveAccessTier(input.userId) !== 'trial') {
+                    if (applicantTier !== 'trial') {
                         throw new AccessApplicationError('already_full', '你已拥有完整权限，无需申请');
                     }
                     const pending = await AccessApplication.findOne({

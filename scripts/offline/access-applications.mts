@@ -382,7 +382,7 @@ const cases: { name: string; body: () => Promise<void> }[] = [
             expect(record.chatId === APP_CHAT && record.messageId === 555, 'chat and message ids are stored');
             expect(record.reviewedBy === null && record.comment === null && record.reviewedAt === null, 'nothing reviewed yet');
             expect(record.deliveryStatus === null && record.deliveryError === null, 'nothing delivered yet');
-            expect(resolveAccessTier(ALICE_ID) === 'trial', 'filing does not grant the full tier');
+            expect((await resolveAccessTier(ALICE_ID)) === 'trial', 'filing does not grant the full tier');
             expect(latestApplicationOf(ALICE_ID)?.id === record.id, 'the cache remembers the application');
 
             const audits = await auditOf(`access:${record.id}`);
@@ -453,7 +453,7 @@ const cases: { name: string; body: () => Promise<void> }[] = [
             expect(grant !== null, 'a user_access row is written');
             expect(grant?.source === 'application' && grant.applicationId === approved.id, 'pointing at the application');
             expect(grant?.grantedBy === OWNER_ID, 'by the owner');
-            expect(resolveAccessTier(ALICE_ID) === 'full', 'the cache makes the user full right away');
+            expect((await resolveAccessTier(ALICE_ID)) === 'full', 'the cache makes the user full right away');
             expect(latestApplicationOf(ALICE_ID)?.status === 'approved', 'the cache latest application is approved');
 
             const audits = await auditOf(`access:${approved.id}`);
@@ -473,7 +473,7 @@ const cases: { name: string; body: () => Promise<void> }[] = [
             });
             expect(rejected.status === 'rejected' && rejected.comment === '请补充身份', 'the rejection and comment are stored');
             expect((await UserAccess.findByPk(BOB_ID)) === null, 'no grant is written');
-            expect(resolveAccessTier(BOB_ID) === 'trial', 'the user stays trial');
+            expect((await resolveAccessTier(BOB_ID)) === 'trial', 'the user stays trial');
             expect(latestApplicationOf(BOB_ID)?.status === 'rejected', 'the cache shows the rejection');
             expect(latestApplicationOf(BOB_ID)?.comment === '请补充身份', 'with the owner comment');
             const audits = await auditOf(`access:${first.id}`);
@@ -523,7 +523,7 @@ const cases: { name: string; body: () => Promise<void> }[] = [
             expect(result.userId === ALICE_ID, 'the revoked user is returned');
             expect(result.lastApproved?.status === 'approved', 'with the last approved application for the notice target');
             expect((await UserAccess.findByPk(ALICE_ID)) === null, 'the grant row is gone');
-            expect(resolveAccessTier(ALICE_ID) === 'trial', 'the user is trial again');
+            expect((await resolveAccessTier(ALICE_ID)) === 'trial', 'the user is trial again');
             const audits = await auditOf(`user-access:${ALICE_ID}`);
             expect(
                 audits.some((entry) => entry.key === 'revoke' && entry.newValue === 'revoked'),
@@ -926,7 +926,7 @@ const cases: { name: string; body: () => Promise<void> }[] = [
             const delivered = await waitForDelivery(pending.id);
             expect(delivered?.deliveryStatus === 'sent', 'the delivery is recorded as sent');
             expect(lastSentTextTo(telegram, PANEL_TRIAL.id).includes('已通过'), 'the applicant is told');
-            expect(resolveAccessTier(PANEL_TRIAL.id) === 'full', 'the cache makes the applicant full');
+            expect((await resolveAccessTier(PANEL_TRIAL.id)) === 'full', 'the cache makes the applicant full');
 
             const audits = await auditOf(`access:${pending.id}`);
             expect(audits.some((entry) => entry.key === 'approve' && entry.actorId === OWNER_ID), 'the panel decision is audited');
@@ -938,7 +938,7 @@ const cases: { name: string; body: () => Promise<void> }[] = [
             const app = makeApp();
             const owner = await jsonOf(await call(app, '/api/me', { user: OWNER }));
             expect(owner.accessTier === 'owner', `the owner reads as owner (got ${JSON.stringify(owner.accessTier)})`);
-            expect(owner.trialModel === 'gemini-3.8-flash', 'the trial model is reported');
+            expect(owner.trialModel === 'gemini-4-hydrogen', 'the trial model is reported');
             expect(owner.accessTieringEnabled === true, 'tiering is on');
             expect(owner.accessApplication === null, 'the owner has no application');
             expect(
@@ -991,12 +991,12 @@ const cases: { name: string; body: () => Promise<void> }[] = [
         name: 'the owner can revoke a grant, and an unknown grant is a 404',
         body: async () => {
             const app = makeApp();
-            expect(resolveAccessTier(PANEL_TRIAL.id) === 'full', 'the user is full before the revoke');
+            expect((await resolveAccessTier(PANEL_TRIAL.id)) === 'full', 'the user is full before the revoke');
             const response = await call(app, `/api/user-access/${PANEL_TRIAL.id}`, { method: 'DELETE', user: OWNER });
             expect(response.status === 200, `the revoke answers 200 (got ${response.status})`);
             const body = await jsonOf(response);
             expect(body.userId === PANEL_TRIAL.id && body.revoked === true, 'it reports the revoked user');
-            expect(resolveAccessTier(PANEL_TRIAL.id) === 'trial', 'the user is trial again');
+            expect((await resolveAccessTier(PANEL_TRIAL.id)) === 'trial', 'the user is trial again');
             await expectError(
                 await call(app, `/api/user-access/${PANEL_TRIAL.id}`, { method: 'DELETE', user: OWNER }),
                 404,

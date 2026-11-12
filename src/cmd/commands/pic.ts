@@ -150,7 +150,7 @@ export const registerPicCommands = (bot: Bot): void => {
         // Handled here rather than in chat-handler, so it checks the pause itself
         if (await stopIfChatPaused(ctx)) return;
         // Paid xAI generation: a trial user may only draw with banana
-        if (await refuseTrialGeneration(ctx, resolveAccessTier(ctx.from?.id ?? null), 'picgrok')) return;
+        if (await refuseTrialGeneration(ctx, await resolveAccessTier(ctx.from?.id ?? null, ctx.chat?.id ?? null), 'picgrok')) return;
 
         const prompt = extractPrompt(ctx);
         if (!prompt) {

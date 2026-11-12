@@ -1,7 +1,8 @@
 /**
- * Offline cases for the user tier (design 2026-1112-1216, §3–§5, §7):
- * who counts as owner / full / trial, the cheap model a trial turn is pinned
- * to, the tools and image models a trial turn loses, the prompt sections that
+ * Offline cases for the user tier (design 2026-1112-1216 §3–§5, §7 and the
+ * D1-C correction in §14): the full-tier roster is group membership, so who
+ * counts as owner / full / trial, the cheap model a trial turn is pinned to,
+ * the tools and image models a trial turn loses, the prompt sections that
  * follow the tier, the chat-settings rule that refuses a trial user's model
  * change, the refused generation commands, and `/apply`'s status answers.
  *
@@ -12,7 +13,7 @@
  * Run: npx tsx scripts/offline/access-tiers.mts
  */
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
-import type { Bot } from 'grammy';
+import { GrammyError, type Bot } from 'grammy';
 import {
     expect,
     reportResults,
@@ -35,16 +36,22 @@ import type { ToolHandler } from '../../src/ai/tools/tool-types.js';
 // Tiering is off in the harness by default; this file is about the tier feature.
 process.env.ACCESS_TIERS = '1';
 const OWNER_ID = 4242;
-/** A positive TOOL_CHAT_IDS entry: a private chat, i.e. a user */
+/** A positive TOOL_CHAT_IDS entry: an explicitly listed private user */
 const FULL_USER_ID = 5151;
-/** A negative TOOL_CHAT_IDS entry: a group, which grants its members nothing */
+/** A negative TOOL_CHAT_IDS entry: the access group (its members are full, D1-C) */
 const GROUP_CHAT_ID = -1004242424242;
 const OTHER_CHAT_ID = -1007373737373;
 const STRANGER_ID = 6161;
+const MEMBER_ID = 9191;
+const KICKED_ID = 9292;
+const UNKNOWN_ID = 9393;
+const THROTTLED_ID = 9494;
 const ADMITTED_ID = 7171;
 const APPLICANT_ID = 8181;
 
 process.env.OWNER_USER_ID = String(OWNER_ID);
+// The group entry is the roster: no ACCESS_GROUP_IDS, so the default applies
+delete process.env.ACCESS_GROUP_IDS;
 process.env.TOOL_CHAT_IDS = `${GROUP_CHAT_ID}, ${FULL_USER_ID}`;
 process.env.DEFAULT_MODEL = 'gemini-4-argon';
 // Never contacted: only the SMS tool's presence is checked here
@@ -56,6 +63,7 @@ await setupOfflineDb();
 
 const { sequelize } = await import('../../src/db/config.js');
 const { UserAccess } = await import('../../src/db/userAccessDTO.js');
+const { ChatMemberSeen } = await import('../../src/db/chatMemberSeenDTO.js');
 const { TRIAL_MODEL, accessTiersEnabled } = await import('../../src/config/trial-access.js');
 const {
     effectiveReplyModel,
@@ -63,6 +71,7 @@ const {
     resolveAccessTier,
     resolveTriggerAccess,
 } = await import('../../src/services/access-tier.js');
+const { setAccessMembershipLookup } = await import('../../src/services/access-membership.js');
 const {
     isUserAccessCacheLoaded,
     loadUserAccessCache,
@@ -188,22 +197,91 @@ process.env.MCP_SERVERS = JSON.stringify({
 await quietly(() => mcp.initMcpClients());
 
 // ---------------------------------------------------------------------------
+// The fake Bot API: only the access group can be asked, and its answer depends
+// on the user id. 429 and 5xx stand for the two failure classes.
+// ---------------------------------------------------------------------------
+
+const grammyError = (code: number, description: string): GrammyError =>
+    new GrammyError(`(${code}: ${description})`, { ok: false, error_code: code, description }, 'getChatMember', {});
+
+setAccessMembershipLookup(async (chatId, userId) => {
+    if (chatId !== GROUP_CHAT_ID) throw grammyError(400, 'Bad Request: chat not found');
+    if (userId === MEMBER_ID) return { status: 'member' };
+    if (userId === KICKED_ID) return { status: 'kicked' };
+    if (userId === UNKNOWN_ID) throw grammyError(500, 'Internal Server Error');
+    if (userId === THROTTLED_ID) throw grammyError(429, 'Too Many Requests: retry after 1');
+    return { status: 'left' };
+});
+
+// ---------------------------------------------------------------------------
 // Cases
 // ---------------------------------------------------------------------------
 
 const cases: { name: string; body: () => Promise<void> }[] = [
     {
-        name: 'owner, a listed private user and an admitted user are full; everyone else is trial',
+        name: 'the roster is group membership: owner, a listed user and a current group member are full',
         body: async () => {
-            expect(resolveAccessTier(OWNER_ID) === 'owner', 'OWNER_USER_ID is owner');
-            expect(resolveAccessTier(FULL_USER_ID) === 'full', 'a positive TOOL_CHAT_IDS entry is a full user');
+            expect((await resolveAccessTier(OWNER_ID)) === 'owner', 'OWNER_USER_ID is owner');
             expect(
-                resolveAccessTier(GROUP_CHAT_ID) === 'trial',
-                'a negative (group) TOOL_CHAT_IDS entry is not a user and grants nothing'
+                (await resolveAccessTier(FULL_USER_ID)) === 'full',
+                'a positive TOOL_CHAT_IDS entry is an explicitly full user'
             );
-            expect(resolveAccessTier(STRANGER_ID) === 'trial', 'an unlisted user is trial');
-            expect(resolveAccessTier(null) === 'trial', 'a stored row without an author id is trial');
+            expect((await resolveAccessTier(MEMBER_ID)) === 'full', 'a current member of the access group is full');
+            expect((await resolveAccessTier(STRANGER_ID)) === 'trial', 'a non-member is trial');
+            expect((await resolveAccessTier(null)) === 'trial', 'a stored row without an author id is trial');
             expect(isTrialTier('trial') && !isTrialTier('full') && !isTrialTier('owner'), 'isTrialTier names only trial');
+        },
+    },
+    {
+        name: 'a message posted in the access group is proof of membership, no lookup needed',
+        body: async () => {
+            // The fake says this id is not a member, but nobody else can post there
+            expect(
+                (await resolveAccessTier(STRANGER_ID, GROUP_CHAT_ID)) === 'full',
+                'the trigger chat being the access group grants full'
+            );
+            expect(
+                (await resolveAccessTier(STRANGER_ID, OTHER_CHAT_ID)) === 'trial',
+                'another group is not the roster'
+            );
+            expect(
+                (await resolveAccessTier(MEMBER_ID, GROUP_CHAT_ID)) === 'full',
+                'and a member posting there stays full'
+            );
+        },
+    },
+    {
+        name: 'a kicked member is trial on the next private-chat message',
+        body: async () => {
+            expect((await resolveAccessTier(KICKED_ID)) === 'trial', 'status kicked is not a member');
+            expect((await resolveAccessTier(KICKED_ID, KICKED_ID)) === 'trial', 'the same in their private chat');
+        },
+    },
+    {
+        name: 'a failed lookup falls back to a recent message; a 429 never does',
+        body: async () => {
+            // No row yet: a 5xx means "cannot answer" and the fallback has nothing
+            expect((await resolveAccessTier(UNKNOWN_ID)) === 'trial', 'unknown without a recent message is trial');
+            const now = new Date();
+            await ChatMemberSeen.create({
+                chatId: GROUP_CHAT_ID,
+                userId: UNKNOWN_ID,
+                firstSeenAt: now,
+                lastSeenAt: now,
+                messageCount: 1,
+            });
+            await ChatMemberSeen.create({
+                chatId: GROUP_CHAT_ID,
+                userId: THROTTLED_ID,
+                firstSeenAt: now,
+                lastSeenAt: now,
+                messageCount: 1,
+            });
+            expect(
+                (await resolveAccessTier(UNKNOWN_ID)) === 'full',
+                'a 5xx falls back to having spoken in the group within 30 days'
+            );
+            expect((await resolveAccessTier(THROTTLED_ID)) === 'trial', 'a 429 is never read as membership');
         },
     },
     {
@@ -219,12 +297,12 @@ const cases: { name: string; body: () => Promise<void> }[] = [
                 updatedAt: new Date(),
             });
             expect(
-                resolveAccessTier(ADMITTED_ID) === 'trial',
+                (await resolveAccessTier(ADMITTED_ID)) === 'trial',
                 'before the cache loads, the grant is not seen (reply path falls back to not admitted)'
             );
             await loadUserAccessCache();
             expect(isUserAccessCacheLoaded(), 'loaded');
-            expect(resolveAccessTier(ADMITTED_ID) === 'full', 'the admitted user is full after the load');
+            expect((await resolveAccessTier(ADMITTED_ID)) === 'full', 'the admitted user is full after the load');
         },
     },
     {
@@ -234,10 +312,10 @@ const cases: { name: string; body: () => Promise<void> }[] = [
             process.env.ACCESS_TIERS = '0';
             try {
                 expect(!accessTiersEnabled(), 'the switch is off');
-                expect(resolveAccessTier(STRANGER_ID) === 'full', 'a stranger is full');
-                expect(resolveAccessTier(null) === 'full', 'a row without an author is full');
-                expect(resolveAccessTier(GROUP_CHAT_ID) === 'full', 'even a chat id is full');
-                expect(resolveAccessTier(OWNER_ID) === 'owner', 'the owner is still owner');
+                expect((await resolveAccessTier(STRANGER_ID)) === 'full', 'a stranger is full');
+                expect((await resolveAccessTier(null)) === 'full', 'a row without an author is full');
+                expect((await resolveAccessTier(GROUP_CHAT_ID)) === 'full', 'even a chat id is full');
+                expect((await resolveAccessTier(OWNER_ID)) === 'owner', 'the owner is still owner');
             } finally {
                 process.env.ACCESS_TIERS = previous ?? '1';
             }
@@ -247,7 +325,7 @@ const cases: { name: string; body: () => Promise<void> }[] = [
     {
         name: 'effectiveReplyModel pins a trial turn to the trial model and leaves the other tiers alone',
         body: async () => {
-            expect(TRIAL_MODEL === 'gemini-3.8-flash', `the trial model is the design's (got ${TRIAL_MODEL})`);
+            expect(TRIAL_MODEL === 'gemini-4-hydrogen', `the trial model is the design's (got ${TRIAL_MODEL})`);
             expect(
                 effectiveReplyModel('trial', 'gpt-6-astra') === TRIAL_MODEL,
                 'a trial turn ignores the chat model'
@@ -274,18 +352,18 @@ const cases: { name: string; body: () => Promise<void> }[] = [
                 createdAt: new Date('2026-11-12T04:00:00Z'),
             });
 
-            const trial = resolveTriggerAccess(STRANGER_ID, '张三');
+            const trial = await resolveTriggerAccess(STRANGER_ID, '张三');
             expect(trial.tier === 'trial' && trial.name === '张三' && trial.userId === STRANGER_ID, 'trial turn keeps the name');
             expect(
                 trial.application !== null && trial.application.id === 9001 && trial.application.status === 'pending',
                 'with the pending application'
             );
 
-            const full = resolveTriggerAccess(FULL_USER_ID, '李四');
+            const full = await resolveTriggerAccess(FULL_USER_ID, '李四');
             expect(full.tier === 'full', 'the listed user is full');
             expect(full.application === null, 'a full turn reports no application');
 
-            const anonymous = resolveTriggerAccess(null, null);
+            const anonymous = await resolveTriggerAccess(null, null);
             expect(anonymous.tier === 'trial' && anonymous.application === null, 'no user id means no application');
         },
     },
@@ -431,13 +509,13 @@ const cases: { name: string; body: () => Promise<void> }[] = [
 
             // The real cache feeds the same note: the trial user's remembered
             // pending application arrives through resolveTriggerAccess.
-            const note = triggerAccessNoteOf(resolveTriggerAccess(STRANGER_ID, '张三'));
+            const note = triggerAccessNoteOf(await resolveTriggerAccess(STRANGER_ID, '张三'));
             expect(note?.applicationStatus === 'pending', 'the cache-backed note is pending');
             expect(
                 buildRuntimeContext('gemini-3.8-flash', [], '测试群', null, note).includes('准入申请：待审核'),
                 'and renders into the runtime block'
             );
-            expect(triggerAccessNoteOf(resolveTriggerAccess(FULL_USER_ID, '李四')) === null, 'a full turn gets no note');
+            expect(triggerAccessNoteOf(await resolveTriggerAccess(FULL_USER_ID, '李四')) === null, 'a full turn gets no note');
         },
     },
     {
@@ -510,7 +588,7 @@ const cases: { name: string; body: () => Promise<void> }[] = [
             const { bot, telegram } = createFakeBot();
             registerApplyCommand(bot);
 
-            await sendText(bot, GROUP_CHAT_ID, APPLICANT_ID, '/apply');
+            await sendText(bot, APPLICANT_ID, APPLICANT_ID, '/apply');
             const status = sentTextOf(telegram);
             expect(status.includes('你是体验用户'), `no application shows the header (got ${JSON.stringify(status)})`);
             expect(status.includes('用法：/apply 你是谁 | 你要做什么'), 'and the usage');
@@ -519,11 +597,11 @@ const cases: { name: string; body: () => Promise<void> }[] = [
             expect(!status.includes('Mini App'), 'no Mini App hint while the panel is not running');
 
             telegram.reset();
-            await sendText(bot, GROUP_CHAT_ID, FULL_USER_ID, '/apply');
+            await sendText(bot, FULL_USER_ID, FULL_USER_ID, '/apply');
             expect(sentTextOf(telegram).includes('你已拥有完整功能权限，无需申请'), 'a full user needs no application');
 
             telegram.reset();
-            await sendText(bot, GROUP_CHAT_ID, OWNER_ID, '/apply');
+            await sendText(bot, OWNER_ID, OWNER_ID, '/apply');
             expect(sentTextOf(telegram).includes('你已拥有完整功能权限，无需申请'), 'the owner needs none either');
         },
     },
