@@ -94,9 +94,9 @@ import type { ToolLoopCheckpoint } from '../ai/tools/tool-loop-checkpoint.js';
 import type { FinalizeOptions } from '../services/bot-message-service.js';
 import {
     fillStoppedToolUsage,
-    fillToolUsageFromCheckpoint,
     keepPreparedCheckpoint,
     prepareCheckpointKeep,
+    prepareErrorKeep,
     withKeptRoundsLine,
 } from './resume/keep-checkpoint.js';
 import { createReplayTracker } from './resume/replay-tracker.js';
@@ -1685,16 +1685,13 @@ export const handleResponseError = async (
 
     // A checkpoint at hand: the failed version and its row count the tools of
     // the kept rounds, and whether it is kept is decided before the row is written
-    if (chatContext.lastCheckpoint !== undefined) {
-        fillToolUsageFromCheckpoint(session, chatContext.lastCheckpoint);
-    }
-    const keptCheckpoint = prepareCheckpointKeep(chatContext);
+    const preparedCheckpoint = prepareErrorKeep(chatContext);
 
     // Finalize session with error first: persists partial text as the version
     // content and the error string in the separate errorMessage field
     await session.handleError(error);
     // After the finalization, which clears the reply's earlier mark
-    keepPreparedCheckpoint(keptCheckpoint);
+    const keptCheckpoint = keepPreparedCheckpoint(preparedCheckpoint);
 
     // Partial content shown to the user: the display buffers of the message
     // this editor owns (continuations reset them), falling back to session

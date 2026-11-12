@@ -8,6 +8,9 @@ export const GEMINI_PRIORITY_LABEL = 'Priority PayGo';
 export const GEMINI_PRIORITY_HELP =
     'Vertex 有优先容量时按优先档服务，价格为标准档的 1.8 倍；没有容量时自动按标准档服务和计费。';
 
+// Which replies the switch reaches at all: "当前生效" alone does not say
+export const GEMINI_PRIORITY_APPLIES_HINT = '只对 Vertex 直连的 Gemini 文字模型回复生效，试用用户触发的回复不使用。';
+
 // Same wording as the server's refusal, so the hint and a refused save agree
 export const GEMINI_PRIORITY_NOT_ALLOWED_HINT = '全局关闭时，只有工具白名单里的会话可以单独开启';
 

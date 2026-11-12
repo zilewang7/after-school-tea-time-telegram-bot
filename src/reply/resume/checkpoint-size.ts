@@ -2,7 +2,7 @@
  * How much memory a kept checkpoint holds on to, for the registry's byte
  * limit. An estimate: text and bytes are what make a checkpoint big (inline
  * pictures and videos as base64, files, widget HTML), so those are counted
- * and everything else costs a small flat amount.
+ * as V8 stores them, and everything else costs a flat amount.
  *
  * The same data sits in several places of one checkpoint: a picture's base64
  * in the request contents and in the context index, a drawn picture's buffer
@@ -12,8 +12,30 @@
  */
 import type { ReplyCheckpoint } from './reply-checkpoint.js';
 
-/** Flat cost of a number, a flag or an object header; small next to any text */
+/** A number, a flag or a reference */
 const SLOT_BYTES = 8;
+/** An object, array, map or set besides what it holds: what the heap retains for a small one */
+const OBJECT_BYTES = 48;
+/**
+ * Characters looked at to tell how a string is stored. Bounded, so a 10 MB
+ * base64 string is not scanned whole; spread over the string, so text that
+ * turns Chinese after an ASCII start is still seen.
+ */
+const ENCODING_PROBES = 1024;
+const LATIN1_MAX_CODE = 0xff;
+
+/**
+ * V8 keeps a string one byte per character while every character is Latin-1
+ * (base64, ASCII) and two bytes per character otherwise (CJK text)
+ */
+const bytesPerCharacterOf = (value: string): number => {
+    const probes = Math.min(value.length, ENCODING_PROBES);
+    const stride = value.length / probes;
+    for (let probe = 0; probe < probes; probe += 1) {
+        if (value.charCodeAt(Math.floor(probe * stride)) > LATIN1_MAX_CODE) return 2;
+    }
+    return 1;
+};
 
 /**
  * Bytes held by everything reachable from `roots`. Walks plain objects,
@@ -31,8 +53,7 @@ export const estimateRetainedBytes = (roots: readonly unknown[]): number => {
         if (typeof value === 'string') {
             if (!seenStrings.has(value)) {
                 seenStrings.add(value);
-                // One byte per character: base64 and ASCII dominate the big strings
-                total += value.length;
+                total += value.length * bytesPerCharacterOf(value);
             }
             continue;
         }
@@ -47,7 +68,7 @@ export const estimateRetainedBytes = (roots: readonly unknown[]): number => {
             total += value.byteLength;
             continue;
         }
-        total += SLOT_BYTES;
+        total += OBJECT_BYTES;
         if (value instanceof Map) {
             for (const [key, item] of value) pending.push(key, item);
         } else if (value instanceof Set) {

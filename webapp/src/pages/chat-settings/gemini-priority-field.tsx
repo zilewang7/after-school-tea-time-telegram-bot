@@ -2,6 +2,7 @@ import { useMemo } from 'react';
 import { ChoiceChips } from '../../components/choice-chips';
 import {
     chatGeminiPriorityOptionsOf,
+    GEMINI_PRIORITY_APPLIES_HINT,
     GEMINI_PRIORITY_HELP,
     GEMINI_PRIORITY_LABEL,
     GEMINI_PRIORITY_NOT_ALLOWED_HINT,
@@ -51,6 +52,7 @@ export const GeminiPriorityField = ({
             />
             <p className="hint">{GEMINI_PRIORITY_HELP}</p>
             <p className="hint">当前生效：{onOffLabel(effective)}</p>
+            <p className="hint">{GEMINI_PRIORITY_APPLIES_HINT}</p>
             {onWithoutEffect && (
                 <p className="notice warning">「开」当前不生效：{GEMINI_PRIORITY_NOT_ALLOWED_HINT}</p>
             )}

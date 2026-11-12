@@ -1,9 +1,11 @@
 /**
  * In-memory copy of chat_settings and global_settings.
  *
- * Both tables are tiny and only chat-settings-service writes them, so the whole
- * of each is loaded once at startup and kept in step by the service: the reply
- * path reads settings synchronously and never touches the database for them.
+ * Both tables are tiny and only two services write them: chat-settings-service
+ * writes chat_settings, global-settings-service writes global_settings. So the
+ * whole of each is loaded once at startup and kept in step by its writer: the
+ * reply path reads settings synchronously and never touches the database for
+ * them.
  * Before the load, every chat reads as "no settings" and the global default
  * model falls back to the env, which is what offline scripts rely on.
  *

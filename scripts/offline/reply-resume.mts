@@ -9,7 +9,7 @@
  *
  * Run: npx tsx scripts/offline/reply-resume.mts
  */
-import { expect, reportResults, runCase, type CaseResult } from './harness.mts';
+import { expect, reportResults, runCase, takeMessageId, type CaseResult } from './harness.mts';
 import { endOpenReplies, waitUntil } from './fake-telegram.mts';
 import { httpErrorReply, type ScriptedReply } from './support/fake-vertex.mts';
 import { answer, callsRound, groundingOf } from './support/gemini-loop-fixtures.mts';
@@ -21,9 +21,11 @@ import {
     createResumeBench,
     failingRound,
     finalButtonsOf,
+    FULL_USER_ID,
     gate,
     imageReply,
     json,
+    OWNER_USER_ID,
     quietCase,
     roundOf,
     stalledRound,
@@ -38,6 +40,8 @@ const { STOPPED_DURING_CALL_NOTE } = await import('../../src/ai/platforms/gemini
 const { ONE_ATTACHMENT_PER_REPLY } = await import('../../src/reply/tools/reply-media-state.js');
 const { loadThinkingDocument } = await import('../../src/panel/thinking/thinking-view.js');
 const { getActiveSession } = await import('../../src/services/bot-message-service.js');
+const { updateChatSettings } = await import('../../src/services/chat-settings-service.js');
+const { openCodeGoSessionId } = await import('../../src/ai/platforms/opencode-go-fetch.js');
 
 const sentDocuments = (): number[] =>
     telegram.callsOf('sendDocument').map((call) => Number(asRecord(call.payload).chat_id));
@@ -354,6 +358,45 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
                 if (variant.label !== 'sticker') {
                     expect(telegram.callsOf('sendSticker').length === 0, `${variant.label}: no sticker went out`);
                 }
+            }
+        }),
+    },
+    {
+        name: 'a resumed argon reply sends the OpenCode Go session id its first answer sent: the root of its reply tree',
+        body: quietCase(async () => {
+            const chatId = takeChatId();
+            await updateChatSettings({ chatId, patch: { model: 'gemini-4-argon' }, actor: { userId: OWNER_USER_ID, isOwner: true } });
+            try {
+                // The question replies to an earlier message: the session names the tree's root, not the question
+                const rootMessageId = takeMessageId();
+                await bench.dbIndex.saveMessage({
+                    chatId,
+                    messageId: rootMessageId,
+                    userId: FULL_USER_ID,
+                    date: new Date(),
+                    userName: `user-${FULL_USER_ID}`,
+                    message: '先聊个话题',
+                });
+                const reply = await bench.failedAfterRound1({ label: 'a1', calls: [webLookup('argon')] }, { chatId, replyToId: rootMessageId });
+                const sessionId = openCodeGoSessionId(chatId, rootMessageId);
+                const firstAnswer = bench.configs.at(-1);
+                expect(
+                    firstAnswer?.model === 'gemini-4-argon' && firstAnswer.sessionId === sessionId,
+                    `the first answer names the conversation (got ${json({ model: firstAnswer?.model, sessionId: firstAnswer?.sessionId })})`
+                );
+
+                vertex.reset([answer('argon 接着说完。')]);
+                telegram.reset();
+                const configsBefore = bench.configs.length;
+                await bench.continueReply(reply);
+                const resumed = bench.configs.slice(configsBefore);
+                expect(
+                    resumed.length === 1 && resumed[0]?.resumeFrom !== undefined && resumed[0].sessionId === sessionId,
+                    `the resumed request sends the same session id (got ${json(resumed.map((config) => config.sessionId ?? null))})`
+                );
+                expect((await bench.latestVersion(reply)).text.includes('argon 接着说完。'), 'and the resumed reply ends normally');
+            } finally {
+                await updateChatSettings({ chatId, patch: { model: null }, actor: { userId: OWNER_USER_ID, isOwner: true } });
             }
         }),
     },

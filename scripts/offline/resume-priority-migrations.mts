@@ -12,6 +12,11 @@
  */
 import { expect, reportResults, runCase, setupOfflineDb, type CaseResult } from './harness.mts';
 
+/** The chat of the chat_settings case; listed, so a stored "on" applies while the global switch is off */
+const PRIORITY_CHAT_ID = -1007700000002;
+// Read once by the tool config, before src is imported
+process.env.TOOL_CHAT_IDS = String(PRIORITY_CHAT_ID);
+
 await setupOfflineDb();
 const { QueryTypes } = await import('@sequelize/core');
 const { sequelize } = await import('../../src/db/config.js');
@@ -235,9 +240,9 @@ const cases: { name: string; body: () => Promise<void> }[] = [
         },
     },
     {
-        name: 'an old chat_settings table gains geminiPriority; its rows read as unset and take the switch afterwards',
+        name: 'an old chat_settings table gains geminiPriority; its rows read as unset and take the switch afterwards, off and on',
         body: async () => {
-            const chatId = -1007700000002;
+            const chatId = PRIORITY_CHAT_ID;
             await sequelize.query('DROP TABLE chat_settings');
             await sequelize.query(OLD_CHAT_SETTINGS);
             await sequelize.query(
@@ -259,6 +264,21 @@ const cases: { name: string; body: () => Promise<void> }[] = [
             expect(settings.geminiPriority === false && settings.model === 'old-model', 'the owner switches it off');
             await service.loadChatSettingsCache();
             expect(service.getChatSettings(chatId)?.geminiPriority === false, 'and the value survives a reload');
+
+            // SQLite keeps the flag as the number 1; the reload must still read a boolean true
+            await service.updateChatSettings({ chatId, patch: { geminiPriority: true }, actor: OWNER });
+            const stored: unknown[] = await sequelize.query('SELECT geminiPriority FROM chat_settings WHERE chatId = :chatId', {
+                replacements: { chatId },
+                type: QueryTypes.SELECT,
+            });
+            expect(json(stored) === json([{ geminiPriority: 1 }]), `the migrated INTEGER column holds 1 (got ${json(stored)})`);
+            await service.loadChatSettingsCache();
+            const reloaded = service.getChatSettings(chatId)?.geminiPriority;
+            expect(reloaded === true, `a stored "on" reads back as true after a reload (got ${json(reloaded)})`);
+            expect(
+                !service.getGlobalGeminiPriority() && service.resolveGeminiPriority(chatId),
+                'and resolves to on for this listed chat while the global switch is off'
+            );
 
             await startUp();
             expect(

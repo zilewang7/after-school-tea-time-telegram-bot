@@ -1,6 +1,7 @@
 /**
  * Offline cases for the "继续" click itself (design 2026-1112-1123 §6.4,
- * §7.3; test plan §11 第 3 期 cases 10, 13 and 18, and the access tiers):
+ * §7.3; test plan §11 第 3 期 cases 10, 13 and 18, and the access tiers, with
+ * whom Priority PayGo is asked for):
  * the order of the checks and what each failed check leaves behind, the
  * claim the click shares with 重试, the ways out that must give the
  * checkpoint and the claim back, and the log line of a missing checkpoint.
@@ -40,11 +41,14 @@ const { createReplyToolState } = await import('../../src/reply/tools/reply-tool-
 const { CHECKPOINT_REGISTRY_LIMITS } = await import('../../src/reply/resume/checkpoint-registry.js');
 const { Message } = await import('../../src/db/messageDTO.js');
 const { setAccessMembershipLookup } = await import('../../src/services/access-membership.js');
+const { TRIAL_MODEL } = await import('../../src/config/trial-access.js');
 
 const OWNER = { userId: OWNER_USER_ID, isOwner: true };
 /** An access group that is none of the bench's chats */
 const ROSTER_GROUP_ID = -1007699999999;
 const CLAIMED_NOTICE = '正在处理';
+/** The Priority PayGo request header, as fetch saw it (lower-cased) */
+const PRIORITY_HEADER = 'x-vertex-ai-llm-shared-request-type';
 const STARTING_NOTICE = '正在启动，请稍后再点';
 
 const kept = (reply: AskedReply): boolean => bench.entryOf(reply) !== undefined && bench.markOf(reply) !== undefined;
@@ -122,6 +126,35 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
                 await expectGone(reply, 'expired');
             });
             expect(log.has('[resume] checkpoint missing reason=expired'), 'the log names the reason');
+        }),
+    },
+    {
+        name: 'case 10 (1b): a checkpoint that expires between the checks and the take is gone too: logged, the buttons lose 继续, the claim is free',
+        body: quietCase(async (log) => {
+            const reply = await failedReply();
+            await withFakeClock(async (jump) => {
+                // The checks pass; while the click is answered the entry runs out
+                bench.hooks.push({
+                    method: 'answerCallbackQuery',
+                    when: (payload) => payload.text === '继续中...',
+                    onCaught: () => jump(CHECKPOINT_REGISTRY_LIMITS.ttlMs + 1000),
+                });
+                vertex.reset([]);
+                telegram.reset();
+                const thrown = await bench.press(reply, 'resp:continue');
+                await bench.settled(reply, 'the click to give its claim back');
+                expect(thrown === null, `the click is handled (got ${String(thrown)})`);
+                expect(json(bench.toasts()) === json(['继续中...']), `the one toast it had sent (got ${json(bench.toasts())})`);
+                expect(vertex.requests.length === 0 && telegram.callsOf('editMessageText').length === 0, 'nothing is resumed');
+                const redraw = telegram.callsOf('editMessageReplyMarkup');
+                const redrawn = json(redraw.at(-1)?.payload.reply_markup);
+                expect(
+                    redraw.length === 1 && redrawn.includes('重试') && !redrawn.includes('继续'),
+                    `the buttons lose 继续 (got ${json(finalButtonsOf(telegram))})`
+                );
+                expect(registry.peek(reply.chatId, reply.firstMessageId) === undefined && bench.markOf(reply) === undefined, 'dropped');
+            });
+            expect(log.has(`[resume] checkpoint missing reason=expired chat=${reply.chatId}`), 'the log names the reason');
         }),
     },
     {
@@ -413,6 +446,58 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
                 process.env.ACCESS_TIERS = '0';
                 delete process.env.ACCESS_GROUP_IDS;
                 setAccessMembershipLookup(null);
+            }
+        }),
+    },
+    {
+        name: 'Priority PayGo with the chat switch on: a full turn asks for it; a trial turn, and a continue or retry a trial user presses, do not',
+        body: quietCase(async () => {
+            process.env.ACCESS_TIERS = '1';
+            process.env.ACCESS_GROUP_IDS = String(ROSTER_GROUP_ID);
+            setAccessMembershipLookup(async () => ({ status: 'left' }));
+            const chatId = takeChatId();
+            await updateChatSettings({ chatId, patch: { geminiPriority: true }, actor: OWNER });
+            const headersSent = (): Array<string | null> => vertex.requests.map((request) => request.headers[PRIORITY_HEADER] ?? null);
+            const lastRowTier = async (reply: AskedReply): Promise<string | null | undefined> => (await bench.rowsOf(reply)).at(-1)?.tierRequested;
+            try {
+                vertex.reset([answer('全员的回答。')]);
+                const full = await bench.ask(chatId, '@AfterSchoolTeatimeBot 问一下');
+                expect(json(headersSent()) === json(['priority']), `a full turn asks for priority (got ${json(headersSent())})`);
+                expect((await lastRowTier(full)) === 'priority', `and its row says so (got ${json(await lastRowTier(full))})`);
+
+                // A trial user's question runs on the cheap model; it fails after round 1 so it can be continued
+                const trial = await bench.failedAfterRound1(
+                    { label: 't1', calls: [{ name: 'send_file', args: { file_name: 'a.md', content: '# A' } }] },
+                    { chatId, userId: TRIAL_USER_ID }
+                );
+                expect(bench.configs.at(-1)?.model === TRIAL_MODEL, `the trial turn runs ${TRIAL_MODEL} (got ${bench.configs.at(-1)?.model})`);
+                expect(json(headersSent()) === json([null, null]), `a trial turn asks for nothing (got ${json(headersSent())})`);
+                expect((await lastRowTier(trial)) === null, `its row has no tier (got ${json(await lastRowTier(trial))})`);
+
+                vertex.reset([answer('试用用户接着说完。')]);
+                telegram.reset();
+                await bench.continueReply(trial, TRIAL_USER_ID);
+                expect(
+                    bench.toasts().includes('继续中...') && (await bench.latestVersion(trial)).text.includes('试用用户接着说完。'),
+                    `the trial user continues their own reply (got ${json(bench.toasts())})`
+                );
+                expect(json(headersSent()) === json([null]), `the continue asks for nothing (got ${json(headersSent())})`);
+                expect((await lastRowTier(trial)) === null, 'nor does its row');
+
+                vertex.reset([answer('试用用户重试。')]);
+                await bench.retryReply(trial, TRIAL_USER_ID);
+                expect(json(headersSent()) === json([null]), `a retry the trial user presses asks for nothing (got ${json(headersSent())})`);
+                expect((await lastRowTier(trial)) === null, 'nor does its row');
+
+                vertex.reset([answer('全员重试。')]);
+                await bench.retryReply(trial);
+                expect(json(headersSent()) === json(['priority']), `the same retry pressed by a full user asks (got ${json(headersSent())})`);
+                expect((await lastRowTier(trial)) === 'priority', 'and its row says so');
+            } finally {
+                process.env.ACCESS_TIERS = '0';
+                delete process.env.ACCESS_GROUP_IDS;
+                setAccessMembershipLookup(null);
+                await updateChatSettings({ chatId, patch: { geminiPriority: null }, actor: OWNER });
             }
         }),
     },

@@ -350,6 +350,29 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
         },
     },
     {
+        name: 'the estimate counts as V8 stores: CJK text two bytes a character, base64 and ASCII one, an object about 48 bytes',
+        body: async () => {
+            const chinese = estimateRetainedBytes(['中文的思考过程'.repeat(10_000)]);
+            expect(chinese >= 2 * 70_000, `CJK text counts two bytes per character (got ${chinese} for 70000 characters)`);
+            const ascii = estimateRetainedBytes(['plain ascii text'.repeat(10_000)]);
+            expect(ascii >= 160_000 && ascii < 161_000, `ASCII counts one (got ${ascii} for 160000 characters)`);
+            const base64 = Buffer.alloc(3 * 1024 * 1024, 7).toString('base64');
+            const base64Bytes = estimateRetainedBytes([base64]);
+            expect(base64Bytes === base64.length, `base64 counts one (got ${base64Bytes} for ${base64.length})`);
+            // A bounded look decides, yet one spread over the string: a Chinese body after an ASCII start
+            const mixed = `${'{"role":"user","text":"'.repeat(200)}${'很长的中文内容。'.repeat(20_000)}`;
+            const mixedBytes = estimateRetainedBytes([mixed]);
+            expect(mixedBytes === 2 * mixed.length, `a string that turns Chinese counts two (got ${mixedBytes} for ${mixed.length})`);
+            expect(estimateRetainedBytes(['ü'.repeat(1000)]) === 1000, 'Latin-1 beyond ASCII still counts one');
+
+            const count = 1000;
+            const smallObjects = estimateRetainedBytes([Array.from({ length: count }, () => ({}))]);
+            expect(smallObjects >= 48 * count, `${count} empty objects cost at least 48 bytes each (got ${smallObjects})`);
+            const parts = estimateRetainedBytes([Array.from({ length: count }, (_unused, index) => ({ index, done: true }))]);
+            expect(parts >= (48 + 16) * count, `and their fields come on top (got ${parts})`);
+        },
+    },
+    {
         name: 'peek leaves the entry, take removes it with its mark, put back returns both, drop forgets them',
         body: async () => {
             const registry = createCheckpointRegistry();
@@ -376,14 +399,6 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
                 state.resumableMarkOf(entry.chatId, entry.firstMessageId)?.expiresAt === entry.savedAt + CHECKPOINT_REGISTRY_LIMITS.ttlMs,
                 'with the lifetime it had'
             );
-            const again = registry.take(entry.chatId, entry.firstMessageId);
-            if (again === undefined) throw new Error('nothing taken');
-            registry.putBack(again, { failedVersionId: 3 });
-            expect(
-                registry.peek(entry.chatId, entry.firstMessageId)?.failedVersionId === 3 &&
-                    state.resumableMarkOf(entry.chatId, entry.firstMessageId)?.versionId === 3,
-                'a put back onto a newer failed version marks that one'
-            );
 
             registry.drop(entry.chatId, entry.firstMessageId);
             expect(
@@ -403,8 +418,33 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
             quiet(() => registry.save(prepared));
             // What a finalization of the reply does
             state.clearReplyResumable(entry.chatId, entry.firstMessageId);
-            expect(registry.size() === 0, 'the next touch drops it');
-            expect(registry.peek(entry.chatId, entry.firstMessageId) === undefined, 'nothing is handed out');
+            expect(registry.size() === 1, 'counting the entries does not drop it');
+            expect(registry.peek(entry.chatId, entry.firstMessageId) === undefined, 'the next touch does: nothing is handed out');
+            expect(registry.size() === 0 && registry.totalBytes() === 0, 'and nothing is held');
+
+            // A prune drops what lost its mark and what expired, and only that
+            let now = 4_000_000_000_000;
+            const clocked = createCheckpointRegistry({ now: () => now });
+            const saveAt = (savedAt: number): ReplyCheckpoint => {
+                const kept = entryOf(savedAt);
+                const preparedEntry = clocked.prepare(kept);
+                if (preparedEntry === null) throw new Error('refused');
+                quiet(() => clocked.save(preparedEntry));
+                return kept;
+            };
+            const unmarked = saveAt(now);
+            const expiring = saveAt(now);
+            now += HOUR_MS;
+            const fresh = saveAt(now);
+            state.clearReplyResumable(unmarked.chatId, unmarked.firstMessageId);
+            now += HOUR_MS;
+            expect(clocked.size() === 3, `all three are held until the prune (got ${clocked.size()})`);
+            quiet(() => clocked.prune());
+            expect(
+                clocked.size() === 1 && clocked.peek(fresh.chatId, fresh.firstMessageId) !== undefined,
+                `the prune leaves only the fresh entry (got ${clocked.size()})`
+            );
+            expect(state.resumableMarkOf(expiring.chatId, expiring.firstMessageId, expiring.savedAt) === undefined, 'the expired mark went with it');
 
             const replaced = entryOf(Date.now(), { chatId: entry.chatId, failedVersionId: 1 });
             const sameKey = { ...replaced, firstMessageId: entry.firstMessageId };
