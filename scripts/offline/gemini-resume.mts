@@ -29,6 +29,7 @@ import {
     event,
     frozenCopyOf,
     json,
+    nonPlainPaths,
     signature,
     statusTexts,
     textOf,
@@ -577,6 +578,10 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
                 ),
                 'each starts with the old journal, chunk for chunk, and holds no replay flag'
             );
+            expect(
+                resumed.checkpoints.every((item) => nonPlainPaths(item).length === 0),
+                'and each is plain data like any other checkpoint'
+            );
             const added = resumed.checkpoints.at(-1)?.journal.slice(old.length) ?? [];
             expect(textOf(added, 'thinking') === 'plan r2', `then round 2's own output (got ${json(added)})`);
             expect(frozenCopyOf(checkpoint) === frozen, 'the checkpoint resumed from is unchanged, twice over');
@@ -663,6 +668,23 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
                 expect(errorMessage(rejected.error).includes(message), `${label}: rejected (got ${errorMessage(rejected.error)})`);
                 expect(rejected.chunks.length === 0 && vertex.requests.length === 0, `${label}: nothing yielded, nothing sent`);
             }
+        },
+    },
+    {
+        name: "a resumed round never takes round 1's 400 fallback",
+        body: async () => {
+            reset([callsRound('r1', [{ name: 'lookup_a' }]), httpErrorReply(400, BAD_REQUEST)]);
+            const checkpoint = lastCheckpoint(await runTurn());
+
+            reset([
+                httpErrorReply(400, `Invalid JSON payload received. Unknown name "$schema" at 'tools[2].function_declarations[0].parameters'`),
+                answer('never sent'),
+            ]);
+            const rejected = await runTurn({ resumeFrom: checkpoint });
+            expect(
+                asRecord(rejected.error).status === 400 && vertex.requests.length === 1,
+                `the 400 ends the resume, no request without the declarations (got ${vertex.requests.length})`
+            );
         },
     },
     {
