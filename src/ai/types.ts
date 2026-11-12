@@ -1,6 +1,7 @@
 /**
  * AI Platform unified types
  */
+import type { ToolLoopCheckpoint, ToolLoopCheckpointSink } from './tools/tool-loop-checkpoint.js';
 import type { TurnTools } from './tools/tool-types.js';
 import type { UsageSink } from './usage/usage-types.js';
 
@@ -218,6 +219,11 @@ export interface StreamChunk {
     status?: ToolStatus;
     agentStats?: AgentStats;
     rawResponse?: unknown;
+    /**
+     * Replayed from a checkpoint's journal: content the interrupted version
+     * already produced, shown again and not newly generated.
+     */
+    replay?: boolean;
 }
 
 // AI response result
@@ -266,6 +272,18 @@ export interface PlatformConfig {
      * own Vertex reads it; every other lane ignores the field.
      */
     serviceTier?: 'priority';
+    /**
+     * Gets a new checkpoint each time the tool loop reaches a point it could
+     * be resumed from; the caller keeps the last one. Only the Gemini tool
+     * loop calls it.
+     */
+    checkpointSink?: ToolLoopCheckpointSink;
+    /**
+     * Continue an interrupted tool loop: `messages` is ignored, the
+     * checkpoint's journal is replayed first (chunks marked `replay`), then
+     * the loop opens the round the checkpoint had ready.
+     */
+    resumeFrom?: ToolLoopCheckpoint;
 }
 
 // Model capabilities
