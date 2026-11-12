@@ -581,12 +581,14 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
             const controller = new AbortController();
             reset([httpErrorReply(429, RATE_LIMITED), answer('never sent')]);
             platform.onSleep = () => controller.abort();
+            const usageSink = createUsageSink();
 
-            const { error, chunks } = await runTurn({ signal: controller.signal });
+            const { error, chunks } = await runTurn({ signal: controller.signal, usageSink });
 
             expect(vertex.requests.length === 1, `nothing is sent after the stop (got ${vertex.requests.length})`);
             expect(errorMessage(error) === 'Aborted', `the reply ends as stopped (got ${errorMessage(error)})`);
             expect(statusTexts(chunks).length === 1, 'the waiting status was the last thing shown');
+            expect(usageSink.totals().roundRetries === 0, `the retry that never went out is not counted (got ${usageSink.totals().roundRetries})`);
         },
     },
     {

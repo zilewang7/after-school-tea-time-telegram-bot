@@ -252,9 +252,10 @@ export async function* runRecoverableRound(
         }
         counters = decision.counters;
         console.warn(formatRetryLine(facts, decision.waitMs));
-        usageSink?.addRecovery();
         yield waitingStatus(roundNumber, decision.kind, decision.waitMs, attempt + 1);
         statusShown = true;
         await recovery.sleep(decision.waitMs, signal);
+        // Counted once the wait is over: a stop during it sends nothing again
+        usageSink?.addRecovery();
     }
 }
