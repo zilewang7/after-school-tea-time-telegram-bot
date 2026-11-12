@@ -23,6 +23,11 @@ export interface ChatSettingsPatch {
     settingsLocked?: boolean;
     /** Per-chat tool switches; null = every group follows the env. Only the owner may touch `sms` */
     toolOverrides?: ToolOverrides | null;
+    /**
+     * Priority PayGo for Gemini; null = follow the global switch. Owner only;
+     * true only where it can take effect (global on, or a TOOL_CHAT_IDS chat)
+     */
+    geminiPriority?: boolean | null;
 }
 
 export type ChatSettingKey = keyof ChatSettingsPatch;
@@ -34,6 +39,7 @@ const CHAT_SETTING_KEYS: readonly ChatSettingKey[] = [
     'paused',
     'settingsLocked',
     'toolOverrides',
+    'geminiPriority',
 ];
 
 /** `conflict`: the caller edited a version that someone else has since replaced */
@@ -46,7 +52,18 @@ export interface ChatSettingValues {
     paused: boolean;
     settingsLocked: boolean;
     toolOverrides: ToolOverrides | null;
+    geminiPriority: boolean | null;
 }
+
+/** Who asks, and what the chat allows; the service reads both before the rules run */
+export interface PatchContext {
+    actorIsOwner: boolean;
+    /** Priority PayGo may be switched on here: the global switch is on, or the chat is in TOOL_CHAT_IDS */
+    geminiPriorityCanEnable: boolean;
+}
+
+/** The panel shows it next to the disabled "on" choice as well */
+export const GEMINI_PRIORITY_NOT_ALLOWED_MESSAGE = '全局关闭时，只有工具白名单里的会话可以单独开启';
 
 export interface ChatSettingChange {
     key: ChatSettingKey;
@@ -97,6 +114,15 @@ export const normalizePromptAddendum = (raw: unknown): Normalized<string | null>
 const normalizeFlag = (raw: unknown, key: ChatSettingKey): Normalized<boolean> =>
     typeof raw === 'boolean' ? { ok: true, value: raw } : { ok: false, message: `${key} 必须是布尔值` };
 
+/** A three-state switch: true / false, or null for "not set, follow the global value" */
+export const normalizeNullableFlag = (raw: unknown, key: ChatSettingKey): Normalized<boolean | null> =>
+    raw === null || typeof raw === 'boolean'
+        ? { ok: true, value: raw }
+        : { ok: false, message: `${key} 必须是布尔值或 null` };
+
+/** 'true' / 'false', and NULL for an unset three-state switch (never the text 'null') */
+const nullableFlagAuditText = (value: boolean | null): string | null => (value === null ? null : String(value));
+
 const unchanged = <T>(value: T): Normalized<T> => ({ ok: true, value });
 
 /** Every key's audit text: booleans as 'true' / 'false', overrides as canonical JSON */
@@ -106,6 +132,7 @@ const auditValuesOf = (values: ChatSettingValues): Record<ChatSettingKey, string
     paused: String(values.paused),
     settingsLocked: String(values.settingsLocked),
     toolOverrides: canonicalToolOverridesJson(values.toolOverrides),
+    geminiPriority: nullableFlagAuditText(values.geminiPriority),
 });
 
 /** Whether one key's value actually changes (overrides compare as canonical JSON) */
@@ -115,6 +142,7 @@ const CHANGED: Record<ChatSettingKey, (current: ChatSettingValues, next: ChatSet
     paused: (current, next) => current.paused !== next.paused,
     settingsLocked: (current, next) => current.settingsLocked !== next.settingsLocked,
     toolOverrides: (current, next) => !toolOverridesEqual(current.toolOverrides, next.toolOverrides),
+    geminiPriority: (current, next) => current.geminiPriority !== next.geminiPriority,
 };
 
 /** Normalize every key present in the patch; absent keys keep `current`. The first bad value wins */
@@ -135,6 +163,10 @@ const applyPatchValues = (current: ChatSettingValues, patch: ChatSettingsPatch):
         ? unchanged(current.toolOverrides)
         : normalizeToolOverrides(patch.toolOverrides);
     if (!toolOverrides.ok) return toolOverrides;
+    const geminiPriority = patch.geminiPriority === undefined
+        ? unchanged(current.geminiPriority)
+        : normalizeNullableFlag(patch.geminiPriority, 'geminiPriority');
+    if (!geminiPriority.ok) return geminiPriority;
     return {
         ok: true,
         value: {
@@ -143,6 +175,7 @@ const applyPatchValues = (current: ChatSettingValues, patch: ChatSettingsPatch):
             paused: paused.value,
             settingsLocked: settingsLocked.value,
             toolOverrides: toolOverrides.value,
+            geminiPriority: geminiPriority.value,
         },
     };
 };
@@ -157,14 +190,18 @@ const smsChanged = (current: ToolOverrides | null, next: ToolOverrides | null): 
  *    value is looked at);
  * 2. a non-owner touches settingsLocked → forbidden;
  * 3. a value is malformed → invalid;
- * 4. a non-owner changes the sms switch → forbidden.
- * Keys whose normalized value equals the current one are not changes.
+ * 4. a non-owner changes the sms switch → forbidden;
+ * 5. a non-owner changes the Priority PayGo switch → forbidden;
+ * 6. the Priority PayGo switch changes to on where it cannot take effect → forbidden.
+ * Keys whose normalized value equals the current one are not changes, so a
+ * stored "on" the global switch no longer allows does not block other keys.
  */
 export const resolveChatSettingsPatch = (
     current: ChatSettingValues,
     patch: ChatSettingsPatch,
-    actorIsOwner: boolean
+    context: PatchContext
 ): PatchResolution => {
+    const { actorIsOwner } = context;
     if (current.settingsLocked && !actorIsOwner) {
         return { kind: 'rejected', code: 'locked', message: '本聊天的设置已被机主锁定' };
     }
@@ -177,6 +214,14 @@ export const resolveChatSettingsPatch = (
     const next = applied.value;
     if (!actorIsOwner && smsChanged(current.toolOverrides, next.toolOverrides)) {
         return { kind: 'rejected', code: 'forbidden', message: '只有机主可以开关本聊天的短信工具' };
+    }
+    // Priority PayGo is billed to the owner at 1.8 times the standard price
+    const priorityChanged = CHANGED.geminiPriority(current, next);
+    if (!actorIsOwner && priorityChanged) {
+        return { kind: 'rejected', code: 'forbidden', message: '只有机主可以开关本聊天的 Priority PayGo' };
+    }
+    if (priorityChanged && next.geminiPriority === true && !context.geminiPriorityCanEnable) {
+        return { kind: 'rejected', code: 'forbidden', message: GEMINI_PRIORITY_NOT_ALLOWED_MESSAGE };
     }
 
     const oldValues = auditValuesOf(current);

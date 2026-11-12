@@ -6,7 +6,12 @@
  * path reads settings synchronously and never touches the database for them.
  * Before the load, every chat reads as "no settings" and the global default
  * model falls back to the env, which is what offline scripts rely on.
+ *
+ * The effective Priority PayGo switch is resolved here rather than in
+ * src/config (next to resolveChatModel): config may not import services.
  */
+import { match } from 'ts-pattern';
+import { getToolConfig } from '../config/tool-config.js';
 import { ChatSettingsRecord } from '../db/chatSettingsDTO.js';
 import { GlobalSetting } from '../db/globalSettingDTO.js';
 import { parseStoredToolOverrides, type ToolOverrides } from './tool-overrides.js';
@@ -21,6 +26,8 @@ export interface ChatSettings {
     settingsLocked: boolean;
     /** The panel's per-chat tool switches; null = every group follows the env */
     toolOverrides: ToolOverrides | null;
+    /** Priority PayGo for Gemini; null = follow the global switch (see resolveGeminiPriority) */
+    geminiPriority: boolean | null;
     updatedAt: Date;
     /** Telegram user id of the last writer */
     updatedBy: number | null;
@@ -28,6 +35,9 @@ export interface ChatSettings {
 
 /** global_settings key of the panel-set default model */
 export const DEFAULT_MODEL_SETTING_KEY = 'defaultModel';
+
+/** global_settings key of the global Priority PayGo switch: 'true' / 'false', no row = off */
+export const DEFAULT_GEMINI_PRIORITY_SETTING_KEY = 'defaultGeminiPriority';
 
 /** Last resort when DEFAULT_MODEL is unset or empty (`.env.example` leaves it empty) */
 const FALLBACK_DEFAULT_MODEL = 'gpt-5';
@@ -37,6 +47,10 @@ const globalSettingsByKey = new Map<string, string>();
 let cacheLoaded = false;
 let inflightLoad: Promise<void> | null = null;
 
+/** A nullable BOOLEAN column: NULL (or a row from before the column) stays unset */
+const storedNullableFlag = (value: boolean | null | undefined): boolean | null =>
+    value === null || value === undefined ? null : value === true;
+
 const toChatSettings = (record: ChatSettingsRecord): ChatSettings => ({
     chatId: record.chatId,
     model: record.model ?? null,
@@ -44,6 +58,7 @@ const toChatSettings = (record: ChatSettingsRecord): ChatSettings => ({
     paused: record.paused === true,
     settingsLocked: record.settingsLocked === true,
     toolOverrides: parseStoredToolOverrides(record.toolOverrides ?? null),
+    geminiPriority: storedNullableFlag(record.geminiPriority),
     updatedAt: record.updatedAt,
     updatedBy: record.updatedBy ?? null,
 });
@@ -97,6 +112,37 @@ export const getGlobalDefaultModel = (): string =>
 
 export const getGlobalDefaultModelSource = (): 'panel' | 'env' =>
     getStoredGlobalSetting(DEFAULT_MODEL_SETTING_KEY) === null ? 'env' : 'panel';
+
+/** The global Priority PayGo switch; off unless the owner turned it on */
+export const getGlobalGeminiPriority = (): boolean =>
+    getStoredGlobalSetting(DEFAULT_GEMINI_PRIORITY_SETTING_KEY) === 'true';
+
+/**
+ * Whether the chat may have Priority PayGo on: always while the global switch
+ * is on; with it off, only the chats of the env whitelist TOOL_CHAT_IDS (the
+ * env list itself, not the panel's per-tool switches). The priority tier
+ * costs the owner 1.8 times the standard price.
+ */
+export const canEnableGeminiPriority = (chatId: number): boolean =>
+    getGlobalGeminiPriority() || getToolConfig().toolChatIds.has(chatId);
+
+/**
+ * Whether the chat's Gemini requests ask for Priority PayGo (design §8.2):
+ *
+ * | chat value | global on | global off                   |
+ * | unset      | on        | off                          |
+ * | off        | off       | off                          |
+ * | on         | on        | on only for TOOL_CHAT_IDS    |
+ *
+ * A stored "on" that the global switch no longer allows stays in the row and
+ * applies again once the global switch is back on.
+ */
+export const resolveGeminiPriority = (chatId: number): boolean =>
+    match(getChatSettings(chatId)?.geminiPriority ?? null)
+        .with(null, () => getGlobalGeminiPriority())
+        .with(false, () => false)
+        .with(true, () => canEnableGeminiPriority(chatId))
+        .exhaustive();
 
 /** Write-side: only chat-settings-service calls this, after the row is committed */
 export const storeChatSettings = (settings: ChatSettings): void => {
