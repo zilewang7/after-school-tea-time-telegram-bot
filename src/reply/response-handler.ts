@@ -60,6 +60,13 @@ import {
 } from '../telegram/formatters/thinking-link.js';
 import { renderThinkingQuote } from '../telegram/formatters/quoted-render.js';
 import { buildFinalMessages, type FinalMessageChunk } from '../telegram/formatters/final-message-builder.js';
+import {
+    STREAMING_MAX_ENTITIES,
+    STREAMING_MAX_LENGTH,
+    TELEGRAM_MAX_LENGTH,
+} from '../telegram/formatters/message-budget.js';
+import { layOutChunks } from '../telegram/final-message-layout.js';
+import { buildFinalChunks, renderedCoTLength, shouldLinkCoT } from './final-layout.js';
 import { splitRawByFits, splitAtLastNewline } from '../telegram/formatters/smart-splitter.js';
 import { buildImageCaption, type ImageCaptionFields } from './tools/image-message.js';
 import {
@@ -89,10 +96,11 @@ import { noteStreamChunk } from '../services/reply-metrics-draft.js';
 import { findStickerByPackIndex } from '../services/sticker-catalog.js';
 import { downloadStickerPreview } from '../services/sticker-set-service.js';
 
-const MESSAGE_LENGTH_LIMIT = 3900;
+/** Streaming budget; the final layout re-renders per message (TELEGRAM_MAX_LENGTH) */
+const MESSAGE_LENGTH_LIMIT = STREAMING_MAX_LENGTH;
 /** Per-message entity budget during streaming (server cap is ~100; the
  *  final pass re-renders per message so a little headroom is enough) */
-const MESSAGE_ENTITY_LIMIT = 85;
+const MESSAGE_ENTITY_LIMIT = STREAMING_MAX_ENTITIES;
 const THINKING_BUFFER_LIMIT = 10000;
 /** Link-mode trigger: the rendered thinking reaches the message budget minus the
  *  status-line headroom, exactly where the legacy split switch fires */
@@ -318,6 +326,16 @@ const contextLinkResolverFor = (
     buildMessageLinkResolver(chatContext.chatId, chatContext.userMessageId);
 
 /**
+ * Whether the editor is on a continuation message (the reply already split).
+ * A continuation never shows the chain of thought: the reply's first message
+ * owns the CoT quote, and thinking that arrives after the split stays in the
+ * stored version. Rendering it here put a second, partial CoT quote at the top
+ * of a body message, which read as if the answer restarted mid-reply.
+ */
+const isContinuationMessage = (chatContext: ChatContext): boolean =>
+    chatContext.session.messageIds.length > 1;
+
+/**
  * How much of the full thinking the link-mode preview reads from. Link mode
  * never splits the message, so the display buffer does reach its flood cap and
  * turns into its omission placeholder; the preview must show the real CoT tail
@@ -345,6 +363,7 @@ const formatStateForDisplay = (
     isProcessing: boolean,
     resolveContextLink?: ContextLinkResolver,
     thinkingLink?: ThinkingLinkRef,
+    suppressThinking = false,
 ): RenderedMessage => {
     // Link mode: the CoT lives behind the link, so the message only shows the
     // fixed-height link + last-two-sections preview instead of a quote
@@ -360,7 +379,7 @@ const formatStateForDisplay = (
 
     const parts: (RenderedMessage | string)[] = [];
 
-    if (state.thinkingBuffer) {
+    if (state.thinkingBuffer && !suppressThinking) {
         parts.push(
             isProcessing
                 ? formatThinkingForStreaming(state.thinkingBuffer, {
@@ -404,7 +423,9 @@ const finalizeCurrentMessage = async (
     const finalContent = formatStateForDisplay(
         state,
         false,
-        contextLinkResolverFor(chatContext)
+        contextLinkResolverFor(chatContext),
+        undefined,
+        isContinuationMessage(chatContext)
     );
 
     // Update message with final content (no status text - isFinal)
@@ -686,7 +707,13 @@ export const processStream = async (
             session.thinkingLink !== undefined && !session.thinkingLink.emitted
                 ? session.thinkingLink
                 : undefined;
-        const rendered = formatStateForDisplay(state, true, resolveContextLink, linkForDisplay);
+        const rendered = formatStateForDisplay(
+            state,
+            true,
+            resolveContextLink,
+            linkForDisplay,
+            isContinuationMessage(chatContext)
+        );
 
         // A pending link message is bounded by design: the message-budget split
         // only applies to the legacy shape (and to the body once the link is out)
@@ -1250,6 +1277,128 @@ const deliverReplyMedia = async (
 };
 
 /**
+ * What the final delivery shows: the layout's chunks, and whether they replace
+ * the messages the stream left behind.
+ */
+interface ReplyFinalLayout {
+    readonly chunks: FinalMessageChunk[];
+    readonly reLayout: boolean;
+    /**
+     * The reply's first message is the already-delivered link message: the
+     * chunks are laid out over the messages after it.
+     */
+    readonly skipFirstMessage?: boolean;
+}
+
+/**
+ * Render the reply's final layout from its complete text and thinking.
+ *
+ * The stream's messages are built from partial display buffers: the first one
+ * closes at the streaming budget, so it holds the CoT as it stood at that
+ * moment, and continuations never show thinking. The final layout is computed
+ * again from the session's complete buffers, so the first message carries the
+ * complete CoT — or, when the CoT renders to at least half a message and the
+ * reply has to split, the long-CoT link message instead.
+ */
+const buildReplyFinalLayout = async (
+    chatContext: ChatContext,
+    response: AIResponse,
+    resolveContextLink: ContextLinkResolver | undefined,
+    wasStoppedByUser: boolean
+): Promise<ReplyFinalLayout> => {
+    const { session } = chatContext;
+
+    // The stream syncs the complete buffers on every chunk; a caller that never
+    // streamed (an image-chat turn, a direct final delivery) only has the response.
+    const fullText = session.textBuffer !== '' ? session.textBuffer : response.text;
+    const fullThinking =
+        session.thinkingBuffer !== '' ? session.thinkingBuffer : response.thinkingText;
+
+    // Link mode decided while streaming: the link message leads the reply.
+    if (session.thinkingLink !== undefined) {
+        // The body is rendered from the complete text, not from the stream's
+        // leftover buffer: a long body may have split across several
+        // continuations, and each of them needs its final chunk.
+        const builtChunks = buildFinalChunks({
+            text: fullText,
+            thinking: fullThinking,
+            thinkingLink: session.thinkingLink,
+            agentStats: response.agentStats,
+            groundingData: response.groundingData,
+            wasStoppedByUser,
+            resolveContextLink,
+        });
+        if (session.thinkingLink.emitted !== true) {
+            // The link was never delivered: the existing final delivery replays
+            // it as the first chunk and sends the body after it
+            return { chunks: builtChunks, reLayout: false };
+        }
+        // The link message is already final: lay the body out over the messages
+        // after it (the stream's body messages were built from partial buffers)
+        return { chunks: builtChunks.slice(1), reLayout: true, skipFirstMessage: true };
+    }
+    // A CoT longer than one message cannot stay inline; measuring it would mean
+    // rendering up to 500k characters for a decision that is already made.
+    const inlineThinking = fullThinking.length <= TELEGRAM_MAX_LENGTH;
+    const renderedThinking = inlineThinking ? renderedCoTLength(fullThinking) : 0;
+    const inlineChunks = inlineThinking
+        ? buildFinalChunks({
+              text: fullText,
+              thinking: fullThinking,
+              agentStats: response.agentStats,
+              groundingData: response.groundingData,
+              wasStoppedByUser,
+              resolveContextLink,
+          })
+        : undefined;
+
+    if (inlineChunks !== undefined) {
+        const reLayout = inlineChunks.length > 1 || session.messageIds.length > 1;
+        if (!reLayout) return { chunks: inlineChunks, reLayout };
+        if (!shouldLinkCoT({ renderedThinking, chunkCount: inlineChunks.length })) {
+            return { chunks: inlineChunks, reLayout };
+        }
+    }
+
+    const ref = await beginThinkingLink({
+        chatId: chatContext.chatId,
+        firstMessageId: session.firstMessageId,
+        versionId: session.versionCount + 1,
+        model: session.model,
+    });
+    if (ref === null) {
+        // No link available: keep the streamed layout as it is
+        if (inlineChunks !== undefined) return { chunks: inlineChunks, reLayout: true };
+        const streamedChunks = buildFinalMessages({
+            text: response.text,
+            // A continuation never shows the CoT quote, even in the fallback
+            thinking: isContinuationMessage(chatContext) ? undefined : response.thinkingText,
+            agentStats: response.agentStats,
+            wasStoppedByUser,
+            groundingData: response.groundingData,
+            resolveContextLink,
+        });
+        return { chunks: streamedChunks, reLayout: false };
+    }
+
+    // The link chunk is delivered by the re-layout, not during streaming
+    session.thinkingLink = { ...ref, key: liveThinkingKeyOf(session), emitted: false };
+    const linkedChunks = buildFinalChunks({
+        text: fullText,
+        thinking: fullThinking,
+        thinkingLink: ref,
+        agentStats: response.agentStats,
+        groundingData: response.groundingData,
+        wasStoppedByUser,
+        resolveContextLink,
+    });
+    return {
+        chunks: linkedChunks,
+        reLayout: linkedChunks.length > 1 || session.messageIds.length > 1,
+    };
+};
+
+/**
  * Send final response (text and/or images)
  * Handles the last message in the chain (may be first or continuation)
  */
@@ -1269,26 +1418,15 @@ export const sendFinalResponse = async (
     const wasStoppedByUser = session.streamController.isAborted();
     const resolveContextLink = contextLinkResolverFor(chatContext);
 
-    const builtChunks = buildFinalMessages({
-        text: response.text,
-        // The link message's stats must count the whole CoT, while the stream
-        // only returns its 10k display buffer: in link mode the session holds
-        // the full thinking (the body ignores `thinking` when a link exists)
-        thinking:
-            session.thinkingLink === undefined
-                ? response.thinkingText
-                : session.thinkingBuffer,
-        // Link mode: the reply leads with the link message instead of the CoT
-        thinkingLink: session.thinkingLink,
-        agentStats: response.agentStats,
-        wasStoppedByUser,
-        groundingData: response.groundingData,
+    // The final layout is rendered from the complete reply, not from the
+    // stream's leftover display buffers: see buildReplyFinalLayout.
+    const layout = await buildReplyFinalLayout(
+        chatContext,
+        response,
         resolveContextLink,
-    });
-    // A link message emitted during streaming is already in the chat: its chunk
-    // must not be re-delivered, it only leads the stored layout
-    const finalChunks =
-        session.thinkingLink?.emitted === true ? builtChunks.slice(1) : builtChunks;
+        wasStoppedByUser
+    );
+    const finalChunks = layout.chunks;
     // Only the first image is delivered, and it carries the reply's image caption
     const imageCaptionFields = buildImageCaption(response.imageCaption, resolveContextLink);
     // The file's caption rides on the file itself, so a version switch keeps it
@@ -1304,6 +1442,70 @@ export const sendFinalResponse = async (
 
     if (response.groundingData?.length) {
         console.log('[response-handler] Grounding metadata:', JSON.stringify(response.groundingData));
+    }
+
+    // The final layout replaces the messages the stream left behind: the first
+    // message gets the complete CoT (or the long-CoT link) and every text
+    // message is rewritten to its final chunk, so the live chat matches a replay.
+    if (layout.reLayout && finalChunks.length > 0) {
+        const hasMedia =
+            response.images.length > 0 ||
+            (response.stickers?.length ?? 0) > 0 ||
+            (response.files?.length ?? 0) > 0 ||
+            (response.widgets?.length ?? 0) > 0;
+        console.log(
+            `[response-handler] Final layout replaces the streamed messages: chunks=${finalChunks.length} messages=${session.messageIds.length}`
+        );
+        // A delivered link message leads the reply and stays untouched; the body
+        // chunks are laid out over the messages after it.
+        const layoutMessageIds =
+            layout.skipFirstMessage === true ? session.messageIds.slice(1) : session.messageIds;
+        const laidOut = await layOutChunks({
+            api: ctx.api,
+            chatId,
+            userMessageId,
+            firstMessageId: session.firstMessageId,
+            messageIds: layoutMessageIds,
+            chunks: finalChunks,
+        });
+        session.messageIds =
+            layout.skipFirstMessage === true
+                ? [...session.messageIds.slice(0, 1), ...laidOut.messageIds]
+                : laidOut.messageIds;
+        session.currentMessageId = laidOut.currentMessageId;
+        if (!laidOut.allDelivered) {
+            console.warn('[response-handler] Final layout did not fully deliver');
+        }
+
+        if (hasMedia) {
+            await deliverReplyMedia(
+                chatContext,
+                response,
+                imageCaptionFields,
+                fileCaptionFields,
+                widgetCaptionFields
+            );
+        }
+
+        await session.finalize(finalizeOptions);
+
+        const getBotResponseForButtons = async () => {
+            const { getBotResponse } = await import('../db/index.js');
+            return getBotResponse(chatId, session.firstMessageId);
+        };
+        const botResponse = await getBotResponseForButtons();
+        const finalButtonState = botResponse?.buttonState ?? ButtonState.NONE;
+        if (finalButtonState !== ButtonState.NONE) {
+            const finalButtons = buildResponseButtons(
+                finalButtonState,
+                botResponse?.currentVersionIndex ?? 0,
+                botResponse?.getVersions().length ?? 1
+            );
+            await editCurrentMessageButtons(chatContext, finalButtons);
+        } else {
+            await healEditDetectedButtons(chatContext);
+        }
+        return;
     }
 
     // Check if final message needs multi-message output
@@ -1597,7 +1799,12 @@ export const handleResponseError = async (
 
     const errorRendered = buildErrorDisplay({
         text: partialText,
-        thinking: pendingLink === undefined ? partialThinking : undefined,
+        // A continuation shows the error against its own text only, for the same
+        // reason it never shows the CoT quote (see isContinuationMessage)
+        thinking:
+            pendingLink === undefined && !isContinuationMessage(chatContext)
+                ? partialThinking
+                : undefined,
         thinkingLink: pendingLink,
         // The stats line counts the full thinking, not the display buffer
         thinkingLinkSummary:

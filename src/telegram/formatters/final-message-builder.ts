@@ -113,6 +113,59 @@ export const buildFinalMessages = (
         : bodyChunks;
 };
 
+/**
+ * Whether the inline CoT quote got cut by the split: its blockquote leads the
+ * first chunk, so a shorter blockquote there is its cut head — the rest of the
+ * CoT would reopen as a quote on a later message.
+ */
+const quoteSplitAcrossChunks = (
+    quote: RenderedMessage,
+    chunks: readonly RenderedMessage[]
+): boolean => {
+    const first = chunks[0];
+    if (first === undefined) return false;
+    const leading = first.entities.find(
+        (entity) => entity.offset === 0 && entity.type === 'expandable_blockquote'
+    );
+    return leading === undefined || leading.length < quote.text.length;
+};
+
+/**
+ * The layout that keeps the whole CoT quote on the first message: the body is
+ * split with the full budget, then the first body chunk is cut down to what the
+ * quote leaves. Only used when the regular split would cut the quote itself (a
+ * body without paragraph breaks makes the splitter fall back to the quote's
+ * last paragraph boundary).
+ */
+const splitAfterQuote = (
+    quote: RenderedMessage,
+    body: RenderedMessage,
+    maxLength: number
+): RenderedMessage[] => {
+    const remainingLength = maxLength - quote.text.length - 1;
+    const remainingEntities = TELEGRAM_MAX_ENTITIES - quote.entities.length;
+    const bodyChunks = body.text
+        ? splitMessage(body, { maxLength, maxEntities: TELEGRAM_MAX_ENTITIES })
+        : [];
+    if (remainingLength < 1 || remainingEntities < 1 || bodyChunks.length === 0) {
+        return [quote, ...bodyChunks];
+    }
+    const firstBody = bodyChunks[0];
+    const pieces =
+        firstBody === undefined
+            ? []
+            : splitMessage(firstBody, {
+                  maxLength: remainingLength,
+                  maxEntities: remainingEntities,
+              });
+    const firstPiece = pieces[0];
+    const chunks =
+        firstPiece === undefined
+            ? [quote, ...bodyChunks]
+            : [concatMessages(quote, '\n', firstPiece), ...pieces.slice(1), ...bodyChunks.slice(1)];
+    return chunks.filter((chunk) => chunk.text.length > 0);
+};
+
 /** Body chunks: answer text, [stopped] marker, tool / search records */
 const buildBodyChunks = (
     options: FinalMessageBuildOptions
@@ -128,8 +181,6 @@ const buildBodyChunks = (
         resolveContextLink,
     } = options;
 
-    const parts: (RenderedMessage | string)[] = [];
-
     // The Gemini search-grounding step the footer is built from; its supports
     // place the superscript markers in the body
     const searchGrounding = (groundingData ?? []).find(isSearchGroundingStep);
@@ -142,14 +193,19 @@ const buildBodyChunks = (
         ...googleSearchBlocks.map((block) => block.message),
     ];
 
-    // In link mode the thinking lives behind the link, never in the body
-    if (thinking && !thinkingLink) {
-        parts.push(renderThinkingQuote(thinking, { expandable: true }));
-    }
+    // The CoT quote is rendered on its own so a split can keep it whole: the
+    // first message carries the complete thinking (see splitAfterQuote).
+    const quote =
+        thinking && !thinkingLink
+            ? linkifyContextNumbers(
+                  renderThinkingQuote(thinking, { expandable: true }),
+                  resolveContextLink
+              )
+            : undefined;
 
+    const bodyParts: (RenderedMessage | string)[] = [];
     if (text) {
-        if (parts.length) parts.push('\n');
-        parts.push(renderMarkdown(withCitations(text, searchGrounding)));
+        bodyParts.push(renderMarkdown(withCitations(text, searchGrounding)));
     }
 
     // A bare stopped reply has no place for the marker: the link message must
@@ -158,23 +214,33 @@ const buildBodyChunks = (
         wasStoppedByUser === true &&
         (thinkingLink === undefined || Boolean(text) || recordSections.length > 0);
     if (stoppedMarkerFits) {
-        parts.push('\n\n', plainText('[stopped]'));
+        bodyParts.push('\n\n', plainText('[stopped]'));
     }
-
     for (const section of recordSections) {
-        parts.push('\n', section);
+        bodyParts.push('\n', section);
     }
 
-    if (!parts.length) return [];
+    const body = bodyParts.length
+        ? linkifyContextNumbers(concatMessages(...bodyParts), resolveContextLink)
+        : concatMessages();
 
-    // Before the split, so the added link entities count against its budget
-    const combined = linkifyContextNumbers(concatMessages(...parts), resolveContextLink);
-    if (!combined.text.trim()) return [];
+    if (quote === undefined && body.text.trim() === '') return [];
 
-    const chunks = splitMessage(combined, {
-        maxLength,
-        maxEntities: TELEGRAM_MAX_ENTITIES,
-    }).filter((chunk) => chunk.text.length > 0);
+    let chunks: RenderedMessage[];
+    if (quote === undefined) {
+        chunks = splitMessage(body, { maxLength, maxEntities: TELEGRAM_MAX_ENTITIES });
+    } else if (body.text.trim() === '') {
+        chunks = splitMessage(quote, { maxLength, maxEntities: TELEGRAM_MAX_ENTITIES });
+    } else {
+        const combined = concatMessages(quote, '\n', body);
+        chunks = splitMessage(combined, { maxLength, maxEntities: TELEGRAM_MAX_ENTITIES });
+        if (quote.text.length <= maxLength && quoteSplitAcrossChunks(quote, chunks)) {
+            chunks = splitAfterQuote(quote, body, maxLength);
+        }
+    }
 
-    return applyLinkPreviewPolicy(chunks, googleSearchBlocks);
+    return applyLinkPreviewPolicy(
+        chunks.filter((chunk) => chunk.text.length > 0),
+        googleSearchBlocks
+    );
 };

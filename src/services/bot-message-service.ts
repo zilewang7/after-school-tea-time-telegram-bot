@@ -29,6 +29,7 @@ import { appendErrorLine } from '../telegram/formatters/error-display.js';
 import { formatErrorForUser } from '../shared/errors.js';
 import { stripContextLabel } from '../reply/context-label.js';
 import { toApiEntities } from '../telegram/api-entities.js';
+import { layOutChunks } from '../telegram/final-message-layout.js';
 import { buildResponseButtons } from '../cmd/menus/index.js';
 import { to, isErr, type Result } from '../shared/result.js';
 import {
@@ -39,7 +40,7 @@ import {
     unregisterContinuation,
     unregisterReplyInFlight,
 } from '../state.js';
-import { runApiCall, submitEdit } from '../telegram/edit-coordinator.js';
+import { runApiCall } from '../telegram/edit-coordinator.js';
 import { decideFinalButtonState } from './final-button-state.js';
 import { sniffMediaMime } from '../ai/image-generation/image-mime.js';
 import { buildImageCaption } from '../reply/tools/image-message.js';
@@ -1350,58 +1351,42 @@ export const refreshToFinalState = async (
         ? version.messageIds.filter((id) => id !== version.currentMessageId)
         : version.messageIds;
 
-    let allDelivered = true;
-    const editableCount = Math.min(chunks.length, textMessageIds.length);
+    // Lay the stored layout over the reply's text messages: edits in order, sends
+    // the missing chunks, deletes the ones the final layout no longer needs. The
+    // final delivery uses the same helper, so a replay matches the live layout.
+    const laidOut = await layOutChunks({
+        api,
+        chatId,
+        userMessageId: response.userMessageId,
+        firstMessageId,
+        messageIds: textMessageIds,
+        chunks,
+        replyMarkup: hasMedia ? undefined : buttons,
+    });
+    let allDelivered = laidOut.allDelivered;
 
-    for (let i = 0; i < editableCount; i++) {
-        const messageId = textMessageIds[i];
-        const chunk = chunks[i];
-        if (messageId === undefined || chunk === undefined) continue;
-
-        const carriesButtons = !hasMedia && i === chunks.length - 1;
-        const delivered = await submitEdit(api, chatId, messageId, chunk.text, {
-            entities: chunk.entities,
-            replyMarkup: carriesButtons ? buttons : undefined,
-            linkPreviewOptions: chunk.linkPreviewOptions,
-            isFinal: true,
-        });
-        if (!delivered) allDelivered = false;
-    }
-
-    // Final content needs more messages than exist (stream died before a
-    // continuation was created): append the overflow chunks as new messages
-    if (chunks.length > textMessageIds.length) {
-        let messageIdsChanged = false;
-        for (let i = textMessageIds.length; i < chunks.length; i++) {
-            const chunk = chunks[i];
-            if (chunk === undefined) continue;
-            const carriesButtons = !hasMedia && i === chunks.length - 1;
-            const [sendErr, sentMsg] = await to(
-                runApiCall(chatId, () =>
-                    api.sendMessage(chatId, chunk.text, {
-                        entities: toApiEntities(chunk.entities),
-                        reply_parameters: { message_id: response.userMessageId },
-                        reply_markup: carriesButtons ? buttons : undefined,
-                        link_preview_options: chunk.linkPreviewOptions,
-                    })
-                )
-            );
-            if (sendErr) {
-                console.error('[bot-message-service] Refresh: failed to send overflow chunk:', sendErr);
-                allDelivered = false;
-                break;
-            }
-            version.messageIds.push(sentMsg.message_id);
-            if (!hasMedia) {
-                version.currentMessageId = sentMsg.message_id;
-            }
-            registerContinuation(chatId, sentMsg.message_id, firstMessageId);
-            messageIdsChanged = true;
-        }
-        if (messageIdsChanged) {
-            response.setVersions(versions);
-            await response.save();
-        }
+    // A media message ends the reply: new text chunks land after it in the chat,
+    // so the stored order keeps the media before them too.
+    const editedCount = Math.min(chunks.length, textMessageIds.length);
+    const nextMessageIds = hasMedia
+        ? [
+              ...laidOut.messageIds.slice(0, editedCount),
+              version.currentMessageId,
+              ...laidOut.messageIds.slice(editedCount),
+          ]
+        : laidOut.messageIds;
+    const nextCurrentMessageId = hasMedia
+        ? version.currentMessageId
+        : laidOut.currentMessageId;
+    const messageIdsChanged =
+        nextMessageIds.length !== version.messageIds.length ||
+        nextMessageIds.some((messageId, index) => messageId !== version.messageIds[index]) ||
+        nextCurrentMessageId !== version.currentMessageId;
+    if (messageIdsChanged) {
+        version.messageIds = nextMessageIds;
+        version.currentMessageId = nextCurrentMessageId;
+        response.setVersions(versions);
+        await response.save();
     }
 
     // The media message carries the buttons: refresh its markup separately
