@@ -360,6 +360,7 @@ export const handleReply = async (
             signal,
             tools,
             usageSink: chatContext.session.metrics.usage,
+            ...(settings.geminiPriority ? { serviceTier: 'priority' as const } : {}),
         })
     );
     if (isErr(streamResult)) {
