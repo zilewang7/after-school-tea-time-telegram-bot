@@ -44,6 +44,7 @@ const { createWorkspacePreviewTool } = await import('../../src/reply/tools/works
 const { createSendFileTool } = await import('../../src/reply/tools/send-file-tool.js');
 const { createSendWidgetTool } = await import('../../src/reply/tools/send-widget-tool.js');
 const { createReplyMediaState } = await import('../../src/reply/tools/reply-media-state.js');
+const { measureWidgetHtml } = await import('../../src/ai/widget/widget-size.js');
 const { clearExpiredData } = await import('../../src/db/autoSave.js');
 
 const CHAT = -1009999999999;
@@ -66,6 +67,17 @@ const PNG = Buffer.from(
 );
 
 const call = (handler: ToolHandler, args: Readonly<Record<string, unknown>>) => handler.execute(args, signal);
+
+/** Deterministic printable filler that deflate cannot shrink much (a hostile draft) */
+const randomHtmlOf = (length: number): string => {
+    const chars: string[] = [];
+    let seed = 987654321;
+    for (let index = 0; index < length; index += 1) {
+        seed = (seed * 48271) % 2147483647;
+        chars.push(String.fromCharCode(33 + (seed % 90)));
+    }
+    return chars.join('');
+};
 
 const captureConsole = async <T,>(body: () => Promise<T>): Promise<{ result: T; lines: string[] }> => {
     const lines: string[] = [];
@@ -94,7 +106,6 @@ const stateOf = (rootIds: readonly number[] = [ROOT, OTHER_ROOT]) =>
         chatId: CHAT,
         conversationRootIds: rootIds,
         quota: QUOTA,
-        callLimits: { writes: 20, reads: 20, lists: 10, deletes: 10, previews: 6 },
     });
 
 const write = (path: string, content: string, extra: Record<string, unknown> = {}) =>
@@ -314,6 +325,89 @@ const cases: { name: string; body: () => Promise<void> }[] = [
         },
     },
     {
+        name: 'html drafts report the widget budget on write, edit and list',
+        body: async () => {
+            await clearWorkspace();
+            const limits = { maxHtmlBytes: 32768, maxGzipBytes: 4096 };
+            const state = stateOf();
+            const writeTool = createWorkspaceWriteTool({ state, widgetLimits: limits });
+            const editTool = createWorkspaceEditTool({ state, widgetLimits: limits });
+            const listTool = createWorkspaceListTool({ state, widgetLimits: limits });
+
+            const small = '<div class="card">你好</div>';
+            const size = measureWidgetHtml(small);
+            const written = await call(writeTool, { path: 'widgets/card.html', content: small });
+            expect(
+                written.content.includes(`原文 ${size.rawBytes} B / 32768 B`),
+                `the write reports the raw size (got ${written.content})`
+            );
+            expect(
+                written.content.includes(`zlib9 ${size.zlibBytes} B / 4096 B`),
+                'the write reports the compressed size'
+            );
+            expect(written.content.includes('余 '), 'a draft under the limit shows the remaining room');
+
+            const note = await call(writeTool, { path: 'notes/plan.md', content: '# 计划' });
+            expect(!note.content.includes('widget 体积'), 'a non-HTML file gets no widget line');
+
+            const plain = await call(createWorkspaceWriteTool({ state }), {
+                path: 'widgets/plain.html',
+                content: small,
+            });
+            expect(!plain.content.includes('widget 体积'), 'without widget tools the write stays plain');
+
+            const edited = await call(editTool, {
+                path: 'widgets/card.html',
+                old_string: '你好',
+                new_string: '再见',
+            });
+            const editedSize = measureWidgetHtml('<div class="card">再见</div>');
+            expect(
+                edited.content.includes(`zlib9 ${editedSize.zlibBytes} B`),
+                `the edit reports the new compressed size (got ${edited.content})`
+            );
+
+            const listed = await call(listTool, {});
+            expect(listed.content.includes('HTML 草稿按 widget 计'), 'the list states the widget limits');
+            expect(listed.content.includes('zlib9'), 'the list shows the compressed size of the draft');
+            expect(listed.content.includes('widgets/plain.html'), 'the plain draft is listed too');
+            const plainList = await call(createWorkspaceListTool({ state }), {});
+            expect(!plainList.content.includes('zlib9'), 'without widget tools the list stays plain');
+
+            // A draft over the compressed limit says how much has to go
+            const bigQuota = {
+                maxFileBytes: 64_000,
+                maxConversationBytes: 500_000,
+                maxFiles: 10,
+                maxGlobalBytes: 2_000_000,
+            };
+            const bigState = createWorkspaceState({
+                chatId: CHAT,
+                conversationRootIds: [ROOT],
+                quota: bigQuota,
+            });
+            const bigWrite = createWorkspaceWriteTool({ state: bigState, widgetLimits: limits });
+            const bigContent = randomHtmlOf(6000);
+            const bigSize = measureWidgetHtml(bigContent);
+            expect(bigSize.zlibBytes > limits.maxGzipBytes, 'the fixture is over the zlib limit');
+            const big = await call(bigWrite, { path: 'widgets/big.html', content: bigContent });
+            expect(
+                big.content.includes(`超 ${bigSize.zlibBytes - limits.maxGzipBytes} B`),
+                `the write names the gap to close (got ${big.content})`
+            );
+            expect(big.content.includes('发送会被拒'), 'an over-limit draft warns that sending is refused');
+
+            // A draft over the raw cap cannot be a widget: the list says so and
+            // does not read the file to measure it
+            const huge = randomHtmlOf(40_000);
+            const hugeWritten = await call(bigWrite, { path: 'widgets/huge.html', content: huge });
+            expect(!hugeWritten.isError, `a big draft still writes (${hugeWritten.content})`);
+            const bigList = await call(createWorkspaceListTool({ state: bigState, widgetLimits: limits }), {});
+            expect(bigList.content.includes('已超 widget 原文上限 32768 B'), 'an over-cap draft is named as such');
+            expect(bigList.content.includes('widgets/big.html'), 'the other draft is still listed');
+        },
+    },
+    {
         name: 'the manifest lists the current conversation and gives spliced ones a token',
         body: async () => {
             await clearWorkspace();
@@ -381,14 +475,13 @@ const cases: { name: string; body: () => Promise<void> }[] = [
         },
     },
     {
-        name: 'the tool flow writes, lists, reads, edits and deletes with call limits',
+        name: 'the tool flow writes, lists, reads, edits and deletes',
         body: async () => {
             await clearWorkspace();
             const state = createWorkspaceState({
                 chatId: CHAT,
                 conversationRootIds: [ROOT, OTHER_ROOT],
                 quota: QUOTA,
-                callLimits: { writes: 5, reads: 20, lists: 10, deletes: 10, previews: 6 },
             });
             ensureWorkspaceToken(state, OTHER_ROOT, '拼接的会话');
             const writeTool = createWorkspaceWriteTool({ state });
@@ -420,8 +513,9 @@ const cases: { name: string; body: () => Promise<void> }[] = [
                 'overwrite names the replaced size'
             );
 
-            const overLimit = await call(writeTool, { path: 'notes/c.md', content: '# C' });
-            expect(overLimit.isError && overLimit.content.includes('次数已用完'), 'the per-reply write limit is enforced');
+            // No per-reply call counters: a later write is not refused
+            const extra = await call(writeTool, { path: 'notes/c.md', content: '# C' });
+            expect(!extra.isError && extra.content.includes('已写入'), 'a later write is not refused by a count');
             const deleted = await call(deleteTool, { path: 'notes/a.md' });
             expect(!deleted.isError && deleted.content.includes('已删除'), 'delete succeeds');
             const missing = await call(readTool, { path: 'notes/a.md' });
@@ -515,16 +609,9 @@ const cases: { name: string; body: () => Promise<void> }[] = [
             const miss = await call(findTool, { query: 'zzz' });
             expect(!miss.isError && miss.content.includes('没有找到'), 'a miss tells the model what it scanned');
 
-            const limitedState = createWorkspaceState({
-                chatId: CHAT,
-                conversationRootIds: [ROOT],
-                quota: QUOTA,
-                callLimits: { writes: 10, reads: 1, lists: 10, deletes: 10, previews: 6 },
-            });
-            const limitedTool = createWorkspaceFindTool({ state: limitedState });
-            await call(limitedTool, { query: 'neon' });
-            const overReads = await call(limitedTool, { query: 'neon' });
-            expect(overReads.isError && overReads.content.includes('次数已用完'), 'find counts as a read');
+            // No per-reply call counters: a repeated find is not refused
+            const again = await call(findTool, { query: 'neon' });
+            expect(!again.isError && again.content.includes('找到 2 处'), 'a repeated find is not refused');
         },
     },
     {
@@ -578,20 +665,18 @@ const cases: { name: string; body: () => Promise<void> }[] = [
             const source = await readWorkspaceFile(CHAT, ROOT, 'widgets/game.html');
             expect(source?.content === '<div>v1</div>', 'failed copies leave the source alone');
 
-            // Copies count toward the per-reply write limit
+            // No per-reply call counters: several copies in one reply are fine
             await clearWorkspace();
-            const limitedState = createWorkspaceState({
-                chatId: CHAT,
-                conversationRootIds: [ROOT],
-                quota: QUOTA,
-                callLimits: { writes: 1, reads: 20, lists: 10, deletes: 10, previews: 6 },
+            const repeatCopyTool = createWorkspaceCopyTool({
+                state: createWorkspaceState({ chatId: CHAT, conversationRootIds: [ROOT], quota: QUOTA }),
             });
-            const limitedCopyTool = createWorkspaceCopyTool({ state: limitedState });
             await write('a.txt', 'hello');
-            const firstCopy = await call(limitedCopyTool, { path: 'a.txt', new_path: 'b.txt' });
-            expect(!firstCopy.isError, `the first copy fits the write limit (got ${firstCopy.content})`);
-            const overWrites = await call(limitedCopyTool, { path: 'a.txt', new_path: 'c.txt' });
-            expect(overWrites.isError && overWrites.content.includes('次数已用完'), 'copy counts as a write');
+            const firstCopy = await call(repeatCopyTool, { path: 'a.txt', new_path: 'b.txt' });
+            const secondCopy = await call(repeatCopyTool, { path: 'a.txt', new_path: 'c.txt' });
+            expect(
+                !firstCopy.isError && !secondCopy.isError,
+                `copies are not refused by a per-reply count (${firstCopy.content} / ${secondCopy.content})`
+            );
         },
     },
     {

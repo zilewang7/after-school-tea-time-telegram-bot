@@ -1,7 +1,7 @@
 /**
  * Everything the tools of one reply remember between their calls: the media
  * ids and attachment flags, the `hN` history numbering, the harness issue
- * count and the workspace tokens and call counters.
+ * count and the workspace tokens.
  *
  * createReplyTools makes one bundle per reply. A continued reply is handed the
  * bundle of the version it continues, so `g1` still resolves and the per-reply
@@ -11,11 +11,7 @@ import { getToolConfig, type ToolConfig } from '../../config/tool-config.js';
 import { createHarnessIssueState, type HarnessIssueState } from './harness-issue-state.js';
 import { createHistoryState, type HistoryState } from './history-state.js';
 import { createReplyMediaState, type ReplyMediaState } from './reply-media-state.js';
-import {
-    createWorkspaceState,
-    WORKSPACE_CALL_LIMITS,
-    type WorkspaceState,
-} from '../workspace/workspace-state.js';
+import { createWorkspaceState, type WorkspaceState } from '../workspace/workspace-state.js';
 
 export interface ReplyToolState {
     readonly media: ReplyMediaState;
@@ -47,6 +43,5 @@ export const createReplyToolState = (
             maxFiles: config.workspaceMaxFiles,
             maxGlobalBytes: config.workspaceMaxGlobalBytes,
         },
-        callLimits: { ...WORKSPACE_CALL_LIMITS, previews: config.workspacePreviewsPerReply },
     }),
 });

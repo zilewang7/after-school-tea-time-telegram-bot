@@ -37,6 +37,7 @@ const { captureResumeFacts } = await import('../../src/reply/resume/resume-facts
 const replyTools = await import('../../src/reply/tools/index.js');
 const { createSearchByImageTool, MAX_SEARCHES_PER_REPLY } = await import('../../src/reply/tools/search-by-image-tool.js');
 const { MAX_HARNESS_ISSUES_PER_REPLY } = await import('../../src/reply/tools/harness-issue-state.js');
+const { ensureWorkspaceToken } = await import('../../src/reply/workspace/workspace-state.js');
 
 type ReplyCheckpoint = import('../../src/reply/resume/reply-checkpoint.js').ReplyCheckpoint;
 type ReplyToolState = import('../../src/reply/tools/reply-tool-state.js').ReplyToolState;
@@ -495,7 +496,7 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
         },
     },
     {
-        name: 'createReplyTools reuses an injected state bundle: g1 resolves, per-reply limits go on counting',
+        name: 'createReplyTools reuses an injected state bundle: g1 and the workspace tokens resolve, per-reply limits go on counting',
         body: async () => {
             const chatId = -1007300000050;
             const rootId = takeMessageId();
@@ -508,7 +509,7 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
             bundle.media.generated.set('g1', { id: 'g1', data: PNG_BYTES, mimeType: 'image/png' });
             bundle.media.reverseSearchCount = MAX_SEARCHES_PER_REPLY;
             for (let index = 0; index < MAX_HARNESS_ISSUES_PER_REPLY; index += 1) bundle.harnessIssues.noteCreated();
-            bundle.workspace.calls.read = bundle.workspace.callLimits.reads;
+            const splicedToken = ensureWorkspaceToken(bundle.workspace, takeMessageId(), '拼接进来的对话');
             bundle.history.remember({
                 channelId: 1,
                 messageId: 77,
@@ -540,13 +541,22 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
             expect(reverse.isError && reverse.content.includes(`${MAX_SEARCHES_PER_REPLY} 次以图搜图`), `search_by_image stays at its limit (got ${reverse.content})`);
             const issue = await run('create_harness_issue', { title: '标题', body: '内容', kind: 'bug' });
             expect(issue.isError && issue.content.includes(`${MAX_HARNESS_ISSUES_PER_REPLY} 条 issue`), `the issue limit carries on (got ${issue.content})`);
-            const read = await run('workspace_read', { path: 'notes.md' });
-            expect(read.isError && read.content.includes('次数已用完'), `the workspace read counter carries on (got ${read.content})`);
+            const read = await run('workspace_read', { path: 'notes.md', workspace: splicedToken });
+            expect(
+                splicedToken === 'w2' && read.content.includes('工作区里没有《notes.md》'),
+                `the workspace tokens carry on: ${splicedToken} is known and only the file is missing (got ${read.content})`
+            );
 
             // Without the bundle the next attempt starts from nothing
             const fresh = replyTools.createReplyTools('gemini-4-carbon', toolContextFor(chatId, [rootId]), undefined, overrides);
             const unknown = await fresh.tools.execute({ id: 'call', name: 'send_image', argumentsJson: JSON.stringify({ image_id: 'g1' }) });
             expect(fresh.toolState !== bundle && unknown.isError, 'a fresh reply does not know g1');
+            const unknownToken = await fresh.tools.execute({
+                id: 'call',
+                name: 'workspace_read',
+                argumentsJson: JSON.stringify({ path: 'notes.md', workspace: splicedToken }),
+            });
+            expect(unknownToken.content.includes(`没有 ${splicedToken} 这个工作区`), `nor ${splicedToken} (got ${unknownToken.content})`);
         },
     },
     {

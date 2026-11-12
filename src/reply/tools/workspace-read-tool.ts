@@ -8,7 +8,7 @@
 import type { ToolHandler, ToolResult } from '../../ai/tools/tool-types.js';
 import { formatBytes } from '../../shared/file-name.js';
 import { readWorkspaceFile, touchWorkspaceFile } from '../../services/workspace-service.js';
-import { consumeWorkspaceCall, resolveWorkspaceRef, type WorkspaceState } from '../workspace/workspace-state.js';
+import { resolveWorkspaceRef, type WorkspaceState } from '../workspace/workspace-state.js';
 import { parseWorkspaceReadArgs } from './workspace-tool-args.js';
 import { workspaceToolError, workspaceToolSuccess } from './workspace-tool-result.js';
 import { WORKSPACE_READ_TOOL_NAME } from './tool-names.js';
@@ -62,8 +62,6 @@ export const createWorkspaceReadTool = (options: WorkspaceReadToolOptions): Tool
             if (!parsed.ok) return reject(parsed.error);
             const ref = resolveWorkspaceRef(state, rawArgs.workspace);
             if (!ref.ok) return reject(ref.error);
-            const overLimit = consumeWorkspaceCall(state, 'read');
-            if (overLimit !== null) return reject(overLimit);
 
             const file = await readWorkspaceFile(state.chatId, ref.ref.rootId, parsed.value.path);
             if (file === null) {

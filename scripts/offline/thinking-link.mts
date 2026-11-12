@@ -447,16 +447,25 @@ results.push(
         telegram.reset();
         await quietly(() => responseHandler.sendFinalResponse(chatContext, response));
 
-        const markupEdits = telegram
-            .callsOf('editMessageText')
-            .filter((call) => call.payload.reply_markup !== undefined);
-        expect(markupEdits.length >= 1, 'the final edit carries the retry buttons');
+        // The final layout writes the body first and adds the terminal markup
+        // afterwards, so the buttons arrive either on the final edit or as a
+        // separate markup call — never on the link message.
+        const buttonedMessageIds = [
+            ...telegram
+                .callsOf('editMessageText')
+                .filter((call) => call.payload.reply_markup !== undefined)
+                .map((call) => call.payload.message_id),
+            ...telegram
+                .callsOf('editMessageReplyMarkup')
+                .map((call) => call.payload.message_id),
+        ];
+        expect(buttonedMessageIds.length >= 1, 'the final delivery carries the retry buttons');
         expect(
-            markupEdits.every((call) => call.payload.message_id !== firstMessageId),
+            buttonedMessageIds.every((messageId) => messageId !== firstMessageId),
             'the link message never carries the terminal buttons'
         );
         expect(
-            markupEdits.some((call) => call.payload.message_id === continuationId),
+            buttonedMessageIds.some((messageId) => messageId === continuationId),
             'the buttons ride on the body message'
         );
 
@@ -514,6 +523,33 @@ results.push(
         expect(
             version?.currentMessageId === lastMessageId,
             `the version points at its real last message (got ${version?.currentMessageId} vs ${lastMessageId})`
+        );
+
+        // The body is laid out over its own messages from the complete text: the
+        // first body message keeps the head, the last one carries the tail, and
+        // no message repeats another's chunk (the old path wrote chunk 0 into
+        // the last message and duplicated the body head there).
+        const edits = started.telegram.callsOf('editMessageText');
+        const finalTextOf = (messageId: number | undefined): string => {
+            const call = edits.filter((entry) => entry.payload.message_id === messageId).at(-1);
+            return call === undefined ? '' : payloadText(call.payload);
+        };
+        const bodyMessageIds = version?.messageIds.slice(1) ?? [];
+        expect(
+            bodyMessageIds.length >= 2,
+            `the body spans several messages (got ${bodyMessageIds.length})`
+        );
+        expect(
+            finalTextOf(bodyMessageIds[0]).includes('第0段'),
+            'the first body message keeps the body head'
+        );
+        expect(
+            !finalTextOf(bodyMessageIds[bodyMessageIds.length - 1]).includes('第0段'),
+            'the last body message does not repeat the body head'
+        );
+        expect(
+            finalTextOf(bodyMessageIds[bodyMessageIds.length - 1]).includes('第7段'),
+            'the body tail lands on the last body message'
         );
     })
 );
@@ -881,6 +917,114 @@ results.push(
 );
 
 results.push(
+    await runCase('a split reply keeps the CoT quote on its first message', async () => {
+        process.env.THINKING_LINK = '0';
+        try {
+            const started = await startReply();
+            const { telegram, chatContext } = started;
+            // The CoT fits one message, the body does not: the split happens while
+            // the answer streams. Thinking that arrives after the split must not
+            // become a second CoT quote on the continuation — the reply's first
+            // message owns the CoT, and the rest stays in the stored version.
+            const headThinking = Array.from(
+                { length: 4 },
+                (_, index) => `**H${index}**\n\n${'推理'.repeat(300)}`
+            ).join('\n\n');
+            const tailThinking = '**AfterSplit**\n\n切换之后才到达的思考内容。';
+            const firstBody = `第一部分：${'正文'.repeat(745)}`;
+            const secondBody = `第二部分：${'续写'.repeat(400)}`;
+
+            const response = await quietly(() =>
+                responseHandler.processStream(
+                    streamOf([
+                        ...thinkingSteps(headThinking),
+                        { waitMs: 30 },
+                        { chunk: { type: 'text', content: firstBody } },
+                        { chunk: { type: 'thinking', content: tailThinking } },
+                        { chunk: { type: 'text', content: secondBody } },
+                    ]),
+                    chatContext,
+                    0
+                )
+            );
+            chatContext.typing.stop();
+
+            const firstMessageId = chatContext.session.firstMessageId;
+            const continuationId = chatContext.session.messageIds[1];
+            expect(continuationId !== undefined, 'the body overflowed into a continuation');
+
+            await quietly(() => responseHandler.sendFinalResponse(chatContext, response));
+
+            const edits = telegram.callsOf('editMessageText');
+            const continuationEdits = edits.filter(
+                (call) => call.payload.message_id === continuationId
+            );
+            expect(continuationEdits.length > 0, 'the continuation was rendered');
+            expect(
+                continuationEdits.every(
+                    (call) => !payloadText(call.payload).includes('AfterSplit')
+                ),
+                'thinking that arrived after the split never shows on the continuation'
+            );
+            expect(
+                continuationEdits.some((call) => payloadText(call.payload).includes('续写')),
+                'the continuation still streams and finalizes the body'
+            );
+
+            const firstEdits = edits.filter((call) => call.payload.message_id === firstMessageId);
+            const lastFirstEdit = firstEdits.at(-1);
+            expect(
+                lastFirstEdit !== undefined &&
+                    entitiesOf(lastFirstEdit.payload).some(
+                        (entity) => entity.type === 'expandable_blockquote'
+                    ),
+                'the first message keeps its collapsed CoT quote'
+            );
+            expect(
+                payloadText(lastFirstEdit?.payload ?? {}).startsWith('H0'),
+                `the first message leads with the CoT (got ${JSON.stringify(
+                    payloadText(lastFirstEdit?.payload ?? {}).slice(0, 20)
+                )})`
+            );
+            // The final layout is re-rendered from the complete thinking, so the
+            // quote on the first message covers the thinking that arrived late
+            const firstFinalText = payloadText(lastFirstEdit?.payload ?? {});
+            expect(
+                firstFinalText.includes('AfterSplit'),
+                'the first message carries the complete CoT after the final re-layout'
+            );
+            expect(
+                firstFinalText.length <= 4000,
+                `the first message fits the final message budget (got ${firstFinalText.length})`
+            );
+            const lastContinuationEdit = continuationEdits.at(-1);
+            expect(
+                lastContinuationEdit !== undefined &&
+                    !entitiesOf(lastContinuationEdit.payload).some(
+                        (entity) => entity.type === 'expandable_blockquote'
+                    ),
+                `the continuation carries the body only, with no CoT quote (got ${JSON.stringify(
+                    {
+                        text: payloadText(lastContinuationEdit?.payload ?? {}).slice(0, 60),
+                        entities: entitiesOf(lastContinuationEdit?.payload ?? {}).map((e) => e.type),
+                        edits: continuationEdits.length,
+                    }
+                )})`
+            );
+
+            const stored = await dbIndex.getBotResponse(chatContext.chatId, firstMessageId);
+            const version = stored?.getVersions().at(-1);
+            expect(
+                version?.thinkingText?.includes('AfterSplit') === true,
+                'the full thinking still reaches the stored version'
+            );
+        } finally {
+            delete process.env.THINKING_LINK;
+        }
+    })
+);
+
+results.push(
     await runCase('the full thinking keeps the shared cap while the display buffer stays at 10k', async () => {
         const { THINKING_MAX_CHARS, THINKING_TRUNCATION_MARK } = await import(
             '../../src/shared/thinking-limits.js'
@@ -993,6 +1137,167 @@ results.push(
             'the flood omission note never reaches the link preview'
         );
         expect(lastEdit.length < 2100, `the preview stays bounded (got ${lastEdit.length})`);
+    })
+);
+
+results.push(
+    await runCase('a split reply with a long CoT moves the CoT behind the link message', async () => {
+        const started = await startReply();
+        const { telegram, chatContext } = started;
+        // The CoT is long but not long enough to fill a message on its own (that
+        // is the streaming link mode). The answer pushes the reply over the
+        // budget, so the final layout puts the CoT behind the link message.
+        const mediumThinking = Array.from(
+            { length: 4 },
+            (_, index) => `**M${index}**\n\n${'推理'.repeat(325)}`
+        ).join('\n\n');
+        const body = `正文：${'内容'.repeat(750)}`;
+
+        const response = await quietly(() =>
+            responseHandler.processStream(
+                streamOf([
+                    ...thinkingSteps(mediumThinking),
+                    { waitMs: 30 },
+                    { chunk: { type: 'text', content: body } },
+                ]),
+                chatContext,
+                0
+            )
+        );
+        chatContext.typing.stop();
+
+        expect(
+            chatContext.session.thinkingLink === undefined,
+            'the streaming link mode stays off for a CoT under one message'
+        );
+        const firstMessageId = chatContext.session.firstMessageId;
+        const continuationId = chatContext.session.messageIds[1];
+        expect(continuationId !== undefined, 'the body overflowed into a continuation');
+
+        await quietly(() => responseHandler.sendFinalResponse(chatContext, response));
+
+        const link = chatContext.session.thinkingLink;
+        expect(link !== undefined, 'the final layout chose the link message');
+        const edits = telegram.callsOf('editMessageText');
+        const firstFinal = edits
+            .filter((call) => call.payload.message_id === firstMessageId)
+            .at(-1);
+        expect(
+            firstFinal !== undefined && isFinishedLinkText(payloadText(firstFinal.payload)),
+            `the first message is the finished link (got ${JSON.stringify(payloadText(firstFinal?.payload ?? {}))})`
+        );
+        expect(
+            link !== undefined && linkPreviewOf(firstFinal?.payload ?? {}).url === link.fastPageUrl,
+            'the link message carries the fast-page card'
+        );
+        expect(
+            !payloadText(firstFinal?.payload ?? {}).includes('推理'),
+            'the CoT no longer sits inline in the chat'
+        );
+
+        const continuationEdits = edits.filter(
+            (call) => call.payload.message_id === continuationId
+        );
+        expect(
+            continuationEdits.some((call) => payloadText(call.payload).includes('内容')),
+            'the body streams and finalizes in the continuation'
+        );
+        expect(
+            continuationEdits.every((call) => !payloadText(call.payload).includes('推理')),
+            'the continuation carries no CoT text'
+        );
+
+        const stored = await dbIndex.getBotResponse(chatContext.chatId, firstMessageId);
+        const version = stored?.getVersions().at(-1);
+        expect(version?.thinkingLinkToken === link?.token, 'the version stores the link token');
+        expect(version?.messageIds.length === 2, 'the layout keeps two text messages');
+
+        // The replay must show the same layout: link message first, body after
+        telegram.reset();
+        const refreshed = await quietly(() =>
+            import('../../src/services/bot-message-service.js').then((service) =>
+                service.refreshToFinalState(telegram.api, chatContext.chatId, firstMessageId)
+            )
+        );
+        expect(refreshed === true, 'the stored layout replays');
+        const replayEdits = telegram.callsOf('editMessageText');
+        const replayFirst = replayEdits.find(
+            (call) => call.payload.message_id === firstMessageId
+        );
+        expect(
+            replayFirst !== undefined && isFinishedLinkText(payloadText(replayFirst.payload)),
+            'the replay rebuilds the link message first'
+        );
+        expect(
+            replayEdits.some(
+                (call) =>
+                    call.payload.message_id !== firstMessageId &&
+                    payloadText(call.payload).includes('内容')
+            ),
+            'the replay rebuilds the body message'
+        );
+    })
+);
+
+results.push(
+    await runCase('a split that the final layout fits in one message deletes the surplus message', async () => {
+        process.env.THINKING_LINK = '0';
+        try {
+            const started = await startReply();
+            const { telegram, chatContext } = started;
+            // The streaming budget (3900) splits the reply; the final layout
+            // budget (4000) fits it in one message, so the continuation must go.
+            const thinking = `**S**\n\n${'推理'.repeat(250)}`;
+            const body = `正文：${'内容'.repeat(1700)}`;
+
+            const response = await quietly(() =>
+                responseHandler.processStream(
+                    streamOf([
+                        ...thinkingSteps(thinking),
+                        { waitMs: 30 },
+                        { chunk: { type: 'text', content: body } },
+                    ]),
+                    chatContext,
+                    0
+                )
+            );
+            chatContext.typing.stop();
+
+            const firstMessageId = chatContext.session.firstMessageId;
+            const continuationId = chatContext.session.messageIds[1];
+            expect(continuationId !== undefined, 'the stream split the reply');
+
+            await quietly(() => responseHandler.sendFinalResponse(chatContext, response));
+
+            expect(
+                telegram
+                    .callsOf('deleteMessage')
+                    .some((call) => call.payload.message_id === continuationId),
+                'the surplus continuation message is deleted'
+            );
+            const stored = await dbIndex.getBotResponse(chatContext.chatId, firstMessageId);
+            const version = stored?.getVersions().at(-1);
+            expect(
+                version?.messageIds.length === 1,
+                `the stored layout is one message (got ${version?.messageIds.length})`
+            );
+            expect(
+                version?.currentMessageId === firstMessageId,
+                'the first message is the current one again'
+            );
+            const firstFinal = telegram
+                .callsOf('editMessageText')
+                .filter((call) => call.payload.message_id === firstMessageId)
+                .at(-1);
+            const finalText = payloadText(firstFinal?.payload ?? {});
+            expect(finalText.includes('内容'), 'the first message carries the whole body');
+            expect(
+                finalText.length <= 4000,
+                `and fits the final message budget (got ${finalText.length})`
+            );
+        } finally {
+            delete process.env.THINKING_LINK;
+        }
     })
 );
 

@@ -42,7 +42,6 @@
  * - WORKSPACE_CHAT_IDS: chats offered the workspace tools (empty = TOOL_CHAT_IDS)
  * - WORKSPACE_MAX_FILE_BYTES / WORKSPACE_MAX_CONVERSATION_BYTES /
  *   WORKSPACE_MAX_FILES / WORKSPACE_MAX_GLOBAL_BYTES: workspace quotas
- * - WORKSPACE_PREVIEWS_PER_REPLY: render previews one reply may request
  */
 import { parseChatIdList } from './chat-id-list.js';
 import type { EnvSource } from './env-source.js';
@@ -124,8 +123,6 @@ export interface ToolConfig {
     readonly workspaceMaxFiles: number;
     /** All workspaces together may not exceed this many bytes */
     readonly workspaceMaxGlobalBytes: number;
-    /** Render previews one reply may ask for */
-    readonly workspacePreviewsPerReply: number;
 }
 
 /** Stands in for OWNER_DISPLAY_NAME when it is not set */
@@ -218,7 +215,6 @@ export const readToolConfig = (env: EnvSource = process.env): ToolConfig => ({
         env.WORKSPACE_MAX_GLOBAL_BYTES,
         1024 * 1024 * 1024
     ),
-    workspacePreviewsPerReply: parsePositiveInt(env.WORKSPACE_PREVIEWS_PER_REPLY, 6),
     owner: readOwner(env),
 });
 

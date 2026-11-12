@@ -16,14 +16,14 @@ import { readWorkspaceFile, touchWorkspaceFile } from '../../services/workspace-
 import { precheckWidgetHtml, type WidgetPrecheckLimits } from '../../telegram/widget-precheck.js';
 import { renderWidgetPng } from '../../widget-image/render-client.js';
 import { widgetDocument } from '../../widget-image/widget-page.js';
-import { consumeWorkspaceCall, resolveWorkspaceRef, type WorkspaceState } from '../workspace/workspace-state.js';
+import { resolveWorkspaceRef, type WorkspaceState } from '../workspace/workspace-state.js';
 import { parseWorkspacePreviewArgs } from './workspace-tool-args.js';
 import { workspaceToolError, workspaceToolSuccess } from './workspace-tool-result.js';
 import { WORKSPACE_PREVIEW_TOOL_NAME } from './tool-names.js';
 
 const DESCRIPTION =
     '把工作区里的 HTML/A2UI 草稿渲染成 600px 宽的图片给你自己看（静态首帧），同时报告体积与 widget 预检结果。' +
-    '发送前用它检查布局/配色/溢出与体积。支持 .html/.htm 与 A2UI surface 的 .json；渲染需要 1–3 秒，计入工具时间。';
+    '发送前用它检查布局/配色/溢出与体积。支持 .html/.htm 与 A2UI surface 的 .json；渲染需要 1–3 秒。';
 
 const INPUT_SCHEMA = {
     type: 'object',
@@ -95,8 +95,6 @@ export const createWorkspacePreviewTool = (options: WorkspacePreviewToolOptions)
             if (!parsed.ok) return reject(parsed.error);
             const ref = resolveWorkspaceRef(state, rawArgs.workspace);
             if (!ref.ok) return reject(ref.error);
-            const overLimit = consumeWorkspaceCall(state, 'preview');
-            if (overLimit !== null) return reject(overLimit);
 
             const file = await readWorkspaceFile(state.chatId, ref.ref.rootId, parsed.value.path);
             if (file === null) {

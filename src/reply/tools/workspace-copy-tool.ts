@@ -8,7 +8,7 @@
 import type { ToolHandler, ToolResult } from '../../ai/tools/tool-types.js';
 import { formatBytes } from '../../shared/file-name.js';
 import { copyWorkspaceFile } from '../../services/workspace-service.js';
-import { consumeWorkspaceCall, resolveWorkspaceRef, type WorkspaceState } from '../workspace/workspace-state.js';
+import { resolveWorkspaceRef, type WorkspaceState } from '../workspace/workspace-state.js';
 import { parseWorkspaceCopyArgs } from './workspace-tool-args.js';
 import { workspaceToolError, workspaceToolSuccess } from './workspace-tool-result.js';
 import { WORKSPACE_COPY_TOOL_NAME } from './tool-names.js';
@@ -56,8 +56,6 @@ export const createWorkspaceCopyTool = (options: WorkspaceCopyToolOptions): Tool
             if (!parsed.ok) return reject(parsed.error);
             const ref = resolveWorkspaceRef(state, rawArgs.workspace);
             if (!ref.ok) return reject(ref.error);
-            const overLimit = consumeWorkspaceCall(state, 'write');
-            if (overLimit !== null) return reject(overLimit);
 
             const result = await copyWorkspaceFile(state.chatId, ref.ref.rootId, {
                 from: parsed.value.from,

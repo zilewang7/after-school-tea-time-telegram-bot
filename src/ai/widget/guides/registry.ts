@@ -17,8 +17,10 @@ import { WIDGET_GUIDE_HTML_TEXT, WIDGET_GUIDE_HTML_TITLE } from './widget-guide.
  * the v1 text said both "JS and taps work" and "output zero JS" (issue #6).
  * v3: the A2UI guide's tool-argument example is a valid escaped JSON string
  * (v2 rendered `"` where the model must write `\"`).
+ * v4: the HTML guide names the workspace as the cheap way to measure a draft:
+ * workspace_write / workspace_edit report raw and zlib9 bytes after every edit.
  */
-export const WIDGET_GUIDE_VERSION = 3;
+export const WIDGET_GUIDE_VERSION = 4;
 
 const GUIDES: Readonly<Record<WidgetGuideKind, WidgetGuide>> = Object.freeze({
     html: Object.freeze({

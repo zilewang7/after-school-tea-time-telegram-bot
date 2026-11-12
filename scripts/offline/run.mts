@@ -782,9 +782,9 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
         },
     },
     {
-        // Guards the wiring, not just the stripper: both buffers are fed from
+        // Guards the wiring, not just the strippers: both buffers are fed from
         // processChunk, and the one that ends up in the DB is fullText.
-        name: 'the stream processor applies the label stripping',
+        name: 'the stream processor applies the outbound text cleanup',
         body: async () => {
             const { processChunk } = await import('../../src/reply/response-handler.js');
             const { createContextLabelStripper } = await import('../../src/reply/context-label.js');
@@ -822,6 +822,18 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
             expect(
                 finished.fullText === '梓喵的回答就是这样',
                 `a replacement final text is cleaned as well (got ${JSON.stringify(finished.fullText)})`
+            );
+
+            // The same replacement path drops the raw PerQueryResult markers
+            // Gemini writes when its grounding metadata does not consume them
+            const cited = processChunk(
+                { type: 'done', rawResponse: { output_text: '氪基米）[1.4.1][1.4.5]。' } },
+                finished,
+                strip
+            );
+            expect(
+                cited.fullText === '氪基米）。',
+                `a raw citation marker is dropped from the replacement text (got ${JSON.stringify(cited.fullText)})`
             );
         },
     },

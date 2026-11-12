@@ -29,7 +29,6 @@ const bench = await createResumeBench();
 const { telegram, vertex } = bench;
 const { MAX_HARNESS_ISSUES_PER_REPLY } = await import('../../src/reply/tools/harness-issue-state.js');
 const { MAX_SEARCHES_PER_REPLY } = await import('../../src/reply/tools/search-by-image-tool.js');
-const { WORKSPACE_CALL_LIMITS } = await import('../../src/reply/workspace/workspace-state.js');
 
 const answerOf = (answers: readonly FunctionAnswer[], name: string): FunctionAnswer[] =>
     answers.filter((item) => item.name === name);
@@ -82,23 +81,18 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
         }),
     },
     {
-        name: 'case 8: the per-reply limits go on counting: harness issues, workspace writes, search_by_image',
+        name: 'case 8: the per-reply limits go on counting: harness issues, search_by_image',
         body: quietCase(async () => {
             const issueCalls = Array.from({ length: MAX_HARNESS_ISSUES_PER_REPLY }, (_unused, index) => ({
                 name: 'create_harness_issue',
                 args: { title: `问题 ${index + 1}`, body: '离线测试记下的问题', kind: 'bug' },
             }));
-            const writeCalls = Array.from({ length: WORKSPACE_CALL_LIMITS.writes }, (_unused, index) => ({
-                name: 'workspace_write',
-                args: { path: `notes/draft-${index + 1}.md`, content: `第 ${index + 1} 份草稿` },
-            }));
-            vertex.reset([roundOf({ label: 'r1', calls: [...issueCalls, ...writeCalls] }), failingRound()]);
+            vertex.reset([roundOf({ label: 'r1', calls: issueCalls }), failingRound()]);
             telegram.reset();
-            const reply = await bench.ask(takeChatId(), '@AfterSchoolTeatimeBot 记几个问题，写几份草稿');
+            const reply = await bench.ask(takeChatId(), '@AfterSchoolTeatimeBot 记几个问题');
             const entry = bench.entryOf(reply);
             if (entry === undefined) throw new Error('nothing was kept');
             expect(entry.toolState.harnessIssues.createdCount() === MAX_HARNESS_ISSUES_PER_REPLY, 'the issues of round 1 were filed');
-            expect(entry.toolState.workspace.calls.write === WORKSPACE_CALL_LIMITS.writes, 'and the writes counted');
             // search_by_image only counts real searches against an outside service: the
             // interrupted version is given its spent allowance directly
             entry.toolState.media.reverseSearchCount = MAX_SEARCHES_PER_REPLY;
@@ -109,7 +103,6 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
                     label: 'r2',
                     calls: [
                         { name: 'create_harness_issue', args: { title: '再一个问题', body: '超出上限', kind: 'bug' } },
-                        { name: 'workspace_write', args: { path: 'notes/one-more.md', content: '再写一份' } },
                         { name: 'search_by_image', args: { message: 1 } },
                     ],
                 }),
@@ -122,11 +115,6 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
             expect(
                 issue?.error?.includes(`已经记录了 ${MAX_HARNESS_ISSUES_PER_REPLY} 条 issue`) === true,
                 `the issue past the limit is refused (got ${json(issue)})`
-            );
-            const write = answerOf(answers, 'workspace_write').at(-1);
-            expect(
-                write?.error?.includes(`（${WORKSPACE_CALL_LIMITS.writes} 次）`) === true,
-                `the write past the limit is refused (got ${json(write)})`
             );
             const search = answerOf(answers, 'search_by_image').at(-1);
             expect(

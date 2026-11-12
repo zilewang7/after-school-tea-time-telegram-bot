@@ -56,8 +56,8 @@ export interface ReplyTools {
     readonly tools: TurnTools;
     readonly availability: ToolAvailability;
     /**
-     * Per-reply workspace tokens and call counters. The manifest builder uses
-     * it to register the other conversations spliced into this context.
+     * Per-reply workspace tokens. The manifest builder uses it to register
+     * the other conversations spliced into this context.
      */
     readonly workspaceState: WorkspaceState;
     /**
@@ -92,6 +92,11 @@ export const createReplyTools = (
     const workspaceState = toolState.workspace;
     const historyState = toolState.history;
     const harnessIssueState = toolState.harnessIssues;
+    // HTML drafts are widget payloads: the write/edit/list results report the
+    // zlib9 size only when this turn can actually send a widget.
+    const widgetDraftLimits = availability.widget
+        ? { maxHtmlBytes: config.widgetMaxHtmlBytes, maxGzipBytes: config.widgetMaxGzipBytes }
+        : null;
     // One luoxu client per reply: the history tools and fetch_image's archive
     // lane read the same archive, so they share the client (and its cache).
     const historyWiring: HistoryWiring = {
@@ -211,11 +216,11 @@ export const createReplyTools = (
         ...(availability.widgetGuide ? [createUiGuideTool()] : []),
         ...(availability.workspace
             ? [
-                  createWorkspaceWriteTool({ state: workspaceState }),
+                  createWorkspaceWriteTool({ state: workspaceState, widgetLimits: widgetDraftLimits }),
                   createWorkspaceReadTool({ state: workspaceState }),
-                  createWorkspaceListTool({ state: workspaceState }),
+                  createWorkspaceListTool({ state: workspaceState, widgetLimits: widgetDraftLimits }),
                   createWorkspaceFindTool({ state: workspaceState }),
-                  createWorkspaceEditTool({ state: workspaceState }),
+                  createWorkspaceEditTool({ state: workspaceState, widgetLimits: widgetDraftLimits }),
                   createWorkspaceCopyTool({ state: workspaceState }),
                   createWorkspaceDeleteTool({ state: workspaceState }),
               ]

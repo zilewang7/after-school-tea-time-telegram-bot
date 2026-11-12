@@ -11,7 +11,7 @@
 export const WIDGET_GUIDE_HTML_TITLE = "Telegram Widget · HTML 模式规范";
 
 export const WIDGET_GUIDE_HTML_TEXT = `Telegram Widget · HTML 模式规范
-guide=html · version 3 · 来源：TelegramMessenger/widget-sandbox 官方文档内部快照（widget profile 1 / SDK v1 / widget-sandbox 0.6.1，快照 2026-11-08）
+guide=html · version 4 · 来源：TelegramMessenger/widget-sandbox 官方文档内部快照（widget profile 1 / SDK v1 / widget-sandbox 0.6.1，快照 2026-11-08）
 
 ## 0. 这份文本是什么、产出什么
 
@@ -248,6 +248,7 @@ summary{color:var(--tg-theme-link-color)}
 - 压缩率的决定因素：**重复的 CSS、重复的结构、短类名**压缩最好；**data: 图片与各不相同的长文本**几乎压不动；中文正文 UTF-8 每字 3 字节，压缩收益有限。省字节的写法：样式集中成几条类而非逐个元素 style；重复块用同一类名；不写注释与死代码；长文案压成短句、细节放 \`<details>\`；图片用 SVG/渐变/emoji 而非 data:。
 - 经验参考（官方 harness 实测）：§9 的示例约 30 个元素、1.6 KB raw → 761 B zlib9（约 47%）；20 行左右的列表 zlib9 约 1.1 KB。
 - 实操：raw ≤8 KB 的卡片/列表基本安全；10 KB 以上先按「去注释、合并重复类、删未用规则」砍一遍再交给 send_widget —— bot 侧会量 raw 与 zlib9 两个真实数字，超 4096 会拒发并报出差距，按差距删内容即可。
+- 量体积不用预览、也不用试发：草稿写进工作区（.html），每次 workspace_write / workspace_edit / workspace_list 都会直接报原文与 zlib9 两个真实数字，以及离 4096 B 还差多少；按这个差距改草稿，最后再 send_widget(workspace_path=…)。
 - 运行时限额（超了 widget 停在最后一帧显示 "Widget stopped"，或抛异常）：文档节点（元素/文本/注释）≤2000、单个文本值 ≤32K 字符、全文档文本 ≤48K 字符、单个属性/内联样式 ≤8K、CSS 规则 ≤400、@keyframes ≤32、同时运行的脚本动画 ≤64。静态展示或小游戏只要不堆几千行就不会碰到。
 
 ## 11. 常见失败形态（都是客户端静默处理，不会报错）

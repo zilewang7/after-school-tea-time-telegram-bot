@@ -148,7 +148,7 @@ results.push(
         const a2ui = await run(tool, { kind: 'a2ui' });
         expect(!a2ui.isError && a2ui.content.length > 2000, 'the A2UI guide is long enough to be useful');
         expect(a2ui.content.includes('tg-card-v1'), 'the A2UI guide names the catalog');
-        expect(a2ui.content.includes('version 3'), 'the guide version is announced');
+        expect(a2ui.content.includes('version 4'), 'the guide version is announced');
 
         const htmlGuide = await run(tool, { kind: 'html' });
         expect(!htmlGuide.isError && htmlGuide.content.length > 5000, 'the HTML guide is long enough');

@@ -115,7 +115,6 @@ declare global {
             WORKSPACE_MAX_CONVERSATION_BYTES?: string
             WORKSPACE_MAX_FILES?: string
             WORKSPACE_MAX_GLOBAL_BYTES?: string
-            WORKSPACE_PREVIEWS_PER_REPLY?: string
             /** '0' turns off the /share and /shareone commands */
             SHARE_COMMAND?: string
             /** '0' turns off the long-thinking link pages and the link mode */

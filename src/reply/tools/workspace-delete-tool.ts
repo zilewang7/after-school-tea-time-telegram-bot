@@ -4,7 +4,7 @@
 import type { ToolHandler, ToolResult } from '../../ai/tools/tool-types.js';
 import { formatBytes } from '../../shared/file-name.js';
 import { deleteWorkspaceFile } from '../../services/workspace-service.js';
-import { consumeWorkspaceCall, resolveWorkspaceRef, type WorkspaceState } from '../workspace/workspace-state.js';
+import { resolveWorkspaceRef, type WorkspaceState } from '../workspace/workspace-state.js';
 import { parseWorkspaceDeleteArgs } from './workspace-tool-args.js';
 import { workspaceToolError, workspaceToolSuccess } from './workspace-tool-result.js';
 import { WORKSPACE_DELETE_TOOL_NAME } from './tool-names.js';
@@ -49,8 +49,6 @@ export const createWorkspaceDeleteTool = (options: WorkspaceDeleteToolOptions): 
             if (!parsed.ok) return reject(parsed.error);
             const ref = resolveWorkspaceRef(state, rawArgs.workspace);
             if (!ref.ok) return reject(ref.error);
-            const overLimit = consumeWorkspaceCall(state, 'delete');
-            if (overLimit !== null) return reject(overLimit);
 
             const result = await deleteWorkspaceFile(state.chatId, ref.ref.rootId, parsed.value.path);
             if (!result.ok) return reject(result.error);

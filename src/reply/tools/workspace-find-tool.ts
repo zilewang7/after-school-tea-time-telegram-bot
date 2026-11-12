@@ -8,7 +8,7 @@
  */
 import type { ToolHandler, ToolResult } from '../../ai/tools/tool-types.js';
 import { findWorkspaceFiles } from '../../services/workspace-service.js';
-import { consumeWorkspaceCall, resolveWorkspaceRef, type WorkspaceState } from '../workspace/workspace-state.js';
+import { resolveWorkspaceRef, type WorkspaceState } from '../workspace/workspace-state.js';
 import { parseWorkspaceFindArgs } from './workspace-tool-args.js';
 import { workspaceToolError, workspaceToolSuccess } from './workspace-tool-result.js';
 import { WORKSPACE_FIND_TOOL_NAME } from './tool-names.js';
@@ -64,8 +64,6 @@ export const createWorkspaceFindTool = (options: WorkspaceFindToolOptions): Tool
             if (!parsed.ok) return reject(parsed.error);
             const ref = resolveWorkspaceRef(state, rawArgs.workspace);
             if (!ref.ok) return reject(ref.error);
-            const overLimit = consumeWorkspaceCall(state, 'read');
-            if (overLimit !== null) return reject(overLimit);
 
             const result = await findWorkspaceFiles(state.chatId, ref.ref.rootId, {
                 query: parsed.value.query,
