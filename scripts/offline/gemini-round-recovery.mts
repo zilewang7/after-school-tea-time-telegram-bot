@@ -11,6 +11,7 @@
  *
  * Run: npx tsx scripts/offline/gemini-round-recovery.mts
  */
+import { getEventListeners } from 'node:events';
 import { expect, reportResults, runCase, type CaseResult } from './harness.mts';
 import {
     createFakeVertex,
@@ -50,6 +51,13 @@ class RecordingGeminiPlatform extends GeminiPlatform {
 
 // random 0.5: no jitter, every wait is the ladder's base value
 const platform = new RecordingGeminiPlatform({ client: vertex.client, random: () => 0.5 });
+
+/** Waits through the platform's own sleep, one millisecond each */
+class ShortWaitGeminiPlatform extends GeminiPlatform {
+    protected override sleep(_ms: number, signal?: AbortSignal): Promise<void> {
+        return super.sleep(1, signal);
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -159,6 +167,8 @@ interface TurnOptions {
     readonly usageSink?: UsageSink;
     /** Called with every chunk as it arrives */
     readonly onChunk?: (chunk: StreamChunk) => void;
+    /** Another platform over the same fake Vertex */
+    readonly platform?: InstanceType<typeof GeminiPlatform>;
 }
 
 interface TurnResult {
@@ -180,7 +190,7 @@ const runTurn = async (options: TurnOptions = {}): Promise<TurnResult> => {
     console.error = record;
     let error: unknown = null;
     try {
-        const stream = await platform.sendMessage(options.messages ?? userTurn('What is the code word?'), {
+        const stream = await (options.platform ?? platform).sendMessage(options.messages ?? userTurn('What is the code word?'), {
             model: 'gemini-3.8-flash',
             systemPrompt: 'offline system prompt',
             // Recovery is on unless a case asks for the single attempt
@@ -589,6 +599,35 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
             expect(errorMessage(error) === 'Aborted', `the reply ends as stopped (got ${errorMessage(error)})`);
             expect(statusTexts(chunks).length === 1, 'the waiting status was the last thing shown');
             expect(usageSink.totals().roundRetries === 0, `the retry that never went out is not counted (got ${usageSink.totals().roundRetries})`);
+        },
+    },
+    {
+        name: "9b. the platform's own waits leave no listener on the reply's stop signal, and a stop still ends one",
+        body: async () => {
+            const shortWaits = new ShortWaitGeminiPlatform({ client: vertex.client, random: () => 0.5 });
+            const controller = new AbortController();
+            reset([httpErrorReply(429, RATE_LIMITED), httpErrorReply(429, RATE_LIMITED), httpErrorReply(503, 'The service is currently unavailable.'), answer('After three waits.')]);
+
+            const waited = await runTurn({ platform: shortWaits, signal: controller.signal });
+
+            expect(waited.error === null && vertex.requests.length === 4, `three waits, then the answer (got ${errorMessage(waited.error)})`);
+            const left = getEventListeners(controller.signal, 'abort').length;
+            expect(left === 0, `no abort listener is left on the reply's signal (got ${left})`);
+
+            const stopping = new AbortController();
+            reset([httpErrorReply(429, RATE_LIMITED), answer('never sent')]);
+            const stopped = await runTurn({
+                platform: shortWaits,
+                signal: stopping.signal,
+                onChunk: (chunk) => {
+                    // The waiting status goes out right before the wait starts
+                    if (chunk.type === 'status' && chunk.status !== undefined) stopping.abort();
+                },
+            });
+            expect(
+                errorMessage(stopped.error) === 'Aborted' && vertex.requests.length === 1,
+                `a stop during the wait ends the reply at once (got ${errorMessage(stopped.error)})`
+            );
         },
     },
     {

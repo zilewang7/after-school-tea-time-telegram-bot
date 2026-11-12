@@ -125,12 +125,16 @@ export abstract class BasePlatform implements IAIPlatform {
                 return;
             }
 
-            const timeoutId = setTimeout(resolve, ms);
-
             const abortHandler = () => {
                 clearTimeout(timeoutId);
                 reject(new Error('Aborted'));
             };
+            // The signal outlives the wait (a reply's stop signal sees many): the
+            // listener goes with the timer, or every wait would leave one behind
+            const timeoutId = setTimeout(() => {
+                signal?.removeEventListener('abort', abortHandler);
+                resolve();
+            }, ms);
             signal?.addEventListener('abort', abortHandler, { once: true });
         });
     }
