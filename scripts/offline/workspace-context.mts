@@ -395,6 +395,8 @@ const cases: { name: string; body: () => Promise<void> }[] = [
                 widget: true,
             });
             expect(withWorkspace.includes('workspace_write'), 'the workspace tools are named');
+            expect(withWorkspace.includes('workspace_find'), 'the find tool is named');
+            expect(withWorkspace.includes('workspace_copy'), 'the copy tool is named');
             expect(withWorkspace.includes('workspace_preview'), 'the preview tool is named');
             expect(withWorkspace.includes('workspace_path'), 'send_file names the workspace source');
 

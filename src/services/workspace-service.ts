@@ -587,6 +587,184 @@ export const deleteWorkspaceFile = async (
         `workspace delete ${chatId}/${conversationRootId}/${path}`
     );
 
+/** One `workspace_find` hit: the line is already capped for display */
+export interface WorkspaceFindHit {
+    readonly path: string;
+    readonly lineNumber: number;
+    readonly line: string;
+}
+
+export interface WorkspaceFindInput {
+    readonly query: string;
+    /** Exact file to search; null = the whole conversation (filtered by prefix) */
+    readonly path: string | null;
+    /** Canonical `dir/` prefix; empty = the whole conversation */
+    readonly prefix: string;
+    readonly caseSensitive: boolean;
+    /** Hits shown, characters of the rendered `path:line| text` lines, and one line's cap */
+    readonly maxHits: number;
+    readonly maxChars: number;
+    readonly maxLineChars: number;
+}
+
+export interface WorkspaceFindOk {
+    readonly hits: readonly WorkspaceFindHit[];
+    /** Every match, including the ones the caps kept out */
+    readonly totalHits: number;
+    readonly scannedFiles: number;
+    readonly truncated: boolean;
+}
+
+/** Cap one matched line so a single long line cannot eat the whole budget */
+const findLineOf = (line: string, maxChars: number): string => {
+    const chars = Array.from(line);
+    return chars.length > maxChars ? `${chars.slice(0, maxChars).join('')}…` : line;
+};
+
+/**
+ * Literal substring search across one conversation's files, line by line.
+ *
+ * The content is scanned in memory: one conversation is capped at 10 MB and
+ * 100 files, so a search is a single query plus a linear scan. Only files with
+ * a hit refresh their LRU clock — scanning past a file is not using it.
+ */
+export const findWorkspaceFiles = async (
+    chatId: number,
+    conversationRootId: number,
+    input: WorkspaceFindInput
+): Promise<WorkspaceFindOk> => {
+    const rows = await WorkspaceFile.findAll({
+        where: { chatId, conversationRootId },
+        attributes: ['id', 'path', 'content'],
+        order: [['path', 'ASC']],
+    });
+    const files = rows.filter((row) =>
+        input.path === null ? pathMatchesPrefix(row.path, input.prefix) : row.path === input.path
+    );
+    const needle = input.caseSensitive ? input.query : input.query.toLowerCase();
+    const hits: WorkspaceFindHit[] = [];
+    const matchedIds: number[] = [];
+    let totalHits = 0;
+    let usedChars = 0;
+    for (const file of files) {
+        const content = file.content.toString('utf8');
+        let found = false;
+        let lineNumber = 0;
+        for (const rawLine of content.split('\n')) {
+            lineNumber += 1;
+            const haystack = input.caseSensitive ? rawLine : rawLine.toLowerCase();
+            if (!haystack.includes(needle)) continue;
+            totalHits += 1;
+            found = true;
+            if (hits.length >= input.maxHits) continue;
+            const line = findLineOf(rawLine, input.maxLineChars);
+            // Budget the rendered line, including the `path:line| ` prefix
+            const renderedLength = file.path.length + String(lineNumber).length + 2 + line.length;
+            if (usedChars + renderedLength > input.maxChars) continue;
+            usedChars += renderedLength + 1;
+            hits.push({ path: file.path, lineNumber, line });
+        }
+        if (found) matchedIds.push(file.id);
+    }
+    for (const id of matchedIds) {
+        await touchWorkspaceFile(id).catch((error: unknown) => {
+            console.warn('[workspace_find] lastUsedAt refresh failed:', error);
+        });
+    }
+    return { hits, totalHits, scannedFiles: files.length, truncated: totalHits > hits.length };
+};
+
+export interface WorkspaceCopyInput {
+    readonly from: string;
+    readonly to: string;
+    readonly quota: WorkspaceQuota;
+}
+
+export interface WorkspaceCopyOk {
+    readonly from: string;
+    readonly to: string;
+    readonly sizeBytes: number;
+    readonly fileCount: number;
+    readonly totalBytes: number;
+}
+
+/**
+ * Copy one file to a new path inside the same conversation; never overwrites.
+ *
+ * The copy is a plain row duplicate (content bytes, summary, MIME type) with
+ * the quotas checked in the same transaction; reading the source also refreshes
+ * its LRU clock. A model keeps a known-good version this way before a risky
+ * edit without re-outputting the whole file.
+ */
+export const copyWorkspaceFile = async (
+    chatId: number,
+    conversationRootId: number,
+    input: WorkspaceCopyInput
+): Promise<WorkspaceResult<WorkspaceCopyOk>> => {
+    const { from, to, quota } = input;
+    return withBusyRetry(
+        () =>
+            sequelize.transaction(async (transaction): Promise<WorkspaceResult<WorkspaceCopyOk>> => {
+                const source = await WorkspaceFile.findOne({
+                    where: { chatId, conversationRootId, path: from },
+                    transaction,
+                });
+                if (source === null) {
+                    return {
+                        ok: false,
+                        error: `工作区里没有《${from}》；用 workspace_list 看看现有文件，或用 workspace_find 搜内容。`,
+                    };
+                }
+                const existing = await WorkspaceFile.findOne({
+                    where: { chatId, conversationRootId, path: to },
+                    transaction,
+                });
+                if (existing !== null) {
+                    return {
+                        ok: false,
+                        error:
+                            `工作区里已经有《${to}》（${formatBytes(existing.sizeBytes)}）。` +
+                            '换一个 new_path，或先 workspace_delete 目标，或直接改源文件。',
+                    };
+                }
+                const usage = await usageExcluding(chatId, conversationRootId, null, transaction);
+                if (
+                    usage.fileCount + 1 > quota.maxFiles ||
+                    usage.totalBytes + source.sizeBytes > quota.maxConversationBytes ||
+                    usage.globalBytes + source.sizeBytes > quota.maxGlobalBytes
+                ) {
+                    return { ok: false, error: quotaError(quota, usage, source.sizeBytes) };
+                }
+                const now = new Date();
+                await WorkspaceFile.create(
+                    {
+                        chatId,
+                        conversationRootId,
+                        path: to,
+                        content: source.content,
+                        sizeBytes: source.sizeBytes,
+                        summary: source.summary,
+                        mimeType: mimeForFileName(to),
+                        createdAt: now,
+                        updatedAt: now,
+                        lastUsedAt: now,
+                    },
+                    { transaction }
+                );
+                await source.update({ lastUsedAt: now }, { transaction });
+                return {
+                    ok: true,
+                    from,
+                    to,
+                    sizeBytes: source.sizeBytes,
+                    fileCount: usage.fileCount + 1,
+                    totalBytes: usage.totalBytes + source.sizeBytes,
+                };
+            }),
+        `workspace copy ${chatId}/${conversationRootId}/${from}`
+    );
+};
+
 /** Whole-workspace usage of one conversation; v1 has no panel page (D11), so only the offline suite calls it */
 export const workspaceUsageOf = async (
     chatId: number,

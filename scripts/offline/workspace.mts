@@ -4,8 +4,8 @@
  *
  * Run: npx tsx scripts/offline/workspace.mts
  *
- * Covers the path rules, read/write/edit/delete and their quotas, the manifest
- * builder and its workspace tokens, the tool handlers, `send_file` /
+ * Covers the path rules, read/write/find/copy/edit/delete and their quotas, the
+ * manifest builder and its workspace tokens, the tool handlers, `send_file` /
  * `send_widget` reading from the workspace, the preview tool with an injected
  * renderer, and the 7-day LRU cleanup.
  */
@@ -15,8 +15,10 @@ import type { ToolHandler } from '../../src/ai/tools/tool-types.js';
 await setupOfflineDb();
 const { WorkspaceFile } = await import('../../src/db/workspaceFileDTO.js');
 const {
+    copyWorkspaceFile,
     deleteWorkspaceFile,
     editWorkspaceFile,
+    findWorkspaceFiles,
     formatWorkspaceTime,
     listWorkspaceFiles,
     loadWorkspaceSnapshots,
@@ -34,7 +36,9 @@ const { buildWorkspaceManifest } = await import('../../src/reply/workspace/works
 const { createWorkspaceWriteTool } = await import('../../src/reply/tools/workspace-write-tool.js');
 const { createWorkspaceReadTool } = await import('../../src/reply/tools/workspace-read-tool.js');
 const { createWorkspaceListTool } = await import('../../src/reply/tools/workspace-list-tool.js');
+const { createWorkspaceFindTool } = await import('../../src/reply/tools/workspace-find-tool.js');
 const { createWorkspaceEditTool } = await import('../../src/reply/tools/workspace-edit-tool.js');
+const { createWorkspaceCopyTool } = await import('../../src/reply/tools/workspace-copy-tool.js');
 const { createWorkspaceDeleteTool } = await import('../../src/reply/tools/workspace-delete-tool.js');
 const { createWorkspacePreviewTool } = await import('../../src/reply/tools/workspace-preview-tool.js');
 const { createSendFileTool } = await import('../../src/reply/tools/send-file-tool.js');
@@ -422,6 +426,172 @@ const cases: { name: string; body: () => Promise<void> }[] = [
             expect(!deleted.isError && deleted.content.includes('已删除'), 'delete succeeds');
             const missing = await call(readTool, { path: 'notes/a.md' });
             expect(missing.isError && missing.content.includes('workspace_list'), 'a missing file points at list');
+        },
+    },
+    {
+        name: 'find locates lines across files, by scope and case, with caps',
+        body: async () => {
+            await clearWorkspace();
+            await write('widgets/card.html', '<div class="card">NEON</div>\n<div>霓虹</div>');
+            await write('notes/plan.md', '第一行\nneon 参考\n最后一行');
+            await write('notes/other.md', '无关内容');
+
+            const base = {
+                query: 'neon',
+                path: null,
+                prefix: '',
+                caseSensitive: false,
+                maxHits: 50,
+                maxChars: 8000,
+                maxLineChars: 200,
+            };
+            const all = await findWorkspaceFiles(CHAT, ROOT, base);
+            expect(
+                all.totalHits === 2 && all.scannedFiles === 3,
+                `case-insensitive search scans every file (got ${JSON.stringify({ total: all.totalHits, scanned: all.scannedFiles })})`
+            );
+            expect(
+                all.hits.some((hit) => hit.path === 'notes/plan.md' && hit.lineNumber === 2),
+                `hits carry the path and the line number (got ${JSON.stringify(all.hits)})`
+            );
+            expect(
+                all.hits.some((hit) => hit.path === 'widgets/card.html' && hit.lineNumber === 1),
+                'the other file is found too'
+            );
+
+            const exact = await findWorkspaceFiles(CHAT, ROOT, { ...base, query: 'NEON', caseSensitive: true });
+            expect(
+                exact.totalHits === 1 && exact.hits[0]?.path === 'widgets/card.html',
+                `case_sensitive filters the matches (got ${JSON.stringify(exact.hits)})`
+            );
+            const oneFile = await findWorkspaceFiles(CHAT, ROOT, { ...base, path: 'notes/plan.md' });
+            expect(
+                oneFile.totalHits === 1 && oneFile.scannedFiles === 1,
+                `path limits the scan to one file (got ${JSON.stringify(oneFile)})`
+            );
+            const oneDir = await findWorkspaceFiles(CHAT, ROOT, { ...base, prefix: 'widgets/' });
+            expect(
+                oneDir.totalHits === 1 && oneDir.scannedFiles === 1,
+                `prefix limits the scan to one directory (got ${JSON.stringify(oneDir)})`
+            );
+            const none = await findWorkspaceFiles(CHAT, ROOT, { ...base, query: '不存在的词' });
+            expect(none.totalHits === 0 && none.hits.length === 0 && !none.truncated, 'a miss is a clean empty result');
+
+            // Caps: every match is counted, only the first few are shown
+            await write('notes/many.md', Array.from({ length: 60 }, (_, index) => `hit ${index}`).join('\n'));
+            const capped = await findWorkspaceFiles(CHAT, ROOT, { ...base, query: 'hit', maxHits: 5 });
+            expect(
+                capped.totalHits === 60 && capped.hits.length === 5 && capped.truncated,
+                `caps count everything but show a few (got ${JSON.stringify({ total: capped.totalHits, shown: capped.hits.length })})`
+            );
+            const longLine = await findWorkspaceFiles(CHAT, ROOT, {
+                ...base,
+                query: 'END',
+                maxLineChars: 10,
+            });
+            await write('notes/long.md', `${'x'.repeat(30)}END`);
+            const cappedLine = await findWorkspaceFiles(CHAT, ROOT, {
+                ...base,
+                query: 'END',
+                maxLineChars: 10,
+            });
+            expect(longLine.totalHits === 0, 'the long line did not exist yet');
+            expect(
+                cappedLine.totalHits === 1 && cappedLine.hits[0]?.line === `${'x'.repeat(10)}…`,
+                `one long line is capped for display (got ${JSON.stringify(cappedLine.hits[0])})`
+            );
+
+            const state = createWorkspaceState({ chatId: CHAT, conversationRootIds: [ROOT], quota: QUOTA });
+            const findTool = createWorkspaceFindTool({ state });
+            const toolResult = await call(findTool, { query: 'neon' });
+            expect(
+                !toolResult.isError && toolResult.content.includes('找到 2 处') && toolResult.content.includes('notes/plan.md:2| neon 参考'),
+                `the tool renders path:line hits (got ${toolResult.content})`
+            );
+            const scoped = await call(findTool, { query: 'neon', path: 'notes/plan.md', prefix: 'notes/' });
+            expect(scoped.isError && scoped.content.includes('只能给一个'), 'path and prefix are exclusive');
+            const empty = await call(findTool, { query: '  ' });
+            expect(empty.isError && empty.content.includes('query 不能为空'), 'an empty query is rejected');
+            const miss = await call(findTool, { query: 'zzz' });
+            expect(!miss.isError && miss.content.includes('没有找到'), 'a miss tells the model what it scanned');
+
+            const limitedState = createWorkspaceState({
+                chatId: CHAT,
+                conversationRootIds: [ROOT],
+                quota: QUOTA,
+                callLimits: { writes: 10, reads: 1, lists: 10, deletes: 10, previews: 6 },
+            });
+            const limitedTool = createWorkspaceFindTool({ state: limitedState });
+            await call(limitedTool, { query: 'neon' });
+            const overReads = await call(limitedTool, { query: 'neon' });
+            expect(overReads.isError && overReads.content.includes('次数已用完'), 'find counts as a read');
+        },
+    },
+    {
+        name: 'copy duplicates a file without overwriting the target',
+        body: async () => {
+            await clearWorkspace();
+            const state = createWorkspaceState({ chatId: CHAT, conversationRootIds: [ROOT], quota: QUOTA });
+            const writeTool = createWorkspaceWriteTool({ state });
+            const copyTool = createWorkspaceCopyTool({ state });
+            await call(writeTool, { path: 'widgets/game.html', content: '<div>v1</div>' });
+
+            const copied = await call(copyTool, { path: 'widgets/game.html', new_path: 'widgets/game-v1.html' });
+            expect(!copied.isError && copied.content.includes('已复制'), `copy succeeds (got ${copied.content})`);
+            const readBack = await readWorkspaceFile(CHAT, ROOT, 'widgets/game-v1.html');
+            expect(readBack?.content === '<div>v1</div>', 'the copy carries the same bytes');
+            const listed = await listWorkspaceFiles(CHAT, ROOT);
+            expect(
+                listed.files.length === 2 && listed.usage.totalBytes === 26,
+                `both files count toward the quota (got ${JSON.stringify(listed.usage)})`
+            );
+            const copiedInfo = listed.files.find((file) => file.path === 'widgets/game-v1.html');
+            expect(
+                copiedInfo?.summary === '<div>v1</div>' && copiedInfo?.mimeType === 'text/html',
+                `the copy keeps the summary and takes the target MIME type (got ${JSON.stringify(copiedInfo)})`
+            );
+            const serviceCopy = await copyWorkspaceFile(CHAT, ROOT, {
+                from: 'widgets/game.html',
+                to: 'widgets/game-svc.html',
+                quota: QUOTA,
+            });
+            expect(
+                serviceCopy.ok && serviceCopy.sizeBytes === 13 && serviceCopy.fileCount === 3,
+                `the service reports the copy's size and the new usage (got ${JSON.stringify(serviceCopy)})`
+            );
+
+            const again = await call(copyTool, { path: 'widgets/game.html', new_path: 'widgets/game-v1.html' });
+            expect(
+                again.isError && again.content.includes('已经有') && again.content.includes('new_path'),
+                'a copy never overwrites the target'
+            );
+            const missing = await call(copyTool, { path: 'widgets/nope.html', new_path: 'widgets/x.html' });
+            expect(missing.isError && missing.content.includes('workspace_list'), 'a missing source points at list');
+            const same = await call(copyTool, { path: 'widgets/game.html', new_path: 'widgets/game.html' });
+            expect(same.isError && same.content.includes('相同'), 'source and target must differ');
+
+            // The file-count quota stops the next copy, and the source is untouched
+            await call(copyTool, { path: 'widgets/game.html', new_path: 'widgets/game-v2.html' });
+            await call(copyTool, { path: 'widgets/game.html', new_path: 'widgets/game-v3.html' });
+            const overQuota = await call(copyTool, { path: 'widgets/game.html', new_path: 'widgets/game-v4.html' });
+            expect(overQuota.isError && overQuota.content.includes('配额'), 'the file-count quota applies to copies');
+            const source = await readWorkspaceFile(CHAT, ROOT, 'widgets/game.html');
+            expect(source?.content === '<div>v1</div>', 'failed copies leave the source alone');
+
+            // Copies count toward the per-reply write limit
+            await clearWorkspace();
+            const limitedState = createWorkspaceState({
+                chatId: CHAT,
+                conversationRootIds: [ROOT],
+                quota: QUOTA,
+                callLimits: { writes: 1, reads: 20, lists: 10, deletes: 10, previews: 6 },
+            });
+            const limitedCopyTool = createWorkspaceCopyTool({ state: limitedState });
+            await write('a.txt', 'hello');
+            const firstCopy = await call(limitedCopyTool, { path: 'a.txt', new_path: 'b.txt' });
+            expect(!firstCopy.isError, `the first copy fits the write limit (got ${firstCopy.content})`);
+            const overWrites = await call(limitedCopyTool, { path: 'a.txt', new_path: 'c.txt' });
+            expect(overWrites.isError && overWrites.content.includes('次数已用完'), 'copy counts as a write');
         },
     },
     {

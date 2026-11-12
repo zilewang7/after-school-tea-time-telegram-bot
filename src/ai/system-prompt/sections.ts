@@ -130,7 +130,7 @@ const fileLine = (workspace: boolean): string =>
     (workspace ? '；也可以从本会话工作区的文件直接发出（workspace_path）' : '');
 
 const WORKSPACE_LINE =
-    '- 可以用 `workspace_write` / `workspace_read` / `workspace_list` / `workspace_edit` / `workspace_delete` 在按会话保留的「工作区」里写、读、改、删草稿文件（7 天未使用自动清理）。';
+    '- 可以用 `workspace_write` / `workspace_read` / `workspace_list` / `workspace_find` / `workspace_edit` / `workspace_copy` / `workspace_delete` 在按会话保留的「工作区」里写、读、搜、改、复制、删草稿文件（7 天未使用自动清理）。';
 
 const WORKSPACE_PREVIEW_LINE =
     '- `workspace_preview` 可以把工作区的 HTML/A2UI 草稿渲染成图查看。';

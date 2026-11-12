@@ -208,7 +208,9 @@ const cases: { name: string; body: () => Promise<void> }[] = [
                 executed('workspace_write', 700),
                 executed('workspace_read', 200),
                 executed('workspace_list', 100),
+                executed('workspace_find', 300),
                 executed('workspace_edit', 600),
+                executed('workspace_copy', 300),
                 executed('workspace_delete', 100),
                 executed('workspace_preview', 800),
             ]);

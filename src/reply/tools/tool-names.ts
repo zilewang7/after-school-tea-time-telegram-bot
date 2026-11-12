@@ -19,7 +19,9 @@ export const CREATE_HARNESS_ISSUE_TOOL_NAME = 'create_harness_issue';
 export const WORKSPACE_WRITE_TOOL_NAME = 'workspace_write';
 export const WORKSPACE_READ_TOOL_NAME = 'workspace_read';
 export const WORKSPACE_LIST_TOOL_NAME = 'workspace_list';
+export const WORKSPACE_FIND_TOOL_NAME = 'workspace_find';
 export const WORKSPACE_EDIT_TOOL_NAME = 'workspace_edit';
+export const WORKSPACE_COPY_TOOL_NAME = 'workspace_copy';
 export const WORKSPACE_DELETE_TOOL_NAME = 'workspace_delete';
 export const WORKSPACE_PREVIEW_TOOL_NAME = 'workspace_preview';
 
@@ -46,7 +48,9 @@ export const WORKSPACE_FILE_TOOL_NAMES: readonly string[] = [
     WORKSPACE_WRITE_TOOL_NAME,
     WORKSPACE_READ_TOOL_NAME,
     WORKSPACE_LIST_TOOL_NAME,
+    WORKSPACE_FIND_TOOL_NAME,
     WORKSPACE_EDIT_TOOL_NAME,
+    WORKSPACE_COPY_TOOL_NAME,
     WORKSPACE_DELETE_TOOL_NAME,
 ];
 
@@ -92,7 +96,9 @@ export const RESERVED_TOOL_NAMES: readonly string[] = [
     WORKSPACE_WRITE_TOOL_NAME,
     WORKSPACE_READ_TOOL_NAME,
     WORKSPACE_LIST_TOOL_NAME,
+    WORKSPACE_FIND_TOOL_NAME,
     WORKSPACE_EDIT_TOOL_NAME,
+    WORKSPACE_COPY_TOOL_NAME,
     WORKSPACE_DELETE_TOOL_NAME,
     WORKSPACE_PREVIEW_TOOL_NAME,
 ];

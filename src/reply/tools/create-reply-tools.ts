@@ -33,8 +33,10 @@ import { createSendFileTool } from './send-file-tool.js';
 import { createSendImageTool } from './send-image-tool.js';
 import { createSendStickerTool } from './send-sticker-tool.js';
 import { createSendWidgetTool } from './send-widget-tool.js';
+import { createWorkspaceCopyTool } from './workspace-copy-tool.js';
 import { createWorkspaceDeleteTool } from './workspace-delete-tool.js';
 import { createWorkspaceEditTool } from './workspace-edit-tool.js';
+import { createWorkspaceFindTool } from './workspace-find-tool.js';
 import { createWorkspaceListTool } from './workspace-list-tool.js';
 import { createWorkspacePreviewTool } from './workspace-preview-tool.js';
 import { createWorkspaceReadTool } from './workspace-read-tool.js';
@@ -208,7 +210,9 @@ export const createReplyTools = (
                   createWorkspaceWriteTool({ state: workspaceState }),
                   createWorkspaceReadTool({ state: workspaceState }),
                   createWorkspaceListTool({ state: workspaceState }),
+                  createWorkspaceFindTool({ state: workspaceState }),
                   createWorkspaceEditTool({ state: workspaceState }),
+                  createWorkspaceCopyTool({ state: workspaceState }),
                   createWorkspaceDeleteTool({ state: workspaceState }),
               ]
             : []),

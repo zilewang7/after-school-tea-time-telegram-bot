@@ -27,7 +27,7 @@ export const toolRoundNotice = (
         return (
             `[工具轮次] 本次回复已调用工具 ${toolCalls} 次；时间已用完，只能再调用不产生开销的工具` +
             '（产物工具 generate_image / send_image / send_sticker / send_file / send_widget，' +
-            '工作区工具 workspace_write / workspace_edit / workspace_read / workspace_list / workspace_delete / workspace_preview，' +
+            '工作区工具 workspace_write / workspace_read / workspace_list / workspace_find / workspace_edit / workspace_copy / workspace_delete / workspace_preview，' +
             '以及 get_ui_guide / list_harness_issues / create_harness_issue），之后必须文字收尾。'
         );
     }

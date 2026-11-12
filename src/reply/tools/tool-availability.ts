@@ -72,7 +72,7 @@ export interface ToolAvailability {
     readonly widget: boolean;
     /** get_ui_guide is offered (only together with send_widget) */
     readonly widgetGuide: boolean;
-    /** workspace_write / read / list / edit / delete are offered */
+    /** workspace_write / read / list / find / edit / copy / delete are offered */
     readonly workspace: boolean;
     /** workspace_preview is offered (workspace + a vision model + the render sidecar) */
     readonly workspacePreview: boolean;
