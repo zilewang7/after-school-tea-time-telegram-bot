@@ -56,7 +56,8 @@ export interface ThoughtSummaryStats {
 /**
  * What the filter knows between rounds, as plain data: a tool loop checkpoint
  * keeps it and a resume restores it. Nothing is held between rounds (a round
- * ends with flush), so the held text is not part of it.
+ * ends with flush, a broken attempt with flushBroken), so the held text is not
+ * part of it.
  */
 export interface ThoughtSummaryFilterState {
     /** Whether the stream was recognised as a summarizer stream, or not decided yet */
@@ -70,8 +71,14 @@ export interface ThoughtSummaryFilter {
     push(text: string): string;
     /** Clean text left when the stream or the round ends */
     flush(): string;
+    /**
+     * Clean text left when the stream broke off: only the summaries the cut
+     * block finished. Text held while the stream was not recognised yet is
+     * dropped, as it may be the scaffold's start; nothing stays held.
+     */
+    flushBroken(): string;
     stats(): ThoughtSummaryStats;
-    /** A copy of what holds across rounds; read it right after flush */
+    /** A copy of what holds across rounds; read it right after flush or flushBroken */
     state(): ThoughtSummaryFilterState;
 }
 
@@ -108,6 +115,15 @@ export const extractThoughtSummaries = (block: string): string[] => {
     // carries the intended answer in that draft.
     const chosen = clean.length > 0 ? clean : lastDraft === null ? [] : [lastDraft];
     return chosen.map((candidate) => `**${candidate.heading}**\n\n${candidate.paragraph}`);
+};
+
+/**
+ * A cut block up to its last blank line: a paragraph after it may stop
+ * mid-sentence, every one before it is finished
+ */
+const finishedPartOf = (block: string): string => {
+    const lastBlankLine = block.lastIndexOf('\n\n');
+    return lastBlankLine === -1 ? '' : block.slice(0, lastBlankLine + 2);
 };
 
 /** Index of the next block start at or after `from`, or -1 when not complete yet */
@@ -158,11 +174,11 @@ export const createThoughtSummaryFilter = (
         dropped: 0,
     };
 
-    /** Turn one block into the text to release now */
-    const release = (block: string): string => {
+    /** Turn one block into the text to release now; `finished` is the part whose summaries count */
+    const release = (block: string, finished: string = block): string => {
         // Blank space between blocks is a separator, not a block
         if (block.trim() === '') return '';
-        const summaries = extractThoughtSummaries(block);
+        const summaries = extractThoughtSummaries(finished);
         stats.blocks += 1;
         if (summaries.length === 0) {
             stats.dropped += 1;
@@ -227,9 +243,19 @@ export const createThoughtSummaryFilter = (
         return release(block);
     };
 
+    const flushBroken = (): string => {
+        const block = held;
+        held = '';
+        // Undecided text belongs to an attempt that is thrown away; passing it
+        // through could show the scaffold's first line
+        if (mode !== 'filtering') return '';
+        return release(block, finishedPartOf(block));
+    };
+
     return {
         push,
         flush,
+        flushBroken,
         stats: () => ({ ...stats }),
         state: () => ({ mode, emitted }),
     };
