@@ -1,6 +1,6 @@
 /**
  * Response menu for bot messages
- * Handles stop, retry, and version switching
+ * Handles stop, retry, continue, and version switching
  *
  * Uses raw callback_query handling instead of Grammy Menu
  * because Menu's callback_data format is too complex for manual InlineKeyboard
@@ -36,6 +36,8 @@ const RERUN_CLAIMED_NOTICE = '正在处理';
 const RERUN_STARTING_NOTICE = '正在启动，请稍后再点';
 /** A button whose action this version of the bot does not know */
 const UNKNOWN_ACTION_NOTICE = '按钮已失效，已刷新';
+/** The checks of a continue click failed unexpectedly; nothing was taken */
+const CONTINUE_CHECK_FAILED_NOTICE = '暂时无法继续，请稍后再试';
 
 /**
  * The toast for a button pressed while a retry or continue of the reply holds
@@ -56,6 +58,31 @@ let retryHandler: RetryHandler | null = null;
  */
 export const setRetryHandler = (handler: RetryHandler): void => {
     retryHandler = handler;
+};
+
+/**
+ * What a "继续" click's checks found, made while the kept checkpoint is only
+ * looked at (design 2026-1112-1123 §6.4)
+ */
+export type ContinueVerdict =
+    /** Everything holds: `start` takes the checkpoint at once and resolves when the resumed reply has ended */
+    | { readonly kind: 'ready'; readonly start: () => Promise<void> }
+    /** The checkpoint is gone (the checks dropped what was left): the buttons lose "继续" */
+    | { readonly kind: 'gone'; readonly notice: string }
+    /** Not now: only the notice; the checkpoint, its mark and the buttons stay for a later click */
+    | { readonly kind: 'keep'; readonly notice: string };
+
+/**
+ * Checks a continue click on a reply that is not generating. It lives in the
+ * reply layer, which imports this module, so it is handed in like the retry
+ * handler.
+ */
+type ContinueHandler = (ctx: Context, response: BotResponse) => Promise<ContinueVerdict>;
+
+let continueHandler: ContinueHandler | null = null;
+
+export const setContinueHandler = (handler: ContinueHandler): void => {
+    continueHandler = handler;
 };
 
 /**
@@ -102,6 +129,7 @@ export const registerResponseCallbacks = (bot: Bot): void => {
         await match(action)
             .with('stop', () => handleStop(ctx))
             .with('retry', () => handleRetry(ctx))
+            .with('continue', () => handleContinue(ctx))
             .with('prev', () => handlePrev(ctx))
             .with('next', () => handleNext(ctx))
             .otherwise(() => handleUnknownAction(ctx));
@@ -276,6 +304,98 @@ const runRetryHoldingClaim = async (
         const [retryErr] = await to(handler(ctx, firstMessageId));
         if (retryErr) {
             console.error('[response-menu] Retry failed:', retryErr);
+        }
+    } finally {
+        releaseReplyRerun(chatId, firstMessageId);
+    }
+};
+
+/**
+ * Continue button handler (design 2026-1112-1123 §6.4, §7.3). The order:
+ * look the reply up; claim it with no await in between; check while only
+ * looking at the kept checkpoint; then either answer why not and give the
+ * claim back, or answer, take the checkpoint and hold the claim until the
+ * resumed reply has ended.
+ */
+const handleContinue = async (ctx: Context): Promise<void> => {
+    const msg = ctx.callbackQuery?.message;
+    if (!msg) {
+        await ctx.answerCallbackQuery({ text: '消息无效' });
+        return;
+    }
+
+    const [err, response] = await to(findBotResponseByMessageId(msg.chat.id, msg.message_id));
+    if (err || !response) {
+        await ctx.answerCallbackQuery({ text: '找不到消息记录' });
+        return;
+    }
+
+    // As for retry: of two fast clicks only one gets past here, and the loser
+    // leaves the buttons to the winner
+    const chatId = msg.chat.id;
+    const firstMessageId = response.messageId;
+    if (!tryClaimReplyRerun(chatId, firstMessageId)) {
+        await ctx.answerCallbackQuery({ text: RERUN_CLAIMED_NOTICE });
+        return;
+    }
+
+    // Released below on every way out, unless the resumed reply took it over
+    let continueDetached = false;
+    try {
+        if (response.buttonState === ButtonState.PROCESSING) {
+            await ctx.answerCallbackQuery({ text: '还在生成中' });
+            await refreshButtonsToCurrent(ctx, response, msg.message_id);
+            return;
+        }
+
+        const handler = continueHandler;
+        if (!handler) {
+            console.error('[response-menu] Continue handler not set');
+            await ctx.answerCallbackQuery({ text: '继续功能未配置' });
+            return;
+        }
+
+        const [checkErr, verdict] = await to(handler(ctx, response));
+        if (checkErr) {
+            // Nothing was taken: a later click can still continue
+            console.error('[response-menu] Continue check failed:', checkErr);
+            await ctx.answerCallbackQuery({ text: CONTINUE_CHECK_FAILED_NOTICE });
+            return;
+        }
+
+        await match(verdict)
+            .with({ kind: 'keep' }, async ({ notice }) => {
+                await ctx.answerCallbackQuery({ text: notice });
+            })
+            .with({ kind: 'gone' }, async ({ notice }) => {
+                await ctx.answerCallbackQuery({ text: notice });
+                // The checks cleared the mark: the redraw leaves "继续" out
+                await refreshButtonsToCurrent(ctx, response, msg.message_id);
+            })
+            .with({ kind: 'ready' }, async ({ start }) => {
+                // A failed answer leaves the checkpoint where it is
+                await ctx.answerCallbackQuery({ text: '继续中...' });
+                // start() takes the checkpoint before it first waits; the
+                // resumed reply runs on without holding up this update
+                void runContinueHoldingClaim(start(), chatId, firstMessageId);
+                continueDetached = true;
+            })
+            .exhaustive();
+    } finally {
+        if (!continueDetached) releaseReplyRerun(chatId, firstMessageId);
+    }
+};
+
+/** Wait for a resumed reply to end, then give the claim back whatever happened */
+const runContinueHoldingClaim = async (
+    running: Promise<void>,
+    chatId: number,
+    firstMessageId: number
+): Promise<void> => {
+    try {
+        const [continueErr] = await to(running);
+        if (continueErr) {
+            console.error('[response-menu] Continue failed:', continueErr);
         }
     } finally {
         releaseReplyRerun(chatId, firstMessageId);

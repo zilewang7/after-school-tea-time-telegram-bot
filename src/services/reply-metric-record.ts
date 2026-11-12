@@ -4,7 +4,7 @@
  * finalize; a lost row only shows as "no metrics" in the panel.
  */
 import { match } from 'ts-pattern';
-import type { AgentStats } from '../ai/types.js';
+import type { AgentStats, AgentToolUsage } from '../ai/types.js';
 import type { ReplyUsageTotals } from '../ai/usage/usage-types.js';
 import {
     insertReplyMetric,
@@ -64,12 +64,25 @@ const outcomeOf = (facts: OutcomeFacts): ReplyOutcome =>
         .with({ hasText: false, hasAttachment: false }, () => 'empty')
         .otherwise(() => 'ok');
 
-const toolUsageOf = (agentStats: AgentStats | undefined): ToolUsageEntry[] =>
-    (agentStats?.toolUsage ?? []).map((usage) => ({
-        name: usage.name,
-        count: usage.count,
-        failed: usage.failed ?? 0,
-    }));
+/**
+ * The calls this attempt made itself. A resume's session counts the kept
+ * rounds' calls too (that is what the version shows); they were recorded on
+ * the attempt it continues, so the baseline is taken off per tool name, and a
+ * tool of the baseline left with nothing new drops out.
+ */
+const toolUsageOf = (
+    agentStats: AgentStats | undefined,
+    baseline: readonly AgentToolUsage[]
+): ToolUsageEntry[] => {
+    const before = new Map(baseline.map((usage) => [usage.name, usage] as const));
+    return (agentStats?.toolUsage ?? [])
+        .map((usage) => ({
+            name: usage.name,
+            count: Math.max(0, usage.count - (before.get(usage.name)?.count ?? 0)),
+            failed: Math.max(0, (usage.failed ?? 0) - (before.get(usage.name)?.failed ?? 0)),
+        }))
+        .filter((entry) => !before.has(entry.name) || entry.count > 0 || entry.failed > 0);
+};
 
 type RecoveryAndTierColumns = Pick<
     ReplyMetricInput,
@@ -94,7 +107,7 @@ const recoveryAndTierOf = (usage: ReplyUsageTotals): RecoveryAndTierColumns => (
 export const buildReplyMetricInput = (source: ReplyMetricSource, attempt: FinalizedAttempt): ReplyMetricInput => {
     const { metrics } = source;
     const usage = metrics.usage.totals();
-    const toolUsage = toolUsageOf(source.agentStats);
+    const toolUsage = toolUsageOf(source.agentStats, metrics.toolUsageBaseline);
     const failed = attempt.errorMessage !== undefined;
     const imageCount = source.images.length;
     const hasSticker = source.sticker !== undefined;

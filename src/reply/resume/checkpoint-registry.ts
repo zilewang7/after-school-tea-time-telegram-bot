@@ -99,7 +99,9 @@ const describe = (checkpoint: ReplyCheckpoint): string =>
 
 export const createCheckpointRegistry = (options: CheckpointRegistryOptions = {}): CheckpointRegistry => {
     const limits: CheckpointRegistryLimits = { ...CHECKPOINT_REGISTRY_LIMITS, ...options.limits };
-    const now = options.now ?? Date.now;
+    // Date.now looked up on every read, like the marks' clock in state.ts:
+    // the two must agree on what has expired
+    const now = options.now ?? ((): number => Date.now());
     const processStartedAt = options.processStartedAt ?? performance.timeOrigin;
     // Insertion order is save order; eviction still compares savedAt, since a
     // put-back entry returns at the end with its original save time

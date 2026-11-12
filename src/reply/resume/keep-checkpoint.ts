@@ -74,6 +74,19 @@ export const fillToolUsageFromCheckpoint = (session: BotMessageSession, checkpoi
     session.agentStats = { ...session.agentStats, toolUsage };
 };
 
+/**
+ * A stopped reply has no tool usage of its own unless its stream ended (only
+ * the done chunk carries it). With a checkpoint at hand it takes the kept
+ * rounds' usage, as a failed one does, so the stopped version shows its tools
+ * and its row counts them.
+ */
+export const fillStoppedToolUsage = (holder: CheckpointHolder): void => {
+    const { session, lastCheckpoint } = holder;
+    if (lastCheckpoint === undefined) return;
+    if ((session.agentStats?.toolUsage?.length ?? 0) > 0) return;
+    fillToolUsageFromCheckpoint(session, lastCheckpoint);
+};
+
 /** The error message of a failure whose checkpoint was kept says how much of it is kept */
 export const withKeptRoundsLine = (message: RenderedMessage, rounds: number): RenderedMessage =>
     concatMessages(message, '\n', italicText(`已保留前 ${rounds} 轮`));

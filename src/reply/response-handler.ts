@@ -93,11 +93,13 @@ import type {
 import type { ToolLoopCheckpoint } from '../ai/tools/tool-loop-checkpoint.js';
 import type { FinalizeOptions } from '../services/bot-message-service.js';
 import {
+    fillStoppedToolUsage,
     fillToolUsageFromCheckpoint,
     keepPreparedCheckpoint,
     prepareCheckpointKeep,
     withKeptRoundsLine,
 } from './resume/keep-checkpoint.js';
+import { createReplayTracker } from './resume/replay-tracker.js';
 import type { ReplyResumeFacts } from './resume/reply-checkpoint.js';
 import { getToolConfig } from '../config/tool-config.js';
 import { noteStreamChunk } from '../services/reply-metrics-draft.js';
@@ -672,10 +674,19 @@ export const processStream = async (
     let linkActivationFailed = false;
     let linkEmitAttempted = false;
     const heartbeat = createReplyHeartbeat(session);
+    const replay = createReplayTracker();
 
     for await (const chunk of stream) {
+        // A resume first replays what the interrupted version showed. Those
+        // chunks are processed like new ones, but a stop waits for the first
+        // new chunk: the stopped version then holds the whole replay, and the
+        // attachments at the end of it still go out.
+        const replayed = chunk.replay === true;
+        if (replayed) replay.note();
+        else replay.end();
+
         // Check if stream was aborted (user clicked stop)
-        if (session.streamController.isAborted()) {
+        if (!replayed && session.streamController.isAborted()) {
             console.log('[response-handler] Stream aborted by user');
             break;
         }
@@ -913,6 +924,8 @@ export const processStream = async (
             lastUpdateTime = Date.now();
         }
     }
+    // A stream that ended with its replay still logs it
+    replay.end();
 
     // The streaming stripper only guards the opening, so the assembled text is
     // cleaned once more: what the final edit displays, what finalize stores and
@@ -1350,6 +1363,9 @@ export const sendFinalResponse = async (
     // Check if stopped by user
     const wasStoppedByUser = session.streamController.isAborted();
     const resolveContextLink = contextLinkResolverFor(chatContext);
+    // A stop with a checkpoint at hand shows and stores the kept rounds' tools
+    if (wasStoppedByUser) fillStoppedToolUsage(chatContext);
+    const agentStats = wasStoppedByUser ? session.agentStats ?? response.agentStats : response.agentStats;
 
     const builtChunks = buildFinalMessages({
         text: response.text,
@@ -1362,7 +1378,7 @@ export const sendFinalResponse = async (
                 : session.thinkingBuffer,
         // Link mode: the reply leads with the link message instead of the CoT
         thinkingLink: session.thinkingLink,
-        agentStats: response.agentStats,
+        agentStats,
         wasStoppedByUser,
         groundingData: response.groundingData,
         resolveContextLink,

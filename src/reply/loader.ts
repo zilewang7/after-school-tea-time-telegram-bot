@@ -2,7 +2,9 @@
  * Reply module loader
  */
 import type { Bot } from 'grammy';
+import { setContinueHandler } from '../cmd/menus/response-menu.js';
 import { registerChatHandler } from './chat-handler.js';
+import { handleContinueClick } from './resume/continue-click.js';
 
 /**
  * Load reply handlers on bot
@@ -16,4 +18,8 @@ export const replyLoad = (bot: Bot): void => {
 
     // Register main chat handler (buttons handled via buildResponseButtons)
     registerChatHandler(bot);
+
+    // "继续" on a failed or stopped reply: the button handler claims the
+    // reply, this layer checks the kept checkpoint and runs the resume
+    setContinueHandler((ctx, response) => handleContinueClick(ctx, response));
 };

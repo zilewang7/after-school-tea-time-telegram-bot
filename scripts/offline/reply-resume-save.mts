@@ -478,11 +478,11 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
             await quietly(() => botMessageService.refreshToFinalState(refreshTelegram.api, run.chatId, run.firstMessageId));
             expect(json(finalButtonsOf(refreshTelegram)) === json(['<', '继续', '重试']), 'refreshToFinalState keeps it');
 
-            // A click on 继续 before the next stage: the unknown-action refresh redraws the same buttons
+            // A button this version does not know: the refresh redraws the same buttons
             const { bot, telegram: botTelegram } = createFakeBot();
             registerResponseCallbacks(bot);
             await quietly(() =>
-                bot.handleUpdate(callbackUpdate({ chatId: run.chatId, messageId: run.firstMessageId, userId: USER_ID, data: 'resp:continue' }))
+                bot.handleUpdate(callbackUpdate({ chatId: run.chatId, messageId: run.firstMessageId, userId: USER_ID, data: 'resp:rewind' }))
             );
             expect(lastToastOf(botTelegram) === '按钮已失效，已刷新', `the click falls to the unknown action (got ${String(lastToastOf(botTelegram))})`);
             expect(json(finalButtonsOf(botTelegram)) === json(['<', '继续', '重试']), 'and the refresh shows 继续 again');
@@ -491,7 +491,7 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
             await quietly(() => botMessageService.switchVersion(switchContext, run.firstMessageId, 'prev'));
             botTelegram.reset();
             await quietly(() =>
-                bot.handleUpdate(callbackUpdate({ chatId: run.chatId, messageId: run.firstMessageId, userId: USER_ID, data: 'resp:continue' }))
+                bot.handleUpdate(callbackUpdate({ chatId: run.chatId, messageId: run.firstMessageId, userId: USER_ID, data: 'resp:rewind' }))
             );
             expect(json(finalButtonsOf(botTelegram)) === json(['重试', '>']), `nor on the older version (got ${json(finalButtonsOf(botTelegram))})`);
 

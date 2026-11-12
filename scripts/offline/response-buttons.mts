@@ -180,7 +180,7 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
             await waitUntil('the retry to start', () => retryStarts.length === 1);
 
             // Claimed, PROCESSING not written yet
-            for (const data of ['resp:stop', 'resp:prev', 'resp:next', 'resp:continue']) {
+            for (const data of ['resp:stop', 'resp:prev', 'resp:next', 'resp:some-future-action']) {
                 telegram.reset();
                 await press(chatId, firstMessageId, data);
                 await settle();
@@ -189,6 +189,14 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
                     `${data} answers ${STARTING_NOTICE} and changes nothing (got ${json({ toast: lastToastOf(telegram), edits: editsOf() })})`
                 );
             }
+            // 继续 shares the claim with 重试: it loses it like a second retry click
+            telegram.reset();
+            await press(chatId, firstMessageId, 'resp:continue');
+            await settle();
+            expect(
+                lastToastOf(telegram) === CLAIMED_NOTICE && editsOf().length === 0,
+                `resp:continue answers ${CLAIMED_NOTICE} and changes nothing (got ${json({ toast: lastToastOf(telegram), edits: editsOf() })})`
+            );
             const untouched = await storedOf(chatId, firstMessageId);
             expect(
                 untouched.currentVersionIndex === 1 && untouched.buttonState === ButtonState.HAS_VERSIONS,
@@ -291,7 +299,7 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
             const chatId = -1007200000004;
             const withVersions = await seedReply(chatId, { versionCount: 2, currentIndex: 1 });
             telegram.reset();
-            await press(chatId, withVersions, 'resp:continue');
+            await press(chatId, withVersions, 'resp:rewind');
             expect(lastToastOf(telegram) === '按钮已失效，已刷新', `the click is answered (got ${String(lastToastOf(telegram))})`);
             expect(
                 telegram.callsOf('editMessageReplyMarkup').length === 1 &&
@@ -310,7 +318,7 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
             );
 
             telegram.reset();
-            await press(chatId, takeMessageId(), 'resp:continue');
+            await press(chatId, takeMessageId(), 'resp:rewind');
             expect(
                 lastToastOf(telegram) === '未知操作' && editsOf().length === 0,
                 'a message without a stored reply is only answered'

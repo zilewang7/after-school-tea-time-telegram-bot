@@ -6,7 +6,7 @@
  * into the sink.
  */
 import { platformTypeOf } from '../ai/platform-routing.js';
-import type { PlatformType, StreamChunk } from '../ai/types.js';
+import type { AgentToolUsage, PlatformType, StreamChunk } from '../ai/types.js';
 import { createUsageSink } from '../ai/usage/usage-sink.js';
 import type { UsageSink } from '../ai/usage/usage-types.js';
 import type { CommandType } from '../db/botResponseDTO.js';
@@ -31,6 +31,11 @@ export interface ReplyMetricsDraft {
     thinkingChars: number;
     /** Rounds this attempt carried over from a checkpoint; null when it is not a resume */
     resumedRounds: number | null;
+    /**
+     * A resume: the tool usage the checkpoint brought along. The session's
+     * usage stays cumulative for display; the row counts only what is above it.
+     */
+    toolUsageBaseline: readonly AgentToolUsage[];
     /** Rounds the checkpoint saved when this attempt failed or stopped; null when none was saved */
     checkpointRounds: number | null;
     /** Passed to the platform with the request */
@@ -54,6 +59,7 @@ export const createReplyMetricsDraft = (input: ReplyMetricsDraftInput): ReplyMet
     contextImages: null,
     thinkingChars: 0,
     resumedRounds: null,
+    toolUsageBaseline: [],
     checkpointRounds: null,
     usage: createUsageSink(),
 });
@@ -75,9 +81,17 @@ export const recordReferenceImages = (draft: ReplyMetricsDraft, imageCount: numb
     draft.contextImages = imageCount;
 };
 
-/** A resume: the rounds the checkpoint brought along, already recorded on the attempt it continues */
-export const recordResumedRounds = (draft: ReplyMetricsDraft, rounds: number): void => {
+/**
+ * A resume: the rounds the checkpoint brought along and the tool calls they
+ * made, both already recorded on the attempt it continues
+ */
+export const recordResumedRounds = (
+    draft: ReplyMetricsDraft,
+    rounds: number,
+    toolUsageBaseline: readonly AgentToolUsage[] = []
+): void => {
     draft.resumedRounds = rounds;
+    draft.toolUsageBaseline = toolUsageBaseline.map((usage) => ({ ...usage }));
 };
 
 /** A failed or stopped attempt saved a checkpoint holding this many rounds */
@@ -87,12 +101,14 @@ export const recordCheckpointRounds = (draft: ReplyMetricsDraft, rounds: number)
 
 /**
  * One chunk as the stream processor receives it. Empty text parts do not
- * count as the first chunk: Gemini sends them to carry signatures.
+ * count as the first chunk: Gemini sends them to carry signatures. A chunk
+ * replayed from a checkpoint is no first chunk either (the model sent nothing
+ * yet), but its thinking is part of the version and counts.
  */
 export const noteStreamChunk = (draft: ReplyMetricsDraft, chunk: StreamChunk): void => {
     if (chunk.type !== 'text' && chunk.type !== 'thinking') return;
     const content = chunk.content ?? '';
     if (content === '') return;
-    draft.firstChunkAt ??= new Date();
+    if (chunk.replay !== true) draft.firstChunkAt ??= new Date();
     if (chunk.type === 'thinking') draft.thinkingChars += content.length;
 };
