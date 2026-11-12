@@ -5,7 +5,11 @@
  * types. Lengths and normalization are the settings service's.
  */
 import { match } from 'ts-pattern';
-import type { ChatSettingKey, ChatSettingsPatch } from '../../services/chat-settings-service.js';
+import {
+    normalizeNullableFlag,
+    type ChatSettingKey,
+    type ChatSettingsPatch,
+} from '../../services/chat-settings-service.js';
 import { normalizeToolOverrides } from '../../services/tool-overrides.js';
 import type { JsonRecord } from '../json.js';
 import { checkBodyKeys, invalid } from '../request.js';
@@ -70,6 +74,11 @@ export const toChatSettingsPatch = (body: JsonRecord, shape: SettingsPatchShape)
                 const normalized = normalizeToolOverrides(value);
                 if (!normalized.ok) throw invalid(normalized.message);
                 patch.toolOverrides = normalized.value;
+            })
+            .with('geminiPriority', () => {
+                const normalized = normalizeNullableFlag(value, key);
+                if (!normalized.ok) throw invalid(normalized.message);
+                patch.geminiPriority = normalized.value;
             })
             .exhaustive();
     }

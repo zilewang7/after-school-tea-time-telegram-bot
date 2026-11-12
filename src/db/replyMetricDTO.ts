@@ -72,6 +72,19 @@ export class ReplyMetric extends Model<
   declare imageCount: number;
   declare hasSticker: boolean;
   declare hasFile: boolean;
+  // Failed round attempts retried automatically inside the reply; NULL = none
+  declare roundRetries: number | null;
+  // 'priority' when the Priority PayGo header went out; NULL = standard request
+  declare tierRequested: string | null;
+  // The part actually served at the priority tier (Vertex trafficType); all NULL when none was
+  declare priorityRounds: number | null;
+  declare priorityPromptTokens: number | null;
+  declare priorityCachedTokens: number | null;
+  declare priorityOutputTokens: number | null;
+  // Rounds carried over from a checkpoint; NULL = not a resumed attempt
+  declare resumedRounds: number | null;
+  // Rounds a checkpoint saved when this attempt failed or stopped; NULL = none saved
+  declare checkpointRounds: number | null;
 }
 
 // Fresh option objects per column: Sequelize normalizes attribute definitions in place
@@ -123,6 +136,15 @@ ReplyMetric.init({
   imageCount: counter(),
   hasSticker: flag(),
   hasFile: flag(),
+  // Added after the table shipped: schema-migrations.ts adds them to an existing table
+  roundRetries: nullableInteger(),
+  tierRequested: { type: DataTypes.TEXT, allowNull: true, defaultValue: null },
+  priorityRounds: nullableInteger(),
+  priorityPromptTokens: nullableInteger(),
+  priorityCachedTokens: nullableInteger(),
+  priorityOutputTokens: nullableInteger(),
+  resumedRounds: nullableInteger(),
+  checkpointRounds: nullableInteger(),
 }, {
   sequelize,
   tableName: 'reply_metrics',

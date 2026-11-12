@@ -5,6 +5,7 @@
  */
 import { match } from 'ts-pattern';
 import type { AgentStats } from '../ai/types.js';
+import type { ReplyUsageTotals } from '../ai/usage/usage-types.js';
 import {
     insertReplyMetric,
     type ReplyMetricInput,
@@ -70,6 +71,26 @@ const toolUsageOf = (agentStats: AgentStats | undefined): ToolUsageEntry[] =>
         failed: usage.failed ?? 0,
     }));
 
+type RecoveryAndTierColumns = Pick<
+    ReplyMetricInput,
+    | 'roundRetries'
+    | 'tierRequested'
+    | 'priorityRounds'
+    | 'priorityPromptTokens'
+    | 'priorityCachedTokens'
+    | 'priorityOutputTokens'
+>;
+
+/** The usage columns that are NULL when there was nothing: no retry, no priority round */
+const recoveryAndTierOf = (usage: ReplyUsageTotals): RecoveryAndTierColumns => ({
+    roundRetries: usage.roundRetries === 0 ? null : usage.roundRetries,
+    tierRequested: usage.tierRequested,
+    priorityRounds: usage.priority?.rounds ?? null,
+    priorityPromptTokens: usage.priority?.promptTokens ?? null,
+    priorityCachedTokens: usage.priority?.cachedTokens ?? null,
+    priorityOutputTokens: usage.priority?.outputTokens ?? null,
+});
+
 export const buildReplyMetricInput = (source: ReplyMetricSource, attempt: FinalizedAttempt): ReplyMetricInput => {
     const { metrics } = source;
     const usage = metrics.usage.totals();
@@ -122,6 +143,9 @@ export const buildReplyMetricInput = (source: ReplyMetricSource, attempt: Finali
         imageCount,
         hasSticker,
         hasFile,
+        ...recoveryAndTierOf(usage),
+        resumedRounds: metrics.resumedRounds,
+        checkpointRounds: metrics.checkpointRounds,
     };
 };
 

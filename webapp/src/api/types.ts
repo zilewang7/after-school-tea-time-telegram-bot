@@ -527,6 +527,19 @@ export interface ReplyMetric {
     imageCount: number;
     hasSticker: boolean;
     hasFile: boolean;
+    // Failed round attempts retried automatically; null when none was
+    roundRetries: number | null;
+    // 'priority' when the Priority PayGo header went out; null otherwise
+    tierRequested: 'priority' | null;
+    // Rounds served at the priority tier and their tokens; null when none was
+    priorityRounds: number | null;
+    priorityPromptTokens: number | null;
+    priorityCachedTokens: number | null;
+    priorityOutputTokens: number | null;
+    // Rounds carried over from a checkpoint; null when the attempt is not a resume
+    resumedRounds: number | null;
+    // Rounds the checkpoint saved when this attempt failed or stopped; null when none was saved
+    checkpointRounds: number | null;
     // This attempt alone, priced like the statistics
     costUsd: number | null;
     pricing: PricingFlag;
@@ -756,6 +769,11 @@ export interface CostGroupUsage {
     unsplitImageOutputTokens: number;
     imagesWithoutUsage: number;
     imageRowsWithoutUsage: number;
+    // Rounds served at the priority tier, and the priority part of the token sums above
+    priorityRounds: number;
+    priorityPromptTokens: number;
+    priorityCachedTokens: number;
+    priorityOutputTokens: number;
 }
 
 /** One (model, route) group */

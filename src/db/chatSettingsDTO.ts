@@ -30,6 +30,8 @@ export class ChatSettingsRecord extends Model<
   declare settingsLocked: CreationOptional<boolean>;
   // Canonical JSON of the panel's per-chat tool switches; NULL = follow the env
   declare toolOverrides: CreationOptional<string | null>;
+  // Owner-only Priority PayGo switch; NULL = follow the global switch
+  declare geminiPriority: CreationOptional<boolean | null>;
   declare updatedAt: Date;
   // Telegram user id of the last writer
   declare updatedBy: CreationOptional<number | null>;
@@ -62,6 +64,12 @@ ChatSettingsRecord.init({
   },
   toolOverrides: {
     type: DataTypes.TEXT,
+    allowNull: true,
+    defaultValue: null,
+  },
+  // Added after the table shipped: schema-migrations.ts adds it to an existing table
+  geminiPriority: {
+    type: DataTypes.BOOLEAN,
     allowNull: true,
     defaultValue: null,
   },

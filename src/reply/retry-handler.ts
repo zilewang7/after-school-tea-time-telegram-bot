@@ -340,6 +340,7 @@ const handleChatRetry = async (
             signal,
             tools,
             usageSink: session.metrics.usage,
+            ...(settings.geminiPriority ? { serviceTier: 'priority' as const } : {}),
         })
     );
     if (streamErr) {

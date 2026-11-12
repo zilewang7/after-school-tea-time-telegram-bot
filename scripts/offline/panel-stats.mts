@@ -161,6 +161,14 @@ const metricRow = (fields: Partial<ReplyMetricInput>): ReplyMetricInput => {
         imageCount: 0,
         hasSticker: false,
         hasFile: false,
+        roundRetries: null,
+        tierRequested: null,
+        priorityRounds: null,
+        priorityPromptTokens: null,
+        priorityCachedTokens: null,
+        priorityOutputTokens: null,
+        resumedRounds: null,
+        checkpointRounds: null,
         ...fields,
     };
 };

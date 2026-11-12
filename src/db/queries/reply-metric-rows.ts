@@ -11,6 +11,11 @@ export type ReplyOutcome = 'ok' | 'error' | 'stopped' | 'empty';
 
 export const REPLY_OUTCOMES: readonly ReplyOutcome[] = ['ok', 'error', 'stopped', 'empty'];
 
+/** What a reply asked Vertex for; only Priority PayGo exists (standard requests store NULL) */
+export type RequestedTier = 'priority';
+
+export const REQUESTED_TIERS: readonly RequestedTier[] = ['priority'];
+
 export interface ToolUsageEntry {
     readonly name: string;
     readonly count: number;
@@ -54,6 +59,20 @@ export interface ReplyMetricInput {
     readonly imageCount: number;
     readonly hasSticker: boolean;
     readonly hasFile: boolean;
+    /** Failed round attempts retried automatically; null when there was none */
+    readonly roundRetries: number | null;
+    /** Set when the Priority PayGo header went out with the requests */
+    readonly tierRequested: RequestedTier | null;
+    /** Rounds served at the priority tier and their tokens; all null when none was */
+    readonly priorityRounds: number | null;
+    readonly priorityPromptTokens: number | null;
+    readonly priorityCachedTokens: number | null;
+    /** Reasoning included, like outputTokens */
+    readonly priorityOutputTokens: number | null;
+    /** Rounds carried over from a checkpoint; null when the attempt is not a resume */
+    readonly resumedRounds: number | null;
+    /** Rounds the checkpoint saved when this attempt failed or stopped; null when none was saved */
+    readonly checkpointRounds: number | null;
 }
 
 export interface ReplyMetricRecord extends ReplyMetricInput {
@@ -80,6 +99,9 @@ const outcomeOf = (value: unknown): ReplyOutcome | null =>
     REPLY_OUTCOMES.find((outcome) => outcome === value) ?? null;
 
 const errorKindOf = (value: unknown): ErrorKind | null => ERROR_KINDS.find((kind) => kind === value) ?? null;
+
+const requestedTierOf = (value: unknown): RequestedTier | null =>
+    REQUESTED_TIERS.find((tier) => tier === value) ?? null;
 
 const toolUsageEntryOf = (value: unknown): ToolUsageEntry | null => {
     if (!isJsonObject(value) || typeof value.name !== 'string') return null;
@@ -170,5 +192,13 @@ export const parseReplyMetricRow = (row: unknown): ReplyMetricRecord | null => {
         imageCount: integerOrNull(row.imageCount) ?? 0,
         hasSticker: booleanOf(row.hasSticker),
         hasFile: booleanOf(row.hasFile),
+        roundRetries: integerOrNull(row.roundRetries),
+        tierRequested: requestedTierOf(row.tierRequested),
+        priorityRounds: integerOrNull(row.priorityRounds),
+        priorityPromptTokens: integerOrNull(row.priorityPromptTokens),
+        priorityCachedTokens: integerOrNull(row.priorityCachedTokens),
+        priorityOutputTokens: integerOrNull(row.priorityOutputTokens),
+        resumedRounds: integerOrNull(row.resumedRounds),
+        checkpointRounds: integerOrNull(row.checkpointRounds),
     };
 };

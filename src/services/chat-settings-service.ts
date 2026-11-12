@@ -15,11 +15,13 @@ import { chatAuditScope, GLOBAL_AUDIT_SCOPE, writeSettingsAudit } from '../db/qu
 import { resolveChatModel } from '../config/chat-model.js';
 import {
     DEFAULT_MODEL_SETTING_KEY,
+    canEnableGeminiPriority,
     getChatSettings,
     getGlobalDefaultModel,
     getStoredGlobalSetting,
     isChatSettingsCacheLoaded,
     loadChatSettingsCache,
+    resolveGeminiPriority,
     storeChatSettings,
     storeGlobalSetting,
     type ChatSettings,
@@ -42,12 +44,18 @@ export {
     isChatSettingsLocked,
     getGlobalDefaultModel,
     getGlobalDefaultModelSource,
+    DEFAULT_GEMINI_PRIORITY_SETTING_KEY,
+    getGlobalGeminiPriority,
+    canEnableGeminiPriority,
+    resolveGeminiPriority,
     type ChatSettings,
 } from './chat-settings-cache.js';
 export {
+    GEMINI_PRIORITY_NOT_ALLOWED_MESSAGE,
     MODEL_ID_MAX_LENGTH,
     PROMPT_ADDENDUM_MAX_CODE_POINTS,
     countCodePoints,
+    normalizeNullableFlag,
     normalizePromptAddendum,
     type ChatSettingKey,
     type ChatSettingsErrorCode,
@@ -70,6 +78,8 @@ export interface ReplySettingsSnapshot {
     promptAddendum: string | null;
     /** The per-chat tool switches at the same moment; null = follow the env */
     toolOverrides: ToolOverrides | null;
+    /** The effective Priority PayGo switch (chat value, global switch and whitelist resolved) */
+    geminiPriority: boolean;
 }
 
 export interface SettingsActor {
@@ -97,6 +107,7 @@ export const snapshotReplySettings = (chatId: number): ReplySettingsSnapshot => 
     model: resolveChatModel(chatId),
     promptAddendum: getChatSettings(chatId)?.promptAddendum ?? null,
     toolOverrides: getChatSettings(chatId)?.toolOverrides ?? null,
+    geminiPriority: resolveGeminiPriority(chatId),
 });
 
 /** What a chat without a settings row behaves as; updatedAt is the epoch, updatedBy null */
@@ -107,6 +118,7 @@ export const defaultChatSettings = (chatId: number): ChatSettings => ({
     paused: false,
     settingsLocked: false,
     toolOverrides: null,
+    geminiPriority: null,
     updatedAt: new Date(0),
     updatedBy: null,
 });
@@ -151,6 +163,8 @@ const persistChatSettings = async (
                 paused: settings.paused,
                 settingsLocked: settings.settingsLocked,
                 toolOverrides: canonicalToolOverridesJson(settings.toolOverrides),
+                // Every column, or a value would live in the cache only and vanish on restart
+                geminiPriority: settings.geminiPriority,
                 updatedAt: settings.updatedAt,
                 updatedBy: settings.updatedBy,
             },
@@ -174,7 +188,9 @@ const persistChatSettings = async (
 /**
  * Change some of a chat's settings. Throws ChatSettingsError: `locked` when
  * the chat is locked and the actor is not the owner (checked first),
- * `forbidden` when a non-owner touches settingsLocked or the sms tool switch,
+ * `forbidden` when a non-owner touches settingsLocked, the sms tool switch or
+ * the Priority PayGo switch, or when Priority PayGo is switched on where it
+ * cannot take effect (global switch off, chat not in TOOL_CHAT_IDS),
  * `invalid` for a malformed value, `conflict` when `expectedUpdatedAt` is given
  * and no longer matches (checked inside the write queue, so two editors of one
  * version cannot both win). Unchanged keys are dropped; with nothing left,
@@ -190,7 +206,10 @@ export const updateChatSettings = (input: {
     runSerialized(chatAuditScope(input.chatId), async () => {
         await ensureCacheLoaded();
         const current = getChatSettings(input.chatId) ?? defaultChatSettings(input.chatId);
-        const resolution = resolveChatSettingsPatch(current, input.patch, input.actor.isOwner);
+        const resolution = resolveChatSettingsPatch(current, input.patch, {
+            actorIsOwner: input.actor.isOwner,
+            geminiPriorityCanEnable: canEnableGeminiPriority(input.chatId),
+        });
         if (resolution.kind === 'rejected') {
             throw new ChatSettingsError(resolution.code, resolution.message);
         }

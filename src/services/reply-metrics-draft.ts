@@ -29,6 +29,10 @@ export interface ReplyMetricsDraft {
     contextImages: number | null;
     /** Thinking characters as streamed, before the display truncates them */
     thinkingChars: number;
+    /** Rounds this attempt carried over from a checkpoint; null when it is not a resume */
+    resumedRounds: number | null;
+    /** Rounds the checkpoint saved when this attempt failed or stopped; null when none was saved */
+    checkpointRounds: number | null;
     /** Passed to the platform with the request */
     readonly usage: UsageSink;
 }
@@ -49,6 +53,8 @@ export const createReplyMetricsDraft = (input: ReplyMetricsDraftInput): ReplyMet
     contextMessages: null,
     contextImages: null,
     thinkingChars: 0,
+    resumedRounds: null,
+    checkpointRounds: null,
     usage: createUsageSink(),
 });
 
@@ -67,6 +73,16 @@ export const recordContextSize = (draft: ReplyMetricsDraft, contextIndex: Contex
 export const recordReferenceImages = (draft: ReplyMetricsDraft, imageCount: number): void => {
     draft.contextMessages = null;
     draft.contextImages = imageCount;
+};
+
+/** A resume: the rounds the checkpoint brought along, already recorded on the attempt it continues */
+export const recordResumedRounds = (draft: ReplyMetricsDraft, rounds: number): void => {
+    draft.resumedRounds = rounds;
+};
+
+/** A failed or stopped attempt saved a checkpoint holding this many rounds */
+export const recordCheckpointRounds = (draft: ReplyMetricsDraft, rounds: number): void => {
+    draft.checkpointRounds = rounds;
 };
 
 /**

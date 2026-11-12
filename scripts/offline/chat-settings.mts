@@ -1,9 +1,10 @@
 /**
  * Offline cases for per-chat settings: the model fallback chain, the update
  * rules (free model ids, addendum normalization, lock and owner checks), the
- * audit trail and its retention; then the bot side: `/model` and the `mdl:`
- * buttons, the reply and retry settings snapshots, and what a paused chat
- * still answers.
+ * audit trail and its retention; the Priority PayGo switch (the effective
+ * value of design §8.2, the TOOL_CHAT_IDS rule, owner only, audit, reload);
+ * then the bot side: `/model` and the `mdl:` buttons, the reply and retry
+ * settings snapshots, and what a paused chat still answers.
  *
  * Run: npx tsx scripts/offline/chat-settings.mts
  */
@@ -26,6 +27,8 @@ import { startStubServer } from './support/stub-server.mts';
 // id is read once into the tool config
 process.env.DEFAULT_MODEL = 'env-default-model';
 process.env.OWNER_USER_ID = '4242';
+// With the global Priority PayGo switch off, only these chats may switch it on
+process.env.TOOL_CHAT_IDS = '-2101,-2105';
 
 // The reply and retry cases talk to a MiMo-shaped stub; the platform reads its
 // URL once, when the platforms are created
@@ -42,6 +45,7 @@ const { isOwnerUser } = await import('../../src/config/owner.js');
 const { listSettingsAudit } = await import('../../src/db/queries/settings-audit.js');
 const { SettingsAudit } = await import('../../src/db/settingsAuditDTO.js');
 const { ChatSettingsRecord } = await import('../../src/db/chatSettingsDTO.js');
+const { GlobalSetting } = await import('../../src/db/globalSettingDTO.js');
 const { clearExpiredData } = await import('../../src/db/autoSave.js');
 const dbIndex = await import('../../src/db/index.js');
 const { modelConfigs, GEMINI_IMAGE_MODEL, OPENAI_IMAGE_MODEL } = await import('../../src/config/models.js');
@@ -68,6 +72,39 @@ const rejectionOf = async (run: () => Promise<unknown>): Promise<string> => {
         throw error;
     }
 };
+
+/** The ChatSettingsError `run` throws as `code: message`, or 'none' */
+const refusalOf = async (run: () => Promise<unknown>): Promise<string> => {
+    try {
+        await run();
+        return 'none';
+    } catch (error) {
+        if (error instanceof ChatSettingsError) return `${error.code}: ${error.message}`;
+        throw error;
+    }
+};
+
+/**
+ * The global Priority PayGo switch: null removes the row (off). The panel
+ * route owns the global write and its audit; here the row is written directly
+ * and read back the way startup reads it.
+ */
+const setGlobalPriority = async (value: boolean | null): Promise<void> => {
+    if (value === null) {
+        await GlobalSetting.destroy({ where: { key: service.DEFAULT_GEMINI_PRIORITY_SETTING_KEY } });
+    } else {
+        await GlobalSetting.upsert({
+            key: service.DEFAULT_GEMINI_PRIORITY_SETTING_KEY,
+            value: String(value),
+            updatedAt: new Date(),
+            updatedBy: 4242,
+        });
+    }
+    await service.loadChatSettingsCache();
+};
+
+const storedPriorityOf = async (chatId: number): Promise<boolean | null | undefined> =>
+    (await ChatSettingsRecord.findByPk(chatId))?.geminiPriority;
 
 const auditOf = (chatId: number) => listSettingsAudit({ scope: `chat:${chatId}`, limit: 100 });
 
@@ -509,13 +546,229 @@ const cases: { name: string; body: () => Promise<void> }[] = [
             expect(service.isChatSettingsLocked(-2005) && service.isChatPaused(-2005), 'flags survive a reload');
             expect(
                 JSON.stringify(service.snapshotReplySettings(-2008)) ===
-                    JSON.stringify({ model: 'concurrent-model', promptAddendum: '并发', toolOverrides: null }),
-                'the snapshot is model + addendum + tool switches'
+                    JSON.stringify({
+                        model: 'concurrent-model',
+                        promptAddendum: '并发',
+                        toolOverrides: null,
+                        geminiPriority: false,
+                    }),
+                'the snapshot is model + addendum + tool switches + the effective Priority PayGo switch'
             );
             expect(
                 JSON.stringify(service.snapshotReplySettings(-2999)) ===
-                    JSON.stringify({ model: 'reloaded-default', promptAddendum: null, toolOverrides: null }),
+                    JSON.stringify({
+                        model: 'reloaded-default',
+                        promptAddendum: null,
+                        toolOverrides: null,
+                        geminiPriority: false,
+                    }),
                 'a chat without settings snapshots the global default'
+            );
+        },
+    },
+    {
+        name: 'Priority PayGo: the effective value follows the table of design §8.2',
+        body: async () => {
+            const WHITELISTED = -2101;
+            const OUTSIDE = -2102;
+            const OFF_CHAT = -2103;
+            const UNSET = -2104;
+            const effective = (chatId: number): boolean => service.resolveGeminiPriority(chatId);
+
+            await setGlobalPriority(null);
+            expect(!service.getGlobalGeminiPriority(), 'no global row reads as off');
+            expect(
+                service.canEnableGeminiPriority(WHITELISTED) && !service.canEnableGeminiPriority(OUTSIDE),
+                'global off: only a TOOL_CHAT_IDS chat can be switched on'
+            );
+            expect(!effective(UNSET), 'unset, global off → off');
+
+            const whitelistedOn = await updateChatSettings({ chatId: WHITELISTED, patch: { geminiPriority: true }, actor: OWNER });
+            expect(whitelistedOn.settings.geminiPriority === true, 'the owner switches a whitelisted chat on');
+            expect(effective(WHITELISTED), 'on, global off, in TOOL_CHAT_IDS → on');
+
+            const refused = await refusalOf(() =>
+                updateChatSettings({ chatId: OUTSIDE, patch: { geminiPriority: true }, actor: OWNER })
+            );
+            expect(
+                refused === `forbidden: ${service.GEMINI_PRIORITY_NOT_ALLOWED_MESSAGE}` &&
+                    service.GEMINI_PRIORITY_NOT_ALLOWED_MESSAGE === '全局关闭时，只有工具白名单里的会话可以单独开启',
+                `on, global off, outside the whitelist → refused with the panel's text (got ${refused})`
+            );
+            expect(
+                service.getChatSettings(OUTSIDE) === undefined && (await storedPriorityOf(OUTSIDE)) === undefined,
+                'the refused write left no row'
+            );
+
+            await updateChatSettings({ chatId: OFF_CHAT, patch: { geminiPriority: false }, actor: OWNER });
+            expect(!effective(OFF_CHAT), 'off, global off → off');
+
+            await setGlobalPriority(true);
+            expect(service.getGlobalGeminiPriority(), "a 'true' row reads as on");
+            expect(service.canEnableGeminiPriority(OUTSIDE), 'global on: every chat can be switched on');
+            expect(effective(UNSET), 'unset, global on → on');
+            expect(!effective(OFF_CHAT), 'off, global on → off');
+            const outsideOn = await updateChatSettings({ chatId: OUTSIDE, patch: { geminiPriority: true }, actor: OWNER });
+            expect(outsideOn.settings.geminiPriority === true && effective(OUTSIDE), 'on, global on → on, whitelist or not');
+            expect(effective(WHITELISTED), 'and for a whitelisted chat');
+            expect(
+                service.snapshotReplySettings(UNSET).geminiPriority && !service.snapshotReplySettings(OFF_CHAT).geminiPriority,
+                'the reply snapshot carries the resolved value'
+            );
+        },
+    },
+    {
+        name: 'Priority PayGo: turning the global switch off keeps a stored "on", which applies again when it is back on',
+        body: async () => {
+            const WHITELISTED = -2101;
+            const OUTSIDE = -2102;
+            const UNSET = -2104;
+            expect(service.getChatSettings(OUTSIDE)?.geminiPriority === true, 'the previous case left OUTSIDE on');
+
+            await setGlobalPriority(false);
+            expect(!service.getGlobalGeminiPriority(), "a 'false' row reads as off");
+            expect(!service.resolveGeminiPriority(OUTSIDE), 'the stored "on" outside the whitelist no longer applies');
+            expect(
+                service.getChatSettings(OUTSIDE)?.geminiPriority === true && (await storedPriorityOf(OUTSIDE)) === true,
+                'and the stored value is left alone'
+            );
+            expect(service.resolveGeminiPriority(WHITELISTED), 'a whitelisted chat stays on');
+            expect(!service.resolveGeminiPriority(UNSET), 'an unset chat follows the global switch off');
+            expect(!service.snapshotReplySettings(OUTSIDE).geminiPriority, 'the reply snapshot follows');
+
+            const otherKey = await updateChatSettings({ chatId: OUTSIDE, patch: { paused: true }, actor: MEMBER });
+            expect(
+                JSON.stringify(otherKey.changedKeys) === JSON.stringify(['paused']) && otherKey.settings.geminiPriority === true,
+                'the stored "on" does not block a patch of another key'
+            );
+            const sameValue = await updateChatSettings({
+                chatId: OUTSIDE,
+                patch: { geminiPriority: true, paused: false },
+                actor: OWNER,
+            });
+            expect(
+                JSON.stringify(sameValue.changedKeys) === JSON.stringify(['paused']),
+                `resending the stored "on" is not a change, so it is not refused (got ${JSON.stringify(sameValue.changedKeys)})`
+            );
+
+            await setGlobalPriority(true);
+            expect(service.resolveGeminiPriority(OUTSIDE), 'the global switch back on restores it');
+        },
+    },
+    {
+        name: 'Priority PayGo: null steps back to the global switch; the audit keeps true / false / NULL',
+        body: async () => {
+            const AUDITED = -2105;
+            await setGlobalPriority(true);
+            await updateChatSettings({ chatId: AUDITED, patch: { geminiPriority: false }, actor: OWNER });
+            expect(!service.resolveGeminiPriority(AUDITED), 'off wins over the global on');
+            const cleared = await updateChatSettings({ chatId: AUDITED, patch: { geminiPriority: null }, actor: OWNER });
+            expect(
+                cleared.settings.geminiPriority === null &&
+                    JSON.stringify(cleared.changedKeys) === JSON.stringify(['geminiPriority']),
+                'null clears the chat value'
+            );
+            expect(service.resolveGeminiPriority(AUDITED), 'and the chat follows the global switch (on)');
+            await setGlobalPriority(null);
+            expect(!service.resolveGeminiPriority(AUDITED), 'and follows it off again');
+            expect((await storedPriorityOf(AUDITED)) === null, 'NULL in the row');
+
+            await updateChatSettings({ chatId: AUDITED, patch: { geminiPriority: true }, actor: OWNER });
+            const repeat = await updateChatSettings({ chatId: AUDITED, patch: { geminiPriority: true }, actor: OWNER });
+            expect(repeat.changedKeys.length === 0, 'the same value again changes nothing');
+
+            const rows = (await auditOf(AUDITED)).filter((row) => row.key === 'geminiPriority');
+            const transitions = rows.map((row) => [row.oldValue, row.newValue]);
+            expect(
+                JSON.stringify(transitions) ===
+                    JSON.stringify([
+                        [null, 'true'],
+                        ['false', null],
+                        [null, 'false'],
+                    ]),
+                `newest first: NULL → 'true', 'false' → NULL, NULL → 'false', never the text 'null' (got ${JSON.stringify(transitions)})`
+            );
+            expect(rows.every((row) => row.actorId === OWNER.userId), 'all by the owner');
+        },
+    },
+    {
+        name: 'Priority PayGo: only the owner changes it; a member keeps it while editing other keys',
+        body: async () => {
+            const chatId = -2101;
+            await setGlobalPriority(true);
+            const memberOn = await refusalOf(() =>
+                updateChatSettings({ chatId: -2106, patch: { geminiPriority: true }, actor: MEMBER })
+            );
+            expect(
+                memberOn === 'forbidden: 只有机主可以开关本聊天的 Priority PayGo',
+                `a member cannot switch it on, even where it is allowed (got ${memberOn})`
+            );
+            const memberOff = await rejectionOf(() =>
+                updateChatSettings({ chatId, patch: { geminiPriority: false }, actor: MEMBER })
+            );
+            expect(memberOff === 'forbidden', `nor off (got ${memberOff})`);
+            const memberClear = await rejectionOf(() =>
+                updateChatSettings({ chatId, patch: { geminiPriority: null }, actor: MEMBER })
+            );
+            expect(memberClear === 'forbidden', `nor back to the global switch (got ${memberClear})`);
+            expect(service.getChatSettings(chatId)?.geminiPriority === true, 'the refused patches changed nothing');
+
+            const unchanged = await updateChatSettings({
+                chatId,
+                patch: { geminiPriority: true, promptAddendum: '成员改的' },
+                actor: MEMBER,
+            });
+            expect(
+                JSON.stringify(unchanged.changedKeys) === JSON.stringify(['promptAddendum']) &&
+                    unchanged.settings.geminiPriority === true,
+                'a member sending the current value back is not a change'
+            );
+            const unsetByMember = await updateChatSettings({
+                chatId: -2107,
+                patch: { geminiPriority: null, paused: true },
+                actor: MEMBER,
+            });
+            expect(
+                JSON.stringify(unsetByMember.changedKeys) === JSON.stringify(['paused']) &&
+                    unsetByMember.settings.geminiPriority === null,
+                'nor is null for a chat that never set it'
+            );
+
+            await updateChatSettings({ chatId: -2108, patch: { settingsLocked: true }, actor: OWNER });
+            const locked = await rejectionOf(() =>
+                updateChatSettings({ chatId: -2108, patch: { geminiPriority: true }, actor: MEMBER })
+            );
+            expect(locked === 'locked', `a locked chat says locked first (got ${locked})`);
+            const ownerLocked = await updateChatSettings({ chatId: -2108, patch: { geminiPriority: true }, actor: OWNER });
+            expect(ownerLocked.settings.geminiPriority === true, 'the owner is not bound by the lock');
+
+            expect(service.normalizeNullableFlag('yes', 'geminiPriority').ok === false, 'a string is not a switch value');
+            expect(service.normalizeNullableFlag(0, 'geminiPriority').ok === false, 'nor is a number');
+            const nullValue = service.normalizeNullableFlag(null, 'geminiPriority');
+            expect(nullValue.ok && nullValue.value === null, 'null is accepted');
+            await setGlobalPriority(null);
+        },
+    },
+    {
+        name: 'Priority PayGo: the stored switches survive a reload from the database',
+        body: async () => {
+            await setGlobalPriority(true);
+            // The cache is replaced by what the rows hold
+            await service.loadChatSettingsCache();
+            const stored = [-2101, -2102, -2103, -2104, -2105].map((chatId) => service.getChatSettings(chatId)?.geminiPriority);
+            expect(
+                JSON.stringify(stored) === JSON.stringify([true, true, false, undefined, true]),
+                `on, on, off, no row, on (got ${JSON.stringify(stored)})`
+            );
+            expect(service.getChatSettings(-2107)?.geminiPriority === null, 'a row that never set it reads as null, not false');
+            expect(service.getGlobalGeminiPriority(), 'the global switch reloads too');
+            const rows = await Promise.all([-2101, -2103, -2107].map(storedPriorityOf));
+            expect(JSON.stringify(rows) === JSON.stringify([true, false, null]), `the rows (got ${JSON.stringify(rows)})`);
+
+            await setGlobalPriority(null);
+            expect(
+                service.resolveGeminiPriority(-2101) && !service.resolveGeminiPriority(-2102),
+                'after a reload with the global switch off: the whitelisted chat on, the other off'
             );
         },
     },
