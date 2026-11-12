@@ -3,7 +3,9 @@
  * shown as they stream, while everything the next request needs is kept
  * aside. A stream that breaks is reported, not thrown: the round runner
  * decides whether the round is tried again, and what this attempt collected
- * (parts, calls, grounding) is dropped with it.
+ * (parts, calls, grounding) is dropped with it. A stream that breaks after
+ * its finish reason arrived is a finished round and is kept (design §5.2:
+ * a stream that ended with a finish reason is never redone).
  */
 import type {
     FinishReason,
@@ -32,9 +34,11 @@ export interface CollectedGeminiRound {
     /** Search grounding as each chunk reported it; merged once per reply */
     readonly groundings: readonly GroundingData[];
     readonly usage: GeminiRequestUsage;
+    /** What the stream threw after its finish reason had arrived; null when it ended cleanly */
+    readonly brokeAfterFinish: { readonly error: unknown } | null;
 }
 
-/** A stream that threw after it had opened */
+/** A stream that threw after it had opened, before its finish reason */
 export interface BrokenGeminiRound {
     readonly kind: 'broken';
     readonly error: unknown;
@@ -63,8 +67,9 @@ const isBlank = (chunk: StreamChunk): boolean => (chunk.content ?? '').trim() ==
  * round's first text) and returns the round as collected, or how it broke.
  * Thinking goes through the thought-summary filter, which drops the
  * summarizer's own CoT and keeps its summaries; the last block is flushed
- * when the stream ends, and when it breaks (finished summaries only), so a
- * retry starts on a clean filter. Grounding is not yielded here: each round
+ * when the stream ends (or breaks after its finish reason), and when it
+ * breaks before that (finished summaries only), so a retry starts on a clean
+ * filter. Grounding is not yielded here: each round
  * repeats the turn's searches so far. `leadingChunk` goes out right before
  * the first visible chunk.
  */
@@ -129,6 +134,7 @@ export async function* consumeGeminiRound(
         yield* afterLeading(thinking);
     }
 
+    let brokeAfterFinish: { readonly error: unknown } | null = null;
     try {
         for await (const chunk of opened.stream) {
             const chunkAt = Date.now();
@@ -176,17 +182,23 @@ export async function* consumeGeminiRound(
             }
         }
     } catch (error) {
-        // The cut block gives up the summaries it finished, and the filter
-        // holds nothing of this attempt when the round is tried again
-        yield* shownThinking(thoughtSummary.flushBroken());
-        return {
-            kind: 'broken',
-            error,
-            showedAnswer: showedText || showedImage,
-            showedThinking,
-            leadingShown,
-            usage: usageSoFar(),
-        };
+        // The finish reason was in: the round is whole, only the connection
+        // went (or a stop came) before the body closed. It is kept as it is.
+        if (finishReason !== undefined) {
+            brokeAfterFinish = { error };
+        } else {
+            // The cut block gives up the summaries it finished, and the filter
+            // holds nothing of this attempt when the round is tried again
+            yield* shownThinking(thoughtSummary.flushBroken());
+            return {
+                kind: 'broken',
+                error,
+                showedAnswer: showedText || showedImage,
+                showedThinking,
+                leadingShown,
+                usage: usageSoFar(),
+            };
+        }
     }
 
     // The round ended: its last block is complete (or was cut by the end)
@@ -202,6 +214,7 @@ export async function* consumeGeminiRound(
             lastChunk,
             groundings,
             usage: usageSoFar(),
+            brokeAfterFinish,
         },
     };
 }

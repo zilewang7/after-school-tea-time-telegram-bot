@@ -475,6 +475,40 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
         },
     },
     {
+        name: '7b. a connection dropped after the finish reason keeps the round: its calls run once, an answer ends the reply',
+        body: async () => {
+            const dropped = (): TypeError =>
+                new TypeError('terminated', { cause: Object.assign(new Error('other side closed'), { code: 'UND_ERR_SOCKET' }) });
+
+            reset([
+                droppedStreamReply(roundEvents([[thoughtPart('plan r1')], [callPart('lookup_a', { topic: 'falcon' }, 'r1', 'call_r1')]]), dropped),
+                answer('The code word is AZALEA-42.'),
+            ]);
+            const usageSink = createUsageSink();
+            const toolRound = await runTurn({ usageSink });
+            expect(toolRound.error === null, `the reply finishes (got ${errorMessage(toolRound.error)})`);
+            expect(vertex.requests.length === 2, `round 1 is not sent again (got ${vertex.requests.length} requests)`);
+            expect(json(executions.map((execution) => execution.name)) === '["lookup_a"]', `its call ran once (got ${json(executions)})`);
+            expect(platform.sleeps.length === 0, 'without a wait');
+            expect(!textOf(toolRound.chunks, 'thinking').includes('〔'), 'and without a retry marker');
+            const totals = usageSink.totals();
+            expect(totals.roundRetries === 0 && totals.rounds === 2, `no automatic retry, two rounds (got ${json(totals)})`);
+            expect(
+                json(recoverLines(toolRound.lines)) ===
+                    json(["[gemini-recover] round=1 attempt=1 broke after finishReason=STOP; kept as the round's result: terminated"]),
+                `one line says the round was kept (got ${json(recoverLines(toolRound.lines))})`
+            );
+            expect(vertex.requests[0]?.signal?.aborted === true, 'the broken attempt is still closed');
+
+            reset([droppedStreamReply(roundEvents([[thoughtPart('thinking first')], [textPart('The whole answer.')]]), dropped), answer('never sent')]);
+            const answerRound = await runTurn();
+            expect(answerRound.error === null, `the answer round ends the reply normally (got ${errorMessage(answerRound.error)})`);
+            expect(vertex.requests.length === 1, `nothing more is sent (got ${vertex.requests.length})`);
+            expect(textOf(answerRound.chunks) === 'The whole answer.', `the answer stands (got ${json(textOf(answerRound.chunks))})`);
+            expect(answerRound.chunks.at(-1)?.type === 'done', 'and the reply ends with done');
+        },
+    },
+    {
         name: '8. opening: 429 ×3 then success, 429 ×4 gives up, timeout ×3 gives up with the same timeout, 5xx and network once each',
         body: async () => {
             reset([httpErrorReply(429, RATE_LIMITED), httpErrorReply(429, RATE_LIMITED), httpErrorReply(429, RATE_LIMITED), answer('Fourth time.')]);

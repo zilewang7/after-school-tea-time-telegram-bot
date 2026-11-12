@@ -12,11 +12,12 @@
  * Run: npx tsx scripts/offline/gemini-checkpoints.mts
  */
 import { expect, reportResults, runCase, type CaseResult } from './harness.mts';
-import { createFakeVertex, midStreamErrorReply, sseReply, type ScriptedReply } from './support/fake-vertex.mts';
+import { createFakeVertex, midStreamErrorReply, sseReply, stalledStreamReply, type ScriptedReply } from './support/fake-vertex.mts';
 import {
     answer,
     asArray,
     asRecord,
+    callPart,
     callsRound,
     consumeReply,
     errorMessage,
@@ -399,15 +400,25 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
         name: '1e. a stop right after the stream completed: the round is kept, no call runs',
         body: async () => {
             const controller = new AbortController();
-            reset([callsRound('r1', [{ name: 'lookup_a' }]), answer('never sent')]);
+            // 'Thinking' could still be the start of the summarizer's scaffold, so
+            // the filter holds it until the stream has ended: the one chunk the
+            // stop lands on comes after the body closed with the finish reason
+            reset([
+                sseReply([event([thoughtPart('Thinking')]), event([callPart('lookup_a', { topic: 'r1' }, 'r1-0', 'call_r1_0')], { finishReason: 'STOP' })]),
+                answer('never sent'),
+            ]);
 
-            const { handedOver, chunks } = await runTurn({
+            const { handedOver, chunks, lines } = await runTurn({
                 signal: controller.signal,
                 onChunk: (chunk) => {
                     if (chunk.type === 'thinking') controller.abort();
                 },
             });
 
+            expect(
+                textOf(chunks, 'thinking') === 'Thinking' && lines.some((line) => line.startsWith('[gemini-usage] ')),
+                `the stop came on the flushed thinking, after round 1 had completed (got ${json(lines.filter((line) => line.startsWith('[gemini')))})`
+            );
             expect(vertex.requests.length === 1 && executions.length === 0, 'nothing more is sent and no tool runs');
             expect(handedOver.length === 1, `one checkpoint (got ${summaryOf(handedOver)})`);
             const loop = loopOf(handedOver[0]?.checkpoint);
@@ -416,7 +427,50 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
                     json(answersOf(loop, 0)) === json([{ name: 'lookup_a', error: INTERRUPTED_CALL_ERROR }]),
                 'it keeps round 1 with its call answered as interrupted'
             );
+            expect(json(journalTypes(handedOver[0]?.checkpoint)) === '["thinking"]', 'with the thinking the stop landed on');
             expect(chunks.at(-1)?.type === 'done', 'the stopped loop still ends with done');
+        },
+    },
+    {
+        name: '1g. a stop after the finish reason arrived, the connection still open: kept like a completed round, no call runs',
+        body: async () => {
+            const controller = new AbortController();
+            // The text rides the chunk that carries the finish reason; the body then
+            // stays open until the stop aborts it
+            reset([
+                stalledStreamReply([
+                    event([thoughtPart('plan r1')]),
+                    event([textPart('Let me check.'), callPart('lookup_a', { topic: 'r1' }, 'r1-0', 'call_r1_0')], { finishReason: 'STOP' }),
+                ]),
+                answer('never sent'),
+            ]);
+
+            const { error, handedOver, chunks, lines } = await runTurn({
+                signal: controller.signal,
+                onChunk: (chunk) => {
+                    if (chunk.type === 'text') controller.abort();
+                },
+            });
+
+            expect(error === null, `no error comes out: the loop's own stop check ends it (got ${errorMessage(error)})`);
+            expect(vertex.requests.length === 1 && executions.length === 0, 'nothing more is sent and no tool runs');
+            expect(vertex.requests[0]?.signal?.aborted === true, 'the stop reached the open body');
+            expect(handedOver.length === 1, `one checkpoint, as after a completed stream (got ${summaryOf(handedOver)})`);
+            const loop = loopOf(handedOver[0]?.checkpoint);
+            expect(
+                handedOver[0]?.checkpoint.completedRounds === 1 &&
+                    json(answersOf(loop, 0)) === json([{ name: 'lookup_a', error: INTERRUPTED_CALL_ERROR }]),
+                `it keeps round 1 with its call answered as interrupted (got ${json(answersOf(loop, 0))})`
+            );
+            expect(
+                json(journalTypes(handedOver[0]?.checkpoint)) === '["thinking","text"]',
+                `with the round's whole output (got ${json(journalTypes(handedOver[0]?.checkpoint))})`
+            );
+            expect(
+                lines.some((line) => line.includes('round=1 attempt=1 broke after finishReason=STOP')),
+                `the kept round is logged (got ${json(lines.filter((line) => line.startsWith('[gemini-recover]')))})`
+            );
+            expect(chunks.at(-1)?.type === 'done', 'the stopped loop ends with done');
         },
     },
     {

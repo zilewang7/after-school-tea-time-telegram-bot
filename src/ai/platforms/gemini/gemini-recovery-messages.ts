@@ -70,6 +70,16 @@ export const formatGiveUpLine = (facts: FailedAttemptFacts, reason: GiveUpReason
     `[gemini-recover] round=${facts.roundNumber} gave up after ${facts.attempt} attempts: ${reason} ` +
     `(phase=${facts.phase} kind=${facts.kind}) ${describeError(error)}`;
 
+/** A stream that broke after its finish reason arrived is kept as the round, not redone */
+export const formatBrokeAfterFinishLine = (
+    roundNumber: number,
+    attempt: number,
+    finishReason: string,
+    error: unknown
+): string =>
+    `[gemini-recover] round=${roundNumber} attempt=${attempt} broke after finishReason=${finishReason}; ` +
+    `kept as the round's result: ${describeError(error)}`;
+
 /** A stream that ended with neither an error nor a finish reason is kept as the round */
 export const formatNoFinishLine = (roundNumber: number, attempt: number): string =>
     `[gemini-recover] round=${roundNumber} attempt=${attempt} ended without a finish reason or an error; kept as the round's result`;
