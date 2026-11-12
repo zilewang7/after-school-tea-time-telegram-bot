@@ -39,8 +39,11 @@ const { captureResumeFacts } = await import('../../src/reply/resume/resume-facts
 const { createReplyToolState } = await import('../../src/reply/tools/reply-tool-state.js');
 const { CHECKPOINT_REGISTRY_LIMITS } = await import('../../src/reply/resume/checkpoint-registry.js');
 const { Message } = await import('../../src/db/messageDTO.js');
+const { setAccessMembershipLookup } = await import('../../src/services/access-membership.js');
 
 const OWNER = { userId: OWNER_USER_ID, isOwner: true };
+/** An access group that is none of the bench's chats */
+const ROSTER_GROUP_ID = -1007699999999;
 const CLAIMED_NOTICE = '正在处理';
 const STARTING_NOTICE = '正在启动，请稍后再点';
 
@@ -389,15 +392,27 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
         }),
     },
     {
-        name: 'access tiers: a trial user pressing 继续 on a full user\'s reply gets the model notice; the full user can still continue',
+        name: 'access tiers: outside the access groups a trial presser gets the model notice; in an access group any member continues',
         body: quietCase(async () => {
             process.env.ACCESS_TIERS = '1';
+            // The roster is a group none of the bench's chats is, and nobody is its member
+            process.env.ACCESS_GROUP_IDS = String(ROSTER_GROUP_ID);
+            setAccessMembershipLookup(async () => ({ status: 'left' }));
             try {
                 const reply = await failedReply();
                 await expectNoticeOnly(reply, checks.MODEL_CHANGED_NOTICE, 'trial presser', TRIAL_USER_ID);
                 await expectContinues(reply, 'full presser');
+
+                // The chat itself is an access group: the click proves membership,
+                // so a user nobody listed continues another member's reply
+                const groupChatId = takeChatId();
+                process.env.ACCESS_GROUP_IDS = String(groupChatId);
+                const groupReply = await failedReply(groupChatId);
+                await expectContinues(groupReply, 'access group member', TRIAL_USER_ID);
             } finally {
                 process.env.ACCESS_TIERS = '0';
+                delete process.env.ACCESS_GROUP_IDS;
+                setAccessMembershipLookup(null);
             }
         }),
     },

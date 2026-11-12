@@ -4,13 +4,14 @@
  */
 import type { Hono } from 'hono';
 import { modelConfigs } from '../../config/models.js';
-import { accessTiersEnabled, TRIAL_MODEL } from '../../config/trial-access.js';
+import { accessTiersEnabled, getAccessGroupIds, TRIAL_MODEL } from '../../config/trial-access.js';
 import { findBotResponseInChat } from '../../db/queries/context-queries.js';
-import { resolveAccessTier } from '../../services/access-tier.js';
+import { findChat } from '../../db/queries/panel-registry.js';
 import { getGlobalDefaultModel } from '../../services/chat-settings-service.js';
 import { latestApplicationOf, type LatestApplicationSummary } from '../../services/user-access-cache.js';
 import { countPendingApplications } from '../../services/user-access-service.js';
 import { listAccessibleChats } from '../access/chat-access.js';
+import { resolvePanelAccessTier } from '../access/panel-tier.js';
 import { parseStartParam, resolveHintChatId } from '../auth/start-param.js';
 import { requireAuth, type PanelEnv } from '../context.js';
 import { countOpenIssuesByChat, findIssueChatId } from '../queries/harness-issues.js';
@@ -20,6 +21,13 @@ import { buildStartTarget } from '../views/start-target.js';
 /** A reply deep link only lands on the reply while it is stored */
 const replyExists = async (chatId: number, firstMessageId: number): Promise<boolean> =>
     (await findBotResponseInChat(chatId, firstMessageId)) !== null;
+
+/** The groups whose members are automatically full, as the owner's review page explains them */
+const accessGroupsOf = async (): Promise<{ chatId: number; title: string | null }[]> => {
+    const chatIds = [...getAccessGroupIds()];
+    const rows = await Promise.all(chatIds.map((chatId) => findChat(chatId)));
+    return chatIds.map((chatId, index) => ({ chatId, title: rows[index]?.title ?? null }));
+};
 
 /** The requester's own latest application: the review internals stay private */
 const toAccessApplicationSelf = (summary: LatestApplicationSummary | null) => {
@@ -38,12 +46,16 @@ export const registerMeRoute = (app: Hono<PanelEnv>): void => {
         const auth = requireAuth(context);
         const target = parseStartParam(auth.startParam);
         const hintChatId = await resolveHintChatId(target, findIssueChatId);
-        const [accessibleChats, openIssuesByChat, pendingAccessApplications] = await Promise.all([
-            listAccessibleChats(auth.access, hintChatId),
-            countOpenIssuesByChat(),
-            // The review badge is the owner's alone; everyone else gets null
-            auth.user.isOwner ? countPendingApplications() : Promise.resolve(null),
-        ]);
+        const [accessibleChats, openIssuesByChat, pendingAccessApplications, accessTier, accessGroups] =
+            await Promise.all([
+                listAccessibleChats(auth.access, hintChatId),
+                countOpenIssuesByChat(),
+                // The review badge is the owner's alone; everyone else gets null
+                auth.user.isOwner ? countPendingApplications() : Promise.resolve(null),
+                resolvePanelAccessTier(auth),
+                // Who is in the roster is the owner's business; everyone else gets null
+                auth.user.isOwner ? accessGroupsOf() : Promise.resolve(null),
+            ]);
         const startTarget = await buildStartTarget(target, hintChatId, auth.access, replyExists);
 
         return context.json({
@@ -60,7 +72,8 @@ export const registerMeRoute = (app: Hono<PanelEnv>): void => {
             models: modelConfigs.map((model) => model.id),
             chats: accessibleChats.map((accessible) => toChatListItem(accessible, openIssuesByChat)),
             startTarget,
-            accessTier: resolveAccessTier(auth.user.id),
+            accessTier,
+            accessGroups,
             trialModel: TRIAL_MODEL,
             accessTieringEnabled: accessTiersEnabled(),
             accessApplication: toAccessApplicationSelf(latestApplicationOf(auth.user.id)),

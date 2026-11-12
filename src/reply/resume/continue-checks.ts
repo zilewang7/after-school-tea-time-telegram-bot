@@ -110,7 +110,8 @@ export const checkContinue = async (
     if (isCallbackChatPaused(ctx)) return keep(PAUSED_CALLBACK_NOTICE);
 
     const settings = snapshotReplySettings(response.chatId);
-    const access = resolveAccessTier(ctx.from?.id ?? null);
+    // In an access group the click itself proves membership; elsewhere this asks Telegram
+    const access = await resolveAccessTier(ctx.from?.id ?? null, response.chatId);
     const plan: ResumePlan = { model: effectiveReplyModel(access, settings.model), access, settings };
     // Thought signatures belong to the model that wrote them
     if (plan.model !== entry.request.model) return keep(MODEL_CHANGED_NOTICE);

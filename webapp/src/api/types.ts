@@ -81,6 +81,14 @@ export interface MeResponse {
     accessApplication: AccessApplicationSelf | null;
     // Owner only: applications awaiting review; null for everyone else
     pendingAccessApplications: number | null;
+    // Owner only: the groups whose current members are automatically full; null for everyone else
+    accessGroups: AccessGroupSummary[] | null;
+}
+
+/** One group whose members hold the full tier without applying */
+export interface AccessGroupSummary {
+    chatId: number;
+    title: string | null;
 }
 
 /** The login page's public facts: is web login on, and where the Telegram entries are */

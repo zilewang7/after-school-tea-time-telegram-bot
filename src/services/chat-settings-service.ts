@@ -177,10 +177,14 @@ export const updateChatSettings = (input: {
     runSerialized(chatAuditScope(input.chatId), async () => {
         await ensureCacheLoaded();
         const current = getChatSettings(input.chatId) ?? defaultChatSettings(input.chatId);
+        // The actor's tier needs a membership lookup; resolved here because the
+        // chat being edited is the trigger chat for both /model and the panel
+        const actorIsTrial =
+            !input.actor.isOwner && (await resolveAccessTier(input.actor.userId, input.chatId)) === 'trial';
         const resolution = resolveChatSettingsPatch(current, input.patch, {
             actorIsOwner: input.actor.isOwner,
             geminiPriorityCanEnable: canEnableGeminiPriority(input.chatId),
-            actorIsTrial: !input.actor.isOwner && resolveAccessTier(input.actor.userId) === 'trial',
+            actorIsTrial,
         });
         if (resolution.kind === 'rejected') {
             throw new ChatSettingsError(resolution.code, resolution.message);

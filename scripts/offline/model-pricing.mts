@@ -364,13 +364,24 @@ const cases: { name: string; body: () => Promise<void> }[] = [
             expect(near(deepseek, (400 * 0.3 + 600 * 0.006 + 250 * 1.2) / 1e6), `deepseek at the peak price (got ${deepseek})`);
             const luna = estimateCostUsd(price('gpt-6-luna'), { ...zero, promptTokens: 1000, cachedTokens: 800, outputTokens: 300 });
             expect(near(luna, (200 * 0.1 + 800 * 0.01 + 300 * 0.5) / 1e6), `luna, reasoning billed as output (got ${luna})`);
+            // Hydrogen's row is the 3.8 Flash promotional price until Vertex publishes one
+            const hydrogen = estimateCostUsd(price('gemini-4-hydrogen'), {
+                ...zero,
+                promptTokens: 1000,
+                cachedTokens: 600,
+                outputTokens: 200,
+            });
+            expect(
+                near(hydrogen, (400 * 0.75 + 600 * 0.075 + 200 * 3.75) / 1e6),
+                `hydrogen at the 3.8 Flash promotional price (got ${hydrogen})`
+            );
         },
     },
     {
         name: 'the price table: complete entries, the relay-only image id stays unpriced',
         body: async () => {
             const entries = Object.entries(MODEL_PRICES);
-            expect(entries.length === 14, `the 13 models of appendix A and gemini-4-carbon (got ${entries.length})`);
+            expect(entries.length === 15, `the 14 models of appendix A and gemini-4-carbon (got ${entries.length})`);
             for (const [model, price] of entries) {
                 const numbers = [price.inputPerM, price.cachedInputPerM, price.outputPerM];
                 expect(

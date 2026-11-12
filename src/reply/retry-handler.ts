@@ -77,7 +77,7 @@ export const handleRetryRequest = async (
 
     // A retry re-generates and re-bills: the tier is whoever pressed the
     // button (design §9.3), so a trial user cannot rerun a paid image reply
-    const access = resolveAccessTier(ctx.from?.id ?? null);
+    const access = await resolveAccessTier(ctx.from?.id ?? null, chatId);
     if (access === 'trial' && commandType === 'picgpt') {
         await sendBotNotice(ctx, TRIAL_COMMAND_REFUSAL_TEXT);
         return;
@@ -283,9 +283,10 @@ const handleChatRetry = async (
     const settings = snapshotReplySettings(chatId);
     const model = effectiveReplyModel(access, settings.model);
     // The presser's tier was decided above; reuse it so the two cannot disagree
-    const triggerAccess = resolveTriggerAccess(
+    const triggerAccess = await resolveTriggerAccess(
         ctx.from?.id ?? null,
         ctx.from ? formatUserDisplayName({ firstName: ctx.from.first_name, lastName: ctx.from.last_name }) : null,
+        chatId,
         access
     );
 

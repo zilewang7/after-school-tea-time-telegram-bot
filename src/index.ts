@@ -1,6 +1,6 @@
 import 'dotenv/config';
 import { installHttpDispatcher } from './shared/http-dispatcher.js';
-import { Bot } from "grammy";
+import { Api, Bot } from "grammy";
 import { autoRetry } from "@grammyjs/auto-retry";
 import { SocksProxyAgent } from "socks-proxy-agent";
 import { cmdLoad } from './cmd/index.js';
@@ -18,6 +18,7 @@ import { logWidgetReadiness, logWidgetRendererReadiness } from './telegram/widge
 import { reconcileInterruptedResponses } from './services/bot-message-service.js';
 import { getGlobalDefaultModel, loadChatSettingsCache } from './services/chat-settings-service.js';
 import { loadUserAccessCache } from './services/user-access-cache.js';
+import { configureAccessMembership } from './services/access-membership.js';
 import { startPanel, stopPanel } from './panel/index.js';
 
 if (!process.env.BOT_TOKEN) {
@@ -49,6 +50,10 @@ const botConfig = localApiRoot
     : undefined;
 
 const bot = new Bot(process.env.BOT_TOKEN, botConfig);
+
+// Access-tier membership lookups (design D1-C): a separate client without
+// autoRetry, so a rate limit fails fast instead of being slept on inside a reply
+configureAccessMembership(new Api(process.env.BOT_TOKEN, botConfig?.client));
 
 // Flood-wait safety net: retry any API call on 429 per retry_after.
 // Pacing (edit coalescing, per-chat budget) stays in edit-coordinator.

@@ -26,6 +26,7 @@ const USAGE = [
 
 const APPLY_HEADER =
     '你是体验用户。完整功能（切换模型、gpt/Grok 生图、/pic、/vid、MCP 工具等）需要机主批准后才能使用。\n' +
+    '如果你在机主指定的群聊里，完整功能会自动恢复，无需申请。\n' +
     '申请时请说明两件事：你是谁（身份、与机主的关系）、你要做什么（用途）。';
 
 const formatTime = (date: Date): string => {
@@ -109,7 +110,7 @@ const submitApplication = async (ctx: Context, raw: string): Promise<void> => {
 export const registerApplyCommand = (bot: Bot): void => {
     bot.command('apply', async (ctx) => {
         if (!ctx.chat || !ctx.from) return;
-        if (resolveAccessTier(ctx.from.id) !== 'trial') {
+        if ((await resolveAccessTier(ctx.from.id, ctx.chat.id)) !== 'trial') {
             await sendBotNotice(ctx, '你已拥有完整功能权限，无需申请。');
             return;
         }
