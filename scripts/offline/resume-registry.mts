@@ -350,6 +350,29 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
         },
     },
     {
+        name: 'the estimate counts as V8 stores: CJK text two bytes a character, base64 and ASCII one, an object about 48 bytes',
+        body: async () => {
+            const chinese = estimateRetainedBytes(['中文的思考过程'.repeat(10_000)]);
+            expect(chinese >= 2 * 70_000, `CJK text counts two bytes per character (got ${chinese} for 70000 characters)`);
+            const ascii = estimateRetainedBytes(['plain ascii text'.repeat(10_000)]);
+            expect(ascii >= 160_000 && ascii < 161_000, `ASCII counts one (got ${ascii} for 160000 characters)`);
+            const base64 = Buffer.alloc(3 * 1024 * 1024, 7).toString('base64');
+            const base64Bytes = estimateRetainedBytes([base64]);
+            expect(base64Bytes === base64.length, `base64 counts one (got ${base64Bytes} for ${base64.length})`);
+            // A bounded look decides, yet one spread over the string: a Chinese body after an ASCII start
+            const mixed = `${'{"role":"user","text":"'.repeat(200)}${'很长的中文内容。'.repeat(20_000)}`;
+            const mixedBytes = estimateRetainedBytes([mixed]);
+            expect(mixedBytes === 2 * mixed.length, `a string that turns Chinese counts two (got ${mixedBytes} for ${mixed.length})`);
+            expect(estimateRetainedBytes(['ü'.repeat(1000)]) === 1000, 'Latin-1 beyond ASCII still counts one');
+
+            const count = 1000;
+            const smallObjects = estimateRetainedBytes([Array.from({ length: count }, () => ({}))]);
+            expect(smallObjects >= 48 * count, `${count} empty objects cost at least 48 bytes each (got ${smallObjects})`);
+            const parts = estimateRetainedBytes([Array.from({ length: count }, (_unused, index) => ({ index, done: true }))]);
+            expect(parts >= (48 + 16) * count, `and their fields come on top (got ${parts})`);
+        },
+    },
+    {
         name: 'peek leaves the entry, take removes it with its mark, put back returns both, drop forgets them',
         body: async () => {
             const registry = createCheckpointRegistry();
