@@ -7,6 +7,8 @@
  * there. Calls not run yet are answered as interrupted. A call the stop
  * landed in comes back from tools.execute as an error result (the abort
  * reached the tool); its answer then says that it may have taken effect.
+ * Until every call ran without a stop the round is not over, so the round a
+ * resume opens is of the same kind (normal or no-cost) and may call again.
  */
 import type { StreamChunk } from '../../types.js';
 import { runToolRound, type ExecutedToolCall, type ToolUsageTally } from '../../tools/tool-round.js';
@@ -56,11 +58,11 @@ export async function* runRoundCalls(
     options: RoundCallsOptions
 ): AsyncGenerator<StreamChunk, FollowedRound | null, void> {
     const { state, round, limits, signal, handOver } = options;
-    const follow = (executed: readonly ExecutedToolCall[]): FollowedRound =>
-        followExecutedRound(state, { round, executed, elapsedMs: options.elapsedMs() }, limits);
+    const follow = (executed: readonly ExecutedToolCall[], complete: boolean): FollowedRound =>
+        followExecutedRound(state, { round, executed, elapsedMs: options.elapsedMs(), complete }, limits);
 
     // Before the stop check: a stop right after the stream completed still keeps the round
-    handOver(() => follow([]).state);
+    handOver(() => follow([], false).state);
     // A stopped reply sends nothing further and runs no tools
     if (signal?.aborted) return null;
 
@@ -73,9 +75,13 @@ export async function* runRoundCalls(
         {
             onCallExecuted: ({ executed, products, stoppedDuringCall }) => {
                 keptAnswers.push(keptAnswerOf(executed, stoppedDuringCall));
-                handOver(() => follow(keptAnswers).state, products);
+                // With calls left, or once stopped, the round is not over: a
+                // resume goes on with the same kind of round
+                const complete = keptAnswers.length === round.functionCalls.length && signal?.aborted !== true;
+                handOver(() => follow(keptAnswers, complete).state, products);
             },
         }
     );
-    return follow(executedCalls);
+    // After a stop the loop sends nothing further; its last checkpoint is the one above
+    return follow(executedCalls, true);
 }

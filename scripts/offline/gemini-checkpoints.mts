@@ -378,9 +378,13 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
                 const [, , afterRound1, beforeFree, afterFree, afterFreeRound, freeExit] = handedOver.map((item) => loopOf(item.checkpoint));
                 expect(afterRound1?.freeMode === true && afterRound1.freeRounds === 0, 'after round 1: no-cost mode, no no-cost round yet');
                 expect(
-                    beforeFree?.freeMode === true && beforeFree.freeRounds === 1 && answersOf(beforeFree, 1)[0]?.error === INTERRUPTED_CALL_ERROR,
-                    'before the no-cost call: counted as a no-cost round, the call interrupted'
+                    beforeFree?.freeMode === true &&
+                        beforeFree.freeRounds === 0 &&
+                        !beforeFree.request.final &&
+                        answersOf(beforeFree, 1)[0]?.error === INTERRUPTED_CALL_ERROR,
+                    'before the no-cost call: still a no-cost round next, not counted yet, the call interrupted'
                 );
+                expect(afterFree?.freeRounds === 1, 'once its call ran, the no-cost round counts');
                 const freeAnswer = afterFree === undefined ? undefined : answersOf(afterFree, 1)[0];
                 expect(
                     afterFree?.executedCallCount === 2 && freeAnswer?.output?.includes('只能再调用不产生开销的工具') === true,

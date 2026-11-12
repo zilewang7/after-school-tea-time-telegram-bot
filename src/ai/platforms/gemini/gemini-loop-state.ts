@@ -3,10 +3,13 @@
  * round (design 2026-1112-1123 §6.2).
  *
  * The loop and its checkpoints go through the same transitions: a checkpoint
- * taken halfway through a round's calls is the round as if it had ended with
- * the calls executed so far, counted by the very function that counts a whole
- * round. Pure: the time is passed in, nothing is read or mutated, so a state
- * handed out in a checkpoint never changes afterwards.
+ * taken halfway through a round's calls is the round with the calls executed
+ * so far, counted by the very function that counts a whole round. Such a
+ * round is not over, though: the limits judge a round only once all its calls
+ * ran, so the round after a partial one is of the same kind again (a resume
+ * may re-issue what was interrupted). Pure: the time is passed in, nothing is
+ * read or mutated, so a state handed out in a checkpoint never changes
+ * afterwards.
  */
 import type { FunctionCall, Part } from '@google/genai';
 import type { GroundingData } from '../../types.js';
@@ -131,6 +134,12 @@ export interface ExecutedRoundStep {
     readonly executed: readonly ExecutedToolCall[];
     /** Reply wall time at this moment */
     readonly elapsedMs: number;
+    /**
+     * The round is over: every call ran and no stop landed in it. Only then is
+     * the budget judged and a no-cost round counted; a partial step leaves the
+     * next round the same kind as this one.
+     */
+    readonly complete: boolean;
 }
 
 export interface FollowedRound {
@@ -152,13 +161,15 @@ const followToolRound = (
 ): FollowedRound => {
     const executedCallCount = state.executedCallCount + step.executed.length;
     const toolTimeMs = state.toolTimeMs + toolTimeSpentMs(step.executed);
-    // Judged after the calls ran: they may have used up the budget
-    const exhausted = budgetExhaustedReasonAt({
-        toolTimeMs,
-        elapsedMs: step.elapsedMs,
-        deadlineMs: limits.deadlineMs,
-        wallMs: limits.wallMs,
-    });
+    // Judged after all the calls ran: they may have used up the budget
+    const exhausted = step.complete
+        ? budgetExhaustedReasonAt({
+              toolTimeMs,
+              elapsedMs: step.elapsedMs,
+              deadlineMs: limits.deadlineMs,
+              wallMs: limits.wallMs,
+          })
+        : null;
     const final = exhausted !== null && !limits.hasFreeTools;
     const freeMode = exhausted !== null && limits.hasFreeTools;
     // The call count rides in each result, like every other fact the
@@ -196,15 +207,18 @@ const followToolRound = (
     };
 };
 
-/** Past the budget: no tool time is charged, and the cap of no-cost rounds makes the next one final */
+/**
+ * Past the budget: no tool time is charged, and the cap of no-cost rounds
+ * makes the next one final. A partial no-cost round is not counted yet.
+ */
 const followFreeRound = (
     state: GeminiLoopState,
     step: ExecutedRoundStep,
     limits: GeminiLoopLimits
 ): FollowedRound => {
-    const freeRounds = state.freeRounds + 1;
+    const freeRounds = step.complete ? state.freeRounds + 1 : state.freeRounds;
     const executedCallCount = state.executedCallCount + step.executed.length;
-    const capReached = freeRounds >= FREE_TOOL_ROUNDS_MAX;
+    const capReached = step.complete && freeRounds >= FREE_TOOL_ROUNDS_MAX;
     const answered = withToolBudget(step.executed, {
         toolCalls: executedCallCount,
         finalRound: capReached,
@@ -241,7 +255,7 @@ const followFreeRound = (
 /**
  * What follows a round whose calls ran: the counts, the budget, and the next
  * request with one answer per call. The loop calls it once the round's calls
- * are done; a checkpoint calls it with the calls executed so far.
+ * are done (complete); a checkpoint calls it with the calls executed so far.
  */
 export const followExecutedRound = (
     state: GeminiLoopState,

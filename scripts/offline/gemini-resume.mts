@@ -134,6 +134,17 @@ const makePictures = tool(
 );
 const sendFile = tool('send_file', okResult('file sent'));
 
+/** A no-cost tool; when the stop reached it while it ran it fails the way an aborted request does */
+const generateImage: ToolHandler = {
+    definition: { name: 'generate_image', description: 'The generate_image tool', inputSchema: objectSchema },
+    execute: async (_args, signal) => {
+        executions.push('generate_image');
+        duringTool?.('generate_image');
+        if (signal.aborted) throw abortError();
+        return okResult('image generated');
+    },
+};
+
 const turnTools = createTurnTools([sendSms, slowSearch, lookupA, lookupB, lookupC, makePictures]);
 const turnToolsWithFree = createTurnTools([lookupA, lookupB, sendFile]);
 
@@ -549,6 +560,123 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
                     resumedAfter.lines.some((line) => line.includes('round 3 still asked for 1 function call(s)')),
                     'the ignored call is logged'
                 );
+            });
+        },
+    },
+    {
+        name: '9e. a stop in the call of the last allowed no-cost round: the resume may call again, the call runs, then the cap applies',
+        body: async () => {
+            await withFakeClock(async (jump) => {
+                const controller = new AbortController();
+                const tools = createTurnTools([lookupA, generateImage]);
+                reset([
+                    callsRound('r1', [{ name: 'lookup_a' }]),
+                    ...Array.from({ length: FREE_TOOL_ROUNDS_MAX }, (_unused, index) => callsRound(`f${index + 1}`, [{ name: 'generate_image' }])),
+                    answer('never sent'),
+                ]);
+                let imageCalls = 0;
+                duringTool = (name) => {
+                    if (name === 'lookup_a') jump(TOOL_LOOP_DEADLINE_MS + 1_000);
+                    imageCalls += name === 'generate_image' ? 1 : 0;
+                    if (imageCalls === FREE_TOOL_ROUNDS_MAX) controller.abort();
+                };
+                const interrupted = await runTurn({ tools, signal: controller.signal, stopSignal: controller.signal });
+                expect(
+                    executions.length === FREE_TOOL_ROUNDS_MAX + 1 && interrupted.requests.length === FREE_TOOL_ROUNDS_MAX + 1,
+                    `round 1, then ${FREE_TOOL_ROUNDS_MAX} no-cost rounds, the last one stopped in its call (got ${json(executions)})`
+                );
+                const checkpoint = lastCheckpoint(interrupted);
+                expect(checkpoint.completedRounds === FREE_TOOL_ROUNDS_MAX + 1, `every round is kept (got ${checkpoint.completedRounds})`);
+
+                reset([callsRound('again', [{ name: 'generate_image' }]), answer('Here is the picture.')]);
+                duringTool = null;
+                const resumed = await runTurn({ resumeFrom: checkpoint, tools });
+
+                expect(resumed.error === null && resumed.requests.length === 2, `two requests (got ${resumed.requests.length} / ${errorMessage(resumed.error)})`);
+                const stoppedAnswer = answersIn(resumed.requests[0]).at(-1);
+                expect(
+                    !isModeNone(resumed.requests[0]) && stoppedAnswer?.notice === undefined,
+                    `the resumed round is the interrupted no-cost round again, not the final one (got ${json(stoppedAnswer)})`
+                );
+                expect(stoppedAnswer?.error?.includes(STOPPED_DURING_CALL_NOTE) === true, 'the stopped call carries the stop note');
+                expect(json(executions) === '["generate_image"]', `the call issued again runs (got ${json(executions)})`);
+                const capAnswer = answersIn(resumed.requests[1]).at(-1);
+                expect(
+                    isModeNone(resumed.requests[1]) &&
+                        capAnswer?.notice === LAST_TOOL_ROUND_NOTICE &&
+                        capAnswer.output?.includes('只能再调用不产生开销的工具') === true,
+                    `that round was the ${FREE_TOOL_ROUNDS_MAX}th no-cost round: the next one is final (got ${json(capAnswer)})`
+                );
+            });
+        },
+    },
+    {
+        name: '9f. the budget used up partway through a normal round: the resume is a normal round again, with and without no-cost tools',
+        body: async () => {
+            for (const [label, tools] of [
+                ['without no-cost tools', createTurnTools([lookupA, lookupB])],
+                ['with no-cost tools', turnToolsWithFree],
+            ] as const) {
+                await withFakeClock(async (jump) => {
+                    reset([callsRound('r1', [{ name: 'lookup_a' }, { name: 'lookup_b' }]), answer('never sent')]);
+                    duringTool = (name) => {
+                        if (name === 'lookup_a') jump(TOOL_LOOP_DEADLINE_MS + 1_000);
+                    };
+                    // The consumer walks away at lookup_a's record: lookup_b never runs
+                    const interrupted = await runTurn({ tools, breakAfter: (chunk) => chunk.type === 'grounding' });
+                    expect(json(executions) === '["lookup_a"]', `${label}: only lookup_a ran (got ${json(executions)})`);
+                    const checkpoint = lastCheckpoint(interrupted);
+
+                    reset([callsRound('again', [{ name: 'lookup_b' }]), answer('The code word is AZALEA-42.')]);
+                    duringTool = null;
+                    const resumed = await runTurn({ resumeFrom: checkpoint, tools });
+
+                    expect(resumed.error === null && resumed.requests.length === 2, `${label}: two requests (got ${errorMessage(resumed.error)})`);
+                    const answers = answersIn(resumed.requests[0]);
+                    expect(
+                        !isModeNone(resumed.requests[0]) &&
+                            answers.every((item) => item.notice === undefined && item.output?.includes('只能再调用不产生开销的工具') !== true) &&
+                            answers[1]?.error === INTERRUPTED_CALL_ERROR,
+                        `${label}: the resumed round is a normal one, lookup_b answered as not run (got ${json(answers)})`
+                    );
+                    expect(json(executions) === '["lookup_b"]', `${label}: lookup_b, issued again, runs (got ${json(executions)})`);
+                    const afterRound = answersIn(resumed.requests[1]).at(-1);
+                    expect(
+                        label === 'without no-cost tools'
+                            ? isModeNone(resumed.requests[1]) && afterRound?.notice === LAST_TOOL_ROUND_NOTICE
+                            : !isModeNone(resumed.requests[1]) && afterRound?.output?.includes('只能再调用不产生开销的工具') === true,
+                        `${label}: once that round's calls ran, the budget is judged (got ${json(afterRound)})`
+                    );
+                });
+            }
+        },
+    },
+    {
+        name: '9g. a round whose last call was stopped ran every call, yet is not over: the budget it used up is not judged from it',
+        body: async () => {
+            await withFakeClock(async (jump) => {
+                const controller = new AbortController();
+                const tools = createTurnTools([lookupA, slowSearch]);
+                reset([callsRound('r1', [{ name: 'lookup_a' }, { name: 'slow_search' }]), answer('never sent')]);
+                duringTool = (name) => {
+                    if (name === 'lookup_a') jump(TOOL_LOOP_DEADLINE_MS + 1_000);
+                    if (name === 'slow_search') controller.abort();
+                };
+                const interrupted = await runTurn({ tools, signal: controller.signal, stopSignal: controller.signal });
+                expect(json(executions) === '["lookup_a","slow_search"]', `every call of the round ran (got ${json(executions)})`);
+                const checkpoint = lastCheckpoint(interrupted);
+
+                reset([answer('Resumed after the stop.')]);
+                duringTool = null;
+                const resumed = await runTurn({ resumeFrom: checkpoint, tools });
+
+                expect(resumed.error === null, `the resume finishes (got ${errorMessage(resumed.error)})`);
+                const answers = answersIn(resumed.requests[0]);
+                expect(
+                    !isModeNone(resumed.requests[0]) && answers.every((item) => item.notice === undefined),
+                    `the resumed round may still call: the stopped call can be issued again (got ${json(answers)})`
+                );
+                expect(answers[1]?.error?.includes(STOPPED_DURING_CALL_NOTE) === true, `slow_search carries the stop note (got ${json(answers[1])})`);
             });
         },
     },
