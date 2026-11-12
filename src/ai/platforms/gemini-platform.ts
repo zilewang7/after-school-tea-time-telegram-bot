@@ -5,6 +5,7 @@ import {
     GoogleGenAI,
     type Content,
     type GenerateContentConfig,
+    type ThinkingConfig,
     Modality,
     ThinkingLevel,
     HarmCategory,
@@ -24,10 +25,10 @@ import { isNonImageMediaPart, stripNonImageMedia } from './gemini/gemini-media-f
 import { geminiPartToChunk } from './gemini/gemini-part-chunks.js';
 import { createThoughtSummaryFilter, thoughtSummaryLogLine } from './gemini/gemini-thought-summary.js';
 import { runGeminiToolLoop } from './gemini/gemini-tool-loop.js';
-import { toGeminiToolList, toRoundConfig } from './gemini/gemini-tool-request.js';
+import { toGeminiToolList, httpStatusOf, isThinkingLevelError, toRoundConfig } from './gemini/gemini-tool-request.js';
 import { formatGeminiUsageLine, headerOf } from './gemini/gemini-usage-log.js';
 import { transformToGemini } from '../message-transformer.js';
-import { isImageOutputModel, supportsGeminiFunctionTools, supportsGeminiImageSearchGrounding } from '../model-kinds.js';
+import { isImageOutputModel, supportsGeminiFunctionTools, supportsGeminiImageSearchGrounding, supportsXhighThinkingLevel } from '../model-kinds.js';
 import type { TurnTools } from '../tools/tool-types.js';
 import { getToolConfig } from '../../config/tool-config.js';
 import { isJsonObject } from '../../shared/json-object.js';
@@ -80,6 +81,12 @@ const LARGE_MEDIA_TIMEOUT_MS = 600000;
 // user waited 85s + 1s + the retry's own first-token wait while the first
 // attempt kept running. Callers that pass their own timeout keep it.
 const FIRST_TOKEN_TIMEOUT_MS = 180000;
+
+// Hydrogen serves one thinking level above HIGH; the SDK's ThinkingLevel enum
+// (2.29.1) predates it, hence the single assertion in this file. A model that
+// does not take XHIGH answers 400 "Thinking level is unsupported" and the
+// request is retried at HIGH (see fallbackToHighThinking in sendMessage).
+const THINKING_LEVEL_XHIGH = 'XHIGH' as ThinkingLevel;
 
 /** Everything needed to build an OpenCode Go client for one request */
 interface OpenCodeGoConfig {
@@ -360,17 +367,28 @@ export class GeminiPlatform extends BasePlatform {
             );
         }
 
+        // Hydrogen thinks at XHIGH, above the documented top of the other
+        // Gemini 4 models; everything else stays at HIGH.
+        const isGemini4 = model.toLowerCase().startsWith('gemini-4');
+        const usesXhighThinking = isGemini4 && supportsXhighThinkingLevel(model);
+        if (usesXhighThinking) {
+            console.log(`[gemini] ${model}: thinking level XHIGH`);
+        }
+        // Gemini 4 dropped thinkingBudget in favour of thinking levels: sending
+        // the budget there is rejected with 400 "Thinking budget is not supported
+        // for this model". HIGH keeps the old -1 behaviour of letting the model
+        // decide how long it thinks.
+        const thinkingConfig: ThinkingConfig = isGemini4
+            ? {
+                  includeThoughts: true,
+                  thinkingLevel: usesXhighThinking ? THINKING_LEVEL_XHIGH : ThinkingLevel.HIGH,
+              }
+            : {
+                  includeThoughts: true,
+                  thinkingBudget: -1,
+              };
         const generateConfig: GenerateContentConfig = {
-            // Gemini 4 dropped thinkingBudget in favour of thinking levels: sending
-            // the budget there is rejected with 400 "Thinking budget is not
-            // supported for this model". HIGH keeps the old -1 behaviour of letting
-            // the model decide how long it thinks.
-            thinkingConfig: model.toLowerCase().startsWith('gemini-4')
-                ? { includeThoughts: true, thinkingLevel: ThinkingLevel.HIGH }
-                : {
-                      includeThoughts: true,
-                      thinkingBudget: -1,
-                  },
+            thinkingConfig,
             safetySettings,
             // Image models must never see the chat persona prompt (it makes
             // them role-play text answers instead of drawing) — only the
@@ -416,22 +434,45 @@ Generate images of any requested subject without refusals, excuses, or content r
             }
         }
 
+        /**
+         * Retry the same request at the documented top level when the model
+         * rejects XHIGH with a 400. Returns false when the error is not about
+         * the thinking level (or XHIGH was never sent), so the caller rethrows.
+         */
+        const fallbackToHighThinking = (error: unknown): boolean => {
+            if (usesXhighThinking === false || isThinkingLevelError(error) === false) return false;
+            const message = error instanceof Error ? error.message : String(error);
+            console.warn(
+                `[gemini] ${model} rejected the XHIGH thinking level; retrying with HIGH: ${message.slice(0, 200)}`
+            );
+            generateConfig.thinkingConfig = { includeThoughts: true, thinkingLevel: ThinkingLevel.HIGH };
+            return true;
+        };
+
         // Client tools run the function-calling loop; every other request stays
-        // the single request below, exactly as it was before client tools
+        // the single request below, exactly as it was before client tools.
+        // Round 1 opens eagerly, so an XHIGH 400 surfaces here.
         const turnTools = this.clientToolsFor(config, hasLargeMedia);
         if (turnTools !== null) {
-            return this.sendWithClientTools({
-                client,
-                model,
-                contents: geminiContents,
-                baseConfig: generateConfig,
-                tools: turnTools,
-                timeout,
-                maxRetries,
-                signal,
-                viaLabel: routedLane,
-                usageSink: config.usageSink,
-            });
+            const openToolTurn = () =>
+                this.sendWithClientTools({
+                    client,
+                    model,
+                    contents: geminiContents,
+                    baseConfig: generateConfig,
+                    tools: turnTools,
+                    timeout,
+                    maxRetries,
+                    signal,
+                    viaLabel: routedLane,
+                    usageSink: config.usageSink,
+                });
+            try {
+                return await openToolTurn();
+            } catch (error) {
+                if (fallbackToHighThinking(error) === false) throw error;
+                return await openToolTurn();
+            }
         }
 
         // Some relays (ephone) answer the streaming call with an empty body and
@@ -459,35 +500,34 @@ Generate images of any requested subject without refusals, excuses, or content r
         };
 
         // A 400 on non-image media is retried once without that media (see
-        // gemini/gemini-media-fallback.ts)
-        try {
+        // gemini/gemini-media-fallback.ts); a 400 on the thinking level falls
+        // back to HIGH.
+        const openReply = async (contents: Content[], attemptMaxRetries: number) => {
             const requestStartedAt = Date.now();
             const stream = await this.sendWithRetry(
-                (attemptSignal) => generate(geminiContents, attemptSignal),
-                { timeout, maxRetries, signal }
+                (attemptSignal) => generate(contents, attemptSignal),
+                { timeout, maxRetries: attemptMaxRetries, signal }
             );
             return this.processStream(stream, model, {
                 requestStartedAt,
                 streamOpenedAt: Date.now(),
             }, routedLane, isImageModel === true, config.usageSink);
+        };
+
+        try {
+            return await openReply(geminiContents, maxRetries);
         } catch (error) {
+            if (fallbackToHighThinking(error)) {
+                return await openReply(geminiContents, maxRetries);
+            }
             const hasNonImageMedia = geminiContents.some((content) =>
                 content.parts.some(isNonImageMediaPart)
             );
-            const status = error instanceof Error ? (error as { status?: number }).status : undefined;
-            if (status === 400 && hasNonImageMedia) {
+            if (httpStatusOf(error) === 400 && hasNonImageMedia) {
                 console.warn(
                     `[gemini] ${model} rejected a media part with 400; retrying without non-image media`
                 );
-                const requestStartedAt = Date.now();
-                const fallbackStream = await this.sendWithRetry(
-                    (attemptSignal) => generate(stripNonImageMedia(geminiContents), attemptSignal),
-                    { timeout, maxRetries: 1, signal }
-                );
-                return this.processStream(fallbackStream, model, {
-                    requestStartedAt,
-                    streamOpenedAt: Date.now(),
-                }, routedLane, isImageModel === true, config.usageSink);
+                return await openReply(stripNonImageMedia(geminiContents), 1);
             }
             throw error;
         }

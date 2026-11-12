@@ -74,3 +74,12 @@ const GEMINI_IMAGE_SEARCH_GROUNDING_MODELS: ReadonlySet<string> = new Set([
 
 export const supportsGeminiImageSearchGrounding = (model: string): boolean =>
     GEMINI_IMAGE_SEARCH_GROUNDING_MODELS.has(model.toLowerCase());
+
+/**
+ * Gemini 4 Hydrogen accepts the XHIGH thinking level on Vertex, one level above
+ * HIGH — the documented top for Argon and Carbon, which answer 400 "Thinking
+ * level is unsupported: THINKING_LEVEL_XHIGH". Other models keep HIGH; a model
+ * that loses XHIGH later falls back to HIGH at request time (see GeminiPlatform).
+ */
+export const supportsXhighThinkingLevel = (model: string): boolean =>
+    model.toLowerCase().startsWith('gemini-4-hydrogen');
