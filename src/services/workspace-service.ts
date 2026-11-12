@@ -226,6 +226,26 @@ export const readWorkspaceFile = async (
 };
 
 /**
+ * The text of several files of one conversation in a single query, keyed by
+ * path; `workspace_list` uses it to measure widget drafts without a query per
+ * file. Paths that do not exist are simply absent from the map.
+ */
+export const loadWorkspaceContents = async (
+    chatId: number,
+    conversationRootId: number,
+    paths: readonly string[]
+): Promise<Map<string, string>> => {
+    const contents = new Map<string, string>();
+    if (paths.length === 0) return contents;
+    const rows = await WorkspaceFile.findAll({
+        where: { chatId, conversationRootId, path: { [Op.in]: [...paths] } },
+        attributes: ['path', 'content'],
+    });
+    for (const row of rows) contents.set(row.path, row.content.toString('utf8'));
+    return contents;
+};
+
+/**
  * Refresh the LRU clock of one file, at most once an hour per file. A read is
  * a write here; the throttle keeps a browsing model from hammering the single
  * SQLite writer.
@@ -294,6 +314,8 @@ export interface WorkspaceWriteInput {
 export interface WorkspaceWriteOk {
     readonly path: string;
     readonly sizeBytes: number;
+    /** The file's text after the write (an append returns the whole file) */
+    readonly content: string;
     /** The row did not exist before this call */
     readonly created: boolean;
     readonly fileCount: number;
@@ -354,13 +376,14 @@ export const writeWorkspaceFile = async (
                 }
 
                 const now = new Date();
+                const nextText = nextContent.toString('utf8');
                 // Appending to a non-empty file never changes its first line, so
                 // the manifest summary must survive it; overwrite re-derives it
                 // (an overwrite to empty content clears it).
                 const summary =
                     append && existing !== null && existing.sizeBytes > 0
                         ? existing.summary
-                        : summarizeWorkspaceContent(nextContent.toString('utf8'));
+                        : summarizeWorkspaceContent(nextText);
                 const mimeType = mimeForFileName(path);
                 if (existing !== null) {
                     const replacedBytes = append ? null : existing.sizeBytes;
@@ -379,6 +402,7 @@ export const writeWorkspaceFile = async (
                         ok: true,
                         path,
                         sizeBytes: nextContent.length,
+                        content: nextText,
                         created: false,
                         // usage excludes this row; the conversation still holds it
                         fileCount: usage.fileCount + 1,
@@ -406,6 +430,7 @@ export const writeWorkspaceFile = async (
                     ok: true,
                     path,
                     sizeBytes: nextContent.length,
+                    content: nextText,
                     created: true,
                     fileCount: usage.fileCount + 1,
                     totalBytes: usage.totalBytes + nextContent.length,
@@ -459,6 +484,8 @@ export interface WorkspaceEditOk {
     readonly path: string;
     readonly replacements: number;
     readonly sizeBytes: number;
+    /** The file's text after the edit */
+    readonly content: string;
 }
 
 /** Exact-string edit, all-or-nothing; quotas checked with the write */
@@ -537,7 +564,13 @@ export const editWorkspaceFile = async (
                     },
                     { transaction }
                 );
-                return { ok: true, path, replacements: replaceAll ? occurrences : 1, sizeBytes: bytes.length };
+                return {
+                    ok: true,
+                    path,
+                    replacements: replaceAll ? occurrences : 1,
+                    sizeBytes: bytes.length,
+                    content: nextContent,
+                };
             }),
         `workspace edit ${chatId}/${conversationRootId}/${path}`
     );

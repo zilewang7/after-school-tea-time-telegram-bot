@@ -45,7 +45,7 @@ cases.push(
     await runCase('the html guide is present, well-formed and inside its size budget', async () => {
         const guide = getWidgetGuide('html');
         expect(guide.kind === 'html', 'kind is html');
-        expect(guide.version === 3, 'version is 3');
+        expect(guide.version === 4, 'version is 4');
         expect(guide.version === WIDGET_GUIDE_VERSION, 'version matches WIDGET_GUIDE_VERSION');
         expect(guide.title.trim().length > 0, 'title is non-empty');
         expect(guide.title.includes('HTML'), 'title names the HTML mode');
@@ -161,7 +161,7 @@ cases.push(
     await runCase('the a2ui guide is present, well-formed and inside its size budget', async () => {
         const guide = getWidgetGuide('a2ui');
         expect(guide.kind === 'a2ui', 'kind is a2ui');
-        expect(guide.version === 3, 'version is 3');
+        expect(guide.version === 4, 'version is 4');
         expect(guide.version === WIDGET_GUIDE_VERSION, 'version matches WIDGET_GUIDE_VERSION');
         expect(guide.title.trim().length > 0, 'title is non-empty');
         expect(guide.title.includes('A2UI'), 'title names the A2UI mode');
@@ -237,7 +237,7 @@ cases.push(
         expect(html.text !== a2ui.text, 'the two texts differ');
         expect(html.kind !== a2ui.kind, 'the kinds differ');
         expect(html.version === a2ui.version, 'both guides share one version');
-        expect(html.version === WIDGET_GUIDE_VERSION && WIDGET_GUIDE_VERSION === 3, 'the shared version is 3');
+        expect(html.version === WIDGET_GUIDE_VERSION && WIDGET_GUIDE_VERSION === 4, 'the shared version is 4');
         expect(getWidgetGuide('html') === html, 'lookups are stable for html');
         expect(getWidgetGuide('a2ui') === a2ui, 'lookups are stable for a2ui');
     })

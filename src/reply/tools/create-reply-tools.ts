@@ -91,6 +91,11 @@ export const createReplyTools = (
         },
         callLimits: { ...WORKSPACE_CALL_LIMITS, previews: config.workspacePreviewsPerReply },
     });
+    // HTML drafts are widget payloads: the write/edit/list results report the
+    // zlib9 size only when this turn can actually send a widget.
+    const widgetDraftLimits = availability.widget
+        ? { maxHtmlBytes: config.widgetMaxHtmlBytes, maxGzipBytes: config.widgetMaxGzipBytes }
+        : null;
     const historyState = createHistoryState();
     const harnessIssueState = createHarnessIssueState();
     // One luoxu client per reply: the history tools and fetch_image's archive
@@ -212,11 +217,11 @@ export const createReplyTools = (
         ...(availability.widgetGuide ? [createUiGuideTool()] : []),
         ...(availability.workspace
             ? [
-                  createWorkspaceWriteTool({ state: workspaceState }),
+                  createWorkspaceWriteTool({ state: workspaceState, widgetLimits: widgetDraftLimits }),
                   createWorkspaceReadTool({ state: workspaceState }),
-                  createWorkspaceListTool({ state: workspaceState }),
+                  createWorkspaceListTool({ state: workspaceState, widgetLimits: widgetDraftLimits }),
                   createWorkspaceFindTool({ state: workspaceState }),
-                  createWorkspaceEditTool({ state: workspaceState }),
+                  createWorkspaceEditTool({ state: workspaceState, widgetLimits: widgetDraftLimits }),
                   createWorkspaceCopyTool({ state: workspaceState }),
                   createWorkspaceDeleteTool({ state: workspaceState }),
               ]

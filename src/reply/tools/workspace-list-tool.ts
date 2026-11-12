@@ -7,16 +7,23 @@
  * "using" a file.
  */
 import type { ToolHandler, ToolResult } from '../../ai/tools/tool-types.js';
+import type { WidgetBudgetLimits } from '../../ai/widget/widget-size.js';
 import { formatBytes } from '../../shared/file-name.js';
-import { formatWorkspaceTime, listWorkspaceFiles } from '../../services/workspace-service.js';
+import {
+    formatWorkspaceTime,
+    listWorkspaceFiles,
+    loadWorkspaceContents,
+} from '../../services/workspace-service.js';
 import { consumeWorkspaceCall, resolveWorkspaceRef, type WorkspaceState } from '../workspace/workspace-state.js';
+import { isWidgetDraftPath, widgetDraftListDetailOf } from '../workspace/workspace-widget-size.js';
 import { parseWorkspaceListArgs } from './workspace-tool-args.js';
 import { workspaceToolError, workspaceToolSuccess } from './workspace-tool-result.js';
 import { WORKSPACE_LIST_TOOL_NAME } from './tool-names.js';
 
 const DESCRIPTION =
     '列出工作区里的文件（路径、大小、最近修改时间、首行摘要），按最近修改排序；' +
-    'prefix 可以只看某个目录。不刷新文件的保留期。';
+    'prefix 可以只看某个目录。HTML 草稿还会给出 zlib9 压缩后体积和离 widget 上限的差距。' +
+    '不刷新文件的保留期。';
 
 const INPUT_SCHEMA = {
     type: 'object',
@@ -39,10 +46,13 @@ const reject = (message: string): ToolResult => {
 
 export interface WorkspaceListToolOptions {
     readonly state: WorkspaceState;
+    /** Widget limits of this turn; null/absent = no widget tools, so HTML drafts list plain sizes */
+    readonly widgetLimits?: WidgetBudgetLimits | null;
 }
 
 export const createWorkspaceListTool = (options: WorkspaceListToolOptions): ToolHandler => {
     const { state } = options;
+    const widgetLimits = options.widgetLimits ?? null;
 
     return {
         definition: {
@@ -61,10 +71,34 @@ export const createWorkspaceListTool = (options: WorkspaceListToolOptions): Tool
 
             const snapshot = await listWorkspaceFiles(state.chatId, ref.ref.rootId, parsed.value.prefix);
             const label = `${ref.ref.label} ${ref.ref.token}`;
+            // Only HTML drafts that can still be a widget get measured: a file
+            // over the raw cap cannot fit anyway, and measuring it would read a
+            // megabyte to report a number that cannot change the verdict.
+            const draftPaths =
+                widgetLimits === null
+                    ? []
+                    : snapshot.files
+                          .filter(
+                              (file) =>
+                                  isWidgetDraftPath(file.path) &&
+                                  file.sizeBytes <= widgetLimits.maxHtmlBytes
+                          )
+                          .map((file) => file.path);
+            const draftContents =
+                widgetLimits === null
+                    ? new Map<string, string>()
+                    : await loadWorkspaceContents(state.chatId, ref.ref.rootId, draftPaths);
+            const hasDraft = snapshot.files.some((file) => isWidgetDraftPath(file.path));
+            const widgetHint =
+                widgetLimits === null || !hasDraft
+                    ? ''
+                    : `\nHTML 草稿按 widget 计：原文 ≤ ${widgetLimits.maxHtmlBytes} B、` +
+                      `zlib9 ≤ ${widgetLimits.maxGzipBytes} B。`;
             const header =
                 `工作区（${label}）共 ${snapshot.usage.fileCount} 个文件，已用 ` +
                 `${formatBytes(snapshot.usage.totalBytes)} / ${formatBytes(state.quota.maxConversationBytes)}` +
-                (parsed.value.prefix === '' ? '。' : `；${parsed.value.prefix} 下 ${snapshot.files.length} 个。`);
+                (parsed.value.prefix === '' ? '。' : `；${parsed.value.prefix} 下 ${snapshot.files.length} 个。`) +
+                widgetHint;
 
             if (snapshot.files.length === 0) {
                 return workspaceToolSuccess(
@@ -74,7 +108,15 @@ export const createWorkspaceListTool = (options: WorkspaceListToolOptions): Tool
 
             const lines = snapshot.files.map((file) => {
                 const summary = file.summary === '' ? '' : ` — ${file.summary}`;
-                return `- ${file.path}（${formatBytes(file.sizeBytes)}，${formatWorkspaceTime(file.updatedAt)}）${summary}`;
+                const detail =
+                    widgetLimits !== null && isWidgetDraftPath(file.path)
+                        ? widgetDraftListDetailOf(
+                              file.sizeBytes,
+                              draftContents.get(file.path),
+                              widgetLimits
+                          )
+                        : formatBytes(file.sizeBytes);
+                return `- ${file.path}（${detail}，${formatWorkspaceTime(file.updatedAt)}）${summary}`;
             });
             return workspaceToolSuccess(`${header}\n${lines.join('\n')}`);
         },

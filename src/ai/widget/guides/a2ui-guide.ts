@@ -10,7 +10,7 @@
 export const WIDGET_GUIDE_A2UI_TITLE = "Telegram Widget · A2UI 模式规范（catalog: tg-card-v1）";
 
 export const WIDGET_GUIDE_A2UI_TEXT = `Telegram Widget · A2UI 模式规范（自定义 catalog: tg-card-v1）
-guide=a2ui · version 3 · 来源：A2UI v1.0（a2ui-project/a2ui，Apache-2.0）的 Telegram 子集 + TelegramMessenger/widget-sandbox 文档内部快照（widget profile 1，快照 2026-11-08）
+guide=a2ui · version 4 · 来源：A2UI v1.0（a2ui-project/a2ui，Apache-2.0）的 Telegram 子集 + TelegramMessenger/widget-sandbox 文档内部快照（widget profile 1，快照 2026-11-08）
 
 ## 0. 这份文本是什么、产出什么
 

@@ -34,6 +34,31 @@ export const measureWidgetHtml = (html: string): WidgetSize => {
 const describeSize = (size: WidgetSize, limits: WidgetBudgetLimits): string =>
     `原文 ${size.rawBytes} B（上限 ${limits.maxHtmlBytes} B），zlib9 ${size.zlibBytes} B（上限 ${limits.maxGzipBytes} B）`;
 
+/**
+ * Both limits with the gap left (or the gap to close), for the workspace tools:
+ * a draft is written long before it is sent, and the model cannot predict the
+ * compression ratio — so every write/edit of an HTML draft reports the real
+ * zlib9 number instead of leaving the model to rewrite and guess.
+ */
+export const widgetSizeText = (size: WidgetSize, limits: WidgetBudgetLimits): string => {
+    const over = Math.max(
+        0,
+        size.rawBytes - limits.maxHtmlBytes,
+        size.zlibBytes - limits.maxGzipBytes
+    );
+    const state =
+        over > 0
+            ? `超 ${over} B，发送会被拒`
+            : `余 ${Math.min(
+                  limits.maxHtmlBytes - size.rawBytes,
+                  limits.maxGzipBytes - size.zlibBytes
+              )} B`;
+    return (
+        `原文 ${size.rawBytes} B / ${limits.maxHtmlBytes} B，` +
+        `zlib9 ${size.zlibBytes} B / ${limits.maxGzipBytes} B（${state}）`
+    );
+};
+
 /** Check both Telegram widget limits; the failure message is model-actionable. */
 export const checkWidgetBudget = (html: string, limits: WidgetBudgetLimits): WidgetBudgetCheck => {
     const size = measureWidgetHtml(html);
