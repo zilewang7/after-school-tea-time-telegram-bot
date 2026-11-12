@@ -7,12 +7,17 @@
  * metrics row can record it), finalize, keep (store it and mark the reply),
  * draw the buttons. The finalization clears the reply's earlier mark, so the
  * keep must come after it.
+ *
+ * Keeping is an extra on top of the reply and fails closed: a step that
+ * throws is logged, and the reply goes on as one without a checkpoint (no
+ * mark, no "继续"), its error or stop handled as if there had never been one.
  */
 import { concatMessages, type RenderedMessage } from 'telegram-md-entities';
 import type { AgentToolUsage } from '../../ai/types.js';
 import type { ToolLoopCheckpoint, ToolLoopCheckpointSink } from '../../ai/tools/tool-loop-checkpoint.js';
 import type { BotMessageSession } from '../../services/bot-message-service.js';
 import { recordCheckpointRounds } from '../../services/reply-metrics-draft.js';
+import { clearReplyResumable } from '../../state.js';
 import { italicText } from '../../telegram/formatters/entity-text.js';
 import { checkpointRegistry, type CheckpointRegistry, type PreparedCheckpoint } from './checkpoint-registry.js';
 import type { ReplyResumeFacts } from './reply-checkpoint.js';
@@ -26,20 +31,34 @@ export interface CheckpointHolder {
     resumeFacts?: ReplyResumeFacts;
 }
 
-/** The sink a reply passes to the platform: only the last checkpoint is remembered */
-export const checkpointSinkFor = (holder: CheckpointHolder): ToolLoopCheckpointSink => (checkpoint) => {
-    holder.lastCheckpoint = checkpoint;
+const logKeepFailure = (error: unknown): void => {
+    console.error(`[resume] keeping the checkpoint failed: ${error instanceof Error ? error.message : String(error)}`);
 };
 
 /**
- * Before the finalization: the entry this failure or stop will keep, or null
- * (no checkpoint at hand, or one too big to be stored). A kept one is recorded
- * on the metrics draft now, because the finalization writes the row.
+ * A step failed: this reply keeps nothing. Without its facts a holder never
+ * prepares an entry, and an older checkpoint must not be kept either: it
+ * would run the rounds after it again.
  */
-export const prepareCheckpointKeep = (
-    holder: CheckpointHolder,
-    registry: CheckpointRegistry = checkpointRegistry
-): PreparedCheckpoint | null => {
+const giveUpKeeping = (holder: CheckpointHolder, error: unknown): void => {
+    logKeepFailure(error);
+    holder.resumeFacts = undefined;
+};
+
+/**
+ * The sink a reply passes to the platform: only the last checkpoint is
+ * remembered. The tool loop calls it in the middle of the reply, which a
+ * failure here must not end.
+ */
+export const checkpointSinkFor = (holder: CheckpointHolder): ToolLoopCheckpointSink => (checkpoint) => {
+    try {
+        holder.lastCheckpoint = checkpoint;
+    } catch (error) {
+        giveUpKeeping(holder, error);
+    }
+};
+
+const prepareEntry = (holder: CheckpointHolder, registry: CheckpointRegistry): PreparedCheckpoint | null => {
     const { session, lastCheckpoint, resumeFacts } = holder;
     if (lastCheckpoint === undefined || resumeFacts === undefined) return null;
     if (lastCheckpoint.completedRounds < 1) return null;
@@ -58,26 +77,75 @@ export const prepareCheckpointKeep = (
 };
 
 /**
- * After every finalization, success included: store the prepared entry and
- * mark the reply resumable. The registry has no timers, so this is also where
- * it drops what expired or lost its mark (this finalization cleared the
- * reply's own) instead of holding it until the next click.
+ * Before the finalization: the entry this failure or stop will keep, or null
+ * (no checkpoint at hand, one too big to be stored, or a step failed). A kept
+ * one is recorded on the metrics draft now, because the finalization writes
+ * the row.
  */
-export const keepPreparedCheckpoint = (
-    prepared: PreparedCheckpoint | null,
+export const prepareCheckpointKeep = (
+    holder: CheckpointHolder,
     registry: CheckpointRegistry = checkpointRegistry
-): void => {
-    registry.prune();
-    if (prepared !== null) registry.save(prepared);
+): PreparedCheckpoint | null => {
+    try {
+        return prepareEntry(holder, registry);
+    } catch (error) {
+        giveUpKeeping(holder, error);
+        return null;
+    }
 };
 
 /**
  * A failed reply's version and metrics row count the tools its kept rounds
  * ran; without this every failed row shows no tool calls.
  */
-export const fillToolUsageFromCheckpoint = (session: BotMessageSession, checkpoint: ToolLoopCheckpoint): void => {
+const fillToolUsageFromCheckpoint = (session: BotMessageSession, checkpoint: ToolLoopCheckpoint): void => {
     const toolUsage: AgentToolUsage[] = checkpoint.toolUsage.map((usage) => ({ ...usage }));
     session.agentStats = { ...session.agentStats, toolUsage };
+};
+
+/**
+ * Before an error's finalization: with a checkpoint at hand the failed
+ * version and its row count the tools of the kept rounds (kept or not), then
+ * the entry is prepared as prepareCheckpointKeep does
+ */
+export const prepareErrorKeep = (
+    holder: CheckpointHolder,
+    registry: CheckpointRegistry = checkpointRegistry
+): PreparedCheckpoint | null => {
+    try {
+        if (holder.lastCheckpoint !== undefined) fillToolUsageFromCheckpoint(holder.session, holder.lastCheckpoint);
+        return prepareEntry(holder, registry);
+    } catch (error) {
+        giveUpKeeping(holder, error);
+        return null;
+    }
+};
+
+/**
+ * After every finalization, success included: store the prepared entry and
+ * mark the reply resumable; the entry when it is kept. The registry has no
+ * timers, so this is also where it drops what expired or lost its mark (this
+ * finalization cleared the reply's own) instead of holding it until the next
+ * click.
+ */
+export const keepPreparedCheckpoint = (
+    prepared: PreparedCheckpoint | null,
+    registry: CheckpointRegistry = checkpointRegistry
+): PreparedCheckpoint | null => {
+    try {
+        registry.prune();
+        if (prepared === null) return null;
+        registry.save(prepared);
+        return prepared;
+    } catch (error) {
+        logKeepFailure(error);
+        // However far the save got, the reply offers no "继续"
+        if (prepared !== null) {
+            const { chatId, firstMessageId, failedVersionId } = prepared.checkpoint;
+            clearReplyResumable(chatId, firstMessageId, failedVersionId);
+        }
+        return null;
+    }
 };
 
 /**
@@ -87,10 +155,14 @@ export const fillToolUsageFromCheckpoint = (session: BotMessageSession, checkpoi
  * and its row counts them.
  */
 export const fillStoppedToolUsage = (holder: CheckpointHolder): void => {
-    const { session, lastCheckpoint } = holder;
-    if (lastCheckpoint === undefined) return;
-    if ((session.agentStats?.toolUsage?.length ?? 0) > 0) return;
-    fillToolUsageFromCheckpoint(session, lastCheckpoint);
+    try {
+        const { session, lastCheckpoint } = holder;
+        if (lastCheckpoint === undefined) return;
+        if ((session.agentStats?.toolUsage?.length ?? 0) > 0) return;
+        fillToolUsageFromCheckpoint(session, lastCheckpoint);
+    } catch (error) {
+        giveUpKeeping(holder, error);
+    }
 };
 
 /** The error message of a failure whose checkpoint was kept says how much of it is kept */

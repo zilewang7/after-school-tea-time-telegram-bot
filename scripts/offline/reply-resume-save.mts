@@ -170,16 +170,40 @@ interface ReplyRun {
     readonly telegram: FakeTelegram;
 }
 
-const runReply = async (chatId: number, steps: readonly Step[]): Promise<ReplyRun> => {
+/** Runs `body` with every console line also kept in `lines`; inside quietly, which swallows them */
+const tappingLogs = async <T,>(lines: string[], body: () => Promise<T>): Promise<T> => {
+    const original = { log: console.log, warn: console.warn, error: console.error };
+    const tap =
+        (forward: (...args: unknown[]) => void) =>
+        (...args: unknown[]): void => {
+            lines.push(args.map((arg) => (arg instanceof Error ? arg.message : String(arg))).join(' '));
+            forward(...args);
+        };
+    console.log = tap(original.log);
+    console.warn = tap(original.warn);
+    console.error = tap(original.error);
+    try {
+        return await body();
+    } finally {
+        Object.assign(console, original);
+    }
+};
+
+const runReply = async (chatId: number, steps: readonly Step[]): Promise<ReplyRun & { readonly logs: readonly string[] }> => {
     const userMessageId = takeMessageId();
     const text = '@AfterSchoolTeatimeBot 查一下';
     await dbIndex.saveMessage({ chatId, messageId: userMessageId, userId: USER_ID, date: new Date(), userName: 'u', message: text });
     const telegram = createFakeTelegram();
     script = steps;
-    await quietly(() => handleReply(contextOf(messageUpdate({ chatId, messageId: userMessageId, userId: USER_ID, text }), telegram), { mention: true }));
+    const logs: string[] = [];
+    await quietly(() =>
+        tappingLogs(logs, () =>
+            handleReply(contextOf(messageUpdate({ chatId, messageId: userMessageId, userId: USER_ID, text }), telegram), { mention: true })
+        )
+    );
     const response = await dbIndex.BotResponse.findOne({ where: { chatId, userMessageId } });
     if (!response) throw new Error('the reply was not recorded');
-    return { chatId, firstMessageId: response.messageId, userMessageId, telegram };
+    return { chatId, firstMessageId: response.messageId, userMessageId, telegram, logs };
 };
 
 const runRetry = async (run: ReplyRun, steps: readonly Step[]): Promise<FakeTelegram> => {
@@ -239,6 +263,58 @@ const describe = (run: ReplyRun, telegram: FakeTelegram = run.telegram): string 
 
 let nextChatId = -1007400000000;
 const takeChatId = (): number => (nextChatId -= 1);
+
+const KEEP_FAILED_LINE = '[resume] keeping the checkpoint failed:';
+
+/** The registry's `method` throws while `body` runs */
+const withFailingRegistry = async (method: 'prepare' | 'save', body: () => Promise<void>): Promise<void> => {
+    const original = checkpointRegistry[method];
+    Object.assign(checkpointRegistry, {
+        [method]: (): never => {
+            throw new Error(`offline: the registry's ${method} failed on purpose`);
+        },
+    });
+    try {
+        await body();
+    } finally {
+        Object.assign(checkpointRegistry, { [method]: original });
+    }
+};
+
+/**
+ * Every write of a reply's lastCheckpoint throws while `body` runs, so the
+ * sink the reply hands to the platform fails each time the loop calls it. A
+ * ChatContext has no own lastCheckpoint until the sink writes one, so the
+ * write reaches this setter; nothing else in the reply has such a field.
+ */
+const withFailingSink = async (body: () => Promise<void>): Promise<void> => {
+    Object.defineProperty(Object.prototype, 'lastCheckpoint', {
+        configurable: true,
+        get: () => undefined,
+        set: () => {
+            throw new Error('offline: the checkpoint sink failed on purpose');
+        },
+    });
+    try {
+        await body();
+    } finally {
+        Reflect.deleteProperty(Object.prototype, 'lastCheckpoint');
+    }
+};
+
+/** A reply that was finalized as if it never had a checkpoint: [重试] alone, no mark, no entry, no session left */
+const expectEndedWithoutCheckpoint = async (run: ReplyRun, outcome: 'error' | 'stopped', label: string): Promise<void> => {
+    expect(json(finalButtonsOf(run.telegram)) === json(['重试']), `${label}: [重试] only (got ${describe(run)})`);
+    expect(!lastEditTextOf(run.telegram).includes('已保留'), `${label}: no kept rounds line`);
+    expect(markOf(run) === undefined && entryOf(run) === undefined, `${label}: no mark, no entry`);
+    const stored = await storedOf(run);
+    expect(
+        stored.buttonState === dbIndex.ButtonState.RETRY_ONLY && !botMessageService.listActiveSessions().some((session) => session.firstMessageId === run.firstMessageId),
+        `${label}: the reply is finalized (got ${stored.buttonState})`
+    );
+    const [row] = await rowsOf(run);
+    expect(row?.outcome === outcome && row.checkpointRounds === null, `${label}: the row (got ${json({ outcome: row?.outcome, checkpointRounds: row?.checkpointRounds })})`);
+};
 
 const cases: Array<{ name: string; body: () => Promise<void> }> = [
     {
@@ -475,6 +551,71 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
                 expect(checkpointRegistry.size() > 0, 'past its lifetime it is still held while nothing ends');
                 await runReply(takeChatId(), [{ chunk: { type: 'text', content: '两小时后的回答。' } }, DONE]);
                 expect(checkpointRegistry.size() === 0, `the next reply's end drops every expired entry (got ${checkpointRegistry.size()})`);
+            });
+        },
+    },
+    {
+        name: 'keeping fails closed: a registry that throws while preparing leaves the failed and the stopped reply finalized, with their own error',
+        body: async () => {
+            await withFailingRegistry('prepare', async () => {
+                const failed = await runReply(takeChatId(), [...keptRounds(2), { fail: new Error('got status: 500 upstream broke') }]);
+                await expectEndedWithoutCheckpoint(failed, 'error', 'failed');
+                const text = lastEditTextOf(failed.telegram);
+                expect(text.includes('upstream broke') && !text.includes('on purpose'), `the real error is shown (got ${json(text)})`);
+                expect((await storedOf(failed)).getVersions().at(-1)?.errorMessage === 'got status: 500 upstream broke', 'and stored');
+                expect(
+                    failed.logs.some((line) => line.startsWith(`${KEEP_FAILED_LINE} offline: the registry's prepare failed on purpose`)),
+                    `one line says why nothing is kept (got ${json(failed.logs.filter((line) => line.startsWith('[resume]')))})`
+                );
+
+                const stopped = await runReply(takeChatId(), [
+                    { chunk: { type: 'text', content: '说到一半' } },
+                    { checkpoint: checkpointOf(1) },
+                    { stop: 'then-chunk' },
+                ]);
+                await expectEndedWithoutCheckpoint(stopped, 'stopped', 'stopped');
+                expect(lastEditTextOf(stopped.telegram).includes('说到一半'), 'the stopped text stays');
+            });
+        },
+    },
+    {
+        name: 'keeping fails closed: a registry that throws while saving leaves no mark and no kept rounds line',
+        body: async () => {
+            await withFailingRegistry('save', async () => {
+                const failed = await runReply(takeChatId(), [...keptRounds(2), { fail: new Error('got status: 500 upstream broke') }]);
+                expect(json(finalButtonsOf(failed.telegram)) === json(['重试']), `[重试] only (got ${describe(failed)})`);
+                const text = lastEditTextOf(failed.telegram);
+                expect(text.includes('upstream broke') && !text.includes('已保留'), `the real error, no kept rounds line (got ${json(text)})`);
+                expect(markOf(failed) === undefined, 'no mark');
+                expect(failed.logs.some((line) => line.startsWith(KEEP_FAILED_LINE)), 'the failure is logged');
+
+                const stopped = await runReply(takeChatId(), [
+                    { chunk: { type: 'text', content: '说到一半' } },
+                    { checkpoint: checkpointOf(1) },
+                    { stop: 'then-chunk' },
+                ]);
+                expect(json(finalButtonsOf(stopped.telegram)) === json(['重试']) && markOf(stopped) === undefined, `the stopped one too (got ${describe(stopped)})`);
+            });
+        },
+    },
+    {
+        name: 'keeping fails closed: a sink that throws does not disturb the running reply, which then keeps nothing',
+        body: async () => {
+            await withFailingSink(async () => {
+                const finished = await runReply(takeChatId(), [...keptRounds(1), { chunk: { type: 'text', content: '查完了。' } }, DONE]);
+                const [finishedRow] = await rowsOf(finished);
+                expect(
+                    finishedRow?.outcome === 'ok' && lastEditTextOf(finished.telegram).includes('查完了。'),
+                    `the reply ends as it would have (got ${json({ outcome: finishedRow?.outcome, text: lastEditTextOf(finished.telegram).slice(-40) })})`
+                );
+                expect(
+                    finished.logs.some((line) => line.startsWith(`${KEEP_FAILED_LINE} offline: the checkpoint sink failed on purpose`)),
+                    'the failed sink is logged'
+                );
+
+                const failed = await runReply(takeChatId(), [...keptRounds(2), { fail: new Error('got status: 500 upstream broke') }]);
+                await expectEndedWithoutCheckpoint(failed, 'error', 'failed after a failed sink');
+                expect(lastEditTextOf(failed.telegram).includes('upstream broke'), 'with its own error');
             });
         },
     },
