@@ -21,11 +21,10 @@ import type { ToolOverrides } from '../../services/tool-overrides.js';
 import { toLuoxuChannelId } from '../../services/luoxu-preview-service.js';
 import { createFetchImageTool, PRODUCTION_FETCH_DEPENDENCIES } from './fetch-image-tool.js';
 import { createGenerateImageTool } from './generate-image-tool.js';
-import { createHistoryState } from './history-state.js';
+import type { HistoryState } from './history-state.js';
 import { createCreateHarnessIssueTool, createListHarnessIssuesTool } from './harness-issue-tool.js';
-import { createHarnessIssueState } from './harness-issue-state.js';
 import { createReadHistoryTool } from './read-history-tool.js';
-import { createReplyMediaState } from './reply-media-state.js';
+import { createReplyToolState, type ReplyToolState } from './reply-tool-state.js';
 import { createSearchByImageTool } from './search-by-image-tool.js';
 import { createSearchHistoryTool } from './search-history-tool.js';
 import { createSearchImagesTool, THUMBNAIL_LIMITS } from './search-images-tool.js';
@@ -41,11 +40,7 @@ import { createWorkspaceListTool } from './workspace-list-tool.js';
 import { createWorkspacePreviewTool } from './workspace-preview-tool.js';
 import { createWorkspaceReadTool } from './workspace-read-tool.js';
 import { createWorkspaceWriteTool } from './workspace-write-tool.js';
-import {
-    createWorkspaceState,
-    WORKSPACE_CALL_LIMITS,
-    type WorkspaceState,
-} from '../workspace/workspace-state.js';
+import type { WorkspaceState } from '../workspace/workspace-state.js';
 import { createUiGuideTool } from './ui-guide-tool.js';
 import { createSendSmsTool } from './send-sms-tool.js';
 import type { ReplyToolContext } from './reply-tool-context.js';
@@ -64,6 +59,12 @@ export interface ReplyTools {
      * it to register the other conversations spliced into this context.
      */
     readonly workspaceState: WorkspaceState;
+    /**
+     * Every state object the tools of this reply share: the one passed in, or
+     * the fresh one made for this reply. A failed reply keeps it with its
+     * checkpoint, so a continue can hand it back.
+     */
+    readonly toolState: ReplyToolState;
 }
 
 export const createReplyTools = (
@@ -71,25 +72,23 @@ export const createReplyTools = (
     context: ReplyToolContext,
     request?: ToolRequestTraits,
     /** The chat's panel switches, taken with the rest of the reply settings */
-    toolOverrides: ToolOverrides | null = null
+    toolOverrides: ToolOverrides | null = null,
+    /** The state of the version a continue picks up; absent = a fresh one */
+    carriedToolState?: ReplyToolState
 ): ReplyTools => {
     const config = getToolConfig();
     const availability = resolveToolAvailability(model, context.chatId, config, request, toolOverrides);
     const capabilities = getModelCapabilities(model);
-    const mediaState = createReplyMediaState();
-    const workspaceState = createWorkspaceState({
-        chatId: context.chatId,
-        conversationRootIds: context.conversationRootIds ?? [],
-        quota: {
-            maxFileBytes: config.workspaceMaxFileBytes,
-            maxConversationBytes: config.workspaceMaxConversationBytes,
-            maxFiles: config.workspaceMaxFiles,
-            maxGlobalBytes: config.workspaceMaxGlobalBytes,
-        },
-        callLimits: { ...WORKSPACE_CALL_LIMITS, previews: config.workspacePreviewsPerReply },
-    });
-    const historyState = createHistoryState();
-    const harnessIssueState = createHarnessIssueState();
+    const toolState =
+        carriedToolState ??
+        createReplyToolState(
+            { chatId: context.chatId, conversationRootIds: context.conversationRootIds ?? [] },
+            config
+        );
+    const mediaState = toolState.media;
+    const workspaceState = toolState.workspace;
+    const historyState = toolState.history;
+    const harnessIssueState = toolState.harnessIssues;
     // One luoxu client per reply: the history tools and fetch_image's archive
     // lane read the same archive, so they share the client (and its cache).
     const historyWiring: HistoryWiring = {
@@ -242,7 +241,7 @@ export const createReplyTools = (
             : []),
     ];
 
-    return { tools: createTurnTools(handlers), availability, workspaceState };
+    return { tools: createTurnTools(handlers), availability, workspaceState, toolState };
 };
 
 /** Telegram ids arrive as strings in the env; a malformed one is simply absent */
@@ -267,7 +266,7 @@ interface HistoryWiring {
  * gate already prevents; the tools still refuse rather than crash.
  */
 const historyOptions = (
-    state: ReturnType<typeof createHistoryState>,
+    state: HistoryState,
     context: ReplyToolContext,
     wiring: HistoryWiring
 ): Parameters<typeof createSearchHistoryTool>[0] => ({

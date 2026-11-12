@@ -58,8 +58,8 @@ const INPUT_SCHEMA = {
     },
 };
 
-/** One reply may spend this many real (non-cached) searches */
-const MAX_SEARCHES_PER_REPLY = 3;
+/** One reply may spend this many real (non-cached) searches; counted in the media state */
+export const MAX_SEARCHES_PER_REPLY = 3;
 /** Pictures shown (and registered as sN) per list */
 const MAX_SIZES_PER_REPLY = 4;
 const MAX_SIMILAR_PER_REPLY = 4;
@@ -174,7 +174,6 @@ export const createSearchByImageTool = (options: SearchByImageToolOptions): Tool
         ...PRODUCTION_DEPENDENCIES,
         ...options.dependencies,
     };
-    let searches = 0;
 
     const resolveMessageImage = async (message: number, imageIndex: number): Promise<ResolvedSource> => {
         const entry = context.contextIndex.get(message);
@@ -238,7 +237,7 @@ export const createSearchByImageTool = (options: SearchByImageToolOptions): Tool
         execute: async (rawArgs) => {
             const args = parseSearchByImageArgs(rawArgs);
             if (!args.ok) return imageToolError(args.error);
-            if (searches >= MAX_SEARCHES_PER_REPLY) {
+            if (state.reverseSearchCount >= MAX_SEARCHES_PER_REPLY) {
                 return imageToolError(`本次回复已经做过 ${MAX_SEARCHES_PER_REPLY} 次以图搜图，达到上限。`);
             }
 
@@ -251,7 +250,7 @@ export const createSearchByImageTool = (options: SearchByImageToolOptions): Tool
                 signal: context.signal,
             });
             if (!outcome.ok) return imageToolError(outcome.error);
-            if (!outcome.cached) searches += 1;
+            if (!outcome.cached) state.reverseSearchCount += 1;
 
             const registered = registerResults(state, outcome.result);
             console.log(
