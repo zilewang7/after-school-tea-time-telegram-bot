@@ -4,6 +4,7 @@ import type { ChatSettings } from '../../api';
 import { ErrorView, LoadingView } from '../../components/status-views';
 import { useChatScope } from '../../context/chat-scope-context';
 import { useMe } from '../../context/me-context';
+import { effectiveGeminiPriorityOf } from '../../gemini-priority';
 import { useSuccessHaptic } from '../../hooks/use-telegram-feedback';
 import { ChatSettingsView } from './chat-settings-view';
 
@@ -21,6 +22,12 @@ export const ChatSettingsTab = () => {
                 ...chatDetail,
                 settings,
                 effectiveModel: settings.model ?? chatDetail.globalDefaultModel,
+                // Until the refresh below brings the server's value
+                effectiveGeminiPriority: effectiveGeminiPriorityOf(
+                    settings.geminiPriority,
+                    chatDetail.globalGeminiPriority,
+                    chatDetail.geminiPriorityCanEnable
+                ),
             }));
             setJustSaved(true);
             notifySaved();

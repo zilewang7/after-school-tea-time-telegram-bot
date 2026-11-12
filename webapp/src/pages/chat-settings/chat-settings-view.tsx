@@ -1,4 +1,6 @@
+import { useMemo } from 'react';
 import type { ChatDetailResponse, ChatSettings } from '../../api';
+import type { ChatGeminiPriorityState } from '../../gemini-priority';
 import { ChatSettingsForm } from './chat-settings-form';
 import { RecentAudit } from './recent-audit';
 import { ToolSummaryRow } from './tool-summary-row';
@@ -13,9 +15,17 @@ interface ChatSettingsViewProps {
 }
 
 export const ChatSettingsView = ({ detail, isOwner, models, justSaved, onSaved, onReload }: ChatSettingsViewProps) => {
-    const { chat, settings } = detail;
+    const { chat, settings, effectiveGeminiPriority, globalGeminiPriority, geminiPriorityCanEnable } = detail;
     // Locking only binds non-owners
     const writable = !settings.settingsLocked || isOwner;
+    const geminiPriority = useMemo<ChatGeminiPriorityState>(
+        () => ({
+            effective: effectiveGeminiPriority,
+            globalOn: globalGeminiPriority,
+            canEnable: geminiPriorityCanEnable,
+        }),
+        [effectiveGeminiPriority, globalGeminiPriority, geminiPriorityCanEnable]
+    );
 
     return (
         <>
@@ -26,6 +36,7 @@ export const ChatSettingsView = ({ detail, isOwner, models, justSaved, onSaved, 
                 settings={settings}
                 effectiveModel={detail.effectiveModel}
                 globalDefaultModel={detail.globalDefaultModel}
+                geminiPriority={geminiPriority}
                 models={models}
                 isOwner={isOwner}
                 writable={writable}

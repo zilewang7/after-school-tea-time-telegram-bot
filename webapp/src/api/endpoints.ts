@@ -8,6 +8,7 @@ import type {
     ConversationListResponse,
     ConversationTreeResponse,
     ExcludedMessageResponse,
+    GlobalSettingsPatch,
     GlobalSettingsResponse,
     HealthResponse,
     IncludedMessageResponse,
@@ -176,8 +177,9 @@ export const createApi = (initData: string) => {
             }),
         getGlobal: (signal?: AbortSignal) =>
             request<GlobalSettingsResponse>({ method: 'GET', path: '/api/global', signal }),
-        patchGlobal: (defaultModel: string | null) =>
-            request<GlobalSettingsResponse>({ method: 'PATCH', path: '/api/global', body: { defaultModel } }),
+        // Only the keys that changed; the server writes all of them or none
+        patchGlobal: (patch: GlobalSettingsPatch) =>
+            request<GlobalSettingsResponse>({ method: 'PATCH', path: '/api/global', body: patch }),
         getAudit: (query: AuditQuery, signal?: AbortSignal) =>
             request<AuditResponse>({ method: 'GET', path: auditPath(query), signal }),
         getIssues: (query: IssueListQuery, signal?: AbortSignal) =>
