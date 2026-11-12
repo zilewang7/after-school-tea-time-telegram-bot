@@ -27,6 +27,7 @@ import {
     sumTokens,
 } from './metric-samples.js';
 import { summarizeSamples } from './percentile.js';
+import { countPriorityHits } from './priority-hits.js';
 
 export const RECENT_ERROR_LIMIT = 20;
 
@@ -82,6 +83,7 @@ export const buildKpis = (rows: readonly ReplyMetricRecord[], cost: CostTotals):
         avgContextImages: averageOf(sumOf(contextImages), contextImages.length),
         costUsd: roundUsd(cost.costUsd),
         pricedReplyRatio: roundRatio(cost.pricedReplyRatio),
+        ...countPriorityHits(rows),
     };
 };
 
@@ -134,6 +136,8 @@ const toModelRow = (model: string, rows: readonly ReplyMetricRecord[], rollup: M
         cacheHitRate: ratioOf(tokens.cachedTokens, tokens.promptTokens),
         costUsd: roundUsd(rollup?.costUsd ?? null),
         pricing: rollup?.pricing ?? 'unpriced',
+        priorityAtStandardPrice: rollup?.priorityAtStandardPrice ?? false,
+        ...countPriorityHits(rows),
     };
 };
 

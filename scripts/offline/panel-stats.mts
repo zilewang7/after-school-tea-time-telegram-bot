@@ -5,7 +5,9 @@
  * no user ids or names for anyone), GET /api/status (process facts for the
  * owner only, live replies and recent errors filtered by access, trigger
  * text for members only, non-candidate chats never looked up) and the
- * dashboard's 7-day `summary`.
+ * dashboard's 7-day `summary`. Then Priority PayGo (design §8.4): the hit rate
+ * over the replies that asked for it, the stray rounds kept apart, and the
+ * split cost in the model table, the cost groups, the total and the summary.
  *
  * Run: npx tsx scripts/offline/panel-stats.mts
  */
@@ -28,6 +30,8 @@ const GROUP_OTHER = -1001300000002;
 const GROUP_CALC = -1001300000003;
 /** One conversation tree for the conversation statistics */
 const GROUP_CONV = -1001300000004;
+/** Priority PayGo rows, inserted by their own case after the others ran */
+const GROUP_PRIORITY = -1001300000005;
 
 process.env.OWNER_USER_ID = String(OWNER_ID);
 process.env.DEFAULT_MODEL = 'env-default-model';
@@ -575,6 +579,126 @@ const cases: { name: string; body: () => Promise<void> }[] = [
         },
     },
 ];
+
+cases.push({
+    name: 'Priority PayGo: hits over the replies that asked, stray rounds apart, the split cost everywhere',
+    body: async () => {
+        await registry.upsertChatNow({ id: GROUP_PRIORITY, type: 'supergroup', title: 'Priority' });
+        const priorityRow = (fields: Partial<ReplyMetricInput>): ReplyMetricInput =>
+            metricRow({ chatId: GROUP_PRIORITY, triggerUserId: 9999, ...fields });
+        const rows: ReplyMetricInput[] = [
+            // Asked: 1 of 3 rounds served at the priority tier
+            priorityRow({
+                rounds: 3,
+                promptTokens: 3000,
+                cachedTokens: 1000,
+                outputTokens: 300,
+                tierRequested: 'priority',
+                priorityRounds: 1,
+                priorityPromptTokens: 1000,
+                priorityCachedTokens: 500,
+                priorityOutputTokens: 100,
+            }),
+            // Asked, both rounds downgraded
+            priorityRow({ rounds: 2, promptTokens: 2000, cachedTokens: 0, outputTokens: 200, tierRequested: 'priority' }),
+            // Asked, failed without usage: its round still counts in the denominator
+            priorityRow({
+                rounds: 1,
+                outcome: 'error',
+                errorKind: 'rate_limit',
+                errorSummary: '429',
+                promptTokens: null,
+                cachedTokens: null,
+                outputTokens: null,
+                firstChunkAt: null,
+                tierRequested: 'priority',
+            }),
+            // Never asked, yet one round came back at the priority tier
+            priorityRow({
+                rounds: 2,
+                promptTokens: 1000,
+                cachedTokens: 0,
+                outputTokens: 100,
+                priorityRounds: 1,
+                priorityPromptTokens: 500,
+                priorityCachedTokens: 0,
+                priorityOutputTokens: 50,
+            }),
+            // A model without a priority price, with a stray priority round
+            priorityRow({
+                model: 'gemini-nano-banana-2.1',
+                promptTokens: 100,
+                cachedTokens: 0,
+                outputTokens: 10,
+                priorityRounds: 1,
+                priorityPromptTokens: 100,
+                priorityCachedTokens: 0,
+                priorityOutputTokens: 10,
+            }),
+            priorityRow({ model: 'deepseek-flash', platform: 'deepseek', promptTokens: 500, cachedTokens: 0, outputTokens: 50 }),
+        ];
+        for (const row of rows) await insertReplyMetric(row);
+
+        const stats = await quietly(() => call(`/api/stats?chatId=${GROUP_PRIORITY}&range=7d`, OWNER));
+        expect(stats.status === 200, `200 (got ${stats.status})`);
+        const { kpis, models, costGroups, cost } = stats.body;
+        const modelRow = (model: string) => models.find((row: any) => row.model === model);
+        const hitsOf = (row: any) => ({
+            priorityReplies: row?.priorityReplies,
+            priorityRequestedRounds: row?.priorityRequestedRounds,
+            priorityHitRounds: row?.priorityHitRounds,
+            priorityHitRate: row?.priorityHitRate,
+            strayPriorityRounds: row?.strayPriorityRounds,
+        });
+        const oneInSix = Math.round((1 / 6) * 10_000) / 10_000;
+        expect(
+            json(hitsOf(modelRow('gemini-4-argon'))) ===
+                json({ priorityReplies: 3, priorityRequestedRounds: 6, priorityHitRounds: 1, priorityHitRate: oneInSix, strayPriorityRounds: 1 }),
+            `argon: 1 of the 6 asked rounds hit, the stray round kept apart (got ${json(hitsOf(modelRow('gemini-4-argon')))})`
+        );
+        expect(
+            json(hitsOf(modelRow('deepseek-flash'))) ===
+                json({ priorityReplies: 0, priorityRequestedRounds: 0, priorityHitRounds: 0, priorityHitRate: null, strayPriorityRounds: 0 }),
+            'a model that never asked: zeros and no rate'
+        );
+        expect(
+            json(hitsOf(kpis)) ===
+                json({ priorityReplies: 3, priorityRequestedRounds: 6, priorityHitRounds: 1, priorityHitRate: oneInSix, strayPriorityRounds: 2 }),
+            `the KPIs: the same hit rate, both stray rounds (got ${json(hitsOf(kpis))})`
+        );
+
+        const argonCost = (4000 * 2 + 500 * 0.1 + 450 * 10 + 1000 * 3.6 + 500 * 0.18 + 150 * 18) / 1e6;
+        const bananaCost = (100 * 1.5 + 10 * 7.5) / 1e6;
+        const deepseekCost = (500 * 0.3 + 50 * 1.2) / 1e6;
+        const usd = (value: number): number => Math.round(value * 1e6) / 1e6;
+        const argon = modelRow('gemini-4-argon');
+        expect(
+            argon?.costUsd === usd(argonCost) && argon.pricing === 'priced' && argon.priorityAtStandardPrice === false,
+            `argon's row: standard part + priority part at 1.8x (got ${argon?.costUsd}, want ${usd(argonCost)})`
+        );
+        const banana = modelRow('gemini-nano-banana-2.1');
+        expect(
+            banana?.costUsd === usd(bananaCost) && banana.priorityAtStandardPrice === true,
+            `no priority price: the standard price, and the row says so (got ${json(banana)})`
+        );
+        expect(modelRow('deepseek-flash')?.priorityAtStandardPrice === false, 'no priority rounds: no note');
+        expect(
+            costGroups.find((group: any) => group.model === 'gemini-nano-banana-2.1')?.priorityAtStandardPrice === true &&
+                costGroups.find((group: any) => group.model === 'gemini-4-argon')?.priorityAtStandardPrice === false,
+            'the cost groups carry the note too'
+        );
+        expect(
+            cost.costUsd === usd(argonCost + bananaCost + deepseekCost) && kpis.costUsd === cost.costUsd,
+            `the total follows the split (got ${cost.costUsd})`
+        );
+
+        const dashboard = await quietly(() => call(`/api/chats/${GROUP_PRIORITY}`, OWNER));
+        expect(
+            dashboard.body.summary?.costUsd === cost.costUsd,
+            `the dashboard summary prices the same way (got ${dashboard.body.summary?.costUsd})`
+        );
+    },
+});
 
 const results: CaseResult[] = [];
 for (const testCase of cases) {

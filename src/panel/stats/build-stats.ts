@@ -35,7 +35,7 @@ export interface StatsRequest {
     readonly firstMessageIds?: readonly number[];
 }
 
-const toCostGroupView = ({ group, costUsd, pricing }: PricedUsageGroup): CostGroupView => ({
+const toCostGroupView = ({ group, costUsd, pricing, priorityAtStandardPrice }: PricedUsageGroup): CostGroupView => ({
     model: group.model,
     route: group.route,
     replies: group.replies,
@@ -57,6 +57,7 @@ const toCostGroupView = ({ group, costUsd, pricing }: PricedUsageGroup): CostGro
     },
     costUsd: roundUsd(costUsd),
     pricing,
+    priorityAtStandardPrice,
 });
 
 /** Most replies first */
