@@ -27,6 +27,7 @@ import { buildRuntimeContext, type TriggerAccessNote } from '../ai/system-prompt
 import { getRepliesInFlight, isBotReplyInFlight, setContextNumbering } from '../state.js';
 import { getGlobalDefaultModel } from '../services/chat-settings-service.js';
 import { replacesChatSystemPrompt } from '../ai/model-kinds.js';
+import { stripPerQueryResultCitations } from '../shared/citation-markers.js';
 import { buildInFlightOwnReplyNote, buildInFlightReplyNote, buildInterruptedOwnReplyNote } from './inflight-reply-note.js';
 import { collectContextUsers, type ContextUser } from './context-users.js';
 import { getModelCapabilities } from '../ai/platform-factory.js';
@@ -417,7 +418,9 @@ const renderUserText = (header: string, text: string | null): string => {
  * A stored reply of ours can leak the wire format (`[replying to #2 某某]` or
  * `[#7]` on the first line). Replayed as an example it teaches the model to
  * emit it again — the one thing the format section forbids outright — so those
- * leading lines are stripped whenever our own turn is rebuilt.
+ * leading lines are stripped whenever our own turn is rebuilt. Raw
+ * PerQueryResult citation markers from replies stored before the outbound
+ * cleanup are dropped for the same reason: the model would copy the shape.
  */
 const LEAKED_WIRE_FORMAT_LINE = /^[ \t]*(?:\[replying to[^\]\n]*\]|\[#\d+\])[ \t]*\n?/;
 
@@ -426,7 +429,7 @@ export const stripLeakedWireFormat = (text: string): string => {
     while (LEAKED_WIRE_FORMAT_LINE.test(cleaned)) {
         cleaned = cleaned.replace(LEAKED_WIRE_FORMAT_LINE, '');
     }
-    return cleaned.replace(/^\n+/, '');
+    return stripPerQueryResultCitations(cleaned.replace(/^\n+/, ''));
 };
 
 /**

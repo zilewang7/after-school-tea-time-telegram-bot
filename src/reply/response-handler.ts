@@ -92,6 +92,7 @@ import type {
     WidgetDelivery,
 } from '../ai/types.js';
 import { getToolConfig } from '../config/tool-config.js';
+import { stripPerQueryResultCitations } from '../shared/citation-markers.js';
 import { noteStreamChunk } from '../services/reply-metrics-draft.js';
 import { findStickerByPackIndex } from '../services/sticker-catalog.js';
 import { downloadStickerPreview } from '../services/sticker-set-service.js';
@@ -116,6 +117,14 @@ const STICKER_NOT_SENT_TEXT = '[sticker failed to send]';
 const FILE_NOT_SENT_TEXT = '[file failed to send]';
 /** Shown in place of a reply that was only a widget Telegram would not take */
 const WIDGET_NOT_SENT_TEXT = '[widget failed to send]';
+
+/**
+ * Everything an outbound reply body must not carry: an imitated context label
+ * (`[#N]`, `[replying to …]`) and the raw PerQueryResult markers Gemini writes
+ * for its search results. Both are wire format, not content.
+ */
+const cleanReplyBody = (text: string): string =>
+    stripPerQueryResultCitations(stripContextLabel(text));
 
 /**
  * Chat context for response handling
@@ -298,7 +307,7 @@ export const processChunk = (
             const rawFinalText = (rawResponse as any)?.output_text;
             // This text bypassed the streaming stripper, so clean it here too
             const finalOutputText =
-                typeof rawFinalText === 'string' ? stripContextLabel(rawFinalText) : rawFinalText;
+                typeof rawFinalText === 'string' ? cleanReplyBody(rawFinalText) : rawFinalText;
             const canSafelyReplaceBufferedText =
                 typeof finalOutputText === 'string' && state.fullText === state.textBuffer;
 
@@ -397,7 +406,7 @@ const formatStateForDisplay = (
         // model dropped further down must not show up mid-stream and then
         // disappear in the final edit
         parts.push(
-            renderMarkdown(stripContextLabel(state.textBuffer), { streaming: isProcessing })
+            renderMarkdown(cleanReplyBody(state.textBuffer), { streaming: isProcessing })
         );
     }
 
@@ -881,9 +890,10 @@ export const processStream = async (
 
     // The streaming stripper only guards the opening, so the assembled text is
     // cleaned once more: what the final edit displays, what finalize stores and
-    // therefore what the next context reads never carries an imitated label.
-    state.textBuffer = stripContextLabel(state.textBuffer);
-    state.fullText = stripContextLabel(state.fullText);
+    // therefore what the next context reads never carries an imitated label or
+    // a raw PerQueryResult citation marker.
+    state.textBuffer = cleanReplyBody(state.textBuffer);
+    state.fullText = cleanReplyBody(state.fullText);
     session.textBuffer = state.fullText;
 
     return {

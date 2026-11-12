@@ -9,6 +9,7 @@ import { concatMessages, renderMarkdown, splitMessage } from 'telegram-md-entiti
 import type { RenderedMessage } from 'telegram-md-entities';
 import type { AgentStats, GroundingData } from '../../ai/types.js';
 import { getRenderConfig } from '../../config/render-config.js';
+import { stripPerQueryResultCitations } from '../../shared/citation-markers.js';
 import { buildToolRecordSections } from './tool-records-formatter.js';
 import { buildGoogleSearchBlocks, isSearchGroundingStep } from './google-search-formatter.js';
 import type { GoogleSearchBlock } from './google-search-formatter.js';
@@ -28,11 +29,21 @@ import {
 
 /**
  * Display-only superscript markers: the stored reply text stays clean, so a
- * rerender (edit/retry) and the next turn's context never see them.
+ * rerender (edit/retry) and the next turn's context never see them. Raw
+ * PerQueryResult markers are dropped after the superscripts are placed, so a
+ * version stored before the cleanup does not show them when it is replayed and
+ * a support whose segment text carries a marker still finds its segment.
  */
 const withCitations = (text: string, grounding: GroundingData | undefined): string => {
-    if (grounding === undefined || !getRenderConfig().groundingCitations) return text;
-    return inlineCitations(text, resolveGroundingSources(grounding), grounding.groundingSupports);
+    if (grounding === undefined || !getRenderConfig().groundingCitations) {
+        return stripPerQueryResultCitations(text);
+    }
+    const cited = inlineCitations(
+        text,
+        resolveGroundingSources(grounding),
+        grounding.groundingSupports
+    );
+    return stripPerQueryResultCitations(cited);
 };
 
 export interface FinalMessageBuildOptions {

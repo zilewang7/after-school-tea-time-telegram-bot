@@ -27,6 +27,7 @@ import { buildMessageLinkResolver } from '../telegram/message-link.js';
 import { plainText } from '../telegram/formatters/entity-text.js';
 import { appendErrorLine } from '../telegram/formatters/error-display.js';
 import { formatErrorForUser } from '../shared/errors.js';
+import { stripPerQueryResultCitations } from '../shared/citation-markers.js';
 import { stripContextLabel } from '../reply/context-label.js';
 import { toApiEntities } from '../telegram/api-entities.js';
 import { layOutChunks } from '../telegram/final-message-layout.js';
@@ -504,8 +505,8 @@ const finalizeSession = async (
 
     // Last line of defense before the reply is versioned and stored: text that
     // never went through the stream processor (image-chat turns and the like)
-    // loses its imitated `[#N]` labels here as well
-    session.textBuffer = stripContextLabel(session.textBuffer);
+    // loses its imitated `[#N]` labels and raw PerQueryResult markers here too
+    session.textBuffer = stripPerQueryResultCitations(stripContextLabel(session.textBuffer));
 
     const image = session.images[0];
     const sticker = session.sticker;
