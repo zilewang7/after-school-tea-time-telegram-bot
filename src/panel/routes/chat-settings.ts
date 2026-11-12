@@ -4,8 +4,10 @@
  * Order (design §7): access (403 / 503) → body shape (400) → locked chat and
  * non-owner (403 locked, before any value is looked at) → non-owner touching
  * the lock (403 forbidden) → value types (400) → the settings service
- * (lengths and normalization 400, then expectedUpdatedAt 409 inside its write
- * queue). Unchanged values answer 200 and write nothing.
+ * (lengths and normalization 400, the owner-only sms and Priority PayGo
+ * switches 403, Priority PayGo "on" where it cannot take effect 403, then
+ * expectedUpdatedAt 409 inside its write queue). Unchanged values answer 200
+ * and write nothing.
  */
 import type { Hono } from 'hono';
 import {

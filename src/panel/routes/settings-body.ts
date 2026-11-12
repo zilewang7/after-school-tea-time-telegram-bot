@@ -14,7 +14,14 @@ import { normalizeToolOverrides } from '../../services/tool-overrides.js';
 import type { JsonRecord } from '../json.js';
 import { checkBodyKeys, invalid } from '../request.js';
 
-const SETTING_KEYS: readonly ChatSettingKey[] = ['model', 'promptAddendum', 'paused', 'settingsLocked', 'toolOverrides'];
+const SETTING_KEYS: readonly ChatSettingKey[] = [
+    'model',
+    'promptAddendum',
+    'paused',
+    'settingsLocked',
+    'toolOverrides',
+    'geminiPriority',
+];
 const EXPECTED_UPDATED_AT_KEY = 'expectedUpdatedAt';
 const ALLOWED_KEYS: ReadonlySet<string> = new Set<string>([...SETTING_KEYS, EXPECTED_UPDATED_AT_KEY]);
 
