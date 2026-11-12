@@ -72,6 +72,12 @@ export const sendMessage = async (
     config: PlatformConfig
 ): Promise<AsyncIterable<StreamChunk>> => {
     const platform = getPlatform(config.model);
+    // Only the platform that made a checkpoint can go on from it; any other
+    // would ignore it and send `messages` (empty on a resume) as a new turn
+    const { resumeFrom } = config;
+    if (resumeFrom !== undefined && resumeFrom.platform !== platform.type) {
+        throw new Error(`Cannot resume a ${resumeFrom.platform} checkpoint on the ${platform.type} platform (${config.model})`);
+    }
     const capabilities = platform.getModelCapabilities(config.model);
 
     // Apply model capabilities (filter images, merge messages, etc.)
