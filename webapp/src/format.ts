@@ -21,6 +21,8 @@ const AUDIT_KEY_LABELS: Partial<Record<string, string>> = {
     paused: '暂停',
     settingsLocked: '锁定设置',
     defaultModel: '全局默认模型',
+    geminiPriority: 'Priority PayGo',
+    defaultGeminiPriority: '全局 Priority PayGo',
     toolOverrides: '工具开关',
     exclude: '排除消息',
     include: '恢复消息',
@@ -29,6 +31,9 @@ const AUDIT_KEY_LABELS: Partial<Record<string, string>> = {
     status: 'issue 状态',
     note: '处理备注',
 };
+
+// Boolean settings, audited as 'true' / 'false'
+const ON_OFF_AUDIT_KEYS = ['paused', 'settingsLocked', 'geminiPriority', 'defaultGeminiPriority'] as const;
 
 export const chatTypeLabel = (type: ChatType): string => CHAT_TYPE_LABELS[type];
 
@@ -96,11 +101,14 @@ export const formatAuditValue = (key: string, value: string | null): string =>
     match({ key, value })
         .with({ key: 'model', value: P.nullish }, () => '跟随全局默认')
         .with({ key: 'defaultModel', value: P.nullish }, () => '环境变量默认')
+        .with({ key: 'geminiPriority', value: P.nullish }, () => '跟随全局')
+        // No global row means off
+        .with({ key: 'defaultGeminiPriority', value: P.nullish }, () => '关（未设置）')
         // Tool switches: null (and unreadable JSON) means every group follows the env
         .with({ key: 'toolOverrides' }, ({ value: overridesText }) => formatToolOverridesValue(overridesText))
         .with({ value: P.nullish }, () => '（空）')
-        .with({ key: P.union('paused', 'settingsLocked'), value: 'true' }, () => '开')
-        .with({ key: P.union('paused', 'settingsLocked'), value: 'false' }, () => '关')
+        .with({ key: P.union(...ON_OFF_AUDIT_KEYS), value: 'true' }, () => '开')
+        .with({ key: P.union(...ON_OFF_AUDIT_KEYS), value: 'false' }, () => '关')
         // An issue's status change (scope issue:<id>)
         .with({ key: 'status', value: P.string }, ({ value: status }) => issueStatusLabel(status))
         .with({ value: P.string }, ({ value: text }) => text)
