@@ -121,6 +121,18 @@ interface AttemptOptions {
     readonly leadingChunk: StreamChunk | null;
 }
 
+/**
+ * The marker before a retried round's thinking (§5.3). Once the filter has let
+ * a summary out, it starts every later one with a blank line of its own, so
+ * the marker leaves its trailing blank line out: one blank line follows it
+ * either way.
+ */
+const retryMarkerFor = (roundNumber: number, thoughtSummary: ThoughtSummaryFilter): StreamChunk => {
+    const marker = retriedThinkingMarker(roundNumber);
+    if (!thoughtSummary.state().emitted) return marker;
+    return { ...marker, content: (marker.content ?? '').replace(/\n\n$/, '') };
+};
+
 async function* runAttempt(options: AttemptOptions): AsyncGenerator<StreamChunk, AttemptOutcome, void> {
     const attemptSignal = followStop(options.signal);
     const startedAt = Date.now();
@@ -188,7 +200,7 @@ export async function* runRecoverableRound(
             thoughtSummary: options.thoughtSummary,
             viaLabel: options.viaLabel,
             onOpen: statusShown ? [clearedStatus()] : [],
-            leadingChunk: markerPending ? retriedThinkingMarker(roundNumber) : null,
+            leadingChunk: markerPending ? retryMarkerFor(roundNumber, options.thoughtSummary) : null,
         });
         if (outcome.kind === 'complete') {
             if (outcome.round.finishReason === undefined) {

@@ -63,10 +63,10 @@ const isBlank = (chunk: StreamChunk): boolean => (chunk.content ?? '').trim() ==
  * round's first text) and returns the round as collected, or how it broke.
  * Thinking goes through the thought-summary filter, which drops the
  * summarizer's own CoT and keeps its summaries; the last block is flushed
- * when the stream ends, and when it breaks, so a retry starts on a clean
- * filter. Grounding is not yielded here: each round repeats the turn's
- * searches so far. `leadingChunk` goes out right before the first visible
- * chunk.
+ * when the stream ends, and when it breaks (finished summaries only), so a
+ * retry starts on a clean filter. Grounding is not yielded here: each round
+ * repeats the turn's searches so far. `leadingChunk` goes out right before
+ * the first visible chunk.
  */
 export async function* consumeGeminiRound(
     opened: OpenedGeminiRound,
@@ -176,9 +176,9 @@ export async function* consumeGeminiRound(
             }
         }
     } catch (error) {
-        // The cut block gives up the summaries it has, and the filter holds
-        // nothing of this attempt when the round is tried again
-        yield* shownThinking(thoughtSummary.flush());
+        // The cut block gives up the summaries it finished, and the filter
+        // holds nothing of this attempt when the round is tried again
+        yield* shownThinking(thoughtSummary.flushBroken());
         return {
             kind: 'broken',
             error,
