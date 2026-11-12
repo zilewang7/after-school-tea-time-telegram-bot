@@ -50,6 +50,7 @@ import {
 import type { UnifiedContentPart } from '../ai/types.js';
 import { checkpointSinkFor } from './resume/keep-checkpoint.js';
 import { captureResumeFacts } from './resume/resume-facts.js';
+import { priorityRequestOf } from './priority-request.js';
 
 /**
  * Handle retry for a bot response
@@ -389,7 +390,7 @@ const handleChatRetry = async (
             tools,
             usageSink: session.metrics.usage,
             checkpointSink: checkpointSinkFor(chatContext),
-            ...(settings.geminiPriority ? { serviceTier: 'priority' as const } : {}),
+            ...priorityRequestOf(access, settings.geminiPriority),
         })
     );
     if (streamErr) {

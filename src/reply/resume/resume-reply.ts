@@ -20,6 +20,7 @@ import { markRequestStarted, recordContextSize, recordResumedRounds } from '../.
 import { to } from '../../shared/result.js';
 import { setContextNumbering } from '../../state.js';
 import { resolveContextRoot } from '../context-root.js';
+import { priorityRequestOf } from '../priority-request.js';
 import {
     createChatContextForRetry,
     handleResponseError,
@@ -113,7 +114,7 @@ const continueFromCheckpoint = async (
             usageSink: session.metrics.usage,
             checkpointSink: checkpointSinkFor(chatContext),
             resumeFrom: entry.loop,
-            ...(plan.settings.geminiPriority ? { serviceTier: 'priority' as const } : {}),
+            ...priorityRequestOf(plan.access, plan.settings.geminiPriority),
         })
     );
     if (streamErr) {

@@ -507,8 +507,8 @@ export const createResumeBench = async () => {
         return thrown;
     };
 
-    const retryReply = async (reply: AskedReply): Promise<unknown> => {
-        const thrown = await press(reply, 'resp:retry');
+    const retryReply = async (reply: AskedReply, userId: number = FULL_USER_ID): Promise<unknown> => {
+        const thrown = await press(reply, 'resp:retry', userId);
         // The retry is detached: wait for its claim, then for it to be free again
         await new Promise((resolve) => setTimeout(resolve, 20));
         await settled(reply, 'the retry to end');

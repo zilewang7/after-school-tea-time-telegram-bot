@@ -58,6 +58,7 @@ import { stopIfChatPaused } from './chat-pause.js';
 import { markRequestStarted, recordContextSize } from '../services/reply-metrics-draft.js';
 import { checkpointSinkFor } from './resume/keep-checkpoint.js';
 import { captureResumeFacts } from './resume/resume-facts.js';
+import { priorityRequestOf } from './priority-request.js';
 
 /** The generation command this text is, if any (denied ones are refused for trial users) */
 const generationCommandName = (text: string): string | null => {
@@ -398,7 +399,7 @@ export const handleReply = async (
             tools,
             usageSink: chatContext.session.metrics.usage,
             checkpointSink: checkpointSinkFor(chatContext),
-            ...(settings.geminiPriority ? { serviceTier: 'priority' as const } : {}),
+            ...priorityRequestOf(access, settings.geminiPriority),
         })
     );
     if (isErr(streamResult)) {
