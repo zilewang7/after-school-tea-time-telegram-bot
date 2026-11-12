@@ -563,8 +563,10 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
             expect(errorMessage(timedOut.error) === 'Timeout', `the timeout is thrown (got ${errorMessage(timedOut.error)})`);
             expect(json(platform.sleeps) === '[2000,60000]', `waits 2 s then 60 s (got ${json(platform.sleeps)})`);
             const openTimes = vertex.requests.map((request) => (request.abortedAt() ?? Number.NaN) - request.sentAt);
+            // No lower bound: the timer starts before the SDK builds the request, and
+            // under load most of the 40 ms can pass before the fake sees it
             expect(
-                vertex.requests.every((request) => request.signal?.aborted === true) && openTimes.every((ms) => ms >= 30 && ms < 1_000),
+                vertex.requests.every((request) => request.signal?.aborted === true) && openTimes.every((ms) => ms < 1_000),
                 `every attempt was aborted after the same short timeout, no +30 s step (got ${json(openTimes)})`
             );
 

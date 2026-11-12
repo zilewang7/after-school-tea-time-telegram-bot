@@ -151,7 +151,7 @@ export const storeChatSettings = (settings: ChatSettings): void => {
     chatSettingsByChat.set(settings.chatId, settings);
 };
 
-/** Write-side: null removes the key. Only chat-settings-service calls this */
+/** Write-side: null removes the key. Only global-settings-service calls this */
 export const storeGlobalSetting = (key: string, value: string | null): void => {
     if (value === null) {
         globalSettingsByKey.delete(key);

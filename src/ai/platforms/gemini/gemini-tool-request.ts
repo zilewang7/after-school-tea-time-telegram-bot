@@ -76,3 +76,9 @@ const FUNCTION_DECLARATION_ERROR =
 
 export const isFunctionDeclarationError = (error: unknown): boolean =>
     httpStatusOf(error) === 400 && FUNCTION_DECLARATION_ERROR.test(errorText(error));
+
+/** A 400 that blames the thinking level: the model does not take that level */
+const THINKING_LEVEL_ERROR = /thinking level is unsupported/i;
+
+export const isThinkingLevelError = (error: unknown): boolean =>
+    httpStatusOf(error) === 400 && THINKING_LEVEL_ERROR.test(errorText(error));
