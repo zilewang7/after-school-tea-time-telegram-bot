@@ -6,13 +6,14 @@
  * at most ten are kept and at most 64 MB by estimate, the oldest going first
  * when a limit is passed. One that alone exceeds the byte limit is never
  * stored. There are no timers: expiry is checked whenever the registry is
- * read or written.
+ * read or written, and every finalization of a reply prunes it, so a quiet
+ * bot does not hold a dead entry's memory until the next click.
  *
  * The resumable mark in src/state.ts is the single truth of whether a reply
  * can be continued. The registry sets it on every store, clears it when an
  * entry expires, is evicted, taken or dropped, and drops any entry whose mark
- * is gone (every finalization of the reply clears it) the next time it is
- * touched. So it never hands out an entry the buttons no longer offer.
+ * is gone (every finalization of the reply clears it) at the next prune. So
+ * it never hands out an entry the buttons no longer offer.
  */
 import {
     clearReplyResumable,
@@ -77,9 +78,11 @@ export interface CheckpointRegistry {
     readonly drop: (chatId: number, firstMessageId: number) => void;
     /** Why a version's entry is not there; for the log line of the click */
     readonly missingReason: (failedVersionCreatedAt: number) => CheckpointMissingReason;
-    /** Entries kept right now */
+    /** Drop the entries that expired or lost their mark; every finalization of a reply calls it */
+    readonly prune: () => void;
+    /** Entries held right now, those the next prune drops included; reading changes nothing */
     readonly size: () => number;
-    /** Estimated bytes of the entries kept right now */
+    /** Estimated bytes of the entries held right now, as size() counts them */
     readonly totalBytes: () => number;
 }
 
@@ -202,14 +205,9 @@ export const createCheckpointRegistry = (options: CheckpointRegistryOptions = {}
                 now: now(),
                 ttlMs: limits.ttlMs,
             }),
-        size: () => {
-            prune(now());
-            return entries.size;
-        },
-        totalBytes: () => {
-            prune(now());
-            return bytesHeld();
-        },
+        prune: () => prune(now()),
+        size: () => entries.size,
+        totalBytes: bytesHeld,
     };
 };
 

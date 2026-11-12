@@ -418,8 +418,33 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
             quiet(() => registry.save(prepared));
             // What a finalization of the reply does
             state.clearReplyResumable(entry.chatId, entry.firstMessageId);
-            expect(registry.size() === 0, 'the next touch drops it');
-            expect(registry.peek(entry.chatId, entry.firstMessageId) === undefined, 'nothing is handed out');
+            expect(registry.size() === 1, 'counting the entries does not drop it');
+            expect(registry.peek(entry.chatId, entry.firstMessageId) === undefined, 'the next touch does: nothing is handed out');
+            expect(registry.size() === 0 && registry.totalBytes() === 0, 'and nothing is held');
+
+            // A prune drops what lost its mark and what expired, and only that
+            let now = 4_000_000_000_000;
+            const clocked = createCheckpointRegistry({ now: () => now });
+            const saveAt = (savedAt: number): ReplyCheckpoint => {
+                const kept = entryOf(savedAt);
+                const preparedEntry = clocked.prepare(kept);
+                if (preparedEntry === null) throw new Error('refused');
+                quiet(() => clocked.save(preparedEntry));
+                return kept;
+            };
+            const unmarked = saveAt(now);
+            const expiring = saveAt(now);
+            now += HOUR_MS;
+            const fresh = saveAt(now);
+            state.clearReplyResumable(unmarked.chatId, unmarked.firstMessageId);
+            now += HOUR_MS;
+            expect(clocked.size() === 3, `all three are held until the prune (got ${clocked.size()})`);
+            quiet(() => clocked.prune());
+            expect(
+                clocked.size() === 1 && clocked.peek(fresh.chatId, fresh.firstMessageId) !== undefined,
+                `the prune leaves only the fresh entry (got ${clocked.size()})`
+            );
+            expect(state.resumableMarkOf(expiring.chatId, expiring.firstMessageId, expiring.savedAt) === undefined, 'the expired mark went with it');
 
             const replaced = entryOf(Date.now(), { chatId: entry.chatId, failedVersionId: 1 });
             const sameKey = { ...replaced, firstMessageId: entry.firstMessageId };

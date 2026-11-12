@@ -57,11 +57,17 @@ export const prepareCheckpointKeep = (
     return prepared;
 };
 
-/** After the finalization: store the prepared entry and mark the reply resumable */
+/**
+ * After every finalization, success included: store the prepared entry and
+ * mark the reply resumable. The registry has no timers, so this is also where
+ * it drops what expired or lost its mark (this finalization cleared the
+ * reply's own) instead of holding it until the next click.
+ */
 export const keepPreparedCheckpoint = (
     prepared: PreparedCheckpoint | null,
     registry: CheckpointRegistry = checkpointRegistry
 ): void => {
+    registry.prune();
     if (prepared !== null) registry.save(prepared);
 };
 

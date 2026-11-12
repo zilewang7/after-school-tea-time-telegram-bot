@@ -37,6 +37,7 @@ import {
     waitUntil,
     type FakeTelegram,
 } from './fake-telegram.mts';
+import { withFakeClock } from './support/gemini-loop-fixtures.mts';
 import type { AgentToolUsage, PlatformConfig, StreamChunk, UnifiedMessage } from '../../src/ai/types.js';
 import type { ToolLoopCheckpoint } from '../../src/ai/tools/tool-loop-checkpoint.js';
 
@@ -55,7 +56,7 @@ const { handleReply } = await import('../../src/reply/chat-handler.js');
 const { handleRetryRequest } = await import('../../src/reply/retry-handler.js');
 const responseHandler = await import('../../src/reply/response-handler.js');
 const botMessageService = await import('../../src/services/bot-message-service.js');
-const { checkpointRegistry } = await import('../../src/reply/resume/checkpoint-registry.js');
+const { checkpointRegistry, CHECKPOINT_REGISTRY_LIMITS } = await import('../../src/reply/resume/checkpoint-registry.js');
 const { captureResumeFacts } = await import('../../src/reply/resume/resume-facts.js');
 const { createReplyToolState } = await import('../../src/reply/tools/reply-tool-state.js');
 const { findReplyMetricsByReply } = await import('../../src/db/queries/reply-metrics.js');
@@ -451,6 +452,30 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
                 replaced?.failedVersionId === 4 && replaced.loop.completedRounds === 5 && markOf(run)?.versionId === 4,
                 `a second failure of the reply replaces the first entry (got ${json({ version: replaced?.failedVersionId })})`
             );
+        },
+    },
+    {
+        name: 'every finalization prunes the registry: an entry whose mark is gone, then one that expired, leave when another reply ends',
+        body: async () => {
+            const unmarked = await runReply(takeChatId(), [...keptRounds(2), { fail: new Error('got status: 429 RESOURCE_EXHAUSTED') }]);
+            expect(entryOf(unmarked) !== undefined, 'the first failure is kept');
+            // The mark goes without the registry being touched
+            state.clearReplyResumable(unmarked.chatId, unmarked.firstMessageId);
+            const heldBefore = checkpointRegistry.size();
+            await runReply(takeChatId(), [{ chunk: { type: 'text', content: '另一个回答。' } }, DONE]);
+            expect(
+                checkpointRegistry.size() === heldBefore - 1,
+                `another reply's normal end drops it (held ${heldBefore}, then ${checkpointRegistry.size()})`
+            );
+
+            const expiring = await runReply(takeChatId(), [...keptRounds(1), { fail: new Error('got status: 429 RESOURCE_EXHAUSTED') }]);
+            expect(entryOf(expiring) !== undefined && checkpointRegistry.size() > 0, 'the second failure is kept');
+            await withFakeClock(async (jump) => {
+                jump(CHECKPOINT_REGISTRY_LIMITS.ttlMs + 1000);
+                expect(checkpointRegistry.size() > 0, 'past its lifetime it is still held while nothing ends');
+                await runReply(takeChatId(), [{ chunk: { type: 'text', content: '两小时后的回答。' } }, DONE]);
+                expect(checkpointRegistry.size() === 0, `the next reply's end drops every expired entry (got ${checkpointRegistry.size()})`);
+            });
         },
     },
     {
