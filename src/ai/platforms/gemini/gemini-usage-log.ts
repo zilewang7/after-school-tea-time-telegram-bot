@@ -144,7 +144,9 @@ export const formatGeminiTurnSummary = (
     model: string,
     rounds: readonly GeminiRequestUsage[],
     executedCallCount: number,
-    turnStartedAt: number
+    turnStartedAt: number,
+    /** A resume: the rounds kept from the interrupted version; rounds and calls count only the new ones */
+    resumedAfterRounds?: number
 ): string => {
     const usages = rounds.map((round) => round.usage);
     return (
@@ -155,6 +157,7 @@ export const formatGeminiTurnSummary = (
         `output=${sumOf(usages, (usage) => usage.candidatesTokenCount)} ` +
         `total=${sumOf(usages, (usage) => usage.totalTokenCount)} ` +
         `tiers=${tierCounts(usages)} ` +
-        `dur=${Date.now() - turnStartedAt}ms`
+        `dur=${Date.now() - turnStartedAt}ms` +
+        (resumedAfterRounds === undefined ? '' : ` resumed=${resumedAfterRounds}`)
     );
 };

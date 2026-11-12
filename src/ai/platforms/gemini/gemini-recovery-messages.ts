@@ -38,6 +38,9 @@ export const retryingStatus = (roundNumber: number, attempt: number): StreamChun
 /** The stream opened: the status line goes away */
 export const clearedStatus = (): StreamChunk => ({ type: 'status' });
 
+/** A resume replayed the kept rounds and opens the next one: ⟳ 从第 6 轮继续 */
+export const resumingStatus = (roundNumber: number): StreamChunk => statusChunk(`⟳ 从第 ${roundNumber} 轮继续`);
+
 /**
  * Thinking already shown cannot be taken back (no chunk retracts, the live
  * thinking page only appends), so the retry's thinking follows a marker.

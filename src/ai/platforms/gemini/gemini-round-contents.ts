@@ -138,6 +138,33 @@ export const buildFunctionCallingOffParts = (functionCalls: readonly FunctionCal
         functionCalls.map(() => functionCallingOffResult)
     );
 
+/**
+ * What a resumed reply's model reads back for a call of the interrupted round
+ * that never started: it decides itself whether the call is still needed.
+ */
+export const INTERRUPTED_CALL_ERROR =
+    'Not run: the reply was interrupted before this call; call it again if you still need it.';
+
+export const interruptedCallResult: ToolResult = {
+    content: INTERRUPTED_CALL_ERROR,
+    isError: true,
+    images: [],
+    record: null,
+};
+
+/**
+ * Follows the error of a call the stop landed in: the stop reached the tool
+ * as an abort, but whatever it had started may already have happened.
+ */
+export const STOPPED_DURING_CALL_NOTE =
+    'The reply was stopped while this call ran; it may have taken effect anyway, so check before calling it again.';
+
+/** The error result with STOPPED_DURING_CALL_NOTE after it */
+export const withStoppedDuringCallNote = (result: ToolResult): ToolResult => ({
+    ...result,
+    content: `${result.content}\n\n${STOPPED_DURING_CALL_NOTE}`,
+});
+
 /** A relay bug can hand candidates over as an object keyed 'undefined' */
 const isCandidateList = (
     candidates: readonly Candidate[] | undefined

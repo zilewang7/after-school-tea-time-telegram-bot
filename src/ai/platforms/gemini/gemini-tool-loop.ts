@@ -24,42 +24,57 @@
  * the single done chunk.
  *
  * Every round, round 1 included, is opened by runRecoverableRound
- * (gemini-round-runner.ts), which retries a failed attempt in place. Each
- * branch below only works out the next round's request; the loop top sends
- * it. Round 1's fallbacks live in the runner, and what round 1 finally sent
- * is the base every later round builds on.
+ * (gemini-round-runner.ts), which retries a failed attempt in place. The loop
+ * state is one immutable value (gemini-loop-state.ts); each branch below only
+ * works out the next state, whose request the loop top sends. Round 1's
+ * fallbacks live in the runner, and what round 1 finally sent is the base
+ * every later round builds on.
+ *
+ * Checkpoints (design 2026-1112-1123 §6.2). With a checkpointSink, the loop
+ * hands over a checkpoint (gemini-checkpoint.ts) whenever the next round
+ * could be sent as it is: (1) a round is dealt with and the next request is
+ * worked out, before it opens; (2) a round's stream completed and its calls
+ * are about to run; (3) after each call, before what it produced is yielded
+ * (gemini-round-calls.ts). The consumer ends the loop by walking away at a
+ * yield, and a failed round throws out of it, so each checkpoint is handed
+ * over before the yields that follow it. A checkpoint's journal is what the
+ * loop yielded up to then (gemini-loop-journal.ts): the half-finished output
+ * of a round that later fails is never in it.
+ *
+ * Resume: started from a checkpoint, the loop first replays its journal
+ * (chunks marked `replay`), shows a status line until the next round's
+ * stream opens, and goes on with the checkpoint's counts, clock, tally and
+ * separator. Only the automatic recovery budget starts afresh.
  */
 import { match, P } from 'ts-pattern';
 import { FinishReason, type GenerateContentResponse } from '@google/genai';
-import type { GroundingData, StreamChunk } from '../../types.js';
-import { createRoundTextSeparator } from '../../tools/round-text-separator.js';
+import type { AgentToolUsage, StreamChunk } from '../../types.js';
 import {
-    budgetExhaustedReason,
-    createToolTimeClock,
-    FREE_TOOL_ROUNDS_MAX,
-    TOOL_LOOP_DEADLINE_MS,
-    TOOL_LOOP_WALL_MS,
-} from '../../tools/tool-loop.js';
-import {
-    createToolUsageTally,
-    runToolRound,
-    toolTimeSpentMs,
-    withToolBudget,
-    type ToolUsageTally,
-} from '../../tools/tool-round.js';
+    createRoundTextSeparator,
+    type RoundTextSeparatorState,
+} from '../../tools/round-text-separator.js';
+import type { ToolLoopCheckpointSink } from '../../tools/tool-loop-checkpoint.js';
+import { TOOL_LOOP_DEADLINE_MS, TOOL_LOOP_WALL_MS } from '../../tools/tool-loop.js';
+import { createToolUsageTally, type ToolUsageTally } from '../../tools/tool-round.js';
 import { filterTurnTools } from '../../tools/turn-tools.js';
 import { isTimeFreeToolName } from '../../../reply/tools/tool-names.js';
 import type { TurnTools } from '../../tools/tool-types.js';
+import { toGeminiCheckpoint, type GeminiSnapshot } from './gemini-checkpoint.js';
 import { mergeGroundingData } from './gemini-grounding.js';
-import { FRESH_REPLY_RECOVERY } from './gemini-recovery-policy.js';
+import { journaled, replayJournal } from './gemini-loop-journal.js';
 import {
-    buildFunctionCallingOffParts,
-    buildFunctionResponseParts,
-    buildRoundContents,
-    toToolCalls,
-    withoutFunctionCallParts,
-    type GeminiToolRound,
-} from './gemini-round-contents.js';
+    afterFailedCall,
+    afterFinalCalls,
+    afterFreeModeExit,
+    afterRoundStreamed,
+    initialLoopState,
+    type GeminiLoopLimits,
+    type GeminiLoopState,
+} from './gemini-loop-state.js';
+import { resumingStatus } from './gemini-recovery-messages.js';
+import { FRESH_REPLY_RECOVERY } from './gemini-recovery-policy.js';
+import { runRoundCalls, type HandOverCheckpoint } from './gemini-round-calls.js';
+import { withoutFunctionCallParts } from './gemini-round-contents.js';
 import type { OpenGeminiRound } from './gemini-round-open.js';
 import { runRecoverableRound, type RoundRecovery } from './gemini-round-runner.js';
 import type { CollectedGeminiRound } from './gemini-round-stream.js';
@@ -78,17 +93,23 @@ const FAILED_CALL_FINISH_REASONS: ReadonlySet<FinishReason> = new Set([
     FinishReason.UNEXPECTED_TOOL_CALL,
 ]);
 
+/**
+ * - fresh: round 1 as built from the messages (the runner may fall back from
+ *   it once); `startedAt` is epoch ms before it was first sent
+ * - resume: a checkpoint's snapshot; its wall time goes on from there
+ */
+export type GeminiLoopStart =
+    | { readonly kind: 'fresh'; readonly firstRequest: GeminiRoundRequest; readonly startedAt: number }
+    | { readonly kind: 'resume'; readonly snapshot: GeminiSnapshot };
+
 export interface GeminiToolLoopOptions {
     readonly model: string;
     readonly tools: TurnTools;
-    /** Round 1 as built from the messages; the runner may fall back from it once */
-    readonly firstRequest: GeminiRoundRequest;
+    readonly start: GeminiLoopStart;
     /** Opens one attempt of a round */
     readonly openRound: OpenGeminiRound;
     /** Null: no automatic recovery, every round gets one attempt (maxRetries === 1) */
     readonly recovery: RoundRecovery | null;
-    /** Epoch ms before round 1 was first sent; the deadline counts from here */
-    readonly startedAt: number;
     /** Defaults to TOOL_LOOP_DEADLINE_MS */
     readonly deadlineMs?: number;
     /** Defaults to TOOL_LOOP_WALL_MS */
@@ -98,6 +119,8 @@ export interface GeminiToolLoopOptions {
     readonly signal?: AbortSignal;
     /** Gets every round's usage as soon as the round has streamed */
     readonly usageSink?: UsageSink;
+    /** Gets a new checkpoint each time the next round could be sent as it is */
+    readonly checkpointSink?: ToolLoopCheckpointSink;
 }
 
 /**
@@ -136,6 +159,40 @@ const roundOutcome = (
         .with({ callCount: 0 }, () => 'answer')
         .otherwise(() => 'calls');
 
+/**
+ * The next state of a round that runs no calls, or null when its calls run.
+ * Past the budget, a round that did not call ends the no-cost rounds.
+ */
+const followWithoutCalls = (
+    state: GeminiLoopState,
+    outcome: Exclude<RoundOutcome, 'answer'>,
+    round: CollectedGeminiRound
+): GeminiLoopState | null =>
+    match({ outcome, freeMode: state.freeMode })
+        .returnType<GeminiLoopState | null>()
+        .with({ outcome: 'calls' }, () => null)
+        .with({ freeMode: true }, () => afterFreeModeExit(state))
+        .with({ outcome: 'failed-call' }, () => afterFailedCall(state))
+        .with({ outcome: 'final-calls' }, () => afterFinalCalls(state, round))
+        .exhaustive();
+
+const logFollowWithoutCalls = (
+    outcome: Exclude<RoundOutcome, 'answer'>,
+    freeMode: boolean,
+    round: CollectedGeminiRound,
+    roundNumber: number
+): void => {
+    if (freeMode) return;
+    if (outcome === 'failed-call') {
+        console.warn(`[gemini] round ${roundNumber} ended with ${round.finishReason}, forcing final answer`);
+    } else if (outcome === 'final-calls') {
+        console.warn(
+            `[gemini] final round ${roundNumber} still made ${round.functionCalls.length} function call(s) ` +
+                `${round.showedText ? 'after some text' : 'and no text'}; answered them as not run, asking once more`
+        );
+    }
+};
+
 const doneChunk = (lastChunk: GenerateContentResponse | null, tally: ToolUsageTally): StreamChunk => {
     const toolUsage = tally.snapshot();
     return {
@@ -145,41 +202,84 @@ const doneChunk = (lastChunk: GenerateContentResponse | null, tally: ToolUsageTa
     };
 };
 
-export async function* runGeminiToolLoop(
-    options: GeminiToolLoopOptions
+/** Where the rounds begin: the state, the clock, and what was counted and shown before */
+interface LoopBeginning {
+    readonly state: GeminiLoopState;
+    readonly startedAt: number;
+    readonly toolUsage: readonly AgentToolUsage[];
+    readonly separator: RoundTextSeparatorState | undefined;
+    /** A resume: the rounds kept from the interrupted version */
+    readonly resumedAfterRounds: number | undefined;
+}
+
+const beginningOf = (start: GeminiLoopStart): LoopBeginning =>
+    match(start)
+        .returnType<LoopBeginning>()
+        .with({ kind: 'fresh' }, (fresh) => ({
+            state: initialLoopState(fresh.firstRequest),
+            startedAt: fresh.startedAt,
+            toolUsage: [],
+            separator: undefined,
+            resumedAfterRounds: undefined,
+        }))
+        .with({ kind: 'resume' }, ({ snapshot }) => ({
+            state: snapshot.loop,
+            // The wall time goes on from the checkpoint's: the gap before the resume does not count
+            startedAt: Date.now() - snapshot.elapsedMs,
+            toolUsage: snapshot.toolUsage,
+            separator: snapshot.separator,
+            resumedAfterRounds: snapshot.loop.roundNumber - 1,
+        }))
+        .exhaustive();
+
+/** The rounds themselves; `journal` holds every chunk yielded so far but status lines */
+async function* runRounds(
+    options: GeminiToolLoopOptions,
+    journal: readonly StreamChunk[]
 ): AsyncGenerator<StreamChunk, void, undefined> {
-    const { model, tools, openRound, recovery, startedAt, viaLabel, signal, usageSink } = options;
-    const deadlineMs = options.deadlineMs ?? TOOL_LOOP_DEADLINE_MS;
-    const wallMs = options.wallMs ?? TOOL_LOOP_WALL_MS;
-    const clock = createToolTimeClock(deadlineMs, wallMs, startedAt);
+    const { model, tools, openRound, recovery, viaLabel, signal, usageSink, checkpointSink } = options;
     const freeTools = filterTurnTools(tools, (name) => isTimeFreeToolName(name));
-    const hasFreeTools = freeTools.definitions.length > 0;
-    let freeMode = false;
-    let freeRounds = 0;
-    const tally = createToolUsageTally();
-    const separator = createRoundTextSeparator();
-    const toolRounds: GeminiToolRound[] = [];
+    const limits: GeminiLoopLimits = {
+        deadlineMs: options.deadlineMs ?? TOOL_LOOP_DEADLINE_MS,
+        wallMs: options.wallMs ?? TOOL_LOOP_WALL_MS,
+        hasFreeTools: freeTools.definitions.length > 0,
+    };
+    const beginning = beginningOf(options.start);
+    const { startedAt } = beginning;
+    // The summary's own clock: a resume's line covers this request only
+    const summaryStartedAt = beginning.resumedAfterRounds === undefined ? startedAt : Date.now();
+    const tally = createToolUsageTally(beginning.toolUsage);
+    const separator = createRoundTextSeparator(beginning.separator);
+    let state = beginning.state;
+    const callsBefore = state.executedCallCount;
     const roundUsages: GeminiRequestUsage[] = [];
-    const groundings: GroundingData[] = [];
-    let executedCallCount = 0;
-    // The one extra round for a final round that still called
-    let mayAskAgain = true;
-    // The next round's request; every branch below sets it, the loop top sends it
-    let request = options.firstRequest;
-    // What round 1 finally sent (a 400 fallback may have changed it): the
-    // contents and tools every later round builds on
-    let baseRequest: GeminiRoundRequest | null = null;
-    // Automatic recovery is budgeted per reply, across rounds
+    // Automatic recovery is budgeted per reply, across rounds; a resume starts it afresh
     let recoveryState = FRESH_REPLY_RECOVERY;
     let lastChunk: GenerateContentResponse | null = null;
+    // A resume's status line stays until the first round's stream opens
+    let statusOnScreen = beginning.resumedAfterRounds !== undefined;
+    const elapsedMs = (): number => Date.now() - startedAt;
 
-    for (let roundNumber = 1; ; roundNumber++) {
+    const handOver: HandOverCheckpoint = (stateAt, pendingProducts = []) => {
+        if (!checkpointSink) return;
+        checkpointSink(
+            toGeminiCheckpoint({
+                loop: stateAt(),
+                elapsedMs: elapsedMs(),
+                toolUsage: tally.snapshot(),
+                journal: [...journal, ...pendingProducts],
+                separator: separator.state(),
+            })
+        );
+    };
+
+    for (;;) {
         separator.startRound();
         const recovered = yield* runRecoverableRound({
             model,
-            roundNumber,
-            request,
-            allowFallback: roundNumber === 1,
+            roundNumber: state.roundNumber,
+            request: state.request,
+            allowFallback: state.roundNumber === 1,
             openRound,
             separator,
             viaLabel,
@@ -187,149 +287,106 @@ export async function* runGeminiToolLoop(
             recovery,
             recoveryState,
             usageSink,
+            statusOnScreen,
         });
+        statusOnScreen = false;
         const { round } = recovered;
-        request = recovered.request;
         recoveryState = recovered.recoveryState;
-        const base: GeminiRoundRequest = baseRequest ?? recovered.request;
-        baseRequest = base;
+        state = afterRoundStreamed(state, recovered.request, round.groundings);
 
         lastChunk = round.lastChunk;
-        groundings.push(...round.groundings);
         roundUsages.push(round.usage);
         usageSink?.addRound(normalizeGeminiUsage(round.usage.usage), {
             servedTier: geminiServedTier(round.usage.usage),
         });
         console.log(
             formatGeminiUsageLine(model, round.usage, {
-                roundNumber,
+                roundNumber: state.roundNumber,
                 callCount: round.functionCalls.length,
             })
         );
 
-        const outcome = roundOutcome(round, request, mayAskAgain);
-        // A stopped reply sends nothing further and runs no tools
-        if (outcome === 'answer' || signal?.aborted) {
-            if (outcome === 'answer' && round.functionCalls.length > 0) {
+        const outcome = roundOutcome(round, state.request, state.mayAskAgain);
+        if (outcome === 'answer') {
+            if (round.functionCalls.length > 0) {
                 console.warn(
-                    `[gemini] round ${roundNumber} still asked for ${round.functionCalls.length} function call(s) after function calling was off; not run`
+                    `[gemini] round ${state.roundNumber} still asked for ${round.functionCalls.length} function call(s) after function calling was off; not run`
                 );
             }
             break;
         }
 
-        if (freeMode) {
-            // Past the budget: only no-cost tools run, and the reply then answers
-            if (outcome !== 'calls') {
-                request = { ...request, tools: base.tools, final: true };
-                freeMode = false;
-                continue;
-            }
-            freeRounds += 1;
-            const freeCalls = toToolCalls(round.functionCalls, roundNumber);
-            const freeExecuted = yield* runToolRound(freeTools, freeCalls, tally, signal);
-            executedCallCount += freeExecuted.length;
-            const capReached = freeRounds >= FREE_TOOL_ROUNDS_MAX;
-            const answeredFreeCalls = withToolBudget(freeExecuted, {
-                toolCalls: executedCallCount,
-                finalRound: capReached,
-                freeRound: true,
-                elapsedMs: Date.now() - startedAt,
-                toolTimeMs: clock.toolTimeMs,
-                deadlineMs,
-            });
-            toolRounds.push({
-                modelParts: round.parts,
-                responseParts: buildFunctionResponseParts(
-                    round.functionCalls,
-                    answeredFreeCalls.map((executedCall) => executedCall.result),
-                    { lastToolRound: capReached }
-                ),
-            });
-            request = {
-                contents: buildRoundContents(base.contents, toolRounds),
-                tools: base.tools,
-                final: capReached,
-            };
-            freeMode = !capReached;
+        const followed = followWithoutCalls(state, outcome, round);
+        if (followed !== null) {
+            const roundState = state;
+            state = followed;
+            // Before the stop check: a stop right after the stream completed still keeps the round
+            handOver(() => followed);
+            // A stopped reply sends nothing further
+            if (signal?.aborted) break;
+            logFollowWithoutCalls(outcome, roundState.freeMode, round, roundState.roundNumber);
             continue;
         }
 
-        if (outcome === 'failed-call') {
-            console.warn(
-                `[gemini] round ${roundNumber} ended with ${round.finishReason}, forcing final answer`
-            );
-            request = { ...request, final: true };
-            continue;
-        }
-
-        if (outcome === 'final-calls') {
-            console.warn(
-                `[gemini] final round ${roundNumber} still made ${round.functionCalls.length} function call(s) ` +
-                    `${round.showedText ? 'after some text' : 'and no text'}; answered them as not run, asking once more`
-            );
-            mayAskAgain = false;
-            toolRounds.push({
-                modelParts: round.parts,
-                responseParts: buildFunctionCallingOffParts(round.functionCalls),
-            });
-            request = {
-                contents: buildRoundContents(base.contents, toolRounds),
-                tools: base.tools,
-                final: true,
-            };
-            continue;
-        }
-
-        const executedCalls = yield* runToolRound(
-            tools,
-            toToolCalls(round.functionCalls, roundNumber),
+        const { roundNumber, freeMode: freeRound } = state;
+        const afterCalls = yield* runRoundCalls({
+            state,
+            round,
+            tools: freeRound ? freeTools : tools,
             tally,
-            signal
-        );
-        executedCallCount += executedCalls.length;
-        clock.toolTimeMs += toolTimeSpentMs(executedCalls);
-        if (signal?.aborted) break;
-
-        // Judged after the calls ran: they may have used up the budget
-        const exhausted = budgetExhaustedReason(clock);
-        if (exhausted !== null) {
+            signal,
+            limits,
+            elapsedMs,
+            handOver,
+        });
+        if (afterCalls === null) break;
+        state = afterCalls.state;
+        if (signal?.aborted) {
+            // The checkpoint after the last call stays the last one: it says
+            // the stop landed in that call. A stopped no-cost round goes on to
+            // the loop top, which ends it as stopped.
+            if (freeRound) continue;
+            break;
+        }
+        if (afterCalls.exhausted !== null) {
             console.log(
-                `[gemini] ${exhausted}, ` +
-                    (hasFreeTools ? 'no-cost tools only from here' : 'forcing final answer') +
+                `[gemini] ${afterCalls.exhausted}, ` +
+                    (limits.hasFreeTools ? 'no-cost tools only from here' : 'forcing final answer') +
                     ` (notice on the round ${roundNumber} responses)`
             );
-            freeMode = hasFreeTools;
         }
-        // The call count rides in each result, like every other fact the
-        // model has to plan around; the last-round notice stays separate.
-        const answeredCalls = withToolBudget(executedCalls, {
-            toolCalls: executedCallCount,
-            finalRound: exhausted !== null && !hasFreeTools,
-            freeRound: exhausted !== null && hasFreeTools,
-            elapsedMs: Date.now() - startedAt,
-            toolTimeMs: clock.toolTimeMs,
-            deadlineMs,
-        });
-        toolRounds.push({
-            modelParts: round.parts,
-            responseParts: buildFunctionResponseParts(
-                round.functionCalls,
-                answeredCalls.map((executedCall) => executedCall.result),
-                { lastToolRound: exhausted !== null && !hasFreeTools }
-            ),
-        });
-        request = {
-            contents: buildRoundContents(base.contents, toolRounds),
-            tools: base.tools,
-            final: exhausted !== null && !hasFreeTools,
-        };
+        handOver(() => afterCalls.state);
     }
 
-    console.log(formatGeminiTurnSummary(model, roundUsages, executedCallCount, startedAt));
-    const grounding = mergeGroundingData(groundings);
+    console.log(
+        formatGeminiTurnSummary(
+            model,
+            roundUsages,
+            state.executedCallCount - callsBefore,
+            summaryStartedAt,
+            beginning.resumedAfterRounds
+        )
+    );
+    const grounding = mergeGroundingData(state.groundings);
     if (grounding) {
         yield { type: 'grounding', groundingMetadata: grounding };
     }
     yield doneChunk(lastChunk, tally);
+}
+
+/**
+ * The loop, every chunk it yields but status lines journaled. A resume
+ * replays the checkpoint's journal first and goes on journaling after it.
+ */
+export async function* runGeminiToolLoop(
+    options: GeminiToolLoopOptions
+): AsyncGenerator<StreamChunk, void, undefined> {
+    const { start } = options;
+    if (start.kind === 'resume') {
+        yield* replayJournal(start.snapshot.journal);
+        yield resumingStatus(start.snapshot.loop.roundNumber);
+    }
+    // A copy: the checkpoint resumed from stays as it was
+    const journal: StreamChunk[] = start.kind === 'resume' ? [...start.snapshot.journal] : [];
+    yield* journaled(runRounds(options, journal), journal);
 }

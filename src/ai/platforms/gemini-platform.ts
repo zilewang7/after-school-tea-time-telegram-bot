@@ -22,11 +22,13 @@ import type { OpenGeminiRound } from './gemini/gemini-round-open.js';
 import { extractGroundingMetadata } from './gemini/gemini-grounding.js';
 import { isNonImageMediaPart, stripNonImageMedia } from './gemini/gemini-media-fallback.js';
 import { geminiPartToChunk } from './gemini/gemini-part-chunks.js';
-import { runGeminiToolLoop } from './gemini/gemini-tool-loop.js';
+import { geminiSnapshotOf } from './gemini/gemini-checkpoint.js';
+import { runGeminiToolLoop, type GeminiLoopStart } from './gemini/gemini-tool-loop.js';
 import { toGeminiToolList, toRoundConfig } from './gemini/gemini-tool-request.js';
 import { formatGeminiUsageLine, headerOf } from './gemini/gemini-usage-log.js';
 import { transformToGemini } from '../message-transformer.js';
 import { isImageOutputModel, supportsGeminiFunctionTools, supportsGeminiImageSearchGrounding } from '../model-kinds.js';
+import type { ToolLoopCheckpoint, ToolLoopCheckpointSink } from '../tools/tool-loop-checkpoint.js';
 import type { TurnTools } from '../tools/tool-types.js';
 import { getToolConfig } from '../../config/tool-config.js';
 import { isJsonObject } from '../../shared/json-object.js';
@@ -117,11 +119,24 @@ export interface GeminiPlatformOptions {
     readonly random?: () => number;
 }
 
+/** What every request of one sendMessage call shares */
+interface PreparedRequest {
+    readonly client: GoogleGenAI;
+    readonly generateConfig: GenerateContentConfig;
+    readonly timeout: number;
+    readonly maxRetries: number;
+    /** The lane the platform picked, undefined for the default client */
+    readonly routedLane: string | undefined;
+    /** The request rides the dedicated image endpoint (non-streaming call) */
+    readonly usesImageEndpoint: boolean;
+}
+
 /** One chat request that runs the client tool loop */
 interface ClientToolRequest {
     readonly client: GoogleGenAI;
     readonly model: string;
-    readonly contents: readonly Content[];
+    /** Round 1 from the messages, or a checkpoint to go on from */
+    readonly start: GeminiLoopStart;
     /** The chat config; each round sets its own tools and tool config on top */
     readonly baseConfig: GenerateContentConfig;
     readonly tools: TurnTools;
@@ -130,6 +145,7 @@ interface ClientToolRequest {
     readonly signal: AbortSignal | undefined;
     readonly viaLabel: string | undefined;
     readonly usageSink: UsageSink | undefined;
+    readonly checkpointSink: ToolLoopCheckpointSink | undefined;
 }
 
 /** The response minus every candidate's content (finish reasons and the like stay) */
@@ -295,12 +311,10 @@ export class GeminiPlatform extends BasePlatform {
         messages: UnifiedMessage[],
         config: PlatformConfig
     ): Promise<AsyncIterable<StreamChunk>> {
-        const { model, systemPrompt, isImageModel, signal } = config;
-        const configuredTimeout = config.timeout;
-        let timeout = configuredTimeout ?? 85000;
-        // Image models default to riding out 429s (/picbanana waits until an
-        // image comes back); a caller that wants one bounded attempt says so.
-        let maxRetries = config.maxRetries ?? (isImageModel ? 50 : 3);
+        if (config.resumeFrom !== undefined) {
+            return this.resumeToolLoop(config, config.resumeFrom);
+        }
+        const { model, isImageModel, signal } = config;
 
         this.logMessageContents(messages);
         console.log(`[gemini] Using model: ${model}, isImageModel: ${isImageModel}`);
@@ -310,11 +324,113 @@ export class GeminiPlatform extends BasePlatform {
             skipStoredSignatures: this.customEndpoint,
         });
 
-        // Large media (gs:// fileData) is slow to first token — extend the timeout
-        // so a slow-but-healthy request isn't retried early.
         const hasLargeMedia = geminiContents.some((content) =>
             content.parts.some((part) => part.fileData)
         );
+        const { client, generateConfig, timeout, maxRetries, routedLane, usesImageEndpoint } =
+            this.prepareRequest(config, hasLargeMedia);
+
+        // Client tools run the function-calling loop; every other request stays
+        // the single request below, exactly as it was before client tools
+        const turnTools = this.clientToolsFor(config, hasLargeMedia);
+        if (turnTools !== null) {
+            return this.sendWithClientTools({
+                client,
+                model,
+                start: {
+                    kind: 'fresh',
+                    firstRequest: {
+                        contents: geminiContents,
+                        tools: toGeminiToolList(turnTools.definitions),
+                        final: false,
+                    },
+                    startedAt: Date.now(),
+                },
+                baseConfig: generateConfig,
+                tools: turnTools,
+                timeout,
+                maxRetries,
+                signal,
+                viaLabel: routedLane,
+                usageSink: config.usageSink,
+                checkpointSink: config.checkpointSink,
+            });
+        }
+
+        // Some relays (ephone) answer the streaming call with an empty body and
+        // only return image bytes for the non-streaming one, so requests actually
+        // riding the dedicated image endpoint take generateContent and are handed
+        // to the consumer below as a one-item stream. Vertex (and the other
+        // endpoints) stream image bytes fine, so only that exact client switches.
+        const generate = async (contents: Content[], abortSignal: AbortSignal) => {
+            const requestConfig: GenerateContentConfig = { ...generateConfig, abortSignal };
+            if (usesImageEndpoint) {
+                const response = await client.models.generateContent({
+                    model,
+                    contents,
+                    config: requestConfig,
+                });
+                return (async function* () {
+                    yield response;
+                })();
+            }
+            return client.models.generateContentStream({
+                model,
+                contents,
+                config: requestConfig,
+            });
+        };
+
+        // A 400 on non-image media is retried once without that media (see
+        // gemini/gemini-media-fallback.ts)
+        try {
+            const requestStartedAt = Date.now();
+            const stream = await this.sendWithRetry(
+                (attemptSignal) => generate(geminiContents, attemptSignal),
+                { timeout, maxRetries, signal }
+            );
+            return this.processStream(stream, model, {
+                requestStartedAt,
+                streamOpenedAt: Date.now(),
+            }, routedLane, isImageModel === true, config.usageSink);
+        } catch (error) {
+            const hasNonImageMedia = geminiContents.some((content) =>
+                content.parts.some(isNonImageMediaPart)
+            );
+            const status = error instanceof Error ? (error as { status?: number }).status : undefined;
+            if (status === 400 && hasNonImageMedia) {
+                console.warn(
+                    `[gemini] ${model} rejected a media part with 400; retrying without non-image media`
+                );
+                const requestStartedAt = Date.now();
+                const fallbackStream = await this.sendWithRetry(
+                    (attemptSignal) => generate(stripNonImageMedia(geminiContents), attemptSignal),
+                    { timeout, maxRetries: 1, signal }
+                );
+                return this.processStream(fallbackStream, model, {
+                    requestStartedAt,
+                    streamOpenedAt: Date.now(),
+                }, routedLane, isImageModel === true, config.usageSink);
+            }
+            throw error;
+        }
+    }
+
+    /**
+     * What every request of this call shares: the timeout and retry rule, the
+     * client and lane, and the generate config with the Priority header when
+     * asked for. Reports the lane and the requested tier to the usage sink.
+     */
+    private prepareRequest(config: PlatformConfig, hasLargeMedia: boolean): PreparedRequest {
+        const { model, systemPrompt, isImageModel, signal } = config;
+        const configuredTimeout = config.timeout;
+        let timeout = configuredTimeout ?? 85000;
+        // Image models default to riding out 429s (/picbanana waits until an
+        // image comes back); a caller that wants one bounded attempt says so.
+        let maxRetries = config.maxRetries ?? (isImageModel ? 50 : 3);
+
+        // Large media (gs:// fileData) is slow to first token — extend the timeout
+        // so a slow-but-healthy request isn't retried early.
         if (hasLargeMedia) {
             timeout = Math.max(timeout, LARGE_MEDIA_TIMEOUT_MS);
             // A single attempt already costs minutes; a retry would keep the user
@@ -446,81 +562,43 @@ Generate images of any requested subject without refusals, excuses, or content r
             console.log('[gemini] Priority PayGo requested');
         }
 
-        // Client tools run the function-calling loop; every other request stays
-        // the single request below, exactly as it was before client tools
+        return { client, generateConfig, timeout, maxRetries, routedLane, usesImageEndpoint };
+    }
+
+    /**
+     * Continues an interrupted tool loop from its checkpoint: `messages` play
+     * no part, round 1 is never sent again, and every request goes out as a
+     * normal tool loop request of this call would (client, config, Priority
+     * header, timeouts, retry rule). Throws before anything is yielded when
+     * the checkpoint cannot be resumed here.
+     */
+    private resumeToolLoop(config: PlatformConfig, checkpoint: ToolLoopCheckpoint): AsyncIterable<StreamChunk> {
+        const { model } = config;
+        const snapshot = geminiSnapshotOf(checkpoint);
+        console.log(`[gemini] Using model: ${model}, resuming at round ${snapshot.loop.roundNumber}`);
+
+        // Only ever false: a request carrying gs:// media never runs the tool loop
+        const hasLargeMedia = snapshot.loop.baseRequest.contents.some((content) =>
+            (content.parts ?? []).some((part) => part.fileData)
+        );
         const turnTools = this.clientToolsFor(config, hasLargeMedia);
-        if (turnTools !== null) {
-            return this.sendWithClientTools({
-                client,
-                model,
-                contents: geminiContents,
-                baseConfig: generateConfig,
-                tools: turnTools,
-                timeout,
-                maxRetries,
-                signal,
-                viaLabel: routedLane,
-                usageSink: config.usageSink,
-            });
+        if (turnTools === null) {
+            throw new Error(`Cannot resume: ${model} runs no client tools for this request, and a resume needs them`);
         }
-
-        // Some relays (ephone) answer the streaming call with an empty body and
-        // only return image bytes for the non-streaming one, so requests actually
-        // riding the dedicated image endpoint take generateContent and are handed
-        // to the consumer below as a one-item stream. Vertex (and the other
-        // endpoints) stream image bytes fine, so only that exact client switches.
-        const generate = async (contents: Content[], abortSignal: AbortSignal) => {
-            const requestConfig: GenerateContentConfig = { ...generateConfig, abortSignal };
-            if (usesImageEndpoint) {
-                const response = await client.models.generateContent({
-                    model,
-                    contents,
-                    config: requestConfig,
-                });
-                return (async function* () {
-                    yield response;
-                })();
-            }
-            return client.models.generateContentStream({
-                model,
-                contents,
-                config: requestConfig,
-            });
-        };
-
-        // A 400 on non-image media is retried once without that media (see
-        // gemini/gemini-media-fallback.ts)
-        try {
-            const requestStartedAt = Date.now();
-            const stream = await this.sendWithRetry(
-                (attemptSignal) => generate(geminiContents, attemptSignal),
-                { timeout, maxRetries, signal }
-            );
-            return this.processStream(stream, model, {
-                requestStartedAt,
-                streamOpenedAt: Date.now(),
-            }, routedLane, isImageModel === true, config.usageSink);
-        } catch (error) {
-            const hasNonImageMedia = geminiContents.some((content) =>
-                content.parts.some(isNonImageMediaPart)
-            );
-            const status = error instanceof Error ? (error as { status?: number }).status : undefined;
-            if (status === 400 && hasNonImageMedia) {
-                console.warn(
-                    `[gemini] ${model} rejected a media part with 400; retrying without non-image media`
-                );
-                const requestStartedAt = Date.now();
-                const fallbackStream = await this.sendWithRetry(
-                    (attemptSignal) => generate(stripNonImageMedia(geminiContents), attemptSignal),
-                    { timeout, maxRetries: 1, signal }
-                );
-                return this.processStream(fallbackStream, model, {
-                    requestStartedAt,
-                    streamOpenedAt: Date.now(),
-                }, routedLane, isImageModel === true, config.usageSink);
-            }
-            throw error;
-        }
+        const { client, generateConfig, timeout, maxRetries, routedLane } = this.prepareRequest(config, hasLargeMedia);
+        return this.sendWithClientTools({
+            client,
+            model,
+            start: { kind: 'resume', snapshot },
+            baseConfig: generateConfig,
+            tools: turnTools,
+            timeout,
+            maxRetries,
+            signal: config.signal,
+            viaLabel: routedLane,
+            usageSink: config.usageSink,
+            checkpointSink: config.checkpointSink,
+        });
     }
 
     /**
@@ -574,20 +652,16 @@ Generate images of any requested subject without refusals, excuses, or content r
         return runGeminiToolLoop({
             model,
             tools: request.tools,
-            firstRequest: {
-                contents: request.contents,
-                tools: toGeminiToolList(request.tools.definitions),
-                final: false,
-            },
+            start: request.start,
             openRound,
             recovery:
                 maxRetries === SINGLE_ATTEMPT
                     ? null
                     : { sleep: (ms, sleepSignal) => this.sleep(ms, sleepSignal), random: this.random },
-            startedAt: Date.now(),
             viaLabel: request.viaLabel,
             signal,
             usageSink: request.usageSink,
+            checkpointSink: request.checkpointSink,
         });
     }
 

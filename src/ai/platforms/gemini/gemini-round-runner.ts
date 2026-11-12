@@ -66,6 +66,11 @@ export interface RecoverableRoundOptions {
     /** The reply's recovery counters before this round */
     readonly recoveryState: ReplyRecoveryState;
     readonly usageSink: UsageSink | undefined;
+    /**
+     * A status line is on screen as the round begins (a resume's): it goes
+     * once the stream opens, and is replaced or cleared like a retry status
+     */
+    readonly statusOnScreen?: boolean;
 }
 
 export interface RecoveredRound {
@@ -157,14 +162,14 @@ export async function* runRecoverableRound(
     let request = options.request;
     let fallbackAvailable = options.allowFallback;
     let counters: RecoveryCounters = { reply: options.recoveryState, round: FRESH_ROUND_RECOVERY };
-    // A retry status is on screen until the next attempt opens
-    let statusShown = false;
+    // A status line is on screen until the next attempt opens
+    let statusShown = options.statusOnScreen === true;
     // A failed attempt showed thinking: the retry's thinking follows a marker
     let markerPending = false;
 
     for (let attempt = 1; ; attempt++) {
         if (signal?.aborted) throw new Error('Aborted');
-        if (statusShown) yield retryingStatus(roundNumber, attempt);
+        if (attempt > 1 && statusShown) yield retryingStatus(roundNumber, attempt);
         const outcome: AttemptOutcome = yield* runAttempt({
             openRound: options.openRound,
             request,
@@ -200,7 +205,11 @@ export async function* runRecoverableRound(
                 continue;
             }
         }
-        if (recovery === null) throw failure.error;
+        if (recovery === null) {
+            // Only a resume's status line can be on screen here
+            if (statusShown) yield clearedStatus();
+            throw failure.error;
+        }
 
         const decision = decideRecovery(failure, counters, recovery.random);
         const facts = { roundNumber, phase: failure.phase, kind: decision.kind, attempt };
