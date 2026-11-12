@@ -126,6 +126,22 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
                 await expectGone(reply, 'expired');
             });
             expect(log.has('[resume] checkpoint missing reason=expired'), 'the log names the reason');
+
+            // The answer comes too late for Telegram: the dropped checkpoint still leaves the buttons
+            const late = await failedReply();
+            await withFakeClock(async (jump) => {
+                jump(CHECKPOINT_REGISTRY_LIMITS.ttlMs + 60_000);
+                bench.hooks.push({
+                    method: 'answerCallbackQuery',
+                    when: (payload) => payload.text === checks.CHECKPOINT_GONE_NOTICE,
+                    fail: true,
+                });
+                telegram.reset();
+                await bench.press(late, 'resp:continue');
+                const redrawn = json(telegram.callsOf('editMessageReplyMarkup').at(-1)?.payload.reply_markup);
+                expect(redrawn.includes('重试') && !redrawn.includes('继续'), `a failed answer: the buttons still lose 继续 (got ${redrawn})`);
+                expect(!bench.state.isReplyRerunClaimed(late.chatId, late.firstMessageId), 'a failed answer: the claim is free');
+            });
         }),
     },
     {
@@ -363,14 +379,15 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
     },
     {
         name: 'case 13: a failed answer, startRetry returning null and an unreadable trigger all leave the checkpoint and free the claim',
-        body: quietCase(async () => {
+        body: quietCase(async (log) => {
             const reply = await failedReply();
 
             // The answer fails: nothing was taken yet
             bench.hooks.push({ method: 'answerCallbackQuery', when: (payload) => payload.text === '继续中...', fail: true });
             telegram.reset();
             const thrown = await bench.press(reply, 'resp:continue');
-            expect(thrown instanceof Error, `the failed answer reaches the update handler (got ${String(thrown)})`);
+            // The click works off the update loop: its failure is logged there
+            expect(thrown === null && log.has('[response-menu] Continue failed'), `the failed answer is logged (got ${String(thrown)})`);
             expect(bench.entryOf(reply)?.failedVersionId === 1 && bench.markOf(reply)?.versionId === 1, 'answer failed: the checkpoint stays');
             expect(!bench.state.isReplyRerunClaimed(reply.chatId, reply.firstMessageId), 'answer failed: the claim is free');
 
@@ -422,6 +439,92 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
                 message: '@AfterSchoolTeatimeBot 查一下',
             });
             await expectContinues(reply, 'trigger back');
+        }),
+    },
+    {
+        name: 'case 13: a version switch holds the claim: 继续 and 重试 pressed meanwhile only hear 正在处理, and the switch erases nothing',
+        body: quietCase(async () => {
+            // Version 1 answers; the retry fails with a checkpoint as version 2
+            const chatId = takeChatId();
+            vertex.reset([answer('第一版。')]);
+            const reply = await bench.ask(chatId, '@AfterSchoolTeatimeBot 说点什么');
+            vertex.reset([roundOf({ label: 'r1', calls: [webLookup('a')] }), failingRound()]);
+            await bench.retryReply(reply);
+            expect(bench.entryOf(reply)?.failedVersionId === 2, 'version 2 is kept');
+
+            // The switch back to version 1 hangs on its first edit
+            const held = gate();
+            const caught = gate();
+            bench.hooks.push({ method: 'editMessageText', when: () => true, onCaught: () => caught.open(), holdUntil: held.opened });
+            telegram.reset();
+            await bench.press(reply, 'resp:prev');
+            await caught.opened;
+            expect(bench.state.isReplyRerunClaimed(reply.chatId, reply.firstMessageId), 'the switch holds the claim');
+            for (const [data, notice] of [
+                ['resp:continue', CLAIMED_NOTICE],
+                ['resp:retry', CLAIMED_NOTICE],
+                ['resp:next', STARTING_NOTICE],
+                ['resp:stop', STARTING_NOTICE],
+            ] as const) {
+                telegram.reset();
+                await bench.press(reply, data);
+                expect(json(bench.toasts()) === json([notice]), `${data} during the switch answers ${notice} (got ${json(bench.toasts())})`);
+            }
+            expect(vertex.requests.length === 2 && kept(reply), 'nothing was resumed or retried, the checkpoint stays');
+
+            held.open();
+            await bench.settled(reply, 'the switch to end');
+            const afterSwitch = await bench.stored(reply);
+            expect(
+                afterSwitch.getVersions().length === 2 && afterSwitch.currentVersionIndex === 0,
+                `the switch saved both versions, version 1 on screen (got ${afterSwitch.getVersions().length} at ${afterSwitch.currentVersionIndex})`
+            );
+
+            // Back on the failed version it continues as usual
+            await bench.press(reply, 'resp:next');
+            await bench.settled(reply, 'the switch back to end');
+            await expectContinues(reply, 'after the switches');
+            expect((await bench.stored(reply)).getVersions().length === 3, 'the resumed version is the third one');
+        }),
+    },
+    {
+        name: 'case 13: the checks of a 继续 click run off the update loop: a slow membership lookup holds up nothing else',
+        body: quietCase(async () => {
+            process.env.ACCESS_TIERS = '1';
+            process.env.ACCESS_GROUP_IDS = String(ROSTER_GROUP_ID);
+            const asked = gate();
+            const answered = gate();
+            setAccessMembershipLookup(async () => {
+                asked.open();
+                await answered.opened;
+                return { status: 'left' };
+            });
+            try {
+                const reply = await failedReply();
+                const other = await failedReply();
+                telegram.reset();
+                // Telegram is slow to say whether the presser is a member
+                await bench.deliverPress(reply, 'resp:continue', TRIAL_USER_ID);
+                await asked.opened;
+                expect(bench.toasts().length === 0, 'the update handler returned before the lookup answered');
+                expect(bench.state.isReplyRerunClaimed(reply.chatId, reply.firstMessageId), 'the click holds its claim meanwhile');
+
+                // Other updates are handled in the meantime
+                await bench.press(reply, 'resp:stop');
+                expect(json(bench.toasts()) === json([STARTING_NOTICE]), `a stop on the same reply is answered (got ${json(bench.toasts())})`);
+                await expectContinues(other, 'another reply meanwhile');
+
+                telegram.reset();
+                answered.open();
+                await bench.settled(reply, 'the click to end');
+                expect(json(bench.toasts()) === json([checks.MODEL_CHANGED_NOTICE]), `then the click gets its notice (got ${json(bench.toasts())})`);
+                expect(kept(reply), 'and the checkpoint stays');
+            } finally {
+                answered.open();
+                process.env.ACCESS_TIERS = '0';
+                delete process.env.ACCESS_GROUP_IDS;
+                setAccessMembershipLookup(null);
+            }
         }),
     },
     {

@@ -30,9 +30,9 @@ import {
 // Callback data prefix for our buttons
 const CALLBACK_PREFIX = 'resp:';
 
-/** A second retry or continue click while the first one is still being handled */
+/** A retry or continue click while a retry, a continue or a version switch holds the claim */
 const RERUN_CLAIMED_NOTICE = '正在处理';
-/** A click between a retry's claim and its PROCESSING write */
+/** Stop, previous or next while the claim is held and nothing is generating yet */
 const RERUN_STARTING_NOTICE = '正在启动，请稍后再点';
 /** A button whose action this version of the bot does not know */
 const UNKNOWN_ACTION_NOTICE = '按钮已失效，已刷新';
@@ -136,8 +136,8 @@ export const registerResponseCallbacks = (bot: Bot): void => {
             .with('stop', () => handleStop(ctx))
             .with('retry', () => handleRetry(ctx))
             .with('continue', () => handleContinue(ctx))
-            .with('prev', () => handlePrev(ctx))
-            .with('next', () => handleNext(ctx))
+            .with('prev', () => handleSwitch(ctx, 'prev'))
+            .with('next', () => handleSwitch(ctx, 'next'))
             .otherwise(() => handleUnknownAction(ctx));
     });
 };
@@ -185,33 +185,39 @@ const handleStop = async (ctx: Context): Promise<void> => {
         return;
     }
 
-    // A retry or continue was claimed but has not written PROCESSING yet: there
-    // is nothing to stop so far, and the refresh below would put the old
-    // version back over the reply that is starting
-    if (
-        response.buttonState !== ButtonState.PROCESSING &&
-        isReplyRerunClaimed(msg.chat.id, response.messageId)
-    ) {
-        await ctx.answerCallbackQuery({ text: RERUN_STARTING_NOTICE });
-        return;
-    }
+    const chatId = msg.chat.id;
+    const firstMessageId = response.messageId;
 
     // Self-correction: if the response is no longer in PROCESSING state, the
     // stream already ended — the message may be stuck in an intermediate state
     // (e.g. the final edit was lost to a 429). Refresh text AND buttons to the
     // final state saved in the database.
     if (response.buttonState !== ButtonState.PROCESSING) {
-        await ctx.answerCallbackQuery({ text: '已结束，刷新到最新状态' });
-        setImmediate(async () => {
-            const [refreshErr, refreshed] = await to(
-                refreshToFinalState(ctx.api, msg.chat.id, response.messageId)
-            );
-            if (refreshErr || !refreshed) {
-                console.error('[response-menu] Refresh to final state failed:', refreshErr);
-                // Fall back to at least fixing the buttons
-                await refreshButtonsToCurrent(ctx, response, msg.message_id);
-            }
-        });
+        // The refresh re-sends messages and saves the versions it read, so it
+        // takes the claim. A retry or continue that holds it has not written
+        // PROCESSING yet: nothing to stop so far, and a refresh would put the
+        // old version back over the reply that is starting
+        if (!tryClaimReplyRerun(chatId, firstMessageId)) {
+            await ctx.answerCallbackQuery({ text: RERUN_STARTING_NOTICE });
+            return;
+        }
+        let refreshDetached = false;
+        try {
+            await ctx.answerCallbackQuery({ text: '已结束，刷新到最新状态' });
+            setImmediate(() => {
+                void runHoldingClaim(chatId, firstMessageId, 'Refresh to final state', async () => {
+                    const [refreshErr, refreshed] = await to(refreshToFinalState(ctx.api, chatId, firstMessageId));
+                    if (refreshErr || !refreshed) {
+                        console.error('[response-menu] Refresh to final state failed:', refreshErr);
+                        // Fall back to at least fixing the buttons
+                        await refreshButtonsToCurrent(ctx, response, msg.message_id);
+                    }
+                });
+            });
+            refreshDetached = true;
+        } finally {
+            if (!refreshDetached) releaseReplyRerun(chatId, firstMessageId);
+        }
         return;
     }
 
@@ -220,18 +226,23 @@ const handleStop = async (ctx: Context): Promise<void> => {
 
     // Execute stop asynchronously
     setImmediate(async () => {
-        const [stopErr, stopped] = await to(stopResponse(msg.chat.id, response.messageId));
+        const [stopErr, stopped] = await to(stopResponse(chatId, firstMessageId));
         if (stopErr) {
             console.error('[response-menu] Stop failed:', stopErr);
             return;
         }
         // A claimed run that already ended owns the stored state; only a
         // reply nobody runs any more is made retryable here
-        if (!stopped && !isReplyRerunClaimed(msg.chat.id, response.messageId)) {
-            // PROCESSING in DB but no active session (e.g. bot restarted
-            // mid-stream): mark retryable and refresh the buttons
-            response.buttonState = ButtonState.RETRY_ONLY;
-            await to(response.save());
+        if (!stopped && !isReplyRerunClaimed(chatId, firstMessageId)) {
+            // The row as it is now: a reply that ended while the stop was on
+            // its way has saved its own final state (and may offer "继续")
+            const [reloadErr] = await to(response.reload());
+            if (!reloadErr && response.buttonState === ButtonState.PROCESSING) {
+                // PROCESSING in DB but no active session (e.g. bot restarted
+                // mid-stream): mark retryable
+                response.buttonState = ButtonState.RETRY_ONLY;
+                await to(response.save());
+            }
             await refreshButtonsToCurrent(ctx, response, msg.message_id);
         }
     });
@@ -291,7 +302,7 @@ const handleRetry = async (ctx: Context): Promise<void> => {
 
         // Execute retry asynchronously; it holds the claim until it has ended
         setImmediate(() => {
-            void runRetryHoldingClaim(ctx, handler, chatId, firstMessageId);
+            void runHoldingClaim(chatId, firstMessageId, 'Retry', () => handler(ctx, firstMessageId));
         });
         retryDetached = true;
     } finally {
@@ -299,17 +310,20 @@ const handleRetry = async (ctx: Context): Promise<void> => {
     }
 };
 
-/** Run a claimed retry to its end, then give the claim back whatever happened */
-const runRetryHoldingClaim = async (
-    ctx: Context,
-    handler: RetryHandler,
+/**
+ * Run claimed work to its end off the update loop, then give the claim back
+ * whatever happened
+ */
+const runHoldingClaim = async (
     chatId: number,
-    firstMessageId: number
+    firstMessageId: number,
+    label: string,
+    work: () => Promise<unknown>
 ): Promise<void> => {
     try {
-        const [retryErr] = await to(handler(ctx, firstMessageId));
-        if (retryErr) {
-            console.error('[response-menu] Retry failed:', retryErr);
+        const [workErr] = await to(work());
+        if (workErr) {
+            console.error(`[response-menu] ${label} failed:`, workErr);
         }
     } finally {
         releaseReplyRerun(chatId, firstMessageId);
@@ -318,10 +332,10 @@ const runRetryHoldingClaim = async (
 
 /**
  * Continue button handler (design 2026-1112-1123 §6.4, §7.3). The order:
- * look the reply up; claim it with no await in between; check while only
- * looking at the kept checkpoint; then either answer why not and give the
- * claim back, or answer, take the checkpoint and hold the claim until the
- * resumed reply has ended.
+ * look the reply up; claim it with no await in between; then, off the update
+ * loop, check while only looking at the kept checkpoint and either answer why
+ * not, or answer, take the checkpoint and run the resumed reply. The claim is
+ * held until all of that has ended.
  */
 const handleContinue = async (ctx: Context): Promise<void> => {
     const msg = ctx.callbackQuery?.message;
@@ -345,161 +359,130 @@ const handleContinue = async (ctx: Context): Promise<void> => {
         return;
     }
 
-    // Released below on every way out, unless the resumed reply took it over
-    let continueDetached = false;
+    // The checks may have to ask Telegram whether the presser is a member of
+    // an access group (seconds when Telegram is slow), and updates are handled
+    // one at a time: everything after the claim runs off the update loop, and
+    // the answer goes out from there once the checks know what to say
+    setImmediate(() => {
+        void runHoldingClaim(chatId, firstMessageId, 'Continue', () =>
+            continueHoldingClaim(ctx, response, msg.message_id)
+        );
+    });
+};
+
+/** A continue click whose claim is held: the checks, the answer and the resumed reply */
+const continueHoldingClaim = async (ctx: Context, response: BotResponse, messageId: number): Promise<void> => {
+    // The row as it is now that the claim is held: a run that ended while the
+    // click was being looked up has saved its versions since
+    const [reloadErr] = await to(response.reload());
+    if (reloadErr) {
+        await ctx.answerCallbackQuery({ text: '找不到消息记录' });
+        return;
+    }
+
+    if (response.buttonState === ButtonState.PROCESSING) {
+        await ctx.answerCallbackQuery({ text: '还在生成中' });
+        await refreshButtonsToCurrent(ctx, response, messageId);
+        return;
+    }
+
+    const handler = continueHandler;
+    if (!handler) {
+        console.error('[response-menu] Continue handler not set');
+        await ctx.answerCallbackQuery({ text: '继续功能未配置' });
+        return;
+    }
+
+    const [checkErr, verdict] = await to(handler(ctx, response));
+    if (checkErr) {
+        // Nothing was taken: a later click can still continue
+        console.error('[response-menu] Continue check failed:', checkErr);
+        await ctx.answerCallbackQuery({ text: CONTINUE_CHECK_FAILED_NOTICE });
+        return;
+    }
+
+    await match(verdict)
+        .with({ kind: 'keep' }, async ({ notice }) => {
+            await ctx.answerCallbackQuery({ text: notice });
+        })
+        .with({ kind: 'gone' }, async ({ notice }) => {
+            // The checks dropped the checkpoint and cleared the mark: the
+            // buttons lose "继续" even when the answer came too late for Telegram
+            const [answerErr] = await to(ctx.answerCallbackQuery({ text: notice }));
+            if (answerErr) {
+                console.warn('[response-menu] Continue answer failed:', answerErr.message);
+            }
+            await refreshButtonsToCurrent(ctx, response, messageId);
+        })
+        .with({ kind: 'ready' }, async ({ start }) => {
+            // A failed answer leaves the checkpoint where it is
+            await ctx.answerCallbackQuery({ text: '继续中...' });
+            // start() takes the checkpoint before it first waits
+            const outcome = await start();
+            if (outcome === 'gone') {
+                // It went missing between the checks and the take: as a gone
+                // click, but the toast already went out
+                await refreshButtonsToCurrent(ctx, response, messageId);
+            }
+        })
+        .exhaustive();
+};
+
+/**
+ * Previous / next version button. The switch edits the reply's messages and,
+ * at its end, saves the versions it read at its start, so it takes the claim
+ * a retry and a continue take: a rerun started in the middle of a switch
+ * would be erased by that save.
+ */
+const handleSwitch = async (ctx: Context, direction: 'prev' | 'next'): Promise<void> => {
+    const msg = ctx.callbackQuery?.message;
+    if (!msg) {
+        await ctx.answerCallbackQuery({ text: '消息无效' });
+        return;
+    }
+
+    const [err, response] = await to(findBotResponseByMessageId(msg.chat.id, msg.message_id));
+    if (err || !response) {
+        await ctx.answerCallbackQuery({ text: '找不到消息记录' });
+        return;
+    }
+
+    // A retry, a continue or another switch is starting or running
+    const chatId = msg.chat.id;
+    const firstMessageId = response.messageId;
+    if (!tryClaimReplyRerun(chatId, firstMessageId)) {
+        await ctx.answerCallbackQuery({ text: rerunNoticeOf(response) });
+        return;
+    }
+
+    // Released below on every way out, unless the detached switch took it over
+    let switchDetached = false;
     try {
-        if (response.buttonState === ButtonState.PROCESSING) {
-            await ctx.answerCallbackQuery({ text: '还在生成中' });
+        const versions = response.getVersions();
+        const currentIndex = response.currentVersionIndex;
+        const atEnd = direction === 'prev' ? currentIndex <= 0 : currentIndex >= versions.length - 1;
+
+        // Self-correction: if there is nowhere to go, refresh buttons
+        if (atEnd) {
+            await ctx.answerCallbackQuery({ text: direction === 'prev' ? '已是第一个版本' : '已是最新版本' });
             await refreshButtonsToCurrent(ctx, response, msg.message_id);
             return;
         }
 
-        const handler = continueHandler;
-        if (!handler) {
-            console.error('[response-menu] Continue handler not set');
-            await ctx.answerCallbackQuery({ text: '继续功能未配置' });
-            return;
-        }
+        // Answer callback immediately with version info
+        const targetNumber = direction === 'prev' ? currentIndex : currentIndex + 2;
+        await ctx.answerCallbackQuery({ text: `切换到版本 ${targetNumber}/${versions.length}` });
 
-        const [checkErr, verdict] = await to(handler(ctx, response));
-        if (checkErr) {
-            // Nothing was taken: a later click can still continue
-            console.error('[response-menu] Continue check failed:', checkErr);
-            await ctx.answerCallbackQuery({ text: CONTINUE_CHECK_FAILED_NOTICE });
-            return;
-        }
-
-        await match(verdict)
-            .with({ kind: 'keep' }, async ({ notice }) => {
-                await ctx.answerCallbackQuery({ text: notice });
-            })
-            .with({ kind: 'gone' }, async ({ notice }) => {
-                await ctx.answerCallbackQuery({ text: notice });
-                // The checks cleared the mark: the redraw leaves "继续" out
-                await refreshButtonsToCurrent(ctx, response, msg.message_id);
-            })
-            .with({ kind: 'ready' }, async ({ start }) => {
-                // A failed answer leaves the checkpoint where it is
-                await ctx.answerCallbackQuery({ text: '继续中...' });
-                // start() takes the checkpoint before it first waits; the
-                // resumed reply runs on without holding up this update
-                void runContinueHoldingClaim(ctx, start(), response, msg.message_id);
-                continueDetached = true;
-            })
-            .exhaustive();
+        // Execute switch asynchronously; it holds the claim until it has ended
+        setImmediate(() => {
+            void runHoldingClaim(chatId, firstMessageId, 'Version switch', () =>
+                switchVersion(ctx, firstMessageId, direction)
+            );
+        });
+        switchDetached = true;
     } finally {
-        if (!continueDetached) releaseReplyRerun(chatId, firstMessageId);
+        if (!switchDetached) releaseReplyRerun(chatId, firstMessageId);
     }
-};
-
-/** Wait for a resumed reply to end, then give the claim back whatever happened */
-const runContinueHoldingClaim = async (
-    ctx: Context,
-    running: Promise<ContinueStartOutcome>,
-    response: BotResponse,
-    messageId: number
-): Promise<void> => {
-    try {
-        const [continueErr, outcome] = await to(running);
-        if (continueErr) {
-            console.error('[response-menu] Continue failed:', continueErr);
-        } else if (outcome === 'gone') {
-            // It expired between the checks and the take: as a gone click, but
-            // the toast already went out, so only the buttons lose "继续"
-            await refreshButtonsToCurrent(ctx, response, messageId);
-        }
-    } finally {
-        releaseReplyRerun(response.chatId, response.messageId);
-    }
-};
-
-/**
- * Previous version button handler - async execution
- */
-const handlePrev = async (ctx: Context): Promise<void> => {
-    const msg = ctx.callbackQuery?.message;
-    if (!msg) {
-        await ctx.answerCallbackQuery({ text: '消息无效' });
-        return;
-    }
-
-    const [err, response] = await to(findBotResponseByMessageId(msg.chat.id, msg.message_id));
-    if (err || !response) {
-        await ctx.answerCallbackQuery({ text: '找不到消息记录' });
-        return;
-    }
-
-    // A retry or continue is starting or running: switching now would edit
-    // the messages it streams into
-    if (isReplyRerunClaimed(msg.chat.id, response.messageId)) {
-        await ctx.answerCallbackQuery({ text: rerunNoticeOf(response) });
-        return;
-    }
-
-    const versions = response.getVersions();
-    const currentIndex = response.currentVersionIndex;
-
-    // Self-correction: if can't go prev, refresh buttons
-    if (currentIndex <= 0) {
-        await ctx.answerCallbackQuery({ text: '已是第一个版本' });
-        await refreshButtonsToCurrent(ctx, response, msg.message_id);
-        return;
-    }
-
-    // Answer callback immediately with version info
-    await ctx.answerCallbackQuery({ text: `切换到版本 ${currentIndex}/${versions.length}` });
-
-    // Execute switch asynchronously
-    setImmediate(async () => {
-        const [switchErr] = await to(switchVersion(ctx, response.messageId, 'prev'));
-        if (switchErr) {
-            console.error('[response-menu] Version switch failed:', switchErr);
-        }
-    });
-};
-
-/**
- * Next version button handler - async execution
- */
-const handleNext = async (ctx: Context): Promise<void> => {
-    const msg = ctx.callbackQuery?.message;
-    if (!msg) {
-        await ctx.answerCallbackQuery({ text: '消息无效' });
-        return;
-    }
-
-    const [err, response] = await to(findBotResponseByMessageId(msg.chat.id, msg.message_id));
-    if (err || !response) {
-        await ctx.answerCallbackQuery({ text: '找不到消息记录' });
-        return;
-    }
-
-    // Same as prev: never switch under a starting or running retry
-    if (isReplyRerunClaimed(msg.chat.id, response.messageId)) {
-        await ctx.answerCallbackQuery({ text: rerunNoticeOf(response) });
-        return;
-    }
-
-    const versions = response.getVersions();
-    const currentIndex = response.currentVersionIndex;
-
-    // Self-correction: if can't go next, refresh buttons
-    if (currentIndex >= versions.length - 1) {
-        await ctx.answerCallbackQuery({ text: '已是最新版本' });
-        await refreshButtonsToCurrent(ctx, response, msg.message_id);
-        return;
-    }
-
-    // Answer callback immediately with version info
-    await ctx.answerCallbackQuery({ text: `切换到版本 ${currentIndex + 2}/${versions.length}` });
-
-    // Execute switch asynchronously
-    setImmediate(async () => {
-        const [switchErr] = await to(switchVersion(ctx, response.messageId, 'next'));
-        if (switchErr) {
-            console.error('[response-menu] Version switch failed:', switchErr);
-        }
-    });
 };
 
 export interface ResponseButtonOptions {
