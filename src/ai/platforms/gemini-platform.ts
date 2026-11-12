@@ -22,6 +22,7 @@ import { openFirstGeminiRound, type OpenGeminiRound } from './gemini/gemini-firs
 import { extractGroundingMetadata } from './gemini/gemini-grounding.js';
 import { isNonImageMediaPart, stripNonImageMedia } from './gemini/gemini-media-fallback.js';
 import { geminiPartToChunk } from './gemini/gemini-part-chunks.js';
+import { createThoughtSummaryFilter, thoughtSummaryLogLine } from './gemini/gemini-thought-summary.js';
 import { runGeminiToolLoop } from './gemini/gemini-tool-loop.js';
 import { toGeminiToolList, toRoundConfig } from './gemini/gemini-tool-request.js';
 import { formatGeminiUsageLine, headerOf } from './gemini/gemini-usage-log.js';
@@ -601,6 +602,8 @@ Generate images of any requested subject without refusals, excuses, or content r
         let maxChunkGapMs = 0;
         let maxChunkGapAtMs: number | null = null;
         let previousChunkAt: number | null = null;
+        // One request is one round: the filter's last block flushes at the end
+        const thoughtSummary = createThoughtSummaryFilter();
 
         for await (const chunk of stream) {
             const chunkAt = Date.now();
@@ -623,7 +626,14 @@ Generate images of any requested subject without refusals, excuses, or content r
                         firstPartAt ??= Date.now();
                         if (streamChunk.type === 'thinking') {
                             firstThinkAt ??= Date.now();
-                        } else if (streamChunk.type === 'text') {
+                            // Only the summarizer's summaries are shown; its own CoT is not
+                            const cleaned = thoughtSummary.push(streamChunk.content ?? '');
+                            if (cleaned !== '') {
+                                yield { type: 'thinking', content: cleaned };
+                            }
+                            continue;
+                        }
+                        if (streamChunk.type === 'text') {
                             firstTextAt ??= Date.now();
                         }
                         yield streamChunk;
@@ -641,6 +651,15 @@ Generate images of any requested subject without refusals, excuses, or content r
                     groundingMetadata,
                 };
             }
+        }
+
+        const thoughtTail = thoughtSummary.flush();
+        if (thoughtTail !== '') {
+            yield { type: 'thinking', content: thoughtTail };
+        }
+        const thoughtSummaryLine = thoughtSummaryLogLine(model, thoughtSummary.stats());
+        if (thoughtSummaryLine !== null) {
+            console.log(thoughtSummaryLine);
         }
 
         // The single request is one round: the last chunk carries its usage

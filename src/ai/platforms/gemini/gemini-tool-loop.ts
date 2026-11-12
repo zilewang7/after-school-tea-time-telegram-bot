@@ -55,6 +55,7 @@ import {
     type GeminiToolRound,
 } from './gemini-round-contents.js';
 import { consumeGeminiRound, type CollectedGeminiRound } from './gemini-round-stream.js';
+import { createThoughtSummaryFilter, thoughtSummaryLogLine } from './gemini-thought-summary.js';
 import { hasFunctionDeclarations, type GeminiRoundRequest } from './gemini-tool-request.js';
 import {
     formatGeminiTurnSummary,
@@ -147,6 +148,8 @@ export async function* runGeminiToolLoop(
     let freeRounds = 0;
     const tally = createToolUsageTally();
     const separator = createRoundTextSeparator();
+    // One filter per reply: the summarizer-stream decision holds across rounds
+    const thoughtSummary = createThoughtSummaryFilter();
     const toolRounds: GeminiToolRound[] = [];
     const roundUsages: GeminiRequestUsage[] = [];
     const groundings: GroundingData[] = [];
@@ -159,7 +162,7 @@ export async function* runGeminiToolLoop(
 
     for (let roundNumber = 1; ; roundNumber++) {
         separator.startRound();
-        const round = yield* consumeGeminiRound(opened, separator, viaLabel);
+        const round = yield* consumeGeminiRound(opened, separator, viaLabel, thoughtSummary);
         lastChunk = round.lastChunk;
         groundings.push(...round.groundings);
         roundUsages.push(round.usage);
@@ -290,6 +293,10 @@ export async function* runGeminiToolLoop(
         opened = await openRound(request);
     }
 
+    const thoughtSummaryLine = thoughtSummaryLogLine(model, thoughtSummary.stats());
+    if (thoughtSummaryLine !== null) {
+        console.log(thoughtSummaryLine);
+    }
     console.log(formatGeminiTurnSummary(model, roundUsages, executedCallCount, startedAt));
     const grounding = mergeGroundingData(groundings);
     if (grounding) {

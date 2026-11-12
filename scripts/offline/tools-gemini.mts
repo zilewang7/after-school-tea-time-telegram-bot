@@ -13,6 +13,7 @@ import http from 'node:http';
 import https from 'node:https';
 import { FinishReason, GoogleGenAI } from '@google/genai';
 import { expect, reportResults, runCase, type CaseResult } from './harness.mts';
+import { THOUGHT_SUMMARY_FIXTURES, type ThoughtSummaryFixture } from './support/thought-summary-fixtures.mts';
 import type { StreamChunk, UnifiedMessage } from '../../src/ai/types.js';
 import type { ToolHandler, ToolResult, TurnTools } from '../../src/ai/tools/index.js';
 
@@ -359,6 +360,25 @@ const textOf = (chunks: readonly StreamChunk[], type: 'text' | 'thinking' = 'tex
         .filter((chunk) => chunk.type === type)
         .map((chunk) => chunk.content ?? '')
         .join('');
+
+// ---- thought summary fixtures (support/thought-summary-fixtures.mts) ----
+
+/** One real production summarizer block: the raw leak and the summaries to keep */
+const thoughtFixture = (index: number): ThoughtSummaryFixture => {
+    const fixture = THOUGHT_SUMMARY_FIXTURES[index];
+    if (fixture === undefined) throw new Error(`thought summary fixture ${index} is missing`);
+    return fixture;
+};
+
+/** `text` cut into `count` near-equal pieces, as the upstream streams it */
+const splitText = (text: string, count: number): string[] =>
+    Array.from({ length: count }, (_, index) =>
+        text.slice(Math.floor((text.length * index) / count), Math.floor((text.length * (index + 1)) / count))
+    );
+
+/** The reply's thought-summary log line, or '' when the filter never logged */
+const thoughtSummaryLineOf = (lines: readonly string[]): string =>
+    lines.find((line) => line.includes('thought summaries filtered')) ?? '';
 
 const contentsOf = (request: RecordedRequest | undefined): Array<Record<string, unknown>> =>
     asArray(request?.body.contents).map(asRecord);
@@ -1522,6 +1542,121 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
                     `the no-cost mode is logged (got ${json(lines)})`
                 );
             });
+        },
+    },
+    {
+        name: 'thought summary (single request): the summaries show, the summarizer scaffold never does',
+        body: async () => {
+            const fixture = thoughtFixture(0);
+            const [first, second, third] = splitText(fixture.raw, 3);
+            const answer = 'The shortcut is shared ideographs.';
+            reset([
+                sse([
+                    event([thoughtPart(first ?? '')]),
+                    event([thoughtPart(second ?? '')]),
+                    event([thoughtPart(third ?? ''), textPart(answer)], { finishReason: 'STOP' }),
+                ]),
+            ]);
+
+            const { chunks, lines } = await runTurn({});
+
+            expect(
+                textOf(chunks, 'thinking') === fixture.expected,
+                `only the summary shows (got ${json(textOf(chunks, 'thinking'))})`
+            );
+            expect(textOf(chunks) === answer, `the answer streams (got ${json(textOf(chunks))})`);
+            expect(
+                canonical(donePartsOf(chunks)) === canonical([thoughtPart(third ?? ''), textPart(answer)]),
+                `rawResponse keeps the raw thought part, not the filtered text (got ${json(donePartsOf(chunks))})`
+            );
+            expect(json(donePartsOf(chunks)).includes('Final Polish'), 'the scaffold is still in the stored rawResponse');
+            expect(doneChunksOf(chunks).length === 1 && chunks.at(-1)?.type === 'done', 'one done, last');
+            expect(
+                thoughtSummaryLineOf(lines) ===
+                    `[gemini] gemini-3.8-flash thought summaries filtered raw=${fixture.raw.length} ` +
+                        `clean=${fixture.expected.length} blocks=1 summaries=1 dropped=0`,
+                `the filter logs its counts (got ${json(thoughtSummaryLineOf(lines))})`
+            );
+        },
+    },
+    {
+        name: 'thought summary (tool loop): each round flushes its block, one blank line apart',
+        body: async () => {
+            const firstBlock = thoughtFixture(3);
+            const secondBlock = thoughtFixture(0);
+            const answer = 'The shortcut is shared ideographs.';
+            const round1 = [
+                [thoughtPart(firstBlock.raw)],
+                [callPart('lookup_a', { topic: 'falcon' }, 'ts1', 'call_ts1'), textPart('')],
+            ];
+            const round2 = [[thoughtPart(secondBlock.raw), textPart(answer)]];
+            reset([sse(roundEvents(round1)), sse(roundEvents(round2))]);
+
+            const { chunks, lines } = await runTurn({ tools: turnTools });
+
+            expect(recordedRequests.length === 2, `one request per round (got ${recordedRequests.length})`);
+            expect(
+                json(executions.map((execution) => execution.name)) === '["lookup_a"]',
+                `the round 1 call ran once (got ${json(executions)})`
+            );
+            expect(
+                canonical(partsOf(contentsOf(recordedRequests[1])[1])) === canonical(partsOfRound(round1)),
+                'round 2 replays round 1 verbatim: the raw thought text is not replaced by its summary'
+            );
+            expect(
+                textOf(chunks, 'thinking') === `${firstBlock.expected}\n\n${secondBlock.expected}`,
+                `each round flushes its block, a blank line apart (got ${json(textOf(chunks, 'thinking'))})`
+            );
+            expect(textOf(chunks) === answer, `the answer streams (got ${json(textOf(chunks))})`);
+            expect(
+                canonical(donePartsOf(chunks)) === canonical([thoughtPart(secondBlock.raw), textPart(answer)]),
+                `rawResponse keeps the raw thought part (got ${json(donePartsOf(chunks))})`
+            );
+            expect(json(donePartsOf(chunks)).includes('Analyze the Request'), 'the scaffold is still in the stored rawResponse');
+            expect(
+                thoughtSummaryLineOf(lines) ===
+                    `[gemini] gemini-3.8-flash thought summaries filtered ` +
+                        `raw=${firstBlock.raw.length + secondBlock.raw.length} ` +
+                        `clean=${firstBlock.expected.length + secondBlock.expected.length} ` +
+                        'blocks=2 summaries=3 dropped=0',
+                `one filter for the whole reply logs both rounds (got ${json(thoughtSummaryLineOf(lines))})`
+            );
+        },
+    },
+    {
+        name: 'a normal thought stream is passed through untouched, with no filter log',
+        body: async () => {
+            reset([sse(roundEvents([[thoughtPart('plan the lookup')], [textPart('Answer.')]]))]);
+
+            const { chunks, lines } = await runTurn({});
+
+            expect(
+                textOf(chunks, 'thinking') === 'plan the lookup',
+                `the thought text is untouched (got ${json(textOf(chunks, 'thinking'))})`
+            );
+            expect(textOf(chunks) === 'Answer.', 'and the answer streams');
+            expect(canonical(donePartsOf(chunks)) === canonical([textPart('Answer.')]), 'rawResponse is the last chunk');
+            expect(thoughtSummaryLineOf(lines) === '', `no filter log for a normal thought stream (got ${json(lines)})`);
+        },
+    },
+    {
+        name: 'a summarizer block cut before its answer is dropped, and the reply still answers',
+        body: async () => {
+            const fixture = thoughtFixture(2);
+            reset([sse(roundEvents([[thoughtPart(fixture.raw)], [textPart('Answer.')]]))]);
+
+            const { chunks, lines } = await runTurn({});
+
+            expect(textOf(chunks, 'thinking') === '', `the scaffold never shows (got ${json(textOf(chunks, 'thinking'))})`);
+            expect(textOf(chunks) === 'Answer.', 'the reply still answers');
+            expect(canonical(donePartsOf(chunks)) === canonical([textPart('Answer.')]), 'rawResponse is the last chunk');
+            expect(
+                thoughtSummaryLineOf(lines) ===
+                    `[gemini] gemini-3.8-flash thought summaries filtered raw=${fixture.raw.length} ` +
+                        'clean=0 blocks=1 summaries=0 dropped=1',
+                `the dropped block is counted (got ${json(thoughtSummaryLineOf(lines))})`
+            );
+            expect(lines.some((line) => line.includes('a block yielded no summary')), 'and warned about');
         },
     },
     {

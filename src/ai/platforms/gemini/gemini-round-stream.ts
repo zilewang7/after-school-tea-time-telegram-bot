@@ -12,6 +12,7 @@ import type { GroundingData, StreamChunk } from '../../types.js';
 import type { RoundTextSeparator } from '../../tools/round-text-separator.js';
 import { extractGroundingMetadata } from './gemini-grounding.js';
 import { geminiPartToChunk } from './gemini-part-chunks.js';
+import type { ThoughtSummaryFilter } from './gemini-thought-summary.js';
 import { headerOf, type GeminiRequestUsage } from './gemini-usage-log.js';
 import type { OpenedGeminiRound } from './gemini-first-round.js';
 
@@ -36,13 +37,17 @@ const isVisible = (chunk: StreamChunk): boolean =>
 
 /**
  * Streams the round's text, thinking and images (blank line before a later
- * round's first text) and returns the round as collected. Grounding is not
- * yielded here: each round repeats the turn's searches so far.
+ * round's first text) and returns the round as collected. Thinking goes
+ * through the thought-summary filter, which drops the summarizer's own CoT and
+ * keeps its summaries; the round's last block is flushed before the round
+ * ends. Grounding is not yielded here: each round repeats the turn's searches
+ * so far.
  */
 export async function* consumeGeminiRound(
     opened: OpenedGeminiRound,
     separator: RoundTextSeparator,
-    viaLabel: string | undefined
+    viaLabel: string | undefined,
+    thoughtSummary: ThoughtSummaryFilter
 ): AsyncGenerator<StreamChunk, CollectedGeminiRound, void> {
     const parts: Part[] = [];
     const functionCalls: FunctionCall[] = [];
@@ -87,7 +92,14 @@ export async function* consumeGeminiRound(
             firstPartAt ??= Date.now();
             if (streamChunk.type === 'thinking') {
                 firstThinkAt ??= Date.now();
-            } else if (streamChunk.type === 'text') {
+                // Only the summarizer's summaries are shown; its own CoT is not
+                const cleaned = thoughtSummary.push(streamChunk.content ?? '');
+                if (cleaned !== '') {
+                    yield { type: 'thinking', content: cleaned };
+                }
+                continue;
+            }
+            if (streamChunk.type === 'text') {
                 firstTextAt ??= Date.now();
                 if ((streamChunk.content ?? '').trim() !== '') {
                     showedText = true;
@@ -101,6 +113,12 @@ export async function* consumeGeminiRound(
             groundings.push(grounding);
             groundingSources += grounding.groundingChunks?.length ?? 0;
         }
+    }
+
+    // The round ended: its last block is complete (or was cut by the end)
+    const thoughtTail = thoughtSummary.flush();
+    if (thoughtTail !== '') {
+        yield { type: 'thinking', content: thoughtTail };
     }
 
     return {
