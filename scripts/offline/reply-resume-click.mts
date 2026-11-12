@@ -49,7 +49,7 @@ const ROSTER_GROUP_ID = -1007699999999;
 const CLAIMED_NOTICE = '正在处理';
 /** The Priority PayGo request header, as fetch saw it (lower-cased) */
 const PRIORITY_HEADER = 'x-vertex-ai-llm-shared-request-type';
-const STARTING_NOTICE = '正在启动，请稍后再点';
+const BUSY_NOTICE = '正在处理，请稍后再点';
 
 const kept = (reply: AskedReply): boolean => bench.entryOf(reply) !== undefined && bench.markOf(reply) !== undefined;
 
@@ -338,8 +338,8 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
             const clicked = bench.press(reply, 'resp:continue');
             await caught.opened;
             for (const [data, notice] of [
-                ['resp:stop', STARTING_NOTICE],
-                ['resp:prev', STARTING_NOTICE],
+                ['resp:stop', BUSY_NOTICE],
+                ['resp:prev', BUSY_NOTICE],
                 ['resp:retry', CLAIMED_NOTICE],
                 ['resp:continue', CLAIMED_NOTICE],
             ] as const) {
@@ -463,8 +463,8 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
             for (const [data, notice] of [
                 ['resp:continue', CLAIMED_NOTICE],
                 ['resp:retry', CLAIMED_NOTICE],
-                ['resp:next', STARTING_NOTICE],
-                ['resp:stop', STARTING_NOTICE],
+                ['resp:next', BUSY_NOTICE],
+                ['resp:stop', BUSY_NOTICE],
             ] as const) {
                 telegram.reset();
                 await bench.press(reply, data);
@@ -511,7 +511,7 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
 
                 // Other updates are handled in the meantime
                 await bench.press(reply, 'resp:stop');
-                expect(json(bench.toasts()) === json([STARTING_NOTICE]), `a stop on the same reply is answered (got ${json(bench.toasts())})`);
+                expect(json(bench.toasts()) === json([BUSY_NOTICE]), `a stop on the same reply is answered (got ${json(bench.toasts())})`);
                 await expectContinues(other, 'another reply meanwhile');
 
                 telegram.reset();

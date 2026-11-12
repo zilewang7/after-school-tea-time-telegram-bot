@@ -601,6 +601,30 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
             expect(errorMessage(error) === 'Aborted', `the reply ends as stopped (got ${errorMessage(error)})`);
             expect(statusTexts(chunks).length === 1, 'the waiting status was the last thing shown');
             expect(usageSink.totals().roundRetries === 0, `the retry that never went out is not counted (got ${usageSink.totals().roundRetries})`);
+
+            // The wait is over and the 重试中 line is on its way to the screen
+            // when the stop lands: the retry is not sent, so it is not counted
+            const lateStop = new AbortController();
+            reset([httpErrorReply(429, RATE_LIMITED), answer('never sent')]);
+            const lateSink = createUsageSink();
+            const late = await runTurn({
+                signal: lateStop.signal,
+                usageSink: lateSink,
+                onChunk: (chunk) => {
+                    if (chunk.type === 'status' && chunk.status?.text.includes('重试中') === true) lateStop.abort();
+                },
+            });
+            expect(
+                errorMessage(late.error) === 'Aborted' && vertex.requests.length === 1,
+                `a stop while the retrying status is shown sends nothing (got ${errorMessage(late.error)} / ${vertex.requests.length})`
+            );
+            expect(lateSink.totals().roundRetries === 0, `that retry is not counted either (got ${lateSink.totals().roundRetries})`);
+
+            // A retry that does go out is counted
+            reset([httpErrorReply(429, RATE_LIMITED), answer('Sent again.')]);
+            const sentSink = createUsageSink();
+            const sent = await runTurn({ usageSink: sentSink });
+            expect(sent.error === null && sentSink.totals().roundRetries === 1, `a sent retry counts once (got ${sentSink.totals().roundRetries})`);
         },
     },
     {

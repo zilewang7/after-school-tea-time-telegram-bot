@@ -11,6 +11,9 @@
  * Keeping is an extra on top of the reply and fails closed: a step that
  * throws is logged, and the reply goes on as one without a checkpoint (no
  * mark, no "继续"), its error or stop handled as if there had never been one.
+ * One trace stays when the store itself throws: the metrics row is written by
+ * the finalization, before the store, so it still names the rounds that were
+ * about to be kept. The log line is what tells the two apart.
  */
 import { concatMessages, type RenderedMessage } from 'telegram-md-entities';
 import type { AgentToolUsage } from '../../ai/types.js';

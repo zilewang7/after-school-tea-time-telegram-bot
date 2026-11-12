@@ -32,20 +32,21 @@ const CALLBACK_PREFIX = 'resp:';
 
 /** A retry or continue click while a retry, a continue or a version switch holds the claim */
 const RERUN_CLAIMED_NOTICE = '正在处理';
-/** Stop, previous or next while the claim is held and nothing is generating yet */
-const RERUN_STARTING_NOTICE = '正在启动，请稍后再点';
+/** Stop, previous or next while the claim is held (a start, a version switch, a refresh) and nothing is generating yet */
+const RERUN_BUSY_NOTICE = '正在处理，请稍后再点';
 /** A button whose action this version of the bot does not know */
 const UNKNOWN_ACTION_NOTICE = '按钮已失效，已刷新';
 /** The checks of a continue click failed unexpectedly; nothing was taken */
 const CONTINUE_CHECK_FAILED_NOTICE = '暂时无法继续，请稍后再试';
 
 /**
- * The toast for a button pressed while a retry or continue of the reply holds
- * its claim. Its buttons are left alone: the run is about to change them, and
- * a refresh from the state read before would put the old ones back.
+ * The toast for a button pressed while the reply's claim is held (a retry or
+ * continue, a version switch, a refresh). Its buttons are left alone: the
+ * holder is about to change them, and a refresh from the state read before
+ * would put the old ones back.
  */
 const rerunNoticeOf = (response: BotResponse): string =>
-    response.buttonState === ButtonState.PROCESSING ? '还在生成中' : RERUN_STARTING_NOTICE;
+    response.buttonState === ButtonState.PROCESSING ? '还在生成中' : RERUN_BUSY_NOTICE;
 
 /** Regenerates a reply; resolves once the new version has ended */
 type RetryHandler = (ctx: Context, firstMessageId: number) => Promise<void>;
@@ -198,7 +199,7 @@ const handleStop = async (ctx: Context): Promise<void> => {
         // PROCESSING yet: nothing to stop so far, and a refresh would put the
         // old version back over the reply that is starting
         if (!tryClaimReplyRerun(chatId, firstMessageId)) {
-            await ctx.answerCallbackQuery({ text: RERUN_STARTING_NOTICE });
+            await ctx.answerCallbackQuery({ text: RERUN_BUSY_NOTICE });
             return;
         }
         let refreshDetached = false;

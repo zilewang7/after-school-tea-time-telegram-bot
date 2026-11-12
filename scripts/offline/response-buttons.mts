@@ -4,7 +4,8 @@
  * and the loser leaves the buttons alone; what stop, version switching and
  * unknown buttons answer while a claim is held; the claim given back on
  * every way out (a retry that throws or returns early, a refused click, a
- * failed answer); and an unknown `resp:` action refreshing the buttons.
+ * failed answer); a stop that finds nobody running the reply; and an unknown
+ * `resp:` action refreshing the buttons.
  *
  * The bot is a real grammY Bot whose Bot API answers locally. The retry
  * handler is a stand-in the cases hold open, end or make throw: the claim
@@ -26,7 +27,7 @@ const state = await import('../../src/state.js');
 const { ButtonState } = dbIndex;
 const MEMBER = { userId: 1111, isOwner: false };
 const CLAIMED_NOTICE = '正在处理';
-const STARTING_NOTICE = '正在启动，请稍后再点';
+const BUSY_NOTICE = '正在处理，请稍后再点';
 const json = (value: unknown): string => JSON.stringify(value);
 const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -44,6 +45,19 @@ const failingCallbackAnswers: Transformer = (previous, method, payload, signal) 
     return previous(method, payload, signal);
 };
 bot.api.config.use(failingCallbackAnswers);
+
+// What a case does while the next callback answer is on its way: for a stop,
+// between the row its handler read and the detached stop
+let duringNextAnswer: (() => Promise<void>) | null = null;
+const answerInterlude: Transformer = async (previous, method, payload, signal) => {
+    if (duringNextAnswer !== null && method === 'answerCallbackQuery') {
+        const interlude = duringNextAnswer;
+        duringNextAnswer = null;
+        await interlude();
+    }
+    return previous(method, payload, signal);
+};
+bot.api.config.use(answerInterlude);
 
 registerResponseCallbacks(bot);
 
@@ -185,8 +199,8 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
                 await press(chatId, firstMessageId, data);
                 await settle();
                 expect(
-                    lastToastOf(telegram) === STARTING_NOTICE && editsOf().length === 0,
-                    `${data} answers ${STARTING_NOTICE} and changes nothing (got ${json({ toast: lastToastOf(telegram), edits: editsOf() })})`
+                    lastToastOf(telegram) === BUSY_NOTICE && editsOf().length === 0,
+                    `${data} answers ${BUSY_NOTICE} and changes nothing (got ${json({ toast: lastToastOf(telegram), edits: editsOf() })})`
                 );
             }
             // 继续 shares the claim with 重试: it loses it like a second retry click
@@ -291,6 +305,42 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
             await press(chatId, firstMessageId, 'resp:retry');
             await waitUntil('a retry after all that', () => retryStarts.length === 3);
             await waitUntil('its claim to be released', released);
+        },
+    },
+    {
+        name: 'a stop that finds no session makes a reply left generating retryable, and leaves one that ended meanwhile as it ended',
+        body: async () => {
+            const chatId = -1007200000005;
+            const redrawn = (): boolean => telegram.callsOf('editMessageReplyMarkup').length > 0;
+
+            // Left PROCESSING by a restart: nobody runs it
+            const orphan = await seedReply(chatId, { buttonState: ButtonState.PROCESSING, versionCount: 1 });
+            telegram.reset();
+            await press(chatId, orphan, 'resp:stop');
+            await waitUntil('the orphan’s buttons to be redrawn', redrawn);
+            const marked = await storedOf(chatId, orphan);
+            expect(
+                lastToastOf(telegram) === '停止中...' && marked.buttonState === ButtonState.RETRY_ONLY && markupOf(0).includes('resp:retry'),
+                `the orphan becomes retryable (got ${json({ toast: lastToastOf(telegram), state: marked.buttonState, markup: markupOf(0) })})`
+            );
+
+            // This one ends while the stop is on its way: the state it saved stays
+            const ended = await seedReply(chatId, { buttonState: ButtonState.PROCESSING, versionCount: 2, currentIndex: 1 });
+            duringNextAnswer = async () => {
+                await dbIndex.updateBotResponseButtonState(chatId, ended, ButtonState.HAS_VERSIONS);
+            };
+            telegram.reset();
+            await press(chatId, ended, 'resp:stop');
+            await waitUntil('the ended reply’s buttons to be redrawn', redrawn);
+            const kept = await storedOf(chatId, ended);
+            expect(
+                kept.buttonState === ButtonState.HAS_VERSIONS,
+                `a reply that ended meanwhile keeps the state it saved (got ${kept.buttonState})`
+            );
+            expect(
+                markupOf(0).includes('resp:prev') && markupOf(0).includes('resp:retry') && !markupOf(0).includes('resp:stop'),
+                `and its buttons are drawn from that state (got ${markupOf(0)})`
+            );
         },
     },
     {

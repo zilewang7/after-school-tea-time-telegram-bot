@@ -190,10 +190,17 @@ export async function* runRecoverableRound(
     let statusShown = options.statusOnScreen === true;
     // A failed attempt showed thinking: the retry's thinking follows a marker
     let markerPending = false;
+    // A wait is over and its retry has not been counted yet
+    let retryUncounted = false;
 
     for (let attempt = 1; ; attempt++) {
         if (signal?.aborted) throw new Error('Aborted');
         if (attempt > 1 && statusShown) yield retryingStatus(roundNumber, attempt);
+        // Counted as the request goes out: a stop that landed during the wait
+        // or while the consumer showed the status line sends nothing again.
+        // Nothing but the opening's own stop check runs from here to the send
+        if (retryUncounted && signal?.aborted !== true) usageSink?.addRecovery();
+        retryUncounted = false;
         const outcome: AttemptOutcome = yield* runAttempt({
             openRound: options.openRound,
             request,
@@ -255,7 +262,6 @@ export async function* runRecoverableRound(
         yield waitingStatus(roundNumber, decision.kind, decision.waitMs, attempt + 1);
         statusShown = true;
         await recovery.sleep(decision.waitMs, signal);
-        // Counted once the wait is over: a stop during it sends nothing again
-        usageSink?.addRecovery();
+        retryUncounted = true;
     }
 }

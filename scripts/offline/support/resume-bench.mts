@@ -482,14 +482,20 @@ export const createResumeBench = async () => {
     });
 
     /**
-     * A 继续 click works off the update loop. It has been handled once its
-     * claim is free again (a notice, a gone checkpoint, a failed answer), or
-     * once it has answered and taken the checkpoint: from there the resumed
-     * reply runs on, and `settled` waits for its end.
+     * A 继续 click that took the reply's claim works off the update loop. It
+     * has been handled once the claim is free again (a notice, a gone
+     * checkpoint, a failed answer), or once it has answered and taken the
+     * checkpoint: from there the resumed reply runs on, and `settled` waits
+     * for its end. Only this click's own answer counts, so the toasts are read
+     * from where they stood before it.
      */
-    const continueClickHandled = (reply: { readonly chatId: number; readonly firstMessageId: number }): boolean =>
+    const continueClickHandled = (
+        reply: { readonly chatId: number; readonly firstMessageId: number },
+        toastsBefore: number
+    ): boolean =>
         !state.isReplyRerunClaimed(reply.chatId, reply.firstMessageId) ||
-        (toasts().includes('继续中...') && checkpointRegistry.peek(reply.chatId, reply.firstMessageId) === undefined);
+        (toasts().slice(toastsBefore).includes('继续中...') &&
+            checkpointRegistry.peek(reply.chatId, reply.firstMessageId) === undefined);
 
     /** The update handler alone: it returns as Telegram's next update could be taken */
     const deliverPress = (
@@ -499,25 +505,32 @@ export const createResumeBench = async () => {
     ): Promise<void> =>
         bot.handleUpdate(callbackUpdate({ chatId: reply.chatId, messageId: reply.firstMessageId, userId, data }));
 
-    /** A button press as Telegram delivers it; what the handler threw comes back */
+    /**
+     * A button press as Telegram delivers it; what the handler threw comes
+     * back. A 继续 click is followed until it has been handled, and one that
+     * never is fails the case: that is a claim nobody gives back.
+     */
     const press = async (
         reply: { readonly chatId: number; readonly firstMessageId: number },
         data: string,
         userId: number = FULL_USER_ID
     ): Promise<unknown> => {
+        // With the claim held by something else the click loses it: the
+        // update handler's notice is all there is to it
+        const takesClaim = data === 'resp:continue' && !state.isReplyRerunClaimed(reply.chatId, reply.firstMessageId);
+        const toastsBefore = toasts().length;
         try {
             await deliverPress(reply, data, userId);
-            if (data === 'resp:continue') {
-                // Counted in turns, not by the clock: some cases move Date.now
-                for (let turn = 0; turn < 1500 && !continueClickHandled(reply); turn += 1) {
-                    await new Promise((resolve) => setTimeout(resolve, 10));
-                }
-                if (!continueClickHandled(reply)) throw new Error('the 继续 click was never handled');
-            }
-            return null;
         } catch (error) {
             return error;
         }
+        if (!takesClaim) return null;
+        // Counted in turns, not by the clock: some cases move Date.now
+        for (let turn = 0; turn < 1500 && !continueClickHandled(reply, toastsBefore); turn += 1) {
+            await new Promise((resolve) => setTimeout(resolve, 10));
+        }
+        if (!continueClickHandled(reply, toastsBefore)) throw new Error('the 继续 click was never handled');
+        return null;
     };
 
     /** The resume or retry a press started has ended (its claim is free again) */
