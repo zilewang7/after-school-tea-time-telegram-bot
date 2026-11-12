@@ -35,6 +35,9 @@ interface AppStateType {
     // bot messages that are still being generated:
     // "chatId:botMessageId" -> started-at (ms)
     botRepliesInFlight: Map<string, number>;
+    // replies a retry or continue is starting or running for:
+    // "chatId:firstMessageId" -> claimed-at (ms)
+    replyRerunClaims: Map<string, number>;
 }
 
 const createInitialState = (): AppStateType => ({
@@ -52,6 +55,7 @@ const createInitialState = (): AppStateType => ({
     contextNumbering: new Map(),
     repliesInFlight: new Map(),
     botRepliesInFlight: new Map(),
+    replyRerunClaims: new Map(),
 });
 
 // singleton instance
@@ -407,3 +411,31 @@ export const isBotReplyInFlight = (chatId: number, messageId: number): boolean =
     }
     return true;
 };
+
+// Retry and continue claims
+// Between a click and the PROCESSING write there are several awaits, so a
+// database check alone lets two fast clicks both start a run. The claim is
+// checked and taken in one synchronous step instead. It has no expiry: its
+// holder releases it in a finally once the run has ended.
+
+/**
+ * Take the claim on starting a new version of a reply (retry or continue).
+ * Returns false when another click holds it. Call it right after looking up
+ * the reply, with no await between that lookup's check and this call.
+ */
+export const tryClaimReplyRerun = (chatId: number, firstMessageId: number): boolean => {
+    const claims = getAppState().replyRerunClaims;
+    const key = `${chatId}:${firstMessageId}`;
+    if (claims.has(key)) return false;
+    claims.set(key, Date.now());
+    return true;
+};
+
+/** Give the claim back once the run it was taken for has ended (or never started) */
+export const releaseReplyRerun = (chatId: number, firstMessageId: number): void => {
+    getAppState().replyRerunClaims.delete(`${chatId}:${firstMessageId}`);
+};
+
+/** Whether a retry or continue of this reply is being started or running right now */
+export const isReplyRerunClaimed = (chatId: number, firstMessageId: number): boolean =>
+    getAppState().replyRerunClaims.has(`${chatId}:${firstMessageId}`);
