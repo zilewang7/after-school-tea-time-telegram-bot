@@ -91,7 +91,13 @@ export abstract class BasePlatform implements IAIPlatform {
             } catch (error) {
                 if (timeoutHandle) clearTimeout(timeoutHandle);
                 signal?.removeEventListener('abort', abortOnStop);
-                if (signal?.aborted || (!timedOut && isAbortError(error))) {
+                // The attempt is aborted only by the caller's stop or by our
+                // timeout, so a caller's signal says whether this is a stop: an
+                // error that merely reads like one (a 409 ABORTED, ECONNABORTED)
+                // while it is clear goes on as itself. Without a signal, the
+                // error's own look is all there is.
+                const stopped = signal === undefined ? !timedOut && isAbortError(error) : signal.aborted;
+                if (stopped) {
                     throw new Error('Aborted');
                 }
                 err = toError(error);

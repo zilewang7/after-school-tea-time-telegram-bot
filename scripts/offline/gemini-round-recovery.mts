@@ -631,6 +631,85 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
         },
     },
     {
+        name: '9c. an error that only reads like an abort is no stop; a real stop still is one, in an opening, a wait and a stream',
+        body: async () => {
+            const controller = new AbortController();
+            const conflict: ScriptedReply = {
+                status: 409,
+                contentType: 'application/json',
+                body: JSON.stringify({ error: { code: 409, message: 'The operation was aborted.', status: 'ABORTED' } }),
+            };
+            reset([conflict, answer('never sent')]);
+            const aborted409 = await runTurn({ signal: controller.signal });
+            expect(
+                errorStatus(aborted409.error) === 409 && errorMessage(aborted409.error) !== 'Aborted',
+                `a 409 ABORTED comes out as the error it is (got ${errorMessage(aborted409.error)})`
+            );
+            expect(
+                recoverLines(aborted409.lines).some((line) => line.includes('gave up after 1 attempts: not_retryable (phase=open kind=client_error)')),
+                `the policy classifies it, and says so (got ${json(recoverLines(aborted409.lines))})`
+            );
+
+            reset([
+                {
+                    status: 0,
+                    contentType: 'application/json',
+                    body: '',
+                    fetchError: () => Object.assign(new Error('read ECONNABORTED'), { code: 'ECONNABORTED' }),
+                },
+                answer('After a dropped connection.'),
+            ]);
+            const connectionAborted = await runTurn({ signal: controller.signal });
+            expect(
+                connectionAborted.error === null && vertex.requests.length === 2 && json(platform.sleeps) === '[2000]',
+                `ECONNABORTED is a network error: one 2 s wait, then the answer (got ${errorMessage(connectionAborted.error)})`
+            );
+
+            const stopInOpening = new AbortController();
+            const hangUntilStopped: ScriptedReply = {
+                status: 0,
+                contentType: 'text/event-stream',
+                body: '',
+                hangUntilAborted: true,
+                onServe: () => stopInOpening.abort(),
+            };
+            reset([hangUntilStopped, answer('never sent')]);
+            const openingStopped = await runTurn({ signal: stopInOpening.signal });
+            expect(
+                errorMessage(openingStopped.error) === 'Aborted' && vertex.requests.length === 1 && platform.sleeps.length === 0,
+                `a stop while the round opens ends it as Error('Aborted') (got ${errorMessage(openingStopped.error)})`
+            );
+
+            const stopInWait = new AbortController();
+            reset([httpErrorReply(503, 'The service is currently unavailable.'), answer('never sent')]);
+            platform.onSleep = () => stopInWait.abort();
+            const waitStopped = await runTurn({ signal: stopInWait.signal });
+            expect(
+                errorMessage(waitStopped.error) === 'Aborted' && vertex.requests.length === 1,
+                `a stop during a wait ends it as Error('Aborted') (got ${errorMessage(waitStopped.error)})`
+            );
+
+            // Mid-stream the stop never meets sendWithRetry: the stream's own abort comes out, as before
+            const stopInStream = new AbortController();
+            reset([stalledStreamReply([event([thoughtPart('thinking when stopped')])]), answer('never sent')]);
+            platform.onSleep = null;
+            const streamStopped = await runTurn({
+                signal: stopInStream.signal,
+                onChunk: (chunk) => {
+                    if (chunk.type === 'thinking') stopInStream.abort();
+                },
+            });
+            expect(
+                streamStopped.error instanceof Error && streamStopped.error.name === 'AbortError' && vertex.requests.length === 1,
+                `a stop mid-stream ends it with the stream's abort (got ${streamStopped.error instanceof Error ? streamStopped.error.name : String(streamStopped.error)})`
+            );
+            expect(
+                [openingStopped, waitStopped, streamStopped].every((turn) => !recoverLines(turn.lines).some((line) => line.includes('gave up'))),
+                'no stop is logged as giving up'
+            );
+        },
+    },
+    {
         name: '10. the recovery budget runs out: giving up before a wait that would pass 12 minutes',
         body: async () => {
             await withFakeClock(async (jump) => {
