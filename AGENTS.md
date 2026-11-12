@@ -157,7 +157,10 @@ or `docker rm -f`. `pnpm deploy:check` says whether a stop reaches the bot; if
 it does not, a restart is still safe, a recreate is not.
 
 1. `pnpm verify`, push, then `pnpm deploy:check`. It must say READY: the
-   restart kills the process, so wait while a reply is being generated.
+   restart kills the process, so wait while a reply is being generated. Its
+   `resumable replies` line counts interrupted replies that still offer
+   "继续": their checkpoints live in memory, so the restart drops them and
+   those replies are left with "重试". It does not block the release.
 2. Restart: the owner's release decision already covers it; `deploy:check`
    says whether a reply is in flight.
 3. `pnpm deploy:check --wait`. The `version` of `/api/health` is the commit

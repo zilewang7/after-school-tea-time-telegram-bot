@@ -135,7 +135,7 @@ results.push(
 results.push(
     await runCase('the chat page says which replies the switch reaches: Gemini text models on Vertex, not trial turns', async () => {
         expect(
-            ['Vertex', 'Gemini', '文字模型', '试用用户'].every((term) => GEMINI_PRIORITY_APPLIES_HINT.includes(term)),
+            ['Vertex', 'Gemini', '文字模型', '体验用户'].every((term) => GEMINI_PRIORITY_APPLIES_HINT.includes(term)),
             `the hint names the lane, the models and the trial exception (${GEMINI_PRIORITY_APPLIES_HINT})`
         );
     })
