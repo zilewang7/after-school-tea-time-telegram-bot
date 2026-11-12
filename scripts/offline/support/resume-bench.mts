@@ -21,7 +21,16 @@ import { Context, type Transformer } from 'grammy';
 import type { Update } from 'grammy/types';
 import { setupOfflineDb, takeMessageId } from '../harness.mts';
 import { BOT_ME, callbackUpdate, createFakeBot, messageUpdate, waitUntil, type FakeTelegram } from '../fake-telegram.mts';
-import { createFakeVertex, type FakeVertex, type ScriptedReply } from './fake-vertex.mts';
+import {
+    createFakeVertex,
+    httpErrorReply,
+    sseReply,
+    stalledStreamReply,
+    type FakeVertex,
+    type RecordedRequest,
+    type ScriptedReply,
+} from './fake-vertex.mts';
+import { callPart, event, roundEvents, textPart, thoughtPart, type ScriptedCall } from './gemini-loop-fixtures.mts';
 import { scratchDirectoryOf } from './scratch-directory.mts';
 import type { PlatformConfig, StreamChunk, UnifiedMessage } from '../../../src/ai/types.js';
 
@@ -215,6 +224,70 @@ export const imageReply = (): ScriptedReply => ({
     })}\n\n`,
 });
 
+export const BAD_REQUEST = 'Request contains an invalid argument.';
+
+/** A round that fails at once and is not retried: the reply ends in an error */
+export const failingRound = (): ScriptedReply => httpErrorReply(400, BAD_REQUEST);
+
+export interface RoundScript {
+    readonly label: string;
+    readonly thinking?: readonly string[];
+    readonly text?: readonly string[];
+    readonly calls?: readonly ScriptedCall[];
+    readonly grounding?: Record<string, unknown>;
+}
+
+/** One model round: its thinking chunks, then its text chunks, then its calls in one chunk */
+export const roundOf = (script: RoundScript, onServe?: () => void): ScriptedReply =>
+    sseReply(
+        roundEvents(
+            [
+                ...(script.thinking ?? []).map((thinking) => [thoughtPart(thinking)]),
+                ...(script.text ?? []).map((text) => [textPart(text)]),
+                ...((script.calls ?? []).length > 0
+                    ? [
+                          (script.calls ?? []).map((call, index) =>
+                              callPart(call.name, call.args ?? {}, `${script.label}-${index}`, `call_${script.label}_${index}`)
+                          ),
+                      ]
+                    : []),
+            ],
+            script.grounding === undefined ? {} : { grounding: script.grounding }
+        ),
+        onServe
+    );
+
+export const webLookup = (query: string): ScriptedCall => ({ name: 'web_lookup', args: { query } });
+
+/** A round whose stream starts and then hangs until the reply is stopped */
+export const stalledRound = (thinking: string, text: string): ScriptedReply =>
+    stalledStreamReply([event([thoughtPart(thinking)]), event([textPart(text)])]);
+
+export interface FunctionAnswer {
+    readonly name: string;
+    readonly output?: string;
+    readonly error?: string;
+}
+
+/** Every function response a request sends, in order */
+export const answersIn = (request: RecordedRequest | undefined): FunctionAnswer[] =>
+    asArray(request?.body.contents)
+        .flatMap((content) => asArray(asRecord(content).parts))
+        .map((part) => asRecord(asRecord(part).functionResponse))
+        .filter((functionResponse) => typeof functionResponse.name === 'string')
+        .map((functionResponse) => {
+            const response = asRecord(functionResponse.response);
+            return {
+                name: String(functionResponse.name),
+                ...(typeof response.output === 'string' ? { output: response.output } : {}),
+                ...(typeof response.error === 'string' ? { error: response.error } : {}),
+            };
+        });
+
+/** The function responses' texts of a request, output or error */
+export const answerTexts = (request: RecordedRequest | undefined): string[] =>
+    answersIn(request).map((item) => item.output ?? item.error ?? '');
+
 // ---------------------------------------------------------------------------
 // The bench
 // ---------------------------------------------------------------------------
@@ -379,7 +452,7 @@ export const createResumeBench = async () => {
     const ask = async (
         chatId: number,
         text: string,
-        options: { readonly userId?: number; readonly fileBuffer?: Buffer } = {}
+        options: { readonly userId?: number; readonly replyToId?: number } = {}
     ): Promise<AskedReply> => {
         const userId = options.userId ?? FULL_USER_ID;
         const userMessageId = takeMessageId();
@@ -390,7 +463,7 @@ export const createResumeBench = async () => {
             date: new Date(),
             userName: `user-${userId}`,
             message: text,
-            ...(options.fileBuffer ? { fileBuffer: options.fileBuffer, fileMime: 'image/png' } : {}),
+            ...(options.replyToId === undefined ? {} : { replyToId: options.replyToId }),
         });
         const update: Update = messageUpdate({ chatId, messageId: userMessageId, userId, text });
         await handleReply(new Context(update, bot.api, BOT_ME), { mention: true });
@@ -400,8 +473,12 @@ export const createResumeBench = async () => {
     };
 
     /** A question whose reply runs in the background, for cases that press stop meanwhile */
-    const askInBackground = (chatId: number, text: string): { readonly done: Promise<AskedReply> } => ({
-        done: ask(chatId, text),
+    const askInBackground = (
+        chatId: number,
+        text: string,
+        options: { readonly userId?: number } = {}
+    ): { readonly done: Promise<AskedReply> } => ({
+        done: ask(chatId, text, options),
     });
 
     /** A button press as Telegram delivers it; what the handler threw comes back */
@@ -450,6 +527,37 @@ export const createResumeBench = async () => {
         return version;
     };
 
+    /** The reply of a chat's only question, as soon as its session exists */
+    const runningReplyOf = async (chatId: number): Promise<AskedReply> => {
+        const deadline = Date.now() + 5000;
+        while (Date.now() < deadline) {
+            const response = await dbIndex.BotResponse.findOne({ where: { chatId } });
+            if (response) return { chatId, userMessageId: response.userMessageId, firstMessageId: response.messageId };
+            await new Promise((resolve) => setTimeout(resolve, 20));
+        }
+        throw new Error('no running reply');
+    };
+
+    const stopReply = async (reply: AskedReply): Promise<void> => {
+        const thrown = await press(reply, 'resp:stop');
+        if (thrown !== null) throw new Error(`the stop click threw: ${String(thrown)}`);
+    };
+
+    /** A reply that ran round 1 as scripted and failed at round 2: its checkpoint keeps one round */
+    const failedAfterRound1 = async (
+        round1: RoundScript,
+        options: { readonly chatId?: number; readonly question?: string; readonly userId?: number; readonly replyToId?: number } = {}
+    ): Promise<AskedReply> => {
+        vertex.reset([roundOf(round1), failingRound()]);
+        telegram.reset();
+        const reply = await ask(options.chatId ?? takeChatId(), options.question ?? '@AfterSchoolTeatimeBot 查一下', options);
+        const kept = checkpointRegistry.peek(reply.chatId, reply.firstMessageId);
+        if (kept?.loop.completedRounds !== 1) {
+            throw new Error(`the failed reply kept no round-1 checkpoint (got ${json(kept?.loop.completedRounds)})`);
+        }
+        return reply;
+    };
+
     const toasts = (): string[] =>
         telegram.callsOf('answerCallbackQuery').map((call) => String(call.payload.text ?? ''));
 
@@ -479,6 +587,9 @@ export const createResumeBench = async () => {
         markOf: (reply: AskedReply) => state.resumableMarkOf(reply.chatId, reply.firstMessageId),
         ask,
         askInBackground,
+        failedAfterRound1,
+        runningReplyOf,
+        stopReply,
         press,
         settled,
         continueReply,

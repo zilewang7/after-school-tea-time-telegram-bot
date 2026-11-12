@@ -1,0 +1,457 @@
+/**
+ * Offline cases for the "继续" click itself (design 2026-1112-1123 §6.4,
+ * §7.3; test plan §11 第 3 期 cases 10, 13 and 18, and the access tiers):
+ * the order of the checks and what each failed check leaves behind, the
+ * claim the click shares with 重试, the ways out that must give the
+ * checkpoint and the claim back, and the log line of a missing checkpoint.
+ * Same bench as reply-resume.mts: real handlers, the real Gemini platform on
+ * the fake Vertex endpoint, the scratch database.
+ *
+ * Run: npx tsx scripts/offline/reply-resume-click.mts
+ */
+import { expect, reportResults, runCase, takeMessageId, type CaseResult } from './harness.mts';
+import { endOpenReplies, waitUntil } from './fake-telegram.mts';
+import { answer, withFakeClock } from './support/gemini-loop-fixtures.mts';
+import {
+    createResumeBench,
+    failingRound,
+    finalButtonsOf,
+    gate,
+    json,
+    OWNER_USER_ID,
+    quietCase,
+    roundOf,
+    stalledRound,
+    takeChatId,
+    TRIAL_USER_ID,
+    visibleEditsOf,
+    webLookup,
+    type AskedReply,
+} from './support/resume-bench.mts';
+
+const bench = await createResumeBench();
+const { telegram, vertex, registry } = bench;
+const { updateChatSettings } = await import('../../src/services/chat-settings-service.js');
+const { excludeMessage, includeMessage } = await import('../../src/db/queries/context-exclusions.js');
+const { PAUSED_CALLBACK_NOTICE } = await import('../../src/reply/chat-pause.js');
+const checks = await import('../../src/reply/resume/continue-checks.js');
+const { captureResumeFacts } = await import('../../src/reply/resume/resume-facts.js');
+const { createReplyToolState } = await import('../../src/reply/tools/reply-tool-state.js');
+const { CHECKPOINT_REGISTRY_LIMITS } = await import('../../src/reply/resume/checkpoint-registry.js');
+const { Message } = await import('../../src/db/messageDTO.js');
+
+const OWNER = { userId: OWNER_USER_ID, isOwner: true };
+const CLAIMED_NOTICE = '正在处理';
+const STARTING_NOTICE = '正在启动，请稍后再点';
+
+const kept = (reply: AskedReply): boolean => bench.entryOf(reply) !== undefined && bench.markOf(reply) !== undefined;
+
+/** A click that must only answer: the notice, nothing on screen, the checkpoint and the claim as they were */
+const expectNoticeOnly = async (reply: AskedReply, notice: string, label: string, userId?: number): Promise<void> => {
+    const entryBefore = bench.entryOf(reply);
+    telegram.reset();
+    const thrown = await bench.press(reply, 'resp:continue', userId);
+    expect(thrown === null, `${label}: the click is handled (got ${String(thrown)})`);
+    expect(json(bench.toasts()) === json([notice]), `${label}: only the notice (got ${json(bench.toasts())})`);
+    expect(visibleEditsOf(telegram).length === 0, `${label}: the buttons stay (got ${json(visibleEditsOf(telegram))})`);
+    expect(bench.entryOf(reply) === entryBefore && kept(reply), `${label}: the checkpoint and its mark stay`);
+    expect(!bench.state.isReplyRerunClaimed(reply.chatId, reply.firstMessageId), `${label}: the claim is free`);
+};
+
+/** The click goes through once the condition is back: the resumed version ends normally */
+const expectContinues = async (reply: AskedReply, label: string, userId?: number): Promise<void> => {
+    vertex.reset([answer(`${label} 之后接着说完。`)]);
+    telegram.reset();
+    const thrown = await bench.continueReply(reply, userId);
+    expect(thrown === null && bench.toasts().includes('继续中...'), `${label}: then it continues (got ${json(bench.toasts())})`);
+    const version = await bench.latestVersion(reply);
+    expect(version.text.includes(`${label} 之后接着说完。`) && version.errorMessage === undefined, `${label}: and ends normally`);
+    expect(!kept(reply), `${label}: nothing is kept after it`);
+};
+
+/** A click that finds the checkpoint gone: dropped, the notice, the buttons redrawn without 继续 */
+const expectGone = async (reply: AskedReply, label: string): Promise<void> => {
+    telegram.reset();
+    await bench.press(reply, 'resp:continue');
+    expect(json(bench.toasts()) === json([checks.CHECKPOINT_GONE_NOTICE]), `${label}: the gone notice (got ${json(bench.toasts())})`);
+    const redraw = telegram.callsOf('editMessageReplyMarkup');
+    expect(redraw.length === 1 && !json(redraw[0]?.payload.reply_markup).includes('继续'), `${label}: the buttons lose 继续 (got ${json(finalButtonsOf(telegram))})`);
+    expect(registry.peek(reply.chatId, reply.firstMessageId) === undefined && bench.markOf(reply) === undefined, `${label}: dropped`);
+    expect(!bench.state.isReplyRerunClaimed(reply.chatId, reply.firstMessageId), `${label}: the claim is free`);
+};
+
+const failedReply = (chatId?: number): Promise<AskedReply> =>
+    bench.failedAfterRound1({ label: 'r1', thinking: ['先查一下'], calls: [webLookup('k-on')] }, chatId === undefined ? {} : { chatId });
+
+/** A synthetic entry of another reply, only there to fill the registry */
+const saveFiller = (index: number): void => {
+    const facts = captureResumeFacts({
+        model: 'gemini-4-carbon',
+        systemPrompt: 'filler',
+        tools: { definitions: [], execute: async () => ({ content: '', isError: false, images: [], record: null }), statusOf: () => ({ text: '', chatAction: 'typing' }) },
+        toolState: createReplyToolState({ chatId: -1009900000000 - index, conversationRootIds: [] }),
+        contextIndex: new Map(),
+        conversationRootIds: [],
+        requestTraits: { carriesLargeMedia: false },
+        promptAddendum: null,
+        builtAt: Date.now(),
+    });
+    const prepared = registry.prepare({
+        ...facts,
+        chatId: -1009900000000 - index,
+        firstMessageId: 1,
+        userMessageId: 1,
+        loop: { platform: 'gemini', completedRounds: 1, toolUsage: [], journal: [], state: {} },
+        failedVersionId: 1,
+        savedAt: Date.now(),
+    });
+    if (prepared === null) throw new Error('a filler was not kept');
+    registry.save(prepared);
+};
+
+const cases: Array<{ name: string; body: () => Promise<void> }> = [
+    {
+        name: 'case 10 (1): an expired checkpoint is gone: dropped, the notice, the buttons lose 继续',
+        body: quietCase(async (log) => {
+            const reply = await failedReply();
+            await withFakeClock(async (jump) => {
+                jump(CHECKPOINT_REGISTRY_LIMITS.ttlMs + 60_000);
+                await expectGone(reply, 'expired');
+            });
+            expect(log.has('[resume] checkpoint missing reason=expired'), 'the log names the reason');
+        }),
+    },
+    {
+        name: 'case 10 (2): a failed version that is no longer the latest one is gone',
+        body: quietCase(async (log) => {
+            const reply = await failedReply();
+            const stored = await bench.stored(reply);
+            const latest = stored.getVersions().at(-1);
+            if (latest === undefined) throw new Error('no version');
+            // A version that came by another way than a finalization, which would have cleared the mark
+            stored.addVersion({ ...latest, versionId: latest.versionId + 1, createdAt: new Date().toISOString() });
+            await stored.save();
+            await expectGone(reply, 'superseded');
+            expect(log.has('[resume] checkpoint dropped: a newer version exists'), 'and says why');
+        }),
+    },
+    {
+        name: 'case 10 (3): an older version on screen only gets a notice; back on the failed version it continues',
+        body: quietCase(async () => {
+            // Version 1 answers, the retry fails with a checkpoint as version 2
+            const chatId = takeChatId();
+            vertex.reset([answer('第一版。')]);
+            const reply = await bench.ask(chatId, '@AfterSchoolTeatimeBot 说点什么');
+            vertex.reset([roundOf({ label: 'r1', calls: [webLookup('a')] }), failingRound()]);
+            await bench.retryReply(reply);
+            expect(bench.entryOf(reply)?.failedVersionId === 2, 'version 2 is kept');
+            await bench.press(reply, 'resp:prev');
+            await waitUntil('the switch to version 1', () => telegram.callsOf('editMessageText').length > 0);
+            await new Promise((resolve) => setTimeout(resolve, 100));
+            await expectNoticeOnly(reply, checks.SWITCH_TO_LATEST_NOTICE, 'older version');
+            await bench.press(reply, 'resp:next');
+            await new Promise((resolve) => setTimeout(resolve, 100));
+            await expectContinues(reply, 'latest version');
+        }),
+    },
+    {
+        name: 'case 10 (4)-(8): paused, another model, other tools, another addendum, an excluded message: notice only, then it continues',
+        body: quietCase(async () => {
+            const conditions: Array<{ label: string; notice: string; apply: (reply: AskedReply) => Promise<unknown>; restore: (reply: AskedReply) => Promise<unknown> }> = [
+                {
+                    label: 'paused',
+                    notice: PAUSED_CALLBACK_NOTICE,
+                    apply: (reply) => updateChatSettings({ chatId: reply.chatId, patch: { paused: true }, actor: OWNER }),
+                    restore: (reply) => updateChatSettings({ chatId: reply.chatId, patch: { paused: false }, actor: OWNER }),
+                },
+                {
+                    label: 'model',
+                    notice: checks.MODEL_CHANGED_NOTICE,
+                    apply: (reply) => updateChatSettings({ chatId: reply.chatId, patch: { model: 'gemini-3.8-flash' }, actor: OWNER }),
+                    restore: (reply) => updateChatSettings({ chatId: reply.chatId, patch: { model: null }, actor: OWNER }),
+                },
+                {
+                    label: 'tools',
+                    notice: checks.TOOLS_CHANGED_NOTICE,
+                    apply: (reply) => updateChatSettings({ chatId: reply.chatId, patch: { toolOverrides: { file: false } }, actor: OWNER }),
+                    restore: (reply) => updateChatSettings({ chatId: reply.chatId, patch: { toolOverrides: null }, actor: OWNER }),
+                },
+                {
+                    label: 'addendum',
+                    notice: checks.ADDENDUM_CHANGED_NOTICE,
+                    apply: (reply) => updateChatSettings({ chatId: reply.chatId, patch: { promptAddendum: '多用表情' }, actor: OWNER }),
+                    restore: (reply) => updateChatSettings({ chatId: reply.chatId, patch: { promptAddendum: null }, actor: OWNER }),
+                },
+                {
+                    label: 'excluded',
+                    notice: checks.CONTEXT_EXCLUDED_NOTICE,
+                    apply: (reply) => excludeMessage({ chatId: reply.chatId, messageId: reply.userMessageId, actorId: OWNER_USER_ID }),
+                    restore: (reply) => includeMessage({ chatId: reply.chatId, messageId: reply.userMessageId, actorId: OWNER_USER_ID }),
+                },
+            ];
+            for (const condition of conditions) {
+                const reply = await failedReply();
+                await condition.apply(reply);
+                await expectNoticeOnly(reply, condition.notice, condition.label);
+                await condition.restore(reply);
+                await expectContinues(reply, condition.label);
+            }
+        }),
+    },
+    {
+        name: 'case 10 (D11): edits of a context message and of the trigger block nothing and change nothing in the request',
+        body: quietCase(async () => {
+            const chatId = takeChatId();
+            const earlierId = takeMessageId();
+            await bench.dbIndex.saveMessage({
+                chatId,
+                messageId: earlierId,
+                userId: 5150,
+                date: new Date(Date.now() - 60_000),
+                userName: 'user-5150',
+                message: '前一条消息，原文',
+            });
+            const reply = await bench.failedAfterRound1(
+                { label: 'r1', calls: [webLookup('a')] },
+                { chatId, question: '@AfterSchoolTeatimeBot 接着上一条说', replyToId: earlierId }
+            );
+            const failedRequest = vertex.requests[1];
+            expect(bench.entryOf(reply)?.context.contextMessageIds.includes(earlierId) === true, 'the earlier message is in the context');
+
+            for (const [messageId, text] of [[earlierId, '前一条消息，改过了'], [reply.userMessageId, '@AfterSchoolTeatimeBot 改过的问题']] as const) {
+                telegram.reset();
+                await bench.bot.handleUpdate({
+                    update_id: 800_000 + messageId,
+                    edited_message: {
+                        message_id: messageId,
+                        date: Math.floor(Date.now() / 1000) - 10,
+                        edit_date: Math.floor(Date.now() / 1000),
+                        chat: { id: chatId, type: 'supergroup', title: '测试群' },
+                        from: { id: 5150, is_bot: false, first_name: 'u' },
+                        text,
+                    },
+                });
+            }
+            // Both rows now hold the edited texts; a failed reply keeps its buttons
+            for (const [messageId, text] of [[earlierId, '前一条消息，改过了'], [reply.userMessageId, '@AfterSchoolTeatimeBot 改过的问题']] as const) {
+                const deadline = Date.now() + 5000;
+                while ((await bench.dbIndex.getMessage(chatId, messageId))?.text !== text) {
+                    if (Date.now() > deadline) throw new Error(`the edit of ${messageId} was not stored`);
+                    await new Promise((resolve) => setTimeout(resolve, 20));
+                }
+            }
+            expect(kept(reply), 'the edits leave the checkpoint and its mark alone');
+
+            vertex.reset([answer('照原样接着说。')]);
+            telegram.reset();
+            await bench.continueReply(reply);
+            expect(bench.toasts().includes('继续中...'), `the edits do not block (got ${json(bench.toasts())})`);
+            expect(vertex.requests[0]?.rawBody === failedRequest?.rawBody, 'the resumed request is the failed one, byte for byte');
+            expect(!(vertex.requests[0]?.rawBody.includes('改过') ?? true), 'the edited texts are not in it');
+        }),
+    },
+    {
+        name: 'case 13: two fast clicks start one resume; the loser only hears 正在处理',
+        body: quietCase(async (log) => {
+            const reply = await failedReply();
+            vertex.reset([answer('只续了一次。')]);
+            telegram.reset();
+            const continuingBefore = log.matching('[resume] continuing').length;
+            const thrown = await Promise.all([bench.press(reply, 'resp:continue'), bench.press(reply, 'resp:continue')]);
+            await bench.settled(reply);
+            expect(thrown.every((error) => error === null), `both are handled (got ${json(thrown.map(String))})`);
+            expect(
+                json([...bench.toasts()].sort()) === json(['继续中...', CLAIMED_NOTICE].sort()),
+                `one continues, one hears it is being handled (got ${json(bench.toasts())})`
+            );
+            expect(log.matching('[resume] continuing').length === continuingBefore + 1, 'one resume ran');
+            expect(vertex.requests.length === 1, `one request (got ${vertex.requests.length})`);
+            expect((await bench.stored(reply)).getVersions().length === 2, 'one new version');
+        }),
+    },
+    {
+        name: 'case 13: while the resume is starting, 停止, 上一版 and 重试 only answer',
+        body: quietCase(async () => {
+            const reply = await failedReply();
+            const held = gate();
+            const caught = gate();
+            bench.hooks.push({
+                method: 'answerCallbackQuery',
+                when: (payload) => payload.text === '继续中...',
+                onCaught: () => caught.open(),
+                holdUntil: held.opened,
+            });
+            vertex.reset([answer('启动之后说完。')]);
+            telegram.reset();
+            const clicked = bench.press(reply, 'resp:continue');
+            await caught.opened;
+            for (const [data, notice] of [
+                ['resp:stop', STARTING_NOTICE],
+                ['resp:prev', STARTING_NOTICE],
+                ['resp:retry', CLAIMED_NOTICE],
+                ['resp:continue', CLAIMED_NOTICE],
+            ] as const) {
+                telegram.reset();
+                await bench.press(reply, data);
+                await new Promise((resolve) => setTimeout(resolve, 50));
+                expect(
+                    json(bench.toasts()) === json([notice]) && visibleEditsOf(telegram).length === 0,
+                    `${data} answers ${notice} and changes nothing (got ${json({ toasts: bench.toasts(), edits: visibleEditsOf(telegram) })})`
+                );
+            }
+            expect(kept(reply), 'the checkpoint is not taken before the answer');
+            held.open();
+            await clicked;
+            await bench.settled(reply);
+            const version = await bench.latestVersion(reply);
+            expect(version.text.includes('启动之后说完。') && !kept(reply), 'then the resume runs as usual');
+        }),
+    },
+    {
+        name: 'case 13: a reply still generating refuses 继续 and puts the stop button back',
+        body: quietCase(async () => {
+            const chatId = takeChatId();
+            vertex.reset([stalledRound('还在想', '说到一半')]);
+            telegram.reset();
+            const asked = bench.askInBackground(chatId, '@AfterSchoolTeatimeBot 慢慢说');
+            await waitUntil('the stream', () => vertex.requests.length === 1);
+            const running = await bench.runningReplyOf(chatId);
+            telegram.reset();
+            await bench.press(running, 'resp:continue');
+            expect(json(bench.toasts()) === json(['还在生成中']), `refused (got ${json(bench.toasts())})`);
+            expect(json(finalButtonsOf(telegram)) === json(['停止']), `the stop button is put back (got ${json(finalButtonsOf(telegram))})`);
+            expect(!bench.state.isReplyRerunClaimed(chatId, running.firstMessageId), 'the claim is free');
+            await bench.stopReply(running);
+            await asked.done;
+        }),
+    },
+    {
+        name: 'case 13: a failed answer, startRetry returning null and an unreadable trigger all leave the checkpoint and free the claim',
+        body: quietCase(async () => {
+            const reply = await failedReply();
+
+            // The answer fails: nothing was taken yet
+            bench.hooks.push({ method: 'answerCallbackQuery', when: (payload) => payload.text === '继续中...', fail: true });
+            telegram.reset();
+            const thrown = await bench.press(reply, 'resp:continue');
+            expect(thrown instanceof Error, `the failed answer reaches the update handler (got ${String(thrown)})`);
+            expect(bench.entryOf(reply)?.failedVersionId === 1 && bench.markOf(reply)?.versionId === 1, 'answer failed: the checkpoint stays');
+            expect(!bench.state.isReplyRerunClaimed(reply.chatId, reply.firstMessageId), 'answer failed: the claim is free');
+
+            // The reply's record vanishes between the answer and startRetry: it returns null
+            const stored = await bench.stored(reply);
+            const record = stored.get({ plain: true });
+            bench.hooks.push({
+                method: 'answerCallbackQuery',
+                when: (payload) => payload.text === '继续中...',
+                onCaught: async () => {
+                    await stored.destroy();
+                },
+            });
+            vertex.reset([]);
+            telegram.reset();
+            await bench.continueReply(reply);
+            expect(vertex.requests.length === 0, 'startRetry returned null: nothing was sent');
+            expect(bench.entryOf(reply)?.failedVersionId === 1 && bench.markOf(reply)?.versionId === 1, 'null start: the checkpoint is put back');
+            expect(!bench.state.isReplyRerunClaimed(reply.chatId, reply.firstMessageId), 'null start: the claim is free');
+            await bench.dbIndex.BotResponse.create(record);
+
+            // The trigger cannot be read after startRetry: the new version fails and keeps the same checkpoint
+            const original = bench.entryOf(reply);
+            await Message.destroy({ where: { chatId: reply.chatId, messageId: reply.userMessageId } });
+            telegram.reset();
+            await bench.continueReply(reply);
+            const failed = await bench.latestVersion(reply);
+            expect(failed.versionId === 2 && failed.errorMessage !== undefined, `version 2 failed (got ${json({ id: failed.versionId, error: failed.errorMessage })})`);
+            const again = bench.entryOf(reply);
+            expect(
+                again?.failedVersionId === 2 && again.loop.state === original?.loop.state && bench.markOf(reply)?.versionId === 2,
+                'unreadable trigger: the same checkpoint is kept on version 2'
+            );
+            expect(json(finalButtonsOf(telegram)) === json(['<', '继续', '重试']), `with [<] [继续] [重试] (got ${json(finalButtonsOf(telegram))})`);
+            expect(!bench.state.isReplyRerunClaimed(reply.chatId, reply.firstMessageId), 'unreadable trigger: the claim is free');
+            const [, failedRow] = await bench.rowsOf(reply);
+            expect(
+                failedRow?.outcome === 'error' && failedRow.resumedRounds === 1 && failedRow.toolCalls === 0 && failedRow.checkpointRounds === 1,
+                `its row counts no call of its own (got ${json({ outcome: failedRow?.outcome, toolCalls: failedRow?.toolCalls })})`
+            );
+
+            // With the trigger back, it continues
+            await bench.dbIndex.saveMessage({
+                chatId: reply.chatId,
+                messageId: reply.userMessageId,
+                userId: 5150,
+                date: new Date(),
+                userName: 'user-5150',
+                message: '@AfterSchoolTeatimeBot 查一下',
+            });
+            await expectContinues(reply, 'trigger back');
+        }),
+    },
+    {
+        name: 'access tiers: a trial user pressing 继续 on a full user\'s reply gets the model notice; the full user can still continue',
+        body: quietCase(async () => {
+            process.env.ACCESS_TIERS = '1';
+            try {
+                const reply = await failedReply();
+                await expectNoticeOnly(reply, checks.MODEL_CHANGED_NOTICE, 'trial presser', TRIAL_USER_ID);
+                await expectContinues(reply, 'full presser');
+            } finally {
+                process.env.ACCESS_TIERS = '0';
+            }
+        }),
+    },
+    {
+        name: 'case 18: a missing checkpoint logs why: restart, expired, evicted',
+        body: quietCase(async (log) => {
+            // Restart: a reply whose version is older than this process
+            const chatId = takeChatId();
+            const firstMessageId = 910_001;
+            await bench.dbIndex.BotResponse.create({
+                messageId: firstMessageId,
+                chatId,
+                userMessageId: 910_000,
+                currentVersionIndex: 0,
+                versions: JSON.stringify([
+                    {
+                        versionId: 1,
+                        createdAt: new Date(performance.timeOrigin - 60_000).toISOString(),
+                        messageIds: [firstMessageId],
+                        currentMessageId: firstMessageId,
+                        text: '重启前的回复',
+                        errorMessage: 'got status: 429',
+                        wasStoppedByUser: false,
+                    },
+                ]),
+                buttonState: bench.dbIndex.ButtonState.RETRY_ONLY,
+                metadata: JSON.stringify({ model: 'gemini-4-carbon', hasImage: false }),
+            });
+            const restarted: AskedReply = { chatId, userMessageId: 910_000, firstMessageId };
+            await expectGone(restarted, 'restart');
+            expect(log.has(`[resume] checkpoint missing reason=restart chat=${chatId}`), 'reason=restart');
+
+            // Expired
+            const expired = await failedReply();
+            await withFakeClock(async (jump) => {
+                jump(CHECKPOINT_REGISTRY_LIMITS.ttlMs + 1000);
+                await expectGone(expired, 'expired');
+            });
+            expect(log.has(`[resume] checkpoint missing reason=expired chat=${expired.chatId}`), 'reason=expired');
+
+            // Evicted: newer entries of other replies push it out
+            const evicted = await failedReply();
+            for (let index = 0; index < CHECKPOINT_REGISTRY_LIMITS.maxEntries; index += 1) saveFiller(index);
+            expect(log.has(`[resume] checkpoint evicted chat=${evicted.chatId}`), 'the registry evicted it');
+            await expectGone(evicted, 'evicted');
+            expect(log.has(`[resume] checkpoint missing reason=evicted chat=${evicted.chatId}`), 'reason=evicted');
+        }),
+    },
+];
+
+const results: CaseResult[] = [];
+for (const testCase of cases) {
+    results.push(await runCase(testCase.name, testCase.body));
+}
+endOpenReplies();
+await bench.close();
+reportResults(results);

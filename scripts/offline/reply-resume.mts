@@ -11,28 +11,24 @@
  */
 import { expect, reportResults, runCase, type CaseResult } from './harness.mts';
 import { endOpenReplies, waitUntil } from './fake-telegram.mts';
-import { httpErrorReply, sseReply, stalledStreamReply, type RecordedRequest, type ScriptedReply } from './support/fake-vertex.mts';
+import { httpErrorReply, type ScriptedReply } from './support/fake-vertex.mts';
+import { answer, callsRound, groundingOf } from './support/gemini-loop-fixtures.mts';
 import {
-    answer,
-    callPart,
-    callsRound,
-    event,
-    groundingOf,
-    roundEvents,
-    textPart,
-    thoughtPart,
-    type ScriptedCall,
-} from './support/gemini-loop-fixtures.mts';
-import {
+    answersIn,
+    answerTexts,
     asArray,
     asRecord,
     createResumeBench,
+    failingRound,
     finalButtonsOf,
     gate,
     imageReply,
     json,
     quietCase,
+    roundOf,
+    stalledRound,
     takeChatId,
+    webLookup,
     type AskedReply,
 } from './support/resume-bench.mts';
 
@@ -42,49 +38,6 @@ const { STOPPED_DURING_CALL_NOTE } = await import('../../src/ai/platforms/gemini
 const { ONE_ATTACHMENT_PER_REPLY } = await import('../../src/reply/tools/reply-media-state.js');
 const { loadThinkingDocument } = await import('../../src/panel/thinking/thinking-view.js');
 const { getActiveSession } = await import('../../src/services/bot-message-service.js');
-
-// ---- reading requests ----
-
-interface FunctionAnswer {
-    readonly name: string;
-    readonly output?: string;
-    readonly error?: string;
-}
-
-/** Every function response a request sends, in order */
-const answersIn = (request: RecordedRequest | undefined): FunctionAnswer[] =>
-    asArray(request?.body.contents)
-        .flatMap((content) => asArray(asRecord(content).parts))
-        .map((part) => asRecord(asRecord(part).functionResponse))
-        .filter((functionResponse) => typeof functionResponse.name === 'string')
-        .map((functionResponse) => {
-            const response = asRecord(functionResponse.response);
-            return {
-                name: String(functionResponse.name),
-                ...(typeof response.output === 'string' ? { output: response.output } : {}),
-                ...(typeof response.error === 'string' ? { error: response.error } : {}),
-            };
-        });
-
-/** A round whose stream starts and then hangs until the reply is stopped */
-const stalledRound = (thinking: string, text: string) =>
-    stalledStreamReply([event([thoughtPart(thinking)]), event([textPart(text)])]);
-
-const stopReply = async (reply: { readonly chatId: number; readonly firstMessageId: number }): Promise<void> => {
-    const thrown = await bench.press(reply, 'resp:stop');
-    if (thrown !== null) throw new Error(`the stop click threw: ${String(thrown)}`);
-};
-
-/** The reply of a chat's only question, as soon as its session exists */
-const runningReplyOf = async (chatId: number): Promise<AskedReply> => {
-    const deadline = Date.now() + 5000;
-    while (Date.now() < deadline) {
-        const response = await bench.dbIndex.BotResponse.findOne({ where: { chatId } });
-        if (response) return { chatId, userMessageId: response.userMessageId, firstMessageId: response.messageId };
-        await new Promise((resolve) => setTimeout(resolve, 20));
-    }
-    throw new Error('no running reply');
-};
 
 const sentDocuments = (): number[] =>
     telegram.callsOf('sendDocument').map((call) => Number(asRecord(call.payload).chat_id));
@@ -127,40 +80,6 @@ const expectStoppedThenContinued = async (reply: AskedReply, label: string): Pro
 };
 
 
-const BAD_REQUEST = 'Request contains an invalid argument.';
-/** A round that fails at once and is not retried: the reply ends in an error */
-const failingRound = () => httpErrorReply(400, BAD_REQUEST);
-
-interface RoundScript {
-    readonly label: string;
-    readonly thinking?: readonly string[];
-    readonly text?: readonly string[];
-    readonly calls?: readonly ScriptedCall[];
-    readonly grounding?: Record<string, unknown>;
-}
-
-/** One model round: its thinking chunks, then its text chunks, then its calls in one chunk */
-const roundOf = (script: RoundScript, onServe?: () => void) =>
-    sseReply(
-        roundEvents(
-            [
-                ...(script.thinking ?? []).map((thinking) => [thoughtPart(thinking)]),
-                ...(script.text ?? []).map((text) => [textPart(text)]),
-                ...((script.calls ?? []).length > 0
-                    ? [
-                          (script.calls ?? []).map((call, index) =>
-                              callPart(call.name, call.args ?? {}, `${script.label}-${index}`, `call_${script.label}_${index}`)
-                          ),
-                      ]
-                    : []),
-            ],
-            script.grounding === undefined ? {} : { grounding: script.grounding }
-        ),
-        onServe
-    );
-
-const webLookup = (query: string): ScriptedCall => ({ name: 'web_lookup', args: { query } });
-
 /** Six sections of ~700 characters: over one message, so the thinking link starts */
 const longThinking = (label: string): string[] =>
     Array.from({ length: 6 }, (_unused, index) => `**${label}${index}**\n\n${'推理'.repeat(350)}\n\n`);
@@ -168,10 +87,6 @@ const longThinking = (label: string): string[] =>
 /** Text long enough that the legacy display needs more than one message */
 const longText = (label: string): string[] =>
     Array.from({ length: 20 }, (_unused, index) => `${label} 第 ${index + 1} 段：${'很长的回答内容。'.repeat(60)}\n\n`);
-
-/** The function responses' texts of a request, output or error */
-const answerTexts = (request: RecordedRequest | undefined): string[] =>
-    answersIn(request).map((item) => item.output ?? item.error ?? '');
 
 /** Every entity the calls of the fake Bot API carried */
 const entitiesSent = (): Record<string, unknown>[] =>
@@ -184,18 +99,6 @@ const usageRounds = (lines: readonly string[]): string[] =>
 
 const callsNamed = (name: string): number => bench.mcpCalls.filter((call) => call.name === name).length;
 
-/** A reply that ran round 1 (these calls) and failed at round 2: its checkpoint keeps one round */
-const failedAfterRound1 = async (round1: RoundScript, question = '@AfterSchoolTeatimeBot 查一下'): Promise<AskedReply> => {
-    vertex.reset([roundOf(round1), failingRound()]);
-    telegram.reset();
-    const reply = await bench.ask(takeChatId(), question);
-    const kept = bench.entryOf(reply);
-    if (kept?.loop.completedRounds !== 1) {
-        throw new Error(`the failed reply kept no round-1 checkpoint (got ${json(kept?.loop.completedRounds)})`);
-    }
-    return reply;
-};
-
 const cases: Array<{ name: string; body: () => Promise<void> }> = [
     {
         name: 'case 3: stopped mid-stream, then 继续: the stopped version loses its file message, the new one sends the file once',
@@ -205,8 +108,8 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
             telegram.reset();
             const asked = bench.askInBackground(chatId, '@AfterSchoolTeatimeBot 写个文件');
             await waitUntil('round 2 to stream', () => vertex.requests.length === 2);
-            const running = await runningReplyOf(chatId);
-            await stopReply(running);
+            const running = await bench.runningReplyOf(chatId);
+            await bench.stopReply(running);
             const reply = await asked.done;
             await expectStoppedThenContinued(reply, 'mid-stream');
         }),
@@ -222,8 +125,8 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
                 const waitsBefore = bench.gemini.waits.length;
                 const asked = bench.askInBackground(chatId, '@AfterSchoolTeatimeBot 写个文件');
                 await waitUntil('the retry wait', () => bench.gemini.waits.length > waitsBefore);
-                const running = await runningReplyOf(chatId);
-                await stopReply(running);
+                const running = await bench.runningReplyOf(chatId);
+                await bench.stopReply(running);
                 const reply = await asked.done;
                 expect(vertex.requests.length === 2, `round 2 was not reopened after the stop (got ${vertex.requests.length})`);
                 await expectStoppedThenContinued(reply, 'retry wait');
@@ -241,8 +144,8 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
             telegram.reset();
             const asked = bench.askInBackground(chatId, '@AfterSchoolTeatimeBot 写个文件再慢慢查');
             await waitUntil('the slow tool to run', () => bench.mcpCalls.length > callsBefore);
-            const running = await runningReplyOf(chatId);
-            await stopReply(running);
+            const running = await bench.runningReplyOf(chatId);
+            await bench.stopReply(running);
             const reply = await asked.done;
             const kept = bench.entryOf(reply);
             expect(kept?.loop.completedRounds === 2, `the round of the stopped call is kept (got ${kept?.loop.completedRounds})`);
@@ -285,7 +188,7 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
             const slowBefore = callsNamed('slow_lookup');
             const asked = bench.askInBackground(chatId, '@AfterSchoolTeatimeBot 告诉机主一声');
             await waitUntil('the slow call', () => callsNamed('slow_lookup') > slowBefore);
-            await stopReply(await runningReplyOf(chatId));
+            await bench.stopReply(await bench.runningReplyOf(chatId));
             const reply = await asked.done;
             expect(callsNamed('notify_owner') === ownerBefore + 1, 'the owner was told once');
             expect(bench.entryOf(reply)?.loop.completedRounds === 2, `round 2 is kept (got ${json(bench.entryOf(reply)?.loop.completedRounds)})`);
@@ -313,7 +216,7 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
         name: 'case 6: the resumed version is whole (text, thinking, tool records, usage, round-1 grounding); page, bot row and #N links agree',
         body: quietCase(async () => {
             const thinking = longThinking('A');
-            const reply = await failedAfterRound1({
+            const reply = await bench.failedAfterRound1({
                 label: 'r1',
                 thinking,
                 text: ['第一轮的话，见 #1。'],
@@ -364,7 +267,7 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
         body: quietCase(async (log) => {
             process.env.THINKING_LINK = '0';
             try {
-                const reply = await failedAfterRound1({
+                const reply = await bench.failedAfterRound1({
                     label: 'r1',
                     thinking: ['第一轮想了想'],
                     text: longText('第一轮'),
@@ -457,7 +360,7 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
     {
         name: 'case 9: 继续 goes on counting: 已调用 N 次 includes the kept calls, the round numbers go on, the usage shown is cumulative',
         body: quietCase(async (log) => {
-            const reply = await failedAfterRound1({ label: 'r1', thinking: ['查两次'], calls: [webLookup('a'), webLookup('b')] });
+            const reply = await bench.failedAfterRound1({ label: 'r1', thinking: ['查两次'], calls: [webLookup('a'), webLookup('b')] });
             vertex.reset([roundOf({ label: 'r2', calls: [webLookup('c')] }), answer('查完了。')]);
             telegram.reset();
             const linesBefore = log.lines.length;
@@ -474,7 +377,7 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
     {
         name: 'case 9 and 11: 重试 starts from nothing (round 1, 已调用 1 次) and the kept checkpoint is gone',
         body: quietCase(async (log) => {
-            const reply = await failedAfterRound1({ label: 'r1', calls: [webLookup('a'), webLookup('b')] });
+            const reply = await bench.failedAfterRound1({ label: 'r1', calls: [webLookup('a'), webLookup('b')] });
             vertex.reset([roundOf({ label: 'fresh', calls: [webLookup('c')] }), answer('重新查完了。')]);
             telegram.reset();
             const linesBefore = log.lines.length;
@@ -494,7 +397,7 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
     {
         name: 'case 12: a resume that fails or is stopped before a new checkpoint keeps the old one on the new version; after one, the new one',
         body: quietCase(async () => {
-            const reply = await failedAfterRound1({ label: 'r1', calls: [webLookup('a')] });
+            const reply = await bench.failedAfterRound1({ label: 'r1', calls: [webLookup('a')] });
             const original = bench.entryOf(reply);
 
             // Fails at its first round: nothing new was handed over
@@ -523,7 +426,7 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
             const asked = bench.continueReply(reply);
             vertex.reset([stalledRound('第三轮', '说到一半')]);
             await waitUntil('round 3 to stream', () => vertex.requests.length === 1);
-            await stopReply(reply);
+            await bench.stopReply(reply);
             await asked;
             const stopped = bench.entryOf(reply);
             expect(
@@ -543,7 +446,7 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
     {
         name: 'case 14: the resumed row counts only its own rounds, tokens and tool calls; replayed text and thinking count; the first chunk is a new one',
         body: quietCase(async () => {
-            const reply = await failedAfterRound1({
+            const reply = await bench.failedAfterRound1({
                 label: 'r1',
                 thinking: ['第一轮想了很久很久'],
                 text: ['第一轮的话。'],
@@ -586,7 +489,7 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
             expect(resumed?.requestStartedAt !== null, 'the request start is marked');
 
             // A resume that fails after a new call: its row counts that call only
-            const second = await failedAfterRound1({ label: 's1', calls: [webLookup('x'), webLookup('y')] });
+            const second = await bench.failedAfterRound1({ label: 's1', calls: [webLookup('x'), webLookup('y')] });
             vertex.reset([roundOf({ label: 's2', calls: [webLookup('z')] }), failingRound()]);
             telegram.reset();
             await bench.continueReply(second);
@@ -604,7 +507,7 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
         body: quietCase(async (log) => {
             process.env.THINKING_LINK = '0';
             try {
-                const reply = await failedAfterRound1({
+                const reply = await bench.failedAfterRound1({
                     label: 'r1',
                     thinking: ['第一轮想了想'],
                     text: longText('第一轮'),
@@ -624,7 +527,7 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
                 const clicked = bench.press(reply, 'resp:continue');
                 await caught.opened;
                 // The replay is held at its first continuation message: stop now
-                await stopReply(reply);
+                await bench.stopReply(reply);
                 expect(bench.toasts().includes('停止中...'), `the stop is taken (got ${json(bench.toasts())})`);
                 await waitUntil(
                     'the stop to reach the resumed session',
