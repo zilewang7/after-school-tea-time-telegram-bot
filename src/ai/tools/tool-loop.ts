@@ -100,16 +100,34 @@ export const createToolTimeClock = (
     startedAt: number = Date.now()
 ): ToolTimeClock => ({ startedAt, deadlineMs, wallMs, toolTimeMs: 0 });
 
-/** Why the next round has to be the no-cost/final one, or null */
-export const budgetExhaustedReason = (clock: ToolTimeClock): string | null => {
-    if (clock.toolTimeMs >= clock.deadlineMs) {
-        return `Tool budget (${Math.round(clock.deadlineMs / 1000)}s of tool time) used up`;
+/** The budget facts at one moment; the caller reads the time */
+export interface ToolBudgetReading {
+    readonly toolTimeMs: number;
+    /** Reply wall time so far */
+    readonly elapsedMs: number;
+    readonly deadlineMs: number;
+    readonly wallMs: number;
+}
+
+/** Why the next round has to be the no-cost/final one, or null; pure */
+export const budgetExhaustedReasonAt = (reading: ToolBudgetReading): string | null => {
+    if (reading.toolTimeMs >= reading.deadlineMs) {
+        return `Tool budget (${Math.round(reading.deadlineMs / 1000)}s of tool time) used up`;
     }
-    if (Date.now() - clock.startedAt >= clock.wallMs) {
-        return `Reply wall clock (${Math.round(clock.wallMs / 1000)}s) reached`;
+    if (reading.elapsedMs >= reading.wallMs) {
+        return `Reply wall clock (${Math.round(reading.wallMs / 1000)}s) reached`;
     }
     return null;
 };
+
+/** Why the next round has to be the no-cost/final one, or null */
+export const budgetExhaustedReason = (clock: ToolTimeClock): string | null =>
+    budgetExhaustedReasonAt({
+        toolTimeMs: clock.toolTimeMs,
+        elapsedMs: Date.now() - clock.startedAt,
+        deadlineMs: clock.deadlineMs,
+        wallMs: clock.wallMs,
+    });
 
 const freeToolsOf = (tools: TurnTools): TurnTools =>
     filterTurnTools(tools, (name) => isTimeFreeToolName(name));

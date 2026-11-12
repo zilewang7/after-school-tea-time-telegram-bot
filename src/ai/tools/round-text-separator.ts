@@ -10,16 +10,28 @@ import type { StreamChunk } from '../types.js';
 
 const ROUND_SEPARATOR = '\n\n';
 
+/** What the separator knows, as plain data: a checkpoint keeps it, a resume restores it */
+export interface RoundTextSeparatorState {
+    /** Some earlier round showed visible text */
+    readonly textShown: boolean;
+    /** The current round's first visible text still gets the blank line */
+    readonly separatorPending: boolean;
+}
+
 export interface RoundTextSeparator {
     /** A new round begins */
     startRound(): void;
     /** The chunk as shown; only the first visible text of a later round changes */
     apply(chunk: StreamChunk): StreamChunk;
+    /** A copy of the current state */
+    state(): RoundTextSeparatorState;
 }
 
-export const createRoundTextSeparator = (): RoundTextSeparator => {
-    let textShown = false;
-    let separatorPending = false;
+const FRESH_SEPARATOR: RoundTextSeparatorState = { textShown: false, separatorPending: false };
+
+export const createRoundTextSeparator = (initial: RoundTextSeparatorState = FRESH_SEPARATOR): RoundTextSeparator => {
+    let textShown = initial.textShown;
+    let separatorPending = initial.separatorPending;
 
     return {
         startRound: () => {
@@ -34,5 +46,6 @@ export const createRoundTextSeparator = (): RoundTextSeparator => {
             textShown = true;
             return { ...chunk, content };
         },
+        state: () => ({ textShown, separatorPending }),
     };
 };

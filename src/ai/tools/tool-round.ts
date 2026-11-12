@@ -109,10 +109,14 @@ export interface ToolUsageTally {
     snapshot(): AgentToolUsage[];
 }
 
-export const createToolUsageTally = (): ToolUsageTally => {
+/** `initial`: a snapshot to continue from (a resumed reply), in its order */
+export const createToolUsageTally = (initial: readonly AgentToolUsage[] = []): ToolUsageTally => {
     // Map keeps first-use order, which is the order the usage line shows
-    const countsByName = new Map<string, number>();
+    const countsByName = new Map<string, number>(initial.map((usage) => [usage.name, usage.count]));
     const failuresByName = new Map<string, number>();
+    for (const usage of initial) {
+        if (usage.failed !== undefined) failuresByName.set(usage.name, usage.failed);
+    }
     return {
         count: (name) => {
             countsByName.set(name, (countsByName.get(name) ?? 0) + 1);
@@ -129,6 +133,45 @@ export const createToolUsageTally = (): ToolUsageTally => {
     };
 };
 
+/** One call just executed, before anything it produced has been yielded */
+export interface ExecutedToolStep {
+    readonly executed: ExecutedToolCall;
+    /** The chunks this call produced for the reply, in the order they are about to be yielded */
+    readonly products: readonly StreamChunk[];
+    /** The stop signal was clear when the call started and had fired when it returned */
+    readonly stoppedDuringCall: boolean;
+}
+
+export interface ToolRoundHooks {
+    /**
+     * Runs after each executed call, before its products are yielded: a
+     * consumer that stops reading halfway through them has still been told
+     * about the whole call
+     */
+    readonly onCallExecuted?: (step: ExecutedToolStep) => void;
+}
+
+/** What a result hands to the reply: images, stickers, files, widgets, then its record */
+const productsOf = (result: ToolResult): StreamChunk[] => {
+    const products: StreamChunk[] = [
+        ...result.images.map(
+            (image): StreamChunk => ({
+                type: 'image',
+                imageData: image.data,
+                imageMimeType: image.mimeType,
+                imageCaption: image.caption,
+            })
+        ),
+        ...(result.stickers ?? []).map((sticker): StreamChunk => ({ type: 'sticker', sticker })),
+        ...(result.files ?? []).map((file): StreamChunk => ({ type: 'file', file })),
+        ...(result.widgets ?? []).map((widget): StreamChunk => ({ type: 'widget', widget })),
+    ];
+    if (result.record !== null) {
+        products.push({ type: 'grounding', groundingMetadata: result.record });
+    }
+    return products;
+};
+
 /**
  * Runs the calls strictly in order (they may have side effects) and streams
  * what they produce: a status before each call, then its images and record,
@@ -142,11 +185,14 @@ export async function* runToolRound(
     tools: TurnTools,
     calls: readonly ToolCall[],
     tally: ToolUsageTally,
-    signal?: AbortSignal
+    signal?: AbortSignal,
+    hooks: ToolRoundHooks = {}
 ): AsyncGenerator<StreamChunk, ExecutedToolCall[], void> {
     const offeredNames = new Set(tools.definitions.map((definition) => definition.name));
     const executedCalls: ExecutedToolCall[] = [];
     let statusShown = false;
+    // Read afresh each time: the signal can fire while a call runs
+    const isStopped = (): boolean => signal?.aborted === true;
 
     for (const call of calls) {
         const counted = offeredNames.has(call.name);
@@ -156,32 +202,20 @@ export async function* runToolRound(
             statusShown = true;
         }
 
+        const stoppedBefore = isStopped();
         const startedAt = Date.now();
         const result = await tools.execute(call, signal);
         const durationMs = Date.now() - startedAt;
         if (counted && result.isError) tally.fail(call.name);
-        for (const image of result.images) {
-            yield {
-                type: 'image',
-                imageData: image.data,
-                imageMimeType: image.mimeType,
-                imageCaption: image.caption,
-            };
-        }
-        for (const sticker of result.stickers ?? []) {
-            yield { type: 'sticker', sticker };
-        }
-        for (const file of result.files ?? []) {
-            yield { type: 'file', file };
-        }
-        for (const widget of result.widgets ?? []) {
-            yield { type: 'widget', widget };
-        }
-        if (result.record !== null) {
-            yield { type: 'grounding', groundingMetadata: result.record };
-        }
-
-        executedCalls.push({ call, result, durationMs });
+        const executed: ExecutedToolCall = { call, result, durationMs };
+        executedCalls.push(executed);
+        const products = productsOf(result);
+        hooks.onCallExecuted?.({
+            executed,
+            products,
+            stoppedDuringCall: !stoppedBefore && isStopped(),
+        });
+        yield* products;
     }
 
     if (statusShown) {
