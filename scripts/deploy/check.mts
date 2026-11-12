@@ -16,11 +16,16 @@ import { existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { PRODUCTION_CONTAINER, queryProduction, readLiveHealth } from '../lib/production.mts';
+import { ageSecondsOf } from './reply-age.mts';
 import { stopSignalProblem } from './stop-signal.mts';
 
 const REPOSITORY_ROOT = fileURLToPath(new URL('../../', import.meta.url));
 const RELEASE_BRANCH = 'master';
-/** A reply cannot run longer than this (tool budget plus hard wall); an older row is a leftover */
+/**
+ * A streaming reply moves its row's updatedAt forward every minute or so (the
+ * heartbeat; the longest gap is a silent stretch of the model, at most 15
+ * minutes), so a processing row untouched for longer is a leftover
+ */
 const REPLY_MAX_AGE_MS = 25 * 60 * 1000;
 const WAIT_TIMEOUT_MS = 5 * 60 * 1000;
 const POLL_INTERVAL_MS = 2000;
@@ -65,12 +70,6 @@ interface ReplyInProgress {
     messageId: unknown;
     ageSeconds: number;
 }
-
-/** `2026-11-11 07:29:06.000 +00:00` as the database stores it */
-const ageSecondsOf = (storedTimestamp: unknown): number => {
-    const parsed = typeof storedTimestamp === 'string' ? Date.parse(storedTimestamp.replace(' ', 'T').replace(' ', '')) : NaN;
-    return Number.isNaN(parsed) ? 0 : Math.round((Date.now() - parsed) / 1000);
-};
 
 const readRepliesInProgress = (): ReplyInProgress[] =>
     queryProduction(
