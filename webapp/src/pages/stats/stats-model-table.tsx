@@ -7,7 +7,9 @@ import {
     formatPercent,
     formatUsd,
     platformLabel,
-    pricingLabel,
+    pricingNoteOf,
+    priorityHitTextOf,
+    strayPriorityTextOf,
 } from '../../format-metrics';
 
 interface StatsModelTableProps {
@@ -18,17 +20,25 @@ interface ModelRowProps {
     row: ModelStatsRow;
 }
 
+/** Hits of the replies that asked, then the rounds nobody asked for; null when the model has neither */
+const priorityLineOf = (row: ModelStatsRow): string | null => {
+    const parts = [priorityHitTextOf(row), strayPriorityTextOf(row)].filter((part) => part !== null);
+    return parts.length === 0 ? null : parts.join(' · ');
+};
+
 const ModelRow = ({ row }: ModelRowProps) => {
     const toolLine = useMemo(
         () => `工具 ${formatCount(row.toolCalls)} 次（${formatCount(row.toolFailures)} 失败）`,
         [row.toolCalls, row.toolFailures]
     );
+    const priorityLine = useMemo(() => priorityLineOf(row), [row]);
     return (
         <li className="model-stats-row">
             <div className="model-stats-head">
                 <span className="truncate">{row.model}</span>
                 <span className="model-stats-cost">
-                    {formatUsd(row.costUsd)} <span className="hint">{pricingLabel(row.pricing)}</span>
+                    {formatUsd(row.costUsd)}{' '}
+                    <span className="hint">{pricingNoteOf(row.pricing, row.priorityAtStandardPrice)}</span>
                 </span>
             </div>
             <p className="hint">
@@ -40,11 +50,12 @@ const ModelRow = ({ row }: ModelRowProps) => {
                 {toolLine} · 平均轮次 {row.avgRounds === null ? '—' : row.avgRounds.toFixed(1)} · 输出速度{' '}
                 {formatCharsPerSecond(row.outputCharsPerSecond)}
             </p>
+            {priorityLine !== null && <p className="hint">{priorityLine}</p>}
         </li>
     );
 };
 
-/** 「按模型」: a two-line row per model, so seven models do not need a wide table (design §7) */
+/** 「按模型」: a short block per model, so seven models do not need a wide table (design §7) */
 export const StatsModelTable = ({ rows }: StatsModelTableProps) => (
     <section className="section">
         <h2 className="section-title">按模型</h2>

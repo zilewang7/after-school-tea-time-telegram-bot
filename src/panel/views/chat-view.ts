@@ -2,7 +2,14 @@
  * How a chat and its settings appear in API responses.
  */
 import type { ChatRow, ChatType } from '../../db/queries/panel-registry.js';
-import { defaultChatSettings, getChatSettings, type ChatSettings } from '../../services/chat-settings-service.js';
+import {
+    canEnableGeminiPriority,
+    defaultChatSettings,
+    getChatSettings,
+    getGlobalGeminiPriority,
+    resolveGeminiPriority,
+    type ChatSettings,
+} from '../../services/chat-settings-service.js';
 import type { ToolOverrides } from '../../services/tool-overrides.js';
 import type { VisibleAccess } from '../types.js';
 
@@ -13,9 +20,20 @@ export interface ChatSettingsView {
     settingsLocked: boolean;
     /** The panel's per-chat tool switches; null = every group follows the env */
     toolOverrides: ToolOverrides | null;
+    /** The chat's own Priority PayGo value; null = follow the global switch */
+    geminiPriority: boolean | null;
     /** ISO time; the epoch when the chat has never been changed */
     updatedAt: string;
     updatedBy: number | null;
+}
+
+/** The Priority PayGo switch as the chat page shows it (design §8.2, §8.5) */
+export interface GeminiPriorityView {
+    /** Whether this chat's Gemini replies ask for the priority tier now */
+    effectiveGeminiPriority: boolean;
+    globalGeminiPriority: boolean;
+    /** "On" can take effect here: the global switch is on, or the chat is in TOOL_CHAT_IDS */
+    geminiPriorityCanEnable: boolean;
 }
 
 export interface ChatHeaderView {
@@ -38,8 +56,15 @@ export const toSettingsView = (settings: ChatSettings): ChatSettingsView => ({
     paused: settings.paused,
     settingsLocked: settings.settingsLocked,
     toolOverrides: settings.toolOverrides,
+    geminiPriority: settings.geminiPriority,
     updatedAt: settings.updatedAt.toISOString(),
     updatedBy: settings.updatedBy,
+});
+
+export const geminiPriorityViewOf = (chatId: number): GeminiPriorityView => ({
+    effectiveGeminiPriority: resolveGeminiPriority(chatId),
+    globalGeminiPriority: getGlobalGeminiPriority(),
+    geminiPriorityCanEnable: canEnableGeminiPriority(chatId),
 });
 
 export const toChatHeaderView = (chat: ChatRow, access: VisibleAccess): ChatHeaderView => ({

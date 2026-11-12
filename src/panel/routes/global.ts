@@ -1,24 +1,35 @@
 /**
- * GET / PATCH /api/global: the global default model, owner only. PATCH takes
- * `{ defaultModel: string | null }`; null removes the panel value so
- * DEFAULT_MODEL applies again.
+ * GET / PATCH /api/global: the global settings, owner only. PATCH is a partial
+ * update of `{ defaultModel?: string | null, defaultGeminiPriority?: boolean }`
+ * with at least one key; null removes the panel model so DEFAULT_MODEL applies
+ * again. Every key is checked before any is written, and the keys present are
+ * written together or not at all (design §8.5).
  */
 import type { Hono } from 'hono';
 import {
     getGlobalDefaultModel,
     getGlobalDefaultModelSource,
-    updateGlobalDefaultModel,
+    getGlobalGeminiPriority,
+    updateGlobalSettings,
 } from '../../services/chat-settings-service.js';
 import { requireAuth, requireOwner, type PanelEnv } from '../context.js';
-import { checkBodyKeys, invalid, readJsonObject } from '../request.js';
+import { readJsonObject } from '../request.js';
+import { toGlobalSettingsPatch } from './global-body.js';
 import { rethrowSettingsError } from './settings-errors.js';
 
-const DEFAULT_MODEL_KEY = 'defaultModel';
-const ALLOWED_KEYS: ReadonlySet<string> = new Set([DEFAULT_MODEL_KEY]);
+export interface GlobalSettingsView {
+    /** The effective default model */
+    defaultModel: string;
+    /** Where it comes from: the panel's value, or DEFAULT_MODEL */
+    source: 'panel' | 'env';
+    /** The global Priority PayGo switch; off unless the owner turned it on */
+    defaultGeminiPriority: boolean;
+}
 
-const globalSettingsView = () => ({
+const globalSettingsView = (): GlobalSettingsView => ({
     defaultModel: getGlobalDefaultModel(),
     source: getGlobalDefaultModelSource(),
+    defaultGeminiPriority: getGlobalGeminiPriority(),
 });
 
 export const registerGlobalRoutes = (app: Hono<PanelEnv>): void => {
@@ -30,12 +41,9 @@ export const registerGlobalRoutes = (app: Hono<PanelEnv>): void => {
     app.patch('/api/global', async (context) => {
         const auth = requireAuth(context);
         requireOwner(auth);
-        const body = await readJsonObject(context);
-        checkBodyKeys(body, ALLOWED_KEYS, [DEFAULT_MODEL_KEY]);
-        const value = body[DEFAULT_MODEL_KEY];
-        if (typeof value !== 'string' && value !== null) throw invalid('defaultModel 必须是字符串或 null');
+        const patch = toGlobalSettingsPatch(await readJsonObject(context));
 
-        await updateGlobalDefaultModel(value, { userId: auth.user.id, isOwner: auth.user.isOwner }).catch(
+        await updateGlobalSettings(patch, { userId: auth.user.id, isOwner: auth.user.isOwner }).catch(
             rethrowSettingsError
         );
         return context.json(globalSettingsView());

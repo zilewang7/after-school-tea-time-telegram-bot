@@ -3,8 +3,10 @@ import type { ChatSettings } from '../../api';
 import { ModelPicker } from '../../components/model-picker';
 import { SaveBar } from '../../components/save-bar';
 import { ToggleRow } from '../../components/toggle-row';
+import type { ChatGeminiPriorityState } from '../../gemini-priority';
 import { useConfirm } from '../../hooks/use-telegram-feedback';
 import { AddendumEditor } from './addendum-editor';
+import { GeminiPriorityField } from './gemini-priority-field';
 import { useChatSettingsForm } from './use-chat-settings-form';
 
 const LOCK_CONFIRM_MESSAGE = '锁定后，只有机主能修改本聊天的设置。确定锁定？';
@@ -15,6 +17,7 @@ interface ChatSettingsFormProps {
     settings: ChatSettings;
     effectiveModel: string;
     globalDefaultModel: string;
+    geminiPriority: ChatGeminiPriorityState;
     models: readonly string[];
     isOwner: boolean;
     writable: boolean;
@@ -23,12 +26,13 @@ interface ChatSettingsFormProps {
     onReload: () => void;
 }
 
-/** Model, addendum, pause and (owner) lock, saved together as one PATCH of the changed keys */
+/** Model, addendum, pause, Priority PayGo and (owner) lock, saved together as one PATCH of the changed keys */
 export const ChatSettingsForm = ({
     chatId,
     settings,
     effectiveModel,
     globalDefaultModel,
+    geminiPriority,
     models,
     isOwner,
     writable,
@@ -93,6 +97,14 @@ export const ChatSettingsForm = ({
                 checked={form.paused}
                 disabled={disabled}
                 onChange={form.setPaused}
+            />
+            <GeminiPriorityField
+                choice={form.geminiPriority}
+                savedChoice={settings.geminiPriority}
+                state={geminiPriority}
+                isOwner={isOwner}
+                disabled={disabled}
+                onChange={form.setGeminiPriority}
             />
             {isOwner && (
                 <ToggleRow

@@ -4,7 +4,14 @@
  * agree on "9.8s" and "2.9%".
  */
 import { match } from 'ts-pattern';
-import type { ErrorKind, ModelPricingFlag, PricingFlag, ReplyOutcome, ReplyPhase } from './api';
+import type {
+    ErrorKind,
+    ModelPricingFlag,
+    PricingFlag,
+    PriorityHitCounts,
+    ReplyOutcome,
+    ReplyPhase,
+} from './api';
 
 const COUNT_FORMAT = new Intl.NumberFormat('zh-CN');
 const RATE_DECIMALS = 1;
@@ -85,6 +92,22 @@ export const pricingLabel = (pricing: PricingFlag | ModelPricingFlag): string =>
         .with('no_usage', () => '无用量')
         .with('partial', () => '部分定价')
         .exhaustive();
+
+/** The pricing label, noting priority rounds priced at the standard price (the model has no priority price) */
+export const pricingNoteOf = (pricing: PricingFlag | ModelPricingFlag, priorityAtStandardPrice: boolean): string =>
+    priorityAtStandardPrice ? `${pricingLabel(pricing)} · Priority 轮按标准价估算` : pricingLabel(pricing);
+
+/** 「Priority 命中 1 / 6 轮（16.7%）」 over the replies that asked; null when none asked */
+export const priorityHitTextOf = (counts: PriorityHitCounts): string | null =>
+    counts.priorityReplies === 0
+        ? null
+        : `Priority 命中 ${formatCount(counts.priorityHitRounds)} / ${formatCount(counts.priorityRequestedRounds)} 轮（${formatPercent(counts.priorityHitRate)}）`;
+
+/** Priority rounds of replies that never asked for the tier, kept out of the hit rate; null when none */
+export const strayPriorityTextOf = (counts: PriorityHitCounts): string | null =>
+    counts.strayPriorityRounds === 0
+        ? null
+        : `未请求 Priority 却按优先档服务 ${formatCount(counts.strayPriorityRounds)} 轮`;
 
 export const replyPhaseLabel = (phase: ReplyPhase): string =>
     match(phase)

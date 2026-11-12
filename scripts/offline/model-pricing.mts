@@ -4,6 +4,10 @@
  * where the field is still to be confirmed by a probe — mapped to the shared
  * meaning, estimateCostUsd per model, the price table, and the aggregation
  * SQL with its pricing flags, the per-model rollup and the priced share.
+ * Then Priority PayGo (design §8.4): the priority part at the priority price,
+ * the standard-price fallback of a model without one and its note, and both
+ * sources of usage groups (the SQL aggregate and the reply detail) priced the
+ * same way.
  *
  * Run: npx tsx scripts/offline/model-pricing.mts
  */
@@ -22,10 +26,13 @@ const { estimateCostUsd, priceUsageGroup, rollupCostByModel, totalCost } = await
     '../../src/panel/stats/cost-estimate.js'
 );
 const { aggregateUsageByModelRoute, insertReplyMetric } = await import('../../src/db/queries/reply-metrics.js');
+const { listReplyMetricsByReply } = await import('../../src/panel/views/reply-metrics-view.js');
 const { OPENAI_IMAGE_MODEL } = await import('../../src/config/models.js');
 
 type ReplyMetricInput = import('../../src/db/queries/reply-metrics.js').ReplyMetricInput;
 type RoundUsage = import('../../src/ai/usage/index.js').RoundUsage;
+type ModelPrice = import('../../src/config/model-pricing.js').ModelPrice;
+type UsageTotals = import('../../src/panel/stats/cost-estimate.js').UsageTotals;
 
 const json = (value: unknown): string => JSON.stringify(value);
 
@@ -49,7 +56,31 @@ const near = (actual: number | null, expected: number): boolean =>
 
 const PRICED_CHAT = -1004400000001;
 const OTHER_CHAT = -1004400000002;
+const PRIORITY_CHAT = -1004400000003;
 let nextFirstMessageId = 10_000;
+
+const priceOf = (model: string): ModelPrice => {
+    const found = findModelPrice(model);
+    if (found === null) throw new Error(`${model} has no price`);
+    return found;
+};
+
+/** Usage totals with nothing in them; each case says what it reports */
+const ZERO_USAGE: UsageTotals = {
+    promptTokens: 0,
+    cachedTokens: 0,
+    cacheWriteTokens: 0,
+    outputTokens: 0,
+    imageOutputTokens: 0,
+    unsplitImageOutputTokens: 0,
+    imagesWithoutUsage: 0,
+    priorityPromptTokens: 0,
+    priorityCachedTokens: 0,
+    priorityOutputTokens: 0,
+};
+
+/** One million of each: a tier price reads straight off the cost */
+const PER_MILLION = 1_000_000;
 
 /** A stored row; tokens default to none, so each case says what it reports */
 const metricRow = (fields: Partial<ReplyMetricInput>): ReplyMetricInput => {
@@ -299,20 +330,8 @@ const cases: { name: string; body: () => Promise<void> }[] = [
     {
         name: 'estimateCostUsd prices each model at its list price',
         body: async () => {
-            const price = (model: string) => {
-                const found = findModelPrice(model);
-                if (found === null) throw new Error(`${model} has no price`);
-                return found;
-            };
-            const zero = {
-                promptTokens: 0,
-                cachedTokens: 0,
-                cacheWriteTokens: 0,
-                outputTokens: 0,
-                imageOutputTokens: 0,
-                unsplitImageOutputTokens: 0,
-                imagesWithoutUsage: 0,
-            };
+            const price = priceOf;
+            const zero = ZERO_USAGE;
             const argon = estimateCostUsd(price('gemini-4-argon'), {
                 ...zero,
                 promptTokens: 20831,
@@ -351,7 +370,7 @@ const cases: { name: string; body: () => Promise<void> }[] = [
         name: 'the price table: complete entries, the relay-only image id stays unpriced',
         body: async () => {
             const entries = Object.entries(MODEL_PRICES);
-            expect(entries.length === 13, `the 13 models of appendix A (got ${entries.length})`);
+            expect(entries.length === 14, `the 13 models of appendix A and gemini-4-carbon (got ${entries.length})`);
             for (const [model, price] of entries) {
                 const numbers = [price.inputPerM, price.cachedInputPerM, price.outputPerM];
                 expect(
@@ -480,6 +499,181 @@ const cases: { name: string; body: () => Promise<void> }[] = [
         },
     },
 ];
+
+cases.push(
+    {
+        name: 'priority prices: argon, carbon and 3.8-flash at 1.8 times standard, nobody else; carbon is argon',
+        body: async () => {
+            const withPriority = Object.entries(MODEL_PRICES)
+                .filter(([, price]) => price.priority !== undefined)
+                .map(([model]) => model)
+                .sort();
+            expect(
+                json(withPriority) === json(['gemini-3.8-flash', 'gemini-4-argon', 'gemini-4-carbon']),
+                `the three Gemini chat models have one (got ${json(withPriority)})`
+            );
+            for (const model of withPriority) {
+                const price = priceOf(model);
+                const priority = price.priority;
+                expect(
+                    priority !== undefined &&
+                        near(priority.inputPerM, price.inputPerM * 1.8) &&
+                        near(priority.cachedInputPerM, price.cachedInputPerM * 1.8) &&
+                        near(priority.outputPerM, price.outputPerM * 1.8),
+                    `${model}: 1.8 times each standard price (got ${json(priority)})`
+                );
+            }
+            expect(
+                json(priceOf('gemini-4-argon').priority) === json({ inputPerM: 3.6, cachedInputPerM: 0.18, outputPerM: 18 }),
+                'argon: 3.60 / 0.18 / 18'
+            );
+            expect(
+                json(priceOf('gemini-3.8-flash').priority) === json({ inputPerM: 1.35, cachedInputPerM: 0.135, outputPerM: 6.75 }),
+                'flash: 1.35 / 0.135 / 6.75'
+            );
+            // Only the date it was checked on differs
+            const { checkedOn: _carbonChecked, ...carbon } = priceOf('gemini-4-carbon');
+            const { checkedOn: _argonChecked, ...argon } = priceOf('gemini-4-argon');
+            expect(json(carbon) === json(argon), `carbon is priced like argon, no longer "unpriced" (got ${json(carbon)})`);
+        },
+    },
+    {
+        name: 'estimateCostUsd: (total - priority part) at standard + priority part at priority; no priority price = standard',
+        body: async () => {
+            const argon = priceOf('gemini-4-argon');
+            // One million of each kind, all at the priority tier: the cost is the priority prices
+            const allPriority: UsageTotals = {
+                ...ZERO_USAGE,
+                promptTokens: 2 * PER_MILLION,
+                cachedTokens: PER_MILLION,
+                outputTokens: PER_MILLION,
+                priorityPromptTokens: 2 * PER_MILLION,
+                priorityCachedTokens: PER_MILLION,
+                priorityOutputTokens: PER_MILLION,
+            };
+            const priorityOnly = estimateCostUsd(argon, allPriority);
+            expect(near(priorityOnly, 3.6 + 0.18 + 18), `every round at the priority tier (got ${priorityOnly})`);
+
+            // A reply whose round 1 was downgraded and round 2 served at the priority tier
+            const mixed: UsageTotals = {
+                ...ZERO_USAGE,
+                promptTokens: 2200,
+                cachedTokens: 1500,
+                outputTokens: 130,
+                priorityPromptTokens: 1200,
+                priorityCachedTokens: 900,
+                priorityOutputTokens: 80,
+            };
+            const standardPart = (400 * 2 + 600 * 0.1 + 50 * 10) / 1e6;
+            const priorityPart = (300 * 3.6 + 900 * 0.18 + 80 * 18) / 1e6;
+            const mixedCost = estimateCostUsd(argon, mixed);
+            expect(near(mixedCost, standardPart + priorityPart), `the split (got ${mixedCost})`);
+            const withoutSplit = estimateCostUsd(argon, { ...mixed, priorityPromptTokens: 0, priorityCachedTokens: 0, priorityOutputTokens: 0 });
+            expect(
+                near(withoutSplit, (700 * 2 + 1500 * 0.1 + 130 * 10) / 1e6) && mixedCost > withoutSplit,
+                `the same tokens all at standard cost less (got ${withoutSplit})`
+            );
+
+            // A model without a priority price: the priority part at the standard price, i.e. the old total
+            const deepseek = priceOf('deepseek-flash');
+            expect(deepseek.priority === undefined, 'deepseek has no priority price');
+            const fallback = estimateCostUsd(deepseek, { ...mixed });
+            const asStandard = estimateCostUsd(deepseek, { ...mixed, priorityPromptTokens: 0, priorityCachedTokens: 0, priorityOutputTokens: 0 });
+            expect(near(fallback, asStandard), `no priority price: priced as if standard (got ${fallback} vs ${asStandard})`);
+        },
+    },
+    {
+        name: 'priced groups: the split from the SQL aggregate and the reply detail alike; the note for a model without a priority price',
+        body: async () => {
+            const since = new Date(Date.now() - 7 * 24 * 3600 * 1000);
+            const mixedRow = metricRow({
+                chatId: PRIORITY_CHAT,
+                rounds: 2,
+                promptTokens: 2200,
+                cachedTokens: 1500,
+                outputTokens: 130,
+                tierRequested: 'priority',
+                priorityRounds: 1,
+                priorityPromptTokens: 1200,
+                priorityCachedTokens: 900,
+                priorityOutputTokens: 80,
+            });
+            // Priority rounds on a model the table has no priority price for
+            const unpricedTierRow = metricRow({
+                chatId: PRIORITY_CHAT,
+                model: 'gemini-nano-banana-2.1',
+                promptTokens: 1000,
+                cachedTokens: 0,
+                outputTokens: 100,
+                priorityRounds: 1,
+                priorityPromptTokens: 1000,
+                priorityCachedTokens: 0,
+                priorityOutputTokens: 100,
+            });
+            // Asked for priority, every round downgraded: standard price, no note
+            const downgradedRow = metricRow({
+                chatId: PRIORITY_CHAT,
+                model: 'gemini-4-carbon',
+                promptTokens: 1000,
+                cachedTokens: 0,
+                outputTokens: 100,
+                tierRequested: 'priority',
+            });
+            for (const row of [mixedRow, unpricedTierRow, downgradedRow]) await insertReplyMetric(row);
+
+            const priced = (await aggregateUsageByModelRoute({ since, chatId: PRIORITY_CHAT })).map(priceUsageGroup);
+            const find = (model: string) => {
+                const group = priced.find((entry) => entry.group.model === model);
+                if (!group) throw new Error(`no group ${model}`);
+                return group;
+            };
+            const mixedCost = (400 * 2 + 600 * 0.1 + 50 * 10 + 300 * 3.6 + 900 * 0.18 + 80 * 18) / 1e6;
+            const argon = find('gemini-4-argon');
+            expect(
+                argon.pricing === 'priced' && near(argon.costUsd, mixedCost) && !argon.priorityAtStandardPrice,
+                `the SQL group is split (got ${json(argon)})`
+            );
+            const banana = find('gemini-nano-banana-2.1');
+            expect(
+                banana.pricing === 'priced' &&
+                    near(banana.costUsd, (1000 * 1.5 + 100 * 7.5) / 1e6) &&
+                    banana.priorityAtStandardPrice,
+                `no priority price: standard price, and the group says so (got ${json(banana)})`
+            );
+            const carbon = find('gemini-4-carbon');
+            expect(
+                carbon.pricing === 'priced' && near(carbon.costUsd, (1000 * 2 + 100 * 10) / 1e6) && !carbon.priorityAtStandardPrice,
+                `carbon is priced; asked but downgraded is the standard price (got ${json(carbon)})`
+            );
+
+            const rollups = rollupCostByModel(priced);
+            expect(
+                rollups.get('gemini-nano-banana-2.1')?.priorityAtStandardPrice === true &&
+                    rollups.get('gemini-4-argon')?.priorityAtStandardPrice === false,
+                'the per-model rollup carries the note'
+            );
+            const totals = totalCost(priced);
+            expect(
+                near(totals.costUsd, mixedCost + (1000 * 1.5 + 100 * 7.5) / 1e6 + (1000 * 2 + 100 * 10) / 1e6),
+                `the total follows the split (got ${totals.costUsd})`
+            );
+
+            // The reply detail prices one row through asUsageGroup: same split, same note
+            const detailOf = async (row: ReplyMetricInput) =>
+                (await listReplyMetricsByReply(PRIORITY_CHAT, row.firstMessageId, { access: 'observer' })).get(1)?.[0];
+            const mixedDetail = await detailOf(mixedRow);
+            expect(
+                mixedDetail?.costUsd === Math.round(mixedCost * 1e6) / 1e6 && mixedDetail.priorityAtStandardPrice === false,
+                `the reply detail is split too (got ${json(mixedDetail)})`
+            );
+            const bananaDetail = await detailOf(unpricedTierRow);
+            expect(
+                bananaDetail?.priorityAtStandardPrice === true && bananaDetail.pricing === 'priced',
+                `the reply detail notes the standard-price fallback (got ${json(bananaDetail)})`
+            );
+        },
+    }
+);
 
 const results: CaseResult[] = [];
 for (const testCase of cases) {

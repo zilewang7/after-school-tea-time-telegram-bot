@@ -3,7 +3,9 @@
  * `app.request()` with self-signed initData, a fake getChatMember and the
  * scratch database: auth and its age windows, the PATCH settings matrix, the
  * global default, the preview, rate limiting, /api/me, the dashboard, audit,
- * the error envelope, request logs, and the static fallback order.
+ * the error envelope, request logs, and the static fallback order. Then the
+ * Priority PayGo switch (design §8.5): per chat (owner only, refused where it
+ * cannot take effect) and global (a partial update, all keys or none).
  *
  * Run: npx tsx scripts/offline/panel-api.mts
  */
@@ -24,8 +26,14 @@ const GROUP_MAIN = -1001000000001;
 const GROUP_LEFT = -1001000000002;
 const GROUP_THROTTLED = -1001000000003;
 const GROUP_TOOLS = -1001000000004;
+/** In TOOL_CHAT_IDS: Priority PayGo may be switched on here with the global switch off */
+const GROUP_PRIORITY_LISTED = -1001000000005;
+/** Not in TOOL_CHAT_IDS: "on" only takes effect while the global switch is on */
+const GROUP_PRIORITY_UNLISTED = -1001000000006;
 
 process.env.OWNER_USER_ID = String(OWNER_ID);
+// Read once into the tool config, before src is imported
+process.env.TOOL_CHAT_IDS = String(GROUP_PRIORITY_LISTED);
 process.env.DEFAULT_MODEL = 'env-default-model';
 delete process.env.ALLOWED_CHAT_IDS;
 
@@ -33,6 +41,7 @@ await setupOfflineDb();
 const registry = await import('../../src/db/queries/panel-registry.js');
 const { HarnessIssue } = await import('../../src/db/harnessIssueDTO.js');
 const { SettingsAudit } = await import('../../src/db/settingsAuditDTO.js');
+const { GlobalSetting } = await import('../../src/db/globalSettingDTO.js');
 const { loadChatSettingsCache } = await import('../../src/services/chat-settings-service.js');
 const { modelConfigs } = await import('../../src/config/models.js');
 const { createPanelApp } = await import('../../src/panel/app.js');
@@ -61,6 +70,8 @@ const memberships = new Map<string, 'member' | 'left' | 'throttled' | 'slow'>([
     [`${GROUP_MAIN}:${ALICE.id}`, 'member'],
     [`${GROUP_MAIN}:${BOB.id}`, 'left'],
     [`${GROUP_TOOLS}:${ALICE.id}`, 'member'],
+    [`${GROUP_PRIORITY_LISTED}:${ALICE.id}`, 'member'],
+    [`${GROUP_PRIORITY_UNLISTED}:${ALICE.id}`, 'member'],
     [`${GROUP_LEFT}:${ALICE.id}`, 'left'],
     [`${GROUP_THROTTLED}:${ALICE.id}`, 'throttled'],
     [`${GROUP_LEFT}:${BOB.id}`, 'slow'],
@@ -95,6 +106,8 @@ await registry.upsertChatNow({ id: GROUP_MAIN, type: 'supergroup', title: 'Main'
 await registry.upsertChatNow({ id: GROUP_LEFT, type: 'supergroup', title: 'Left' });
 await registry.upsertChatNow({ id: GROUP_THROTTLED, type: 'supergroup', title: 'Throttled' });
 await registry.upsertChatNow({ id: GROUP_TOOLS, type: 'supergroup', title: 'Tools' });
+await registry.upsertChatNow({ id: GROUP_PRIORITY_LISTED, type: 'supergroup', title: 'Priority listed' });
+await registry.upsertChatNow({ id: GROUP_PRIORITY_UNLISTED, type: 'supergroup', title: 'Priority unlisted' });
 await loadChatSettingsCache();
 
 // ---- request helpers --------------------------------------------------------
@@ -174,6 +187,22 @@ const patchSettings = (app: PanelApp, chatId: number, user: InitDataUserInput, b
     call(app, `/api/chats/${chatId}/settings`, { method: 'PATCH', user, body });
 
 const auditCount = (chatId: number): Promise<number> => SettingsAudit.count({ where: { scope: `chat:${chatId}` } });
+const globalAuditCount = (): Promise<number> => SettingsAudit.count({ where: { scope: 'global' } });
+
+const patchGlobal = (user: InitDataUserInput, body: unknown) => call(app, '/api/global', { method: 'PATCH', user, body });
+
+/** The dashboard's three Priority PayGo facts and the chat's own value */
+const priorityFactsOf = async (chatId: number) => {
+    const body = await jsonOf(await call(app, `/api/chats/${chatId}`, { user: ALICE }));
+    return {
+        own: body.settings?.geminiPriority,
+        effective: body.effectiveGeminiPriority,
+        global: body.globalGeminiPriority,
+        canEnable: body.geminiPriorityCanEnable,
+    };
+};
+
+const PRIORITY_NOT_ALLOWED = '全局关闭时，只有工具白名单里的会话可以单独开启';
 
 /** Collect console.log / console.error lines while `body` runs */
 const captureLogs = async (body: () => Promise<void>): Promise<string[]> => {
@@ -401,8 +430,15 @@ const cases: { name: string; body: () => Promise<void> }[] = [
             );
             expect(
                 JSON.stringify(Object.keys(body.settings).sort()) ===
-                    JSON.stringify(['model', 'paused', 'promptAddendum', 'settingsLocked', 'toolOverrides', 'updatedAt', 'updatedBy']),
+                    JSON.stringify(['geminiPriority', 'model', 'paused', 'promptAddendum', 'settingsLocked', 'toolOverrides', 'updatedAt', 'updatedBy']),
                 'settings keys'
+            );
+            expect(
+                body.settings.geminiPriority === null &&
+                    body.effectiveGeminiPriority === false &&
+                    body.globalGeminiPriority === false &&
+                    body.geminiPriorityCanEnable === false,
+                `Priority PayGo: unset, off, global off, cannot be switched on here (got ${JSON.stringify(body)})`
             );
             expect(body.settings.model === 'my-own-model-v9' && body.effectiveModel === 'my-own-model-v9', 'effective model is the chat model');
             expect(body.globalDefaultModel === 'env-default-model', 'global default from the env');
@@ -793,6 +829,206 @@ const cases: { name: string; body: () => Promise<void> }[] = [
         },
     },
 ];
+
+cases.push(
+    {
+        name: 'PATCH settings: Priority PayGo is the owner’s, and "on" is refused where it cannot take effect',
+        body: async () => {
+            clockMs += 60_000;
+            const facts = (own: boolean | null, effective: boolean, global: boolean, canEnable: boolean) =>
+                JSON.stringify({ own, effective, global, canEnable });
+            expect(
+                JSON.stringify(await priorityFactsOf(GROUP_PRIORITY_UNLISTED)) === facts(null, false, false, false),
+                'global off, outside TOOL_CHAT_IDS: cannot be switched on'
+            );
+            expect(
+                JSON.stringify(await priorityFactsOf(GROUP_PRIORITY_LISTED)) === facts(null, false, false, true),
+                'global off, inside TOOL_CHAT_IDS: can be switched on'
+            );
+
+            const unlistedBefore = await auditCount(GROUP_PRIORITY_UNLISTED);
+            const refused = await patchSettings(app, GROUP_PRIORITY_UNLISTED, OWNER, { geminiPriority: true });
+            const refusedBody = await jsonOf(refused);
+            expect(
+                refused.status === 403 && refusedBody.error?.code === 'forbidden' && refusedBody.error?.message === PRIORITY_NOT_ALLOWED,
+                `the owner too is refused "on" outside the whitelist, with the reason (got ${refused.status} ${JSON.stringify(refusedBody)})`
+            );
+            expect((await auditCount(GROUP_PRIORITY_UNLISTED)) === unlistedBefore, 'the refused patch wrote nothing');
+            const off = await patchSettings(app, GROUP_PRIORITY_UNLISTED, OWNER, { geminiPriority: false });
+            expect(off.status === 200 && (await jsonOf(off)).settings.geminiPriority === false, '"off" is always allowed');
+
+            const listedBefore = await auditCount(GROUP_PRIORITY_LISTED);
+            const on = await patchSettings(app, GROUP_PRIORITY_LISTED, OWNER, { geminiPriority: true });
+            expect(on.status === 200 && (await jsonOf(on)).settings.geminiPriority === true, 'inside the whitelist the owner switches it on');
+            expect(
+                JSON.stringify(await priorityFactsOf(GROUP_PRIORITY_LISTED)) === facts(true, true, false, true),
+                'and it takes effect with the global switch off'
+            );
+            expect((await auditCount(GROUP_PRIORITY_LISTED)) === listedBefore + 1, 'one audit row');
+            const [entry] = await SettingsAudit.findAll({
+                where: { scope: `chat:${GROUP_PRIORITY_LISTED}` },
+                order: [['id', 'DESC']],
+                limit: 1,
+            });
+            expect(
+                entry?.key === 'geminiPriority' && entry.oldValue === null && entry.newValue === 'true',
+                `audited null → 'true' (got ${JSON.stringify(entry)})`
+            );
+
+            await expectError(
+                await patchSettings(app, GROUP_PRIORITY_LISTED, ALICE, { geminiPriority: false }),
+                403,
+                'forbidden',
+                'a member switching it'
+            );
+            await expectError(
+                await patchSettings(app, GROUP_PRIORITY_LISTED, ALICE, { geminiPriority: null }),
+                403,
+                'forbidden',
+                'a member clearing it'
+            );
+            const keep = await patchSettings(app, GROUP_PRIORITY_LISTED, ALICE, { geminiPriority: true, promptAddendum: '保持' });
+            expect(keep.status === 200, 'a member may send the unchanged value with another change');
+            for (const [label, value] of [
+                ['a string', 'true'],
+                ['a number', 1],
+                ['an object', { on: true }],
+            ] as const) {
+                await expectError(
+                    await patchSettings(app, GROUP_PRIORITY_LISTED, ALICE, { geminiPriority: value }),
+                    400,
+                    'invalid',
+                    `${label}, even from a member`
+                );
+                await expectError(
+                    await patchSettings(app, GROUP_PRIORITY_LISTED, OWNER, { geminiPriority: value }),
+                    400,
+                    'invalid',
+                    `${label} from the owner`
+                );
+            }
+            expect((await auditCount(GROUP_PRIORITY_LISTED)) === listedBefore + 2, 'only the two accepted changes were audited');
+
+            clockMs += 60_000;
+            // The global switch on: every chat may switch it on, and an unset chat follows
+            expect((await patchGlobal(OWNER, { defaultGeminiPriority: true })).status === 200, 'the global switch goes on');
+            const cleared = await patchSettings(app, GROUP_PRIORITY_UNLISTED, OWNER, { geminiPriority: null });
+            expect(cleared.status === 200 && (await jsonOf(cleared)).settings.geminiPriority === null, 'null: follow the global switch');
+            expect(
+                JSON.stringify(await priorityFactsOf(GROUP_PRIORITY_UNLISTED)) === facts(null, true, true, true),
+                'global on: an unset chat outside the whitelist is on, and may be switched on'
+            );
+            const unlistedOn = await patchSettings(app, GROUP_PRIORITY_UNLISTED, OWNER, { geminiPriority: true });
+            expect(unlistedOn.status === 200, 'with the global switch on, "on" is accepted outside the whitelist');
+
+            // Global off again: the stored "on" stays but no longer takes effect outside the whitelist
+            expect((await patchGlobal(OWNER, { defaultGeminiPriority: false })).status === 200, 'the global switch goes off');
+            expect(
+                JSON.stringify(await priorityFactsOf(GROUP_PRIORITY_UNLISTED)) === facts(true, false, false, false),
+                'outside the whitelist: stored on, effective off'
+            );
+            expect(
+                JSON.stringify(await priorityFactsOf(GROUP_PRIORITY_LISTED)) === facts(true, true, false, true),
+                'inside the whitelist: still on'
+            );
+            const otherKey = await patchSettings(app, GROUP_PRIORITY_UNLISTED, OWNER, { geminiPriority: true, paused: true });
+            expect(otherKey.status === 200, 'an unchanged stored "on" does not block another key');
+            await patchSettings(app, GROUP_PRIORITY_UNLISTED, OWNER, { geminiPriority: null, paused: false });
+            clockMs += 60_000;
+        },
+    },
+    {
+        name: 'PATCH /api/global: a partial update of the model and the switch, every key or none, owner only',
+        body: async () => {
+            clockMs += 60_000;
+            const initial = await jsonOf(await call(app, '/api/global', { user: OWNER }));
+            expect(
+                JSON.stringify(Object.keys(initial).sort()) === JSON.stringify(['defaultGeminiPriority', 'defaultModel', 'source']),
+                `response keys (got ${JSON.stringify(initial)})`
+            );
+            expect(initial.defaultGeminiPriority === false && initial.source === 'env', 'starts off, model from the env');
+
+            const before = await globalAuditCount();
+            const switchOnly = await jsonOf(await patchGlobal(OWNER, { defaultGeminiPriority: true }));
+            expect(
+                switchOnly.defaultGeminiPriority === true && switchOnly.defaultModel === 'env-default-model' && switchOnly.source === 'env',
+                `the switch alone leaves the model alone (got ${JSON.stringify(switchOnly)})`
+            );
+            const modelOnly = await jsonOf(await patchGlobal(OWNER, { defaultModel: 'panel-model-2' }));
+            expect(
+                modelOnly.defaultModel === 'panel-model-2' && modelOnly.defaultGeminiPriority === true,
+                `the model alone leaves the switch alone (got ${JSON.stringify(modelOnly)})`
+            );
+            expect((await globalAuditCount()) === before + 2, 'one audit row each');
+
+            const both = await jsonOf(await patchGlobal(OWNER, { defaultModel: null, defaultGeminiPriority: false }));
+            expect(
+                both.defaultModel === 'env-default-model' && both.source === 'env' && both.defaultGeminiPriority === false,
+                `both keys in one patch (got ${JSON.stringify(both)})`
+            );
+            const latest = await SettingsAudit.findAll({ where: { scope: 'global' }, order: [['id', 'DESC']], limit: 2 });
+            expect(
+                JSON.stringify(latest.reverse().map((entry) => [entry.key, entry.oldValue, entry.newValue])) ===
+                    JSON.stringify([
+                        ['defaultModel', 'panel-model-2', null],
+                        ['defaultGeminiPriority', 'true', 'false'],
+                    ]),
+                'audited in the fixed key order, the switch as text'
+            );
+            const unchanged = await patchGlobal(OWNER, { defaultGeminiPriority: false, defaultModel: null });
+            expect(unchanged.status === 200 && (await globalAuditCount()) === before + 4, 'the values it already has write nothing');
+
+            const afterValid = await globalAuditCount();
+            const invalidBodies: [string, unknown][] = [
+                ['a good model next to a string switch', { defaultModel: 'never-written', defaultGeminiPriority: 'true' }],
+                ['a good model next to a null switch', { defaultModel: 'never-written', defaultGeminiPriority: null }],
+                ['an empty model next to a good switch', { defaultModel: '', defaultGeminiPriority: true }],
+                ['a model over 64 characters next to a good switch', { defaultModel: 'g'.repeat(65), defaultGeminiPriority: true }],
+                ['a numeric switch', { defaultGeminiPriority: 1 }],
+                ['an unknown key next to the switch', { defaultGeminiPriority: true, extra: 1 }],
+                ['no key', {}],
+            ];
+            for (const [label, body] of invalidBodies) {
+                await expectError(await patchGlobal(OWNER, body), 400, 'invalid', label);
+            }
+            const untouched = await jsonOf(await call(app, '/api/global', { user: OWNER }));
+            expect(
+                untouched.defaultModel === 'env-default-model' && untouched.defaultGeminiPriority === false,
+                `one bad key leaves the other unwritten (got ${JSON.stringify(untouched)})`
+            );
+            expect((await globalAuditCount()) === afterValid, 'and audited nothing');
+
+            clockMs += 60_000;
+            await expectError(await call(app, '/api/global', { user: ALICE }), 403, 'forbidden', 'GET by a non-owner');
+            await expectError(await patchGlobal(ALICE, { defaultGeminiPriority: true }), 403, 'forbidden', 'the switch by a non-owner');
+            expect((await globalAuditCount()) === afterValid, 'the refused patch wrote nothing');
+
+            // A write that fails half-way rolls the other key back with it
+            const originalUpsert = GlobalSetting.upsert;
+            Reflect.set(GlobalSetting, 'upsert', async (values: { key?: unknown }, options: unknown) => {
+                if (values.key === 'defaultGeminiPriority') throw new Error('offline: the second row cannot be written');
+                return Reflect.apply(originalUpsert, GlobalSetting, [values, options]);
+            });
+            let failed: Response | undefined;
+            try {
+                await captureLogs(async () => {
+                    failed = await patchGlobal(OWNER, { defaultModel: 'half-written', defaultGeminiPriority: true });
+                });
+            } finally {
+                Reflect.set(GlobalSetting, 'upsert', originalUpsert);
+            }
+            expect(failed?.status === 500, `the failed write is a 500 (got ${failed?.status})`);
+            expect((await GlobalSetting.findByPk('defaultModel')) === null, 'the model row written first was rolled back');
+            const afterFailure = await jsonOf(await call(app, '/api/global', { user: OWNER }));
+            expect(
+                afterFailure.defaultModel === 'env-default-model' && afterFailure.defaultGeminiPriority === false,
+                `the cache never saw either value (got ${JSON.stringify(afterFailure)})`
+            );
+            expect((await globalAuditCount()) === afterValid, 'and neither audit row stayed');
+            clockMs += 60_000;
+        },
+    }
+);
 
 const results: CaseResult[] = [];
 for (const testCase of cases) {

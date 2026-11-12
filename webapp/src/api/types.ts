@@ -93,6 +93,8 @@ export interface ChatSettings {
     settingsLocked: boolean;
     // The panel's per-chat tool switches; null = every group follows the env
     toolOverrides: ToolOverrides | null;
+    // Priority PayGo, the chat's own value: true / false, or null = follow the global switch
+    geminiPriority: boolean | null;
     updatedAt: string | null;
     updatedBy: number | null;
 }
@@ -145,6 +147,13 @@ export interface ChatDetailResponse {
     settings: ChatSettings;
     effectiveModel: string;
     globalDefaultModel: string;
+    // Priority PayGo: whether this chat's Gemini replies ask for the priority tier now
+    effectiveGeminiPriority: boolean;
+    // The global switch (`GlobalSettingsResponse.defaultGeminiPriority`)
+    globalGeminiPriority: boolean;
+    // "On" can take effect here: the global switch is on, or the chat is in TOOL_CHAT_IDS.
+    // When false, PATCH { geminiPriority: true } is refused (403 forbidden)
+    geminiPriorityCanEnable: boolean;
     tools: ToolGroupEntry[];
     // Last 7 days; null when the chat had no reply in the window (shown in the 统计 tab)
     summary: ChatSummaryView | null;
@@ -158,6 +167,9 @@ export interface ChatSettingsPatch {
     settingsLocked?: boolean;
     // Replaces the whole switch object; null clears every override
     toolOverrides?: ToolOverrides | null;
+    // Owner only (403 forbidden otherwise, when the value changes); null = follow the global switch.
+    // true is refused (403 forbidden) where `geminiPriorityCanEnable` is false
+    geminiPriority?: boolean | null;
     expectedUpdatedAt?: string;
 }
 
@@ -171,9 +183,20 @@ export interface AddendumPreviewResponse {
     estimatedTokens: number;
 }
 
+/** GET and PATCH /api/global, owner only */
 export interface GlobalSettingsResponse {
     defaultModel: string;
     source: 'panel' | 'env';
+    // The global Priority PayGo switch: on = every chat that has not set its own value
+    defaultGeminiPriority: boolean;
+}
+
+/** PATCH /api/global: at least one key; every key present is written, or none is */
+export interface GlobalSettingsPatch {
+    // null removes the panel value, so DEFAULT_MODEL applies again
+    defaultModel?: string | null;
+    // Booleans only
+    defaultGeminiPriority?: boolean;
 }
 
 export interface AuditEntry extends ChatAuditEntry {
@@ -540,9 +563,11 @@ export interface ReplyMetric {
     resumedRounds: number | null;
     // Rounds the checkpoint saved when this attempt failed or stopped; null when none was saved
     checkpointRounds: number | null;
-    // This attempt alone, priced like the statistics
+    // This attempt alone, priced like the statistics (priority rounds at the priority price)
     costUsd: number | null;
     pricing: PricingFlag;
+    // Priority rounds priced at the standard price: the model has no priority price
+    priorityAtStandardPrice: boolean;
     // Members only
     triggerUserId?: number | null;
 }
@@ -689,7 +714,26 @@ export interface ChatSummaryView {
     pricedReplyRatio: number | null;
 }
 
-export interface StatsKpis {
+/**
+ * Priority PayGo hits. The hit rate counts only replies that asked for the
+ * priority tier; priority rounds of replies that never asked are counted
+ * apart in `strayPriorityRounds` and never enter the hit rate.
+ * "Priority 命中 x / y 轮": x = priorityHitRounds, y = priorityRequestedRounds.
+ */
+export interface PriorityHitCounts {
+    // Replies that asked for the priority tier; 0 = nothing to show
+    priorityReplies: number;
+    // Their rounds (hit rate denominator)
+    priorityRequestedRounds: number;
+    // Their rounds served at the priority tier (numerator)
+    priorityHitRounds: number;
+    // 0..1; null when no round asked
+    priorityHitRate: number | null;
+    // Priority rounds of replies that did not ask for it
+    strayPriorityRounds: number;
+}
+
+export interface StatsKpis extends PriorityHitCounts {
     replies: number;
     retries: number;
     retryRatio: number | null;
@@ -726,7 +770,7 @@ export interface StatsKpis {
 export type OutcomeCounts = Record<ReplyOutcome, number>;
 
 /** One model across its routes */
-export interface ModelStatsRow {
+export interface ModelStatsRow extends PriorityHitCounts {
     model: string;
     platform: string;
     replies: number;
@@ -754,8 +798,11 @@ export interface ModelStatsRow {
     avgPromptTokens: number | null;
     avgOutputTokens: number | null;
     cacheHitRate: number | null;
+    // Priority rounds at the priority price
     costUsd: number | null;
     pricing: ModelPricingFlag;
+    // Priority rounds priced at the standard price: the model has no priority price
+    priorityAtStandardPrice: boolean;
 }
 
 /** The token sums one cost group is priced from */
@@ -785,6 +832,8 @@ export interface CostGroupView {
     usage: CostGroupUsage;
     costUsd: number | null;
     pricing: PricingFlag;
+    // Priority rounds priced at the standard price: the model has no priority price
+    priorityAtStandardPrice: boolean;
 }
 
 export interface ToolStatsRow {

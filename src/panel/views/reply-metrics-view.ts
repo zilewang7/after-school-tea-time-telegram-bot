@@ -70,9 +70,14 @@ export interface ReplyMetricView {
     readonly resumedRounds: number | null;
     /** Rounds the checkpoint saved when this attempt failed or stopped; null when none was saved */
     readonly checkpointRounds: number | null;
-    /** This attempt alone, priced like the statistics; null when unpriced or without usage */
+    /**
+     * This attempt alone, priced like the statistics (priority rounds at the
+     * priority price); null when unpriced or without usage
+     */
     readonly costUsd: number | null;
     readonly pricing: PricingFlag;
+    /** Priority rounds priced at the standard price: the model has no priority price */
+    readonly priorityAtStandardPrice: boolean;
 }
 
 /** Members also see who triggered the attempt */
@@ -157,6 +162,7 @@ export const toReplyMetricView = (row: ReplyMetricRecord): ReplyMetricView => {
         checkpointRounds: row.checkpointRounds,
         costUsd: roundUsd(priced.costUsd),
         pricing: priced.pricing,
+        priorityAtStandardPrice: priced.priorityAtStandardPrice,
     };
 };
 

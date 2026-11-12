@@ -13,7 +13,8 @@ import type { ChatSettings, ChatSettingsPatch } from '../../api';
 import type { SaveStatus } from '../../components/save-bar';
 import { useApi } from '../../context/panel-context';
 import { modelDraftOf, resolveModelDraft } from '../../model-draft';
-import type { ModelDraft, ResolvedModel } from '../../model-draft';
+import type { ModelDraft } from '../../model-draft';
+import { changedSettingsOf } from './chat-settings-patch';
 
 const DRAFT_DEBOUNCE_MS = 500;
 
@@ -25,23 +26,6 @@ interface ChatSettingsFormOptions {
     writable: boolean;
     onSaved: (settings: ChatSettings) => void;
 }
-
-interface DraftValues {
-    model: ResolvedModel;
-    addendumValue: string | null;
-    paused: boolean;
-    settingsLocked: boolean;
-}
-
-/** Only the keys that differ from the saved settings; an invalid model is left out */
-const changedSettingsOf = (settings: ChatSettings, draft: DraftValues): ChatSettingsPatch => {
-    const changes: ChatSettingsPatch = {};
-    if (draft.model.ok && draft.model.value !== settings.model) changes.model = draft.model.value;
-    if (draft.addendumValue !== settings.promptAddendum) changes.promptAddendum = draft.addendumValue;
-    if (draft.paused !== settings.paused) changes.paused = draft.paused;
-    if (draft.settingsLocked !== settings.settingsLocked) changes.settingsLocked = draft.settingsLocked;
-    return changes;
-};
 
 export const useChatSettingsForm = ({ chatId, settings, models, writable, onSaved }: ChatSettingsFormOptions) => {
     const api = useApi();
@@ -56,6 +40,7 @@ export const useChatSettingsForm = ({ chatId, settings, models, writable, onSave
     const [addendumText, setAddendumText] = useState(addendumStart.text);
     const [paused, setPaused] = useState(settings.paused);
     const [settingsLocked, setSettingsLocked] = useState(settings.settingsLocked);
+    const [geminiPriority, setGeminiPriority] = useState<boolean | null>(settings.geminiPriority);
     const [saveStatus, setSaveStatus] = useState<SaveStatus>({ kind: 'idle' });
 
     // Debounced local draft of the addendum, so closing the panel does not lose typing
@@ -73,8 +58,15 @@ export const useChatSettingsForm = ({ chatId, settings, models, writable, onSave
     const addendumLength = useMemo(() => countCodePoints(addendumValue ?? ''), [addendumValue]);
 
     const changes = useMemo(
-        () => changedSettingsOf(settings, { model: resolvedModel, addendumValue, paused, settingsLocked }),
-        [settings, resolvedModel, addendumValue, paused, settingsLocked]
+        () =>
+            changedSettingsOf(settings, {
+                model: resolvedModel,
+                addendumValue,
+                paused,
+                settingsLocked,
+                geminiPriority,
+            }),
+        [settings, resolvedModel, addendumValue, paused, settingsLocked, geminiPriority]
     );
 
     const dirty = !resolvedModel.ok || Object.keys(changes).length > 0;
@@ -112,6 +104,8 @@ export const useChatSettingsForm = ({ chatId, settings, models, writable, onSave
         setPaused,
         settingsLocked,
         setSettingsLocked,
+        geminiPriority,
+        setGeminiPriority,
         dirty,
         valid,
         saving,

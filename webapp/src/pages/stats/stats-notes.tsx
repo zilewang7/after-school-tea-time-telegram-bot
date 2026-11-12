@@ -3,6 +3,7 @@ const COST_NOTES: readonly string[] = [
     '未计 Vertex 试用额度与促销返还、DeepSeek 峰谷价（单价表取峰时价，偏高）。',
     '未计 Gemini 搜索接地与 xAI 服务端工具的按次费用、超长上下文档位。',
     '/picgpt 的整行未定价（实际花费是底座 token 加生图调用两部分）。',
+    'Priority PayGo 按每轮实际服务的档位计价，优先档为标准档的 1.8 倍；命中率只算请求了 Priority 的回复，没请求却按优先档服务的轮次单独列出。',
 ];
 
 const LATENCY_NOTES: readonly string[] = [

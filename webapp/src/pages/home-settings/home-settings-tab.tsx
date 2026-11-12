@@ -40,7 +40,7 @@ const GlobalSettingsSection = () => {
         .with({ status: 'success' }, ({ data }) => (
             <GlobalSettingsForm
                 // Re-created from server state after every save
-                key={`${data.source}:${data.defaultModel}`}
+                key={`${data.source}:${data.defaultModel}:${String(data.defaultGeminiPriority)}`}
                 global={data}
                 models={me.models}
                 justSaved={justSaved}

@@ -13,7 +13,26 @@ import type { ErrorKind } from '../../shared/error-kind.js';
 import type { ModelPricingFlag, PricingFlag } from '../stats/cost-estimate.js';
 import type { StatsBucket, StatsRangeKey } from '../stats/stats-window.js';
 
-export interface StatsKpis {
+/**
+ * Priority PayGo hits (design §8.4). The hit rate counts only replies that
+ * asked for the priority tier: a chat with the switch off would otherwise
+ * pull it down. Priority rounds of replies that never asked are kept apart
+ * in `strayPriorityRounds` (billed at the priority price nobody chose).
+ */
+export interface PriorityHitCounts {
+    /** Replies that asked for the priority tier (tierRequested = 'priority') */
+    readonly priorityReplies: number;
+    /** Their rounds, rounds without usage included: the hit rate's denominator */
+    readonly priorityRequestedRounds: number;
+    /** Their rounds Vertex served at the priority tier: the numerator */
+    readonly priorityHitRounds: number;
+    /** priorityHitRounds / priorityRequestedRounds; null when no round asked */
+    readonly priorityHitRate: number | null;
+    /** Priority rounds of replies that did not ask for it; never part of the hit rate */
+    readonly strayPriorityRounds: number;
+}
+
+export interface StatsKpis extends PriorityHitCounts {
     // Volume
     readonly replies: number;
     readonly retries: number;
@@ -56,7 +75,7 @@ export interface StatsKpis {
 export type OutcomeCounts = Readonly<Record<ReplyOutcome, number>>;
 
 /** One model across its routes */
-export interface ModelStatsRow {
+export interface ModelStatsRow extends PriorityHitCounts {
     readonly model: string;
     readonly platform: string;
     readonly replies: number;
@@ -86,6 +105,8 @@ export interface ModelStatsRow {
     readonly cacheHitRate: number | null;
     readonly costUsd: number | null;
     readonly pricing: ModelPricingFlag;
+    /** Priority rounds priced at the standard price: the model has no priority price */
+    readonly priorityAtStandardPrice: boolean;
 }
 
 /** The token sums one cost group is priced from */
@@ -115,6 +136,8 @@ export interface CostGroupView {
     readonly usage: CostGroupUsage;
     readonly costUsd: number | null;
     readonly pricing: PricingFlag;
+    /** Priority rounds priced at the standard price: the model has no priority price */
+    readonly priorityAtStandardPrice: boolean;
 }
 
 export interface ToolStatsRow {

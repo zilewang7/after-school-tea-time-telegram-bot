@@ -8,7 +8,8 @@
  * usage through to the row. Then the recovery, Priority PayGo and resume
  * columns: automatic retries, the requested and served tier, the checkpoint
  * facts of the draft, NULL when there was nothing, and the priority sums of
- * the usage aggregate.
+ * the usage aggregate; a priority reply's detail priced at the split cost,
+ * and the hit counts over stored rows.
  *
  * Run: npx tsx scripts/offline/reply-metrics.mts
  */
@@ -97,10 +98,11 @@ const { getLastCleanupRun } = await import('../../src/services/cleanup-status.js
 const { createUsageSink } = await import('../../src/ai/usage/index.js');
 const { classifyErrorKind, summarizeErrorMessage } = await import('../../src/shared/error-kind.js');
 const { AppError } = await import('../../src/shared/errors.js');
-const { aggregateUsageByModelRoute, findReplyMetricsByReply, insertReplyMetric } = await import(
+const { aggregateUsageByModelRoute, findReplyMetricsByReply, findReplyMetricsInWindow, insertReplyMetric } = await import(
     '../../src/db/queries/reply-metrics.js'
 );
 const { listReplyMetricsByReply } = await import('../../src/panel/views/reply-metrics-view.js');
+const { countPriorityHits } = await import('../../src/panel/stats/priority-hits.js');
 const { clearExpiredData } = await import('../../src/db/autoSave.js');
 const { handleReply } = await import('../../src/reply/chat-handler.js');
 const { handleRetryRequest } = await import('../../src/reply/retry-handler.js');
@@ -759,6 +761,60 @@ const cases: { name: string; body: () => Promise<void> }[] = [
                 detail.get(1)?.[0]?.priorityRounds === 1 && detail.get(1)?.[0]?.pricing === 'no_usage',
                 'the reply detail of the row without usage keeps its priority round'
             );
+        },
+    },
+    {
+        name: 'Priority PayGo end to end: the reply detail prices the priority round at its price; hits count asked rounds only',
+        body: async () => {
+            const chatId = -1005100000019;
+            const chatContext = await startReply(chatId, { model: 'gemini-4-argon' });
+            const { session } = chatContext;
+            const { usage } = session.metrics;
+            markRequestStarted(session.metrics);
+            async function* stream(): AsyncGenerator<StreamChunk> {
+                usage.setTierRequested('priority');
+                usage.addRound({ ...roundUsage(1000, 50), cachedTokens: 600 }, { servedTier: 'standard' });
+                usage.addRound({ ...roundUsage(1200, 80), cachedTokens: 900 }, { servedTier: 'priority' });
+                // A round without usage still counts in the hit rate's denominator
+                usage.addRound(null, { servedTier: 'standard' });
+                yield { type: 'text', content: '分档计价' };
+                yield { type: 'done' };
+            }
+            await deliver(chatContext, stream());
+
+            const view = (await listReplyMetricsByReply(chatId, session.firstMessageId, { access: 'observer' })).get(1)?.[0];
+            const standardPart = 400 * 2 + 600 * 0.1 + 50 * 10;
+            const priorityPart = 300 * 3.6 + 900 * 0.18 + 80 * 18;
+            const expectedUsd = Math.round(((standardPart + priorityPart) / 1e6) * 1e6) / 1e6;
+            expect(
+                view?.costUsd === expectedUsd && view.pricing === 'priced' && view.priorityAtStandardPrice === false,
+                `round 1 at the standard price, round 2 at 1.8x (got ${view?.costUsd}, want ${expectedUsd})`
+            );
+
+            // A reply that never asked, with a priority round anyway
+            await insertReplyMetric(
+                storedRow(chatId, session.firstMessageId + 100, {
+                    rounds: 2,
+                    priorityRounds: 2,
+                    priorityPromptTokens: 1000,
+                    priorityCachedTokens: 400,
+                    priorityOutputTokens: 100,
+                })
+            );
+            const rows = await findReplyMetricsInWindow({ since: new Date(Date.now() - 3_600_000), chatId });
+            const hits = countPriorityHits(rows);
+            expect(
+                json(hits) ===
+                    json({
+                        priorityReplies: 1,
+                        priorityRequestedRounds: 3,
+                        priorityHitRounds: 1,
+                        priorityHitRate: Math.round((1 / 3) * 10_000) / 10_000,
+                        strayPriorityRounds: 2,
+                    }),
+                `1 of 3 asked rounds; the 2 stray rounds stay out of the rate (got ${json(hits)})`
+            );
+            expect(json(countPriorityHits([])).includes('"priorityHitRate":null'), 'nothing asked: no rate');
         },
     },
     {

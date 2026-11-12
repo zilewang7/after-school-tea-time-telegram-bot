@@ -7,7 +7,7 @@ import {
     formatTokens,
     formatUsd,
     outcomeLabel,
-    pricingLabel,
+    pricingNoteOf,
 } from '../../../format-metrics';
 
 interface ReplyMetricsPanelProps {
@@ -29,6 +29,16 @@ const tokenValueOf = (promptTokens: number | null, cachedTokens: number | null):
 const cacheHitRateOf = (metrics: ReplyMetric): number | null => {
     if (metrics.promptTokens === null || metrics.promptTokens <= 0 || metrics.cachedTokens === null) return null;
     return metrics.cachedTokens / metrics.promptTokens;
+};
+
+/**
+ * Priority PayGo of this attempt, counted like the statistics: hits over its rounds when
+ * it asked for the tier, priority rounds it never asked for apart; null when neither
+ */
+const priorityTextOf = (metrics: ReplyMetric): string | null => {
+    const priorityRounds = metrics.priorityRounds ?? 0;
+    if (metrics.tierRequested === 'priority') return `命中 ${priorityRounds} / ${metrics.rounds ?? 0} 轮`;
+    return priorityRounds > 0 ? `未请求，却有 ${priorityRounds} 轮按优先档服务` : null;
 };
 
 /** One version's reply_metrics: outcome, timings, tokens, context size and the cost estimate */
@@ -59,8 +69,13 @@ export const ReplyMetricsPanel = ({ metrics }: ReplyMetricsPanelProps) => {
                 label: '上下文',
                 value: `${metrics.contextMessages ?? '—'} 条消息 · ${metrics.contextImages ?? '—'} 张图`,
             },
-            { label: '成本', value: `${formatUsd(metrics.costUsd)}（${pricingLabel(metrics.pricing)}）` }
+            {
+                label: '成本',
+                value: `${formatUsd(metrics.costUsd)}（${pricingNoteOf(metrics.pricing, metrics.priorityAtStandardPrice)}）`,
+            }
         );
+        const priorityText = priorityTextOf(metrics);
+        if (priorityText !== null) list.push({ label: 'Priority', value: priorityText });
         return list;
     }, [metrics]);
 

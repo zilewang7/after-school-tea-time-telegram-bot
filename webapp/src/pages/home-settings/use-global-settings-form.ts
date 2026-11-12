@@ -5,6 +5,7 @@ import type { SaveStatus } from '../../components/save-bar';
 import { useApi } from '../../context/panel-context';
 import { modelDraftOf, resolveModelDraft } from '../../model-draft';
 import type { ModelDraft } from '../../model-draft';
+import { changedGlobalSettingsOf } from './global-settings-patch';
 
 interface GlobalSettingsFormOptions {
     // Server state this form instance started from; the form is re-created when it changes
@@ -16,18 +17,23 @@ interface GlobalSettingsFormOptions {
 export const useGlobalSettingsForm = ({ global, models, onSaved }: GlobalSettingsFormOptions) => {
     const api = useApi();
     const [modelDraft, setModelDraft] = useState<ModelDraft>(() => modelDraftOf(global.defaultModel, models));
+    const [geminiPriority, setGeminiPriority] = useState(global.defaultGeminiPriority);
     const [saveStatus, setSaveStatus] = useState<SaveStatus>({ kind: 'idle' });
 
     const resolvedModel = useMemo(() => resolveModelDraft(modelDraft), [modelDraft]);
-    // null (back to env) is only offered while the panel overrides env, where it always differs
-    const dirty = !resolvedModel.ok || resolvedModel.value !== global.defaultModel;
+    const changes = useMemo(
+        () => changedGlobalSettingsOf(global, { model: resolvedModel, geminiPriority }),
+        [global, resolvedModel, geminiPriority]
+    );
+    const dirty = !resolvedModel.ok || Object.keys(changes).length > 0;
     const valid = resolvedModel.ok;
     const saving = saveStatus.kind === 'saving';
 
+    // One PATCH of every changed key: the server writes them all or none
     const save = useCallback(() => {
-        if (!resolvedModel.ok || !dirty || saving) return;
+        if (!valid || !dirty || saving) return;
         setSaveStatus({ kind: 'saving' });
-        void api.patchGlobal(resolvedModel.value).then((result) => {
+        void api.patchGlobal(changes).then((result) => {
             if (!result.ok) {
                 setSaveStatus({ kind: 'failed', view: describeWriteFailure(result.failure) });
                 return;
@@ -35,12 +41,14 @@ export const useGlobalSettingsForm = ({ global, models, onSaved }: GlobalSetting
             setSaveStatus({ kind: 'idle' });
             onSaved(result.data);
         });
-    }, [resolvedModel, dirty, saving, api, onSaved]);
+    }, [valid, dirty, saving, api, changes, onSaved]);
 
     return {
         modelDraft,
         setModelDraft,
         modelError: resolvedModel.ok ? null : resolvedModel.error,
+        geminiPriority,
+        setGeminiPriority,
         dirty,
         valid,
         saving,

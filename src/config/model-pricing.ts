@@ -4,7 +4,8 @@
  * Official list prices only (relay prices are no basis), USD. Maintained in
  * code: a price change ships with a release and history is re-estimated at
  * the new price. A model id that is not a key here is shown as "unpriced";
- * routes in SUBSCRIPTION_ROUTES cost nothing at the margin.
+ * routes in SUBSCRIPTION_ROUTES cost nothing at the margin. The Gemini chat
+ * models also carry their Priority PayGo price (design §8.4).
  *
  * Not in the estimate (the page says so): the relay's group discount on
  * GPT / Claude, Vertex credits and promotional rebates, DeepSeek off-peak
@@ -13,19 +14,29 @@
  * (gpt-image-2.5-dev is a relay-only id without an official price).
  */
 
-export interface ModelPrice {
-    /** USD per 1M uncached input tokens */
+/** The three text prices of one service tier, USD per 1M tokens */
+export interface TierPrice {
+    /** Uncached input tokens */
     readonly inputPerM: number;
-    /** USD per 1M cache-hit input tokens */
+    /** Cache-hit input tokens */
     readonly cachedInputPerM: number;
-    /** USD per 1M output tokens; reasoning is billed here too */
+    /** Output tokens; reasoning is billed here too */
     readonly outputPerM: number;
+}
+
+export interface ModelPrice extends TierPrice {
     /** Anthropic cache writes; defaults to inputPerM */
     readonly cacheWritePerM?: number;
     /** Image-modality output tokens (Gemini image models) */
     readonly imageOutputPerM?: number;
     /** Per image, only for image rows that carry no usage at all */
     readonly perImageUsd?: number;
+    /**
+     * Vertex Priority PayGo, for the rounds actually served at the priority
+     * tier (design §8.4). Absent: such rounds are estimated at the standard
+     * price and the cost says so.
+     */
+    readonly priority?: TierPrice;
     readonly sourceUrl: string;
     /** YYYY-MM-DD the price was last checked against sourceUrl */
     readonly checkedOn: string;
@@ -38,6 +49,11 @@ const ANTHROPIC_PRICING = 'https://platform.claude.com/docs/en/about-claude/pric
 const GEMINI_PRICING = 'https://aistudio.google.com/docs/pricing';
 const DEEPSEEK_PRICING = 'https://api-docs.deepseek.com/quick_start/pricing';
 const XAI_PRICING = 'https://docs.x.ai/developers/pricing';
+
+// Priority PayGo is 1.8 times the standard price for input, cached input and
+// output alike (design §8.1); a downgraded round bills at the standard price
+const GEMINI_4_PRIORITY: TierPrice = { inputPerM: 3.6, cachedInputPerM: 0.18, outputPerM: 18 };
+const GEMINI_3_8_FLASH_PRIORITY: TierPrice = { inputPerM: 1.35, cachedInputPerM: 0.135, outputPerM: 6.75 };
 
 export const MODEL_PRICES: Readonly<Record<string, ModelPrice>> = {
     // >272K input: the whole request at 0.20 / 0.02 / 0.75 (not modelled)
@@ -63,16 +79,33 @@ export const MODEL_PRICES: Readonly<Record<string, ModelPrice>> = {
         sourceUrl: ANTHROPIC_PRICING,
         checkedOn: '2026-11-07',
     },
-    // Promotional through 2026-12-31; from 2027-01-01: 1.50 / 0.15 / 7.50
+    // Promotional through 2026-12-31; from 2027-01-01: 1.50 / 0.15 / 7.50, priority 2.70 / 0.27 / 13.50
     'gemini-3.8-flash': {
         inputPerM: 0.75,
         cachedInputPerM: 0.075,
         outputPerM: 3.75,
+        priority: GEMINI_3_8_FLASH_PRIORITY,
         sourceUrl: GEMINI_PRICING,
         checkedOn: '2026-11-07',
     },
-    // Promotional through 2026-11-30; from 2026-12-01: 4 / 0.20 / 20 (update then)
-    'gemini-4-argon': { inputPerM: 2, cachedInputPerM: 0.1, outputPerM: 10, sourceUrl: GEMINI_PRICING, checkedOn: '2026-11-07' },
+    // Promotional through 2026-11-30; from 2026-12-01: 4 / 0.20 / 20, priority 7.20 / 0.36 / 36 (update both then)
+    'gemini-4-argon': {
+        inputPerM: 2,
+        cachedInputPerM: 0.1,
+        outputPerM: 10,
+        priority: GEMINI_4_PRIORITY,
+        sourceUrl: GEMINI_PRICING,
+        checkedOn: '2026-11-07',
+    },
+    // argon's price, promotion and 2026-12-01 change included (design §8.1)
+    'gemini-4-carbon': {
+        inputPerM: 2,
+        cachedInputPerM: 0.1,
+        outputPerM: 10,
+        priority: GEMINI_4_PRIORITY,
+        sourceUrl: GEMINI_PRICING,
+        checkedOn: '2026-11-11',
+    },
     // 7.50 is text / thinking output; a 1K image is ~1120 tokens ≈ $0.0336
     'gemini-nano-banana-2.1': {
         inputPerM: 1.5,

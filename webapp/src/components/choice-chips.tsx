@@ -3,6 +3,8 @@ import { useCallback } from 'react';
 export interface ChoiceOption<TValue> {
     value: TValue;
     label: string;
+    // This one choice cannot be picked; the group's own `disabled` covers all of them
+    disabled?: boolean;
 }
 
 interface ChoiceChipProps<TValue> {
@@ -39,7 +41,7 @@ export const ChoiceChips = <TValue,>({ label, options, selected, disabled = fals
                 key={String(option.value)}
                 option={option}
                 checked={option.value === selected}
-                disabled={disabled}
+                disabled={disabled || option.disabled === true}
                 onSelect={onSelect}
             />
         ))}
