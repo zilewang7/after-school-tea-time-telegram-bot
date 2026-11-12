@@ -23,6 +23,7 @@ import {
     removeAsyncOcrTask,
     retainAsyncOcrTasks,
     markPendingEditWhileProcessing,
+    showsResumableVersion,
 } from '../state.js';
 import { buildResponseButtons } from '../cmd/menus/index.js';
 import { getCachedMedia, putCachedMedia } from '../services/media-cache-service.js';
@@ -991,9 +992,11 @@ const addEditDetectedButton = async (api: Api, chatId: number, response: BotResp
     response.buttonState = ButtonState.EDIT_DETECTED;
     await response.save();
 
-    // Add retry button to the bot message
+    // Add retry button to the bot message; an edit does not block "继续" (D11)
     const lastMessageId = currentVersion.messageIds.at(-1) || currentVersion.currentMessageId;
-    const buttons = buildResponseButtons(ButtonState.EDIT_DETECTED);
+    const buttons = buildResponseButtons(ButtonState.EDIT_DETECTED, 0, 1, {
+        resumable: showsResumableVersion(chatId, response.messageId, response.getVersions(), response.currentVersionIndex),
+    });
 
     const [err] = await to(
         api.editMessageReplyMarkup(chatId, lastMessageId, {

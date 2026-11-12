@@ -38,6 +38,8 @@ import {
     handleResponseError,
 } from './response-handler.js';
 import type { UnifiedContentPart } from '../ai/types.js';
+import { checkpointSinkFor } from './resume/keep-checkpoint.js';
+import { captureResumeFacts } from './resume/resume-facts.js';
 
 /**
  * Handle retry for a bot response
@@ -293,6 +295,7 @@ const handleChatRetry = async (
         await handleResponseError(chatContext, ctxErr ?? new Error('Failed to build context'));
         return;
     }
+    const builtAt = Date.now();
     const { messages: chatContents, contextIndex } = builtContext;
     recordContextSize(session.metrics, contextIndex);
 
@@ -304,7 +307,8 @@ const handleChatRetry = async (
 
     // The requester is the original message's author, not whoever pressed retry
     const signal = session.streamController.signal;
-    const { tools, availability, workspaceState } = createReplyTools(
+    const requestTraits = { carriesLargeMedia: carriesLargeMedia(chatContents) };
+    const { tools, availability, workspaceState, toolState } = createReplyTools(
         model,
         buildReplyToolContext({
             chat: ctx.chat,
@@ -314,7 +318,7 @@ const handleChatRetry = async (
             signal,
             api: ctx.api,
         }),
-        { carriesLargeMedia: carriesLargeMedia(chatContents) },
+        requestTraits,
         settings.toolOverrides
     );
     // Same manifest injection as the first answer: the panel and a retry must
@@ -330,16 +334,31 @@ const handleChatRetry = async (
         widgetTools: availability.widget,
     });
 
+    const systemPrompt = buildStaticSystemPrompt(model, buildStaticPromptOptions(availability));
+    // A retry starts from nothing, so it keeps its own checkpoints like a first answer
+    chatContext.resumeFacts = captureResumeFacts({
+        model,
+        systemPrompt,
+        tools,
+        toolState,
+        contextIndex,
+        conversationRootIds: builtContext.conversationRootIds,
+        requestTraits,
+        promptAddendum: settings.promptAddendum,
+        builtAt,
+    });
+
     // Send to AI
     markRequestStarted(session.metrics);
     const [streamErr, stream] = await to(
         sendMessage(chatContents, {
             model,
-            systemPrompt: buildStaticSystemPrompt(model, buildStaticPromptOptions(availability)),
+            systemPrompt,
             ...(openCodeGoSession ? { sessionId: openCodeGoSession } : {}),
             signal,
             tools,
             usageSink: session.metrics.usage,
+            checkpointSink: checkpointSinkFor(chatContext),
             ...(settings.geminiPriority ? { serviceTier: 'priority' as const } : {}),
         })
     );

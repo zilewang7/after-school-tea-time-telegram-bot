@@ -32,9 +32,11 @@ import { toApiEntities } from '../telegram/api-entities.js';
 import { buildResponseButtons } from '../cmd/menus/index.js';
 import { to, isErr, type Result } from '../shared/result.js';
 import {
+    clearReplyResumable,
     registerBotReplyInFlight,
     registerContinuation,
     registerReplyInFlight,
+    showsResumableVersion,
     unregisterBotReplyInFlight,
     unregisterContinuation,
     unregisterReplyInFlight,
@@ -668,12 +670,19 @@ const finalizeSession = async (
     activeSessions.delete(sessionKey);
     unregisterReplyInFlight(session.chatId, session.userMessageId);
 
-    for (const msgId of session.messageIds) {
+    // The first message is not among messageIds when a retry replaced a
+    // media-only version, yet createSession marked it in flight
+    for (const msgId of new Set([session.firstMessageId, ...session.messageIds])) {
         unregisterBotReplyInFlight(session.chatId, msgId);
         if (msgId !== session.firstMessageId) {
             unregisterContinuation(session.chatId, msgId);
         }
     }
+
+    // Any finalization ends what an earlier failure kept for "继续": the
+    // version on screen changes, a retry starts over. A failed or stopped
+    // finalization that keeps a new checkpoint marks the reply again after this.
+    clearReplyResumable(session.chatId, session.firstMessageId);
 
     // After the cleanup, and never throwing: a failed metrics write costs the
     // panel one row, not the reply its finalize
@@ -960,11 +969,10 @@ export const switchVersion = async (
         content = plainText('[Empty response]');
     }
 
-    const versionButtons = buildResponseButtons(
-        ButtonState.HAS_VERSIONS,
-        newIndex,
-        versions.length
-    );
+    // "继续" only on the failed latest version, never on an older one
+    const versionButtons = buildResponseButtons(ButtonState.HAS_VERSIONS, newIndex, versions.length, {
+        resumable: showsResumableVersion(chatId, firstMessageId, versions, newIndex),
+    });
 
     const imageBuffer = newVersion.imageBase64 ? Buffer.from(newVersion.imageBase64, 'base64') : null;
     const sticker = newVersion.sticker;
@@ -1335,11 +1343,9 @@ export const refreshToFinalState = async (
         chunks.push(plainText('[Empty response]'));
     }
 
-    const buttons = buildResponseButtons(
-        response.buttonState,
-        response.currentVersionIndex,
-        versions.length
-    );
+    const buttons = buildResponseButtons(response.buttonState, response.currentVersionIndex, versions.length, {
+        resumable: showsResumableVersion(chatId, firstMessageId, versions, response.currentVersionIndex),
+    });
 
     // Media messages can't be edited to text: pair chunks with text messages only.
     // When a visual attachment exists it is the last message (currentMessageId) and carries the buttons.

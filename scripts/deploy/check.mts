@@ -9,7 +9,9 @@
  * a reply that is being generated at that moment is cut off. The check before
  * therefore looks for replies in progress, and for a commit on origin/master
  * that has not passed `pnpm verify`. It also says whether a stop reaches the
- * bot at all, which decides whether the container may be recreated.
+ * bot at all, which decides whether the container may be recreated, and how
+ * many failed replies could still be continued: their checkpoints live in
+ * memory, so a restart drops them. That count never makes it NOT READY.
  */
 import { spawnSync } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
@@ -107,6 +109,11 @@ const checkBefore = (target: string): string[] => {
         console.log(`         chat ${String(reply.chatId)} message ${String(reply.messageId)}, last update ${reply.ageSeconds}s ago`);
     }
     if (recent.length > 0) reasons.push('a reply is being generated; a restart would cut it off');
+
+    // Not a reason against a restart: those replies fall back to "重试"
+    if (live?.resumableReplies !== null && live?.resumableReplies !== undefined) {
+        console.log(`resumable replies: ${live.resumableReplies} (kept in memory; a restart drops them, "重试" still works)`);
+    }
 
     // Not a reason against a restart, which keeps the container's files
     const stopProblem = stopSignalProblem();

@@ -52,6 +52,8 @@ import { snapshotReplySettings } from '../services/chat-settings-service.js';
 import { buildStaticPromptOptions } from './static-prompt-options.js';
 import { stopIfChatPaused } from './chat-pause.js';
 import { markRequestStarted, recordContextSize } from '../services/reply-metrics-draft.js';
+import { checkpointSinkFor } from './resume/keep-checkpoint.js';
+import { captureResumeFacts } from './resume/resume-facts.js';
 
 /** A `/chat <link>` splice only gets a reaction back, never a message */
 const acknowledgeSilently = async (ctx: Context): Promise<void> => {
@@ -314,6 +316,7 @@ export const handleReply = async (
         return;
     }
     const built = ctxResult[1];
+    const builtAt = Date.now();
     const { messages: chatContents, contextIndex } = built;
     recordContextSize(chatContext.session.metrics, contextIndex);
 
@@ -324,7 +327,8 @@ export const handleReply = async (
         : null;
 
     const signal = chatContext.session.streamController.signal;
-    const { tools, availability, workspaceState } = createReplyTools(
+    const requestTraits = { carriesLargeMedia: carriesLargeMedia(chatContents) };
+    const { tools, availability, workspaceState, toolState } = createReplyTools(
         model,
         buildReplyToolContext({
             chat: ctx.chat,
@@ -334,7 +338,7 @@ export const handleReply = async (
             signal,
             api: ctx.api,
         }),
-        { carriesLargeMedia: carriesLargeMedia(chatContents) },
+        requestTraits,
         settings.toolOverrides
     );
     // The workspace manifest is volatile, so it rides the trigger message after
@@ -350,16 +354,31 @@ export const handleReply = async (
         widgetTools: availability.widget,
     });
 
+    const systemPrompt = buildStaticSystemPrompt(model, buildStaticPromptOptions(availability));
+    // Taken now, so a failure only adds the last checkpoint to keep it
+    chatContext.resumeFacts = captureResumeFacts({
+        model,
+        systemPrompt,
+        tools,
+        toolState,
+        contextIndex,
+        conversationRootIds: built.conversationRootIds,
+        requestTraits,
+        promptAddendum: settings.promptAddendum,
+        builtAt,
+    });
+
     // Send to AI and get stream
     markRequestStarted(chatContext.session.metrics);
     const streamResult = await to(
         sendMessage(chatContents, {
             model,
-            systemPrompt: buildStaticSystemPrompt(model, buildStaticPromptOptions(availability)),
+            systemPrompt,
             ...(openCodeGoSession ? { sessionId: openCodeGoSession } : {}),
             signal,
             tools,
             usageSink: chatContext.session.metrics.usage,
+            checkpointSink: checkpointSinkFor(chatContext),
             ...(settings.geminiPriority ? { serviceTier: 'priority' as const } : {}),
         })
     );

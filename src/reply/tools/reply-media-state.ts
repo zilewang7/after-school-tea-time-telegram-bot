@@ -121,6 +121,11 @@ export interface ReplyMediaState {
     readonly readAvatars: Map<string, string>;
     /** Thumbnails attached so far; only the first window of the reply is small */
     thumbnailCount: number;
+    /**
+     * Real (non-cached) search_by_image calls so far. Kept here, not in the
+     * tool, so a continued reply goes on counting toward the same limit.
+     */
+    reverseSearchCount: number;
     /** Set by the image this reply will deliver */
     hasReplyImage: boolean;
     /** Set by the sticker this reply will deliver */
@@ -143,6 +148,7 @@ export const createReplyMediaState = (): ReplyMediaState => ({
     fetchedStickers: new Map(),
     readAvatars: new Map(),
     thumbnailCount: 0,
+    reverseSearchCount: 0,
     hasReplyImage: false,
     hasReplySticker: false,
     hasReplyFile: false,

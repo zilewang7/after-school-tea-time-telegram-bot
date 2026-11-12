@@ -14,7 +14,7 @@ import {
     type BotMessageSession,
 } from '../services/index.js';
 import { buildResponseButtons } from '../cmd/menus/index.js';
-import { ButtonState, type CommandType } from '../db/index.js';
+import { ButtonState, type BotResponse, type CommandType } from '../db/index.js';
 
 import {
     createTypingIndicator,
@@ -40,7 +40,12 @@ import {
     linkifyContextNumbers,
     type ContextLinkResolver,
 } from '../telegram/formatters/context-links.js';
-import { registerBotReplyInFlight, registerContinuation, registerReplyInFlight } from '../state.js';
+import {
+    registerBotReplyInFlight,
+    registerContinuation,
+    registerReplyInFlight,
+    showsResumableVersion,
+} from '../state.js';
 import { touchProcessingBotResponse } from '../db/queries/bot-response-heartbeat.js';
 import {
     concatMessages,
@@ -85,6 +90,15 @@ import type {
     ToolStatus,
     WidgetDelivery,
 } from '../ai/types.js';
+import type { ToolLoopCheckpoint } from '../ai/tools/tool-loop-checkpoint.js';
+import type { FinalizeOptions } from '../services/bot-message-service.js';
+import {
+    fillToolUsageFromCheckpoint,
+    keepPreparedCheckpoint,
+    prepareCheckpointKeep,
+    withKeptRoundsLine,
+} from './resume/keep-checkpoint.js';
+import type { ReplyResumeFacts } from './resume/reply-checkpoint.js';
 import { getToolConfig } from '../config/tool-config.js';
 import { noteStreamChunk } from '../services/reply-metrics-draft.js';
 import { findStickerByPackIndex } from '../services/sticker-catalog.js';
@@ -129,6 +143,13 @@ export interface ChatContext {
     isFinalized: boolean;
     /** Command type for image generation context detection and retry routing */
     commandType: CommandType;
+    /**
+     * The last checkpoint the tool loop handed over (only the Gemini loop
+     * does). A failure or stop with one at hand keeps it for "继续".
+     */
+    lastCheckpoint?: ToolLoopCheckpoint;
+    /** What a kept checkpoint needs besides that, captured where the context and tools were built */
+    resumeFacts?: ReplyResumeFacts;
 }
 
 /**
@@ -1291,6 +1312,26 @@ const deliverReplyMedia = async (
 };
 
 /**
+ * Finalize the reply. A stopped reply with a checkpoint at hand keeps it (D10):
+ * whether it is kept is decided before the finalization writes the metrics
+ * row, and it is stored after it, because the finalization clears the
+ * reply's earlier mark.
+ */
+const finalizeKeepingCheckpoint = async (
+    chatContext: ChatContext,
+    finalizeOptions: FinalizeOptions
+): Promise<void> => {
+    const kept = finalizeOptions.wasStoppedByUser === true ? prepareCheckpointKeep(chatContext) : null;
+    await chatContext.session.finalize(finalizeOptions);
+    keepPreparedCheckpoint(kept);
+};
+
+/** "继续" goes with the buttons only while the stored reply shows its resumable latest version */
+const showsResumable = (chatId: number, botResponse: BotResponse | null): boolean =>
+    botResponse !== null &&
+    showsResumableVersion(chatId, botResponse.messageId, botResponse.getVersions(), botResponse.currentVersionIndex);
+
+/**
  * Send final response (text and/or images)
  * Handles the last message in the chain (may be first or continuation)
  */
@@ -1396,7 +1437,7 @@ export const sendFinalResponse = async (
         }
 
         // Finalize session (saves to both Message and BotResponse tables)
-        await session.finalize(finalizeOptions);
+        await finalizeKeepingCheckpoint(chatContext, finalizeOptions);
 
         // Add buttons to the last message after finalization
         const getBotResponseForButtons = async () => {
@@ -1410,7 +1451,8 @@ export const sendFinalResponse = async (
             const finalButtons = buildResponseButtons(
                 finalButtonState,
                 botResponse?.currentVersionIndex ?? 0,
-                botResponse?.getVersions().length ?? 1
+                botResponse?.getVersions().length ?? 1,
+                { resumable: showsResumable(chatId, botResponse) }
             );
 
             await editCurrentMessageButtons(chatContext, finalButtons);
@@ -1503,7 +1545,7 @@ export const sendFinalResponse = async (
         }
 
         // Finalize session AFTER sending all messages (so image message ID is included)
-        await session.finalize(finalizeOptions);
+        await finalizeKeepingCheckpoint(chatContext, finalizeOptions);
 
         // Get the correct button state after finalization and update the last message
         const getBotResponseForButtons = async () => {
@@ -1517,7 +1559,8 @@ export const sendFinalResponse = async (
             const finalButtons = buildResponseButtons(
                 finalButtonState,
                 botResponse?.currentVersionIndex ?? 0,
-                botResponse?.getVersions().length ?? 1
+                botResponse?.getVersions().length ?? 1,
+                { resumable: showsResumable(chatId, botResponse) }
             );
 
             // Edit the last message (the attachment, unless it did not go out) to add buttons
@@ -1527,7 +1570,7 @@ export const sendFinalResponse = async (
         }
     } else {
         // Finalize session first to determine button state (no media case)
-        await session.finalize(finalizeOptions);
+        await finalizeKeepingCheckpoint(chatContext, finalizeOptions);
 
         // Get the correct button state after finalization
         const getBotResponseForButtons = async () => {
@@ -1544,7 +1587,8 @@ export const sendFinalResponse = async (
             ? buildResponseButtons(
                 finalButtonState,
                 botResponse?.currentVersionIndex ?? 0,
-                botResponse?.getVersions().length ?? 1
+                botResponse?.getVersions().length ?? 1,
+                { resumable: showsResumable(chatId, botResponse) }
             )
             : undefined;
 
@@ -1623,9 +1667,18 @@ export const handleResponseError = async (
     // failure never reached the chat, so it is not stored as part of the reply
     session.images = [];
 
+    // A checkpoint at hand: the failed version and its row count the tools of
+    // the kept rounds, and whether it is kept is decided before the row is written
+    if (chatContext.lastCheckpoint !== undefined) {
+        fillToolUsageFromCheckpoint(session, chatContext.lastCheckpoint);
+    }
+    const keptCheckpoint = prepareCheckpointKeep(chatContext);
+
     // Finalize session with error first: persists partial text as the version
     // content and the error string in the separate errorMessage field
     await session.handleError(error);
+    // After the finalization, which clears the reply's earlier mark
+    keepPreparedCheckpoint(keptCheckpoint);
 
     // Partial content shown to the user: the display buffers of the message
     // this editor owns (continuations reset them), falling back to session
@@ -1640,7 +1693,7 @@ export const handleResponseError = async (
             ? session.thinkingLink
             : undefined;
 
-    const errorRendered = buildErrorDisplay({
+    const errorDisplay = buildErrorDisplay({
         text: partialText,
         thinking: pendingLink === undefined ? partialThinking : undefined,
         thinkingLink: pendingLink,
@@ -1652,6 +1705,11 @@ export const handleResponseError = async (
         errorMessage: formatErrorForUser(error),
         resolveContextLink: contextLinkResolverFor(chatContext),
     });
+    // Display only, like the error line itself
+    const errorRendered =
+        keptCheckpoint === null
+            ? errorDisplay
+            : withKeptRoundsLine(errorDisplay, keptCheckpoint.checkpoint.loop.completedRounds);
 
     // Get the correct button state after finalization (may be HAS_VERSIONS for retry errors)
     const getBotResponseForButtons = async () => {
@@ -1666,7 +1724,8 @@ export const handleResponseError = async (
     const errorButtons = buildResponseButtons(
         finalButtonState,
         botResponse?.currentVersionIndex ?? 0,
-        botResponse?.getVersions().length ?? 1
+        botResponse?.getVersions().length ?? 1,
+        { resumable: showsResumable(chatId, botResponse) }
     );
 
     // Edit with retry button (delivery retries handled by the edit coordinator)
