@@ -14,7 +14,7 @@ import {
     listWorkspaceFiles,
     loadWorkspaceContents,
 } from '../../services/workspace-service.js';
-import { consumeWorkspaceCall, resolveWorkspaceRef, type WorkspaceState } from '../workspace/workspace-state.js';
+import { resolveWorkspaceRef, type WorkspaceState } from '../workspace/workspace-state.js';
 import { isWidgetDraftPath, widgetDraftListDetailOf } from '../workspace/workspace-widget-size.js';
 import { parseWorkspaceListArgs } from './workspace-tool-args.js';
 import { workspaceToolError, workspaceToolSuccess } from './workspace-tool-result.js';
@@ -66,8 +66,6 @@ export const createWorkspaceListTool = (options: WorkspaceListToolOptions): Tool
             if (!parsed.ok) return reject(parsed.error);
             const ref = resolveWorkspaceRef(state, rawArgs.workspace);
             if (!ref.ok) return reject(ref.error);
-            const overLimit = consumeWorkspaceCall(state, 'list');
-            if (overLimit !== null) return reject(overLimit);
 
             const snapshot = await listWorkspaceFiles(state.chatId, ref.ref.rootId, parsed.value.prefix);
             const label = `${ref.ref.label} ${ref.ref.token}`;

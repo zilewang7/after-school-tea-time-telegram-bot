@@ -7,34 +7,14 @@
  * seeing a raw message id; `w1` is always the conversation the reply happens
  * in. The manifest builder registers the tokens; the tools resolve them.
  *
- * The counters bound one reply's workspace calls: the tools are local and
- * cheap, so the tool-time budget would never stop a model that keeps reading or
- * rewriting the same file.
+ * There are no per-reply call counters: the workspace tools are local and
+ * cheap, and the owner's rule is that a tool without cost is bounded by time,
+ * never by a call count. The storage quotas are the only hard limits.
  */
-import { match } from 'ts-pattern';
 import type { WorkspaceQuota } from '../../services/workspace-service.js';
 
 /** The token the trigger's own conversation always gets */
 export const CURRENT_WORKSPACE_TOKEN = 'w1';
-
-export type WorkspaceCallKind = 'write' | 'read' | 'list' | 'delete' | 'preview';
-
-export interface WorkspaceCallLimits {
-    readonly writes: number;
-    readonly reads: number;
-    readonly lists: number;
-    readonly deletes: number;
-    readonly previews: number;
-}
-
-export const WORKSPACE_CALL_LIMITS: WorkspaceCallLimits = {
-    writes: 10,
-    reads: 20,
-    lists: 10,
-    deletes: 10,
-    // Per-reply preview renders also cost sidecar CPU; the env can lower it
-    previews: 6,
-};
 
 export interface WorkspaceRef {
     readonly token: string;
@@ -46,11 +26,8 @@ export interface WorkspaceRef {
 export interface WorkspaceState {
     readonly chatId: number;
     readonly quota: WorkspaceQuota;
-    readonly callLimits: WorkspaceCallLimits;
     /** token → conversation; `w1` exists from the start */
     readonly refs: Map<string, WorkspaceRef>;
-    /** How many calls of each kind this reply has made */
-    readonly calls: Record<WorkspaceCallKind, number>;
 }
 
 export interface CreateWorkspaceStateInput {
@@ -58,7 +35,6 @@ export interface CreateWorkspaceStateInput {
     /** Current conversation first */
     readonly conversationRootIds: readonly number[];
     readonly quota: WorkspaceQuota;
-    readonly callLimits?: WorkspaceCallLimits;
 }
 
 export const createWorkspaceState = (input: CreateWorkspaceStateInput): WorkspaceState => {
@@ -74,9 +50,7 @@ export const createWorkspaceState = (input: CreateWorkspaceStateInput): Workspac
     return {
         chatId: input.chatId,
         quota: input.quota,
-        callLimits: input.callLimits ?? WORKSPACE_CALL_LIMITS,
         refs,
-        calls: { write: 0, read: 0, list: 0, delete: 0, preview: 0 },
     };
 };
 
@@ -119,35 +93,4 @@ export const resolveWorkspaceRef = (
         };
     }
     return { ok: true, ref };
-};
-
-const limitOf = (state: WorkspaceState, kind: WorkspaceCallKind): number =>
-    match(kind)
-        .with('write', () => state.callLimits.writes)
-        .with('read', () => state.callLimits.reads)
-        .with('list', () => state.callLimits.lists)
-        .with('delete', () => state.callLimits.deletes)
-        .with('preview', () => state.callLimits.previews)
-        .exhaustive();
-
-const limitName = (kind: WorkspaceCallKind): string =>
-    match(kind)
-        .with('write', () => '写入')
-        .with('read', () => '读取')
-        .with('list', () => '列目录')
-        .with('delete', () => '删除')
-        .with('preview', () => '预览')
-        .exhaustive();
-
-/**
- * Count one call of `kind`; returns an actionable error when this reply has
- * used its allowance. The caller must not run the operation on error.
- */
-export const consumeWorkspaceCall = (state: WorkspaceState, kind: WorkspaceCallKind): string | null => {
-    const limit = limitOf(state, kind);
-    if (state.calls[kind] >= limit) {
-        return `本次回复的工作区${limitName(kind)}次数已用完（${limit} 次）；请先收尾，或把剩余内容合并到更少的调用里。`;
-    }
-    state.calls[kind] += 1;
-    return null;
 };

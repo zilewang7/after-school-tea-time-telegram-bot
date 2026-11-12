@@ -9,7 +9,7 @@ import type { ToolHandler, ToolResult } from '../../ai/tools/tool-types.js';
 import type { WidgetBudgetLimits } from '../../ai/widget/widget-size.js';
 import { formatBytes } from '../../shared/file-name.js';
 import { writeWorkspaceFile } from '../../services/workspace-service.js';
-import { consumeWorkspaceCall, resolveWorkspaceRef, type WorkspaceState } from '../workspace/workspace-state.js';
+import { resolveWorkspaceRef, type WorkspaceState } from '../workspace/workspace-state.js';
 import { widgetDraftSizeLineOf } from '../workspace/workspace-widget-size.js';
 import { parseWorkspaceWriteArgs } from './workspace-tool-args.js';
 import { workspaceToolError, workspaceToolSuccess } from './workspace-tool-result.js';
@@ -68,8 +68,6 @@ export const createWorkspaceWriteTool = (options: WorkspaceWriteToolOptions): To
             if (!parsed.ok) return reject(parsed.error);
             const ref = resolveWorkspaceRef(state, rawArgs.workspace);
             if (!ref.ok) return reject(ref.error);
-            const overLimit = consumeWorkspaceCall(state, 'write');
-            if (overLimit !== null) return reject(overLimit);
 
             const result = await writeWorkspaceFile({
                 chatId: state.chatId,

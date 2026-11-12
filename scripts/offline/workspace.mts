@@ -106,7 +106,6 @@ const stateOf = (rootIds: readonly number[] = [ROOT, OTHER_ROOT]) =>
         chatId: CHAT,
         conversationRootIds: rootIds,
         quota: QUOTA,
-        callLimits: { writes: 20, reads: 20, lists: 10, deletes: 10, previews: 6 },
     });
 
 const write = (path: string, content: string, extra: Record<string, unknown> = {}) =>
@@ -476,14 +475,13 @@ const cases: { name: string; body: () => Promise<void> }[] = [
         },
     },
     {
-        name: 'the tool flow writes, lists, reads, edits and deletes with call limits',
+        name: 'the tool flow writes, lists, reads, edits and deletes',
         body: async () => {
             await clearWorkspace();
             const state = createWorkspaceState({
                 chatId: CHAT,
                 conversationRootIds: [ROOT, OTHER_ROOT],
                 quota: QUOTA,
-                callLimits: { writes: 5, reads: 20, lists: 10, deletes: 10, previews: 6 },
             });
             ensureWorkspaceToken(state, OTHER_ROOT, '拼接的会话');
             const writeTool = createWorkspaceWriteTool({ state });
@@ -515,8 +513,9 @@ const cases: { name: string; body: () => Promise<void> }[] = [
                 'overwrite names the replaced size'
             );
 
-            const overLimit = await call(writeTool, { path: 'notes/c.md', content: '# C' });
-            expect(overLimit.isError && overLimit.content.includes('次数已用完'), 'the per-reply write limit is enforced');
+            // No per-reply call counters: a later write is not refused
+            const extra = await call(writeTool, { path: 'notes/c.md', content: '# C' });
+            expect(!extra.isError && extra.content.includes('已写入'), 'a later write is not refused by a count');
             const deleted = await call(deleteTool, { path: 'notes/a.md' });
             expect(!deleted.isError && deleted.content.includes('已删除'), 'delete succeeds');
             const missing = await call(readTool, { path: 'notes/a.md' });
@@ -610,16 +609,9 @@ const cases: { name: string; body: () => Promise<void> }[] = [
             const miss = await call(findTool, { query: 'zzz' });
             expect(!miss.isError && miss.content.includes('没有找到'), 'a miss tells the model what it scanned');
 
-            const limitedState = createWorkspaceState({
-                chatId: CHAT,
-                conversationRootIds: [ROOT],
-                quota: QUOTA,
-                callLimits: { writes: 10, reads: 1, lists: 10, deletes: 10, previews: 6 },
-            });
-            const limitedTool = createWorkspaceFindTool({ state: limitedState });
-            await call(limitedTool, { query: 'neon' });
-            const overReads = await call(limitedTool, { query: 'neon' });
-            expect(overReads.isError && overReads.content.includes('次数已用完'), 'find counts as a read');
+            // No per-reply call counters: a repeated find is not refused
+            const again = await call(findTool, { query: 'neon' });
+            expect(!again.isError && again.content.includes('找到 2 处'), 'a repeated find is not refused');
         },
     },
     {
@@ -673,20 +665,18 @@ const cases: { name: string; body: () => Promise<void> }[] = [
             const source = await readWorkspaceFile(CHAT, ROOT, 'widgets/game.html');
             expect(source?.content === '<div>v1</div>', 'failed copies leave the source alone');
 
-            // Copies count toward the per-reply write limit
+            // No per-reply call counters: several copies in one reply are fine
             await clearWorkspace();
-            const limitedState = createWorkspaceState({
-                chatId: CHAT,
-                conversationRootIds: [ROOT],
-                quota: QUOTA,
-                callLimits: { writes: 1, reads: 20, lists: 10, deletes: 10, previews: 6 },
+            const repeatCopyTool = createWorkspaceCopyTool({
+                state: createWorkspaceState({ chatId: CHAT, conversationRootIds: [ROOT], quota: QUOTA }),
             });
-            const limitedCopyTool = createWorkspaceCopyTool({ state: limitedState });
             await write('a.txt', 'hello');
-            const firstCopy = await call(limitedCopyTool, { path: 'a.txt', new_path: 'b.txt' });
-            expect(!firstCopy.isError, `the first copy fits the write limit (got ${firstCopy.content})`);
-            const overWrites = await call(limitedCopyTool, { path: 'a.txt', new_path: 'c.txt' });
-            expect(overWrites.isError && overWrites.content.includes('次数已用完'), 'copy counts as a write');
+            const firstCopy = await call(repeatCopyTool, { path: 'a.txt', new_path: 'b.txt' });
+            const secondCopy = await call(repeatCopyTool, { path: 'a.txt', new_path: 'c.txt' });
+            expect(
+                !firstCopy.isError && !secondCopy.isError,
+                `copies are not refused by a per-reply count (${firstCopy.content} / ${secondCopy.content})`
+            );
         },
     },
     {

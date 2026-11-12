@@ -44,7 +44,6 @@ import { createWorkspaceReadTool } from './workspace-read-tool.js';
 import { createWorkspaceWriteTool } from './workspace-write-tool.js';
 import {
     createWorkspaceState,
-    WORKSPACE_CALL_LIMITS,
     type WorkspaceState,
 } from '../workspace/workspace-state.js';
 import { createUiGuideTool } from './ui-guide-tool.js';
@@ -89,7 +88,6 @@ export const createReplyTools = (
             maxFiles: config.workspaceMaxFiles,
             maxGlobalBytes: config.workspaceMaxGlobalBytes,
         },
-        callLimits: { ...WORKSPACE_CALL_LIMITS, previews: config.workspacePreviewsPerReply },
     });
     // HTML drafts are widget payloads: the write/edit/list results report the
     // zlib9 size only when this turn can actually send a widget.
