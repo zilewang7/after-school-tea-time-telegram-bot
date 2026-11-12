@@ -435,7 +435,9 @@ const cases = [
             expect(
                 toolRoundNotice(7, true, true).includes('只能再调用不产生开销的工具') &&
                     toolRoundNotice(7, true, true).includes('list_harness_issues') &&
-                    toolRoundNotice(7, true, true).includes('get_ui_guide'),
+                    toolRoundNotice(7, true, true).includes('get_ui_guide') &&
+                    toolRoundNotice(7, true, true).includes('workspace_write') &&
+                    toolRoundNotice(7, true, true).includes('workspace_preview'),
                 'the no-cost round says which tools can still run'
             );
             expect(

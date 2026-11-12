@@ -205,6 +205,12 @@ const cases: { name: string; body: () => Promise<void> }[] = [
                 executed('get_ui_guide', 500),
                 executed('send_file', 100),
                 executed('send_widget', 900),
+                executed('workspace_write', 700),
+                executed('workspace_read', 200),
+                executed('workspace_list', 100),
+                executed('workspace_edit', 600),
+                executed('workspace_delete', 100),
+                executed('workspace_preview', 800),
             ]);
             expect(charged === 1200, `only search_history is charged (got ${charged}ms)`);
         },

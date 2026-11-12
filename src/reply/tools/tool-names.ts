@@ -38,26 +38,6 @@ export const PRODUCT_TOOL_NAMES: ReadonlySet<string> = new Set([
 ]);
 
 /**
- * Tools whose handler time does not count against the reply's tool budget.
- *
- * They cost the reply nothing: the product tools hand over what the reply made
- * (a picture, a sticker, a file, a card), the harness issue tools only write a
- * local row, and `get_ui_guide` only reads a static guide (the prerequisite for
- * a card). None of them spends the budget on looking around, so the reply is
- * never unable to deliver or to report a problem because its clock ran out.
- * The same set is what a post-budget round still offers; the round count there
- * (FREE_TOOL_ROUNDS_MAX) is the bound.
- */
-export const TIME_FREE_TOOL_NAMES: ReadonlySet<string> = new Set([
-    ...PRODUCT_TOOL_NAMES,
-    LIST_HARNESS_ISSUES_TOOL_NAME,
-    CREATE_HARNESS_ISSUE_TOOL_NAME,
-    GET_UI_GUIDE_TOOL_NAME,
-]);
-
-export const isTimeFreeToolName = (name: string): boolean => TIME_FREE_TOOL_NAMES.has(name);
-
-/**
  * The workspace file tools: one group, always offered together (the static
  * prompt lists them in one line). `workspace_preview` is separate because it
  * needs a vision model and the render sidecar.
@@ -69,6 +49,29 @@ export const WORKSPACE_FILE_TOOL_NAMES: readonly string[] = [
     WORKSPACE_EDIT_TOOL_NAME,
     WORKSPACE_DELETE_TOOL_NAME,
 ];
+
+/**
+ * Tools whose handler time does not count against the reply's tool budget.
+ *
+ * They cost the reply nothing: the product tools hand over what the reply made
+ * (a picture, a sticker, a file, a card), the workspace tools let it finish and
+ * preview the draft it is about to hand over, the harness issue tools only
+ * write a local row, and `get_ui_guide` only reads a static guide (the
+ * prerequisite for a card). None of them spends the budget on looking around,
+ * so the reply is never unable to deliver or to report a problem because its
+ * clock ran out. The same set is what a post-budget round still offers; the
+ * round count there (FREE_TOOL_ROUNDS_MAX) is the bound.
+ */
+export const TIME_FREE_TOOL_NAMES: ReadonlySet<string> = new Set([
+    ...PRODUCT_TOOL_NAMES,
+    ...WORKSPACE_FILE_TOOL_NAMES,
+    WORKSPACE_PREVIEW_TOOL_NAME,
+    LIST_HARNESS_ISSUES_TOOL_NAME,
+    CREATE_HARNESS_ISSUE_TOOL_NAME,
+    GET_UI_GUIDE_TOOL_NAME,
+]);
+
+export const isTimeFreeToolName = (name: string): boolean => TIME_FREE_TOOL_NAMES.has(name);
 
 /** Built-in names an MCP tool may never take */
 export const RESERVED_TOOL_NAMES: readonly string[] = [

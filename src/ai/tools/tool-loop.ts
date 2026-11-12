@@ -13,9 +13,10 @@
  * Once the tool budget is used up (or the absolute wall is reached), up to
  * FREE_TOOL_ROUNDS_MAX no-cost rounds are allowed: only the tools that cost
  * the reply nothing run — the product tools (generate_image / send_image /
- * send_sticker / send_file / send_widget), the harness issue tools and
- * get_ui_guide — so a reply never ends unable to hand over what it made or to
- * report a tool that wasted its time. Then the final, tool-less round answers.
+ * send_sticker / send_file / send_widget), the workspace tools (so it can
+ * finish a draft it already has), the harness issue tools and get_ui_guide —
+ * so a reply never ends unable to hand over what it made or to report a tool
+ * that wasted its time. Then the final, tool-less round answers.
  */
 import type { StreamChunk } from '../types.js';
 import { isTimeFreeToolName } from '../../reply/tools/tool-names.js';
@@ -50,8 +51,12 @@ export const TOOL_LOOP_DEADLINE_MS = 600_000;
  */
 export const TOOL_LOOP_WALL_MS = 20 * 60_000;
 
-/** How many no-cost rounds are allowed once the budget is used up */
-export const FREE_TOOL_ROUNDS_MAX = 3;
+/**
+ * How many no-cost rounds are allowed once the budget is used up. Five rather
+ * than three: a reply that ran out of time while finishing a draft needs room
+ * to trim it, preview it and still hand it over.
+ */
+export const FREE_TOOL_ROUNDS_MAX = 5;
 
 export interface CollectedToolRound {
     /** The round's text and thinking chunks, in stream order */

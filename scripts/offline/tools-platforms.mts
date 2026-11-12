@@ -1190,6 +1190,8 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
                     freeTool('list_harness_issues'),
                     freeTool('get_ui_guide'),
                     freeTool('send_file'),
+                    freeTool('workspace_write'),
+                    freeTool('workspace_preview'),
                 ]);
                 let round = 0;
                 const finalFlags: boolean[] = [];
@@ -1215,8 +1217,10 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
                                             { id: 'c2', name: 'list_harness_issues', argumentsJson: '{}' },
                                             { id: 'c3', name: 'get_ui_guide', argumentsJson: '{}' },
                                             { id: 'c4', name: 'send_file', argumentsJson: '{}' },
+                                            { id: 'c5', name: 'workspace_write', argumentsJson: '{}' },
+                                            { id: 'c6', name: 'workspace_preview', argumentsJson: '{}' },
                                             // No longer offered: must be answered, never run
-                                            { id: 'c5', name: 'lookup_weather', argumentsJson: '{"city":"Rome"}' },
+                                            { id: 'c7', name: 'lookup_weather', argumentsJson: '{"city":"Rome"}' },
                                         ],
                                     };
                                 }
@@ -1229,13 +1233,14 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
                     )
                 );
                 expect(
-                    json(freeExecutions) === json(['list_harness_issues', 'get_ui_guide', 'send_file']),
-                    `the issue, guide and product tools all ran after the budget (got ${json(freeExecutions)})`
+                    json(freeExecutions) ===
+                        json(['list_harness_issues', 'get_ui_guide', 'send_file', 'workspace_write', 'workspace_preview']),
+                    `the issue, guide, product and workspace tools all ran after the budget (got ${json(freeExecutions)})`
                 );
                 expect(executions.length === 1, `the charged tool did not run again (got ${json(executions)})`);
                 const freeResults = appendedResults[1] ?? [];
                 expect(
-                    freeResults.length === 4 && freeResults[3]?.includes('Unknown tool lookup_weather') === true,
+                    freeResults.length === 6 && freeResults[5]?.includes('Unknown tool lookup_weather') === true,
                     `the charged call is answered as unknown (got ${json(freeResults)})`
                 );
                 expect(
@@ -1250,6 +1255,67 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
                     json(finalFlags) === json([false, false, false]) && textOf(chunks) === 'Looking.\n\nDone.',
                     `the free rounds keep the tools on and the answer streams (got ${json({ finalFlags, text: textOf(chunks) })})`
                 );
+            });
+        },
+    },
+    {
+        name: 'five no-cost rounds are allowed after the budget, then the final answer',
+        body: async () => {
+            await withFakeClock(async (jump) => {
+                resetStub([]);
+                let chargedRuns = 0;
+                afterToolExecution = () => {
+                    chargedRuns += 1;
+                    // Round 1's lookup uses up the whole tool budget
+                    if (chargedRuns === 1) jump(TOOL_LOOP_DEADLINE_MS + 1_000);
+                };
+                const freeExecutions: string[] = [];
+                const draftTool: ToolHandler = {
+                    definition: {
+                        name: 'workspace_write',
+                        description: 'writes the draft',
+                        inputSchema: { type: 'object', properties: {} },
+                    },
+                    execute: async () => {
+                        freeExecutions.push('workspace_write');
+                        return { content: 'draft written', isError: false, images: [], record: null };
+                    },
+                };
+                const toolsWithFree = createTurnTools([weatherTool, draftTool]);
+                let round = 0;
+                const finalFlags: boolean[] = [];
+                const { result: chunks } = await captureConsole(async () =>
+                    drain(
+                        runToolLoop({
+                            tools: toolsWithFree,
+                            logPrefix: '[offline]',
+                            sendRound: async (_roundIndex, final) => {
+                                round += 1;
+                                finalFlags.push(final);
+                                if (final) {
+                                    return { chunks: [{ type: 'text', content: 'Delivered.' }], toolCalls: [] };
+                                }
+                                if (round === 1) {
+                                    return {
+                                        chunks: [],
+                                        toolCalls: [{ id: 'c1', name: 'lookup_weather', argumentsJson: '{"city":"Oslo"}' }],
+                                    };
+                                }
+                                return {
+                                    chunks: [],
+                                    toolCalls: [{ id: `w${round}`, name: 'workspace_write', argumentsJson: '{}' }],
+                                };
+                            },
+                            appendRound: () => undefined,
+                        })
+                    )
+                );
+                expect(freeExecutions.length === 5, `five no-cost rounds run (got ${freeExecutions.length})`);
+                expect(
+                    json(finalFlags) === json([false, false, false, false, false, false, true]),
+                    `only the round after the five no-cost rounds is final (got ${json(finalFlags)})`
+                );
+                expect(textOf(chunks) === 'Delivered.', `the final answer streams (got ${json(textOf(chunks))})`);
             });
         },
     },
