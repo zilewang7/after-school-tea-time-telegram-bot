@@ -7,6 +7,7 @@ import type { StaticPromptOptions } from '../ai/system-prompt/index.js';
 import type { ToolAvailability } from './tools/index.js';
 
 export const buildStaticPromptOptions = (availability: ToolAvailability): StaticPromptOptions => ({
+    trial: availability.trial,
     sms: availability.sms,
     imageTools: availability.imageSearch,
     imageFetch: availability.imageFetch,

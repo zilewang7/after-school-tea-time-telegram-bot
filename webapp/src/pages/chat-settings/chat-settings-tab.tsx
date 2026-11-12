@@ -50,6 +50,8 @@ export const ChatSettingsTab = () => {
             <ChatSettingsView
                 detail={data}
                 isOwner={me.isOwner}
+                isTrial={me.accessTier === 'trial'}
+                trialModel={me.trialModel}
                 models={me.models}
                 justSaved={justSaved}
                 onSaved={handleSaved}

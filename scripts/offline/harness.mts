@@ -51,6 +51,10 @@ process.env.EDIT_COORDINATOR_TIME_SCALE ||= '0.01';
 // seconds its idle timer would be the last thing keeping a finished file alive.
 process.env.DB_POOL_IDLE_MS ||= '50';
 
+// Tiering is on in production by default; existing cases assert today's
+// full-capability behavior, so the harness keeps it off unless a case opts in.
+process.env.ACCESS_TIERS ||= '0';
+
 const removeScratchDirectory = (): void => removeScratchDirectoryOf(process.pid);
 
 // Registered on import, not in setupOfflineDb: a file that only reaches the db

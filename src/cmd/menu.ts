@@ -12,6 +12,8 @@ import type { RenderedMessage } from 'telegram-md-entities';
 import { modelConfigs } from '../config/models.js';
 import { resolveChatModel } from '../config/chat-model.js';
 import { isOwnerUser } from '../config/owner.js';
+import { resolveAccessTier } from '../services/access-tier.js';
+import { TRIAL_CALLBACK_REFUSAL_TEXT, TRIAL_MODEL_REFUSAL_TEXT } from '../reply/commands/trial-refusal.js';
 import {
     ChatSettingsError,
     getChatSettings,
@@ -68,6 +70,7 @@ const refusalNoticeOf = (code: ChatSettingsErrorCode): string =>
         .with('forbidden', () => '没有权限修改本聊天的设置')
         // /model never sends an expected version, kept for exhaustiveness
         .with('conflict', () => '设置刚被他人修改，请重试')
+        .with('trial', () => '体验用户不能修改模型；申请准入后可以修改')
         .exhaustive();
 
 type ModelChangeOutcome =
@@ -116,12 +119,20 @@ const replyWithModelText = async (ctx: Context, text: RenderedMessage): Promise<
 
 export const sendModelMsg = async (ctx: Context): Promise<void> => {
     if (!ctx.chat) return;
+    if (resolveAccessTier(ctx.from?.id ?? null) === 'trial') {
+        await sendBotNotice(ctx, TRIAL_MODEL_REFUSAL_TEXT);
+        return;
+    }
     await replyWithModelText(ctx, renderModelOverview(chatModelViewOf(ctx.chat.id)));
 };
 
 /** `/model <id>`; `requested` is already trimmed and non-empty */
 export const changeModel = async (ctx: Context, requested: string): Promise<void> => {
     if (!ctx.chat || !ctx.from) return;
+    if (resolveAccessTier(ctx.from.id) === 'trial') {
+        await sendBotNotice(ctx, TRIAL_MODEL_REFUSAL_TEXT);
+        return;
+    }
     const outcome = await applyModelChange(ctx.chat.id, ctx.from.id, requested);
     await match(outcome)
         .with({ kind: 'refused' }, ({ notice }) => sendBotNotice(ctx, notice))
@@ -133,6 +144,10 @@ export const changeModel = async (ctx: Context, requested: string): Promise<void
 const handleModelButton = async (ctx: Context, requested: string): Promise<void> => {
     if (!ctx.chat || !ctx.from) {
         await ctx.answerCallbackQuery();
+        return;
+    }
+    if (resolveAccessTier(ctx.from.id) === 'trial') {
+        await ctx.answerCallbackQuery({ text: TRIAL_CALLBACK_REFUSAL_TEXT });
         return;
     }
     const outcome = await applyModelChange(ctx.chat.id, ctx.from.id, requested);

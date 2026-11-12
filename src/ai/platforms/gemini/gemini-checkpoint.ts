@@ -13,6 +13,7 @@ import type { AgentToolUsage, StreamChunk } from '../../types.js';
 import type { RoundTextSeparatorState } from '../../tools/round-text-separator.js';
 import type { ToolLoopCheckpoint } from '../../tools/tool-loop-checkpoint.js';
 import type { GeminiLoopState } from './gemini-loop-state.js';
+import type { ThoughtSummaryFilterState } from './gemini-thought-summary.js';
 
 const GEMINI_CHECKPOINT_KIND = 'gemini-tool-loop';
 
@@ -24,6 +25,8 @@ export interface GeminiCheckpointState {
     /** Reply wall time used at the snapshot; a resume's clock goes on from it */
     readonly elapsedMs: number;
     readonly separator: RoundTextSeparatorState;
+    /** Whether the reply's thinking is a summarizer stream; decided once per reply */
+    readonly thoughtSummary: ThoughtSummaryFilterState;
 }
 
 /** Everything a checkpoint holds, and everything a resume starts from */
@@ -33,6 +36,7 @@ export interface GeminiSnapshot {
     readonly toolUsage: readonly AgentToolUsage[];
     readonly journal: readonly StreamChunk[];
     readonly separator: RoundTextSeparatorState;
+    readonly thoughtSummary: ThoughtSummaryFilterState;
 }
 
 export const toGeminiCheckpoint = (snapshot: GeminiSnapshot): ToolLoopCheckpoint => {
@@ -41,6 +45,7 @@ export const toGeminiCheckpoint = (snapshot: GeminiSnapshot): ToolLoopCheckpoint
         loop: snapshot.loop,
         elapsedMs: snapshot.elapsedMs,
         separator: snapshot.separator,
+        thoughtSummary: snapshot.thoughtSummary,
     };
     return {
         platform: 'gemini',
@@ -58,6 +63,7 @@ const checkpointStatePattern = {
     kind: GEMINI_CHECKPOINT_KIND,
     elapsedMs: P.number,
     separator: { textShown: P.boolean, separatorPending: P.boolean },
+    thoughtSummary: { mode: P.union('detecting', 'filtering', 'passthrough'), emitted: P.boolean },
     loop: {
         roundNumber: P.number.int().gte(2),
         request: roundRequestPattern,
@@ -98,5 +104,6 @@ export const geminiSnapshotOf = (checkpoint: ToolLoopCheckpoint): GeminiSnapshot
         toolUsage: checkpoint.toolUsage,
         journal: checkpoint.journal,
         separator: state.separator,
+        thoughtSummary: state.thoughtSummary,
     };
 };

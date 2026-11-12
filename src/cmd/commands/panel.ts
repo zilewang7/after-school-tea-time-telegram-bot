@@ -1,44 +1,38 @@
 import type { Bot } from "grammy";
-import { InlineKeyboard } from "grammy";
 import type { Chat } from "grammy/types";
 import { match } from "ts-pattern";
 import { upsertChatNow } from "../../db/queries/panel-registry.js";
 import { isPanelRunning } from "../../panel/panel-state.js";
+import { miniAppKeyboardForChat } from "./mini-app-link.js";
 
 const OPEN_PANEL_LABEL = "打开面板";
-const DEFAULT_SHORT_NAME = "panel";
 
 type PanelReply =
     | { kind: 'text'; text: string }
-    | { kind: 'button'; text: string; keyboard: InlineKeyboard };
+    | { kind: 'button'; text: string; keyboard: NonNullable<ReturnType<typeof miniAppKeyboardForChat>> };
 
 const disabledReply: PanelReply = { kind: 'text', text: "面板未启用" };
 
-/** Private chats open the Mini App in place: a web_app button */
-const privateChatReply = (): PanelReply => {
-    const url = process.env.WEBAPP_PUBLIC_URL?.trim();
-    if (!url) return disabledReply;
-    return { kind: 'button', text: "控制面板：", keyboard: new InlineKeyboard().webApp(OPEN_PANEL_LABEL, url) };
-};
+const unsupportedReply: PanelReply = { kind: 'text', text: "这里不支持控制面板" };
 
 /**
- * Groups cannot carry web_app buttons: a Direct Link instead, whose signed
- * start_param `c<chatId>` lands the panel on this chat.
+ * Private chats open the Mini App in place; groups cannot carry web_app buttons,
+ * so they get a Direct Link whose signed start_param `c<chatId>` lands the panel
+ * on this chat.
  */
-const groupChatReply = (chatId: number): PanelReply => {
-    const botUserName = process.env.BOT_USER_NAME?.trim();
-    if (!botUserName) return disabledReply;
-    const shortName = process.env.WEBAPP_BOT_SHORT_NAME?.trim() || DEFAULT_SHORT_NAME;
-    const url = `https://t.me/${botUserName}/${shortName}?startapp=c${chatId}`;
-    return { kind: 'button', text: "本聊天的控制面板：", keyboard: new InlineKeyboard().url(OPEN_PANEL_LABEL, url) };
+const panelReplyFor = (chat: Chat): PanelReply => {
+    if (chat.type !== 'private' && chat.type !== 'group' && chat.type !== 'supergroup') {
+        return unsupportedReply;
+    }
+    const startParam = chat.type === 'private' ? undefined : `c${chat.id}`;
+    const keyboard = miniAppKeyboardForChat(chat, OPEN_PANEL_LABEL, startParam);
+    if (keyboard === null) return disabledReply;
+    return {
+        kind: 'button',
+        text: chat.type === 'private' ? "控制面板：" : "本聊天的控制面板：",
+        keyboard,
+    };
 };
-
-const panelReplyFor = (chat: Chat): PanelReply =>
-    match(chat.type)
-        .returnType<PanelReply>()
-        .with('private', () => privateChatReply())
-        .with('group', 'supergroup', () => groupChatReply(chat.id))
-        .otherwise(() => ({ kind: 'text', text: "这里不支持控制面板" }));
 
 /** /panel: a button that opens the control panel; not subject to pausing */
 export const registerPanelCommand = (bot: Bot) => {

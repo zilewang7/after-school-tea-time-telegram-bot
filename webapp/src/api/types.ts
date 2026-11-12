@@ -10,6 +10,8 @@ export type ApiErrorCode =
     | 'unauthorized'
     | 'forbidden'
     | 'locked'
+    // A trial user may not change the model (403 on a chat settings PATCH)
+    | 'trial'
     | 'not_found'
     | 'conflict'
     | 'too_large'
@@ -70,6 +72,15 @@ export interface MeResponse {
     models: string[];
     chats: ChatSummary[];
     startTarget: StartTarget | null;
+    accessTier: AccessTier;
+    // The model a trial user's replies are fixed to
+    trialModel: string;
+    // false when ACCESS_TIERS=0: the tiering feature is off and everyone keeps full access
+    accessTieringEnabled: boolean;
+    // The requester's latest application; null when they never applied
+    accessApplication: AccessApplicationSelf | null;
+    // Owner only: applications awaiting review; null for everyone else
+    pendingAccessApplications: number | null;
 }
 
 /** The login page's public facts: is web login on, and where the Telegram entries are */
@@ -1151,4 +1162,76 @@ export interface PublicThinkingResponse {
     next: number;
     // `after` was out of range: replace the whole text instead of appending
     reset?: boolean;
+}
+
+// Access tiers and applications
+
+export type AccessTier = 'owner' | 'full' | 'trial';
+export type AccessApplicationStatus = 'pending' | 'approved' | 'rejected';
+export type AccessApplicationSource = 'command' | 'miniapp';
+export type AccessDeliveryStatus = 'sent' | 'failed';
+
+/** The requester's own latest application, as /api/me reports it */
+export interface AccessApplicationSelf {
+    id: number;
+    status: AccessApplicationStatus;
+    comment: string | null;
+    createdAt: string;
+}
+
+/** One application, as the owner's review pages show it */
+export interface AccessApplicationSummary {
+    id: number;
+    userId: number;
+    // The applicant's display name (first + last), never the @handle
+    userName: string;
+    // Without the @
+    username: string | null;
+    chatId: number;
+    chatTitle: string | null;
+    chatType: ChatType | null;
+    identity: string;
+    purpose: string;
+    source: AccessApplicationSource;
+    status: AccessApplicationStatus;
+    comment: string | null;
+    createdAt: string;
+    reviewedAt: string | null;
+    deliveryStatus: AccessDeliveryStatus | null;
+    deliveryError: string | null;
+}
+
+/** GET /api/access-applications/:id: one application plus the applicant's earlier ones */
+export interface AccessApplicationDetailResponse {
+    application: AccessApplicationSummary;
+    // The same applicant's other applications, newest first
+    history: AccessApplicationSummary[];
+    // Whether the applicant currently holds a grant; false after a revoke, whatever the latest status says
+    accessActive: boolean;
+}
+
+/** GET /api/access-applications (owner only) */
+export interface AccessApplicationsResponse {
+    applications: AccessApplicationSummary[];
+    // Applications matching the status filter: what the pages add up to
+    matched: number;
+    nextOffset: number | null;
+    stats: { pending: number };
+}
+
+/** PATCH /api/access-applications/:id */
+export interface AccessApplicationPatch {
+    action: 'approve' | 'reject';
+    comment?: string;
+}
+
+/** POST /api/access-applications (trial users) */
+export interface AccessApplicationCreate {
+    identity: string;
+    purpose: string;
+}
+
+/** PATCH, POST /resend and POST /api/access-applications answer with the stored application */
+export interface AccessApplicationResponse {
+    application: AccessApplicationSummary;
 }

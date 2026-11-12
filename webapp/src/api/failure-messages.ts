@@ -43,6 +43,11 @@ export const describeWriteFailure = (failure: ApiFailure): WriteFailureView =>
         .with({ kind: 'http', status: 401 }, () => ({ message: REOPEN_PANEL_MESSAGE, suggestRefresh: false }))
         .with({ kind: 'http', status: 409 }, () => ({ message: '设置已被别人修改，请刷新', suggestRefresh: true }))
         .with({ kind: 'http', code: 'locked' }, () => ({ message: '设置已被机主锁定', suggestRefresh: true }))
+        // A trial user tried to change the model; the server's message names the way to apply
+        .with({ kind: 'http', code: 'trial' }, ({ message }) => ({
+            message: message ?? '体验用户不能修改模型，可在「准入」页申请完整功能',
+            suggestRefresh: false,
+        }))
         .with({ kind: 'http', status: 413 }, () => ({ message: '内容太长，未保存', suggestRefresh: false }))
         .with({ kind: 'http', status: 429 }, () => ({ message: '操作太频繁，请稍后再试', suggestRefresh: false }))
         .with({ kind: 'http' }, ({ status, message }) => ({
@@ -130,5 +135,54 @@ export const describeIssueCreateFailure = (failure: ApiFailure): WriteFailureVie
             { kind: 'http', status: P.union(504, 524) },
             { kind: 'http', code: 'timeout' },
             () => ({ message: '未确认是否已提交，请到 Issue 列表核对', suggestRefresh: false })
+        )
+        .otherwise(describeWriteFailure);
+
+const ACCESS_APPLICATION_NOT_FOUND_MESSAGE = '这条准入申请不存在';
+
+/** A failed access application read; a missing application and a hidden one are the same 404 */
+export const describeAccessApplicationReadFailure = (failure: ApiFailure): string =>
+    match(failure)
+        .with({ kind: 'http', status: 404 }, () => ACCESS_APPLICATION_NOT_FOUND_MESSAGE)
+        .otherwise(describeReadFailure);
+
+/** A failed approve / reject / resend; an already decided application is the common conflict */
+export const describeAccessReviewFailure = (failure: ApiFailure): WriteFailureView =>
+    match(failure)
+        .with({ kind: 'http', status: 404 }, () => ({
+            message: ACCESS_APPLICATION_NOT_FOUND_MESSAGE,
+            suggestRefresh: true,
+        }))
+        .with({ kind: 'http', status: 409 }, ({ message }) => ({
+            message: message ?? '这条申请已经处理过了，请刷新',
+            suggestRefresh: true,
+        }))
+        .otherwise(describeWriteFailure);
+
+/** A failed revoke: the user may have lost access already */
+export const describeAccessRevokeFailure = (failure: ApiFailure): WriteFailureView =>
+    match(failure)
+        .with({ kind: 'http', status: 404 }, () => ({
+            message: '这个用户当前没有准入',
+            suggestRefresh: true,
+        }))
+        .otherwise(describeWriteFailure);
+
+/**
+ * A failed application submit: 409 is the normal refusal (already pending, already
+ * full, or tiering off), so its server wording wins over the generic settings one.
+ */
+export const describeAccessApplicationCreateFailure = (failure: ApiFailure): WriteFailureView =>
+    match(failure)
+        .with({ kind: 'http', status: P.union(403, 409) }, ({ message }) => ({
+            message: message ?? '不能提交申请，请稍后再试',
+            suggestRefresh: false,
+        }))
+        .with(
+            { kind: 'network' },
+            { kind: 'unreachable', serverMessage: P.nullish },
+            { kind: 'http', status: P.union(504, 524) },
+            { kind: 'http', code: 'timeout' },
+            () => ({ message: '未确认是否已提交，请刷新后核对', suggestRefresh: true })
         )
         .otherwise(describeWriteFailure);

@@ -53,6 +53,14 @@ export const createAppRouter = (launch: LaunchState) =>
                         'IssueNewChatPickerPage'
                     ),
                 },
+                // One access application, under the access tab (owner only)
+                {
+                    path: 'access/:applicationId',
+                    Component: lazyPage(
+                        () => import('./pages/access/owner/access-detail-route'),
+                        'AccessDetailRoute'
+                    ),
+                },
                 // [F4 slot end]
                 // A startapp reply link the requester cannot open
                 { path: 'no-access', element: <NoAccessPage /> },

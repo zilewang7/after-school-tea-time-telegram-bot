@@ -78,6 +78,11 @@ import { withoutFunctionCallParts } from './gemini-round-contents.js';
 import type { OpenGeminiRound } from './gemini-round-open.js';
 import { runRecoverableRound, type RoundRecovery } from './gemini-round-runner.js';
 import type { CollectedGeminiRound } from './gemini-round-stream.js';
+import {
+    createThoughtSummaryFilter,
+    thoughtSummaryLogLine,
+    type ThoughtSummaryFilterState,
+} from './gemini-thought-summary.js';
 import { hasFunctionDeclarations, type GeminiRoundRequest } from './gemini-tool-request.js';
 import {
     formatGeminiTurnSummary,
@@ -208,6 +213,7 @@ interface LoopBeginning {
     readonly startedAt: number;
     readonly toolUsage: readonly AgentToolUsage[];
     readonly separator: RoundTextSeparatorState | undefined;
+    readonly thoughtSummary: ThoughtSummaryFilterState | undefined;
     /** A resume: the rounds kept from the interrupted version */
     readonly resumedAfterRounds: number | undefined;
 }
@@ -220,6 +226,7 @@ const beginningOf = (start: GeminiLoopStart): LoopBeginning =>
             startedAt: fresh.startedAt,
             toolUsage: [],
             separator: undefined,
+            thoughtSummary: undefined,
             resumedAfterRounds: undefined,
         }))
         .with({ kind: 'resume' }, ({ snapshot }) => ({
@@ -228,6 +235,7 @@ const beginningOf = (start: GeminiLoopStart): LoopBeginning =>
             startedAt: Date.now() - snapshot.elapsedMs,
             toolUsage: snapshot.toolUsage,
             separator: snapshot.separator,
+            thoughtSummary: snapshot.thoughtSummary,
             resumedAfterRounds: snapshot.loop.roundNumber - 1,
         }))
         .exhaustive();
@@ -250,6 +258,8 @@ async function* runRounds(
     const summaryStartedAt = beginning.resumedAfterRounds === undefined ? startedAt : Date.now();
     const tally = createToolUsageTally(beginning.toolUsage);
     const separator = createRoundTextSeparator(beginning.separator);
+    // One filter per reply: the summarizer-stream decision holds across rounds, and across a resume
+    const thoughtSummary = createThoughtSummaryFilter(beginning.thoughtSummary);
     let state = beginning.state;
     const callsBefore = state.executedCallCount;
     const roundUsages: GeminiRequestUsage[] = [];
@@ -269,6 +279,7 @@ async function* runRounds(
                 toolUsage: tally.snapshot(),
                 journal: [...journal, ...pendingProducts],
                 separator: separator.state(),
+                thoughtSummary: thoughtSummary.state(),
             })
         );
     };
@@ -282,6 +293,7 @@ async function* runRounds(
             allowFallback: state.roundNumber === 1,
             openRound,
             separator,
+            thoughtSummary,
             viaLabel,
             signal,
             recovery,
@@ -358,6 +370,10 @@ async function* runRounds(
         handOver(() => afterCalls.state);
     }
 
+    const thoughtSummaryLine = thoughtSummaryLogLine(model, thoughtSummary.stats());
+    if (thoughtSummaryLine !== null) {
+        console.log(thoughtSummaryLine);
+    }
     console.log(
         formatGeminiTurnSummary(
             model,

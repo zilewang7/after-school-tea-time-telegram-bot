@@ -13,6 +13,7 @@ import { withBusyRetry } from '../db/busy-retry.js';
 import { ChatSettingsRecord } from '../db/chatSettingsDTO.js';
 import { chatAuditScope, writeSettingsAudit } from '../db/queries/settings-audit.js';
 import { resolveChatModel } from '../config/chat-model.js';
+import { resolveAccessTier } from './access-tier.js';
 import {
     canEnableGeminiPriority,
     getChatSettings,
@@ -179,6 +180,7 @@ export const updateChatSettings = (input: {
         const resolution = resolveChatSettingsPatch(current, input.patch, {
             actorIsOwner: input.actor.isOwner,
             geminiPriorityCanEnable: canEnableGeminiPriority(input.chatId),
+            actorIsTrial: !input.actor.isOwner && resolveAccessTier(input.actor.userId) === 'trial',
         });
         if (resolution.kind === 'rejected') {
             throw new ChatSettingsError(resolution.code, resolution.message);

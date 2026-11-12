@@ -43,7 +43,7 @@ const CHAT_SETTING_KEYS: readonly ChatSettingKey[] = [
 ];
 
 /** `conflict`: the caller edited a version that someone else has since replaced */
-export type ChatSettingsErrorCode = 'invalid' | 'forbidden' | 'locked' | 'conflict';
+export type ChatSettingsErrorCode = 'invalid' | 'forbidden' | 'locked' | 'conflict' | 'trial';
 
 /** The values a patch can change */
 export interface ChatSettingValues {
@@ -60,6 +60,8 @@ export interface PatchContext {
     actorIsOwner: boolean;
     /** Priority PayGo may be switched on here: the global switch is on, or the chat is in TOOL_CHAT_IDS */
     geminiPriorityCanEnable: boolean;
+    /** The actor is a trial user (access design D1-B); the owner is never one. Absent = not trial */
+    actorIsTrial?: boolean;
 }
 
 /** The panel shows it next to the disabled "on" choice as well */
@@ -192,7 +194,8 @@ const smsChanged = (current: ToolOverrides | null, next: ToolOverrides | null): 
  * 3. a value is malformed → invalid;
  * 4. a non-owner changes the sms switch → forbidden;
  * 5. a non-owner changes the Priority PayGo switch → forbidden;
- * 6. the Priority PayGo switch changes to on where it cannot take effect → forbidden.
+ * 6. the Priority PayGo switch changes to on where it cannot take effect → forbidden;
+ * 7. a trial user changes the model → trial (the model is the biggest cost).
  * Keys whose normalized value equals the current one are not changes, so a
  * stored "on" the global switch no longer allows does not block other keys.
  */
@@ -202,6 +205,7 @@ export const resolveChatSettingsPatch = (
     context: PatchContext
 ): PatchResolution => {
     const { actorIsOwner } = context;
+    const actorIsTrial = context.actorIsTrial === true;
     if (current.settingsLocked && !actorIsOwner) {
         return { kind: 'rejected', code: 'locked', message: '本聊天的设置已被机主锁定' };
     }
@@ -229,5 +233,12 @@ export const resolveChatSettingsPatch = (
     const changes = CHAT_SETTING_KEYS
         .filter((key) => CHANGED[key](current, next))
         .map((key) => ({ key, oldValue: oldValues[key], newValue: newValues[key] }));
+    if (!actorIsOwner && actorIsTrial && changes.some((change) => change.key === 'model')) {
+        return {
+            kind: 'rejected',
+            code: 'trial',
+            message: '体验用户不能修改本聊天的模型；申请准入后可以修改',
+        };
+    }
     return { kind: 'resolved', next, changes };
 };

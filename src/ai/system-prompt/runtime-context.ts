@@ -58,18 +58,53 @@ const addendumSection = (addendum: string): string[] => [
 ];
 
 /**
+ * Who triggered this reply, as the runtime block reports it. Only trial turns
+ * carry the line; the static head explains what the tier may and may not use.
+ */
+export interface TriggerAccessNote {
+    readonly userId: number | null;
+    readonly name: string | null;
+    /** pending / rejected / approved; null = no application yet */
+    readonly applicationStatus: 'pending' | 'approved' | 'rejected' | null;
+    readonly applicationComment: string | null;
+}
+
+/** One line's worth of text: newlines would forge extra prompt lines */
+const oneLine = (text: string): string => text.replace(/\s+/g, ' ').trim();
+
+const triggerAccessLine = (trigger: TriggerAccessNote): string => {
+    const who = oneLine(trigger.name ?? (trigger.userId === null ? '未知用户' : `用户 ${trigger.userId}`));
+    const id = trigger.userId === null ? 'id 未知' : `id ${trigger.userId}`;
+    const comment =
+        trigger.applicationComment === null ? '' : `，机主留言：${oneLine(trigger.applicationComment)}`;
+    // 'approved' only reaches a trial turn after a revoke: the grant is gone,
+    // so the model must not tell the user they already have full access
+    const application =
+        trigger.applicationStatus === null
+            ? '未申请'
+            : trigger.applicationStatus === 'pending'
+              ? '待审核'
+              : trigger.applicationStatus === 'rejected'
+                ? `已拒绝${comment}`
+                : '已通过（准入已被取消）';
+    return `- 本次回复的触发用户：${who}（${id}，体验用户；准入申请：${application}）`;
+};
+
+/**
  * Render the runtime block for the newest message. Humans come first, bots
  * last, so an automated account is never mistaken for a person mid-list.
  *
  * `chatTitle` names the group/channel this reply happens in; private chats have
  * none and are reported as such. `chatAddendum` is appended verbatim as its
  * own section; empty or blank leaves the block exactly as without it.
+ * `triggerAccess` is present on trial turns only.
  */
 export const buildRuntimeContext = (
     model: string,
     contextUsers: ContextUser[],
     chatTitle?: string | null,
-    chatAddendum?: string | null
+    chatAddendum?: string | null,
+    triggerAccess?: TriggerAccessNote | null
 ): string => {
     const lines = [
         '[system] 运行时信息：',
@@ -82,6 +117,10 @@ export const buildRuntimeContext = (
         const humans = contextUsers.filter((user) => user.isBot !== true);
         const bots = contextUsers.filter((user) => user.isBot === true);
         lines.push('- 本次回复涉及的用户：', ...humans.map(rosterLine), ...bots.map(rosterLine));
+    }
+
+    if (triggerAccess !== null && triggerAccess !== undefined) {
+        lines.push(triggerAccessLine(triggerAccess));
     }
 
     if (chatAddendum && chatAddendum.trim().length > 0) {

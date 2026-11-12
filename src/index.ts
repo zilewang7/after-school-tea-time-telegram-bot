@@ -17,6 +17,7 @@ import { startCustomEmojiRecovery } from './services/custom-emoji-service.js';
 import { logWidgetReadiness, logWidgetRendererReadiness } from './telegram/widget-readiness.js';
 import { reconcileInterruptedResponses } from './services/bot-message-service.js';
 import { getGlobalDefaultModel, loadChatSettingsCache } from './services/chat-settings-service.js';
+import { loadUserAccessCache } from './services/user-access-cache.js';
 import { startPanel, stopPanel } from './panel/index.js';
 
 if (!process.env.BOT_TOKEN) {
@@ -152,6 +153,8 @@ async function main() {
     // reply path, so they must be loaded before the first update
     await loadChatSettingsCache();
     console.log(`Initial model: ${getGlobalDefaultModel()}`);
+    // Who may use the full tier is read synchronously by the reply path too
+    await loadUserAccessCache();
     // No session survives a restart: replies still marked as streaming were cut
     // off, so they get their stop button replaced by a retry that works
     await reconcileInterruptedResponses(bot.api).catch((error: unknown) => {

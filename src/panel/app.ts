@@ -25,6 +25,7 @@ import { createRateLimit } from './middleware/rate-limit.js';
 import { requestLog } from './middleware/request-log.js';
 import { securityHeaders } from './middleware/security-headers.js';
 import { createHandlerTimeout } from './middleware/timeout.js';
+import { registerAccessApplicationRoutes } from './routes/access-applications.js';
 import { registerAuditRoute } from './routes/audit.js';
 import { registerChatSettingsRoute } from './routes/chat-settings.js';
 import { registerChatRoutes } from './routes/chats.js';
@@ -170,6 +171,7 @@ export const createPanelApp = (options: PanelAppOptions): Hono<PanelEnv> => {
         botApi: options.botApi ?? null,
         quota: createIssueQuota({ ...(options.issueQuota ?? DEFAULT_ISSUE_QUOTA), now }),
     });
+    registerAccessApplicationRoutes(app, { botApi: options.botApi ?? null });
 
     // Conversations (phase 2)
     const conversationDeps: ConversationRouteDeps = {

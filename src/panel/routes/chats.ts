@@ -8,6 +8,7 @@
 import type { Hono } from 'hono';
 import { resolveChatModel } from '../../config/chat-model.js';
 import { chatAuditScope, listSettingsAudit } from '../../db/queries/settings-audit.js';
+import { resolveAccessTier } from '../../services/access-tier.js';
 import { getGlobalDefaultModel } from '../../services/chat-settings-service.js';
 import { requireChatAccess } from '../access/require-access.js';
 import { requireAuth, type PanelEnv } from '../context.js';
@@ -37,7 +38,7 @@ export const registerChatRoutes = (app: Hono<PanelEnv>): void => {
             effectiveModel,
             globalDefaultModel: getGlobalDefaultModel(),
             ...geminiPriorityViewOf(chatId),
-            tools: buildToolMatrix(effectiveModel, chatId, settings.toolOverrides),
+            tools: buildToolMatrix(effectiveModel, chatId, settings.toolOverrides, resolveAccessTier(auth.user.id)),
             summary,
             recentAudit: recentAuditViews.map(withoutScope),
         });

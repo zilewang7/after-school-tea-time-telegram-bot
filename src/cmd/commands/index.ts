@@ -5,6 +5,7 @@ export { registerPicCommands } from "./pic.js";
 export { registerModelCommand } from "./model.js";
 export { registerContextCommand } from "./context.js";
 export { registerPanelCommand } from "./panel.js";
+export { registerApplyCommand } from "./apply.js";
 export { registerWidgetCommands } from "./widget.js";
 export { registerWebCommand } from "./web.js";
 export { registerShareCommand } from "./share.js";

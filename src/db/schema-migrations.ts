@@ -425,6 +425,13 @@ export const runSchemaMigrations = async (): Promise<void> => {
        VALUES ('20261112_workspace_files', :appliedAt)`,
       { replacements: { appliedAt: new Date().toISOString() }, transaction }
     );
+    // access_applications / user_access are new tables too: their DTOs create
+    // them at sync time, this row only records the feature.
+    await sequelize.query(
+      `INSERT OR IGNORE INTO schema_migrations (name, appliedAt)
+       VALUES ('20261112_user_access', :appliedAt)`,
+      { replacements: { appliedAt: new Date().toISOString() }, transaction }
+    );
     // reply_metrics gained the resume and Priority PayGo columns (migrateReplyMetricsResumeColumns)
     await sequelize.query(
       `INSERT OR IGNORE INTO schema_migrations (name, appliedAt)

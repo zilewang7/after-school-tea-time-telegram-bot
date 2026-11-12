@@ -13,6 +13,7 @@ import { getModelCapabilities } from '../../ai/platform-factory.js';
 import { isTestInstance } from '../../config/instance.js';
 import { getToolConfig, type ToolConfig } from '../../config/tool-config.js';
 import { resolveToolAvailability, type ToolAvailability } from '../../reply/tools/tool-availability.js';
+import type { AccessTier } from '../../services/access-tier.js';
 import { TOOL_GROUP_KEYS, toolOverrideOf, type ToolGroupKey, type ToolOverrides } from '../../services/tool-overrides.js';
 import {
     CREATE_HARNESS_ISSUE_TOOL_NAME,
@@ -96,6 +97,8 @@ interface ReasonContext {
     availability: ToolAvailability;
     supportsImageInput: boolean;
     testInstance: boolean;
+    /** The requester's tier: a trial user loses SMS and MCP whatever the chat says */
+    trial: boolean;
     /** Non-null when the model cannot call client tools at all */
     modelReason: string | null;
 }
@@ -104,6 +107,7 @@ interface ReasonContext {
 type ReasonCheck = (context: ReasonContext) => string | null;
 
 const MODEL_REASON = '当前模型不支持客户端工具';
+const TRIAL_REASON = '体验用户需要申请准入';
 const disabledByName =
     (name: string): ReasonCheck =>
     ({ config }) =>
@@ -114,6 +118,9 @@ const IMAGE_TOOLS_OFF: ReasonCheck = ({ config }) => (config.imageTools ? null :
 /** Hard prerequisites per group: reasons the panel switch cannot override */
 const HARD_REASONS: Record<ToolGroupKey, readonly ReasonCheck[]> = {
     sms: [
+        // A trial user has no SMS tool at all (design D3); the tier comes first
+        // because no env switch or panel switch can turn it back on
+        ({ trial }) => (trial ? TRIAL_REASON : null),
         disabledByName(SEND_SMS_TOOL_NAME),
         ({ config }) => (config.ownerSmsUrl === '' ? 'OWNER_SMS_MCP_URL 未配置' : null),
         ({ config, testInstance }) =>
@@ -201,18 +208,22 @@ const explain = (entry: ToolGroupEntry, context: ReasonContext): { reason: strin
 export const buildToolMatrix = (
     model: string,
     chatId: number,
-    overrides: ToolOverrides | null = null
+    overrides: ToolOverrides | null = null,
+    access: AccessTier = 'full'
 ): ToolGroupEntry[] => {
     const config = getToolConfig();
     const capabilities = getModelCapabilities(model);
-    const availability = resolveToolAvailability(model, chatId, config, undefined, overrides);
-    const envAvailability = resolveToolAvailability(model, chatId, config);
+    // The tier rides along into both variants: a trial user has no SMS/MCP even
+    // when every switch follows the env again
+    const availability = resolveToolAvailability(model, chatId, config, undefined, overrides, access);
+    const envAvailability = resolveToolAvailability(model, chatId, config, undefined, null, access);
     const context: ReasonContext = {
         config,
         chatId,
         availability,
         supportsImageInput: capabilities.supportsImageInput,
         testInstance: isTestInstance(),
+        trial: availability.trial,
         modelReason: capabilities.supportsClientTools === true ? null : MODEL_REASON,
     };
 

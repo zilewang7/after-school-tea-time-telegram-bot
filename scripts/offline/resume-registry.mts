@@ -479,7 +479,14 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
                 indexedHtml: '旧消息',
             });
 
-            const resumed = replyTools.createReplyTools('gemini-4-carbon', toolContextFor(chatId, [rootId]), undefined, overrides, bundle);
+            const resumed = replyTools.createReplyTools(
+                'gemini-4-carbon',
+                toolContextFor(chatId, [rootId]),
+                undefined,
+                overrides,
+                'full',
+                bundle
+            );
             expect(resumed.toolState === bundle && resumed.workspaceState === bundle.workspace, 'the same objects are used');
             expect(resumed.toolState.history.entryOf(1)?.messageId === 77, 'the history numbering goes on (h1)');
 

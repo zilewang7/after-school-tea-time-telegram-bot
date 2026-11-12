@@ -1,5 +1,5 @@
 import type { ComponentType } from 'react';
-import type { ChatAccess } from '../api';
+import type { AccessTier, ChatAccess } from '../api';
 
 /** What a tab's visibility rule may look at */
 export interface TabVisibility {
@@ -10,6 +10,11 @@ export interface TabVisibility {
      * treat null as "show", so a tab does not flicker away while loading.
      */
     access: ChatAccess | null;
+    /**
+     * The requester's access tier. null on the chat layer and when access
+     * tiering is off: a tier-only tab treats null as "hide".
+     */
+    accessTier: AccessTier | null;
 }
 
 /** One entry of a layer's tab registry (home-tabs.ts / chat-tabs.ts) */

@@ -49,11 +49,21 @@ import { dealChatCommand } from './commands/chat-command.js';
 import { isChatCommandText } from './commands/chat-command-parser.js';
 import { chatTitleOf } from '../telegram/chat-title.js';
 import { snapshotReplySettings } from '../services/chat-settings-service.js';
+import { effectiveReplyModel, resolveAccessTier, resolveTriggerAccess } from '../services/access-tier.js';
+import { formatUserDisplayName } from '../shared/user-display-name.js';
 import { buildStaticPromptOptions } from './static-prompt-options.js';
+import { refuseTrialGeneration } from './commands/trial-refusal.js';
+import { triggerAccessNoteOf } from './trigger-access-note.js';
 import { stopIfChatPaused } from './chat-pause.js';
 import { markRequestStarted, recordContextSize } from '../services/reply-metrics-draft.js';
 import { checkpointSinkFor } from './resume/keep-checkpoint.js';
 import { captureResumeFacts } from './resume/resume-facts.js';
+
+/** The generation command this text is, if any (denied ones are refused for trial users) */
+const generationCommandName = (text: string): string | null => {
+    const match = /^\/(picbanana|picgpt|picgrok|picunsafe|vidunsafe|pic|vid)(@\S+)?(\s|$)/.exec(text.trim());
+    return match?.[1] ?? null;
+};
 
 /** A `/chat <link>` splice only gets a reaction back, never a message */
 const acknowledgeSilently = async (ctx: Context): Promise<void> => {
@@ -267,9 +277,15 @@ export const handleReply = async (
     const chatId = ctx.chat.id;
     const userMessageId = ctx.message.message_id;
     // Taken once: a settings change during the media wait or the stream only
-    // affects later replies
+    // affects later replies. The trigger user decides the tier and, for a trial
+    // user, replaces the chat's model with the cheap one (design D1-B/D2).
     const settings = snapshotReplySettings(chatId);
-    const { model } = settings;
+    const triggerAccess = resolveTriggerAccess(
+        ctx.from?.id ?? null,
+        ctx.from ? formatUserDisplayName({ firstName: ctx.from.first_name, lastName: ctx.from.last_name }) : null
+    );
+    const access = triggerAccess.tier;
+    const model = effectiveReplyModel(access, settings.model);
     const capabilities = getModelCapabilities(model);
 
     // Resolve the context tree (reply chain + any messages /chat pulled in)
@@ -310,6 +326,7 @@ export const handleReply = async (
         model,
         chatTitle: chatTitleOf(ctx.chat),
         chatAddendum: settings.promptAddendum,
+        triggerAccess: triggerAccessNoteOf(triggerAccess),
     }));
     if (isErr(ctxResult)) {
         await handleResponseError(chatContext, ctxResult[0]);
@@ -339,7 +356,8 @@ export const handleReply = async (
             api: ctx.api,
         }),
         requestTraits,
-        settings.toolOverrides
+        settings.toolOverrides,
+        access
     );
     // The workspace manifest is volatile, so it rides the trigger message after
     // the tool snapshot is known (the static prompt stays byte-identical).
@@ -437,6 +455,13 @@ export const registerChatHandler = (bot: Bot): void => {
                     isVidCommandText(text);
 
                 if (isGenerationCommand) {
+                    // A trial user may only draw with banana; refuse before the
+                    // media wait (the paid commands would never run anyway)
+                    const generationCommand = generationCommandName(text);
+                    if (generationCommand !== null) {
+                        const access = resolveAccessTier(ctx.from?.id ?? null);
+                        if (await refuseTrialGeneration(ctx, access, generationCommand)) return;
+                    }
                     // These read reference images during the check, so wait for
                     // the current + reply target media first (with feedback).
                     await awaitMediaWithFeedback(ctx, collectImmediateMediaIds(ctx));

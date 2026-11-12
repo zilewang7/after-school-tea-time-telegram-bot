@@ -11,6 +11,7 @@ import {
     registerModelCommand,
     registerContextCommand,
     registerPanelCommand,
+    registerApplyCommand,
     registerWidgetCommands,
     registerWebCommand,
     registerShareCommand,
@@ -28,6 +29,7 @@ const COMMANDS: BotCommand[] = [
     { command: "picbanana", description: "使用 🍌 Gemini Nano Banana 2.1 根据提示词生成图片(支持图生图)" },
     { command: "picgpt", description: `使用 OpenAI ${OPENAI_IMAGE_MODEL} 根据提示词生成图片(支持图生图)` },
     { command: "model", description: "查看/切换本聊天的模型" },
+    { command: "apply", description: "体验用户申请完整功能准入" },
     { command: "panel", description: "打开控制面板" },
     { command: "web", description: "获取网页版身份码（私聊）" },
     {
@@ -69,6 +71,7 @@ export const cmdLoad = async (bot: Bot) => {
     registerModelCommand(bot);
     registerContextCommand(bot);
     registerPanelCommand(bot);
+    registerApplyCommand(bot);
     registerWebCommand(bot);
     // Always registered so a disabled command answers OFF_TEXT instead of
     // falling through to the AI reply path; only the menu entry is gated.

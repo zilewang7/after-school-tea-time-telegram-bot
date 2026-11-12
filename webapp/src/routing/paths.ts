@@ -7,6 +7,12 @@ export const GLOBAL_AUDIT_PATH = '/settings/audit';
 /** The clipboard converter home tab: markdown ⇄ Telegram entities */
 export const TOOLS_PATH = '/tools';
 
+/** The access home tab: the owner's review list, or a trial user's application */
+export const ACCESS_PATH = '/access';
+
+/** One access application's review page (owner only) */
+export const accessApplicationPath = (applicationId: number): string => `${ACCESS_PATH}/${applicationId}`;
+
 /** Where a startapp reply link lands when the requester cannot see the reply */
 export const NO_ACCESS_PATH = '/no-access';
 

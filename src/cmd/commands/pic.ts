@@ -10,6 +10,8 @@ import OpenAI from 'openai';
 import { to, isErr } from '../../shared/result.js';
 import { removeSpecificText } from '../../util.js';
 import { stopIfChatPaused } from '../../reply/chat-pause.js';
+import { resolveAccessTier } from '../../services/access-tier.js';
+import { refuseTrialGeneration } from '../../reply/commands/trial-refusal.js';
 import { sendBotNotice, updateBotNotice } from '../../services/bot-notice-service.js';
 
 // Grok agent for image generation
@@ -147,6 +149,8 @@ export const registerPicCommands = (bot: Bot): void => {
     bot.command('picgrok', async (ctx) => {
         // Handled here rather than in chat-handler, so it checks the pause itself
         if (await stopIfChatPaused(ctx)) return;
+        // Paid xAI generation: a trial user may only draw with banana
+        if (await refuseTrialGeneration(ctx, resolveAccessTier(ctx.from?.id ?? null), 'picgrok')) return;
 
         const prompt = extractPrompt(ctx);
         if (!prompt) {

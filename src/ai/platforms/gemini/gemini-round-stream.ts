@@ -15,6 +15,7 @@ import type { GroundingData, StreamChunk } from '../../types.js';
 import type { RoundTextSeparator } from '../../tools/round-text-separator.js';
 import { extractGroundingMetadata } from './gemini-grounding.js';
 import { geminiPartToChunk } from './gemini-part-chunks.js';
+import type { ThoughtSummaryFilter } from './gemini-thought-summary.js';
 import { headerOf, type GeminiRequestUsage } from './gemini-usage-log.js';
 import type { OpenedGeminiRound } from './gemini-round-open.js';
 
@@ -60,13 +61,18 @@ const isBlank = (chunk: StreamChunk): boolean => (chunk.content ?? '').trim() ==
 /**
  * Streams the attempt's text, thinking and images (blank line before a later
  * round's first text) and returns the round as collected, or how it broke.
- * Grounding is not yielded here: each round repeats the turn's searches so
- * far. `leadingChunk` goes out right before the first visible chunk.
+ * Thinking goes through the thought-summary filter, which drops the
+ * summarizer's own CoT and keeps its summaries; the last block is flushed
+ * when the stream ends, and when it breaks, so a retry starts on a clean
+ * filter. Grounding is not yielded here: each round repeats the turn's
+ * searches so far. `leadingChunk` goes out right before the first visible
+ * chunk.
  */
 export async function* consumeGeminiRound(
     opened: OpenedGeminiRound,
     separator: RoundTextSeparator,
     viaLabel: string | undefined,
+    thoughtSummary: ThoughtSummaryFilter,
     leadingChunk: StreamChunk | null = null
 ): AsyncGenerator<StreamChunk, ConsumedGeminiRound, void> {
     const parts: Part[] = [];
@@ -106,6 +112,23 @@ export async function* consumeGeminiRound(
         maxChunkGapAtMs,
     });
 
+    /** The leading chunk goes out once, right before the first visible chunk */
+    function* afterLeading(chunk: StreamChunk): Generator<StreamChunk, void, void> {
+        if (leadingChunk !== null && !leadingShown) {
+            leadingShown = true;
+            yield leadingChunk;
+        }
+        yield chunk;
+    }
+
+    /** Thinking as the filter released it; nothing while a block is still arriving */
+    function* shownThinking(content: string): Generator<StreamChunk, void, void> {
+        if (content === '') return;
+        const thinking: StreamChunk = { type: 'thinking', content };
+        showedThinking ||= !isBlank(thinking);
+        yield* afterLeading(thinking);
+    }
+
     try {
         for await (const chunk of opened.stream) {
             const chunkAt = Date.now();
@@ -133,18 +156,17 @@ export async function* consumeGeminiRound(
                 firstPartAt ??= Date.now();
                 if (streamChunk.type === 'thinking') {
                     firstThinkAt ??= Date.now();
-                    showedThinking ||= !isBlank(streamChunk);
-                } else if (streamChunk.type === 'text') {
+                    // Only the summarizer's summaries are shown; its own CoT is not
+                    yield* shownThinking(thoughtSummary.push(streamChunk.content ?? ''));
+                    continue;
+                }
+                if (streamChunk.type === 'text') {
                     firstTextAt ??= Date.now();
                     showedText ||= !isBlank(streamChunk);
                 } else if (streamChunk.type === 'image') {
                     showedImage = true;
                 }
-                if (leadingChunk !== null && !leadingShown) {
-                    leadingShown = true;
-                    yield leadingChunk;
-                }
-                yield separator.apply(streamChunk);
+                yield* afterLeading(separator.apply(streamChunk));
             }
 
             const grounding = extractGroundingMetadata(chunk);
@@ -154,6 +176,9 @@ export async function* consumeGeminiRound(
             }
         }
     } catch (error) {
+        // The cut block gives up the summaries it has, and the filter holds
+        // nothing of this attempt when the round is tried again
+        yield* shownThinking(thoughtSummary.flush());
         return {
             kind: 'broken',
             error,
@@ -163,6 +188,9 @@ export async function* consumeGeminiRound(
             usage: usageSoFar(),
         };
     }
+
+    // The round ended: its last block is complete (or was cut by the end)
+    yield* shownThinking(thoughtSummary.flush());
 
     return {
         kind: 'complete',

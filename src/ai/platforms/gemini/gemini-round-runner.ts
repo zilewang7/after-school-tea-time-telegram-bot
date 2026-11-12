@@ -39,6 +39,7 @@ import {
 } from './gemini-recovery-policy.js';
 import type { OpenedGeminiRound, OpenGeminiRound } from './gemini-round-open.js';
 import { consumeGeminiRound, type BrokenGeminiRound, type CollectedGeminiRound } from './gemini-round-stream.js';
+import type { ThoughtSummaryFilter } from './gemini-thought-summary.js';
 import type { GeminiRoundRequest } from './gemini-tool-request.js';
 import { formatGeminiFailedUsageLine } from './gemini-usage-log.js';
 
@@ -58,6 +59,8 @@ export interface RecoverableRoundOptions {
     readonly allowFallback: boolean;
     readonly openRound: OpenGeminiRound;
     readonly separator: RoundTextSeparator;
+    /** The reply's thought-summary filter; a failed attempt leaves nothing held in it */
+    readonly thoughtSummary: ThoughtSummaryFilter;
     readonly viaLabel: string | undefined;
     /** The reply's stop signal */
     readonly signal: AbortSignal | undefined;
@@ -110,6 +113,7 @@ interface AttemptOptions {
     readonly request: GeminiRoundRequest;
     readonly signal: AbortSignal | undefined;
     readonly separator: RoundTextSeparator;
+    readonly thoughtSummary: ThoughtSummaryFilter;
     readonly viaLabel: string | undefined;
     /** Yielded as soon as the stream is open */
     readonly onOpen: readonly StreamChunk[];
@@ -140,7 +144,13 @@ async function* runAttempt(options: AttemptOptions): AsyncGenerator<StreamChunk,
             return { kind: 'failed', failure: failureOf('open', error, false), broken: null };
         }
         yield* options.onOpen;
-        const consumed = yield* consumeGeminiRound(opened, options.separator, options.viaLabel, options.leadingChunk);
+        const consumed = yield* consumeGeminiRound(
+            opened,
+            options.separator,
+            options.viaLabel,
+            options.thoughtSummary,
+            options.leadingChunk
+        );
         if (consumed.kind === 'complete') {
             completed = true;
             return consumed;
@@ -175,6 +185,7 @@ export async function* runRecoverableRound(
             request,
             signal,
             separator: options.separator,
+            thoughtSummary: options.thoughtSummary,
             viaLabel: options.viaLabel,
             onOpen: statusShown ? [clearedStatus()] : [],
             leadingChunk: markerPending ? retriedThinkingMarker(roundNumber) : null,

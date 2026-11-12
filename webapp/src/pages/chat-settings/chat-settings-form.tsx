@@ -20,6 +20,9 @@ interface ChatSettingsFormProps {
     geminiPriority: ChatGeminiPriorityState;
     models: readonly string[];
     isOwner: boolean;
+    // Trial users keep the fixed trial model: the picker is disabled
+    isTrial: boolean;
+    trialModel: string;
     writable: boolean;
     justSaved: boolean;
     onSaved: (settings: ChatSettings) => void;
@@ -35,6 +38,8 @@ export const ChatSettingsForm = ({
     geminiPriority,
     models,
     isOwner,
+    isTrial,
+    trialModel,
     writable,
     justSaved,
     onSaved,
@@ -75,10 +80,14 @@ export const ChatSettingsForm = ({
                     draft={form.modelDraft}
                     unsetLabel={`跟随全局默认（当前为 ${globalDefaultModel}）`}
                     error={form.modelError}
-                    disabled={disabled}
+                    disabled={disabled || isTrial}
                     onChange={form.setModelDraft}
                 />
-                <p className="hint">当前生效：{effectiveModel}</p>
+                {isTrial ? (
+                    <p className="hint">体验用户固定使用 {trialModel}，不能修改模型；可在「准入」页申请完整功能。</p>
+                ) : (
+                    <p className="hint">当前生效：{effectiveModel}</p>
+                )}
             </div>
 
             <AddendumEditor

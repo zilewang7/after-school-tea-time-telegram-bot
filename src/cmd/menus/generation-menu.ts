@@ -18,6 +18,8 @@ import { cancelJob, recallJob } from '../../reply/commands/generation-job-store.
 import { recallAction } from '../../reply/commands/generation-actions.js';
 import { runGeneration } from '../../reply/commands/generation-runner.js';
 import { isCallbackChatPaused, PAUSED_CALLBACK_NOTICE } from '../../reply/chat-pause.js';
+import { resolveAccessTier } from '../../services/access-tier.js';
+import { TRIAL_CALLBACK_REFUSAL_TEXT } from '../../reply/commands/trial-refusal.js';
 
 const EXPIRED = '这个任务已经过期了（bot 重启过），请重新发一次命令';
 
@@ -97,6 +99,13 @@ export const registerGenerationCallbacks = (bot: Bot): void => {
         const callback = parseGenerationCallback(data);
         if (!callback) {
             await ctx.answerCallbackQuery();
+            return;
+        }
+
+        // A reroll/retry/rewrite starts a new generation: a trial user may not
+        // run the comfy commands in the first place (design D3)
+        if (generatesAgain(callback.action) && resolveAccessTier(ctx.from?.id ?? null) === 'trial') {
+            await ctx.answerCallbackQuery({ text: TRIAL_CALLBACK_REFUSAL_TEXT });
             return;
         }
 

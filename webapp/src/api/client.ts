@@ -37,6 +37,7 @@ const API_ERROR_CODES: readonly ApiErrorCode[] = [
     'unauthorized',
     'forbidden',
     'locked',
+    'trial',
     'not_found',
     'conflict',
     'too_large',
