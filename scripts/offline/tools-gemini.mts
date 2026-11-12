@@ -13,6 +13,7 @@ import http from 'node:http';
 import https from 'node:https';
 import { FinishReason, GoogleGenAI } from '@google/genai';
 import { expect, reportResults, runCase, type CaseResult } from './harness.mts';
+import { startStubServer } from './support/stub-server.mts';
 import type { StreamChunk, UnifiedMessage } from '../../src/ai/types.js';
 import type { ToolHandler, ToolResult, TurnTools } from '../../src/ai/tools/index.js';
 
@@ -21,9 +22,14 @@ import type { ToolHandler, ToolResult, TurnTools } from '../../src/ai/tools/inde
 // ---------------------------------------------------------------------------
 
 const outboundRequests: string[] = [];
+/** Local stubs a case starts on purpose (the relay case); everything else is outbound */
+const loopbackStubUrls: string[] = [];
 const originalGlobalFetch = globalThis.fetch;
 globalThis.fetch = async (input, init) => {
-    outboundRequests.push(`fetch ${String(input).slice(0, 120)}`);
+    const url = input instanceof Request ? input.url : String(input);
+    if (!loopbackStubUrls.some((stubUrl) => url.startsWith(stubUrl))) {
+        outboundRequests.push(`fetch ${url.slice(0, 120)}`);
+    }
     return originalGlobalFetch(input, init);
 };
 for (const [label, module] of [['http', http], ['https', https]] as const) {
@@ -61,6 +67,9 @@ const { isFunctionDeclarationError, toGeminiToolList, toRoundConfig, withoutFunc
     '../../src/ai/platforms/gemini/gemini-tool-request.js'
 );
 const { GEMINI_IMAGE_MODEL } = await import('../../src/config/models.js');
+const { createUsageSink } = await import('../../src/ai/usage/index.js');
+
+type UsageSink = import('../../src/ai/usage/index.js').UsageSink;
 
 // ---------------------------------------------------------------------------
 // Fake Vertex endpoint
@@ -84,6 +93,8 @@ interface RecordedRequest {
     /** The body exactly as sent, for byte-identity checks */
     readonly rawBody: string;
     readonly body: Record<string, unknown>;
+    /** Request headers, names lower-cased; credentials are never kept */
+    readonly headers: Readonly<Record<string, string>>;
     /** The attempt's abort signal, as the SDK handed it to fetch */
     readonly signal: AbortSignal | null;
 }
@@ -113,10 +124,27 @@ const canonical = (value: unknown): string =>
         return nested;
     });
 
+const CREDENTIAL_HEADER = /authorization|api-key|goog-api-key|cookie/i;
+
+/** Header names lower-cased; credentials are never kept */
+const headersOf = (headers: ConstructorParameters<typeof Headers>[0]): Record<string, string> => {
+    const kept: Record<string, string> = {};
+    new Headers(headers).forEach((value, name) => {
+        if (!CREDENTIAL_HEADER.test(name)) kept[name.toLowerCase()] = value;
+    });
+    return kept;
+};
+
 const fakeFetch = async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
     const rawBody = typeof init?.body === 'string' ? init.body : '{}';
     const signal = init?.signal ?? null;
-    recordedRequests.push({ url: String(input), rawBody, body: asRecord(JSON.parse(rawBody)), signal });
+    recordedRequests.push({
+        url: String(input),
+        rawBody,
+        body: asRecord(JSON.parse(rawBody)),
+        headers: headersOf(init?.headers),
+        signal,
+    });
     const reply = scriptedReplies.shift();
     if (!reply) {
         return new Response(json({ error: { code: 400, message: 'unexpected request', status: 'INVALID_ARGUMENT' } }), {
@@ -144,7 +172,19 @@ const geminiClient = new GoogleGenAI({
     googleAuthOptions: { apiKey: 'offline', projectId: 'test' },
     httpOptions: { fetch: fakeFetch },
 });
-const platform = new GeminiPlatform({ client: geminiClient });
+/**
+ * Automatic retry waits are recorded and return at once (a stop still ends
+ * them); the jitter is pinned so they read as the policy's base values
+ */
+class RecordingGeminiPlatform extends GeminiPlatform {
+    readonly sleeps: number[] = [];
+
+    protected override sleep(ms: number, signal?: AbortSignal): Promise<void> {
+        this.sleeps.push(ms);
+        return signal?.aborted ? Promise.reject(new Error('Aborted')) : Promise.resolve();
+    }
+}
+const platform = new RecordingGeminiPlatform({ client: geminiClient, random: () => 0.5 });
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -302,6 +342,7 @@ const reset = (replies: readonly ScriptedReply[]): void => {
     scriptedReplies.push(...replies);
     recordedRequests.length = 0;
     executions.length = 0;
+    platform.sleeps.length = 0;
 };
 
 const userTurn = (text: string): UnifiedMessage[] => [{ role: 'user', content: [{ type: 'text', text }] }];
@@ -334,6 +375,8 @@ interface TurnOptions {
     readonly isImageModel?: boolean;
     /** Explicit open timeout; omitted keeps the platform's own default */
     readonly timeout?: number;
+    readonly serviceTier?: 'priority';
+    readonly usageSink?: UsageSink;
 }
 
 const runTurn = async (options: TurnOptions = {}): Promise<{ chunks: StreamChunk[]; lines: string[] }> => {
@@ -346,6 +389,8 @@ const runTurn = async (options: TurnOptions = {}): Promise<{ chunks: StreamChunk
             ...(options.tools ? { tools: options.tools } : {}),
             ...(options.signal ? { signal: options.signal } : {}),
             ...(options.isImageModel ? { isImageModel: true } : {}),
+            ...(options.serviceTier ? { serviceTier: options.serviceTier } : {}),
+            ...(options.usageSink ? { usageSink: options.usageSink } : {}),
         });
         const chunks: StreamChunk[] = [];
         for await (const chunk of stream) chunks.push(chunk);
@@ -442,6 +487,9 @@ const noticeCountOf = (request: RecordedRequest | undefined): number =>
     (request?.rawBody ?? '').split(LAST_TOOL_ROUND_NOTICE).length - 1;
 
 const BUILT_IN_TOOLS_JSON = '[{"googleSearch":{}},{"urlContext":{}}]';
+
+/** The Priority PayGo request header, as fetch saw it (lower-cased) */
+const PRIORITY_HEADER = 'x-vertex-ai-llm-shared-request-type';
 
 // ---------------------------------------------------------------------------
 // Cases
@@ -1229,7 +1277,7 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
         },
     },
     {
-        name: 'a transport retry on a later round reopens that round only; tools never run twice',
+        name: 'a 503 on a later round: the 5xx policy waits 5 s and reopens that round only; tools never run twice',
         body: async () => {
             reset([
                 sse(roundEvents([[callPart('lookup_a', { topic: 'retry' }, 't1', 'call_t1'), textPart('')]])),
@@ -1237,11 +1285,17 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
                 sse(roundEvents([[textPart('Recovered.')]])),
             ]);
 
-            const { chunks } = await runTurn({ tools: turnTools, maxRetries: 2 });
+            // Any maxRetries but 1 hands the round to the recovery policy
+            const { chunks, lines } = await runTurn({ tools: turnTools, maxRetries: 3 });
 
             expect(recordedRequests.length === 3, `round 1, the failed round 2, its retry (got ${recordedRequests.length})`);
             expect(executions.length === 1, 'the tool ran once');
-            expect(canonical(recordedRequests[2]?.body) === canonical(recordedRequests[1]?.body), 'the retry resends round 2 unchanged');
+            expect(recordedRequests[2]?.rawBody === recordedRequests[1]?.rawBody, 'the retry resends round 2 byte for byte');
+            expect(json(platform.sleeps) === '[5000]', `the 5xx ladder's first wait (got ${json(platform.sleeps)})`);
+            expect(
+                lines.some((line) => line === '[gemini-recover] round=2 phase=open kind=upstream attempt=1 wait=5000ms'),
+                `the retry is logged by the recovery, not the transport (got ${json(lines.filter((line) => line.includes('etry')))})`
+            );
             expect(textOf(chunks) === 'Recovered.', 'and the reply finishes');
         },
     },
@@ -1522,6 +1576,193 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
                     `the no-cost mode is logged (got ${json(lines)})`
                 );
             });
+        },
+    },
+    {
+        name: 'Priority PayGo on: the header rides every round, an automatic retry and the round-1 fallback resend',
+        body: async () => {
+            reset([
+                sse(roundEvents([[callPart('lookup_a', { topic: 'falcon' }, 'pp1', 'call_pp1'), textPart('')]])),
+                httpError(503, 'The service is currently unavailable.'),
+                sse(roundEvents([[textPart('Priority answer.')]])),
+            ]);
+            const sink = createUsageSink();
+
+            const { chunks, lines } = await runTurn({ tools: turnTools, maxRetries: 3, serviceTier: 'priority', usageSink: sink });
+
+            expect(textOf(chunks) === 'Priority answer.' && recordedRequests.length === 3, `round 1, the refused round 2, its retry (got ${recordedRequests.length})`);
+            expect(
+                recordedRequests.every((request) => request.headers[PRIORITY_HEADER] === 'priority'),
+                `every request asks for priority (got ${json(recordedRequests.map((request) => request.headers[PRIORITY_HEADER] ?? null))})`
+            );
+            expect(
+                recordedRequests.every((request) => !request.rawBody.includes('httpOptions') && !request.rawBody.includes('priority')),
+                'the header stays out of the body'
+            );
+            expect(sink.totals().tierRequested === 'priority', `the reply records that it asked (got ${json(sink.totals())})`);
+            expect(lines.includes('[gemini] Priority PayGo requested'), 'and logs it once');
+
+            reset([
+                httpError(400, `Invalid JSON payload received. Unknown name "$schema" at 'tools[2].function_declarations[0].parameters': Cannot find field.`),
+                sse(roundEvents([[textPart('Answer without tools.')]])),
+            ]);
+            await runTurn({ tools: turnTools, serviceTier: 'priority' });
+            expect(
+                recordedRequests.length === 2 && recordedRequests.every((request) => request.headers[PRIORITY_HEADER] === 'priority'),
+                'the fallback resend asks for priority too'
+            );
+        },
+    },
+    {
+        name: "Priority PayGo: the gs:// single request and the single request's media fallback carry it; off, nothing does",
+        body: async () => {
+            const videoMessages: UnifiedMessage[] = [
+                {
+                    role: 'user',
+                    content: [
+                        { type: 'text', text: 'Summarise the video.' },
+                        { type: 'media', fileUri: 'gs://offline-bucket/clip.mp4', mimeType: 'video/mp4', durationSeconds: 30 },
+                    ],
+                },
+            ];
+            reset([sse(roundEvents([[textPart('A short clip.')]]))]);
+            await runTurn({ tools: turnTools, messages: videoMessages, serviceTier: 'priority' });
+            expect(
+                recordedRequests.length === 1 && recordedRequests[0]?.headers[PRIORITY_HEADER] === 'priority',
+                'the gs:// request (on Vertex) asks for priority'
+            );
+
+            const audioMessages: UnifiedMessage[] = [
+                {
+                    role: 'user',
+                    content: [
+                        { type: 'text', text: 'What does the clip say?' },
+                        { type: 'media', mediaData: Buffer.from('fake-audio').toString('base64'), mimeType: 'audio/ogg' },
+                    ],
+                },
+            ];
+            reset([httpError(400, 'Request contains an invalid argument.'), sse(roundEvents([[textPart('Could not hear it.')]]))]);
+            await runTurn({ messages: audioMessages, serviceTier: 'priority' });
+            expect(
+                recordedRequests.length === 2 && recordedRequests.every((request) => request.headers[PRIORITY_HEADER] === 'priority'),
+                `the single request and its stripped resend ask for priority (got ${recordedRequests.length})`
+            );
+
+            const sink = createUsageSink();
+            reset([
+                sse(roundEvents([[callPart('lookup_a', { topic: 'falcon' }, 'po1', 'call_po1'), textPart('')]])),
+                sse(roundEvents([[textPart('Standard answer.')]])),
+            ]);
+            await runTurn({ tools: turnTools, usageSink: sink });
+            reset([sse(roundEvents([[textPart('A short clip.')]]))]);
+            await runTurn({ tools: turnTools, messages: videoMessages });
+            expect(
+                recordedRequests.every((request) => request.headers[PRIORITY_HEADER] === undefined),
+                'off: no request carries the header'
+            );
+            expect(sink.totals().tierRequested === null, 'and the reply asked for nothing');
+        },
+    },
+    {
+        name: 'Priority PayGo is never asked for an image model',
+        body: async () => {
+            reset([
+                sse([
+                    event([{ inlineData: { mimeType: 'image/png', data: Buffer.from('final').toString('base64') } }], { finishReason: 'STOP' }),
+                ]),
+            ]);
+            const sink = createUsageSink();
+            const { lines } = await runTurn({ model: GEMINI_IMAGE_MODEL, isImageModel: true, serviceTier: 'priority', usageSink: sink });
+            expect(recordedRequests.length === 1 && recordedRequests[0]?.headers[PRIORITY_HEADER] === undefined, 'no header');
+            expect(sink.totals().tierRequested === null && !lines.includes('[gemini] Priority PayGo requested'), 'nothing recorded');
+        },
+    },
+    {
+        name: 'Priority PayGo never goes to a relay (GEMINI_API_URL)',
+        body: async () => {
+            const relay = await startStubServer();
+            loopbackStubUrls.push(relay.url);
+            const relayHeaders: Array<Record<string, string>> = [];
+            relay.handle((request, response) => {
+                relayHeaders.push(headersOf(Object.entries(request.headers).map(([name, value]): [string, string] => [name, String(value)])));
+                request.resume();
+                request.on('end', () => {
+                    response.writeHead(200, { 'Content-Type': 'text/event-stream' });
+                    response.end(roundEvents([[textPart('Relayed.')]]).map((relayEvent) => `data: ${json(relayEvent)}\n\n`).join(''));
+                });
+            });
+            const relayEnv = ['GEMINI_API_URL', 'GEMINI_API_KEY', 'GEMINI_LARGE_MEDIA_API_KEY', 'GEMINI_IMAGE_API_KEY', 'GEMINI_IMAGE_API_URL', 'OPENCODE_GO_API_KEY'];
+            const savedEnv = new Map(relayEnv.map((key) => [key, process.env[key]]));
+            try {
+                for (const key of relayEnv) delete process.env[key];
+                process.env.GEMINI_API_URL = relay.url;
+                process.env.GEMINI_API_KEY = 'offline-relay';
+                const sink = createUsageSink();
+                const { result } = await captureConsole(async () => {
+                    const relayPlatform = new GeminiPlatform();
+                    const stream = await relayPlatform.sendMessage(userTurn('hello'), {
+                        model: 'gemini-3.8-flash',
+                        systemPrompt: 'offline system prompt',
+                        maxRetries: 1,
+                        tools: turnTools,
+                        serviceTier: 'priority',
+                        usageSink: sink,
+                    });
+                    const chunks: StreamChunk[] = [];
+                    for await (const chunk of stream) chunks.push(chunk);
+                    return chunks;
+                });
+                expect(textOf(result) === 'Relayed.' && relayHeaders.length === 1, `the relay answered (got ${relayHeaders.length} requests)`);
+                expect(relayHeaders[0]?.[PRIORITY_HEADER] === undefined, `no priority header to a relay (got ${json(relayHeaders[0])})`);
+                expect(sink.totals().tierRequested === null, 'and the reply asked for nothing');
+            } finally {
+                for (const [key, value] of savedEnv) {
+                    if (value === undefined) delete process.env[key];
+                    else process.env[key] = value;
+                }
+                await relay.close();
+            }
+        },
+    },
+    {
+        name: 'the usage lines and the sink: the tier each round was served at',
+        body: async () => {
+            const servedAs = (trafficType: string | null) => ({
+                promptTokenCount: 100,
+                cachedContentTokenCount: 40,
+                candidatesTokenCount: 7,
+                thoughtsTokenCount: 3,
+                totalTokenCount: 110,
+                ...(trafficType === null ? {} : { trafficType }),
+            });
+            const roundWith = (parts: unknown[], trafficType: string | null) =>
+                sse([{ candidates: [{ content: { role: 'model', parts }, finishReason: 'STOP' }], usageMetadata: servedAs(trafficType) }]);
+            reset([
+                roundWith([callPart('lookup_a', { topic: 'falcon' }, 't1', 'call_t1')], 'ON_DEMAND'),
+                roundWith([callPart('lookup_b', { key: 'K' }, 't2', 'call_t2')], 'ON_DEMAND_PRIORITY'),
+                roundWith([textPart('Served.')], null),
+            ]);
+            const sink = createUsageSink();
+
+            const { lines } = await runTurn({ tools: turnTools, serviceTier: 'priority', usageSink: sink });
+
+            const usage = usageLines(lines);
+            expect(
+                usage[0]?.includes('tier=ON_DEMAND ') === true &&
+                    usage[1]?.includes('tier=ON_DEMAND_PRIORITY ') === true &&
+                    usage[2]?.includes('tier=- ') === true,
+                `each round names its tier (got ${json(usage)})`
+            );
+            expect(
+                usage[3]?.includes('summary rounds=3') === true && usage[3]?.includes('tiers=ON_DEMAND:1,ON_DEMAND_PRIORITY:1,-:1') === true,
+                `the summary counts rounds per tier (got ${usage[3]})`
+            );
+            const totals = sink.totals();
+            expect(
+                totals.rounds === 3 &&
+                    json(totals.priority) === json({ rounds: 1, promptTokens: 100, cachedTokens: 40, outputTokens: 10 }),
+                `only the priority round is in the priority totals (got ${json(totals.priority)})`
+            );
         },
     },
     {

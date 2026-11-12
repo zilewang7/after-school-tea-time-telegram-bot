@@ -16,7 +16,7 @@
  */
 import { isJsonObject } from '../../shared/json-object.js';
 import { tokenCountAt } from './usage-fields.js';
-import type { RoundUsage } from './usage-types.js';
+import type { RoundUsage, ServedTier } from './usage-types.js';
 
 const IMAGE_MODALITY = 'IMAGE';
 
@@ -27,6 +27,24 @@ const imageModalityTokens = (details: unknown): number | null => {
         if (!isJsonObject(entry) || entry.modality !== IMAGE_MODALITY) return sum;
         return sum + (tokenCountAt(entry, ['tokenCount']) ?? 0);
     }, 0);
+};
+
+/** Vertex trafficType values, as production returned them (2026-11-11) */
+const PRIORITY_TRAFFIC = 'ON_DEMAND_PRIORITY';
+const STANDARD_TRAFFIC = 'ON_DEMAND';
+
+/**
+ * The tier a round was served at, read from `usageMetadata.trafficType` of
+ * its last chunk. A priority request is downgraded silently when Vertex has
+ * no capacity, so this, not the request, decides the price. Undefined when
+ * the response did not say (relays, OpenCode Go) or named another tier.
+ */
+export const geminiServedTier = (usageMetadata: unknown): ServedTier | undefined => {
+    if (!isJsonObject(usageMetadata)) return undefined;
+    const { trafficType } = usageMetadata;
+    if (trafficType === PRIORITY_TRAFFIC) return 'priority';
+    if (trafficType === STANDARD_TRAFFIC) return 'standard';
+    return undefined;
 };
 
 export const normalizeGeminiUsage = (usageMetadata: unknown): RoundUsage | null => {

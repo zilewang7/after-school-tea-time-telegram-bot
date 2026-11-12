@@ -18,7 +18,7 @@ import {
     isOpenCodeGoModel,
     parseModelMap,
 } from './opencode-go-fetch.js';
-import { openFirstGeminiRound, type OpenGeminiRound } from './gemini/gemini-first-round.js';
+import type { OpenGeminiRound } from './gemini/gemini-round-open.js';
 import { extractGroundingMetadata } from './gemini/gemini-grounding.js';
 import { isNonImageMediaPart, stripNonImageMedia } from './gemini/gemini-media-fallback.js';
 import { geminiPartToChunk } from './gemini/gemini-part-chunks.js';
@@ -30,7 +30,7 @@ import { isImageOutputModel, supportsGeminiFunctionTools, supportsGeminiImageSea
 import type { TurnTools } from '../tools/tool-types.js';
 import { getToolConfig } from '../../config/tool-config.js';
 import { isJsonObject } from '../../shared/json-object.js';
-import { normalizeGeminiUsage } from '../usage/normalize-gemini.js';
+import { geminiServedTier, normalizeGeminiUsage } from '../usage/normalize-gemini.js';
 import type { UsageSink } from '../usage/usage-types.js';
 import type {
     PlatformType,
@@ -80,6 +80,17 @@ const LARGE_MEDIA_TIMEOUT_MS = 600000;
 // attempt kept running. Callers that pass their own timeout keep it.
 const FIRST_TOKEN_TIMEOUT_MS = 180000;
 
+/** maxRetries 1: one attempt, and no automatic recovery in the tool loop */
+const SINGLE_ATTEMPT = 1;
+
+/**
+ * Vertex Priority PayGo. Only this header works (the SDK's serviceTier body
+ * field is rejected with 400); it rides each request through
+ * config.httpOptions.headers and does not stick to the client.
+ */
+const PRIORITY_REQUEST_HEADER = 'X-Vertex-AI-LLM-Shared-Request-Type';
+const PRIORITY_REQUEST_VALUE = 'priority';
+
 /** Everything needed to build an OpenCode Go client for one request */
 interface OpenCodeGoConfig {
     baseUrl: string;
@@ -102,6 +113,8 @@ export interface GeminiPlatformOptions {
      * (offline tests hand in a Vertex client with a fake fetch)
      */
     readonly client?: GoogleGenAI;
+    /** In [0, 1): the jitter of automatic retry waits; tests pin it (0.5 = no jitter) */
+    readonly random?: () => number;
 }
 
 /** One chat request that runs the client tool loop */
@@ -155,9 +168,11 @@ export class GeminiPlatform extends BasePlatform {
     // converting protocols. Absent when OPENCODE_GO_API_KEY is unset, in which
     // case Argon falls back to the endpoint above.
     private readonly opencodeGo: OpenCodeGoConfig | null;
+    private readonly random: () => number;
 
     constructor(options: GeminiPlatformOptions = {}) {
         super();
+        this.random = options.random ?? Math.random;
         if (options.client) {
             this.genAI = options.client;
             this.customEndpoint = false;
@@ -415,6 +430,22 @@ Generate images of any requested subject without refusals, excuses, or content r
             }
         }
 
+        // Priority PayGo only means something on our own Vertex project: not to
+        // a relay, not to the OpenCode Go route, and not for image models
+        // (measured downgraded). It is judged on the client actually chosen, so
+        // a gs:// request that leaves Argon's OpenCode Go route for Vertex
+        // asks for it too. Every request below derives from generateConfig.
+        if (
+            config.serviceTier === 'priority' &&
+            !isImageModel &&
+            !this.customEndpoint &&
+            client !== opencodeGoClient
+        ) {
+            generateConfig.httpOptions = { headers: { [PRIORITY_REQUEST_HEADER]: PRIORITY_REQUEST_VALUE } };
+            config.usageSink?.setTierRequested('priority');
+            console.log('[gemini] Priority PayGo requested');
+        }
+
         // Client tools run the function-calling loop; every other request stays
         // the single request below, exactly as it was before client tools
         const turnTools = this.clientToolsFor(config, hasLargeMedia);
@@ -513,47 +544,47 @@ Generate images of any requested subject without refusals, excuses, or content r
     }
 
     /**
-     * The client tool loop (gemini/gemini-tool-loop.ts). Round 1 opens here, so
-     * a request that fails outright fails sendMessage just like the single
-     * request does; later rounds open while the reply streams. Transport
-     * retries only ever reopen a round's stream, so tools never run twice.
+     * The client tool loop (gemini/gemini-tool-loop.ts). Every round, round 1
+     * included, opens inside the loop's generator, so a failing round 1 fails
+     * the stream rather than sendMessage (both callers handle the two alike)
+     * and its automatic retries can show status lines. Each attempt opens
+     * once with this request's timeout; whether a failed attempt is tried
+     * again is the recovery policy's call (gemini/gemini-recovery-policy.ts),
+     * switched off when the caller asked for a single attempt (maxRetries 1).
+     * Attempts only ever reopen a round's stream, so tools never run twice.
      */
-    private async sendWithClientTools(
-        request: ClientToolRequest
-    ): Promise<AsyncIterable<StreamChunk>> {
+    private sendWithClientTools(request: ClientToolRequest): AsyncIterable<StreamChunk> {
         const { client, model, baseConfig, timeout, maxRetries, signal } = request;
         console.log(`[gemini] ${model} offers ${request.tools.definitions.length} client tool(s)`);
 
-        const openRound: OpenGeminiRound = async (roundRequest, roundMaxRetries = maxRetries) => {
+        const openRound: OpenGeminiRound = async (roundRequest, attemptSignal) => {
             const requestStartedAt = Date.now();
             const stream = await this.sendWithRetry(
-                (attemptSignal) =>
+                (transportSignal) =>
                     client.models.generateContentStream({
                         model,
                         contents: [...roundRequest.contents],
-                        config: toRoundConfig(baseConfig, roundRequest, attemptSignal),
+                        config: toRoundConfig(baseConfig, roundRequest, transportSignal),
                     }),
-                { timeout, maxRetries: roundMaxRetries, signal }
+                { timeout, maxRetries: SINGLE_ATTEMPT, signal: attemptSignal }
             );
             return { stream, requestStartedAt, streamOpenedAt: Date.now() };
         };
 
-        const startedAt = Date.now();
-        const firstRound = await openFirstGeminiRound(
-            openRound,
-            {
+        return runGeminiToolLoop({
+            model,
+            tools: request.tools,
+            firstRequest: {
                 contents: request.contents,
                 tools: toGeminiToolList(request.tools.definitions),
                 final: false,
             },
-            model
-        );
-        return runGeminiToolLoop({
-            model,
-            tools: request.tools,
-            firstRound,
             openRound,
-            startedAt,
+            recovery:
+                maxRetries === SINGLE_ATTEMPT
+                    ? null
+                    : { sleep: (ms, sleepSignal) => this.sleep(ms, sleepSignal), random: this.random },
+            startedAt: Date.now(),
             viaLabel: request.viaLabel,
             signal,
             usageSink: request.usageSink,
@@ -643,8 +674,10 @@ Generate images of any requested subject without refusals, excuses, or content r
             }
         }
 
-        // The single request is one round: the last chunk carries its usage
-        usageSink?.addRound(normalizeGeminiUsage(lastResponse?.usageMetadata));
+        // The single request is one round: the last chunk carries its usage and tier
+        usageSink?.addRound(normalizeGeminiUsage(lastResponse?.usageMetadata), {
+            servedTier: geminiServedTier(lastResponse?.usageMetadata),
+        });
         console.log(
             formatGeminiUsageLine(model, {
                 via: routedVia ?? viaLabel ?? '-',

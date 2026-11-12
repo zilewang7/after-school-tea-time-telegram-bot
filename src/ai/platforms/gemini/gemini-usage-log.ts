@@ -13,6 +13,11 @@
  * first chunk, so a stream that goes quiet halfway through used to be invisible
  * in the logs. maxGap is the longest silence between two chunks of the round
  * and where it ended; a long one on a search round is the search running.
+ *
+ * `tier` is the tier Vertex served (Priority PayGo downgrades silently, so
+ * only the response knows). An attempt whose stream broke and was retried
+ * gets a `[gemini-usage-failed]` line instead, so the `[gemini-usage]` lines
+ * still count the finished rounds.
  */
 import type { GenerateContentResponse, GenerateContentResponseUsageMetadata } from '@google/genai';
 
@@ -56,6 +61,38 @@ export interface GeminiRoundLabel {
     readonly callCount: number;
 }
 
+/** An attempt whose stream broke: which round, why, and which attempt of the round */
+export interface GeminiFailedAttemptLabel {
+    readonly roundNumber: number;
+    readonly kind: string;
+    readonly attempt: number;
+}
+
+/**
+ * The tier Vertex actually served (`trafficType` of the last chunk, e.g.
+ * ON_DEMAND or ON_DEMAND_PRIORITY); '-' when the response did not say
+ */
+const tierOf = (usage: GenerateContentResponseUsageMetadata | undefined): string => usage?.trafficType ?? '-';
+
+/** Everything after the label fields: tokens, tier, grounding and timings */
+const usageFields = (request: GeminiRequestUsage): string => {
+    const { usage } = request;
+    const sinceStart = (at: number | null) =>
+        at === null ? '-' : String(at - request.requestStartedAt);
+    return (
+        `via=${request.via} fallback=${request.fallbackAttempts ?? '-'} ` +
+        `prompt=${usage?.promptTokenCount ?? '?'} cached=${usage?.cachedContentTokenCount ?? 0} ` +
+        `thoughts=${usage?.thoughtsTokenCount ?? 0} output=${usage?.candidatesTokenCount ?? 0} ` +
+        `total=${usage?.totalTokenCount ?? '?'} tier=${tierOf(usage)} ` +
+        `grounding=${request.groundingCount} sources=${request.groundingSources} ` +
+        `chunks=${request.chunkCount} ` +
+        `maxGap=${request.maxChunkGapMs}ms@${request.maxChunkGapAtMs === null ? '-' : `+${request.maxChunkGapAtMs}ms`} ` +
+        `ttfb=${request.streamOpenedAt - request.requestStartedAt}ms ` +
+        `firstPart=${sinceStart(request.firstPartAt)}ms firstThink=${sinceStart(request.firstThinkAt)}ms ` +
+        `firstText=${sinceStart(request.firstTextAt)}ms dur=${request.finishedAt - request.requestStartedAt}ms`
+    );
+};
+
 /**
  * Printed even when usage is missing: whether a request searched at all, and
  * how many sources it brought back, is the signal a missing GoogleSearch block
@@ -66,22 +103,30 @@ export const formatGeminiUsageLine = (
     request: GeminiRequestUsage,
     round?: GeminiRoundLabel
 ): string => {
-    const { usage } = request;
-    const sinceStart = (at: number | null) =>
-        at === null ? '-' : String(at - request.requestStartedAt);
     const roundFields = round ? `round=${round.roundNumber} calls=${round.callCount} ` : '';
-    return (
-        `[gemini-usage] model=${model} ${roundFields}via=${request.via} fallback=${request.fallbackAttempts ?? '-'} ` +
-        `prompt=${usage?.promptTokenCount ?? '?'} cached=${usage?.cachedContentTokenCount ?? 0} ` +
-        `thoughts=${usage?.thoughtsTokenCount ?? 0} output=${usage?.candidatesTokenCount ?? 0} ` +
-        `total=${usage?.totalTokenCount ?? '?'} ` +
-        `grounding=${request.groundingCount} sources=${request.groundingSources} ` +
-        `chunks=${request.chunkCount} ` +
-        `maxGap=${request.maxChunkGapMs}ms@${request.maxChunkGapAtMs === null ? '-' : `+${request.maxChunkGapAtMs}ms`} ` +
-        `ttfb=${request.streamOpenedAt - request.requestStartedAt}ms ` +
-        `firstPart=${sinceStart(request.firstPartAt)}ms firstThink=${sinceStart(request.firstThinkAt)}ms ` +
-        `firstText=${sinceStart(request.firstTextAt)}ms dur=${request.finishedAt - request.requestStartedAt}ms`
-    );
+    return `[gemini-usage] model=${model} ${roundFields}${usageFields(request)}`;
+};
+
+/**
+ * An attempt whose stream broke, with what its last chunk reported. A prefix
+ * of its own keeps the `[gemini-usage]` lines one per finished round.
+ */
+export const formatGeminiFailedUsageLine = (
+    model: string,
+    request: GeminiRequestUsage,
+    label: GeminiFailedAttemptLabel
+): string =>
+    `[gemini-usage-failed] model=${model} round=${label.roundNumber} kind=${label.kind} attempt=${label.attempt} ` +
+    usageFields(request);
+
+/** Rounds per served tier, e.g. ON_DEMAND:2,ON_DEMAND_PRIORITY:1 */
+const tierCounts = (usages: readonly (GenerateContentResponseUsageMetadata | undefined)[]): string => {
+    const counts = new Map<string, number>();
+    for (const usage of usages) {
+        const tier = tierOf(usage);
+        counts.set(tier, (counts.get(tier) ?? 0) + 1);
+    }
+    return counts.size === 0 ? '-' : Array.from(counts, ([tier, count]) => `${tier}:${count}`).join(',');
 };
 
 const sumOf = (
@@ -92,8 +137,8 @@ const sumOf = (
 /**
  * The whole tool loop turn: rounds, executed calls and the tokens of every
  * round added up (each round resends the whole context, so prompt is what
- * the turn was billed for). Marked `summary` so it is never read as one more
- * request.
+ * the turn was billed for), and how many rounds each tier served. Marked
+ * `summary` so it is never read as one more request.
  */
 export const formatGeminiTurnSummary = (
     model: string,
@@ -109,6 +154,7 @@ export const formatGeminiTurnSummary = (
         `thoughts=${sumOf(usages, (usage) => usage.thoughtsTokenCount)} ` +
         `output=${sumOf(usages, (usage) => usage.candidatesTokenCount)} ` +
         `total=${sumOf(usages, (usage) => usage.totalTokenCount)} ` +
+        `tiers=${tierCounts(usages)} ` +
         `dur=${Date.now() - turnStartedAt}ms`
     );
 };

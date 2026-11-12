@@ -3,7 +3,8 @@
  * appendix B): every finished round reports once into the reply's usage
  * sink — the plain request and each tool loop round alike — a later round
  * that fails keeps the rounds before it, DeepSeek and MiMo ask for the usage
- * chunk, and Gemini names its lane as the route.
+ * chunk, Gemini names its lane as the route and reports the tier each round
+ * was served at (Priority PayGo).
  *
  * One local stub answers every OpenAI-compatible platform (each under its own
  * base path) with scripted SSE rounds; Gemini gets a Vertex client with a
@@ -69,7 +70,7 @@ const { MimoPlatform } = await import('../../src/ai/platforms/mimo-platform.js')
 const { GrokPlatform } = await import('../../src/ai/platforms/grok-platform.js');
 const { GeminiPlatform } = await import('../../src/ai/platforms/gemini-platform.js');
 const { createTurnTools } = await import('../../src/ai/tools/index.js');
-const { createUsageSink } = await import('../../src/ai/usage/index.js');
+const { createUsageSink, geminiServedTier } = await import('../../src/ai/usage/index.js');
 
 type UsageSink = import('../../src/ai/usage/index.js').UsageSink;
 type ReplyUsageTotals = import('../../src/ai/usage/index.js').ReplyUsageTotals;
@@ -224,8 +225,11 @@ const messagesToolRound = (startUsage: Record<string, unknown>, deltaUsage: Reco
 
 const geminiReplies: string[] = [];
 let geminiRequests = 0;
-const geminiFetch = async (_input: string | URL | Request, _init?: RequestInit): Promise<Response> => {
+/** The Priority PayGo header of each Gemini request, null when absent */
+const geminiPriorityHeaders: Array<string | null> = [];
+const geminiFetch = async (_input: string | URL | Request, init?: RequestInit): Promise<Response> => {
     geminiRequests += 1;
+    geminiPriorityHeaders.push(new Headers(init?.headers).get('x-vertex-ai-llm-shared-request-type'));
     const body = geminiReplies.shift();
     if (body === undefined) {
         return new Response(json({ error: { code: 400, message: 'unexpected request', status: 'INVALID_ARGUMENT' } }), {
@@ -446,6 +450,73 @@ const cases: { name: string; body: () => Promise<void> }[] = [
             );
             expect(large.error === null && geminiRequests === requestsBefore + 1, `gs:// media is one request (got ${json(large)})`);
             expectTotals(largeSink, { rounds: 1, promptTokens: 9000, route: 'large-media' }, 'its lane is the route');
+        },
+    },
+    {
+        name: 'Gemini: the tier each round was served at; round 1 standard and round 2 priority add up apart',
+        body: async () => {
+            expect(geminiServedTier({ trafficType: 'ON_DEMAND_PRIORITY' }) === 'priority', 'ON_DEMAND_PRIORITY is priority');
+            expect(geminiServedTier({ trafficType: 'ON_DEMAND' }) === 'standard', 'ON_DEMAND is standard');
+            expect(
+                geminiServedTier({ promptTokenCount: 3 }) === undefined &&
+                    geminiServedTier({ trafficType: 'ON_DEMAND_FLEX' }) === undefined &&
+                    geminiServedTier(undefined) === undefined,
+                'no trafficType, another tier or no usage: not said'
+            );
+
+            const sink = createUsageSink();
+            geminiReplies.length = 0;
+            geminiPriorityHeaders.length = 0;
+            geminiReplies.push(
+                geminiEvents(
+                    [{ functionCall: { name: 'lookup_weather', args: { city: 'Lyon' } }, thoughtSignature: Buffer.from('sig').toString('base64') }],
+                    { promptTokenCount: 200, cachedContentTokenCount: 50, candidatesTokenCount: 12, thoughtsTokenCount: 8, totalTokenCount: 220, trafficType: 'ON_DEMAND' }
+                ),
+                geminiEvents([{ text: '里昂晴' }], {
+                    promptTokenCount: 260,
+                    cachedContentTokenCount: 200,
+                    candidatesTokenCount: 5,
+                    thoughtsTokenCount: 4,
+                    totalTokenCount: 269,
+                    trafficType: 'ON_DEMAND_PRIORITY',
+                })
+            );
+            const reply = await drain(() =>
+                geminiPlatform.sendMessage(userTurn('里昂天气'), {
+                    model: 'gemini-4-carbon',
+                    systemPrompt: 'p',
+                    maxRetries: 1,
+                    tools: turnTools,
+                    usageSink: sink,
+                    serviceTier: 'priority',
+                })
+            );
+            expect(reply.error === null && reply.text === '里昂晴', `the tool loop answers (got ${json(reply)})`);
+            expect(json(geminiPriorityHeaders) === json(['priority', 'priority']), `both rounds asked (got ${json(geminiPriorityHeaders)})`);
+            const totals = sink.totals();
+            expectTotals(
+                sink,
+                { rounds: 2, promptTokens: 460, cachedTokens: 250, outputTokens: 29, tierRequested: 'priority', roundRetries: 0 },
+                'both rounds in the totals, the request tier recorded'
+            );
+            expect(
+                json(totals.priority) === json({ rounds: 1, promptTokens: 260, cachedTokens: 200, outputTokens: 9 }),
+                `only round 2 was served at priority (got ${json(totals.priority)})`
+            );
+
+            const singleSink = createUsageSink();
+            geminiReplies.push(
+                geminiEvents([{ text: '好' }], { promptTokenCount: 30, candidatesTokenCount: 2, totalTokenCount: 32, trafficType: 'ON_DEMAND_PRIORITY' })
+            );
+            const single = await drain(() =>
+                geminiPlatform.sendMessage(userTurn('你好'), { model: 'gemini-3.8-flash', systemPrompt: 'p', maxRetries: 1, usageSink: singleSink })
+            );
+            expect(single.error === null, 'the single request streams');
+            expect(
+                json(singleSink.totals().priority) === json({ rounds: 1, promptTokens: 30, cachedTokens: 0, outputTokens: 2 }) &&
+                    singleSink.totals().tierRequested === null,
+                `the single request reports its tier too; served at priority without asking stays visible (got ${json(singleSink.totals())})`
+            );
         },
     },
 ];
