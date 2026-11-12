@@ -886,6 +886,13 @@ export const processStream = async (
             // Create continuation message (also switches editor to new message)
             const newMessageId = await createContinuationMessage(chatContext);
             if (!newMessageId) {
+                // Nothing new was asked for yet during a resume's replay: ending
+                // here would store a cut copy of the kept rounds as a finished
+                // reply and lose the checkpoint. As an error the new version
+                // keeps it and offers "继续" again.
+                if (replayed) {
+                    throw new Error('Failed to create a continuation message while replaying the kept rounds');
+                }
                 console.error('[response-handler] Failed to create continuation message, stopping stream');
                 break;
             }
@@ -946,6 +953,7 @@ export const processStream = async (
         agentStats: state.agentStats,
         modelParts: state.modelParts,
         rawResponse: state.rawResponse,
+        streamEnded: state.isDone,
     };
 };
 
@@ -1328,13 +1336,16 @@ const deliverReplyMedia = async (
  * Finalize the reply. A stopped reply with a checkpoint at hand keeps it (D10):
  * whether it is kept is decided before the finalization writes the metrics
  * row, and it is stored after it, because the finalization clears the
- * reply's earlier mark.
+ * reply's earlier mark. A stop that landed after the stream had ended keeps
+ * nothing: the answer is whole, and continuing would write its last round again.
  */
 const finalizeKeepingCheckpoint = async (
     chatContext: ChatContext,
-    finalizeOptions: FinalizeOptions
+    finalizeOptions: FinalizeOptions,
+    streamEnded: boolean
 ): Promise<void> => {
-    const kept = finalizeOptions.wasStoppedByUser === true ? prepareCheckpointKeep(chatContext) : null;
+    const kept =
+        finalizeOptions.wasStoppedByUser === true && !streamEnded ? prepareCheckpointKeep(chatContext) : null;
     await chatContext.session.finalize(finalizeOptions);
     keepPreparedCheckpoint(kept);
 };
@@ -1453,7 +1464,7 @@ export const sendFinalResponse = async (
         }
 
         // Finalize session (saves to both Message and BotResponse tables)
-        await finalizeKeepingCheckpoint(chatContext, finalizeOptions);
+        await finalizeKeepingCheckpoint(chatContext, finalizeOptions, response.streamEnded === true);
 
         // Add buttons to the last message after finalization
         const getBotResponseForButtons = async () => {
@@ -1561,7 +1572,7 @@ export const sendFinalResponse = async (
         }
 
         // Finalize session AFTER sending all messages (so image message ID is included)
-        await finalizeKeepingCheckpoint(chatContext, finalizeOptions);
+        await finalizeKeepingCheckpoint(chatContext, finalizeOptions, response.streamEnded === true);
 
         // Get the correct button state after finalization and update the last message
         const getBotResponseForButtons = async () => {
@@ -1586,7 +1597,7 @@ export const sendFinalResponse = async (
         }
     } else {
         // Finalize session first to determine button state (no media case)
-        await finalizeKeepingCheckpoint(chatContext, finalizeOptions);
+        await finalizeKeepingCheckpoint(chatContext, finalizeOptions, response.streamEnded === true);
 
         // Get the correct button state after finalization
         const getBotResponseForButtons = async () => {

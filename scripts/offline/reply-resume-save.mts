@@ -500,6 +500,51 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
         },
     },
     {
+        name: 'a stop that lands after the stream ended keeps nothing: the answer is whole, so no 继续',
+        body: async () => {
+            const chatId = takeChatId();
+            const telegram = createFakeTelegram();
+            const userMessageId = takeMessageId();
+            const ctx = contextOf(messageUpdate({ chatId, messageId: userMessageId, userId: USER_ID, text: '说完再停' }), telegram);
+            const chatContext = await quietly(() => responseHandler.createChatContext(ctx, { model: MODEL }));
+            if (!chatContext) throw new Error('no chat context');
+            trackReply(chatContext);
+            const { session } = chatContext;
+            chatContext.resumeFacts = captureResumeFacts({
+                model: MODEL,
+                systemPrompt: '系统提示词',
+                tools: { definitions: [], execute: async () => ({ content: '', isError: false, images: [], record: null }), statusOf: () => ({ text: '', chatAction: 'typing' }) },
+                toolState: createReplyToolState({ chatId, conversationRootIds: [] }),
+                contextIndex: new Map(),
+                conversationRootIds: [],
+                requestTraits: { carriesLargeMedia: false },
+                promptAddendum: null,
+                builtAt: Date.now(),
+            });
+            // The checkpoint from before the last round is still at hand
+            chatContext.lastCheckpoint = checkpointOf(2);
+            session.textBuffer = '已经说完了。';
+            // The stop arrives while the last chunk is being shown, after the done chunk
+            session.streamController.abort();
+            await quietly(() =>
+                responseHandler.sendFinalResponse(chatContext, {
+                    text: '已经说完了。',
+                    thinkingText: '',
+                    images: [],
+                    groundingData: [],
+                    streamEnded: true,
+                })
+            );
+            const run: ReplyRun = { chatId, firstMessageId: session.firstMessageId, userMessageId, telegram };
+            expect(json(finalButtonsOf(telegram)) === json(['重试']), `no 继续 on a whole answer (got ${describe(run)})`);
+            const [row] = await rowsOf(run);
+            expect(
+                (row?.checkpointRounds ?? null) === null && markOf(run) === undefined && checkpointRegistry.peek(chatId, session.firstMessageId) === undefined,
+                `nothing kept or recorded (got ${json(row?.checkpointRounds)})`
+            );
+        },
+    },
+    {
         name: 'case 11 and the order of the save: the mark survives its own finalization; 重试 clears it and the entry; a new failure replaces the entry',
         body: async () => {
             const run = await runReply(takeChatId(), [...keptRounds(2), { fail: new Error('got status: 500 INTERNAL') }]);

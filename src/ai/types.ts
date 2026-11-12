@@ -243,6 +243,8 @@ export interface AIResponse {
     agentStats?: AgentStats;
     modelParts?: unknown[];
     rawResponse?: unknown;
+    /** The stream reached its done chunk: nothing of the answer is missing */
+    streamEnded?: boolean;
 }
 
 // Platform configuration

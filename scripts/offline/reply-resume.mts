@@ -304,6 +304,55 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
         }),
     },
     {
+        name: 'case 6: in the legacy split mode a continuation that cannot be sent during the replay ends the new version as an error that keeps the checkpoint',
+        body: quietCase(async () => {
+            process.env.THINKING_LINK = '0';
+            try {
+                const reply = await bench.failedAfterRound1({
+                    label: 'r1',
+                    thinking: ['第一轮想了想'],
+                    text: longText('第一轮'),
+                    calls: [webLookup('k-on')],
+                });
+                const failed = await bench.latestVersion(reply);
+
+                // Telegram refuses every continuation message of the replay
+                for (let index = 0; index < 20; index += 1) {
+                    bench.hooks.push({ method: 'sendMessage', when: (payload) => payload.text === 'continued', fail: true });
+                }
+                vertex.reset([answer('没有被问到的一轮。')]);
+                telegram.reset();
+                await bench.continueReply(reply);
+                bench.hooks.length = 0;
+
+                const cut = await bench.latestVersion(reply);
+                expect(vertex.requests.length === 0, `no new round was asked for (got ${vertex.requests.length})`);
+                expect(
+                    cut.versionId === failed.versionId + 1 && cut.errorMessage !== undefined,
+                    `the new version is an error, not a short finished reply (got ${json({ id: cut.versionId, error: cut.errorMessage })})`
+                );
+                expect(
+                    bench.entryOf(reply)?.failedVersionId === cut.versionId && bench.markOf(reply)?.versionId === cut.versionId,
+                    'the checkpoint is kept on the new version'
+                );
+                expect(finalButtonsOf(telegram).includes('继续'), `继续 is offered again (got ${json(finalButtonsOf(telegram))})`);
+
+                // Once Telegram takes messages again it continues to the end
+                vertex.reset([roundOf({ label: 'r2', text: ['第二轮的话。'] })]);
+                telegram.reset();
+                await bench.continueReply(reply);
+                const version = await bench.latestVersion(reply);
+                expect(
+                    version.text.startsWith(failed.text.trimEnd()) && version.text.endsWith('第二轮的话。'),
+                    'then the version is the kept text plus the new one'
+                );
+            } finally {
+                bench.hooks.length = 0;
+                delete process.env.THINKING_LINK;
+            }
+        }),
+    },
+    {
         name: 'case 7: a buffered image, sticker, file and widget each go out exactly once with the resumed version; the attachment flag is back',
         body: quietCase(async () => {
             const variants: Array<{ label: string; before: ScriptedReply[]; sentCount: () => number }> = [
