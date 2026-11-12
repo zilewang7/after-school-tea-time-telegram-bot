@@ -399,14 +399,6 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
                 state.resumableMarkOf(entry.chatId, entry.firstMessageId)?.expiresAt === entry.savedAt + CHECKPOINT_REGISTRY_LIMITS.ttlMs,
                 'with the lifetime it had'
             );
-            const again = registry.take(entry.chatId, entry.firstMessageId);
-            if (again === undefined) throw new Error('nothing taken');
-            registry.putBack(again, { failedVersionId: 3 });
-            expect(
-                registry.peek(entry.chatId, entry.firstMessageId)?.failedVersionId === 3 &&
-                    state.resumableMarkOf(entry.chatId, entry.firstMessageId)?.versionId === 3,
-                'a put back onto a newer failed version marks that one'
-            );
 
             registry.drop(entry.chatId, entry.firstMessageId);
             expect(

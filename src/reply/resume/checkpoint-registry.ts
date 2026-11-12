@@ -55,15 +55,6 @@ export interface PreparedCheckpoint {
     readonly bytes: number;
 }
 
-export interface PutBackOptions {
-    /**
-     * The version a continue left behind when it failed before sending its
-     * request: the mark moves there, since the old version is no longer the
-     * latest one
-     */
-    readonly failedVersionId?: number;
-}
-
 export interface CheckpointRegistry {
     /**
      * Compact and measure an entry before the reply is finalized, so the
@@ -81,7 +72,7 @@ export interface CheckpointRegistry {
     /** The reply's entry, removed together with its mark */
     readonly take: (chatId: number, firstMessageId: number) => ReplyCheckpoint | undefined;
     /** Return a taken entry (and its mark) when the continue did not get going */
-    readonly putBack: (checkpoint: ReplyCheckpoint, options?: PutBackOptions) => void;
+    readonly putBack: (checkpoint: ReplyCheckpoint) => void;
     /** Forget the reply's entry and its mark */
     readonly drop: (chatId: number, firstMessageId: number) => void;
     /** Why a version's entry is not there; for the log line of the click */
@@ -199,10 +190,7 @@ export const createCheckpointRegistry = (options: CheckpointRegistryOptions = {}
             remove(keyOf(chatId, firstMessageId), stored);
             return stored.checkpoint;
         },
-        putBack: (checkpoint, putBackOptions = {}) => {
-            const failedVersionId = putBackOptions.failedVersionId ?? checkpoint.failedVersionId;
-            store(measure({ ...checkpoint, failedVersionId }));
-        },
+        putBack: (checkpoint) => store(measure(checkpoint)),
         drop: (chatId, firstMessageId) => {
             const stored = read(chatId, firstMessageId);
             if (stored !== undefined) remove(keyOf(chatId, firstMessageId), stored);
