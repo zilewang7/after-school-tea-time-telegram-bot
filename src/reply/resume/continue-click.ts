@@ -6,7 +6,7 @@
  */
 import type { Context } from 'grammy';
 import { match } from 'ts-pattern';
-import type { ContinueVerdict } from '../../cmd/menus/response-menu.js';
+import type { ContinueStartOutcome, ContinueVerdict } from '../../cmd/menus/response-menu.js';
 import type { BotResponse } from '../../db/index.js';
 import { clearReplyResumable } from '../../state.js';
 import { checkpointRegistry, type CheckpointRegistry } from './checkpoint-registry.js';
@@ -46,14 +46,16 @@ const startResume = async (
     response: BotResponse,
     plan: ResumePlan,
     registry: CheckpointRegistry
-): Promise<void> => {
+): Promise<ContinueStartOutcome> => {
     const entry = registry.take(response.chatId, response.messageId);
     if (entry === undefined) {
-        // Only an expiry between the checks and the answer gets here
-        console.log(`[resume] checkpoint gone before it was taken chat=${response.chatId} first=${response.messageId}`);
-        return;
+        // Only an expiry between the checks and the take gets here: it is gone
+        // as if the checks had found it so
+        dropGone(registry, response, 'missing');
+        return 'gone';
     }
     await resumeReply(ctx, entry, plan, registry);
+    return 'resumed';
 };
 
 /** The continue handler the button handler is given (wired in loader.ts) */

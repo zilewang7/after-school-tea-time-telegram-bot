@@ -61,12 +61,18 @@ export const setRetryHandler = (handler: RetryHandler): void => {
 };
 
 /**
+ * How a started continue ended: the resumed reply ran (whatever its own
+ * outcome), or the checkpoint was gone by the time it was taken
+ */
+export type ContinueStartOutcome = 'resumed' | 'gone';
+
+/**
  * What a "继续" click's checks found, made while the kept checkpoint is only
  * looked at (design 2026-1112-1123 §6.4)
  */
 export type ContinueVerdict =
     /** Everything holds: `start` takes the checkpoint at once and resolves when the resumed reply has ended */
-    | { readonly kind: 'ready'; readonly start: () => Promise<void> }
+    | { readonly kind: 'ready'; readonly start: () => Promise<ContinueStartOutcome> }
     /** The checkpoint is gone (the checks dropped what was left): the buttons lose "继续" */
     | { readonly kind: 'gone'; readonly notice: string }
     /** Not now: only the notice; the checkpoint, its mark and the buttons stay for a later click */
@@ -377,7 +383,7 @@ const handleContinue = async (ctx: Context): Promise<void> => {
                 await ctx.answerCallbackQuery({ text: '继续中...' });
                 // start() takes the checkpoint before it first waits; the
                 // resumed reply runs on without holding up this update
-                void runContinueHoldingClaim(start(), chatId, firstMessageId);
+                void runContinueHoldingClaim(ctx, start(), response, msg.message_id);
                 continueDetached = true;
             })
             .exhaustive();
@@ -388,17 +394,22 @@ const handleContinue = async (ctx: Context): Promise<void> => {
 
 /** Wait for a resumed reply to end, then give the claim back whatever happened */
 const runContinueHoldingClaim = async (
-    running: Promise<void>,
-    chatId: number,
-    firstMessageId: number
+    ctx: Context,
+    running: Promise<ContinueStartOutcome>,
+    response: BotResponse,
+    messageId: number
 ): Promise<void> => {
     try {
-        const [continueErr] = await to(running);
+        const [continueErr, outcome] = await to(running);
         if (continueErr) {
             console.error('[response-menu] Continue failed:', continueErr);
+        } else if (outcome === 'gone') {
+            // It expired between the checks and the take: as a gone click, but
+            // the toast already went out, so only the buttons lose "继续"
+            await refreshButtonsToCurrent(ctx, response, messageId);
         }
     } finally {
-        releaseReplyRerun(chatId, firstMessageId);
+        releaseReplyRerun(response.chatId, response.messageId);
     }
 };
 

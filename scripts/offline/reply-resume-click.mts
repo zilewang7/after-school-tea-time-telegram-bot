@@ -125,6 +125,35 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
         }),
     },
     {
+        name: 'case 10 (1b): a checkpoint that expires between the checks and the take is gone too: logged, the buttons lose 继续, the claim is free',
+        body: quietCase(async (log) => {
+            const reply = await failedReply();
+            await withFakeClock(async (jump) => {
+                // The checks pass; while the click is answered the entry runs out
+                bench.hooks.push({
+                    method: 'answerCallbackQuery',
+                    when: (payload) => payload.text === '继续中...',
+                    onCaught: () => jump(CHECKPOINT_REGISTRY_LIMITS.ttlMs + 1000),
+                });
+                vertex.reset([]);
+                telegram.reset();
+                const thrown = await bench.press(reply, 'resp:continue');
+                await bench.settled(reply, 'the click to give its claim back');
+                expect(thrown === null, `the click is handled (got ${String(thrown)})`);
+                expect(json(bench.toasts()) === json(['继续中...']), `the one toast it had sent (got ${json(bench.toasts())})`);
+                expect(vertex.requests.length === 0 && telegram.callsOf('editMessageText').length === 0, 'nothing is resumed');
+                const redraw = telegram.callsOf('editMessageReplyMarkup');
+                const redrawn = json(redraw.at(-1)?.payload.reply_markup);
+                expect(
+                    redraw.length === 1 && redrawn.includes('重试') && !redrawn.includes('继续'),
+                    `the buttons lose 继续 (got ${json(finalButtonsOf(telegram))})`
+                );
+                expect(registry.peek(reply.chatId, reply.firstMessageId) === undefined && bench.markOf(reply) === undefined, 'dropped');
+            });
+            expect(log.has(`[resume] checkpoint missing reason=expired chat=${reply.chatId}`), 'the log names the reason');
+        }),
+    },
+    {
         name: 'case 10 (2): a failed version that is no longer the latest one is gone',
         body: quietCase(async (log) => {
             const reply = await failedReply();
