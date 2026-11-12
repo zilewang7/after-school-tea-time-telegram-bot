@@ -16,9 +16,16 @@ import {
     buildFormatSection,
     NOTES_SECTION,
     ROSTER_SECTION,
+    TRIAL_SECTION,
 } from './sections.js';
 
 export interface StaticPromptOptions {
+    /**
+     * The trigger user is a trial user: the trial section explains what the
+     * turn may use and how to apply. Decided per trigger user's tier, so the
+     * head stays byte-identical for the same (model, chat, tier, tools).
+     */
+    readonly trial?: boolean;
     /**
      * send_sms_to_owner is offered this turn. Decided per model and chat only,
      * so the prompt stays byte-identical across requests of one conversation.
@@ -54,6 +61,7 @@ export const buildStaticSystemPrompt = (model: string, options: StaticPromptOpti
     return [
         getPreferencePrompt(),
         ROSTER_SECTION,
+        options.trial === true ? TRIAL_SECTION : '',
         buildFormatSection({ includeOcrNote: !capabilities.supportsImageInput }),
         buildCapabilitiesSection({
             smsOwner: options.sms === true ? getToolConfig().owner : null,

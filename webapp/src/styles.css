@@ -410,6 +410,13 @@ p {
     cursor: default;
 }
 
+/* A row of action buttons, e.g. approve / reject or resend / revoke */
+.button-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+}
+
 .save-bar,
 .save-failure,
 .preview {
@@ -633,6 +640,13 @@ a.button {
 .issue-list.refreshing {
     opacity: 0.5;
     pointer-events: none;
+}
+
+/* Access review list: rows plus the load-more button */
+.access-list {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
 }
 
 .issue-title {

@@ -1,5 +1,10 @@
 import { createPublicRequester, createRequester, createTextRequester } from './client';
 import type {
+    AccessApplicationCreate,
+    AccessApplicationDetailResponse,
+    AccessApplicationPatch,
+    AccessApplicationResponse,
+    AccessApplicationsResponse,
     AddendumPreviewResponse,
     AuditResponse,
     ChatDetailResponse,
@@ -40,6 +45,8 @@ export const AUDIT_PAGE_SIZE = 50;
 const ISSUE_PAGE_SIZE = 20;
 /** Conversations per page, like the server's default */
 export const CONVERSATION_PAGE_SIZE = 20;
+/** Access applications per page */
+export const ACCESS_APPLICATION_PAGE_SIZE = 20;
 
 export interface AuditQuery {
     // null = global view (owner only)
@@ -54,6 +61,13 @@ export interface IssueListQuery {
     source: IssueSource | null;
     chatId: number | null;
     offset: number;
+}
+
+/** GET /api/access-applications query; an omitted field leaves it out (status = every application) */
+export interface AccessApplicationsQuery {
+    status?: 'pending' | 'all';
+    limit?: number;
+    offset?: number;
 }
 
 /** GET …/model-view query; null leaves the default (the chat's model, the newest user message) */
@@ -95,6 +109,18 @@ const issueListPath = ({ status, kind, source, chatId, offset }: IssueListQuery)
 const chatPath = (chatId: number): string => `/api/chats/${chatId}`;
 
 const issueApiPath = (issueId: number): string => `/api/issues/${issueId}`;
+
+const accessApplicationsPath = ({ status, limit, offset }: AccessApplicationsQuery): string => {
+    const params = new URLSearchParams();
+    if (status !== undefined) params.set('status', status);
+    params.set('limit', String(limit ?? ACCESS_APPLICATION_PAGE_SIZE));
+    if (offset !== undefined && offset > 0) params.set('offset', String(offset));
+    return `/api/access-applications?${params.toString()}`;
+};
+
+const accessApplicationApiPath = (applicationId: number): string => `/api/access-applications/${applicationId}`;
+
+const userAccessPath = (userId: number): string => `/api/user-access/${userId}`;
 
 const conversationListPath = (chatId: number, before: string | null): string => {
     const params = new URLSearchParams();
@@ -190,6 +216,48 @@ export const createApi = (initData: string) => {
         // Owner only
         patchIssue: (issueId: number, patch: IssuePatch) =>
             request<IssueResponse>({ method: 'PATCH', path: issueApiPath(issueId), body: patch }),
+
+        // Access tiers (phase 6): the owner reviews, a trial user applies
+        // Owner only; status omitted = every application
+        getAccessApplications: (query: AccessApplicationsQuery, signal?: AbortSignal) =>
+            request<AccessApplicationsResponse>({
+                method: 'GET',
+                path: accessApplicationsPath(query),
+                signal,
+            }),
+        // Owner only
+        getAccessApplication: (applicationId: number, signal?: AbortSignal) =>
+            request<AccessApplicationDetailResponse>({
+                method: 'GET',
+                path: accessApplicationApiPath(applicationId),
+                signal,
+            }),
+        // Owner only; 409 when the application was already decided
+        reviewAccessApplication: (applicationId: number, patch: AccessApplicationPatch) =>
+            request<AccessApplicationResponse>({
+                method: 'PATCH',
+                path: accessApplicationApiPath(applicationId),
+                body: patch,
+            }),
+        // Owner only; sends the outcome to the application's chat again
+        resendAccessApplication: (applicationId: number) =>
+            request<AccessApplicationResponse>({
+                method: 'POST',
+                path: `${accessApplicationApiPath(applicationId)}/resend`,
+            }),
+        // Owner only; the user goes back to trial
+        revokeUserAccess: (userId: number) =>
+            request<{ userId: number; revoked: boolean }>({
+                method: 'DELETE',
+                path: userAccessPath(userId),
+            }),
+        // Trial users only; 409 when already full, already pending, or tiering is off
+        createAccessApplication: (input: AccessApplicationCreate) =>
+            request<AccessApplicationResponse>({
+                method: 'POST',
+                path: '/api/access-applications',
+                body: input,
+            }),
 
         // Conversations (phase 2)
         getConversations: (chatId: number, before: string | null, signal?: AbortSignal) =>

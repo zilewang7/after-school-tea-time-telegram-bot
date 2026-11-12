@@ -10,6 +10,7 @@ export type PanelErrorCode =
     | 'unauthorized'
     | 'forbidden'
     | 'locked'
+    | 'trial'
     | 'not_found'
     | 'conflict'
     | 'too_large'
@@ -29,7 +30,7 @@ export const statusOfCode = (code: PanelErrorCode): PanelErrorStatus =>
         .returnType<PanelErrorStatus>()
         .with('invalid', () => 400)
         .with('unauthorized', () => 401)
-        .with('forbidden', 'locked', () => 403)
+        .with('forbidden', 'locked', 'trial', () => 403)
         .with('not_found', () => 404)
         .with('conflict', () => 409)
         .with('too_large', () => 413)
@@ -67,6 +68,7 @@ export const PANEL_MESSAGES = {
     unauthorized: '身份校验失败，请关闭面板后重新打开',
     forbidden: '你没有权限访问该聊天',
     ownerOnly: '只有机主可以执行此操作',
+    trialModel: '体验用户不能修改本聊天的模型',
     notFound: '接口不存在',
     membershipUnavailable: '成员资格暂时无法确认，稍后再试',
     tooLarge: '请求体过大',

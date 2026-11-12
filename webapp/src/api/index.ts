@@ -1,7 +1,8 @@
 export type { ApiFailure, ApiResult, TextResult } from './client';
 export { getConnectivityBanner, subscribeConnectivity } from './connectivity';
-export { AUDIT_PAGE_SIZE, CONVERSATION_PAGE_SIZE, createApi } from './endpoints';
+export { ACCESS_APPLICATION_PAGE_SIZE, AUDIT_PAGE_SIZE, CONVERSATION_PAGE_SIZE, createApi } from './endpoints';
 export type {
+    AccessApplicationsQuery,
     AuditQuery,
     ExportFormat,
     IssueListQuery,
@@ -10,6 +11,10 @@ export type {
     ShareQuery,
 } from './endpoints';
 export {
+    describeAccessApplicationCreateFailure,
+    describeAccessApplicationReadFailure,
+    describeAccessReviewFailure,
+    describeAccessRevokeFailure,
     describeExclusionFailure,
     describeExportFailure,
     describeIssueCreateFailure,

@@ -13,6 +13,7 @@ import { ChatSettingsRecord } from '../db/chatSettingsDTO.js';
 import { GlobalSetting } from '../db/globalSettingDTO.js';
 import { chatAuditScope, GLOBAL_AUDIT_SCOPE, writeSettingsAudit } from '../db/queries/settings-audit.js';
 import { resolveChatModel } from '../config/chat-model.js';
+import { resolveAccessTier } from './access-tier.js';
 import {
     DEFAULT_MODEL_SETTING_KEY,
     getChatSettings,
@@ -190,7 +191,8 @@ export const updateChatSettings = (input: {
     runSerialized(chatAuditScope(input.chatId), async () => {
         await ensureCacheLoaded();
         const current = getChatSettings(input.chatId) ?? defaultChatSettings(input.chatId);
-        const resolution = resolveChatSettingsPatch(current, input.patch, input.actor.isOwner);
+        const actorIsTrial = !input.actor.isOwner && resolveAccessTier(input.actor.userId) === 'trial';
+        const resolution = resolveChatSettingsPatch(current, input.patch, input.actor.isOwner, actorIsTrial);
         if (resolution.kind === 'rejected') {
             throw new ChatSettingsError(resolution.code, resolution.message);
         }

@@ -37,7 +37,7 @@ const CHAT_SETTING_KEYS: readonly ChatSettingKey[] = [
 ];
 
 /** `conflict`: the caller edited a version that someone else has since replaced */
-export type ChatSettingsErrorCode = 'invalid' | 'forbidden' | 'locked' | 'conflict';
+export type ChatSettingsErrorCode = 'invalid' | 'forbidden' | 'locked' | 'conflict' | 'trial';
 
 /** The values a patch can change */
 export interface ChatSettingValues {
@@ -157,13 +157,16 @@ const smsChanged = (current: ToolOverrides | null, next: ToolOverrides | null): 
  *    value is looked at);
  * 2. a non-owner touches settingsLocked → forbidden;
  * 3. a value is malformed → invalid;
- * 4. a non-owner changes the sms switch → forbidden.
+ * 4. a non-owner changes the sms switch → forbidden;
+ * 5. a trial user changes the model → trial (the model is the biggest cost).
  * Keys whose normalized value equals the current one are not changes.
  */
 export const resolveChatSettingsPatch = (
     current: ChatSettingValues,
     patch: ChatSettingsPatch,
-    actorIsOwner: boolean
+    actorIsOwner: boolean,
+    /** The actor is a trial user (design D1-B); the owner is never one */
+    actorIsTrial = false
 ): PatchResolution => {
     if (current.settingsLocked && !actorIsOwner) {
         return { kind: 'rejected', code: 'locked', message: '本聊天的设置已被机主锁定' };
@@ -184,5 +187,12 @@ export const resolveChatSettingsPatch = (
     const changes = CHAT_SETTING_KEYS
         .filter((key) => CHANGED[key](current, next))
         .map((key) => ({ key, oldValue: oldValues[key], newValue: newValues[key] }));
+    if (!actorIsOwner && actorIsTrial && changes.some((change) => change.key === 'model')) {
+        return {
+            kind: 'rejected',
+            code: 'trial',
+            message: '体验用户不能修改本聊天的模型；申请准入后可以修改',
+        };
+    }
     return { kind: 'resolved', next, changes };
 };

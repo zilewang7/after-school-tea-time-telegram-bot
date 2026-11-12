@@ -8,7 +8,7 @@ import { SettingsAudit } from '../settingsAuditDTO.js';
 
 export interface SettingsAuditInput {
     actorId: number;
-    /** chat:<chatId> | global | issue:<issueId> */
+    /** chat:<chatId> | global | issue:<issueId> | access:<applicationId> | user-access:<userId> */
     scope: string;
     key: string;
     oldValue: string | null;

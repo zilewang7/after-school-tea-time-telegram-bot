@@ -24,6 +24,16 @@ import { chatTitleOf } from '../telegram/chat-title.js';
 import { resolveContextRoot } from './context-root.js';
 import { buildReplyToolContext, createReplyTools } from './tools/index.js';
 import { snapshotReplySettings } from '../services/chat-settings-service.js';
+import {
+    effectiveReplyModel,
+    resolveAccessTier,
+    resolveTriggerAccess,
+    type AccessTier,
+} from '../services/access-tier.js';
+import { formatUserDisplayName } from '../shared/user-display-name.js';
+import { sendBotNotice } from '../services/bot-notice-service.js';
+import { TRIAL_COMMAND_REFUSAL_TEXT } from './commands/trial-refusal.js';
+import { triggerAccessNoteOf } from './trigger-access-note.js';
 import { buildStaticPromptOptions } from './static-prompt-options.js';
 import { to } from '../shared/result.js';
 import {
@@ -63,10 +73,18 @@ export const handleRetryRequest = async (
     const metadata = botResponse.getMetadata();
     const commandType: CommandType = metadata.commandType || 'chat';
 
+    // A retry re-generates and re-bills: the tier is whoever pressed the
+    // button (design §9.3), so a trial user cannot rerun a paid image reply
+    const access = resolveAccessTier(ctx.from?.id ?? null);
+    if (access === 'trial' && commandType === 'picgpt') {
+        await sendBotNotice(ctx, TRIAL_COMMAND_REFUSAL_TEXT);
+        return;
+    }
+
     return match(commandType)
         .with('picbanana', () => handlePicbananaRetry(ctx, botResponse))
         .with('picgpt', () => handlePicgptRetry(ctx, botResponse))
-        .with('chat', () => handleChatRetry(ctx, botResponse))
+        .with('chat', () => handleChatRetry(ctx, botResponse, access))
         .exhaustive();
 };
 
@@ -250,16 +268,24 @@ const handlePicgptRetry = async (
  */
 const handleChatRetry = async (
     ctx: Context,
-    botResponse: Awaited<ReturnType<typeof getBotResponse>>
+    botResponse: Awaited<ReturnType<typeof getBotResponse>>,
+    access: AccessTier
 ): Promise<void> => {
     if (!botResponse || !ctx.chat) return;
 
     const chatId = ctx.chat.id;
 
     // The chat's settings at the moment retry was pressed; the model the
-    // original version used is never carried over
+    // original version used is never carried over. A trial presser gets the
+    // cheap model whatever the chat says (design D2).
     const settings = snapshotReplySettings(chatId);
-    const { model } = settings;
+    const model = effectiveReplyModel(access, settings.model);
+    // The presser's tier was decided above; reuse it so the two cannot disagree
+    const triggerAccess = resolveTriggerAccess(
+        ctx.from?.id ?? null,
+        ctx.from ? formatUserDisplayName({ firstName: ctx.from.first_name, lastName: ctx.from.last_name }) : null,
+        access
+    );
 
     // Start retry session
     const session = await startRetry(ctx, botResponse.messageId, { model });
@@ -287,6 +313,7 @@ const handleChatRetry = async (
         chatTitle: chatTitleOf(ctx.chat),
         chatAddendum: settings.promptAddendum,
         excludeMessageIds: [botResponse.messageId], // Exclude the bot response we're retrying
+        triggerAccess: triggerAccessNoteOf(triggerAccess),
     }));
     if (ctxErr || !builtContext) {
         console.error('[retry-handler] Failed to build context:', ctxErr);
@@ -302,7 +329,8 @@ const handleChatRetry = async (
         ? openCodeGoSessionId(chatId, await resolveContextRoot(chatId, botResponse.userMessageId))
         : null;
 
-    // The requester is the original message's author, not whoever pressed retry
+    // The context still answers the original message's author; the tier (and
+    // therefore the model and tool set) is the one who pressed retry
     const signal = session.streamController.signal;
     const { tools, availability, workspaceState } = createReplyTools(
         model,
@@ -315,7 +343,8 @@ const handleChatRetry = async (
             api: ctx.api,
         }),
         { carriesLargeMedia: carriesLargeMedia(chatContents) },
-        settings.toolOverrides
+        settings.toolOverrides,
+        access
     );
     // Same manifest injection as the first answer: the panel and a retry must
     // send the same volatile tail.

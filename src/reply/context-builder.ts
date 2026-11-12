@@ -23,7 +23,7 @@ import { getBilibiliDanmakuPart } from '../services/bilibili-danmaku-service.js'
 import { readStoredChatCommand } from './commands/chat-command-parser.js';
 import { buildOcrFallbackPart } from '../services/luoxu-ocr-service.js';
 import { applyModelCapabilities } from '../ai/message-transformer.js';
-import { buildRuntimeContext } from '../ai/system-prompt/runtime-context.js';
+import { buildRuntimeContext, type TriggerAccessNote } from '../ai/system-prompt/runtime-context.js';
 import { getRepliesInFlight, isBotReplyInFlight, setContextNumbering } from '../state.js';
 import { getGlobalDefaultModel } from '../services/chat-settings-service.js';
 import { replacesChatSystemPrompt } from '../ai/model-kinds.js';
@@ -760,6 +760,11 @@ export interface BuildContextOptions {
      * Media are still read as usual (that renews their cache entries).
      */
     dryRun?: boolean;
+    /**
+     * The trigger user's tier note for the runtime block (trial turns only).
+     * Passed in by the handler so the builder never reads the access cache.
+     */
+    triggerAccess?: TriggerAccessNote | null;
 }
 
 /** Distinguish the options object from a bare ModelCapabilities argument. */
@@ -773,6 +778,7 @@ const isBuildContextOptions = (
         'model' in value ||
         'chatTitle' in value ||
         'chatAddendum' in value ||
+        'triggerAccess' in value ||
         'dryRun' in value);
 
 /** Assembled context: the model-facing turns plus the user roster they involve */
@@ -981,7 +987,13 @@ export const buildContext = async (
     const chatAddendum = replacesChatSystemPrompt(model) ? null : opts.chatAddendum ?? null;
     const runtimeBlock: UnifiedContentPart = {
         type: 'text',
-        text: buildRuntimeContext(model, contextUsers, opts.chatTitle ?? null, chatAddendum),
+        text: buildRuntimeContext(
+            model,
+            contextUsers,
+            opts.chatTitle ?? null,
+            chatAddendum,
+            opts.triggerAccess ?? null
+        ),
     };
     const newestIndex = Math.max(0, turnMessageIds.indexOf(messageId));
     const withRuntime = chatContents.map((content, contentIndex) =>

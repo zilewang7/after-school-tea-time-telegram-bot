@@ -23,7 +23,11 @@ export const ChatTabsLayout = () => {
     const { pathname } = useLocation();
 
     const access = header?.access ?? null;
-    const visibility = useMemo<TabVisibility>(() => ({ isOwner: me.isOwner, access }), [me.isOwner, access]);
+    // Tier-only tabs live on the home layer only
+    const visibility = useMemo<TabVisibility>(
+        () => ({ isOwner: me.isOwner, access, accessTier: null }),
+        [me.isOwner, access]
+    );
     const tabItems = useMemo(
         () => tabBarItemsOf(CHAT_TABS, visibility, (tabPath) => chatTabPath(chatId, tabPath)),
         [visibility, chatId]

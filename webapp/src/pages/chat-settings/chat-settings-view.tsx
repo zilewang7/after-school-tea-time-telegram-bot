@@ -6,13 +6,25 @@ import { ToolSummaryRow } from './tool-summary-row';
 interface ChatSettingsViewProps {
     detail: ChatDetailResponse;
     isOwner: boolean;
+    // Trial users see the fixed trial model and cannot change it
+    isTrial: boolean;
+    trialModel: string;
     models: readonly string[];
     justSaved: boolean;
     onSaved: (settings: ChatSettings) => void;
     onReload: () => void;
 }
 
-export const ChatSettingsView = ({ detail, isOwner, models, justSaved, onSaved, onReload }: ChatSettingsViewProps) => {
+export const ChatSettingsView = ({
+    detail,
+    isOwner,
+    isTrial,
+    trialModel,
+    models,
+    justSaved,
+    onSaved,
+    onReload,
+}: ChatSettingsViewProps) => {
     const { chat, settings } = detail;
     // Locking only binds non-owners
     const writable = !settings.settingsLocked || isOwner;
@@ -28,6 +40,8 @@ export const ChatSettingsView = ({ detail, isOwner, models, justSaved, onSaved, 
                 globalDefaultModel={detail.globalDefaultModel}
                 models={models}
                 isOwner={isOwner}
+                isTrial={isTrial}
+                trialModel={trialModel}
                 writable={writable}
                 justSaved={justSaved}
                 onSaved={onSaved}

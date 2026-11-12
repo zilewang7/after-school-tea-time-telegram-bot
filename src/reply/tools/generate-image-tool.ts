@@ -59,17 +59,34 @@ import { GENERATE_IMAGE_TOOL_NAME } from './tool-names.js';
 
 export { IMAGE_ASPECT_RATIOS } from './image-tool-args.js';
 
-const descriptionOf = (hasSticker: boolean): string =>
+const descriptionOf = (hasSticker: boolean, bananaOnly: boolean): string =>
     '生成新图片或基于现有图片进行修改。生成结果不会自动发出：每次生成得到一个编号（g1、g2…），' +
     `用 send_image(image_id='g1') 发出满意的那张；同一条回复最多生成 ${MAX_GENERATED_IMAGES} 张。` +
     '参考或修改上下文已有图片（含消息附件、链接预览图片及历史生成图）时，在 references 中指定消息编号；' +
     '动图（GIF/动态贴纸）取首帧；同条消息含多张图片时用 image 指定序号（从 1 开始，消息附件在前，链接预览图片在后）。' +
     '参考本次已生成的图片（继续修改）、搜索候选或已读取图片时，在 web_references 中填入 image_id（g1 或 img1）或 search_id。' +
     (hasSticker ? '参考贴纸包内贴纸时，在 web_references 中填入 sticker（st1、包内序号或画面名称）。' : '') +
-    '默认用 banana 模型（Gemini nano-banana）出图；model 传 gpt 则改用 gpt-image-2.5-dev。' +
-    'banana 按 aspect_ratio 出图，并支持自动调用 Google 图片搜索获取真实视觉参考（可在 prompt 中注明所需参考对象，参考来源附于回复末尾）；gpt 不支持这两项。';
+    (bananaOnly
+        ? '只能用 banana 模型（Gemini nano-banana）出图；gpt 生图需要申请完整功能后才能使用。'
+        : '默认用 banana 模型（Gemini nano-banana）出图；model 传 gpt 则改用 gpt-image-2.5-dev。') +
+    'banana 按 aspect_ratio 出图，并支持自动调用 Google 图片搜索获取真实视觉参考（可在 prompt 中注明所需参考对象，参考来源附于回复末尾）' +
+    (bananaOnly ? '。' : '；gpt 不支持这两项。');
 
-const inputSchemaOf = (hasSticker: boolean) => ({
+const modelSchemaOf = (bananaOnly: boolean) =>
+    bananaOnly
+        ? {
+              type: 'string',
+              enum: ['banana'],
+              description: '生图模型：只能用 banana（Gemini nano-banana；体验用户限制）。',
+          }
+        : {
+              type: 'string',
+              enum: IMAGE_MODEL_CHOICES,
+              description:
+                  '生图模型：banana（默认，Gemini nano-banana）或 gpt（gpt-image-2.5-dev）。gpt 不支持 aspect_ratio 与 Google 图片搜索参考。',
+          };
+
+const inputSchemaOf = (hasSticker: boolean, bananaOnly: boolean) => ({
     type: 'object',
     properties: {
         prompt: {
@@ -122,12 +139,7 @@ const inputSchemaOf = (hasSticker: boolean) => ({
                 },
             },
         },
-        model: {
-            type: 'string',
-            enum: IMAGE_MODEL_CHOICES,
-            description:
-                '生图模型：banana（默认，Gemini nano-banana）或 gpt（gpt-image-2.5-dev）。gpt 不支持 aspect_ratio 与 Google 图片搜索参考。',
-        },
+        model: modelSchemaOf(bananaOnly),
         aspect_ratio: {
             type: 'string',
             enum: IMAGE_ASPECT_RATIOS,
@@ -155,6 +167,8 @@ export interface GenerateImageToolOptions {
     readonly dependencies?: GenerateImageToolDependencies;
     /** Absent: the schema has no sticker field and references to stickers are refused */
     readonly sticker?: StickerReferenceSource;
+    /** Trial turn: banana is the only model on offer (design D3) */
+    readonly bananaOnly?: boolean;
 }
 
 const PRODUCTION_DEPENDENCIES: GenerateImageToolDependencies = {
@@ -277,12 +291,13 @@ export const createGenerateImageTool = (
 ): ToolHandler => {
     const dependencies = options.dependencies ?? PRODUCTION_DEPENDENCIES;
     const hasSticker = options.sticker !== undefined;
+    const bananaOnly = options.bananaOnly === true;
 
     return {
         definition: {
             name: GENERATE_IMAGE_TOOL_NAME,
-            description: descriptionOf(hasSticker),
-            inputSchema: inputSchemaOf(hasSticker),
+            description: descriptionOf(hasSticker, bananaOnly),
+            inputSchema: inputSchemaOf(hasSticker, bananaOnly),
         },
         statusText: '🎨 正在画图…',
         chatAction: 'upload_photo',
@@ -300,6 +315,10 @@ export const createGenerateImageTool = (
             const parsed = parseGenerateImageArgs(rawArgs);
             if (!parsed.ok) return imageToolError(parsed.error);
             const { args } = parsed;
+            // The narrowed schema already hides gpt; a stale or hand-written call is refused here
+            if (bananaOnly && args.model !== 'banana') {
+                return imageToolError('体验用户只能使用 banana 生图；gpt 生图需要申请完整功能后才能使用。');
+            }
 
             const references = await resolveImageReferences(args.references, {
                 chatId: context.chatId,

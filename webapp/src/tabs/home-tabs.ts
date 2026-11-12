@@ -1,3 +1,4 @@
+import { HomePendingAccessBadge } from '../pages/access/access-tab-badges';
 import { ChatListPage } from '../pages/chat-list/chat-list-page';
 import { HomeOpenIssuesBadge } from '../pages/issues/issue-tab-badges';
 import { lazyPage } from './lazy-page';
@@ -55,6 +56,16 @@ export const HOME_TABS: readonly TabDefinition[] = [
         isVisible: () => true,
         page: lazyPage(() => import('../pages/issues/issue-list/issue-tabs'), 'HomeIssuesTab'),
         badge: HomeOpenIssuesBadge,
+    },
+    // 准入 (id 'access', path 'access'): the owner reviews applications, a trial user applies
+    {
+        id: 'access',
+        label: '准入',
+        path: 'access',
+        // accessTier null = tiering off (or the chat layer): no tab then
+        isVisible: ({ isOwner, accessTier }) => accessTier !== null && (isOwner || accessTier === 'trial'),
+        page: lazyPage(() => import('../pages/access/access-tab'), 'AccessTab'),
+        badge: HomePendingAccessBadge,
     },
     // [F4 slot end]
     // [F5 slot] 工具 (id 'tools', path 'tools'): the clipboard converter, everyone

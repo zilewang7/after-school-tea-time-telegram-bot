@@ -17,7 +17,12 @@ export const HomeLayer = () => {
     const { me } = useMe();
     const { pathname } = useLocation();
 
-    const visibility = useMemo<TabVisibility>(() => ({ isOwner: me.isOwner, access: null }), [me.isOwner]);
+    // A null tier hides the tier-only tabs, which also covers ACCESS_TIERS=0
+    const accessTier = me.accessTieringEnabled ? me.accessTier : null;
+    const visibility = useMemo<TabVisibility>(
+        () => ({ isOwner: me.isOwner, access: null, accessTier }),
+        [me.isOwner, accessTier]
+    );
     const tabItems = useMemo(() => tabBarItemsOf(HOME_TABS, visibility, homeTabPath), [visibility]);
     const activeTab = useMemo(() => tabAtLayerPath(HOME_TABS, pathSegmentsOf(pathname)), [pathname]);
     const layerValue = useMemo<TabLayerValue>(() => ({ visibility, rootPath: HOME_PATH }), [visibility]);

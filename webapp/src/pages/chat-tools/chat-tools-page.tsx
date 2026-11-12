@@ -95,6 +95,11 @@ export const ChatToolsPage = () => {
                             <p className="hint">
                                 当前模型 {data.effectiveModel}；开关只对本聊天生效，未覆盖的项跟随环境配置，保存后对本聊天后续回复生效。
                             </p>
+                            {me.accessTier === 'trial' && (
+                                <p className="notice warning">
+                                    体验用户实际可用的工具更少：MCP 外部工具与付费生图（gpt/Grok）需要申请准入后才能使用。
+                                </p>
+                            )}
                             <ToolList
                                 groups={data.tools}
                                 canToggle={!data.settings.settingsLocked || me.isOwner}

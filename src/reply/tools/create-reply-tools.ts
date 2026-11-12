@@ -14,6 +14,7 @@ import { createTurnTools } from '../../ai/tools/turn-tools.js';
 import type { ToolHandler, TurnTools } from '../../ai/tools/tool-types.js';
 import { getToolConfig } from '../../config/tool-config.js';
 import { findTelegramUserIdByUsername } from '../../db/queries/user-queries.js';
+import type { AccessTier } from '../../services/access-tier.js';
 import { fetchImageBytes } from '../../services/image-fetch-service.js';
 import { searchImages } from '../../services/image-search-service.js';
 import { createHistoryService } from '../../services/luoxu-history-service.js';
@@ -71,10 +72,12 @@ export const createReplyTools = (
     context: ReplyToolContext,
     request?: ToolRequestTraits,
     /** The chat's panel switches, taken with the rest of the reply settings */
-    toolOverrides: ToolOverrides | null = null
+    toolOverrides: ToolOverrides | null = null,
+    /** The trigger user's tier: a trial turn loses the paid tools (design D3) */
+    access: AccessTier = 'full'
 ): ReplyTools => {
     const config = getToolConfig();
-    const availability = resolveToolAvailability(model, context.chatId, config, request, toolOverrides);
+    const availability = resolveToolAvailability(model, context.chatId, config, request, toolOverrides, access);
     const capabilities = getModelCapabilities(model);
     const mediaState = createReplyMediaState();
     const workspaceState = createWorkspaceState({
@@ -104,11 +107,13 @@ export const createReplyTools = (
         ...(availability.sms ? [createSendSmsTool(context)] : []),
         ...(availability.image
             ? [
-                  createGenerateImageTool(
-                      context,
-                      mediaState,
-                      availability.sticker ? { sticker: { setName: config.stickerSetName, api: context.api } } : {}
-                  ),
+                  createGenerateImageTool(context, mediaState, {
+                      ...(availability.sticker
+                          ? { sticker: { setName: config.stickerSetName, api: context.api } }
+                          : {}),
+                      // Trial users may draw, but only with banana (design D3)
+                      ...(access === 'trial' ? { bananaOnly: true } : {}),
+                  }),
               ]
             : []),
         ...(availability.imageSearch

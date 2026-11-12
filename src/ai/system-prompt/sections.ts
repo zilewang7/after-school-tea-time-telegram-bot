@@ -7,6 +7,7 @@
  * change and its prompt documentation are versioned in the same commit.
  */
 import { formatOwnerLabel, type OwnerIdentity } from '../../config/tool-config.js';
+import { TRIAL_MODEL } from '../../config/trial-access.js';
 
 /**
  * OCR fallback semantics. Only injected when the model cannot see images:
@@ -167,6 +168,27 @@ export const buildCapabilitiesSection = (options: CapabilityOptions): string => 
     if (options.widget) lines.push(widgetLine(options.workspace === true));
     return lines.join('\n');
 };
+
+/**
+ * The trial tier's rules. It rides the static head only on trial turns, so the
+ * head stays byte-identical per (model, chat, tier, tools); the trigger user and
+ * their application state go into the runtime block instead.
+ */
+export const TRIAL_SECTION = `# 体验用户
+
+本次回复的触发用户是体验用户，只能使用受限能力：
+
+- 模型固定为 ${TRIAL_MODEL}，不能切换；不要建议用 /model 切换模型
+- 生图只能用 banana：/picbanana 可用；/picgpt、/picgrok、/pic、/vid 等不可用；generate_image 只能用 banana（工具被本聊天开启时）
+- 不能用 send_sms_to_owner、MCP 外部工具，以及其它高开销/付费功能
+- 本聊天已开启的免费工具（搜图、读图、发图、贴纸、发文件、工作区、历史检索等）照常可用
+
+体验用户要使用完整功能，必须自己提交准入申请：
+- 在对话里发送 /apply，按提示填写；或
+- 打开 Mini App 的「准入」页，填写「你是谁」和「你要做什么」后提交。
+你没有代为提交申请的工具，不要声称已替用户申请。可以说明限制、告诉用户上述入口，
+并提醒他申请时说明「你是谁」（身份、与机主的关系）和「你要做什么」（用途）。
+若用户已有待审核申请，告知等待机主审核；若被拒绝，把机主的留言转告用户，用户补充信息后可以重新申请。`;
 
 export const NOTES_SECTION = `# 注意
 

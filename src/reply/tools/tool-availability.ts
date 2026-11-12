@@ -1,13 +1,15 @@
 /**
  * Which tools one turn gets — the only place DISABLED_TOOLS is applied.
  *
- * Decided from the model, the chat, startup configuration and the chat's panel
- * switches — never from what the messages say — so the same model in the same
- * chat with the same settings always declares the same tools, byte for byte
- * (implicit prompt caching), and the system prompt line about SMS is present
- * exactly when the tool is. The panel's per-chat switches override only the
- * chat whitelists; env kill switches, URLs, model capabilities and the test
- * instance's SMS guard remain hard prerequisites. One exception keeps the
+ * Decided from the model, the chat, the trigger user's tier, startup
+ * configuration and the chat's panel switches — never from what the messages
+ * say — so the same (model, chat, tier, settings) always declares the same
+ * tools, byte for byte (implicit prompt caching), and the system prompt line
+ * about SMS is present exactly when the tool is. The panel's per-chat switches
+ * override only the chat whitelists; env kill switches, URLs, model
+ * capabilities and the test instance's SMS guard remain hard prerequisites.
+ * A trial turn additionally loses the paid/unknown-cost tools (SMS, MCP); its
+ * free tools keep following the chat switches. One exception keeps the
  * byte-stability promise: a platform that sends requests carrying large media
  * without client tools (Gemini) gets none for such a turn.
  */
@@ -15,6 +17,7 @@ import { getModelCapabilities, getPlatform } from '../../ai/platform-factory.js'
 import { listMcpServers } from '../../ai/mcp/index.js';
 import { isTestInstance } from '../../config/instance.js';
 import { getToolConfig, type ToolConfig } from '../../config/tool-config.js';
+import type { AccessTier } from '../../services/access-tier.js';
 import { toolOverrideOf, type ToolGroupKey, type ToolOverrides } from '../../services/tool-overrides.js';
 import {
     FETCH_IMAGE_TOOL_NAME,
@@ -44,6 +47,8 @@ export interface ToolRequestTraits {
 const PLAIN_REQUEST: ToolRequestTraits = { carriesLargeMedia: false };
 
 export interface ToolAvailability {
+    /** The trigger user is a trial user: the prompt carries the trial section */
+    readonly trial: boolean;
     /** Connected MCP servers this turn draws tools from, in config order */
     readonly mcpServers: readonly string[];
     /** Whether an MCP tool, by its original MCP name, is left on */
@@ -79,6 +84,7 @@ export interface ToolAvailability {
 }
 
 const NO_TOOLS: ToolAvailability = {
+    trial: false,
     mcpServers: [],
     isMcpToolEnabled: () => false,
     sms: false,
@@ -97,17 +103,24 @@ const NO_TOOLS: ToolAvailability = {
     workspacePreview: false,
 };
 
+/** No client tools this turn; `trial` still rides along so the prompt stays honest */
+const noToolsFor = (trial: boolean): ToolAvailability => (trial ? { ...NO_TOOLS, trial } : NO_TOOLS);
+
 export const resolveToolAvailability = (
     model: string,
     chatId: number,
     config: ToolConfig = getToolConfig(),
     request: ToolRequestTraits = PLAIN_REQUEST,
-    overrides: ToolOverrides | null = null
+    overrides: ToolOverrides | null = null,
+    access: AccessTier = 'full'
 ): ToolAvailability => {
+    const trial = access === 'trial';
     const capabilities = getModelCapabilities(model);
-    if (capabilities.supportsClientTools !== true) return NO_TOOLS;
+    if (capabilities.supportsClientTools !== true) return noToolsFor(trial);
     // The request will declare no tools, so the prompt must not name any
-    if (request.carriesLargeMedia && capabilities.clientToolsWithLargeMedia === false) return NO_TOOLS;
+    if (request.carriesLargeMedia && capabilities.clientToolsWithLargeMedia === false) {
+        return noToolsFor(trial);
+    }
 
     const isEnabled = (name: string): boolean => !config.disabledTools.has(name);
     const platformType = getPlatform(model).type;
@@ -145,12 +158,15 @@ export const resolveToolAvailability = (
         isEnabled(WORKSPACE_PREVIEW_TOOL_NAME);
 
     // A server is out when excluded for this platform, disabled by its key, or
-    // left with no enabled tool
-    const mcpServers = listMcpServers()
-        .filter((server) => !(server.config.excludePlatforms ?? []).includes(platformType))
-        .filter((server) => isEnabled(server.name))
-        .filter((server) => server.tools.some((tool) => isEnabled(tool.name)))
-        .map((server) => server.name);
+    // left with no enabled tool. Trial users get none at all: MCP servers can
+    // reach paid or unknown-cost services (design D3).
+    const mcpServers = trial
+        ? []
+        : listMcpServers()
+              .filter((server) => !(server.config.excludePlatforms ?? []).includes(platformType))
+              .filter((server) => isEnabled(server.name))
+              .filter((server) => server.tools.some((tool) => isEnabled(tool.name)))
+              .map((server) => server.name);
 
     // The one layer the panel may override: which chats are offered the tools
     // with side effects. Everything else below stays a hard prerequisite.
@@ -189,9 +205,11 @@ export const resolveToolAvailability = (
     const image = wantsGenerateImage && sendImageEnabled;
 
     return {
+        trial,
         mcpServers,
         isMcpToolEnabled: isEnabled,
         sms:
+            !trial &&
             sideEffectGate('sms') &&
             config.ownerSmsUrl !== '' &&
             smsInstanceAllowed &&
