@@ -10,7 +10,7 @@
 import type { Api, RawApi } from 'grammy';
 import type { InlineKeyboardMarkup } from 'grammy/types';
 import { to } from '../shared/result.js';
-import { registerContinuation } from '../state.js';
+import { registerContinuation, unregisterBotReplyInFlight, unregisterContinuation } from '../state.js';
 import { toApiEntities } from './api-entities.js';
 import { runApiCall, submitEdit } from './edit-coordinator.js';
 import type { FinalMessageChunk } from './formatters/final-message-builder.js';
@@ -112,6 +112,10 @@ export const layOutChunks = async (input: LayOutChunksInput): Promise<LayOutChun
             break;
         }
         messageIds.pop();
+        // The message is gone, and the reply's finalization only knows the
+        // messages that are left: nothing of this one stays registered
+        unregisterContinuation(chatId, messageId);
+        unregisterBotReplyInFlight(chatId, messageId);
     }
 
     return {

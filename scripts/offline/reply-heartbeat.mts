@@ -127,6 +127,7 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
             // A continuation the reply already opened is renewed as well
             const continuationId = takeMessageId();
             session.messageIds.push(continuationId);
+            state.registerContinuation(chatId, continuationId, firstMessageId);
             const botMessageIds = [firstMessageId, continuationId];
 
             const modelWritten = await rowOf(chatId, firstMessageId);
@@ -192,7 +193,14 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
                 !state.isBotReplyInFlight(chatId, firstMessageId) &&
                     !state.isBotReplyInFlight(chatId, continuationId) &&
                     !state.getRepliesInFlight(chatId).includes(chatContext.userMessageId),
-                'the finalize still takes every mark off'
+                'the end of the reply still takes every mark off'
+            );
+            // The one-message answer needs no continuation: the final layout
+            // deleted it, and with it what was registered for it
+            expect(
+                !session.messageIds.includes(continuationId) &&
+                    state.findFirstMessageIdByContinuation(chatId, continuationId) === undefined,
+                `the surplus continuation is deleted and no longer registered (got ${json(session.messageIds)})`
             );
         },
     },
