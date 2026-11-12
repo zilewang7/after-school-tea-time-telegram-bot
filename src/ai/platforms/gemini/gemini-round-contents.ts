@@ -154,10 +154,13 @@ export const interruptedCallResult: ToolResult = {
 
 /**
  * Follows the error of a call the stop landed in: the stop reached the tool
- * as an abort, but whatever it had started may already have happened.
+ * as an abort, but whatever it had started may already have happened. A
+ * tool's own error may say exactly what happened (the SMS tool says the SMS
+ * was not sent); that wins over the warning.
  */
 export const STOPPED_DURING_CALL_NOTE =
-    'The reply was stopped while this call ran; it may have taken effect anyway, so check before calling it again.';
+    'The reply was stopped while this call ran. If the error above says what happened, go by it; ' +
+    'otherwise the call may have taken effect anyway, so check before calling it again.';
 
 /** The error result with STOPPED_DURING_CALL_NOTE after it */
 export const withStoppedDuringCallNote = (result: ToolResult): ToolResult => ({

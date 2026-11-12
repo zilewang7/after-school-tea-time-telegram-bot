@@ -17,6 +17,7 @@ import type {
 } from 'openai/resources/responses/responses';
 import type { ModelCapabilities, StreamChunk, UnifiedMessage } from '../../src/ai/types.js';
 import type { ToolHandler, ToolResult } from '../../src/ai/tools/index.js';
+import type { ToolLoopCheckpoint } from '../../src/ai/tools/tool-loop-checkpoint.js';
 
 interface ScriptedResponse {
     readonly path: string;
@@ -69,6 +70,11 @@ process.env.DEEPSEEK_API_URL = `${stubBaseUrl}/v1`;
 process.env.DEEPSEEK_API_KEY = 'offline-stub';
 process.env.MIMO_API_URL = `${stubBaseUrl}/v1`;
 process.env.MIMO_API_KEY = 'offline-stub';
+// The platform factory builds every platform at import: Gemini and Grok point at the stub too
+process.env.GEMINI_API_URL = stubBaseUrl;
+process.env.GEMINI_API_KEY = 'offline-stub';
+process.env.GROK_API_URL = `${stubBaseUrl}/v1`;
+process.env.GROK_API_KEY = 'offline-stub';
 
 const { OpenAIPlatform } = await import('../../src/ai/platforms/openai-platform.js');
 const { AnthropicPlatform } = await import('../../src/ai/platforms/anthropic-platform.js');
@@ -83,7 +89,8 @@ const { createChatToolCallCollector } = await import(
     '../../src/ai/platforms/chat-completions/chat-completions-tool-round.js'
 );
 const { MIMO_CONTENT_FILTER_NOTICE } = await import('../../src/ai/platforms/mimo-content-filter.js');
-const { OPENAI_IMAGE_MODEL } = await import('../../src/config/models.js');
+const { GEMINI_IMAGE_MODEL, OPENAI_IMAGE_MODEL } = await import('../../src/config/models.js');
+const { sendMessage } = await import('../../src/ai/platform-factory.js');
 
 // ---- fake tools ----
 
@@ -1427,6 +1434,63 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
                 .then(() => null, (error: Error) => error);
             expect(failure?.message === 'Timeout', `it timed out (got ${failure?.message})`);
             expect(Date.now() - startedAt < 2000, 'without waiting for the request itself');
+        },
+    },
+    {
+        name: 'a resume the platform cannot honour is refused before any request: another platform, Gemini without its tool loop',
+        body: async () => {
+            const loopRequest = { contents: [], tools: [], final: false };
+            // A well-formed Gemini checkpoint, so only the platform or the missing tool loop can refuse it
+            const checkpoint: ToolLoopCheckpoint = {
+                platform: 'gemini',
+                completedRounds: 1,
+                toolUsage: [],
+                journal: [{ type: 'text', content: 'kept round' }],
+                state: {
+                    kind: 'gemini-tool-loop',
+                    elapsedMs: 0,
+                    separator: { textShown: true, separatorPending: false },
+                    thoughtSummary: { mode: 'passthrough', emitted: false },
+                    loop: {
+                        roundNumber: 2,
+                        request: loopRequest,
+                        baseRequest: loopRequest,
+                        toolRounds: [],
+                        groundings: [],
+                        executedCallCount: 0,
+                        toolTimeMs: 0,
+                        freeMode: false,
+                        freeRounds: 0,
+                        mayAskAgain: true,
+                    },
+                },
+            };
+            const attempts: Array<[string, string]> = [
+                ['gpt-5.4', 'Cannot resume a gemini checkpoint on the openai platform'],
+                ['claude-sonnet-5', 'Cannot resume a gemini checkpoint on the anthropic platform'],
+                ['deepseek-reasoning', 'Cannot resume a gemini checkpoint on the deepseek platform'],
+                ['mimo-v2.6-pro', 'Cannot resume a gemini checkpoint on the mimo platform'],
+                ['grok-4.20-0309-reasoning', 'Cannot resume a gemini checkpoint on the grok platform'],
+                // No tools: the plain single request cannot go on from a tool loop
+                ['gemini-3.8-flash', 'runs no client tools for this request'],
+                [GEMINI_IMAGE_MODEL, 'runs no client tools for this request'],
+            ];
+            for (const [model, message] of attempts) {
+                resetStub([]);
+                let error: unknown = null;
+                let chunks = 0;
+                try {
+                    const stream = await sendMessage([], { model, resumeFrom: checkpoint });
+                    for await (const _chunk of stream) chunks += 1;
+                } catch (caught) {
+                    error = caught;
+                }
+                expect(
+                    error instanceof Error && error.message.includes(message),
+                    `${model}: refused (got ${error instanceof Error ? error.message : String(error)})`
+                );
+                expect(chunks === 0 && recordedRequests.length === 0, `${model}: nothing yielded, nothing sent (got ${recordedRequests.length} request(s))`);
+            }
         },
     },
 ];

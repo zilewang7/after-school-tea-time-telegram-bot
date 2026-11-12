@@ -11,6 +11,7 @@
  *
  * Run: npx tsx scripts/offline/gemini-round-recovery.mts
  */
+import { getEventListeners } from 'node:events';
 import { expect, reportResults, runCase, type CaseResult } from './harness.mts';
 import {
     createFakeVertex,
@@ -50,6 +51,13 @@ class RecordingGeminiPlatform extends GeminiPlatform {
 
 // random 0.5: no jitter, every wait is the ladder's base value
 const platform = new RecordingGeminiPlatform({ client: vertex.client, random: () => 0.5 });
+
+/** Waits through the platform's own sleep, one millisecond each */
+class ShortWaitGeminiPlatform extends GeminiPlatform {
+    protected override sleep(_ms: number, signal?: AbortSignal): Promise<void> {
+        return super.sleep(1, signal);
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -159,6 +167,8 @@ interface TurnOptions {
     readonly usageSink?: UsageSink;
     /** Called with every chunk as it arrives */
     readonly onChunk?: (chunk: StreamChunk) => void;
+    /** Another platform over the same fake Vertex */
+    readonly platform?: InstanceType<typeof GeminiPlatform>;
 }
 
 interface TurnResult {
@@ -180,7 +190,7 @@ const runTurn = async (options: TurnOptions = {}): Promise<TurnResult> => {
     console.error = record;
     let error: unknown = null;
     try {
-        const stream = await platform.sendMessage(options.messages ?? userTurn('What is the code word?'), {
+        const stream = await (options.platform ?? platform).sendMessage(options.messages ?? userTurn('What is the code word?'), {
             model: 'gemini-3.8-flash',
             systemPrompt: 'offline system prompt',
             // Recovery is on unless a case asks for the single attempt
@@ -475,6 +485,40 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
         },
     },
     {
+        name: '7b. a connection dropped after the finish reason keeps the round: its calls run once, an answer ends the reply',
+        body: async () => {
+            const dropped = (): TypeError =>
+                new TypeError('terminated', { cause: Object.assign(new Error('other side closed'), { code: 'UND_ERR_SOCKET' }) });
+
+            reset([
+                droppedStreamReply(roundEvents([[thoughtPart('plan r1')], [callPart('lookup_a', { topic: 'falcon' }, 'r1', 'call_r1')]]), dropped),
+                answer('The code word is AZALEA-42.'),
+            ]);
+            const usageSink = createUsageSink();
+            const toolRound = await runTurn({ usageSink });
+            expect(toolRound.error === null, `the reply finishes (got ${errorMessage(toolRound.error)})`);
+            expect(vertex.requests.length === 2, `round 1 is not sent again (got ${vertex.requests.length} requests)`);
+            expect(json(executions.map((execution) => execution.name)) === '["lookup_a"]', `its call ran once (got ${json(executions)})`);
+            expect(platform.sleeps.length === 0, 'without a wait');
+            expect(!textOf(toolRound.chunks, 'thinking').includes('〔'), 'and without a retry marker');
+            const totals = usageSink.totals();
+            expect(totals.roundRetries === 0 && totals.rounds === 2, `no automatic retry, two rounds (got ${json(totals)})`);
+            expect(
+                json(recoverLines(toolRound.lines)) ===
+                    json(["[gemini-recover] round=1 attempt=1 broke after finishReason=STOP; kept as the round's result: terminated"]),
+                `one line says the round was kept (got ${json(recoverLines(toolRound.lines))})`
+            );
+            expect(vertex.requests[0]?.signal?.aborted === true, 'the broken attempt is still closed');
+
+            reset([droppedStreamReply(roundEvents([[thoughtPart('thinking first')], [textPart('The whole answer.')]]), dropped), answer('never sent')]);
+            const answerRound = await runTurn();
+            expect(answerRound.error === null, `the answer round ends the reply normally (got ${errorMessage(answerRound.error)})`);
+            expect(vertex.requests.length === 1, `nothing more is sent (got ${vertex.requests.length})`);
+            expect(textOf(answerRound.chunks) === 'The whole answer.', `the answer stands (got ${json(textOf(answerRound.chunks))})`);
+            expect(answerRound.chunks.at(-1)?.type === 'done', 'and the reply ends with done');
+        },
+    },
+    {
         name: '8. opening: 429 ×3 then success, 429 ×4 gives up, timeout ×3 gives up with the same timeout, 5xx and network once each',
         body: async () => {
             reset([httpErrorReply(429, RATE_LIMITED), httpErrorReply(429, RATE_LIMITED), httpErrorReply(429, RATE_LIMITED), answer('Fourth time.')]);
@@ -547,12 +591,122 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
             const controller = new AbortController();
             reset([httpErrorReply(429, RATE_LIMITED), answer('never sent')]);
             platform.onSleep = () => controller.abort();
+            const usageSink = createUsageSink();
 
-            const { error, chunks } = await runTurn({ signal: controller.signal });
+            const { error, chunks } = await runTurn({ signal: controller.signal, usageSink });
 
             expect(vertex.requests.length === 1, `nothing is sent after the stop (got ${vertex.requests.length})`);
             expect(errorMessage(error) === 'Aborted', `the reply ends as stopped (got ${errorMessage(error)})`);
             expect(statusTexts(chunks).length === 1, 'the waiting status was the last thing shown');
+            expect(usageSink.totals().roundRetries === 0, `the retry that never went out is not counted (got ${usageSink.totals().roundRetries})`);
+        },
+    },
+    {
+        name: "9b. the platform's own waits leave no listener on the reply's stop signal, and a stop still ends one",
+        body: async () => {
+            const shortWaits = new ShortWaitGeminiPlatform({ client: vertex.client, random: () => 0.5 });
+            const controller = new AbortController();
+            reset([httpErrorReply(429, RATE_LIMITED), httpErrorReply(429, RATE_LIMITED), httpErrorReply(503, 'The service is currently unavailable.'), answer('After three waits.')]);
+
+            const waited = await runTurn({ platform: shortWaits, signal: controller.signal });
+
+            expect(waited.error === null && vertex.requests.length === 4, `three waits, then the answer (got ${errorMessage(waited.error)})`);
+            const left = getEventListeners(controller.signal, 'abort').length;
+            expect(left === 0, `no abort listener is left on the reply's signal (got ${left})`);
+
+            const stopping = new AbortController();
+            reset([httpErrorReply(429, RATE_LIMITED), answer('never sent')]);
+            const stopped = await runTurn({
+                platform: shortWaits,
+                signal: stopping.signal,
+                onChunk: (chunk) => {
+                    // The waiting status goes out right before the wait starts
+                    if (chunk.type === 'status' && chunk.status !== undefined) stopping.abort();
+                },
+            });
+            expect(
+                errorMessage(stopped.error) === 'Aborted' && vertex.requests.length === 1,
+                `a stop during the wait ends the reply at once (got ${errorMessage(stopped.error)})`
+            );
+        },
+    },
+    {
+        name: '9c. an error that only reads like an abort is no stop; a real stop still is one, in an opening, a wait and a stream',
+        body: async () => {
+            const controller = new AbortController();
+            const conflict: ScriptedReply = {
+                status: 409,
+                contentType: 'application/json',
+                body: JSON.stringify({ error: { code: 409, message: 'The operation was aborted.', status: 'ABORTED' } }),
+            };
+            reset([conflict, answer('never sent')]);
+            const aborted409 = await runTurn({ signal: controller.signal });
+            expect(
+                errorStatus(aborted409.error) === 409 && errorMessage(aborted409.error) !== 'Aborted',
+                `a 409 ABORTED comes out as the error it is (got ${errorMessage(aborted409.error)})`
+            );
+            expect(
+                recoverLines(aborted409.lines).some((line) => line.includes('gave up after 1 attempts: not_retryable (phase=open kind=client_error)')),
+                `the policy classifies it, and says so (got ${json(recoverLines(aborted409.lines))})`
+            );
+
+            reset([
+                {
+                    status: 0,
+                    contentType: 'application/json',
+                    body: '',
+                    fetchError: () => Object.assign(new Error('read ECONNABORTED'), { code: 'ECONNABORTED' }),
+                },
+                answer('After a dropped connection.'),
+            ]);
+            const connectionAborted = await runTurn({ signal: controller.signal });
+            expect(
+                connectionAborted.error === null && vertex.requests.length === 2 && json(platform.sleeps) === '[2000]',
+                `ECONNABORTED is a network error: one 2 s wait, then the answer (got ${errorMessage(connectionAborted.error)})`
+            );
+
+            const stopInOpening = new AbortController();
+            const hangUntilStopped: ScriptedReply = {
+                status: 0,
+                contentType: 'text/event-stream',
+                body: '',
+                hangUntilAborted: true,
+                onServe: () => stopInOpening.abort(),
+            };
+            reset([hangUntilStopped, answer('never sent')]);
+            const openingStopped = await runTurn({ signal: stopInOpening.signal });
+            expect(
+                errorMessage(openingStopped.error) === 'Aborted' && vertex.requests.length === 1 && platform.sleeps.length === 0,
+                `a stop while the round opens ends it as Error('Aborted') (got ${errorMessage(openingStopped.error)})`
+            );
+
+            const stopInWait = new AbortController();
+            reset([httpErrorReply(503, 'The service is currently unavailable.'), answer('never sent')]);
+            platform.onSleep = () => stopInWait.abort();
+            const waitStopped = await runTurn({ signal: stopInWait.signal });
+            expect(
+                errorMessage(waitStopped.error) === 'Aborted' && vertex.requests.length === 1,
+                `a stop during a wait ends it as Error('Aborted') (got ${errorMessage(waitStopped.error)})`
+            );
+
+            // Mid-stream the stop never meets sendWithRetry: the stream's own abort comes out, as before
+            const stopInStream = new AbortController();
+            reset([stalledStreamReply([event([thoughtPart('thinking when stopped')])]), answer('never sent')]);
+            platform.onSleep = null;
+            const streamStopped = await runTurn({
+                signal: stopInStream.signal,
+                onChunk: (chunk) => {
+                    if (chunk.type === 'thinking') stopInStream.abort();
+                },
+            });
+            expect(
+                streamStopped.error instanceof Error && streamStopped.error.name === 'AbortError' && vertex.requests.length === 1,
+                `a stop mid-stream ends it with the stream's abort (got ${streamStopped.error instanceof Error ? streamStopped.error.name : String(streamStopped.error)})`
+            );
+            expect(
+                [openingStopped, waitStopped, streamStopped].every((turn) => !recoverLines(turn.lines).some((line) => line.includes('gave up'))),
+                'no stop is logged as giving up'
+            );
         },
     },
     {

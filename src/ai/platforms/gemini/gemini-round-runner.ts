@@ -22,6 +22,7 @@ import type { UsageSink } from '../../usage/usage-types.js';
 import { firstRoundFallbackFor } from './gemini-first-round-fallback.js';
 import {
     clearedStatus,
+    formatBrokeAfterFinishLine,
     formatGiveUpLine,
     formatNoFinishLine,
     formatRetryLine,
@@ -164,7 +165,8 @@ async function* runAttempt(options: AttemptOptions): AsyncGenerator<StreamChunk,
             options.leadingChunk
         );
         if (consumed.kind === 'complete') {
-            completed = true;
+            // A body that broke after the finish reason may still be open
+            completed = consumed.round.brokeAfterFinish === null;
             return consumed;
         }
         return { kind: 'failed', failure: failureOf('stream', consumed.error, consumed.showedAnswer), broken: consumed };
@@ -203,8 +205,11 @@ export async function* runRecoverableRound(
             leadingChunk: markerPending ? retryMarkerFor(roundNumber, options.thoughtSummary) : null,
         });
         if (outcome.kind === 'complete') {
-            if (outcome.round.finishReason === undefined) {
+            const { finishReason, brokeAfterFinish } = outcome.round;
+            if (finishReason === undefined) {
                 console.warn(formatNoFinishLine(roundNumber, attempt));
+            } else if (brokeAfterFinish !== null) {
+                console.warn(formatBrokeAfterFinishLine(roundNumber, attempt, finishReason, brokeAfterFinish.error));
             }
             return { round: outcome.round, request, recoveryState: counters.reply };
         }
@@ -247,9 +252,10 @@ export async function* runRecoverableRound(
         }
         counters = decision.counters;
         console.warn(formatRetryLine(facts, decision.waitMs));
-        usageSink?.addRecovery();
         yield waitingStatus(roundNumber, decision.kind, decision.waitMs, attempt + 1);
         statusShown = true;
         await recovery.sleep(decision.waitMs, signal);
+        // Counted once the wait is over: a stop during it sends nothing again
+        usageSink?.addRecovery();
     }
 }
