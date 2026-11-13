@@ -355,6 +355,35 @@ const migrateThinkingLinks = async (transaction: Transaction): Promise<void> => 
   );
 };
 
+/**
+ * The public Google-search pages (design 2026-1113-1831 §3.6): one row per
+ * reply version whose GoogleSearch footer could not fit one message. The page
+ * is rendered once at delivery time and stored whole (`html`), because
+ * Telegram's preview crawler fetches once and never refreshes the card: the
+ * first request must already see the final page, and later requests serve the
+ * same bytes. A version that re-renders finds its row and keeps that page.
+ *
+ * Raw SQL only, like thinking_links: no sequelize model, so sync() never
+ * rebuilds it.
+ */
+const migrateSearchLinks = async (transaction: Transaction): Promise<void> => {
+  await sequelize.query(`
+    CREATE TABLE IF NOT EXISTS search_links (
+      token TEXT PRIMARY KEY,
+      chatId INTEGER NOT NULL,
+      firstMessageId INTEGER NOT NULL,
+      versionId INTEGER NOT NULL,
+      model TEXT,
+      createdAt DATETIME NOT NULL,
+      html TEXT NOT NULL
+    )
+  `, { transaction });
+  await sequelize.query(
+    'CREATE UNIQUE INDEX IF NOT EXISTS search_links_target ON search_links (chatId, firstMessageId, versionId)',
+    { transaction }
+  );
+};
+
 /** Apply additive, idempotent DDL without altering the large message table. */
 /**
  * Indexes that Sequelize's sync cannot express (partial unique index): a
@@ -677,6 +706,7 @@ export const runSchemaMigrations = async (): Promise<void> => {
     await migrateShareLinks(transaction);
     await migratePanelWebSessions(transaction);
     await migrateThinkingLinks(transaction);
+    await migrateSearchLinks(transaction);
     await migrateReplyMetricsResumeColumns(transaction);
     await migrateChatSettingsGeminiPriority(transaction);
     await migrateThinkingEffortColumns(transaction);
@@ -789,6 +819,12 @@ export const runSchemaMigrations = async (): Promise<void> => {
     await sequelize.query(
       `INSERT OR IGNORE INTO schema_migrations (name, appliedAt)
        VALUES ('20261113_model_capability_proposals', :appliedAt)`,
+      { replacements: { appliedAt: new Date().toISOString() }, transaction }
+    );
+    // search_links is a brand-new table, created by migrateSearchLinks above
+    await sequelize.query(
+      `INSERT OR IGNORE INTO schema_migrations (name, appliedAt)
+       VALUES ('20261113_search_links', :appliedAt)`,
       { replacements: { appliedAt: new Date().toISOString() }, transaction }
     );
   });

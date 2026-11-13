@@ -70,8 +70,7 @@ import {
     buildGoogleSearchDocument,
     googleSearchFooterPlanOfDocument,
 } from '../telegram/formatters/google-search-document.js';
-import { rememberSearchDocument } from '../panel/search/search-document-cache.js';
-import { searchLinkEnabled, searchPageLinkOf } from '../shared/search-page.js';
+import { beginSearchLink } from '../panel/search/search-link-service.js';
 import {
     STREAMING_MAX_ENTITIES,
     STREAMING_MAX_LENGTH,
@@ -1441,25 +1440,19 @@ const buildReplyFinalLayout = async (
     const groundingData = response.groundingData ?? [];
     const googleSearchDocument = buildGoogleSearchDocument(groundingData);
     // A footer too big for one message becomes a link message to the public
-    // page. Its document is cached before anything goes out: Telegram fetches
-    // the page right after the send, while the version row is stored only after
-    // the media delivery (design §3.7).
+    // page: the page is generated once and stored before any message goes out,
+    // because Telegram fetches the card once and never refreshes it (design
+    // §3.6). Null means the reply keeps the inline footer.
     if (googleSearchFooterPlanOfDocument(googleSearchDocument) === 'overflows') {
-        const link = searchLinkEnabled()
-            ? searchPageLinkOf({
-                  chatId: chatContext.chatId,
-                  firstMessageId: session.firstMessageId,
-                  versionId: session.versionCount + 1,
-              })
-            : null;
-        if (link !== null) {
-            rememberSearchDocument(link.token, {
-                model: session.model,
-                createdAt: new Date().toISOString(),
-                document: googleSearchDocument,
-            });
-            session.searchLink = link;
-        }
+        const link = await beginSearchLink({
+            chatId: chatContext.chatId,
+            firstMessageId: session.firstMessageId,
+            versionId: session.versionCount + 1,
+            model: session.model,
+            createdAt: new Date().toISOString(),
+            document: googleSearchDocument,
+        });
+        if (link !== null) session.searchLink = link;
     }
     // The stream syncs the complete buffers on every chunk; a caller that never
     // streamed (an image-chat turn, a direct final delivery) only has the response.

@@ -17,7 +17,7 @@ import type {
     GoogleSearchSource,
 } from '../../telegram/formatters/google-search-document.js';
 import { escapeHtml } from '../share/markdown-html.js';
-import type { SearchPageDocument } from './search-types.js';
+import type { SearchPageRenderInput } from './search-types.js';
 
 const BOT_NAME = 'k-on-bot';
 
@@ -134,7 +134,7 @@ const HEAD_START = [
 ].join('');
 
 /** The card: fixed title, the quote block's text as its description, no image */
-const headOf = (page: SearchPageDocument): string =>
+const headOf = (page: SearchPageRenderInput): string =>
     [
         HEAD_START,
         `<title>${SEARCH_PAGE_TITLE}</title>`,
@@ -149,7 +149,7 @@ const headOf = (page: SearchPageDocument): string =>
     ].join('');
 
 /** `共搜索 131 次` / `引用 3 条来源`, the same counts the chat's stat line uses */
-const statsOf = (page: SearchPageDocument): string[] => {
+const statsOf = (page: SearchPageRenderInput): string[] => {
     const parts: string[] = [];
     if (page.document.queryCount > 0) {
         parts.push(`共搜索 ${page.document.queryCount.toLocaleString('zh-CN')} 次`);
@@ -161,7 +161,7 @@ const statsOf = (page: SearchPageDocument): string[] => {
 };
 
 /** `模型 · 11-13 18:31 · 共搜索 131 次 · 引用 3 条来源` */
-const metaLineOf = (page: SearchPageDocument): string => {
+const metaLineOf = (page: SearchPageRenderInput): string => {
     const parts: string[] = [];
     if (page.model !== null) parts.push(`<span>${escapeHtml(page.model)}</span>`);
     const time = formatTime(page.createdAt);
@@ -172,7 +172,7 @@ const metaLineOf = (page: SearchPageDocument): string => {
 };
 
 /** The complete fast page */
-export const renderSearchPage = (page: SearchPageDocument): string =>
+export const renderSearchPage = (page: SearchPageRenderInput): string =>
     [
         headOf(page),
         '<body>',

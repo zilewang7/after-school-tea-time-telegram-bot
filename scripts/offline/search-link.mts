@@ -10,8 +10,10 @@
  *
  * - the folded final delivery: last message is the link, the footer text is in
  *   no message, the version stores the token, the buttons land on it;
- * - the live document is cached for Telegram's preview crawler;
- * - a stored version replays the same link message (refresh and version switch);
+ * - the page is rendered once and stored (search_links) before the link message
+ *   goes out: the preview crawler fetches once and never refreshes the card;
+ * - a stored version replays the same link message and reads the same stored
+ *   page (refresh and version switch);
  * - a footer that fits one message is not folded;
  * - the switch off / no public origin keeps today's inline footer;
  * - the stop path keeps its `[stopped]` line in the body;
@@ -48,8 +50,10 @@ import {
     trackReply,
     type FakeTelegram,
 } from './fake-telegram.mts';
+import type { Transformer } from 'grammy';
 import type { AIResponse, GroundingData, StreamChunk } from '../../src/ai/types.js';
 import type { ResponseVersion } from '../../src/db/botResponseDTO.js';
+import type { SearchLinkRow } from '../../src/panel/search/search-types.js';
 
 type BotMessageSession = import('../../src/services/bot-message-service.js').BotMessageSession;
 type ChatContext = import('../../src/reply/response-handler.js').ChatContext;
@@ -60,9 +64,14 @@ const botMessageService = await import('../../src/services/bot-message-service.j
 const dbIndex = await import('../../src/db/index.js');
 const { SEARCH_LINK_LABEL } = await import('../../src/telegram/formatters/google-search-link.js');
 const { THINKING_LINK_LABEL } = await import('../../src/telegram/formatters/thinking-link.js');
-const { googleSearchFooterPlan } = await import('../../src/telegram/formatters/google-search-document.js');
-const { searchPageLinkOf } = await import('../../src/shared/search-page.js');
-const { cachedSearchDocument } = await import('../../src/panel/search/search-document-cache.js');
+const { buildGoogleSearchDocument, googleSearchFooterPlan } = await import(
+    '../../src/telegram/formatters/google-search-document.js'
+);
+const { searchPageLinkOf, searchPageTokenOf } = await import('../../src/shared/search-page.js');
+const { findSearchLink, findSearchLinkByToken } = await import(
+    '../../src/panel/search/search-store.js'
+);
+const { SEARCH_PAGE_TITLE } = await import('../../src/panel/search/search-page.js');
 const { markPendingEditWhileProcessing } = await import('../../src/state.js');
 
 const USER_ID = 603421700;
@@ -204,6 +213,33 @@ const pageLinkOf = (started: StartedReply, versionId: number) =>
         versionId,
     });
 
+/** The signed page token of one version, derived without asking the service */
+const pageTokenOf = (started: StartedReply, versionId: number): string =>
+    searchPageTokenOf({
+        chatId: started.chatId,
+        firstMessageId: started.firstMessageId,
+        versionId,
+    });
+
+/** The stored page row of one version; null when the reply never folded */
+const pageOfVersion = (started: StartedReply, versionId: number) =>
+    findSearchLink({
+        chatId: started.chatId,
+        firstMessageId: started.firstMessageId,
+        versionId,
+    });
+
+/** The minute the page's meta line shows; the same format the renderer uses */
+const pageTimeOf = (iso: string): string =>
+    new Intl.DateTimeFormat('zh-CN', {
+        timeZone: 'Asia/Shanghai',
+        month: '2-digit',
+        day: '2-digit',
+        hour: '2-digit',
+        minute: '2-digit',
+        hour12: false,
+    }).format(new Date(iso));
+
 // ---------------------------------------------------------------------------
 // Payload readers (no casts: the fake API's payloads are untyped)
 // ---------------------------------------------------------------------------
@@ -290,6 +326,18 @@ results.push(
 
         // A user edit while the reply generates ships the retry buttons
         markPendingEditWhileProcessing(started.chatId, started.userMessageId);
+        // Watch the link message go out: its page must already be stored then
+        let rowWhenLinkSent: SearchLinkRow | null | undefined;
+        const watchSearchPage: Transformer = async (previous, method, payload, signal) => {
+            if (method === 'sendMessage') {
+                const fields = asRecord(payload);
+                if (typeof fields.text === 'string' && fields.text.startsWith(SEARCH_LINK_LABEL)) {
+                    rowWhenLinkSent = await findSearchLinkByToken(pageTokenOf(started, 1));
+                }
+            }
+            return previous(method, payload, signal);
+        };
+        started.telegram.api.config.use(watchSearchPage);
         const response = await streamInto(started.chatContext, [
             textChunk('答案来了。'),
             groundingChunk(footer),
@@ -356,19 +404,58 @@ results.push(
             'the buttons land on the search link message'
         );
 
-        // The live document is cached before the send, for the preview crawler
-        const cached = cachedSearchDocument(link.token);
-        expect(cached !== null, 'the document is cached for the page');
+        // The page is generated once and stored before the link message, because
+        // Telegram's crawler fetches the card once and never refreshes it
         expect(
-            cached?.document.queryCount === BIG_QUERY_COUNT &&
-                cached.document.sourceCount === BIG_SOURCE_TITLES.length,
-            `the cached document has the footer's numbers (got ${JSON.stringify({
-                queries: cached?.document.queryCount,
-                sources: cached?.document.sourceCount,
+            link.token === pageTokenOf(started, 1),
+            'the link token is the signed page token of the version'
+        );
+        const page = await findSearchLinkByToken(link.token);
+        expect(page !== null, 'the folded page is stored');
+        if (page === null) return;
+        expect(
+            page.chatId === started.chatId &&
+                page.firstMessageId === started.firstMessageId &&
+                page.versionId === 1,
+            `the page names its reply version (got ${JSON.stringify({
+                chatId: page.chatId,
+                firstMessageId: page.firstMessageId,
+                versionId: page.versionId,
             })})`
         );
-        expect(cached?.model === MODEL, 'the cache names the version model');
-        expect(started.chatContext.session.searchLink?.token === link.token, 'the session carries the link');
+        expect(page.model === MODEL, `the page names the generating model (got ${JSON.stringify(page.model)})`);
+        expect(
+            Number.isNaN(Date.parse(page.createdAt)) === false,
+            `the page keeps an ISO delivery time (got ${JSON.stringify(page.createdAt)})`
+        );
+        expect(
+            Math.abs(Date.parse(page.createdAt) - Date.parse(version?.createdAt ?? '')) < 60_000,
+            'the page time is the delivery time of the version'
+        );
+        const footerDocument = buildGoogleSearchDocument([footer]);
+        expect(
+            page.html.includes(footerDocument.bodyText),
+            'the stored page holds the footer text the chat dropped (its card description)'
+        );
+        expect(page.html.includes(SEARCH_PAGE_TITLE), 'the stored page carries the card title');
+        expect(
+            page.html.includes('共搜索 131 次') && page.html.includes('引用 3 条来源'),
+            'the stored page shows the same stats as the chat line'
+        );
+        expect(page.html.includes(MODEL), 'the stored page names the model');
+        expect(
+            page.html.includes(pageTimeOf(page.createdAt)),
+            'the stored page shows the delivery minute'
+        );
+        expect(page.html.startsWith('<!doctype html>'), 'the row stores the whole page');
+        const sameTarget = await pageOfVersion(started, 1);
+        expect(sameTarget?.token === page.token, 'one page row per reply version');
+        expect(rowWhenLinkSent !== undefined, 'the send hook saw the link message');
+        expect(rowWhenLinkSent !== null, 'the page row existed when the link message was sent');
+        expect(
+            started.chatContext.session.searchLink?.token === link.token,
+            'the session carries the link'
+        );
     })
 );
 
@@ -384,6 +471,8 @@ results.push(
         expect(link !== null, 'the folded page pointer exists');
         if (link === null) return;
         const before = await versionOf(started);
+        const pageBefore = await findSearchLinkByToken(pageTokenOf(started, 1));
+        expect(pageBefore !== null, 'the folded page is stored before the replay');
 
         started.telegram.reset();
         const refreshed = await quietly(() =>
@@ -426,6 +515,11 @@ results.push(
                 after.currentMessageId === before?.currentMessageId,
             'the refresh keeps the stored layout'
         );
+        const pageAfter = await findSearchLinkByToken(pageTokenOf(started, 1));
+        expect(
+            pageAfter !== null && pageBefore !== null && pageAfter.html === pageBefore.html,
+            'the replay reads the same stored page, not a re-render'
+        );
     })
 );
 
@@ -440,6 +534,8 @@ results.push(
         const link = pageLinkOf(started, 1);
         expect(link !== null, 'the reply went out folded');
         if (link === null) return;
+        const pageBefore = await findSearchLinkByToken(link.token);
+        expect(pageBefore !== null, 'the folded page is stored');
 
         // Turning the switch off must not un-fold a message that is already in the
         // chat: the replay keys the fold off the stored token, never the switch
@@ -471,6 +567,11 @@ results.push(
         }
         const after = await versionOf(started);
         expect(after?.searchLinkToken === link.token, 'the stored token is untouched');
+        const pageAfterSwitchOff = await findSearchLinkByToken(link.token);
+        expect(
+            pageAfterSwitchOff !== null && pageAfterSwitchOff.html === pageBefore?.html,
+            'the switch off keeps the stored page untouched'
+        );
     })
 );
 
@@ -485,6 +586,8 @@ results.push(
         const firstLink = pageLinkOf(started, 1);
         expect(firstLink !== null, 'the folded first version has a page');
         if (firstLink === null) return;
+        const firstPage = await findSearchLinkByToken(firstLink.token);
+        expect(firstPage !== null, 'the folded version has its stored page');
 
         // A retry in the same reply: its small footer stays inline, unfolded
         const retrySession: BotMessageSession | null = await quietly(() =>
@@ -512,6 +615,7 @@ results.push(
             secondLink !== null && secondLink.token !== firstLink.token,
             'version 2 has a page pointer of its own'
         );
+        expect(await pageOfVersion(started, 2) === null, 'the fitting footer stores no page');
 
         // Back to the folded version: its link message comes back as the last message
         const switchContext = contextOf(
@@ -542,6 +646,11 @@ results.push(
         expect(
             switchedLink?.payload.reply_markup !== undefined,
             'the last message of the switched-to version carries the buttons'
+        );
+        const switchedPage = await findSearchLinkByToken(firstLink.token);
+        expect(
+            switchedPage !== null && switchedPage.html === firstPage?.html,
+            'the switched-to version reads the same stored page'
         );
         const switchedBack = await dbIndex.getBotResponse(started.chatId, started.firstMessageId);
         expect(switchedBack?.currentVersionIndex === 0, 'the reply shows version 1');
@@ -579,6 +688,7 @@ results.push(
         );
         const finalState = await dbIndex.getBotResponse(started.chatId, started.firstMessageId);
         expect(finalState?.currentVersionIndex === 1, 'the reply shows version 2 again');
+        expect(await pageOfVersion(started, 2) === null, 'the inline version still has no page');
     })
 );
 
@@ -607,10 +717,7 @@ results.push(
             `the footer stays inline (got ${JSON.stringify(text)})`
         );
         expect(isSearchLinkText(text) === false, 'no link label anywhere');
-        expect(
-            pageLinkOf(started, 1) !== null,
-            'a page pointer would exist, but the fold never asked for it'
-        );
+        expect(await pageOfVersion(started, 1) === null, 'a fitting footer stores no page');
     })
 );
 
@@ -635,6 +742,7 @@ results.push(
                     !textsOfMethod(started.telegram, 'sendMessage').some(isSearchLinkText),
                 `${label}: no link message appears`
             );
+            expect(await pageOfVersion(started, 1) === null, `${label}: no page row is created`);
             const joined = allTexts(started.telegram).join('\n');
             expect(
                 joined.includes('事故查询 1') && joined.includes('来源甲'),
@@ -675,6 +783,12 @@ results.push(
         const version = await versionOf(started);
         expect(version?.wasStoppedByUser === true, 'the version records the stop');
         expect(version?.searchLinkToken === link.token, 'and the page token');
+        const stoppedPage = await findSearchLinkByToken(link.token);
+        expect(stoppedPage !== null, 'the stopped reply still stores its page');
+        expect(
+            stoppedPage?.html.includes('事故查询 1') === true,
+            'the stored page holds the footer of the stopped reply'
+        );
         const linkMessageId = version?.messageIds.at(-1) ?? 0;
 
         const bodyEdit = lastEditOf(started.telegram, started.firstMessageId);
@@ -744,6 +858,7 @@ results.push(
             erroredVersion?.searchLinkToken === undefined,
             'the error path never folded a footer, so it stores no token'
         );
+        expect(await pageOfVersion(started, 1) === null, 'the error path never generated a page');
 
         // The replay puts the error line on the last message it shows
         started.telegram.reset();
@@ -786,6 +901,12 @@ results.push(
         const version = await versionOf(started);
         expect(version?.thinkingLinkToken === sessionLink?.token, 'the version keeps the CoT token');
         expect(version?.searchLinkToken === link.token, 'and the folded page token');
+        const cotPage = await findSearchLinkByToken(link.token);
+        expect(cotPage !== null, 'the folded footer page is stored');
+        expect(
+            cotPage?.html.includes('事故查询 1') === true,
+            'the stored page holds the footer of the thinking-only reply'
+        );
         expect(version?.text === '', 'a thinking-only reply stores no body text');
         expect(
             version?.messageIds.length === 2,
@@ -862,6 +983,8 @@ results.push(
         const version = await versionOf(started);
         expect(version?.thinkingLinkToken === cotLink?.token, 'the version keeps the CoT token');
         expect(version?.searchLinkToken === link.token, 'and the folded page token');
+        const combinedPage = await findSearchLinkByToken(link.token);
+        expect(combinedPage !== null, 'the folded footer page is stored');
         const messageIds = version?.messageIds ?? [];
         expect(
             messageIds.length === 3,
@@ -943,6 +1066,12 @@ results.push(
         if (link === null) return;
         const version = await versionOf(started);
         expect(version?.searchLinkToken === link.token, 'the version stores the page token');
+        const imagePage = await findSearchLinkByToken(link.token);
+        expect(imagePage !== null, 'the folded footer page is stored');
+        expect(
+            imagePage?.html.includes('事故查询 1') === true,
+            'the stored page holds the footer of the image reply'
+        );
         expect(version?.imageBase64 !== undefined, 'the image is part of the version');
         const messageIds = version?.messageIds ?? [];
         expect(messageIds.length === 3, `body, link and photo are three messages (got ${messageIds.length})`);

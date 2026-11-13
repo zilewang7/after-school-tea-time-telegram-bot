@@ -12,8 +12,9 @@
 import type { Context, Hono } from 'hono';
 import type { PanelEnv } from '../context.js';
 import { clientIpOf, createPublicRateLimiter, PUBLIC_RATE_LIMIT } from '../share/public-routes.js';
-import { renderSearchNotFoundPage, renderSearchPage, SEARCH_PAGE_CSP } from './search-page.js';
-import { loadSearchDocument } from './search-view.js';
+import { renderSearchNotFoundPage, SEARCH_PAGE_CSP } from './search-page.js';
+import { searchPageTargetOfToken } from '../../shared/search-page.js';
+import { findSearchLinkByToken } from './search-store.js';
 
 const NOINDEX = 'noindex, nofollow';
 const NO_STORE = 'no-store';
@@ -57,8 +58,11 @@ export const registerSearchPublicRoutes = (
     app.get('/g/:token', async (context) => {
         if (!options.enabled) return context.text('Not Found', 404);
         if (!allow(clientIpOf(context))) return rateLimitedResponse(context);
-        const page = await loadSearchDocument(context.req.param('token'));
+        const token = context.req.param('token');
+        // The signature is the permission; a forged token never reaches the table
+        if (searchPageTargetOfToken(token) === null) return notFoundPageResponse(context);
+        const page = await findSearchLinkByToken(token);
         if (page === null) return notFoundPageResponse(context);
-        return pageResponse(renderSearchPage(page));
+        return pageResponse(page.html);
     });
 };
