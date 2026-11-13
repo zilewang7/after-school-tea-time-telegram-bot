@@ -439,7 +439,8 @@ const cases = [
                     toolRoundNotice(7, true, true).includes('workspace_write') &&
                     toolRoundNotice(7, true, true).includes('workspace_find') &&
                     toolRoundNotice(7, true, true).includes('workspace_copy') &&
-                    toolRoundNotice(7, true, true).includes('workspace_preview'),
+                    toolRoundNotice(7, true, true).includes('workspace_preview') &&
+                    toolRoundNotice(7, true, true).includes('leave_handoff'),
                 'the no-cost round says which tools can still run'
             );
             expect(

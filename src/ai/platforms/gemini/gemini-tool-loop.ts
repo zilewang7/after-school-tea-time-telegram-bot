@@ -57,7 +57,7 @@ import type { ToolLoopCheckpointSink } from '../../tools/tool-loop-checkpoint.js
 import { TOOL_LOOP_DEADLINE_MS, TOOL_LOOP_WALL_MS } from '../../tools/tool-loop.js';
 import { createToolUsageTally, type ToolUsageTally } from '../../tools/tool-round.js';
 import { filterTurnTools } from '../../tools/turn-tools.js';
-import { isTimeFreeToolName } from '../../../reply/tools/tool-names.js';
+import { isTimeFreeToolName, LEAVE_HANDOFF_TOOL_NAME } from '../../../reply/tools/tool-names.js';
 import type { TurnTools } from '../../tools/tool-types.js';
 import { toGeminiCheckpoint, type GeminiSnapshot } from './gemini-checkpoint.js';
 import { mergeGroundingData } from './gemini-grounding.js';
@@ -68,6 +68,7 @@ import {
     afterFreeModeExit,
     afterRoundStreamed,
     initialLoopState,
+    requestOn,
     type GeminiLoopLimits,
     type GeminiLoopState,
 } from './gemini-loop-state.js';
@@ -76,14 +77,19 @@ import { FRESH_REPLY_RECOVERY } from './gemini-recovery-policy.js';
 import { runRoundCalls, type HandOverCheckpoint } from './gemini-round-calls.js';
 import { withoutFunctionCallParts } from './gemini-round-contents.js';
 import type { OpenGeminiRound } from './gemini-round-open.js';
-import { runRecoverableRound, type RoundRecovery } from './gemini-round-runner.js';
+import { runRecoverableRound, type RecoveredRound, type RoundRecovery } from './gemini-round-runner.js';
 import type { CollectedGeminiRound } from './gemini-round-stream.js';
 import {
     createThoughtSummaryFilter,
     thoughtSummaryLogLine,
     type ThoughtSummaryFilterState,
 } from './gemini-thought-summary.js';
-import { hasFunctionDeclarations, type GeminiRoundRequest } from './gemini-tool-request.js';
+import {
+    hasFunctionDeclarations,
+    httpStatusOf,
+    toGeminiToolList,
+    type GeminiRoundRequest,
+} from './gemini-tool-request.js';
 import {
     formatGeminiTurnSummary,
     formatGeminiUsageLine,
@@ -247,10 +253,19 @@ async function* runRounds(
 ): AsyncGenerator<StreamChunk, void, undefined> {
     const { model, tools, openRound, recovery, viaLabel, signal, usageSink, checkpointSink } = options;
     const freeTools = filterTurnTools(tools, (name) => isTimeFreeToolName(name));
+    // The hand-off round offers the one tool the last reply may still call; the
+    // turn does not offer it at all when the workspace (or the tool) is off.
+    const handoffDefinition = tools.definitions.find(
+        (definition) => definition.name === LEAVE_HANDOFF_TOOL_NAME
+    );
+    const handoffToolList =
+        handoffDefinition === undefined ? null : toGeminiToolList([handoffDefinition]);
+    const handoffOnlyTools = filterTurnTools(tools, (name) => name === LEAVE_HANDOFF_TOOL_NAME);
     const limits: GeminiLoopLimits = {
         deadlineMs: options.deadlineMs ?? TOOL_LOOP_DEADLINE_MS,
         wallMs: options.wallMs ?? TOOL_LOOP_WALL_MS,
         hasFreeTools: freeTools.definitions.length > 0,
+        handoffToolList,
     };
     const beginning = beginningOf(options.start);
     const { startedAt } = beginning;
@@ -284,23 +299,54 @@ async function* runRounds(
         );
     };
 
+    // One downgrade per loop run: a 400 on the hand-off round ends as the
+    // plain final round instead of failing the reply (design D10).
+    let handoffFallbackUsed = false;
+
     for (;;) {
         separator.startRound();
-        const recovered = yield* runRecoverableRound({
-            model,
-            roundNumber: state.roundNumber,
-            request: state.request,
-            allowFallback: state.roundNumber === 1,
-            openRound,
-            separator,
-            thoughtSummary,
-            viaLabel,
-            signal,
-            recovery,
-            recoveryState,
-            usageSink,
-            statusOnScreen,
-        });
+        const journalBeforeRound = journal.length;
+        if (state.handoffRound) {
+            console.log(`[handoff] round offered model=${model} round=${state.roundNumber}`);
+        }
+        let recovered: RecoveredRound;
+        try {
+            recovered = yield* runRecoverableRound({
+                model,
+                roundNumber: state.roundNumber,
+                request: state.request,
+                allowFallback: state.roundNumber === 1,
+                openRound,
+                separator,
+                thoughtSummary,
+                viaLabel,
+                signal,
+                recovery,
+                recoveryState,
+                usageSink,
+                statusOnScreen,
+            });
+        } catch (error) {
+            // Only when this round produced nothing: already shown text must
+            // not be followed by a second answer.
+            if (
+                !handoffFallbackUsed &&
+                state.handoffRound &&
+                httpStatusOf(error) === 400 &&
+                journal.length === journalBeforeRound
+            ) {
+                handoffFallbackUsed = true;
+                console.warn('[handoff] round rejected (400); falling back to the plain final round');
+                state = {
+                    ...state,
+                    roundNumber: state.roundNumber + 1,
+                    handoffRound: false,
+                    request: requestOn(state, state.toolRounds, true),
+                };
+                continue;
+            }
+            throw error;
+        }
         statusOnScreen = false;
         const { round } = recovered;
         recoveryState = recovered.recoveryState;
@@ -344,7 +390,7 @@ async function* runRounds(
         const afterCalls = yield* runRoundCalls({
             state,
             round,
-            tools: freeRound ? freeTools : tools,
+            tools: state.handoffRound ? handoffOnlyTools : freeRound ? freeTools : tools,
             tally,
             signal,
             limits,

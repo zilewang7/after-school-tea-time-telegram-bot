@@ -62,10 +62,27 @@ const notRunResult = (name: string): ToolResult => ({
 export const LAST_TOOL_ROUND_NOTICE =
     'No more tool calls are available for this reply; answer the user now with what you have.';
 
+/**
+ * The last round that may still call one tool: leave_handoff is the only one
+ * left, so the model either answers now or hands the unfinished work over.
+ */
+export const LAST_TOOL_ROUND_HANDOFF_NOTICE =
+    'No more tool calls are available for this reply except leave_handoff: answer the user now, ' +
+    'or call leave_handoff to hand unfinished work to the next reply.';
+
 export interface FunctionResponseOptions {
     /** The next request is the final round: each response carries LAST_TOOL_ROUND_NOTICE */
     readonly lastToolRound?: boolean;
+    /** The next request is the hand-off round: leave_handoff is the only tool still available */
+    readonly handoffOffered?: boolean;
 }
+
+/** The notice a response of the last tool round carries, if any */
+const noticeOf = (options: FunctionResponseOptions): string | null => {
+    if (options.lastToolRound === true) return LAST_TOOL_ROUND_NOTICE;
+    if (options.handoffOffered === true) return LAST_TOOL_ROUND_HANDOFF_NOTICE;
+    return null;
+};
 
 /**
  * `{ output }` for a result, `{ error }` for a failure, plus the notice on the
@@ -74,7 +91,7 @@ export interface FunctionResponseOptions {
 const toFunctionResponsePart = (
     functionCall: FunctionCall,
     result: ToolResult,
-    lastToolRound: boolean
+    notice: string | null
 ): Part => {
     const id = providerIdOf(functionCall);
     // FunctionResponse.parts takes inlineData/fileData only: captions ride
@@ -86,7 +103,7 @@ const toFunctionResponsePart = (
             name: functionCall.name ?? '',
             response: {
                 ...(result.isError ? { error: result.content } : { output: result.content }),
-                ...(lastToolRound ? { notice: LAST_TOOL_ROUND_NOTICE } : {}),
+                ...(notice === null ? {} : { notice }),
             },
             ...(images.length === 0
                 ? {}
@@ -111,14 +128,12 @@ export const buildFunctionResponseParts = (
     functionCalls: readonly FunctionCall[],
     results: readonly ToolResult[],
     options: FunctionResponseOptions = {}
-): Part[] =>
-    functionCalls.map((functionCall, index) =>
-        toFunctionResponsePart(
-            functionCall,
-            results[index] ?? notRunResult(functionCall.name ?? ''),
-            options.lastToolRound === true
-        )
+): Part[] => {
+    const notice = noticeOf(options);
+    return functionCalls.map((functionCall, index) =>
+        toFunctionResponsePart(functionCall, results[index] ?? notRunResult(functionCall.name ?? ''), notice)
     );
+};
 
 /** What Gemini reads back for a call it made while function calling was off */
 export const FUNCTION_CALLING_OFF_ERROR =

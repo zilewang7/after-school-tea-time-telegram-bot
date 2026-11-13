@@ -16,19 +16,27 @@ export interface ExecutedToolCall {
  * What the model is told about the tool loop after a round: how many calls it
  * has made so far, so it can judge whether one more look is worth it. There is
  * no round cap to announce — the clock is the bound — but the round that used
- * the clock up says the next step has to be the answer.
+ * the clock up says the next step has to be the answer. The last no-cost round
+ * instead says the next round is the handoff round: answer, or leave a handoff.
  */
 export const toolRoundNotice = (
     toolCalls: number,
     finalRound: boolean,
-    freeRound = false
+    freeRound = false,
+    handoffRoundNext = false
 ): string => {
+    if (handoffRoundNext) {
+        return (
+            `[工具轮次] 本次回复已调用工具 ${toolCalls} 次；本次回复的免费轮次已用完，` +
+            '下一步要么直接文字收尾，要么先调用 leave_handoff 写下交接（这是最后能调用的工具）。'
+        );
+    }
     if (freeRound) {
         return (
             `[工具轮次] 本次回复已调用工具 ${toolCalls} 次；时间已用完，只能再调用不产生开销的工具` +
             '（产物工具 generate_image / send_image / send_sticker / send_file / send_widget，' +
-            '工作区工具 workspace_write / workspace_read / workspace_list / workspace_find / workspace_edit / workspace_copy / workspace_delete / workspace_preview，' +
-            '以及 get_ui_guide / list_harness_issues / create_harness_issue），之后必须文字收尾。'
+            '工作区工具 workspace_write / workspace_read / workspace_list / workspace_find / workspace_edit / workspace_copy / workspace_delete / workspace_preview、' +
+            'leave_handoff，以及 get_ui_guide / list_harness_issues / create_harness_issue），之后必须文字收尾。'
         );
     }
     return finalRound
@@ -61,6 +69,8 @@ export interface ToolBudget {
     readonly finalRound: boolean;
     /** Past the budget: only no-cost tools can run, and then it is the answer */
     readonly freeRound?: boolean;
+    /** The last no-cost round ran: the next round is the handoff round, where leave_handoff is the only call left */
+    readonly handoffRoundNext?: boolean;
     /** Reply wall time, for the model to see (never the budget) */
     readonly elapsedMs: number;
     /** Tool time spent so far, the number the budget is compared with */
@@ -80,7 +90,12 @@ export const withToolBudget = (
             ...result,
             content:
                 `${result.content}\n\n${
-                    toolRoundNotice(budget.toolCalls, budget.finalRound, budget.freeRound === true)
+                    toolRoundNotice(
+                        budget.toolCalls,
+                        budget.finalRound,
+                        budget.freeRound === true,
+                        budget.handoffRoundNext === true
+                    )
                 }\n` +
                 toolTimeNotice(budget),
         },

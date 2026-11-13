@@ -1461,6 +1461,7 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
                         toolTimeMs: 0,
                         freeMode: false,
                         freeRounds: 0,
+                        handoffRound: false,
                         mayAskAgain: true,
                     },
                 },

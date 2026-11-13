@@ -74,6 +74,7 @@ const checkpointStatePattern = {
         toolTimeMs: P.number,
         freeMode: P.boolean,
         freeRounds: P.number,
+        handoffRound: P.boolean,
         mayAskAgain: P.boolean,
     },
 };
