@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useMemo, useState } from 'react';
 import { describeShareFailure } from '../api';
 import type { ShareLink } from '../api';
 import { useApi } from '../context/panel-context';
@@ -33,10 +33,15 @@ export const useShare = (target: ShareTarget): ShareController => {
     const [error, setError] = useState<string | null>(null);
 
     const lookupState = lookup.state;
-    useEffect(() => {
+    // The link is what was said last, by a lookup or by an action. A lookup's
+    // answer is taken in during the render that first sees it, not in an effect:
+    // no render in between shows the link of before.
+    const [seenLookup, setSeenLookup] = useState(lookupState);
+    if (seenLookup !== lookupState) {
+        setSeenLookup(lookupState);
         // A failed lookup keeps "no link yet": creating is idempotent, so it cannot duplicate one
         if (lookupState.status === 'success') setShare(lookupState.data.share);
-    }, [lookupState]);
+    }
 
     const create = useCallback(async (): Promise<ShareLink | null> => {
         if (busy) return null;

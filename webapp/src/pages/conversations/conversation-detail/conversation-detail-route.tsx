@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useMemo, useState } from 'react';
 import { match } from 'ts-pattern';
 import { ErrorView, LoadingView } from '../../../components/status-views';
 import { useChatScope } from '../../../context/chat-scope-context';
@@ -33,12 +33,10 @@ const ConversationDetailPage = ({ chatId, rootId }: ConversationDetailPageProps)
     // A generating conversation keeps the tree fresh (design §5)
     usePolling(refresh, tree?.generating ?? false);
 
-    const [segment, setSegment] = useState<ConversationSegment>('tree');
+    const [chosenSegment, setSegment] = useState<ConversationSegment>('tree');
     const member = tree?.access === 'member';
-    // Observers have no model view; leaving the chat cannot keep it selected (统计 stays available)
-    useEffect(() => {
-        if (tree !== null && !member && segment === 'model') setSegment('tree');
-    }, [tree, member, segment]);
+    // Observers have no model view; leaving the chat cannot keep it on screen (统计 stays available)
+    const segment: ConversationSegment = tree !== null && !member && chosenSegment === 'model' ? 'tree' : chosenSegment;
 
     const title = useMemo(() => {
         const rootNode = tree?.nodes.find((node) => node.messageId === tree.rootId);

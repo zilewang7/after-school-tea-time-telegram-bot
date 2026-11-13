@@ -11,6 +11,9 @@ export interface ActiveReplies {
     finished: boolean;
 }
 
+/** One array for "none": setting it again does not render again */
+const NO_REPLIES: readonly ActiveReply[] = [];
+
 /**
  * Polls /api/status while the list says something is generating, and stops
  * when it does not (design §5: no polling on a quiet conversation page).
@@ -18,23 +21,17 @@ export interface ActiveReplies {
  */
 export const useActiveReplies = (chatId: number, enabled: boolean): ActiveReplies => {
     const api = useApi();
-    const [active, setActive] = useState<readonly ActiveReply[]>([]);
+    const [active, setActive] = useState<readonly ActiveReply[]>(NO_REPLIES);
     const [finished, setFinished] = useState(false);
 
     useEffect(() => {
-        if (!enabled) {
-            setActive([]);
-            setFinished(false);
-            return;
-        }
+        if (!enabled) return;
         const controller = new AbortController();
         let timer: number | undefined;
-        let polled = false;
         const poll = async (): Promise<void> => {
             const result = await api.getStatus(controller.signal);
             if (controller.signal.aborted) return;
             if (result.ok) {
-                polled = true;
                 setGeneratingChatIds(new Set(result.data.active.map((reply) => reply.chat.chatId)));
                 const forChat = result.data.active.filter((reply) => reply.chat.chatId === chatId);
                 setActive(forChat);
@@ -49,8 +46,10 @@ export const useActiveReplies = (chatId: number, enabled: boolean): ActiveReplie
             controller.abort();
             window.clearTimeout(timer);
             clearGeneratingChat(chatId);
-            // A poll that never answered leaves no dot behind either
-            if (!polled) setActive([]);
+            // What this polling saw ends with it: the next one, of this chat or
+            // another, starts from nothing
+            setActive(NO_REPLIES);
+            setFinished(false);
         };
     }, [api, chatId, enabled]);
 

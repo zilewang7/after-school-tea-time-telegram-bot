@@ -15,7 +15,7 @@
             "plugins": ["react"],
             "rules": {
                 "react/exhaustive-deps": "error",
-                "react/set-state-in-effect": "off"
+                "react/set-state-in-effect": "error"
             }
         },
         {
