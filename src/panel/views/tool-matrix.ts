@@ -33,9 +33,12 @@ import {
     WORKSPACE_WRITE_TOOL_NAME,
     WORKSPACE_READ_TOOL_NAME,
     WORKSPACE_LIST_TOOL_NAME,
+    WORKSPACE_FIND_TOOL_NAME,
     WORKSPACE_EDIT_TOOL_NAME,
+    WORKSPACE_COPY_TOOL_NAME,
     WORKSPACE_DELETE_TOOL_NAME,
     WORKSPACE_PREVIEW_TOOL_NAME,
+    LEAVE_HANDOFF_TOOL_NAME,
 } from '../../reply/tools/tool-names.js';
 
 export interface ToolGroupEntry {
@@ -69,9 +72,12 @@ const GROUP_TOOLS: Record<ToolGroupKey, readonly string[]> = {
         WORKSPACE_WRITE_TOOL_NAME,
         WORKSPACE_READ_TOOL_NAME,
         WORKSPACE_LIST_TOOL_NAME,
+        WORKSPACE_FIND_TOOL_NAME,
         WORKSPACE_EDIT_TOOL_NAME,
+        WORKSPACE_COPY_TOOL_NAME,
         WORKSPACE_DELETE_TOOL_NAME,
         WORKSPACE_PREVIEW_TOOL_NAME,
+        LEAVE_HANDOFF_TOOL_NAME,
     ],
 };
 
@@ -174,7 +180,9 @@ const HARD_REASONS: Record<ToolGroupKey, readonly ReasonCheck[]> = {
         disabledByName(WORKSPACE_WRITE_TOOL_NAME),
         disabledByName(WORKSPACE_READ_TOOL_NAME),
         disabledByName(WORKSPACE_LIST_TOOL_NAME),
+        disabledByName(WORKSPACE_FIND_TOOL_NAME),
         disabledByName(WORKSPACE_EDIT_TOOL_NAME),
+        disabledByName(WORKSPACE_COPY_TOOL_NAME),
         disabledByName(WORKSPACE_DELETE_TOOL_NAME),
     ],
 };
@@ -230,7 +238,9 @@ export const buildToolMatrix = (
     return TOOL_GROUP_KEYS.map((key) => {
         const entry: ToolGroupEntry = {
             key,
-            tools: GROUP_TOOLS[key],
+            tools: GROUP_TOOLS[key].filter(
+                (name) => name !== LEAVE_HANDOFF_TOOL_NAME || availability.handoff
+            ),
             enabled: ENABLED_OF[key](availability),
             defaultEnabled: ENABLED_OF[key](envAvailability),
             override: toolOverrideOf(overrides, key),
