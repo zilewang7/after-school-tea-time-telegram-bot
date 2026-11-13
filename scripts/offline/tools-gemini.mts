@@ -441,6 +441,23 @@ const declarationNamesOf = (request: RecordedRequest | undefined): string[] =>
         .flatMap((tool) => asArray(tool.functionDeclarations))
         .map((declaration) => String(asRecord(declaration).name));
 
+const LARGE_VIDEO_URI = 'gs://offline-bucket/clip.mp4';
+
+/** The turn that carries a large gs:// video: what the platform takes for gs:// media */
+const largeVideoMessages = (): UnifiedMessage[] => [
+    {
+        role: 'user',
+        content: [
+            { type: 'text', text: 'Watch the clip, then look up its topic.' },
+            { type: 'media', fileUri: LARGE_VIDEO_URI, mimeType: 'video/mp4', durationSeconds: 30 },
+        ],
+    },
+];
+
+/** The request still carries the gs:// fileData (every round of a large-media turn resends it) */
+const hasLargeFileData = (request: RecordedRequest | undefined): boolean =>
+    json(request?.body.contents).includes('"fileData"') && json(request?.body.contents).includes(LARGE_VIDEO_URI);
+
 const doneChunksOf = (chunks: readonly StreamChunk[]): StreamChunk[] => chunks.filter((chunk) => chunk.type === 'done');
 
 const donePartsOf = (chunks: readonly StreamChunk[]): unknown[] =>
@@ -1468,6 +1485,168 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
             expect(recordedRequests.length === 1, 'without tools the gs:// turn is still one request');
             expect(json(recordedRequests[0]?.body.tools) === BUILT_IN_TOOLS_JSON, 'with the search tools only');
             expect(textOf(withoutTools.chunks) === 'A short clip.', 'and it answers');
+        },
+    },
+    {
+        name: 'gs:// media: a round-1 400 on the declarations retries once without them, the file kept',
+        body: async () => {
+            reset([
+                httpError(400, `Invalid JSON payload received. Unknown name "$schema" at 'tools[2].function_declarations[0].parameters': Cannot find field.`),
+                sse(roundEvents([[textPart('Answer without tools.')], [signedEmptyText('gs-fb')]])),
+            ]);
+
+            const { chunks, lines } = await runTurn({ tools: turnTools, messages: largeVideoMessages() });
+
+            expect(
+                recordedRequests.length === 2,
+                `the rejected request and one retry, nothing after (got ${recordedRequests.length})`
+            );
+            expect(
+                declarationNamesOf(recordedRequests[0]).length === 3 && hasLargeFileData(recordedRequests[0]),
+                'round 1 sent the gs:// fileData next to the declarations'
+            );
+            expect(json(recordedRequests[1]?.body.tools) === BUILT_IN_TOOLS_JSON, 'the retry declares no functions');
+            expect(hasLargeFileData(recordedRequests[1]), 'but keeps the gs:// fileData');
+            expect(
+                canonical(recordedRequests[1]?.body.contents) === canonical(recordedRequests[0]?.body.contents),
+                'with the same contents otherwise'
+            );
+            expect(
+                lines.filter((line) => line.includes('rejected the function declarations')).length === 1,
+                `the fallback happens exactly once (got ${json(lines.filter((line) => line.includes('rejected')))})`
+            );
+            expect(textOf(chunks) === 'Answer without tools.' && doneChunksOf(chunks).length === 1, 'the reply still answers');
+            expect(executions.length === 0, 'nothing ran');
+            const usage = usageLines(lines);
+            expect(
+                usage.length === 2 &&
+                    usage[0]?.includes('round=1 calls=0') === true &&
+                    usage[0]?.includes('via=large-media') === true,
+                `the retried round rides the large-media lane (got ${json(usage)})`
+            );
+        },
+    },
+    {
+        name: 'gs:// media: a round-1 400 on the media strips the file once, the loop goes on',
+        body: async () => {
+            reset([
+                httpError(400, 'Request contains an invalid argument.'),
+                sse(roundEvents([[callPart('lookup_a', { topic: 'falcon' }, 'gm1', 'call_gm1'), textPart('')]])),
+                sse(roundEvents([[textPart('The clip is about falcons.')]])),
+            ]);
+
+            const { chunks, lines } = await runTurn({ tools: turnTools, messages: largeVideoMessages() });
+
+            expect(recordedRequests.length === 3, `rejected, stripped retry, round 2 (got ${recordedRequests.length})`);
+            expect(hasLargeFileData(recordedRequests[0]), 'round 1 sent the gs:// fileData');
+            expect(!hasLargeFileData(recordedRequests[1]), 'the retry drops the media');
+            expect(declarationNamesOf(recordedRequests[1]).length === 3, 'and keeps the declarations');
+            expect(
+                !hasLargeFileData(recordedRequests[2]) && declarationNamesOf(recordedRequests[2]).length === 3,
+                'round 2 builds on the stripped contents, declarations kept'
+            );
+            expect(
+                canonical(contentsOf(recordedRequests[2])[0]) === canonical(contentsOf(recordedRequests[1])[0]),
+                'round 2 replays exactly what round 1 finally sent'
+            );
+            expect(json(executions.map((execution) => execution.name)) === '["lookup_a"]', 'the call ran once');
+            expect(
+                lines.filter((line) => line.includes('rejected a media part')).length === 1,
+                `the strip happens exactly once (got ${json(lines.filter((line) => line.includes('rejected')))})`
+            );
+            expect(
+                textOf(chunks) === 'The clip is about falcons.' && doneChunksOf(chunks).length === 1,
+                'the loop continues to the answer'
+            );
+            const usage = usageLines(lines);
+            expect(
+                usage.length === 3 &&
+                    usage[0]?.includes('round=1 calls=1') === true &&
+                    usage[0]?.includes('via=large-media') === true &&
+                    usage[1]?.includes('round=2 calls=0') === true &&
+                    usage[1]?.includes('via=large-media') === true,
+                `both rounds rode the large-media lane (got ${json(usage)})`
+            );
+        },
+    },
+    {
+        name: 'gs:// media: the deadline makes the next round final, which still sends the file with mode NONE',
+        body: async () => {
+            await withFakeClock(async (jump) => {
+                const finalRound = [
+                    [textPart('Let me check one more thing.')],
+                    [callPart('lookup_b', { key: 'K-7731' }, 'gf2', 'call_gf2'), signedEmptyText('gf2-end')],
+                ];
+                reset([
+                    callThenDeadline(jump),
+                    sse(roundEvents(finalRound)),
+                    sse(roundEvents([[textPart('The code word is AZALEA-42.')], [signedEmptyText('gf3-end')]])),
+                ]);
+
+                const { chunks, lines } = await runTurn({ tools: turnTools, messages: largeVideoMessages() });
+
+                expect(recordedRequests.length === 3, `round 1, the final round, one more (got ${recordedRequests.length})`);
+                expect(
+                    recordedRequests.every(hasLargeFileData),
+                    `every round resends the gs:// fileData (got ${json(recordedRequests.map(hasLargeFileData))})`
+                );
+                expect(
+                    toolConfigOf(recordedRequests[0]) === undefined &&
+                        isModeNone(recordedRequests[1]) &&
+                        isModeNone(recordedRequests[2]),
+                    'the deadline makes the next round final, and the extra request stays final'
+                );
+                expect(
+                    declarationNamesOf(recordedRequests[1]).length === 3,
+                    'the final round keeps the declarations next to the file'
+                );
+                const finalContents = contentsOf(recordedRequests[1]);
+                const retryContents = contentsOf(recordedRequests[2]);
+                expect(
+                    finalContents.length === 3 &&
+                        canonical(retryContents.slice(0, finalContents.length)) === canonical(finalContents),
+                    'both build on round 1 contents and its tool round'
+                );
+                expect(
+                    canonical(partsOf(retryContents[finalContents.length])) === canonical(partsOfRound(finalRound)),
+                    'the final round replayed verbatim: text, call, signatures'
+                );
+                expect(
+                    canonical(partsOf(retryContents[finalContents.length + 1])) ===
+                        canonical([functionCallingOffResponse('lookup_b', 'call_gf2')]),
+                    `its call answered as not run (got ${json(partsOf(retryContents[finalContents.length + 1]))})`
+                );
+                expect(
+                    json(noticePatternOf(recordedRequests[1])) === '["1/1"]' &&
+                        json(noticePatternOf(recordedRequests[2])) === '["1/1","0/1"]',
+                    `the notice rides round 1's response only (got ${json(recordedRequests.map(noticePatternOf))})`
+                );
+                expect(
+                    json(executions) === '[{"name":"lookup_a","args":{"topic":"falcon"}}]',
+                    `the final round's call never ran (got ${json(executions)})`
+                );
+                expect(
+                    textOf(chunks) === 'Let me check one more thing.\n\nThe code word is AZALEA-42.',
+                    `both texts show, a blank line apart (got ${json(textOf(chunks))})`
+                );
+                expect(
+                    lines.some((line) => line.includes('final round 2 still made 1 function call(s) after some text')),
+                    'the extra request is logged'
+                );
+                expect(
+                    json(doneChunksOf(chunks)[0]?.agentStats?.toolUsage) === json([{ name: 'lookup_a', count: 1 }]),
+                    'the call that never ran is not counted'
+                );
+                const usage = usageLines(lines);
+                expect(
+                    usage.length === 4 &&
+                        usage[0]?.includes('round=1 calls=1') === true &&
+                        usage[1]?.includes('round=2 calls=1') === true &&
+                        usage[2]?.includes('round=3 calls=0') === true &&
+                        usage.slice(0, 3).every((line) => line.includes('via=large-media')),
+                    `every round rides the large-media lane (got ${json(usage)})`
+                );
+            });
         },
     },
     {

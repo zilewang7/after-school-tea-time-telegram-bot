@@ -163,6 +163,8 @@ const userTurn: UnifiedMessage[] = [{ role: 'user', content: [{ type: 'text', te
 interface TurnOptions extends ConsumeOptions {
     readonly resumeFrom?: ToolLoopCheckpoint;
     readonly tools?: TurnTools | null;
+    /** The messages of a fresh reply; a resume never sends them */
+    readonly messages?: UnifiedMessage[];
     readonly signal?: AbortSignal;
     readonly maxRetries?: number;
     readonly usageSink?: UsageSink;
@@ -179,7 +181,7 @@ const runTurn = async (options: TurnOptions = {}): Promise<TurnResult> => {
     const checkpoints: ToolLoopCheckpoint[] = [];
     const consumed = await consumeReply(
         () =>
-            platform.sendMessage(options.resumeFrom ? [] : userTurn, {
+            platform.sendMessage(options.resumeFrom ? [] : (options.messages ?? userTurn), {
                 model: 'gemini-3.8-flash',
                 systemPrompt: 'offline system prompt',
                 maxRetries: options.maxRetries ?? 3,
@@ -227,6 +229,18 @@ const answersIn = (request: RecordedRequest | undefined): Answer[] =>
 
 const isModeNone = (request: RecordedRequest | undefined): boolean =>
     asRecord(asRecord(request?.body.toolConfig).functionCallingConfig).mode === 'NONE';
+
+const declarationNamesIn = (request: RecordedRequest | undefined): string[] =>
+    asArray(request?.body.tools)
+        .map(asRecord)
+        .flatMap((tool) => asArray(tool.functionDeclarations))
+        .map((declaration) => String(asRecord(declaration).name));
+
+const LARGE_VIDEO_URI = 'gs://offline-bucket/clip.mp4';
+
+/** The request still carries the gs:// fileData (every round of a large-media turn resends it) */
+const hasLargeFileData = (request: RecordedRequest | undefined): boolean =>
+    json(request?.body.contents).includes('"fileData"') && json(request?.body.contents).includes(LARGE_VIDEO_URI);
 
 /** The interrupted request's contents, minus the closing bracket: what the resumed body must start with */
 const contentsPrefixOf = (request: RecordedRequest | undefined): string =>
@@ -298,6 +312,65 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
                 resumed.lines.some((line) => line.includes(' summary rounds=1 calls=0 ') && line.endsWith(' resumed=2')),
                 `the summary counts this request and names the resume (got ${json(resumed.lines.filter((line) => line.includes('summary')))})`
             );
+        },
+    },
+    {
+        name: '5b. a gs:// turn keeps its checkpoint and resumes with the declarations, the file and its lane',
+        body: async () => {
+            const messages: UnifiedMessage[] = [
+                {
+                    role: 'user',
+                    content: [
+                        { type: 'text', text: 'Watch the clip, then look it up.' },
+                        { type: 'media', fileUri: LARGE_VIDEO_URI, mimeType: 'video/mp4', durationSeconds: 30 },
+                    ],
+                },
+            ];
+            reset([callsRound('r1', [{ name: 'lookup_a' }]), httpErrorReply(400, BAD_REQUEST)]);
+            const interrupted = await runTurn({ messages });
+            expect(asRecord(interrupted.error).status === 400, `round 2 fails (got ${errorMessage(interrupted.error)})`);
+            const checkpoint = lastCheckpoint(interrupted);
+            expect(checkpoint.completedRounds === 1 && interrupted.requests.length === 2, 'round 1 is kept, round 2 failed');
+            const failedRound = interrupted.requests[1];
+
+            reset([callsRound('r2', [{ name: 'lookup_b' }]), answer('Resumed answer.')]);
+            const usageSink = createUsageSink();
+            const resumed = await runTurn({ resumeFrom: checkpoint, usageSink });
+
+            expect(resumed.error === null && resumed.requests.length === 2, `the resume finishes (got ${errorMessage(resumed.error)})`);
+            expect(
+                resumed.requests[0]?.rawBody === failedRound?.rawBody,
+                'the resumed request is the kept next round, byte for byte: round 1 is not sent again'
+            );
+            const resumedRequest = resumed.requests[0];
+            expect(
+                declarationNamesIn(resumedRequest).length > 0 &&
+                    json(declarationNamesIn(resumedRequest)) === json(declarationNamesIn(interrupted.requests[0])),
+                `the resumed request keeps round 1's declarations (got ${json(declarationNamesIn(resumedRequest))})`
+            );
+            expect(hasLargeFileData(resumedRequest), 'and resends the gs:// fileData');
+            const contents = asArray(resumedRequest?.body.contents);
+            expect(
+                json(contents.map((content) => asRecord(content).role)) === '["user","model","user"]',
+                `the contents are round 1's base plus its kept tool round (got ${json(contents.map((content) => asRecord(content).role))})`
+            );
+            expect(
+                json(contents[0]).includes(LARGE_VIDEO_URI) && json(contents[2]).includes('key is K-7731'),
+                'the base keeps the video and the kept round its tool answer'
+            );
+            expect(
+                json(executions) === '["lookup_b"]',
+                `the resumed round's call runs once; the kept round's call does not run again (got ${json(executions)})`
+            );
+            expect(textOf(fresh(resumed.chunks)) === 'Resumed answer.', 'then the new round streams');
+            const usage = usageLines(resumed.lines);
+            expect(
+                usage.length === 2 &&
+                    usage.every((line) => line.includes('via=large-media')) &&
+                    json(usage.map((line) => /round=(\d+)/.exec(line)?.[1])) === '["2","3"]',
+                `both requests ride the large-media lane (got ${json(usage)})`
+            );
+            expect(usageSink.totals().rounds === 2, `the sink counts the two new rounds (got ${json(usageSink.totals())})`);
         },
     },
     {
