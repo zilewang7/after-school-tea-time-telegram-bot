@@ -29,6 +29,20 @@ export interface FileReport {
     /** The last lines of the log, shown when there is no summary to go by */
     logTail: string[];
     ok: boolean;
+    /**
+     * Set when the file first ran in a shared worker and did not pass there.
+     * Everything else in this report is then from the run in a process of its
+     * own that followed, which is the one that counts.
+     */
+    sharedFailure?: SharedFailure;
+}
+
+export interface SharedFailure {
+    /** What the shared run ended with, in the words of `verdictOf` */
+    verdict: string;
+    logPath: string;
+    /** The files the same worker had run before, in order */
+    ranAfter: string[];
 }
 
 const SUMMARY_MARKER = '==== offline summary ====';
@@ -116,15 +130,23 @@ export const reportOf = (run: FileRun): FileReport => {
 
 const seconds = (durationMs: number): string => `${(durationMs / 1000).toFixed(1)}s`;
 
+/** How one run of a file ended, without the file's name */
+export const verdictOf = (report: FileReport): string => {
+    const duration = seconds(report.run.durationMs);
+    if (report.ok) return `${report.passedCases} cases, ${duration}`;
+    if (report.run.timedOut) return `timed out after ${duration}`;
+    if (report.incomplete) return `exit code ${report.run.exitCode ?? 'none'}, no summary, ${duration}`;
+    if (report.outsideCases !== undefined) return `${report.outsideCases}, ${duration}`;
+    const total = report.passedCases + report.failedCases.length;
+    return `${report.failedCases.length} of ${total} cases failed, ${duration}`;
+};
+
 /** One line per file, printed as soon as the file is done */
 export const fileLine = (report: FileReport): string => {
-    const duration = seconds(report.run.durationMs);
-    if (report.ok) return `PASS  ${report.name}  (${report.passedCases} cases, ${duration})`;
-    if (report.run.timedOut) return `FAIL  ${report.name}  (timed out after ${duration})`;
-    if (report.incomplete) return `FAIL  ${report.name}  (exit code ${report.run.exitCode ?? 'none'}, no summary, ${duration})`;
-    if (report.outsideCases !== undefined) return `FAIL  ${report.name}  (${report.outsideCases}, ${duration})`;
-    const total = report.passedCases + report.failedCases.length;
-    return `FAIL  ${report.name}  (${report.failedCases.length} of ${total} cases failed, ${duration})`;
+    const verdict = verdictOf(report);
+    if (!report.ok) return `FAIL  ${report.name}  (${verdict})`;
+    if (report.sharedFailure === undefined) return `PASS  ${report.name}  (${verdict})`;
+    return `PASS  ${report.name}  (${verdict} on its own; in a shared process: ${report.sharedFailure.verdict})`;
 };
 
 /** What went wrong in one file, for the end of the run */
@@ -139,5 +161,27 @@ export const failureLines = (report: FileReport): string[] => {
             `  ✗ ${failedCase.name}`,
             `      ${failedCase.message}${failedCase.location === undefined ? '' : `  (${failedCase.location})`}`,
         ]),
+    ];
+};
+
+/**
+ * The files that did not pass in a shared worker and passed on their own. They
+ * count as passed; the note is for whoever looks for what an earlier file left
+ * behind.
+ */
+export const sharedFailureLines = (reports: FileReport[]): string[] => {
+    const affected = reports.filter((report) => report.ok && report.sharedFailure !== undefined);
+    if (affected.length === 0) return [];
+    return [
+        `\n${affected.length === 1 ? '1 file did not pass in a shared process and passed on its own' : `${affected.length} files did not pass in a shared process and passed on their own`} (counted as passed):`,
+        ...affected.flatMap((report) => {
+            const earlier = report.sharedFailure?.ranAfter.map((file) => basename(file, '.mts')) ?? [];
+            return [
+                `  ${report.name}: ${report.sharedFailure?.verdict ?? ''}`,
+                `      ran after: ${earlier.length === 0 ? '(first file of its process)' : earlier.join(', ')}`,
+                `      log of that run: ${report.sharedFailure?.logPath ?? ''}`,
+            ];
+        }),
+        '  An earlier file of the same process left something behind that the worker does not undo, or the file depends on timing.',
     ];
 };

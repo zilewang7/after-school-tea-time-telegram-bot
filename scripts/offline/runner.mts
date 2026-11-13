@@ -9,19 +9,27 @@
  *   pnpm test:offline --grep "atlas"     only the cases whose name contains the text
  *   pnpm test:offline --bail             start no further file after the first failure
  *   pnpm test:offline --timeout 300      seconds a single file may take (default 120)
+ *   pnpm test:offline --isolated         every file in a process of its own
  *   pnpm test:offline --list             print the files that would run
  *
  * A test is any `scripts/offline/*.mts` file. Helpers live in `support/`; a
  * file that must not run with the suite says `// offline: manual` in its header.
- * Each file runs in its own process with its own scratch database, and its full
- * output (every assertion) goes to a log file named at the end of the run.
+ * Each file has its own scratch database and its own copy of the repository's
+ * modules, and its full output (every assertion) goes to a log file named at
+ * the end of the run.
+ *
+ * With more files than jobs, the files run in shared worker processes that load
+ * the packages once (support/run-suite.mts); a file that does not pass there is
+ * run again in a process of its own, and that result counts. A few files, or
+ * `--isolated`, or OFFLINE_DEBUG_HANDLES=1: a process per file from the start.
  */
 import { mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { constants, tmpdir } from 'node:os';
 import { basename, join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { killLiveTestProcesses, runFile } from './support/run-file.mts';
-import { failureLines, fileLine, reportOf, type FileReport } from './support/run-report.mts';
+import { killLiveTestProcesses } from './support/process-groups.mts';
+import { failureLines, fileLine, sharedFailureLines, type FileReport } from './support/run-report.mts';
+import { runSuite } from './support/run-suite.mts';
 
 const REPOSITORY_ROOT = fileURLToPath(new URL('../../', import.meta.url));
 const TEST_DIRECTORY = join(REPOSITORY_ROOT, 'scripts', 'offline');
@@ -36,7 +44,9 @@ const DEFAULT_JOBS = 3;
 const DEFAULT_TIMEOUT_SECONDS = 120;
 
 const RUNNER_DIRECTORY = join(tmpdir(), 'k-on-bot-offline-runner');
-const DURATIONS_PATH = join(RUNNER_DIRECTORY, 'durations.json');
+/** A file takes much less time in a shared worker, so each way of running keeps its own estimates */
+const durationsPathOf = (shared: boolean): string =>
+    join(RUNNER_DIRECTORY, shared ? 'durations-shared.json' : 'durations.json');
 const LOG_DIRECTORY = join(RUNNER_DIRECTORY, `run-${process.pid}`);
 const STALE_LOG_AGE_MS = 24 * 60 * 60 * 1000;
 
@@ -46,11 +56,14 @@ interface RunnerOptions {
     timeoutSeconds: number;
     caseFilter: string | undefined;
     bail: boolean;
+    isolated: boolean;
     listOnly: boolean;
 }
 
 const usage = (): never => {
-    console.error('usage: pnpm test:offline [name…] [-j N] [--grep TEXT] [--bail] [--timeout SECONDS] [--list]');
+    console.error(
+        'usage: pnpm test:offline [name…] [-j N] [--grep TEXT] [--bail] [--timeout SECONDS] [--isolated] [--list]'
+    );
     process.exit(2);
 };
 
@@ -66,6 +79,7 @@ const parseArguments = (argv: string[]): RunnerOptions => {
         timeoutSeconds: DEFAULT_TIMEOUT_SECONDS,
         caseFilter: undefined,
         bail: false,
+        isolated: false,
         listOnly: false,
     };
     for (let index = 0; index < argv.length; index += 1) {
@@ -74,6 +88,7 @@ const parseArguments = (argv: string[]): RunnerOptions => {
         else if (argument === '--timeout') options.timeoutSeconds = positiveInteger(argv[(index += 1)]);
         else if (argument === '--grep') options.caseFilter = argv[(index += 1)] ?? usage();
         else if (argument === '--bail') options.bail = true;
+        else if (argument === '--isolated') options.isolated = true;
         else if (argument === '--list') options.listOnly = true;
         else if (argument.startsWith('-')) usage();
         else options.nameFilters.push(argument);
@@ -118,9 +133,9 @@ const isDurations = (value: unknown): value is Durations =>
     value !== null &&
     Object.values(value).every((duration) => typeof duration === 'number');
 
-const readDurations = (): Durations => {
+const readDurations = (path: string): Durations => {
     try {
-        const parsed: unknown = JSON.parse(readFileSync(DURATIONS_PATH, 'utf8'));
+        const parsed: unknown = JSON.parse(readFileSync(path, 'utf8'));
         return isDurations(parsed) ? parsed : {};
     } catch {
         return {};
@@ -145,29 +160,6 @@ const removeStaleLogs = (): void => {
     }
 };
 
-const runAll = async (files: string[], options: RunnerOptions): Promise<FileReport[]> => {
-    const queue = [...files];
-    const reports: FileReport[] = [];
-    let stopped = false;
-
-    const worker = async (): Promise<void> => {
-        for (let file = queue.shift(); file !== undefined && !stopped; file = queue.shift()) {
-            const run = await runFile(file, {
-                repositoryRoot: REPOSITORY_ROOT,
-                logPath: join(LOG_DIRECTORY, `${basename(file, '.mts')}.log`),
-                timeoutMs: options.timeoutSeconds * 1000,
-                caseFilter: options.caseFilter,
-            });
-            const report = reportOf(run);
-            reports.push(report);
-            console.log(fileLine(report));
-            if (!report.ok && options.bail) stopped = true;
-        }
-    };
-    await Promise.all(Array.from({ length: Math.min(options.jobs, files.length) }, worker));
-    return reports;
-};
-
 const printSummary = (reports: FileReport[], skippedFiles: number, wallMs: number): void => {
     const failed = reports.filter((report) => !report.ok);
     for (const report of failed) console.log(failureLines(report).join('\n'));
@@ -182,17 +174,29 @@ const printSummary = (reports: FileReport[], skippedFiles: number, wallMs: numbe
     if (failed.length > 0) {
         console.log(`rerun: pnpm test:offline ${failed.map((report) => report.name).join(' ')}`);
     }
+    for (const line of sharedFailureLines(reports)) console.log(line);
     console.log(`logs: ${LOG_DIRECTORY}`);
 };
 
+/**
+ * Shared workers pay off when there are more files than jobs: up to that many,
+ * every file has a process to itself anyway. Tracing handles needs the process
+ * from its very start.
+ */
+const usesSharedWorkers = (options: RunnerOptions, fileCount: number): boolean =>
+    !options.isolated && process.env.OFFLINE_DEBUG_HANDLES !== '1' && fileCount > options.jobs;
+
 const main = async (): Promise<void> => {
     const options = parseArguments(process.argv.slice(2));
-    const durations = readDurations();
-    const files = longestFirst(discoverTestFiles(options.nameFilters), durations);
-    if (files.length === 0) {
+    const discovered = discoverTestFiles(options.nameFilters);
+    if (discovered.length === 0) {
         console.error('no test file matches');
         process.exit(2);
     }
+    const shared = usesSharedWorkers(options, discovered.length);
+    const durationsPath = durationsPathOf(shared);
+    const durations = readDurations(durationsPath);
+    const files = longestFirst(discovered, durations);
     if (options.listOnly) {
         console.log(files.join('\n'));
         return;
@@ -208,15 +212,31 @@ const main = async (): Promise<void> => {
     }
 
     const startedAt = performance.now();
-    const reports = await runAll(files, options);
+    const { reports, sharedUnavailable } = await runSuite(files, {
+        repositoryRoot: REPOSITORY_ROOT,
+        logDirectory: LOG_DIRECTORY,
+        jobs: options.jobs,
+        timeoutMs: options.timeoutSeconds * 1000,
+        caseFilter: options.caseFilter,
+        bail: options.bail,
+        shared,
+        onReport: (report) => console.log(fileLine(report)),
+    });
     printSummary(reports, files.length - reports.length, performance.now() - startedAt);
+    if (sharedUnavailable) {
+        console.log('shared workers could not be used (see the worker logs): every file ran in a process of its own');
+    }
 
-    // A filtered run times only part of each file, so it must not update the estimates
-    if (options.caseFilter === undefined) {
+    // A filtered run times only part of each file, and a file that needed a
+    // second run has no time of its own: neither updates the estimates. Nor
+    // does a run that had to fall back to a process per file.
+    if (options.caseFilter === undefined && !sharedUnavailable) {
         const measured = Object.fromEntries(
-            reports.filter((report) => report.ok).map((report) => [basename(report.run.file), report.run.durationMs])
+            reports
+                .filter((report) => report.ok && report.sharedFailure === undefined)
+                .map((report) => [basename(report.run.file), report.run.durationMs])
         );
-        writeFileSync(DURATIONS_PATH, JSON.stringify({ ...durations, ...measured }));
+        writeFileSync(durationsPath, JSON.stringify({ ...durations, ...measured }));
     }
     const passedCases = reports.reduce((total, report) => total + report.passedCases, 0);
     if (passedCases === 0 && reports.every((report) => report.ok)) {

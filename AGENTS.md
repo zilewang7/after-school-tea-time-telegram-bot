@@ -42,7 +42,7 @@ runs from the same directory. Most rules below exist because of that.
 |---|---|---|
 | One offline test file | `pnpm test:offline <name>` (exact file name, or a substring) | 1–20 s |
 | Cases matching a text | `pnpm test:offline <name> --grep "text"` | |
-| Whole offline suite | `pnpm test:offline` (3 files at a time; `-j N`) | ~2 min |
+| Whole offline suite | `pnpm test:offline` (3 at a time, `-j N`; `--isolated` = a process per file) | ~1 min |
 | Type check | `pnpm typecheck` (`src`, `scripts`, `scripts-dom`, `webapp`; a name runs one) | ~12 s |
 | Lint | `pnpm lint` | ~2 s |
 | Dependency guard | `pnpm check-deps` (never writes; `--tighten` after fixing a baseline entry) | ~1 s |
@@ -64,6 +64,19 @@ after the last case still fails the file. A file that is still running 3 s
 after its summary is ended and fails: run it with `OFFLINE_DEBUG_HANDLES=1` to
 see which timer or server was left running, where it was created and during
 which case.
+
+The whole suite runs in shared worker processes: a worker runs many files one
+after the other and loads the packages in `node_modules` only once. Every file
+still gets its own copy of the repository's modules (module state, env values
+read at import), its own scratch database and its own log, and the worker
+undoes what a file leaves behind: env values, replaced globals and functions
+of `node:` modules (`fetch`, `Date.now`, console methods, `http.request`), the
+pending timers of the repository's code, listeners on `process` (its 'exit'
+listeners run when the file ends). A file that does not pass in a worker is
+run again in a process of its own and that result counts; when it passes
+there, the end of the run names it together with the files that ran before it
+in that worker. Up to three files (`pnpm test:offline a b`), `--isolated` and
+`OFFLINE_DEBUG_HANDLES=1` give every file a process of its own from the start.
 
 ## Working loop
 
@@ -90,6 +103,10 @@ which case.
   would call Telegram. A call to the unused client fails the file.
 - `src` reads most env variables at import. A test sets the env first and
   imports `src` afterwards with `await import(…)`.
+- A test puts back what belongs to a package and that no worker can know
+  about: a method it replaced on a package's class, a setting it changed on a
+  shared object (`http.globalAgent`). The next file of the same worker would
+  run with it.
 
 ## Layout
 

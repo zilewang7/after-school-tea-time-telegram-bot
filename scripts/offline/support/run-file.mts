@@ -1,9 +1,9 @@
 /**
- * Runs one offline test file in its own process group and captures its output.
+ * Runs one offline test file in a process of its own and captures its output.
  */
 import { spawn } from 'node:child_process';
 import { closeSync, openSync } from 'node:fs';
-import { removeScratchDirectoryOf } from './scratch-directory.mts';
+import { endProcessGroup, trackProcessGroup } from './process-groups.mts';
 
 export interface FileRun {
     /** Path relative to the repository root */
@@ -21,37 +21,24 @@ export interface RunFileOptions {
     timeoutMs: number;
     /** Passed on as OFFLINE_GREP: only the cases whose name contains it run */
     caseFilter: string | undefined;
+    /** Variables the test gets on top of the runner's own environment */
+    extraEnvironment?: Readonly<Record<string, string>>;
 }
 
-/** Every test process group still running, so an interrupted run can take them down */
-const liveProcessGroups = new Set<number>();
-
-/**
- * Ends a test and anything it started, and removes the scratch directory the
- * test could not remove itself. Harmless when the test has already ended.
- */
-const endProcessGroup = (groupId: number): void => {
-    try {
-        // A negative pid addresses the whole group: the test and anything it spawned
-        process.kill(-groupId, 'SIGKILL');
-    } catch {
-        // Nothing left in the group
-    }
-    // The group id is the pid of the test process, which names its scratch directory
-    removeScratchDirectoryOf(groupId);
-};
-
-export const killLiveTestProcesses = (): void => {
-    for (const groupId of liveProcessGroups) endProcessGroup(groupId);
+/** What a test process is started with, in a process of its own or in a shared worker */
+export const testEnvironment = (
+    caseFilter: string | undefined,
+    extraEnvironment: Readonly<Record<string, string>> = {}
+): NodeJS.ProcessEnv => {
+    // The log keeps every assertion; the terminal only gets the summary
+    const environment: NodeJS.ProcessEnv = { ...process.env, ...extraEnvironment, OFFLINE_VERBOSE: '1' };
+    if (caseFilter !== undefined) environment.OFFLINE_GREP = caseFilter;
+    return environment;
 };
 
 export const runFile = (file: string, options: RunFileOptions): Promise<FileRun> =>
     new Promise((resolve) => {
         const startedAt = performance.now();
-        // The log keeps every assertion; the terminal only gets the summary
-        const environment: NodeJS.ProcessEnv = { ...process.env, OFFLINE_VERBOSE: '1' };
-        if (options.caseFilter !== undefined) environment.OFFLINE_GREP = options.caseFilter;
-
         // One file descriptor for stdout and stderr: the log then holds the lines
         // in the order they were written. Two pipes would interleave them by
         // arrival, and a failure message could land under the wrong case.
@@ -60,14 +47,14 @@ export const runFile = (file: string, options: RunFileOptions): Promise<FileRun>
         // test as a grandchild, which a kill of the child would leave running
         const child = spawn(process.execPath, ['--import', 'tsx', file], {
             cwd: options.repositoryRoot,
-            env: environment,
+            env: testEnvironment(options.caseFilter, options.extraEnvironment),
             detached: true,
             stdio: ['ignore', logDescriptor, logDescriptor],
         });
         // The child has its own copies now
         closeSync(logDescriptor);
         const groupId = child.pid;
-        if (groupId !== undefined) liveProcessGroups.add(groupId);
+        if (groupId !== undefined) trackProcessGroup(groupId);
 
         let timedOut = false;
         const timeout = setTimeout(() => {
@@ -80,11 +67,8 @@ export const runFile = (file: string, options: RunFileOptions): Promise<FileRun>
             if (settled) return;
             settled = true;
             clearTimeout(timeout);
-            if (groupId !== undefined) {
-                // A helper the test started and did not stop must not outlive it
-                endProcessGroup(groupId);
-                liveProcessGroups.delete(groupId);
-            }
+            // A helper the test started and did not stop must not outlive it
+            if (groupId !== undefined) endProcessGroup(groupId);
             resolve({
                 file,
                 logPath: options.logPath,
