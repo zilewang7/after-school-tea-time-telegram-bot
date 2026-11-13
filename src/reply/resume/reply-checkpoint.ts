@@ -12,7 +12,6 @@ import type { ThinkingEffortValue } from '../../services/thinking-effort-values.
 import type { ToolLoopCheckpoint } from '../../ai/tools/tool-loop-checkpoint.js';
 import type { ContextIndex } from '../context-index.js';
 import type { ReplyToolState } from '../tools/reply-tool-state.js';
-import type { ToolRequestTraits } from '../tools/tool-availability.js';
 
 /** The context as it was built for the interrupted version */
 export interface ResumeContextFacts {
@@ -22,8 +21,6 @@ export interface ResumeContextFacts {
     readonly contextIndex: ContextIndex;
     /** Reply-tree roots of the context, the trigger's own conversation first */
     readonly conversationRootIds: readonly number[];
-    /** The request traits tool availability depends on */
-    readonly requestTraits: ToolRequestTraits;
     /** The chat's prompt addendum the context was built with */
     readonly promptAddendum: string | null;
     /** Epoch ms of the build */

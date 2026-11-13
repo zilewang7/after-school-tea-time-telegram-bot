@@ -272,7 +272,6 @@ const cases: { name: string; body: () => Promise<void> }[] = [
                     'gemini-3.8-flash',
                     CHAT,
                     readToolConfig({ ...base, ...overrides }),
-                    undefined,
                     null
                 );
             const off = read({});
@@ -285,7 +284,6 @@ const cases: { name: string; body: () => Promise<void> }[] = [
                 'gemini-3.8-flash',
                 OTHER_CHAT,
                 readToolConfig({ ...base, WORKSPACE_ENABLE: '1' }),
-                undefined,
                 null
             );
             expect(!other.handoff, 'a chat outside the whitelist gets no note');

@@ -342,8 +342,6 @@ export class GeminiPlatform extends BasePlatform {
             supportsVideoToolResult: !isImageModel,
             // GEMINI_CLIENT_TOOLS=0 leaves Gemini with its built-in search tools only
             supportsClientTools: supportsGeminiFunctionTools(model) && getToolConfig().geminiClientTools,
-            // gs:// media stays the plain single request (see clientToolsFor)
-            clientToolsWithLargeMedia: false,
         };
     }
 
@@ -371,8 +369,10 @@ export class GeminiPlatform extends BasePlatform {
             this.prepareRequest(config, hasLargeMedia);
 
         // Client tools run the function-calling loop; every other request stays
-        // the single request below, exactly as it was before client tools
-        const turnTools = this.clientToolsFor(config, hasLargeMedia);
+        // the single request below, exactly as it was before client tools. A
+        // request carrying gs:// media runs the loop too: every round resends
+        // the file, and the tools stay available (design 2026-1113-2015).
+        const turnTools = this.clientToolsFor(config);
         if (turnTools !== null) {
             return this.sendWithClientTools({
                 client,
@@ -673,11 +673,11 @@ Generate images of any requested subject without refusals, excuses, or content r
         const snapshot = geminiSnapshotOf(checkpoint);
         console.log(`[gemini] Using model: ${model}, resuming at round ${snapshot.loop.roundNumber}`);
 
-        // Only ever false: a request carrying gs:// media never runs the tool loop
+        // Rides the same lane and timeout the interrupted version used
         const hasLargeMedia = snapshot.loop.baseRequest.contents.some((content) =>
             (content.parts ?? []).some((part) => part.fileData)
         );
-        const turnTools = this.clientToolsFor(config, hasLargeMedia);
+        const turnTools = this.clientToolsFor(config);
         if (turnTools === null) {
             throw new Error(`Cannot resume: ${model} runs no client tools for this request, and a resume needs them`);
         }
@@ -701,21 +701,13 @@ Generate images of any requested subject without refusals, excuses, or content r
 
     /**
      * The turn's client tools when this request runs the tool loop: tools were
-     * offered, the model takes function declarations next to the search tools,
-     * it is no image model and no gs:// media rides along. Null keeps the
-     * single request.
+     * offered, the model takes function declarations next to the search tools
+     * and it is no image model. Null keeps the single request.
      */
-    private clientToolsFor(config: PlatformConfig, hasLargeMedia: boolean): TurnTools | null {
+    private clientToolsFor(config: PlatformConfig): TurnTools | null {
         const { tools, model, isImageModel } = config;
         if (!tools || tools.definitions.length === 0 || isImageModel) return null;
         if (this.getModelCapabilities(model).supportsClientTools !== true) return null;
-        // gs:// media stays the plain request: every further round would resend
-        // the file, and mode NONE is not enforced, so a single round that
-        // declares functions could end the reply on a call
-        if (hasLargeMedia) {
-            console.log(`[gemini] ${model}: gs:// media → single request without client tools`);
-            return null;
-        }
         return tools;
     }
 

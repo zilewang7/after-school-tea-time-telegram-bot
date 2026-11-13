@@ -334,14 +334,13 @@ const cases: { name: string; body: () => Promise<void> }[] = [
                 WIDGET_RENDER_URL: 'http://127.0.0.1:9',
                 DISABLED_TOOLS: '',
             };
-            const off = resolveToolAvailability('gemini-3.8-flash', CHAT, readToolConfig(base), undefined, null);
+            const off = resolveToolAvailability('gemini-3.8-flash', CHAT, readToolConfig(base), null);
             expect(!off.workspace, 'the workspace is off by default (WIDGET_ENABLE pattern)');
 
             const on = resolveToolAvailability(
                 'gemini-3.8-flash',
                 CHAT,
                 readToolConfig({ ...base, WORKSPACE_ENABLE: '1' }),
-                undefined,
                 null
             );
             expect(on.workspace && on.workspacePreview, 'enabled for the whitelisted chat and a vision model');
@@ -350,7 +349,6 @@ const cases: { name: string; body: () => Promise<void> }[] = [
                 'gemini-3.8-flash',
                 -1007777777777,
                 readToolConfig({ ...base, WORKSPACE_ENABLE: '1' }),
-                undefined,
                 null
             );
             expect(!otherChat.workspace, 'a chat outside the whitelist gets no workspace tools');
@@ -359,7 +357,6 @@ const cases: { name: string; body: () => Promise<void> }[] = [
                 'deepseek-reasoner',
                 CHAT,
                 readToolConfig({ ...base, WORKSPACE_ENABLE: '1' }),
-                undefined,
                 null
             );
             expect(textOnly.workspace && !textOnly.workspacePreview, 'a text-only model gets the file tools but not preview');
@@ -368,7 +365,6 @@ const cases: { name: string; body: () => Promise<void> }[] = [
                 'gemini-3.8-flash',
                 CHAT,
                 readToolConfig({ ...base, WORKSPACE_ENABLE: '1', WIDGET_RENDER_URL: '' }),
-                undefined,
                 null
             );
             expect(noRender.workspace && !noRender.workspacePreview, 'preview needs the render sidecar');
@@ -377,7 +373,6 @@ const cases: { name: string; body: () => Promise<void> }[] = [
                 'gemini-3.8-flash',
                 CHAT,
                 readToolConfig({ ...base, WORKSPACE_ENABLE: '1', DISABLED_TOOLS: 'workspace_preview' }),
-                undefined,
                 null
             );
             expect(disabledPreview.workspace && !disabledPreview.workspacePreview, 'DISABLED_TOOLS=workspace_preview is honored');
@@ -386,7 +381,6 @@ const cases: { name: string; body: () => Promise<void> }[] = [
                 'gemini-3.8-flash',
                 CHAT,
                 readToolConfig({ ...base, WORKSPACE_ENABLE: '1' }),
-                undefined,
                 { workspace: false }
             );
             expect(!panelOff.workspace, 'the panel switch can turn the group off');
@@ -395,7 +389,6 @@ const cases: { name: string; body: () => Promise<void> }[] = [
                 'gemini-3.8-flash',
                 -1007777777777,
                 readToolConfig({ ...base, WORKSPACE_ENABLE: '1' }),
-                undefined,
                 { workspace: true }
             );
             expect(panelOn.workspace, 'the panel switch can turn the group on for another chat');

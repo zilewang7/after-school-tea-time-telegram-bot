@@ -83,7 +83,6 @@ const sameToolsAndPrompt = (chat: Chat, api: Api, entry: ReplyCheckpoint, plan: 
             signal: new AbortController().signal,
             api,
         }),
-        entry.context.requestTraits,
         plan.settings.toolOverrides,
         plan.access
     );

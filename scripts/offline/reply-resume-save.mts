@@ -343,8 +343,7 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
                     entry.request.toolDefinitionsJson.startsWith('[') &&
                     entry.context.contextMessageIds.includes(run.userMessageId) &&
                     entry.context.numbering.size === entry.context.contextIndex.size &&
-                    entry.context.promptAddendum === null &&
-                    entry.context.requestTraits.carriesLargeMedia === false,
+                    entry.context.promptAddendum === null,
                 'with the facts of the build and of the request'
             );
             expect(entry?.loop.journal.length === 2, 'the half-written round is not in it');
@@ -481,7 +480,6 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
                 toolState: createReplyToolState({ chatId, conversationRootIds: [] }),
                 contextIndex: new Map(),
                 conversationRootIds: [],
-                requestTraits: { carriesLargeMedia: false },
                 promptAddendum: null,
                 builtAt: Date.now(),
             });
@@ -517,7 +515,6 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
                 toolState: createReplyToolState({ chatId, conversationRootIds: [] }),
                 contextIndex: new Map(),
                 conversationRootIds: [],
-                requestTraits: { carriesLargeMedia: false },
                 promptAddendum: null,
                 builtAt: Date.now(),
             });

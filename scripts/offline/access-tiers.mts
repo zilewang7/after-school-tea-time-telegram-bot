@@ -371,8 +371,8 @@ const cases: { name: string; body: () => Promise<void> }[] = [
         name: 'a trial turn loses SMS and MCP tools; its free tools still follow the chat switches',
         body: async () => {
             const config = getToolConfig();
-            const trial = resolveToolAvailability('gemini-4-argon', GROUP_CHAT_ID, config, undefined, null, 'trial');
-            const full = resolveToolAvailability('gemini-4-argon', GROUP_CHAT_ID, config, undefined, null, 'full');
+            const trial = resolveToolAvailability('gemini-4-argon', GROUP_CHAT_ID, config, null, 'trial');
+            const full = resolveToolAvailability('gemini-4-argon', GROUP_CHAT_ID, config, null, 'full');
 
             expect(trial.trial && !full.trial, 'the availability carries the tier for the prompt');
             expect(trial.sms === false, 'a trial turn is not offered send_sms_to_owner');
@@ -389,8 +389,8 @@ const cases: { name: string; body: () => Promise<void> }[] = [
             expect(trial.image === full.image && trial.image === true, 'generate_image is still offered');
             expect(trial.harnessIssues === true, 'the free harness-issue tools are unchanged');
 
-            const trialOutside = resolveToolAvailability('gemini-4-argon', OTHER_CHAT_ID, config, undefined, null, 'trial');
-            const fullOutside = resolveToolAvailability('gemini-4-argon', OTHER_CHAT_ID, config, undefined, null, 'full');
+            const trialOutside = resolveToolAvailability('gemini-4-argon', OTHER_CHAT_ID, config, null, 'trial');
+            const fullOutside = resolveToolAvailability('gemini-4-argon', OTHER_CHAT_ID, config, null, 'full');
             expect(
                 trialOutside.imageSearch === false && fullOutside.imageSearch === false,
                 'the chat whitelist still gates the free tools, for either tier'
@@ -431,7 +431,7 @@ const cases: { name: string; body: () => Promise<void> }[] = [
         body: async () => {
             const context = toolContextOf(STRANGER_ID);
             const schemaOf = (access: 'trial' | 'full'): Record<string, unknown> => {
-                const definitions = createReplyTools('gemini-4-argon', context, undefined, null, access).tools.definitions;
+                const definitions = createReplyTools('gemini-4-argon', context, null, access).tools.definitions;
                 const definition = definitions.find((entry) => entry.name === 'generate_image');
                 if (definition === undefined) throw new Error(`generate_image missing for the ${access} turn`);
                 return asRecord(asRecord(asRecord(definition.inputSchema).properties).model);

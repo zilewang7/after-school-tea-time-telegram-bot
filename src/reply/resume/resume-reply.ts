@@ -102,7 +102,6 @@ const continueFromCheckpoint = async (
             signal,
             api: ctx.api,
         }),
-        entry.context.requestTraits,
         plan.settings.toolOverrides,
         plan.access,
         entry.toolState

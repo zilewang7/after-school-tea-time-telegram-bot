@@ -2,12 +2,13 @@
  * Offline cases for the panel's model view (GET …/model-view) and the tree
  * numbering it shares with buildContext: `at` on a bot message (continuation
  * id included) answers its user message and leaves that reply out; the
- * runtime block rides a user turn; Gemini with gs:// media declares no tools
- * and its static head no capability line; a hand-typed Gemini image model
- * shows the generation instruction; every member sees the preference layer;
- * the dry run sends nothing over the network, writes no snapshot and
- * publishes no numbering, and shows a placeholder where a preview is not
- * cached; the tree and buildContext give the same `#N` (reply targets too).
+ * runtime block rides a user turn; a Gemini turn with gs:// media keeps the
+ * tools and the static head of a plain turn of the same chat; a hand-typed
+ * Gemini image model shows the generation instruction; every member sees the
+ * preference layer; the dry run sends nothing over the network, writes no
+ * snapshot and publishes no numbering, and shows a placeholder where a
+ * preview is not cached; the tree and buildContext give the same `#N` (reply
+ * targets too).
  *
  * Run: npx tsx scripts/offline/panel-model-view.mts
  */
@@ -45,7 +46,6 @@ const { BotResponse, BiliDanmakuSnapshot, ButtonState, TgMessageLinkCache } = aw
 const { saveMessageLinks } = await import('../../src/db/queries/context-queries.js');
 const { loadChatSettingsCache, updateChatSettings } = await import('../../src/services/chat-settings-service.js');
 const { buildContext } = await import('../../src/reply/context-builder.js');
-const { buildStaticSystemPrompt } = await import('../../src/ai/system-prompt/index.js');
 const { getContextNumbering } = await import('../../src/state.js');
 const { GEMINI_IMAGE_SYSTEM_INSTRUCTION } = await import('../../src/panel/views/model-view.js');
 const { createPanelApp } = await import('../../src/panel/app.js');
@@ -240,20 +240,16 @@ const cases: { name: string; body: () => Promise<void> }[] = [
         },
     },
     {
-        name: 'Gemini with gs:// media: no tools declared and no capability line in the static head',
+        name: 'Gemini with a large gs:// video keeps its tools and its static head',
         body: async () => {
             const plain = (await get(`${C1}/model-view`)).body;
-            expect(plain.tools.length > 0 && plain.toolsDroppedForLargeMedia === false, `a plain turn declares tools here (got ${plain.tools.join(', ')})`);
+            expect(plain.tools.length > 0, `a plain turn declares tools here (got ${plain.tools.join(', ')})`);
             const withVideo = (await get(`${C2}/model-view`)).body;
             expect(
-                withVideo.tools.length === 0 && withVideo.toolsDroppedForLargeMedia === true,
-                `the gs:// turn declares none (got ${withVideo.tools.join(', ')})`
+                withVideo.tools.length > 0 && JSON.stringify(withVideo.tools) === JSON.stringify(plain.tools),
+                `the gs:// turn declares the same tools (got ${withVideo.tools.join(', ')} / plain ${plain.tools.join(', ')})`
             );
-            expect(
-                withVideo.systemPrompt === buildStaticSystemPrompt('gemini-4-argon', {}),
-                'the static head has no capability line'
-            );
-            expect(withVideo.systemPrompt !== plain.systemPrompt, 'unlike the plain turn of the same chat');
+            expect(withVideo.systemPrompt === plain.systemPrompt, 'and the same static head');
             expect(
                 turnTexts(withVideo).includes('[media gs://… 31 MB video/mp4]'),
                 `the video is a placeholder (got ${JSON.stringify(turnTexts(withVideo))})`

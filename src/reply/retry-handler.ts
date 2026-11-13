@@ -13,7 +13,6 @@ import { startRetry } from '../services/index.js';
 import {
     sendMessage,
     buildStaticSystemPrompt,
-    carriesLargeMedia,
     getModelCapabilities,
     isOpenCodeGoModel,
     openCodeGoSessionId,
@@ -339,7 +338,6 @@ const handleChatRetry = async (
     // The context still answers the original message's author; the tier (and
     // therefore the model and tool set) is the one who pressed retry
     const signal = session.streamController.signal;
-    const requestTraits = { carriesLargeMedia: carriesLargeMedia(chatContents) };
     const { tools, availability, workspaceState, toolState } = createReplyTools(
         model,
         buildReplyToolContext({
@@ -350,7 +348,6 @@ const handleChatRetry = async (
             signal,
             api: ctx.api,
         }),
-        requestTraits,
         settings.toolOverrides,
         access
     );
@@ -379,7 +376,6 @@ const handleChatRetry = async (
         toolState,
         contextIndex,
         conversationRootIds: builtContext.conversationRootIds,
-        requestTraits,
         promptAddendum: settings.promptAddendum,
         thinkingEffort: settings.thinkingEffort,
         thinkingEffortSent: thinking.facts.sent,

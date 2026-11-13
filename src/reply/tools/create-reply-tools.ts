@@ -46,11 +46,7 @@ import type { WorkspaceState } from '../workspace/workspace-state.js';
 import { createUiGuideTool } from './ui-guide-tool.js';
 import { createSendSmsTool } from './send-sms-tool.js';
 import type { ReplyToolContext } from './reply-tool-context.js';
-import {
-    resolveToolAvailability,
-    type ToolAvailability,
-    type ToolRequestTraits,
-} from './tool-availability.js';
+import { resolveToolAvailability, type ToolAvailability } from './tool-availability.js';
 import { RESERVED_TOOL_NAMES } from './tool-names.js';
 
 export interface ReplyTools {
@@ -72,7 +68,6 @@ export interface ReplyTools {
 export const createReplyTools = (
     model: string,
     context: ReplyToolContext,
-    request?: ToolRequestTraits,
     /** The chat's panel switches, taken with the rest of the reply settings */
     toolOverrides: ToolOverrides | null = null,
     /** The trigger user's tier: a trial turn loses the paid tools (design D3) */
@@ -81,7 +76,7 @@ export const createReplyTools = (
     carriedToolState?: ReplyToolState
 ): ReplyTools => {
     const config = getToolConfig();
-    const availability = resolveToolAvailability(model, context.chatId, config, request, toolOverrides, access);
+    const availability = resolveToolAvailability(model, context.chatId, config, toolOverrides, access);
     const capabilities = getModelCapabilities(model);
     const toolState =
         carriedToolState ??

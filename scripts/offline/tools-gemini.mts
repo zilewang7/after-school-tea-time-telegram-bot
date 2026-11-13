@@ -1409,62 +1409,65 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
         },
     },
     {
-        name: 'gs:// media: no function declarations, byte for byte the request without tools',
+        name: 'gs:// media: the client tools stay and every round resends the file',
         body: async () => {
             const messages: UnifiedMessage[] = [
                 {
                     role: 'user',
                     content: [
-                        { type: 'text', text: 'Summarise the video.' },
+                        { type: 'text', text: 'Watch the clip, then look up its topic.' },
                         { type: 'media', fileUri: 'gs://offline-bucket/clip.mp4', mimeType: 'video/mp4', durationSeconds: 30 },
                     ],
                 },
             ];
-            const videoRound = () =>
-                sse([
-                    event([thoughtPart('watching')]),
-                    event([textPart('A short clip.')]),
-                    event([signedEmptyText('g1-end')], { finishReason: 'STOP', grounding: groundingOf(['clip'], ['https://a']) }),
-                ]);
-            const normalizedUsageLines = (lines: readonly string[]): string[] =>
-                // timings and the gap position are the only parts that may differ
-                usageLines(lines).map((line) =>
-                    line
-                        .replace(/maxGap=\d+ms@(?:\+\d+ms|-)/, 'maxGap=Nms')
-                        .replace(/=\d+ms/g, '=Nms')
+            const round1 = [
+                [thoughtPart('watching')],
+                [callPart('lookup_a', { topic: 'falcon' }, 'gs1', 'call_gs1'), textPart('')],
+            ];
+            const round2 = [[textPart('The clip is about falcons; the key is K-7731.')], [signedEmptyText('gs2')]];
+            reset([sse(roundEvents(round1)), sse(roundEvents(round2))]);
+
+            const { chunks, lines } = await runTurn({ tools: turnTools, messages });
+
+            expect(recordedRequests.length === 2, `the tool call adds a second round (got ${recordedRequests.length})`);
+            for (const [index, request] of recordedRequests.entries()) {
+                expect(
+                    json(declarationNamesOf(request)) === '["lookup_a","lookup_b","broken_tool"]',
+                    `request ${index + 1}: all declarations ride along (got ${json(declarationNamesOf(request))})`
                 );
-
-            reset([videoRound()]);
-            const withTools = await runTurn({ tools: turnTools, messages });
-            const toolsRequest = recordedRequests[0];
-            expect(recordedRequests.length === 1, 'one request');
+            }
+            const fileDataIn = (request: RecordedRequest | undefined): boolean =>
+                json(request?.body.contents).includes('"fileData"') &&
+                json(request?.body.contents).includes('gs://offline-bucket/clip.mp4');
+            expect(fileDataIn(recordedRequests[0]), 'round 1 sends the gs:// fileData');
+            expect(fileDataIn(recordedRequests[1]), 'round 2 resends it next to the tool result');
+            expect(json(executions.map((execution) => execution.name)) === '["lookup_a"]', 'the call ran once');
             expect(
-                declarationNamesOf(toolsRequest).length === 0 && json(toolsRequest?.body.tools) === BUILT_IN_TOOLS_JSON,
-                `no function declarations, the search tools only (got ${json(toolsRequest?.body.tools)})`
+                textOf(chunks) === 'The clip is about falcons; the key is K-7731.',
+                `the answer streams (got ${json(textOf(chunks))})`
             );
-            expect(toolConfigOf(toolsRequest) === undefined, 'and no toolConfig');
-            expect(json(toolsRequest?.body.contents).includes('gs://offline-bucket/clip.mp4'), 'the gs:// file is in it');
             expect(
-                withTools.lines.some((line) => line.includes('gs:// media → single request without client tools')),
-                'leaving the tools out is logged'
+                lines.some((line) => line.includes('offers') && line.includes('client tool(s)')),
+                'the loop is logged'
             );
-            expect(!withTools.lines.some((line) => line.includes('client tool(s)')), 'and the tool loop never starts');
-            expect(executions.length === 0, 'nothing ran');
+            const usage = usageLines(lines);
+            expect(
+                usage.length === 3 &&
+                    usage[0]?.includes('round=1 calls=1') === true &&
+                    usage[0]?.includes('via=large-media') === true &&
+                    usage[1]?.includes('round=2 calls=0') === true,
+                `one usage line per round on the large-media lane (got ${json(usage)})`
+            );
+            expect(usage[2]?.includes('summary rounds=2 calls=1') === true, `the summary counts both rounds (got ${usage[2]})`);
 
-            reset([videoRound()]);
+            // No tools offered: the loop never starts, so the gs:// turn stays one plain request
+            reset([
+                sse(roundEvents([[thoughtPart('watching')], [textPart('A short clip.')], [signedEmptyText('g1-end')]])),
+            ]);
             const withoutTools = await runTurn({ messages });
-            expect(toolsRequest?.rawBody === recordedRequests[0]?.rawBody, 'the body is byte for byte the one sent without tools');
-            expect(toolsRequest?.url === recordedRequests[0]?.url, 'to the same endpoint');
-            expect(
-                json(withTools.chunks.map((chunk) => chunk.type)) === '["thinking","text","text","grounding","done"]' &&
-                    json(withTools.chunks) === json(withoutTools.chunks),
-                `the same single-request chunks (got ${json(withTools.chunks.map((chunk) => chunk.type))})`
-            );
-            expect(
-                json(normalizedUsageLines(withTools.lines)) === json(normalizedUsageLines(withoutTools.lines)) &&
-                    !(usageLines(withTools.lines)[0] ?? '').includes('round='),
-                `and the same single usage line (got ${json(normalizedUsageLines(withTools.lines))} vs ${json(normalizedUsageLines(withoutTools.lines))})`
-            );
+            expect(recordedRequests.length === 1, 'without tools the gs:// turn is still one request');
+            expect(json(recordedRequests[0]?.body.tools) === BUILT_IN_TOOLS_JSON, 'with the search tools only');
+            expect(textOf(withoutTools.chunks) === 'A short clip.', 'and it answers');
         },
     },
     {
@@ -1634,7 +1637,7 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
         },
     },
     {
-        name: "Priority PayGo: the gs:// single request and the single request's media fallback carry it; off, nothing does",
+        name: "Priority PayGo: the gs:// round 1 and the single request's media fallback carry it; off, nothing does",
         body: async () => {
             const videoMessages: UnifiedMessage[] = [
                 {
@@ -1648,8 +1651,10 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
             reset([sse(roundEvents([[textPart('A short clip.')]]))]);
             await runTurn({ tools: turnTools, messages: videoMessages, serviceTier: 'priority' });
             expect(
-                recordedRequests.length === 1 && recordedRequests[0]?.headers[PRIORITY_HEADER] === 'priority',
-                'the gs:// request (on Vertex) asks for priority'
+                recordedRequests.length === 1 &&
+                    declarationNamesOf(recordedRequests[0]).length === 3 &&
+                    recordedRequests[0]?.headers[PRIORITY_HEADER] === 'priority',
+                'the gs:// round 1 (on Vertex, declarations out) asks for priority'
             );
 
             const audioMessages: UnifiedMessage[] = [

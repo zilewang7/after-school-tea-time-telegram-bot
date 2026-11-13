@@ -101,7 +101,6 @@ const saveFiller = (index: number): void => {
         toolState: createReplyToolState({ chatId: -1009900000000 - index, conversationRootIds: [] }),
         contextIndex: new Map(),
         conversationRootIds: [],
-        requestTraits: { carriesLargeMedia: false },
         promptAddendum: null,
         builtAt: Date.now(),
     });

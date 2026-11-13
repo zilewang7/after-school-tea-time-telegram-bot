@@ -105,7 +105,7 @@ const modelViewSection = (modelView: ModelView): string[] => [
     `- 等同于现在点重试，重算于 ${modelView.computedAt}，不是当时请求的快照`,
     `- 模型：${modelView.model}${modelView.asModel ? '（临时换用）' : ''}`,
     `- 回答的消息：${modelView.at}${modelView.excludedReplyId !== null ? `；重试时替换的回复 ${modelView.excludedReplyId} 不在上下文里` : ''}`,
-    `- 本轮声明的工具：${modelView.tools.length > 0 ? modelView.tools.join(', ') : '无'}${modelView.toolsDroppedForLargeMedia ? '（本轮因大文件不声明工具）' : ''}`,
+    `- 本轮声明的工具：${modelView.tools.length > 0 ? modelView.tools.join(', ') : '无'}`,
     '',
     modelView.systemPromptReplaced ? '### 生图指令（替换静态头）' : '### 静态头',
     '',

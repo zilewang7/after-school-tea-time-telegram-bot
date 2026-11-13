@@ -13,7 +13,6 @@
  * head, as the platform sends it.
  */
 import type { Api } from 'grammy';
-import { carriesLargeMedia } from '../../ai/large-media.js';
 import { replacesChatSystemPrompt } from '../../ai/model-kinds.js';
 import { getModelCapabilities } from '../../ai/platform-factory.js';
 import { buildStaticSystemPrompt } from '../../ai/system-prompt/index.js';
@@ -54,8 +53,6 @@ export interface ModelView {
     systemPromptReplaced: boolean;
     /** Tool names declared this turn, in declaration order */
     tools: string[];
-    /** The context carries gs:// media and this platform then sends no tools */
-    toolsDroppedForLargeMedia: boolean;
     turns: ModelViewTurn[];
     /** `#N` → message id, as this context numbers them */
     numbers: Array<{ number: number; messageId: number }>;
@@ -99,11 +96,9 @@ export const buildModelView = async (request: ModelViewRequest): Promise<ModelVi
         excludeMessageIds: target.excludedReplyId === null ? [] : [target.excludedReplyId],
         dryRun: true,
     });
-    const largeMedia = carriesLargeMedia(built.messages);
     const { tools, availability, workspaceState } = createReplyTools(
         model,
         toolContextOf(chat, target.userMessage, built, request.toolApi),
-        { carriesLargeMedia: largeMedia },
         settings.toolOverrides
     );
     // Mirror the real request: the workspace manifest is part of the volatile
@@ -132,8 +127,6 @@ export const buildModelView = async (request: ModelViewRequest): Promise<ModelVi
             : buildStaticSystemPrompt(model, buildStaticPromptOptions(availability)),
         systemPromptReplaced,
         tools: tools.definitions.map((definition) => definition.name),
-        toolsDroppedForLargeMedia:
-            largeMedia && capabilities.supportsClientTools === true && capabilities.clientToolsWithLargeMedia === false,
         turns: built.messages.map(toModelViewTurn),
         numbers: [...built.contextIndex.values()].map((entry) => ({ number: entry.number, messageId: entry.messageId })),
     };

@@ -13,7 +13,6 @@ import {
 import {
     sendMessage,
     buildStaticSystemPrompt,
-    carriesLargeMedia,
     getModelCapabilities,
     isOpenCodeGoModel,
     openCodeGoSessionId,
@@ -347,7 +346,6 @@ export const handleReply = async (
         : null;
 
     const signal = chatContext.session.streamController.signal;
-    const requestTraits = { carriesLargeMedia: carriesLargeMedia(chatContents) };
     const { tools, availability, workspaceState, toolState } = createReplyTools(
         model,
         buildReplyToolContext({
@@ -358,7 +356,6 @@ export const handleReply = async (
             signal,
             api: ctx.api,
         }),
-        requestTraits,
         settings.toolOverrides,
         access
     );
@@ -388,7 +385,6 @@ export const handleReply = async (
         toolState,
         contextIndex,
         conversationRootIds: built.conversationRootIds,
-        requestTraits,
         promptAddendum: settings.promptAddendum,
         thinkingEffort: settings.thinkingEffort,
         thinkingEffortSent: thinking.facts.sent,

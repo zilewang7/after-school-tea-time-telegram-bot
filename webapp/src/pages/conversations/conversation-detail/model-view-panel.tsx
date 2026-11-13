@@ -193,10 +193,6 @@ const ModelViewResult = ({ data, lastUserTurnIndex }: ModelViewResultProps) => (
                 )}
             </p>
             <p className="hint">重算于 {formatDateTime(data.computedAt)} · 触发消息 #{data.at}</p>
-            {data.toolsDroppedForLargeMedia && (
-                <p className="notice warning">本轮上下文带大文件（gs://），该平台此时不声明工具。</p>
-            )}
-
             <CollapsibleSection
                 title={data.systemPromptReplaced ? '生成指令（替代静态头）' : '静态头'}
                 summary={`${Array.from(data.systemPrompt).length} 字`}

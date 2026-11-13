@@ -45,7 +45,7 @@ export interface ToolGroupEntry {
     key: ToolGroupKey;
     /** The tool names this group registers, in declaration order */
     tools: readonly string[];
-    /** Offered to a plain turn (no gs:// media) with the chat's current settings */
+    /** Offered to a turn with the chat's current model, tier and settings */
     enabled: boolean;
     /** Offered if every switch followed the env again */
     defaultEnabled: boolean;
@@ -223,8 +223,8 @@ export const buildToolMatrix = (
     const capabilities = getModelCapabilities(model);
     // The tier rides along into both variants: a trial user has no SMS/MCP even
     // when every switch follows the env again
-    const availability = resolveToolAvailability(model, chatId, config, undefined, overrides, access);
-    const envAvailability = resolveToolAvailability(model, chatId, config, undefined, null, access);
+    const availability = resolveToolAvailability(model, chatId, config, overrides, access);
+    const envAvailability = resolveToolAvailability(model, chatId, config, null, access);
     const context: ReasonContext = {
         config,
         chatId,

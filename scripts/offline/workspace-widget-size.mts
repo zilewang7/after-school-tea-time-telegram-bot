@@ -56,7 +56,7 @@ const results: CaseResult[] = [];
 
 results.push(
     await runCase('a widget turn hands the widget budget to the workspace tools', async () => {
-        const turn = createReplyTools('gemini-4-argon', contextOf(), undefined, null, 'full');
+        const turn = createReplyTools('gemini-4-argon', contextOf(), null, 'full');
         expect(turn.availability.workspace, 'the workspace tools are offered');
         expect(turn.availability.widget, 'send_widget is offered');
 

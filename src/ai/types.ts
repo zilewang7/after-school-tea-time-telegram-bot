@@ -328,8 +328,6 @@ export interface ModelCapabilities {
     supportsVideoToolResult?: boolean;
     /** Accepts client-side function tools (config.tools) */
     supportsClientTools?: boolean;
-    /** False: a request carrying large media (gs:// references) goes out without client tools */
-    clientToolsWithLargeMedia?: boolean;
 }
 
 // AI Platform interface

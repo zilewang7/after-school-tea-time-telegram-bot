@@ -723,8 +723,6 @@ export interface ModelView {
     systemPromptReplaced: boolean;
     // Tool names declared this turn, in declaration order
     tools: string[];
-    // The context carries gs:// media and this platform then sends no tools
-    toolsDroppedForLargeMedia: boolean;
     turns: ModelViewTurn[];
     // `#N` → message id, as this context numbers them
     numbers: Array<{ number: number; messageId: number }>;

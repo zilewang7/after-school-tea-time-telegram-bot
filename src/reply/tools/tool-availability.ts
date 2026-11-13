@@ -9,9 +9,7 @@
  * override only the chat whitelists; env kill switches, URLs, model
  * capabilities and the test instance's SMS guard remain hard prerequisites.
  * A trial turn additionally loses the paid/unknown-cost tools (SMS, MCP); its
- * free tools keep following the chat switches. One exception keeps the
- * byte-stability promise: a platform that sends requests carrying large media
- * without client tools (Gemini) gets none for such a turn.
+ * free tools keep following the chat switches.
  */
 import { getModelCapabilities, getPlatform } from '../../ai/platform-factory.js';
 import { listMcpServers } from '../../ai/mcp/index.js';
@@ -38,14 +36,6 @@ import {
     WORKSPACE_PREVIEW_TOOL_NAME,
     LEAVE_HANDOFF_TOOL_NAME,
 } from './tool-names.js';
-
-/** What the turn's request carries, as far as tool availability cares */
-export interface ToolRequestTraits {
-    /** The context references large media (gs:// URIs) */
-    readonly carriesLargeMedia: boolean;
-}
-
-const PLAIN_REQUEST: ToolRequestTraits = { carriesLargeMedia: false };
 
 export interface ToolAvailability {
     /** The trigger user is a trial user: the prompt carries the trial section */
@@ -114,17 +104,12 @@ export const resolveToolAvailability = (
     model: string,
     chatId: number,
     config: ToolConfig = getToolConfig(),
-    request: ToolRequestTraits = PLAIN_REQUEST,
     overrides: ToolOverrides | null = null,
     access: AccessTier = 'full'
 ): ToolAvailability => {
     const trial = access === 'trial';
     const capabilities = getModelCapabilities(model);
     if (capabilities.supportsClientTools !== true) return noToolsFor(trial);
-    // The request will declare no tools, so the prompt must not name any
-    if (request.carriesLargeMedia && capabilities.clientToolsWithLargeMedia === false) {
-        return noToolsFor(trial);
-    }
 
     const isEnabled = (name: string): boolean => !config.disabledTools.has(name);
     const platformType = getPlatform(model).type;

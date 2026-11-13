@@ -8,7 +8,6 @@ import type { TurnTools } from '../../ai/tools/tool-types.js';
 import type { ThinkingEffortValue } from '../../services/thinking-effort-values.js';
 import type { ContextIndex } from '../context-index.js';
 import type { ReplyToolState } from '../tools/reply-tool-state.js';
-import type { ToolRequestTraits } from '../tools/tool-availability.js';
 import { toolDefinitionsJsonOf } from './canonical-json.js';
 import { resolveThinkingEffort, sentEffortOf } from '../../ai/thinking-effort.js';
 import type { ReplyResumeFacts, ResumeRequestFacts } from './reply-checkpoint.js';
@@ -22,7 +21,6 @@ export interface ResumeFactsInput {
     readonly toolState: ReplyToolState;
     readonly contextIndex: ContextIndex;
     readonly conversationRootIds: readonly number[];
-    readonly requestTraits: ToolRequestTraits;
     readonly promptAddendum: string | null;
     /** The chat's thinking level setting the request used; null = the model default */
     readonly thinkingEffort?: ThinkingEffortValue | null;
@@ -74,7 +72,6 @@ export const captureResumeFacts = (input: ResumeFactsInput): ReplyResumeFacts =>
         numbering: numberingOf(input.contextIndex),
         contextIndex: input.contextIndex,
         conversationRootIds: [...input.conversationRootIds],
-        requestTraits: { carriesLargeMedia: input.requestTraits.carriesLargeMedia },
         promptAddendum: input.promptAddendum,
         builtAt: input.builtAt,
         contextMessageIds: [...input.contextIndex.values()].map((entry) => entry.messageId),

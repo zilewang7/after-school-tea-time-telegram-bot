@@ -32,7 +32,7 @@ import {
     takeMessageId,
     type CaseResult,
 } from './harness.mts';
-import type { AIResponse, ResponseState, StreamChunk, ToolChatAction, ToolStatus, UnifiedMessage } from '../../src/ai/types.js';
+import type { AIResponse, ResponseState, StreamChunk, ToolChatAction, ToolStatus } from '../../src/ai/types.js';
 import type { ToolCall, ToolHandler, ToolResult, TurnTools } from '../../src/ai/tools/tool-types.js';
 import type { StreamingEditor, TypingIndicator } from '../../src/telegram/index.js';
 
@@ -279,7 +279,6 @@ const db = await setupOfflineDb();
 const { Message, putCachedMedia } = db;
 
 const { isImageOutputModel } = await import('../../src/ai/model-kinds.js');
-const { carriesLargeMedia } = await import('../../src/ai/large-media.js');
 const { GEMINI_IMAGE_MODEL, OPENAI_IMAGE_MODEL } = await import('../../src/config/models.js');
 const { toToolName, stripSchemaMeta } = await import('../../src/ai/tools/tool-wire-formats.js');
 const { createTurnTools } = await import('../../src/ai/tools/turn-tools.js');
@@ -974,39 +973,6 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
                 'outside TOOL_CHAT_IDS: no SMS, no image, MCP stays'
             );
 
-            // Gemini sends a turn with gs:// media without client tools, so it is offered none
-            const withLargeMedia = (model: string): string => {
-                const availability = resolveToolAvailability(model, WHITELISTED_CHAT_ID, undefined, { carriesLargeMedia: true });
-                return `${availability.mcpServers.join('+') || '-'}|sms=${availability.sms}|image=${availability.image}`;
-            };
-            expect(
-                withLargeMedia('gemini-4-argon') === '-|sms=false|image=false',
-                `a Gemini turn with large media gets no tools, so the prompt names none (got ${withLargeMedia('gemini-4-argon')})`
-            );
-            expect(
-                withLargeMedia('deepseek-reasoning') === describe('deepseek-reasoning', WHITELISTED_CHAT_ID),
-                'other platforms keep their tools'
-            );
-            const largeVideo: UnifiedMessage = {
-                role: 'user',
-                content: [{ type: 'media', mimeType: 'video/mp4', fileUri: 'gs://offline-bucket/video.mp4' }],
-            };
-            const inlineVideo: UnifiedMessage = {
-                role: 'user',
-                content: [{ type: 'text', text: '看看' }, { type: 'media', mimeType: 'video/mp4', mediaData: 'AAAA' }],
-            };
-            expect(
-                carriesLargeMedia([inlineVideo, largeVideo]) && !carriesLargeMedia([inlineVideo]),
-                'a gs:// media part counts as large media, inline media does not'
-            );
-            const largeMediaTurn = replyTools.createReplyTools('gemini-4-argon', toolContext(WHITELISTED_CHAT_ID), {
-                carriesLargeMedia: true,
-            });
-            expect(
-                largeMediaTurn.tools.definitions.length === 0 && !largeMediaTurn.availability.sms,
-                'and the reply snapshot is empty'
-            );
-
             process.env.TEST_INSTANCE = '1';
             try {
                 expect(
@@ -1028,7 +994,7 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
             const outside = resolveToolAvailability('gemini-4-argon', OTHER_CHAT_ID);
             expect(baseline.image && !outside.image, 'baseline: the image group only in the whitelisted chat');
 
-            const offInWhitelist = resolveToolAvailability('gemini-4-argon', WHITELISTED_CHAT_ID, undefined, undefined, {
+            const offInWhitelist = resolveToolAvailability('gemini-4-argon', WHITELISTED_CHAT_ID, undefined, {
                 image: false,
             });
             expect(
@@ -1036,7 +1002,7 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
                 'a panel off switch stops drawing; searching still delivers through send_image'
             );
 
-            const onElsewhere = resolveToolAvailability('gemini-4-argon', OTHER_CHAT_ID, undefined, undefined, {
+            const onElsewhere = resolveToolAvailability('gemini-4-argon', OTHER_CHAT_ID, undefined, {
                 image: true,
             });
             expect(onElsewhere.image && onElsewhere.sendImage, 'a panel on switch opens a chat outside TOOL_CHAT_IDS');
@@ -1046,7 +1012,7 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
                 TOOL_CHAT_IDS: String(OTHER_CHAT_ID),
                 DISABLED_TOOLS: 'generate_image',
             });
-            const forcedOff = resolveToolAvailability('gemini-4-argon', OTHER_CHAT_ID, generateOff, undefined, {
+            const forcedOff = resolveToolAvailability('gemini-4-argon', OTHER_CHAT_ID, generateOff, {
                 image: true,
             });
             expect(!forcedOff.image, 'DISABLED_TOOLS stays a hard prerequisite');
@@ -1056,7 +1022,6 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
                 'gemini-4-argon',
                 WHITELISTED_CHAT_ID,
                 imageToolsOff,
-                undefined,
                 { imageSearch: true }
             );
             expect(!searchForcedOff.imageSearch, 'IMAGE_TOOLS=0 stays a hard prerequisite for searching');
@@ -1065,7 +1030,7 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
                 TOOL_CHAT_IDS: String(WHITELISTED_CHAT_ID),
                 DISABLED_TOOLS: 'send_image',
             });
-            const noDelivery = resolveToolAvailability('gemini-4-argon', WHITELISTED_CHAT_ID, sendImageOff, undefined, {
+            const noDelivery = resolveToolAvailability('gemini-4-argon', WHITELISTED_CHAT_ID, sendImageOff, {
                 image: true,
                 imageSearch: true,
             });
@@ -1074,12 +1039,12 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
                 'a disabled send_image closes drawing and searching'
             );
 
-            const textModel = resolveToolAvailability('deepseek-reasoning', WHITELISTED_CHAT_ID, undefined, undefined, {
+            const textModel = resolveToolAvailability('deepseek-reasoning', WHITELISTED_CHAT_ID, undefined, {
                 imageFetch: true,
             });
             expect(!textModel.imageFetch, 'a model that cannot see images never gets fetch_image');
 
-            const imageModel = resolveToolAvailability(GEMINI_IMAGE_MODEL, WHITELISTED_CHAT_ID, undefined, undefined, {
+            const imageModel = resolveToolAvailability(GEMINI_IMAGE_MODEL, WHITELISTED_CHAT_ID, undefined, {
                 image: true,
                 sms: true,
             });
@@ -1092,13 +1057,13 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
             });
             expect(
                 resolveToolAvailability('gemini-4-argon', WHITELISTED_CHAT_ID, historyConfig).history === false &&
-                    resolveToolAvailability('gemini-4-argon', WHITELISTED_CHAT_ID, historyConfig, undefined, { history: true })
+                    resolveToolAvailability('gemini-4-argon', WHITELISTED_CHAT_ID, historyConfig, { history: true })
                         .history,
                 'history follows its own whitelist and switch'
             );
             expect(
                 resolveToolAvailability('gemini-4-argon', OTHER_CHAT_ID, historyConfig).history &&
-                    resolveToolAvailability('gemini-4-argon', OTHER_CHAT_ID, historyConfig, undefined, { history: false })
+                    resolveToolAvailability('gemini-4-argon', OTHER_CHAT_ID, historyConfig, { history: false })
                         .history === false,
                 'and can be switched off where it was on'
             );
@@ -1110,12 +1075,12 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
                 LUOXU_PREVIEW_URL: 'http://luoxu.invalid',
             });
             expect(
-                resolveToolAvailability('gemini-4-argon', OTHER_CHAT_ID, historyToolsOff, undefined, { history: true })
+                resolveToolAvailability('gemini-4-argon', OTHER_CHAT_ID, historyToolsOff, { history: true })
                     .history === false,
                 'HISTORY_TOOLS=0 stays a hard prerequisite'
             );
 
-            const turn = replyTools.createReplyTools('gemini-4-argon', toolContext(OTHER_CHAT_ID), undefined, {
+            const turn = replyTools.createReplyTools('gemini-4-argon', toolContext(OTHER_CHAT_ID), {
                 image: true,
             });
             expect(

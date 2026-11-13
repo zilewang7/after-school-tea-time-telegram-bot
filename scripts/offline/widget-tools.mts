@@ -177,7 +177,6 @@ results.push(
             'gemini-4-argon',
             603421700,
             config,
-            undefined,
             normalized.ok ? normalized.value : null
         );
         expect(!disabled.widget && !disabled.widgetGuide, 'the panel switch can turn both off');
@@ -187,7 +186,6 @@ results.push(
             'gemini-4-argon',
             -1001415974153,
             config,
-            undefined,
             groupOverride.ok ? groupOverride.value : null
         );
         expect(!group.widget, 'a group chat stays off even when the panel asks for it');

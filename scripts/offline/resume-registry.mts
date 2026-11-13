@@ -107,7 +107,6 @@ const entryOf = (
         toolState,
         contextIndex: new Map(),
         conversationRootIds: [],
-        requestTraits: { carriesLargeMedia: false },
         promptAddendum: null,
         builtAt: savedAt,
     });
@@ -501,7 +500,7 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
             const chatId = -1007300000050;
             const rootId = takeMessageId();
             const overrides = { image: true, imageReverseSearch: true, harnessIssues: true, workspace: true };
-            const first = replyTools.createReplyTools('gemini-4-carbon', toolContextFor(chatId, [rootId]), undefined, overrides);
+            const first = replyTools.createReplyTools('gemini-4-carbon', toolContextFor(chatId, [rootId]), overrides);
             const bundle = first.toolState;
             expect(first.workspaceState === bundle.workspace, 'the bundle carries the workspace state the manifest uses');
 
@@ -523,7 +522,6 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
             const resumed = replyTools.createReplyTools(
                 'gemini-4-carbon',
                 toolContextFor(chatId, [rootId]),
-                undefined,
                 overrides,
                 'full',
                 bundle
@@ -548,7 +546,7 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
             );
 
             // Without the bundle the next attempt starts from nothing
-            const fresh = replyTools.createReplyTools('gemini-4-carbon', toolContextFor(chatId, [rootId]), undefined, overrides);
+            const fresh = replyTools.createReplyTools('gemini-4-carbon', toolContextFor(chatId, [rootId]), overrides);
             const unknown = await fresh.tools.execute({ id: 'call', name: 'send_image', argumentsJson: JSON.stringify({ image_id: 'g1' }) });
             expect(fresh.toolState !== bundle && unknown.isError, 'a fresh reply does not know g1');
             const unknownToken = await fresh.tools.execute({
