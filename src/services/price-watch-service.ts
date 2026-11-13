@@ -103,14 +103,14 @@ const NON_CHAT_ID = /image|embedding|tts|audio|live|realtime|computer-use|imagen
 const VARIANT_SUFFIX = /-(preview|exp|experimental|alpha|beta|thinking|nothinking|nothink|chat|instruct|deprecated|legacy|latest|high|medium|low|max|mini-high)$/i;
 
 /**
- * "Same family enters the menu automatically" means a *newer version* of a
- * family we already offer, or — for a line we do not know yet — a release from
- * the last days. The catalog also lists old models (gpt-4o, gpt-5.2, ...) and
- * retired aliases (deepseek-v4-flash), so a bare prefix match is not enough.
+ * "Same family enters the menu automatically" means a *newer generation* of a
+ * family we already offer, a newer minor of a product line we offer
+ * (gpt-6.1-sol next to gpt-6-sol), or — for a line we never named — a release
+ * from the last days. The catalog also lists old models (gpt-4o, gpt-5.2, ...)
+ * and retired aliases (deepseek-v4-flash), so a bare prefix match is not enough.
  *
- * For a family the menu serves the version compare is the whole test: gpt-6.1-sol
- * shipped 45 days before the first watch run and still has to enter. Only a
- * line we never offered is time-boxed, so an unknown old alias cannot arrive.
+ * Release age only gates a line the menu never named: gpt-6.1-sol shipped 45
+ * days before the first watch run and still belongs in the menu.
  */
 const MAX_NEW_FAMILY_AGE_DAYS = 7;
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -143,39 +143,71 @@ const versionOf = (id: string, familyLine: string): number | null => {
     return major + minor;
 };
 
-/** The newest version the menu already offers per family line */
-const menuVersionsOf = (menuIds: readonly string[]): ReadonlyMap<string, number> => {
-    const versions = new Map<string, number>();
+/**
+ * The product line an id belongs to, with the version removed: `gpt-sol`,
+ * `gemini-argon`, `claude-sonnet`. Two ids of one line are one model at
+ * different versions, so a new id of an offered line is that model's upgrade.
+ */
+const productLineOf = (id: string): string => {
+    const normalized = id.toLowerCase();
+    const family = familyLineOf(normalized);
+    const rest = normalized.slice(family.length + 1);
+    const version = /^v?\d+(?:[.-]\d+)?/.exec(rest);
+    const persona = version === null ? rest : rest.slice(version[0].length).replace(/^-/, '');
+    return persona === '' ? family : `${family}-${persona}`;
+};
+
+/** Newest version the menu already offers, per family and per product line */
+interface MenuVersions {
+    readonly families: ReadonlyMap<string, number>;
+    readonly products: ReadonlyMap<string, number>;
+}
+
+const recordNewest = (versions: Map<string, number>, line: string, version: number): void => {
+    const current = versions.get(line);
+    if (current === undefined || version > current) versions.set(line, version);
+};
+
+const menuVersionsOf = (menuIds: readonly string[]): MenuVersions => {
+    const families = new Map<string, number>();
+    const products = new Map<string, number>();
     for (const id of menuIds) {
-        const line = familyLineOf(id);
-        const version = versionOf(id, line);
+        const family = familyLineOf(id);
+        const version = versionOf(id, family);
         if (version === null) continue;
-        const current = versions.get(line);
-        if (current === undefined || version > current) versions.set(line, version);
+        recordNewest(families, family, version);
+        recordNewest(products, productLineOf(id), version);
     }
-    return versions;
+    return { families, products };
 };
 
 /**
- * Whether the catalog entry may enter the menu by itself: only a newer minor of
- * a menu family (or, for a line we never offered, a release of the last days).
+ * Whether the catalog entry may enter the menu by itself. It may never be an
+ * older generation than the menu already offers; a newer generation enters as
+ * a whole; inside the menu's generation, only a newer minor of an offered
+ * product line, or a brand-new line released in the last days.
  */
 const qualifiesForAutoAdd = (
     id: string,
     releaseDate: unknown,
-    menuIds: readonly string[],
+    menu: MenuVersions,
     now: Date
 ): boolean => {
     const age = releaseAgeDays(releaseDate, now);
     // An undated entry is unverified, never a new release
     if (age === null) return false;
-    const line = familyLineOf(id);
-    const version = versionOf(id, line);
-    const offered = menuVersionsOf(menuIds).get(line);
-    // A newer version of a family the menu already offers: release age is not
-    // a reason to skip it, however late the watcher first saw it.
-    if (offered !== undefined && version !== null) return version > offered;
-    // A family line the menu never named: only a release from the last days.
+    const family = familyLineOf(id);
+    const version = versionOf(id, family);
+    const familyVersion = menu.families.get(family);
+    // Never resurrect an older generation, however recent its date: the first
+    // watch run added gpt-4o / gpt-5.2 exactly this way.
+    if (version !== null && familyVersion !== undefined && version < familyVersion) return false;
+    if (version !== null && familyVersion !== undefined && version > familyVersion) return true;
+    // Inside the menu's generation: the newer minor of an offered product line
+    // (gpt-6.1-terra in the menu must not hide gpt-6.1-sol).
+    const productVersion = version === null ? undefined : menu.products.get(productLineOf(id));
+    if (version !== null && productVersion !== undefined) return version > productVersion;
+    // A product line the menu never named: only a release from the last days.
     return age <= MAX_NEW_FAMILY_AGE_DAYS;
 };
 
@@ -291,6 +323,7 @@ export const discoveredModelsOf = (body: string, now: Date = new Date()): readon
     const menuIds = listAllModelCatalog()
         .filter((entry) => entry.enabled)
         .map((entry) => entry.id);
+    const menu = menuVersionsOf(menuIds);
     const discovered: DiscoveredModel[] = [];
     for (const providerId of DISCOVERY_PROVIDERS) {
         const models = providers[providerId]?.models;
@@ -301,7 +334,7 @@ export const discoveredModelsOf = (body: string, now: Date = new Date()): readon
             if (VARIANT_SUFFIX.test(id)) continue;
             if (ARTIFACT_ID.test(id)) continue;
             if (!CHAT_FAMILY_PREFIXES.some((prefix) => id.toLowerCase().startsWith(prefix))) continue;
-            if (!qualifiesForAutoAdd(id, model.release_date, menuIds, now)) continue;
+            if (!qualifiesForAutoAdd(id, model.release_date, menu, now)) continue;
             if (findModelCatalogEntry(id) !== null) continue;
             const capabilities = capabilitiesOf(model);
             if (capabilities.imageOutput) continue;

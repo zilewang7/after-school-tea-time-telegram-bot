@@ -1,9 +1,10 @@
 /**
- * Offline cases for the auto-add rule of the model catalog: only a *newer*
- * version of a family the menu already offers (however long ago it shipped) or
- * a line we never offered, released in the last week, may enter the menu by
- * itself. Old versions, retired aliases, variants, artifacts and non-chat
- * entries never do, and one run adds at most five.
+ * Offline cases for the auto-add rule of the model catalog: a newer generation
+ * of a family the menu already offers enters as a whole (however long ago it
+ * shipped); inside the menu's generation only a newer minor of an offered
+ * product line, or a brand-new line released in the last week. Old versions,
+ * retired aliases, variants, artifacts and non-chat entries never do, and one
+ * run adds at most five.
  *
  * Run: npx tsx scripts/offline/price-discovery.mts
  */
@@ -11,6 +12,7 @@ import { setupOfflineDb, expect, reportResults, runCase, type CaseResult } from 
 
 await setupOfflineDb();
 const { discoveredModelsOf } = await import('../../src/services/price-watch-service.js');
+const { seedModelCatalogEntries, setModelCatalog } = await import('../../src/config/model-catalog.js');
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const recent = new Date(Date.now() - 2 * DAY_MS).toISOString().slice(0, 10);
@@ -124,6 +126,31 @@ results.push(
         const models = Array.from({ length: 8 }, (_, index) => model(`gpt-6.2-variant${index}`));
         const ids = idsOf(catalogOf(models));
         expect(ids.length === 5, `the cap holds (got ${ids.length})`);
+    })
+);
+
+results.push(
+    await runCase('a newer minor of an offered product line enters while its sibling generation is in the menu', async () => {
+        // Production state after the first auto-add: gpt-6.1-terra already made
+        // the gpt family 6.1, so comparing only family versions would never let
+        // gpt-6.1-sol in (it is newer only than its own line, gpt-6-sol).
+        const seed = seedModelCatalogEntries();
+        const template = seed.find((entry) => entry.id === 'gpt-6-sol');
+        if (template === undefined) throw new Error('the seed menu lost gpt-6-sol');
+        setModelCatalog([...seed, { ...template, id: 'gpt-6.1-terra', label: 'GPT-6.1 Terra' }]);
+        const lineUpgrade = idsOf(catalogOf([model('gpt-6.1-sol', { release_date: older })]));
+        expect(
+            lineUpgrade.length === 1 && lineUpgrade[0] === 'gpt-6.1-sol',
+            `the line upgrade enters (got ${lineUpgrade.join(', ')})`
+        );
+        const unknownLine = idsOf(catalogOf([model('gpt-6.1-nova', { release_date: older })]));
+        expect(
+            unknownLine.length === 0,
+            `an unknown line of the same generation still needs a fresh release (got ${unknownLine.join(', ')})`
+        );
+        const freshLine = idsOf(catalogOf([model('gpt-6.1-nova')]));
+        expect(freshLine.length === 1, `a brand-new line enters while fresh (got ${freshLine.join(', ')})`);
+        setModelCatalog([]);
     })
 );
 
