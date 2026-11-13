@@ -40,6 +40,15 @@ const OFFLINE_DB_PATH = join(SCRATCH_DIRECTORY, 'database.sqlite');
  */
 const LINGER_LIMIT_MS = 3000;
 
+/**
+ * File operations in progress end on their own: no case left them running.
+ * tsx goes through its whole cache directory in this process after compiling
+ * a file it had not seen before, and on a busy machine that outlasts the limit.
+ * A file that is busy with them gets the limit again, this many times at most.
+ */
+const FILE_OPERATIONS: ReadonlySet<string> = new Set(['FSReqCallback', 'FSReqPromise']);
+const LINGER_EXTENSIONS = 10;
+
 // Set as soon as a test file imports the harness. A file that reaches the db
 // layer without setupOfflineDb still gets a database here, not ./database.sqlite
 // (the production file): sqlite creates the missing directory on its own.
@@ -154,8 +163,8 @@ const describeLiveHandles = (): string => {
 };
 
 /** Ends a file that is still running long after its summary. The file fails: it did not end what it started. */
-const endLingeringProcess = async (): Promise<void> => {
-    console.error(`[offline] still running ${LINGER_LIMIT_MS}ms after the summary, ending it; alive: ${describeLiveHandles()}`);
+const endLingeringProcess = async (sinceSummaryMs: number): Promise<void> => {
+    console.error(`[offline] still running ${sinceSummaryMs}ms after the summary, ending it; alive: ${describeLiveHandles()}`);
     if (debugHandles) {
         for (const origin of liveHandleOrigins()) console.error(`[offline]   ${origin}`);
     } else {
@@ -163,6 +172,16 @@ const endLingeringProcess = async (): Promise<void> => {
     }
     await Promise.all([flush(process.stdout), flush(process.stderr)]);
     process.exit(1);
+};
+
+/** Ends the file when it is still running one limit from now, or later while file operations keep it busy */
+const watchForLingering = (reportedAt: number, extensionsLeft: number): void => {
+    // unref: this timer alone must not keep the process alive
+    setTimeout(() => {
+        const busyWithFiles = process.getActiveResourcesInfo().some((resource) => FILE_OPERATIONS.has(resource));
+        if (busyWithFiles && extensionsLeft > 0) watchForLingering(reportedAt, extensionsLeft - 1);
+        else void endLingeringProcess(Math.round(performance.now() - reportedAt));
+    }, LINGER_LIMIT_MS).unref();
 };
 
 /**
@@ -184,15 +203,14 @@ export const reportResults = (results: CaseResult[]): void => {
     // Only ever raised: something outside the cases may have failed the file already
     if (results.some((result) => !result.ok)) process.exitCode = 1;
 
+    const reportedAt = performance.now();
     if (debugHandles) {
-        const reportedAt = performance.now();
         console.error(`[offline] alive at the summary: ${describeLiveHandles()}`);
         process.once('exit', () => {
             console.error(`[offline] ended ${Math.round(performance.now() - reportedAt)}ms after the summary`);
         });
     }
-    // unref: this timer alone must not keep the process alive
-    setTimeout(() => void endLingeringProcess(), LINGER_LIMIT_MS).unref();
+    watchForLingering(reportedAt, LINGER_EXTENSIONS);
 };
 
 export interface OfflineDb {

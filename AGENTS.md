@@ -63,7 +63,9 @@ A test file ends when the work its cases started has ended, so an error thrown
 after the last case still fails the file. A file that is still running 3 s
 after its summary is ended and fails: run it with `OFFLINE_DEBUG_HANDLES=1` to
 see which timer or server was left running, where it was created and during
-which case.
+which case. File operations still in progress are not counted as left running
+(they end on their own; tsx starts a long one after compiling a file it had
+not seen before): the file gets another 3 s, up to ten times.
 
 The whole suite runs in shared worker processes: a worker runs many files one
 after the other and loads the packages in `node_modules` only once. Every file

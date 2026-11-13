@@ -226,6 +226,7 @@ const [
         'writes-odd-hex',
         'adds-listener-on-exit',
         'replaces-set-immediate',
+        'waits-for-a-file',
         'passes',
     ]),
     runScenario('package-work', ['uses-package-helper', 'needs-package-helper', 'needs-silence']),
@@ -509,6 +510,8 @@ results.push(
             ['writes-odd-hex', 'a file that writes an odd number of hex digits'],
             ['adds-listener-on-exit', "a file whose 'exit' listener adds a 'beforeExit' listener"],
             ['replaces-set-immediate', 'a file that leaves a stub in place of setImmediate'],
+            // Not lingering: what keeps it running ends on its own. tsx does this to a file it compiles for the first time.
+            ['waits-for-a-file', 'a file that waits for a file operation for longer than a file may linger'],
             ['passes', 'the file after all of them'],
         ];
         for (const [name, description] of expected) expectPassedAtOnce(unusual.reports.get(name), `${description} passes`);
