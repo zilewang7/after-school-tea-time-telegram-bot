@@ -29,7 +29,7 @@ import { getFailedCustomEmojiAttachments } from '../db/queries/message-attachmen
 import { checkIfMentioned, isGroupChat } from '../util.js';
 import { saveMessageLinks } from '../db/queries/context-queries.js';
 import { buildContext } from './context-builder.js';
-import { appendWorkspaceManifestForReply } from './workspace/workspace-manifest.js';
+import { appendWorkspaceTailForReply } from './workspace/workspace-tail.js';
 import { resolveContextRoot } from './context-root.js';
 import { submitToMentionBatch } from './mention-batcher.js';
 import { buildReplyToolContext, createReplyTools } from './tools/index.js';
@@ -363,13 +363,14 @@ export const handleReply = async (
     );
     // The workspace manifest is volatile, so it rides the trigger message after
     // the tool snapshot is known (the static prompt stays byte-identical).
-    await appendWorkspaceManifestForReply({
+    await appendWorkspaceTailForReply({
         messages: chatContents,
         triggerTurnIndex: built.triggerTurnIndex,
         workspaceState,
         conversationRootIds: built.conversationRootIds,
         contextIndex,
         enabled: availability.workspace,
+        handoff: availability.handoff,
         fileTools: availability.file,
         widgetTools: availability.widget,
     });

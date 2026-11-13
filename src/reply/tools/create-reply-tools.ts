@@ -8,7 +8,7 @@
  * generate_image read, the drawn pictures wait there as g1…, and the
  * one-attachment-per-reply flag lives there too.
  */
-import { getModelCapabilities } from '../../ai/platform-factory.js';
+import { getModelCapabilities, getPlatform } from '../../ai/platform-factory.js';
 import { buildMcpToolHandlers } from '../../ai/tools/mcp-tool-handlers.js';
 import { createTurnTools } from '../../ai/tools/turn-tools.js';
 import type { ToolHandler, TurnTools } from '../../ai/tools/tool-types.js';
@@ -41,6 +41,7 @@ import { createWorkspaceListTool } from './workspace-list-tool.js';
 import { createWorkspacePreviewTool } from './workspace-preview-tool.js';
 import { createWorkspaceReadTool } from './workspace-read-tool.js';
 import { createWorkspaceWriteTool } from './workspace-write-tool.js';
+import { createLeaveHandoffTool } from './leave-handoff-tool.js';
 import type { WorkspaceState } from '../workspace/workspace-state.js';
 import { createUiGuideTool } from './ui-guide-tool.js';
 import { createSendSmsTool } from './send-sms-tool.js';
@@ -223,6 +224,14 @@ export const createReplyTools = (
                   createWorkspaceEditTool({ state: workspaceState, widgetLimits: widgetDraftLimits }),
                   createWorkspaceCopyTool({ state: workspaceState }),
                   createWorkspaceDeleteTool({ state: workspaceState }),
+              ]
+            : []),
+        ...(availability.handoff
+            ? [
+                  createLeaveHandoffTool({
+                      state: workspaceState,
+                      finalRoundTool: getPlatform(model).type === 'gemini',
+                  }),
               ]
             : []),
         ...(availability.workspacePreview

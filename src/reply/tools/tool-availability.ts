@@ -36,6 +36,7 @@ import {
     GET_UI_GUIDE_TOOL_NAME,
     WORKSPACE_FILE_TOOL_NAMES,
     WORKSPACE_PREVIEW_TOOL_NAME,
+    LEAVE_HANDOFF_TOOL_NAME,
 } from './tool-names.js';
 
 /** What the turn's request carries, as far as tool availability cares */
@@ -81,6 +82,8 @@ export interface ToolAvailability {
     readonly workspace: boolean;
     /** workspace_preview is offered (workspace + a vision model + the render sidecar) */
     readonly workspacePreview: boolean;
+    /** leave_handoff is offered (the workspace is on and the tool is not disabled) */
+    readonly handoff: boolean;
 }
 
 const NO_TOOLS: ToolAvailability = {
@@ -101,6 +104,7 @@ const NO_TOOLS: ToolAvailability = {
     widgetGuide: false,
     workspace: false,
     workspacePreview: false,
+    handoff: false,
 };
 
 /** No client tools this turn; `trial` still rides along so the prompt stays honest */
@@ -156,6 +160,9 @@ export const resolveToolAvailability = (
         capabilities.supportsImageInput === true &&
         config.widgetRenderUrl !== '' &&
         isEnabled(WORKSPACE_PREVIEW_TOOL_NAME);
+    // Offered with the workspace, killable on its own: turning it off must not
+    // turn the whole workspace group off.
+    const handoff = workspace && isEnabled(LEAVE_HANDOFF_TOOL_NAME);
 
     // A server is out when excluded for this platform, disabled by its key, or
     // left with no enabled tool. Trial users get none at all: MCP servers can
@@ -247,5 +254,6 @@ export const resolveToolAvailability = (
         widgetGuide: widget,
         workspace,
         workspacePreview,
+        handoff,
     };
 };

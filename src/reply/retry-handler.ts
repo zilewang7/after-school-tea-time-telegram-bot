@@ -19,7 +19,7 @@ import {
     openCodeGoSessionId,
 } from '../ai/index.js';
 import { buildContext, buildContextFromParts } from './context-builder.js';
-import { appendWorkspaceManifestForReply } from './workspace/workspace-manifest.js';
+import { appendWorkspaceTailForReply } from './workspace/workspace-tail.js';
 import { chatTitleOf } from '../telegram/chat-title.js';
 import { resolveContextRoot } from './context-root.js';
 import { buildReplyToolContext, createReplyTools } from './tools/index.js';
@@ -354,13 +354,14 @@ const handleChatRetry = async (
     );
     // Same manifest injection as the first answer: the panel and a retry must
     // send the same volatile tail.
-    await appendWorkspaceManifestForReply({
+    await appendWorkspaceTailForReply({
         messages: chatContents,
         triggerTurnIndex: builtContext.triggerTurnIndex,
         workspaceState,
         conversationRootIds: builtContext.conversationRootIds,
         contextIndex,
         enabled: availability.workspace,
+        handoff: availability.handoff,
         fileTools: availability.file,
         widgetTools: availability.widget,
     });

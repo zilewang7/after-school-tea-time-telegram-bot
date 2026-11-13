@@ -213,3 +213,17 @@ export const parseWorkspaceCopyArgs = (raw: Readonly<Record<string, unknown>>): 
     }
     return { ok: true, value: { from: from.value, to: to.value } };
 };
+
+export interface LeaveHandoffArgs {
+    readonly content: string;
+}
+
+/** The handoff tool takes one body; the path is fixed and every write replaces the old note */
+export const parseLeaveHandoffArgs = (raw: Readonly<Record<string, unknown>>): Parsed<LeaveHandoffArgs> => {
+    const content = textArg(raw.content, 'content');
+    if (!content.ok) return content;
+    if (content.value.trim() === '') {
+        return { ok: false, error: '交接内容为空；本轮已无法补救，下一条回复请重新写交接。' };
+    }
+    return { ok: true, value: { content: content.value } };
+};

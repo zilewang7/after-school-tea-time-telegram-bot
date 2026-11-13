@@ -47,6 +47,8 @@ export interface StaticPromptOptions {
     readonly workspace?: boolean;
     /** workspace_preview is offered this turn */
     readonly workspacePreview?: boolean;
+    /** leave_handoff is offered this turn */
+    readonly handoff?: boolean;
     /** search_history / read_history are offered this turn */
     readonly historyTools?: boolean;
     /** list_harness_issues / create_harness_issue are offered this turn */
@@ -73,6 +75,7 @@ export const buildStaticSystemPrompt = (model: string, options: StaticPromptOpti
             fileTools: options.fileTools === true,
             workspace: options.workspace === true,
             workspacePreview: options.workspacePreview === true,
+            workspaceHandoff: options.handoff === true,
             historyTools: options.historyTools === true,
             harnessIssues: options.harnessIssues === true,
             widget: options.widget === true,

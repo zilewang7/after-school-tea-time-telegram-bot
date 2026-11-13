@@ -24,6 +24,7 @@ const { Message } = db;
 const { buildContext } = await import('../../src/reply/context-builder.js');
 const { buildStaticSystemPrompt } = await import('../../src/ai/system-prompt/builder.js');
 const { appendWorkspaceManifestForReply } = await import('../../src/reply/workspace/workspace-manifest.js');
+const { appendWorkspaceTailForReply } = await import('../../src/reply/workspace/workspace-tail.js');
 const { createWorkspaceState } = await import('../../src/reply/workspace/workspace-state.js');
 const { writeWorkspaceFile } = await import('../../src/services/workspace-service.js');
 
@@ -415,6 +416,73 @@ const cases: { name: string; body: () => Promise<void> }[] = [
 
             const noPreview = buildStaticSystemPrompt('gemini-3.8-flash', { workspace: true, workspacePreview: false });
             expect(!noPreview.includes('workspace_preview'), 'preview is not named without the tool');
+        },
+    },
+    {
+        name: 'the handoff note rides the volatile tail after the manifest, and only when the switch is on',
+        body: async () => {
+            const handoffRoot = 8100;
+            const handoffTrigger = 8101;
+            await seedRow({ messageId: handoffRoot, text: '长任务开头' });
+            await seedRow({ messageId: handoffTrigger, replyToId: handoffRoot, text: '继续' });
+            const built = await buildContext(await rowOf(handoffTrigger), {
+                model: 'gemini-3.8-flash',
+                dryRun: true,
+            });
+            const state = createWorkspaceState({
+                chatId: CHAT,
+                conversationRootIds: built.conversationRootIds,
+                quota: QUOTA,
+            });
+            await writeWorkspaceFile({
+                chatId: CHAT,
+                conversationRootId: handoffRoot,
+                path: 'handoff.md',
+                content: '# 交接\n下一步：写第三节',
+                append: false,
+                overwrite: true,
+                quota: QUOTA,
+            });
+
+            await appendWorkspaceTailForReply({
+                messages: built.messages,
+                triggerTurnIndex: built.triggerTurnIndex,
+                workspaceState: state,
+                conversationRootIds: built.conversationRootIds,
+                contextIndex: built.contextIndex,
+                enabled: true,
+                fileTools: false,
+                widgetTools: false,
+                handoff: true,
+            });
+            const texts = (built.messages[built.triggerTurnIndex]?.content ?? [])
+                .filter((part) => part.type === 'text')
+                .map((part) => part.text ?? '');
+            const handoffIndex = texts.findIndex((text) => text.startsWith('[system] 交接文档'));
+            const manifestIndex = texts.findIndex((text) => text.startsWith('[system] 工作区'));
+            expect(handoffIndex >= 0, 'the note is appended to the trigger turn');
+            expect(manifestIndex >= 0 && handoffIndex > manifestIndex, 'the note comes after the manifest');
+            expect(texts[handoffIndex]?.includes('下一步：写第三节'), 'the note body is injected');
+
+            const plain = await buildContext(await rowOf(handoffTrigger), {
+                model: 'gemini-3.8-flash',
+                dryRun: true,
+            });
+            await appendWorkspaceTailForReply({
+                messages: plain.messages,
+                triggerTurnIndex: plain.triggerTurnIndex,
+                workspaceState: state,
+                conversationRootIds: plain.conversationRootIds,
+                contextIndex: plain.contextIndex,
+                enabled: true,
+                fileTools: false,
+                widgetTools: false,
+                handoff: false,
+            });
+            const plainTexts = (plain.messages[plain.triggerTurnIndex]?.content ?? [])
+                .filter((part) => part.type === 'text')
+                .map((part) => part.text ?? '');
+            expect(!plainTexts.some((text) => text.startsWith('[system] 交接文档')), 'no note when the switch is off');
         },
     },
 ];

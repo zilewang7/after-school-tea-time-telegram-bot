@@ -22,7 +22,7 @@ import type { Message } from '../../db/messageDTO.js';
 import { buildContext, type BuiltContext } from '../../reply/context-builder.js';
 import { buildStaticPromptOptions } from '../../reply/static-prompt-options.js';
 import { createReplyTools } from '../../reply/tools/create-reply-tools.js';
-import { appendWorkspaceManifestForReply } from '../../reply/workspace/workspace-manifest.js';
+import { appendWorkspaceTailForReply } from '../../reply/workspace/workspace-tail.js';
 import type { ReplyToolContext } from '../../reply/tools/reply-tool-context.js';
 import { snapshotReplySettings } from '../../services/chat-settings-service.js';
 import { runtimeChatTitleOf } from './chat-view.js';
@@ -108,13 +108,14 @@ export const buildModelView = async (request: ModelViewRequest): Promise<ModelVi
     );
     // Mirror the real request: the workspace manifest is part of the volatile
     // tail the model would see, so the panel must show it too.
-    await appendWorkspaceManifestForReply({
+    await appendWorkspaceTailForReply({
         messages: built.messages,
         triggerTurnIndex: built.triggerTurnIndex,
         workspaceState,
         conversationRootIds: built.conversationRootIds,
         contextIndex: built.contextIndex,
         enabled: availability.workspace,
+        handoff: availability.handoff,
         fileTools: availability.file,
         widgetTools: availability.widget,
     });
