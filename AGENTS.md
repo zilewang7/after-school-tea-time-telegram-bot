@@ -47,7 +47,7 @@ runs from the same directory. Most rules below exist because of that.
 | Lint | `pnpm lint` | ~2 s |
 | Dependency guard | `pnpm check-deps` (never writes; `--tighten` after fixing a baseline entry) | ~1 s |
 | All three checks, working tree | `pnpm check` | ~15 s |
-| Everything, on the committed tree | `pnpm verify` (required before pushing `master`) | ~3 min |
+| Everything, on the committed tree | `pnpm verify` (required before pushing `master`) | ~1.5 min |
 | Write-lock regression | `pnpm test:lock` | ~5 s |
 | e2e against the test bot | `pnpm test:e2e:bot` (`:full`, `:tools`); ask first, one run at a time | minutes |
 | Production data | `npx tsx scripts/prod-query.mts --tables` / `--schema T` / `"SELECT …"` | |
