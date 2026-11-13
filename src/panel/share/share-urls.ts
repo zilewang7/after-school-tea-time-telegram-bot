@@ -7,13 +7,13 @@
  * The env is read per call rather than once: offline cases set it, and the
  * production values come from compose (WEBAPP_PUBLIC_URL, BOT_USER_NAME).
  */
+import { webappPublicUrl } from '../../shared/public-url.js';
 import { isShareToken } from './token.js';
+
+export { webappPublicUrl };
 
 /** BotFather short name of the Mini App when WEBAPP_BOT_SHORT_NAME is unset (as /panel) */
 const DEFAULT_SHORT_NAME = 'panel';
-
-/** The public panel origin without a trailing slash; '' when not configured */
-export const webappPublicUrl = (): string => (process.env.WEBAPP_PUBLIC_URL ?? '').trim().replace(/\/+$/, '');
 
 /** The public path of one share (always starts with /s/) */
 export const sharePathOf = (token: string): string => `/s/${token}`;

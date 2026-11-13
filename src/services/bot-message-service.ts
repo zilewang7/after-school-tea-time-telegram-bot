@@ -23,10 +23,12 @@ import {
     type MessageEditor,
 } from '../telegram/index.js';
 import { buildFinalMessages, type FinalMessageChunk } from '../telegram/formatters/final-message-builder.js';
+import { buildGoogleSearchDocument } from '../telegram/formatters/google-search-document.js';
 import { buildMessageLinkResolver } from '../telegram/message-link.js';
 import { plainText } from '../telegram/formatters/entity-text.js';
 import { appendErrorLine } from '../telegram/formatters/error-display.js';
 import { formatErrorForUser } from '../shared/errors.js';
+import { searchPageLinkOfToken, type SearchPageLink } from '../shared/search-page.js';
 import { stripPerQueryResultCitations } from '../shared/citation-markers.js';
 import { stripContextLabel } from '../reply/context-label.js';
 import { toApiEntities } from '../telegram/api-entities.js';
@@ -85,6 +87,14 @@ import {
  * body continues in another message.
  */
 export type SessionThinkingLink = ThinkingLinkRef & { key: string; emitted: boolean };
+
+/**
+ * The folded GoogleSearch footer link of a reply being delivered: the public
+ * search page of the version the delivery stores (design §3.8). Its token is
+ * what the version keeps, so a replay shows the same link message without
+ * re-deciding the fold.
+ */
+export type SessionSearchLink = SearchPageLink;
 
 /**
  * Stream controller for aborting streams
@@ -182,6 +192,13 @@ export interface BotMessageSession {
      * absent means the reply keeps the legacy split behaviour.
      */
     thinkingLink?: SessionThinkingLink;
+
+    /**
+     * The folded GoogleSearch footer this reply is showing as its last message.
+     * Set by the final layout when the footer cannot fit one message; absent
+     * means the reply keeps the inline footer.
+     */
+    searchLink?: SessionSearchLink;
 
     // Stream control
     streamController: StreamController;
@@ -541,6 +558,7 @@ const finalizeSession = async (
         ...(session.thinkingLink === undefined
             ? {}
             : { thinkingLinkToken: session.thinkingLink.token }),
+        ...(session.searchLink === undefined ? {} : { searchLinkToken: session.searchLink.token }),
         groundingData: session.groundingData.length ? session.groundingData : undefined,
         agentStats: session.agentStats,
         errorMessage: options?.errorMessage,
@@ -800,6 +818,17 @@ export const reconcileInterruptedResponses = async (api: Api): Promise<number> =
 };
 
 /**
+ * The search page a stored version replays. Only the token decides the fold: a
+ * version that kept one shows the link message, a version from before the
+ * feature has none and renders the inline footer as it always did.
+ */
+const searchLinkOfVersion = (version: ResponseVersion): SearchPageLink | undefined => {
+    const token = version.searchLinkToken;
+    if (token === undefined || token === '') return undefined;
+    return searchPageLinkOfToken(token) ?? undefined;
+};
+
+/**
  * The messages a stored version shows: the final layout of its text,
  * thinking and records, plus an errored version's error line (display-only,
  * never stored)
@@ -814,6 +843,11 @@ const buildVersionMessages = (
         // A version that showed the link replays it as the reply's first message;
         // a version from before the feature has no token and renders as it always did
         thinkingLink: thinkingLinkRefOfVersion(version) ?? undefined,
+        // A folded GoogleSearch footer replays as the reply's last message
+        searchLink: searchLinkOfVersion(version),
+        // The same footer document the live layout had, so the replay assembles
+        // the same chunks (attached tail, own message, or folded link)
+        googleSearch: buildGoogleSearchDocument(version.groundingData ?? []),
         agentStats: version.agentStats,
         groundingData: version.groundingData,
         wasStoppedByUser: version.wasStoppedByUser,

@@ -127,6 +127,8 @@ declare global {
             PRICE_WATCH_TIMEOUT_MS?: string
             /** '0' turns off the long-thinking link pages and the link mode */
             THINKING_LINK?: string
+            /** '0' turns off the public Google-search page and the folded search footer */
+            SEARCH_LINK?: string
             /** HMAC secret for signed widget URLs (default: derived from BOT_TOKEN) */
             WEBAPP_SHARE_SECRET?: string
             /** Multiplier for the Telegram call pacing; tests only, unset in production */

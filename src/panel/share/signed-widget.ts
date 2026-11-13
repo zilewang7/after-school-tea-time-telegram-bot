@@ -12,6 +12,7 @@
  */
 import { createHmac, timingSafeEqual } from 'node:crypto';
 import { findBotResponseInChat } from '../../db/queries/context-queries.js';
+import { shareSecretOf } from '../../shared/share-secret.js';
 import { widgetDocument, type WidgetTheme } from '../../widget-image/index.js';
 import { selectVersion } from './share-content.js';
 
@@ -47,9 +48,6 @@ export interface SignedWidgetSigner {
 /** How long an iframe URL stays valid (design §5.5) */
 export const SIGNED_WIDGET_TTL_SECONDS = 600;
 
-/** Domain separation for the BOT_TOKEN-derived secret */
-const SECRET_CONTEXT = 'k-on-bot-share-secret';
-
 /** The CSP of a widget document: no network, no images but data:, only our origin may frame it */
 export const WIDGET_DOC_CSP = [
     "default-src 'none'",
@@ -65,11 +63,7 @@ export const WIDGET_DOC_CSP = [
 ].join('; ');
 
 /** HMAC key for the share family of signed URLs; the media signer derives its own key from it */
-export const shareSecretOf = (botToken: string, configuredSecret: string | undefined): Buffer => {
-    const secret = (configuredSecret ?? process.env.WEBAPP_SHARE_SECRET ?? '').trim();
-    if (secret !== '') return Buffer.from(secret, 'utf8');
-    return createHmac('sha256', botToken).update(SECRET_CONTEXT).digest();
-};
+export { shareSecretOf };
 
 const isPayload = (value: unknown): value is SignedWidgetPayload => {
     if (typeof value !== 'object' || value === null) return false;

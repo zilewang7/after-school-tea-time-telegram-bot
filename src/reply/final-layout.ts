@@ -2,16 +2,19 @@
  * The final layout of one reply: the chunks `buildFinalMessages` renders, plus
  * the decision whether a split reply keeps its chain of thought inline (a
  * collapsed quote on the first message) or hands it to the long-CoT link
- * message.
+ * message, and whether an overflowing GoogleSearch footer becomes one compact
+ * link message at the end.
  *
  * The final delivery and the stored-version refresh build their layout here, so
  * the chat a live reply ends with matches what a version replay shows.
  */
 import { buildFinalMessages, type FinalMessageChunk } from '../telegram/formatters/final-message-builder.js';
+import type { GoogleSearchDocument } from '../telegram/formatters/google-search-document.js';
 import { STREAMING_MAX_LENGTH } from '../telegram/formatters/message-budget.js';
 import { renderThinkingQuote } from '../telegram/formatters/quoted-render.js';
 import type { ContextLinkResolver } from '../telegram/formatters/context-links.js';
 import type { ThinkingLinkRef } from '../telegram/formatters/thinking-link.js';
+import type { SearchPageLink } from '../shared/search-page.js';
 import type { AgentStats, GroundingData } from '../ai/types.js';
 
 /**
@@ -26,6 +29,13 @@ export interface FinalLayoutInput {
     readonly thinking: string;
     /** Long-CoT link message: leads the layout and replaces the CoT quote */
     readonly thinkingLink?: ThinkingLinkRef;
+    /**
+     * Folded GoogleSearch footer: one compact link message ends the reply.
+     * Passing it always folds; the version replay keys the fold off its token.
+     */
+    readonly searchLink?: SearchPageLink;
+    /** Prebuilt footer document, so a large grounding payload is parsed once */
+    readonly googleSearch?: GoogleSearchDocument;
     readonly agentStats?: AgentStats;
     readonly groundingData?: GroundingData[];
     readonly wasStoppedByUser?: boolean;
@@ -38,6 +48,8 @@ export const buildFinalChunks = (input: FinalLayoutInput): FinalMessageChunk[] =
         text: input.text,
         thinking: input.thinking,
         thinkingLink: input.thinkingLink,
+        searchLink: input.searchLink,
+        googleSearch: input.googleSearch,
         agentStats: input.agentStats,
         groundingData: input.groundingData,
         wasStoppedByUser: input.wasStoppedByUser,

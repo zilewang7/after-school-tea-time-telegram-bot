@@ -13,6 +13,7 @@
 import { Api } from 'grammy';
 import { Hono, type Context } from 'hono';
 import { getToolConfig } from '../config/tool-config.js';
+import { searchLinkEnabled } from '../shared/search-page.js';
 import { createMembershipChecker, type MembershipLookup } from './access/membership.js';
 import type { ChatNameLookup } from './chat-names.js';
 import type { PanelEnv } from './context.js';
@@ -52,6 +53,7 @@ import { createMediaSigner } from './share/signed-media.js';
 import { registerSignedMediaRoute } from './share/signed-media-routes.js';
 import { createWidgetSigner } from './share/signed-widget.js';
 import { registerSignedWidgetRoute } from './share/signed-widget-routes.js';
+import { registerSearchPublicRoutes } from './search/search-routes.js';
 import { registerStaticRoutes } from './static.js';
 import { thinkingLinkEnabled } from './thinking/thinking-config.js';
 import { registerPublicThinkingApiRoutes, registerThinkingPublicRoutes } from './thinking/thinking-routes.js';
@@ -100,6 +102,11 @@ export interface PanelAppOptions {
      * its public API exist (design §10). Default: the env.
      */
     thinkingEnabled?: boolean;
+    /**
+     * SEARCH_LINK is on and WEBAPP_PUBLIC_URL is set: the public Google-search
+     * fast page exists (design 2026-1113-1831 §3.5). Default: the env.
+     */
+    searchEnabled?: boolean;
 }
 
 const BODY_LIMIT_BYTES = 32 * 1024;
@@ -118,6 +125,7 @@ export const createPanelApp = (options: PanelAppOptions): Hono<PanelEnv> => {
     const rateLimit = options.rateLimit ?? DEFAULT_RATE_LIMIT;
     const shareEnabled = options.shareEnabled ?? getToolConfig().shareEnabled;
     const thinkingEnabled = options.thinkingEnabled ?? thinkingLinkEnabled();
+    const searchEnabled = options.searchEnabled ?? searchLinkEnabled();
     const webAuth = options.webAuth ?? getWebAuthRuntime();
     const bodyLimit = createBodyLimit({
         maxSize: BODY_LIMIT_BYTES,
@@ -202,6 +210,9 @@ export const createPanelApp = (options: PanelAppOptions): Hono<PanelEnv> => {
     // /t/<token> is SSR like /s/<token>: registered before the static catch-all so
     // it never serves the SPA
     registerThinkingPublicRoutes(app, { enabled: thinkingEnabled, now });
+    // /g/<token> is the GoogleSearch fast page: SSR like /t, registered before the
+    // static catch-all so it never serves the SPA
+    registerSearchPublicRoutes(app, { enabled: searchEnabled, now });
 
     registerStaticRoutes(app, options.staticRoot);
     // Methods outside HTTP_METHODS reach nothing above

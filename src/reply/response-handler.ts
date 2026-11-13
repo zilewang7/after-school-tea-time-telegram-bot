@@ -67,6 +67,12 @@ import {
 import { renderThinkingQuote } from '../telegram/formatters/quoted-render.js';
 import { buildFinalMessages, type FinalMessageChunk } from '../telegram/formatters/final-message-builder.js';
 import {
+    buildGoogleSearchDocument,
+    googleSearchFooterPlanOfDocument,
+} from '../telegram/formatters/google-search-document.js';
+import { rememberSearchDocument } from '../panel/search/search-document-cache.js';
+import { searchLinkEnabled, searchPageLinkOf } from '../shared/search-page.js';
+import {
     STREAMING_MAX_ENTITIES,
     STREAMING_MAX_LENGTH,
     TELEGRAM_MAX_LENGTH,
@@ -1424,6 +1430,37 @@ const buildReplyFinalLayout = async (
 ): Promise<ReplyFinalLayout> => {
     const { session } = chatContext;
 
+    // The layout below and the stored version must describe the same footer: a
+    // caller that never streamed (an image-chat turn) only has the response.
+    if (session.groundingData.length === 0 && (response.groundingData ?? []).length > 0) {
+        session.groundingData = response.groundingData ?? [];
+    }
+    // The GoogleSearch footer as one document: the inline footer, the stats of
+    // the folded link message, the fast page and the fold trigger all come from
+    // this one parse.
+    const groundingData = response.groundingData ?? [];
+    const googleSearchDocument = buildGoogleSearchDocument(groundingData);
+    // A footer too big for one message becomes a link message to the public
+    // page. Its document is cached before anything goes out: Telegram fetches
+    // the page right after the send, while the version row is stored only after
+    // the media delivery (design §3.7).
+    if (googleSearchFooterPlanOfDocument(googleSearchDocument) === 'overflows') {
+        const link = searchLinkEnabled()
+            ? searchPageLinkOf({
+                  chatId: chatContext.chatId,
+                  firstMessageId: session.firstMessageId,
+                  versionId: session.versionCount + 1,
+              })
+            : null;
+        if (link !== null) {
+            rememberSearchDocument(link.token, {
+                model: session.model,
+                createdAt: new Date().toISOString(),
+                document: googleSearchDocument,
+            });
+            session.searchLink = link;
+        }
+    }
     // The stream syncs the complete buffers on every chunk; a caller that never
     // streamed (an image-chat turn, a direct final delivery) only has the response.
     const fullText = session.textBuffer !== '' ? session.textBuffer : response.text;
@@ -1443,6 +1480,8 @@ const buildReplyFinalLayout = async (
             groundingData: response.groundingData,
             wasStoppedByUser,
             resolveContextLink,
+            searchLink: session.searchLink,
+            googleSearch: googleSearchDocument,
         });
         if (session.thinkingLink.emitted !== true) {
             // The link was never delivered: the existing final delivery replays
@@ -1465,6 +1504,8 @@ const buildReplyFinalLayout = async (
               groundingData: response.groundingData,
               wasStoppedByUser,
               resolveContextLink,
+              searchLink: session.searchLink,
+              googleSearch: googleSearchDocument,
           })
         : undefined;
 
@@ -1493,6 +1534,8 @@ const buildReplyFinalLayout = async (
             wasStoppedByUser,
             groundingData: response.groundingData,
             resolveContextLink,
+            searchLink: session.searchLink,
+            googleSearch: googleSearchDocument,
         });
         return { chunks: streamedChunks, reLayout: false };
     }
@@ -1507,6 +1550,8 @@ const buildReplyFinalLayout = async (
         groundingData: response.groundingData,
         wasStoppedByUser,
         resolveContextLink,
+        searchLink: session.searchLink,
+        googleSearch: googleSearchDocument,
     });
     return {
         chunks: linkedChunks,

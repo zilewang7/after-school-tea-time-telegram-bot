@@ -105,6 +105,12 @@ export interface ResponseVersion {
      * instead of the thinking quote; absent on versions from before it existed.
      */
     thinkingLinkToken?: string;
+    /**
+     * Signed token of the folded GoogleSearch footer this version shows as its
+     * last message instead of the inline footer; absent on versions from before
+     * the feature, or whose footer fit one message anyway.
+     */
+    searchLinkToken?: string;
     /** Grounding/search data */
     groundingData?: any[];
     /** Agent stats / tool usage summary */

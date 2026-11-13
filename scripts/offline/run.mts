@@ -1002,27 +1002,36 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
         // chunk as plain text, and the collapsed GoogleSearch block showed up
         // expanded and unstyled. The splitter now counts URL bytes as a third
         // budget, so the footer splits instead of losing its entities.
+        //
+        // 2026-11-13: this is the footer the folded link message exists for.
+        // Without a page link (SEARCH_LINK=0, no public origin) the merged split
+        // below is exactly today's rendering; with one, the whole footer becomes
+        // one compact message and no GoogleSearch text reaches the answer.
         name: 'a search footer splits by URL budget instead of losing its fold',
         body: async () => {
             const { buildFinalMessages } = await import(
                 '../../src/telegram/formatters/final-message-builder.js'
             );
+            const { buildGoogleSearchDocument, googleSearchFooterPlan } = await import(
+                '../../src/telegram/formatters/google-search-document.js'
+            );
+            const { SEARCH_LINK_LABEL } = await import(
+                '../../src/telegram/formatters/google-search-link.js'
+            );
 
             const redirectUrl = (index: number): string =>
                 `https://vertexaisearch.cloud.google.com/grounding-api-redirect/AUZIYQ${String(index).padStart(4, '0')}${'x'.repeat(200)}`;
             const searchQueries = Array.from({ length: 29 }, (_, i) => `查询 ${i + 1}`);
+            const grounding = {
+                searchQueries,
+                groundingChunks: Array.from({ length: 39 }, (_, i) => ({
+                    web: { uri: redirectUrl(i + 1), title: `example${i + 1}.com` },
+                })),
+            };
+            const text = '正文。\n'.repeat(40);
 
-            const chunks = buildFinalMessages({
-                text: '正文。\n'.repeat(40),
-                groundingData: [
-                    {
-                        searchQueries,
-                        groundingChunks: Array.from({ length: 39 }, (_, i) => ({
-                            web: { uri: redirectUrl(i + 1), title: `example${i + 1}.com` },
-                        })),
-                    },
-                ],
-            });
+            // No page link: the footer splits over several messages, entities intact.
+            const chunks = buildFinalMessages({ text, groundingData: [grounding] });
 
             const urlBytes = (chunk: (typeof chunks)[number]): number =>
                 chunk.entities.reduce(
@@ -1057,6 +1066,51 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
             expect(
                 joined.includes('example39.com'),
                 'the last source still renders after the split'
+            );
+
+            // With a page link the same footer folds: answer chunks plus one
+            // compact message, and the answer carries no GoogleSearch text.
+            const document = buildGoogleSearchDocument([grounding]);
+            expect(
+                googleSearchFooterPlan([grounding]) === 'overflows',
+                'the footer cannot fit one Telegram message'
+            );
+            const searchLink = {
+                token: 'payload.signature',
+                url: 'https://miniapp.test/g/payload.signature',
+            };
+            const folded = buildFinalMessages({
+                text,
+                groundingData: [grounding],
+                googleSearch: document,
+                searchLink,
+            });
+            expect(folded.length === 2, `the answer and one link message (got ${folded.length})`);
+            const linkChunk = folded[folded.length - 1];
+            expect(
+                linkChunk?.text.startsWith(SEARCH_LINK_LABEL) === true,
+                `the reply ends with the link message (got ${JSON.stringify(linkChunk?.text.slice(0, 24))})`
+            );
+            expect(
+                linkChunk?.text.includes('共搜索 29 次，引用 39 条来源') === true,
+                `the stats line counts the footer (got ${JSON.stringify(linkChunk?.text)})`
+            );
+            expect(
+                linkChunk?.linkPreviewOptions?.url === searchLink.url,
+                `the link message carries the page card (got ${JSON.stringify(linkChunk?.linkPreviewOptions)})`
+            );
+            const answerChunks = folded.slice(0, -1);
+            expect(
+                answerChunks.every((chunk) => !chunk.text.includes('GoogleSearch')),
+                'no GoogleSearch text is left in the answer'
+            );
+            expect(
+                answerChunks.every((chunk) => chunk.linkPreviewOptions?.is_disabled === true),
+                'the answer chunks carry no preview'
+            );
+            expect(
+                folded.reduce((total, chunk) => total + urlBytes(chunk), 0) < 9000,
+                'the redirect URLs never reach a message'
             );
         },
     },
@@ -1123,13 +1177,16 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
     },
     {
         // A reply split into several messages must not grow one preview card
-        // per message. With a search footer the card belongs to the chunk that
-        // starts the first linked query (the footer itself may span messages);
-        // everything else is explicitly disabled.
+        // per message. The search footer is assembled apart from the answer: at
+        // this budget it takes a message of its own, whole and never cut, and
+        // the card for its first linked query rides on that message only.
         name: 'a search reply previews its first linked query on that chunk only',
         body: async () => {
             const { buildFinalMessages } = await import(
                 '../../src/telegram/formatters/final-message-builder.js'
+            );
+            const { buildGoogleSearchDocument, renderGoogleSearchFooter } = await import(
+                '../../src/telegram/formatters/google-search-document.js'
             );
 
             const firstQueryUrl = 'https://www.google.com/search?q=first+query';
@@ -1185,10 +1242,21 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
                 'every other chunk has its preview disabled'
             );
 
-            const previewIndex = chunks.indexOf(previewChunk);
+            // The footer fits one message at this budget, so it goes out whole
+            // as the last message (the split never cuts it in half).
+            const document = buildGoogleSearchDocument([grounding]);
+            const footerText = renderGoogleSearchFooter(document).text;
             expect(
-                previewIndex >= 0 && previewIndex < chunks.length - 1,
-                `the footer spans messages, so the preview is not the last chunk (got ${previewIndex}/${chunks.length - 1})`
+                chunks[chunks.length - 1] === previewChunk,
+                `the footer message ends the reply (got ${chunks.indexOf(previewChunk)}/${chunks.length - 1})`
+            );
+            expect(
+                previewChunk.text === footerText,
+                `the footer is not cut (got ${JSON.stringify(previewChunk.text)})`
+            );
+            expect(
+                chunks.slice(0, -1).every((chunk) => !chunk.text.includes('GoogleSearch')),
+                'the answer chunks hold no footer'
             );
 
             const single = buildFinalMessages({
