@@ -6,12 +6,13 @@
  * throwaway database BEFORE any db module is imported, which is why every
  * import here is dynamic.
  *
- * The scratch database belongs to this test file alone (a directory in the OS
- * temp dir named after the pid, removed when the file ends), so a full
- * `pnpm test:offline` and single test files can run at the same time without
- * sharing or wiping each other's state. In a shared worker (support/worker/)
- * the files of one process use that directory one after the other; each has
- * its own copy of this module and of everything else in the repository.
+ * The scratch database belongs to this test file alone (a directory named
+ * after the pid, kept in memory where the system allows and removed when the
+ * file ends), so a full `pnpm test:offline` and single test files can run at
+ * the same time without sharing or wiping each other's state. In a shared
+ * worker (support/worker/) the files of one process use that directory one
+ * after the other; each has its own copy of this module and of everything
+ * else in the repository.
  *
  * Environment switches:
  * - OFFLINE_VERBOSE=1        print every passing assertion (the runner sets it

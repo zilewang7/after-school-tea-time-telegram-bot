@@ -30,6 +30,7 @@ import { fileURLToPath } from 'node:url';
 import { killLiveTestProcesses } from './support/process-groups.mts';
 import { failureLines, fileLine, sharedFailureLines, type FileReport } from './support/run-report.mts';
 import { runSuite } from './support/run-suite.mts';
+import { removeAbandonedScratchDirectories } from './support/scratch-directory.mts';
 
 const REPOSITORY_ROOT = fileURLToPath(new URL('../../', import.meta.url));
 const TEST_DIRECTORY = join(REPOSITORY_ROOT, 'scripts', 'offline');
@@ -204,6 +205,7 @@ const main = async (): Promise<void> => {
 
     mkdirSync(LOG_DIRECTORY, { recursive: true });
     removeStaleLogs();
+    removeAbandonedScratchDirectories();
     for (const signal of ['SIGINT', 'SIGTERM'] as const) {
         process.once(signal, () => {
             killLiveTestProcesses();
