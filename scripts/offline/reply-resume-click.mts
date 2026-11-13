@@ -197,12 +197,14 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
             vertex.reset([roundOf({ label: 'r1', calls: [webLookup('a')] }), failingRound()]);
             await bench.retryReply(reply);
             expect(bench.entryOf(reply)?.failedVersionId === 2, 'version 2 is kept');
+            // A switch holds the reply's claim from the click until it has stored the version on screen
             await bench.press(reply, 'resp:prev');
-            await waitUntil('the switch to version 1', () => telegram.callsOf('editMessageText').length > 0);
-            await new Promise((resolve) => setTimeout(resolve, 100));
+            await bench.settled(reply, 'the switch to version 1');
+            expect((await bench.stored(reply)).currentVersionIndex === 0, 'version 1 is on screen');
             await expectNoticeOnly(reply, checks.SWITCH_TO_LATEST_NOTICE, 'older version');
             await bench.press(reply, 'resp:next');
-            await new Promise((resolve) => setTimeout(resolve, 100));
+            await bench.settled(reply, 'the switch back to version 2');
+            expect((await bench.stored(reply)).currentVersionIndex === 1, 'version 2 is on screen again');
             await expectContinues(reply, 'latest version');
         }),
     },
