@@ -107,8 +107,11 @@ const VARIANT_SUFFIX = /-(preview|exp|experimental|alpha|beta|thinking|nothinkin
  * family we already offer, or — for a line we do not know yet — a release from
  * the last days. The catalog also lists old models (gpt-4o, gpt-5.2, ...) and
  * retired aliases (deepseek-v4-flash), so a bare prefix match is not enough.
+ *
+ * For a family the menu serves the version compare is the whole test: gpt-6.1-sol
+ * shipped 45 days before the first watch run and still has to enter. Only a
+ * line we never offered is time-boxed, so an unknown old alias cannot arrive.
  */
-const MAX_AUTO_ADD_AGE_DAYS = 30;
 const MAX_NEW_FAMILY_AGE_DAYS = 7;
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -164,13 +167,15 @@ const qualifiesForAutoAdd = (
     now: Date
 ): boolean => {
     const age = releaseAgeDays(releaseDate, now);
-    if (age === null || age > MAX_AUTO_ADD_AGE_DAYS) return false;
+    // An undated entry is unverified, never a new release
+    if (age === null) return false;
     const line = familyLineOf(id);
     const version = versionOf(id, line);
     const offered = menuVersionsOf(menuIds).get(line);
+    // A newer version of a family the menu already offers: release age is not
+    // a reason to skip it, however late the watcher first saw it.
     if (offered !== undefined && version !== null) return version > offered;
     // A family line the menu never named: only a release from the last days.
-    if (offered === undefined && version === null) return age <= MAX_NEW_FAMILY_AGE_DAYS;
     return age <= MAX_NEW_FAMILY_AGE_DAYS;
 };
 

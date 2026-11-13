@@ -1,9 +1,9 @@
 /**
  * Offline cases for the auto-add rule of the model catalog: only a *newer*
- * version of a family the menu already offers (or a line we never offered,
- * released in the last week) may enter the menu by itself. Old models, retired
- * aliases, variants, artifacts and non-chat entries never do, and one run adds
- * at most five.
+ * version of a family the menu already offers (however long ago it shipped) or
+ * a line we never offered, released in the last week, may enter the menu by
+ * itself. Old versions, retired aliases, variants, artifacts and non-chat
+ * entries never do, and one run adds at most five.
  *
  * Run: npx tsx scripts/offline/price-discovery.mts
  */
@@ -62,11 +62,22 @@ results.push(
 );
 
 results.push(
-    await runCase('a release older than the window is skipped', async () => {
-        const ids = idsOf(catalogOf([model('gpt-6.1-sol', { release_date: ancient })]));
-        expect(ids.length === 0, `old releases are skipped (got ${ids.join(', ')})`);
+    await runCase('a newer minor enters however long ago it shipped', async () => {
+        // gpt-6.1-sol shipped 45 days before the watcher first ran; the version
+        // compare decides for a family the menu serves, not the release date.
+        const ids = idsOf(catalogOf([model('gpt-6.1-sol', { release_date: older })]));
+        expect(ids.length === 1 && ids[0] === 'gpt-6.1-sol', `the newer minor enters (got ${ids.join(', ')})`);
+        const veryOld = idsOf(catalogOf([model('gpt-6.1-sol', { release_date: ancient })]));
+        expect(veryOld.length === 1, 'the age is irrelevant once the version is newer');
+    })
+);
+
+results.push(
+    await runCase('an undated entry is not a new model', async () => {
         const undated = idsOf(catalogOf([model('gpt-6.1-terra', { release_date: null })]));
         expect(undated.length === 0, 'an undated entry is not a new model');
+        const dated = idsOf(catalogOf([model('gpt-5.2', { release_date: ancient })]));
+        expect(dated.length === 0, 'an old version never enters, whatever its date says');
     })
 );
 
