@@ -967,10 +967,18 @@ const entryOfCandidate = (
     };
 };
 
+/**
+ * The tiers our requests can actually be served at. Only the Gemini platform
+ * asks for Vertex's priority tier (the round's trafficType decides the price);
+ * OpenAI/xAI priority would never be billed, so those rows are not compiled.
+ */
+const tiersOf = (model: string): readonly PriceTier[] =>
+    model.toLowerCase().startsWith('gemini') ? ['standard', 'priority'] : ['standard'];
+
 /** The TOML candidates of one model: today's price retimed to the run, then scheduled windows */
 const tomlPricesOf = (model: string, parsed: ParsedTomlPrice, now: Date, from: Date): readonly TaggedPrice[] => {
     const result: TaggedPrice[] = [];
-    for (const tier of ['standard', 'priority'] as const) {
+    for (const tier of tiersOf(model)) {
         const windows = tier === 'standard' ? parsed.standard : parsed.priority;
         for (const window of windowedPrices(windows, now, from)) {
             result.push({ model, tier, from: window.from, to: window.to, values: window.values, perImageUsd: null, sourceKind: 'models-dev' });
@@ -987,7 +995,7 @@ const officialPricesOf = (
     from: Date
 ): readonly TaggedPrice[] => {
     const result: TaggedPrice[] = [];
-    for (const tier of ['standard', 'priority'] as const) {
+    for (const tier of tiersOf(model)) {
         const tierPrices = prices.filter((price) => price.tier === tier);
         // Each window states absolute prices, so normalize them as one-window rows
         for (const window of windowedPrices(

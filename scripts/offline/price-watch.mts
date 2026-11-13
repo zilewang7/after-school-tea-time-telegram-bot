@@ -180,11 +180,12 @@ results.push(
         expect(isNear(hydrogen.entry.cachedInputPerM, 0.135), 'hydrogen priority cache read 0.135');
         expect(isNear(hydrogen.entry.outputPerM, 13.5), 'hydrogen priority output 13.50');
         expect(hydrogen.sourceKind === 'official', 'the official page wins for Gemini');
-        const luna = requireCandidate(pipeline.candidates, 'gpt-6-luna', 'priority');
-        expect(isNear(luna.entry.inputPerM, 0.2) && isNear(luna.entry.outputPerM, 1), 'gpt-6-luna priority is the TOML ×2');
-        expect(luna.sourceKind === 'models-dev', 'a TOML-only model stays models-dev');
-        const grok = requireCandidate(pipeline.candidates, 'grok-4.7', 'priority');
-        expect(isNear(grok.entry.inputPerM, 4) && isNear(grok.entry.outputPerM, 12), 'grok-4.7 priority ×2');
+        // Only Gemini rounds are requested at the priority tier; OpenAI's service
+        // tier would never be billed, so no row is compiled for it.
+        expect(
+            pipeline.candidates.every((candidate) => candidate.entry.tier === 'standard' || candidate.entry.model.startsWith('gemini')),
+            'priority rows exist for Gemini models only'
+        );
     })
 );
 
@@ -392,15 +393,13 @@ results.push(
 );
 
 results.push(
-    await runCase('diff: today matches the table, only the missing priority tiers are proposed', async () => {
+    await runCase('diff: today matches the table, so nothing is proposed', async () => {
         const pipeline = await runPipeline();
         const diff = diffPriceCandidates(pipeline.candidates, seedPriceEntries(), { now: NOW });
         const proposed = diff.drafts.map((draft) => `${draft.model}/${draft.tier}`).sort();
-        expect(
-            JSON.stringify(proposed) ===
-                JSON.stringify(['gpt-6-astra/priority', 'gpt-6-luna/priority', 'gpt-6-sol/priority', 'grok-4.20-multi-agent-0309/priority', 'grok-4.7/priority']),
-            `exactly the five missing priority tiers (got ${proposed.join(', ')})`
-        );
+        // Only Gemini is ever served at the priority tier, and the seed already
+        // has those rows, so a matching catalog proposes nothing at all.
+        expect(proposed.length === 0, `no proposal when the table already matches (got ${proposed.join(', ')})`);
         for (const draft of diff.drafts) {
             expect(draft.kind === 'update' && draft.baseline === null, `${draft.model}/${draft.tier} is a new tier, not a replacement`);
             expect(draft.entry.effectiveFrom.getTime() === RUN_FROM.getTime(), 'starts at the run instant');
