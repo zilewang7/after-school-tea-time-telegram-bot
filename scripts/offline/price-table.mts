@@ -15,6 +15,11 @@ const service = await import('../../src/services/model-price-service.js');
 const { ModelPriceEntry } = await import('../../src/db/modelPriceDTO.js');
 const { PriceChangeProposal } = await import('../../src/db/priceChangeProposalDTO.js');
 const { SettingsAudit } = await import('../../src/db/settingsAuditDTO.js');
+const { ModelCatalogEntryRow } = await import('../../src/db/modelCatalogDTO.js');
+const { backfillCatalogSeedsOnly } = await import('../../src/db/schema-migrations.js');
+const { modelConfigs } = await import('../../src/config/models.js');
+const catalogService = await import('../../src/services/model-catalog-service.js');
+const { sequelize } = await import('../../src/db/config.js');
 
 const at = (iso: string): Date => new Date(iso);
 const results: CaseResult[] = [];
@@ -31,6 +36,70 @@ const entry = (over: Partial<import('../../src/config/model-pricing.js').PriceEn
     confidence: 'high',
     ...over,
 });
+
+results.push(
+    await runCase('the one-off cleanup drops models the first catalog watch auto-added', async () => {
+        const now = new Date();
+        // Both tables are already seeded by the startup loaders in production
+        await service.loadModelPrices();
+        await catalogService.loadModelCatalog();
+        // The startup chain already ran the cleanup once; replay the upgrade
+        await sequelize.query("DELETE FROM schema_migrations WHERE name = '20261113_catalog_legacy_cleanup'");
+        await ModelCatalogEntryRow.create({
+            id: 'gpt-4o',
+            label: 'gpt-4o',
+            enabled: 1,
+            capabilities: '{}',
+            source: 'models-dev',
+            sourceUrl: 'https://example.test/models-dev',
+            checkedOn: '2026-11-13',
+            confidence: 'medium',
+            note: 'auto-added by the price watcher',
+            createdAt: now,
+            updatedAt: now,
+        });
+        await ModelPriceEntry.create({
+            model: 'gpt-4o',
+            tier: 'standard',
+            inputPerM: 2.5,
+            cachedInputPerM: 1.25,
+            cacheWritePerM: null,
+            outputPerM: 10,
+            imageOutputPerM: null,
+            perImageUsd: null,
+            effectiveFrom: new Date('2026-11-13T00:00:00Z'),
+            effectiveTo: null,
+            source: 'models-dev',
+            sourceUrl: 'https://example.test/models-dev',
+            checkedOn: '2026-11-13',
+            confidence: 'medium',
+            note: null,
+        });
+        const beforeCleanup = await ModelCatalogEntryRow.count();
+        await backfillCatalogSeedsOnly();
+        const afterCleanup = await ModelCatalogEntryRow.count();
+        expect(
+            afterCleanup === modelConfigs.length,
+            `the catalog holds only the seeded menu (${afterCleanup} rows, ${beforeCleanup} before, ${modelConfigs.length} seeds)`
+        );
+        expect((await ModelPriceEntry.count({ where: { model: 'gpt-4o' } })) === 0, 'the auto-added price row is gone');
+        // Recorded once: a second pass changes nothing
+        await ModelCatalogEntryRow.create({
+            id: 'gpt-5.2',
+            label: 'gpt-5.2',
+            enabled: 1,
+            capabilities: '{}',
+            source: 'models-dev',
+            checkedOn: '2026-11-13',
+            confidence: 'medium',
+            note: null,
+            createdAt: now,
+            updatedAt: now,
+        });
+        await backfillCatalogSeedsOnly();
+        expect((await ModelCatalogEntryRow.count()) === modelConfigs.length + 1, 'the cleanup runs exactly once');
+    })
+);
 
 results.push(
     await runCase('a fresh database seeds from the built-in rows and loads the registry', async () => {

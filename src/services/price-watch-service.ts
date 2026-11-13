@@ -96,6 +96,84 @@ const CHAT_FAMILY_PREFIXES: readonly string[] = [
 /** Ids that are not chat replies and must never enter the menu by themselves */
 const NON_CHAT_ID = /image|embedding|tts|audio|live|realtime|computer-use|imagen|veo|sora|whisper|transcribe|rerank|moderation|ocr|speech/i;
 
+/**
+ * Variant ids of a model already in the menu: a new suffix would offer the
+ * same model again (or an experimental build), not a new release.
+ */
+const VARIANT_SUFFIX = /-(preview|exp|experimental|alpha|beta|thinking|nothinking|nothink|chat|instruct|deprecated|legacy|latest|high|medium|low|max|mini-high)$/i;
+
+/**
+ * "Same family enters the menu automatically" means a *newer version* of a
+ * family we already offer, or — for a line we do not know yet — a release from
+ * the last days. The catalog also lists old models (gpt-4o, gpt-5.2, ...) and
+ * retired aliases (deepseek-v4-flash), so a bare prefix match is not enough.
+ */
+const MAX_AUTO_ADD_AGE_DAYS = 30;
+const MAX_NEW_FAMILY_AGE_DAYS = 7;
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+/** Ids with a routing suffix are artifacts, not model ids */
+const ARTIFACT_ID = /[@:]/;
+
+const releaseAgeDays = (releaseDate: unknown, now: Date): number | null => {
+    if (typeof releaseDate !== 'string' || releaseDate === '') return null;
+    const releasedAt = Date.parse(releaseDate);
+    if (!Number.isFinite(releasedAt)) return null;
+    const age = (now.getTime() - releasedAt) / DAY_MS;
+    return age >= -1 ? age : null;
+};
+
+/** The family a version belongs to: `gpt`, `gemini`, `claude-sonnet`, ... */
+const familyLineOf = (id: string): string => {
+    const tokens = id.toLowerCase().split('-');
+    if (tokens[0] === 'claude' && tokens.length > 1) return `${tokens[0]}-${tokens[1]}`;
+    return tokens[0] ?? id.toLowerCase();
+};
+
+/** The numeric version right after the family line (`gpt-6.1`, `claude-sonnet-5-5` → 5.5) */
+const versionOf = (id: string, familyLine: string): number | null => {
+    const rest = id.toLowerCase().slice(familyLine.length + 1);
+    const match = /^v?(\d+)(?:[.-](\d+))?/.exec(rest);
+    if (match === null) return null;
+    const major = Number(match[1]);
+    const minor = match[2] === undefined ? 0 : Number(`0.${match[2]}`);
+    return major + minor;
+};
+
+/** The newest version the menu already offers per family line */
+const menuVersionsOf = (menuIds: readonly string[]): ReadonlyMap<string, number> => {
+    const versions = new Map<string, number>();
+    for (const id of menuIds) {
+        const line = familyLineOf(id);
+        const version = versionOf(id, line);
+        if (version === null) continue;
+        const current = versions.get(line);
+        if (current === undefined || version > current) versions.set(line, version);
+    }
+    return versions;
+};
+
+/**
+ * Whether the catalog entry may enter the menu by itself: only a newer minor of
+ * a menu family (or, for a line we never offered, a release of the last days).
+ */
+const qualifiesForAutoAdd = (
+    id: string,
+    releaseDate: unknown,
+    menuIds: readonly string[],
+    now: Date
+): boolean => {
+    const age = releaseAgeDays(releaseDate, now);
+    if (age === null || age > MAX_AUTO_ADD_AGE_DAYS) return false;
+    const line = familyLineOf(id);
+    const version = versionOf(id, line);
+    const offered = menuVersionsOf(menuIds).get(line);
+    if (offered !== undefined && version !== null) return version > offered;
+    // A family line the menu never named: only a release from the last days.
+    if (offered === undefined && version === null) return age <= MAX_NEW_FAMILY_AGE_DAYS;
+    return age <= MAX_NEW_FAMILY_AGE_DAYS;
+};
+
 /** At most this many new models enter the menu per run */
 const MAX_AUTO_ADDED_MODELS = 5;
 
@@ -140,6 +218,8 @@ interface ModelsDevCost {
 interface ModelsDevModel {
     readonly id?: string;
     readonly name?: string;
+    /** YYYY-MM-DD the vendor released it; the auto-add window reads this */
+    readonly release_date?: string;
     readonly cost?: ModelsDevCost;
     readonly limit?: { readonly context?: number; readonly output?: number };
     readonly modalities?: { readonly input?: readonly string[]; readonly output?: readonly string[] };
@@ -194,7 +274,7 @@ const isModelsDevCatalog = (value: unknown): value is Record<string, ModelsDevPr
     isJsonObject(value) && Object.values(value).every((provider) => isJsonObject(provider));
 
 /** Parse the models.dev aggregate and keep chat models of our families */
-export const discoveredModelsOf = (body: string): readonly DiscoveredModel[] => {
+export const discoveredModelsOf = (body: string, now: Date = new Date()): readonly DiscoveredModel[] => {
     let parsed: unknown;
     try {
         parsed = JSON.parse(body);
@@ -203,6 +283,9 @@ export const discoveredModelsOf = (body: string): readonly DiscoveredModel[] => 
     }
     if (!isModelsDevCatalog(parsed)) return [];
     const providers = parsed;
+    const menuIds = listAllModelCatalog()
+        .filter((entry) => entry.enabled)
+        .map((entry) => entry.id);
     const discovered: DiscoveredModel[] = [];
     for (const providerId of DISCOVERY_PROVIDERS) {
         const models = providers[providerId]?.models;
@@ -210,7 +293,10 @@ export const discoveredModelsOf = (body: string): readonly DiscoveredModel[] => 
         for (const [modelId, model] of Object.entries(models)) {
             const id = model.id ?? modelId;
             if (NON_CHAT_ID.test(id)) continue;
+            if (VARIANT_SUFFIX.test(id)) continue;
+            if (ARTIFACT_ID.test(id)) continue;
             if (!CHAT_FAMILY_PREFIXES.some((prefix) => id.toLowerCase().startsWith(prefix))) continue;
+            if (!qualifiesForAutoAdd(id, model.release_date, menuIds, now)) continue;
             if (findModelCatalogEntry(id) !== null) continue;
             const capabilities = capabilitiesOf(model);
             if (capabilities.imageOutput) continue;
@@ -300,7 +386,7 @@ export const runPriceWatchNow = async (
             return null;
         });
         if (aggregate !== null && aggregate.status === 200) {
-            const discovered = discoveredModelsOf(aggregate.body);
+            const discovered = discoveredModelsOf(aggregate.body, now);
             const ownerId = getOwnerUserId();
             addedModels = await addCatalogModels(
                 discovered.map((item) => item.entry),

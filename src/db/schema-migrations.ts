@@ -343,6 +343,42 @@ const migrateThinkingLinks = async (transaction: Transaction): Promise<void> => 
  * Runs after sequelize.sync() (the tables are created there), and is
  * idempotent, so a restart is harmless.
  */
+/**
+ * One-off cleanup of the too-broad auto-add the first catalog watch performed
+ * (2026-11-13): a family-prefix match alone also accepted old models (gpt-4o,
+ * gpt-5.x, ...). Keeps only the seeded menu ids in model_catalog and drops the
+ * price rows the watcher had proposed for those models. Recorded in
+ * schema_migrations so it runs exactly once; later auto-adds are untouched.
+ */
+export const backfillCatalogSeedsOnly = async (): Promise<void> => {
+    const { modelConfigs } = await import('../config/models.js');
+    const name = '20261113_catalog_legacy_cleanup';
+    const applied = await sequelize.query<{ name: string }>(
+        'SELECT name FROM schema_migrations WHERE name = :name',
+        { type: QueryTypes.SELECT, replacements: { name } }
+    );
+    if (applied.length > 0) return;
+    const seedIds = modelConfigs.map((model) => model.id);
+    const placeholders = seedIds.map((_, index) => `:seed${index}`).join(', ');
+    const replacements = Object.fromEntries(seedIds.map((id, index) => [`seed${index}`, id]));
+    await sequelize.transaction(async (transaction) => {
+        await sequelize.query(
+            `DELETE FROM model_catalog WHERE id NOT IN (${placeholders})`,
+            { replacements, transaction }
+        );
+        await sequelize.query(
+            `DELETE FROM model_price_entries
+              WHERE source = 'models-dev' AND model NOT IN (${placeholders})`,
+            { replacements, transaction }
+        );
+        await sequelize.query(
+            `INSERT OR IGNORE INTO schema_migrations (name, appliedAt)
+             VALUES (:name, :appliedAt)`,
+            { replacements: { name, appliedAt: new Date().toISOString() }, transaction }
+        );
+    });
+};
+
 export const ensureModelPriceIndexes = async (): Promise<void> => {
   await sequelize.query(
     `CREATE UNIQUE INDEX IF NOT EXISTS price_change_proposals_pending_key
