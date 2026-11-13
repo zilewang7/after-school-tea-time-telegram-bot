@@ -7,15 +7,16 @@
  * real scheduler and real workers, and look at the reports and at what the
  * fixtures wrote into a scratch directory.
  */
-import { spawn } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
+import { promisify } from 'node:util';
 import { expect, reportResults, runCase, type CaseResult } from './harness.mts';
 import { testEnvironment } from './support/run-file.mts';
-import { failureLines, fileLine, sharedFailureLines, type FileReport } from './support/run-report.mts';
+import { failureLines, fileLine, sharedFailureLines, sharedUnavailableLine, type FileReport } from './support/run-report.mts';
 import { runSuite, usesSharedWorkers, type SuiteOptions } from './support/run-suite.mts';
 import { isRunning } from './support/scratch-directory.mts';
 import { startSharedWorker } from './support/worker-pool.mts';
@@ -91,15 +92,13 @@ const becomesTrue = async (condition: () => boolean, withinMs: number): Promise<
 
 /**
  * Ends the process that ran `fixtureName` in the scenario of that name, from
- * inside the runner's report of a file. Returns when the process is gone and
- * before the runner can notice: this blocks the event loop the runner's
- * events would arrive on. So the runner hands the next file to a worker that
- * is no longer there.
+ * inside the runner's report of a file. The runner goes on to the next file
+ * without a turn of the event loop in between, the only place where it could
+ * learn of the worker's end. So it hands that file to a worker that is gone.
  */
 const endWorkerBehindTheRunner = (scenarioName: string, fixtureName: string): void => {
     const processId = Number(readOrEmpty(join(scratch, scenarioName, `pid-${fixtureName}`)));
     process.kill(processId, 'SIGKILL');
-    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 150);
 };
 
 interface OrphanedWorker {
@@ -132,40 +131,123 @@ const orphanWorker = async (): Promise<OrphanedWorker> => {
     return { started, gone };
 };
 
+interface WorkerLimits {
+    /** A worker allowed two files: whether it would take another after the first, and after the second */
+    usableAfterOneFile: boolean;
+    usableAfterTwoFiles: boolean;
+    filesRun: number;
+    /** A worker allowed one megabyte: before its first file, and after */
+    usableBeforeGrowing: boolean;
+    usableAfterGrowing: boolean;
+    exitCodes: (number | null | undefined)[];
+}
+
+/** Drives two workers by hand, each with a limit that the real suite's workers reach only after many files */
+const reachWorkerLimits = async (): Promise<WorkerLimits> => {
+    const directory = join(scratch, 'limits');
+    mkdirSync(directory);
+    const options = {
+        repositoryRoot: REPOSITORY_ROOT,
+        environment: testEnvironment(undefined, { SHARED_WORKER_FIXTURE_DIRECTORY: directory }),
+    };
+    const [counted, small] = await Promise.all([
+        startSharedWorker({ ...options, logPath: join(directory, 'worker.log'), maxFiles: 2 }),
+        startSharedWorker({ ...options, logPath: join(directory, 'small-worker.log'), maxResidentMegabytes: 1 }),
+    ]);
+    try {
+        const first = await counted?.run(fixture('passes'), join(directory, 'passes.log'), 30_000);
+        const usableAfterOneFile = counted?.isUsable() === true;
+        const second = await counted?.run(fixture('passes-again'), join(directory, 'passes-again.log'), 30_000);
+        const usableAfterTwoFiles = counted?.isUsable() === true;
+        const usableBeforeGrowing = small?.isUsable() === true;
+        const only = await small?.run(fixture('passes'), join(directory, 'passes-small.log'), 30_000);
+        return {
+            usableAfterOneFile,
+            usableAfterTwoFiles,
+            filesRun: counted?.filesRun.length ?? 0,
+            usableBeforeGrowing,
+            usableAfterGrowing: small?.isUsable() === true,
+            exitCodes: [first?.exitCode, second?.exitCode, only?.exitCode],
+        };
+    } finally {
+        await Promise.all([counted?.stop(), small?.stop()]);
+    }
+};
+
+/** What the real runner would run for these arguments, one name per line: nothing is started */
+const listedBy = async (runnerArguments: readonly string[]): Promise<string[]> => {
+    const { stdout } = await promisify(execFile)(
+        process.execPath,
+        ['--import', 'tsx', 'scripts/offline/runner.mts', '--list', ...runnerArguments],
+        { cwd: REPOSITORY_ROOT }
+    );
+    return stdout.split('\n').filter((line) => line !== '').map((line) => basename(line, '.mts'));
+};
+
 /** The scenarios do not share anything, so they run side by side: most of their time is waiting */
-const [sharing, failures, endings, lateWork, forGood, betweenFiles, timeout, filtered, withoutHook, isolated, orphaned] = await Promise.all([
+const [
+    sharing,
+    failures,
+    lingering,
+    endings,
+    lateWork,
+    forGood,
+    unusual,
+    packageWork,
+    betweenFiles,
+    timeout,
+    filtered,
+    withoutHook,
+    isolated,
+    orphaned,
+    limits,
+    listedInOrder,
+    listedTheOtherWay,
+] = await Promise.all([
     runScenario('sharing', ['leaves-traces', 'finds-no-traces', 'uses-package-timer', 'needs-package-timer']),
-    // A file that fails gets the worker replaced, so every file after one starts in a new worker
-    runScenario('failures', [
-        'fails-one-case',
-        'passes',
-        'lingers',
-        'passes-again',
-        'silences-uncaught-errors',
-        'throws-late',
-        'changes-http-agent',
-        'needs-default-http-agent',
-    ]),
+    // A file that fails gets the worker replaced, so the file after one starts in a new worker
+    runScenario('failures', ['fails-one-case', 'passes', 'silences-uncaught-errors', 'throws-late']),
+    runScenario('lingering', ['lingers', 'passes-again', 'changes-http-agent', 'needs-default-http-agent']),
     runScenario('endings', [
         'never-settles',
         'throws-at-top',
+        'throws-an-object',
         'listens-for-before-exit',
         'throws-on-exit',
         'sets-exit-code-on-exit',
     ]),
-    runScenario('late-work', ['starts-work-on-exit', 'passes']),
-    runScenario('for-good', ['fixes-a-global', 'passes']),
+    runScenario('late-work', ['starts-work-on-exit', 'passes', 'leaves-child-that-throws', 'passes-again']),
+    runScenario('for-good', ['fixes-a-global', 'passes', 'enters-a-domain', 'throws-late']),
+    // Each of them passes in a process of its own, and nothing it does is in the next one's way
+    runScenario('unusual', [
+        'leaves-detached-child',
+        'makes-error-settings-read-only',
+        'sets-exit-code-256',
+        'writes-odd-hex',
+        'adds-listener-on-exit',
+        'replaces-set-immediate',
+        'passes',
+    ]),
+    runScenario('package-work', ['uses-package-helper', 'needs-package-helper', 'needs-silence']),
     runScenario('between-files', ['passes', 'passes-again'], {
         onReport: (report) => {
             if (report.name === 'passes') endWorkerBehindTheRunner('between-files', 'passes');
         },
     }),
-    runScenario('timeout', ['hangs', 'passes'], { timeoutMs: 1500 }),
+    // Also the limit of the files that pass: wide enough for a process of its own on a busy machine
+    runScenario('timeout', ['hangs', 'passes'], { timeoutMs: 3000 }),
     runScenario('filtered', ['two-cases', 'passes'], { caseFilter: 'second' }),
     runScenario('without-hook', ['passes', 'passes-again'], { extraEnvironment: { OFFLINE_WORKER_HOOK: 'off' } }),
     runScenario('isolated', ['passes', 'passes-again'], { shared: false }),
     orphanWorker(),
+    reachWorkerLimits(),
+    // Two real test files, in both orders: one of the two is not the order the runner would choose
+    listedBy(['--in-order', 'shared-worker', 'check-deps']),
+    listedBy(['--in-order', 'check-deps', 'shared-worker']),
 ]);
+
+/** How many workers a scenario started in its one lane */
+const workersStartedIn = (scenario: Scenario): number => scenario.noteOf('worker-1.log').split('is ready').length - 1;
 
 /** What a file that was expected to pass did instead, for the message of the assertion */
 const outcomeOf = (report: FileReport | undefined): string => {
@@ -197,7 +279,10 @@ const results: CaseResult[] = [];
 results.push(
     await runCase('two files run in one process, each with its own copy of the modules', () => {
         expectPassedAtOnce(sharing.reports.get('leaves-traces'), 'the first file passes in the worker');
-        expectPassedAtOnce(sharing.reports.get('finds-no-traces'), 'the second file finds a fresh copy of the support module');
+        expect(
+            sharing.noteOf('finds-no-traces.log').includes('✓ the support module is a fresh copy'),
+            'the second file finds a fresh copy of the support module'
+        );
         const firstProcess = sharing.noteOf('pid-leaves-traces');
         expect(firstProcess !== '' && firstProcess === sharing.noteOf('pid-finds-no-traces'), 'both ran in the same process');
     })
@@ -247,16 +332,20 @@ results.push(
         const printed = report === undefined ? '' : failureLines(report).join('\n');
         expect(printed.includes('in a shared process before that: 1 of 2 cases failed'), 'what is printed about the failure names both runs');
         expectPassedAtOnce(failures.reports.get('passes'), 'the next file passes');
+        const ranTheFailure = failures.processIdsOf('pid-fails-one-case');
+        expect(ranTheFailure.length === 2, 'the failing file ran in the worker and on its own');
+        const [ranTheNext] = failures.processIdsOf('pid-passes');
+        expect(ranTheNext !== undefined && !ranTheFailure.includes(ranTheNext), 'the next file got another worker');
     })
 );
 
 results.push(
     await runCase('a file that leaves a server open fails, and the next file is not affected', () => {
-        const report = failures.reports.get('lingers');
+        const report = lingering.reports.get('lingers');
         expect(failedBothWays(report), 'the file fails in the worker and on its own');
         expect(report?.lingered, 'on its own the harness ended it for lingering');
         expect(report?.sharedFailure?.verdict.startsWith('still running long after its summary'), 'the worker run failed for the same reason');
-        expectPassedAtOnce(failures.reports.get('passes-again'), 'the next file passes in a new worker');
+        expectPassedAtOnce(lingering.reports.get('passes-again'), 'the next file passes in a new worker');
     })
 );
 
@@ -266,7 +355,7 @@ results.push(
         expectPassedAtOnce(failures.reports.get('silences-uncaught-errors'), 'the file that silences uncaught errors passes');
         const report = failures.reports.get('throws-late');
         expect(
-            report?.sharedFailure?.ranAfter.map((file) => basename(file, '.mts')).join() === 'passes-again,silences-uncaught-errors',
+            report?.sharedFailure?.ranAfter.map((file) => basename(file, '.mts')).join() === 'passes,silences-uncaught-errors',
             `it ran in that worker (${report?.sharedFailure?.ranAfter.join()})`
         );
         expect(failedBothWays(report), 'the file fails in the worker and on its own');
@@ -296,30 +385,40 @@ results.push(
         expect((report?.sharedFailure?.durationMs ?? Infinity) < 10_000, 'the worker did not wait for the server it had opened');
         const sharedLog = readOrEmpty(report?.sharedFailure?.logPath ?? '');
         expect(sharedLog.includes('Error: thrown at the top level'), 'the log of the worker run holds the error');
+
+        const thrownObject = endings.reports.get('throws-an-object');
+        expect(failedBothWays(thrownObject), 'so does a file that throws something that is no Error');
+        const logOfThat = readOrEmpty(thrownObject?.sharedFailure?.logPath ?? '');
+        expect(logOfThat.includes("{ code: 42, detail: 'a thrown plain object' }"), 'and the log shows what was thrown');
     })
 );
 
 results.push(
     await runCase('a file that only fails after another file counts as passed, with a note', () => {
-        expectPassedAtOnce(failures.reports.get('changes-http-agent'), 'the file that changes the agent passes');
-        const report = failures.reports.get('needs-default-http-agent');
+        expectPassedAtOnce(lingering.reports.get('changes-http-agent'), 'the file that changes the agent passes');
+        const report = lingering.reports.get('needs-default-http-agent');
         expect(report?.ok, 'the affected file passes on its own, which is what counts');
         const sharedFailure = report?.sharedFailure;
         expect(sharedFailure?.verdict.startsWith('1 of 1 cases failed'), 'it had failed in the worker');
         expect(
-            sharedFailure?.ranAfter.map((file) => basename(file)).join() === 'changes-http-agent.mts',
-            `the note names the file that ran before it (${sharedFailure?.ranAfter.join()})`
+            sharedFailure?.ranAfter.map((file) => basename(file, '.mts')).join() === 'passes-again,changes-http-agent',
+            `the note names the files that ran before it in that worker (${sharedFailure?.ranAfter.join()})`
         );
         expect(report !== undefined && fileLine(report).startsWith('PASS  needs-default-http-agent  ('), 'its line says PASS');
         expect(report !== undefined && fileLine(report).includes('in a shared process: 1 of 1 cases failed'), 'and what happened in the worker');
-        const note = sharedFailureLines([...failures.reports.values(), ...endings.reports.values()]).join('\n');
+        const reports = [...failures.reports.values(), ...lingering.reports.values(), ...endings.reports.values()];
+        const note = sharedFailureLines(reports).join('\n');
         expect(note.includes('2 files did not pass in a shared process'), 'the end of the run lists it');
-        expect(note.includes('ran after: changes-http-agent'), 'with the files before it');
+        expect(note.includes('ran after: passes-again, changes-http-agent'), 'with the files before it');
         expect(
-            note.includes('pnpm test:offline --in-order changes-http-agent needs-default-http-agent'),
+            note.includes('pnpm test:offline --in-order passes-again changes-http-agent needs-default-http-agent'),
             'and the command that runs them in one process again'
         );
         expect(!note.includes('fails-one-case'), 'a file that fails on its own as well is not in that list');
+        expect(
+            sharedFailureLines(reports, 'some "case"').join('\n').includes('--in-order --grep "some \\"case\\"" passes-again'),
+            'a run that was limited to some cases gets a command with the same limit'
+        );
     })
 );
 
@@ -364,6 +463,60 @@ results.push(
 );
 
 results.push(
+    await runCase('a child process a file leaves running is ended with the file, and its end is that file\'s', () => {
+        const report = lateWork.reports.get('leaves-child-that-throws');
+        expect(report?.ok, 'the file passes on its own, where its process is gone before the child is');
+        const verdict = report?.sharedFailure?.verdict;
+        // Not waited for, the end of the child would have thrown in the middle of the next file
+        expect(verdict?.startsWith('exit code 1 after a clean summary'), `in the worker what the end of the child set off ended that file (${verdict})`);
+        const sharedLog = readOrEmpty(report?.sharedFailure?.logPath ?? '');
+        expect(sharedLog.includes('Uncaught error: Error: thrown when the child process ended'), 'and is in the log of that run');
+        expectPassedAtOnce(lateWork.reports.get('passes-again'), 'the next file passes');
+    })
+);
+
+results.push(
+    await runCase('what a package started for itself is left alone, and so is a detached child process', async () => {
+        expectPassedAtOnce(packageWork.reports.get('uses-package-helper'), 'the file that makes a package start a helper process passes');
+        // Ended with the first file's own children, the helper would be missing here
+        expectPassedAtOnce(packageWork.reports.get('needs-package-helper'), 'the helper process still runs during the next file');
+        const worker = packageWork.noteOf('pid-uses-package-helper');
+        expect(worker !== '' && worker === packageWork.noteOf('pid-needs-package-helper'), 'which ran in the same worker');
+        const [helper] = packageWork.processIdsOf('pid-package-helper');
+        expect(helper !== undefined && !isRunning(helper), 'the helper process ended with the worker');
+
+        expectPassedAtOnce(unusual.reports.get('leaves-detached-child'), 'the file that leaves a detached child process passes');
+        const wrote = await becomesTrue(() => unusual.noteOf('detached-child') !== '', 10_000);
+        expect(wrote, 'that child process got to do its work, as it does after a process of its own');
+    })
+);
+
+results.push(
+    await runCase('the run on its own does not meet the worker the file failed in', () => {
+        const report = packageWork.reports.get('needs-silence');
+        const verdict = report?.sharedFailure?.verdict;
+        expect(verdict?.startsWith('1 of 1 cases failed'), `the file fails in the worker, where the timer of a package runs (${verdict})`);
+        // That worker still running, its timer would fail the file here as well
+        expect(report?.ok, `it passes on its own: ${outcomeOf(report)}`);
+    })
+);
+
+results.push(
+    await runCase('files that pass on their own pass in a worker, whatever they do on the way out', () => {
+        const expected: [string, string][] = [
+            ['makes-error-settings-read-only', 'a file that makes the stack settings of Error read-only'],
+            ['sets-exit-code-256', 'a file whose exit code has only high bits set'],
+            ['writes-odd-hex', 'a file that writes an odd number of hex digits'],
+            ['adds-listener-on-exit', "a file whose 'exit' listener adds a 'beforeExit' listener"],
+            ['replaces-set-immediate', 'a file that leaves a stub in place of setImmediate'],
+            ['passes', 'the file after all of them'],
+        ];
+        for (const [name, description] of expected) expectPassedAtOnce(unusual.reports.get(name), `${description} passes`);
+        expect(workersStartedIn(unusual) === 1, `all of them ran in one worker (${workersStartedIn(unusual)})`);
+    })
+);
+
+results.push(
     await runCase('a worker that cannot undo what a file left is not used for the next file', () => {
         expectPassedAtOnce(forGood.reports.get('fixes-a-global'), 'the file that leaves a global nobody can remove passes');
         expectPassedAtOnce(forGood.reports.get('passes'), 'so does the next file');
@@ -374,6 +527,13 @@ results.push(
             workerLog.includes('left what cannot be undone') && workerLog.includes('sharedWorkerFixtureForGood'),
             `the worker's log names what was left (${workerLog.trim()})`
         );
+
+        // node:domain stays loaded, and the domain a file was left in takes the uncaught errors of every file after it
+        expectPassedAtOnce(forGood.reports.get('enters-a-domain'), 'a file that ends inside a domain passes');
+        expect(workerLog.includes('process.domain'), "the worker's log names the domain");
+        const afterTheDomain = forGood.reports.get('throws-late');
+        expect(failedBothWays(afterTheDomain), `an error thrown late by the next file still fails that file: ${outcomeOf(afterTheDomain)}`);
+        expect(workersStartedIn(forGood) === 3, `which ran in a third worker (${workersStartedIn(forGood)})`);
     })
 );
 
@@ -422,7 +582,9 @@ results.push(
     await runCase('without the module hook every file gets a process of its own', () => {
         expect(withoutHook.sharedUnavailableAfter === 0, 'the run says shared workers could not be used, from the first file on');
         const workerLog = withoutHook.noteOf('worker-1.log');
-        expect(workerLog.includes('this worker is not used: its module hook has no effect'), `the worker's log says why (${workerLog.trim()})`);
+        expect(/process \d+ is not used: its module hook has no effect/.test(workerLog), `the worker's log says why (${workerLog.trim()})`);
+        expect(sharedUnavailableLine(0).includes('every file ran in a process of its own'), 'and so does the end of the run');
+        expect(sharedUnavailableLine(2).includes('2 files ran in shared processes'), 'which counts the files that workers did run');
         expectPassedAtOnce(withoutHook.reports.get('passes'), 'the first file passes');
         expectPassedAtOnce(withoutHook.reports.get('passes-again'), 'the second file passes');
         const firstProcess = withoutHook.noteOf('pid-passes');
@@ -440,34 +602,13 @@ results.push(
 );
 
 results.push(
-    await runCase('a worker is due for replacement after its share of files', async () => {
-        const directory = join(scratch, 'replacement');
-        mkdirSync(directory);
-        const worker = await startSharedWorker({
-            repositoryRoot: REPOSITORY_ROOT,
-            logPath: join(directory, 'worker.log'),
-            environment: testEnvironment(undefined, { SHARED_WORKER_FIXTURE_DIRECTORY: directory }),
-            maxFiles: 2,
-        });
-        expect(worker !== undefined, 'the worker starts');
-        if (worker === undefined) return;
-        const first = await worker.run(fixture('passes'), join(directory, 'passes.log'), 30_000);
-        expect(first.exitCode === 0 && worker.isUsable(), 'after one file it takes another');
-        const second = await worker.run(fixture('passes-again'), join(directory, 'passes-again.log'), 30_000);
-        expect(second.exitCode === 0 && !worker.isUsable(), 'after two it is due for replacement');
-        expect(worker.filesRun.length === 2, 'it knows the files it ran');
-        await worker.stop();
-
-        const small = await startSharedWorker({
-            repositoryRoot: REPOSITORY_ROOT,
-            logPath: join(directory, 'small-worker.log'),
-            environment: testEnvironment(undefined, { SHARED_WORKER_FIXTURE_DIRECTORY: directory }),
-            maxResidentMegabytes: 1,
-        });
-        expect(small?.isUsable(), 'a worker with a memory limit takes its first file');
-        const only = await small?.run(fixture('passes'), join(directory, 'passes-small.log'), 30_000);
-        expect(only?.exitCode === 0 && small?.isUsable() === false, 'having grown past the limit it is due for replacement');
-        await small?.stop();
+    await runCase('a worker is due for replacement after its share of files or of memory', () => {
+        expect(limits.exitCodes.join() === '0,0,0', `the files passed (${limits.exitCodes.join()})`);
+        expect(limits.usableAfterOneFile, 'a worker allowed two files takes another after the first');
+        expect(!limits.usableAfterTwoFiles, 'after two it is due for replacement');
+        expect(limits.filesRun === 2, 'it knows the files it ran');
+        expect(limits.usableBeforeGrowing, 'a worker with a memory limit takes its first file');
+        expect(!limits.usableAfterGrowing, 'having grown past the limit it is due for replacement');
     })
 );
 
@@ -479,6 +620,13 @@ results.push(
         expect(usesSharedWorkers({ ...choice, fileCount: 2, jobs: 1 }), 'two files, one at a time: shared');
         expect(!usesSharedWorkers({ ...choice, isolated: true }), 'not with --isolated');
         expect(!usesSharedWorkers({ ...choice, environment: { OFFLINE_DEBUG_HANDLES: '1' } }), 'not while handles are traced');
+    })
+);
+
+results.push(
+    await runCase('--in-order keeps the files in the order of the names', () => {
+        expect(listedInOrder.join() === 'shared-worker,check-deps', `one way round (${listedInOrder.join()})`);
+        expect(listedTheOtherWay.join() === 'check-deps,shared-worker', `and the other (${listedTheOtherWay.join()})`);
     })
 );
 

@@ -22,9 +22,10 @@ export interface CallOrigin {
 export const captureCallOrigin = (calledFunction: (...parameters: never[]) => unknown): CallOrigin => {
     const origin: CallOrigin = {};
     const limit = Error.stackTraceLimit;
-    Error.stackTraceLimit = FRAMES_KEPT;
+    // Not by assignment, here and below: that throws once a file has made the property read-only
+    const raised = Reflect.set(Error, 'stackTraceLimit', FRAMES_KEPT);
     captureStackTrace(origin, calledFunction);
-    Error.stackTraceLimit = limit;
+    if (raised) Reflect.set(Error, 'stackTraceLimit', limit);
     return origin;
 };
 
@@ -34,11 +35,14 @@ const FRAME_LOCATION = /\(?((?:file:\/\/)?\/[^():]+|node:[^():]+):\d+:\d+\)?$/;
 /** The stack is formatted when it is read, by the Error.prepareStackTrace of that moment: the file's must not do it */
 const stackTextOf = (origin: CallOrigin): unknown => {
     const ofTheFile = Error.prepareStackTrace;
-    Error.prepareStackTrace = prepareStackTrace;
+    const swapped = Reflect.set(Error, 'prepareStackTrace', prepareStackTrace);
     try {
         return origin.stack;
+    } catch {
+        // The file's function formats it after all, and throws: nothing to go by
+        return undefined;
     } finally {
-        Error.prepareStackTrace = ofTheFile;
+        if (swapped) Reflect.set(Error, 'prepareStackTrace', ofTheFile);
     }
 };
 

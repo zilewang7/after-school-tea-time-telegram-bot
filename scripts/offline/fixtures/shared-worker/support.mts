@@ -4,8 +4,9 @@
  * in processes of their own, and looks at what they leave in the scratch
  * directory it names in SHARED_WORKER_FIXTURE_DIRECTORY.
  */
-import { appendFileSync, statSync } from 'node:fs';
+import { appendFileSync, mkdirSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
 
 /**
  * How long after it was started the work leaves-traces.mts leaves behind would
@@ -27,3 +28,40 @@ export const scratchSizeOf = (name: string): number =>
 
 /** Lets the test see which process ran the fixture */
 export const noteProcess = (fixtureName: string): void => appendToScratch(`pid-${fixtureName}`, `${process.pid}\n`);
+
+/** What the stand-in for a package offers */
+export interface FixturePackage {
+    /** Appends to the note every 20 ms, on a timer that does not keep the process running */
+    startTicker: (notePath: string) => void;
+    /** Starts a process that does not keep this one running, and returns its id */
+    startHelper: () => number | undefined;
+}
+
+const FIXTURE_PACKAGE_SOURCE = `
+import { spawn } from 'node:child_process';
+import { appendFileSync } from 'node:fs';
+
+export const startTicker = (notePath) => {
+    setInterval(() => appendFileSync(notePath, 'x'), 20).unref();
+};
+
+export const startHelper = () => {
+    const helper = spawn('sleep', ['60'], { stdio: 'ignore' });
+    helper.unref();
+    return helper.pid;
+};
+`;
+
+/**
+ * A module under a `node_modules` directory, written into the scratch
+ * directory. That path makes it a package to a worker: loaded once, and left
+ * to go on using what it started when the file that imported it has ended.
+ */
+export const importFixturePackage = async (): Promise<FixturePackage> => {
+    const directory = scratchPath(join('node_modules', 'fixture-package'));
+    mkdirSync(directory, { recursive: true });
+    const entry = join(directory, 'index.mjs');
+    writeFileSync(entry, FIXTURE_PACKAGE_SOURCE);
+    const fixturePackage: FixturePackage = await import(pathToFileURL(entry).href);
+    return fixturePackage;
+};

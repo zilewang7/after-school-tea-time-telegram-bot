@@ -25,6 +25,9 @@ const leaveValuesBehind = (): void => {
 
 /** Each of these would write its note after LEFTOVER_DELAY_MS, long after this file has ended */
 const leaveWorkBehind = (): void => {
+    // What the worker goes by to tell whose timer or child process one is
+    Error.stackTraceLimit = 0;
+    Error.prepareStackTrace = () => 'formatted by leaves-traces';
     setInterval(() => appendToScratch('ticks', 'x'), 10).unref();
     AbortSignal.timeout(LEFTOVER_DELAY_MS).addEventListener('abort', () => appendToScratch('aborts', 'x'));
     spawn('sh', ['-c', `sleep ${LEFTOVER_DELAY_MS / 1000}; echo x >> "$NOTE"`], {
@@ -32,6 +35,9 @@ const leaveWorkBehind = (): void => {
         env: { ...process.env, NOTE: scratchPath('child') },
     }).unref();
     appendToScratch('leftovers-due', `${performance.timeOrigin + performance.now() + LEFTOVER_DELAY_MS}`);
+    // And what it would clear the timers with
+    Reflect.set(globalThis, 'clearTimeout', () => undefined);
+    Reflect.set(globalThis, 'clearInterval', () => undefined);
 };
 
 const leaveListenersBehind = (): void => {
@@ -46,6 +52,10 @@ const leaveListenersBehind = (): void => {
         setImmediate(() => {
             process.env.SHARED_WORKER_FIXTURE_SET_LATE = 'set after the exit listeners';
             process.exitCode = 1;
+            spawn('sh', ['-c', 'sleep 1; echo x >> "$NOTE"'], {
+                stdio: 'ignore',
+                env: { ...process.env, NOTE: scratchPath('late-child') },
+            }).unref();
         });
     });
     process.on('warning', () => appendToScratch('warning-listener', 'x'));

@@ -15,6 +15,8 @@
  *
  * What cannot be put back (a file made the property non-configurable) stays in
  * the worker. The worker says so, and the runner gives the next file another one.
+ * The same goes for a change that is only the visible part of something that
+ * stays (node:domain).
  */
 import { syncBuiltinESMExports } from 'node:module';
 
@@ -54,6 +56,14 @@ const WATCHED: readonly WatchedObject[] = [
     // What `import http from 'node:http'` gives: the object replacements are made on
     ...WATCHED_MODULES.map((name) => ({ label: name, target: process.getBuiltinModule(name) })),
 ];
+
+/**
+ * Loading node:domain turns `process.domain` into an accessor. From then on
+ * the module follows every asynchronous call and hands uncaught errors to the
+ * domain a file was left in, and nothing unloads it: putting the property back
+ * would only hide that.
+ */
+const STAYS_CHANGED: ReadonlySet<string> = new Set(['process.domain']);
 
 /** Node's own bookkeeping on `process` (`_events`, `_exiting`, …) changes without anyone replacing anything */
 const isBookkeeping = (key: PropertyKey): boolean => typeof key === 'string' && key.startsWith('_');
@@ -104,8 +114,9 @@ const restoreObject = (watched: WatchedObject, original: Descriptors): RestoredG
     for (const [key, descriptor] of original) {
         const now = current.get(key);
         if (now !== undefined && sameDescriptor(now, descriptor)) continue;
-        if (Reflect.defineProperty(watched.target, key, descriptor)) restored.push(nameOf(watched, key));
-        else stuck.push(nameOf(watched, key));
+        const name = nameOf(watched, key);
+        const putBack = !STAYS_CHANGED.has(name) && Reflect.defineProperty(watched.target, key, descriptor);
+        (putBack ? restored : stuck).push(name);
     }
     for (const [key, descriptor] of current) {
         if (original.has(key)) continue;

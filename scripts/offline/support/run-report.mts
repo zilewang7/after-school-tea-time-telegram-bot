@@ -175,9 +175,11 @@ export const failureLines = (report: FileReport): string[] => {
  * count as passed; the note is for whoever looks for what an earlier file left
  * behind.
  */
-export const sharedFailureLines = (reports: FileReport[]): string[] => {
+export const sharedFailureLines = (reports: FileReport[], caseFilter?: string): string[] => {
     const affected = reports.filter((report) => report.ok && report.sharedFailure !== undefined);
     if (affected.length === 0) return [];
+    // With the filter of this run: an earlier file left behind what the cases that ran did
+    const again = `pnpm test:offline --in-order${caseFilter === undefined ? '' : ` --grep ${JSON.stringify(caseFilter)}`}`;
     return [
         `\n${affected.length === 1 ? '1 file did not pass in a shared process and passed on its own' : `${affected.length} files did not pass in a shared process and passed on their own`} (counted as passed):`,
         ...affected.flatMap((report) => {
@@ -188,17 +190,18 @@ export const sharedFailureLines = (reports: FileReport[]): string[] => {
                 `      log of that run: ${report.sharedFailure?.logPath ?? ''}`,
                 ...(earlier.length === 0
                     ? []
-                    : [`      the same files in one process again: pnpm test:offline --in-order ${[...earlier, report.name].join(' ')}`]),
+                    : [`      the same files in one process again: ${again} ${[...earlier, report.name].join(' ')}`]),
             ];
         }),
-        '  An earlier file of the same process left something behind that the worker does not undo, or the file depends on timing.',
+        '  Either an earlier file of the same process left something behind that the worker does not undo,',
+        "  or the file ends differently there (what its 'exit' listeners start gets to run), or it depends on timing.",
     ];
 };
 
 /** For the end of a run that asked for shared workers and did not get them, or not to the end */
-export const sharedUnavailableLine = (filesDoneBefore: number): string => {
+export const sharedUnavailableLine = (filesGivenToWorkers: number): string => {
     const why = 'the worker-N.log files in the log directory say why';
-    return filesDoneBefore === 0
-        ? `shared workers could not be used (${why}): every file ran in a process of its own`
-        : `after ${filesDoneBefore} files a shared worker could not be started (${why}): the files after that ran in processes of their own`;
+    if (filesGivenToWorkers === 0) return `shared workers could not be used (${why}): every file ran in a process of its own`;
+    const inWorkers = filesGivenToWorkers === 1 ? '1 file' : `${filesGivenToWorkers} files`;
+    return `a shared worker could not be started (${why}): ${inWorkers} ran in shared processes, the others in processes of their own`;
 };

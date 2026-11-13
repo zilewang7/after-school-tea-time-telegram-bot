@@ -150,7 +150,8 @@ export const startSharedWorker = async (options: SharedWorkerOptions): Promise<S
     if (unusable !== undefined) {
         connection.end();
         // By the runner: the worker may not have lived long enough to say anything
-        appendFileSync(options.logPath, `[offline] this worker is not used: ${unusable}\n`);
+        const which = connection.processId === undefined ? 'the worker' : `process ${connection.processId}`;
+        appendFileSync(options.logPath, `[offline] ${which} is not used: ${unusable}\n`);
         return undefined;
     }
 

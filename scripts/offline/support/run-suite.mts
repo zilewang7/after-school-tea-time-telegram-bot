@@ -36,8 +36,8 @@ export interface SuiteResult {
     reports: FileReport[];
     /**
      * Set when shared workers were asked for and one could not be started: the
-     * number of files that were done by then. Every file after that ran in a
-     * process of its own.
+     * number of files that had been given to a worker by then. Every file
+     * started after that ran in a process of its own.
      */
     sharedUnavailableAfter: number | undefined;
 }
@@ -73,7 +73,7 @@ const runAlone = async (file: string, options: SuiteOptions): Promise<FileReport
         })
     );
 
-/** In the worker first; on its own as well when it did not pass there */
+/** In the worker first; on its own as well when it did not pass there, and without that worker */
 const runInWorker = async (worker: SharedWorker, file: string, options: SuiteOptions): Promise<FileReport> => {
     const ranAfter = [...worker.filesRun];
     const logPath = logPathOf(file, options);
@@ -81,6 +81,9 @@ const runInWorker = async (worker: SharedWorker, file: string, options: SuiteOpt
     const shared = reportOf(run);
     if (shared.ok) return shared;
 
+    // Whatever made the file fail may still be at work in the worker (a package's
+    // timer, a helper process): the run that counts must not meet it
+    await worker.stop();
     // Keep the log of the shared run: the run on its own writes the file's log
     const sharedLogPath = logPathOf(file, options, '.shared');
     renameSync(logPath, sharedLogPath);
@@ -95,6 +98,7 @@ export const runSuite = async (files: readonly string[], options: SuiteOptions):
     let stopped = false;
     let sharing = options.shared;
     let sharedUnavailableAfter: number | undefined;
+    let givenToWorkers = 0;
 
     const startWorker = (laneNumber: number): Promise<SharedWorker | undefined> =>
         startSharedWorker({
@@ -113,7 +117,7 @@ export const runSuite = async (files: readonly string[], options: SuiteOptions):
                     if (worker === undefined) {
                         // Every lane: what stopped this worker stops the others too
                         sharing = false;
-                        sharedUnavailableAfter ??= reports.length;
+                        sharedUnavailableAfter ??= givenToWorkers;
                     }
                 }
                 if (!sharing && worker !== undefined) {
@@ -121,12 +125,10 @@ export const runSuite = async (files: readonly string[], options: SuiteOptions):
                     await worker.stop();
                     worker = undefined;
                 }
+                if (worker !== undefined) givenToWorkers += 1;
                 const report = worker === undefined ? await runAlone(file, options) : await runInWorker(worker, file, options);
-                if (report.sharedFailure !== undefined) {
-                    // Whatever made the file fail there may still be in the worker
-                    await worker?.stop();
-                    worker = undefined;
-                }
+                // The worker a file did not pass in is stopped by then
+                if (report.sharedFailure !== undefined) worker = undefined;
                 reports.push(report);
                 options.onReport(report);
                 if (!report.ok && options.bail) stopped = true;

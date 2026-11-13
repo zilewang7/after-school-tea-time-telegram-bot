@@ -177,7 +177,7 @@ const removeStaleLogs = (): void => {
     }
 };
 
-const printSummary = (reports: FileReport[], skippedFiles: number, wallMs: number): void => {
+const printSummary = (reports: FileReport[], skippedFiles: number, wallMs: number, caseFilter: string | undefined): void => {
     const failed = reports.filter((report) => !report.ok);
     for (const report of failed) console.log(failureLines(report).join('\n'));
 
@@ -191,7 +191,7 @@ const printSummary = (reports: FileReport[], skippedFiles: number, wallMs: numbe
     if (failed.length > 0) {
         console.log(`rerun: pnpm test:offline ${failed.map((report) => report.name).join(' ')}`);
     }
-    for (const line of sharedFailureLines(reports)) console.log(line);
+    for (const line of sharedFailureLines(reports, caseFilter)) console.log(line);
     console.log(`logs: ${LOG_DIRECTORY}`);
 };
 
@@ -237,7 +237,7 @@ const main = async (): Promise<void> => {
         shared,
         onReport: (report) => console.log(fileLine(report)),
     });
-    printSummary(reports, files.length - reports.length, performance.now() - startedAt);
+    printSummary(reports, files.length - reports.length, performance.now() - startedAt, options.caseFilter);
     if (sharedUnavailableAfter !== undefined) console.log(sharedUnavailableLine(sharedUnavailableAfter));
 
     // A filtered run times only part of each file, and a file that needed a

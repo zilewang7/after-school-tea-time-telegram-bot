@@ -25,6 +25,8 @@ export interface WorkerConnectionOptions {
 }
 
 export interface WorkerConnection {
+    /** `undefined`: the process could not be started */
+    readonly processId: number | undefined;
     hasExited(): boolean;
     /** Whoever waits for the worker's next answer; one at a time. `undefined`: nobody. */
     listen(events: WorkerEvents | undefined): void;
@@ -59,6 +61,7 @@ export const connectWorker = (options: WorkerConnectionOptions): WorkerConnectio
     child.once('exit', noteExit);
 
     return {
+        processId: child.pid,
         hasExited: () => exited,
         listen: (next) => {
             events = next ?? NO_EVENTS;

@@ -7,11 +7,11 @@
  * the event loop busy. The worker then does what the end of a process does for
  * free, in two steps:
  *
- * 1. The file's 'exit' listeners run and decide the exit code, and the
- *    children it left running are ended.
- * 2. When whatever that set off has ended as well, the worker is put back to
- *    how it started (timers, globals, listeners, environment) and reports the
- *    exit code. A real exit would have cut that work off; here it must at
+ * 1. The file's 'exit' listeners run and decide the exit code.
+ * 2. When whatever they set off has ended, the children the file left running
+ *    are ended. When those are gone too, the worker is put back to how it
+ *    started (timers, globals, listeners, environment) and reports the exit
+ *    code. A real exit would have cut all that work off; here it must at
  *    least not run into the next file.
  *
  * Whatever really ends a process still ends this one: an uncaught error,
@@ -84,16 +84,15 @@ const endFile = (file: RunningFile): void => {
     }
     // Read after the listeners: they may still set it
     file.exitCode = exitCodeSoFar() & EXIT_STATUS_BITS;
-    endLeftoverChildren();
-    // The listeners may have started work, and the end of a child sets off
-    // its own. All of it runs while the worker still belongs to this file:
-    // one more turn of the event loop at least, then 'beforeExit' comes again.
+    // The listeners may have started work. It runs while the worker still
+    // belongs to this file: one more turn of the event loop at least, then
+    // 'beforeExit' comes again. (Taking a signal listener off gives that turn
+    // as well, so only a file without the harness depends on this.)
     runAnotherTurn(() => undefined);
 };
 
 /** Step 2: the worker as the next file must find it, and the report to the runner */
 const releaseWorker = (file: RunningFile, exitCode: number): void => {
-    running = undefined;
     clearLeftoverTimers();
     const { restored, stuck } = restoreGlobals();
     // Node keeps it inside, so it is not among the globals. With it in place a
@@ -105,6 +104,8 @@ const releaseWorker = (file: RunningFile, exitCode: number): void => {
     restoreListeners();
     restoreEnvironment();
     process.exitCode = undefined;
+    // Only now: an error in the lines above still gets into the file's log
+    running = undefined;
     sendOutputTo(undefined);
     closeSync(file.logDescriptor);
     // In the worker's own log: where to look when a later file fails only in a worker
@@ -197,7 +198,8 @@ process.on('beforeExit', () => {
         exitWorker(NEEDS_ITS_OWN_PROCESS);
     }
     if (running.exitCode !== undefined) {
-        // A child started since step 1 holds the worker until it is gone too
+        // Step 2. A child holds the worker until it is gone and what its end
+        // sets off has run: 'beforeExit' comes again then.
         if (endLeftoverChildren() === 0) releaseWorker(running, running.exitCode);
         return;
     }
