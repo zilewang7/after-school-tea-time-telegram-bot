@@ -20,10 +20,13 @@ const PNG_BYTES = Buffer.from(
 
 let previewRequests = 0;
 let atlasRequests = 0;
+/** Atlas requests whose connection the client closed before it had the answer */
+let abandonedAtlasRequests = 0;
 let activePreviewRequests = 0;
 let maxActivePreviewRequests = 0;
 let previewResponseDelayMs = 0;
-let atlasResponseDelayMs = 0;
+/** While set, atlas requests are left unanswered: only the client can end them */
+let holdAtlasAnswers = false;
 const sendPng = (response: import('node:http').ServerResponse): void => {
   if (response.destroyed) return;
   response.writeHead(200, {
@@ -48,7 +51,10 @@ const converter = createServer((request, response) => {
     }
     if (request.url === '/emoji-atlas') {
       atlasRequests += 1;
-      setTimeout(() => sendPng(response), atlasResponseDelayMs);
+      response.once('close', () => {
+        if (!response.writableEnded) abandonedAtlasRequests += 1;
+      });
+      if (!holdAtlasAnswers) sendPng(response);
       return;
     }
     response.writeHead(404);
@@ -81,8 +87,19 @@ const withShortTimeouts = async (
     }
   }
 };
+/** Polls instead of sleeping: true as soon as the condition holds, false when it never does */
+const becomesTrue = async (condition: () => boolean, withinMs: number): Promise<boolean> => {
+  const deadline = Date.now() + withinMs;
+  while (!condition()) {
+    if (Date.now() > deadline) return false;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  return true;
+};
 const SHORT_ACQUISITION_TIMEOUT = { CUSTOM_EMOJI_ACQUISITION_TIMEOUT_MS: '1000' };
-const SHORT_CONTEXT_TIMEOUT = { CUSTOM_EMOJI_CONTEXT_TIMEOUT_MS: '100' };
+// Long enough for the atlas request to be under way when it ends, also on a
+// busy machine (on an idle one the request reaches the converter in 5 ms)
+const SHORT_CONTEXT_TIMEOUT = { CUSTOM_EMOJI_CONTEXT_TIMEOUT_MS: '1000' };
 
 const tempDirectory = await mkdtemp(join(tmpdir(), 'custom-emoji-offline-'));
 const emojiFileA = join(tempDirectory, 'emoji-a.bin');
@@ -95,6 +112,7 @@ await Promise.all([
 const db = await setupOfflineDb();
 const { Message, putCachedMedia } = db;
 const { sequelize } = await import('../../src/db/config.js');
+const { MediaCache } = await import('../../src/db/mediaCacheDTO.js');
 const { MessageAttachment } = await import('../../src/db/messageAttachmentDTO.js');
 const { CustomEmojiAsset } = await import('../../src/db/customEmojiAssetDTO.js');
 const { LinkPreviewCache } = await import('../../src/db/linkPreviewCacheDTO.js');
@@ -131,6 +149,8 @@ const {
 } = await import('../../src/state.js');
 const { toVisionImageMimeType } = await import('../../src/ai/supported-mime.js');
 const { transformToAnthropic } = await import('../../src/ai/message-transformer.js');
+
+const atlasRowCount = (): Promise<number> => MediaCache.count({ where: { kind: 'custom_emoji_atlas' } });
 
 const seedMessage = async (messageId: number, text: string): Promise<void> => {
   await Message.create({
@@ -669,23 +689,32 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
         mediaKey,
       });
 
-      atlasResponseDelayMs = 300;
+      const atlasRowsBefore = await atlasRowCount();
+      const requestsBefore = atlasRequests;
+      const abandonedBefore = abandonedAtlasRequests;
+      holdAtlasAnswers = true;
       const startedAt = Date.now();
       try {
         const plan = await buildCustomEmojiContextPlan(OFFLINE_CHAT_ID, [messageId], true);
         const elapsedMs = Date.now() - startedAt;
-        // The short deadline is 100 ms and the atlas answers after 300 ms, so a
-        // working timeout returns in a few hundred ms. The bound is generous
-        // because the suite runs three files at a time and a busy event loop
-        // stretches wall-clock measurements; it only rejects a hang.
-        expect(elapsedMs < 2000, 'atlas generation obeys the short total context deadline');
+        // The converter never answers, so the plan can only come back by its
+        // deadline. The bound is generous because the suite runs three files at
+        // a time and a busy event loop stretches wall-clock measurements; it
+        // only rejects a hang.
+        expect(elapsedMs < 5000, `atlas generation obeys the total context deadline (${elapsedMs} ms)`);
         expect(plan.atlasParts.length === 0, 'a timed-out atlas is omitted');
         expect(
           plan.annotations.get(messageId)?.includes('visual omitted'),
           'fallback annotation remains when the atlas service is unavailable'
         );
+        // The deadline ends the request as well: left alone it would run on
+        // and store its atlas whenever the converter got round to answering
+        expect(atlasRequests === requestsBefore + 1, 'the request was with the converter when the deadline came');
+        const givenUp = await becomesTrue(() => abandonedAtlasRequests === abandonedBefore + 1, 5000);
+        expect(givenUp, 'the deadline gives up the request to the converter');
+        expect(await atlasRowCount() === atlasRowsBefore, 'and nothing is stored for the atlas that never arrived');
       } finally {
-        atlasResponseDelayMs = 0;
+        holdAtlasAnswers = false;
       }
     }),
   },

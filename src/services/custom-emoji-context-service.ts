@@ -152,26 +152,35 @@ const selectAtlasSources = (
   return { sources, labelByEmojiId };
 };
 
+/**
+ * Runs an operation until the deadline. When the deadline comes first, the
+ * signal the operation was started with is aborted too: a request to the
+ * converter must not run on, and store its atlas, after the caller has moved on.
+ */
 const withDeadline = async <T>(
-  operation: Promise<T>,
+  start: (signal: AbortSignal) => Promise<T>,
   deadline: number,
   description: string
 ): Promise<T> => {
+  const exceeded = (): Error => new Error(`${description} exceeded its deadline`);
   const remainingMs = deadline - Date.now();
-  if (remainingMs <= 0) throw new Error(`${description} exceeded its deadline`);
+  // Not started at all: nothing is left running
+  if (remainingMs <= 0) throw exceeded();
+  const controller = new AbortController();
   let timer: NodeJS.Timeout | undefined;
   try {
     return await Promise.race([
-      operation,
-      new Promise<T>((_resolve, reject) => {
-        timer = setTimeout(
-          () => reject(new Error(`${description} exceeded its deadline`)),
-          remainingMs
-        );
+      start(controller.signal),
+      new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(() => {
+          const error = exceeded();
+          controller.abort(error);
+          reject(error);
+        }, remainingMs);
       }),
     ]);
   } finally {
-    if (timer) clearTimeout(timer);
+    clearTimeout(timer);
   }
 };
 
@@ -201,21 +210,11 @@ const buildAtlasParts = async (
   for (const atlasSources of chunksOf(sources, ATLAS_ITEMS)) {
     const remainingBytes = contextBytes - usedBytes;
     if (remainingBytes <= 0) break;
-    const controller = new AbortController();
-    const abortTimer = setTimeout(
-      () => controller.abort(new Error('custom emoji context deadline exceeded')),
-      Math.max(1, deadline - Date.now())
+    const atlas = await withDeadline(
+      (signal) => getOrCreateCustomEmojiAtlas(atlasSources, signal),
+      deadline,
+      'custom emoji atlas'
     );
-    let atlas: { data: Buffer; mediaKey: string } | null;
-    try {
-      atlas = await withDeadline(
-        getOrCreateCustomEmojiAtlas(atlasSources, controller.signal),
-        deadline,
-        'custom emoji atlas'
-      );
-    } finally {
-      clearTimeout(abortTimer);
-    }
     if (!atlas) {
       noteAtlasFailure();
       continue;
@@ -253,7 +252,7 @@ export const buildCustomEmojiContextPlan = async (
   let attachmentsByMessage: Map<number, MessageAttachment[]>;
   try {
     attachmentsByMessage = await withDeadline(
-      getCustomEmojiAttachmentsForMessages(chatId, messageIds),
+      () => getCustomEmojiAttachmentsForMessages(chatId, messageIds),
       deadline,
       'custom emoji manifest query'
     );
