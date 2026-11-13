@@ -273,6 +273,7 @@ const summarizeModelInner = (spec: ProbeModelSpec, observations: readonly ProbeO
     const incompleteReasons: string[] = [];
     const rejected: ProbeObservation[] = [];
     const acceptedLevels: EffortValue[] = [];
+    const vendorSet = new Set(spec.vendorEfforts);
     let baselineAccepted = false;
     let toggleOffAccepted: boolean | null = null;
 
@@ -295,9 +296,21 @@ const summarizeModelInner = (spec: ProbeModelSpec, observations: readonly ProbeO
             continue;
         }
         rejected.push(observation);
+        // A level the vendor list does not even name is a diagnostic probe, not
+        // a required shape: its rejection must not hide the vendor levels that
+        // did answer (e.g. OpenAI's `none` on a model whose vendor list starts
+        // at `low`).
+        const diagnosticOutOfVendor =
+            observation.variant === 'level' &&
+            candidate.effort !== null &&
+            spec.vendorEfforts.length > 0 &&
+            !vendorSet.has(candidate.effort);
         // A required request shape that was rejected without a clear effort
         // fingerprint leaves no trustworthy answer for this model.
-        const required = candidate.expectedRejection === undefined && (observation.variant === 'baseline' || observation.variant === 'level' || observation.variant === 'toggle-off' || observation.variant === 'toggle-on');
+        const required =
+            candidate.expectedRejection === undefined &&
+            !diagnosticOutOfVendor &&
+            (observation.variant === 'baseline' || observation.variant === 'level' || observation.variant === 'toggle-off' || observation.variant === 'toggle-on');
         if (required && errorClass !== 'rejected_effort') {
             incompleteReasons.push(`${label}: ${errorClass}`);
         }
@@ -305,7 +318,6 @@ const summarizeModelInner = (spec: ProbeModelSpec, observations: readonly ProbeO
     if (finalW1.size === 0) incompleteReasons.push('no W1 observations');
     if (!baselineAccepted && finalW1.size > 0) incompleteReasons.push('baseline was not accepted');
 
-    const vendorSet = new Set(spec.vendorEfforts);
     const acceptedEfforts = sortEfforts(acceptedLevels.filter((effort) => vendorSet.has(effort)));
     const mappedEfforts = sortEfforts(acceptedLevels.filter((effort) => !vendorSet.has(effort) && spec.vendorEfforts.length > 0));
     const defaultInference = inferDefaultEffort(w2);

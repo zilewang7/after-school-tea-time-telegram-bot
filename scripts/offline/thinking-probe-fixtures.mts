@@ -1210,6 +1210,86 @@ const runResultCases = async (): Promise<void> => {
         expect(entry?.errorSummary['minimal'] !== undefined, 'the minimal fingerprint is kept');
     }));
 
+    results.push(await runCase('summary: a vendor-absent diagnostic level does not make the model incomplete', () => {
+        const spec = PROBE_MODEL_SNAPSHOT.find((model) => model.model === 'gpt-6-astra');
+        expect(spec !== undefined, 'astra in snapshot');
+        if (spec === undefined) return;
+        expect(!spec.vendorEfforts.includes('none'), 'astra vendor list has no none');
+        const acceptedVendorLevels: readonly EffortValue[] = ['low', 'medium', 'high', 'xhigh', 'max'];
+        const observations: ProbeObservation[] = [
+            observationFixture(candidateOf('openai', 'gpt-6-astra', 'baseline', null)),
+            ...acceptedVendorLevels.map((effort) =>
+                observationFixture(candidateOf('openai', 'gpt-6-astra', 'level', effort))
+            ),
+            // The diagnostic `none` probe: rejected, but no vendor level was rejected.
+            observationFixture(candidateOf('openai', 'gpt-6-astra', 'level', 'none'), {
+                outcome: 'rejected',
+                errorClass: 'rejected_other',
+                errorSummary: '400 Unsupported reasoning effort: none',
+            }),
+        ];
+        const summary = buildRunSummary({ probedAt: '2026-11-13T10:00:00.000Z', laneSignature: 'lane', specs: [spec], observations });
+        expect(
+            summary.incomplete.length === 0,
+            `astra stays complete (reasons: ${summary.incomplete[0]?.incompleteReasons.join('; ') ?? 'none'})`
+        );
+        expect(summary.document.results.length === 1, 'astra is importable');
+        const entry = summary.document.results[0];
+        expect(
+            JSON.stringify(entry?.acceptedEfforts) === JSON.stringify(['low', 'medium', 'high', 'xhigh', 'max']),
+            `only the vendor levels are accepted (got ${entry?.acceptedEfforts.join(',') ?? 'none'})`
+        );
+        expect(entry?.errorSummary['none'] !== undefined, 'the diagnostic rejection is still recorded as evidence');
+    }));
+
+    results.push(await runCase('summary: a rejected vendor level still makes the model incomplete', () => {
+        const spec = PROBE_MODEL_SNAPSHOT.find((model) => model.model === 'gemini-4-hydrogen');
+        expect(spec !== undefined, 'hydrogen in snapshot');
+        if (spec === undefined) return;
+        const observations: ProbeObservation[] = [
+            observationFixture(candidateOf('gemini', 'gemini-4-hydrogen', 'baseline', null)),
+            observationFixture(candidateOf('gemini', 'gemini-4-hydrogen', 'level', 'low')),
+            observationFixture(candidateOf('gemini', 'gemini-4-hydrogen', 'level', 'medium')),
+            observationFixture(candidateOf('gemini', 'gemini-4-hydrogen', 'level', 'xhigh')),
+            observationFixture(candidateOf('gemini', 'gemini-4-hydrogen', 'level', 'high'), {
+                outcome: 'rejected',
+                errorClass: 'rejected_other',
+                errorSummary: '400 Thinking level is unsupported: HIGH',
+            }),
+        ];
+        const summary = buildRunSummary({ probedAt: '2026-11-13T10:00:00.000Z', laneSignature: 'lane', specs: [spec], observations });
+        expect(summary.document.results.length === 0, 'hydrogen is withheld from results.json');
+        expect(summary.incomplete.length === 1, 'the model is incomplete');
+        expect(
+            summary.incomplete[0]?.incompleteReasons.some((reason) => reason.startsWith('high:')),
+            `the rejected vendor level is named (got ${summary.incomplete[0]?.incompleteReasons.join('; ') ?? 'none'})`
+        );
+    }));
+
+    results.push(await runCase('summary: an explicitly expected sentinel rejection does not make the model incomplete', () => {
+        const spec = PROBE_MODEL_SNAPSHOT.find((model) => model.model === 'gemini-4-argon');
+        expect(spec !== undefined, 'argon in snapshot');
+        if (spec === undefined) return;
+        const sentinel: ProbeCandidate = {
+            ...candidateOf('gemini', 'gemini-4-argon', 'level', 'minimal'),
+            expectedRejection: 'not in the official effort table',
+        };
+        const observations: ProbeObservation[] = [
+            observationFixture(candidateOf('gemini', 'gemini-4-argon', 'baseline', null)),
+            observationFixture(candidateOf('gemini', 'gemini-4-argon', 'level', 'low')),
+            observationFixture(candidateOf('gemini', 'gemini-4-argon', 'level', 'medium')),
+            observationFixture(candidateOf('gemini', 'gemini-4-argon', 'level', 'high')),
+            observationFixture(sentinel, {
+                outcome: 'rejected',
+                errorClass: 'rejected_other',
+                errorSummary: '400 Thinking level is unsupported: MINIMAL',
+            }),
+        ];
+        const summary = buildRunSummary({ probedAt: '2026-11-13T10:00:00.000Z', laneSignature: 'lane', specs: [spec], observations });
+        expect(summary.incomplete.length === 0, 'the sentinel rejection is not a required shape');
+        expect(summary.document.results.length === 1, 'argon stays importable');
+    }));
+
     results.push(await runCase('inference: baseline closest to the vendor default level', () => {
         const spec = PROBE_MODEL_SNAPSHOT.find((model) => model.model === 'gemini-4-hydrogen');
         expect(spec !== undefined, 'hydrogen in snapshot');
