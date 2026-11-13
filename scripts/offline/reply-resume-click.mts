@@ -36,6 +36,8 @@ const { updateChatSettings } = await import('../../src/services/chat-settings-se
 const { excludeMessage, includeMessage } = await import('../../src/db/queries/context-exclusions.js');
 const { PAUSED_CALLBACK_NOTICE } = await import('../../src/reply/chat-pause.js');
 const checks = await import('../../src/reply/resume/continue-checks.js');
+const { capabilitySeedOf } = await import('../../src/config/model-capability-seed.js');
+const { seedModelCatalogEntries, setModelCatalog } = await import('../../src/config/model-catalog.js');
 const { captureResumeFacts } = await import('../../src/reply/resume/resume-facts.js');
 const { createReplyToolState } = await import('../../src/reply/tools/reply-tool-state.js');
 const { CHECKPOINT_REGISTRY_LIMITS } = await import('../../src/reply/resume/checkpoint-registry.js');
@@ -250,6 +252,70 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
                 await condition.restore(reply);
                 await expectContinues(reply, condition.label);
             }
+        }),
+    },
+    {
+        name: 'case 10 (9): a thinking level changed after the interrupt refuses the continue until restored',
+        body: quietCase(async () => {
+            const chatId = takeChatId();
+            // The interrupted version asked the model for a high level
+            await updateChatSettings({ chatId, patch: { thinkingEffort: 'high' }, actor: OWNER });
+            const reply = await failedReply(chatId);
+            // A different level since the interrupt: the click only answers
+            await updateChatSettings({ chatId, patch: { thinkingEffort: 'low' }, actor: OWNER });
+            await expectNoticeOnly(reply, checks.THINKING_EFFORT_CHANGED_NOTICE, 'thinking');
+            // Restored: the click resumes the interrupted request
+            await updateChatSettings({ chatId, patch: { thinkingEffort: 'high' }, actor: OWNER });
+            await expectContinues(reply, 'thinking');
+            const row = (await bench.rowsOf(reply)).at(-1);
+            expect(
+                row?.thinkingEffortRequested === 'high' && row.thinkingEffortSent === 'high',
+                `the resumed attempt records the level it asked for (got ${json({
+                    requested: row?.thinkingEffortRequested,
+                    sent: row?.thinkingEffortSent,
+                })})`
+            );
+            await updateChatSettings({ chatId, patch: { thinkingEffort: null }, actor: OWNER });
+        }),
+    },
+    {
+        name: 'case 10 (10): model data that resolves the same setting differently asks for a retry, then the restored data continues',
+        body: quietCase(async () => {
+            const chatId = takeChatId();
+            const carbon = capabilitySeedOf('gemini-4-carbon');
+            const reasoning = carbon?.reasoning;
+            if (carbon === null || reasoning === undefined) throw new Error('no carbon reasoning seed');
+            // The interrupted version asked for high while the model accepted it
+            await updateChatSettings({ chatId, patch: { thinkingEffort: 'high' }, actor: OWNER });
+            const reply = await failedReply(chatId);
+            // Same setting, but the catalog data now clamps high to medium: there
+            // is nothing to change back, only a retry can start a new version
+            setModelCatalog(
+                seedModelCatalogEntries().map((entry) =>
+                    entry.id === 'gemini-4-carbon'
+                        ? {
+                              ...entry,
+                              capabilities: {
+                                  ...entry.capabilities,
+                                  reasoning: { ...reasoning, efforts: ['low', 'medium'] },
+                              },
+                          }
+                        : entry
+                )
+            );
+            await expectNoticeOnly(reply, checks.THINKING_EFFORT_DATA_CHANGED_NOTICE, 'thinking data');
+            // Restored: the click resumes the interrupted request
+            setModelCatalog(seedModelCatalogEntries());
+            await expectContinues(reply, 'thinking data');
+            const row = (await bench.rowsOf(reply)).at(-1);
+            expect(
+                row?.thinkingEffortRequested === 'high' && row.thinkingEffortSent === 'high',
+                `the resumed attempt records the level it asked for (got ${json({
+                    requested: row?.thinkingEffortRequested,
+                    sent: row?.thinkingEffortSent,
+                })})`
+            );
+            await updateChatSettings({ chatId, patch: { thinkingEffort: null }, actor: OWNER });
         }),
     },
     {

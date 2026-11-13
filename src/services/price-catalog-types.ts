@@ -33,6 +33,12 @@ export interface CatalogModelRef {
 export interface CatalogDocuments {
     /** model → TOML body, only for refs whose fetch answered 200 */
     readonly tomlByModel: ReadonlyMap<string, string>;
+    /**
+     * model → canonical models.dev lab TOML body (`models/<base_model>.toml`),
+     * derived from the provider TOML's `base_model`. Absent when the provider
+     * file names none (a relay-only or historical entry) or its fetch failed.
+     */
+    readonly labTomlByModel: ReadonlyMap<string, string>;
     /** The Vertex pricing page body (the only official source with priority/promo) */
     readonly vertexPricingHtml: string | null;
     /** ephone `/api/pricing` body: relay-only ids and the paid-price view */

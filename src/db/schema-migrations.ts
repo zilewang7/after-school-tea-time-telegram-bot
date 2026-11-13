@@ -1,4 +1,6 @@
 import { QueryTypes, type Transaction } from '@sequelize/core';
+import type { ModelCapabilitiesNormalization, ModelCatalogCapabilities } from '../config/model-capabilities.js';
+import { isJsonObject } from '../shared/json-object.js';
 import { sequelize } from './config.js';
 
 interface TableColumn {
@@ -244,6 +246,24 @@ const migrateChatSettingsGeminiPriority = async (transaction: Transaction): Prom
 };
 
 /**
+ * The thinking-effort columns (thinking-effort design 2026-1113-1742 §1.2/§1.4):
+ * the per-chat selection and the three reply-metric values. All nullable
+ * (NULL = follow the vendor default / nothing recorded), so old rows need no
+ * backfill and rolling the code back needs no schema change. A fresh database
+ * gets them from the DTOs at sync time.
+ */
+const migrateThinkingEffortColumns = async (transaction: Transaction): Promise<void> => {
+  if (await tableExists('chat_settings', transaction)) {
+    await ensureColumn('chat_settings', 'thinkingEffort', 'TEXT DEFAULT NULL', transaction);
+  }
+  if (await tableExists('reply_metrics', transaction)) {
+    await ensureColumn('reply_metrics', 'thinkingEffortRequested', 'TEXT DEFAULT NULL', transaction);
+    await ensureColumn('reply_metrics', 'thinkingEffortSent', 'TEXT DEFAULT NULL', transaction);
+    await ensureColumn('reply_metrics', 'thinkingEffortFallback', 'TEXT DEFAULT NULL', transaction);
+  }
+};
+
+/**
  * The share links of the control panel (design §6.1): one row per public
  * /s/<token> page. A system share (createdBy 0, source 'system') is the bot's
  * own link fallback in groups; user shares come from the panel.
@@ -468,6 +488,178 @@ export const ensureModelPriceIndexes = async (): Promise<void> => {
   );
 };
 
+/**
+ * The pending capability proposal is unique per model (the newest payload
+ * replaces an older pending one). Runs after sequelize.sync(), idempotent.
+ */
+export const ensureCapabilityProposalIndexes = async (): Promise<void> => {
+  await sequelize.query(
+    `CREATE UNIQUE INDEX IF NOT EXISTS model_capability_proposals_pending_model
+       ON model_capability_proposals(model)
+     WHERE status = 'pending'`
+  );
+};
+
+/** The capability source a legacy catalog row's source maps to */
+const capabilitySourceOfRowSource = (source: string): string | undefined => {
+  if (source === 'manual') return 'manual';
+  if (source === 'official') return 'official';
+  if (source === 'models-dev' || source === 'catalog') return 'models-dev';
+  return undefined;
+};
+
+/** The old seven-field shape with nothing meaningful set (a placeholder row) */
+const isEmptyLegacyCapabilities = (capabilities: {
+  readonly kind: string;
+  readonly vision: boolean;
+  readonly imageOutput: boolean;
+  readonly tools: boolean;
+  readonly reasoningEffort: readonly string[];
+  readonly contextTokens: number | null;
+  readonly outputTokens: number | null;
+}): boolean =>
+  capabilities.kind === 'chat' &&
+  capabilities.vision === false &&
+  capabilities.imageOutput === false &&
+  capabilities.tools === true &&
+  capabilities.reasoningEffort.length === 0 &&
+  capabilities.contextTokens === null &&
+  capabilities.outputTokens === null;
+
+/**
+ * Wrap a legacy (schema-less) capability row as schema 1: keep the seven fields,
+ * derive the reasoning section from the old effort list (`supported` only when
+ * the list has entries) and inherit the row's provenance. Run through the
+ * normalizer so the written JSON follows the same rules as every other row.
+ */
+const wrapLegacyCapabilities = (
+  legacy: {
+    readonly kind: string;
+    readonly vision: boolean;
+    readonly imageOutput: boolean;
+    readonly tools: boolean;
+    readonly reasoningEffort: readonly string[];
+    readonly contextTokens: number | null;
+    readonly outputTokens: number | null;
+  },
+  row: { readonly id: string; readonly source: string; readonly checkedOn: string; readonly confidence: string },
+  normalize: (raw: unknown) => ModelCapabilitiesNormalization
+): ModelCatalogCapabilities | null => {
+  if (isEmptyLegacyCapabilities(legacy)) return null;
+  const reasoning = {
+    supported: legacy.reasoningEffort.length > 0,
+    ...(legacy.reasoningEffort.length > 0 ? { efforts: legacy.reasoningEffort } : {}),
+  };
+  const source = capabilitySourceOfRowSource(row.source);
+  const raw = {
+    schema: 1,
+    kind: legacy.kind,
+    vision: legacy.vision,
+    imageOutput: legacy.imageOutput,
+    tools: legacy.tools,
+    reasoningEffort: legacy.reasoningEffort,
+    contextTokens: legacy.contextTokens,
+    outputTokens: legacy.outputTokens,
+    reasoning,
+    ...(source === undefined ? {} : { source }),
+    checkedOn: row.checkedOn,
+    confidence: row.confidence,
+  };
+  const normalized = normalize(raw);
+  if (normalized.warnings.length > 0) {
+    console.warn(`[catalog] ${row.id} 的 capabilities backfill 有未知值：${normalized.warnings.join('；')}`);
+  }
+  return normalized.capabilities;
+};
+
+/**
+ * One-off backfill of `model_catalog.capabilities` to schema 1 (thinking-effort
+ * design §1.5): rows already at schema 1 are skipped, a row the code seed knows
+ * gets the seed, any other row with real (non-placeholder) data is wrapped as
+ * schema 1 inheriting the row's source/checkedOn/confidence, and a placeholder
+ * row without a seed is left alone with a warning.
+ *
+ * The goal is that the first real capability watch run is (nearly) proposal
+ * free: the seed is the 2026-11-13 snapshot the watcher compares against.
+ * Recorded in schema_migrations; runs after sequelize.sync().
+ */
+export const backfillCatalogCapabilities = async (): Promise<void> => {
+  const name = '20261113_catalog_capabilities';
+  const applied = await sequelize.query<{ name: string }>(
+    'SELECT name FROM schema_migrations WHERE name = :name',
+    { type: QueryTypes.SELECT, replacements: { name } }
+  );
+  if (applied.length > 0) return;
+  const { capabilitySeedOf } = await import('../config/model-capability-seed.js');
+  const { normalizeModelCapabilities } = await import('../config/model-capabilities.js');
+  const rows = await sequelize.query<{
+    id: string;
+    capabilities: string;
+    source: string;
+    checkedOn: string;
+    confidence: string;
+  }>(
+    'SELECT id, capabilities, source, checkedOn, confidence FROM model_catalog',
+    { type: QueryTypes.SELECT }
+  );
+  const updatedAt = new Date().toISOString();
+  let upgraded = 0;
+  let skipped = 0;
+  const writeCapabilities = async (
+    transaction: Transaction,
+    id: string,
+    capabilities: ModelCatalogCapabilities
+  ): Promise<void> => {
+    await sequelize.query(
+      'UPDATE model_catalog SET capabilities = :capabilities, updatedAt = :updatedAt WHERE id = :id',
+      { replacements: { id, capabilities: JSON.stringify(capabilities), updatedAt }, transaction }
+    );
+    upgraded += 1;
+  };
+  await sequelize.transaction(async (transaction) => {
+    for (const row of rows) {
+      const seed = capabilitySeedOf(row.id);
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(row.capabilities);
+      } catch {
+        if (seed === null) {
+          console.warn(`[catalog] ${row.id} 的 capabilities 不是合法 JSON 且没有 seed，backfill 跳过`);
+          skipped += 1;
+          continue;
+        }
+        // Design §1.5: a row the code seed knows gets the seed, even from bad JSON
+        console.warn(`[catalog] ${row.id} 的 capabilities 不是合法 JSON，backfill 写入 seed`);
+        await writeCapabilities(transaction, row.id, normalizeModelCapabilities(seed).capabilities);
+        continue;
+      }
+      if (isJsonObject(parsed) && parsed.schema !== undefined && parsed.schema !== 1) {
+        // Design §1.1-5: a future schema's JSON is preserved untouched
+        console.warn(`[catalog] ${row.id} 的 capabilities.schema 是 ${String(parsed.schema)}，backfill 保留原 JSON`);
+        skipped += 1;
+        continue;
+      }
+      const legacy = normalizeModelCapabilities(parsed).capabilities;
+      if (legacy.schema === 1) continue;
+      const wrapped = seed ?? wrapLegacyCapabilities(legacy, row, normalizeModelCapabilities);
+      if (wrapped === null) {
+        console.warn(`[catalog] ${row.id} 的 capabilities 是占位值且没有 seed，backfill 保持不变`);
+        skipped += 1;
+        continue;
+      }
+      await writeCapabilities(transaction, row.id, wrapped);
+    }
+    await sequelize.query(
+      `INSERT OR IGNORE INTO schema_migrations (name, appliedAt)
+       VALUES (:name, :appliedAt)`,
+      { replacements: { name, appliedAt: updatedAt }, transaction }
+    );
+  });
+  if (upgraded > 0 || skipped > 0) {
+    console.log(`[catalog] capabilities backfill: ${upgraded} 行升级为 schema 1, ${skipped} 行保持原样`);
+  }
+};
+
 export const runSchemaMigrations = async (): Promise<void> => {
   await sequelize.query(`
     CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -487,6 +679,7 @@ export const runSchemaMigrations = async (): Promise<void> => {
     await migrateThinkingLinks(transaction);
     await migrateReplyMetricsResumeColumns(transaction);
     await migrateChatSettingsGeminiPriority(transaction);
+    await migrateThinkingEffortColumns(transaction);
     await sequelize.query(
       `INSERT OR IGNORE INTO schema_migrations (name, appliedAt)
        VALUES ('20260908_custom_emoji_phase1', :appliedAt)`,
@@ -582,6 +775,20 @@ export const runSchemaMigrations = async (): Promise<void> => {
     await sequelize.query(
       `INSERT OR IGNORE INTO schema_migrations (name, appliedAt)
        VALUES ('20261113_model_prices', :appliedAt)`,
+      { replacements: { appliedAt: new Date().toISOString() }, transaction }
+    );
+    // chat_settings and reply_metrics gained the thinking-effort columns
+    // (migrateThinkingEffortColumns)
+    await sequelize.query(
+      `INSERT OR IGNORE INTO schema_migrations (name, appliedAt)
+       VALUES ('20261113_thinking_effort_columns', :appliedAt)`,
+      { replacements: { appliedAt: new Date().toISOString() }, transaction }
+    );
+    // model_capability_proposals is a new table: its DTO creates it at sync
+    // time, the pending unique index comes from ensureCapabilityProposalIndexes.
+    await sequelize.query(
+      `INSERT OR IGNORE INTO schema_migrations (name, appliedAt)
+       VALUES ('20261113_model_capability_proposals', :appliedAt)`,
       { replacements: { appliedAt: new Date().toISOString() }, transaction }
     );
   });

@@ -9,6 +9,7 @@ import {
     toolOverridesEqual,
     type ToolOverrides,
 } from './tool-overrides.js';
+import { normalizeThinkingEffort, type ThinkingEffortValue } from './thinking-effort-values.js';
 
 export const MODEL_ID_MAX_LENGTH = 64;
 export const PROMPT_ADDENDUM_MAX_CODE_POINTS = 2000;
@@ -28,6 +29,12 @@ export interface ChatSettingsPatch {
      * true only where it can take effect (global on, or a TOOL_CHAT_IDS chat)
      */
     geminiPriority?: boolean | null;
+    /**
+     * Thinking level; null = the model default, 'off' = thinking off, else a
+     * graded effort. A free string here (like model): the rules narrow it to
+     * the closed set. Members may change it; trial users may not.
+     */
+    thinkingEffort?: string | null;
 }
 
 export type ChatSettingKey = keyof ChatSettingsPatch;
@@ -40,6 +47,7 @@ const CHAT_SETTING_KEYS: readonly ChatSettingKey[] = [
     'settingsLocked',
     'toolOverrides',
     'geminiPriority',
+    'thinkingEffort',
 ];
 
 /** `conflict`: the caller edited a version that someone else has since replaced */
@@ -53,6 +61,7 @@ export interface ChatSettingValues {
     settingsLocked: boolean;
     toolOverrides: ToolOverrides | null;
     geminiPriority: boolean | null;
+    thinkingEffort: ThinkingEffortValue | null;
 }
 
 /** Who asks, and what the chat allows; the service reads both before the rules run */
@@ -135,6 +144,7 @@ const auditValuesOf = (values: ChatSettingValues): Record<ChatSettingKey, string
     settingsLocked: String(values.settingsLocked),
     toolOverrides: canonicalToolOverridesJson(values.toolOverrides),
     geminiPriority: nullableFlagAuditText(values.geminiPriority),
+    thinkingEffort: values.thinkingEffort,
 });
 
 /** Whether one key's value actually changes (overrides compare as canonical JSON) */
@@ -145,6 +155,7 @@ const CHANGED: Record<ChatSettingKey, (current: ChatSettingValues, next: ChatSet
     settingsLocked: (current, next) => current.settingsLocked !== next.settingsLocked,
     toolOverrides: (current, next) => !toolOverridesEqual(current.toolOverrides, next.toolOverrides),
     geminiPriority: (current, next) => current.geminiPriority !== next.geminiPriority,
+    thinkingEffort: (current, next) => current.thinkingEffort !== next.thinkingEffort,
 };
 
 /** Normalize every key present in the patch; absent keys keep `current`. The first bad value wins */
@@ -169,6 +180,10 @@ const applyPatchValues = (current: ChatSettingValues, patch: ChatSettingsPatch):
         ? unchanged(current.geminiPriority)
         : normalizeNullableFlag(patch.geminiPriority, 'geminiPriority');
     if (!geminiPriority.ok) return geminiPriority;
+    const thinkingEffort = patch.thinkingEffort === undefined
+        ? unchanged(current.thinkingEffort)
+        : normalizeThinkingEffort(patch.thinkingEffort);
+    if (!thinkingEffort.ok) return thinkingEffort;
     return {
         ok: true,
         value: {
@@ -178,6 +193,7 @@ const applyPatchValues = (current: ChatSettingValues, patch: ChatSettingsPatch):
             settingsLocked: settingsLocked.value,
             toolOverrides: toolOverrides.value,
             geminiPriority: geminiPriority.value,
+            thinkingEffort: thinkingEffort.value,
         },
     };
 };
@@ -195,7 +211,8 @@ const smsChanged = (current: ToolOverrides | null, next: ToolOverrides | null): 
  * 4. a non-owner changes the sms switch → forbidden;
  * 5. a non-owner changes the Priority PayGo switch → forbidden;
  * 6. the Priority PayGo switch changes to on where it cannot take effect → forbidden;
- * 7. a trial user changes the model → trial (the model is the biggest cost).
+ * 7. a trial user changes the model → trial (the model is the biggest cost);
+ * 8. a trial user changes the thinking level → trial (it changes the cost too).
  * Keys whose normalized value equals the current one are not changes, so a
  * stored "on" the global switch no longer allows does not block other keys.
  */
@@ -233,12 +250,21 @@ export const resolveChatSettingsPatch = (
     const changes = CHAT_SETTING_KEYS
         .filter((key) => CHANGED[key](current, next))
         .map((key) => ({ key, oldValue: oldValues[key], newValue: newValues[key] }));
-    if (!actorIsOwner && actorIsTrial && changes.some((change) => change.key === 'model')) {
-        return {
-            kind: 'rejected',
-            code: 'trial',
-            message: '体验用户不能修改本聊天的模型；申请准入后可以修改',
-        };
+    if (!actorIsOwner && actorIsTrial) {
+        if (changes.some((change) => change.key === 'model')) {
+            return {
+                kind: 'rejected',
+                code: 'trial',
+                message: '体验用户不能修改本聊天的模型；申请准入后可以修改',
+            };
+        }
+        if (changes.some((change) => change.key === 'thinkingEffort')) {
+            return {
+                kind: 'rejected',
+                code: 'trial',
+                message: '体验用户不能修改本聊天的思考等级；申请准入后可以修改',
+            };
+        }
     }
     return { kind: 'resolved', next, changes };
 };

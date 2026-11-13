@@ -28,6 +28,12 @@ export const ChatSettingsTab = () => {
                     chatDetail.globalGeminiPriority,
                     chatDetail.geminiPriorityCanEnable
                 ),
+                // The server recomputes the options for the effective model; the choice is known here
+                thinkingEffortView: {
+                    ...chatDetail.thinkingEffortView,
+                    value: settings.thinkingEffort,
+                    source: settings.thinkingEffort === null ? 'model-default' : 'chat',
+                },
             }));
             setJustSaved(true);
             notifySaved();

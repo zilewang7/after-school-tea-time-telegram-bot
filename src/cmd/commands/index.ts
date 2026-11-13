@@ -10,3 +10,4 @@ export { registerWidgetCommands } from "./widget.js";
 export { registerWebCommand } from "./web.js";
 export { registerShareCommand } from "./share.js";
 export { registerPricingCommand } from "./pricing.js";
+export { registerProbeCommand } from "./probe.js";

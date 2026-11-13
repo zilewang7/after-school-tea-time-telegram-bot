@@ -40,6 +40,7 @@ import { registerConversationExportRoute } from './routes/conversation-export.js
 import { registerConversationLinksRoute } from './routes/conversation-links.js';
 import { registerConversationRoutes } from './routes/conversations.js';
 import { registerExclusionRoutes } from './routes/exclusions.js';
+import { registerModelCatalogRoute } from './routes/model-catalog.js';
 import { registerModelViewRoute } from './routes/model-view.js';
 import { registerReplyRoute } from './routes/replies.js';
 import { registerShareRoutes } from './routes/shares.js';
@@ -196,6 +197,8 @@ export const createPanelApp = (options: PanelAppOptions): Hono<PanelEnv> => {
     registerExclusionRoutes(app);
     registerStatsRoute(app);
     registerStatusRoute(app, { startedAt: options.startedAt, version: options.version });
+    // Owner-only, read-only: the model catalog and its normalized capabilities
+    registerModelCatalogRoute(app);
     // SHARE_ENABLED=0: no share API, so these paths fall through to the JSON 404
     if (shareEnabled) registerShareRoutes(app);
 

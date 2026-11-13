@@ -26,3 +26,19 @@ factor = { text = 2 }
 [[cost.multipliers]]
 when = { region = { equals = "us" } }
 factor = { text = 1.1 }
+
+[capabilities]
+tools = { supported = true, strict = true, choice = ["auto", "none", "required", "tool"] }
+reasoning = { supported = true, default = { type = "effort", value = "high" }, effort = ["low", "medium", "high", "xhigh"] }
+structured_output = true
+system_updates = true
+store = true
+stream_usage = true
+prompt_cache_key = true
+cache = { implicit = true }
+service_tier = ["priority"]
+
+[api.responses]
+
+[api.chat-completions]
+sdk = { opencodeai = "@opencode/ai/providers/openai-compatible" }

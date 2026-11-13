@@ -16,3 +16,18 @@ price = 14
 [[cost.multipliers]]
 when = { service_tier = { equals = "priority" } }
 factor = { text = 1.8, image = 1.8 }
+
+[modalities]
+input = ["text", "image/png", "image/jpeg", "image/webp", "image/heic", "image/heif", "video/x-flv", "video/quicktime", "video/mpeg", "video/mpegs", "video/mpg", "video/mp4", "video/webm", "video/wmv", "video/3gpp", "application/pdf"]
+output = ["text", "image/png", "image/jpeg"]
+
+[capabilities]
+reasoning = { supported = true, default = { type = "effort", value = "medium" }, effort = ["minimal", "medium", "high"] }
+structured_output = false
+cache = { implicit = true }
+service_tier = ["priority"]
+
+[api.images]
+sdk = { opencodeai = "@opencode/ai/providers/google-vertex/images" }
+
+[api.generate-content]

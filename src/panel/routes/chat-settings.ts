@@ -5,7 +5,8 @@
  * non-owner (403 locked, before any value is looked at) → non-owner touching
  * the lock (403 forbidden) → value types (400) → the settings service
  * (lengths and normalization 400, the owner-only sms and Priority PayGo
- * switches 403, Priority PayGo "on" where it cannot take effect 403, then
+ * switches 403, Priority PayGo "on" where it cannot take effect 403, a trial
+ * user changing the model or the thinking level 403 trial, then
  * expectedUpdatedAt 409 inside its write queue). Unchanged values answer 200
  * and write nothing.
  */

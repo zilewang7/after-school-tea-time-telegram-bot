@@ -30,3 +30,22 @@ factor = { text = 0.5 }
 [[cost.multipliers]]
 when = { not = { region = { equals = "global" } } }
 factor = { text = 1.1 }
+
+[capabilities]
+tools = { supported = true }
+reasoning = { supported = true, effort = ["none", "low", "medium", "high", "xhigh", "max"] }
+structured_output = true
+store = true
+cache = { implicit = { min_tokens = 1_024 }, explicit = { ttl = ["30m", "12h"], max_breakpoints = 4, min_tokens = 1_024 } }
+prompt_cache_key = true
+service_tier = ["flex", "priority"]
+
+[api.responses]
+capabilities = { system_updates = true, effort_updates = true, tools = { strict = true, choice = ["auto", "none", "required", "tool"], search = true, freeform = ["text", "lark", "regex"], updates = true } }
+
+[api.chat-completions]
+sdk = { opencodeai = "@opencode/ai/providers/openai/chat" }
+capabilities = { system_updates = true, tools = { strict = true, choice = ["auto", "none", "required", "tool"], freeform = ["text", "lark", "regex"] } }
+
+[api.decisions]
+sdk = { opencodeai = "@opencode/ai/protocols/openai-decisions" }

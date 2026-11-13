@@ -24,6 +24,13 @@ import {
     type GrokResponseRequest,
 } from './grok/grok-request.js';
 import { runGrokToolLoop } from './grok/grok-tool-loop.js';
+import {
+    effortWireOf,
+    isParamRejection,
+    logEffortFallback,
+    nextLowerEffortWithin,
+    type EffortWire,
+} from './thinking-effort-wire.js';
 import type {
     PlatformType,
     UnifiedMessage,
@@ -38,6 +45,30 @@ interface FirstRound {
     readonly stream: Stream<ResponseStreamEvent>;
     readonly request: GrokResponseRequest;
 }
+
+/** The efforts xAI's reasoning models take, ascending; the downgrade walks down these */
+const GROK_EFFORTS: readonly string[] = ['low', 'medium', 'high', 'xhigh'];
+
+/** A 400 that blames the requested effort; every other status keeps its classification */
+const EFFORT_REJECTION = /reasoning|effort/i;
+
+/**
+ * The reasoning params of a request carrying a thinkingEffort. 'default' keeps
+ * what the model sends today (multi-agent high, 4.7 nothing), 'explicit' sends
+ * the requested effort and a degraded wire walks one step down.
+ */
+const grokReasoningForWire = (model: string, wire: EffortWire): GrokResponseRequest['reasoning'] => {
+    if (wire.mode === 'off') return undefined;
+    if (wire.mode === 'default') {
+        const legacy = grokReasoningFor(model);
+        if (legacy === undefined || !wire.degraded) return legacy;
+        const lower = nextLowerEffortWithin(legacy.effort, GROK_EFFORTS);
+        return lower === null ? undefined : { effort: lower };
+    }
+    if (wire.value === null) return undefined;
+    const effort = wire.degraded ? nextLowerEffortWithin(wire.value, GROK_EFFORTS) : wire.value;
+    return effort === null ? undefined : { effort };
+};
 
 const errorMessageOf = (error: unknown): string =>
     error instanceof Error ? error.message : String(error);
@@ -99,12 +130,13 @@ export class GrokPlatform extends BasePlatform {
             clientTools: functionTools.length,
         });
 
+        const thinkingEffort = effortWireOf(config);
         const request: GrokResponseRequest = {
             model,
             input: this.transformToResponsesInput(messages, systemPrompt),
             stream: true,
             tools,
-            reasoning: grokReasoningFor(model),
+            reasoning: thinkingEffort === null ? grokReasoningFor(model) : grokReasoningForWire(model, thinkingEffort),
             max_turns: 10,
             parallel_tool_calls: true,
         };
@@ -113,7 +145,7 @@ export class GrokPlatform extends BasePlatform {
 
         const startedAt = Date.now();
         const firstRound = await this.sendWithRetry(
-            () => this.openFirstRound(candidates, functionTools.length > 0, signal),
+            () => this.openFirstRound(candidates, functionTools.length > 0, signal, thinkingEffort),
             retryOptions
         );
 
@@ -233,15 +265,24 @@ export class GrokPlatform extends BasePlatform {
     /**
      * Round 1 walks the candidates until xAI accepts one. The accepted one is
      * returned with its stream: every later round of the reply reuses it.
+     *
+     * A 400 that blames the effort is not the generic "less feature-rich
+     * tool configuration" fallback: it downgrades the effort once for the
+     * whole reply and retries the same candidate, so the tools stay as they
+     * are. Every other 400 keeps the candidate walk.
      */
     private async openFirstRound(
         candidates: readonly GrokResponseRequest[],
         wantsFunctionTools: boolean,
-        signal?: AbortSignal
+        signal: AbortSignal | undefined,
+        thinking: EffortWire | null
     ): Promise<FirstRound> {
         let lastError: unknown;
+        let attempts: readonly GrokResponseRequest[] = candidates;
 
-        for (const candidate of candidates) {
+        for (let index = 0; index < attempts.length; index += 1) {
+            const candidate = attempts[index];
+            if (candidate === undefined) continue;
             try {
                 const stream = await this.createResponseStream(candidate, signal);
                 if (wantsFunctionTools && functionToolNames(candidate.tools).length === 0) {
@@ -252,6 +293,28 @@ export class GrokPlatform extends BasePlatform {
                 return { stream, request: candidate };
             } catch (error) {
                 lastError = error;
+                if (
+                    thinking !== null &&
+                    !thinking.degraded &&
+                    candidate.reasoning !== undefined &&
+                    isParamRejection(error, EFFORT_REJECTION)
+                ) {
+                    thinking.degraded = true;
+                    const model = candidate.model ?? 'unknown';
+                    const fallbackReasoning = grokReasoningForWire(model, thinking);
+                    logEffortFallback(
+                        'grok',
+                        model,
+                        candidate.reasoning.effort,
+                        fallbackReasoning?.effort ?? 'the vendor default',
+                        error
+                    );
+                    // Every later candidate carries the downgraded reasoning too:
+                    // the accepted one is the base of every later round.
+                    attempts = candidates.map((entry) => ({ ...entry, reasoning: fallbackReasoning }));
+                    index -= 1;
+                    continue;
+                }
                 if (!isUnsupportedFeatureError(error)) {
                     throw error;
                 }

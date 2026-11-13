@@ -57,6 +57,7 @@ const { registerChatHandler, handleReply } = await import('../../src/reply/chat-
 const { handleRetryRequest } = await import('../../src/reply/retry-handler.js');
 
 const { ChatSettingsError, updateChatSettings, updateGlobalDefaultModel } = service;
+const { resolveChatSettingsPatch } = await import('../../src/services/chat-settings-rules.js');
 
 const OWNER = { userId: 4242, isOwner: true };
 const MEMBER = { userId: 1111, isOwner: false };
@@ -168,7 +169,7 @@ const lastKeyboardRows = (): string[][] => {
     return rows.map((row) => (Array.isArray(row) ? row : []).map((button) => String(fieldsOf(button).callback_data)));
 };
 
-const FOOTER = '\n\n只对本聊天生效。点击下方按钮快速切换或使用 /model +模型名 手动指定';
+const FOOTER = '\n\n只对本聊天生效。点击下方按钮选择模型或思考等级，也可用 /model +模型名 手动指定';
 const LOCKED_NOTICE = '本聊天的设置已被机主锁定';
 const PAUSED_NOTICE = '本聊天已暂停';
 
@@ -551,8 +552,9 @@ const cases: { name: string; body: () => Promise<void> }[] = [
                         promptAddendum: '并发',
                         toolOverrides: null,
                         geminiPriority: false,
+                        thinkingEffort: null,
                     }),
-                'the snapshot is model + addendum + tool switches + the effective Priority PayGo switch'
+                'the snapshot is model + addendum + tool switches + the effective Priority PayGo switch + the thinking level'
             );
             expect(
                 JSON.stringify(service.snapshotReplySettings(-2999)) ===
@@ -561,6 +563,7 @@ const cases: { name: string; body: () => Promise<void> }[] = [
                         promptAddendum: null,
                         toolOverrides: null,
                         geminiPriority: false,
+                        thinkingEffort: null,
                     }),
                 'a chat without settings snapshots the global default'
             );
@@ -773,6 +776,111 @@ const cases: { name: string; body: () => Promise<void> }[] = [
         },
     },
     {
+        name: 'thinking effort: the closed set, one audit row per change, a reload and a hand-edited value',
+        body: async () => {
+            const chatId = -2201;
+            const values = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra', 'off', null] as const;
+            for (const value of values) {
+                const result = await updateChatSettings({ chatId, patch: { thinkingEffort: value }, actor: MEMBER });
+                expect(result.settings.thinkingEffort === value, `${String(value)} is stored`);
+                expect(
+                    JSON.stringify(result.changedKeys) === JSON.stringify(['thinkingEffort']),
+                    `${String(value)}: only the effort changed (got ${JSON.stringify(result.changedKeys)})`
+                );
+            }
+            await service.loadChatSettingsCache();
+            expect(service.getChatSettings(chatId)?.thinkingEffort === null, 'the last value (the model default) survives a reload');
+
+            const unknown = await rejectionOf(() =>
+                updateChatSettings({ chatId, patch: { thinkingEffort: 'turbo' }, actor: MEMBER })
+            );
+            expect(unknown === 'invalid', `a value outside the closed set is refused (got ${unknown})`);
+            expect(service.getChatSettings(chatId)?.thinkingEffort === null, 'and nothing is written for it');
+
+            // One audit row per actual change, newest first; an unchanged value writes none
+            const audited = -2202;
+            await updateChatSettings({ chatId: audited, patch: { thinkingEffort: 'high' }, actor: MEMBER });
+            await updateChatSettings({ chatId: audited, patch: { thinkingEffort: 'off' }, actor: MEMBER });
+            await updateChatSettings({ chatId: audited, patch: { thinkingEffort: null }, actor: MEMBER });
+            await updateChatSettings({ chatId: audited, patch: { thinkingEffort: null }, actor: MEMBER });
+            const rows = (await auditOf(audited)).filter((entry) => entry.key === 'thinkingEffort');
+            expect(rows.length === 3, `one row per change (got ${rows.length})`);
+            const [newest, middle, oldest] = rows;
+            expect(
+                newest?.oldValue === 'off' && newest.newValue === null,
+                `off → model default in the audit (got ${String(newest?.oldValue)} → ${String(newest?.newValue)})`
+            );
+            expect(middle?.oldValue === 'high' && middle.newValue === 'off', 'high → off in the audit');
+            expect(oldest?.oldValue === null && oldest.newValue === 'high', 'model default → high in the audit');
+
+            // A hand-edited value outside the closed set reads as the model default
+            await ChatSettingsRecord.create({ chatId: -2203, thinkingEffort: 'turbo', updatedAt: new Date() });
+            await service.loadChatSettingsCache();
+            expect(
+                service.getChatSettings(-2203)?.thinkingEffort === null,
+                'an unknown stored value reads as the model default'
+            );
+            await ChatSettingsRecord.destroy({ where: { chatId: -2203 } });
+            await service.loadChatSettingsCache();
+        },
+    },
+    {
+        name: 'thinking effort: members may change it; a trial user and a locked chat are refused',
+        body: async () => {
+            const current = {
+                model: 'gemini-4-hydrogen',
+                promptAddendum: null,
+                paused: false,
+                settingsLocked: false,
+                toolOverrides: null,
+                geminiPriority: null,
+                thinkingEffort: null,
+            };
+            const member = resolveChatSettingsPatch(current, { thinkingEffort: 'high' }, {
+                actorIsOwner: false,
+                geminiPriorityCanEnable: false,
+                actorIsTrial: false,
+            });
+            expect(
+                member.kind === 'resolved' &&
+                    JSON.stringify(member.changes) ===
+                        JSON.stringify([{ key: 'thinkingEffort', oldValue: null, newValue: 'high' }]),
+                `a member resolves, one change in the documented audit format (got ${JSON.stringify(member)})`
+            );
+            const trial = resolveChatSettingsPatch(current, { thinkingEffort: 'high' }, {
+                actorIsOwner: false,
+                geminiPriorityCanEnable: false,
+                actorIsTrial: true,
+            });
+            expect(
+                trial.kind === 'rejected' && trial.code === 'trial' && trial.message.includes('思考等级'),
+                `a trial user is refused with a message about the level (got ${JSON.stringify(trial)})`
+            );
+            const trialPause = resolveChatSettingsPatch(current, { paused: true }, {
+                actorIsOwner: false,
+                geminiPriorityCanEnable: false,
+                actorIsTrial: true,
+            });
+            expect(trialPause.kind === 'resolved', 'a trial user can still change other keys');
+            const locked = resolveChatSettingsPatch({ ...current, settingsLocked: true }, { thinkingEffort: 'high' }, {
+                actorIsOwner: false,
+                geminiPriorityCanEnable: false,
+            });
+            expect(locked.kind === 'rejected' && locked.code === 'locked', 'a locked chat refuses a member first');
+            const owner = resolveChatSettingsPatch(current, { thinkingEffort: 'high' }, {
+                actorIsOwner: true,
+                geminiPriorityCanEnable: false,
+            });
+            expect(owner.kind === 'resolved', 'the owner is not bound by the trial rule');
+            const invalid = resolveChatSettingsPatch(current, { thinkingEffort: 'turbo' }, {
+                actorIsOwner: true,
+                geminiPriorityCanEnable: false,
+            });
+            expect(invalid.kind === 'rejected' && invalid.code === 'invalid', 'an unknown value is invalid');
+            await service.loadChatSettingsCache();
+        },
+    },
+    {
         name: 'the hourly cleanup drops audit rows older than 365 days and keeps the rest',
         body: async () => {
             const old = await SettingsAudit.create({
@@ -844,9 +952,10 @@ const cases: { name: string; body: () => Promise<void> }[] = [
             expect(resolveChatModel(chatId) === 'not-in-menu-free-id', 'a member sets an id outside the menu');
             const switched = lastReply();
             expect(
-                switched.text.startsWith(`切换为：not-in-menu-free-id\n上一个模型：${globalModel}\n操作时间：`) &&
+                switched.text.startsWith('切换为：not-in-menu-free-id\n思考等级：') &&
+                    switched.text.includes(`\n上一个模型：${globalModel}\n操作时间：`) &&
                     switched.text.endsWith(FOOTER),
-                `the switch text names both models (got ${JSON.stringify(switched.text)})`
+                `the switch text names both models and the level (got ${JSON.stringify(switched.text)})`
             );
             expect(!switched.hasParseMode && switched.hasKeyboard, 'entities instead of parse_mode, keyboard kept');
 
@@ -855,7 +964,11 @@ const cases: { name: string; body: () => Promise<void> }[] = [
 
             await press(chatId, MEMBER.userId, 'mdl:button-free-id');
             expect(resolveChatModel(chatId) === 'button-free-id', 'a button press sets an unknown id too');
-            expect(lastEdit().text.startsWith('切换为：button-free-id\n上一个模型：owner-free-id'), 'the menu is edited in place');
+            expect(
+                lastEdit().text.startsWith('切换为：button-free-id\n思考等级：') &&
+                    lastEdit().text.includes('\n上一个模型：owner-free-id\n操作时间：'),
+                'the menu is edited in place'
+            );
             expect(lastToastOf(telegram) === '已切换到 button-free-id', `toast (got ${String(lastToastOf(telegram))})`);
 
             const overlong = 'x'.repeat(65);
@@ -878,7 +991,8 @@ const cases: { name: string; body: () => Promise<void> }[] = [
             await sendText(chatId, MEMBER.userId, '/model default');
             expect(service.getChatSettings(chatId)?.model === null, '/model default clears the chat model');
             expect(
-                lastReply().text.startsWith(`切换为：${globalModel}（跟随全局默认）\n上一个模型：${'z'.repeat(64)}`),
+                lastReply().text.startsWith(`切换为：${globalModel}（跟随全局默认）\n思考等级：`) &&
+                    lastReply().text.includes(`\n上一个模型：${'z'.repeat(64)}\n操作时间：`),
                 `the switch text marks the global default (got ${JSON.stringify(lastReply().text)})`
             );
 
@@ -915,7 +1029,7 @@ const cases: { name: string; body: () => Promise<void> }[] = [
             await sendText(chatId, MEMBER.userId, '/model');
             const own = lastReply();
             expect(
-                own.text === `当前模型：${odd}（本聊天单独设置）${FOOTER}`,
+                own.text === `当前模型：${odd}（本聊天单独设置）\n思考等级：模型默认（由模型决定）${FOOTER}`,
                 `the overview marks a chat's own model (got ${JSON.stringify(own.text)})`
             );
             expect(
@@ -926,7 +1040,7 @@ const cases: { name: string; body: () => Promise<void> }[] = [
             await sendText(chatId, MEMBER.userId, '/model default');
             await sendText(chatId, MEMBER.userId, '/model');
             expect(
-                lastReply().text === `当前模型：${globalModel}（跟随全局默认）${FOOTER}`,
+                lastReply().text === `当前模型：${globalModel}（跟随全局默认）\n思考等级：模型默认（由模型决定）${FOOTER}`,
                 `the overview marks the global default (got ${JSON.stringify(lastReply().text)})`
             );
 

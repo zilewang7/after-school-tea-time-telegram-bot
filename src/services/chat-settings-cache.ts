@@ -17,6 +17,7 @@ import { getToolConfig } from '../config/tool-config.js';
 import { ChatSettingsRecord } from '../db/chatSettingsDTO.js';
 import { GlobalSetting } from '../db/globalSettingDTO.js';
 import { parseStoredToolOverrides, type ToolOverrides } from './tool-overrides.js';
+import { storedThinkingEffortOf, type ThinkingEffortValue } from './thinking-effort-values.js';
 
 export interface ChatSettings {
     chatId: number;
@@ -30,6 +31,8 @@ export interface ChatSettings {
     toolOverrides: ToolOverrides | null;
     /** Priority PayGo for Gemini; null = follow the global switch (see resolveGeminiPriority) */
     geminiPriority: boolean | null;
+    /** Thinking level; null = the model default, 'off' = thinking off, else a graded effort */
+    thinkingEffort: ThinkingEffortValue | null;
     updatedAt: Date;
     /** Telegram user id of the last writer */
     updatedBy: number | null;
@@ -61,6 +64,7 @@ const toChatSettings = (record: ChatSettingsRecord): ChatSettings => ({
     settingsLocked: record.settingsLocked === true,
     toolOverrides: parseStoredToolOverrides(record.toolOverrides ?? null),
     geminiPriority: storedNullableFlag(record.geminiPriority),
+    thinkingEffort: storedThinkingEffortOf(record.thinkingEffort ?? null),
     updatedAt: record.updatedAt,
     updatedBy: record.updatedBy ?? null,
 });

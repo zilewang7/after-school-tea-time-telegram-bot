@@ -4,6 +4,9 @@ export const HOME_PATH = '/';
 export const GLOBAL_SETTINGS_PATH = '/settings';
 export const GLOBAL_AUDIT_PATH = '/settings/audit';
 
+/** The owner's read-only model catalog page (under the owner-only settings tab) */
+export const GLOBAL_MODEL_CATALOG_PATH = '/settings/model-catalog';
+
 /** The clipboard converter home tab: markdown ⇄ Telegram entities */
 export const TOOLS_PATH = '/tools';
 

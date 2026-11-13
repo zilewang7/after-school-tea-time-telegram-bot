@@ -43,6 +43,9 @@ const { HarnessIssue } = await import('../../src/db/harnessIssueDTO.js');
 const { SettingsAudit } = await import('../../src/db/settingsAuditDTO.js');
 const { GlobalSetting } = await import('../../src/db/globalSettingDTO.js');
 const { loadChatSettingsCache } = await import('../../src/services/chat-settings-service.js');
+const { loadModelCatalog } = await import('../../src/services/model-catalog-service.js');
+const { findModelCatalogEntry, setModelCatalog } = await import('../../src/config/model-catalog.js');
+const { ModelCatalogEntryRow } = await import('../../src/db/modelCatalogDTO.js');
 const { modelConfigs } = await import('../../src/config/models.js');
 const { createPanelApp } = await import('../../src/panel/app.js');
 const { INDEX_CONTENT_SECURITY_POLICY } = await import('../../src/panel/static.js');
@@ -335,6 +338,9 @@ const cases: { name: string; body: () => Promise<void> }[] = [
                 ['an unknown tool group', { toolOverrides: { nonsense: true } }],
                 ['a tool switch of the wrong type', { toolOverrides: { sticker: 'yes' } }],
                 ['tool switches as an array', { toolOverrides: [] }],
+                ['an unknown thinking level', { thinkingEffort: 'turbo' }],
+                ['a thinking level of the wrong type', { thinkingEffort: 42 }],
+                ['a thinking level as an array', { thinkingEffort: ['high'] }],
             ];
             for (const [label, body] of invalidBodies) {
                 await expectError(await patchSettings(app, GROUP_MAIN, ALICE, body), 400, 'invalid', label);
@@ -430,7 +436,7 @@ const cases: { name: string; body: () => Promise<void> }[] = [
             );
             expect(
                 JSON.stringify(Object.keys(body.settings).sort()) ===
-                    JSON.stringify(['geminiPriority', 'model', 'paused', 'promptAddendum', 'settingsLocked', 'toolOverrides', 'updatedAt', 'updatedBy']),
+                    JSON.stringify(['geminiPriority', 'model', 'paused', 'promptAddendum', 'settingsLocked', 'thinkingEffort', 'toolOverrides', 'updatedAt', 'updatedBy']),
                 'settings keys'
             );
             expect(
@@ -441,6 +447,20 @@ const cases: { name: string; body: () => Promise<void> }[] = [
                 `Priority PayGo: unset, off, global off, cannot be switched on here (got ${JSON.stringify(body)})`
             );
             expect(body.settings.model === 'my-own-model-v9' && body.effectiveModel === 'my-own-model-v9', 'effective model is the chat model');
+            expect(
+                body.settings.thinkingEffort === null &&
+                    JSON.stringify(body.thinkingEffortView) ===
+                        JSON.stringify({
+                            value: null,
+                            source: 'model-default',
+                            effectiveDefault: null,
+                            enabledDefault: null,
+                            options: [],
+                            supported: false,
+                            toggle: false,
+                        }),
+                `thinking effort: unset, and a free model id offers nothing (got ${JSON.stringify(body.thinkingEffortView)})`
+            );
             expect(body.globalDefaultModel === 'env-default-model', 'global default from the env');
             expect(body.summary === null, 'summary is null until reply_metrics exists');
             expect(Array.isArray(body.tools) && body.tools.length === 11, `11 tool groups (got ${body.tools?.length})`);
@@ -486,6 +506,134 @@ const cases: { name: string; body: () => Promise<void> }[] = [
             await SettingsAudit.create({ actorId: 777, scope: `chat:${GROUP_MAIN}`, key: 'paused', oldValue: 'false', newValue: 'true', createdAt: new Date() });
             const withStranger = await jsonOf(await call(app, `/api/chats/${GROUP_MAIN}`, { user: ALICE }));
             expect(withStranger.recentAudit[0].actorName === '用户 777', 'an unknown actor reads as 用户 <id>');
+        },
+    },
+    {
+        name: 'thinking effort: the view follows the effective model, the closed set goes through PATCH, a stale edit is 409',
+        body: async () => {
+            // Fresh rate-limit window: this case adds a handful of requests to the shared budget
+            clockMs += 60_000;
+            const before = await jsonOf(await call(app, `/api/chats/${GROUP_MAIN}`, { user: ALICE }));
+            const set = await patchSettings(app, GROUP_MAIN, ALICE, {
+                thinkingEffort: 'high',
+                expectedUpdatedAt: before.settings.updatedAt,
+            });
+            const setBody = await jsonOf(set);
+            expect(set.status === 200 && setBody.settings.thinkingEffort === 'high', 'a member sets the level');
+            const after = await jsonOf(await call(app, `/api/chats/${GROUP_MAIN}`, { user: ALICE }));
+            expect(
+                after.thinkingEffortView.value === 'high' && after.thinkingEffortView.source === 'chat',
+                `the view carries the chat value and where it comes from (got ${JSON.stringify(after.thinkingEffortView)})`
+            );
+            const audit = await jsonOf(await call(app, `/api/audit?chatId=${GROUP_MAIN}&limit=10`, { user: ALICE }));
+            const entry = audit.entries.find((row: any) => row.key === 'thinkingEffort');
+            expect(entry?.oldValue === null && entry.newValue === 'high', 'the audit keeps the raw values');
+
+            await expectError(
+                await patchSettings(app, GROUP_MAIN, ALICE, {
+                    thinkingEffort: 'low',
+                    expectedUpdatedAt: before.settings.updatedAt,
+                }),
+                409,
+                'conflict',
+                'a stale expectedUpdatedAt is still 409'
+            );
+            const cleared = await patchSettings(app, GROUP_MAIN, ALICE, { thinkingEffort: null });
+            expect(
+                cleared.status === 200 && (await jsonOf(cleared)).settings.thinkingEffort === null,
+                'null goes back to the model default'
+            );
+
+            // The effective model decides the options: Gemini 4 Hydrogen has graded efforts
+            await patchSettings(app, GROUP_MAIN, ALICE, { model: 'gemini-4-hydrogen' });
+            const hydrogen = await jsonOf(await call(app, `/api/chats/${GROUP_MAIN}`, { user: ALICE }));
+            expect(
+                JSON.stringify(hydrogen.thinkingEffortView) ===
+                    JSON.stringify({
+                        value: null,
+                        source: 'model-default',
+                        effectiveDefault: 'high',
+                        enabledDefault: null,
+                        options: [
+                            { value: 'low', label: '低' },
+                            { value: 'medium', label: '中' },
+                            { value: 'high', label: '高' },
+                            { value: 'xhigh', label: '极高' },
+                        ],
+                        supported: true,
+                        toggle: false,
+                    }),
+                `the catalog model's own efforts, in order (got ${JSON.stringify(hydrogen.thinkingEffortView)})`
+            );
+
+            // A graded toggle model: off is offered and the vendor default is named
+            await patchSettings(app, GROUP_MAIN, ALICE, { model: 'deepseek-flash' });
+            const deepseek = await jsonOf(await call(app, `/api/chats/${GROUP_MAIN}`, { user: ALICE }));
+            expect(
+                deepseek.thinkingEffortView.toggle === true &&
+                    deepseek.thinkingEffortView.enabledDefault === true &&
+                    deepseek.thinkingEffortView.effectiveDefault === 'high' &&
+                    JSON.stringify(deepseek.thinkingEffortView.options) ===
+                        JSON.stringify([
+                            { value: 'low', label: '低' },
+                            { value: 'high', label: '高' },
+                            { value: 'max', label: '最大' },
+                        ]),
+                `a graded toggle model (got ${JSON.stringify(deepseek.thinkingEffortView)})`
+            );
+
+            // A toggle-only model: no graded efforts, the switch remains
+            await patchSettings(app, GROUP_MAIN, ALICE, { model: 'mimo-v2.6-flash' });
+            const mimo = await jsonOf(await call(app, `/api/chats/${GROUP_MAIN}`, { user: ALICE }));
+            expect(
+                mimo.thinkingEffortView.supported === false &&
+                    mimo.thinkingEffortView.toggle === true &&
+                    mimo.thinkingEffortView.enabledDefault === true &&
+                    mimo.thinkingEffortView.options.length === 0,
+                `a toggle-only model (got ${JSON.stringify(mimo.thinkingEffortView)})`
+            );
+
+            // Leave the chat as the later cases expect it
+            await patchSettings(app, GROUP_MAIN, ALICE, { model: 'my-own-model-v9' });
+        },
+    },
+    {
+        name: 'thinking effort: a seed-only model without a catalog row shows its seed efforts',
+        body: async () => {
+            clockMs += 60_000;
+            // The production catalog holds the database rows only; a seed id that
+            // is not a menu model (so its row is never backfilled) must still show
+            // what the menu and the request path resolve.
+            await loadModelCatalog();
+            await ModelCatalogEntryRow.destroy({ where: { id: 'gemini-3.8-flash' } });
+            await loadModelCatalog();
+            expect(findModelCatalogEntry('gemini-3.8-flash') === null, 'the id has no catalog row');
+
+            await patchSettings(app, GROUP_MAIN, ALICE, { model: 'gemini-3.8-flash' });
+            const viewBody = await jsonOf(await call(app, `/api/chats/${GROUP_MAIN}`, { user: ALICE }));
+            expect(viewBody.effectiveModel === 'gemini-3.8-flash', 'the view follows the chat model');
+            expect(
+                JSON.stringify(viewBody.thinkingEffortView) ===
+                    JSON.stringify({
+                        value: null,
+                        source: 'model-default',
+                        effectiveDefault: 'medium',
+                        enabledDefault: null,
+                        options: [
+                            { value: 'low', label: '低' },
+                            { value: 'medium', label: '中' },
+                            { value: 'high', label: '高' },
+                        ],
+                        supported: true,
+                        toggle: false,
+                    }),
+                `the seed-only model's data reaches the panel (got ${JSON.stringify(viewBody.thinkingEffortView)})`
+            );
+
+            // Back to the built-in fallback: the later cases expect the menu order
+            // and the fallback is what the panel reads until the DB loads anyway.
+            setModelCatalog([]);
+            await patchSettings(app, GROUP_MAIN, ALICE, { model: 'my-own-model-v9' });
         },
     },
     {

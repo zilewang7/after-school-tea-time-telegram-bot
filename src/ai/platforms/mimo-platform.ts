@@ -31,6 +31,14 @@ import {
 } from './chat-completions/chat-completions-usage.js';
 import { normalizeChatCompletionsUsage } from '../usage/normalize-chat-completions.js';
 import type { RoundUsage, UsageSink } from '../usage/usage-types.js';
+import {
+    effortWireOf,
+    isParamRejection,
+    logEffortFallback,
+    openAIReasoningEffortOf,
+    type EffortWire,
+    type OpenAIReasoningEffort,
+} from './thinking-effort-wire.js';
 import type {
     PlatformType,
     UnifiedMessage,
@@ -38,6 +46,15 @@ import type {
     StreamChunk,
     ModelCapabilities,
 } from '../types.js';
+
+/** The thinking params MiMo's OpenAI-compatible chat takes */
+interface MimoThinkingParams {
+    readonly thinking: { readonly type: 'enabled' | 'disabled' };
+    readonly reasoning_effort?: OpenAIReasoningEffort;
+}
+
+/** A 400 that blames the thinking params; every other status keeps its classification */
+const EFFORT_REJECTION = /thinking|reasoning|effort/i;
 
 /** One collected tool-loop round */
 interface MimoToolRound {
@@ -115,19 +132,82 @@ export class MimoPlatform extends BasePlatform {
             })
         );
 
+        const thinkingWire = effortWireOf(config);
         if (tools && tools.definitions.length > 0) {
-            return this.sendMessageWithTools(openaiMessages, model, tools, timeout, maxRetries, signal, usageSink);
+            return this.sendMessageWithTools(
+                openaiMessages,
+                model,
+                tools,
+                timeout,
+                maxRetries,
+                signal,
+                usageSink,
+                thinkingWire
+            );
         }
 
-        return this.sendMessageDirect(openaiMessages, model, timeout, maxRetries, signal, usageSink);
+        return this.sendMessageDirect(
+            openaiMessages,
+            model,
+            timeout,
+            maxRetries,
+            signal,
+            usageSink,
+            thinkingWire
+        );
     }
 
-    private getRequestBody(model: string) {
+    /**
+     * The request body's thinking params. Without the field (or in 'default')
+     * MiMo keeps its legacy always-on request; explicit adds the effort on top
+     * of the enabled switch, 'off' disables it, and a degraded wire is back to
+     * the legacy body.
+     */
+    private thinkingParamsOf(thinkingWire: EffortWire | null): MimoThinkingParams {
+        if (thinkingWire === null || thinkingWire.mode === 'default' || thinkingWire.degraded) {
+            // Enable thinking mode - returns reasoning_content in response
+            return { thinking: { type: 'enabled' } };
+        }
+        if (thinkingWire.mode === 'off') return { thinking: { type: 'disabled' } };
+        const effort = thinkingWire.value === null ? null : openAIReasoningEffortOf(thinkingWire.value);
+        return {
+            thinking: { type: 'enabled' },
+            ...(effort === null ? {} : { reasoning_effort: effort }),
+        };
+    }
+
+    private getRequestBody(model: string, thinkingWire: EffortWire | null) {
         return {
             model,
-            // Enable thinking mode - returns reasoning_content in response
-            thinking: { type: 'enabled' as const },
+            ...this.thinkingParamsOf(thinkingWire),
         };
+    }
+
+    /**
+     * One chat request with the reply-wide one-shot thinking downgrade: a 400
+     * that blames the thinking params retries the same request with the legacy
+     * body. 401/404/429 are never a downgrade (see isParamRejection).
+     */
+    private async openChatWithEffortFallback<T>(
+        open: () => Promise<T>,
+        thinkingWire: EffortWire | null,
+        model: string
+    ): Promise<T> {
+        try {
+            return await open();
+        } catch (error) {
+            if (
+                thinkingWire === null ||
+                thinkingWire.mode === 'default' ||
+                thinkingWire.degraded ||
+                !isParamRejection(error, EFFORT_REJECTION)
+            ) {
+                throw error;
+            }
+            thinkingWire.degraded = true;
+            logEffortFallback('mimo', model, thinkingWire.value ?? thinkingWire.mode, 'thinking enabled', error);
+            return await open();
+        }
     }
 
     private async *sendMessageDirect(
@@ -135,17 +215,24 @@ export class MimoPlatform extends BasePlatform {
         model: string,
         timeout: number,
         maxRetries: number,
-        signal?: AbortSignal,
-        usageSink?: UsageSink
+        signal: AbortSignal | undefined,
+        usageSink: UsageSink | undefined,
+        thinkingWire: EffortWire | null
     ): AsyncIterable<StreamChunk> {
-        const stream = await this.sendWithRetry(
-            () => this.client.chat.completions.create({
-                ...this.getRequestBody(model),
-                messages,
-                stream: true,
-                stream_options: INCLUDE_USAGE_STREAM_OPTIONS,
-            }, { signal }),
-            { timeout, maxRetries, signal }
+        const stream = await this.openChatWithEffortFallback(
+            () =>
+                this.sendWithRetry(
+                    () =>
+                        this.client.chat.completions.create({
+                            ...this.getRequestBody(model, thinkingWire),
+                            messages,
+                            stream: true,
+                            stream_options: INCLUDE_USAGE_STREAM_OPTIONS,
+                        }, { signal }),
+                    { timeout, maxRetries, signal }
+                ),
+            thinkingWire,
+            model
         );
 
         yield* this.processStream(stream as Stream<ChatCompletionChunk>, usageSink);
@@ -162,8 +249,9 @@ export class MimoPlatform extends BasePlatform {
         tools: TurnTools,
         timeout: number,
         maxRetries: number,
-        signal?: AbortSignal,
-        usageSink?: UsageSink
+        signal: AbortSignal | undefined,
+        usageSink: UsageSink | undefined,
+        thinkingWire: EffortWire | null
     ): AsyncGenerator<StreamChunk, void, undefined> {
         const chatTools = toChatCompletionTools(tools.definitions);
         const currentMessages = [...initialMessages];
@@ -176,16 +264,22 @@ export class MimoPlatform extends BasePlatform {
                 const roundLabel = final ? 'final round' : `round ${roundIndex + 1}`;
                 console.log(`[mimo] Tool ${roundLabel}, messages: ${currentMessages.length}`);
 
-                const stream = await this.sendWithRetry(
-                    () => this.client.chat.completions.create({
-                        ...this.getRequestBody(model),
-                        messages: currentMessages,
-                        tools: chatTools,
-                        ...(final ? { tool_choice: 'none' as const } : {}),
-                        stream: true,
-                        stream_options: INCLUDE_USAGE_STREAM_OPTIONS,
-                    }, { signal }),
-                    { timeout, maxRetries, signal }
+                const stream = await this.openChatWithEffortFallback(
+                    () =>
+                        this.sendWithRetry(
+                            () =>
+                                this.client.chat.completions.create({
+                                    ...this.getRequestBody(model, thinkingWire),
+                                    messages: currentMessages,
+                                    tools: chatTools,
+                                    ...(final ? { tool_choice: 'none' as const } : {}),
+                                    stream: true,
+                                    stream_options: INCLUDE_USAGE_STREAM_OPTIONS,
+                                }, { signal }),
+                            { timeout, maxRetries, signal }
+                        ),
+                    thinkingWire,
+                    model
                 );
 
                 const collected = await this.collectStreamWithTools(stream, roundIndex);

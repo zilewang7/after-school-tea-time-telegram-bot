@@ -73,10 +73,21 @@ export interface ReplyMetricInput {
     readonly resumedRounds: number | null;
     /** Rounds the checkpoint saved when this attempt failed or stopped; null when none was saved */
     readonly checkpointRounds: number | null;
+    /**
+     * The thinking-effort columns. Optional on the input so a caller writing a
+     * row without them stores NULL (rows from before the feature, fixtures);
+     * a stored row always carries them, which the record below states.
+     */
+    readonly thinkingEffortRequested?: string | null;
+    readonly thinkingEffortSent?: string | null;
+    readonly thinkingEffortFallback?: string | null;
 }
 
 export interface ReplyMetricRecord extends ReplyMetricInput {
     readonly id: number;
+    readonly thinkingEffortRequested: string | null;
+    readonly thinkingEffortSent: string | null;
+    readonly thinkingEffortFallback: string | null;
 }
 
 const integerOrNull = (value: unknown): number | null =>
@@ -200,5 +211,8 @@ export const parseReplyMetricRow = (row: unknown): ReplyMetricRecord | null => {
         priorityOutputTokens: integerOrNull(row.priorityOutputTokens),
         resumedRounds: integerOrNull(row.resumedRounds),
         checkpointRounds: integerOrNull(row.checkpointRounds),
+        thinkingEffortRequested: stringOrNull(row.thinkingEffortRequested),
+        thinkingEffortSent: stringOrNull(row.thinkingEffortSent),
+        thinkingEffortFallback: stringOrNull(row.thinkingEffortFallback),
     };
 };

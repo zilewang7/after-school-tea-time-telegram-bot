@@ -159,6 +159,9 @@ export const buildReplyMetricInput = (source: ReplyMetricSource, attempt: Finali
         ...recoveryAndTierOf(usage),
         resumedRounds: metrics.resumedRounds,
         checkpointRounds: metrics.checkpointRounds,
+        thinkingEffortRequested: metrics.thinkingEffortRequested,
+        thinkingEffortSent: metrics.thinkingEffortSent,
+        thinkingEffortFallback: metrics.thinkingEffortFallback,
     };
 };
 

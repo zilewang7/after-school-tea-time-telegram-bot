@@ -8,6 +8,7 @@
  * session, the ChatContext, a stream, an abort signal, the Bot API or a model
  * client: those belong to one attempt, and the entry outlives it.
  */
+import type { ThinkingEffortValue } from '../../services/thinking-effort-values.js';
 import type { ToolLoopCheckpoint } from '../../ai/tools/tool-loop-checkpoint.js';
 import type { ContextIndex } from '../context-index.js';
 import type { ReplyToolState } from '../tools/reply-tool-state.js';
@@ -38,6 +39,10 @@ export interface ResumeRequestFacts {
     readonly systemPrompt: string;
     /** The tool definitions as canonical JSON (keys sorted) */
     readonly toolDefinitionsJson: string;
+    /** The chat's thinking level setting as it was; null = the model default */
+    readonly thinkingEffort: ThinkingEffortValue | null;
+    /** The level that actually went out after clamping; null = nothing explicit */
+    readonly thinkingEffortSent: string | null;
 }
 
 /**

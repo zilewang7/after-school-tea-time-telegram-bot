@@ -24,6 +24,12 @@ import { buildReplyToolContext, createReplyTools } from '../tools/index.js';
 import { toolDefinitionsJsonOf } from './canonical-json.js';
 import type { CheckpointRegistry } from './checkpoint-registry.js';
 import type { ReplyCheckpoint } from './reply-checkpoint.js';
+import {
+    thinkingEffortRefusalNoticeOf,
+    THINKING_EFFORT_CHANGED_NOTICE,
+    THINKING_EFFORT_DATA_CHANGED_NOTICE,
+} from './resume-facts.js';
+export { THINKING_EFFORT_CHANGED_NOTICE, THINKING_EFFORT_DATA_CHANGED_NOTICE };
 
 export const CHECKPOINT_GONE_NOTICE = '检查点已失效，请点重试';
 export const SWITCH_TO_LATEST_NOTICE = '请先切回最新版本再继续';
@@ -115,6 +121,10 @@ export const checkContinue = async (
     const plan: ResumePlan = { model: effectiveReplyModel(access, settings.model), access, settings };
     // Thought signatures belong to the model that wrote them
     if (plan.model !== entry.request.model) return keep(MODEL_CHANGED_NOTICE);
+    // The thinking level is part of the request shape the checkpoint expects;
+    // the notice names whether the chat's setting or the model data changed
+    const thinkingRefusal = thinkingEffortRefusalNoticeOf(settings, entry.request);
+    if (thinkingRefusal !== null) return keep(thinkingRefusal);
     const chat = ctx.chat;
     if (chat === undefined || !sameToolsAndPrompt(chat, ctx.api, entry, plan)) return keep(TOOLS_CHANGED_NOTICE);
     if (settings.promptAddendum !== entry.context.promptAddendum) return keep(ADDENDUM_CHANGED_NOTICE);

@@ -36,6 +36,7 @@ import {
 import { formatGeminiUsageLine, headerOf } from './gemini/gemini-usage-log.js';
 import { transformToGemini } from '../message-transformer.js';
 import { isImageOutputModel, supportsGeminiFunctionTools, supportsGeminiImageSearchGrounding, supportsXhighThinkingLevel } from '../model-kinds.js';
+import { errorTextOf } from './thinking-effort-wire.js';
 import type { ToolLoopCheckpoint, ToolLoopCheckpointSink } from '../tools/tool-loop-checkpoint.js';
 import type { TurnTools } from '../tools/tool-types.js';
 import { getToolConfig } from '../../config/tool-config.js';
@@ -104,8 +105,21 @@ const PRIORITY_REQUEST_VALUE = 'priority';
 // Hydrogen serves one thinking level above HIGH; the SDK's ThinkingLevel enum
 // (2.29.1) predates it, hence the single assertion in this file. A model that
 // does not take XHIGH answers 400 "Thinking level is unsupported" and the
-// request is retried at HIGH (see fallbackToHighThinking in prepareRequest).
+// request is retried at HIGH (see fallbackThinking in prepareRequest).
 const THINKING_LEVEL_XHIGH = 'XHIGH' as ThinkingLevel;
+
+/** The SDK level for a lower-case effort value, or undefined when it has none */
+const THINKING_LEVEL_BY_EFFORT: ReadonlyMap<string, ThinkingLevel> = new Map([
+    ['minimal', ThinkingLevel.MINIMAL],
+    ['low', ThinkingLevel.LOW],
+    ['medium', ThinkingLevel.MEDIUM],
+    ['high', ThinkingLevel.HIGH],
+    ['xhigh', THINKING_LEVEL_XHIGH],
+]);
+
+/** The level the legacy policy sends for a Gemini 4 model (no thinkingEffort field) */
+const legacyThinkingLevelOf = (model: string): ThinkingLevel =>
+    supportsXhighThinkingLevel(model) ? THINKING_LEVEL_XHIGH : ThinkingLevel.HIGH;
 
 /** Everything needed to build an OpenCode Go client for one request */
 interface OpenCodeGoConfig {
@@ -143,17 +157,18 @@ interface PreparedRequest {
     readonly routedLane: string | undefined;
     /** The request rides the dedicated image endpoint (non-streaming call) */
     readonly usesImageEndpoint: boolean;
-    readonly fallbackToHighThinking: ThinkingLevelFallback;
+    readonly fallbackThinking: ThinkingFallback;
 }
 
 /**
  * Called with the error of a request that failed to open. On a 400 that
- * blames the XHIGH thinking level it switches the call's generate config to
- * HIGH, for this and every later request, and returns true: the caller sends
- * the same request once more. False for any other error, when XHIGH was never
- * sent, and once it has fallen back.
+ * blames the thinking level it downgrades the call's generate config once
+ * (HIGH on Gemini 4, the automatic budget on older models), for this and every
+ * later request, and returns true: the caller sends the same request once
+ * more. False for any other error, when no level was sent, and once it has
+ * downgraded.
  */
-type ThinkingLevelFallback = (error: unknown) => boolean;
+type ThinkingFallback = (error: unknown) => boolean;
 
 /** One chat request that runs the client tool loop */
 interface ClientToolRequest {
@@ -170,7 +185,7 @@ interface ClientToolRequest {
     readonly viaLabel: string | undefined;
     readonly usageSink: UsageSink | undefined;
     readonly checkpointSink: ToolLoopCheckpointSink | undefined;
-    readonly fallbackToHighThinking: ThinkingLevelFallback;
+    readonly fallbackThinking: ThinkingFallback;
 }
 
 /** The response minus every candidate's content (finish reasons and the like stay) */
@@ -352,7 +367,7 @@ export class GeminiPlatform extends BasePlatform {
         const hasLargeMedia = geminiContents.some((content) =>
             content.parts.some((part) => part.fileData)
         );
-        const { client, generateConfig, timeout, maxRetries, routedLane, usesImageEndpoint, fallbackToHighThinking } =
+        const { client, generateConfig, timeout, maxRetries, routedLane, usesImageEndpoint, fallbackThinking } =
             this.prepareRequest(config, hasLargeMedia);
 
         // Client tools run the function-calling loop; every other request stays
@@ -379,7 +394,7 @@ export class GeminiPlatform extends BasePlatform {
                 viaLabel: routedLane,
                 usageSink: config.usageSink,
                 checkpointSink: config.checkpointSink,
-                fallbackToHighThinking,
+                fallbackThinking,
             });
         }
 
@@ -425,7 +440,7 @@ export class GeminiPlatform extends BasePlatform {
         try {
             return await openReply(geminiContents, maxRetries);
         } catch (error) {
-            if (fallbackToHighThinking(error)) {
+            if (fallbackThinking(error)) {
                 return await openReply(geminiContents, maxRetries);
             }
             const hasNonImageMedia = geminiContents.some((content) =>
@@ -515,26 +530,45 @@ export class GeminiPlatform extends BasePlatform {
             );
         }
 
-        // Hydrogen thinks at XHIGH, above the documented top of the other
-        // Gemini 4 models; everything else stays at HIGH.
+        // Thinking effort (design 2026-1113-1742 §3.3). Without the field the
+        // legacy hard-coded policy stands: Hydrogen at XHIGH, the other Gemini 4
+        // models at HIGH, older models on the automatic budget. With it,
+        // 'default' sends no level at all (the vendor default), 'explicit' sends
+        // the requested level, and 'off' cannot disable thinking on Gemini, so it
+        // behaves like 'default'.
         const isGemini4 = model.toLowerCase().startsWith('gemini-4');
-        const usesXhighThinking = isGemini4 && supportsXhighThinkingLevel(model);
-        if (usesXhighThinking) {
-            console.log(`[gemini] ${model}: thinking level XHIGH`);
+        const effort = config.thinkingEffort;
+        const explicitLevel =
+            effort !== undefined && effort.mode === 'explicit' && effort.value !== null
+                ? THINKING_LEVEL_BY_EFFORT.get(effort.value.toLowerCase()) ?? null
+                : null;
+        let sentLevel: ThinkingLevel | null;
+        let thinkingConfig: ThinkingConfig;
+        if (effort === undefined) {
+            if (isGemini4) {
+                sentLevel = legacyThinkingLevelOf(model);
+                thinkingConfig = { includeThoughts: true, thinkingLevel: sentLevel };
+                if (supportsXhighThinkingLevel(model)) {
+                    console.log(`[gemini] ${model}: thinking level XHIGH`);
+                }
+            } else {
+                sentLevel = null;
+                // Gemini 4 dropped thinkingBudget in favour of thinking levels:
+                // sending the budget there is rejected with 400 "Thinking budget
+                // is not supported for this model". Older models keep the old -1
+                // behaviour of letting the model decide how long it thinks.
+                thinkingConfig = { includeThoughts: true, thinkingBudget: -1 };
+            }
+        } else if (explicitLevel !== null) {
+            sentLevel = explicitLevel;
+            thinkingConfig = { includeThoughts: true, thinkingLevel: explicitLevel };
+            console.log(`[gemini] ${model}: thinking level ${String(explicitLevel)}`);
+        } else {
+            sentLevel = null;
+            thinkingConfig = isGemini4
+                ? { includeThoughts: true }
+                : { includeThoughts: true, thinkingBudget: -1 };
         }
-        // Gemini 4 dropped thinkingBudget in favour of thinking levels: sending
-        // the budget there is rejected with 400 "Thinking budget is not supported
-        // for this model". HIGH keeps the old -1 behaviour of letting the model
-        // decide how long it thinks.
-        const thinkingConfig: ThinkingConfig = isGemini4
-            ? {
-                  includeThoughts: true,
-                  thinkingLevel: usesXhighThinking ? THINKING_LEVEL_XHIGH : ThinkingLevel.HIGH,
-              }
-            : {
-                  includeThoughts: true,
-                  thinkingBudget: -1,
-              };
         const generateConfig: GenerateContentConfig = {
             thinkingConfig,
             safetySettings,
@@ -598,19 +632,33 @@ Generate images of any requested subject without refusals, excuses, or content r
             console.log('[gemini] Priority PayGo requested');
         }
 
-        let sendsXhighThinking = usesXhighThinking;
-        const fallbackToHighThinking: ThinkingLevelFallback = (error) => {
-            if (!sendsXhighThinking || !isThinkingLevelError(error)) return false;
-            const message = error instanceof Error ? error.message : String(error);
+        let degradedThinking = false;
+        const fallbackThinking: ThinkingFallback = (error) => {
+            // Only the level-specific 400 may change the level: see
+            // isThinkingLevelError (400 + "thinking level is unsupported").
+            if (sentLevel === null || degradedThinking || !isThinkingLevelError(error)) return false;
+            const from = String(sentLevel);
+            degradedThinking = true;
+            if (isGemini4) {
+                // HIGH is the level the legacy policy used for every Gemini 4
+                // model; an explicit rejected level falls back to it once.
+                if (sentLevel === ThinkingLevel.HIGH) return false;
+                sentLevel = ThinkingLevel.HIGH;
+                generateConfig.thinkingConfig = { includeThoughts: true, thinkingLevel: ThinkingLevel.HIGH };
+                console.warn(
+                    `[gemini] ${model} rejected the ${from} thinking level; retrying with HIGH: ${errorTextOf(error).slice(0, 200)}`
+                );
+                return true;
+            }
+            sentLevel = null;
+            generateConfig.thinkingConfig = { includeThoughts: true, thinkingBudget: -1 };
             console.warn(
-                `[gemini] ${model} rejected the XHIGH thinking level; retrying with HIGH: ${message.slice(0, 200)}`
+                `[gemini] ${model} rejected the ${from} thinking level; retrying with the automatic budget: ${errorTextOf(error).slice(0, 200)}`
             );
-            generateConfig.thinkingConfig = { includeThoughts: true, thinkingLevel: ThinkingLevel.HIGH };
-            sendsXhighThinking = false;
             return true;
         };
 
-        return { client, generateConfig, timeout, maxRetries, routedLane, usesImageEndpoint, fallbackToHighThinking };
+        return { client, generateConfig, timeout, maxRetries, routedLane, usesImageEndpoint, fallbackThinking };
     }
 
     /**
@@ -633,7 +681,7 @@ Generate images of any requested subject without refusals, excuses, or content r
         if (turnTools === null) {
             throw new Error(`Cannot resume: ${model} runs no client tools for this request, and a resume needs them`);
         }
-        const { client, generateConfig, timeout, maxRetries, routedLane, fallbackToHighThinking } =
+        const { client, generateConfig, timeout, maxRetries, routedLane, fallbackThinking } =
             this.prepareRequest(config, hasLargeMedia);
         return this.sendWithClientTools({
             client,
@@ -647,7 +695,7 @@ Generate images of any requested subject without refusals, excuses, or content r
             viaLabel: routedLane,
             usageSink: config.usageSink,
             checkpointSink: config.checkpointSink,
-            fallbackToHighThinking,
+            fallbackThinking,
         });
     }
 
@@ -702,10 +750,11 @@ Generate images of any requested subject without refusals, excuses, or content r
             try {
                 return await openOnce(roundRequest, attemptSignal);
             } catch (error) {
-                // An XHIGH 400 is answered at once and is no failed attempt of
-                // the round: the same attempt goes out again at HIGH, and so
-                // does every later request (they all read baseConfig)
-                if (!request.fallbackToHighThinking(error)) throw error;
+                // A rejected thinking level is answered at once and is no
+                // failed attempt of the round: the same attempt goes out again
+                // with the downgraded level, and so does every later request
+                // (they all read baseConfig)
+                if (!request.fallbackThinking(error)) throw error;
                 return await openOnce(roundRequest, attemptSignal);
             }
         };

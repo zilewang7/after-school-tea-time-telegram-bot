@@ -49,7 +49,8 @@ export type GrokResponseTool =
 export type GrokResponseRequest = Omit<ResponseCreateParamsStreaming, 'tools' | 'reasoning'> & {
     tools: GrokResponseTool[];
     reasoning?: {
-        effort: 'high';
+        /** A lower-case effort value; the platform decides the level (see grok-platform) */
+        effort: string;
     };
     max_turns?: number;
 };

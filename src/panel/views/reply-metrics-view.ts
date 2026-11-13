@@ -71,6 +71,12 @@ export interface ReplyMetricView {
     readonly resumedRounds: number | null;
     /** Rounds the checkpoint saved when this attempt failed or stopped; null when none was saved */
     readonly checkpointRounds: number | null;
+    /** The chat's thinking level when the attempt started; null = the model default */
+    readonly thinkingEffortRequested: string | null;
+    /** The level actually sent after clamping/fallback; null = nothing explicit went out */
+    readonly thinkingEffortSent: string | null;
+    /** The degradation chain, e.g. 'xhigh->high'; null = none */
+    readonly thinkingEffortFallback: string | null;
     /**
      * This attempt alone, priced like the statistics (priority rounds at the
      * priority price); null when unpriced or without usage
@@ -162,6 +168,9 @@ export const toReplyMetricView = (row: ReplyMetricRecord): ReplyMetricView => {
         priorityOutputTokens: row.priorityOutputTokens,
         resumedRounds: row.resumedRounds,
         checkpointRounds: row.checkpointRounds,
+        thinkingEffortRequested: row.thinkingEffortRequested,
+        thinkingEffortSent: row.thinkingEffortSent,
+        thinkingEffortFallback: row.thinkingEffortFallback,
         costUsd: roundUsd(priced.costUsd),
         pricing: priced.pricing,
         priorityAtStandardPrice: priced.priorityAtStandardPrice,

@@ -40,6 +40,7 @@ import {
     markRequestStarted,
     recordContextSize,
     recordReferenceImages,
+    recordThinkingEffort,
 } from '../services/reply-metrics-draft.js';
 import {
     createChatContextForRetry,
@@ -51,6 +52,7 @@ import type { UnifiedContentPart } from '../ai/types.js';
 import { checkpointSinkFor } from './resume/keep-checkpoint.js';
 import { captureResumeFacts } from './resume/resume-facts.js';
 import { priorityRequestOf } from './priority-request.js';
+import { thinkingRequestOf } from './thinking-request.js';
 
 /**
  * Handle retry for a bot response
@@ -367,6 +369,8 @@ const handleChatRetry = async (
     });
 
     const systemPrompt = buildStaticSystemPrompt(model, buildStaticPromptOptions(availability));
+    // The retry sends the chat's current thinking level against the model it reuses
+    const thinking = thinkingRequestOf(model, settings.thinkingEffort);
     // A retry starts from nothing, so it keeps its own checkpoints like a first answer
     chatContext.resumeFacts = captureResumeFacts({
         model,
@@ -377,8 +381,12 @@ const handleChatRetry = async (
         conversationRootIds: builtContext.conversationRootIds,
         requestTraits,
         promptAddendum: settings.promptAddendum,
+        thinkingEffort: settings.thinkingEffort,
+        thinkingEffortSent: thinking.facts.sent,
         builtAt,
     });
+
+    recordThinkingEffort(session.metrics, thinking.facts);
 
     // Send to AI
     markRequestStarted(session.metrics);
@@ -392,6 +400,7 @@ const handleChatRetry = async (
             usageSink: session.metrics.usage,
             checkpointSink: checkpointSinkFor(chatContext),
             ...priorityRequestOf(access, settings.geminiPriority),
+            ...thinking.platform,
         })
     );
     if (streamErr) {

@@ -21,6 +21,8 @@ import type { ToolLoopCheckpoint } from '../../src/ai/tools/tool-loop-checkpoint
 
 interface ScriptedResponse {
     readonly path: string;
+    /** HTTP status of the scripted reply; absent = 200 */
+    readonly status?: number;
     readonly body: string;
 }
 
@@ -50,7 +52,7 @@ const stubServer = createServer((request, response) => {
             response.end(JSON.stringify({ error: { message: `unexpected request to ${path}` } }));
             return;
         }
-        response.writeHead(200, { 'Content-Type': 'text/event-stream' });
+        response.writeHead(next.status ?? 200, { 'Content-Type': 'application/json' });
         response.end(next.body);
     });
 });
@@ -276,6 +278,10 @@ const responsesAnswerBody = (text: string): string =>
     ]
         .map(namedEvent)
         .join('');
+
+/** The 400 OpenAI answers with when it does not take the requested effort */
+const responsesEffortRejectedBody = (): string =>
+    JSON.stringify({ error: { message: 'Unsupported value: reasoning.effort', type: 'invalid_request_error' } });
 
 /** A round that calls lookup_weather once */
 const responsesToolRoundBody = (round: number): string => {
@@ -1492,6 +1498,68 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
                 );
                 expect(chunks === 0 && recordedRequests.length === 0, `${model}: nothing yielded, nothing sent (got ${recordedRequests.length} request(s))`);
             }
+        },
+    },
+    {
+        name: 'openai tool rounds carry the thinking summary in the default mode',
+        body: async () => {
+            resetStub([
+                { path: '/v1/responses', body: responsesToolRoundBody(1) },
+                { path: '/v1/responses', body: responsesAnswerBody('Both sunny.') },
+            ]);
+            const platform = new OpenAIPlatform();
+            await captureConsole(async () =>
+                drain(
+                    await platform.sendMessage(userTurn('Weather?'), {
+                        model: 'gpt-6-luna',
+                        systemPrompt: 'offline persona',
+                        timeout: 20000,
+                        tools: turnTools,
+                        thinkingEffort: { mode: 'default', value: null },
+                    })
+                )
+            );
+
+            expect(recordedRequests.length === 2, `one tool round then the answer (got ${recordedRequests.length})`);
+            const reasoning = recordedRequests.map((request) => asRecord(request.body.reasoning));
+            expect(
+                reasoning.every((entry) => json(entry) === json({ summary: 'detailed' })),
+                `every round carries the summary alone (got ${json(reasoning)})`
+            );
+        },
+    },
+    {
+        name: 'openai tool rounds share one effort downgrade with the whole reply',
+        body: async () => {
+            resetStub([
+                { path: '/v1/responses', status: 400, body: responsesEffortRejectedBody() },
+                { path: '/v1/responses', body: responsesToolRoundBody(1) },
+                { path: '/v1/responses', body: responsesAnswerBody('Both sunny.') },
+            ]);
+            const platform = new OpenAIPlatform();
+            const { result: chunks, lines } = await captureConsole(async () =>
+                drain(
+                    await platform.sendMessage(userTurn('Weather?'), {
+                        model: 'gpt-6-luna',
+                        systemPrompt: 'offline persona',
+                        timeout: 20000,
+                        tools: turnTools,
+                        thinkingEffort: { mode: 'explicit', value: 'xhigh' },
+                    })
+                )
+            );
+
+            expect(recordedRequests.length === 3, `rejected round, tool round, answer (got ${recordedRequests.length})`);
+            const efforts = recordedRequests.map((request) => asRecord(request.body.reasoning).effort);
+            expect(
+                json(efforts) === json(['xhigh', 'high', 'high']),
+                `only the rejected attempt kept the explicit effort (got ${json(efforts)})`
+            );
+            expect(textOf(chunks) === 'Both sunny.', `the reply answers after the downgrade (got ${json(textOf(chunks))})`);
+            expect(
+                lines.some((line) => line.includes('rejected thinking effort xhigh; retrying with high')),
+                `the downgrade is logged (got ${json(lines)})`
+            );
         },
     },
 ];

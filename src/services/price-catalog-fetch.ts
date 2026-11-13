@@ -14,11 +14,19 @@
  * this module never schedules a timer, never throws, and records a dead source
  * as a warning or an error so the rest of the run still happens.
  */
+import { parse as parseToml } from 'smol-toml';
+import { isJsonObject } from '../shared/json-object.js';
 import { listAllModelCatalog } from '../config/model-catalog.js';
 import type { CatalogFetchResult, CatalogFetcher, CatalogModelRef } from './price-catalog-types.js';
 
 /** models.dev keeps one TOML per provider model (schema 2, MIT) */
 const MODELS_DEV_PROVIDER_DIRECTORY = 'https://raw.githubusercontent.com/sst/models.dev/dev/providers';
+
+/**
+ * models.dev keeps the canonical lab document of a model under
+ * `models/<vendor>/<id>.toml`; the provider TOML names it in `base_model`.
+ */
+export const MODELS_DEV_LAB_DIRECTORY = 'https://raw.githubusercontent.com/sst/models.dev/dev/models';
 
 /** Vertex's own pricing page: Priority PayGo rows, promo windows and dates */
 export const VERTEX_PRICING_URL = 'https://cloud.google.com/vertex-ai/generative-ai/pricing';
@@ -87,6 +95,26 @@ export const modelsDevTomlUrl = (ref: CatalogModelRef): string =>
         ? ''
         : `${MODELS_DEV_PROVIDER_DIRECTORY}/${ref.provider}/models/${ref.modelFile}.toml`;
 
+/** The canonical lab document of a `base_model` value such as `google/gemini-4-hydrogen` */
+export const modelsDevLabTomlUrl = (baseModel: string): string =>
+    `${MODELS_DEV_LAB_DIRECTORY}/${baseModel}.toml`;
+
+/**
+ * The `base_model` a provider TOML points at (the canonical lab document), or
+ * null when it names none or the body is not a TOML object.
+ */
+export const baseModelOfToml = (body: string): string | null => {
+    let parsed: unknown;
+    try {
+        parsed = parseToml(body);
+    } catch {
+        return null;
+    }
+    if (!isJsonObject(parsed)) return null;
+    const baseModel = parsed.base_model;
+    return typeof baseModel === 'string' && baseModel.trim() !== '' ? baseModel.trim() : null;
+};
+
 /** One GET result: a body or the reason there is none (never a thrown error) */
 interface FetchOutcome {
     readonly body: string | null;
@@ -108,6 +136,11 @@ const fetchText = async (fetcher: CatalogFetcher, url: string): Promise<FetchOut
  * Downloads every catalog in one concurrent batch. A failing TOML is a warning
  * (the other 15 models still compile); a failing whole source is an error (its
  * candidates are simply absent, LiteLLM/ephone may still fill a gap).
+ *
+ * The canonical lab documents are a second wave of the same batch because their
+ * URL comes from the downloaded provider TOML's `base_model`. A model without
+ * one (`claude-sonnet-5`, `grok-4.20-multi-agent-0309`) has no lab document:
+ * its limits stay absent and `api.json` fills them at compile time.
  */
 export const fetchPriceCatalogs = async (
     fetcher: CatalogFetcher,
@@ -129,14 +162,32 @@ export const fetchPriceCatalogs = async (
     const warnings: string[] = [];
     const errors: string[] = [];
     const tomlByModel = new Map<string, string>();
+    const labTargets: { readonly model: string; readonly url: string }[] = [];
     for (const result of tomlResults) {
         if (result.outcome.body === null) {
             warnings.push(`models.dev TOML 抓取失败（${result.model}）：${result.outcome.error ?? '未知原因'}`);
             continue;
         }
         tomlByModel.set(result.model, result.outcome.body);
+        const baseModel = baseModelOfToml(result.outcome.body);
+        if (baseModel !== null) labTargets.push({ model: result.model, url: modelsDevLabTomlUrl(baseModel) });
     }
     if (tomlByModel.size === 0) errors.push('models.dev 的 TOML 全部抓取失败，本次没有基价来源');
+
+    const labResults = await Promise.all(
+        labTargets.map(async (target) => ({
+            model: target.model,
+            outcome: await fetchText(fetcher, target.url),
+        }))
+    );
+    const labTomlByModel = new Map<string, string>();
+    for (const result of labResults) {
+        if (result.outcome.body === null) {
+            warnings.push(`models.dev canonical lab TOML 抓取失败（${result.model}）：${result.outcome.error ?? '未知原因'}`);
+            continue;
+        }
+        labTomlByModel.set(result.model, result.outcome.body);
+    }
 
     const sourceBody = (label: string, url: string, outcome: FetchOutcome, problems: string[]): string | null => {
         if (outcome.body === null) problems.push(`${label} 抓取失败：${outcome.error ?? '未知原因'}（${url}）`);
@@ -146,6 +197,7 @@ export const fetchPriceCatalogs = async (
     return {
         documents: {
             tomlByModel,
+            labTomlByModel,
             // The official page is the main source of Priority PayGo and promo
             // windows: its absence is a run-level error, while ephone and
             // LiteLLM are optional (a gap filler and a cross-check) and only warn.

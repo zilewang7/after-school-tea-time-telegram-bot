@@ -528,6 +528,7 @@ const cases: { name: string; body: () => Promise<void> }[] = [
                 settingsLocked: false,
                 toolOverrides: null,
                 geminiPriority: null,
+                thinkingEffort: null,
             };
             const trialPatch = resolveChatSettingsPatch(current, { model: 'gpt-6-astra' }, {
                 actorIsOwner: false,

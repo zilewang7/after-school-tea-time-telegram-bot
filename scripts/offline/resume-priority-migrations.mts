@@ -1,12 +1,13 @@
 /**
  * Offline cases for the schema of Gemini resume and Priority PayGo (design
  * §10): reply_metrics gains roundRetries, tierRequested, the four priority
- * sums, resumedRounds and checkpointRounds; chat_settings gains the nullable
- * geminiPriority. A fresh database gets them from the models at sync time and
- * the migrations skip the missing tables; an old database gets them from the
- * migrations, keeps its rows, and takes new rows afterwards. Every other
- * offline file runs on a fresh database, so without these cases a missing
- * migration would only show in production, as metric rows that never write.
+ * sums, resumedRounds, checkpointRounds and the thinking-effort columns;
+ * chat_settings gains the nullable geminiPriority and thinkingEffort. A fresh
+ * database gets them from the models at sync time and the migrations skip the
+ * missing tables; an old database gets them from the migrations, keeps its
+ * rows, and takes new rows afterwards. Every other offline file runs on a
+ * fresh database, so without these cases a missing migration would only show
+ * in production, as metric rows that never write.
  *
  * Run: npx tsx scripts/offline/resume-priority-migrations.mts
  */
@@ -37,6 +38,10 @@ const REPLY_METRICS_COLUMNS = [
     'priorityOutputTokens',
     'resumedRounds',
     'checkpointRounds',
+    // Added with the thinking-effort feature in the same migration batch
+    'thinkingEffortRequested',
+    'thinkingEffortSent',
+    'thinkingEffortFallback',
 ];
 
 // In name order, as appliedMigrations reads them
@@ -160,6 +165,7 @@ const cases: { name: string; body: () => Promise<void> }[] = [
         body: async () => {
             expect(hasEvery(await columnsOf('reply_metrics'), REPLY_METRICS_COLUMNS), 'reply_metrics has the new columns');
             expect((await columnsOf('chat_settings')).includes('geminiPriority'), 'chat_settings has geminiPriority');
+            expect((await columnsOf('chat_settings')).includes('thinkingEffort'), 'and thinkingEffort');
             expect(json(await appliedMigrations()) === json(MIGRATION_NAMES), 'both migrations are recorded');
 
             await sequelize.query('DROP TABLE reply_metrics');
@@ -172,6 +178,7 @@ const cases: { name: string; body: () => Promise<void> }[] = [
             await sequelize.sync();
             expect(hasEvery(await columnsOf('reply_metrics'), REPLY_METRICS_COLUMNS), 'sync creates reply_metrics with them');
             expect((await columnsOf('chat_settings')).includes('geminiPriority'), 'and chat_settings with geminiPriority');
+            expect((await columnsOf('chat_settings')).includes('thinkingEffort'), 'and with thinkingEffort');
         },
     },
     {
@@ -190,7 +197,7 @@ const cases: { name: string; body: () => Promise<void> }[] = [
 
             await startUp();
             const after = await columnsOf('reply_metrics');
-            expect(hasEvery(after, REPLY_METRICS_COLUMNS), `the migration adds all eight (got ${json(after)})`);
+            expect(hasEvery(after, REPLY_METRICS_COLUMNS), `the migration adds all of them (got ${json(after)})`);
             expect(after.length === before.length + REPLY_METRICS_COLUMNS.length, 'and nothing else');
 
             const [old] = await findReplyMetricsByReply(-1007700000001, 11);
@@ -253,10 +260,11 @@ const cases: { name: string; body: () => Promise<void> }[] = [
 
             await startUp();
             expect((await columnsOf('chat_settings')).includes('geminiPriority'), 'the migration adds it');
+            expect((await columnsOf('chat_settings')).includes('thinkingEffort'), 'and the thinking level');
             await service.loadChatSettingsCache();
             const old = service.getChatSettings(chatId);
             expect(
-                old?.model === 'old-model' && old.paused && old.geminiPriority === null,
+                old?.model === 'old-model' && old.paused && old.geminiPriority === null && old.thinkingEffort === null,
                 `the old row keeps its values and reads as "follow the global switch" (got ${json(old)})`
             );
 

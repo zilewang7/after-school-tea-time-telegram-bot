@@ -16,8 +16,8 @@ const { ModelPriceEntry } = await import('../../src/db/modelPriceDTO.js');
 const { PriceChangeProposal } = await import('../../src/db/priceChangeProposalDTO.js');
 const { SettingsAudit } = await import('../../src/db/settingsAuditDTO.js');
 const { ModelCatalogEntryRow } = await import('../../src/db/modelCatalogDTO.js');
-const { backfillCatalogLabels, backfillCatalogSeedsOnly, backfillCatalogSuperseded } = await import('../../src/db/schema-migrations.js');
-const { listModelCatalog, seedModelCatalogEntries } = await import('../../src/config/model-catalog.js');
+const { backfillCatalogCapabilities, backfillCatalogLabels, backfillCatalogSeedsOnly, backfillCatalogSuperseded } = await import('../../src/db/schema-migrations.js');
+const { listModelCatalog, modelCatalogVersion, seedModelCatalogEntries } = await import('../../src/config/model-catalog.js');
 const { modelConfigs } = await import('../../src/config/models.js');
 const catalogService = await import('../../src/services/model-catalog-service.js');
 const { sequelize } = await import('../../src/db/config.js');
@@ -338,6 +338,164 @@ results.push(
         const status = await service.priceWatchStatus();
         expect(status.version === pricing.priceTableVersion(), 'status carries the version');
         expect(status.pendingProposals === 0, 'nothing is pending after the cases above');
+    })
+);
+
+const nodeOf = (value: unknown): Record<string, unknown> =>
+    typeof value === 'object' && value !== null && !Array.isArray(value)
+        ? Object.fromEntries(Object.entries(value))
+        : {};
+
+const capabilitiesOfRow = async (id: string): Promise<Record<string, unknown>> => {
+    const row = await ModelCatalogEntryRow.findByPk(id);
+    if (row === null) return {};
+    const parsed: unknown = JSON.parse(row.capabilities);
+    return nodeOf(parsed);
+};
+
+results.push(
+    await runCase('the seeded catalog rows are already schema 1', async () => {
+        await catalogService.loadModelCatalog();
+        const hydrogen = await capabilitiesOfRow('gemini-4-hydrogen');
+        expect(hydrogen.schema === 1, `the seed writes schema 1 (got ${String(hydrogen.schema)})`);
+        expect(typeof hydrogen.source === 'string', 'the seed carries a per-field source');
+        const reasoning = nodeOf(hydrogen.reasoning);
+        expect(reasoning.supported === true, 'the seed reasoning section is written');
+    })
+);
+
+results.push(
+    await runCase('the capabilities backfill upgrades legacy rows to schema 1', async () => {
+        await catalogService.loadModelCatalog();
+        const now = new Date();
+        // A seeded row still carrying the old seven-field JSON
+        await ModelCatalogEntryRow.update(
+            {
+                capabilities: JSON.stringify({
+                    kind: 'chat',
+                    vision: false,
+                    imageOutput: false,
+                    tools: true,
+                    reasoningEffort: [],
+                    contextTokens: null,
+                    outputTokens: null,
+                }),
+            },
+            { where: { id: 'gemini-4-hydrogen' } }
+        );
+        // An auto-added row: real legacy data, and no code seed for this id
+        await ModelCatalogEntryRow.create({
+            id: 'gpt-6.2-sol',
+            label: 'GPT-6.2 Sol',
+            enabled: 1,
+            capabilities: JSON.stringify({
+                kind: 'chat',
+                vision: true,
+                imageOutput: false,
+                tools: true,
+                reasoningEffort: ['low', 'medium', 'high', 'xhigh', 'max'],
+                contextTokens: 1_050_000,
+                outputTokens: 128_000,
+            }),
+            platform: 'openai',
+            source: 'models-dev',
+            sourceUrl: 'https://example.test/catalog',
+            checkedOn: '2026-11-13',
+            confidence: 'medium',
+            note: 'auto-added by the price watcher',
+            createdAt: now,
+            updatedAt: now,
+        });
+        // A placeholder row without a seed: left alone
+        await ModelCatalogEntryRow.create({
+            id: 'manual-placeholder',
+            label: 'Manual Placeholder',
+            enabled: 1,
+            capabilities: '{}',
+            source: 'manual',
+            checkedOn: '2026-11-13',
+            confidence: 'high',
+            createdAt: now,
+            updatedAt: now,
+        });
+        // A future schema row must be preserved untouched (design §1.1-5)
+        await ModelCatalogEntryRow.create({
+            id: 'future-schema-row',
+            label: 'Future Schema Row',
+            enabled: 1,
+            capabilities: JSON.stringify({
+                schema: 2,
+                kind: 'chat',
+                vision: true,
+                tools: true,
+                reasoningEffort: ['low'],
+                contextTokens: 1_000,
+                outputTokens: 100,
+            }),
+            platform: 'openai',
+            source: 'models-dev',
+            sourceUrl: null,
+            checkedOn: '2026-11-13',
+            confidence: 'medium',
+            note: 'a future writer',
+            createdAt: now,
+            updatedAt: now,
+        });
+        // A broken row the seed knows: the seed wins (design §1.5)
+        await ModelCatalogEntryRow.update({ capabilities: 'not json' }, { where: { id: 'gemini-4-carbon' } });
+        await sequelize.query("DELETE FROM schema_migrations WHERE name = '20261113_catalog_capabilities'");
+        const versionBefore = modelCatalogVersion();
+        await backfillCatalogCapabilities();
+
+        const hydrogen = await capabilitiesOfRow('gemini-4-hydrogen');
+        const hydrogenReasoning = nodeOf(hydrogen.reasoning);
+        expect(hydrogen.schema === 1, `a seeded row is schema 1 (got ${String(hydrogen.schema)})`);
+        expect(JSON.stringify(hydrogen.reasoningEffort) === '["low","medium","high","xhigh"]', 'the seed effort list is written');
+        expect(hydrogenReasoning.supported === true, 'the seed reasoning is written');
+        expect(JSON.stringify(hydrogenReasoning.efforts) === '["low","medium","high","xhigh"]', 'efforts come from the seed');
+        expect(hydrogenReasoning.defaultEffort === 'high', 'the vendor default comes from the seed');
+        expect(hydrogen.source === 'code' && hydrogen.confidence === 'high', 'the seed provenance is written');
+
+        const autoAdded = await capabilitiesOfRow('gpt-6.2-sol');
+        const autoAddedReasoning = nodeOf(autoAdded.reasoning);
+        expect(autoAdded.schema === 1, 'an auto-added row is wrapped as schema 1');
+        expect(autoAddedReasoning.supported === true, 'a non-empty old effort list means reasoning is supported');
+        expect(
+            JSON.stringify(autoAddedReasoning.efforts) === '["low","medium","high","xhigh","max"]',
+            `the old effort list becomes reasoning.efforts (got ${JSON.stringify(autoAddedReasoning.efforts)})`
+        );
+        expect(
+            JSON.stringify(autoAdded.reasoningEffort) === JSON.stringify(autoAddedReasoning.efforts),
+            'the legacy mirror stays consistent with reasoning.efforts'
+        );
+        expect(autoAdded.source === 'models-dev', 'the row source is inherited');
+        expect(autoAdded.checkedOn === '2026-11-13' && autoAdded.confidence === 'medium', 'date and confidence are inherited');
+        expect(autoAdded.contextTokens === 1_050_000 && autoAdded.outputTokens === 128_000, 'the limits survive the wrap');
+
+        const placeholder = await capabilitiesOfRow('manual-placeholder');
+        expect(Object.keys(placeholder).length === 0, 'a placeholder row without a seed is not touched');
+
+        const future = await capabilitiesOfRow('future-schema-row');
+        expect(future.schema === 2, `a future schema row is not downgraded (got ${String(future.schema)})`);
+        expect(future.reasoning === undefined, 'no reasoning section is added to a future schema row');
+
+        const corrupted = await capabilitiesOfRow('gemini-4-carbon');
+        expect(corrupted.schema === 1, 'a broken row the seed knows gets the seed');
+        expect(corrupted.source === 'code', 'the seed provenance is written');
+        expect(nodeOf(corrupted.reasoning).supported === true, 'the seed reasoning is written');
+
+        await catalogService.loadModelCatalog();
+        expect(modelCatalogVersion() !== versionBefore, 'the catalog version moves with the capabilities content');
+
+        // Recorded once: a legacy row written afterwards stays legacy
+        await ModelCatalogEntryRow.update({ capabilities: '{}' }, { where: { id: 'gemini-4-argon' } });
+        await backfillCatalogCapabilities();
+        expect((await capabilitiesOfRow('gemini-4-argon')).schema === undefined, 'the backfill runs exactly once');
+
+        await ModelCatalogEntryRow.destroy({ where: { id: 'gpt-6.2-sol' } });
+        await ModelCatalogEntryRow.destroy({ where: { id: 'manual-placeholder' } });
+        await ModelCatalogEntryRow.destroy({ where: { id: 'future-schema-row' } });
+        await catalogService.loadModelCatalog();
     })
 );
 

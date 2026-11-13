@@ -7,7 +7,7 @@ import { useMe } from '../../context/me-context';
 import { useApi } from '../../context/panel-context';
 import { useApiQuery } from '../../hooks/use-api-query';
 import { useSuccessHaptic } from '../../hooks/use-telegram-feedback';
-import { GLOBAL_AUDIT_PATH } from '../../routing/paths';
+import { GLOBAL_AUDIT_PATH, GLOBAL_MODEL_CATALOG_PATH } from '../../routing/paths';
 import { GlobalSettingsForm } from './global-settings-form';
 
 const GlobalSettingsSection = () => {
@@ -58,6 +58,7 @@ export const HomeSettingsTab = () => (
         <section className="section">
             <ul className="list">
                 <NavListItem to={GLOBAL_AUDIT_PATH} label="全部改动" />
+                <NavListItem to={GLOBAL_MODEL_CATALOG_PATH} label="模型能力目录" />
             </ul>
         </section>
     </>

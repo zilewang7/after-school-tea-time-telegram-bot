@@ -22,3 +22,26 @@ price = 5
 [[cost.multipliers]]
 when = { service_tier = { equals = "priority" } }
 factor = { text = 2 }
+
+[modalities]
+input = ["text", "image/jpeg", "image/png", "application/pdf"]
+output = ["text"]
+
+[capabilities]
+tools = { supported = false }
+reasoning = { supported = true, effort = ["low", "medium", "high", "xhigh"] }
+structured_output = true
+temperature = true
+top_p = true
+top_k = true
+system_updates = true
+store = true
+prompt_cache_key = true
+cache = { implicit = true }
+service_tier = ["priority"]
+
+[limit]
+context = 1_000_000
+output = 30_000
+
+[api.responses]

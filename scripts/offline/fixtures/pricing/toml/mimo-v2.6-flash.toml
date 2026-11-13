@@ -9,3 +9,22 @@ price = 0.28
 
 [cost.web_search]
 price = 5
+
+[capabilities]
+tools = { supported = true, strict = true, choice = ["auto"] }
+reasoning = { supported = true, default = { type = "toggle", value = true }, toggle = true }
+structured_output = true
+top_k = false
+stream_usage = true
+cache = { implicit = true }
+
+[api.chat-completions]
+compatibility = { reasoning_field = "reasoning_content" }
+capabilities = { system_updates = true }
+
+[api.responses]
+sdk = { aisdk = "@ai-sdk/openai", opencodeai = "@opencode/ai/providers/openai-compatible/responses" }
+
+[api.messages]
+base_url = "https://api.xiaomimimo.com/anthropic/v1"
+sdk = { aisdk = "@ai-sdk/anthropic", opencodeai = "@opencode/ai/providers/anthropic-compatible" }

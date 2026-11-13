@@ -41,6 +41,7 @@ export const useChatSettingsForm = ({ chatId, settings, models, writable, onSave
     const [paused, setPaused] = useState(settings.paused);
     const [settingsLocked, setSettingsLocked] = useState(settings.settingsLocked);
     const [geminiPriority, setGeminiPriority] = useState<boolean | null>(settings.geminiPriority);
+    const [thinkingEffort, setThinkingEffort] = useState<string | null>(settings.thinkingEffort);
     const [saveStatus, setSaveStatus] = useState<SaveStatus>({ kind: 'idle' });
 
     // Debounced local draft of the addendum, so closing the panel does not lose typing
@@ -65,8 +66,9 @@ export const useChatSettingsForm = ({ chatId, settings, models, writable, onSave
                 paused,
                 settingsLocked,
                 geminiPriority,
+                thinkingEffort,
             }),
-        [settings, resolvedModel, addendumValue, paused, settingsLocked, geminiPriority]
+        [settings, resolvedModel, addendumValue, paused, settingsLocked, geminiPriority, thinkingEffort]
     );
 
     const dirty = !resolvedModel.ok || Object.keys(changes).length > 0;
@@ -106,6 +108,8 @@ export const useChatSettingsForm = ({ chatId, settings, models, writable, onSave
         setSettingsLocked,
         geminiPriority,
         setGeminiPriority,
+        thinkingEffort,
+        setThinkingEffort,
         dirty,
         valid,
         saving,

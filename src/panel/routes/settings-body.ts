@@ -7,6 +7,7 @@
 import { match } from 'ts-pattern';
 import {
     normalizeNullableFlag,
+    normalizeThinkingEffort,
     type ChatSettingKey,
     type ChatSettingsPatch,
 } from '../../services/chat-settings-service.js';
@@ -21,6 +22,7 @@ const SETTING_KEYS: readonly ChatSettingKey[] = [
     'settingsLocked',
     'toolOverrides',
     'geminiPriority',
+    'thinkingEffort',
 ];
 const EXPECTED_UPDATED_AT_KEY = 'expectedUpdatedAt';
 const ALLOWED_KEYS: ReadonlySet<string> = new Set<string>([...SETTING_KEYS, EXPECTED_UPDATED_AT_KEY]);
@@ -86,6 +88,12 @@ export const toChatSettingsPatch = (body: JsonRecord, shape: SettingsPatchShape)
                 const normalized = normalizeNullableFlag(value, key);
                 if (!normalized.ok) throw invalid(normalized.message);
                 patch.geminiPriority = normalized.value;
+            })
+            .with('thinkingEffort', () => {
+                // The closed set is the service's; a value the model does not offer is still stored
+                const normalized = normalizeThinkingEffort(value);
+                if (!normalized.ok) throw invalid(normalized.message);
+                patch.thinkingEffort = normalized.value;
             })
             .exhaustive();
     }

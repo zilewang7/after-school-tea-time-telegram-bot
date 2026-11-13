@@ -9,9 +9,11 @@ import type {
     ModelPricingFlag,
     PricingFlag,
     PriorityHitCounts,
+    ReplyMetric,
     ReplyOutcome,
     ReplyPhase,
 } from './api';
+import { THINKING_EFFORT_OFF_LABEL, thinkingEffortAuditValue, thinkingEffortLabel } from './thinking-effort';
 
 const COUNT_FORMAT = new Intl.NumberFormat('zh-CN');
 const RATE_DECIMALS = 1;
@@ -111,6 +113,33 @@ export const strayPriorityTextOf = (counts: PriorityHitCounts): string | null =>
     counts.strayPriorityRounds === 0
         ? null
         : `未请求 Priority 却按优先档服务 ${formatCount(counts.strayPriorityRounds)} 轮`;
+
+/** The thinking-effort columns of one reply metric; a view without them is fine too */
+export type ThinkingEffortFields = Pick<
+    ReplyMetric,
+    'thinkingEffortRequested' | 'thinkingEffortSent' | 'thinkingEffortFallback'
+>;
+
+/**
+ * The reply detail's 思考 line: what the chat asked for, what was actually sent
+ * and the resolver's clamping chain. Facts only; null columns are old or
+ * unrecorded rows and nobody should read them as "the model default".
+ */
+export const thinkingEffortTextOf = (metric: ThinkingEffortFields): string => {
+    const requested = metric.thinkingEffortRequested;
+    const sent = metric.thinkingEffortSent;
+    const fallback = metric.thinkingEffortFallback;
+    if (requested === null && sent === null && fallback === null) return '未记录';
+    const fallbackText = fallback === null ? '' : `，裁剪 ${fallback.split('->').join('→')}`;
+    const sentText = sent === null ? '' : sent === 'off' ? ` / ${THINKING_EFFORT_OFF_LABEL}` : ` / 实际 显式${thinkingEffortLabel(sent)}`;
+    if (requested === null) return `跟随厂商默认${sentText}${fallbackText}`;
+    // A closed switch asked for and a closed switch sent is one fact, not two
+    if (requested === 'off' && (sent === null || sent === 'off')) {
+        return sent === null ? `${THINKING_EFFORT_OFF_LABEL}（未显式发送）${fallbackText}` : `${THINKING_EFFORT_OFF_LABEL}${fallbackText}`;
+    }
+    const requestedText = `请求 ${thinkingEffortAuditValue(requested)}`;
+    return `${requestedText}${sent === null ? '（未显式发送）' : sentText}${fallbackText}`;
+};
 
 export const replyPhaseLabel = (phase: ReplyPhase): string =>
     match(phase)

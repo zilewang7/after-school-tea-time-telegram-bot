@@ -1,7 +1,8 @@
 import { useCallback } from 'react';
-import type { ChatSettings } from '../../api';
+import type { ChatSettings, ThinkingEffortView } from '../../api';
 import { ModelPicker } from '../../components/model-picker';
 import { SaveBar } from '../../components/save-bar';
+import { ThinkingEffortField } from '../../components/thinking-effort-field';
 import { ToggleRow } from '../../components/toggle-row';
 import type { ChatGeminiPriorityState } from '../../gemini-priority';
 import { useConfirm } from '../../hooks/use-telegram-feedback';
@@ -18,9 +19,11 @@ interface ChatSettingsFormProps {
     effectiveModel: string;
     globalDefaultModel: string;
     geminiPriority: ChatGeminiPriorityState;
+    // The chat's thinking level and the effective model's graded efforts
+    thinkingEffortView: ThinkingEffortView;
     models: readonly string[];
     isOwner: boolean;
-    // Trial users keep the fixed trial model: the picker is disabled
+    // Trial users keep the fixed trial model: the picker and the thinking level are disabled
     isTrial: boolean;
     trialModel: string;
     writable: boolean;
@@ -29,13 +32,14 @@ interface ChatSettingsFormProps {
     onReload: () => void;
 }
 
-/** Model, addendum, pause, Priority PayGo and (owner) lock, saved together as one PATCH of the changed keys */
+/** Model, thinking level, addendum, pause, Priority PayGo and (owner) lock, saved together as one PATCH of the changed keys */
 export const ChatSettingsForm = ({
     chatId,
     settings,
     effectiveModel,
     globalDefaultModel,
     geminiPriority,
+    thinkingEffortView,
     models,
     isOwner,
     isTrial,
@@ -89,6 +93,14 @@ export const ChatSettingsForm = ({
                     <p className="hint">当前生效：{effectiveModel}</p>
                 )}
             </div>
+
+            <ThinkingEffortField
+                view={thinkingEffortView}
+                choice={form.thinkingEffort}
+                disabled={disabled || isTrial}
+                onChange={form.setThinkingEffort}
+            />
+            {isTrial && <p className="hint">体验用户不能修改思考等级；可在「准入」页申请完整功能。</p>}
 
             <AddendumEditor
                 chatId={chatId}

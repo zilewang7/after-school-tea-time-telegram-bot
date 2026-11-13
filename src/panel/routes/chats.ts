@@ -1,9 +1,9 @@
 /**
  * GET /api/chats/:chatId: one chat's dashboard for members and observers —
  * settings, effective model, the Priority PayGo switch (effective value,
- * global value, whether "on" can take effect), tool matrix, the last 7 days
- * of replies (`summary`, null when there were none) and the latest settings
- * changes.
+ * global value, whether "on" can take effect), the thinking level with the
+ * options the effective model allows, tool matrix, the last 7 days of replies
+ * (`summary`, null when there were none) and the latest settings changes.
  */
 import type { Hono } from 'hono';
 import { resolveChatModel } from '../../config/chat-model.js';
@@ -14,7 +14,13 @@ import { requireChatAccess } from '../access/require-access.js';
 import { requireAuth, type PanelEnv } from '../context.js';
 import { parseChatId } from '../request.js';
 import { toAuditEntryViews, withoutScope } from '../views/audit-view.js';
-import { currentChatSettings, geminiPriorityViewOf, toChatHeaderView, toSettingsView } from '../views/chat-view.js';
+import {
+    currentChatSettings,
+    geminiPriorityViewOf,
+    thinkingEffortViewOf,
+    toChatHeaderView,
+    toSettingsView,
+} from '../views/chat-view.js';
 import { buildToolMatrix } from '../views/tool-matrix.js';
 import { buildChatSummary } from '../stats/chat-summary.js';
 
@@ -39,6 +45,7 @@ export const registerChatRoutes = (app: Hono<PanelEnv>): void => {
             effectiveModel,
             globalDefaultModel: getGlobalDefaultModel(),
             ...geminiPriorityViewOf(chatId),
+            thinkingEffortView: thinkingEffortViewOf(chatId, effectiveModel),
             tools: buildToolMatrix(effectiveModel, chatId, settings.toolOverrides, tier),
             summary,
             recentAudit: recentAuditViews.map(withoutScope),

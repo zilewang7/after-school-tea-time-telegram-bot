@@ -29,6 +29,8 @@ export interface HealthResponse {
     version: string | null;
     // The in-memory price table the cost estimate uses
     priceTableVersion: string;
+    // The in-memory model catalog content version, capabilities included
+    catalogVersion: string;
     settingsLoaded: boolean;
 }
 
@@ -116,8 +118,33 @@ export interface ChatSettings {
     toolOverrides: ToolOverrides | null;
     // Priority PayGo, the chat's own value: true / false, or null = follow the global switch
     geminiPriority: boolean | null;
+    // Thinking level: null = the model default, 'off' = thinking off, else a graded effort
+    thinkingEffort: string | null;
     updatedAt: string | null;
     updatedBy: number | null;
+}
+
+/** One graded thinking effort the current model accepts, as the server labels it */
+export interface ThinkingEffortOption {
+    value: string;
+    label: string;
+}
+
+/** GET /api/chats/:chatId: the chat's thinking level and what its current model allows */
+export interface ThinkingEffortView {
+    // The chat's own value: null = model default, 'off' = thinking off, else a graded effort
+    value: string | null;
+    source: 'chat' | 'model-default';
+    // The vendor default when the chat has no choice; null = not known
+    effectiveDefault: string | null;
+    // Toggle models only: the vendor default on/off; null = not known
+    enabledDefault: boolean | null;
+    // The model supports switching thinking off/on (the backend's catalog reasoning.toggle)
+    toggle: boolean;
+    // Graded efforts the current model accepts, lowest first
+    options: ThinkingEffortOption[];
+    // false = the current model has no graded efforts
+    supported: boolean;
 }
 
 /** A panel tool switch group, the same keys the server uses */
@@ -175,6 +202,8 @@ export interface ChatDetailResponse {
     // "On" can take effect here: the global switch is on, or the chat is in TOOL_CHAT_IDS.
     // When false, PATCH { geminiPriority: true } is refused (403 forbidden)
     geminiPriorityCanEnable: boolean;
+    // The chat's thinking level and the efforts the effective model accepts
+    thinkingEffortView: ThinkingEffortView;
     tools: ToolGroupEntry[];
     // Last 7 days; null when the chat had no reply in the window (shown in the 统计 tab)
     summary: ChatSummaryView | null;
@@ -191,6 +220,8 @@ export interface ChatSettingsPatch {
     // Owner only (403 forbidden otherwise, when the value changes); null = follow the global switch.
     // true is refused (403 forbidden) where `geminiPriorityCanEnable` is false
     geminiPriority?: boolean | null;
+    // null = model default, 'off' = thinking off, else a graded effort (the server's closed set)
+    thinkingEffort?: string | null;
     expectedUpdatedAt?: string;
 }
 
@@ -584,6 +615,12 @@ export interface ReplyMetric {
     resumedRounds: number | null;
     // Rounds the checkpoint saved when this attempt failed or stopped; null when none was saved
     checkpointRounds: number | null;
+    // The chat's thinking level when the reply started; null = the model default
+    thinkingEffortRequested: string | null;
+    // The level actually sent after clamping/fallback; null = nothing explicit went out
+    thinkingEffortSent: string | null;
+    // The resolver's degradation chain, e.g. 'xhigh->high'; null = none
+    thinkingEffortFallback: string | null;
     // This attempt alone, priced like the statistics (priority rounds at the priority price)
     costUsd: number | null;
     pricing: PricingFlag;
@@ -1284,4 +1321,86 @@ export interface AccessApplicationCreate {
 /** PATCH, POST /resend and POST /api/access-applications answer with the stored application */
 export interface AccessApplicationResponse {
     application: AccessApplicationSummary;
+}
+
+// ---- Model catalog (owner-only, read only; thinking-effort design §5) ----
+
+/** What the runtime resolves a model's traits from: the catalog row, the seed, or the code fallback */
+export type ModelTraitsOrigin = 'catalog' | 'seed' | 'code';
+
+/** Where one capability value came from (mirrors the server's ModelCapabilitySource) */
+export type ModelCapabilitySource = 'code' | 'models-dev' | 'manual' | 'official' | 'probe';
+
+export type ModelCapabilityConfidence = 'high' | 'medium' | 'low';
+
+export type ModelCatalogKind = 'chat' | 'image';
+
+export type ModelModalityName = 'text' | 'image' | 'audio' | 'video' | 'pdf';
+
+export interface ModelCapabilityModalities {
+    input?: readonly ModelModalityName[];
+    output?: readonly ModelModalityName[];
+}
+
+export interface ModelCapabilityReasoning {
+    supported: boolean;
+    // Supports switching thinking off/on
+    toggle?: boolean;
+    // Graded efforts the model accepts, ascending
+    efforts?: readonly string[];
+    // Vendor default effort; null/absent = unknown
+    defaultEffort?: string | null;
+    // Vendor default on/off for a toggle model; null/absent = unknown
+    defaultEnabled?: boolean | null;
+    source?: ModelCapabilitySource;
+    checkedOn?: string;
+    confidence?: ModelCapabilityConfidence;
+}
+
+export interface ModelCapabilityApiFlags {
+    reasoning?: boolean;
+    tools?: boolean;
+    structuredOutput?: boolean;
+}
+
+/** The normalized capabilities object the server stores (schema 1); read-only */
+export interface ModelCapabilitiesView {
+    schema?: 1;
+    kind: ModelCatalogKind;
+    vision: boolean;
+    imageOutput: boolean;
+    tools: boolean;
+    // Legacy mirror of reasoning.efforts
+    reasoningEffort: readonly string[];
+    contextTokens: number | null;
+    outputTokens: number | null;
+    modalities?: ModelCapabilityModalities;
+    reasoning?: ModelCapabilityReasoning;
+    apis?: Readonly<Record<string, ModelCapabilityApiFlags>>;
+    toolsMixing?: 'allowed' | 'denied' | 'unknown';
+    nativeTools?: { readonly imageSearchGrounding?: boolean };
+    source?: ModelCapabilitySource;
+    checkedOn?: string;
+    confidence?: ModelCapabilityConfidence;
+}
+
+/** One row of GET /api/model-catalog */
+export interface ModelCatalogEntryView {
+    id: string;
+    label: string;
+    platform: string | null;
+    enabled: boolean;
+    source: string;
+    // YYYY-MM-DD the row was last checked
+    checkedOn: string;
+    confidence: string;
+    traitsOrigin: ModelTraitsOrigin;
+    capabilities: ModelCapabilitiesView;
+}
+
+/** GET /api/model-catalog (owner only): catalog version, pending proposals, rows */
+export interface ModelCatalogResponse {
+    catalogVersion: string;
+    pendingProposals: number;
+    models: readonly ModelCatalogEntryView[];
 }

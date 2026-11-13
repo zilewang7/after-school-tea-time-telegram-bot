@@ -247,6 +247,23 @@ export interface AIResponse {
     streamEnded?: boolean;
 }
 
+/**
+ * The thinking effort a reply asks the platform for, settled by the reply
+ * layer from the chat's setting and the model's capability data.
+ * - absent on PlatformConfig: the platform keeps its legacy hard-coded
+ *   behaviour, request for request;
+ * - 'default': follow the vendor default, so no level/effort parameter goes
+ *   out at all (the provider decides);
+ * - 'explicit': send `value` (lower case) as the level/effort parameter;
+ * - 'off': disable thinking where the platform can, otherwise behave like
+ *   'default'.
+ */
+export interface ThinkingEffortRequest {
+    readonly mode: 'default' | 'explicit' | 'off';
+    /** Lower-case effort value for mode 'explicit'; null otherwise */
+    readonly value: string | null;
+}
+
 // Platform configuration
 export interface PlatformConfig {
     model: string;
@@ -274,6 +291,11 @@ export interface PlatformConfig {
      * own Vertex reads it; every other lane ignores the field.
      */
     serviceTier?: 'priority';
+    /**
+     * Thinking effort this request asks for; absent keeps the platform's
+     * legacy hard-coded behaviour (see ThinkingEffortRequest).
+     */
+    thinkingEffort?: ThinkingEffortRequest;
     /**
      * Gets a new checkpoint each time the tool loop reaches a point it could
      * be resumed from; the caller keeps the last one. Only the Gemini tool

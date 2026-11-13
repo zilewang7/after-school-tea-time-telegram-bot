@@ -8,34 +8,18 @@
  * a catalog row says whether a model is offered and what it can do, but code
  * that changes prompts, tools or the image pipeline still ships in a release.
  */
+import {
+    emptyModelCapabilities,
+    type ModelCatalogCapabilities,
+    type ModelCatalogConfidence,
+    type ModelCatalogKind,
+} from './model-capabilities.js';
+import { capabilitySeedOf } from './model-capability-seed.js';
 import { GEMINI_IMAGE_MODEL, OPENAI_IMAGE_MODEL, modelConfigs } from './models.js';
 
-export type ModelCatalogKind = 'chat' | 'image';
+export type { ModelCatalogCapabilities, ModelCatalogConfidence, ModelCatalogKind };
 
 export type ModelCatalogSource = 'manual' | 'models-dev' | 'official' | 'catalog';
-
-export type ModelCatalogConfidence = 'high' | 'medium' | 'low';
-
-/**
- * What one model can do. Kept close to the models.dev schema-2 capabilities so
- * the watcher can fill it from the catalog; a field missing here means "not
- * known", never "supported".
- */
-export interface ModelCatalogCapabilities {
-    readonly kind: ModelCatalogKind;
-    /** Accepts image input */
-    readonly vision: boolean;
-    /** Emits images (image generation models) */
-    readonly imageOutput: boolean;
-    /** Function/tool calling */
-    readonly tools: boolean;
-    /** Reasoning effort values the model accepts, e.g. ['low','medium','high'] */
-    readonly reasoningEffort: readonly string[];
-    /** Context window in tokens */
-    readonly contextTokens: number | null;
-    /** Max output tokens */
-    readonly outputTokens: number | null;
-}
 
 export interface ModelCatalogEntry {
     readonly id: string;
@@ -66,39 +50,37 @@ export const platformOfModelId = (modelId: string): string => {
     return 'openai';
 };
 
-const BASE_CAPABILITIES: ModelCatalogCapabilities = {
-    kind: 'chat',
-    vision: false,
-    imageOutput: false,
-    tools: true,
-    reasoningEffort: [],
-    contextTokens: null,
-    outputTokens: null,
+/**
+ * The pre-seed fallback for a menu id the capability seed does not know: the
+ * old code's image-id heuristic, nothing else.
+ */
+const fallbackCapabilitiesOf = (modelId: string): ModelCatalogCapabilities => {
+    const id = modelId.toLowerCase();
+    const imageIds = new Set([GEMINI_IMAGE_MODEL.toLowerCase(), OPENAI_IMAGE_MODEL.toLowerCase()]);
+    const isImage = imageIds.has(id) || id.includes('image') || id.includes('nano-banana');
+    return {
+        ...emptyModelCapabilities(),
+        schema: 1,
+        ...(isImage ? { kind: 'image', imageOutput: true, tools: false } : {}),
+    };
 };
 
-const imageModelIds = (): ReadonlySet<string> =>
-    new Set([OPENAI_IMAGE_MODEL, GEMINI_IMAGE_MODEL].map((id) => id.toLowerCase()));
-
-/** Seed rows: the menu as it ships in code, with conservative capabilities */
-export const seedModelCatalogEntries = (): readonly ModelCatalogEntry[] => {
-    const images = imageModelIds();
-    return modelConfigs.map((model) => {
-        const id = model.id.toLowerCase();
-        const isImage = images.has(id) || id.includes('image') || id.includes('nano-banana');
-        return {
-            id: model.id,
-            label: model.name,
-            platform: platformOfModelId(model.id),
-            enabled: true,
-            capabilities: isImage
-                ? { ...BASE_CAPABILITIES, kind: 'image', imageOutput: true, tools: false }
-                : BASE_CAPABILITIES,
-            source: 'manual',
-            checkedOn: '2026-11-13',
-            confidence: 'high',
-        };
-    });
-};
+/**
+ * Seed rows: the menu as it ships in code. Capabilities come from the code seed
+ * (the 2026-11-13 snapshot); a menu id the seed does not know keeps the old
+ * image-id heuristic on the empty schema-1 shape.
+ */
+export const seedModelCatalogEntries = (): readonly ModelCatalogEntry[] =>
+    modelConfigs.map((model) => ({
+        id: model.id,
+        label: model.name,
+        platform: platformOfModelId(model.id),
+        enabled: true,
+        capabilities: capabilitySeedOf(model.id) ?? fallbackCapabilitiesOf(model.id),
+        source: 'manual',
+        checkedOn: '2026-11-13',
+        confidence: 'high',
+    }));
 
 let catalog = new Map<string, ModelCatalogEntry>(seedModelCatalogEntries().map((entry) => [entry.id, entry]));
 let catalogVersion = 'seed';

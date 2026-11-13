@@ -37,6 +37,10 @@ const pricingCommand = await import('../../src/cmd/commands/pricing.js');
 const { ModelPriceEntry } = await import('../../src/db/modelPriceDTO.js');
 const { PriceChangeProposal } = await import('../../src/db/priceChangeProposalDTO.js');
 const { PriceWatchRun } = await import('../../src/db/priceWatchRunDTO.js');
+const { ModelCapabilityProposal } = await import('../../src/db/modelCapabilityProposalDTO.js');
+const { ModelCatalogEntryRow } = await import('../../src/db/modelCatalogDTO.js');
+const catalogService = await import('../../src/services/model-catalog-service.js');
+const catalogConfig = await import('../../src/config/model-catalog.js');
 
 const OWNER_ID = 4242;
 const OUTSIDER_ID = 6262;
@@ -48,6 +52,48 @@ const fetchedUrls: string[] = [];
 /** Empty catalogs: no candidate, no proposal, and no network */
 const emptyCatalogs: CatalogFetcher = async (url) => {
     fetchedUrls.push(url);
+    return { status: 200, body: url.endsWith('.toml') ? '' : '{}' };
+};
+
+/**
+ * A provider TOML whose reasoning section drifted from the code seed: the
+ * watcher must propose the effort list change and nothing else.
+ */
+const DRIFT_TOML = `schema = 2
+
+[capabilities]
+tools = { supported = true }
+reasoning = { supported = true, effort = ["low", "medium"] }
+`;
+
+const capabilityDriftCatalogs: CatalogFetcher = async (url) => {
+    fetchedUrls.push(url);
+    if (url.endsWith('/google-vertex/models/gemini-4-hydrogen.toml')) {
+        return { status: 200, body: DRIFT_TOML };
+    }
+    return { status: 200, body: url.endsWith('.toml') ? '' : '{}' };
+};
+
+/** api.json with one new model of a known family: the run auto-adds it */
+const DISCOVERY_API = JSON.stringify({
+    openai: {
+        models: {
+            'gpt-7-audit': {
+                id: 'gpt-7-audit',
+                name: 'GPT-7 Audit',
+                release_date: new Date().toISOString().slice(0, 10),
+                limit: { context: 200_000, output: 32_000 },
+                modalities: { input: ['text', 'image'], output: ['text'] },
+                tool_call: true,
+                reasoning_options: [{ type: 'effort', values: ['low', 'medium', 'high'] }],
+            },
+        },
+    },
+});
+
+const discoveryFetcher: CatalogFetcher = async (url) => {
+    fetchedUrls.push(url);
+    if (url.endsWith('api.json')) return { status: 200, body: DISCOVERY_API };
     return { status: 200, body: url.endsWith('.toml') ? '' : '{}' };
 };
 
@@ -102,13 +148,16 @@ const runGroupCommand = async (text: string): Promise<readonly string[]> => {
     return repliesOf();
 };
 
-/** Empty the pricing tables, reload the seed rows and forget the debounce clock */
+/** Empty the pricing/capability tables, reload the seeds and forget the debounce clock */
 const resetPricingDb = async (): Promise<void> => {
     await PriceChangeProposal.destroy({ where: {} });
     await PriceWatchRun.destroy({ where: {} });
     await ModelPriceEntry.destroy({ where: {} });
+    await ModelCapabilityProposal.destroy({ where: {} });
+    await ModelCatalogEntryRow.destroy({ where: {} });
     pricingConfig.setPriceEntries([]);
     await service.loadModelPrices();
+    await quietly(() => catalogService.loadModelCatalog());
     pricingCommand.resetPricingCommandState();
     fetchedUrls.length = 0;
     telegram.reset();
@@ -185,7 +234,12 @@ cases.push(
         const text = replies[0] ?? '';
         expect(text.includes('价目版本：'), `the table version is shown (got ${JSON.stringify(text.slice(0, 80))})`);
         expect(text.includes('最近核对：'), 'the freshness of the sources is shown');
-        expect(text.includes('待确认提案：0'), 'the pending count is shown');
+        expect(text.includes('待确认提案：0'), 'the pending price count is shown');
+        expect(text.includes('待确认能力提案：0'), 'the pending capability count is shown');
+        expect(
+            text.includes(`目录版本：${catalogConfig.modelCatalogVersion()}`),
+            `the catalog version is shown (got ${JSON.stringify(text.slice(0, 200))})`
+        );
         expect(text.includes('未来 30 天'), 'the upcoming changes are shown');
         expect(text.includes('上次巡检：从未'), 'the watcher has not run yet');
         expect(fetchedUrls.length === 0, 'status does not fetch');
@@ -236,6 +290,95 @@ cases.push(
         const laterReplies = await runCommand('/pricing status');
         const laterText = laterReplies[0] ?? '';
         expect(laterText.includes('（ok）'), `the last run outcome is shown (got ${JSON.stringify(laterText)})`);
+    })
+);
+
+// ---- the capability half of the run ----
+
+cases.push(
+    await runCase('a capability drift gets its own approval message after the price run', async () => {
+        await resetPricingDb();
+        watch.setPriceWatchFetcher(capabilityDriftCatalogs);
+        try {
+            const replies = await runCommand('/pricing');
+            // The run sends the capability message before the command's own summary
+            const capabilityText = replies.find((text) => text.startsWith('🧩 能力巡检：'));
+            expect(capabilityText !== undefined, `an ability approval message was sent (got ${JSON.stringify(replies)})`);
+            expect(
+                (capabilityText ?? '').includes('1 条待确认'),
+                `the message names the count (got ${JSON.stringify(capabilityText?.slice(0, 100))})`
+            );
+            expect(
+                (capabilityText ?? '').includes('思考档位：low/medium/high/xhigh → low/medium'),
+                'the field-level change is rendered'
+            );
+            const approvals = telegram
+                .callsOf('sendMessage')
+                .filter((call) => typeof call.payload.reply_markup === 'object' && call.payload.reply_markup !== null);
+            expect(approvals.length === 1, `one approval message carries the buttons (got ${approvals.length})`);
+            const summary = replies.find((text) => text !== capabilityText) ?? '';
+            expect(summary.includes('1 条能力变更待确认'), `the summary counts the capability proposal (got ${JSON.stringify(summary)})`);
+
+            const proposals = await ModelCapabilityProposal.findAll({ where: { model: 'gemini-4-hydrogen' } });
+            expect(proposals.length === 1, `one capability proposal is pending (got ${proposals.length})`);
+            expect(proposals[0]?.status === 'pending', 'it waits for the owner');
+            const runs = await PriceWatchRun.findAll();
+            expect(runs.length === 1 && runs[0]?.outcome === 'ok', 'the run recorded ok');
+            expect(runs[0]?.proposals === 0, 'it counts price proposals only');
+
+            const statusReplies = await runCommand('/pricing status');
+            expect(
+                (statusReplies[0] ?? '').includes('待确认能力提案：1'),
+                `status counts the pending capability proposal (got ${JSON.stringify(statusReplies[0]?.slice(0, 120))})`
+            );
+        } finally {
+            watch.setPriceWatchFetcher(emptyCatalogs);
+        }
+    })
+);
+
+// ---- auto-added model capabilities ----
+
+cases.push(
+    await runCase('a discovered model is written with schema-1 capabilities', async () => {
+        await resetPricingDb();
+        watch.setPriceWatchFetcher(discoveryFetcher);
+        try {
+            const replies = await runCommand('/pricing');
+            expect(
+                replies.some((text) => text.includes('gpt-7-audit')),
+                `the new model is announced (got ${JSON.stringify(replies)})`
+            );
+            const row = await ModelCatalogEntryRow.findByPk('gpt-7-audit');
+            expect(row !== null, 'the discovered row exists');
+            if (row === null) return;
+            const parsed: unknown = JSON.parse(row.capabilities);
+            if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+                throw new Error('the stored capabilities is not an object');
+            }
+            const capabilities = Object.fromEntries(Object.entries(parsed));
+            expect(capabilities['schema'] === 1, `the row is schema 1 (got ${String(capabilities['schema'])})`);
+            expect(capabilities['source'] === 'models-dev', 'the capability source is models-dev');
+            expect(
+                typeof capabilities['checkedOn'] === 'string' && String(capabilities['checkedOn']).length === 10,
+                `the check date is written (got ${String(capabilities['checkedOn'])})`
+            );
+            expect(capabilities['kind'] === 'chat' && capabilities['vision'] === true, 'the legacy fields come from api.json');
+            expect(capabilities['imageOutput'] === false && capabilities['tools'] === true, 'output modality and tools recorded');
+            expect(
+                JSON.stringify(capabilities['reasoningEffort']) === '["low","medium","high"]',
+                `the legacy effort mirror is written (got ${JSON.stringify(capabilities['reasoningEffort'])})`
+            );
+            expect(capabilities['contextTokens'] === 200_000 && capabilities['outputTokens'] === 32_000, 'the limits are written');
+            expect(Object.hasOwn(capabilities, 'reasoning') === false, 'no reasoning section is derived (the proposal fills it)');
+            expect(row.source === 'models-dev', 'the row provenance is models-dev');
+            const proposals = await ModelCapabilityProposal.findAll({ where: { model: 'gpt-7-audit' } });
+            expect(proposals.length === 0, 'its capability proposal waits for the next run');
+        } finally {
+            await ModelCatalogEntryRow.destroy({ where: { id: 'gpt-7-audit' } });
+            watch.setPriceWatchFetcher(emptyCatalogs);
+            await quietly(() => catalogService.loadModelCatalog());
+        }
     })
 );
 

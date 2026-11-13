@@ -49,6 +49,7 @@ export const ChatSettingsView = ({
                 effectiveModel={detail.effectiveModel}
                 globalDefaultModel={detail.globalDefaultModel}
                 geminiPriority={geminiPriority}
+                thinkingEffortView={detail.thinkingEffortView}
                 models={models}
                 isOwner={isOwner}
                 isTrial={isTrial}

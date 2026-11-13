@@ -91,6 +91,10 @@ const httpError = (status: number, message: string): ScriptedReply => ({
 const xhighRejected = (): ScriptedReply =>
     httpError(400, 'Thinking level is unsupported: THINKING_LEVEL_XHIGH');
 
+/** The 400 a model answers with when it does not take the requested level */
+const levelRejected = (level: string): ScriptedReply =>
+    httpError(400, `Thinking level is unsupported: THINKING_LEVEL_${level.toUpperCase()}`);
+
 /** One streamed chunk in Vertex wire shape; finishReason marks the last one */
 const event = (parts: readonly unknown[], finishReason?: string) => ({
     candidates: [
@@ -158,6 +162,8 @@ const captureConsole = async <T,>(body: () => Promise<T>): Promise<{ result: T; 
 interface TurnOptions {
     readonly model?: string;
     readonly tools?: TurnTools;
+    /** Absent: the platform keeps its legacy hard-coded level */
+    readonly thinkingEffort?: { readonly mode: 'default' | 'explicit' | 'off'; readonly value: string | null };
     /** Absent: a single attempt per request, so no automatic recovery in the tool loop */
     readonly maxRetries?: number;
 }
@@ -169,6 +175,7 @@ const runTurn = async (options: TurnOptions = {}): Promise<{ chunks: StreamChunk
             systemPrompt: 'offline system prompt',
             maxRetries: options.maxRetries ?? 1,
             ...(options.tools ? { tools: options.tools } : {}),
+            ...(options.thinkingEffort ? { thinkingEffort: options.thinkingEffort } : {}),
         });
         const chunks: StreamChunk[] = [];
         for await (const chunk of stream) chunks.push(chunk);
@@ -306,6 +313,162 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
                 `only the rejected attempt used XHIGH (got ${json(thinkingLevelsOf())})`
             );
             expect(textOf(chunks) === 'tool fallback answer', 'the reply answers after the fallback');
+        },
+    },
+    {
+        name: 'default sends no level on Gemini 4 and keeps the automatic budget before Gemini 4',
+        body: async () => {
+            for (const model of ['gemini-4-hydrogen', 'gemini-4-argon', 'gemini-4-carbon']) {
+                reset([sse(answerRound('default answer'))]);
+                await runTurn({ model, thinkingEffort: { mode: 'default', value: null } });
+                const config = thinkingConfigOf(recordedRequests[0]);
+                expect(
+                    config.includeThoughts === true && config.thinkingLevel === undefined && config.thinkingBudget === undefined,
+                    `${model}: default sends includeThoughts alone (got ${json(config)})`
+                );
+            }
+
+            reset([sse(answerRound('flash answer'))]);
+            await runTurn({ model: 'gemini-3.8-flash', thinkingEffort: { mode: 'default', value: null } });
+            const flash = thinkingConfigOf(recordedRequests[0]);
+            expect(
+                flash.thinkingBudget === -1 && flash.thinkingLevel === undefined,
+                `a pre-Gemini-4 model keeps its automatic budget (got ${json(flash)})`
+            );
+
+            reset([sse(answerRound('image answer'))]);
+            await runTurn({ model: 'gemini-nano-banana-2.1', thinkingEffort: { mode: 'default', value: null } });
+            expect(
+                thinkingConfigOf(recordedRequests[0]).thinkingBudget === -1,
+                `the image model keeps its automatic budget (got ${json(thinkingConfigOf(recordedRequests[0]))})`
+            );
+        },
+    },
+    {
+        name: 'an explicit effort goes out as the uppercase wire level',
+        body: async () => {
+            reset([sse(answerRound('hydrogen answer'))]);
+            const hydrogen = await runTurn({
+                model: 'gemini-4-hydrogen',
+                thinkingEffort: { mode: 'explicit', value: 'xhigh' },
+            });
+            expect(
+                thinkingConfigOf(recordedRequests[0]).thinkingLevel === 'XHIGH',
+                `hydrogen sends XHIGH (got ${json(thinkingLevelsOf())})`
+            );
+            expect(
+                hydrogen.lines.some((line) => line.includes('thinking level XHIGH')),
+                `the explicit level is logged (got ${json(hydrogen.lines)})`
+            );
+
+            reset([sse(answerRound('argon answer'))]);
+            await runTurn({ model: 'gemini-4-argon', thinkingEffort: { mode: 'explicit', value: 'low' } });
+            expect(
+                thinkingConfigOf(recordedRequests[0]).thinkingLevel === 'LOW',
+                `a lower-case value is sent uppercase (got ${json(thinkingLevelsOf())})`
+            );
+
+            reset([sse(answerRound('flash answer'))]);
+            await runTurn({ model: 'gemini-3.8-flash', thinkingEffort: { mode: 'explicit', value: 'high' } });
+            expect(
+                thinkingConfigOf(recordedRequests[0]).thinkingLevel === 'HIGH' &&
+                    thinkingConfigOf(recordedRequests[0]).thinkingBudget === undefined,
+                `a pre-Gemini-4 model sends the level instead of the budget (got ${json(thinkingConfigOf(recordedRequests[0]))})`
+            );
+        },
+    },
+    {
+        name: 'off cannot disable Gemini thinking and behaves like the default',
+        body: async () => {
+            reset([sse(answerRound('argon answer'))]);
+            await runTurn({ model: 'gemini-4-argon', thinkingEffort: { mode: 'off', value: null } });
+            const config = thinkingConfigOf(recordedRequests[0]);
+            expect(
+                config.includeThoughts === true && config.thinkingLevel === undefined && config.thinkingBudget === undefined,
+                `Gemini 4 ignores off and sends no level (got ${json(config)})`
+            );
+
+            reset([sse(answerRound('flash answer'))]);
+            await runTurn({ model: 'gemini-3.8-flash', thinkingEffort: { mode: 'off', value: null } });
+            expect(
+                thinkingConfigOf(recordedRequests[0]).thinkingBudget === -1,
+                `a pre-Gemini-4 model keeps the automatic budget (got ${json(thinkingConfigOf(recordedRequests[0]))})`
+            );
+        },
+    },
+    {
+        name: 'an explicit level the model rejects falls back to HIGH once',
+        body: async () => {
+            reset([levelRejected('low'), sse(answerRound('fallback answer'))]);
+            const { chunks, lines } = await runTurn({
+                model: 'gemini-4-argon',
+                thinkingEffort: { mode: 'explicit', value: 'low' },
+            });
+            expect(recordedRequests.length === 2, `one fallback retry (got ${recordedRequests.length})`);
+            expect(json(thinkingLevelsOf()) === json(['LOW', 'HIGH']), `LOW then HIGH (got ${json(thinkingLevelsOf())})`);
+            expect(textOf(chunks) === 'fallback answer', 'the retry answers');
+            expect(
+                lines.some((line) => line.includes('rejected the LOW thinking level; retrying with HIGH')),
+                `the downgrade is logged (got ${json(lines)})`
+            );
+        },
+    },
+    {
+        name: 'a pre-Gemini-4 explicit level falls back to the automatic budget',
+        body: async () => {
+            reset([levelRejected('high'), sse(answerRound('budget answer'))]);
+            const { chunks } = await runTurn({
+                model: 'gemini-3.8-flash',
+                thinkingEffort: { mode: 'explicit', value: 'high' },
+            });
+            expect(recordedRequests.length === 2, `one fallback retry (got ${recordedRequests.length})`);
+            expect(thinkingConfigOf(recordedRequests[0]).thinkingLevel === 'HIGH', 'the first attempt sends the level');
+            const fallback = thinkingConfigOf(recordedRequests[1]);
+            expect(
+                fallback.thinkingBudget === -1 && fallback.thinkingLevel === undefined,
+                `the retry uses the automatic budget (got ${json(fallback)})`
+            );
+            expect(textOf(chunks) === 'budget answer', 'the retry answers');
+        },
+    },
+    {
+        name: 'the tool loop shares an explicit downgrade across rounds',
+        body: async () => {
+            reset([levelRejected('xhigh'), sse(toolCallRound()), sse(answerRound('tool fallback answer'))]);
+            const { chunks } = await runTurn({
+                model: 'gemini-4-hydrogen',
+                tools: turnTools,
+                thinkingEffort: { mode: 'explicit', value: 'xhigh' },
+            });
+            expect(recordedRequests.length === 3, `rejected round 1, tool round, answer round (got ${recordedRequests.length})`);
+            expect(
+                json(thinkingLevelsOf()) === json(['XHIGH', 'HIGH', 'HIGH']),
+                `only the rejected attempt used the explicit level (got ${json(thinkingLevelsOf())})`
+            );
+            expect(textOf(chunks) === 'tool fallback answer', 'the reply answers after the fallback');
+        },
+    },
+    {
+        name: '401 and 429 with a thinking-level message are not an effort downgrade',
+        body: async () => {
+            for (const status of [401, 429]) {
+                reset([httpError(status, 'Thinking level is unsupported: THINKING_LEVEL_LOW')]);
+                let error: unknown = null;
+                try {
+                    await runTurn({
+                        model: 'gemini-4-argon',
+                        thinkingEffort: { mode: 'explicit', value: 'low' },
+                    });
+                } catch (caught) {
+                    error = caught;
+                }
+                expect(error !== null, `${status}: the reply fails`);
+                expect(recordedRequests.length === 1, `${status}: no downgrade retry (got ${recordedRequests.length})`);
+                expect(
+                    thinkingConfigOf(recordedRequests[0]).thinkingLevel === 'LOW',
+                    `${status}: the body is unchanged (got ${json(thinkingLevelsOf())})`
+                );
+            }
         },
     },
     {

@@ -90,9 +90,8 @@ const dbIndex = await import('../../src/db/index.js');
 const { sequelize } = await import('../../src/db/config.js');
 const responseHandler = await import('../../src/reply/response-handler.js');
 const { getActiveSession, listActiveSessions, startRetry } = await import('../../src/services/bot-message-service.js');
-const { markRequestStarted, recordCheckpointRounds, recordContextSize, recordResumedRounds } = await import(
-    '../../src/services/reply-metrics-draft.js'
-);
+const { markRequestStarted, recordCheckpointRounds, recordContextSize, recordResumedRounds, recordThinkingEffort } =
+    await import('../../src/services/reply-metrics-draft.js');
 const { listRecentReplyErrors } = await import('../../src/services/recent-reply-errors.js');
 const { getLastCleanupRun } = await import('../../src/services/cleanup-status.js');
 const { createUsageSink } = await import('../../src/ai/usage/index.js');
@@ -107,12 +106,15 @@ const { clearExpiredData } = await import('../../src/db/autoSave.js');
 const { handleReply } = await import('../../src/reply/chat-handler.js');
 const { handleRetryRequest } = await import('../../src/reply/retry-handler.js');
 const { handlePicgptCommand } = await import('../../src/reply/commands/picgpt-handler.js');
+const { updateChatSettings } = await import('../../src/services/chat-settings-service.js');
+const { seedModelCatalogEntries, setModelCatalog } = await import('../../src/config/model-catalog.js');
 const { OPENAI_IMAGE_MODEL } = await import('../../src/config/models.js');
 
 type ChatContext = import('../../src/reply/response-handler.js').ChatContext;
 type ReplyMetricRecord = import('../../src/db/queries/reply-metrics.js').ReplyMetricRecord;
 type ReplyMetricInput = import('../../src/db/queries/reply-metrics.js').ReplyMetricInput;
 type ContextIndexEntry = import('../../src/reply/context-index.js').ContextIndexEntry;
+type ModelEffort = import('../../src/config/model-capabilities.js').ModelEffort;
 
 const USER_ID = 5150;
 const json = (value: unknown): string => JSON.stringify(value);
@@ -208,6 +210,27 @@ const NO_RECOVERY_COLUMNS = {
     priorityOutputTokens: null,
     resumedRounds: null,
     checkpointRounds: null,
+};
+
+/** The thinking-effort columns: the chat's request, what went out and the fallback chain */
+const thinkingColumnsOf = (
+    row:
+        | {
+              readonly thinkingEffortRequested: string | null;
+              readonly thinkingEffortSent: string | null;
+              readonly thinkingEffortFallback: string | null;
+          }
+        | undefined
+) => ({
+    thinkingEffortRequested: row?.thinkingEffortRequested,
+    thinkingEffortSent: row?.thinkingEffortSent,
+    thinkingEffortFallback: row?.thinkingEffortFallback,
+});
+
+const NO_THINKING_COLUMNS = {
+    thinkingEffortRequested: null,
+    thinkingEffortSent: null,
+    thinkingEffortFallback: null,
 };
 
 /** A stored row with every column given; tokens of one round with usage */
@@ -691,6 +714,69 @@ const cases: { name: string; body: () => Promise<void> }[] = [
         },
     },
     {
+        name: 'thinking effort: the requested, sent and fallback columns reach the row and the reply detail',
+        body: async () => {
+            const chatContext = await startReply(-1005100000019, { model: 'gemini-4-hydrogen' });
+            expect(
+                json(thinkingColumnsOf(chatContext.session.metrics)) === json(NO_THINKING_COLUMNS),
+                'a new draft records nothing'
+            );
+            recordThinkingEffort(chatContext.session.metrics, {
+                requested: 'xhigh',
+                sent: 'high',
+                fallback: 'xhigh->high',
+            });
+            markRequestStarted(chatContext.session.metrics);
+            async function* answer(): AsyncGenerator<StreamChunk> {
+                yield { type: 'text', content: '思考过' };
+                yield { type: 'done' };
+            }
+            await deliver(chatContext, answer());
+            const row = await onlyRow(chatContext);
+            expect(
+                json(thinkingColumnsOf(row)) ===
+                    json({
+                        thinkingEffortRequested: 'xhigh',
+                        thinkingEffortSent: 'high',
+                        thinkingEffortFallback: 'xhigh->high',
+                    }),
+                `the row keeps the request, what went out and the fallback (got ${json(thinkingColumnsOf(row))})`
+            );
+            const view = (
+                await listReplyMetricsByReply(chatContext.chatId, chatContext.session.firstMessageId, { access: 'observer' })
+            ).get(1)?.[0];
+            expect(
+                view?.thinkingEffortRequested === 'xhigh' &&
+                    view.thinkingEffortSent === 'high' &&
+                    view.thinkingEffortFallback === 'xhigh->high',
+                `the reply detail carries them (got ${json(view)})`
+            );
+
+            // Nothing recorded: all NULL, not an empty string
+            const plain = await startReply(-1005100000020, { model: 'deepseek-flash' });
+            markRequestStarted(plain.session.metrics);
+            async function* plainStream(): AsyncGenerator<StreamChunk> {
+                yield { type: 'text', content: '默认档' };
+                yield { type: 'done' };
+            }
+            await deliver(plain, plainStream());
+            const plainRow = await onlyRow(plain);
+            expect(
+                json(thinkingColumnsOf(plainRow)) === json(NO_THINKING_COLUMNS),
+                `no choice and no fallback stay NULL (got ${json(thinkingColumnsOf(plainRow))})`
+            );
+
+            // A row written without the columns stores NULL
+            const chatId = -1005100000021;
+            await insertReplyMetric(storedRow(chatId, 9101, {}));
+            const [stored] = await findReplyMetricsByReply(chatId, 9101);
+            expect(
+                json(thinkingColumnsOf(stored)) === json(NO_THINKING_COLUMNS),
+                `a row written without them reads back NULL (got ${json(thinkingColumnsOf(stored))})`
+            );
+        },
+    },
+    {
         name: 'the usage aggregate sums the priority part: rounds over every row, tokens over rows with usage',
         body: async () => {
             const chatId = -1005100000018;
@@ -963,6 +1049,80 @@ const cases: { name: string; body: () => Promise<void> }[] = [
                 row?.rounds === 1 && row.promptTokens === 31 && row.outputTokens === 1056 && row.imageOutputTokens === 1056,
                 `the images API usage, all output as image output (got ${json(row)})`
             );
+        },
+    },
+    {
+        name: 'the chat thinking level reaches the request build and the reply_metrics row',
+        body: async () => {
+            const chatId = -1005100000022;
+            const actor = { userId: USER_ID, isOwner: false };
+            const replyOnce = async (): Promise<ReplyMetricRecord> => {
+                const userMessageId = takeMessageId();
+                const text = '@AfterSchoolTeatimeBot 你好';
+                await dbIndex.saveMessage({ chatId, messageId: userMessageId, userId: USER_ID, date: new Date(), userName: 'u', message: text });
+                const replyContext = contextOf(
+                    messageUpdate({ chatId, messageId: userMessageId, userId: USER_ID, text }),
+                    createFakeTelegram()
+                );
+                await capture(() => handleReply(replyContext, { mention: true }));
+                const response = await dbIndex.BotResponse.findOne({ where: { chatId, userMessageId } });
+                if (!response) throw new Error('the reply was not recorded');
+                const [row] = await findReplyMetricsByReply(chatId, response.messageId);
+                if (row === undefined) throw new Error('the reply has no metrics row');
+                return row;
+            };
+
+            // No setting: the model default, nothing explicit recorded
+            const plain = await replyOnce();
+            expect(
+                json(thinkingColumnsOf(plain)) === json(NO_THINKING_COLUMNS),
+                `the default setting records no explicit level (got ${json(thinkingColumnsOf(plain))})`
+            );
+
+            // MiMo supports toggling: the off switch reaches the row
+            await updateChatSettings({ chatId, patch: { thinkingEffort: 'off' }, actor });
+            const off = await replyOnce();
+            expect(
+                json(thinkingColumnsOf(off)) ===
+                    json({ thinkingEffortRequested: 'off', thinkingEffortSent: 'off', thinkingEffortFallback: null }),
+                `off is requested and sent (got ${json(thinkingColumnsOf(off))})`
+            );
+
+            // A graded setting on a ladder model clamps and records the chain
+            const miMo = seedModelCatalogEntries().find((entry) => entry.id === 'mimo-v2.6-flash');
+            if (miMo === undefined) throw new Error('the seed lost mimo');
+            const reasoning = miMo.capabilities.reasoning;
+            const gradedEfforts: readonly ModelEffort[] = ['low', 'medium', 'high'];
+            setModelCatalog(
+                seedModelCatalogEntries().map((entry) =>
+                    entry.id === 'mimo-v2.6-flash'
+                        ? {
+                              ...entry,
+                              capabilities: {
+                                  ...entry.capabilities,
+                                  reasoning: {
+                                      ...(reasoning === undefined ? { supported: true } : reasoning),
+                                      efforts: gradedEfforts,
+                                  },
+                              },
+                          }
+                        : entry
+                )
+            );
+            await updateChatSettings({ chatId, patch: { thinkingEffort: 'xhigh' }, actor });
+            const clamped = await replyOnce();
+            expect(
+                json(thinkingColumnsOf(clamped)) ===
+                    json({
+                        thinkingEffortRequested: 'xhigh',
+                        thinkingEffortSent: 'high',
+                        thinkingEffortFallback: 'xhigh->high',
+                    }),
+                `the clamp reaches the row with its chain (got ${json(thinkingColumnsOf(clamped))})`
+            );
+
+            setModelCatalog([]);
+            await updateChatSettings({ chatId, patch: { thinkingEffort: null }, actor });
         },
     },
 ];

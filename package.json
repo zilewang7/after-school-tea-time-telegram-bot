@@ -20,7 +20,10 @@
     "test:e2e:bot:tools": "tsx scripts/e2e/with-test-bot.mts --tools",
     "test:e2e:bot:attach": "tsx scripts/e2e/run.mts",
     "test:e2e:ocr": "tsx scripts/e2e/ocr-fallback.mts",
-    "test:e2e:vid": "tsx scripts/e2e/vid-probe.mts"
+    "test:e2e:vid": "tsx scripts/e2e/vid-probe.mts",
+    "probe:thinking": "tsx scripts/probe/thinking-effort.mts",
+    "probe:thinking:stub": "tsx scripts/probe/thinking-effort.mts --stub",
+    "probe:thinking:check": "tsx scripts/probe/thinking-effort.mts --check"
   },
   "keywords": [],
   "author": "ddc",

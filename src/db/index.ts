@@ -27,9 +27,10 @@ import './modelPriceDTO.js';
 import './priceChangeProposalDTO.js';
 import './priceWatchRunDTO.js';
 import './modelCatalogDTO.js';
+import './modelCapabilityProposalDTO.js';
 import { getBlob } from "../util.js";
 import { addAsyncFileSaveTask, removeAsyncFileSaveTask, findFirstMessageIdByContinuation } from '../state.js';
-import { backfillAnimationMediaKind, backfillCatalogLabels, backfillCatalogSeedsOnly, backfillCatalogSuperseded, backfillPanelRegistry, ensureModelPriceIndexes, runSchemaMigrations } from './schema-migrations.js';
+import { backfillAnimationMediaKind, backfillCatalogCapabilities, backfillCatalogLabels, backfillCatalogSeedsOnly, backfillCatalogSuperseded, backfillPanelRegistry, ensureCapabilityProposalIndexes, ensureModelPriceIndexes, runSchemaMigrations } from './schema-migrations.js';
 
 // sync database (the imports above ensure every table is registered before sync)
 // Exported so callers can await schema readiness instead of racing the migration;
@@ -41,14 +42,17 @@ import { backfillAnimationMediaKind, backfillCatalogLabels, backfillCatalogSeeds
 export const dbReady = enableWriteAheadLog()
     .then(() => runSchemaMigrations())
     .then(() => sequelize.sync())
-    // Partial unique index for pending proposals; the DTOs created the tables above
+    // Partial unique indexes for pending proposals; the DTOs created the tables above
     .then(() => ensureModelPriceIndexes())
+    .then(() => ensureCapabilityProposalIndexes())
     // One-off: the first catalog watch auto-added old models; keep the seeded menu
     .then(() => backfillCatalogSeedsOnly())
     // One-off: the first catalog seed stored ids as labels; use display names
     .then(() => backfillCatalogLabels())
     // One-off: rows a newer version of the same product line already replaces
     .then(() => backfillCatalogSuperseded())
+    // One-off: old capability JSON becomes schema 1 (seeded snapshot / wrapped legacy)
+    .then(() => backfillCatalogCapabilities())
     // Data fixes need the tables, so they run after sync (a fresh database has
     // no rows for them, an existing one is scanned once)
     .then(() => backfillAnimationMediaKind())

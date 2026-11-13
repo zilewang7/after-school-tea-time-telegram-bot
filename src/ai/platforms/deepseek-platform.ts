@@ -22,6 +22,14 @@ import {
 } from './chat-completions/chat-completions-usage.js';
 import { normalizeChatCompletionsUsage } from '../usage/normalize-chat-completions.js';
 import type { RoundUsage, UsageSink } from '../usage/usage-types.js';
+import {
+    effortWireOf,
+    isParamRejection,
+    logEffortFallback,
+    openAIReasoningEffortOf,
+    type EffortWire,
+    type OpenAIReasoningEffort,
+} from './thinking-effort-wire.js';
 import type {
     PlatformType,
     UnifiedMessage,
@@ -29,6 +37,15 @@ import type {
     StreamChunk,
     ModelCapabilities,
 } from '../types.js';
+
+/** The extra chat.completions params a thinkingEffort sends */
+interface ChatThinkingParams {
+    readonly thinking?: { readonly type: 'enabled' | 'disabled' };
+    readonly reasoning_effort?: OpenAIReasoningEffort;
+}
+
+/** A 400 that blames the thinking params; every other status keeps its classification */
+const EFFORT_REJECTION = /thinking|reasoning|effort/i;
 
 /** One collected tool-loop round */
 interface DeepSeekToolRound {
@@ -112,23 +129,84 @@ export class DeepSeekPlatform extends BasePlatform {
             systemPrompt,
         });
 
+        const thinkingWire = effortWireOf(config);
+
         // Client tool loop
         if (tools && tools.definitions.length > 0) {
-            return this.sendMessageWithTools(openaiMessages, model, tools, timeout, maxRetries, signal, usageSink);
+            return this.sendMessageWithTools(
+                openaiMessages,
+                model,
+                tools,
+                timeout,
+                maxRetries,
+                signal,
+                usageSink,
+                thinkingWire
+            );
         }
 
-        const stream = await this.sendWithRetry(
+        const stream = await this.openChatWithEffortFallback(
             () =>
-                this.client.chat.completions.create({
-                    model,
-                    messages: openaiMessages,
-                    stream: true,
-                    stream_options: INCLUDE_USAGE_STREAM_OPTIONS,
-                }, { signal }),
-            { timeout, maxRetries, signal }
+                this.sendWithRetry(
+                    () =>
+                        this.client.chat.completions.create({
+                            model,
+                            messages: openaiMessages,
+                            stream: true,
+                            stream_options: INCLUDE_USAGE_STREAM_OPTIONS,
+                            ...this.thinkingParamsOf(thinkingWire),
+                        }, { signal }),
+                    { timeout, maxRetries, signal }
+                ),
+            thinkingWire,
+            model
         );
 
         return this.processStream(stream, usageSink);
+    }
+
+    /**
+     * The chat.completions params a thinkingEffort adds over the legacy body:
+     * nothing for the vendor default, the thinking switch plus
+     * reasoning_effort for an explicit level, disabled for 'off'. A degraded
+     * wire adds nothing (the provider default is the fallback).
+     */
+    private thinkingParamsOf(wire: EffortWire | null): ChatThinkingParams {
+        if (wire === null || wire.mode === 'default' || wire.degraded) return {};
+        if (wire.mode === 'off') return { thinking: { type: 'disabled' } };
+        if (wire.value === null) return { thinking: { type: 'enabled' } };
+        const effort = openAIReasoningEffortOf(wire.value);
+        return {
+            thinking: { type: 'enabled' },
+            ...(effort === null ? {} : { reasoning_effort: effort }),
+        };
+    }
+
+    /**
+     * One chat request with the reply-wide one-shot thinking downgrade: a 400
+     * that blames the thinking params retries the same request without them.
+     * 401/404/429 are never a downgrade (see isParamRejection).
+     */
+    private async openChatWithEffortFallback<T>(
+        open: () => Promise<T>,
+        wire: EffortWire | null,
+        model: string
+    ): Promise<T> {
+        try {
+            return await open();
+        } catch (error) {
+            if (
+                wire === null ||
+                wire.degraded ||
+                wire.mode === 'default' ||
+                !isParamRejection(error, EFFORT_REJECTION)
+            ) {
+                throw error;
+            }
+            wire.degraded = true;
+            logEffortFallback('deepseek', model, wire.value ?? wire.mode, 'the provider default', error);
+            return await open();
+        }
     }
 
     /**
@@ -143,8 +221,9 @@ export class DeepSeekPlatform extends BasePlatform {
         tools: TurnTools,
         timeout: number,
         maxRetries: number,
-        signal?: AbortSignal,
-        usageSink?: UsageSink
+        signal: AbortSignal | undefined,
+        usageSink: UsageSink | undefined,
+        thinkingWire: EffortWire | null
     ): AsyncGenerator<StreamChunk, void, undefined> {
         const chatTools = toChatCompletionTools(tools.definitions);
         const currentMessages = [...initialMessages];
@@ -154,16 +233,23 @@ export class DeepSeekPlatform extends BasePlatform {
             signal,
             logPrefix: '[deepseek]',
             sendRound: async (roundIndex, final) => {
-                const stream = await this.sendWithRetry(
-                    () => this.client.chat.completions.create({
-                        model,
-                        messages: currentMessages,
-                        tools: chatTools,
-                        ...(final ? { tool_choice: 'none' as const } : {}),
-                        stream: true,
-                        stream_options: INCLUDE_USAGE_STREAM_OPTIONS,
-                    }, { signal }),
-                    { timeout, maxRetries, signal }
+                const stream = await this.openChatWithEffortFallback(
+                    () =>
+                        this.sendWithRetry(
+                            () =>
+                                this.client.chat.completions.create({
+                                    model,
+                                    messages: currentMessages,
+                                    tools: chatTools,
+                                    ...(final ? { tool_choice: 'none' as const } : {}),
+                                    stream: true,
+                                    stream_options: INCLUDE_USAGE_STREAM_OPTIONS,
+                                    ...this.thinkingParamsOf(thinkingWire),
+                                }, { signal }),
+                            { timeout, maxRetries, signal }
+                        ),
+                    thinkingWire,
+                    model
                 );
                 const round = await this.collectToolRound(stream, roundIndex);
                 usageSink?.addRound(round.usage);

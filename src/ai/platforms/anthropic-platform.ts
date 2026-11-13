@@ -18,6 +18,13 @@ import {
     type AnthropicRound,
 } from './anthropic/anthropic-tool-round.js';
 import type { UsageSink } from '../usage/usage-types.js';
+import {
+    anthropicEffortOf,
+    effortWireOf,
+    isParamRejection,
+    logEffortFallback,
+    type EffortWire,
+} from './thinking-effort-wire.js';
 import type {
     PlatformType,
     UnifiedMessage,
@@ -28,6 +35,9 @@ import type {
 
 const MAX_OUTPUT_TOKENS = 16000;
 
+/** A 400 that blames the requested effort; every other status keeps its classification */
+const EFFORT_REJECTION = /effort|output[_\s]?config/i;
+
 interface RequestOptions {
     model: string;
     systemPrompt?: string;
@@ -35,6 +45,8 @@ interface RequestOptions {
     maxRetries: number;
     signal?: AbortSignal;
     usageSink?: UsageSink;
+    /** The reply's thinking effort; null keeps the legacy adaptive-only request */
+    thinking: EffortWire | null;
 }
 
 export class AnthropicPlatform extends BasePlatform {
@@ -84,7 +96,15 @@ export class AnthropicPlatform extends BasePlatform {
         console.log(`[anthropic] Using model: ${model}`);
 
         const anthropicMessages = transformToAnthropic(messages);
-        const options: RequestOptions = { model, systemPrompt, timeout, maxRetries, signal, usageSink };
+        const options: RequestOptions = {
+            model,
+            systemPrompt,
+            timeout,
+            maxRetries,
+            signal,
+            usageSink,
+            thinking: effortWireOf(config),
+        };
 
         if (tools && tools.definitions.length > 0) {
             return this.sendMessageWithTools(anthropicMessages, tools, options);
@@ -95,8 +115,13 @@ export class AnthropicPlatform extends BasePlatform {
     private buildRequest(
         messages: Anthropic.MessageParam[],
         tools: Anthropic.ToolUnion[],
-        options: { model: string; systemPrompt?: string; forceNoTools?: boolean }
+        options: { model: string; systemPrompt?: string; forceNoTools?: boolean; thinking?: EffortWire | null }
     ): Anthropic.MessageCreateParamsStreaming {
+        const effort = options.thinking === undefined || options.thinking === null || options.thinking.degraded
+            ? null
+            : options.thinking.mode === 'explicit' && options.thinking.value !== null
+                ? anthropicEffortOf(options.thinking.value)
+                : null;
         return {
             model: options.model,
             max_tokens: MAX_OUTPUT_TOKENS,
@@ -107,6 +132,9 @@ export class AnthropicPlatform extends BasePlatform {
             // on-mode. 'summarized' returns readable thinking text when the
             // provider passes thinking blocks through.
             thinking: { type: 'adaptive', display: 'summarized' },
+            // The requested effort rides output_config; 'default' and 'off'
+            // leave the provider default in place (design 2026-1113-1742 §3.3).
+            ...(effort === null ? {} : { output_config: { effort } }),
             ...(tools.length > 0
                 ? {
                       tools,
@@ -125,22 +153,52 @@ export class AnthropicPlatform extends BasePlatform {
         options: RequestOptions,
         roundOptions: { forceNoTools?: boolean } = {}
     ): Promise<AnthropicRound> {
-        const { model, systemPrompt, timeout, maxRetries, signal } = options;
-        const stream = await this.sendWithRetry(
-            () => this.client.messages.create(
-                this.buildRequest(messages, tools, {
-                    model,
-                    systemPrompt,
-                    forceNoTools: roundOptions.forceNoTools,
-                }),
-                { signal }
-            ),
-            { timeout, maxRetries, signal }
-        );
+        const stream = await this.openRoundStream(messages, tools, options, roundOptions);
         const round = await collectAnthropicRound(stream);
         // Both paths (with and without tools) collect every round here
         options.usageSink?.addRound(round.usage);
         return round;
+    }
+
+    /**
+     * One Messages request with the reply-wide one-shot effort downgrade: a 400
+     * that blames output_config.effort retries the same round without it (the
+     * adaptive thinking stays). 401/404/429 are never a downgrade.
+     */
+    private async openRoundStream(
+        messages: Anthropic.MessageParam[],
+        tools: Anthropic.ToolUnion[],
+        options: RequestOptions,
+        roundOptions: { forceNoTools?: boolean }
+    ) {
+        const open = () => this.sendWithRetry(
+            () => this.client.messages.create(
+                this.buildRequest(messages, tools, {
+                    model: options.model,
+                    systemPrompt: options.systemPrompt,
+                    forceNoTools: roundOptions.forceNoTools,
+                    thinking: options.thinking,
+                }),
+                { signal: options.signal }
+            ),
+            { timeout: options.timeout, maxRetries: options.maxRetries, signal: options.signal }
+        );
+        try {
+            return await open();
+        } catch (error) {
+            const thinking = options.thinking;
+            if (
+                thinking === null ||
+                thinking.degraded ||
+                thinking.mode !== 'explicit' ||
+                !isParamRejection(error, EFFORT_REJECTION)
+            ) {
+                throw error;
+            }
+            thinking.degraded = true;
+            logEffortFallback('anthropic', options.model, thinking.value ?? 'explicit', 'adaptive thinking', error);
+            return await open();
+        }
     }
 
     private async *sendWithoutTools(

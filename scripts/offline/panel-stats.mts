@@ -49,6 +49,7 @@ const { pushRecentReplyError } = await import('../../src/services/recent-reply-e
 const responseHandler = await import('../../src/reply/response-handler.js');
 const { markRequestStarted } = await import('../../src/services/reply-metrics-draft.js');
 const { STATS_TIME_ZONE } = await import('../../src/panel/stats/time-buckets.js');
+const { modelCatalogVersion } = await import('../../src/config/model-catalog.js');
 const { priceTableVersion } = await import('../../src/config/model-pricing.js');
 const { PriceChangeProposal } = await import('../../src/db/priceChangeProposalDTO.js');
 
@@ -776,9 +777,16 @@ cases.push({
         const body = await jsonObjectOf(response);
         expect(response.status === 200 && body.ok === true, '200 ok');
         expect(body.priceTableVersion === priceTableVersion(), `priceTableVersion (got ${json(body.priceTableVersion)})`);
+        expect(body.catalogVersion === modelCatalogVersion(), `catalogVersion (got ${json(body.catalogVersion)})`);
+        expect(
+            typeof body.catalogVersion === 'string' && body.catalogVersion.length > 0,
+            'a catalog version is always reported'
+        );
         await PriceChangeProposal.destroy({ where: { status: 'pending' } });
         const again = await app.request('/api/health');
-        expect((await jsonObjectOf(again)).priceTableVersion === priceTableVersion(), 'it is the memory value, not a DB read');
+        const againBody = await jsonObjectOf(again);
+        expect(againBody.priceTableVersion === priceTableVersion(), 'it is the memory value, not a DB read');
+        expect(againBody.catalogVersion === modelCatalogVersion(), 'the catalog version is the memory value too');
     },
 });
 

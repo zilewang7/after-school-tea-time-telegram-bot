@@ -29,6 +29,7 @@ import {
 } from './chat-settings-rules.js';
 import { ChatSettingsError, type SettingsActor } from './settings-errors.js';
 import { ensureCacheLoaded, runSerialized } from './settings-write-queue.js';
+import type { ThinkingEffortValue } from './thinking-effort-values.js';
 import { canonicalToolOverridesJson, type ToolOverrides } from './tool-overrides.js';
 
 export {
@@ -77,6 +78,18 @@ export {
     type ToolGroupKey,
     type ToolOverrides,
 } from './tool-overrides.js';
+export {
+    THINKING_EFFORT_DEFAULT_LABEL,
+    THINKING_EFFORT_LABELS,
+    THINKING_EFFORT_OFF,
+    THINKING_EFFORT_VALUES,
+    normalizeThinkingEffort,
+    storedThinkingEffortOf,
+    thinkingEffortOptionsOf,
+    thinkingEffortSupportedOf,
+    type ThinkingEffortOptionView,
+    type ThinkingEffortValue,
+} from './thinking-effort-values.js';
 
 /** What one reply uses, taken once when the reply starts */
 export interface ReplySettingsSnapshot {
@@ -86,6 +99,8 @@ export interface ReplySettingsSnapshot {
     toolOverrides: ToolOverrides | null;
     /** The effective Priority PayGo switch (chat value, global switch and whitelist resolved) */
     geminiPriority: boolean;
+    /** The thinking level as stored: null = the model default, 'off', else a graded effort */
+    thinkingEffort: ThinkingEffortValue | null;
 }
 
 export interface ChatSettingsUpdateResult {
@@ -99,6 +114,7 @@ export const snapshotReplySettings = (chatId: number): ReplySettingsSnapshot => 
     promptAddendum: getChatSettings(chatId)?.promptAddendum ?? null,
     toolOverrides: getChatSettings(chatId)?.toolOverrides ?? null,
     geminiPriority: resolveGeminiPriority(chatId),
+    thinkingEffort: getChatSettings(chatId)?.thinkingEffort ?? null,
 });
 
 /** What a chat without a settings row behaves as; updatedAt is the epoch, updatedBy null */
@@ -110,6 +126,7 @@ export const defaultChatSettings = (chatId: number): ChatSettings => ({
     settingsLocked: false,
     toolOverrides: null,
     geminiPriority: null,
+    thinkingEffort: null,
     updatedAt: new Date(0),
     updatedBy: null,
 });
@@ -136,6 +153,7 @@ const persistChatSettings = async (
                 toolOverrides: canonicalToolOverridesJson(settings.toolOverrides),
                 // Every column, or a value would live in the cache only and vanish on restart
                 geminiPriority: settings.geminiPriority,
+                thinkingEffort: settings.thinkingEffort,
                 updatedAt: settings.updatedAt,
                 updatedBy: settings.updatedBy,
             },
@@ -162,7 +180,8 @@ const persistChatSettings = async (
  * `forbidden` when a non-owner touches settingsLocked, the sms tool switch or
  * the Priority PayGo switch, or when Priority PayGo is switched on where it
  * cannot take effect (global switch off, chat not in TOOL_CHAT_IDS),
- * `invalid` for a malformed value, `conflict` when `expectedUpdatedAt` is given
+ * `invalid` for a malformed value, `trial` when a trial user changes the model
+ * or the thinking level, `conflict` when `expectedUpdatedAt` is given
  * and no longer matches (checked inside the write queue, so two editors of one
  * version cannot both win). Unchanged keys are dropped; with nothing left,
  * nothing is written and changedKeys is empty.

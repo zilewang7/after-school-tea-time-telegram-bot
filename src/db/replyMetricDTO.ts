@@ -85,6 +85,12 @@ export class ReplyMetric extends Model<
   declare resumedRounds: number | null;
   // Rounds a checkpoint saved when this attempt failed or stopped; NULL = none saved
   declare checkpointRounds: number | null;
+  // The chat's thinking level when the attempt started; NULL = the model default
+  declare thinkingEffortRequested: string | null;
+  // The level actually sent to the platform after clamping/fallback; NULL = nothing explicit
+  declare thinkingEffortSent: string | null;
+  // The degradation chain, e.g. 'xhigh->high'; NULL = none
+  declare thinkingEffortFallback: string | null;
 }
 
 // Fresh option objects per column: Sequelize normalizes attribute definitions in place
@@ -145,6 +151,10 @@ ReplyMetric.init({
   priorityOutputTokens: nullableInteger(),
   resumedRounds: nullableInteger(),
   checkpointRounds: nullableInteger(),
+  // Added with the thinking-effort feature; all NULL on rows from before it
+  thinkingEffortRequested: { type: DataTypes.TEXT, allowNull: true, defaultValue: null },
+  thinkingEffortSent: { type: DataTypes.TEXT, allowNull: true, defaultValue: null },
+  thinkingEffortFallback: { type: DataTypes.TEXT, allowNull: true, defaultValue: null },
 }, {
   sequelize,
   tableName: 'reply_metrics',

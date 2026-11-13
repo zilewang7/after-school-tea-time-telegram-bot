@@ -8,9 +8,10 @@
  * its price still needs the owner's approval). Rows are never deleted by a
  * watch run: `enabled=0` is how a model leaves the menu.
  */
+import { createHash } from 'node:crypto';
 import { ModelCatalogEntryRow } from '../db/modelCatalogDTO.js';
 import { writeSettingsAudit } from '../db/queries/settings-audit.js';
-import { isJsonObject } from '../shared/json-object.js';
+import { emptyModelCapabilities, normalizeModelCapabilities } from '../config/model-capabilities.js';
 import {
     findModelCatalogEntry,
     seedModelCatalogEntries,
@@ -20,47 +21,25 @@ import {
 } from '../config/model-catalog.js';
 import { isNewerVersionOfSameLine } from '../shared/model-line.js';
 
-const DEFAULT_CAPABILITIES: ModelCatalogCapabilities = {
-    kind: 'chat',
-    vision: false,
-    imageOutput: false,
-    tools: true,
-    reasoningEffort: [],
-    contextTokens: null,
-    outputTokens: null,
-};
-
 const readRows = async (): Promise<ModelCatalogEntryRow[]> =>
     ModelCatalogEntryRow.findAll({ order: [['id', 'ASC']] });
 
-const capabilitiesOf = (json: string): ModelCatalogCapabilities => {
+/** Parse one row's capabilities JSON through the single reader; problems only warn */
+const capabilitiesOf = (json: string, modelId: string): ModelCatalogCapabilities => {
+    let parsed: unknown;
     try {
-        const raw: unknown = JSON.parse(json);
-        if (!isJsonObject(raw)) return DEFAULT_CAPABILITIES;
-        const record = raw;
-        const boolean = (key: string, fallback: boolean): boolean => {
-            const value = record[key];
-            return typeof value === 'boolean' ? value : fallback;
-        };
-        const numberOrNull = (key: string): number | null => {
-            const value = record[key];
-            return typeof value === 'number' ? value : null;
-        };
-        const efforts = Array.isArray(record.reasoningEffort)
-            ? record.reasoningEffort.filter((effort): effort is string => typeof effort === 'string')
-            : [];
-        return {
-            kind: record.kind === 'image' ? 'image' : 'chat',
-            vision: boolean('vision', false),
-            imageOutput: boolean('imageOutput', false),
-            tools: boolean('tools', true),
-            reasoningEffort: efforts,
-            contextTokens: numberOrNull('contextTokens'),
-            outputTokens: numberOrNull('outputTokens'),
-        };
-    } catch {
-        return DEFAULT_CAPABILITIES;
+        parsed = JSON.parse(json);
+    } catch (error: unknown) {
+        console.warn(
+            `[catalog] ${modelId} 的 capabilities JSON 解析失败，按空能力处理：${error instanceof Error ? error.message : String(error)}`
+        );
+        return emptyModelCapabilities();
     }
+    const normalized = normalizeModelCapabilities(parsed);
+    if (normalized.warnings.length > 0) {
+        console.warn(`[catalog] ${modelId} 的 capabilities 有未知值：${normalized.warnings.join('；')}`);
+    }
+    return normalized.capabilities;
 };
 
 const entryOfRow = (row: ModelCatalogEntryRow): ModelCatalogEntry => ({
@@ -69,7 +48,7 @@ const entryOfRow = (row: ModelCatalogEntryRow): ModelCatalogEntry => ({
     ...(row.platform === null ? {} : { platform: row.platform }),
     ...(row.catalogKey === null ? {} : { catalogKey: row.catalogKey }),
     enabled: row.enabled !== 0,
-    capabilities: capabilitiesOf(row.capabilities),
+    capabilities: capabilitiesOf(row.capabilities, row.id),
     source: row.source === 'models-dev' || row.source === 'official' || row.source === 'catalog'
         ? row.source
         : 'manual',
@@ -107,13 +86,19 @@ const rowValuesOf = (entry: ModelCatalogEntry): NewCatalogRow => ({
     note: entry.note ?? null,
 });
 
+/**
+ * The version the panel and /api/health report: a content hash of the rows and
+ * their capabilities JSON, not a timestamp, so applying a capability proposal
+ * moves it even on the same day (design §6).
+ */
 const versionOf = (rows: readonly ModelCatalogEntryRow[]): string => {
     if (rows.length === 0) return 'seed';
-    const newest = rows.reduce(
-        (latest, row) => (row.updatedAt.getTime() > latest.getTime() ? row.updatedAt : latest),
-        rows[0]!.updatedAt
-    );
-    return `m${newest.toISOString().slice(0, 10).replace(/-/g, '')}-${rows.length}`;
+    const hash = createHash('sha256');
+    hash.update(String(rows.length));
+    for (const row of [...rows].sort((first, second) => first.id.localeCompare(second.id))) {
+        hash.update(`${row.id}:${row.capabilities}\n`);
+    }
+    return `m${hash.digest('hex').slice(0, 12)}-${rows.length}`;
 };
 
 /**

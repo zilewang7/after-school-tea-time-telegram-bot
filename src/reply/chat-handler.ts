@@ -55,10 +55,11 @@ import { buildStaticPromptOptions } from './static-prompt-options.js';
 import { refuseTrialGeneration } from './commands/trial-refusal.js';
 import { triggerAccessNoteOf } from './trigger-access-note.js';
 import { stopIfChatPaused } from './chat-pause.js';
-import { markRequestStarted, recordContextSize } from '../services/reply-metrics-draft.js';
+import { markRequestStarted, recordContextSize, recordThinkingEffort } from '../services/reply-metrics-draft.js';
 import { checkpointSinkFor } from './resume/keep-checkpoint.js';
 import { captureResumeFacts } from './resume/resume-facts.js';
 import { priorityRequestOf } from './priority-request.js';
+import { thinkingRequestOf } from './thinking-request.js';
 
 /** The generation command this text is, if any (denied ones are refused for trial users) */
 const generationCommandName = (text: string): string | null => {
@@ -376,6 +377,9 @@ export const handleReply = async (
     });
 
     const systemPrompt = buildStaticSystemPrompt(model, buildStaticPromptOptions(availability));
+    // The chat's thinking level against this attempt's model: an empty fragment
+    // for a model without data (the platform keeps its current request shape)
+    const thinking = thinkingRequestOf(model, settings.thinkingEffort);
     // Taken now, so a failure only adds the last checkpoint to keep it
     chatContext.resumeFacts = captureResumeFacts({
         model,
@@ -386,8 +390,12 @@ export const handleReply = async (
         conversationRootIds: built.conversationRootIds,
         requestTraits,
         promptAddendum: settings.promptAddendum,
+        thinkingEffort: settings.thinkingEffort,
+        thinkingEffortSent: thinking.facts.sent,
         builtAt,
     });
+
+    recordThinkingEffort(chatContext.session.metrics, thinking.facts);
 
     // Send to AI and get stream
     markRequestStarted(chatContext.session.metrics);
@@ -401,6 +409,7 @@ export const handleReply = async (
             usageSink: chatContext.session.metrics.usage,
             checkpointSink: checkpointSinkFor(chatContext),
             ...priorityRequestOf(access, settings.geminiPriority),
+            ...thinking.platform,
         })
     );
     if (isErr(streamResult)) {

@@ -16,11 +16,17 @@ import { isOpenCodeGoModel, openCodeGoSessionId, sendMessage } from '../../ai/in
 import { getMessage } from '../../db/index.js';
 import type { BotMessageSession } from '../../services/bot-message-service.js';
 import { startRetry } from '../../services/index.js';
-import { markRequestStarted, recordContextSize, recordResumedRounds } from '../../services/reply-metrics-draft.js';
+import {
+    markRequestStarted,
+    recordContextSize,
+    recordResumedRounds,
+    recordThinkingEffort,
+} from '../../services/reply-metrics-draft.js';
 import { to } from '../../shared/result.js';
 import { setContextNumbering } from '../../state.js';
 import { resolveContextRoot } from '../context-root.js';
 import { priorityRequestOf } from '../priority-request.js';
+import { thinkingRequestOf } from '../thinking-request.js';
 import {
     createChatContextForRetry,
     handleResponseError,
@@ -102,6 +108,11 @@ const continueFromCheckpoint = async (
         entry.toolState
     );
 
+    // The continue validated the setting against the checkpoint, so this is the
+    // same thinking level the interrupted version asked for
+    const thinking = thinkingRequestOf(model, plan.settings.thinkingEffort);
+    recordThinkingEffort(session.metrics, thinking.facts);
+
     markRequestStarted(session.metrics);
     const [streamErr, stream] = await to(
         sendMessage([], {
@@ -115,6 +126,7 @@ const continueFromCheckpoint = async (
             checkpointSink: checkpointSinkFor(chatContext),
             resumeFrom: entry.loop,
             ...priorityRequestOf(plan.access, plan.settings.geminiPriority),
+            ...thinking.platform,
         })
     );
     if (streamErr) {

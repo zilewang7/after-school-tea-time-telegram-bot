@@ -1,6 +1,7 @@
 import { match, P } from 'ts-pattern';
 import type { ChatAccess, ChatSummary, ChatType, PanelUser } from './api';
 import { issueStatusLabel } from './issues/issue-labels';
+import { THINKING_EFFORT_LABEL, thinkingEffortAuditValue } from './thinking-effort';
 import { parseToolOverridesJson, TOOL_GROUP_ORDER, toolGroupLabelOf } from './tool-groups';
 
 const CHAT_TYPE_LABELS: Record<ChatType, string> = {
@@ -24,6 +25,7 @@ const AUDIT_KEY_LABELS: Partial<Record<string, string>> = {
     geminiPriority: 'Priority PayGo',
     defaultGeminiPriority: '全局 Priority PayGo',
     toolOverrides: '工具开关',
+    thinkingEffort: THINKING_EFFORT_LABEL,
     exclude: '排除消息',
     include: '恢复消息',
     link: '拼接对话',
@@ -106,6 +108,8 @@ export const formatAuditValue = (key: string, value: string | null): string =>
         .with({ key: 'defaultGeminiPriority', value: P.nullish }, () => '关（未设置）')
         // Tool switches: null (and unreadable JSON) means every group follows the env
         .with({ key: 'toolOverrides' }, ({ value: overridesText }) => formatToolOverridesValue(overridesText))
+        // Thinking level: null = the model default, 'off' = thinking off, else the graded label
+        .with({ key: 'thinkingEffort' }, ({ value: effort }) => thinkingEffortAuditValue(effort))
         .with({ value: P.nullish }, () => '（空）')
         .with({ key: P.union(...ON_OFF_AUDIT_KEYS), value: 'true' }, () => '开')
         .with({ key: P.union(...ON_OFF_AUDIT_KEYS), value: 'false' }, () => '关')

@@ -38,6 +38,13 @@ export const createAppRouter = (launch: LaunchState) =>
                 { element: <HomeLayer />, children: tabRoutesOf(HOME_TABS) },
                 // Home drill-downs
                 { path: 'settings/audit', element: <GlobalAuditRoute /> },
+                {
+                    path: 'settings/model-catalog',
+                    Component: lazyPage(
+                        () => import('./pages/model-catalog/model-catalog-page'),
+                        'ModelCatalogPage'
+                    ),
+                },
                 // [F3 slot]
                 // [F3 slot end]
                 // [F4 slot] issues/:id

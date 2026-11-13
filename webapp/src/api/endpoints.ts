@@ -26,6 +26,7 @@ import type {
     IssueStatus,
     LinkSpliceResponse,
     MeResponse,
+    ModelCatalogResponse,
     ModelView,
     PublicShareResponse,
     PublicThinkingResponse,
@@ -185,6 +186,13 @@ export const createApi = (initData: string) => {
     const requestPublic = createPublicRequester();
     return {
         getHealth: (signal?: AbortSignal) => request<HealthResponse>({ method: 'GET', path: '/api/health', signal }),
+        // Owner only; read-only model catalog with normalized capabilities and the pending count
+        getModelCatalog: (includeDisabled: boolean, signal?: AbortSignal) =>
+            request<ModelCatalogResponse>({
+                method: 'GET',
+                path: includeDisabled ? '/api/model-catalog?includeDisabled=1' : '/api/model-catalog',
+                signal,
+            }),
         getWebConfig: (signal?: AbortSignal) =>
             requestPublic<WebConfigResponse>({ method: 'GET', path: '/api/public/web-config', signal }),
         // The login route creates the credential, so it carries none; the response sets the cookie

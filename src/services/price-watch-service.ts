@@ -3,6 +3,11 @@
  * imply, diffs it against the rows in force, records proposals and asks the
  * owner from a private chat (pricing design 2026-1113-1150).
  *
+ * The same run also compiles the model-capability half from the documents it
+ * already downloaded (thinking-effort design 2026-1113-1742 §2.3): capability
+ * proposals go out in their own private message after the price one, and a
+ * change only lands in the catalog after the owner presses its button.
+ *
  * Runs in the bot process because the approval is a Telegram message with
  * inline buttons: the daily timer and the owner's `/pricing` share one path
  * and one lock. Everything here is best-effort: a failed source, a slow CDN
@@ -22,6 +27,7 @@ import {
 import {
     findModelCatalogEntry,
     listAllModelCatalog,
+    modelCatalogVersion,
     platformOfModelId,
     type ModelCatalogCapabilities,
     type ModelCatalogEntry,
@@ -36,11 +42,18 @@ import {
     priceWatchStatus,
     startWatchRun,
 } from './model-price-service.js';
+import {
+    countPendingCapabilityProposals,
+    createOrRefreshCapabilityProposals,
+    expireStaleCapabilityProposals,
+    listPendingCapabilityProposals,
+} from './model-capability-service.js';
 import { addCatalogModels } from './model-catalog-service.js';
 import {
     diffPriceCandidates,
     compilePriceCandidates,
 } from './price-catalog-compile.js';
+import { compileCapabilityObservations, diffCapabilityCandidates } from './capability-catalog-compile.js';
 import { catalogModelRefs, fetchPriceCatalogs } from './price-catalog-fetch.js';
 import type { CatalogFetcher, ProposalDraft } from './price-catalog-types.js';
 import {
@@ -48,12 +61,15 @@ import {
     sendOwnerNotice,
     sendProposalMessage,
 } from './price-proposal-notify.js';
+import { sendCapabilityProposalMessage } from './capability-proposal-notify.js';
 
 /** How one run ended; `busy`/`disabled` never touched the network */
 export interface WatchRunResult {
     readonly outcome: 'ok' | 'failed' | 'busy' | 'disabled';
-    /** Pending proposals after the run */
+    /** Pending price proposals after the run */
     readonly proposals: number;
+    /** Pending capability proposals after the run */
+    readonly capabilityProposals: number;
     /** Private-chat messages the run sent (0 when nothing needed approval) */
     readonly messageIds: readonly number[];
     /** Models the run added to the menu automatically */
@@ -65,6 +81,7 @@ export interface WatchRunResult {
 const DISABLED: WatchRunResult = {
     outcome: 'disabled',
     proposals: 0,
+    capabilityProposals: 0,
     messageIds: [],
     addedModels: [],
     warnings: [],
@@ -247,7 +264,13 @@ const effortsOf = (model: ModelsDevModel): readonly string[] => {
     return effort?.values ?? [];
 };
 
-const capabilitiesOf = (model: ModelsDevModel): ModelCatalogCapabilities => ({
+/**
+ * The capabilities an auto-added row starts with: schema 1 (design §1.1-6) with
+ * the seven legacy fields and models.dev provenance. No reasoning section is
+ * derived here — the capability proposal is what fills it, with owner approval.
+ */
+const capabilitiesOf = (model: ModelsDevModel, checkedOn: string): ModelCatalogCapabilities => ({
+    schema: 1,
     kind: 'chat',
     vision: (model.modalities?.input ?? []).includes('image'),
     imageOutput: (model.modalities?.output ?? []).includes('image'),
@@ -255,6 +278,9 @@ const capabilitiesOf = (model: ModelsDevModel): ModelCatalogCapabilities => ({
     reasoningEffort: effortsOf(model),
     contextTokens: model.limit?.context ?? null,
     outputTokens: model.limit?.output ?? null,
+    source: 'models-dev',
+    checkedOn,
+    confidence: 'medium',
 });
 
 const discoveredPriceOf = (model: ModelsDevModel, sourceUrl: string): PriceEntry | null => {
@@ -306,7 +332,8 @@ export const discoveredModelsOf = (body: string, now: Date = new Date()): readon
             if (!CHAT_FAMILY_PREFIXES.some((prefix) => id.toLowerCase().startsWith(prefix))) continue;
             if (!qualifiesForAutoAdd(id, model.release_date, menu, now)) continue;
             if (findModelCatalogEntry(id) !== null) continue;
-            const capabilities = capabilitiesOf(model);
+            const checkedOn = today();
+            const capabilities = capabilitiesOf(model, checkedOn);
             if (capabilities.imageOutput) continue;
             const label = model.name ?? id;
             const sourceUrl = `https://models.dev/?model=${encodeURIComponent(`${providerId}/${modelId}`)}`;
@@ -321,7 +348,7 @@ export const discoveredModelsOf = (body: string, now: Date = new Date()): readon
                     capabilities,
                     source: 'models-dev',
                     sourceUrl,
-                    checkedOn: today(),
+                    checkedOn,
                     confidence: 'medium',
                     note: 'auto-added by the price watcher',
                 },
@@ -351,7 +378,12 @@ const summaryOf = (result: WatchRunResult): string => {
     if (result.outcome === 'disabled') return '巡检未启用';
     if (result.outcome === 'failed') return `巡检失败：${result.errors[0] ?? '见日志'}`;
     const parts: string[] = [];
-    parts.push(result.proposals > 0 ? `${result.proposals} 条价格变更待确认` : '未发现价格变更');
+    if (result.proposals === 0 && result.capabilityProposals === 0) {
+        parts.push('未发现价格变更');
+    } else {
+        if (result.proposals > 0) parts.push(`${result.proposals} 条价格变更待确认`);
+        if (result.capabilityProposals > 0) parts.push(`${result.capabilityProposals} 条能力变更待确认`);
+    }
     if (result.addedModels.length > 0) parts.push(`新收录模型 ${result.addedModels.join('、')}`);
     if (result.warnings.length > 0) parts.push(`警告 ${result.warnings.length} 条`);
     return parts.join('；');
@@ -374,6 +406,7 @@ export const runPriceWatchNow = async (
     let messageIds: readonly number[] = [];
     let addedModels: readonly string[] = [];
     let proposals = 0;
+    let capabilityProposals = 0;
     try {
         const statusBefore = await priceWatchStatus();
         // One refs list for the download and the compile: the models the menu
@@ -396,7 +429,9 @@ export const runPriceWatchNow = async (
             warnings.push(`模型发现失败：${error instanceof Error ? error.message : String(error)}`);
             return null;
         });
+        let apiJsonBody: string | null = null;
         if (aggregate !== null && aggregate.status === 200) {
+            apiJsonBody = aggregate.body;
             const discovered = discoveredModelsOf(aggregate.body, now);
             const ownerId = getOwnerUserId();
             addedModels = await addCatalogModels(
@@ -407,15 +442,41 @@ export const runPriceWatchNow = async (
             drafts.push(...draftsOfDiscovered(discovered.filter((item) => added.has(item.entry.id))));
         }
 
+        // Capability half: the provider/lab TOMLs and the aggregate body above
+        // are exactly what the compiler needs, so the run fetches nothing extra.
+        const capabilityCompiled = compileCapabilityObservations(catalogs.documents, {
+            now,
+            refs,
+            apiJson: apiJsonBody,
+        });
+        warnings.push(...capabilityCompiled.warnings);
+        const capabilityDiff = diffCapabilityCandidates(capabilityCompiled.candidates, listAllModelCatalog(), {
+            now,
+            justAddedModels: addedModels,
+        });
+        warnings.push(...capabilityDiff.warnings);
+
         await expireStaleProposals(now);
+        await expireStaleCapabilityProposals(now);
         await loadModelPrices();
         proposals = await createOrRefreshProposals(drafts, runId);
+        const capabilityRefresh = await createOrRefreshCapabilityProposals(capabilityDiff.drafts, runId);
+        capabilityProposals = capabilityRefresh.pending;
+        warnings.push(...capabilityRefresh.skipped.map((skip) => skip.reason));
+        console.log(
+            `[catalog] capabilities: ${capabilityCompiled.candidates.length} models, ${capabilityProposals} proposals, ${capabilityCompiled.warnings.length + capabilityDiff.warnings.length + capabilityRefresh.skipped.length} warnings`
+        );
 
         if (proposals > 0) {
             const pending = await listPendingProposals();
             messageIds = await sendProposalMessage(api, { id: runId }, pending);
         } else {
             messageIds = [];
+        }
+        if (capabilityProposals > 0) {
+            const pendingCapabilities = await listPendingCapabilityProposals();
+            const capabilityMessageIds = await sendCapabilityProposalMessage(api, pendingCapabilities);
+            messageIds = [...messageIds, ...capabilityMessageIds];
         }
         if (addedModels.length > 0) {
             await sendModelCatalogNotice(api, addedModels);
@@ -433,6 +494,7 @@ export const runPriceWatchNow = async (
         const result: WatchRunResult = {
             outcome: 'ok',
             proposals,
+            capabilityProposals,
             messageIds,
             addedModels,
             warnings,
@@ -451,7 +513,7 @@ export const runPriceWatchNow = async (
         errors.push(message);
         await finishWatchRun(runId, { outcome: 'failed', proposals: 0, error: message.slice(0, 1000) });
         console.error(`[pricing] watch run ${runId} failed:`, error);
-        return { outcome: 'failed', proposals, messageIds, addedModels, warnings, errors };
+        return { outcome: 'failed', proposals, capabilityProposals, messageIds, addedModels, warnings, errors };
     } finally {
         running = false;
     }
@@ -462,12 +524,18 @@ export const watchRunSummary = (result: WatchRunResult): string => summaryOf(res
 
 /** The `/pricing status` text: table version, freshness and pending work */
 export const formatPriceStatusText = async (now: Date = new Date()): Promise<string> => {
-    const [status, meta] = await Promise.all([priceWatchStatus(), loadPriceTableMeta(now)]);
+    const [status, meta, pendingCapabilityProposals] = await Promise.all([
+        priceWatchStatus(),
+        loadPriceTableMeta(now),
+        countPendingCapabilityProposals(),
+    ]);
     const lines = [
         `价目版本：${status.version}`,
+        `目录版本：${modelCatalogVersion()}`,
         `最近核对：${meta.checkedOn ?? '未知'}（来源 ${meta.sources.map((source) => `${source.kind} ${source.checkedOn}`).join('、') || '无'}）`,
         `上次巡检：${status.lastRunAt ?? '从未'}${status.lastOutcome === null ? '' : `（${status.lastOutcome}）`}${status.lastError === null ? '' : `，最近错误：${status.lastError.slice(0, 120)}`}`,
         `待确认提案：${status.pendingProposals}`,
+        `待确认能力提案：${pendingCapabilityProposals}`,
         meta.nextChanges.length === 0
             ? '未来 30 天没有已知调价'
             : `未来 30 天调价：${meta.nextChanges

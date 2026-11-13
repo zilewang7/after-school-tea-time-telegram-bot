@@ -2,6 +2,7 @@
  * GET /api/health: liveness without auth and without touching the database.
  */
 import type { Hono } from 'hono';
+import { modelCatalogVersion } from '../../config/model-catalog.js';
 import { priceTableVersion } from '../../config/model-pricing.js';
 import { isChatSettingsCacheLoaded } from '../../services/chat-settings-service.js';
 import { countResumableReplies } from '../../state.js';
@@ -21,6 +22,8 @@ export const registerHealthRoute = (app: Hono<PanelEnv>, info: HealthInfo): void
             version: info.version,
             // The in-memory price table the estimate uses; never read the DB here
             priceTableVersion: priceTableVersion(),
+            // The in-memory catalog content hash; moves when capabilities change
+            catalogVersion: modelCatalogVersion(),
             settingsLoaded: isChatSettingsCacheLoaded(),
             // Kept checkpoints live in memory: a restart drops them (design D3)
             resumableReplies: countResumableReplies(),

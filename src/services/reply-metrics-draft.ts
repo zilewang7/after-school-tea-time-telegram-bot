@@ -38,6 +38,12 @@ export interface ReplyMetricsDraft {
     toolUsageBaseline: readonly AgentToolUsage[];
     /** Rounds the checkpoint saved when this attempt failed or stopped; null when none was saved */
     checkpointRounds: number | null;
+    /** The chat's thinking level when the attempt started; null = the model default */
+    thinkingEffortRequested: string | null;
+    /** What the platform actually sent after clamping/fallback; null = nothing explicit */
+    thinkingEffortSent: string | null;
+    /** The degradation chain, e.g. 'xhigh->high'; null = none */
+    thinkingEffortFallback: string | null;
     /** Passed to the platform with the request */
     readonly usage: UsageSink;
 }
@@ -61,6 +67,9 @@ export const createReplyMetricsDraft = (input: ReplyMetricsDraftInput): ReplyMet
     resumedRounds: null,
     toolUsageBaseline: [],
     checkpointRounds: null,
+    thinkingEffortRequested: null,
+    thinkingEffortSent: null,
+    thinkingEffortFallback: null,
     usage: createUsageSink(),
 });
 
@@ -97,6 +106,23 @@ export const recordResumedRounds = (
 /** A failed or stopped attempt saved a checkpoint holding this many rounds */
 export const recordCheckpointRounds = (draft: ReplyMetricsDraft, rounds: number): void => {
     draft.checkpointRounds = rounds;
+};
+
+/** What the thinking level resolved to, recorded where the request is built */
+export const recordThinkingEffort = (
+    draft: ReplyMetricsDraft,
+    facts: {
+        /** The chat setting as it was when the reply started */
+        readonly requested: string | null;
+        /** The level actually sent after clamping/fallback; null = nothing explicit went out */
+        readonly sent: string | null;
+        /** The degradation chain, e.g. 'xhigh->high' */
+        readonly fallback?: string | null;
+    }
+): void => {
+    draft.thinkingEffortRequested = facts.requested;
+    draft.thinkingEffortSent = facts.sent;
+    draft.thinkingEffortFallback = facts.fallback ?? null;
 };
 
 /**

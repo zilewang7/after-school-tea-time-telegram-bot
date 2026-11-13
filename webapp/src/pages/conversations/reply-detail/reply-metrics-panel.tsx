@@ -8,6 +8,7 @@ import {
     formatUsd,
     outcomeLabel,
     pricingNoteOf,
+    thinkingEffortTextOf,
 } from '../../../format-metrics';
 
 interface ReplyMetricsPanelProps {
@@ -49,6 +50,7 @@ export const ReplyMetricsPanel = ({ metrics }: ReplyMetricsPanelProps) => {
             list.push({ label: '错误类型', value: errorKindLabel(metrics.errorKind) });
         }
         list.push(
+            { label: '思考', value: thinkingEffortTextOf(metrics) },
             { label: '首字', value: formatMs(metrics.firstChunkMs) },
             { label: '总耗时', value: formatMs(metrics.durationMs) },
             { label: '工具轮次', value: metrics.rounds === null ? '—' : String(metrics.rounds) },

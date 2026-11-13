@@ -38,6 +38,14 @@ import { normalizeImagesUsage } from '../usage/normalize-images.js';
 import { normalizeResponsesUsage } from '../usage/normalize-responses.js';
 import type { UsageSink } from '../usage/usage-types.js';
 import { isJsonObject } from '../../shared/json-object.js';
+import {
+    effortWireOf,
+    isParamRejection,
+    logEffortFallback,
+    nextLowerEffort,
+    openAIReasoningEffortOf,
+    type EffortWire,
+} from './thinking-effort-wire.js';
 import type {
     PlatformType,
     UnifiedMessage,
@@ -46,6 +54,26 @@ import type {
     StreamChunk,
     ModelCapabilities,
 } from '../types.js';
+
+/** The reasoning params of one Responses request */
+type ReasoningParams = NonNullable<ResponseCreateParamsStreaming['reasoning']>;
+
+/** A 400 that blames reasoning/effort; every other status keeps its classification */
+const REASONING_REJECTION = /reasoning|effort/i;
+
+/** The request with its reasoning field replaced; undefined drops the field */
+const withReasoning = (
+    request: ResponseCreateParamsStreaming,
+    reasoning: ReasoningParams | undefined
+): ResponseCreateParamsStreaming => {
+    const next: ResponseCreateParamsStreaming = { ...request };
+    if (reasoning === undefined) {
+        delete next.reasoning;
+    } else {
+        next.reasoning = reasoning;
+    }
+    return next;
+};
 
 /** Closes the input of the final, tool-less round */
 const FINAL_ROUND_NOTE: EasyInputMessage = {
@@ -141,28 +169,88 @@ export class OpenAIPlatform extends BasePlatform {
         console.log(`[openai] Using model: ${model}, supportsThinking: ${capabilities.supportsThinking}, isImageModel: ${isImageModel}`);
 
         const input = this.transformToResponsesInput(messages);
+        // Without the field the legacy path sends xhigh on a reasoning model.
+        // With it, 'default' sends the summary alone (vendor default effort),
+        // 'explicit' sends the requested effort and 'off' sends no reasoning.
+        const wire = effortWireOf(config);
+        const reasoning = wire === null
+            ? this.legacyReasoningOf(capabilities.supportsThinking ? 'xhigh' : null)
+            : capabilities.supportsThinking
+              ? this.reasoningFor(wire)
+              : undefined;
 
         const request: ResponseCreateParamsStreaming = {
             model,
             input,
             instructions: capabilities.supportsSystemPrompt ? systemPrompt ?? null : null,
             stream: true,
-            ...(capabilities.supportsThinking
-                ? {
-                    reasoning: {
-                        effort: 'xhigh',
-                        summary: 'detailed',
-                    },
-                }
-                : {}),
+            ...(reasoning === undefined ? {} : { reasoning }),
         };
 
-        const stream = await this.sendWithRetry(
-            () => this.createResponseStream(request, signal),
-            { timeout, maxRetries, signal }
-        );
+        const stream = wire === null
+            ? await this.sendWithRetry(
+                () => this.createResponseStream(request, signal),
+                { timeout, maxRetries, signal }
+            )
+            : await this.openReasonedStream(request, signal, wire, timeout, maxRetries);
 
         return this.processStream(stream, config.usageSink);
+    }
+
+    /** The reasoning params the legacy path sends; undefined omits the field */
+    private legacyReasoningOf(effort: 'xhigh' | 'high' | null): ReasoningParams | undefined {
+        return effort === null ? undefined : { effort, summary: 'detailed' };
+    }
+
+    /**
+     * The reasoning params a request carrying a thinkingEffort sends. A
+     * degraded wire (upstream already rejected the level once) sends the next
+     * lower effort, or the summary alone when the ladder is exhausted.
+     */
+    private reasoningFor(wire: EffortWire): ReasoningParams | undefined {
+        if (wire.mode === 'off') return undefined;
+        if (wire.mode === 'default' || wire.value === null) return { summary: 'detailed' };
+        const effort = wire.degraded ? nextLowerEffort(wire.value) : wire.value;
+        const mapped = effort === null ? null : openAIReasoningEffortOf(effort);
+        return mapped === null ? { summary: 'detailed' } : { effort: mapped, summary: 'detailed' };
+    }
+
+    /**
+     * One reasoned request, with the reply-wide one-shot downgrade: a 400 that
+     * blames reasoning/effort lowers the effort (or drops it) for this and every
+     * later tool round. 401/404/429 are never a downgrade (see isParamRejection).
+     */
+    private async openReasonedStream(
+        request: ResponseCreateParamsStreaming,
+        signal: AbortSignal | undefined,
+        wire: EffortWire,
+        timeout: number,
+        maxRetries: number
+    ): Promise<Stream<ResponseStreamEvent>> {
+        try {
+            return await this.sendWithRetry(
+                () => this.createResponseStream(request, signal, false),
+                { timeout, maxRetries, signal }
+            );
+        } catch (error) {
+            const effort = request.reasoning?.effort ?? null;
+            if (wire.degraded || effort === null || !isParamRejection(error, REASONING_REJECTION)) {
+                throw error;
+            }
+            wire.degraded = true;
+            const fallbackReasoning = this.reasoningFor(wire);
+            logEffortFallback(
+                'openai',
+                request.model ?? 'unknown',
+                effort,
+                fallbackReasoning?.effort ?? 'the vendor default',
+                error
+            );
+            return await this.sendWithRetry(
+                () => this.createResponseStream(withReasoning(request, fallbackReasoning), signal, false),
+                { timeout, maxRetries, signal }
+            );
+        }
     }
 
     private isReasoningModel(model: string): boolean {
@@ -273,20 +361,33 @@ export class OpenAIPlatform extends BasePlatform {
         const functionTools = toResponsesFunctionTools(tools.definitions);
         const instructions = systemPrompt || null;
         let currentInput: EasyInputMessage[] = this.transformToResponsesInput(messages);
+        // One downgrade state for the whole reply: every later round reads it
+        const wire = effortWireOf(config);
+        const supportsThinking = this.getModelCapabilities(model).supportsThinking;
 
         yield* runToolLoop<ResponsesRound>({
             tools,
             signal,
             logPrefix: '[openai]',
             sendRound: async (roundIndex, final) => {
-                // Tool rounds keep today's request shape (no reasoning params)
-                const request: ResponseCreateParamsStreaming = final
-                    ? { model, input: [...currentInput, FINAL_ROUND_NOTE], instructions, stream: true }
-                    : { model, input: currentInput, instructions, stream: true, tools: functionTools };
-                const stream = await this.sendWithRetry(
-                    () => this.createResponseStream(request, signal),
-                    { timeout, maxRetries, signal }
-                );
+                // Without the field tool rounds keep the legacy shape (no
+                // reasoning); with it every round carries the summary at least,
+                // and an earlier round's downgrade shows in the reasoning below.
+                const reasoning = wire === null || !supportsThinking ? undefined : this.reasoningFor(wire);
+                const request: ResponseCreateParamsStreaming = {
+                    model,
+                    input: final ? [...currentInput, FINAL_ROUND_NOTE] : currentInput,
+                    instructions,
+                    stream: true,
+                    ...(final ? {} : { tools: functionTools }),
+                    ...(reasoning === undefined ? {} : { reasoning }),
+                };
+                const stream = wire === null
+                    ? await this.sendWithRetry(
+                        () => this.createResponseStream(request, signal),
+                        { timeout, maxRetries, signal }
+                    )
+                    : await this.openReasonedStream(request, signal, wire, timeout, maxRetries);
                 const round = await collectResponsesRound(stream, roundIndex);
                 usageSink?.addRound(normalizeResponsesUsage(round.completedResponse?.usage));
                 return round;
@@ -311,7 +412,8 @@ export class OpenAIPlatform extends BasePlatform {
 
     private async createResponseStream(
         request: ResponseCreateParamsStreaming,
-        signal?: AbortSignal
+        signal?: AbortSignal,
+        allowLegacyFallback = true
     ): Promise<Stream<ResponseStreamEvent>> {
         const requestOptions = signal ? { signal } : undefined;
 
@@ -319,8 +421,11 @@ export class OpenAIPlatform extends BasePlatform {
             const stream = await this.client.responses.create(request, requestOptions);
             return stream as Stream<ResponseStreamEvent>;
         } catch (error) {
-            // Some reasoning models don't accept xhigh; fallback to high once.
+            // Legacy path (no thinkingEffort): some reasoning models don't accept
+            // xhigh; fallback to high once. A request carrying an effort is
+            // downgraded by openReasonedStream instead, so both never run.
             if (
+                allowLegacyFallback &&
                 request.reasoning?.effort === 'xhigh' &&
                 this.shouldFallbackReasoningEffort(error)
             ) {

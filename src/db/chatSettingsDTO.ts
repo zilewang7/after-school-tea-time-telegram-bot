@@ -32,6 +32,8 @@ export class ChatSettingsRecord extends Model<
   declare toolOverrides: CreationOptional<string | null>;
   // Owner-only Priority PayGo switch; NULL = follow the global switch
   declare geminiPriority: CreationOptional<boolean | null>;
+  // Thinking level: NULL = the model default, 'off' = thinking off, else a graded effort
+  declare thinkingEffort: CreationOptional<string | null>;
   declare updatedAt: Date;
   // Telegram user id of the last writer
   declare updatedBy: CreationOptional<number | null>;
@@ -70,6 +72,12 @@ ChatSettingsRecord.init({
   // Added after the table shipped: schema-migrations.ts adds it to an existing table
   geminiPriority: {
     type: DataTypes.BOOLEAN,
+    allowNull: true,
+    defaultValue: null,
+  },
+  // Added after the table shipped too: a TEXT value from the thinking-effort closed set
+  thinkingEffort: {
+    type: DataTypes.TEXT,
     allowNull: true,
     defaultValue: null,
   },

@@ -125,6 +125,8 @@ declare global {
             PRICE_WATCH_INTERVAL_HOURS?: string
             /** Per-source HTTP timeout of a price watch run, ms (default 8000) */
             PRICE_WATCH_TIMEOUT_MS?: string
+            /** '1' compares catalog capability data with the code heuristics (shadow only, default off) */
+            MODEL_TRAITS_SHADOW?: string
             /** '0' turns off the long-thinking link pages and the link mode */
             THINKING_LINK?: string
             /** '0' turns off the public Google-search page and the folded search footer */
