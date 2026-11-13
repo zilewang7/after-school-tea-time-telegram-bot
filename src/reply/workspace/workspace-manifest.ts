@@ -19,6 +19,7 @@ import {
     type WorkspaceSnapshot,
 } from '../../services/workspace-service.js';
 import { CURRENT_WORKSPACE_TOKEN, ensureWorkspaceToken, type WorkspaceState } from './workspace-state.js';
+import { appendVolatileSection } from './volatile-section.js';
 
 /** Files one manifest lists; the rest is one `workspace_list` away */
 const MAX_MANIFEST_FILES = 20;
@@ -174,9 +175,7 @@ export const appendWorkspaceManifest = (
     triggerTurnIndex: number,
     manifest: string
 ): void => {
-    const message = messages[triggerTurnIndex];
-    if (message === undefined) return;
-    message.content.push({ type: 'text', text: manifest });
+    appendVolatileSection(messages, triggerTurnIndex, manifest);
 };
 
 export interface AppendWorkspaceManifestInput {

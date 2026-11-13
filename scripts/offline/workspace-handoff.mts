@@ -171,6 +171,12 @@ const cases: { name: string; body: () => Promise<void> }[] = [
             const handoffIndex = parts.findIndex((part) => textOfPart(part).startsWith('[system] 交接文档'));
             const manifestIndex = parts.findIndex((part) => textOfPart(part).startsWith('[system] 工作区'));
             expect(handoffIndex > manifestIndex && manifestIndex >= 0, 'the note rides after the manifest');
+            // Platforms join text parts with no separator: each section must
+            // open a new paragraph by itself (harness issue #9).
+            const wire = parts.map((part) => textOfPart(part)).join('');
+            expect(wire.includes('\n\n[system] 工作区'), 'the manifest is separated from the message text');
+            expect(wire.includes('\n\n[system] 交接文档'), 'the note is separated from the manifest');
+            expect(!wire.includes('\n\n\n'), 'no extra blank line between the sections');
             const handoffPart = handoffIndex >= 0 ? parts[handoffIndex] : undefined;
             const section = handoffPart === undefined ? '' : textOfPart(handoffPart);
             expect(section.includes('## 进度'), 'the body is injected');

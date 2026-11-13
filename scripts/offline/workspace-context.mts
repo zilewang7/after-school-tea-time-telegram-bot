@@ -9,6 +9,7 @@
  * buildContext is called exactly as the reply path calls it.
  */
 import { expect, reportResults, runCase, setupOfflineDb, type CaseResult } from './harness.mts';
+import type { UnifiedContentPart, UnifiedMessage } from '../../src/ai/types.js';
 
 // The platform factories construct clients from the env on first use; these
 // dummies are never contacted.
@@ -78,6 +79,20 @@ const runtimeTurnOf = (messages: readonly { content: readonly { type: string; te
     if (message === undefined) throw new Error(`no message at index ${index}`);
     return message.content.filter((part) => part.type === 'text').map((part) => part.text ?? '').join('\n');
 };
+
+/** The text parts concatenated the way a platform sends them: no separator */
+const wireOf = (messages: readonly { content: readonly { type: string; text?: string }[] }[], index: number): string => {
+    const message = messages[index];
+    if (message === undefined) throw new Error(`no message at index ${index}`);
+    return message.content
+        .filter((part) => part.type === 'text')
+        .map((part) => part.text ?? '')
+        .join('');
+};
+
+/** How many tail sections are preceded by exactly one blank line */
+const separatedSectionsOf = (wire: string): number =>
+    (wire.match(/\n\n\[system\] (?:工作区|交接文档)/g) ?? []).length;
 
 const cases: { name: string; body: () => Promise<void> }[] = [
     {
@@ -483,6 +498,116 @@ const cases: { name: string; body: () => Promise<void> }[] = [
                 .filter((part) => part.type === 'text')
                 .map((part) => part.text ?? '');
             expect(!plainTexts.some((text) => text.startsWith('[system] 交接文档')), 'no note when the switch is off');
+        },
+    },
+    {
+        name: 'the volatile tail puts one blank line before each section on the wire',
+        body: async () => {
+            const wireRoot = 8200;
+            const wireTrigger = 8201;
+            await seedRow({ messageId: wireRoot, text: '任务开头' });
+            await seedRow({ messageId: wireTrigger, replyToId: wireRoot, text: '继续写' });
+            await writeWorkspaceFile({
+                chatId: CHAT,
+                conversationRootId: wireRoot,
+                path: 'handoff.md',
+                content: '# 交接\n下一步：写第三节',
+                append: false,
+                overwrite: true,
+                quota: QUOTA,
+            });
+
+            const built = await buildContext(await rowOf(wireTrigger), {
+                model: 'gemini-3.8-flash',
+                dryRun: true,
+            });
+            const state = createWorkspaceState({
+                chatId: CHAT,
+                conversationRootIds: built.conversationRootIds,
+                quota: QUOTA,
+            });
+            const appendTail = (messages: UnifiedMessage[], triggerTurnIndex: number, enabled: boolean) =>
+                appendWorkspaceTailForReply({
+                    messages,
+                    triggerTurnIndex,
+                    workspaceState: state,
+                    conversationRootIds: built.conversationRootIds,
+                    contextIndex: built.contextIndex,
+                    enabled,
+                    fileTools: true,
+                    widgetTools: false,
+                    handoff: true,
+                });
+
+            // Both sections injected: platforms join text parts with no
+            // separator, so each one must open on a new paragraph itself.
+            await appendTail(built.messages, built.triggerTurnIndex, true);
+            const wire = wireOf(built.messages, built.triggerTurnIndex);
+            const manifestIndex = wire.indexOf('[system] 工作区');
+            const handoffIndex = wire.indexOf('[system] 交接文档');
+            expect(wire.includes('\n\n[system] 工作区'), 'a blank line separates the runtime block from the manifest');
+            expect(wire.includes('\n\n[system] 交接文档'), 'a blank line separates the manifest from the handoff note');
+            expect(manifestIndex >= 0 && handoffIndex > manifestIndex, 'the note still rides after the manifest');
+            expect(!wire.includes('\n\n\n[system]'), 'no extra blank lines before a section');
+            expect(separatedSectionsOf(wire) === 2, `each section is separated once (got ${separatedSectionsOf(wire)})`);
+
+            // The section parts keep their own text: startsWith locators still work.
+            const partTexts = (built.messages[built.triggerTurnIndex]?.content ?? [])
+                .filter((part) => part.type === 'text')
+                .map((part) => part.text ?? '');
+            expect(partTexts.some((text) => text.startsWith('[system] 工作区')), 'the manifest part is unchanged');
+            expect(partTexts.some((text) => text.startsWith('[system] 交接文档')), 'the handoff part is unchanged');
+
+            // No manifest this time: the note right after the runtime block is
+            // still separated from it.
+            const plain = await buildContext(await rowOf(wireTrigger), {
+                model: 'gemini-3.8-flash',
+                dryRun: true,
+            });
+            await appendWorkspaceTailForReply({
+                messages: plain.messages,
+                triggerTurnIndex: plain.triggerTurnIndex,
+                workspaceState: state,
+                conversationRootIds: plain.conversationRootIds,
+                contextIndex: plain.contextIndex,
+                enabled: false,
+                fileTools: false,
+                widgetTools: false,
+                handoff: true,
+            });
+            const plainWire = wireOf(plain.messages, plain.triggerTurnIndex);
+            expect(plainWire.includes('\n\n[system] 交接文档'), 'a note right after the runtime block is separated');
+            expect(!plainWire.includes('\n\n\n'), 'still no extra blank line');
+
+            // A repeated append adds one separator per section, not a growing run.
+            await appendTail(built.messages, built.triggerTurnIndex, true);
+            const twiceWire = wireOf(built.messages, built.triggerTurnIndex);
+            expect(separatedSectionsOf(twiceWire) === 4, `a repeated append separates each new section once (got ${separatedSectionsOf(twiceWire)})`);
+            expect(!twiceWire.includes('\n\n\n[system]'), 'a repeated append stacks no blank line');
+        },
+    },
+    {
+        name: 'appending a section never edits a part that is not non-empty text',
+        body: async () => {
+            const { appendVolatileSection } = await import('../../src/reply/workspace/volatile-section.js');
+
+            const image: UnifiedContentPart = { type: 'image', imageData: 'offline' };
+            const withImage: UnifiedMessage[] = [{ role: 'user', content: [image] }];
+            appendVolatileSection(withImage, 0, '[system] 工作区');
+            expect(withImage[0]?.content[0] === image, 'the image part is left as is');
+            expect(withImage[0]?.content[1]?.text === '[system] 工作区', 'the section is still appended');
+
+            const empty: UnifiedMessage[] = [{ role: 'user', content: [{ type: 'text', text: '' }] }];
+            appendVolatileSection(empty, 0, '[system] 工作区');
+            expect(empty[0]?.content[0]?.text === '', 'an empty text part gains no newline');
+
+            const text: UnifiedMessage[] = [{ role: 'user', content: [{ type: 'text', text: '正文' }] }];
+            appendVolatileSection(text, 0, 'a');
+            expect(text[0]?.content[0]?.text === '正文\n\n', `exactly one blank line is added (got ${JSON.stringify(text[0]?.content[0]?.text)})`);
+            appendVolatileSection(text, 0, 'b');
+            expect(text[0]?.content[0]?.text === '正文\n\n', 'a second append adds no newline');
+            appendVolatileSection(text, 9, 'c');
+            expect(text[0]?.content.length === 3, 'a missing trigger turn is a no-op');
         },
     },
 ];

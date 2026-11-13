@@ -14,6 +14,7 @@
 import type { UnifiedMessage } from '../../ai/types.js';
 import { formatWorkspaceTime, readWorkspaceFile } from '../../services/workspace-service.js';
 import { neutralizeWireFormat } from '../tools/history-text.js';
+import { appendVolatileSection } from './volatile-section.js';
 
 /** The fixed path the tool writes and the injection reads */
 export const HANDOFF_FILE_PATH = 'handoff.md';
@@ -134,7 +135,5 @@ export const appendWorkspaceHandoff = (
     triggerTurnIndex: number,
     section: string
 ): void => {
-    const message = messages[triggerTurnIndex];
-    if (message === undefined) return;
-    message.content.push({ type: 'text', text: section });
+    appendVolatileSection(messages, triggerTurnIndex, section);
 };
