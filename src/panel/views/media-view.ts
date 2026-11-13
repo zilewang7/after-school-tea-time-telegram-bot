@@ -6,7 +6,7 @@
 import type { ContextMessage } from '../../db/queries/context-queries.js';
 import type { SignedMediaSigner } from '../share/signed-media.js';
 import {
-    loadMessageMediaDescriptors,
+    loadMessageAlbumMedia,
     type MediaDescriptor,
     type PreviewMediaDescriptor,
 } from '../media/media-content.js';
@@ -48,16 +48,23 @@ export const toPreviewMediaViews = (
         url: signer.sign({ chatId, messageId, kind: 'cache', mediaKey: preview.mediaKey }).path,
     }));
 
-/** One batched lookup and signing of the user messages' media (tree / flat view) */
+/**
+ * One batched lookup and signing of the user messages' media (tree / flat
+ * view): every item of a bubble signs its own message id, so a Telegram album's
+ * extra items load through their own `/m/…` URLs.
+ */
 export const loadMessageMediaViews = async (
     signer: SignedMediaSigner,
     chatId: number,
     messages: readonly ContextMessage[]
-): Promise<Map<number, MediaView>> => {
-    const descriptors = await loadMessageMediaDescriptors(messages);
-    const views = new Map<number, MediaView>();
-    for (const [messageId, descriptor] of descriptors) {
-        views.set(messageId, toMediaView(signer, chatId, messageId, null, descriptor));
+): Promise<Map<number, MediaView[]>> => {
+    const albumMedia = await loadMessageAlbumMedia(chatId, messages);
+    const views = new Map<number, MediaView[]>();
+    for (const [messageId, items] of albumMedia) {
+        views.set(
+            messageId,
+            items.map((item) => toMediaView(signer, chatId, item.messageId, null, item.descriptor))
+        );
     }
     return views;
 };

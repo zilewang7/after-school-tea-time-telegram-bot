@@ -80,11 +80,13 @@ export const UserNodeRow = ({ row, node, member, pending, onExclude, onRestore }
             {node.quote !== null && <blockquote className="quote">{node.quote}</blockquote>}
 
             {node.text !== null && node.text !== '' && <FoldableText text={node.text} />}
-            {node.media !== null && <MediaAttachmentView media={node.media} compact />}
+            {node.media.map((item) => (
+                <MediaAttachmentView key={item.url} media={item} compact />
+            ))}
             {node.previewMedia.map((preview) => (
                 <MediaAttachmentView key={preview.url} media={preview} compact />
             ))}
-            {node.media === null && node.mediaHint !== null && <p className="hint">[{node.mediaHint}]</p>}
+            {node.media.length === 0 && node.mediaHint !== null && <p className="hint">[{node.mediaHint}]</p>}
             {node.linkPreview !== null && (
                 <CollapsibleSection title="网页预览" summary={null}>
                     <FoldableText text={node.linkPreview} foldLines={10} />

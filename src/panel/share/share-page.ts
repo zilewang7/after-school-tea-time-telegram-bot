@@ -18,6 +18,7 @@ import type {
     ShareContent,
     ShareConversationContent,
     ShareMedia,
+    ShareMediaItem,
     ShareReplyContent,
     ShareReplyTarget,
     ShareUserBubble,
@@ -401,17 +402,16 @@ const previewTextBlock = (previewText: string | null): string =>
 /** One bot reply bubble; `widgetIndex` is the iframe order on this page */
 const botBubble = (
     token: string,
-    messageId: number,
     createdAt: string,
     text: string,
     widget: ShareWidgetContent | null,
-    media: ShareMedia | null,
+    media: readonly ShareMediaItem[],
     widgetIndex: number | null,
     replyTo: ShareReplyTarget | null
 ): string => {
     const attachments: string[] = [];
     if (widget !== null && widgetIndex !== null) attachments.push(widgetFigure(token, widgetIndex, widget));
-    if (media !== null) attachments.push(mediaFigure(token, messageId, media));
+    attachments.push(...media.map((item) => mediaFigure(token, item.messageId, item)));
     return [
         '<article class="bubble bot">',
         `<div class="bubble-head"><span class="author">${BOT_NAME}</span><span class="time">${escapeHtml(formatTime(createdAt))}</span></div>`,
@@ -427,9 +427,9 @@ const userBubble = (token: string, bubble: ShareUserBubble): string => {
         .map((preview, index) => previewFigure(token, bubble.messageId, preview, index))
         .join('');
     const media = [
-        bubble.media === null ? '' : mediaFigure(token, bubble.messageId, bubble.media),
+        ...bubble.media.map((item) => mediaFigure(token, item.messageId, item)),
         previews,
-        bubble.media !== null || bubble.mediaHint === null
+        bubble.media.length > 0 || bubble.mediaHint === null
             ? ''
             : `<span class="media-hint">[${escapeHtml(bubble.mediaHint)}]</span>`,
     ].join('');
@@ -449,11 +449,10 @@ const userBubble = (token: string, bubble: ShareUserBubble): string => {
 const renderReplyBody = (input: SharePageInput, content: ShareReplyContent): string =>
     botBubble(
         input.token,
-        content.firstMessageId,
         content.createdAt,
         content.text,
         content.widget,
-        content.media,
+        content.media === null ? [] : [{ messageId: content.firstMessageId, ...content.media }],
         content.widget === null ? null : 0,
         null
     );
@@ -467,7 +466,6 @@ const renderConversationBody = (input: SharePageInput, content: ShareConversatio
             const index = bubble.widget === null ? null : widgetIndex++;
             return botBubble(
                 input.token,
-                bubble.messageId,
                 bubble.createdAt,
                 bubble.text,
                 bubble.widget,

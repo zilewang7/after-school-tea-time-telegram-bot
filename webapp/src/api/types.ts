@@ -414,8 +414,8 @@ export interface MemberUserNode extends TreeNodePosition {
     excluded: boolean;
     // The message this one answers, when it can be resolved
     replyTo: ReplyTarget | null;
-    // The message's own attachment, when the 7-day retention still has it
-    media: MediaAttachment | null;
+    // Every attachment of the bubble in display order (own media first, then the rest of its media group)
+    media: MediaAttachment[];
     // Pictures / clips Telegram crawled for the message's first URL
     previewMedia: MediaAttachment[];
     // Supergroups only: t.me/c/<internal id>/<message id>
@@ -1149,6 +1149,12 @@ export interface PublicShareMedia {
     fileName: string | null;
 }
 
+/** One attachment of a share bubble, plus the message whose file it is */
+export interface PublicShareMediaItem extends PublicShareMedia {
+    // A media group item has its own message id
+    messageId: number;
+}
+
 /** A reply share's pinned version */
 export interface PublicShareReply {
     firstMessageId: number;
@@ -1172,7 +1178,7 @@ export interface PublicShareReplyTarget {
 
 /**
  * One bubble of a conversation share. User bubbles carry `authorName`; both
- * kinds may carry one attachment or a widget, so those stay optional rather
+ * kinds may carry attachments or a widget, so those stay optional rather
  * than forming a discriminated union.
  */
 export interface PublicShareBubble {
@@ -1188,7 +1194,8 @@ export interface PublicShareBubble {
     previewText?: string | null;
     mediaHint: string | null;
     widget: PublicShareWidget | null;
-    media: PublicShareMedia | null;
+    // Every attachment of the bubble in display order (empty when none)
+    media: PublicShareMediaItem[];
     // Link-preview pictures / clips captured for the bubble's first URL
     previewMedia: PublicShareMedia[];
     // The bubble this one answers; null when it is outside the share

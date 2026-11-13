@@ -66,8 +66,11 @@ export interface MemberUserNode extends NodePosition {
     excluded: boolean;
     /** The message this one answers, when it can be resolved */
     replyTo: ReplyTargetView | null;
-    /** The message's own media (image / sticker / video / file), when still stored */
-    media: MediaView | null;
+    /**
+     * Every attachment of this bubble in display order (own media first, then
+     * the rest of its media group); empty when it has none
+     */
+    media: MediaView[];
     /** The captured link preview's pictures / clips, when still stored */
     previewMedia: MediaView[];
     /** Supergroups only: t.me/c/<internal id>/<message id> */
@@ -126,7 +129,7 @@ export const toMemberUserNode = (
     position: TreeNodePosition,
     extras: MemberNodeExtras,
     chat: Pick<ChatRow, 'chatId' | 'type'>,
-    media: MediaView | null,
+    media: MediaView[],
     previewMedia: MediaView[],
     replyTo: ReplyTargetView | null
 ): MemberUserNode => ({

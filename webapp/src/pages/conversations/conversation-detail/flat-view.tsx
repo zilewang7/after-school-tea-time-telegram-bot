@@ -29,11 +29,13 @@ const MemberBubble = ({ node }: { node: MemberUserNode }) => (
         {node.replyTo !== null && <ReplyTargetBlock target={node.replyTo} />}
         {node.quote !== null && <blockquote className="quote">{node.quote}</blockquote>}
         {node.text !== null && node.text !== '' && <FoldableText text={node.text} foldLines={12} foldChars={800} />}
-        {node.media !== null && <MediaAttachmentView media={node.media} />}
+        {node.media.map((item) => (
+            <MediaAttachmentView key={item.url} media={item} />
+        ))}
         {node.previewMedia.map((preview) => (
             <MediaAttachmentView key={preview.url} media={preview} />
         ))}
-        {node.media === null && node.mediaHint !== null && <p className="hint">[{node.mediaHint}]</p>}
+        {node.media.length === 0 && node.mediaHint !== null && <p className="hint">[{node.mediaHint}]</p>}
         {node.linkPreview !== null && (
             <CollapsibleSection title="网页预览" summary={null}>
                 <FoldableText text={node.linkPreview} foldLines={10} />

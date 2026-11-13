@@ -98,7 +98,7 @@ cases.push(
                     previewText: 'URL: https://t.me/c/1415974153/2',
                     replyTo: { messageId: 0, authorName: '某人', snippet: 'tg://user?id=7', mediaHint: null },
                     mediaHint: null,
-                    media: null,
+                    media: [],
                     previewMedia: [],
                 },
                 {
@@ -108,7 +108,7 @@ cases.push(
                     text: '回 [黑猫](tg://user?id=603421700)',
                     widget: { html: '<div>x</div>', caption: 'tg://user?id=9', imageBase64: null },
                     replyTo: { messageId: 1, authorName: '黑猫', snippet: null, mediaHint: 'a picture' },
-                    media: null,
+                    media: [],
                 },
             ],
         };

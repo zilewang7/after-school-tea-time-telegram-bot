@@ -272,7 +272,10 @@ const cases: { name: string; body: () => Promise<void> }[] = [
                 `a reply to the bot reads as the model reads it (got ${JSON.stringify(helper?.annotations)})`
             );
             expect(
-                keysOf(root).length === 19 && root.media === null && root.previewMedia.length === 0,
+                keysOf(root).length === 19 &&
+                    Array.isArray(root.media) &&
+                    root.media.length === 0 &&
+                    root.previewMedia.length === 0,
                 `a member's user node has 19 fields and no media here (got ${keysOf(root).join(', ')})`
             );
             expect(root.replyTo === null, 'the root answers nothing');

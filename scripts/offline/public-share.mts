@@ -210,6 +210,7 @@ const cases: { name: string; body: () => Promise<void> }[] = [
             expect(reply.text === '一段**加粗**的正文', 'the raw markdown text');
             expect(asRecord(reply.widget).caption === '卡片说明', 'the widget caption only');
             const media = asRecord(reply.media);
+            expect(!Array.isArray(reply.media), 'a reply share keeps one attachment object');
             expect(media.kind === 'image', 'the image attachment');
             expect(media.mimeType === 'image/png', 'the sniffed image mime');
             expect(media.fileName === null, 'visual media has no file name');
@@ -263,8 +264,14 @@ const cases: { name: string; body: () => Promise<void> }[] = [
             const userBubble = bubbles[0] ?? {};
             expect(userBubble.kind === 'user' && userBubble.messageId === rootId, 'the user bubble');
             expect(userBubble.authorName === 'Alice', 'the display name');
-            const userMedia = asRecord(userBubble.media);
-            expect(userMedia.kind === 'image' && userMedia.mimeType === 'image/png', 'the user image');
+            const userMedia = Array.isArray(userBubble.media) ? userBubble.media.map(asRecord) : [];
+            expect(
+                userMedia.length === 1 &&
+                    userMedia[0]?.kind === 'image' &&
+                    userMedia[0]?.mimeType === 'image/png' &&
+                    userMedia[0]?.messageId === rootId,
+                `the user image names its message (got ${JSON.stringify(userBubble.media)})`
+            );
             expect(userBubble.widget === null, 'a user bubble has no widget');
             expect(userBubble.quote === null && userBubble.previewText === null, 'no quote or preview text here');
             expect(userBubble.replyTo === null, 'the root answers nothing');
@@ -274,7 +281,10 @@ const cases: { name: string; body: () => Promise<void> }[] = [
             expect(botBubble.text === 'bot 的回答', 'the bot text');
             expect(botBubble.mediaHint === null, 'a bot bubble has no media hint');
             expect(asRecord(botBubble.widget).caption === '会话说明', 'the bot widget caption');
-            expect(botBubble.media === null, 'no media on this bot bubble');
+            expect(
+                Array.isArray(botBubble.media) && botBubble.media.length === 0,
+                `a bot bubble without media carries an empty list (got ${JSON.stringify(botBubble.media)})`
+            );
             const botReplyTo = asRecord(botBubble.replyTo);
             expect(
                 botReplyTo.messageId === rootId && botReplyTo.authorName === 'Alice' && botReplyTo.snippet === '用户的问题',

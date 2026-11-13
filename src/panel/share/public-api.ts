@@ -21,6 +21,7 @@ import {
     type ShareContent,
     type ShareConversationContent,
     type ShareMedia,
+    type ShareMediaItem,
     type ShareReplyContent,
     type ShareReplyTarget,
     type ShareWidgetContent,
@@ -39,6 +40,12 @@ export interface PublicShareMediaView {
     sizeBytes: number | null;
     /** Download name for documents */
     fileName: string | null;
+}
+
+/** One attachment of a share bubble: the message whose file it is */
+export interface PublicShareMediaItemView extends PublicShareMediaView {
+    /** A media group item has its own message id; its bytes come from that one */
+    messageId: number;
 }
 
 export interface PublicShareReplyView {
@@ -74,8 +81,8 @@ export interface PublicShareBubbleView {
     /** User bubbles only; bot bubbles carry `null` */
     mediaHint: string | null;
     widget: PublicShareWidgetView | null;
-    /** The bubble's attachment, when the retention still has it */
-    media: PublicShareMediaView | null;
+    /** Every attachment of the bubble in display order (empty when none) */
+    media: PublicShareMediaItemView[];
     /** Link-preview pictures / clips captured for the bubble's first URL */
     previewMedia: PublicShareMediaView[];
     /** The bubble this one answers; null when it is outside the share */
@@ -102,10 +109,22 @@ export interface PublicShareView {
 const widgetViewOf = (widget: ShareWidgetContent | null): PublicShareWidgetView | null =>
     widget === null ? null : { caption: widget.caption };
 
+const mediaFieldsOf = (media: ShareMedia): PublicShareMediaView => ({
+    kind: media.kind,
+    mimeType: media.mimeType,
+    sizeBytes: media.sizeBytes,
+    fileName: media.fileName,
+});
+
+/** The single attachment forms (a reply's version, a link preview) */
 const mediaViewOf = (media: ShareMedia | null): PublicShareMediaView | null =>
-    media === null
-        ? null
-        : { kind: media.kind, mimeType: media.mimeType, sizeBytes: media.sizeBytes, fileName: media.fileName };
+    media === null ? null : mediaFieldsOf(media);
+
+/** A bubble attachment, which also names the message its bytes belong to */
+const mediaItemViewOf = (item: ShareMediaItem): PublicShareMediaItemView => ({
+    messageId: item.messageId,
+    ...mediaFieldsOf(item),
+});
 
 const replyViewOf = (content: ShareReplyContent): PublicShareReplyView => ({
     firstMessageId: content.firstMessageId,
@@ -140,7 +159,7 @@ const bubbleViewOf = (bubble: ShareBubble): PublicShareBubbleView => {
             previewText: bubble.previewText,
             mediaHint: bubble.mediaHint,
             widget: null,
-            media: mediaViewOf(bubble.media),
+            media: bubble.media.map(mediaItemViewOf),
             previewMedia: bubble.previewMedia.flatMap((preview) => {
                 const view = mediaViewOf(preview);
                 return view === null ? [] : [view];
@@ -155,7 +174,7 @@ const bubbleViewOf = (bubble: ShareBubble): PublicShareBubbleView => {
         text: bubble.text,
         mediaHint: null,
         widget: widgetViewOf(bubble.widget),
-        media: mediaViewOf(bubble.media),
+        media: bubble.media.map(mediaItemViewOf),
         previewMedia: [],
         replyTo: replyTargetViewOf(bubble.replyTo),
     };

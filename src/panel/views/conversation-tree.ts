@@ -237,7 +237,7 @@ export const buildConversationTreeView = async (
     // media is signed only when a caller asked for a panel tree.
     const mediaSigner = options?.mediaSigner;
     const userMessages = messages.filter((message) => !message.fromBotSelf);
-    const mediaByMessageId = access === 'member' && mediaSigner !== undefined
+    const mediaByMessageId: ReadonlyMap<number, MediaView[]> = access === 'member' && mediaSigner !== undefined
         ? await loadMessageMediaViews(mediaSigner, chatId, userMessages)
         : new Map();
     const previewMediaByMessageId = access === 'member' && mediaSigner !== undefined
@@ -265,7 +265,7 @@ export const buildConversationTreeView = async (
             position,
             memberExtras.get(message.messageId) ?? EMPTY_EXTRAS,
             chat,
-            mediaByMessageId.get(message.messageId) ?? null,
+            mediaByMessageId.get(message.messageId) ?? [],
             previewMediaByMessageId.get(message.messageId) ?? [],
             replyTargets.get(message.messageId) ?? null
         );

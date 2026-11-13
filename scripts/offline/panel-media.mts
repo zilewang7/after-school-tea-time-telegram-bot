@@ -183,10 +183,15 @@ const cases: { name: string; body: () => Promise<void> }[] = [
 
             const tree = await jsonOf(await call(`/api/chats/${GROUP}/conversations/${rootId}`, ALICE));
             const node = findNode(tree, rootId);
-            expect(node.media?.kind === 'image' && node.media?.mimeType === 'image/png', 'the member node carries the picture');
-            expect(node.media?.url.startsWith('/m/') === true, `the URL is a signed /m/ path (got ${node.media?.url})`);
+            expect(
+                Array.isArray(node.media) && node.media.length === 1,
+                `one attachment on the member node (got ${JSON.stringify(node.media)})`
+            );
+            const mediaItem = node.media[0] ?? {};
+            expect(mediaItem.kind === 'image' && mediaItem.mimeType === 'image/png', 'the member node carries the picture');
+            expect(mediaItem.url?.startsWith('/m/') === true, `the URL is a signed /m/ path (got ${mediaItem.url})`);
 
-            const media = await app.request(node.media.url);
+            const media = await app.request(mediaItem.url);
             expect(media.status === 200, `the signed URL answers 200 (got ${media.status})`);
             expect(media.headers.get('Content-Type') === 'image/png', 'the stored MIME type');
             expect((await bytesOf(media)).equals(PNG_BYTES), 'the stored bytes');
@@ -248,8 +253,9 @@ const cases: { name: string; body: () => Promise<void> }[] = [
             });
             const legacyTree = await jsonOf(await call(`/api/chats/${GROUP}/conversations/${legacyRoot}`, ALICE));
             const legacyNode = findNode(legacyTree, legacyRoot);
-            expect(legacyNode.media?.kind === 'image', 'the legacy file renders');
-            const legacyBytes = await app.request(legacyNode.media.url);
+            const legacyItem = legacyNode.media[0] ?? {};
+            expect(legacyItem.kind === 'image', 'the legacy file renders');
+            const legacyBytes = await app.request(legacyItem.url);
             expect((await bytesOf(legacyBytes)).equals(PNG_BYTES), 'the legacy bytes are served');
 
             const missingRoot = takeMessageId();
@@ -259,7 +265,11 @@ const cases: { name: string; body: () => Promise<void> }[] = [
                 mediaHint: 'a picture',
             });
             const missingTree = await jsonOf(await call(`/api/chats/${GROUP}/conversations/${missingRoot}`, ALICE));
-            expect(findNode(missingTree, missingRoot).media === null, 'a cache miss leaves the node without media');
+            const missingNode = findNode(missingTree, missingRoot);
+            expect(
+                Array.isArray(missingNode.media) && missingNode.media.length === 0,
+                `a cache miss leaves the node with an empty list (got ${JSON.stringify(missingNode.media)})`
+            );
         },
     },
     {
@@ -320,7 +330,12 @@ const cases: { name: string; body: () => Promise<void> }[] = [
                 mediaHint: 'a picture',
             });
             const tree = await jsonOf(await call(`/api/chats/${GROUP}/conversations/${rootId}`, ALICE));
-            const url = findNode(tree, rootId).media.url;
+            const rangeNode = findNode(tree, rootId);
+            expect(
+                Array.isArray(rangeNode.media) && rangeNode.media.length === 1,
+                `one attachment for the range request (got ${JSON.stringify(rangeNode.media)})`
+            );
+            const url = rangeNode.media[0]?.url;
 
             const response = await app.request(url, { headers: { Range: 'bytes=0-3' } });
             expect(response.status === 206, `a range request is 206 (got ${response.status})`);
@@ -382,7 +397,13 @@ const cases: { name: string; body: () => Promise<void> }[] = [
 
             const view = await jsonOf(await app.request(`/api/public/shares/${token}`));
             const bubble = view.share?.conversation?.bubbles?.[0];
-            expect(bubble?.media?.kind === 'image', `the public bubble carries the picture (got ${JSON.stringify(bubble?.media)})`);
+            expect(
+                Array.isArray(bubble?.media) &&
+                    bubble.media.length === 1 &&
+                    bubble.media[0]?.kind === 'image' &&
+                    bubble.media[0]?.messageId === rootId,
+                `the public bubble carries the picture (got ${JSON.stringify(bubble?.media)})`
+            );
             expect(bubble?.previewMedia?.length === 1, `the public bubble carries the preview (got ${JSON.stringify(bubble?.previewMedia)})`);
 
             const picture = await app.request(`/s/${token}/media/${rootId}/image`);
@@ -426,7 +447,10 @@ const cases: { name: string; body: () => Promise<void> }[] = [
             const bubbles = view.share?.conversation?.bubbles ?? [];
             const linked = bubbles.find((bubble: any) => bubble.messageId === linkedId);
             expect(linked !== undefined, 'the linked message is a bubble of the share');
-            expect(linked.media?.kind === 'image', 'the bubble carries its picture');
+            expect(
+                Array.isArray(linked.media) && linked.media.length === 1 && linked.media[0]?.kind === 'image',
+                `the bubble carries its picture (got ${JSON.stringify(linked.media)})`
+            );
             const served = await app.request(`/s/${token}/media/${linkedId}/image`);
             expect(served.status === 200 && (await bytesOf(served)).equals(PNG_BYTES), 'the linked message media is served');
         },

@@ -11,7 +11,7 @@ import { Readable } from 'node:stream';
 import type { Context } from 'hono';
 import { Op } from '@sequelize/core';
 import { LinkPreviewCache, MediaCache, getMessage, type BotResponse, type ResponseVersion } from '../../db/index.js';
-import { findBotResponseInChat, type ContextMessage } from '../../db/queries/context-queries.js';
+import { findBotResponseInChat, listSubImageMessages, type ContextMessage } from '../../db/queries/context-queries.js';
 import { sniffMediaMime } from '../../ai/image-generation/image-mime.js';
 import { getGcsObjectSize, openGcsReadStream } from '../../services/gcs-service.js';
 import { extractFirstUrl } from '../../services/luoxu-preview-service.js';
@@ -202,13 +202,19 @@ export const resolveMessageMedia = async (chatId: number, messageId: number): Pr
     return null;
 };
 
+/** The fields of a stored message row that decide its media descriptor */
+export type MessageMediaSource = Pick<
+    ContextMessage,
+    'messageId' | 'fileUniqueId' | 'file' | 'fileMime' | 'mediaHint'
+>;
+
 /**
  * Descriptors for many messages at once (the panel tree / a share page): one
  * metadata query, no bytes. Bot-written rows are the caller's business — the
  * bot's own media lives in its versions, not in these rows.
  */
 export const loadMessageMediaDescriptors = async (
-    messages: readonly ContextMessage[]
+    messages: readonly MessageMediaSource[]
 ): Promise<Map<number, MediaDescriptor>> => {
     const descriptors = new Map<number, MediaDescriptor>();
     const uniqueIds = [...new Set(messages.map((message) => message.fileUniqueId).filter((id): id is string => id !== null))];
@@ -239,6 +245,52 @@ export const loadMessageMediaDescriptors = async (
         }
     }
     return descriptors;
+};
+
+/** One attachment of a bubble: which stored message owns the file, plus its descriptor */
+export interface MessageMediaItem {
+    messageId: number;
+    descriptor: MediaDescriptor;
+}
+
+/**
+ * Every attachment of each message's bubble, in display order: the message's
+ * own media first, then the rest of its Telegram media group. Messages with no
+ * attachment are absent from the map.
+ *
+ * A Telegram album stores its first item as an ordinary message and every
+ * further item as a `sub image of [<first>]` reply (left out of the reply tree
+ * on purpose, see listSubImageMessages); display surfaces show them all inside
+ * the parent's bubble.
+ */
+export const loadMessageAlbumMedia = async (
+    chatId: number,
+    messages: readonly ContextMessage[]
+): Promise<Map<number, MessageMediaItem[]>> => {
+    const albumMedia = new Map<number, MessageMediaItem[]>();
+    if (messages.length === 0) return albumMedia;
+
+    const subImagesByParentId = await listSubImageMessages(
+        chatId,
+        messages.map((message) => message.messageId)
+    );
+    const descriptors = await loadMessageMediaDescriptors([
+        ...messages,
+        ...[...subImagesByParentId.values()].flat(),
+    ]);
+
+    for (const message of messages) {
+        const items: MessageMediaItem[] = [];
+        const own = descriptors.get(message.messageId);
+        if (own !== undefined) items.push({ messageId: message.messageId, descriptor: own });
+        // The children come back ascending by message id
+        for (const subImage of subImagesByParentId.get(message.messageId) ?? []) {
+            const descriptor = descriptors.get(subImage.messageId);
+            if (descriptor !== undefined) items.push({ messageId: subImage.messageId, descriptor });
+        }
+        if (items.length > 0) albumMedia.set(message.messageId, items);
+    }
+    return albumMedia;
 };
 
 /** A link preview's attachment: the same facts plus the cache key its bytes live under */

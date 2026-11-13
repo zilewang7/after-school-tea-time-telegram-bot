@@ -214,6 +214,66 @@ export const getChildMessageIds = async (
 ): Promise<number[]> => findChildMessageIds(chatId, [messageId]);
 
 /**
+ * The stored marker of a Telegram media group's extra item: the text names the
+ * first message of the album, which is the row every item replies to.
+ */
+const SUB_IMAGE_TEXT_PATTERN = /sub image of \[(\w+)\]/;
+
+/** One extra item of a Telegram media group: a row stored as `sub image of [parent]` */
+export interface SubImageMessage {
+    parentMessageId: number;
+    messageId: number;
+    file: Buffer | null;
+    fileMime: string | null;
+    fileUniqueId: string | null;
+    mediaHint: string | null;
+}
+
+/**
+ * The extra items of each message's Telegram media group, ascending by message
+ * id: rows whose `replyToId` is the parent and whose text is
+ * `sub image of [<parent>]`. Parents without extra items are absent.
+ *
+ * They are left out of the reply tree on purpose (getRepliesHistory), because
+ * the model side folds them into the parent's media; display surfaces read
+ * them here instead.
+ */
+export const listSubImageMessages = async (
+    chatId: number,
+    parentMessageIds: readonly number[]
+): Promise<Map<number, SubImageMessage[]>> => {
+    const byParentId = new Map<number, SubImageMessage[]>();
+    if (parentMessageIds.length === 0) return byParentId;
+
+    const rows = await Message.findAll({
+        where: { chatId, replyToId: { [Op.in]: [...parentMessageIds] } },
+        attributes: ['messageId', 'replyToId', 'text', 'file', 'fileMime', 'fileUniqueId', 'mediaHint'],
+        order: [['messageId', 'ASC']],
+    });
+
+    for (const row of rows) {
+        const parentMessageId = row.replyToId;
+        const text = row.text;
+        if (parentMessageId === null || text === null) continue;
+        // The marker must name the row this one replies to: a message merely
+        // quoting another album's marker is not one of its items.
+        if (SUB_IMAGE_TEXT_PATTERN.exec(text)?.[1] !== String(parentMessageId)) continue;
+        const item: SubImageMessage = {
+            parentMessageId,
+            messageId: row.messageId,
+            file: row.file,
+            fileMime: row.fileMime,
+            fileUniqueId: row.fileUniqueId,
+            mediaHint: row.mediaHint,
+        };
+        const items = byParentId.get(parentMessageId);
+        if (items === undefined) byParentId.set(parentMessageId, [item]);
+        else items.push(item);
+    }
+    return byParentId;
+};
+
+/**
  * Get a message from either Message table or BotResponse table
  * This allows context to include bot responses
  */
@@ -668,8 +728,9 @@ export const getRepliesHistory = async (
     const filtered = messageList.filter((msg) => {
         if (seen.has(msg.messageId)) return false;
         if (excludeSelf && msg.messageId === messageId) return false;
-        // Filter out "sub image" messages
-        if (msg.text && /sub image of \[(\w+)\]/.test(msg.text)) return false;
+        // Filter out "sub image" messages: they are the rest of a media group,
+        // folded into their parent's media (see listSubImageMessages)
+        if (msg.text && SUB_IMAGE_TEXT_PATTERN.test(msg.text)) return false;
 
         seen.add(msg.messageId);
         return true;

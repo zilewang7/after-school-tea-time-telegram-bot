@@ -19,9 +19,10 @@ import { findChat } from '../../db/queries/panel-registry.js';
 import type { BotResponse, ResponseVersion } from '../../db/index.js';
 import {
     loadLinkPreviewMediaDescriptors,
-    loadMessageMediaDescriptors,
+    loadMessageAlbumMedia,
     versionMediaDescriptorOf,
     type MediaDescriptor,
+    type MessageMediaItem,
 } from '../media/media-content.js';
 import { getLinkPreviewParts } from '../../services/luoxu-preview-service.js';
 import { plainExcerptOf } from '../views/excerpt.js';
@@ -37,6 +38,11 @@ export interface ShareWidgetContent {
 
 /** The attachment facts a share page renders; the media route serves the bytes */
 export type ShareMedia = MediaDescriptor;
+
+/** One attachment of a share bubble: the stored message that owns the file */
+export interface ShareMediaItem extends ShareMedia {
+    messageId: number;
+}
 
 export interface ShareReplyContent {
     kind: 'reply';
@@ -80,8 +86,11 @@ export interface ShareUserBubble {
     /** The message this one replies to; null when it is outside the share */
     replyTo: ShareReplyTarget | null;
     mediaHint: string | null;
-    /** The message's own attachment, when the 7-day retention still has it */
-    media: ShareMedia | null;
+    /**
+     * Every attachment of this bubble in display order (own media first, then
+     * the rest of its Telegram media group), when the retention still has it
+     */
+    media: ShareMediaItem[];
     /** Pictures / clips Telegram crawled for the message's first URL */
     previewMedia: ShareMedia[];
 }
@@ -94,8 +103,8 @@ export interface ShareBotBubble {
     widget: ShareWidgetContent | null;
     /** The message this reply answers; null when it is outside the share */
     replyTo: ShareReplyTarget | null;
-    /** The current version's attachment, when it has one */
-    media: ShareMedia | null;
+    /** The current version's attachment(s), when it has one */
+    media: ShareMediaItem[];
 }
 
 export type ShareBubble = ShareUserBubble | ShareBotBubble;
@@ -249,9 +258,15 @@ export const loadReplyShareContent = async (
     };
 };
 
+/** One bubble attachment as a share page renders it: the descriptor plus its owner */
+const shareMediaItemOf = (item: MessageMediaItem): ShareMediaItem => ({
+    messageId: item.messageId,
+    ...item.descriptor,
+});
+
 const userBubbleOf = (
     message: ContextMessage,
-    media: ShareMedia | null,
+    media: readonly ShareMediaItem[],
     previewMedia: readonly ShareMedia[],
     previewText: string | null,
     replyTo: ShareReplyTarget | null
@@ -265,7 +280,7 @@ const userBubbleOf = (
     previewText,
     replyTo,
     mediaHint: message.mediaHint,
-    media,
+    media: [...media],
     previewMedia: [...previewMedia],
 });
 
@@ -275,6 +290,7 @@ const botBubbleOf = (
     replyTo: ShareReplyTarget | null
 ): ShareBotBubble => {
     const version = response?.getCurrentVersion() ?? null;
+    const descriptor = version === null ? null : versionMediaDescriptorOf(version);
     return {
         kind: 'bot',
         messageId: message.messageId,
@@ -282,7 +298,7 @@ const botBubbleOf = (
         text: version !== null && typeof version.text === 'string' ? version.text : (message.text ?? ''),
         widget: version === null ? null : widgetOf(version),
         replyTo,
-        media: version === null ? null : versionMediaDescriptorOf(version),
+        media: descriptor === null ? [] : [{ messageId: message.messageId, ...descriptor }],
     };
 };
 
@@ -328,7 +344,7 @@ export const loadConversationShareContent = async (
     const responses = await listBotResponsesByIds(chatId, botMessageIds);
     const responseById = new Map(responses.map((response) => [response.messageId, response]));
     const userMessages = ordered.filter((message) => !message.fromBotSelf);
-    const userMedia = await loadMessageMediaDescriptors(userMessages);
+    const userAlbumMedia = await loadMessageAlbumMedia(chatId, userMessages);
     const userPreviewMedia = await loadLinkPreviewMediaDescriptors(userMessages);
 
     const chat = await findChat(chatId);
@@ -346,7 +362,7 @@ export const loadConversationShareContent = async (
                 ? botBubbleOf(message, responseById.get(message.messageId), replyTo)
                 : userBubbleOf(
                     message,
-                    userMedia.get(message.messageId) ?? null,
+                    (userAlbumMedia.get(message.messageId) ?? []).map(shareMediaItemOf),
                     userPreviewMedia.get(message.messageId) ?? [],
                     previewTexts.get(message.messageId) ?? null,
                     replyTo

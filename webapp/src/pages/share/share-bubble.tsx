@@ -51,9 +51,14 @@ export const ShareBubble = ({ token, bubble, widgetIndex, autoFocusWidget = fals
             ) : (
                 <FoldableText text={bubble.text} foldLines={10} foldChars={600} />
             )}
-            {bubble.media !== null && (
-                <ShareMediaAttachment token={token} messageId={bubble.messageId} media={bubble.media} />
-            )}
+            {bubble.media.map((item, index) => (
+                <ShareMediaAttachment
+                    key={`${item.messageId}:${item.mimeType}:${index}`}
+                    token={token}
+                    messageId={item.messageId}
+                    media={item}
+                />
+            ))}
             {bubble.previewMedia.map((preview, index) => (
                 <ShareMediaAttachment
                     key={`${preview.kind}:${preview.sizeBytes ?? 0}:${index}`}
@@ -64,7 +69,7 @@ export const ShareBubble = ({ token, bubble, widgetIndex, autoFocusWidget = fals
                     index={index}
                 />
             ))}
-            {bubble.media === null && bubble.mediaHint !== null && <p className="hint">[{bubble.mediaHint}]</p>}
+            {bubble.media.length === 0 && bubble.mediaHint !== null && <p className="hint">[{bubble.mediaHint}]</p>}
             {previewText !== null && previewText !== '' && (
                 <details className="share-preview-text">
                     <summary className="hint">网页预览</summary>
