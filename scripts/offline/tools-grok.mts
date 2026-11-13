@@ -565,7 +565,7 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
     {
         name: 'the round after the deadline is the tool-less one, however many rounds ran before it',
         body: async () => {
-            const realNow = Date.now.bind(Date);
+            const realNow = Date.now;
             let offsetMs = 0;
             Date.now = () => realNow() + offsetMs;
             try {
@@ -637,7 +637,7 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
         {
         name: 'after the tool budget: a no-cost round still runs the free tools, then the answer',
         body: async () => {
-            const realNow = Date.now.bind(Date);
+            const realNow = Date.now;
             let offsetMs = 0;
             Date.now = () => realNow() + offsetMs;
             try {

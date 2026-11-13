@@ -231,7 +231,7 @@ const errorMessage = (error: unknown): string => (error instanceof Error ? error
 // ---------------------------------------------------------------------------
 
 const withFakeClock = async (body: (jump: (milliseconds: number) => void) => Promise<void>): Promise<void> => {
-    const realNow = Date.now.bind(Date);
+    const realNow = Date.now;
     let offsetMs = 0;
     Date.now = () => realNow() + offsetMs;
     try {

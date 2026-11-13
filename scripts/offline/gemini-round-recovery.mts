@@ -243,7 +243,7 @@ const errorMessage = (error: unknown): string => (error instanceof Error ? error
 
 /** Runs `body` with Date.now under the test's control; `jump` moves it forward */
 const withFakeClock = async (body: (jump: (milliseconds: number) => void) => Promise<void>): Promise<void> => {
-    const realNow = Date.now.bind(Date);
+    const realNow = Date.now;
     let offsetMs = 0;
     Date.now = () => realNow() + offsetMs;
     try {
