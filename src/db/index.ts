@@ -29,7 +29,7 @@ import './priceWatchRunDTO.js';
 import './modelCatalogDTO.js';
 import { getBlob } from "../util.js";
 import { addAsyncFileSaveTask, removeAsyncFileSaveTask, findFirstMessageIdByContinuation } from '../state.js';
-import { backfillAnimationMediaKind, backfillCatalogSeedsOnly, backfillPanelRegistry, ensureModelPriceIndexes, runSchemaMigrations } from './schema-migrations.js';
+import { backfillAnimationMediaKind, backfillCatalogLabels, backfillCatalogSeedsOnly, backfillPanelRegistry, ensureModelPriceIndexes, runSchemaMigrations } from './schema-migrations.js';
 
 // sync database (the imports above ensure every table is registered before sync)
 // Exported so callers can await schema readiness instead of racing the migration;
@@ -45,6 +45,8 @@ export const dbReady = enableWriteAheadLog()
     .then(() => ensureModelPriceIndexes())
     // One-off: the first catalog watch auto-added old models; keep the seeded menu
     .then(() => backfillCatalogSeedsOnly())
+    // One-off: the first catalog seed stored ids as labels; use display names
+    .then(() => backfillCatalogLabels())
     // Data fixes need the tables, so they run after sync (a fresh database has
     // no rows for them, an existing one is scanned once)
     .then(() => backfillAnimationMediaKind())

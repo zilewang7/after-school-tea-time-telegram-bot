@@ -16,7 +16,7 @@ const { ModelPriceEntry } = await import('../../src/db/modelPriceDTO.js');
 const { PriceChangeProposal } = await import('../../src/db/priceChangeProposalDTO.js');
 const { SettingsAudit } = await import('../../src/db/settingsAuditDTO.js');
 const { ModelCatalogEntryRow } = await import('../../src/db/modelCatalogDTO.js');
-const { backfillCatalogSeedsOnly } = await import('../../src/db/schema-migrations.js');
+const { backfillCatalogLabels, backfillCatalogSeedsOnly } = await import('../../src/db/schema-migrations.js');
 const { modelConfigs } = await import('../../src/config/models.js');
 const catalogService = await import('../../src/services/model-catalog-service.js');
 const { sequelize } = await import('../../src/db/config.js');
@@ -98,6 +98,39 @@ results.push(
         });
         await backfillCatalogSeedsOnly();
         expect((await ModelCatalogEntryRow.count()) === modelConfigs.length + 1, 'the cleanup runs exactly once');
+    })
+);
+
+results.push(
+    await runCase('the label backfill renames old seeded labels only', async () => {
+        await catalogService.loadModelCatalog();
+        // Rows carry the display names now; put two back to what the first
+        // seed wrote (the id, and the one model whose old name differed)
+        await ModelCatalogEntryRow.update({ label: 'gpt-6-sol' }, { where: { id: 'gpt-6-sol' } });
+        await ModelCatalogEntryRow.update(
+            { label: 'grok-4.20-multi-agent' },
+            { where: { id: 'grok-4.20-multi-agent-0309' } }
+        );
+        // A label the owner edited is not one of the old defaults
+        await ModelCatalogEntryRow.update({ label: '我的自定义名字' }, { where: { id: 'gemini-4-argon' } });
+        const nameOf = (id: string): string => modelConfigs.find((model) => model.id === id)?.name ?? id;
+        await sequelize.query("DELETE FROM schema_migrations WHERE name = '20261113_catalog_labels'");
+        await backfillCatalogLabels();
+        const renamed = await ModelCatalogEntryRow.findByPk('gpt-6-sol');
+        expect(renamed?.label === nameOf('gpt-6-sol'), `the id label becomes the display name (got ${renamed?.label})`);
+        expect(nameOf('gpt-6-sol') === 'GPT-6 Sol', 'the seed label is the catalog display name');
+        const renamedOldName = await ModelCatalogEntryRow.findByPk('grok-4.20-multi-agent-0309');
+        expect(
+            renamedOldName?.label === 'Grok 4.20 Multi-Agent',
+            `the old non-id label is renamed too (got ${renamedOldName?.label})`
+        );
+        const edited = await ModelCatalogEntryRow.findByPk('gemini-4-argon');
+        expect(edited?.label === '我的自定义名字', 'an edited label is never overwritten');
+        // Runs once: a second pass leaves a new old-style label alone
+        await ModelCatalogEntryRow.update({ label: 'gpt-6-sol' }, { where: { id: 'gpt-6-sol' } });
+        await backfillCatalogLabels();
+        const kept = await ModelCatalogEntryRow.findByPk('gpt-6-sol');
+        expect(kept?.label === 'gpt-6-sol', 'the backfill runs exactly once');
     })
 );
 

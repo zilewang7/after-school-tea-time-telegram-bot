@@ -379,6 +379,51 @@ export const backfillCatalogSeedsOnly = async (): Promise<void> => {
     });
 };
 
+/**
+ * Menu labels of the seeded models (2026-11-13): the first seed stored the id
+ * as the label while models the watcher adds carry the catalog's display name,
+ * so the menu showed both forms. A row is renamed only while it still carries
+ * its old default, so a label the owner edits later is never overwritten.
+ *
+ * Recorded in schema_migrations: the old defaults exist only once.
+ */
+const OLD_SEED_LABELS: Readonly<Record<string, string>> = {
+    'grok-4.20-multi-agent-0309': 'grok-4.20-multi-agent',
+};
+
+export const backfillCatalogLabels = async (): Promise<void> => {
+    const name = '20261113_catalog_labels';
+    const applied = await sequelize.query<{ name: string }>(
+        'SELECT name FROM schema_migrations WHERE name = :name',
+        { type: QueryTypes.SELECT, replacements: { name } }
+    );
+    if (applied.length > 0) return;
+    const { modelConfigs } = await import('../config/models.js');
+    const updatedAt = new Date().toISOString();
+    await sequelize.transaction(async (transaction) => {
+        for (const model of modelConfigs) {
+            await sequelize.query(
+                `UPDATE model_catalog SET label = :label, updatedAt = :updatedAt
+                  WHERE id = :id AND label = :oldLabel`,
+                {
+                    replacements: {
+                        id: model.id,
+                        label: model.name,
+                        oldLabel: OLD_SEED_LABELS[model.id] ?? model.id,
+                        updatedAt,
+                    },
+                    transaction,
+                }
+            );
+        }
+        await sequelize.query(
+            `INSERT OR IGNORE INTO schema_migrations (name, appliedAt)
+             VALUES (:name, :appliedAt)`,
+            { replacements: { name, appliedAt: updatedAt }, transaction }
+        );
+    });
+};
+
 export const ensureModelPriceIndexes = async (): Promise<void> => {
   await sequelize.query(
     `CREATE UNIQUE INDEX IF NOT EXISTS price_change_proposals_pending_key
