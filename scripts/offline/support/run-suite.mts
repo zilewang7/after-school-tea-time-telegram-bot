@@ -34,9 +34,30 @@ export interface SuiteOptions {
 
 export interface SuiteResult {
     reports: FileReport[];
-    /** Shared workers were asked for and could not be used: every file ran on its own */
-    sharedUnavailable: boolean;
+    /**
+     * Set when shared workers were asked for and one could not be started: the
+     * number of files that were done by then. Every file after that ran in a
+     * process of its own.
+     */
+    sharedUnavailableAfter: number | undefined;
 }
+
+export interface RunnerChoice {
+    /** `--isolated` */
+    isolated: boolean;
+    jobs: number;
+    fileCount: number;
+    /** The runner's own: OFFLINE_DEBUG_HANDLES is read from it */
+    environment: Readonly<Record<string, string | undefined>>;
+}
+
+/**
+ * Shared workers pay off when there are more files than jobs: up to that many,
+ * every file has a process to itself anyway. Tracing handles needs the process
+ * from its very start.
+ */
+export const usesSharedWorkers = (choice: RunnerChoice): boolean =>
+    !choice.isolated && choice.environment.OFFLINE_DEBUG_HANDLES !== '1' && choice.fileCount > choice.jobs;
 
 const logPathOf = (file: string, options: SuiteOptions, suffix = ''): string =>
     join(options.logDirectory, `${basename(file, '.mts')}${suffix}.log`);
@@ -65,7 +86,7 @@ const runInWorker = async (worker: SharedWorker, file: string, options: SuiteOpt
     renameSync(logPath, sharedLogPath);
     const alone = await runAlone(file, options);
     const verdict = run.started ? verdictOf(shared) : 'the process had ended before the file started';
-    return { ...alone, sharedFailure: { verdict, logPath: sharedLogPath, ranAfter } };
+    return { ...alone, sharedFailure: { verdict, logPath: sharedLogPath, ranAfter, durationMs: run.durationMs } };
 };
 
 export const runSuite = async (files: readonly string[], options: SuiteOptions): Promise<SuiteResult> => {
@@ -73,36 +94,48 @@ export const runSuite = async (files: readonly string[], options: SuiteOptions):
     const reports: FileReport[] = [];
     let stopped = false;
     let sharing = options.shared;
-    let sharedUnavailable = false;
+    let sharedUnavailableAfter: number | undefined;
+
+    const startWorker = (laneNumber: number): Promise<SharedWorker | undefined> =>
+        startSharedWorker({
+            repositoryRoot: options.repositoryRoot,
+            logPath: join(options.logDirectory, `worker-${laneNumber}.log`),
+            environment: testEnvironment(options.caseFilter, options.extraEnvironment),
+        });
 
     const lane = async (laneNumber: number): Promise<void> => {
         let worker: SharedWorker | undefined;
-        for (let file = queue.shift(); file !== undefined && !stopped; file = queue.shift()) {
-            if (sharing && worker?.isUsable() !== true) {
-                await worker?.stop();
-                worker = await startSharedWorker({
-                    repositoryRoot: options.repositoryRoot,
-                    logPath: join(options.logDirectory, `worker-${laneNumber}.log`),
-                    environment: testEnvironment(options.caseFilter, options.extraEnvironment),
-                });
-                if (worker === undefined) {
-                    // Every lane: what stopped this worker stops the others too
-                    sharing = false;
-                    sharedUnavailable = true;
+        try {
+            for (let file = queue.shift(); file !== undefined && !stopped; file = queue.shift()) {
+                if (sharing && worker?.isUsable() !== true) {
+                    await worker?.stop();
+                    worker = await startWorker(laneNumber);
+                    if (worker === undefined) {
+                        // Every lane: what stopped this worker stops the others too
+                        sharing = false;
+                        sharedUnavailableAfter ??= reports.length;
+                    }
                 }
+                if (!sharing && worker !== undefined) {
+                    // Another lane found that no worker can be started any more
+                    await worker.stop();
+                    worker = undefined;
+                }
+                const report = worker === undefined ? await runAlone(file, options) : await runInWorker(worker, file, options);
+                if (report.sharedFailure !== undefined) {
+                    // Whatever made the file fail there may still be in the worker
+                    await worker?.stop();
+                    worker = undefined;
+                }
+                reports.push(report);
+                options.onReport(report);
+                if (!report.ok && options.bail) stopped = true;
             }
-            const report = worker === undefined || !sharing ? await runAlone(file, options) : await runInWorker(worker, file, options);
-            if (report.sharedFailure !== undefined) {
-                // Whatever made the file fail there may still be in the worker
-                await worker?.stop();
-                worker = undefined;
-            }
-            reports.push(report);
-            options.onReport(report);
-            if (!report.ok && options.bail) stopped = true;
+        } finally {
+            // Also when a run throws (the log directory is gone): no worker is left waiting for a file
+            await worker?.stop();
         }
-        await worker?.stop();
     };
     await Promise.all(Array.from({ length: Math.min(options.jobs, files.length) }, (_, index) => lane(index + 1)));
-    return { reports, sharedUnavailable };
+    return { reports, sharedUnavailableAfter };
 };

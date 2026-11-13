@@ -34,6 +34,8 @@ export interface FileDoneMessage {
     exitCode: number;
     /** Resident memory of the worker, in megabytes: old module copies are never freed */
     residentMegabytes: number;
+    /** false: the file left something the worker could not undo, so the next file needs another worker */
+    reusable: boolean;
 }
 
 export type WorkerMessage = ReadyMessage | FileStartedMessage | FileDoneMessage;
@@ -52,7 +54,8 @@ const isFileDoneMessage = (value: unknown): value is FileDoneMessage =>
     isRecord(value) &&
     value.kind === 'done' &&
     typeof value.exitCode === 'number' &&
-    typeof value.residentMegabytes === 'number';
+    typeof value.residentMegabytes === 'number' &&
+    typeof value.reusable === 'boolean';
 
 export const isWorkerMessage = (value: unknown): value is WorkerMessage =>
     isReadyMessage(value) || isFileStartedMessage(value) || isFileDoneMessage(value);

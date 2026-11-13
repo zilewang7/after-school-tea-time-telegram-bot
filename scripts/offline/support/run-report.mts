@@ -43,6 +43,7 @@ export interface SharedFailure {
     logPath: string;
     /** The files the same worker had run before, in order */
     ranAfter: string[];
+    durationMs: number;
 }
 
 const SUMMARY_MARKER = '==== offline summary ====';
@@ -151,12 +152,17 @@ export const fileLine = (report: FileReport): string => {
 
 /** What went wrong in one file, for the end of the run */
 export const failureLines = (report: FileReport): string[] => {
-    const header = `\n── ${report.run.file}  (log: ${report.run.logPath})`;
+    const header = [`\n── ${report.run.file}  (log: ${report.run.logPath})`];
+    if (report.sharedFailure !== undefined) {
+        // What follows is from the run on its own; the first run is not lost
+        const { verdict, logPath } = report.sharedFailure;
+        header.push(`   in a shared process before that: ${verdict}  (log: ${logPath})`);
+    }
     if (report.incomplete || report.failedCases.length === 0) {
-        return [header, ...report.logTail.map((line) => `    ${line}`)];
+        return [...header, ...report.logTail.map((line) => `    ${line}`)];
     }
     return [
-        header,
+        ...header,
         ...report.failedCases.flatMap((failedCase) => [
             `  ✗ ${failedCase.name}`,
             `      ${failedCase.message}${failedCase.location === undefined ? '' : `  (${failedCase.location})`}`,
@@ -180,8 +186,19 @@ export const sharedFailureLines = (reports: FileReport[]): string[] => {
                 `  ${report.name}: ${report.sharedFailure?.verdict ?? ''}`,
                 `      ran after: ${earlier.length === 0 ? '(first file of its process)' : earlier.join(', ')}`,
                 `      log of that run: ${report.sharedFailure?.logPath ?? ''}`,
+                ...(earlier.length === 0
+                    ? []
+                    : [`      the same files in one process again: pnpm test:offline --in-order ${[...earlier, report.name].join(' ')}`]),
             ];
         }),
         '  An earlier file of the same process left something behind that the worker does not undo, or the file depends on timing.',
     ];
+};
+
+/** For the end of a run that asked for shared workers and did not get them, or not to the end */
+export const sharedUnavailableLine = (filesDoneBefore: number): string => {
+    const why = 'the worker-N.log files in the log directory say why';
+    return filesDoneBefore === 0
+        ? `shared workers could not be used (${why}): every file ran in a process of its own`
+        : `after ${filesDoneBefore} files a shared worker could not be started (${why}): the files after that ran in processes of their own`;
 };

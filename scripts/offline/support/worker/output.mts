@@ -5,6 +5,7 @@
  * lines in the order they were written, as it does when a test process has the
  * log as its stdout and stderr.
  */
+import { Buffer } from 'node:buffer';
 import { writeSync } from 'node:fs';
 
 type WriteCallback = (error?: Error | null) => void;
@@ -23,11 +24,9 @@ const routeStream = (stream: NodeJS.WriteStream): void => {
                 ? writeToStream(chunk, encodingOrCallback)
                 : writeToStream(chunk, encodingOrCallback, callback);
         }
-        if (typeof chunk === 'string') {
-            writeSync(logDescriptor, chunk, null, typeof encodingOrCallback === 'string' ? encodingOrCallback : 'utf8');
-        } else {
-            writeSync(logDescriptor, chunk);
-        }
+        // As a stream does: text becomes bytes first, which forgives what writeSync would refuse (an odd number of hex digits)
+        const encoding = typeof encodingOrCallback === 'string' ? encodingOrCallback : 'utf8';
+        writeSync(logDescriptor, typeof chunk === 'string' ? Buffer.from(chunk, encoding) : chunk);
         const written = typeof encodingOrCallback === 'function' ? encodingOrCallback : callback;
         if (written !== undefined) process.nextTick(written);
         return true;

@@ -2,9 +2,11 @@
 import { Agent, request } from 'undici';
 import { expect, reportResults, runCase } from '../../harness.mts';
 import { startStubServer } from '../../support/stub-server.mts';
+import { noteProcess } from './support.mts';
 
 const results = [
     await runCase('one request through undici', async () => {
+        noteProcess('uses-package-timer');
         const stub = await startStubServer();
         stub.handle((_request, response) => response.end('ok'));
         const agent = new Agent();

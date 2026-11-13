@@ -5,6 +5,7 @@
 import { Agent, request } from 'undici';
 import { expect, reportResults, runCase } from '../../harness.mts';
 import { startStubServer } from '../../support/stub-server.mts';
+import { noteProcess } from './support.mts';
 
 /** Above one second undici counts the time with its shared timer */
 const HEADERS_TIMEOUT_MS = 1500;
@@ -12,6 +13,7 @@ const PATIENCE_MS = 6000;
 
 const results = [
     await runCase('undici gives up on a server that never answers', async () => {
+        noteProcess('needs-package-timer');
         const stub = await startStubServer();
         stub.handle(() => undefined);
         const agent = new Agent({ headersTimeout: HEADERS_TIMEOUT_MS });

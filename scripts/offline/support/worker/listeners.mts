@@ -40,14 +40,9 @@ const removeAddedListeners = (): Listener[] => {
 
 /**
  * Removes what was added since `recordListeners` and puts back what was
- * removed. The added 'exit' listeners are called with `exitCode`. When one of
- * them throws, so does this function: the caller ends the process, as Node
- * does, and the listeners after it never run.
+ * removed: the worker's own listeners are what the next file must find.
  */
-export const endFileListeners = (exitCode: number): void => {
-    // All taken off before the first one runs: none may be left for the real end of the worker
-    for (const listener of removeAddedListeners()) Reflect.apply(listener, process, [exitCode]);
-    // A listener registered by one of them would never have been called
+export const restoreListeners = (): void => {
     removeAddedListeners();
     for (const [eventName, listeners] of recorded) {
         const now = process.rawListeners(eventName);
@@ -55,4 +50,17 @@ export const endFileListeners = (exitCode: number): void => {
             if (!now.includes(listener)) process.on(eventName, listener);
         }
     }
+};
+
+/**
+ * Calls the 'exit' listeners added since `recordListeners` with `exitCode`,
+ * and leaves `process` with the worker's own listeners. When a listener
+ * throws, so does this function: the caller ends the process, as Node does,
+ * and the listeners after it never run.
+ */
+export const runExitListeners = (exitCode: number): void => {
+    // All taken off before the first one runs: none may be left for the real end of the worker
+    for (const listener of removeAddedListeners()) Reflect.apply(listener, process, [exitCode]);
+    // A listener registered by one of them would never have been called
+    restoreListeners();
 };

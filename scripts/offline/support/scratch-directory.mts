@@ -30,7 +30,8 @@ export const removeScratchDirectoryOf = (processId: number): void => {
     rmSync(scratchDirectoryOf(processId), { recursive: true, force: true });
 };
 
-const isRunning = (processId: number): boolean => {
+/** Whether a process with that id exists; one that has ended and was not collected yet still does */
+export const isRunning = (processId: number): boolean => {
     try {
         // Signal 0 sends nothing: it only asks whether the process is there
         process.kill(processId, 0);
@@ -50,6 +51,11 @@ export const removeAbandonedScratchDirectories = (): void => {
     for (const entry of readdirSync(SCRATCH_ROOT)) {
         if (!entry.startsWith(NAME_PREFIX)) continue;
         const processId = Number(entry.slice(NAME_PREFIX.length));
-        if (Number.isInteger(processId) && !isRunning(processId)) removeScratchDirectoryOf(processId);
+        if (!Number.isInteger(processId) || isRunning(processId)) continue;
+        try {
+            removeScratchDirectoryOf(processId);
+        } catch {
+            // Somebody else's, or made read-only by the test that left it: not worth failing a run over
+        }
     }
 };

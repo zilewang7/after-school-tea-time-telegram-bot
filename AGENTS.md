@@ -71,12 +71,14 @@ still gets its own copy of the repository's modules (module state, env values
 read at import), its own scratch database and its own log, and the worker
 undoes what a file leaves behind: env values, replaced globals and functions
 of `node:` modules (`fetch`, `Date.now`, console methods, `http.request`), the
-pending timers of the repository's code, listeners on `process` (its 'exit'
-listeners run when the file ends). A file that does not pass in a worker is
-run again in a process of its own and that result counts; when it passes
-there, the end of the run names it together with the files that ran before it
-in that worker. Up to three files (`pnpm test:offline a b`), `--isolated` and
-`OFFLINE_DEBUG_HANDLES=1` give every file a process of its own from the start.
+pending timers and running child processes of the repository's code,
+listeners on `process` (its 'exit' listeners run when the file ends). A file
+that does not pass in a worker is run again in a process of its own and that
+result counts; when it passes there, the end of the run names it, the files
+that ran before it in that worker, and the command that runs the same files
+in one worker again (`--in-order`). With no more files than run at a time
+(`pnpm test:offline a b`), with `--isolated` or with `OFFLINE_DEBUG_HANDLES=1`
+every file has a process of its own from the start.
 
 ## Working loop
 
@@ -94,7 +96,8 @@ in that worker. Up to three files (`pnpm test:offline a b`), `--isolated` and
   existing features, not only the happy path.
 - Tests never use a fixed port or a fixed path under `/tmp`: two suites run at
   the same time. Use `startStubServer()` (`support/stub-server.mts`) and a
-  per-process temporary directory.
+  temporary directory of the file's own (`mkdtempSync`), removed in an 'exit'
+  listener.
 - A test ends what it starts before `reportResults`: close servers, clear
   intervals. A reply started with `createChatContext` goes through
   `trackReply()` and the file calls `endOpenReplies()` at the end

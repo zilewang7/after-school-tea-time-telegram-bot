@@ -10,6 +10,7 @@
  *   pnpm test:offline --bail             start no further file after the first failure
  *   pnpm test:offline --timeout 300      seconds a single file may take (default 120)
  *   pnpm test:offline --isolated         every file in a process of its own
+ *   pnpm test:offline --in-order a b c   one at a time, in the order of the names
  *   pnpm test:offline --list             print the files that would run
  *
  * A test is any `scripts/offline/*.mts` file. Helpers live in `support/`; a
@@ -28,8 +29,14 @@ import { constants, tmpdir } from 'node:os';
 import { basename, join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { killLiveTestProcesses } from './support/process-groups.mts';
-import { failureLines, fileLine, sharedFailureLines, type FileReport } from './support/run-report.mts';
-import { runSuite } from './support/run-suite.mts';
+import {
+    failureLines,
+    fileLine,
+    sharedFailureLines,
+    sharedUnavailableLine,
+    type FileReport,
+} from './support/run-report.mts';
+import { runSuite, usesSharedWorkers } from './support/run-suite.mts';
 import { removeAbandonedScratchDirectories } from './support/scratch-directory.mts';
 
 const REPOSITORY_ROOT = fileURLToPath(new URL('../../', import.meta.url));
@@ -58,12 +65,17 @@ interface RunnerOptions {
     caseFilter: string | undefined;
     bail: boolean;
     isolated: boolean;
+    /**
+     * Run the files one at a time, in the order of the names given: what a
+     * shared worker did when a file failed only after the files before it
+     */
+    inOrder: boolean;
     listOnly: boolean;
 }
 
 const usage = (): never => {
     console.error(
-        'usage: pnpm test:offline [name…] [-j N] [--grep TEXT] [--bail] [--timeout SECONDS] [--isolated] [--list]'
+        'usage: pnpm test:offline [name…] [-j N] [--grep TEXT] [--bail] [--timeout SECONDS] [--isolated] [--in-order] [--list]'
     );
     process.exit(2);
 };
@@ -81,6 +93,7 @@ const parseArguments = (argv: string[]): RunnerOptions => {
         caseFilter: undefined,
         bail: false,
         isolated: false,
+        inOrder: false,
         listOnly: false,
     };
     for (let index = 0; index < argv.length; index += 1) {
@@ -90,11 +103,13 @@ const parseArguments = (argv: string[]): RunnerOptions => {
         else if (argument === '--grep') options.caseFilter = argv[(index += 1)] ?? usage();
         else if (argument === '--bail') options.bail = true;
         else if (argument === '--isolated') options.isolated = true;
+        else if (argument === '--in-order') options.inOrder = true;
         else if (argument === '--list') options.listOnly = true;
         else if (argument.startsWith('-')) usage();
         else options.nameFilters.push(argument);
     }
-    return options;
+    // One lane: with more, the files of one worker would not be the ones named
+    return options.inOrder ? { ...options, jobs: 1 } : options;
 };
 
 const isManual = (path: string): boolean =>
@@ -109,7 +124,7 @@ const matchesFilter = (entry: string, filter: string, entries: readonly string[]
     return entries.includes(exactName) ? entry === exactName : entry.includes(filter);
 };
 
-/** Test files as paths relative to the repository root */
+/** Test files as paths relative to the repository root, in the order of the filters that select them */
 const discoverTestFiles = (nameFilters: string[]): string[] => {
     const entries = readdirSync(TEST_DIRECTORY).filter((entry) => entry.endsWith('.mts') && !NOT_TESTS.has(entry));
     // A mistyped name must not turn into a green run of the other names
@@ -118,10 +133,11 @@ const discoverTestFiles = (nameFilters: string[]): string[] => {
         console.error(`no test file matches: ${unmatched.join(', ')}`);
         process.exit(2);
     }
-    return entries
-        .filter(
-            (entry) => nameFilters.length === 0 || nameFilters.some((filter) => matchesFilter(entry, filter, entries))
-        )
+    const selected =
+        nameFilters.length === 0
+            ? entries
+            : new Set(nameFilters.flatMap((filter) => entries.filter((entry) => matchesFilter(entry, filter, entries))));
+    return [...selected]
         .map((entry) => join(TEST_DIRECTORY, entry))
         .filter((path) => !isManual(path))
         .map((path) => relative(REPOSITORY_ROOT, path));
@@ -179,14 +195,6 @@ const printSummary = (reports: FileReport[], skippedFiles: number, wallMs: numbe
     console.log(`logs: ${LOG_DIRECTORY}`);
 };
 
-/**
- * Shared workers pay off when there are more files than jobs: up to that many,
- * every file has a process to itself anyway. Tracing handles needs the process
- * from its very start.
- */
-const usesSharedWorkers = (options: RunnerOptions, fileCount: number): boolean =>
-    !options.isolated && process.env.OFFLINE_DEBUG_HANDLES !== '1' && fileCount > options.jobs;
-
 const main = async (): Promise<void> => {
     const options = parseArguments(process.argv.slice(2));
     const discovered = discoverTestFiles(options.nameFilters);
@@ -194,10 +202,15 @@ const main = async (): Promise<void> => {
         console.error('no test file matches');
         process.exit(2);
     }
-    const shared = usesSharedWorkers(options, discovered.length);
+    const shared = usesSharedWorkers({
+        isolated: options.isolated,
+        jobs: options.jobs,
+        fileCount: discovered.length,
+        environment: process.env,
+    });
     const durationsPath = durationsPathOf(shared);
     const durations = readDurations(durationsPath);
-    const files = longestFirst(discovered, durations);
+    const files = options.inOrder ? discovered : longestFirst(discovered, durations);
     if (options.listOnly) {
         console.log(files.join('\n'));
         return;
@@ -214,7 +227,7 @@ const main = async (): Promise<void> => {
     }
 
     const startedAt = performance.now();
-    const { reports, sharedUnavailable } = await runSuite(files, {
+    const { reports, sharedUnavailableAfter } = await runSuite(files, {
         repositoryRoot: REPOSITORY_ROOT,
         logDirectory: LOG_DIRECTORY,
         jobs: options.jobs,
@@ -225,14 +238,12 @@ const main = async (): Promise<void> => {
         onReport: (report) => console.log(fileLine(report)),
     });
     printSummary(reports, files.length - reports.length, performance.now() - startedAt);
-    if (sharedUnavailable) {
-        console.log('shared workers could not be used (see the worker logs): every file ran in a process of its own');
-    }
+    if (sharedUnavailableAfter !== undefined) console.log(sharedUnavailableLine(sharedUnavailableAfter));
 
     // A filtered run times only part of each file, and a file that needed a
     // second run has no time of its own: neither updates the estimates. Nor
     // does a run that had to fall back to a process per file.
-    if (options.caseFilter === undefined && !sharedUnavailable) {
+    if (options.caseFilter === undefined && sharedUnavailableAfter === undefined) {
         const measured = Object.fromEntries(
             reports
                 .filter((report) => report.ok && report.sharedFailure === undefined)

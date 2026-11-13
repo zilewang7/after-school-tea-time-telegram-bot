@@ -1,9 +1,8 @@
 /**
  * Runs one offline test file in a process of its own and captures its output.
  */
-import { spawn } from 'node:child_process';
-import { closeSync, openSync } from 'node:fs';
-import { endProcessGroup, trackProcessGroup } from './process-groups.mts';
+import { endProcessGroup } from './process-groups.mts';
+import { spawnTestProcess } from './test-process.mts';
 
 export interface FileRun {
     /** Path relative to the repository root */
@@ -39,22 +38,14 @@ export const testEnvironment = (
 export const runFile = (file: string, options: RunFileOptions): Promise<FileRun> =>
     new Promise((resolve) => {
         const startedAt = performance.now();
-        // One file descriptor for stdout and stderr: the log then holds the lines
-        // in the order they were written. Two pipes would interleave them by
-        // arrival, and a failure message could land under the wrong case.
-        const logDescriptor = openSync(options.logPath, 'w');
-        // `node --import tsx` instead of the tsx binary: the binary starts the
-        // test as a grandchild, which a kill of the child would leave running
-        const child = spawn(process.execPath, ['--import', 'tsx', file], {
-            cwd: options.repositoryRoot,
-            env: testEnvironment(options.caseFilter, options.extraEnvironment),
-            detached: true,
-            stdio: ['ignore', logDescriptor, logDescriptor],
+        const child = spawnTestProcess(file, {
+            repositoryRoot: options.repositoryRoot,
+            environment: testEnvironment(options.caseFilter, options.extraEnvironment),
+            logPath: options.logPath,
+            logFlags: 'w',
+            channel: false,
         });
-        // The child has its own copies now
-        closeSync(logDescriptor);
         const groupId = child.pid;
-        if (groupId !== undefined) trackProcessGroup(groupId);
 
         let timedOut = false;
         const timeout = setTimeout(() => {

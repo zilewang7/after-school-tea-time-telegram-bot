@@ -7,6 +7,13 @@
 import { appendFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 
+/**
+ * How long after it was started the work leaves-traces.mts leaves behind would
+ * show. Long enough for the next file to be running by then, also on a busy
+ * machine: only then can it tell whether the work was stopped.
+ */
+export const LEFTOVER_DELAY_MS = 3000;
+
 /** One array per evaluation of this module: a file that finds it empty has its own copy */
 export const moduleVisits: string[] = [];
 
