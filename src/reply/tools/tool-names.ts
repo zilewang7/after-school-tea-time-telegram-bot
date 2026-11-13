@@ -24,6 +24,7 @@ export const WORKSPACE_EDIT_TOOL_NAME = 'workspace_edit';
 export const WORKSPACE_COPY_TOOL_NAME = 'workspace_copy';
 export const WORKSPACE_DELETE_TOOL_NAME = 'workspace_delete';
 export const WORKSPACE_PREVIEW_TOOL_NAME = 'workspace_preview';
+export const LEAVE_HANDOFF_TOOL_NAME = 'leave_handoff';
 
 /**
  * The "product" tools: they produce or deliver what the reply exists to hand
@@ -42,7 +43,9 @@ export const PRODUCT_TOOL_NAMES: ReadonlySet<string> = new Set([
 /**
  * The workspace file tools: one group, always offered together (the static
  * prompt lists them in one line). `workspace_preview` is separate because it
- * needs a vision model and the render sidecar.
+ * needs a vision model and the render sidecar. `leave_handoff` is deliberately
+ * not part of it: it is offered whenever the workspace is, but turning it off
+ * must not turn the whole workspace off.
  */
 export const WORKSPACE_FILE_TOOL_NAMES: readonly string[] = [
     WORKSPACE_WRITE_TOOL_NAME,
@@ -70,6 +73,11 @@ export const TIME_FREE_TOOL_NAMES: ReadonlySet<string> = new Set([
     ...PRODUCT_TOOL_NAMES,
     ...WORKSPACE_FILE_TOOL_NAMES,
     WORKSPACE_PREVIEW_TOOL_NAME,
+    // It only writes one local row, and the Gemini loop may offer it in the
+    // last round after every budget is gone. Adding it cannot flip the
+    // no-cost/final split: it exists only while the workspace tools (all
+    // time-free) are offered, so hasFreeTools is already true whenever it is.
+    LEAVE_HANDOFF_TOOL_NAME,
     LIST_HARNESS_ISSUES_TOOL_NAME,
     CREATE_HARNESS_ISSUE_TOOL_NAME,
     GET_UI_GUIDE_TOOL_NAME,
@@ -101,4 +109,5 @@ export const RESERVED_TOOL_NAMES: readonly string[] = [
     WORKSPACE_COPY_TOOL_NAME,
     WORKSPACE_DELETE_TOOL_NAME,
     WORKSPACE_PREVIEW_TOOL_NAME,
+    LEAVE_HANDOFF_TOOL_NAME,
 ];
