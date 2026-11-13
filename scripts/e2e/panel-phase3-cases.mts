@@ -54,7 +54,7 @@ interface UsageProbe {
 const USAGE_PROBES: readonly UsageProbe[] = [
     { model: 'gemini-3.8-flash', platform: 'gemini' },
     { model: 'gpt-6-luna', platform: 'openai' },
-    { model: 'claude-sonnet-5', platform: 'anthropic' },
+    { model: 'claude-sonnet-5-5', platform: 'anthropic' },
     { model: 'deepseek-flash', platform: 'deepseek' },
     { model: 'mimo-v2.6-flash', platform: 'mimo' },
     { model: 'grok-4.7', platform: 'grok' },

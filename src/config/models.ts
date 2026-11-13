@@ -14,7 +14,7 @@ export const modelConfigs: ModelConfig[] = [
     { id: "gpt-6-luna", name: "gpt-6-luna" },
     { id: "gpt-6-sol", name: "gpt-6-sol" },
     { id: "gpt-6-astra", name: "gpt-6-astra" },
-    { id: "claude-sonnet-5", name: "claude-sonnet-5" },
+    { id: "claude-sonnet-5-5", name: "claude-sonnet-5-5" },
     { id: "claude-opus-5-5", name: "claude-opus-5-5" },
     { id: "gemini-4-hydrogen", name: "gemini-4-hydrogen" },
     { id: "gemini-4-argon", name: "gemini-4-argon" },

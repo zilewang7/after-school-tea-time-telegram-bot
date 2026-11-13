@@ -59,7 +59,7 @@ export const getDefaultModel = (platformType: string): string => {
         .with('deepseek', () => 'deepseek-reasoning')
         .with('grok', () => 'grok-4.20-0309-reasoning')
         .with('mimo', () => 'mimo-v2.6-pro')
-        .with('anthropic', () => 'claude-sonnet-5')
+        .with('anthropic', () => 'claude-sonnet-5-5')
         .otherwise(() => process.env.DEFAULT_MODEL || 'gpt-5.4');
 };
 

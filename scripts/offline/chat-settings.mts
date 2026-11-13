@@ -802,6 +802,11 @@ const cases: { name: string; body: () => Promise<void> }[] = [
         name: 'the menu holds the 13 chat models, no image model, then 跟随全局默认 and 收起',
         body: async () => {
             expect(modelConfigs.length === 13, `13 entries (got ${modelConfigs.length})`);
+            const sonnet = modelConfigs.find((model) => model.id === 'claude-sonnet-5-5');
+            expect(
+                sonnet?.name === 'claude-sonnet-5-5' && !modelConfigs.some((model) => model.id === 'claude-sonnet-5'),
+                `sonnet 5.5 replaces sonnet 5 in the menu (got ${JSON.stringify(modelConfigs.map((model) => model.id))})`
+            );
             expect(
                 modelConfigs.some((model) => model.id === 'gemini-4-carbon'),
                 'gemini-4-carbon is offered'
