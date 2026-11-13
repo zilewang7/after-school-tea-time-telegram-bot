@@ -205,3 +205,10 @@ export const sharedUnavailableLine = (filesGivenToWorkers: number): string => {
     const inWorkers = filesGivenToWorkers === 1 ? '1 file' : `${filesGivenToWorkers} files`;
     return `a shared worker could not be started (${why}): ${inWorkers} ran in shared processes, the others in processes of their own`;
 };
+
+/** How the files are run, said before the first of them starts */
+export const planLine = (fileCount: number, jobs: number, shared: boolean): string => {
+    const files = `${fileCount} ${fileCount === 1 ? 'file' : 'files'}`;
+    const atATime = Math.min(jobs, fileCount);
+    return `${files}, ${atATime} at a time, ${shared ? 'in shared processes' : 'each in a process of its own'}`;
+};

@@ -54,8 +54,9 @@ runs from the same directory. Most rules below exist because of that.
 | Before a release | `pnpm deploy:check` (what ships, verified?, replies in progress, does a stop reach the bot) | ~3 s |
 | After a release | `pnpm deploy:check --wait` (waits for the new build, shows the build log) | |
 
-Offline test output: one line per file. The per-assertion log of every file is
-in the directory printed at the end; a failing case prints its name, message
+Offline test output: a first line that says how the files are run (`N files,
+3 at a time, in shared processes`), then one line per file. The per-assertion
+log of every file is in the directory printed at the end; a failing case prints its name, message
 and `file:line`. `OFFLINE_VERBOSE=1` shows assertions when running one file
 directly.
 

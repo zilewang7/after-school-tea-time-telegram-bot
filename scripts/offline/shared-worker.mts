@@ -8,7 +8,7 @@
  * fixtures wrote into a scratch directory.
  */
 import { execFile, spawn } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
@@ -174,14 +174,84 @@ const reachWorkerLimits = async (): Promise<WorkerLimits> => {
     }
 };
 
-/** What the real runner would run for these arguments, one name per line: nothing is started */
-const listedBy = async (runnerArguments: readonly string[]): Promise<string[]> => {
-    const { stdout } = await promisify(execFile)(
+interface Listing {
+    /** The files the real runner would run, in its order */
+    names: string[];
+    /** What it says about how it would run them */
+    plan: string;
+}
+
+/** Asks the real runner what it would do for these arguments: nothing is started */
+const listedBy = async (
+    runnerArguments: readonly string[],
+    environment: NodeJS.ProcessEnv = process.env
+): Promise<Listing> => {
+    const { stdout, stderr } = await promisify(execFile)(
         process.execPath,
         ['--import', 'tsx', 'scripts/offline/runner.mts', '--list', ...runnerArguments],
-        { cwd: REPOSITORY_ROOT }
+        { cwd: REPOSITORY_ROOT, env: environment }
     );
-    return stdout.split('\n').filter((line) => line !== '').map((line) => basename(line, '.mts'));
+    return {
+        names: stdout.split('\n').filter((line) => line !== '').map((line) => basename(line, '.mts')),
+        plan: stderr.trim(),
+    };
+};
+
+/** In the order the two lanes take them: the first two start together, one in each lane */
+const GIVING_UP_FIXTURES = ['fixes-a-global-late', 'waits-for-note-one', 'passes', 'waits-for-note-two', 'passes-again'];
+
+interface SharingGivenUp {
+    reports: Map<string, FileReport>;
+    sharedUnavailableAfter: number | undefined;
+    /** The process that ran the fixture of that name; 0 when it left no note */
+    processIdOf: (fixtureName: string) => number;
+    /** Whether the second lane's worker was still running when the file that lane ran next had ended */
+    idleWorkerWasLeftRunning: boolean | undefined;
+}
+
+/**
+ * Two lanes, and from the middle of the run no worker can be started. The
+ * first lane finds out: its worker is not reusable after its first file. The
+ * second lane has a working worker then, and a file still to run. Three of the
+ * files wait for a note, which makes the order certain: each ends only when
+ * the other lane is where the case needs it.
+ */
+const giveUpSharingMidRun = async (): Promise<SharingGivenUp> => {
+    const directory = join(scratch, 'gives-up-mid-run');
+    mkdirSync(directory);
+    // Read again for every worker that is started
+    const environment: Record<string, string> = { SHARED_WORKER_FIXTURE_DIRECTORY: directory };
+    const processIdOf = (fixtureName: string): number => Number(readOrEmpty(join(directory, `pid-${fixtureName}`)));
+    let idleWorkerWasLeftRunning: boolean | undefined;
+    const { reports, sharedUnavailableAfter } = await runSuite(
+        GIVING_UP_FIXTURES.map(fixture),
+        {
+            repositoryRoot: REPOSITORY_ROOT,
+            logDirectory: directory,
+            jobs: 2,
+            timeoutMs: 30_000,
+            caseFilter: undefined,
+            bail: false,
+            shared: true,
+            extraEnvironment: environment,
+            onReport: (report) => {
+                // This file ended only when the second lane's file was running in its worker. The
+                // first lane needs another worker for its next file, and that one will not do.
+                if (report.name === 'fixes-a-global-late') environment.OFFLINE_WORKER_HOOK = 'off';
+                // That file ran alone, so sharing has been given up: the second lane's file may end.
+                // The first lane is kept busy until the second has taken the last file.
+                if (report.name === 'passes') writeFileSync(join(directory, 'note-one'), '');
+                if (report.name === 'waits-for-note-one') writeFileSync(join(directory, 'note-two'), '');
+                if (report.name === 'passes-again') idleWorkerWasLeftRunning = isRunning(processIdOf('waits-for-note-one'));
+            },
+        }
+    );
+    return {
+        reports: new Map(reports.map((report) => [report.name, report])),
+        sharedUnavailableAfter,
+        processIdOf,
+        idleWorkerWasLeftRunning,
+    };
 };
 
 /** The scenarios do not share anything, so they run side by side: most of their time is waiting */
@@ -201,8 +271,12 @@ const [
     isolated,
     orphaned,
     limits,
+    givenUp,
     listedInOrder,
     listedTheOtherWay,
+    listedFew,
+    listedIsolated,
+    listedTraced,
 ] = await Promise.all([
     runScenario('sharing', ['leaves-traces', 'finds-no-traces', 'uses-package-timer', 'needs-package-timer']),
     // A file that fails gets the worker replaced, so the file after one starts in a new worker
@@ -242,9 +316,14 @@ const [
     runScenario('isolated', ['passes', 'passes-again'], { shared: false }),
     orphanWorker(),
     reachWorkerLimits(),
+    giveUpSharingMidRun(),
     // Two real test files, in both orders: one of the two is not the order the runner would choose
     listedBy(['--in-order', 'shared-worker', 'check-deps']),
     listedBy(['--in-order', 'check-deps', 'shared-worker']),
+    // The same two files, in each way that gives every file a process of its own
+    listedBy(['shared-worker', 'check-deps']),
+    listedBy(['--isolated', '--in-order', 'shared-worker', 'check-deps']),
+    listedBy(['--in-order', 'shared-worker', 'check-deps'], { ...process.env, OFFLINE_DEBUG_HANDLES: '1' }),
 ]);
 
 /** How many workers a scenario started in its one lane */
@@ -596,6 +675,26 @@ results.push(
 );
 
 results.push(
+    await runCase('when one lane cannot start a worker any more, the other lane stops using its own', () => {
+        const names = GIVING_UP_FIXTURES;
+        for (const name of names) expectPassedAtOnce(givenUp.reports.get(name), `${name} passes`);
+        expect(
+            givenUp.sharedUnavailableAfter === 2,
+            `the run says that two files had gone to workers by then (${givenUp.sharedUnavailableAfter})`
+        );
+        const idleWorker = givenUp.processIdOf('waits-for-note-one');
+        const fileAfterIt = givenUp.processIdOf('passes-again');
+        expect(
+            idleWorker !== 0 && fileAfterIt !== 0 && fileAfterIt !== idleWorker,
+            'the next file of the lane whose worker still worked ran in a process of its own'
+        );
+        expect(givenUp.idleWorkerWasLeftRunning === false, 'and that worker had been stopped by then');
+        const processes = new Set(names.map(givenUp.processIdOf));
+        expect(processes.size === names.length, `every file after that had a process of its own (${[...processes].join()})`);
+    })
+);
+
+results.push(
     await runCase('a run that does not share gives every file a process of its own', () => {
         expect(isolated.sharedUnavailableAfter === undefined, 'nothing is reported as unavailable');
         expectPassedAtOnce(isolated.reports.get('passes'), 'the first file passes');
@@ -628,8 +727,22 @@ results.push(
 
 results.push(
     await runCase('--in-order keeps the files in the order of the names', () => {
-        expect(listedInOrder.join() === 'shared-worker,check-deps', `one way round (${listedInOrder.join()})`);
-        expect(listedTheOtherWay.join() === 'check-deps,shared-worker', `and the other (${listedTheOtherWay.join()})`);
+        expect(listedInOrder.names.join() === 'shared-worker,check-deps', `one way round (${listedInOrder.names.join()})`);
+        expect(listedTheOtherWay.names.join() === 'check-deps,shared-worker', `and the other (${listedTheOtherWay.names.join()})`);
+    })
+);
+
+results.push(
+    // What the runner prints is the constant it hands to runSuite
+    await runCase('the runner decides for shared workers, or against, as its arguments say', () => {
+        const ofItsOwn = 'each in a process of its own';
+        expect(
+            listedInOrder.plan.includes('2 files, 1 at a time, in shared processes'),
+            `--in-order puts the files into one worker (${listedInOrder.plan})`
+        );
+        expect(listedFew.plan.includes(`2 files, 2 at a time, ${ofItsOwn}`), `no more files than run at a time (${listedFew.plan})`);
+        expect(listedIsolated.plan.includes(`2 files, 1 at a time, ${ofItsOwn}`), `--isolated (${listedIsolated.plan})`);
+        expect(listedTraced.plan.includes(`2 files, 1 at a time, ${ofItsOwn}`), `while handles are traced (${listedTraced.plan})`);
     })
 );
 

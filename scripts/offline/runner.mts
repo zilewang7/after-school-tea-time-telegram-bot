@@ -11,7 +11,7 @@
  *   pnpm test:offline --timeout 300      seconds a single file may take (default 120)
  *   pnpm test:offline --isolated         every file in a process of its own
  *   pnpm test:offline --in-order a b c   one at a time, in the order of the names
- *   pnpm test:offline --list             print the files that would run
+ *   pnpm test:offline --list             print the files that would run (and, on stderr, how)
  *
  * A test is any `scripts/offline/*.mts` file. Helpers live in `support/`; a
  * file that must not run with the suite says `// offline: manual` in its header.
@@ -32,6 +32,7 @@ import { killLiveTestProcesses } from './support/process-groups.mts';
 import {
     failureLines,
     fileLine,
+    planLine,
     sharedFailureLines,
     sharedUnavailableLine,
     type FileReport,
@@ -211,10 +212,14 @@ const main = async (): Promise<void> => {
     const durationsPath = durationsPathOf(shared);
     const durations = readDurations(durationsPath);
     const files = options.inOrder ? discovered : longestFirst(discovered, durations);
+    const plan = planLine(files.length, options.jobs, shared);
     if (options.listOnly) {
+        // Not on stdout: that is the names alone, one per line
+        console.error(plan);
         console.log(files.join('\n'));
         return;
     }
+    console.log(plan);
 
     mkdirSync(LOG_DIRECTORY, { recursive: true });
     removeStaleLogs();

@@ -29,6 +29,15 @@ export const scratchSizeOf = (name: string): number =>
 /** Lets the test see which process ran the fixture */
 export const noteProcess = (fixtureName: string): void => appendToScratch(`pid-${fixtureName}`, `${process.pid}\n`);
 
+/** Resolves once the test has written the note of that name: it decides when the fixture goes on */
+export const waitForNote = async (name: string, withinMs = 25_000): Promise<void> => {
+    const deadline = Date.now() + withinMs;
+    while (statSync(scratchPath(name), { throwIfNoEntry: false }) === undefined) {
+        if (Date.now() > deadline) throw new Error(`the note ${name} was never written`);
+        await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+};
+
 /** What the stand-in for a package offers */
 export interface FixturePackage {
     /** Appends to the note every 20 ms, on a timer that does not keep the process running */
