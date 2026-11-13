@@ -10,6 +10,7 @@
 import { Server as HttpServer } from 'node:http';
 import { serve, type ServerType } from '@hono/node-server';
 import { Api, type ApiClientOptions } from 'grammy';
+import { requireBotToken } from '../config/bot-token.js';
 import { botApiMembershipLookup } from './access/membership.js';
 import { createPanelApp } from './app.js';
 import { botApiChatNameLookup, fillMissingChatNames } from './chat-names.js';
@@ -84,9 +85,10 @@ export const startPanel = async (options: StartPanelOptions): Promise<void> => {
     if (activeServer !== null) return;
 
     // No autoRetry here: a 429 must surface as "unavailable", not be slept on
-    const lookupApi = new Api(process.env.BOT_TOKEN, options.clientConfig);
+    const botToken = requireBotToken();
+    const lookupApi = new Api(botToken, options.clientConfig);
     const app = createPanelApp({
-        botToken: process.env.BOT_TOKEN,
+        botToken,
         membershipLookup: botApiMembershipLookup(lookupApi),
         staticRoot: DEFAULT_STATIC_ROOT,
         startedAt: new Date(),

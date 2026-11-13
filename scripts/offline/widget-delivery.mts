@@ -38,6 +38,8 @@ process.env.WIDGET_GROUP_FALLBACK = '1';
 process.env.WIDGET_ENABLE = '1';
 process.env.SHARE_ENABLED = '1';
 process.env.BOT_USER_ID = '7777';
+// The widget client is built with it; the stub below answers whatever the token
+process.env.BOT_TOKEN = '123456789:AAFakeOfflineTokenForWidgetDelivery_01';
 for (const key of ['GEMINI_API_KEY', 'OPENAI_API_KEY', 'DEEPSEEK_API_KEY', 'GROK_API_KEY', 'MIMO_API_KEY']) {
     process.env[key] ||= 'offline-placeholder';
 }

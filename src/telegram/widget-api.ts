@@ -15,6 +15,7 @@ import { Api, GrammyError, type ApiClientOptions, type RawApi } from 'grammy';
 import type { InlineKeyboardMarkup, Message, MessageEntity } from 'grammy/types';
 import { autoRetry } from '@grammyjs/auto-retry';
 import { SocksProxyAgent } from 'socks-proxy-agent';
+import { requireBotToken } from '../config/bot-token.js';
 import { getToolConfig } from '../config/tool-config.js';
 import { to, type Result } from '../shared/result.js';
 
@@ -68,7 +69,7 @@ const buildCloudClient = (apiRoot: string): Api<WidgetRawApi> => {
               baseFetchConfig: { agent: new SocksProxyAgent(proxyUrl), compress: true },
           }
         : { apiRoot };
-    const api = new Api<WidgetRawApi>(process.env.BOT_TOKEN, client);
+    const api = new Api<WidgetRawApi>(requireBotToken(), client);
     // Same flood-wait safety net as the main client; widget sends are rare, but
     // a burst of edits after a scheduled state refresh must not throw.
     api.config.use(autoRetry({ maxRetryAttempts: 2, maxDelaySeconds: 30 }));
