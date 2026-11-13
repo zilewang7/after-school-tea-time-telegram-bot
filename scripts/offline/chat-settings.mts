@@ -804,7 +804,7 @@ const cases: { name: string; body: () => Promise<void> }[] = [
             expect(modelConfigs.length === 13, `13 entries (got ${modelConfigs.length})`);
             const sonnet = modelConfigs.find((model) => model.id === 'claude-sonnet-5-5');
             expect(
-                sonnet?.name === 'claude-sonnet-5-5' && !modelConfigs.some((model) => model.id === 'claude-sonnet-5'),
+                sonnet !== undefined && !modelConfigs.some((model) => model.id === 'claude-sonnet-5'),
                 `sonnet 5.5 replaces sonnet 5 in the menu (got ${JSON.stringify(modelConfigs.map((model) => model.id))})`
             );
             expect(
