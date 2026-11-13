@@ -13,6 +13,7 @@ import { setupOfflineDb, expect, reportResults, runCase, type CaseResult } from 
 await setupOfflineDb();
 const { discoveredModelsOf } = await import('../../src/services/price-watch-service.js');
 const { seedModelCatalogEntries, setModelCatalog } = await import('../../src/config/model-catalog.js');
+const { catalogModelRefs } = await import('../../src/services/price-catalog-fetch.js');
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const recent = new Date(Date.now() - 2 * DAY_MS).toISOString().slice(0, 10);
@@ -150,6 +151,30 @@ results.push(
         );
         const freshLine = idsOf(catalogOf([model('gpt-6.1-nova')]));
         expect(freshLine.length === 1, `a brand-new line enters while fresh (got ${freshLine.join(', ')})`);
+        setModelCatalog([]);
+    })
+);
+
+results.push(
+    await runCase('a model the watcher added is tracked like a shipped one', async () => {
+        const seed = seedModelCatalogEntries();
+        const template = seed.find((entry) => entry.id === 'gpt-6-sol');
+        if (template === undefined) throw new Error('the seed menu lost gpt-6-sol');
+        setModelCatalog([
+            ...seed,
+            // What an auto-added row looks like: the catalog key of its source
+            { ...template, id: 'gpt-6.1-sol', catalogKey: 'openai/gpt-6.1-sol' },
+            // A manually added row has no source page and cannot be tracked
+            { ...template, id: 'some-manual-model' },
+        ]);
+        const refs = catalogModelRefs();
+        const added = refs.find((ref) => ref.model === 'gpt-6.1-sol');
+        expect(
+            added?.provider === 'openai' && added.modelFile === 'gpt-6.1-sol',
+            `the auto-added model gets a models.dev ref (got ${JSON.stringify(added)})`
+        );
+        expect(!refs.some((ref) => ref.model === 'some-manual-model'), 'a row without a catalog key is not tracked');
+        expect(refs.filter((ref) => ref.model === 'gpt-6-sol').length === 1, 'a shipped ref is not duplicated');
         setModelCatalog([]);
     })
 );

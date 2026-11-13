@@ -424,6 +424,42 @@ export const backfillCatalogLabels = async (): Promise<void> => {
     });
 };
 
+/**
+ * The menu after the first "a newer version replaces the old one" watch run
+ * (2026-11-13): a model whose product line already has a newer version leaves
+ * the menu (gpt-6-sol is superseded by gpt-6.1-sol). Runs once; later
+ * replacements happen when the watcher adds the newer model.
+ */
+export const backfillCatalogSuperseded = async (): Promise<void> => {
+    const name = '20261113_catalog_superseded';
+    const applied = await sequelize.query<{ name: string }>(
+        'SELECT name FROM schema_migrations WHERE name = :name',
+        { type: QueryTypes.SELECT, replacements: { name } }
+    );
+    if (applied.length > 0) return;
+    const { isNewerVersionOfSameLine } = await import('../shared/model-line.js');
+    const enabled = await sequelize.query<{ id: string }>(
+        'SELECT id FROM model_catalog WHERE enabled = 1',
+        { type: QueryTypes.SELECT }
+    );
+    const ids = enabled.map((row) => row.id);
+    const superseded = ids.filter((id) => ids.some((other) => isNewerVersionOfSameLine(other, id)));
+    const updatedAt = new Date().toISOString();
+    await sequelize.transaction(async (transaction) => {
+        for (const id of superseded) {
+            await sequelize.query(
+                'UPDATE model_catalog SET enabled = 0, updatedAt = :updatedAt WHERE id = :id',
+                { replacements: { id, updatedAt }, transaction }
+            );
+        }
+        await sequelize.query(
+            `INSERT OR IGNORE INTO schema_migrations (name, appliedAt)
+             VALUES (:name, :appliedAt)`,
+            { replacements: { name, appliedAt: updatedAt }, transaction }
+        );
+    });
+};
+
 export const ensureModelPriceIndexes = async (): Promise<void> => {
   await sequelize.query(
     `CREATE UNIQUE INDEX IF NOT EXISTS price_change_proposals_pending_key

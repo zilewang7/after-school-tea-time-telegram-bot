@@ -18,6 +18,7 @@ import {
     type ModelCatalogCapabilities,
     type ModelCatalogEntry,
 } from '../config/model-catalog.js';
+import { isNewerVersionOfSameLine } from '../shared/model-line.js';
 
 const DEFAULT_CAPABILITIES: ModelCatalogCapabilities = {
     kind: 'chat',
@@ -146,6 +147,30 @@ export const findCatalogRow = async (id: string): Promise<ModelCatalogEntry | nu
 };
 
 /**
+ * The rows a new model replaces: when a newer version of one product line
+ * enters, the older version leaves the menu (`enabled=0`) — the owner's "a
+ * minor version upgrades itself" decision. The row stays for history and price
+ * data, and a different line (another persona) is untouched.
+ */
+const retireSuperseded = async (candidate: ModelCatalogEntry, actorId: number | null): Promise<void> => {
+    const enabledRows = await ModelCatalogEntryRow.findAll({ where: { enabled: 1 } });
+    for (const row of enabledRows) {
+        if (row.id === candidate.id) continue;
+        if (!isNewerVersionOfSameLine(candidate.id, row.id)) continue;
+        await row.update({ enabled: 0 });
+        if (actorId !== null) {
+            await writeSettingsAudit({
+                actorId,
+                scope: 'model-catalog',
+                key: `${row.id}:enabled`,
+                oldValue: 'true',
+                newValue: 'false',
+            });
+        }
+    }
+};
+
+/**
  * Auto-add models the watcher found (the owner approved "same family enters the
  * menu automatically"). Existing rows are left alone, so a manually disabled
  * model never comes back by itself. Returns the ids actually added.
@@ -169,6 +194,7 @@ export const addCatalogModels = async (
                 newValue: JSON.stringify(candidate.capabilities),
             });
         }
+        await retireSuperseded(candidate, actorId);
         added.push(candidate.id);
     }
     if (added.length > 0) await loadModelCatalog();

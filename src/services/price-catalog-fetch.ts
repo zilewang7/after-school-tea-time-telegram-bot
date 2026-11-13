@@ -14,6 +14,7 @@
  * this module never schedules a timer, never throws, and records a dead source
  * as a warning or an error so the rest of the run still happens.
  */
+import { listAllModelCatalog } from '../config/model-catalog.js';
 import type { CatalogFetchResult, CatalogFetcher, CatalogModelRef } from './price-catalog-types.js';
 
 /** models.dev keeps one TOML per provider model (schema 2, MIT) */
@@ -61,6 +62,25 @@ export const CATALOG_MODEL_REFS: readonly CatalogModelRef[] = [
     { model: 'gpt-image-2.5-dev', provider: 'openai', modelFile: '' },
 ];
 
+/**
+ * Every model to track in a run: the built-in refs plus the models the watcher
+ * added to the menu itself. An auto-added row stores the catalog key it came
+ * from (`openai/gpt-6.1-sol`), so it is tracked from the next run on exactly
+ * like a shipped model — otherwise its
+ * price would stay at the value of the day it entered the menu.
+ */
+export const catalogModelRefs = (): readonly CatalogModelRef[] => {
+    const known = new Set(CATALOG_MODEL_REFS.map((ref) => ref.model));
+    const derived: CatalogModelRef[] = [];
+    for (const entry of listAllModelCatalog()) {
+        if (known.has(entry.id) || entry.catalogKey === undefined) continue;
+        const [provider, ...rest] = entry.catalogKey.split('/');
+        if (provider === undefined || rest.length === 0) continue;
+        derived.push({ model: entry.id, provider, modelFile: rest.join('/') });
+    }
+    return derived.length === 0 ? CATALOG_MODEL_REFS : [...CATALOG_MODEL_REFS, ...derived];
+};
+
 /** The raw URL of one model's models.dev TOML; '' when models.dev has none */
 export const modelsDevTomlUrl = (ref: CatalogModelRef): string =>
     ref.modelFile === ''
@@ -89,8 +109,11 @@ const fetchText = async (fetcher: CatalogFetcher, url: string): Promise<FetchOut
  * (the other 15 models still compile); a failing whole source is an error (its
  * candidates are simply absent, LiteLLM/ephone may still fill a gap).
  */
-export const fetchPriceCatalogs = async (fetcher: CatalogFetcher): Promise<CatalogFetchResult> => {
-    const tomlRefs = CATALOG_MODEL_REFS.filter((ref) => ref.modelFile !== '');
+export const fetchPriceCatalogs = async (
+    fetcher: CatalogFetcher,
+    refs: readonly CatalogModelRef[] = catalogModelRefs()
+): Promise<CatalogFetchResult> => {
+    const tomlRefs = refs.filter((ref) => ref.modelFile !== '');
     // One promise per model, in ref order: the result order stays deterministic
     const tomlRequests = tomlRefs.map(async (ref) => ({
         model: ref.model,

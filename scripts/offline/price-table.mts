@@ -16,7 +16,8 @@ const { ModelPriceEntry } = await import('../../src/db/modelPriceDTO.js');
 const { PriceChangeProposal } = await import('../../src/db/priceChangeProposalDTO.js');
 const { SettingsAudit } = await import('../../src/db/settingsAuditDTO.js');
 const { ModelCatalogEntryRow } = await import('../../src/db/modelCatalogDTO.js');
-const { backfillCatalogLabels, backfillCatalogSeedsOnly } = await import('../../src/db/schema-migrations.js');
+const { backfillCatalogLabels, backfillCatalogSeedsOnly, backfillCatalogSuperseded } = await import('../../src/db/schema-migrations.js');
+const { listModelCatalog, seedModelCatalogEntries } = await import('../../src/config/model-catalog.js');
 const { modelConfigs } = await import('../../src/config/models.js');
 const catalogService = await import('../../src/services/model-catalog-service.js');
 const { sequelize } = await import('../../src/db/config.js');
@@ -131,6 +132,42 @@ results.push(
         await backfillCatalogLabels();
         const kept = await ModelCatalogEntryRow.findByPk('gpt-6-sol');
         expect(kept?.label === 'gpt-6-sol', 'the backfill runs exactly once');
+    })
+);
+
+results.push(
+    await runCase('a newer version retires the previous one of the same product line', async () => {
+        await catalogService.loadModelCatalog();
+        const before = await ModelCatalogEntryRow.findByPk('gpt-6-sol');
+        expect(before?.enabled === 1, 'the old version is in the menu first');
+        const seed = seedModelCatalogEntries();
+        const template = seed.find((entry) => entry.id === 'gpt-6-sol');
+        if (template === undefined) throw new Error('the seed menu lost gpt-6-sol');
+        const added = await catalogService.addCatalogModels(
+            [{ ...template, id: 'gpt-6.1-sol', label: 'GPT-6.1 Sol', catalogKey: 'openai/gpt-6.1-sol' }],
+            0
+        );
+        expect(JSON.stringify(added) === JSON.stringify(['gpt-6.1-sol']), `the new version is added (got ${JSON.stringify(added)})`);
+        expect((await ModelCatalogEntryRow.findByPk('gpt-6-sol'))?.enabled === 0, 'the previous version leaves the menu');
+        expect((await ModelCatalogEntryRow.findByPk('gpt-6-luna'))?.enabled === 1, 'another product line stays');
+        const catalog = listModelCatalog();
+        expect(!catalog.some((entry) => entry.id === 'gpt-6-sol'), 'the menu no longer offers the old version');
+        expect(catalog.some((entry) => entry.id === 'gpt-6.1-sol'), 'the menu offers the new version');
+    })
+);
+
+results.push(
+    await runCase('the superseded cleanup retires older versions once', async () => {
+        await ModelCatalogEntryRow.update({ enabled: 1 }, { where: { id: 'gpt-6-sol' } });
+        await sequelize.query("DELETE FROM schema_migrations WHERE name = '20261113_catalog_superseded'");
+        await backfillCatalogSuperseded();
+        expect((await ModelCatalogEntryRow.findByPk('gpt-6-sol'))?.enabled === 0, 'the older version is retired');
+        expect((await ModelCatalogEntryRow.findByPk('gpt-6.1-sol'))?.enabled === 1, 'the newer version stays');
+        // Runs once: a re-enabled row is not touched again
+        await ModelCatalogEntryRow.update({ enabled: 1 }, { where: { id: 'gpt-6-sol' } });
+        await backfillCatalogSuperseded();
+        expect((await ModelCatalogEntryRow.findByPk('gpt-6-sol'))?.enabled === 1, 'the cleanup runs exactly once');
+        await ModelCatalogEntryRow.update({ enabled: 0 }, { where: { id: 'gpt-6-sol' } });
     })
 );
 

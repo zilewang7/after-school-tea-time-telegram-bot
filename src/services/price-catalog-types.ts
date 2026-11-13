@@ -95,6 +95,8 @@ export type CurrentPriceRow = PriceEntry;
 export interface CompileOptions {
     /** Fixed clock in tests; the run's start time in production */
     readonly now: Date;
+    /** The models to compile; defaults to every ref the catalog knows */
+    readonly refs?: readonly CatalogModelRef[];
 }
 
 /** Relative tolerance below which two prices are "the same" (0.5%) */

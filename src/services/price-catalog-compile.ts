@@ -38,7 +38,7 @@ import {
     type ProposalDraft,
 } from './price-catalog-types.js';
 import {
-    CATALOG_MODEL_REFS,
+    catalogModelRefs,
     EPHONE_PRICING_URL,
     LITELLM_PRICING_URL,
     modelsDevTomlUrl,
@@ -1143,13 +1143,14 @@ const withNote = (candidates: readonly PriceCandidate[], confirmed: ReadonlySet<
 export const compilePriceCandidates = (result: CatalogFetchResult, options: CompileOptions): CompileResult => {
     const warnings: string[] = [];
     const now = options.now;
+    const refs = options.refs ?? catalogModelRefs();
     const from = runFrom(now);
     const checkedOn = isoDay(now);
     const documents = result.documents;
 
     // 1. models.dev baseline, in menu order
     const tomlByModel = new Map<string, readonly TaggedPrice[]>();
-    for (const ref of CATALOG_MODEL_REFS) {
+    for (const ref of refs) {
         if (ref.modelFile === '') continue;
         const body = documents.tomlByModel.get(ref.model);
         if (body === undefined) {
@@ -1171,7 +1172,7 @@ export const compilePriceCandidates = (result: CatalogFetchResult, options: Comp
     if (official === null) warnings.push('官方 Vertex 页不可用：Gemini 价格只来自 models.dev TOML');
     else warnings.push(...official.warnings);
     const officialByModel = new Map<string, readonly TaggedPrice[]>();
-    for (const ref of CATALOG_MODEL_REFS) {
+    for (const ref of refs) {
         const modelPrices = official === null ? [] : official.prices.filter((price) => price.model === ref.model);
         if (modelPrices.length === 0) continue;
         const prices = officialPricesOf(ref.model, modelPrices, now, from);
@@ -1188,7 +1189,7 @@ export const compilePriceCandidates = (result: CatalogFetchResult, options: Comp
     // 3. pick the source per model and compare official against the baseline
     const tagged: TaggedPrice[] = [];
     const notes = new Map<string, string>();
-    for (const ref of CATALOG_MODEL_REFS) {
+    for (const ref of refs) {
         const tomlPrices = tomlByModel.get(ref.model) ?? [];
         const officialPrices = officialByModel.get(ref.model);
         if (officialPrices !== undefined) {
@@ -1208,7 +1209,7 @@ export const compilePriceCandidates = (result: CatalogFetchResult, options: Comp
     const pricedModels = new Set(tagged.map((price) => price.model));
     if (documents.ephonePricingJson !== null) {
         const ephone = parseEphoneCatalog(documents.ephonePricingJson, warnings);
-        for (const ref of CATALOG_MODEL_REFS) {
+        for (const ref of refs) {
             if (pricedModels.has(ref.model)) continue;
             const prices = ephonePricesOf(ref, ephone, now, from, warnings);
             if (prices.length > 0) {
@@ -1228,7 +1229,7 @@ export const compilePriceCandidates = (result: CatalogFetchResult, options: Comp
         byModel.set(price.model, list);
     }
     const usable: PriceCandidate[] = [];
-    for (const ref of CATALOG_MODEL_REFS) {
+    for (const ref of refs) {
         for (const price of byModel.get(ref.model) ?? []) {
             const note = notes.get(price.model) ?? SOURCE_LABELS[price.sourceKind];
             usable.push({

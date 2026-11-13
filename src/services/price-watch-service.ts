@@ -12,6 +12,7 @@
 import type { Api } from 'grammy';
 import { isTestInstance } from '../config/instance.js';
 import { isJsonObject } from '../shared/json-object.js';
+import { familyLineOf, productLineOf, versionOf } from '../shared/model-line.js';
 import { getOwnerUserId } from '../config/owner.js';
 import {
     allPriceEntries,
@@ -40,7 +41,7 @@ import {
     diffPriceCandidates,
     compilePriceCandidates,
 } from './price-catalog-compile.js';
-import { fetchPriceCatalogs } from './price-catalog-fetch.js';
+import { catalogModelRefs, fetchPriceCatalogs } from './price-catalog-fetch.js';
 import type { CatalogFetcher, ProposalDraft } from './price-catalog-types.js';
 import {
     sendModelCatalogNotice,
@@ -124,37 +125,6 @@ const releaseAgeDays = (releaseDate: unknown, now: Date): number | null => {
     if (!Number.isFinite(releasedAt)) return null;
     const age = (now.getTime() - releasedAt) / DAY_MS;
     return age >= -1 ? age : null;
-};
-
-/** The family a version belongs to: `gpt`, `gemini`, `claude-sonnet`, ... */
-const familyLineOf = (id: string): string => {
-    const tokens = id.toLowerCase().split('-');
-    if (tokens[0] === 'claude' && tokens.length > 1) return `${tokens[0]}-${tokens[1]}`;
-    return tokens[0] ?? id.toLowerCase();
-};
-
-/** The numeric version right after the family line (`gpt-6.1`, `claude-sonnet-5-5` → 5.5) */
-const versionOf = (id: string, familyLine: string): number | null => {
-    const rest = id.toLowerCase().slice(familyLine.length + 1);
-    const match = /^v?(\d+)(?:[.-](\d+))?/.exec(rest);
-    if (match === null) return null;
-    const major = Number(match[1]);
-    const minor = match[2] === undefined ? 0 : Number(`0.${match[2]}`);
-    return major + minor;
-};
-
-/**
- * The product line an id belongs to, with the version removed: `gpt-sol`,
- * `gemini-argon`, `claude-sonnet`. Two ids of one line are one model at
- * different versions, so a new id of an offered line is that model's upgrade.
- */
-const productLineOf = (id: string): string => {
-    const normalized = id.toLowerCase();
-    const family = familyLineOf(normalized);
-    const rest = normalized.slice(family.length + 1);
-    const version = /^v?\d+(?:[.-]\d+)?/.exec(rest);
-    const persona = version === null ? rest : rest.slice(version[0].length).replace(/^-/, '');
-    return persona === '' ? family : `${family}-${persona}`;
 };
 
 /** Newest version the menu already offers, per family and per product line */
@@ -406,10 +376,13 @@ export const runPriceWatchNow = async (
     let proposals = 0;
     try {
         const statusBefore = await priceWatchStatus();
-        const catalogs = await fetchPriceCatalogs(fetcher);
+        // One refs list for the download and the compile: the models the menu
+        // gained since the last release are tracked like the shipped ones
+        const refs = catalogModelRefs();
+        const catalogs = await fetchPriceCatalogs(fetcher, refs);
         warnings.push(...catalogs.warnings);
         errors.push(...catalogs.errors);
-        const compiled = compilePriceCandidates(catalogs, { now });
+        const compiled = compilePriceCandidates(catalogs, { now, refs });
         warnings.push(...compiled.warnings);
         const current = allPriceEntries();
         const diff = diffPriceCandidates(compiled.candidates, current, { now });
