@@ -59,6 +59,8 @@ export const registerConversationRoutes = (app: Hono<PanelEnv>, deps: Conversati
 
         const rootId = parseMessageIdParam(context.req.param('rootId'), 'rootId');
         await requireConversationRoot(chatId, rootId);
-        return context.json(await buildConversationStats(chatId, rootId, new Date(deps.now())));
+        return context.json(
+            await buildConversationStats(chatId, rootId, new Date(deps.now()), auth.user.isOwner)
+        );
     });
 };

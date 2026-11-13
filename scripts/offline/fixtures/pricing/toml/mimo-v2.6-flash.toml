@@ -1,0 +1,11 @@
+schema = 2
+
+[cost.text.input]
+price = 0.14
+cache = { read = 0.0028 }
+
+[cost.text.output]
+price = 0.28
+
+[cost.web_search]
+price = 5

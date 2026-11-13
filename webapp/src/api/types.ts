@@ -27,6 +27,8 @@ export interface HealthResponse {
     ok: boolean;
     startedAt: string;
     version: string | null;
+    // The in-memory price table the cost estimate uses
+    priceTableVersion: string;
     settingsLoaded: boolean;
 }
 
@@ -914,6 +916,35 @@ export interface RecentErrorRow {
     versionId: number;
 }
 
+/** One price origin, with the newest date its values were checked */
+export interface PricingSourceMeta {
+    kind: 'manual' | 'models-dev' | 'official' | 'ephone';
+    checkedOn: string;
+}
+
+/** A price window that starts (or ends) within the next 30 days */
+export interface PricingNextChange {
+    model: string;
+    tier: 'standard' | 'priority';
+    // ISO instant of the change
+    at: string;
+    // One line, e.g. `标准价 2.00/0.10/10.00 → 4.00/0.20/20.00`
+    summary: string;
+}
+
+/** The price table behind the cost estimate: version, freshness, future changes */
+export interface PricingMeta {
+    version: string;
+    // The oldest checkedOn in the table; null for an empty table
+    checkedOn: string | null;
+    sources: PricingSourceMeta[];
+    nextChanges: PricingNextChange[];
+    // Models seen in the last 30 days of replies that still have no price row
+    unpricedModels: string[];
+    // The owner's pending proposal count; everyone else sees 0
+    pendingProposals: number;
+}
+
 export interface StatsResponse {
     // null = every chat (owner only)
     chatId: number | null;
@@ -928,6 +959,8 @@ export interface StatsResponse {
     models: ModelStatsRow[];
     costGroups: CostGroupView[];
     cost: { costUsd: number | null; pricedReplyRatio: number | null };
+    // The price table the estimate used
+    pricing: PricingMeta;
     // Most calls first
     tools: ToolStatsRow[];
     // Most frequent first
@@ -959,6 +992,15 @@ export interface ProcessStatus {
     // Connected MCP servers only
     mcpServers: Array<{ name: string; toolCount: number }>;
     lastCleanup: { finishedAt: string; elapsedMs: number; summary: string } | null;
+    // The price watcher and its pending proposals; null when unavailable
+    pricing: {
+        version: string;
+        // ISO instant of the last watch run; null when none ran
+        lastRunAt: string | null;
+        // 'ok' | 'failed' | 'skipped'; null when none ran
+        lastOutcome: string | null;
+        pendingProposals: number;
+    } | null;
 }
 
 /** preparing: waiting for media / building the context; waiting: request out, no chunk yet; streaming */

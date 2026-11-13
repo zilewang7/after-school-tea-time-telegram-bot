@@ -1,0 +1,31 @@
+schema = 2
+
+[cost.text.input]
+price = 0.75
+cache = { read = 0.075, storage = 1 }
+
+[cost.text.output]
+price = 3.75
+
+[cost.audio.input]
+price = 0.75
+cache = { read = 0.075, storage = 1 }
+
+[cost.web_search]
+price = 14
+
+[[cost.multipliers]]
+when = { service_tier = { equals = "priority" } }
+factor = { text = { input = { price = 1.8, cache = { read = 1.8 } }, output = 1.8 }, audio = { input = { price = 1.8, cache = { read = 1.8 } } } }
+
+[[cost.multipliers]]
+when = { service_tier = { equals = "flex" } }
+factor = { text = { input = { price = 0.5, cache = { read = 0.5 } }, output = 0.5 }, audio = { input = { price = 0.5, cache = { read = 0.5 } } } }
+
+[[cost.multipliers]]
+when = { not = { region = { equals = "global" } } }
+factor = { text = { input = { price = 1.1, cache = { read = 1.1 } }, output = 1.1 }, audio = { input = { price = 1.1, cache = { read = 1.1 } } } }
+
+[[cost.multipliers]]
+when = { date = { gte = "2027-01-01" } }
+factor = { text = { input = { price = 2, cache = { read = 2 } }, output = 2 }, audio = { input = { price = 2, cache = { read = 2 } } } }

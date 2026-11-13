@@ -23,9 +23,13 @@ import './globalSettingDTO.js';
 import './settingsAuditDTO.js';
 import './contextExclusionDTO.js';
 import './replyMetricDTO.js';
+import './modelPriceDTO.js';
+import './priceChangeProposalDTO.js';
+import './priceWatchRunDTO.js';
+import './modelCatalogDTO.js';
 import { getBlob } from "../util.js";
 import { addAsyncFileSaveTask, removeAsyncFileSaveTask, findFirstMessageIdByContinuation } from '../state.js';
-import { backfillAnimationMediaKind, backfillPanelRegistry, runSchemaMigrations } from './schema-migrations.js';
+import { backfillAnimationMediaKind, backfillPanelRegistry, ensureModelPriceIndexes, runSchemaMigrations } from './schema-migrations.js';
 
 // sync database (the imports above ensure every table is registered before sync)
 // Exported so callers can await schema readiness instead of racing the migration;
@@ -37,6 +41,8 @@ import { backfillAnimationMediaKind, backfillPanelRegistry, runSchemaMigrations 
 export const dbReady = enableWriteAheadLog()
     .then(() => runSchemaMigrations())
     .then(() => sequelize.sync())
+    // Partial unique index for pending proposals; the DTOs created the tables above
+    .then(() => ensureModelPriceIndexes())
     // Data fixes need the tables, so they run after sync (a fresh database has
     // no rows for them, an existing one is scanned once)
     .then(() => backfillAnimationMediaKind())

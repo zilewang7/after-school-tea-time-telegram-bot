@@ -364,7 +364,7 @@ const cases: { name: string; body: () => Promise<void> }[] = [
             expect(near(deepseek, (400 * 0.3 + 600 * 0.006 + 250 * 1.2) / 1e6), `deepseek at the peak price (got ${deepseek})`);
             const luna = estimateCostUsd(price('gpt-6-luna'), { ...zero, promptTokens: 1000, cachedTokens: 800, outputTokens: 300 });
             expect(near(luna, (200 * 0.1 + 800 * 0.01 + 300 * 0.5) / 1e6), `luna, reasoning billed as output (got ${luna})`);
-            // Hydrogen's row is the 3.8 Flash promotional price until Vertex publishes one
+            // Vertex published the standard price on 2026-11-12; 0.75/3.75 was the Batch tier
             const hydrogen = estimateCostUsd(price('gemini-4-hydrogen'), {
                 ...zero,
                 promptTokens: 1000,
@@ -372,8 +372,20 @@ const cases: { name: string; body: () => Promise<void> }[] = [
                 outputTokens: 200,
             });
             expect(
-                near(hydrogen, (400 * 0.75 + 600 * 0.075 + 200 * 3.75) / 1e6),
-                `hydrogen at the 3.8 Flash promotional price (got ${hydrogen})`
+                near(hydrogen, (400 * 1.5 + 600 * 0.075 + 200 * 7.5) / 1e6),
+                `hydrogen at the published standard price (got ${hydrogen})`
+            );
+
+            // Sonnet 5.5 is the Anthropic id the menu offers: cache hits cost half of 5's
+            const sonnet55 = estimateCostUsd(price('claude-sonnet-5-5'), {
+                ...zero,
+                promptTokens: 1050,
+                cachedTokens: 900,
+                outputTokens: 420,
+            });
+            expect(
+                near(sonnet55, (150 * 2 + 900 * 0.1 + 420 * 10) / 1e6),
+                `sonnet-5-5: half-price cache hits (got ${sonnet55})`
             );
         },
     },
@@ -381,7 +393,10 @@ const cases: { name: string; body: () => Promise<void> }[] = [
         name: 'the price table: complete entries, the relay-only image id stays unpriced',
         body: async () => {
             const entries = Object.entries(MODEL_PRICES);
-            expect(entries.length === 15, `the 14 models of appendix A and gemini-4-carbon (got ${entries.length})`);
+            expect(
+                entries.length === 16,
+                `the appendix models, gemini-4-carbon and both Anthropic ids (got ${entries.length})`
+            );
             for (const [model, price] of entries) {
                 const numbers = [price.inputPerM, price.cachedInputPerM, price.outputPerM];
                 expect(
@@ -437,7 +452,7 @@ const cases: { name: string; body: () => Promise<void> }[] = [
                 since: new Date(Date.now() - 7 * 24 * 3600 * 1000),
                 chatId: PRICED_CHAT,
             });
-            const priced = groups.map(priceUsageGroup);
+            const priced = groups.map((group) => priceUsageGroup(group));
             const find = (model: string, route: string | null) => {
                 const group = priced.find((entry) => entry.group.model === model && entry.group.route === route);
                 if (!group) throw new Error(`no group ${model}/${route ?? 'null'} (got ${json(groups)})`);
@@ -513,15 +528,22 @@ const cases: { name: string; body: () => Promise<void> }[] = [
 
 cases.push(
     {
-        name: 'priority prices: argon, carbon and 3.8-flash at 1.8 times standard, nobody else; carbon is argon',
+        name: 'priority prices: the Gemini chat models and the image model at 1.8 times standard; carbon is argon',
         body: async () => {
             const withPriority = Object.entries(MODEL_PRICES)
                 .filter(([, price]) => price.priority !== undefined)
                 .map(([model]) => model)
                 .sort();
             expect(
-                json(withPriority) === json(['gemini-3.8-flash', 'gemini-4-argon', 'gemini-4-carbon']),
-                `the three Gemini chat models have one (got ${json(withPriority)})`
+                json(withPriority) ===
+                    json([
+                        'gemini-3.8-flash',
+                        'gemini-4-argon',
+                        'gemini-4-carbon',
+                        'gemini-4-hydrogen',
+                        'gemini-nano-banana-2.1',
+                    ]),
+                `the Gemini models and the image model have one (got ${json(withPriority)})`
             );
             for (const model of withPriority) {
                 const price = priceOf(model);
@@ -612,7 +634,7 @@ cases.push(
             // Priority rounds on a model the table has no priority price for
             const unpricedTierRow = metricRow({
                 chatId: PRIORITY_CHAT,
-                model: 'gemini-nano-banana-2.1',
+                model: 'grok-4.7',
                 promptTokens: 1000,
                 cachedTokens: 0,
                 outputTokens: 100,
@@ -632,7 +654,7 @@ cases.push(
             });
             for (const row of [mixedRow, unpricedTierRow, downgradedRow]) await insertReplyMetric(row);
 
-            const priced = (await aggregateUsageByModelRoute({ since, chatId: PRIORITY_CHAT })).map(priceUsageGroup);
+            const priced = (await aggregateUsageByModelRoute({ since, chatId: PRIORITY_CHAT })).map((group) => priceUsageGroup(group));
             const find = (model: string) => {
                 const group = priced.find((entry) => entry.group.model === model);
                 if (!group) throw new Error(`no group ${model}`);
@@ -644,12 +666,12 @@ cases.push(
                 argon.pricing === 'priced' && near(argon.costUsd, mixedCost) && !argon.priorityAtStandardPrice,
                 `the SQL group is split (got ${json(argon)})`
             );
-            const banana = find('gemini-nano-banana-2.1');
+            const withStandardFallback = find('grok-4.7');
             expect(
-                banana.pricing === 'priced' &&
-                    near(banana.costUsd, (1000 * 1.5 + 100 * 7.5) / 1e6) &&
-                    banana.priorityAtStandardPrice,
-                `no priority price: standard price, and the group says so (got ${json(banana)})`
+                withStandardFallback.pricing === 'priced' &&
+                    near(withStandardFallback.costUsd, (1000 * 2 + 100 * 6) / 1e6) &&
+                    withStandardFallback.priorityAtStandardPrice,
+                `no priority price: standard price, and the group says so (got ${json(withStandardFallback)})`
             );
             const carbon = find('gemini-4-carbon');
             expect(
@@ -659,13 +681,13 @@ cases.push(
 
             const rollups = rollupCostByModel(priced);
             expect(
-                rollups.get('gemini-nano-banana-2.1')?.priorityAtStandardPrice === true &&
+                rollups.get('grok-4.7')?.priorityAtStandardPrice === true &&
                     rollups.get('gemini-4-argon')?.priorityAtStandardPrice === false,
                 'the per-model rollup carries the note'
             );
             const totals = totalCost(priced);
             expect(
-                near(totals.costUsd, mixedCost + (1000 * 1.5 + 100 * 7.5) / 1e6 + (1000 * 2 + 100 * 10) / 1e6),
+                near(totals.costUsd, mixedCost + (1000 * 2 + 100 * 6) / 1e6 + (1000 * 2 + 100 * 10) / 1e6),
                 `the total follows the split (got ${totals.costUsd})`
             );
 
@@ -677,10 +699,10 @@ cases.push(
                 mixedDetail?.costUsd === Math.round(mixedCost * 1e6) / 1e6 && mixedDetail.priorityAtStandardPrice === false,
                 `the reply detail is split too (got ${json(mixedDetail)})`
             );
-            const bananaDetail = await detailOf(unpricedTierRow);
+            const fallbackDetail = await detailOf(unpricedTierRow);
             expect(
-                bananaDetail?.priorityAtStandardPrice === true && bananaDetail.pricing === 'priced',
-                `the reply detail notes the standard-price fallback (got ${json(bananaDetail)})`
+                fallbackDetail?.priorityAtStandardPrice === true && fallbackDetail.pricing === 'priced',
+                `the reply detail notes the standard-price fallback (got ${json(fallbackDetail)})`
             );
         },
     }

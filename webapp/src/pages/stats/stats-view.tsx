@@ -74,7 +74,7 @@ export const StatsView = ({ data, refreshing }: StatsViewProps) => {
 
     return (
         <div className={refreshing ? 'stats-view refreshing' : 'stats-view'}>
-            <StatsKpis kpis={data.kpis} cost={data.cost} outcomes={data.outcomes} />
+            <StatsKpis kpis={data.kpis} cost={data.cost} outcomes={data.outcomes} pricing={data.pricing} />
 
             <StackedBarChart
                 title="回复数"
@@ -114,7 +114,7 @@ export const StatsView = ({ data, refreshing }: StatsViewProps) => {
                 formatValue={formatTokens}
             />
             <StatsErrors errorKinds={data.errorKinds} recentErrors={data.recentErrors} showChat={isAllChats} />
-            <StatsNotes />
+            <StatsNotes pricing={data.pricing} />
         </div>
     );
 };

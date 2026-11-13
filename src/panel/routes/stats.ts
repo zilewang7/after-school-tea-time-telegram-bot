@@ -29,6 +29,8 @@ export const registerStatsRoute = (app: Hono<PanelEnv>): void => {
         const chatId = await statsScopeFor(auth, context.req.query('chatId'));
         const range = parseStatsRange(context.req.query('range'));
         if (range === null) throw invalid(`range 必须是 ${STATS_RANGE_KEYS.join(' / ')} 之一`);
-        return context.json(await buildStats({ chatId, range, now: new Date() }));
+        return context.json(
+            await buildStats({ chatId, range, now: new Date(), isOwner: auth.user.isOwner })
+        );
     });
 };

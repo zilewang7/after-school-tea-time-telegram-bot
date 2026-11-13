@@ -95,13 +95,19 @@ export interface PricedUsageGroup {
 const perImageRowsOf = (price: ModelPrice, group: UsageGroupRow): number =>
     price.perImageUsd === undefined ? 0 : group.imageRowsWithoutUsage;
 
-export const priceUsageGroup = (group: UsageGroupRow): PricedUsageGroup => {
-    const price = findModelPrice(group.model);
-    if (price === null) {
+/**
+ * Cost of one (model, route) group. `price` overrides the current list price:
+ * a price-segmented estimate passes the price in force when the group's rows
+ * started (design §4.2). undefined = the current price (the existing callers),
+ * null = the model was unpriced for those rows.
+ */
+export const priceUsageGroup = (group: UsageGroupRow, price?: ModelPrice | null): PricedUsageGroup => {
+    const effectivePrice = price === undefined ? findModelPrice(group.model) : price;
+    if (effectivePrice === null) {
         return { group, costUsd: null, pricing: 'unpriced', pricedReplies: 0, priorityAtStandardPrice: false };
     }
 
-    const pricedReplies = group.repliesWithUsage + perImageRowsOf(price, group);
+    const pricedReplies = group.repliesWithUsage + perImageRowsOf(effectivePrice, group);
     if (group.route !== null && SUBSCRIPTION_ROUTES.has(group.route)) {
         return { group, costUsd: 0, pricing: 'subscription', pricedReplies, priorityAtStandardPrice: false };
     }
@@ -110,11 +116,49 @@ export const priceUsageGroup = (group: UsageGroupRow): PricedUsageGroup => {
     }
     return {
         group,
-        costUsd: estimateCostUsd(price, group),
+        costUsd: estimateCostUsd(effectivePrice, group),
         pricing: 'priced',
         pricedReplies,
-        priorityAtStandardPrice: group.priorityRounds > 0 && price.priority === undefined,
+        priorityAtStandardPrice: group.priorityRounds > 0 && effectivePrice.priority === undefined,
     };
+};
+
+const groupKeyOf = (group: UsageGroupRow): string => JSON.stringify([group.model, group.route]);
+
+/** Sum of two usage groups; every field of the row is additive */
+const addUsageGroups = (first: UsageGroupRow, second: UsageGroupRow): UsageGroupRow => ({
+    model: first.model,
+    route: first.route,
+    replies: first.replies + second.replies,
+    repliesWithUsage: first.repliesWithUsage + second.repliesWithUsage,
+    promptTokens: first.promptTokens + second.promptTokens,
+    cachedTokens: first.cachedTokens + second.cachedTokens,
+    cacheWriteTokens: first.cacheWriteTokens + second.cacheWriteTokens,
+    outputTokens: first.outputTokens + second.outputTokens,
+    thoughtsTokens: first.thoughtsTokens + second.thoughtsTokens,
+    imageOutputTokens: first.imageOutputTokens + second.imageOutputTokens,
+    unsplitImageOutputTokens: first.unsplitImageOutputTokens + second.unsplitImageOutputTokens,
+    imagesWithoutUsage: first.imagesWithoutUsage + second.imagesWithoutUsage,
+    imageRowsWithoutUsage: first.imageRowsWithoutUsage + second.imageRowsWithoutUsage,
+    priorityRounds: first.priorityRounds + second.priorityRounds,
+    priorityPromptTokens: first.priorityPromptTokens + second.priorityPromptTokens,
+    priorityCachedTokens: first.priorityCachedTokens + second.priorityCachedTokens,
+    priorityOutputTokens: first.priorityOutputTokens + second.priorityOutputTokens,
+});
+
+/**
+ * One group per (model, route): the rows of the price segments added back
+ * together, first-seen order kept. All fields are sums, so the merged row is
+ * exactly what a single unsegmented aggregation would have returned.
+ */
+export const mergeUsageGroupRows = (groups: readonly UsageGroupRow[]): UsageGroupRow[] => {
+    const merged = new Map<string, UsageGroupRow>();
+    for (const group of groups) {
+        const key = groupKeyOf(group);
+        const existing = merged.get(key);
+        merged.set(key, existing === undefined ? group : addUsageGroups(existing, group));
+    }
+    return [...merged.values()];
 };
 
 export interface ModelCostRollup {
@@ -136,6 +180,50 @@ const rollupFlagOf = (groups: readonly PricedUsageGroup[]): ModelPricingFlag => 
     if (withCost === groups.length) return 'priced';
     if (withCost > 0) return 'partial';
     return flags.has('unpriced') ? 'unpriced' : 'no_usage';
+};
+
+/**
+ * A group's flag after its price segments merged. A price can appear or
+ * disappear at a segment boundary (a model priced only after some of its rows),
+ * so the flag follows the cost: some covered rows price the group.
+ */
+const mergedFlagOf = (segments: readonly PricedUsageGroup[], hasCost: boolean): PricingFlag => {
+    const flags = new Set(segments.map((priced) => priced.pricing));
+    const [onlyFlag] = flags;
+    if (flags.size === 1 && onlyFlag !== undefined) return onlyFlag;
+    if (hasCost) return 'priced';
+    return flags.has('unpriced') ? 'unpriced' : 'no_usage';
+};
+
+/**
+ * The (model, route) groups of a price-segmented estimate: each segment was
+ * priced at the price in force when it started, so the merged group adds the
+ * segment groups back together (usage sums, costs summed; null only when no
+ * segment had a cost). This is the row the API returns and the model rollup
+ * uses, so one model keeps one row whatever the price did inside the window.
+ */
+export const mergePricedUsageGroups = (segments: readonly PricedUsageGroup[]): PricedUsageGroup[] => {
+    const byKey = new Map<string, PricedUsageGroup[]>();
+    for (const priced of segments) {
+        const key = groupKeyOf(priced.group);
+        const list = byKey.get(key) ?? [];
+        list.push(priced);
+        byKey.set(key, list);
+    }
+    return [...byKey.values()].flatMap((segmentGroups) => {
+        const group = mergeUsageGroupRows(segmentGroups.map((priced) => priced.group))[0];
+        if (group === undefined) return [];
+        const costs = segmentGroups.flatMap((priced) => (priced.costUsd === null ? [] : [priced.costUsd]));
+        return [
+            {
+                group,
+                costUsd: costs.length === 0 ? null : sumOf(costs),
+                pricing: mergedFlagOf(segmentGroups, costs.length > 0),
+                pricedReplies: sumOf(segmentGroups.map((priced) => priced.pricedReplies)),
+                priorityAtStandardPrice: segmentGroups.some((priced) => priced.priorityAtStandardPrice),
+            },
+        ];
+    });
 };
 
 /** Per model across routes (design D5: a cost per model) */

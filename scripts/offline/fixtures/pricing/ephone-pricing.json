@@ -1,0 +1,85 @@
+{
+ "data": {
+  "model_info": [
+   {
+    "model_name": "gemini-4-carbon",
+    "billing_kind": "token",
+    "price_config": {
+     "original_price": {
+      "conditions": [
+       {
+        "name": "默认档",
+        "name_en": "Default",
+        "rule": "",
+        "price": {
+         "quota_type": "token",
+         "currency": "USD",
+         "input_token_price": 4,
+         "output_token_price": 20,
+         "cache_read_token_price": 0.2
+        }
+       }
+      ],
+      "time_rules": [
+       {
+        "time": "",
+        "end_date": "2026-11-30",
+        "timezone": "UTC",
+        "ratio": 0.5
+       }
+      ]
+     }
+    }
+   },
+   {
+    "model_name": "gemini-nano-banana-2.1",
+    "billing_kind": "token",
+    "price_config": {
+     "original_price": {
+      "conditions": [
+       {
+        "rule": "",
+        "price": {
+         "quota_type": "token",
+         "currency": "USD",
+         "input_token_price": 1.5,
+         "output_token_price": 7.5,
+         "reasoning_token_price": 7.5,
+         "image_output_token_price": 30
+        }
+       }
+      ],
+      "time_rules": []
+     }
+    }
+   },
+   {
+    "model_name": "gpt-image-2.5-dev",
+    "billing_kind": "call",
+    "price_config": {
+     "original_price": {
+      "conditions": [
+       {
+        "name": "默认档",
+        "name_en": "Default",
+        "rule": "",
+        "price": {
+         "quota_type": "call",
+         "currency": "CNY",
+         "model_price": 0.7,
+         "input_token_price": 5,
+         "output_token_price": 30,
+         "cache_read_token_price": 1.25,
+         "image_token_price": 8,
+         "image_cache_read_token_price": 2,
+         "image_output_token_price": 30
+        }
+       }
+      ],
+      "time_rules": []
+     }
+    }
+   }
+  ]
+ }
+}

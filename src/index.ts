@@ -20,6 +20,9 @@ import { getGlobalDefaultModel, loadChatSettingsCache } from './services/chat-se
 import { loadUserAccessCache } from './services/user-access-cache.js';
 import { configureAccessMembership } from './services/access-membership.js';
 import { startPanel, stopPanel } from './panel/index.js';
+import { loadModelPrices } from './services/model-price-service.js';
+import { loadModelCatalog } from './services/model-catalog-service.js';
+import { startPriceWatch } from './services/price-watch-service.js';
 
 if (!process.env.BOT_TOKEN) {
     throw new Error('BOT_TOKEN must be provided');
@@ -154,6 +157,10 @@ async function main() {
     // alters the multi-GB message table; writes still must not race DDL.
     await dbReady;
     console.log('[db] Schema ready');
+    // Price table and model catalog live in SQLite; both loaders fall back to the
+    // built-in seed on failure, so a broken row never blocks startup.
+    await loadModelPrices();
+    await loadModelCatalog();
     // Per-chat and global settings are read synchronously from memory by the
     // reply path, so they must be loaded before the first update
     await loadChatSettingsCache();
@@ -175,6 +182,9 @@ async function main() {
     console.log('[mcp] Initialization complete');
     // Listening before "Bot started" is logged: e2e treats that line as ready
     await startPanel({ api: bot.api, clientConfig: botConfig?.client });
+    // Daily price watch: fetch catalogs, propose changes to the owner's DM.
+    // Non-blocking and disabled by PRICE_WATCH=0 / the test instance.
+    startPriceWatch(bot.api);
     // Test instance: never react to updates queued while it was offline
     // (it shares a group with the production bot)
     // onStart fires when long polling actually begins; the promise bot.start()

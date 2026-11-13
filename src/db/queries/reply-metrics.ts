@@ -28,6 +28,12 @@ export {
 /** Rows started at or after `since`; one chat, or every chat when chatId is null */
 export interface MetricWindow {
     readonly since: Date;
+    /**
+     * Exclusive upper bound, for the slices of a price-segmented estimate: a
+     * price window is priced from the rows that started inside it. undefined =
+     * everything from `since` on (the existing callers).
+     */
+    readonly until?: Date;
     readonly chatId: number | null;
     /**
      * Only these bot replies (first message ids): one conversation tree's
@@ -76,7 +82,8 @@ const parseRows = (rows: readonly unknown[]): ReplyMetricRecord[] =>
 
 /** The window's WHERE clause; the chat form keeps to the (chatId, startedAt) index */
 const windowCondition = (window: MetricWindow): string => {
-    const scope = window.chatId === null ? 'startedAt >= :since' : 'chatId = :chatId AND startedAt >= :since';
+    const bounds = window.until === undefined ? 'startedAt >= :since' : 'startedAt >= :since AND startedAt < :until';
+    const scope = window.chatId === null ? bounds : `chatId = :chatId AND ${bounds}`;
     if (window.firstMessageIds === undefined) return scope;
     // Raw replacements do not expand arrays on sqlite; json_each turns the id list into rows
     return `${scope} AND firstMessageId IN (SELECT value FROM json_each(:firstMessageIdsJson))`;
@@ -84,6 +91,7 @@ const windowCondition = (window: MetricWindow): string => {
 
 const windowReplacements = (window: MetricWindow): Record<string, unknown> => ({
     since: window.since,
+    ...(window.until === undefined ? {} : { until: window.until }),
     chatId: window.chatId,
     ...(window.firstMessageIds === undefined
         ? {}

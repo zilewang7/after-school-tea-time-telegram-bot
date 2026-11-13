@@ -336,6 +336,21 @@ const migrateThinkingLinks = async (transaction: Transaction): Promise<void> => 
 };
 
 /** Apply additive, idempotent DDL without altering the large message table. */
+/**
+ * Indexes that Sequelize's sync cannot express (partial unique index): a
+ * pending price proposal is unique per (model, tier, effectiveFrom, kind).
+ *
+ * Runs after sequelize.sync() (the tables are created there), and is
+ * idempotent, so a restart is harmless.
+ */
+export const ensureModelPriceIndexes = async (): Promise<void> => {
+  await sequelize.query(
+    `CREATE UNIQUE INDEX IF NOT EXISTS price_change_proposals_pending_key
+       ON price_change_proposals(model, tier, effectiveFrom, kind)
+     WHERE status = 'pending'`
+  );
+};
+
 export const runSchemaMigrations = async (): Promise<void> => {
   await sequelize.query(`
     CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -442,6 +457,14 @@ export const runSchemaMigrations = async (): Promise<void> => {
     await sequelize.query(
       `INSERT OR IGNORE INTO schema_migrations (name, appliedAt)
        VALUES ('20261112_chat_settings_gemini_priority', :appliedAt)`,
+      { replacements: { appliedAt: new Date().toISOString() }, transaction }
+    );
+    // model_price_entries / price_change_proposals / price_watch_runs /
+    // model_catalog are new tables: their DTOs create them at sync time, the
+    // partial unique index comes from ensureModelPriceIndexes.
+    await sequelize.query(
+      `INSERT OR IGNORE INTO schema_migrations (name, appliedAt)
+       VALUES ('20261113_model_prices', :appliedAt)`,
       { replacements: { appliedAt: new Date().toISOString() }, transaction }
     );
   });

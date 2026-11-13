@@ -8,6 +8,7 @@
 import type { Hono } from 'hono';
 import { listChats, type ChatRow } from '../../db/queries/panel-registry.js';
 import { listActiveSessions, type BotMessageSession } from '../../services/bot-message-service.js';
+import { priceWatchStatus } from '../../services/model-price-service.js';
 import { listRecentReplyErrors } from '../../services/recent-reply-errors.js';
 import { requireAuth, type PanelEnv } from '../context.js';
 import { findTriggerSummary, type TriggerSummary } from '../queries/trigger-messages.js';
@@ -17,6 +18,7 @@ import {
     toActiveReplyView,
     toStatusChatView,
     toStatusErrorView,
+    type ProcessPricingView,
     type StatusChatView,
     type StatusResponse,
 } from '../views/status-view.js';
@@ -31,6 +33,25 @@ export interface StatusRouteInfo {
 /** Observers never get the trigger read at all */
 const triggerFor = (session: BotMessageSession, access: VisibleAccess): Promise<TriggerSummary | null> =>
     access === 'member' ? findTriggerSummary(session.chatId, session.userMessageId) : Promise.resolve(null);
+
+/**
+ * The watcher's facts are DB state: reading them must not break /api/status,
+ * so an unavailable watcher leaves the block null.
+ */
+const pricingStatusOrNull = async (): Promise<ProcessPricingView | null> => {
+    try {
+        const status = await priceWatchStatus();
+        return {
+            version: status.version,
+            lastRunAt: status.lastRunAt,
+            lastOutcome: status.lastOutcome,
+            pendingProposals: status.pendingProposals,
+        };
+    } catch (error: unknown) {
+        console.warn('[panel] price watch status unavailable:', error);
+        return null;
+    }
+};
 
 export const registerStatusRoute = (app: Hono<PanelEnv>, info: StatusRouteInfo): void => {
     app.get('/api/status', async (context) => {
@@ -70,7 +91,7 @@ export const registerStatusRoute = (app: Hono<PanelEnv>, info: StatusRouteInfo):
 
         const body: StatusResponse = {
             serverTime: now.toISOString(),
-            process: auth.user.isOwner ? buildProcessStatus(info, now) : null,
+            process: auth.user.isOwner ? buildProcessStatus(info, now, await pricingStatusOrNull()) : null,
             active,
             recentErrors,
         };

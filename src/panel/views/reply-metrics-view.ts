@@ -7,6 +7,7 @@
  *
  * Units: times ISO, durations milliseconds, cost USD at list price.
  */
+import { findPriceAt } from '../../config/model-pricing.js';
 import type {
     ReplyMetricRecord,
     ReplyOutcome,
@@ -116,7 +117,8 @@ const asUsageGroup = (row: ReplyMetricRecord): UsageGroupRow => {
 };
 
 export const toReplyMetricView = (row: ReplyMetricRecord): ReplyMetricView => {
-    const priced = priceUsageGroup(asUsageGroup(row));
+    // This attempt alone, at the price in force when it started (design §4.2)
+    const priced = priceUsageGroup(asUsageGroup(row), findPriceAt(row.model, row.startedAt));
     return {
         id: row.id,
         versionId: row.versionId,

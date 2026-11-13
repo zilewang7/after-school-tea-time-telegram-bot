@@ -27,6 +27,9 @@ export const formatUsd = (value: number | null): string => {
     return `$${value.toFixed(2)}`;
 };
 
+/** The price table's version label; 'seed' is the built-in table before the DB loads */
+export const formatPriceTableVersion = (version: string): string => (version === 'seed' ? '内置' : version);
+
 /** 0..1 as a percentage; null (nothing to divide by) is a dash */
 export const formatPercent = (ratio: number | null, digits = 1): string =>
     ratio === null ? '—' : `${(ratio * 100).toFixed(digits)}%`;

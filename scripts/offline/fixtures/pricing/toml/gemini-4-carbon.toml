@@ -1,0 +1,27 @@
+schema = 2
+
+[cost.text.input]
+price = 2
+cache = { read = 0.1 }
+
+[cost.text.output]
+price = 10
+
+[cost.audio.input]
+price = 2
+cache = { read = 0.1 }
+
+[cost.web_search]
+price = 14
+
+[[cost.multipliers]]
+when = { service_tier = { equals = "priority" } }
+factor = { text = 1.8, audio = 1.8 }
+
+[[cost.multipliers]]
+when = { not = { region = { equals = "global" } } }
+factor = { text = 1.1, audio = 1.1 }
+
+[[cost.multipliers]]
+when = { date = { gte = "2026-12-01" } }
+factor = { text = 2, audio = 2 }

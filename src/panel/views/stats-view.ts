@@ -8,6 +8,7 @@
  * (no samples, no replies, no price), never zero. No response carries a user
  * id or display name; chat titles appear only in the all-chats view.
  */
+import type { PriceSource, PriceTier } from '../../config/model-pricing.js';
 import type { ReplyOutcome } from '../../db/queries/reply-metrics.js';
 import type { ErrorKind } from '../../shared/error-kind.js';
 import type { ModelPricingFlag, PricingFlag } from '../stats/cost-estimate.js';
@@ -199,6 +200,39 @@ export interface RecentErrorRow {
     readonly versionId: number;
 }
 
+/** One price origin, with the newest date its values were checked */
+export interface PricingSourceMeta {
+    readonly kind: PriceSource;
+    readonly checkedOn: string;
+}
+
+/** A price window that starts (or ends) within the next 30 days */
+export interface PricingNextChange {
+    readonly model: string;
+    readonly tier: PriceTier;
+    /** ISO instant of the change */
+    readonly at: string;
+    /** One line, e.g. `标准价 2.00/0.10/10.00 → 4.00/0.20/20.00` */
+    readonly summary: string;
+}
+
+/**
+ * The price table behind the estimate (design §4.3): which table version the
+ * numbers were priced with, when it was last checked, what changes next and
+ * which models still have no price. `pendingProposals` is the owner's count;
+ * everyone else sees 0.
+ */
+export interface PricingMeta {
+    readonly version: string;
+    /** The oldest checkedOn in the table; null for an empty table */
+    readonly checkedOn: string | null;
+    readonly sources: readonly PricingSourceMeta[];
+    readonly nextChanges: readonly PricingNextChange[];
+    /** Models seen in the last 30 days of replies that still have no price row */
+    readonly unpricedModels: readonly string[];
+    readonly pendingProposals: number;
+}
+
 export interface StatsResponse {
     /** null = every chat (owner only) */
     readonly chatId: number | null;
@@ -213,6 +247,8 @@ export interface StatsResponse {
     readonly models: readonly ModelStatsRow[];
     readonly costGroups: readonly CostGroupView[];
     readonly cost: { readonly costUsd: number | null; readonly pricedReplyRatio: number | null };
+    /** The price table the estimate used (design §4.3) */
+    readonly pricing: PricingMeta;
     /** Most calls first */
     readonly tools: readonly ToolStatsRow[];
     /** Most frequent first */

@@ -9,7 +9,7 @@ import { InlineKeyboard } from 'grammy';
 import type { Bot, Context } from 'grammy';
 import { match } from 'ts-pattern';
 import type { RenderedMessage } from 'telegram-md-entities';
-import { modelConfigs } from '../config/models.js';
+import { listModelCatalog } from '../config/model-catalog.js';
 import { resolveChatModel } from '../config/chat-model.js';
 import { isOwnerUser } from '../config/owner.js';
 import { resolveAccessTier } from '../services/access-tier.js';
@@ -30,6 +30,7 @@ import {
     type ChatModelView,
 } from './model-menu-text.js';
 import { setRetryHandler, registerResponseCallbacks, registerGenerationCallbacks } from './menus/index.js';
+import { registerPriceApprovalCallbacks } from './menus/price-approval-menu.js';
 import { handleRetryRequest } from '../reply/retry-handler.js';
 
 const MODEL_PREFIX = 'mdl:';
@@ -43,8 +44,10 @@ const buildCollapsedModelKeyboard = (): InlineKeyboard => {
 
 const buildExpandedModelKeyboard = (): InlineKeyboard => {
     const keyboard = new InlineKeyboard();
-    modelConfigs.forEach((model, index) => {
-        keyboard.text(model.name, `${MODEL_PREFIX}${model.id}`);
+    // The registry (DB-backed once loaded, the built-in menu before that);
+    // any model the owner allows enters the menu without a release
+    listModelCatalog().forEach((model, index) => {
+        keyboard.text(model.label, `${MODEL_PREFIX}${model.id}`);
         if ((index + 1) % BUTTONS_PER_ROW === 0) {
             keyboard.row();
         }
@@ -208,5 +211,6 @@ export const menuLoad = (bot: Bot): void => {
     registerModelCallbacks(bot);
     registerGenerationCallbacks(bot);
     registerResponseCallbacks(bot);
+    registerPriceApprovalCallbacks(bot);
     setRetryHandler(handleRetryRequest);
 };

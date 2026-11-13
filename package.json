@@ -46,6 +46,7 @@
     "grammy": "^1.45.0",
     "hono": "^4.13.17",
     "openai": "^6.47.0",
+    "smol-toml": "^1.9.1",
     "socks-proxy-agent": "^10.1.0",
     "sqlite3": "^6.0.1",
     "telegram-md-entities": "^0.7.3",

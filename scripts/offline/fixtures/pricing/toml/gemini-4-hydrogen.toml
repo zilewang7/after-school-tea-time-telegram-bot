@@ -1,0 +1,23 @@
+schema = 2
+
+[cost.text.input]
+price = 1.5
+cache = { read = 0.075 }
+
+[cost.text.output]
+price = 7.5
+
+[cost.audio.input]
+price = 1.5
+cache = { read = 0.075 }
+
+[cost.web_search]
+price = 14
+
+[[cost.multipliers]]
+when = { service_tier = { equals = "priority" } }
+factor = { text = 1.8, audio = 1.8 }
+
+[[cost.multipliers]]
+when = { not = { region = { equals = "global" } } }
+factor = { text = 1.1, audio = 1.1 }

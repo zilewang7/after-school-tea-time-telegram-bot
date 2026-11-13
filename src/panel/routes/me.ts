@@ -3,7 +3,7 @@
  * where the signed start_param wants them to land.
  */
 import type { Hono } from 'hono';
-import { modelConfigs } from '../../config/models.js';
+import { listModelCatalog } from '../../config/model-catalog.js';
 import { accessTiersEnabled, getAccessGroupIds, TRIAL_MODEL } from '../../config/trial-access.js';
 import { findBotResponseInChat } from '../../db/queries/context-queries.js';
 import { findChat } from '../../db/queries/panel-registry.js';
@@ -68,8 +68,9 @@ export const registerMeRoute = (app: Hono<PanelEnv>): void => {
             isOwner: auth.user.isOwner,
             authenticatedBy: auth.authenticatedBy,
             globalDefaultModel: getGlobalDefaultModel(),
-            // Read per request: the menu list is not frozen at startup
-            models: modelConfigs.map((model) => model.id),
+            // The catalog registry (DB-backed once loaded): an allowed model
+            // enters the menu without a release (design §P6)
+            models: listModelCatalog().map((model) => model.id),
             chats: accessibleChats.map((accessible) => toChatListItem(accessible, openIssuesByChat)),
             startTarget,
             accessTier,

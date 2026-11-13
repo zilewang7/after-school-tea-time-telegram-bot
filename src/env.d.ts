@@ -117,6 +117,14 @@ declare global {
             WORKSPACE_MAX_GLOBAL_BYTES?: string
             /** '0' turns off the /share and /shareone commands */
             SHARE_COMMAND?: string
+            /** '0' turns off the price watcher (daily catalog run + the owner's /pricing) */
+            PRICE_WATCH?: string
+            /** Minutes after startup before the first price watch run (default 10) */
+            PRICE_WATCH_INITIAL_DELAY_MIN?: string
+            /** Hours between automatic price watch runs (default 24) */
+            PRICE_WATCH_INTERVAL_HOURS?: string
+            /** Per-source HTTP timeout of a price watch run, ms (default 8000) */
+            PRICE_WATCH_TIMEOUT_MS?: string
             /** '0' turns off the long-thinking link pages and the link mode */
             THINKING_LINK?: string
             /** HMAC secret for signed widget URLs (default: derived from BOT_TOKEN) */

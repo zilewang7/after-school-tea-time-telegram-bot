@@ -15,6 +15,7 @@ import {
     registerWidgetCommands,
     registerWebCommand,
     registerShareCommand,
+    registerPricingCommand,
 } from "./commands/index.js";
 
 const COMMANDS: BotCommand[] = [
@@ -78,4 +79,6 @@ export const cmdLoad = async (bot: Bot) => {
     registerShareCommand(bot);
     // Owner-only, hidden from the command menu: widget readiness and probe
     registerWidgetCommands(bot);
+    // Owner-only, hidden from the command menu: run the price watcher by hand
+    registerPricingCommand(bot);
 };

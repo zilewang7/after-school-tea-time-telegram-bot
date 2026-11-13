@@ -1,6 +1,6 @@
 import { useMemo } from 'react';
-import type { OutcomeCounts, StatsKpis as StatsKpisData } from '../../api';
-import { formatCount, formatMs, formatPercent, formatUsd } from '../../format-metrics';
+import type { OutcomeCounts, PricingMeta, StatsKpis as StatsKpisData } from '../../api';
+import { formatCount, formatMs, formatPercent, formatPriceTableVersion, formatUsd } from '../../format-metrics';
 
 interface KpiCard {
     key: string;
@@ -22,10 +22,11 @@ interface StatsKpisProps {
     kpis: StatsKpisData;
     cost: { costUsd: number | null; pricedReplyRatio: number | null };
     outcomes: OutcomeCounts;
+    pricing: PricingMeta;
 }
 
 /** The 2×2 number cards on top of the statistics (design §7) */
-export const StatsKpis = ({ kpis, cost, outcomes }: StatsKpisProps) => {
+export const StatsKpis = ({ kpis, cost, outcomes, pricing }: StatsKpisProps) => {
     const cards = useMemo<KpiCard[]>(
         () => [
             {
@@ -50,10 +51,10 @@ export const StatsKpis = ({ kpis, cost, outcomes }: StatsKpisProps) => {
                 key: 'cost',
                 label: '估算费用',
                 value: formatUsd(cost.costUsd),
-                detail: `已定价 ${formatPercent(cost.pricedReplyRatio)} · 按官方标价估算`,
+                detail: `已定价 ${formatPercent(cost.pricedReplyRatio)} · 按官方标价估算 · 价格表 ${formatPriceTableVersion(pricing.version)}`,
             },
         ],
-        [kpis, cost, outcomes]
+        [kpis, cost, outcomes, pricing]
     );
 
     return (

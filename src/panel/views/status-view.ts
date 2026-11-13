@@ -17,6 +17,19 @@ import type { ErrorKind } from '../../shared/error-kind.js';
 import type { TriggerSummary } from '../queries/trigger-messages.js';
 import type { VisibleAccess } from '../types.js';
 
+/**
+ * The price watcher's process facts (design §4.3). Null when the watcher
+ * state could not be read: the rest of the process block still answers.
+ */
+export interface ProcessPricingView {
+    readonly version: string;
+    /** ISO instant of the last watch run; null when none ran in this database */
+    readonly lastRunAt: string | null;
+    /** 'ok' | 'failed' | 'skipped'; null when none ran */
+    readonly lastOutcome: string | null;
+    readonly pendingProposals: number;
+}
+
 export interface ProcessStatusView {
     /** Always true: an answer means the bot process is up */
     readonly online: true;
@@ -31,6 +44,8 @@ export interface ProcessStatusView {
     readonly mcpServers: readonly { readonly name: string; readonly toolCount: number }[];
     /** The last hourly cleanup of this process; null until the first one */
     readonly lastCleanup: { readonly finishedAt: string; readonly elapsedMs: number; readonly summary: string } | null;
+    /** The price watcher and its pending proposals; null when unavailable */
+    readonly pricing: ProcessPricingView | null;
 }
 
 export interface StatusChatView {
@@ -86,7 +101,11 @@ export interface StatusResponse {
     readonly recentErrors: readonly StatusErrorView[];
 }
 
-export const buildProcessStatus = (info: { startedAt: Date; version: string | null }, now: Date): ProcessStatusView => {
+export const buildProcessStatus = (
+    info: { startedAt: Date; version: string | null },
+    now: Date,
+    pricing: ProcessPricingView | null
+): ProcessStatusView => {
     const cleanup = getLastCleanupRun();
     return {
         online: true,
@@ -101,6 +120,7 @@ export const buildProcessStatus = (info: { startedAt: Date; version: string | nu
             cleanup === null
                 ? null
                 : { finishedAt: cleanup.finishedAt.toISOString(), elapsedMs: cleanup.elapsedMs, summary: cleanup.summary },
+        pricing,
     };
 };
 

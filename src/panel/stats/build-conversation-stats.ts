@@ -21,8 +21,11 @@ export const conversationReplyIds = async (chatId: number, rootId: number): Prom
 export const buildConversationStats = async (
     chatId: number,
     rootId: number,
-    now: Date
+    now: Date,
+    isOwner: boolean
 ): Promise<StatsResponse> => {
     const firstMessageIds = await conversationReplyIds(chatId, rootId);
-    return buildStats({ chatId, range: 'all', now, firstMessageIds });
+    // The pricing block shows pending proposals to the owner only; the route
+    // knows who asked, so pass it through instead of silently dropping it.
+    return buildStats({ chatId, range: 'all', now, firstMessageIds, isOwner });
 };

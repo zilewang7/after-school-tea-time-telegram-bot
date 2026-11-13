@@ -2,12 +2,15 @@
  * The dashboard's "last 7 days" line (design §6.1): replies, error rate,
  * first-chunk p50 and the estimated cost with its priced share. Null when the
  * chat had no reply in the window: the dashboard then has nothing to show.
+ * The cost is price-segmented like /api/stats (price-segments.ts), so a price
+ * change inside the seven days does not reprice the replies before it.
  */
-import { aggregateUsageByModelRoute, findReplyMetricsInWindow, type MetricWindow } from '../../db/queries/reply-metrics.js';
+import { findReplyMetricsInWindow, type MetricWindow } from '../../db/queries/reply-metrics.js';
 import { ratioOf, roundRatio, roundUsd } from '../views/stats-view.js';
-import { priceUsageGroup, totalCost } from './cost-estimate.js';
+import { totalCost } from './cost-estimate.js';
 import { firstChunkMsOf, presentValues } from './metric-samples.js';
 import { summarizeSamples } from './percentile.js';
+import { pricedUsageGroupsInWindow } from './price-segments.js';
 
 export const CHAT_SUMMARY_DAYS = 7;
 
@@ -28,12 +31,19 @@ export interface ChatSummaryView {
 }
 
 export const buildChatSummary = async (chatId: number, now: Date): Promise<ChatSummaryView | null> => {
-    const window: MetricWindow = { since: new Date(now.getTime() - CHAT_SUMMARY_DAYS * DAY_MS), chatId };
-    const [rows, groups] = await Promise.all([findReplyMetricsInWindow(window), aggregateUsageByModelRoute(window)]);
+    const window: MetricWindow = {
+        since: new Date(now.getTime() - CHAT_SUMMARY_DAYS * DAY_MS),
+        until: now,
+        chatId,
+    };
+    const [rows, pricedGroups] = await Promise.all([
+        findReplyMetricsInWindow(window),
+        pricedUsageGroupsInWindow(window, now),
+    ]);
     if (rows.length === 0) return null;
 
     const errorReplies = rows.filter((row) => row.outcome === 'error').length;
-    const cost = totalCost(groups.map(priceUsageGroup));
+    const cost = totalCost(pricedGroups);
     return {
         days: CHAT_SUMMARY_DAYS,
         replies: rows.length,

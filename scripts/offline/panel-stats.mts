@@ -49,6 +49,8 @@ const { pushRecentReplyError } = await import('../../src/services/recent-reply-e
 const responseHandler = await import('../../src/reply/response-handler.js');
 const { markRequestStarted } = await import('../../src/services/reply-metrics-draft.js');
 const { STATS_TIME_ZONE } = await import('../../src/panel/stats/time-buckets.js');
+const { priceTableVersion } = await import('../../src/config/model-pricing.js');
+const { PriceChangeProposal } = await import('../../src/db/priceChangeProposalDTO.js');
 
 type MembershipLookup = import('../../src/panel/access/membership.js').MembershipLookup;
 type ReplyMetricInput = import('../../src/db/queries/reply-metrics.js').ReplyMetricInput;
@@ -323,7 +325,7 @@ const cases: { name: string; body: () => Promise<void> }[] = [
             const body = member.body;
             expect(
                 json(Object.keys(body).sort()) ===
-                    json(['bucket', 'chatId', 'chats', 'cost', 'costGroups', 'errorKinds', 'from', 'kpis', 'models', 'outcomes', 'range', 'recentErrors', 'series', 'timeZone', 'to', 'tools']),
+                    json(['bucket', 'chatId', 'chats', 'cost', 'costGroups', 'errorKinds', 'from', 'kpis', 'models', 'outcomes', 'pricing', 'range', 'recentErrors', 'series', 'timeZone', 'to', 'tools']),
                 `top-level keys (got ${json(Object.keys(body))})`
             );
             expect(
@@ -478,8 +480,12 @@ const cases: { name: string; body: () => Promise<void> }[] = [
                     facts.globalDefaultModel === 'env-default-model' &&
                     facts.globalDefaultModelSource === 'env' &&
                     Array.isArray(facts.mcpServers) &&
-                    facts.lastCleanup === null,
-                `process facts (got ${json(facts)})`
+                    facts.lastCleanup === null &&
+                    facts.pricing?.version === priceTableVersion() &&
+                    facts.pricing.lastRunAt === null &&
+                    facts.pricing.lastOutcome === null &&
+                    facts.pricing.pendingProposals === 0,
+                `process facts and the price watcher's (got ${json(facts)})`
             );
             const active = owner.body.active;
             expect(active.length === 3, `all three live replies (got ${active.length})`);
@@ -625,8 +631,10 @@ cases.push({
                 priorityOutputTokens: 50,
             }),
             // A model without a priority price, with a stray priority round
+            // (nano-banana has one since 2026-11-13, so MiMo stands in here)
             priorityRow({
-                model: 'gemini-nano-banana-2.1',
+                model: 'mimo-v2.6-flash',
+                platform: 'mimo',
                 promptTokens: 100,
                 cachedTokens: 0,
                 outputTokens: 10,
@@ -668,7 +676,8 @@ cases.push({
         );
 
         const argonCost = (4000 * 2 + 500 * 0.1 + 450 * 10 + 1000 * 3.6 + 500 * 0.18 + 150 * 18) / 1e6;
-        const bananaCost = (100 * 1.5 + 10 * 7.5) / 1e6;
+        // No priority price: the stray priority round is priced at the standard one
+        const fallbackCost = (100 * 0.14 + 10 * 0.28) / 1e6;
         const deepseekCost = (500 * 0.3 + 50 * 1.2) / 1e6;
         const usd = (value: number): number => Math.round(value * 1e6) / 1e6;
         const argon = modelRow('gemini-4-argon');
@@ -676,19 +685,19 @@ cases.push({
             argon?.costUsd === usd(argonCost) && argon.pricing === 'priced' && argon.priorityAtStandardPrice === false,
             `argon's row: standard part + priority part at 1.8x (got ${argon?.costUsd}, want ${usd(argonCost)})`
         );
-        const banana = modelRow('gemini-nano-banana-2.1');
+        const fallback = modelRow('mimo-v2.6-flash');
         expect(
-            banana?.costUsd === usd(bananaCost) && banana.priorityAtStandardPrice === true,
-            `no priority price: the standard price, and the row says so (got ${json(banana)})`
+            fallback?.costUsd === usd(fallbackCost) && fallback.priorityAtStandardPrice === true,
+            `no priority price: the standard price, and the row says so (got ${json(fallback)})`
         );
         expect(modelRow('deepseek-flash')?.priorityAtStandardPrice === false, 'no priority rounds: no note');
         expect(
-            costGroups.find((group: any) => group.model === 'gemini-nano-banana-2.1')?.priorityAtStandardPrice === true &&
+            costGroups.find((group: any) => group.model === 'mimo-v2.6-flash')?.priorityAtStandardPrice === true &&
                 costGroups.find((group: any) => group.model === 'gemini-4-argon')?.priorityAtStandardPrice === false,
             'the cost groups carry the note too'
         );
         expect(
-            cost.costUsd === usd(argonCost + bananaCost + deepseekCost) && kpis.costUsd === cost.costUsd,
+            cost.costUsd === usd(argonCost + fallbackCost + deepseekCost) && kpis.costUsd === cost.costUsd,
             `the total follows the split (got ${cost.costUsd})`
         );
 
@@ -697,6 +706,79 @@ cases.push({
             dashboard.body.summary?.costUsd === cost.costUsd,
             `the dashboard summary prices the same way (got ${dashboard.body.summary?.costUsd})`
         );
+    },
+});
+
+cases.push({
+    name: 'pricing metadata on /api/stats: version, freshness, next changes, unpriced models, owner-only pending count',
+    body: async () => {
+        const pending = await PriceChangeProposal.create({
+            kind: 'update',
+            model: 'gemini-4-argon',
+            tier: 'standard',
+            effectiveFrom: new Date('2026-12-01T00:00:00Z'),
+            payload: '{}',
+            detectedAt: new Date(),
+            status: 'pending',
+        });
+        try {
+            const member = await quietly(() => call(`/api/stats?chatId=${GROUP_MAIN}&range=7d`, ALICE));
+            expect(member.status === 200 && member.body.pricing !== undefined, '200 with the pricing block');
+            const meta = member.body.pricing;
+            expect(meta.version === priceTableVersion(), `the price table version (got ${json(meta.version)})`);
+            expect(
+                typeof meta.checkedOn === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(meta.checkedOn),
+                `the oldest checkedOn (got ${json(meta.checkedOn)})`
+            );
+            expect(
+                meta.sources.length > 0 &&
+                    meta.sources.every((source: any) =>
+                        ['manual', 'models-dev', 'official', 'ephone'].includes(source.kind) && typeof source.checkedOn === 'string'
+                    ),
+                `the source list (got ${json(meta.sources)})`
+            );
+            expect(
+                Array.isArray(meta.nextChanges) &&
+                    meta.nextChanges.every((change: any) => typeof change.at === 'string' && typeof change.summary === 'string'),
+                `the next price changes (got ${json(meta.nextChanges)})`
+            );
+            expect(
+                meta.unpricedModels.includes('my-own-model'),
+                `a model of the window without a price (got ${json(meta.unpricedModels)})`
+            );
+            expect(meta.pendingProposals === 0, `a member sees no pending proposals (got ${meta.pendingProposals})`);
+
+            const owner = await quietly(() => call('/api/stats?range=7d', OWNER));
+            expect(owner.status === 200, '200 for the owner');
+            expect(owner.body.pricing.pendingProposals === 1, `the owner sees the pending proposal (got ${owner.body.pricing.pendingProposals})`);
+            expect(
+                json(owner.body.pricing.nextChanges) === json(meta.nextChanges),
+                'the rest of the block does not depend on who asks'
+            );
+
+            const stranger = await quietly(() => call(`/api/stats?chatId=${GROUP_MAIN}&range=7d`, BOB));
+            expect(stranger.status === 403 && stranger.body?.pricing === undefined, 'no metadata for a non-member');
+        } finally {
+            await pending.destroy();
+        }
+    },
+});
+
+const jsonObjectOf = async (response: Response): Promise<Record<string, unknown>> => {
+    const body: unknown = await response.json();
+    return typeof body === 'object' && body !== null ? Object.fromEntries(Object.entries(body)) : {};
+};
+
+cases.push({
+    name: 'health reports the in-memory price table version without auth or the database',
+    body: async () => {
+        const response = await app.request('/api/health');
+        const body = await jsonObjectOf(response);
+        expect(response.status === 200 && body.ok === true, '200 ok');
+        expect(body.priceTableVersion === priceTableVersion(), `priceTableVersion (got ${json(body.priceTableVersion)})`);
+        await PriceChangeProposal.destroy({ where: { status: 'pending' } });
+        const again = await app.request('/api/health');
+        expect((await jsonObjectOf(again)).priceTableVersion === priceTableVersion(), 'it is the memory value, not a DB read');
     },
 });
 
