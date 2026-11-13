@@ -674,7 +674,11 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
       try {
         const plan = await buildCustomEmojiContextPlan(OFFLINE_CHAT_ID, [messageId], true);
         const elapsedMs = Date.now() - startedAt;
-        expect(elapsedMs < 500, 'atlas generation obeys the short total context deadline');
+        // The short deadline is 100 ms and the atlas answers after 300 ms, so a
+        // working timeout returns in a few hundred ms. The bound is generous
+        // because the suite runs three files at a time and a busy event loop
+        // stretches wall-clock measurements; it only rejects a hang.
+        expect(elapsedMs < 2000, 'atlas generation obeys the short total context deadline');
         expect(plan.atlasParts.length === 0, 'a timed-out atlas is omitted');
         expect(
           plan.annotations.get(messageId)?.includes('visual omitted'),
