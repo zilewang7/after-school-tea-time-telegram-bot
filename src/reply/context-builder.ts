@@ -373,7 +373,7 @@ const headerAnnotationsOf = (
  * Render the model-facing header: `#N 用户名 [annotation…]`, without the colon.
  * All metadata (context number, forward origin, reply context, attached media)
  * becomes a prefix / square-bracket annotations after the name. The colon is
- * added by renderUserText, and only when there is a body to follow it.
+ * added by renderUserTextParts, and only when there is a body to follow it.
  */
 const renderMessageHeader = (
     msg: ContextMessage,
@@ -398,20 +398,42 @@ export const describeMessageAnnotations = async (
     headerAnnotationsOf(msg, await buildReplyAnnotations(msg, context.numbering, context.exclusions), true);
 
 /**
- * Assemble the text part of a user message: header + content + EOF marker.
+ * Assemble the text parts of one user message around its media.
+ *
+ * A message's own media parts (its picture, video, file or custom-emoji atlas)
+ * belong *inside* its block: an image part left between the previous message's
+ * `<<EOF` and this message's `#N 用户名` header reads as the previous message's
+ * attachment, so the model asks for the picture of the wrong message and is
+ * told that message has none (harness issue #10, 2026-11-13). The header and
+ * body therefore open the block, the media follow as their own parts, and the
+ * `<<EOF` terminator closes it after them.
+ *
+ * A message whose media the model cannot see keeps one text part, exactly as
+ * before, so a text-only model's wire format does not change.
  *
  * The colon appears only when a body follows it, so a message that carries no
  * text of its own (a sticker, or a `/chat` summon whose annotation *is* its
  * content) reads as a complete line instead of trailing off after `用户名: `.
- * Legacy rows (<= 7 days old) already carry `<<EOF` inside the stored text;
- * those keep their body verbatim.
+ * Stored text from before 2026-07-17 could carry its own `<<EOF`; messages are
+ * kept for a week, so no such row can reach a context now — the branch is
+ * defensive and keeps the body verbatim, with its media after it.
  */
-const renderUserText = (header: string, text: string | null): string => {
+const renderUserTextParts = (
+    header: string,
+    text: string | null,
+    mediaParts: readonly UnifiedContentPart[]
+): UnifiedContentPart[] => {
     // Whitespace-only is empty: rows stored before this change kept a single
     // space as the body of a `/chat` that carried no words of its own
     const content = text?.trim() ? text : '';
-    if (content.includes('<<EOF')) return `${header}: ${content}`;
-    return content ? `${header}: ${content}\n<<EOF\n` : `${header}\n<<EOF\n`;
+    if (content.includes('<<EOF')) {
+        return [{ type: 'text', text: `${header}: ${content}` }, ...mediaParts];
+    }
+    const body = content ? `${header}: ${content}` : header;
+    if (mediaParts.length === 0) {
+        return [{ type: 'text', text: `${body}\n<<EOF\n` }];
+    }
+    return [{ type: 'text', text: body }, ...mediaParts, { type: 'text', text: '\n<<EOF\n' }];
 };
 
 /**
@@ -625,8 +647,9 @@ interface TurnInputs {
 }
 
 /**
- * Build the user turn: media parts + rendered header/text + link preview +
- * capability-aware media nudges.
+ * Build the user turn: the message's media inside its block (header → media →
+ * terminator), then its link previews, capability-aware media nudges and the
+ * remaining system annotations.
  */
 const buildUserMessage = async (
     msg: ContextMessage,
@@ -652,11 +675,27 @@ const buildUserMessage = async (
         mediaVisible
     );
 
-    const parts: UnifiedContentPart[] = [
-        ...fileContents,
-        ...customEmojiAtlasParts,
-        { type: 'text', text: renderUserText(header, msg.text) },
-    ];
+    // Every part that carries bytes the model looks at (the message's own
+    // attachments and its custom-emoji atlas) belongs inside the message block.
+    // Parts this model cannot see are filtered downstream, so they stay out of
+    // the block: moving a note that will never be shown next to the media would
+    // only split the text for nothing.
+    const attachedMedia: UnifiedContentPart[] = [...fileContents, ...customEmojiAtlasParts];
+    // A text part among the file contents is a system note (an expired media
+    // file), not media: it keeps to the metadata after the block instead of
+    // splitting the message text.
+    const carriedMedia = attachedMedia.filter((part) => part.type !== 'text');
+    const mediaNotes = attachedMedia.filter((part) => part.type === 'text');
+    const receivesMedia = carriedMedia.some((part) => partVisibleToModel(part, capabilities));
+    const parts: UnifiedContentPart[] = renderUserTextParts(
+        header,
+        msg.text,
+        receivesMedia ? carriedMedia : []
+    );
+    if (!receivesMedia) {
+        parts.push(...carriedMedia);
+    }
+    parts.push(...mediaNotes);
     if (customEmojiAnnotation) {
         parts.push({ type: 'text', text: customEmojiAnnotation });
     }

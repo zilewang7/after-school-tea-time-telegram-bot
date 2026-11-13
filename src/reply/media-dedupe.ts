@@ -89,8 +89,17 @@ interface KeptCopy {
 }
 
 /**
+ * A note stands at the position the media part stood, which since harness
+ * issue #10 is inside the message block. Platforms join a message's text parts
+ * with no separator (see workspace/volatile-section.ts), so the note carries a
+ * leading newline of its own: it must not fuse into the body it follows.
+ */
+const SEPARATED_NOTE = '\n';
+
+/**
  * Walk every turn in reading order, keep the first copy of each distinct file
- * and replace the rest with a one-line note in the same position.
+ * and replace the rest with a one-line note on its own line, at the same
+ * position.
  */
 export const dedupeContextMedia = (
     turns: readonly MediaDedupeInput[],
@@ -117,7 +126,8 @@ export const dedupeContextMedia = (
             }
 
             removed += 1;
-            keptParts.push({ type: 'text', text: noteFor(kept.messageId, turn.messageId, capabilities.contextNumbers) });
+            const note = noteFor(kept.messageId, turn.messageId, capabilities.contextNumbers);
+            keptParts.push({ type: 'text', text: `${SEPARATED_NOTE}${note}` });
         }
 
         // The pictures a turn keeps are the ones whose part survived, by identity

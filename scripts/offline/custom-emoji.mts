@@ -874,6 +874,31 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
       const imageParts = built.messages.flatMap((message) => message.content).filter((part) => part.type === 'image');
       expect(imageParts.length === 2, 'the primary image and custom emoji atlas both reach the model');
       expect(imageParts.some((part) => part.mediaKind === 'custom_emoji_atlas'), 'the atlas remains identifiable');
+
+      // Both pictures belong to this message's block: header, then its media,
+      // then the terminator (harness issue #10); the annotation explaining the
+      // atlas is system metadata and follows the block.
+      const turn = built.messages[0];
+      if (turn === undefined) throw new Error('the trigger turn is missing');
+      const primaryIndex = turn.content.findIndex(
+        (part) => part.type === 'image' && part.mediaKind !== 'custom_emoji_atlas'
+      );
+      const atlasIndex = turn.content.findIndex(
+        (part) => part.type === 'image' && part.mediaKind === 'custom_emoji_atlas'
+      );
+      const closeIndex = turn.content.findIndex(
+        (part) => part.type === 'text' && part.text === '\n<<EOF\n'
+      );
+      const annotationIndex = turn.content.findIndex(
+        (part) => part.type === 'text' && (part.text ?? '').includes('labeled custom-emoji atlas')
+      );
+      expect(turn.content[0]?.type === 'text', 'the message opens with its header, not with a picture');
+      expect(
+        primaryIndex === 1 && atlasIndex === 2,
+        `the primary image comes first, the atlas second (got ${primaryIndex}/${atlasIndex})`
+      );
+      expect(closeIndex === 3, `the terminator closes the block after both (got ${closeIndex})`);
+      expect(annotationIndex > closeIndex, `the atlas annotation follows the block (got ${annotationIndex})`);
     },
   },
 ];

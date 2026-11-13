@@ -45,7 +45,8 @@ export const buildFormatSection = (options: { includeOcrNote: boolean }): string
   - \`[sent a widget]\` — 这条回复发过一张聊天卡片：卡片渲染图作为该回合的图片回放；
     A2UI 模式还会在其后给出 \`[a2ui surface] {…}\` 行（当时提交的 surface 源码，超过 4000 字符时截断并标注 \`…（已截断）\`），HTML 模式只有渲染图、不回放源码
 - 冒号后为消息正文；仅含媒体或仅用 \`/chat\` 召唤的消息无冒号与正文
-- \`<<EOF\` 为消息结束标记
+- \`<<EOF\` 为消息正文块结束标记：消息自带的图片/视频/文件（含带标签的自定义 emoji 拼图）位于 \`#N 用户名\` 行与它之间；
+  它之后出现的 \`[system]\` 段落与图片是系统附加的元数据，仍属于同一条消息，不是下一条消息的附件
 - 独立的 \`[system] …\` 段落为系统注入的元数据，非用户发言
 - \`[system] another session is already replying to #3 …\` 表示 #3 正由另一会话处理并生成回复
 - \`[system] your reply #5 is still being generated …\`（出现在你的历史消息位）表示你的 #5 回复正在另一会话中流式生成，尚未落库，并非内容丢失或故障
