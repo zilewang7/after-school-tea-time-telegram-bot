@@ -25,6 +25,16 @@ let abandonedAtlasRequests = 0;
 let activePreviewRequests = 0;
 let maxActivePreviewRequests = 0;
 let previewResponseDelayMs = 0;
+/**
+ * While set, preview requests are left open until that many are open at once;
+ * from then on each is answered as it comes. What the client runs side by side
+ * then shows whatever the machine is busy with.
+ */
+let previewsOpenBeforeAnswering = 0;
+const heldPreviewAnswers: Array<() => void> = [];
+const answerHeldPreviews = (): void => {
+  for (const answer of heldPreviewAnswers.splice(0)) answer();
+};
 /** While set, atlas requests are left unanswered: only the client can end them */
 let holdAtlasAnswers = false;
 const sendPng = (response: import('node:http').ServerResponse): void => {
@@ -43,10 +53,19 @@ const converter = createServer((request, response) => {
       previewRequests += 1;
       activePreviewRequests += 1;
       maxActivePreviewRequests = Math.max(maxActivePreviewRequests, activePreviewRequests);
-      setTimeout(() => {
-        activePreviewRequests -= 1;
-        sendPng(response);
-      }, previewResponseDelayMs);
+      const answer = (): void => {
+        setTimeout(() => {
+          activePreviewRequests -= 1;
+          sendPng(response);
+        }, previewResponseDelayMs);
+      };
+      if (activePreviewRequests < previewsOpenBeforeAnswering) {
+        heldPreviewAnswers.push(answer);
+        return;
+      }
+      previewsOpenBeforeAnswering = 0;
+      answerHeldPreviews();
+      answer();
       return;
     }
     if (request.url === '/emoji-atlas') {
@@ -379,13 +398,19 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
         },
       };
       maxActivePreviewRequests = 0;
+      // The first requests stay open until three are: that the client gets to
+      // three does not depend on timing. A fourth has the 30 ms each answer
+      // takes from then on to show up.
+      previewsOpenBeforeAnswering = 3;
       previewResponseDelayMs = 30;
       try {
         await acquireCustomEmojiAttachments(concurrencyBot, revision);
       } finally {
+        previewsOpenBeforeAnswering = 0;
         previewResponseDelayMs = 0;
+        answerHeldPreviews();
       }
-      expect(maxActivePreviewRequests === 3, 'no more than three previews run concurrently');
+      expect(maxActivePreviewRequests === 3, `three previews run side by side, and no more (${maxActivePreviewRequests})`);
     },
   },
   {
