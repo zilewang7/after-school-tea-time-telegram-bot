@@ -14,7 +14,7 @@ export const analyzerKeyOf = (sources: ReadonlyMap<string, string>): string => {
     const analyzerTexts = [...sources]
         .filter(([path]) => path.startsWith(ANALYZER_DIRECTORY))
         .map(([path, text]) => `${path}\n${text}`);
-    const typescriptLocation = realpathSync(createRequire(import.meta.url).resolve('typescript'));
+    const typescriptLocation = realpathSync(createRequire(import.meta.url).resolve('@typescript/typescript6'));
     return hashText([typescriptLocation, ...analyzerTexts].join('\n'));
 };
 

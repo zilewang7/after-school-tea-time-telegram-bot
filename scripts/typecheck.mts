@@ -4,16 +4,11 @@
  *   pnpm typecheck             every project
  *   pnpm typecheck scripts     only the projects whose name contains the text
  *
- * Uses the native TypeScript 7 compiler from tools/checks when it is
- * installed (a few seconds per project). Without it, the 5.x compiler the
- * build uses does the same job with an incremental cache.
- *
- * The cache belongs to this command alone. `pnpm build` must never be
- * incremental: its cache would outlive a deleted dist/ and tsc would then emit
- * nothing.
+ * The compiler is the one the build uses: the native TypeScript 7 of the root
+ * package. It takes a few seconds per project, so nothing is cached.
  */
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync } from 'node:fs';
+import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -33,22 +28,12 @@ const PROJECTS: readonly Project[] = [
     { name: 'webapp', config: 'webapp/tsconfig.json' },
 ];
 
-const NATIVE_COMPILER = join(REPOSITORY_ROOT, 'tools', 'checks', 'node_modules', '.bin', 'tsc');
-const BUILD_COMPILER = join(REPOSITORY_ROOT, 'node_modules', '.bin', 'tsc');
-const CACHE_DIRECTORY = join(REPOSITORY_ROOT, 'node_modules', '.cache', 'tsc');
-
-const useNativeCompiler = existsSync(NATIVE_COMPILER);
-
-const compilerArguments = (project: Project): string[] => {
-    const shared = ['-p', project.config, '--noEmit', '--pretty', 'false'];
-    if (useNativeCompiler) return shared;
-    return [...shared, '--incremental', '--tsBuildInfoFile', join(CACHE_DIRECTORY, `${project.name}.tsbuildinfo`)];
-};
+const COMPILER = join(REPOSITORY_ROOT, 'node_modules', '.bin', 'tsc');
 
 /** Runs one project; true when it has no errors */
 const check = (project: Project): boolean => {
     const startedAt = performance.now();
-    const outcome = spawnSync(useNativeCompiler ? NATIVE_COMPILER : BUILD_COMPILER, compilerArguments(project), {
+    const outcome = spawnSync(COMPILER, ['-p', project.config, '--noEmit', '--pretty', 'false'], {
         cwd: REPOSITORY_ROOT,
         encoding: 'utf8',
     });
@@ -73,9 +58,9 @@ if (selected.length === 0) {
     console.error(`no project matches; projects: ${PROJECTS.map((project) => project.name).join(', ')}`);
     process.exit(2);
 }
-if (!useNativeCompiler) {
-    mkdirSync(CACHE_DIRECTORY, { recursive: true });
-    console.log('native compiler not installed (pnpm install), using the build compiler');
+if (!existsSync(COMPILER)) {
+    console.error('the compiler is not installed; run `pnpm install` in the main checkout');
+    process.exit(2);
 }
 
 // One at a time: each run can take about 1 GB and the host has little memory to spare

@@ -1,9 +1,8 @@
 {
   "name": "k-on-bot-checks",
   "private": true,
-  "description": "Tools that only check the code: the native TypeScript 7 compiler for `pnpm typecheck` and oxlint for `pnpm lint`. The build keeps the 5.x compiler of the root package.",
+  "description": "Tools that only check the code and that production never installs: oxlint for `pnpm lint`.",
   "devDependencies": {
-    "oxlint": "1.93.0",
-    "typescript": "7.0.2"
+    "oxlint": "1.93.0"
   }
 }

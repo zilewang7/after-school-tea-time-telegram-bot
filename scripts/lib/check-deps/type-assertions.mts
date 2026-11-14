@@ -1,4 +1,4 @@
-import type { AsExpression, Node, SourceFile, TypeAssertion, TypeNode } from 'typescript';
+import type { AsExpression, Node, SourceFile, TypeAssertion, TypeNode } from '@typescript/typescript6';
 import { ts } from './typescript.mts';
 import { lineOf } from './parse-source.mts';
 

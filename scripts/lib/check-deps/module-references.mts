@@ -1,4 +1,4 @@
-import type { ExportDeclaration, ImportDeclaration, Node, SourceFile, Statement } from 'typescript';
+import type { ExportDeclaration, ImportDeclaration, Node, SourceFile, Statement } from '@typescript/typescript6';
 import { ts } from './typescript.mts';
 import { lineOf } from './parse-source.mts';
 

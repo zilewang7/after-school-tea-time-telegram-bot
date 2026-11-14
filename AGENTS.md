@@ -133,7 +133,7 @@ every file has a process of its own from the start.
 | `scripts/deploy/` | Container start script, pm2 config, release checks, rehearsal |
 | `scripts/lib/` | Shared by scripts: production queries, the dependency guard's rules |
 | `scripts/guard/` | Host watchdog timers |
-| `tools/checks/` | Check-only tools: TypeScript 7 for `pnpm typecheck`, oxlint |
+| `tools/checks/` | Check-only tools that production does not install: oxlint |
 | `tgs-converter/`, `widget-render/` | Sidecar containers |
 | `docs/` | Design documents; git-ignored, present only in the main checkout |
 
@@ -155,8 +155,9 @@ table in `scripts/lib/check-deps/layers.mts`.
 - React: `useMemo` / `useCallback` where it matters; hook dependency lists
   complete (lint checks them).
 - Comments: concise English, about why. Commit messages: `type(scope): what`.
-- Type checking uses TypeScript 7 from `tools/checks`; the build uses the 5.x
-  compiler of the root package. Do not make the build incremental: its cache
+- One compiler builds and type-checks: TypeScript 7 of the root package. It
+  has no compiler API, so `pnpm check-deps` parses with
+  `@typescript/typescript6`. Do not make the build incremental: its cache
   would outlive a deleted `dist/` and nothing would be emitted.
 - A major change starts with a design document in `docs/`, named
   `YYYY-MMDD-HHMM-<title>.md`, whose first paragraph is the goal from the
@@ -203,4 +204,10 @@ production.
 - A new tool is also registered in the Mini App tool groups
   (`webapp/src/tool-groups.ts`), or the panel cannot show or override it.
 - A new dependency in `webapp/` ships with the updated `pnpm-lock.yaml`.
+- pnpm settings live in `pnpm-workspace.yaml` (overrides, `allowBuilds`), not
+  in `package.json`. A new dependency that has an install script fails the
+  install until it is listed under `allowBuilds`.
+- On this host `pnpm install` reaches the registry directly:
+  `NO_PROXY=registry.npmjs.org pnpm install`. Through the host's HTTP proxy
+  it times out.
 - One-off scripts live in `tmp/` (git-ignored) and are deleted after use.

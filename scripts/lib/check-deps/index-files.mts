@@ -1,5 +1,5 @@
 import { posix } from 'node:path';
-import type { SourceFile, Statement } from 'typescript';
+import type { SourceFile, Statement } from '@typescript/typescript6';
 import { ts } from './typescript.mts';
 import { lineOf } from './parse-source.mts';
 
