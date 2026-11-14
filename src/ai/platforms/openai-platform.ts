@@ -2,19 +2,6 @@
  * OpenAI platform implementation
  */
 
-// Polyfill globalThis.File for Node.js < 20 (required by OpenAI SDK file uploads)
-if (typeof globalThis.File === 'undefined') {
-    (globalThis as any).File = class NodeFile extends Blob {
-        name: string;
-        lastModified: number;
-        constructor(fileBits: any[], fileName: string, options?: { type?: string; lastModified?: number }) {
-            super(fileBits, options);
-            this.name = fileName;
-            this.lastModified = options?.lastModified ?? Date.now();
-        }
-    };
-}
-
 import OpenAI, { toFile } from 'openai';
 import type { Stream } from 'openai/streaming';
 import type {
@@ -397,8 +384,7 @@ export class OpenAIPlatform extends BasePlatform {
         const requestOptions = signal ? { signal } : undefined;
 
         try {
-            const stream = await this.client.responses.create(request, requestOptions);
-            return stream as Stream<ResponseStreamEvent>;
+            return await this.client.responses.create(request, requestOptions);
         } catch (error) {
             // Legacy path (no thinkingEffort): some reasoning models don't accept
             // xhigh; fallback to high once. A request carrying an effort is
@@ -420,8 +406,7 @@ export class OpenAIPlatform extends BasePlatform {
                     },
                 };
 
-                const stream = await this.client.responses.create(fallbackRequest, requestOptions);
-                return stream as Stream<ResponseStreamEvent>;
+                return await this.client.responses.create(fallbackRequest, requestOptions);
             }
 
             throw error;
@@ -515,7 +500,7 @@ export class OpenAIPlatform extends BasePlatform {
                     imageFiles.map((f, i) => `[${i}] ${f.name} ${Math.round(f.size / 1024)}KB`));
                 return this.client.images.edit({
                     model: imageModel,
-                    image: imageFiles as any,
+                    image: imageFiles,
                     prompt,
                     n: 1,
                     size: 'auto',
