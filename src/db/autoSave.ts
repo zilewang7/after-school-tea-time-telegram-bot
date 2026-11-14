@@ -728,6 +728,15 @@ const acquireMediaBytes = async (
     return { status: 'cached', fileUniqueId: media.fileUniqueId, mime: normalizedVideo.mime };
 };
 
+/**
+ * The URL whose web preview belongs to a message: the first one of its stored
+ * text. A rich message has none: luoxu's 'none' for it would be cached for
+ * its URL (a button's included), and its OCR run would clear that URL's
+ * preview OCR text.
+ */
+const linkPreviewUrlOf = (message: TgMessage, storedText: string): string | null =>
+    isLuoxuPreviewEnabled() && message.rich_message === undefined ? extractFirstUrl(storedText) : null;
+
 /** Bot API getChat adapter, used to resolve public usernames to chat ids */
 const buildChatLookup = (bot: Bot): TgChatLookup => ({
     getChat: async (username) => {
@@ -771,7 +780,7 @@ export const autoUpdate = (bot: Bot, options: AutoSaveOptions = {}) => {
             const customEmojiOccurrences = CUSTOM_EMOJI_ENABLED
                 ? extractCustomEmojiOccurrences(editedMsg)
                 : [];
-            const previewUrl = isLuoxuPreviewEnabled() ? extractFirstUrl(newText) : null;
+            const previewUrl = linkPreviewUrlOf(editedMsg, newText);
             const shouldAcquireOcr = isLuoxuOcrEnabled()
                 && Boolean(resolvedEditedMedia || previewUrl);
             const mediaTaskId = createRevisionTaskId('primary-media-edit', revisionToken);
@@ -1160,7 +1169,7 @@ export const autoSave = (bot: Bot, options: AutoSaveOptions = {}) => {
                 const customEmojiOccurrences = CUSTOM_EMOJI_ENABLED && !isSubImage
                     ? extractCustomEmojiOccurrences(ctx.message)
                     : [];
-                const previewUrl = isLuoxuPreviewEnabled() ? extractFirstUrl(baseText) : null;
+                const previewUrl = linkPreviewUrlOf(ctx.message, baseText);
                 const shouldAcquireOcr = isLuoxuOcrEnabled() && Boolean(media || previewUrl);
                 const tgLinkText = !isSubImage && userId !== Number(process.env.BOT_USER_ID)
                     ? baseText
@@ -1308,9 +1317,10 @@ export const autoSave = (bot: Bot, options: AutoSaveOptions = {}) => {
                     })();
                 }
 
-                // Link preview: messages carrying a URL get their Telegram-side
-                // preview (text + preview media) fetched live via luoxu and cached
-                // by URL. Extracted from baseText — the exact string that gets
+                // Link preview: messages carrying a URL (rich ones excepted, see
+                // linkPreviewUrlOf) get their Telegram-side preview (text +
+                // preview media) fetched live via luoxu and cached by URL.
+                // Extracted from baseText — the exact string that gets
                 // stored — so save-time and build-time extraction always agree.
                 // The flag below only gates how long a reply waits; the
                 // acquisition itself polls until Telegram confirms ready/none.
