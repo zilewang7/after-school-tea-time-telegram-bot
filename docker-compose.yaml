@@ -185,11 +185,17 @@ services:
   # Requires TG_API_ID / TG_API_HASH in .env (reuse luoxu's api_id/api_hash).
   telegram-bot-api:
     container_name: telegram-bot-api
-    # Pin the Bot API version: 'latest' proved stale (a June image predating
-    # Bot API 10.1 silently dropped incoming rich messages).
-    image: aiogram/telegram-bot-api:10.2
+    # Pinned by digest, not by tag: the image is rebuilt from upstream master
+    # every day and pushed under the same version tag, and 'latest' proved
+    # stale before (a June image predating Bot API 10.1 silently dropped
+    # incoming rich messages). To move it: pull the new tag, put its index
+    # digest here, and keep the old image for the way back. TDLib only migrates
+    # its data forward, so going back may need the bot's directory emptied.
+    image: aiogram/telegram-bot-api:10.4@sha256:aec0b557cc00a52e189168b00c292ca1f65e6b5724ffcf6fb6bebb6f18169a03
     restart: always
     profiles: ["bigfile"]
+    # Time to write its update queue and TDLib state before docker kills it
+    stop_grace_period: 30s
     environment:
       - TELEGRAM_API_ID=${TG_API_ID:-}
       - TELEGRAM_API_HASH=${TG_API_HASH:-}
