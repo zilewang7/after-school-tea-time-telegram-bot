@@ -5,13 +5,17 @@
  * field is absent, the one-shot downgrade after a level 400, and the rule that
  * 401/429 never count as a thinking rejection.
  *
+ * The Anthropic wire beyond the effort lives here too: the headers SDK 1.x
+ * sends to the relay, named SSE events the consumer does not know, and the
+ * request rules of API version 2026-10-21.
+ *
  * One local stub answers every OpenAI-compatible platform (each under its own
  * base path) with scripted rounds. Gemini has its own file
  * (gemini-thinking-level.mts). No network, no database.
  *
  * Run: npx tsx scripts/offline/platform-thinking-wire.mts
  */
-import { createServer } from 'node:http';
+import { createServer, type IncomingHttpHeaders } from 'node:http';
 import { expect, reportResults, runCase, type CaseResult } from './harness.mts';
 import type { StreamChunk, UnifiedMessage } from '../../src/ai/types.js';
 import type { ToolHandler } from '../../src/ai/tools/index.js';
@@ -23,7 +27,7 @@ interface ScriptedReply {
 }
 
 const scripted: ScriptedReply[] = [];
-const recorded: Array<{ path: string; body: Record<string, unknown> }> = [];
+const recorded: Array<{ path: string; headers: IncomingHttpHeaders; body: Record<string, unknown> }> = [];
 
 const stub = createServer((request, response) => {
     const parts: Buffer[] = [];
@@ -31,7 +35,7 @@ const stub = createServer((request, response) => {
     request.on('end', () => {
         const path = new URL(request.url ?? '/', 'http://stub').pathname;
         const raw = Buffer.concat(parts).toString('utf8');
-        recorded.push({ path, body: raw ? JSON.parse(raw) : {} });
+        recorded.push({ path, headers: request.headers, body: raw ? JSON.parse(raw) : {} });
         const next = scripted.shift();
         if (!next || next.path !== path) {
             response.writeHead(400, { 'Content-Type': 'application/json' });
@@ -181,6 +185,8 @@ const messagesAnswer = (text: string): string =>
 /** An SDK-shaped error body the platform receives as an HTTP 400 */
 const errorBody = (message: string): string => JSON.stringify({ error: { message, type: 'invalid_request_error' } });
 
+const ANTHROPIC_PATH = '/anthropic/v1/messages';
+
 // ---- request body helpers ----
 
 const bodyOf = (index: number): Record<string, unknown> => recorded[index]?.body ?? {};
@@ -196,6 +202,15 @@ const thinkingOf = (index: number): Record<string, unknown> | undefined => {
 };
 
 const effortOf = (index: number): unknown => reasoningOf(index)?.effort;
+
+const asArray = (value: unknown): unknown[] => (Array.isArray(value) ? value : []);
+
+/** The content blocks of a message; a string content has none */
+const blocksOf = (message: Record<string, unknown>): Record<string, unknown>[] => asArray(message.content).map(asRecord);
+
+/** Every block of a message, the ones nested in a tool_result included */
+const allBlocksOf = (message: Record<string, unknown>): Record<string, unknown>[] =>
+    blocksOf(message).flatMap((block) => [block, ...asArray(block.content).map(asRecord)]);
 
 const cases: Array<{ name: string; body: () => Promise<void> }> = [
     {
@@ -417,6 +432,157 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
                     `${status}: no downgrade was logged (got ${json(lines)})`
                 );
             }
+        },
+    },
+    {
+        name: 'anthropic sends the key as Bearer and API version 2026-10-21, no x-api-key',
+        body: async () => {
+            // SDK 1.x moved the key from x-api-key to Authorization: Bearer and
+            // the version from 2023-06-01 to 2026-10-21. Production talks to a
+            // relay, not to Anthropic: a later SDK that changes what goes to
+            // the relay should fail this case, not production.
+            reset(reply(ANTHROPIC_PATH, 200, messagesAnswer('header answer')));
+            const { text } = await drainQuietly(() =>
+                new AnthropicPlatform().sendMessage(userTurn('hi'), { model: 'claude-sonnet-5-5', timeout: 20000 })
+            );
+            expect(text === 'header answer', `the answer streams (got ${json(text)})`);
+            const headers = recorded[0]?.headers ?? {};
+            expect(headers.authorization === 'Bearer offline-stub', `the key rides Authorization (got ${json(headers.authorization)})`);
+            expect(
+                headers['anthropic-version'] === '2026-10-21',
+                `the API version is 2026-10-21 (got ${json(headers['anthropic-version'])})`
+            );
+            expect(!('x-api-key' in headers), `no x-api-key header (got ${json(Object.keys(headers))})`);
+        },
+    },
+    {
+        name: 'anthropic ignores named SSE events it does not know and completes the reply',
+        body: async () => {
+            // SDK 1.x hands every named event to the caller (0.122 dropped the
+            // names it did not know), so a relay's own events now reach the
+            // round consumer, with any JSON body.
+            const unknownEvents =
+                `event: relay_heartbeat\ndata: ${json({ type: 'relay_heartbeat', queue: 0 })}\n\n` +
+                `event: relay_status\ndata: ${json({ status: 'ok' })}\n\n` +
+                'event: relay_tick\ndata: 42\n\n';
+            const events = (list: readonly Record<string, unknown>[]): string => list.map(namedEvent).join('');
+            const body =
+                events([messageStart]) +
+                unknownEvents +
+                events([
+                    { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } },
+                    { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'all ' } },
+                ]) +
+                unknownEvents +
+                events([
+                    { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'good' } },
+                    { type: 'content_block_stop', index: 0 },
+                    { type: 'message_delta', delta: { stop_reason: 'end_turn', stop_sequence: null }, usage: { output_tokens: 5 } },
+                ]) +
+                unknownEvents +
+                events([{ type: 'message_stop' }]);
+            reset(reply(ANTHROPIC_PATH, 200, body));
+            const { text, error } = await drainQuietly(() =>
+                new AnthropicPlatform().sendMessage(userTurn('hi'), { model: 'claude-sonnet-5-5', timeout: 20000 })
+            );
+            expect(error === null, `the reply does not fail (got ${json(error)})`);
+            expect(text === 'all good', `the known events still build the answer (got ${json(text)})`);
+            expect(recorded.length === 1, `one request, no retry (got ${recorded.length})`);
+        },
+    },
+    {
+        name: 'anthropic tool-loop bodies carry no sampling keys, no documents and no citations',
+        body: async () => {
+            // API version 2026-10-21 answers 400 to temperature/top_p/top_k, to a
+            // document block in an assistant turn and to citations in a user
+            // text block. History with images, a PDF and an assistant image,
+            // and a replayed round with every block kind, must avoid all three.
+            const pixel = 'iVBORw0KGgo=';
+            const history: UnifiedMessage[] = [
+                {
+                    role: 'user',
+                    content: [
+                        { type: 'text', text: 'Earlier question' },
+                        { type: 'image', imageData: pixel, mimeType: 'image/png' },
+                        { type: 'media', mediaData: pixel, mimeType: 'application/pdf' },
+                    ],
+                },
+                {
+                    role: 'assistant',
+                    content: [
+                        { type: 'text', text: 'Earlier answer' },
+                        { type: 'image', imageData: pixel, mimeType: 'image/png' },
+                    ],
+                },
+                { role: 'user', content: [{ type: 'text', text: 'Weather in Rome?' }] },
+            ];
+            const toolRound: Record<string, unknown>[] = [
+                messageStart,
+                { type: 'content_block_start', index: 0, content_block: { type: 'thinking', thinking: '', signature: '' } },
+                { type: 'content_block_delta', index: 0, delta: { type: 'thinking_delta', thinking: 'Weather first.' } },
+                { type: 'content_block_delta', index: 0, delta: { type: 'signature_delta', signature: 'sig-offline' } },
+                { type: 'content_block_stop', index: 0 },
+                { type: 'content_block_start', index: 1, content_block: { type: 'redacted_thinking', data: 'opaque-blob' } },
+                { type: 'content_block_stop', index: 1 },
+                // A provider may attach citations to its text; a replay never carries them
+                { type: 'content_block_start', index: 2, content_block: { type: 'text', text: '', citations: [] } },
+                { type: 'content_block_delta', index: 2, delta: { type: 'text_delta', text: 'Checking.' } },
+                { type: 'content_block_stop', index: 2 },
+                {
+                    type: 'content_block_start',
+                    index: 3,
+                    content_block: { type: 'tool_use', id: 'toolu_rome', name: 'lookup_weather', input: {} },
+                },
+                { type: 'content_block_delta', index: 3, delta: { type: 'input_json_delta', partial_json: '{"city":"Rome"}' } },
+                { type: 'content_block_stop', index: 3 },
+                { type: 'message_delta', delta: { stop_reason: 'tool_use', stop_sequence: null }, usage: { output_tokens: 9 } },
+                { type: 'message_stop' },
+            ];
+            reset(
+                reply(ANTHROPIC_PATH, 200, toolRound.map(namedEvent).join('')),
+                reply(ANTHROPIC_PATH, 200, messagesAnswer('Rome is sunny.'))
+            );
+            const { result } = await captureConsole(async () =>
+                drain(() =>
+                    new AnthropicPlatform().sendMessage(history, {
+                        model: 'claude-sonnet-5-5',
+                        timeout: 20000,
+                        thinkingEffort: { mode: 'explicit', value: 'high' },
+                        tools: createTurnTools([weatherTool]),
+                    })
+                )
+            );
+            expect(result.error === null && recorded.length === 2, `one tool round and the answer (got ${json(result)})`);
+
+            const replayedKinds = new Set(['thinking', 'redacted_thinking', 'text', 'tool_use']);
+            for (const [index, entry] of recorded.entries()) {
+                const sampling = ['temperature', 'top_p', 'top_k'].filter((key) => key in entry.body);
+                expect(sampling.length === 0, `request ${index}: no sampling keys (got ${json(sampling)})`);
+                const messages = asArray(entry.body.messages).map(asRecord);
+                for (const message of messages.filter((candidate) => candidate.role === 'assistant')) {
+                    const kinds = blocksOf(message).map((block) => block.type);
+                    expect(
+                        typeof message.content === 'string' || kinds.every((kind) => typeof kind === 'string' && replayedKinds.has(kind)),
+                        `request ${index}: an assistant turn holds only replayed block kinds (got ${json(message.content)})`
+                    );
+                }
+                const blocks = messages.flatMap(allBlocksOf);
+                expect(
+                    blocks.every((block) => block.type !== 'document'),
+                    `request ${index}: no document block anywhere (got ${json(blocks.map((block) => block.type))})`
+                );
+                expect(
+                    blocks.every((block) => !('citations' in block)),
+                    `request ${index}: no block carries citations (got ${json(blocks.filter((block) => 'citations' in block))})`
+                );
+            }
+            const replayed = asArray(bodyOf(1).messages).map(asRecord).at(-2) ?? {};
+            expect(
+                replayed.role === 'assistant' &&
+                    json(blocksOf(replayed).map((block) => block.type)) ===
+                        json(['thinking', 'redacted_thinking', 'text', 'tool_use']),
+                `the tool round is replayed block for block (got ${json(replayed)})`
+            );
         },
     },
     {
