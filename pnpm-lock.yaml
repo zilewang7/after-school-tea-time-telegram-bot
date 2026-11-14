@@ -71,8 +71,8 @@ importers:
         specifier: ^6.0.1
         version: 6.0.1
       telegram-md-entities:
-        specifier: ^0.8.0
-        version: 0.8.0(micromark-util-types@2.0.2)(micromark@4.0.2)
+        specifier: ^0.8.2
+        version: 0.8.2(micromark-util-types@2.0.2)(micromark@4.0.2)
       ts-pattern:
         specifier: ^5.9.2
         version: 5.9.2
@@ -114,8 +114,8 @@ importers:
         specifier: ^8.5.1
         version: 8.5.1(@types/react-dom@19.3.0(@types/react@19.3.0))(@types/react@19.3.0)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)
       telegram-md-entities:
-        specifier: ^0.8.0
-        version: 0.8.0(micromark-util-types@2.0.2)(micromark@4.0.2)
+        specifier: ^0.8.2
+        version: 0.8.2(micromark-util-types@2.0.2)(micromark@4.0.2)
       ts-pattern:
         specifier: ^5.9.2
         version: 5.9.2
@@ -2077,8 +2077,8 @@ packages:
     resolution: {integrity: sha512-resvxdc6Mgb7YEThw6G6bExlXKkv6+YbuzGg9xuXxSgxJF7Ozs+o8Y9+2R3sArdWdW8nOokoQb1yrpFB0pQK2g==}
     engines: {node: '>=14'}
 
-  telegram-md-entities@0.8.0:
-    resolution: {integrity: sha512-TqYpYGBjxP/qDzDaVyqhdu+JQz/kejZ6ivXRX6jigvIJQZYUu0yYg/x9ApMHeeQ7Ew6Iwni34Z3e+GO5V1yatA==}
+  telegram-md-entities@0.8.2:
+    resolution: {integrity: sha512-KTf//wwvo+cDq/L7B/q7gBerT+OFTr6+Ka5kK80PfyauJDingTRGvOS200MboMDU+4BGqq/H9E5qb7R9jrhbvQ==}
     engines: {node: '>=18'}
 
   tinyglobby@0.2.17:
@@ -4242,7 +4242,7 @@ snapshots:
       - encoding
       - supports-color
 
-  telegram-md-entities@0.8.0(micromark-util-types@2.0.2)(micromark@4.0.2):
+  telegram-md-entities@0.8.2(micromark-util-types@2.0.2)(micromark@4.0.2):
     dependencies:
       mdast-util-from-markdown: 2.0.3
       mdast-util-gfm: 3.1.0

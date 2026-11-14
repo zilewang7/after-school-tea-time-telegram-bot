@@ -52,7 +52,7 @@
     "smol-toml": "^1.9.1",
     "socks-proxy-agent": "^10.1.0",
     "sqlite3": "^6.0.1",
-    "telegram-md-entities": "^0.8.0",
+    "telegram-md-entities": "^0.8.2",
     "ts-pattern": "^5.9.2",
     "undici": "^8.12.4",
     "zod": "^4.6.7"

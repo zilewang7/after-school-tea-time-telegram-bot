@@ -1353,6 +1353,39 @@ results.push(
     })
 );
 
+/** Half of a character outside the BMP, which no valid UTF-8 can carry */
+const LONE_SURROGATE = /[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/;
+
+results.push(
+    await runCase('case 16: emoji in the thinking, a status line and the answer stay whole in every rich call', async () => {
+        // telegram-md-entities 0.8.0 lost one UTF-16 unit per emoji in toRichHtml
+        const started = await startReply({ richReplies: true });
+        await runReply(started, {
+            steps: [
+                { chunk: thinkingChunk('用户说 "今天好开心😄🎉"，我应该回应他的情绪。最后确认一下语气👍') },
+                { chunk: { type: 'status', status: { text: '🔍 正在翻聊天记录…', chatAction: 'typing' } } },
+                ...textSteps(['好的😄', '，一起开心🎉']),
+            ],
+        });
+        const richTexts = editsOf(started.telegram, started.firstMessageId)
+            .filter(isRichCall)
+            .map((call) => richMarkdownOf(call) ?? '');
+        expect(
+            richTexts.length > 0 && richTexts.every((markdown) => !LONE_SURROGATE.test(markdown)),
+            `no rich call carries half an emoji (got ${json(richTexts)})`
+        );
+        expect(
+            richTexts.some((markdown) => markdown.includes('<i>🔍 正在翻聊天记录…</i>')),
+            `the status line keeps its last character (got ${json(richTexts)})`
+        );
+        const final = richTexts.at(-1) ?? '';
+        expect(
+            final.includes('最后确认一下语气👍</blockquote>') && final.endsWith('好的😄，一起开心🎉'),
+            `the final keeps the thinking's last characters and the whole answer (got ${json(final)})`
+        );
+    })
+);
+
 endOpenReplies();
 await bench.close();
 reportResults(results);
