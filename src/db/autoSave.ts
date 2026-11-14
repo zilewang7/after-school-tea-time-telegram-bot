@@ -329,8 +329,10 @@ export const resolveCapturedMedia = (msg: TgMessage | undefined): CapturedMedia 
 
 /**
  * Collect downloadable media carried inside rich message blocks. Media blocks
- * hold ordinary file_ids (RichBlockPhoto.photo is a plain PhotoSize[]), so the
- * normal getFile pipeline applies. Container blocks nest, hence the recursion.
+ * hold ordinary file_ids (RichBlockPhoto.photo is a plain PhotoSize[], a 10.3
+ * document block a plain Document), so the normal getFile pipeline applies.
+ * Container blocks nest, hence the recursion. Expandable quotes and button
+ * rows carry no files.
  */
 const collectRichBlockMedia = (blocks: RichBlock[], found: CapturedMedia[]): void => {
     for (const block of blocks) {
@@ -395,6 +397,9 @@ const collectRichBlockMedia = (blocks: RichBlock[], found: CapturedMedia[]): voi
                     hint: `a voice message${block.voice_note.duration ? `, ${block.voice_note.duration}s` : ''}`,
                     needsTgsConversion: false,
                 });
+                break;
+            case 'document':
+                found.push(captureDocument(block.document));
                 break;
             case 'blockquote':
             case 'details':

@@ -7,8 +7,13 @@
  * Only a premium account can send a real one, so the update is built by hand
  * and fed to the bot. Its photo cannot be fetched (the fake Bot API has no
  * file for it), which is the case the model has to be told about.
+ *
+ * The 10.3 blocks (expandable quotes, documents, button rows, inline buttons)
+ * follow, each in a message of its own, then shapes no Bot API version has
+ * yet: a later Bot API must never cost a message.
  */
-import type { Update } from 'grammy/types';
+import type { Bot } from 'grammy';
+import type { RichBlock, Update } from 'grammy/types';
 import { expect, reportResults, runCase, setupOfflineDb, takeMessageId, type CaseResult } from './harness.mts';
 import { createFakeBot, quietly, waitUntil } from './fake-telegram.mts';
 
@@ -18,7 +23,7 @@ process.env.BOT_USER_ID = '7777';
 delete process.env.ALLOWED_CHAT_IDS;
 
 await setupOfflineDb();
-const { autoSave } = await import('../../src/db/autoSave.js');
+const { autoSave, autoUpdate } = await import('../../src/db/autoSave.js');
 const { getMessage } = await import('../../src/db/index.js');
 const { buildContext } = await import('../../src/reply/context-builder.js');
 const { isAsyncFileSavePending } = await import('../../src/state.js');
@@ -92,6 +97,7 @@ const IMAGE_ONLY: ModelCapabilities = {
 
 const { bot, telegram } = createFakeBot();
 autoSave(bot);
+autoUpdate(bot);
 // The row is saved inside the middleware; the photo is fetched after it
 await quietly(() => bot.handleUpdate(update));
 await quietly(() => waitUntil('the photo to be given up', () => !isAsyncFileSavePending(CHAT_ID, MESSAGE_ID)));
@@ -141,6 +147,188 @@ results.push(
             'the model is told that there was a picture it cannot see'
         );
         expect(rendered.includes('\n<<EOF'), 'the message ends with the EOF marker');
+    })
+);
+
+// ---- Bot API 10.3 blocks, and shapes no Bot API version has yet ----
+
+const SENT_AT = 1_800_000_100;
+let nextUpdateId = 1000;
+
+const richMessageUpdate = (messageId: number, blocks: RichBlock[]): Update => ({
+    update_id: (nextUpdateId += 1),
+    message: {
+        message_id: messageId,
+        date: SENT_AT,
+        chat: { id: CHAT_ID, type: 'supergroup', title: '测试群' },
+        from: { id: 111, is_bot: false, first_name: '测试用户' },
+        rich_message: { blocks },
+    },
+});
+
+const textMessageUpdate = (messageId: number, messageText: string): Update => ({
+    update_id: (nextUpdateId += 1),
+    message: {
+        message_id: messageId,
+        date: SENT_AT,
+        chat: { id: CHAT_ID, type: 'supergroup', title: '测试群' },
+        from: { id: 111, is_bot: false, first_name: '测试用户' },
+        text: messageText,
+    },
+});
+
+/** The message edited into a rich message a minute after it was sent */
+const richEditUpdate = (messageId: number, blocks: RichBlock[]): Update => ({
+    update_id: (nextUpdateId += 1),
+    edited_message: {
+        message_id: messageId,
+        date: SENT_AT,
+        edit_date: SENT_AT + 60,
+        chat: { id: CHAT_ID, type: 'supergroup', title: '测试群' },
+        from: { id: 111, is_bot: false, first_name: '测试用户' },
+        rich_message: { blocks },
+    },
+});
+
+/** Feed an update, wait until its file is fetched or given up, read the row */
+const handleAndRead = async (target: Bot, incoming: Update, messageId: number) => {
+    await target.handleUpdate(incoming);
+    await waitUntil('the file to be given up', () => !isAsyncFileSavePending(CHAT_ID, messageId));
+    return getMessage(CHAT_ID, messageId);
+};
+
+/** The same, with what the bot logs swallowed */
+const ingest = (target: Bot, incoming: Update, messageId: number) =>
+    quietly(() => handleAndRead(target, incoming, messageId));
+
+const fileIdsAskedFor = (): unknown[] => telegram.callsOf('getFile').map((call) => call.payload.file_id);
+
+const REPORT_DOCUMENT: RichBlock = {
+    type: 'document',
+    document: {
+        file_id: 'FAKE_DOC',
+        file_unique_id: 'FAKE_DOC_U',
+        file_name: 'report.pdf',
+        mime_type: 'application/pdf',
+        file_size: 2048,
+    },
+    caption: { text: '周报' },
+};
+
+// ton_address is Bot API 10.4: grammy 1.46 has no type for it yet
+const TON_PARAGRAPH: RichBlock = JSON.parse('{"type":"paragraph","text":["钱包 ",{"type":"ton_address","text":"UQAbc123","address":"UQAbc123"}]}');
+
+results.push(
+    await runCase('10.3 blocks are stored as markdown, and the document is the attached file', async () => {
+        const messageId = takeMessageId();
+        telegram.reset();
+        const row = await ingest(bot, richMessageUpdate(messageId, [
+            { type: 'expandable_blockquote', text: ['第一行\n第二行 ', { type: 'bold', text: '粗' }], credit: '某人' },
+            REPORT_DOCUMENT,
+            {
+                type: 'buttons',
+                buttons: [
+                    { text: '打开', url: 'https://example.com/open' },
+                    { text: '签到', callback_data: 'sign-in' },
+                ],
+            },
+            {
+                type: 'paragraph',
+                text: [
+                    '点 ',
+                    { type: 'button', button: { text: '这里', url: 'https://example.com/here' } },
+                    ' 或 ',
+                    { type: 'button', button: { text: '回调', callback_data: 'callback' } },
+                ],
+            },
+            TON_PARAGRAPH,
+        ]), messageId);
+        const rowText = row?.text ?? '';
+        expect(row !== null, 'the message is stored');
+        expect(
+            rowText.includes('<details>\n第一行\n第二行 **粗**\n— 某人\n</details>'),
+            `an expandable quote becomes <details> with its credit (${rowText})`
+        );
+        expect(rowText.includes('[文件] report.pdf 周报'), 'a document leaves its name and caption');
+        expect(
+            rowText.includes('[按钮] [打开](https://example.com/open) · 签到'),
+            'a button row keeps the url of a url button and the label of a callback button'
+        );
+        expect(rowText.includes('点 [这里](https://example.com/here) 或 回调'), 'inline buttons become a link and a label');
+        expect(rowText.includes('钱包 UQAbc123'), 'a 10.4 ton address keeps its text');
+        expect(
+            row?.mediaHint === 'a file: report.pdf, application/pdf — failed to download, you cannot see it',
+            `the document is the attached file, and could not be fetched (${row?.mediaHint})`
+        );
+        expect(fileIdsAskedFor().includes('FAKE_DOC'), `the document was asked for (${JSON.stringify(fileIdsAskedFor())})`);
+    })
+);
+
+results.push(
+    await runCase('a photo wins the single file slot over a document', async () => {
+        const messageId = takeMessageId();
+        telegram.reset();
+        const row = await ingest(bot, richMessageUpdate(messageId, [
+            REPORT_DOCUMENT,
+            {
+                type: 'photo',
+                photo: [{ file_id: 'FAKE_PHOTO', file_unique_id: 'FAKE_PHOTO_U', width: 800, height: 600, file_size: 4096 }],
+            },
+        ]), messageId);
+        expect(
+            row?.mediaHint === 'a picture (this rich message carries 2 media files, only this one is attached) — failed to download, you cannot see it',
+            `the photo is attached and the document counted (${row?.mediaHint})`
+        );
+        expect(
+            fileIdsAskedFor().includes('FAKE_PHOTO') && !fileIdsAskedFor().includes('FAKE_DOC'),
+            `only the photo was asked for (${JSON.stringify(fileIdsAskedFor())})`
+        );
+        expect((row?.text ?? '').includes('[文件] report.pdf 周报'), 'the document still leaves its placeholder');
+    })
+);
+
+results.push(
+    await runCase('an edit into a rich message with a document attaches the document', async () => {
+        const messageId = takeMessageId();
+        await ingest(bot, textMessageUpdate(messageId, '先发一条纯文本'), messageId);
+        telegram.reset();
+        const row = await ingest(bot, richEditUpdate(messageId, [
+            { type: 'paragraph', text: '改成了富文本' },
+            {
+                type: 'document',
+                document: { file_id: 'FAKE_EDIT_DOC', file_unique_id: 'FAKE_EDIT_DOC_U', file_name: 'notes.txt', mime_type: 'text/plain', file_size: 512 },
+            },
+        ]), messageId);
+        const rowText = row?.text ?? '';
+        expect(rowText.includes('改成了富文本') && rowText.includes('[文件] notes.txt'), `the edited text is stored (${rowText})`);
+        expect(!rowText.includes('先发一条纯文本'), 'and replaces the original');
+        expect(
+            row?.mediaHint === 'a file: notes.txt, text/plain — failed to download, you cannot see it',
+            `the document becomes the attached file (${row?.mediaHint})`
+        );
+        expect(fileIdsAskedFor().includes('FAKE_EDIT_DOC'), `the document was asked for (${JSON.stringify(fileIdsAskedFor())})`);
+    })
+);
+
+// Shapes no Bot API version has yet; JSON.parse because no type allows them
+const FUTURE_BLOCKS: RichBlock[] = JSON.parse(`[
+    {"type": "future_block", "text": "未来的块"},
+    {"type": "paragraph", "text": [
+        "之前 ",
+        {"type": "future_inline", "text": "未来的行内"},
+        {"type": "future_inline_without_text", "payload": 1},
+        " 之后"
+    ]}
+]`);
+
+results.push(
+    await runCase('an unknown block or inline type never drops the message', async () => {
+        const messageId = takeMessageId();
+        const row = await ingest(bot, richMessageUpdate(messageId, FUTURE_BLOCKS), messageId);
+        const rowText = row?.text ?? '';
+        expect(row !== null, 'the message is stored');
+        expect(rowText.includes('未来的块'), `an unknown block keeps its text (${rowText})`);
+        expect(rowText.includes('之前 未来的行内 之后'), 'an unknown inline node keeps its text, one without text is left out');
     })
 );
 
