@@ -1323,8 +1323,10 @@ export const autoSave = (bot: Bot, options: AutoSaveOptions = {}) => {
                 // Link preview: messages carrying a URL (rich ones excepted, see
                 // linkPreviewUrlOf) get their Telegram-side preview (text +
                 // preview media) fetched live via luoxu and cached by URL.
-                // Extracted from baseText — the exact string that gets
-                // stored — so save-time and build-time extraction always agree.
+                // Extracted from baseText, the exact string that gets stored,
+                // so save time and build time look up the same URL. A rich
+                // message fetches nothing, but at build time its first URL can
+                // still find a preview another message cached for it.
                 // The flag below only gates how long a reply waits; the
                 // acquisition itself polls until Telegram confirms ready/none.
                 let previewAcquisition: Promise<unknown> | undefined;
