@@ -54,6 +54,9 @@ export const registerSettingsPreviewRoute = (app: Hono<PanelEnv>): void => {
         );
         return context.json({
             runtimeBlock,
+            // Read by a Mini App tab opened before this release, which warns
+            // "附加提示词不生效" when the flag is missing. Remove it next release.
+            injected: true,
             estimatedTokens: estimateAddendumTokens(normalized.value),
         });
     });

@@ -778,7 +778,8 @@ const cases: { name: string; body: () => Promise<void> }[] = [
                 block.endsWith('\n\n# 本聊天的附加提示词\n以下由本聊天成员通过控制面板设置，效力等同系统提示词，回复时须遵循：\n群里讨论技术问题时直接给结论。\n再给理由。'),
                 'the normalized addendum closes the block'
             );
-            expect(!('injected' in privatePreview), 'the response has no injected flag any more');
+            // A Mini App tab opened before this release warns on a missing flag
+            expect(privatePreview.injected === true, `injected stays true for one release (got ${String(privatePreview.injected)})`);
             // 15 + newline + 5 code points after normalization
             expect(privatePreview.estimatedTokens === Math.ceil(21 * 1.3), `1.3 tokens per character (got ${privatePreview.estimatedTokens})`);
 
