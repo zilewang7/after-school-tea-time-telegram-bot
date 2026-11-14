@@ -201,6 +201,28 @@ const handleAndRead = async (target: Bot, incoming: Update, messageId: number) =
 const ingest = (target: Bot, incoming: Update, messageId: number) =>
     quietly(() => handleAndRead(target, incoming, messageId));
 
+/** Run `body` with console output swallowed; also returns the lines it logged as errors */
+const withLoggedErrors = async <Result,>(body: () => Promise<Result>): Promise<{ result: Result; errors: string[] }> => {
+    const original = { log: console.log, warn: console.warn, error: console.error };
+    const errors: string[] = [];
+    console.log = () => undefined;
+    console.warn = () => undefined;
+    console.error = (...args: unknown[]) => {
+        errors.push(args.map((arg) => (arg instanceof Error ? arg.message : String(arg))).join(' '));
+    };
+    try {
+        return { result: await body(), errors };
+    } finally {
+        console.log = original.log;
+        console.warn = original.warn;
+        console.error = original.error;
+    }
+};
+
+/** What was logged about one message of the chat */
+const loggedForMessage = (errors: string[], messageId: number): string[] =>
+    errors.filter((line) => line.includes(`${CHAT_ID}/${messageId}`));
+
 const fileIdsAskedFor = (): unknown[] => telegram.callsOf('getFile').map((call) => call.payload.file_id);
 
 const REPORT_DOCUMENT: RichBlock = {
@@ -329,6 +351,71 @@ results.push(
         expect(row !== null, 'the message is stored');
         expect(rowText.includes('未来的块'), `an unknown block keeps its text (${rowText})`);
         expect(rowText.includes('之前 未来的行内 之后'), 'an unknown inline node keeps its text, one without text is left out');
+    })
+);
+
+// The package renderer does not throw on any shape today; this one stands in
+// for a later release that does
+const { bot: failingBot, telegram: failingTelegram } = createFakeBot();
+const throwingRenderer = (): string => {
+    throw new TypeError("Cannot read properties of undefined (reading 'type')");
+};
+autoSave(failingBot, { renderRichBlocks: throwingRenderer });
+autoUpdate(failingBot, { renderRichBlocks: throwingRenderer });
+
+const UNRENDERABLE_BLOCKS: RichBlock[] = [
+    { type: 'heading', size: 2, text: '周报' },
+    { type: 'paragraph', text: ['本周 ', { type: 'bold', text: '重点' }, ' 如下'] },
+    { type: 'expandable_blockquote', text: '藏起来的话', credit: '某人' },
+    {
+        type: 'buttons',
+        buttons: [{
+            text: ['打开 ', { type: 'custom_emoji', custom_emoji_id: 'emoji-id', alternative_text: '👍' }],
+            url: 'https://example.com/open',
+        }],
+    },
+    REPORT_DOCUMENT,
+];
+const UNRENDERABLE_PLAIN_TEXT = '周报\n本周 重点 如下\n藏起来的话\n某人\n打开 👍\nreport.pdf\n周报';
+
+results.push(
+    await runCase('a renderer that throws still stores the message, as plain text', async () => {
+        const messageId = takeMessageId();
+        failingTelegram.reset();
+        const { result: row, errors } = await withLoggedErrors(() =>
+            handleAndRead(failingBot, richMessageUpdate(messageId, UNRENDERABLE_BLOCKS), messageId)
+        );
+        expect(row !== null, 'the message is stored');
+        expect(
+            row?.text === UNRENDERABLE_PLAIN_TEXT,
+            `with the plain text of every block, ids and urls left out (${JSON.stringify(row?.text)})`
+        );
+        expect(
+            row?.mediaHint === 'a file: report.pdf, application/pdf — failed to download, you cannot see it',
+            `the document is still attached (${row?.mediaHint})`
+        );
+        const logged = loggedForMessage(errors, messageId);
+        expect(
+            logged.length === 1 && logged[0]?.includes('plain text') === true && !logged[0].includes('\n'),
+            `one line names the message (${JSON.stringify(errors)})`
+        );
+        expect(!errors.some((line) => line.includes('DROPPED')), 'nothing is dropped');
+    })
+);
+
+results.push(
+    await runCase('an edit with a renderer that throws stores the plain text too', async () => {
+        const messageId = takeMessageId();
+        await ingest(failingBot, textMessageUpdate(messageId, '原来的文字'), messageId);
+        const { result: row, errors } = await withLoggedErrors(() =>
+            handleAndRead(failingBot, richEditUpdate(messageId, FUTURE_BLOCKS), messageId)
+        );
+        expect(
+            row?.text === '未来的块\n之前 未来的行内 之后',
+            `the edit is stored as plain text (${JSON.stringify(row?.text)})`
+        );
+        expect(loggedForMessage(errors, messageId).length === 1, `one line names the message (${JSON.stringify(errors)})`);
+        expect(!errors.some((line) => line.includes('更新消息失败')), 'the edit is not lost');
     })
 );
 

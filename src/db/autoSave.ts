@@ -47,7 +47,8 @@ import { SettingsAudit } from './settingsAuditDTO.js';
 import { WorkspaceFile } from './workspaceFileDTO.js';
 import { purgeOrphanedExclusions } from './queries/context-exclusions.js';
 import { recordCleanupRun } from '../services/cleanup-status.js';
-import { entitiesToMarkdown, richBlocksToMarkdown } from 'telegram-md-entities';
+import { entitiesToMarkdown } from 'telegram-md-entities';
+import { renderRichMessage, type RichBlocksRenderer } from './rich-message-text.js';
 import { extractCustomEmojiOccurrences } from '../services/custom-emoji-extractor.js';
 import { acquireCustomEmojiAttachments } from '../services/custom-emoji-service.js';
 import {
@@ -492,12 +493,11 @@ const renderTextWithEntities = (
     return entitiesToMarkdown({ text, entities });
 };
 
-/** Rich messages (Premium rich text editor, Bot API 10.1+) → markdown */
-const renderRichMessage = (richMessage: RichMessage | undefined): string | undefined => {
-    if (!richMessage) return undefined;
-    const markdown = richBlocksToMarkdown(richMessage.blocks).trim();
-    return markdown.length > 0 ? markdown : undefined;
-};
+/** Seams for the offline cases; production passes none */
+export interface AutoSaveOptions {
+    /** Rich blocks → markdown; telegram-md-entities' renderer by default */
+    renderRichBlocks?: RichBlocksRenderer;
+}
 
 const CUSTOM_EMOJI_ENABLED = process.env.CUSTOM_EMOJI_ENABLED !== '0';
 let asyncTaskNonce = 0;
@@ -720,7 +720,7 @@ const buildChatLookup = (bot: Bot): TgChatLookup => ({
 });
 
 // 监听编辑消息并更新数据库
-export const autoUpdate = (bot: Bot) => {
+export const autoUpdate = (bot: Bot, options: AutoSaveOptions = {}) => {
     const chatLookup = buildChatLookup(bot);
     bot.on('edited_message', async (ctx) => {
         const editedMsg = ctx.editedMessage;
@@ -728,11 +728,12 @@ export const autoUpdate = (bot: Bot) => {
 
         const chatId = ctx.chat.id;
         const messageId = editedMsg.message_id;
+        const messageKey = `${chatId}/${messageId}`;
 
         try {
             const newText = renderTextWithEntities(editedMsg.text, editedMsg.entities)
                 || renderTextWithEntities(editedMsg.caption, editedMsg.caption_entities)
-                || renderRichMessage(editedMsg.rich_message)
+                || renderRichMessage(editedMsg.rich_message, messageKey, options.renderRichBlocks)
                 || '';
             // An edit into a /share command never becomes a stored message: the
             // command message must stay out of telegram_messages (design §3.5)
@@ -1037,7 +1038,7 @@ export const unsavedCommandText = (text: string, excludeList: string[]): boolean
     excludeList.includes(text) || SHARE_COMMAND_PATTERN().test(text);
 
 // 自动保存消息到数据库
-export const autoSave = (bot: Bot) => {
+export const autoSave = (bot: Bot, options: AutoSaveOptions = {}) => {
     const chatLookup = buildChatLookup(bot);
     // 使用中间件
     bot.use(async (ctx, next) => {
@@ -1076,6 +1077,7 @@ export const autoSave = (bot: Bot) => {
                     }
                 }
 
+                const messageKey = `${ctx.chat.id}/${ctx.message.message_id}`;
                 const media = resolveCapturedMedia(ctx.update.message)
                     ?? resolveRichMessageMedia(ctx.update.message?.rich_message);
 
@@ -1105,7 +1107,7 @@ export const autoSave = (bot: Bot) => {
                             // in the media hint, so the model reads the artwork instead
                             // of treating the emoji as something the user typed.
                             : messageText || messageCaption
-                                || renderRichMessage(ctx.message?.rich_message)
+                                || renderRichMessage(ctx.message?.rich_message, messageKey, options.renderRichBlocks)
                                 || ''
                         )
                     );
