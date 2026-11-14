@@ -107,7 +107,7 @@ export class OpenAIPlatform extends BasePlatform {
             supportsGrounding: false,
             supportsMediaInput: false,
             // Image models answer through their own image paths, never the tool loop
-            supportsClientTools: !isImageModel && !isImageOutputModel(model),
+            supportsClientTools: !isImageOutputModel(model),
         };
     }
 
@@ -119,7 +119,7 @@ export class OpenAIPlatform extends BasePlatform {
         const capabilities = this.getModelCapabilities(model);
 
         if (capabilities.supportsImageOutput) {
-            // The factory refuses this too, but its image predicate misses dall-e
+            // The factory refuses this first; a caller that reaches the platform directly is refused here
             if (isChatShapedRequest(config)) {
                 throw imageModelChatError(model);
             }
@@ -240,6 +240,10 @@ export class OpenAIPlatform extends BasePlatform {
         );
     }
 
+    /**
+     * The ids that take the image path. Not isImageOutputModel, which also
+     * counts nano-banana ids: one routed here keeps the Responses path.
+     */
     private isImageGenerationModel(model: string): boolean {
         const lowerModel = model.toLowerCase();
         return lowerModel.includes('image') || lowerModel.startsWith('dall-e');

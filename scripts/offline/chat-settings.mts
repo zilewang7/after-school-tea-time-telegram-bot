@@ -1191,7 +1191,7 @@ const cases: { name: string; body: () => Promise<void> }[] = [
             await updateChatSettings({ chatId, patch: { model: 'chat-model-before' }, actor: MEMBER });
             const auditBefore = (await auditOf(chatId)).length;
 
-            for (const imageModel of [GEMINI_IMAGE_MODEL, OPENAI_IMAGE_MODEL, 'gemini-3-pro-image']) {
+            for (const imageModel of [GEMINI_IMAGE_MODEL, OPENAI_IMAGE_MODEL, 'gemini-3-pro-image', 'dall-e-3']) {
                 await sendText(chatId, MEMBER.userId, `/model ${imageModel}`);
                 expect(
                     telegram.callsOf('sendMessage').length === 1 && lastReply().text === IMAGE_MODEL_NOT_CHAT_MESSAGE,
@@ -1212,6 +1212,8 @@ const cases: { name: string; body: () => Promise<void> }[] = [
                 updateChatSettings({ chatId, patch: { model: `  ${OPENAI_IMAGE_MODEL} ` }, actor: OWNER })
             );
             expect(direct === `invalid: ${IMAGE_MODEL_NOT_CHAT_MESSAGE}`, `the rules refuse it, trimmed or not (got ${direct})`);
+            const dallE = await refusalOf(() => updateChatSettings({ chatId, patch: { model: 'DALL-E-2' }, actor: OWNER }));
+            expect(dallE === `invalid: ${IMAGE_MODEL_NOT_CHAT_MESSAGE}`, `a dall-e id is refused in any case (got ${dallE})`);
             const globalBefore = service.getGlobalDefaultModel();
             const global = await refusalOf(() => updateGlobalDefaultModel(GEMINI_IMAGE_MODEL, OWNER));
             expect(global === `invalid: ${IMAGE_MODEL_NOT_CHAT_MESSAGE}`, `the global default refuses it (got ${global})`);
@@ -1317,6 +1319,23 @@ const cases: { name: string; body: () => Promise<void> }[] = [
                     `an env default image model is refused, named (got ${JSON.stringify(envNotices)})`
                 );
                 expect(fetchCalls === 0, `no model request for the env default either (got ${fetchCalls})`);
+
+                // A stored dall-e id is an image model as well: the same notice, no placeholder
+                await ChatSettingsRecord.create({ chatId, model: 'dall-e-3', updatedAt: new Date() });
+                await service.loadChatSettingsCache();
+                const dallETelegram = createFakeTelegram();
+                const dallEMessageId = takeBotMessageId();
+                await dbIndex.saveMessage({ chatId, messageId: dallEMessageId, userId: MEMBER.userId, date: new Date(), userName: 'member', message: text });
+                await quietly(() =>
+                    handleReply(contextOf(messageUpdate({ chatId, messageId: dallEMessageId, userId: MEMBER.userId, text }), dallETelegram), { mention: true })
+                );
+                const dallENotices = dallETelegram.callsOf('sendMessage').map((call) => call.payload.text);
+                expect(
+                    JSON.stringify(dallENotices) === JSON.stringify([imageChatModelRefusalText('dall-e-3')]) &&
+                        dallETelegram.callsOf('editMessageText').length === 0,
+                    `a stored dall-e-3 is refused, named, before a placeholder (got ${JSON.stringify(dallENotices)})`
+                );
+                expect(fetchCalls === 0, `no model request for dall-e-3 either (got ${fetchCalls})`);
             } finally {
                 globalThis.fetch = realFetch;
                 process.env.DEFAULT_MODEL = savedDefault;

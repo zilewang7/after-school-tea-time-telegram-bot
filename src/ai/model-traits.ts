@@ -52,7 +52,8 @@ export const resolveModelTraits = (model: string): ModelTraits => {
  * Models whose output is an image. Matched by explicit id first, because the
  * substring rule alone missed `gemini-nano-banana-2.1` — the Nano Banana ids
  * carry no `image` in them, and a missed image model is sent the chat persona,
- * urlContext and function tools, all of which it rejects with 400.
+ * urlContext and function tools, all of which it rejects with 400. OpenAI's
+ * `dall-e-*` ids carry none either.
  */
 const KNOWN_IMAGE_MODELS: ReadonlySet<string> = new Set([
     GEMINI_IMAGE_MODEL.toLowerCase(),
@@ -65,6 +66,7 @@ const codeIsImageOutputModel = (model: string): boolean =>
         .when((id) => KNOWN_IMAGE_MODELS.has(id), () => true)
         .with(P.string.includes('image'), () => true)
         .with(P.string.includes('nano-banana'), () => true)
+        .with(P.string.startsWith('dall-e'), () => true)
         .otherwise(() => false);
 
 /**

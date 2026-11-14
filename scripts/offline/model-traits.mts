@@ -122,6 +122,8 @@ results.push(
             'gpt-4o': [false, false, true],
             'some-random-model': [false, false, true],
             'another-image-model': [true, false, false],
+            // No `image` in the id either: an image model by its prefix
+            'dall-e-3': [true, false, false],
         };
         for (const [id, expected] of Object.entries(historical)) {
             expect(sameValues(id, expected), `${id}: ${JSON.stringify(valuesOf(id))} == ${JSON.stringify(expected)}`);

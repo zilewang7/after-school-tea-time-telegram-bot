@@ -1420,7 +1420,7 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
                 [`${OPENAI_IMAGE_MODEL} with a system prompt`, () => sendMessage(userTurn('画只猫'), { model: OPENAI_IMAGE_MODEL, systemPrompt: 'persona' })],
                 // An empty prompt is still a chat reply's shape
                 [`${OPENAI_IMAGE_MODEL} with an empty system prompt`, () => sendMessage(userTurn('画只猫'), { model: OPENAI_IMAGE_MODEL, systemPrompt: '' })],
-                // The factory's predicate misses dall-e: the OpenAI platform refuses it itself
+                // dall-e ids carry no `image`: the factory's predicate knows them too
                 ['dall-e-3 with a system prompt', () => sendMessage(userTurn('画只猫'), { model: 'dall-e-3', systemPrompt: 'persona' })],
                 [
                     `${OPENAI_IMAGE_MODEL} straight on the platform`,

@@ -14,9 +14,10 @@ import {
 } from './model-traits.js';
 
 /**
- * Models whose output is an image (the Nano Banana ids carry no `image` in
- * them). They serve generate_image and the /pic commands only, never as the
- * chat model: a missed one would take a chat request as an image prompt.
+ * Models whose output is an image (the Nano Banana and dall-e ids carry no
+ * `image` in them). They serve generate_image and the /pic commands only,
+ * never as the chat model: a missed one would take a chat request as an image
+ * prompt.
  */
 export const isImageOutputModel = (model: string): boolean => runtimeIsImageOutputModel(model);
 
