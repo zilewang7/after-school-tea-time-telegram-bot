@@ -40,7 +40,7 @@ import { acquireOcr, isLuoxuOcrEnabled } from '../services/luoxu-ocr-service.js'
 import { convertTgsToWebm, normalizeShortVideo, renderTgsStill } from '../services/tgs-client.js';
 import { to } from 'await-to-js';
 import { readFile, unlink } from 'node:fs/promises';
-import type { Document, Message as TgMessage, MessageEntity, MessageOrigin, RichBlock, RichMessage, User } from 'grammy/types';
+import type { Document, Message as TgMessage, MessageEntity, MessageOrigin, RichBlock, RichMessage, TextQuote, User } from 'grammy/types';
 import { upsertTelegramUser } from './queries/user-queries.js';
 import { harvestChatRegistry } from './queries/panel-registry.js';
 import { SettingsAudit } from './settingsAuditDTO.js';
@@ -48,7 +48,7 @@ import { WorkspaceFile } from './workspaceFileDTO.js';
 import { purgeOrphanedExclusions } from './queries/context-exclusions.js';
 import { recordCleanupRun } from '../services/cleanup-status.js';
 import { entitiesToMarkdown } from 'telegram-md-entities';
-import { renderRichMessage, type RichBlocksRenderer } from './rich-message-text.js';
+import { renderQuoteRichTexts, renderRichMessage, type RichBlocksRenderer } from './rich-message-text.js';
 import { extractCustomEmojiOccurrences } from '../services/custom-emoji-extractor.js';
 import { acquireCustomEmojiAttachments } from '../services/custom-emoji-service.js';
 import {
@@ -503,6 +503,17 @@ const renderTextWithEntities = (
     return entitiesToMarkdown({ text, entities });
 };
 
+/**
+ * A reply's quote as stored: its text with entities. A quote chosen from a
+ * rich message (Bot API 10.4) may have empty text and its content in
+ * rich_texts instead.
+ */
+const renderQuoteText = (quote: TextQuote | undefined, messageKey: string): string | undefined => {
+    const quoteText = renderTextWithEntities(quote?.text, quote?.entities);
+    if (quoteText || quote === undefined) return quoteText;
+    return renderQuoteRichTexts(quote, messageKey) ?? quoteText;
+};
+
 /** Seams for the offline cases; production passes none */
 export interface AutoSaveOptions {
     /** Rich blocks → markdown; telegram-md-entities' renderer by default */
@@ -750,10 +761,7 @@ export const autoUpdate = (bot: Bot, options: AutoSaveOptions = {}) => {
             if (SHARE_COMMAND_PATTERN().test(newText)) return;
             const resolvedEditedMedia = resolveCapturedMedia(editedMsg)
                 ?? resolveRichMessageMedia(editedMsg.rich_message, messageKey);
-            const newQuoteText = renderTextWithEntities(
-                editedMsg.quote?.text,
-                editedMsg.quote?.entities
-            );
+            const newQuoteText = renderQuoteText(editedMsg.quote, messageKey);
             const revisionToken: MessageRevisionToken = {
                 chatId,
                 messageId,
@@ -1142,10 +1150,7 @@ export const autoSave = (bot: Bot, options: AutoSaveOptions = {}) => {
                 const userId = ctx.from.id;
                 const date = new Date(ctx.message?.date * 1000);
                 const userName = ctx.from.first_name;
-                const quoteText = renderTextWithEntities(
-                    ctx.message?.quote?.text,
-                    ctx.message?.quote?.entities
-                );
+                const quoteText = renderQuoteText(ctx.message?.quote, messageKey);
                 const revisionToken: MessageRevisionToken = {
                     chatId,
                     messageId,

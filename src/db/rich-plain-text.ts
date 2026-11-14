@@ -1,7 +1,7 @@
 /**
- * The plain text of a rich message's blocks, for when the markdown renderer
- * failed on them. A shape-blind walk over the JSON, so it never throws,
- * whatever a later Bot API puts in the tree.
+ * The plain text of a rich message tree (rich blocks, or one RichText value),
+ * for when the markdown renderer failed on it. A shape-blind walk over the
+ * JSON, so it never throws, whatever a later Bot API puts in the tree.
  *
  * Only strings under the keys a reader sees as text are kept. Type names,
  * file ids, urls, alignments and user objects are skipped, so they never
@@ -36,3 +36,6 @@ const plainTextOf = (value: unknown, inline: boolean): string => {
 
 /** Plain text of rich message blocks, a line per block */
 export const richBlocksPlainText = (blocks: unknown): string => plainTextOf(blocks, false);
+
+/** Plain text of one RichText value, e.g. a quote's rich_texts */
+export const richTextPlainText = (richText: unknown): string => plainTextOf(richText, true);
