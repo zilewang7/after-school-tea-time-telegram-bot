@@ -51,6 +51,12 @@ export interface LayOutChunksResult {
     readonly currentMessageId: number;
     /** Every edit, send and delete went through */
     readonly allDelivered: boolean;
+    /**
+     * Every rich chunk of the layout is in the chat (edited or sent); one that
+     * was never tried because an earlier send failed counts as not delivered.
+     * Vacuously true for a layout without rich chunks.
+     */
+    readonly richDelivered: boolean;
 }
 
 /**
@@ -61,15 +67,18 @@ export interface LayOutChunksResult {
 export const layOutChunks = async (input: LayOutChunksInput): Promise<LayOutChunksResult> => {
     const { api, chatId, userMessageId, firstMessageId, chunks } = input;
     const messageIds = [...input.messageIds];
+    const richChunkCount = chunks.filter(isRichLayoutChunk).length;
     // An empty layout would delete the whole reply; callers guarantee one chunk
     if (chunks.length === 0) {
         return {
             messageIds,
             currentMessageId: messageIds[messageIds.length - 1] ?? firstMessageId,
             allDelivered: false,
+            richDelivered: true,
         };
     }
     let allDelivered = true;
+    let richChunksDelivered = 0;
 
     const editable = Math.min(chunks.length, messageIds.length);
     for (let index = 0; index < editable; index += 1) {
@@ -90,6 +99,7 @@ export const layOutChunks = async (input: LayOutChunksInput): Promise<LayOutChun
                   isFinal: true,
               });
         if (!delivered) allDelivered = false;
+        else if (isRichLayoutChunk(chunk)) richChunksDelivered += 1;
     }
 
     // The layout needs more messages than the chat has (the stream ended before
@@ -128,6 +138,7 @@ export const layOutChunks = async (input: LayOutChunksInput): Promise<LayOutChun
         }
         messageIds.push(sent.message_id);
         registerContinuation(chatId, sent.message_id, firstMessageId);
+        if (isRichLayoutChunk(chunk)) richChunksDelivered += 1;
     }
 
     // The layout needs fewer messages than the chat has: the reply must not keep
@@ -155,5 +166,6 @@ export const layOutChunks = async (input: LayOutChunksInput): Promise<LayOutChun
         messageIds,
         currentMessageId: messageIds[messageIds.length - 1] ?? firstMessageId,
         allDelivered,
+        richDelivered: richChunksDelivered === richChunkCount,
     };
 };

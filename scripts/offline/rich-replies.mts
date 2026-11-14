@@ -918,6 +918,67 @@ results.push(
 );
 
 results.push(
+    await runCase('case 9: a refused search link message leaves the delivered rich body as it is', async () => {
+        // The question was deleted while the answer streamed: every send that replies to it fails
+        let questionGone = false;
+        const started = await startReply({
+            richReplies: true,
+            refuse: (call) =>
+                questionGone && call.method === 'sendMessage'
+                    ? { error_code: 400, description: 'Bad Request: message to be replied not found' }
+                    : null,
+        });
+        // Past one entities message: a re-layout would need a second body message
+        const paragraphs = Array.from({ length: 3 }, (_, index) => `第 ${index + 1} 段：${'内容很长。'.repeat(300)}`);
+        const logs = await runReply(
+            started,
+            {
+                steps: [
+                    ...textSteps(paragraphs.map((paragraph, index) => (index === 0 ? paragraph : `\n\n${paragraph}`))),
+                    { chunk: { type: 'grounding', groundingMetadata: bigFooter() }, frame: false },
+                ],
+            },
+            {
+                beforeFinal: () => {
+                    questionGone = true;
+                },
+            }
+        );
+        const { telegram } = started;
+        const edits = editsOf(telegram, started.firstMessageId);
+        const finalEdit = edits.at(-1);
+        expect(
+            isRichCall(finalEdit ?? { method: '', payload: {} }) && richMarkdownOf(finalEdit) === paragraphs.join('\n\n'),
+            `the reply's message ends as the whole rich body (got ${json(finalEdit?.payload)})`
+        );
+        const linkSends = telegram.callsOf('sendMessage').filter((call) => textOf(call).startsWith(SEARCH_LINK_LABEL));
+        expect(linkSends.length === 1, `the search link message was tried once (got ${linkSends.length})`);
+        const linkSendIndex = linkSends[0] === undefined ? -1 : telegram.calls.indexOf(linkSends[0]);
+        const finalEditIndex = finalEdit === undefined ? -1 : telegram.calls.indexOf(finalEdit);
+        expect(
+            finalEditIndex !== -1 && finalEditIndex < linkSendIndex,
+            'no entities re-layout rewrites the body after the refusal'
+        );
+        expect(
+            telegram.calls.slice(linkSendIndex + 1).every((call) => call.method !== 'editMessageText' && call.method !== 'sendMessage'),
+            `nothing is sent or rewritten after it (got ${json(telegram.calls.slice(linkSendIndex + 1).map((call) => call.method))})`
+        );
+        const [version] = await versionsOf(started);
+        expect(
+            json(version?.messageIds) === json([started.firstMessageId]) && version?.currentMessageId === started.firstMessageId,
+            `the stored messages are the one in the chat (got ${json(version?.messageIds)})`
+        );
+        expect(version?.text === paragraphs.join('\n\n'), 'the stored text is the whole answer');
+        expect(fallbacksIn(logs).length === 0, `no fallback (got ${json(fallbacksIn(logs))})`);
+        expect(
+            logs.some((line) => line.startsWith('[rich] final layout did not fully deliver')),
+            'the missing link message is logged'
+        );
+        expect(deliveredIn(logs)[0]?.endsWith('link=false searchLink=true') === true, `the success line (got ${json(deliveredIn(logs))})`);
+    })
+);
+
+results.push(
     await runCase('case 10: a media-only reply makes no rich call at all', async () => {
         const started = await startReply({ richReplies: true });
         await runReply(started, { steps: [{ chunk: { type: 'image', imageData: PNG_BYTES }, frame: false }] });

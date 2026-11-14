@@ -3,10 +3,11 @@
  *
  * The decision is made once, when the chat context is built. The only change
  * afterwards is a one-way demotion to the entities path: a refused rich frame,
- * a body over the size budget or a final layout that did not go through hands
- * the reply to the code every other reply takes, which re-lays out over the
- * same messages. What is not body text (the placeholder, the thinking-link and
- * search-link messages, media and their captions) stays entities either way.
+ * a body over the size budget or a final rich body that did not go through
+ * hands the reply to the code every other reply takes, which re-lays out over
+ * the same messages. What is not body text (the placeholder, the thinking-link
+ * and search-link messages, media and their captions) stays entities either
+ * way, and one of those that fails never demotes a delivered body.
  */
 import type { Context } from 'grammy';
 import type { InlineKeyboardMarkup } from 'grammy/types';
@@ -90,10 +91,11 @@ export interface RichFinalInput {
 }
 
 /**
- * delivered: the body is in the chat as a rich message; media, finalize and
- * buttons follow. not-attempted: nothing was sent, the entities path delivers
- * as usual. rejected: the rich layout did not go through and the reply is
- * demoted; the entities path re-lays out over the messages it left.
+ * delivered: the body is in the chat as a rich message (a link message that
+ * failed is only logged); media, finalize and buttons follow. not-attempted:
+ * nothing was sent, the entities path delivers as usual. rejected: the rich
+ * body did not go through and the reply is demoted; the entities path
+ * re-lays out over the messages it left.
  */
 export type RichFinalOutcome = 'delivered' | 'not-attempted' | 'rejected';
 
@@ -192,9 +194,15 @@ export const deliverRichFinal = async (
     session.messageIds = linkEmitted ? [...session.messageIds.slice(0, 1), ...laidOut.messageIds] : laidOut.messageIds;
     session.currentMessageId = laidOut.currentMessageId;
 
-    if (!laidOut.allDelivered) {
+    if (!laidOut.richDelivered) {
         demoteToEntities(holder, 'final-rejected', refusal ?? 'not delivered');
         return 'rejected';
+    }
+    // The body is in the chat: a link message or a surplus delete that failed
+    // is only logged, as on the entities path. Demoting here would rewrite the
+    // delivered body as entities, and the same failure would cut it short.
+    if (!laidOut.allDelivered) {
+        console.warn(`[rich] final layout did not fully deliver chat=${holder.chatId} first=${session.firstMessageId}`);
     }
     console.log(
         `[rich] delivered chat=${holder.chatId} first=${session.firstMessageId} chars=${body.length} link=${link !== undefined} searchLink=${searchFolded}`

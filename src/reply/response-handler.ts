@@ -1714,8 +1714,8 @@ export const sendFinalResponse = async (
         imageCaption: response.imageCaption,
     };
 
-    // A rich reply lays its body out as one rich message; a refused layout is
-    // demoted and laid out again below over the messages it left
+    // A rich reply lays its body out as one rich message; a body that did not
+    // go through is demoted and laid out again below over the messages it left
     const richOutcome: RichFinalOutcome =
         chatContext.delivery === 'rich'
             ? await deliverRichFinal(chatContext, {

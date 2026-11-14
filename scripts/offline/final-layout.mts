@@ -642,13 +642,70 @@ results.push(
                 chunks: [{ richMarkdown: '正文' }],
                 onRichRejected: (error) => rejections.push(error),
             });
-            expect(!laidOut.allDelivered, `${kind}: not delivered`);
+            expect(!laidOut.allDelivered && !laidOut.richDelivered, `${kind}: not delivered`);
             expect(
                 rejections.length === 1 && rejections[0]?.description === `Bad Request: rich ${kind} refused`,
                 `${kind}: the refusal is reported once (got ${rejections.map((error) => error.description).join(', ')})`
             );
             expect(telegram.calls.length === 1, `${kind}: nothing else is tried`);
         }
+    })
+);
+
+results.push(
+    await runCase('layOutChunks: richDelivered tells the rich chunks apart from the entities ones around them', async () => {
+        const refuseSends = () =>
+            createFakeTelegram({
+                refuse: (call) =>
+                    call.method === 'sendMessage'
+                        ? { error_code: 400, description: 'Bad Request: message to be replied not found' }
+                        : null,
+            });
+        const linkChunk = { text: '🔍 链接', entities: [], linkPreviewOptions: { url: 'https://miniapp.test/g/x' } };
+
+        // The rich body is edited in, the link message after it fails
+        const after = refuseSends();
+        const rejections: GrammyError[] = [];
+        const bodyFirst = await layOutChunks({
+            api: after.api,
+            chatId: (nextLayoutChat -= 1),
+            userMessageId: USER_MESSAGE_ID,
+            firstMessageId: FIRST_MESSAGE_ID,
+            messageIds: [FIRST_MESSAGE_ID],
+            chunks: [{ richMarkdown: '正文' }, linkChunk],
+            onRichRejected: (error) => rejections.push(error),
+        });
+        expect(!bodyFirst.allDelivered && bodyFirst.richDelivered, 'a failed link message leaves the rich chunk delivered');
+        expect(rejections.length === 0, 'and is no rich refusal');
+        expect(JSON.stringify(bodyFirst.messageIds) === JSON.stringify([FIRST_MESSAGE_ID]), `the messages are the ones in the chat (got ${JSON.stringify(bodyFirst.messageIds)})`);
+
+        // A failed send ends the layout: the rich chunk after it is never tried
+        const before = refuseSends();
+        const linkFirst = await layOutChunks({
+            api: before.api,
+            chatId: (nextLayoutChat -= 1),
+            userMessageId: USER_MESSAGE_ID,
+            firstMessageId: FIRST_MESSAGE_ID,
+            messageIds: [],
+            chunks: [linkChunk, { richMarkdown: '正文' }],
+        });
+        expect(!linkFirst.allDelivered && !linkFirst.richDelivered, 'a rich chunk never tried is not delivered');
+        expect(
+            JSON.stringify(before.calls.map((call) => call.method)) === JSON.stringify(['sendMessage']),
+            `only the link message was tried (got ${JSON.stringify(before.calls.map((call) => call.method))})`
+        );
+
+        // Entities chunks alone: nothing rich to miss
+        const plain = createFakeTelegram();
+        const entitiesOnly = await layOutChunks({
+            api: plain.api,
+            chatId: (nextLayoutChat -= 1),
+            userMessageId: USER_MESSAGE_ID,
+            firstMessageId: FIRST_MESSAGE_ID,
+            messageIds: [FIRST_MESSAGE_ID],
+            chunks: ENTITIES_CHUNKS,
+        });
+        expect(entitiesOnly.allDelivered && entitiesOnly.richDelivered, 'an entities layout reports both delivered');
     })
 );
 
