@@ -3,7 +3,7 @@
  * Processes stream responses and updates Telegram messages
  */
 import { match } from 'ts-pattern';
-import type { Context } from 'grammy';
+import type { Context, GrammyError } from 'grammy';
 import type { InlineKeyboardMarkup } from 'grammy/types';
 import { to, isErr } from '../shared/result.js';
 import { formatErrorForUser } from '../shared/errors.js';
@@ -53,6 +53,7 @@ import {
 } from 'telegram-md-entities';
 import type { RenderedMessage } from 'telegram-md-entities';
 import { buildErrorDisplay } from '../telegram/formatters/error-display.js';
+import { buildRichStreamingFrame } from '../telegram/formatters/rich-reply-body.js';
 import {
     formatThinkingForStreaming,
     formatThinkingPreviewForLink,
@@ -69,6 +70,7 @@ import { buildFinalMessages, type FinalMessageChunk } from '../telegram/formatte
 import {
     buildGoogleSearchDocument,
     googleSearchFooterPlanOfDocument,
+    type GoogleSearchDocument,
 } from '../telegram/formatters/google-search-document.js';
 import { beginSearchLink } from '../panel/search/search-link-service.js';
 import {
@@ -113,6 +115,15 @@ import {
 } from './resume/keep-checkpoint.js';
 import { createReplayTracker } from './resume/replay-tracker.js';
 import type { ReplyResumeFacts } from './resume/reply-checkpoint.js';
+import {
+    deliverRichErrorDisplay,
+    deliverRichFinal,
+    demoteToEntities,
+    initialDeliveryOf,
+    RICH_MAX_SOURCE_LENGTH,
+    type ReplyDelivery,
+    type RichFinalOutcome,
+} from './rich-delivery.js';
 import { getToolConfig } from '../config/tool-config.js';
 import { stripPerQueryResultCitations } from '../shared/citation-markers.js';
 import { noteStreamChunk } from '../services/reply-metrics-draft.js';
@@ -174,6 +185,11 @@ export interface ChatContext {
     lastCheckpoint?: ToolLoopCheckpoint;
     /** What a kept checkpoint needs besides that, captured where the context and tools were built */
     resumeFacts?: ReplyResumeFacts;
+    /**
+     * How the body goes out: decided when the context is built, then only
+     * ever demoted from rich to entities (see rich-delivery.ts)
+     */
+    delivery: ReplyDelivery;
 }
 
 /**
@@ -184,7 +200,14 @@ export interface CreateChatContextOptions {
     model: string;
     /** Command type for retry routing */
     commandType?: CommandType;
+    /** The chat's rich replies switch as the reply's settings snapshot has it; off when absent */
+    richReplies?: boolean;
 }
+
+/** A refused streaming rich frame hands the reply to the entities path */
+const demoteOnRefusedFrame = (chatContext: ChatContext) => (error: GrammyError): void => {
+    demoteToEntities(chatContext, 'stream-rejected', error.description);
+};
 
 /**
  * Create chat context from grammy context
@@ -225,6 +248,7 @@ export const createChatContext = async (
         currentButtonState: ButtonState.PROCESSING,
         isFinalized: false,
         commandType: options.commandType ?? 'chat',
+        delivery: initialDeliveryOf(options.richReplies === true, options.commandType ?? 'chat'),
     };
 
     // Create StreamingEditor with idle update callback
@@ -241,6 +265,7 @@ export const createChatContext = async (
             }
             return buildResponseButtons(chatContext.currentButtonState);
         },
+        onRichRejected: demoteOnRefusedFrame(chatContext),
     });
 
     chatContext.editor = editor;
@@ -523,6 +548,7 @@ const createContinuationMessage = async (
             }
             return buildResponseButtons(chatContext.currentButtonState);
         },
+        onRichRejected: demoteOnRefusedFrame(chatContext),
     });
 
     // Replace the editor in context
@@ -794,6 +820,33 @@ export const processStream = async (
             session.thinkingLink !== undefined && !session.thinkingLink.emitted
                 ? session.thinkingLink
                 : undefined;
+
+        // A rich reply streams one rich frame per update and never splits; a
+        // pending link message stays entities (it needs its preview card). A
+        // frame over the budget demotes the reply here, and the entities code
+        // below takes over from this very chunk.
+        if (chatContext.delivery === 'rich' && linkForDisplay === undefined) {
+            const frame = buildRichStreamingFrame({
+                thinking: isContinuationMessage(chatContext) ? '' : state.thinkingBuffer,
+                text: cleanReplyBody(state.textBuffer),
+                answerStarted: state.textBuffer !== '',
+                resolveContextLink,
+            });
+            if (frame.length <= RICH_MAX_SOURCE_LENGTH) {
+                if (
+                    (state.textBuffer || state.thinkingBuffer) &&
+                    (toolStatusChanged || Date.now() - lastUpdateTime > updateInterval)
+                ) {
+                    await chatContext.editor.updateRich(frame, {
+                        replyMarkup: buildResponseButtons(chatContext.currentButtonState),
+                    });
+                    lastUpdateTime = Date.now();
+                }
+                continue;
+            }
+            demoteToEntities(chatContext, 'overflow', frame.length);
+        }
+
         const rendered = formatStateForDisplay(
             state,
             true,
@@ -1412,24 +1465,16 @@ interface ReplyFinalLayout {
 }
 
 /**
- * Render the reply's final layout from its complete text and thinking.
- *
- * The stream's messages are built from partial display buffers: the first one
- * closes at the streaming budget, so it holds the CoT as it stood at that
- * moment, and continuations never show thinking. The final layout is computed
- * again from the session's complete buffers, so the first message carries the
- * complete CoT — or, when the CoT renders to at least half a message and the
- * reply has to split, the long-CoT link message instead.
+ * The GoogleSearch footer of the final delivery, prepared once for whichever
+ * layout delivers it (rich or entities).
  */
-const buildReplyFinalLayout = async (
+const prepareFinalFooter = async (
     chatContext: ChatContext,
-    response: AIResponse,
-    resolveContextLink: ContextLinkResolver | undefined,
-    wasStoppedByUser: boolean
-): Promise<ReplyFinalLayout> => {
+    response: AIResponse
+): Promise<GoogleSearchDocument> => {
     const { session } = chatContext;
 
-    // The layout below and the stored version must describe the same footer: a
+    // The layout and the stored version must describe the same footer: a
     // caller that never streamed only has the response.
     if (session.groundingData.length === 0 && (response.groundingData ?? []).length > 0) {
         session.groundingData = response.groundingData ?? [];
@@ -1454,6 +1499,28 @@ const buildReplyFinalLayout = async (
         });
         if (link !== null) session.searchLink = link;
     }
+    return googleSearchDocument;
+};
+
+/**
+ * Render the reply's final layout from its complete text and thinking.
+ *
+ * The stream's messages are built from partial display buffers: the first one
+ * closes at the streaming budget, so it holds the CoT as it stood at that
+ * moment, and continuations never show thinking. The final layout is computed
+ * again from the session's complete buffers, so the first message carries the
+ * complete CoT — or, when the CoT renders to at least half a message and the
+ * reply has to split, the long-CoT link message instead.
+ */
+const buildReplyFinalLayout = async (
+    chatContext: ChatContext,
+    response: AIResponse,
+    resolveContextLink: ContextLinkResolver | undefined,
+    wasStoppedByUser: boolean,
+    googleSearchDocument: GoogleSearchDocument
+): Promise<ReplyFinalLayout> => {
+    const { session } = chatContext;
+
     // The stream syncs the complete buffers on every chunk; a caller that never
     // streamed (a direct final delivery) only has the response.
     const fullText = session.textBuffer !== '' ? session.textBuffer : response.text;
@@ -1552,6 +1619,62 @@ const buildReplyFinalLayout = async (
     };
 };
 
+/** The captions of the reply's one attachment, rendered once */
+interface ReplyCaptions {
+    readonly image: ImageCaptionFields;
+    readonly file: ImageCaptionFields;
+    readonly widget: ImageCaptionFields;
+}
+
+/**
+ * Once the reply's text layout is in the chat: its one attachment, the
+ * finalization, then the buttons on the reply's last message (or the
+ * edit-detected heal when it has none).
+ */
+const finishAfterTextLayout = async (
+    chatContext: ChatContext,
+    response: AIResponse,
+    captions: ReplyCaptions,
+    finalizeOptions: FinalizeOptions
+): Promise<void> => {
+    const { chatId, session } = chatContext;
+    const hasMedia =
+        response.images.length > 0 ||
+        (response.stickers?.length ?? 0) > 0 ||
+        (response.files?.length ?? 0) > 0 ||
+        (response.widgets?.length ?? 0) > 0;
+
+    if (hasMedia) {
+        await deliverReplyMedia(
+            chatContext,
+            response,
+            captions.image,
+            captions.file,
+            captions.widget
+        );
+    }
+
+    await finalizeKeepingCheckpoint(chatContext, finalizeOptions, response.streamEnded === true);
+
+    const getBotResponseForButtons = async () => {
+        const { getBotResponse } = await import('../db/index.js');
+        return getBotResponse(chatId, session.firstMessageId);
+    };
+    const botResponse = await getBotResponseForButtons();
+    const finalButtonState = botResponse?.buttonState ?? ButtonState.NONE;
+    if (finalButtonState !== ButtonState.NONE) {
+        const finalButtons = buildResponseButtons(
+            finalButtonState,
+            botResponse?.currentVersionIndex ?? 0,
+            botResponse?.getVersions().length ?? 1,
+            { resumable: showsResumable(chatId, botResponse) }
+        );
+        await editCurrentMessageButtons(chatContext, finalButtons);
+    } else {
+        await healEditDetectedButtons(chatContext);
+    }
+};
+
 /**
  * Send final response (text and/or images)
  * Handles the last message in the chain (may be first or continuation)
@@ -1574,28 +1697,49 @@ export const sendFinalResponse = async (
     // A stop with a checkpoint at hand shows and stores the kept rounds' tools
     if (wasStoppedByUser) fillStoppedToolUsage(chatContext);
     const agentStats = wasStoppedByUser ? session.agentStats ?? response.agentStats : response.agentStats;
+    // A stopped reply shows the tools of its kept rounds
+    const finalResponse: AIResponse = { ...response, agentStats };
+    const googleSearchDocument = await prepareFinalFooter(chatContext, finalResponse);
 
-    // The final layout is rendered from the complete reply, not from the
-    // stream's leftover display buffers: see buildReplyFinalLayout.
-    const layout = await buildReplyFinalLayout(
-        chatContext,
-        // A stopped reply shows the tools of its kept rounds
-        { ...response, agentStats },
-        resolveContextLink,
-        wasStoppedByUser
-    );
-    const finalChunks = layout.chunks;
     // Only the first image is delivered, and it carries the reply's image caption
     const imageCaptionFields = buildImageCaption(response.imageCaption, resolveContextLink);
     // The file's caption rides on the file itself, so a version switch keeps it
     const fileCaptionFields = buildImageCaption(response.files?.[0]?.caption, resolveContextLink);
     // The widget's caption sits below the card; the HTML itself is final
     const widgetCaptionFields = buildImageCaption(response.widgets?.[0]?.caption, resolveContextLink);
+    const captions: ReplyCaptions = { image: imageCaptionFields, file: fileCaptionFields, widget: widgetCaptionFields };
     const finalizeOptions = {
         modelParts: response.modelParts,
         wasStoppedByUser,
         imageCaption: response.imageCaption,
     };
+
+    // A rich reply lays its body out as one rich message; a refused layout is
+    // demoted and laid out again below over the messages it left
+    const richOutcome: RichFinalOutcome =
+        chatContext.delivery === 'rich'
+            ? await deliverRichFinal(chatContext, {
+                  response: finalResponse,
+                  googleSearch: googleSearchDocument,
+                  wasStoppedByUser,
+                  resolveContextLink,
+              })
+            : 'not-attempted';
+    if (richOutcome === 'delivered') {
+        await finishAfterTextLayout(chatContext, response, captions, finalizeOptions);
+        return;
+    }
+
+    // The final layout is rendered from the complete reply, not from the
+    // stream's leftover display buffers: see buildReplyFinalLayout.
+    const layout = await buildReplyFinalLayout(
+        chatContext,
+        finalResponse,
+        resolveContextLink,
+        wasStoppedByUser,
+        googleSearchDocument
+    );
+    const finalChunks = layout.chunks;
     let finalMessage: FinalMessageChunk = finalChunks[0] ?? { text: '', entities: [] };
 
     if (response.groundingData?.length) {
@@ -1605,12 +1749,8 @@ export const sendFinalResponse = async (
     // The final layout replaces the messages the stream left behind: the first
     // message gets the complete CoT (or the long-CoT link) and every text
     // message is rewritten to its final chunk, so the live chat matches a replay.
-    if (layout.reLayout && finalChunks.length > 0) {
-        const hasMedia =
-            response.images.length > 0 ||
-            (response.stickers?.length ?? 0) > 0 ||
-            (response.files?.length ?? 0) > 0 ||
-            (response.widgets?.length ?? 0) > 0;
+    // After a refused rich layout the messages must be rewritten in any case.
+    if ((layout.reLayout || richOutcome === 'rejected') && finalChunks.length > 0) {
         console.log(
             `[response-handler] Final layout replaces the streamed messages: chunks=${finalChunks.length} messages=${session.messageIds.length}`
         );
@@ -1635,35 +1775,7 @@ export const sendFinalResponse = async (
             console.warn('[response-handler] Final layout did not fully deliver');
         }
 
-        if (hasMedia) {
-            await deliverReplyMedia(
-                chatContext,
-                response,
-                imageCaptionFields,
-                fileCaptionFields,
-                widgetCaptionFields
-            );
-        }
-
-        await finalizeKeepingCheckpoint(chatContext, finalizeOptions, response.streamEnded === true);
-
-        const getBotResponseForButtons = async () => {
-            const { getBotResponse } = await import('../db/index.js');
-            return getBotResponse(chatId, session.firstMessageId);
-        };
-        const botResponse = await getBotResponseForButtons();
-        const finalButtonState = botResponse?.buttonState ?? ButtonState.NONE;
-        if (finalButtonState !== ButtonState.NONE) {
-            const finalButtons = buildResponseButtons(
-                finalButtonState,
-                botResponse?.currentVersionIndex ?? 0,
-                botResponse?.getVersions().length ?? 1,
-                { resumable: showsResumable(chatId, botResponse) }
-            );
-            await editCurrentMessageButtons(chatContext, finalButtons);
-        } else {
-            await healEditDetectedButtons(chatContext);
-        }
+        await finishAfterTextLayout(chatContext, response, captions, finalizeOptions);
         return;
     }
 
@@ -2009,6 +2121,24 @@ export const handleResponseError = async (
         { resumable: showsResumable(chatId, botResponse) }
     );
 
+    // A rich reply shows the error in rich form too, unless its link message
+    // is still pending (that one stays entities). Not delivered: demoted, and
+    // the entities error edit below runs as for any reply.
+    if (chatContext.delivery === 'rich' && pendingLink === undefined) {
+        const delivered = await deliverRichErrorDisplay(chatContext, {
+            partialText,
+            partialThinking: isContinuationMessage(chatContext) ? undefined : partialThinking,
+            errorMessage: formatErrorForUser(error),
+            keptRounds: keptCheckpoint?.checkpoint.loop.completedRounds,
+            errorButtons,
+            resolveContextLink: contextLinkResolverFor(chatContext),
+        });
+        if (delivered) {
+            console.error('[response-handler]', error);
+            return;
+        }
+    }
+
     // Edit with retry button (delivery retries handled by the edit coordinator)
     const delivered = await editor.updateContent(errorRendered.text, {
         entities: errorRendered.entities,
@@ -2031,7 +2161,8 @@ export const handleResponseError = async (
 export const createChatContextForRetry = (
     ctx: Context,
     session: BotMessageSession,
-    commandType: CommandType = 'chat'
+    commandType: CommandType = 'chat',
+    options: { readonly richReplies?: boolean } = {}
 ): ChatContext => {
     const chatId = session.chatId;
 
@@ -2051,6 +2182,8 @@ export const createChatContextForRetry = (
         currentButtonState: ButtonState.PROCESSING,
         isFinalized: false,
         commandType,
+        // The switch as the click found it, not as the first version had it
+        delivery: initialDeliveryOf(options.richReplies === true, commandType),
     };
 
     // Create StreamingEditor with idle update callback
@@ -2067,6 +2200,7 @@ export const createChatContextForRetry = (
             }
             return buildResponseButtons(chatContext.currentButtonState);
         },
+        onRichRejected: demoteOnRefusedFrame(chatContext),
     });
 
     chatContext.editor = editor;
