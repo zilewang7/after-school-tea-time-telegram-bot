@@ -93,6 +93,10 @@ restore_previous_dependencies() {
         return 0
     fi
     log "putting back the packages of the previous build"
+    # Without a marker, a restore that fails or is killed halfway installs and
+    # restores again on the next start, instead of that start taking these
+    # packages for the ones of the checked-out commit
+    rm -f "$INSTALL_MARKER"
     local manifest restored=1
     for manifest in $(cd dist/.deps && find . -type f | sed 's|^\./||'); do
         cp "dist/.deps/$manifest" "$manifest" || restored=0
