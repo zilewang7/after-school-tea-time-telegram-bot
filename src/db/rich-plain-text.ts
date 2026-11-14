@@ -37,5 +37,5 @@ const plainTextOf = (value: unknown, inline: boolean): string => {
 /** Plain text of rich message blocks, a line per block */
 export const richBlocksPlainText = (blocks: unknown): string => plainTextOf(blocks, false);
 
-/** Plain text of one RichText value, e.g. a quote's rich_texts */
+/** Plain text of one RichText value, e.g. one entry of a quote's rich_texts */
 export const richTextPlainText = (richText: unknown): string => plainTextOf(richText, true);

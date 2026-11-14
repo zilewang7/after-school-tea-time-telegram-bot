@@ -1,8 +1,9 @@
 /**
  * A reply's quote as stored (the quoteText column), through a new message and
  * through an edit. Bot API 10.4: a quote chosen from a rich message may come
- * with empty text and its content in rich_texts. grammy 1.46 does not declare
- * that field yet, so those quotes are built with JSON.parse.
+ * with empty text and its content in rich_texts, one entry per quoted text (a
+ * paragraph, a table cell, a caption...). grammy 1.46 does not declare that
+ * field yet, so those quotes are built with JSON.parse.
  */
 import type { Message, TextQuote, Update } from 'grammy/types';
 import { expect, reportResults, runCase, setupOfflineDb, takeMessageId, type CaseResult } from './harness.mts';
@@ -17,6 +18,7 @@ await setupOfflineDb();
 const { autoSave, autoUpdate } = await import('../../src/db/autoSave.js');
 const { getMessage } = await import('../../src/db/index.js');
 const { richTextPlainText } = await import('../../src/db/rich-plain-text.js');
+const { renderQuoteRichTexts } = await import('../../src/db/rich-message-text.js');
 
 const CHAT_ID = -1007800000002;
 const SENT_AT = 1_800_000_000;
@@ -110,6 +112,28 @@ results.push(
     })
 );
 
+/** A quote across two paragraphs: one RichText per quoted text, then one that holds no text */
+const TWO_PARAGRAPHS_JSON = '[["第一段的", {"type":"bold","text":"结尾"}], "第二段的开头", {"type":"anchor","name":"a"}]';
+
+results.push(
+    await runCase('every entry of rich_texts is a quoted text of its own, on a line of its own', async () => {
+        const messageId = takeMessageId();
+        const stored = await storedQuoteOf(
+            replyUpdate(messageId, JSON.parse(`{"text":"","position":0,"rich_texts":${TWO_PARAGRAPHS_JSON}}`)),
+            messageId
+        );
+        expect(stored === '第一段的**结尾**\n第二段的开头', `a line per paragraph, none for the empty entry (${JSON.stringify(stored)})`);
+
+        const throwingRenderer = (): string => {
+            throw new TypeError("Cannot read properties of undefined (reading 'type')");
+        };
+        const plain = await quietly(async () =>
+            renderQuoteRichTexts(JSON.parse(`{"text":"","position":0,"rich_texts":${TWO_PARAGRAPHS_JSON}}`), `${CHAT_ID}/1`, throwingRenderer)
+        );
+        expect(plain === '第一段的结尾\n第二段的开头', `the plain text fallback keeps the lines (${JSON.stringify(plain)})`);
+    })
+);
+
 results.push(
     await runCase('an edit stores a quote chosen from a rich message the same way', async () => {
         const messageId = takeMessageId();
@@ -139,7 +163,7 @@ results.push(
 );
 
 results.push(
-    await runCase('the plain text fallback of rich_texts keeps every visible string', () => {
+    await runCase('the plain text of one entry of rich_texts keeps every visible string', () => {
         const plain = richTextPlainText(JSON.parse(`[
             ["选中的 ", {"type": "bold", "text": "加粗"}],
             {"type": "custom_emoji", "custom_emoji_id": "emoji-id", "alternative_text": "👍"},

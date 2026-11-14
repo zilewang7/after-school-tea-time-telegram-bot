@@ -49,23 +49,38 @@ export const renderRichMessage = (
     ));
 };
 
+/** One RichText → markdown; injectable so the offline cases can make it throw */
+export type RichTextRenderer = (richText: RichTextNode) => string;
+
 /**
  * TextQuote.rich_texts: the quote was chosen from a rich message (Bot API
  * 10.4). grammy 1.46 does not declare it yet, so it is read structurally.
  */
-const quoteRichTexts = (quote: TextQuote): RichTextNode | undefined => {
+const quoteRichTexts = (quote: TextQuote): RichTextNode[] | undefined => {
     if (!('rich_texts' in quote)) return undefined;
     const richTexts: unknown = quote.rich_texts;
     return Array.isArray(richTexts) ? richTexts : undefined;
 };
 
+/**
+ * Each entry of rich_texts is a quoted text of its own, in the order they
+ * appear (a paragraph, a heading, a table cell, a caption...): a line each,
+ * or two paragraphs would run together.
+ */
+const joinQuotedTexts = (parts: readonly string[]): string =>
+    parts.filter((part) => part.trim().length > 0).join('\n');
+
 /** Markdown of a quote's rich_texts; undefined when it has none or they hold no text */
-export const renderQuoteRichTexts = (quote: TextQuote, messageKey: string): string | undefined => {
+export const renderQuoteRichTexts = (
+    quote: TextQuote,
+    messageKey: string,
+    renderRichText: RichTextRenderer = richTextToMarkdown
+): string | undefined => {
     const richTexts = quoteRichTexts(quote);
     if (richTexts === undefined) return undefined;
     return nonEmpty(renderedOrPlainText(
-        () => richTextToMarkdown(richTexts),
-        () => richTextPlainText(richTexts),
+        () => joinQuotedTexts(richTexts.map((entry) => renderRichText(entry))),
+        () => joinQuotedTexts(richTexts.map((entry) => richTextPlainText(entry))),
         `the quote of message ${messageKey}`
     ));
 };
