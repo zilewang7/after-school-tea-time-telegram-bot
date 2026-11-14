@@ -232,9 +232,11 @@ export interface RichErrorInput {
 }
 
 /**
- * The error display as one final rich edit with the retry buttons. false
- * means it is not in the chat and the reply is demoted: the caller shows the
- * entities error display instead.
+ * The error display as one final rich edit with the retry buttons. One over
+ * the budget stays rich: it gives up the thinking quote, then the end of the
+ * answer (the entities display would keep only its first 3,400 characters).
+ * false means Telegram did not take it and the reply is demoted: the caller
+ * shows the entities error display instead.
  */
 export const deliverRichErrorDisplay = async (
     holder: RichDeliveryHolder,
@@ -247,11 +249,8 @@ export const deliverRichErrorDisplay = async (
         // The same lines the entities display ends with, display only
         errorLines: input.keptRounds === undefined ? errorLine : withKeptRoundsLine(errorLine, input.keptRounds),
         resolveContextLink: input.resolveContextLink,
+        maxLength: RICH_MAX_SOURCE_LENGTH,
     });
-    if (display.length > RICH_MAX_SOURCE_LENGTH) {
-        demoteToEntities(holder, 'overflow', display.length);
-        return false;
-    }
     let refusal: string | undefined;
     const delivered = await holder.editor.updateRich(display, {
         replyMarkup: input.errorButtons,

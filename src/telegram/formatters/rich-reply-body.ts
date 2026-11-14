@@ -25,6 +25,7 @@ import {
 } from './google-search-document.js';
 import { renderThinkingQuote } from './quoted-render.js';
 import { joinRichBlocks } from './rich-blocks.js';
+import { splitRawByFits } from './smart-splitter.js';
 import { formatThinkingForStreaming } from './thinking-display.js';
 import { buildToolRecordSections } from './tool-records-formatter.js';
 
@@ -151,12 +152,50 @@ export interface RichErrorDisplayInput {
     /** The error line (with the kept-rounds line), rendered as the entities display renders it */
     readonly errorLines: RenderedMessage;
     readonly resolveContextLink?: ContextLinkResolver;
+    /** The longest display (markdown source length) the caller can send */
+    readonly maxLength: number;
 }
 
-/** What survived the failure, then the italic error lines */
-export const buildRichErrorDisplay = (input: RichErrorDisplayInput): string =>
-    joinRichBlocks([
-        thinkingQuoteBlock(input.thinking, input.resolveContextLink),
-        input.text === '' ? '' : answerMarkdown(input.text, 'strict'),
-        toRichHtml(input.errorLines),
-    ]);
+/** The paragraph that stands for the end of an answer the error display cut */
+const CUT_MARK_BLOCK = toRichHtml(plainText('…'));
+
+/** Passes the cut gets before the display falls back to the error lines alone */
+const MAX_CUT_PASSES = 8;
+
+/**
+ * The answer's head with a '…' paragraph, then the error lines, within
+ * maxLength. The cut prefers a paragraph boundary (the splitter falls back to
+ * a line, then a character). The rendered answer runs about as long as its
+ * source, so each pass cuts what the last one was over by; one or two settle it.
+ */
+const cutAnswerToFit = (text: string, errorBlock: string, uncutLength: number, maxLength: number): string => {
+    let head = text;
+    let overflow = uncutLength - maxLength;
+    for (let pass = 0; pass < MAX_CUT_PASSES && head !== ''; pass += 1) {
+        const target = head.length - overflow;
+        const kept = target <= 0 ? '' : splitRawByFits(head, (prefix) => prefix.length <= target).currentPart;
+        // The blank line after the last whole paragraph belongs to the cut
+        head = kept.replace(/\n+$/, '');
+        const display = joinRichBlocks([head === '' ? '' : answerMarkdown(head, 'strict'), CUT_MARK_BLOCK, errorBlock]);
+        if (display.length <= maxLength) return display;
+        overflow = display.length - maxLength;
+    }
+    return joinRichBlocks([CUT_MARK_BLOCK, errorBlock]);
+};
+
+/**
+ * What survived the failure, then the italic error lines. Over maxLength the
+ * thinking quote goes first, then the end of the answer (see cutAnswerToFit).
+ * Display only: the stored version keeps the whole text.
+ */
+export const buildRichErrorDisplay = (input: RichErrorDisplayInput): string => {
+    const quoteBlock = thinkingQuoteBlock(input.thinking, input.resolveContextLink);
+    const answerBlock = input.text === '' ? '' : answerMarkdown(input.text, 'strict');
+    const errorBlock = toRichHtml(input.errorLines);
+    const whole = joinRichBlocks([quoteBlock, answerBlock, errorBlock]);
+    if (whole.length <= input.maxLength) return whole;
+    const withoutQuote = joinRichBlocks([answerBlock, errorBlock]);
+    if (withoutQuote.length <= input.maxLength) return withoutQuote;
+    const uncutLength = joinRichBlocks([answerBlock, CUT_MARK_BLOCK, errorBlock]).length;
+    return cutAnswerToFit(input.text, errorBlock, uncutLength, input.maxLength);
+};

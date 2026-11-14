@@ -68,6 +68,8 @@ const checks = await import('../../src/reply/resume/continue-checks.js');
 const { THINKING_LINK_LABEL } = await import('../../src/telegram/formatters/thinking-link.js');
 const { SEARCH_LINK_LABEL } = await import('../../src/telegram/formatters/google-search-link.js');
 const { RICH_MAX_SOURCE_LENGTH } = await import('../../src/reply/rich-delivery.js');
+const { buildRichErrorDisplay } = await import('../../src/telegram/formatters/rich-reply-body.js');
+const { buildErrorLine } = await import('../../src/telegram/formatters/error-display.js');
 
 const USER_ID = 603421700;
 const OWNER = { userId: OWNER_USER_ID, isOwner: true };
@@ -143,6 +145,10 @@ const steppedStream = (telegram: FakeTelegram, script: FailingStream): AsyncIter
 });
 
 const textSteps = (texts: readonly string[]): StreamStep[] => texts.map((content) => ({ chunk: textChunk(content) }));
+
+/** One chunk per paragraph; the answer is the paragraphs joined by a blank line */
+const paragraphSteps = (paragraphs: readonly string[]): StreamStep[] =>
+    textSteps(paragraphs.map((paragraph, index) => (index === 0 ? paragraph : `\n\n${paragraph}`)));
 
 const thinkingSteps = (thinking: string, chunkSize = 500): StreamStep[] => {
     const steps: StreamStep[] = [];
@@ -982,7 +988,7 @@ results.push(
             started,
             {
                 steps: [
-                    ...textSteps(paragraphs.map((paragraph, index) => (index === 0 ? paragraph : `\n\n${paragraph}`))),
+                    ...paragraphSteps(paragraphs),
                     { chunk: { type: 'grounding', groundingMetadata: bigFooter() }, frame: false },
                 ],
             },
@@ -1077,6 +1083,80 @@ results.push(
             fallbacks.length === 1 && fallbacks[0]?.endsWith('reason=error-rejected detail=Bad Request: refused') === true,
             `one fallback line (got ${json(fallbacks)})`
         );
+    })
+);
+
+/** A failure with about 500 characters of description: the error line's own limit */
+const longFailure = (): Error =>
+    new Error(`got status: 500 Internal Server Error ${'服务端返回了很长的错误说明。'.repeat(40)}`);
+
+/** The length of the error display with nothing left out */
+const uncutErrorDisplayLength = (text: string, thinking: string | undefined, failure: Error): number =>
+    buildRichErrorDisplay({
+        text,
+        thinking,
+        errorLines: buildErrorLine(failure.message),
+        maxLength: Number.POSITIVE_INFINITY,
+    }).length;
+
+/** Where the error line starts in a display */
+const ERROR_LINE_START = '\n\n<p><i>⚠ got status: 500 Internal Server Error';
+
+results.push(
+    await runCase('case 11: an error display over the budget stays rich: the thinking quote goes first', async () => {
+        const started = await startReply({ richReplies: true });
+        const thinking = `先想清楚。${'思考'.repeat(1_000)}`;
+        // Every frame fits; the error line is what takes the display over
+        const paragraphs = Array.from({ length: 7 }, (_, index) => `第 ${index + 1} 段：${'内容很长。'.repeat(793)}`);
+        const answer = paragraphs.join('\n\n');
+        const failure = longFailure();
+        const logs = await runReply(started, { steps: [{ chunk: thinkingChunk(thinking) }, ...paragraphSteps(paragraphs)], failure });
+        expect(
+            uncutErrorDisplayLength(answer, thinking, failure) > RICH_MAX_SOURCE_LENGTH,
+            `with its thinking quote the display is over the budget (got ${uncutErrorDisplayLength(answer, thinking, failure)})`
+        );
+        const errorEdit = editsOf(started.telegram, started.firstMessageId).at(-1);
+        const markdown = richMarkdownOf(errorEdit) ?? '';
+        expect(
+            errorEdit !== undefined && isRichCall(errorEdit) && markdown.length <= RICH_MAX_SOURCE_LENGTH,
+            `the error display is rich and fits (got ${markdown.length} characters)`
+        );
+        expect(
+            markdown.startsWith(`${answer}${ERROR_LINE_START}`) && !markdown.includes('<blockquote'),
+            `the whole answer, then the error line, no thinking quote (got ${json(markdown.slice(0, 40))}…${json(markdown.slice(-80))})`
+        );
+        expect(json(labelsOf(errorEdit)) === json(['重试']), `with the retry button (got ${json(labelsOf(errorEdit))})`);
+        expect(fallbacksIn(logs).length === 0, `no fallback (got ${json(fallbacksIn(logs))})`);
+        const [version] = await versionsOf(started);
+        expect(version?.errorMessage !== undefined && version.text === answer, 'the version stores the whole answer and the error');
+    })
+);
+
+results.push(
+    await runCase('case 11: an answer too long for the error display keeps its head up to a paragraph, then …', async () => {
+        const started = await startReply({ richReplies: true });
+        const paragraphs = Array.from({ length: 7 }, (_, index) => `第 ${index + 1} 段：${'内容很长。'.repeat(849)}`);
+        const answer = paragraphs.join('\n\n');
+        const failure = longFailure();
+        const logs = await runReply(started, { steps: paragraphSteps(paragraphs), failure });
+        expect(
+            uncutErrorDisplayLength(answer, undefined, failure) > RICH_MAX_SOURCE_LENGTH,
+            `the answer and the error line are over the budget (got ${uncutErrorDisplayLength(answer, undefined, failure)})`
+        );
+        const errorEdit = editsOf(started.telegram, started.firstMessageId).at(-1);
+        const markdown = richMarkdownOf(errorEdit) ?? '';
+        expect(
+            errorEdit !== undefined && isRichCall(errorEdit) && markdown.length <= RICH_MAX_SOURCE_LENGTH,
+            `the error display is rich and fits (got ${markdown.length} characters)`
+        );
+        expect(
+            markdown.startsWith(`${paragraphs.slice(0, 6).join('\n\n')}\n\n<p>…</p>${ERROR_LINE_START}`),
+            `six whole paragraphs, the cut mark, then the error line (got ${json(markdown.slice(0, 40))}…${json(markdown.slice(-600, -480))})`
+        );
+        expect(json(labelsOf(errorEdit)) === json(['重试']), `with the retry button (got ${json(labelsOf(errorEdit))})`);
+        expect(fallbacksIn(logs).length === 0, `no fallback (got ${json(fallbacksIn(logs))})`);
+        const [version] = await versionsOf(started);
+        expect(version?.errorMessage !== undefined && version.text === answer, 'the version stores the whole answer and the error');
     })
 );
 
