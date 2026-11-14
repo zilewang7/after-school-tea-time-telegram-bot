@@ -51,13 +51,11 @@ const ONE_ATTEMPT = '生图工具只调用一次，失败了不要重试，直�
 
 /** src/reply/tools/generate-image-tool.ts: `[generate_image] 1 reference(s), aspect=auto: image/png 734012B` */
 const GENERATION_LINE = /\[generate_image\] (\d+) reference\(s\), aspect=\S+: (.+)$/;
-/** src/ai/platforms/gemini-platform.ts: `[gemini] gemini-3.8-flash offers 3 client tool(s)` */
-const GEMINI_OFFER_LINE = /\[gemini\] \S+ offers (\d+) client tool/;
-/** src/ai/mcp/client.ts: `[mcp] Server "context7-mcp" connected: 2 tool(s) [...]` */
-const MCP_CONNECTED_LINE = /\[mcp\] Server "([^"]+)" connected: (\d+) tool\(s\)/;
-/** src/reply/response-handler.ts */
-const PHOTO_SENT_LINE = '[response-handler] Sending photo:';
-const DOCUMENT_FALLBACK_LINE = 'sendPhoto failed, fallback to sendDocument';
+/** src/ai/platforms/gemini-platform.ts: `[gemini] gemini-3.8-flash offers 3 client tool(s): a, b, c` */
+const GEMINI_OFFER_LINE = /\[gemini\] \S+ offers \d+ client tool\(s\): (.*)$/;
+/** src/telegram/reply-image-send.ts */
+const PHOTO_SENT_LINE = '[reply-image] sending photo:';
+const DOCUMENT_FALLBACK_LINE = '[reply-image] sendPhoto failed, sending a document';
 /** src/reply/tools/send-sms-tool.ts, and the per-call line of src/ai/tools/turn-tools.ts */
 const SMS_RAN_LINES = ['[sms] chat ', `[tools] ${SEND_SMS} took`];
 
@@ -76,20 +74,12 @@ const generationLinesIn = (lines: readonly string[]): GenerationLine[] =>
 const describeGenerations = (generations: readonly GenerationLine[]): string =>
     generations.map((line) => `${line.references} ref(s) → ${line.outcome}`).join('; ') || 'no generation logged';
 
-const offeredToolCountsIn = (lines: readonly string[]): number[] =>
+/** The tool names each logged Gemini turn was offered */
+const offeredToolNamesIn = (lines: readonly string[]): string[][] =>
     lines.flatMap((line) => {
         const found = GEMINI_OFFER_LINE.exec(line);
-        return found ? [Number(found[1])] : [];
+        return found ? [(found[1] ?? '').split(', ').filter((name) => name !== '')] : [];
     });
-
-/** How many tools context7 listed when the bot connected; undefined when not logged */
-const context7ToolCountIn = (lines: readonly string[]): number | undefined =>
-    lines
-        .flatMap((line) => {
-            const found = MCP_CONNECTED_LINE.exec(line);
-            return found && found[1]?.includes('context7') ? [Number(found[2])] : [];
-        })
-        .at(-1);
 
 // ---------------------------------------------------------------------------
 // Run state and helpers
@@ -430,8 +420,7 @@ export const toolCases: E2eCase[] = [
     {
         // The test instance inherits the production env, so SMS has to be off
         // by default there. Nothing stores the tool list a turn was offered, but
-        // the Gemini log line counts it: context7's tools + generate_image, and
-        // send_sms_to_owner would make it one more.
+        // the Gemini log line names it.
         name: 'tools: the test instance never offers send_sms_to_owner',
         tools: true,
         body: async () => {
@@ -447,19 +436,13 @@ export const toolCases: E2eCase[] = [
                 `the container log shows no ${SEND_SMS} call`
             );
 
-            const offered = offeredToolCountsIn((await readContainerLogLines(runStartedAt)) ?? []);
+            const offered = offeredToolNamesIn((await readContainerLogLines(runStartedAt)) ?? []);
             if (offered.length === 0) {
-                skip('日志里没有 "[gemini] … offers N client tool(s)"，数不出提供了几个工具，本条跳过');
+                skip('日志里没有 "[gemini] … offers N client tool(s): …"，看不出提供了哪些工具，本条跳过');
             }
-            const context7Tools =
-                context7ToolCountIn(wholeLog) ?? skip('日志里没有 context7 的连接记录，算不出应有的工具数，本条跳过');
-            // generate_image + search_images + fetch_image + send_image, unless
-            // the media tools are switched off for the test instance
-            const mediaTools = process.env.IMAGE_TOOLS === '0' ? 1 : 4;
-            const expected = context7Tools + mediaTools;
             expect(
-                offered.every((count) => count === expected),
-                `every Gemini tool turn offered ${expected} tools: context7's ${context7Tools} + ${mediaTools} media tool(s); ${SEND_SMS} would make one more (offered: ${offered.join(', ')})`
+                offered.every((names) => names.length > 0 && !names.includes(SEND_SMS)),
+                `no Gemini tool turn offered ${SEND_SMS} (offered: ${offered.map((names) => names.join(',')).join(' | ')})`
             );
         },
     },

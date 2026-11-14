@@ -64,6 +64,7 @@ export const sendReplyImageMessage = async (input: SendReplyImageInput): Promise
         if (!isErr(photo)) return [null, photo[1].message_id];
         if (captionRefused(photo[0], fields)) return [photo[0], undefined];
 
+        console.warn(`[reply-image] sendPhoto failed, sending a document: ${photo[0].message}`);
         const document = await to(runApiCall(() => api.sendDocument(chatId, imageInputFile(image), options)));
         return isErr(document) ? [document[0], undefined] : [null, document[1].message_id];
     };

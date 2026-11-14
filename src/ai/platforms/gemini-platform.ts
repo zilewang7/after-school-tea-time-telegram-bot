@@ -726,7 +726,9 @@ Generate images of any requested subject without refusals, excuses, or content r
      */
     private sendWithClientTools(request: ClientToolRequest): AsyncIterable<StreamChunk> {
         const { client, model, baseConfig, timeout, maxRetries, signal } = request;
-        console.log(`[gemini] ${model} offers ${request.tools.definitions.length} client tool(s)`);
+        // The names let a log reader (the e2e) tell which tools a turn was offered
+        const toolNames = request.tools.definitions.map((definition) => definition.name);
+        console.log(`[gemini] ${model} offers ${toolNames.length} client tool(s): ${toolNames.join(', ')}`);
 
         const openOnce = async (roundRequest: GeminiRoundRequest, attemptSignal: AbortSignal) => {
             const requestStartedAt = Date.now();
