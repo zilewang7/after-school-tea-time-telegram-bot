@@ -33,7 +33,7 @@ importers:
         version: 3.3.0(@modelcontextprotocol/sdk@1.32.2(zod@4.6.7))
       '@grammyjs/auto-retry':
         specifier: ^2.0.2
-        version: 2.0.2(grammy@1.45.0(encoding@0.1.13))
+        version: 2.0.2(grammy@1.46.0(encoding@0.1.13))
       '@hono/node-server':
         specifier: ^2.1.8
         version: 2.1.8(hono@4.13.18)
@@ -53,8 +53,8 @@ importers:
         specifier: ^18.0.10
         version: 18.0.10
       grammy:
-        specifier: ^1.45.0
-        version: 1.45.0(encoding@0.1.13)
+        specifier: ^1.46.0
+        version: 1.46.0(encoding@0.1.13)
       hono:
         specifier: ^4.13.18
         version: 4.13.18
@@ -71,8 +71,8 @@ importers:
         specifier: ^6.0.1
         version: 6.0.1
       telegram-md-entities:
-        specifier: ^0.7.3
-        version: 0.7.3(micromark-util-types@2.0.2)(micromark@4.0.2)
+        specifier: ^0.8.0
+        version: 0.8.0(micromark-util-types@2.0.2)(micromark@4.0.2)
       ts-pattern:
         specifier: ^5.9.2
         version: 5.9.2
@@ -114,8 +114,8 @@ importers:
         specifier: ^8.5.1
         version: 8.5.1(@types/react-dom@19.3.0(@types/react@19.3.0))(@types/react@19.3.0)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)
       telegram-md-entities:
-        specifier: ^0.7.3
-        version: 0.7.3(micromark-util-types@2.0.2)(micromark@4.0.2)
+        specifier: ^0.8.0
+        version: 0.8.0(micromark-util-types@2.0.2)(micromark@4.0.2)
       ts-pattern:
         specifier: ^5.9.2
         version: 5.9.2
@@ -347,8 +347,8 @@ packages:
     peerDependencies:
       grammy: ^1.10.0
 
-  '@grammyjs/types@4.0.0':
-    resolution: {integrity: sha512-Z8lDLTvOlo12e5Vnly/vQh3JC9ppaitS1dGZ3w068gNitOd/y8tTSiib+Xm38aBGbtYGmUZwOc6afYrLs2CSTg==}
+  '@grammyjs/types@5.0.0':
+    resolution: {integrity: sha512-iq1Qrq1iPKkB8yAa0qSuIURMZOCuqTY5pWy5gHpCeL1oQ+GPadGhw/cDTVE8waJwuCzacUzuIjRv1sESvk7u7A==}
 
   '@hono/node-server@2.1.8':
     resolution: {integrity: sha512-jdf7FHh6A1lzjpHHQUgxsg2GeER2vMetnAOfeActzcoli6jamlK+NAwL6Dsr5Fl3BS3tYUQzCdtZjU8Qxv7bEA==}
@@ -1283,8 +1283,8 @@ packages:
   graceful-fs@4.2.11:
     resolution: {integrity: sha512-RbJ5/jmFcNNCcDV5o9eTnBLJ/HszWV0P73bc+Ff4nS/rJj+YaS6IGyiOL0VoBYX+l1Wrl3k63h/KrH+nhJ0XvQ==}
 
-  grammy@1.45.0:
-    resolution: {integrity: sha512-hJBD+KvB+Tae138HOQJrPvRIqyK7oyPtW5xDbVajgs+gcE4qgaRpgVtBQc066HoJb4wtZX3HJ+eGJQTqdZ1zjQ==}
+  grammy@1.46.0:
+    resolution: {integrity: sha512-/8Qw+iisrUdOMk+p2mjEHouMm/BBdBEN1DHh16wiTpRUZkxDG3PxexdjCvR+wvK3LWPdrEvnQbdrwpU954sPhg==}
     engines: {node: ^12.20.0 || >=14.13.1}
 
   gtoken@7.1.0:
@@ -2077,8 +2077,8 @@ packages:
     resolution: {integrity: sha512-resvxdc6Mgb7YEThw6G6bExlXKkv6+YbuzGg9xuXxSgxJF7Ozs+o8Y9+2R3sArdWdW8nOokoQb1yrpFB0pQK2g==}
     engines: {node: '>=14'}
 
-  telegram-md-entities@0.7.3:
-    resolution: {integrity: sha512-AQYsXutndNCYSIy0MVPdOKPD6cBAU4pqDQ9hpuZYERU10PRYZy7vvm9g5I9q+xw3F/SsZpo9XeqnIMLMR06+QQ==}
+  telegram-md-entities@0.8.0:
+    resolution: {integrity: sha512-TqYpYGBjxP/qDzDaVyqhdu+JQz/kejZ6ivXRX6jigvIJQZYUu0yYg/x9ApMHeeQ7Ew6Iwni34Z3e+GO5V1yatA==}
     engines: {node: '>=18'}
 
   tinyglobby@0.2.17:
@@ -2425,14 +2425,14 @@ snapshots:
       - supports-color
       - utf-8-validate
 
-  '@grammyjs/auto-retry@2.0.2(grammy@1.45.0(encoding@0.1.13))':
+  '@grammyjs/auto-retry@2.0.2(grammy@1.46.0(encoding@0.1.13))':
     dependencies:
       debug: 4.4.3
-      grammy: 1.45.0(encoding@0.1.13)
+      grammy: 1.46.0(encoding@0.1.13)
     transitivePeerDependencies:
       - supports-color
 
-  '@grammyjs/types@4.0.0': {}
+  '@grammyjs/types@5.0.0': {}
 
   '@hono/node-server@2.1.8(hono@4.13.18)':
     dependencies:
@@ -3261,9 +3261,9 @@ snapshots:
   graceful-fs@4.2.11:
     optional: true
 
-  grammy@1.45.0(encoding@0.1.13):
+  grammy@1.46.0(encoding@0.1.13):
     dependencies:
-      '@grammyjs/types': 4.0.0
+      '@grammyjs/types': 5.0.0
       abort-controller: 3.0.0
       debug: 4.4.3
       node-fetch: 2.7.0(encoding@0.1.13)
@@ -4242,7 +4242,7 @@ snapshots:
       - encoding
       - supports-color
 
-  telegram-md-entities@0.7.3(micromark-util-types@2.0.2)(micromark@4.0.2):
+  telegram-md-entities@0.8.0(micromark-util-types@2.0.2)(micromark@4.0.2):
     dependencies:
       mdast-util-from-markdown: 2.0.3
       mdast-util-gfm: 3.1.0
