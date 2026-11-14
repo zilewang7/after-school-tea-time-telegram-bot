@@ -1005,23 +1005,70 @@ cases.push(
 );
 
 cases.push(
-    await runCase('without the raw message nothing is labeled', async () => {
-        const html = ['[image]', '无原始正文时的 OCR'].join('\n');
+    await runCase('an unreadable message is not shown as a body quote', async () => {
+        // luoxu keeps deleted messages in the index while /messages returns
+        // nothing; the snippet is index text of unknown origin (likely OCR).
+        const html = ['[image]', '<span class="keyword">HTT 家電修理センター</span>:'].join('\n');
         const fake = fakeService({
             search: async () => outcomeOf([hitWith(2400, html)]),
             raw: [],
         });
         const state = createHistoryState();
         const search = createSearchHistoryTool(buildOptions(fake, { state }));
-        const listed = await execute(search, { query: 'OCR' });
+        const listed = await execute(search, { query: '家電修理' });
         expect(!listed.isError, 'the search still succeeds');
-        expect(!listed.content.includes('（图片 OCR 文字）'), 'a row without a raw message is not labeled');
-        expect(!listed.content.includes('命中在图片 OCR 文字中'), 'and its keyword window is not labeled');
+        const listedLines = listed.content.split('\n');
+        const rowAt = listedLines.findIndex((line) => line.startsWith('h1 ·'));
+        expect(listedLines[rowAt + 1] === '   [image]', 'the marker is the row body line, not the OCR text');
+        expect(
+            listed.content.includes('（未能读取原文，片段来自索引文本）'),
+            `the snippet says it is unverified index text (got ${listed.content})`
+        );
+        expect(!listed.content.includes('（图片 OCR 文字）'), 'no OCR claim without the original message');
 
         const read = createReadHistoryTool(buildOptions(fake, { state }));
         const full = await execute(read, { ids: ['h1'] });
         expect(!full.isError, 'the read still succeeds');
-        expect(!full.content.includes('不是消息正文'), 'a read without a raw message is not labeled');
+        expect(full.content.includes('未能读取原消息'), 'the read names the unreadable original');
+        expect(!full.content.includes('不是消息正文'), 'and makes no OCR claim');
+
+        const window = await execute(read, { around: 'h1', minutes: 10 });
+        expect(
+            window.content.includes('（未能读取原文，文本来自索引）'),
+            `the window row carries the same caveat (got ${window.content})`
+        );
+    })
+);
+
+cases.push(
+    await runCase('a stale index that only repeats the raw text in a preview section is not labeled', async () => {
+        // If the index lost the body, the raw text can still appear as a URL in
+        // the preview section; that must not turn the preview into "OCR".
+        const html = ['[image]', 'OCR 行一', '[instant view]', '标题行', 'https://example.com/x'].join('\n');
+        const fake = fakeService({
+            search: async () => outcomeOf([hitWith(2450, html)]),
+            raw: [rawMessage({ messageId: 2450, text: 'https://example.com/x', media: null })],
+        });
+        const read = createReadHistoryTool(buildOptions(fake));
+        const full = await execute(read, { ids: ['https://t.me/c/2311128579/2450'] });
+        expect(!full.isError, 'the read succeeds');
+        expect(!full.content.includes('图片 OCR 文字'), 'nothing is labeled when the body is not in the index');
+    })
+);
+
+cases.push(
+    await runCase('a body ending with a newline still bounds the OCR', async () => {
+        const html = ['[image]', '有点阴了', '其他文字', '有点阴了'].join('\n');
+        const fake = fakeService({
+            search: async () => outcomeOf([hitWith(2460, html)]),
+            raw: [rawMessage({ messageId: 2460, text: '有点阴了\n', media: photoMedia })],
+        });
+        const read = createReadHistoryTool(buildOptions(fake));
+        const full = await execute(read, { ids: ['https://t.me/c/2311128579/2460'] });
+        expect(
+            full.content.includes('有点阴了\n其他文字\n（图片 OCR 文字结束）\n有点阴了'),
+            `trailing newline does not lose the boundary (got ${full.content})`
+        );
     })
 );
 

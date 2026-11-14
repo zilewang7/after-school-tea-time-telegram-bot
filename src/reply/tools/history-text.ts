@@ -374,36 +374,53 @@ const SECTION_MARKERS = ['[poll]', '[webpage]', '[instant view]', '[file]', '[au
 
 /** Does `offset` end the message body (next is a preview section or the end)? */
 const bodyEndsAt = (body: string, offset: number): boolean => {
-    if (offset === body.length) return true;
-    if (body[offset] !== '\n') return false;
-    const line = body.slice(offset + 1).split('\n', 1)[0]?.trim() ?? '';
-    return SECTION_MARKERS.some((marker) => line.startsWith(marker));
+    if (offset >= body.length) return true;
+    // The body is one line run inside the index text, so the next module starts
+    // on a fresh line. The raw text itself may end with a newline or spaces,
+    // which is why the offset can already sit on that line.
+    const rest = body.slice(offset);
+    const line = (rest.startsWith('\n') ? rest.slice(1) : rest).split('\n', 1)[0]?.trim() ?? '';
+    const atLineStart = offset === 0 || rest.startsWith('\n') || body[offset - 1] === '\n';
+    return atLineStart && SECTION_MARKERS.some((marker) => line.startsWith(marker));
 };
 
 /**
  * Offset where the message's own text starts in the index body, or null when
- * it is not in there. A bare indexOf is not enough: OCR text can repeat the
- * body verbatim (a screenshot of the caption), so the occurrence followed by a
- * preview section or the end of the text wins.
+ * it cannot be located. A bare indexOf is not enough: OCR text can repeat the
+ * body verbatim (a screenshot of the caption), so only an occurrence followed
+ * by a preview section or the end of the text counts. When no occurrence
+ * qualifies, the index is stale or not in luoxu's shape — returning null makes
+ * the caller skip labels rather than guess.
  */
-const rawBodyOffsetOf = (body: string, rawText: string): number | null => {
+export const rawBodyOffsetOf = (body: string, rawText: string): number | null => {
     if (rawText.length === 0) return null;
+    // The body is the first module after the image markers; every preview
+    // section starts *after* it. A message whose index lost its body can still
+    // leave a later section line equal to the raw text (a link URL), so a
+    // candidate beyond the first section marker is not the body.
+    const sectionOffsets: number[] = [];
+    let offset = 0;
+    for (const line of body.split('\n')) {
+        const trimmed = line.trim();
+        if (SECTION_MARKERS.some((marker) => trimmed.startsWith(marker))) sectionOffsets.push(offset);
+        offset += line.length + 1;
+    }
+    const firstSection = sectionOffsets[0] ?? body.length;
     const find = (needle: string): number[] => {
         const found: number[] = [];
         for (let at = body.indexOf(needle); at >= 0; at = body.indexOf(needle, at + 1)) {
-            if (at === 0 || body[at - 1] === '\n') found.push(at);
+            if ((at === 0 || body[at - 1] === '\n') && at < firstSection && bodyEndsAt(body, at + needle.length)) {
+                found.push(at);
+            }
         }
         return found;
     };
-    const candidates = find(rawText);
-    if (candidates.length === 0) {
-        // The index body is trimmed at its edges, so text ending in whitespace
-        // only matches in its trimmed form (same start offset).
-        const trimmed = rawText.trim();
-        return trimmed === '' ? null : (find(trimmed)[0] ?? null);
-    }
-    const ending = candidates.find((at) => bodyEndsAt(body, at + rawText.length));
-    return ending ?? candidates[0] ?? null;
+    const exact = find(rawText)[0];
+    if (exact !== undefined) return exact;
+    // The index body is trimmed at its edges, so text ending in whitespace only
+    // matches in its trimmed form (same start offset).
+    const trimmed = rawText.trim();
+    return trimmed === '' ? null : (find(trimmed)[0] ?? null);
 };
 
 const isOcrImageMedia = (media: HistoryMedia | null | undefined): boolean => {
@@ -501,6 +518,8 @@ export interface SearchListRow {
     readonly kwicInFolded?: boolean;
     /** The hit sits in an image's OCR text, not in the message body */
     readonly kwicOcr?: OcrSource;
+    /** The original message could not be read; the snippet is index text of unknown origin */
+    readonly kwicUnverified?: boolean;
     readonly attachments?: string;
     readonly replyTo?: string;
 }
@@ -588,7 +607,11 @@ const formatRow = (row: SearchListRow, timeZone: string, showGroup: boolean): st
             row.kwicInFolded ? '折叠块内' : null,
             row.kwicOcr ? `${ocrLabelOf(row.kwicOcr)}中` : null,
         ].filter((part): part is string => part !== null);
-        const note = where.length > 0 ? `（命中在${where.join('、')}）` : '';
+        const note = row.kwicUnverified
+            ? '（未能读取原文，片段来自索引文本）'
+            : where.length > 0
+              ? `（命中在${where.join('、')}）`
+              : '';
         lines.push(`   ${neutralizeWireFormat(row.kwic)}${note}`);
     }
     if (row.attachments) lines.push(`   附：${row.attachments}`);
@@ -672,8 +695,14 @@ export const renderFullMessage = (
     const budget = options.maxChars ?? 4000;
     const cut = truncateChars(annotated, budget);
     const note = cut.truncated ? `\n（已截断，共 ${cut.total} 字）` : '';
+    // Without the original message the index text cannot be split into body vs
+    // OCR, so say that instead of presenting the whole index as the message.
+    const unreadable =
+        entry.rawText === undefined
+            ? '\n（未能读取原消息：以下为归档索引文本，可能含图片 OCR 或预览内容，不能当作原文引用）'
+            : '';
     const head = annotation ? `${header}\n${annotation}` : header;
-    return `${head}\n${neutralizeWireFormat(cut.text)}${note}`;
+    return `${head}${unreadable}\n${neutralizeWireFormat(cut.text)}${note}`;
 };
 
 export interface WindowRow {
@@ -711,7 +740,11 @@ export const renderWindow = (
         const body = truncateChars(annotated.replace(/\n+/g, ' '), header.perMessageChars);
         const annotation = annotationsOf(row.entry);
         const prefix = annotation ? ` ${annotation}` : '';
+        // Same caveat as the full read: an unreadable message's text is index
+        // text of unknown origin, not the message as it was.
+        const unreadable = row.entry.rawText === undefined ? '（未能读取原文，文本来自索引）' : '';
         const line = `h${row.entry.h} · ${time} · ${row.entry.fromName}${prefix}: ${neutralizeWireFormat(body.text)}` +
+            unreadable +
             (row.attachments ? `（附：${row.attachments}）` : '') +
             (row.center ? '   ← 中心' : '');
         if (used + line.length + 1 > maxChars) {

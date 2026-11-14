@@ -223,22 +223,32 @@ const buildRow = (
     replyTo: string | undefined
 ): SearchListRow => {
     const blocks = ocrBlocksOf(entry);
-    const strippedRaw = raw ? stripFoldedBlocks(raw.text, raw.entities, 30).text : '';
+    const rawText = raw?.text ?? entry.rawText;
+    const entities = raw?.entities ?? entry.entities;
+    const strippedRaw = rawText === undefined ? '' : stripFoldedBlocks(rawText, entities, 30).text;
     let firstLine: string;
     let firstLineOcr: ReturnType<typeof ocrSourceAtLine> = null;
     if (strippedRaw.trim().length > 0) {
         firstLine = firstLineOf(strippedRaw, 80);
-    } else {
+    } else if (rawText !== undefined) {
         // No text of its own: show the first content line, skipping the image
         // marker (`[image]` alone says nothing) and labeling the line when it
         // is an image's OCR text rather than the message body.
         const content = firstContentLineOf(indexedBodyOf(entry));
         firstLine = content.line >= 0 ? truncateChars(content.text, 80).text : '';
         firstLineOcr = ocrSourceAtLine(blocks, content.line);
+    } else {
+        // The original message could not be read, so which index lines are OCR
+        // is unknown: keep the old conservative first line (the marker) rather
+        // than promoting an unclassifiable line to "the message body".
+        firstLine = firstLineOf(indexedBodyOf(entry), 80);
     }
     const window = query ? keywordWindow(entry.indexedHtml, query) : null;
-    const inFolded = Boolean(window?.term && raw && isInsideFolded(window.term, raw.text, raw.entities));
+    const inFolded = Boolean(window?.term && rawText !== undefined && isInsideFolded(window.term, rawText, entities));
     const kwicOcr = window ? ocrSourceAtLine(blocks, window.line) : null;
+    // A snippet cut from an unreadable message is index text of unknown origin
+    // (OCR, preview or body); the row must say so instead of implying a quote.
+    const kwicUnverified = window !== null && rawText === undefined;
     const attachments = attachmentLine(entry.indexedHtml, raw?.imageCount ?? null);
     return {
         entry,
@@ -251,6 +261,7 @@ const buildRow = (
                   kwic: window.text,
                   kwicInFolded: inFolded,
                   ...(kwicOcr ? { kwicOcr } : {}),
+                  ...(kwicUnverified ? { kwicUnverified } : {}),
               }
             : {}),
         ...(attachments ? { attachments } : {}),
