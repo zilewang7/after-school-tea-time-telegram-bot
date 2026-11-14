@@ -372,8 +372,11 @@ interface TurnOptions {
     readonly tools?: TurnTools;
     readonly messages?: UnifiedMessage[];
     readonly signal?: AbortSignal;
-    readonly maxRetries?: number;
+    /** 1 by default; null leaves it to the platform's default */
+    readonly maxRetries?: number | null;
     readonly isImageModel?: boolean;
+    /** The chat's prompt by default; null sends none (the shape of generate_image and /picbanana) */
+    readonly systemPrompt?: string | null;
     /** Explicit open timeout; omitted keeps the platform's own default */
     readonly timeout?: number;
     readonly serviceTier?: 'priority';
@@ -384,8 +387,8 @@ const runTurn = async (options: TurnOptions = {}): Promise<{ chunks: StreamChunk
     const { result, lines } = await captureConsole(async () => {
         const stream = await platform.sendMessage(options.messages ?? userTurn('What is the code word for falcon?'), {
             model: options.model ?? 'gemini-3.8-flash',
-            systemPrompt: 'offline system prompt',
-            maxRetries: options.maxRetries ?? 1,
+            ...(options.systemPrompt === null ? {} : { systemPrompt: options.systemPrompt ?? 'offline system prompt' }),
+            ...(options.maxRetries === null ? {} : { maxRetries: options.maxRetries ?? 1 }),
             ...(options.timeout === undefined ? {} : { timeout: options.timeout }),
             ...(options.tools ? { tools: options.tools } : {}),
             ...(options.signal ? { signal: options.signal } : {}),
@@ -1700,14 +1703,21 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
                     event([{ inlineData: { mimeType: 'image/png', data: Buffer.from('final').toString('base64') } }], { finishReason: 'STOP' }),
                 ]),
             ]);
-            const image = await runTurn({ model: GEMINI_IMAGE_MODEL, tools: turnTools, isImageModel: true });
+            // The generate_image shape: no system prompt, no tools
+            const image = await runTurn({ model: GEMINI_IMAGE_MODEL, systemPrompt: null, isImageModel: true });
             expect(
                 json(recordedRequests[0]?.body.tools) ===
                     '[{"googleSearch":{"searchTypes":{"imageSearch":{},"webSearch":{}}}}]',
                 `an image model gets image-search grounding, no declarations (got ${json(recordedRequests[0]?.body.tools)})`
             );
+            expect(
+                JSON.stringify(recordedRequests[0]?.body.systemInstruction ?? null).includes('You are an image generation model'),
+                `and the generation directive as its system instruction (got ${JSON.stringify(recordedRequests[0]?.body.systemInstruction ?? null).slice(0, 120)})`
+            );
 
-            // A model that rejects imageSearch keeps the plain search tool
+            // A model that rejects imageSearch keeps the plain search tool; tools
+            // offered to the platform directly (the factory refuses that) still
+            // never reach an image model
             reset([
                 sse([
                     event([{ inlineData: { mimeType: 'image/png', data: Buffer.from('final').toString('base64') } }], {
@@ -1715,7 +1725,7 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
                     }),
                 ]),
             ]);
-            await runTurn({ model: 'gemini-3-pro-image', tools: turnTools, isImageModel: true });
+            await runTurn({ model: 'gemini-3-pro-image', systemPrompt: null, tools: turnTools, isImageModel: true });
             expect(
                 json(recordedRequests[0]?.body.tools) === '[{"googleSearch":{}}]',
                 'gemini-3-pro-image (no imageSearch support) keeps the plain googleSearch'
@@ -1868,7 +1878,7 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
         },
     },
     {
-        name: 'Priority PayGo is never asked for an image model',
+        name: 'Priority PayGo is never asked for an image model, even when a caller passes it',
         body: async () => {
             reset([
                 sse([
@@ -1876,9 +1886,47 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
                 ]),
             ]);
             const sink = createUsageSink();
-            const { lines } = await runTurn({ model: GEMINI_IMAGE_MODEL, isImageModel: true, serviceTier: 'priority', usageSink: sink });
+            const { lines } = await runTurn({
+                model: GEMINI_IMAGE_MODEL,
+                systemPrompt: null,
+                isImageModel: true,
+                serviceTier: 'priority',
+                usageSink: sink,
+            });
             expect(recordedRequests.length === 1 && recordedRequests[0]?.headers[PRIORITY_HEADER] === undefined, 'no header');
             expect(sink.totals().tierRequested === null && !lines.includes('[gemini] Priority PayGo requested'), 'nothing recorded');
+        },
+    },
+    {
+        name: 'an image model request without maxRetries gets the default 3 attempts; /picbanana asks for its own',
+        body: async () => {
+            const finalImage = sse([
+                event([{ inlineData: { mimeType: 'image/png', data: Buffer.from('final').toString('base64') } }], { finishReason: 'STOP' }),
+            ]);
+            const busy = () => httpError(503, 'The service is currently unavailable.');
+            const imageTurn = (maxRetries: number | null) =>
+                runTurn({ model: GEMINI_IMAGE_MODEL, systemPrompt: null, isImageModel: true, maxRetries });
+
+            reset([busy(), busy(), busy(), finalImage]);
+            let failure: unknown = null;
+            try {
+                await imageTurn(null);
+            } catch (error) {
+                failure = error;
+            }
+            expect(
+                failure !== null && recordedRequests.length === 3,
+                `no 50-attempt default any more: it gives up after 3 (got ${recordedRequests.length} request(s))`
+            );
+
+            // /picbanana and its retry pass 50 themselves to ride out a busy upstream
+            reset([busy(), busy(), busy(), finalImage]);
+            const { chunks } = await imageTurn(50);
+            const images = chunks.filter((chunk) => chunk.type === 'image');
+            expect(
+                recordedRequests.length === 4 && images.length === 1,
+                `an explicit 50 keeps retrying until the image comes back (got ${recordedRequests.length} request(s))`
+            );
         },
     },
     {

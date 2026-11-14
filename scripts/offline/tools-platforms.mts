@@ -1404,6 +1404,61 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
         },
     },
     {
+        name: 'an image model refuses a chat request (system prompt or tools) before sending; the image shape still draws',
+        body: async () => {
+            const refusalOf = async (run: () => Promise<AsyncIterable<StreamChunk>>): Promise<string> => {
+                try {
+                    await drain(await run());
+                    return 'none';
+                } catch (error) {
+                    return error instanceof Error ? error.message : String(error);
+                }
+            };
+            const chatShapes: Array<[string, () => Promise<AsyncIterable<StreamChunk>>]> = [
+                [`${GEMINI_IMAGE_MODEL} with a system prompt`, () => sendMessage(userTurn('画只猫'), { model: GEMINI_IMAGE_MODEL, systemPrompt: 'persona' })],
+                [`${GEMINI_IMAGE_MODEL} with tools`, () => sendMessage(userTurn('画只猫'), { model: GEMINI_IMAGE_MODEL, tools: turnTools })],
+                [`${OPENAI_IMAGE_MODEL} with a system prompt`, () => sendMessage(userTurn('画只猫'), { model: OPENAI_IMAGE_MODEL, systemPrompt: 'persona' })],
+                // An empty prompt is still a chat reply's shape
+                [`${OPENAI_IMAGE_MODEL} with an empty system prompt`, () => sendMessage(userTurn('画只猫'), { model: OPENAI_IMAGE_MODEL, systemPrompt: '' })],
+                // The factory's predicate misses dall-e: the OpenAI platform refuses it itself
+                ['dall-e-3 with a system prompt', () => sendMessage(userTurn('画只猫'), { model: 'dall-e-3', systemPrompt: 'persona' })],
+                [
+                    `${OPENAI_IMAGE_MODEL} straight on the platform`,
+                    () => new OpenAIPlatform().sendMessage(userTurn('画只猫'), { model: OPENAI_IMAGE_MODEL, tools: turnTools }),
+                ],
+            ];
+            for (const [label, run] of chatShapes) {
+                resetStub([]);
+                const message = await refusalOf(run);
+                expect(
+                    message.includes('is an image model') && message.includes('never a chat reply'),
+                    `${label}: refused (got ${message})`
+                );
+                expect(recordedRequests.length === 0, `${label}: nothing sent (got ${recordedRequests.length} request(s))`);
+            }
+
+            // /picgpt and generate_image: no system prompt, no tools; only the prompt text goes out
+            const png = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+            resetStub([{ path: '/v1/images/generations', body: JSON.stringify({ data: [{ b64_json: png.toString('base64') }] }) }]);
+            const { result: chunks } = await captureConsole(async () =>
+                drain(await sendMessage(userTurn('a cat on a piano'), { model: OPENAI_IMAGE_MODEL, maxRetries: 1 }))
+            );
+            const image = chunks.find((chunk) => chunk.type === 'image');
+            expect(
+                image?.imageData !== undefined && image.imageData.equals(png) && chunks.at(-1)?.type === 'done',
+                `the image comes back (got ${json(chunks.map((chunk) => chunk.type))})`
+            );
+            const request = recordedRequests[0];
+            expect(
+                recordedRequests.length === 1 &&
+                    request?.path === '/v1/images/generations' &&
+                    request.body.model === OPENAI_IMAGE_MODEL &&
+                    request.body.prompt === 'a cat on a piano',
+                `one images.generate request with the prompt alone (got ${json(recordedRequests)})`
+            );
+        },
+    },
+    {
         name: 'the shared retry still times out an attempt that ignores its signal',
         body: async () => {
             const { BasePlatform } = await import('../../src/ai/platforms/base-platform.js');
@@ -1498,6 +1553,21 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
                 );
                 expect(chunks === 0 && recordedRequests.length === 0, `${model}: nothing yielded, nothing sent (got ${recordedRequests.length} request(s))`);
             }
+
+            // A resume carries the reply's system prompt and tools: the image
+            // model guard leaves it to the platform's own refusal
+            resetStub([]);
+            let resumeError: unknown = null;
+            try {
+                await drain(await sendMessage([], { model: GEMINI_IMAGE_MODEL, systemPrompt: 'persona', tools: turnTools, resumeFrom: checkpoint }));
+            } catch (caught) {
+                resumeError = caught;
+            }
+            expect(
+                resumeError instanceof Error && resumeError.message.includes('runs no client tools for this request'),
+                `an image model resume meets the resume refusal (got ${resumeError instanceof Error ? resumeError.message : String(resumeError)})`
+            );
+            expect(recordedRequests.length === 0, 'and sends nothing');
         },
     },
     {

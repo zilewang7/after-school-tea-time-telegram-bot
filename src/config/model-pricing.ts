@@ -183,7 +183,7 @@ const seedEntriesFor = (spec: SeedSpec): readonly PriceEntry[] => {
 export const SEED_SPECS: readonly SeedSpec[] = [
     // >272K input: the whole request at 0.20 / 0.02 / 0.75 (not modelled)
     { model: 'gpt-6-luna', inputPerM: 0.1, cachedInputPerM: 0.01, outputPerM: 0.5, sourceUrl: OPENAI_PRICING, checkedOn: '2026-11-07' },
-    // Also the base model of image chat; >272K: 4 / 0.40 / 15
+    // >272K: 4 / 0.40 / 15
     { model: 'gpt-6-sol', inputPerM: 2, cachedInputPerM: 0.2, outputPerM: 10, sourceUrl: OPENAI_PRICING, checkedOn: '2026-11-07' },
     // >272K: 20 / 2 / 75
     { model: 'gpt-6-astra', inputPerM: 10, cachedInputPerM: 1, outputPerM: 50, sourceUrl: OPENAI_PRICING, checkedOn: '2026-11-07' },

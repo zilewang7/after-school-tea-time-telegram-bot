@@ -523,8 +523,8 @@ const finalizeSession = async (
     const sessionKey = getSessionKey(session.chatId, session.firstMessageId);
 
     // Last line of defense before the reply is versioned and stored: text that
-    // never went through the stream processor (image-chat turns and the like)
-    // loses its imitated `[#N]` labels and raw PerQueryResult markers here too
+    // never went through the stream processor loses its imitated `[#N]` labels
+    // and raw PerQueryResult markers here too
     session.textBuffer = stripPerQueryResultCitations(stripContextLabel(session.textBuffer));
 
     const image = session.images[0];

@@ -10,6 +10,7 @@ import { GrokPlatform } from './platforms/grok-platform.js';
 import { MimoPlatform } from './platforms/mimo-platform.js';
 import { AnthropicPlatform } from './platforms/anthropic-platform.js';
 import { applyModelCapabilities } from './message-transformer.js';
+import { imageModelChatError, isChatShapedRequest } from './image-model-guard.js';
 import { isImageOutputModel } from './model-kinds.js';
 import { platformTypeOf } from './platform-routing.js';
 
@@ -78,6 +79,11 @@ export const sendMessage = async (
     if (resumeFrom !== undefined && resumeFrom.platform !== platform.type) {
         throw new Error(`Cannot resume a ${resumeFrom.platform} checkpoint on the ${platform.type} platform (${config.model})`);
     }
+    const imageModel = isImageModel(config.model);
+    // A resume is left to the platform: it refuses a checkpoint it cannot go on from
+    if (imageModel && resumeFrom === undefined && isChatShapedRequest(config)) {
+        throw imageModelChatError(config.model);
+    }
     const capabilities = platform.getModelCapabilities(config.model);
 
     // Apply model capabilities (filter images, merge messages, etc.)
@@ -86,7 +92,7 @@ export const sendMessage = async (
     // Add isImageModel to config
     const fullConfig: PlatformConfig = {
         ...config,
-        isImageModel: isImageModel(config.model),
+        isImageModel: imageModel,
     };
 
     return platform.sendMessage(processedMessages, fullConfig);

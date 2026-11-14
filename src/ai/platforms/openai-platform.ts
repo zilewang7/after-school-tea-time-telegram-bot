@@ -24,9 +24,9 @@ import type {
     ResponseInputMessageContentList,
     ResponseStreamEvent,
 } from 'openai/resources/responses/responses';
-import { OPENAI_IMAGE_CHAT_BASE_MODEL } from '../../config/models.js';
 import { BasePlatform } from './base-platform.js';
 import { toVisionImageMimeType } from '../supported-mime.js';
+import { imageModelChatError, isChatShapedRequest } from '../image-model-guard.js';
 import { isImageOutputModel } from '../model-kinds.js';
 import { runToolLoop, toResponsesFunctionTools, type TurnTools } from '../tools/index.js';
 import {
@@ -82,27 +82,6 @@ const FINAL_ROUND_NOTE: EasyInputMessage = {
     content: 'Tool call budget is exhausted. Answer the user now based on the tool results above; do not request any more tools.',
 };
 
-const IMAGE_GENERATION_TOOL = {
-    type: 'function' as const,
-    name: 'generate_image',
-    description: 'Generate or edit an image. Use when the user requests image creation, editing, or modification.',
-    parameters: {
-        type: 'object' as const,
-        properties: {
-            prompt: {
-                type: 'string' as const,
-                description: 'Detailed image generation/editing prompt in English. IMPORTANT: Do NOT refer to images by index or number (e.g. "first image", "image 1"). Instead, describe each image by its visual characteristics (e.g. "the large mural portrait with aged wall texture", "the small imperial portrait in red robe"). This ensures the editing API correctly identifies each image regardless of order.',
-            },
-            reference_image_indices: {
-                type: 'array' as const,
-                items: { type: 'integer' as const },
-                description: 'Indices of images to pass to the editing API (see image list in instructions). Put the base image (the one to be modified) LAST in the array; other reference images go before it. Omit for text-to-image generation from scratch.',
-            },
-        },
-        required: ['prompt'],
-    },
-};
-
 export class OpenAIPlatform extends BasePlatform {
     readonly type: PlatformType = 'openai';
     private client: OpenAI;
@@ -148,15 +127,15 @@ export class OpenAIPlatform extends BasePlatform {
         messages: UnifiedMessage[],
         config: PlatformConfig
     ): Promise<AsyncIterable<StreamChunk>> {
-        let { model, systemPrompt, timeout = 85000, maxRetries = 3, signal, isImageModel, tools } = config;
+        const { model, systemPrompt, timeout = 85000, maxRetries = 3, signal, tools } = config;
         const capabilities = this.getModelCapabilities(model);
 
         if (capabilities.supportsImageOutput) {
-            // Chat flow: proxy through the configured base model with image generation tool
-            if (systemPrompt) {
-                return this.sendImageChatMessage(messages, config);
+            // The factory refuses this too, but its image predicate misses dall-e
+            if (isChatShapedRequest(config)) {
+                throw imageModelChatError(model);
             }
-            // Direct image generation (/picgpt command)
+            // /picgpt and generate_image
             return this.generateImage(messages, config);
         }
 
@@ -166,7 +145,7 @@ export class OpenAIPlatform extends BasePlatform {
         }
 
         this.logMessageContents(messages);
-        console.log(`[openai] Using model: ${model}, supportsThinking: ${capabilities.supportsThinking}, isImageModel: ${isImageModel}`);
+        console.log(`[openai] Using model: ${model}, supportsThinking: ${capabilities.supportsThinking}`);
 
         const input = this.transformToResponsesInput(messages);
         // Without the field the legacy path sends xhigh on a reasoning model.
@@ -512,276 +491,6 @@ export class OpenAIPlatform extends BasePlatform {
             type: 'done',
             rawResponse: completedResponse,
         };
-    }
-
-    private async *sendImageChatMessage(
-        messages: UnifiedMessage[],
-        config: PlatformConfig
-    ): AsyncIterable<StreamChunk> {
-        const { model, systemPrompt, timeout = 85000, maxRetries = 3, signal, usageSink } = config;
-
-        this.logMessageContents(messages);
-        console.log(`[openai] Image chat mode: proxy ${model} through ${OPENAI_IMAGE_CHAT_BASE_MODEL} with tool`);
-
-        const input = this.transformToResponsesInput(messages);
-        const referenceImages = this.collectReferenceImages(messages);
-
-        const imageMetaList: { size: number; source: string }[] = [];
-        for (const message of messages) {
-            for (const part of message.content) {
-                if (
-                    part.type === 'image'
-                    && part.imageData
-                    && part.mediaKind !== 'custom_emoji_atlas'
-                ) {
-                    imageMetaList.push({
-                        size: Math.round(part.imageData.length * 3 / 4 / 1024),
-                        source: message.role === 'user' ? 'user upload' : 'generated',
-                    });
-                }
-            }
-        }
-
-        const imageListStr = imageMetaList.length > 0
-            ? '\nImages in conversation:\n' +
-              imageMetaList.map((meta, i) =>
-                  `  [${i}] ${meta.size}KB (${meta.source})`
-              ).join('\n') +
-              '\nSet reference_image_indices to select images for editing. Put the base image (to be modified) LAST; reference images go before it. Prefer original user uploads over previously generated images. Omit for text-to-image generation from scratch.'
-            : '';
-
-        const imageInstructions =
-            'You have image generation capability via the generate_image tool. ' +
-            'When the user asks to create, edit, or modify images, call the generate_image tool with a detailed English prompt. ' +
-            'You may include a text reply alongside the tool call if you wish.' +
-            imageListStr;
-
-        const request: ResponseCreateParamsStreaming = {
-            model: OPENAI_IMAGE_CHAT_BASE_MODEL,
-            input,
-            instructions: (systemPrompt || '') + '\n\n' + imageInstructions,
-            stream: true,
-            tools: [IMAGE_GENERATION_TOOL as any],
-            ...(this.isReasoningModel(OPENAI_IMAGE_CHAT_BASE_MODEL)
-                ? { reasoning: { effort: 'high', summary: 'detailed' } }
-                : {}),
-        };
-
-        const stream = await this.sendWithRetry(
-            () => this.createResponseStream(request, signal),
-            { timeout, maxRetries, signal }
-        );
-
-        yield* this.processImageChatStream(
-            stream,
-            model,
-            referenceImages,
-            input,
-            request.instructions ?? '',
-            signal,
-            usageSink
-        );
-    }
-
-    private async *processImageChatStream(
-        stream: Stream<ResponseStreamEvent>,
-        imageModel: string,
-        referenceImages: string[],
-        originalInput: EasyInputMessage[],
-        instructions: string,
-        signal?: AbortSignal,
-        usageSink?: UsageSink
-    ): AsyncIterable<StreamChunk> {
-        let completedResponse: Response | null = null;
-        let functionCallArgs = '';
-        let functionCallName = '';
-        let hasFunctionCall = false;
-        let assistantText = '';
-
-        for await (const event of stream) {
-            if (event.type === 'response.output_text.delta' && event.delta) {
-                assistantText += event.delta;
-                yield { type: 'text', content: event.delta };
-                continue;
-            }
-
-            if (
-                (event.type === 'response.reasoning_text.delta' ||
-                    event.type === 'response.reasoning_summary_text.delta') &&
-                event.delta
-            ) {
-                yield { type: 'thinking', content: event.delta };
-                continue;
-            }
-
-            if (event.type === 'response.function_call_arguments.delta') {
-                functionCallArgs += (event as Record<string, any>).delta ?? '';
-                continue;
-            }
-
-            if (event.type === 'response.function_call_arguments.done') {
-                hasFunctionCall = true;
-                const doneEvent = event as Record<string, any>;
-                functionCallName = doneEvent.name || functionCallName;
-                functionCallArgs = doneEvent.arguments ?? functionCallArgs;
-                continue;
-            }
-
-            if (event.type === 'response.output_item.done') {
-                const item = (event as Record<string, any>).item;
-                if (item?.type === 'function_call') {
-                    hasFunctionCall = true;
-                    functionCallName = item.name ?? functionCallName;
-                    functionCallArgs = item.arguments ?? functionCallArgs;
-                }
-                continue;
-            }
-
-            if (event.type === 'response.completed') {
-                completedResponse = event.response;
-                continue;
-            }
-
-            if (event.type === 'response.failed') {
-                throw new Error(event.response.error?.message ?? 'OpenAI response failed');
-            }
-
-            if (event.type === 'error') {
-                throw new Error(event.message || 'OpenAI stream error');
-            }
-        }
-
-        // Reported now: the continuation below replaces completedResponse
-        usageSink?.addRound(normalizeResponsesUsage(completedResponse?.usage));
-        console.log('[openai] Image chat stream done:', { hasFunctionCall, functionCallName, argsLength: functionCallArgs.length, assistantTextLength: assistantText.length });
-
-        if (hasFunctionCall && functionCallName === 'generate_image') {
-            let toolOutput = 'Image generation failed.';
-            let toolSuccess = false;
-            try {
-                const args = JSON.parse(functionCallArgs) as {
-                    prompt: string;
-                    reference_image_indices?: number[];
-                };
-
-                const indices = (args.reference_image_indices ?? [])
-                    .filter(i => i >= 0 && i < referenceImages.length);
-                const selectedImages = indices.map(i => referenceImages[i]!);
-
-                console.log('[openai] Tool call generate_image:', {
-                    prompt: args.prompt,
-                    referenceImageIndices: indices.length > 0 ? indices : 'none (generate from scratch)',
-                    apiOrder: indices.map(i => `[${i}] ${Math.round(referenceImages[i]!.length * 3 / 4 / 1024)}KB`),
-                    allImages: referenceImages.map((img, i) => `[${i}] ${Math.round(img.length * 3 / 4 / 1024)}KB`),
-                    imageModel,
-                });
-                const imageBuffer = await this.executeImageGeneration(
-                    imageModel,
-                    args.prompt,
-                    selectedImages,
-                    signal,
-                    usageSink
-                );
-                yield { type: 'image', imageData: imageBuffer };
-                toolOutput = 'Image generated and sent to the user successfully.';
-                toolSuccess = true;
-            } catch (error) {
-                console.error('[openai] Image generation tool failed:', error);
-                const errorMsg = error instanceof Error ? error.message : String(error);
-                toolOutput = `Image generation failed: ${errorMsg}`;
-                yield { type: 'text', content: `\n\n[Image generation failed: ${errorMsg}]` };
-            }
-
-            // Tool result callback via regular messages (proxy doesn't support function_call items)
-            try {
-                console.log('[openai] Sending tool result callback as regular message');
-                const continueInput: EasyInputMessage[] = [
-                    ...originalInput,
-                    {
-                        role: 'assistant',
-                        content: assistantText || '[Called generate_image tool]',
-                    },
-                    {
-                        role: 'developer',
-                        content: toolSuccess
-                            ? `The generate_image tool succeeded. ${toolOutput} The image is already delivered to the user alongside your message. You may now briefly comment on the result if appropriate.`
-                            : `The generate_image tool failed. ${toolOutput} Inform the user about the failure and suggest they try again.`,
-                    },
-                ];
-                const continueRequest: ResponseCreateParamsStreaming = {
-                    model: OPENAI_IMAGE_CHAT_BASE_MODEL,
-                    input: continueInput,
-                    instructions,
-                    stream: true,
-                };
-
-                const continueStream = await this.createResponseStream(continueRequest, signal);
-                let continuationResponse: Response | null = null;
-                let continuationFailed = false;
-
-                for await (const event of continueStream) {
-                    if (event.type === 'response.output_text.delta' && event.delta) {
-                        yield { type: 'text', content: event.delta };
-                        continue;
-                    }
-                    if (
-                        (event.type === 'response.reasoning_text.delta' ||
-                            event.type === 'response.reasoning_summary_text.delta') &&
-                        event.delta
-                    ) {
-                        yield { type: 'thinking', content: event.delta };
-                        continue;
-                    }
-                    if (event.type === 'response.completed') {
-                        completedResponse = event.response;
-                        continuationResponse = event.response;
-                        continue;
-                    }
-                    if (event.type === 'response.failed') {
-                        console.error('[openai] Tool callback response failed:', event.response.error);
-                        continuationFailed = true;
-                        break;
-                    }
-                    if (event.type === 'error') {
-                        console.error('[openai] Tool callback stream error:', event.message);
-                        continuationFailed = true;
-                        break;
-                    }
-                }
-                if (!continuationFailed) {
-                    usageSink?.addRound(normalizeResponsesUsage(continuationResponse?.usage));
-                }
-            } catch (error) {
-                console.error('[openai] Tool result callback failed:', error);
-            }
-        }
-
-        if (completedResponse?.output) {
-            for (const item of completedResponse.output) {
-                const imageData = await this.extractImageFromOutput(item);
-                if (imageData) {
-                    yield { type: 'image', imageData };
-                }
-            }
-        }
-
-        yield { type: 'done', rawResponse: completedResponse };
-    }
-
-    private collectReferenceImages(messages: UnifiedMessage[]): string[] {
-        const images: string[] = [];
-        for (const message of messages) {
-            for (const part of message.content) {
-                if (
-                    part.type === 'image'
-                    && part.imageData
-                    && part.mediaKind !== 'custom_emoji_atlas'
-                ) {
-                    images.push(part.imageData);
-                }
-            }
-        }
-        return images;
     }
 
     private async executeImageGeneration(

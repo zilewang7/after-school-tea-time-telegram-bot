@@ -88,10 +88,7 @@ const isGeminiFeedablePart = (part: UnifiedContentPart): boolean => {
 /**
  * Transform unified content parts to Gemini parts
  */
-const transformToGeminiParts = (
-    parts: UnifiedContentPart[],
-    options?: { forceSkipThoughtSignature?: boolean }
-): GeminiPart[] => {
+const transformToGeminiParts = (parts: UnifiedContentPart[]): GeminiPart[] => {
     // Drop parts Gemini can't ingest before building the request — keeps a single
     // unsupported attachment from 400-ing the whole context chain. The message's
     // text hint already tells the model a file was shared.
@@ -103,25 +100,13 @@ const transformToGeminiParts = (
 
     return feedableParts.map((part) =>
         match(part)
-            .with({ type: 'text' }, (p) => {
-                const textPart: GeminiPart = { text: p.text ?? '' };
-                if (options?.forceSkipThoughtSignature) {
-                    textPart.thoughtSignature = 'skip_thought_signature_validator';
-                }
-                return textPart;
-            })
-            .with({ type: 'image' }, (p) => {
-                const imagePart: GeminiPart = {
-                    inlineData: {
-                        mimeType: normalizeMimeType(p.mimeType ?? 'image/png'),
-                        data: p.imageData ?? '',
-                    },
-                };
-                if (options?.forceSkipThoughtSignature) {
-                    imagePart.thoughtSignature = 'skip_thought_signature_validator';
-                }
-                return imagePart;
-            })
+            .with({ type: 'text' }, (p): GeminiPart => ({ text: p.text ?? '' }))
+            .with({ type: 'image' }, (p): GeminiPart => ({
+                inlineData: {
+                    mimeType: normalizeMimeType(p.mimeType ?? 'image/png'),
+                    data: p.imageData ?? '',
+                },
+            }))
             .with({ type: 'media' }, (p) => {
                 const mimeType = normalizeMimeType(p.mimeType ?? 'application/octet-stream');
                 // Large media is referenced by gs:// URI (fileData); small media
@@ -140,9 +125,6 @@ const transformToGeminiParts = (
                     if (fps !== null) {
                         mediaPart.videoMetadata = { fps };
                     }
-                }
-                if (options?.forceSkipThoughtSignature) {
-                    mediaPart.thoughtSignature = 'skip_thought_signature_validator';
                 }
                 return mediaPart;
             })
@@ -166,11 +148,9 @@ const transformToGeminiParts = (
  */
 const buildGeminiModelParts = (
     message: UnifiedMessage,
-    options?: { isImageModel?: boolean; skipStoredSignatures?: boolean }
+    options?: { skipStoredSignatures?: boolean }
 ): GeminiPart[] => {
-    const contentParts = transformToGeminiParts(message.content, {
-        forceSkipThoughtSignature: options?.isImageModel,
-    });
+    const contentParts = transformToGeminiParts(message.content);
     const storedParts = (message.modelParts ?? []) as GeminiPart[];
     // On a custom endpoint the stored signature may have been issued by another
     // serving backend (e.g. Vertex): a foreign signature gets the whole request
@@ -191,7 +171,7 @@ const buildGeminiModelParts = (
  */
 export const transformToGemini = (
     messages: UnifiedMessage[],
-    options?: { isImageModel?: boolean; skipStoredSignatures?: boolean }
+    options?: { skipStoredSignatures?: boolean }
 ): GeminiContent[] => {
     return messages
         .filter((msg) => msg.role !== 'system') // System messages handled separately

@@ -1430,7 +1430,7 @@ const buildReplyFinalLayout = async (
     const { session } = chatContext;
 
     // The layout below and the stored version must describe the same footer: a
-    // caller that never streamed (an image-chat turn) only has the response.
+    // caller that never streamed only has the response.
     if (session.groundingData.length === 0 && (response.groundingData ?? []).length > 0) {
         session.groundingData = response.groundingData ?? [];
     }
@@ -1455,7 +1455,7 @@ const buildReplyFinalLayout = async (
         if (link !== null) session.searchLink = link;
     }
     // The stream syncs the complete buffers on every chunk; a caller that never
-    // streamed (an image-chat turn, a direct final delivery) only has the response.
+    // streamed (a direct final delivery) only has the response.
     const fullText = session.textBuffer !== '' ? session.textBuffer : response.text;
     const fullThinking =
         session.thinkingBuffer !== '' ? session.thinkingBuffer : response.thinkingText;
