@@ -1,6 +1,7 @@
 /**
  * Offline stand-ins for driving the bot end to end: a real grammY Api (and Bot)
- * whose transformer answers every call locally and records it, contexts for a
+ * whose transformer answers every call locally and records it (or refuses it
+ * the way Telegram does, when the test asks for that), contexts for a
  * message or a button press, and a MiMo-shaped chat completions stub that
  * records each request and can hold its answer back.
  *
@@ -24,7 +25,21 @@ export interface FakeTelegram {
     readonly reset: () => void;
 }
 
-const SENDING_METHODS: ReadonlySet<string> = new Set(['sendMessage', 'sendPhoto', 'sendDocument']);
+/** What Telegram answers when it refuses a call; grammY turns it into a GrammyError */
+export interface TelegramRefusal {
+    readonly error_code: number;
+    readonly description: string;
+}
+
+export interface FakeTelegramOptions {
+    /**
+     * Asked for every call after it is recorded: a refusal is answered as
+     * `{ ok: false, … }`, null lets the call through
+     */
+    readonly refuse?: (call: TelegramCall) => TelegramRefusal | null;
+}
+
+const SENDING_METHODS: ReadonlySet<string> = new Set(['sendMessage', 'sendPhoto', 'sendDocument', 'sendRichMessage']);
 let nextSentMessageId = 500_000;
 
 const asRecord = (value: unknown): Record<string, unknown> =>
@@ -33,11 +48,16 @@ const asRecord = (value: unknown): Record<string, unknown> =>
         : {};
 
 /** Install the answering transformer on an Api; returns the recorder */
-const recordInto = (api: Api): FakeTelegram => {
+const recordInto = (api: Api, options: FakeTelegramOptions = {}): FakeTelegram => {
     const calls: TelegramCall[] = [];
     const answer = async (method: string, payload: unknown) => {
         const fields = asRecord(payload);
-        calls.push({ method, payload: fields });
+        const call: TelegramCall = { method, payload: fields };
+        calls.push(call);
+        const refusal = options.refuse?.(call) ?? null;
+        if (refusal !== null) {
+            return { ok: false, error_code: refusal.error_code, description: refusal.description };
+        }
         if (!SENDING_METHODS.has(method)) return { ok: true, result: true };
         nextSentMessageId += 1;
         const chatId = typeof fields.chat_id === 'number' ? fields.chat_id : 0;
@@ -75,7 +95,8 @@ export const BOT_ME: UserFromGetMe = {
     supports_join_request_queries: false,
 };
 
-export const createFakeTelegram = (): FakeTelegram => recordInto(new Api('0:offline-token'));
+export const createFakeTelegram = (options: FakeTelegramOptions = {}): FakeTelegram =>
+    recordInto(new Api('0:offline-token'), options);
 
 const refuseBotApiCall: Transformer = (_previous, method) => {
     // The code under test usually catches a failed Bot API call (a tool hands
@@ -98,9 +119,9 @@ export const createUnusedApi = (): Api => {
 };
 
 /** A Bot that never polls: feed it updates with handleUpdate */
-export const createFakeBot = (): { bot: Bot; telegram: FakeTelegram } => {
+export const createFakeBot = (options: FakeTelegramOptions = {}): { bot: Bot; telegram: FakeTelegram } => {
     const bot = new Bot('0:offline-token', { botInfo: BOT_ME });
-    return { bot, telegram: recordInto(bot.api) };
+    return { bot, telegram: recordInto(bot.api, options) };
 };
 
 export const groupChat = (chatId: number): Chat.SupergroupChat => ({ id: chatId, type: 'supergroup', title: '测试群' });
