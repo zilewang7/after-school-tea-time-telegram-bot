@@ -34,6 +34,8 @@ export class ChatSettingsRecord extends Model<
   declare geminiPriority: CreationOptional<boolean | null>;
   // Thinking level: NULL = the model default, 'off' = thinking off, else a graded effort
   declare thinkingEffort: CreationOptional<string | null>;
+  // Experimental rich replies (presentation only); NULL = off, like a missing row
+  declare richReplies: CreationOptional<boolean | null>;
   declare updatedAt: Date;
   // Telegram user id of the last writer
   declare updatedBy: CreationOptional<number | null>;
@@ -78,6 +80,12 @@ ChatSettingsRecord.init({
   // Added after the table shipped too: a TEXT value from the thinking-effort closed set
   thinkingEffort: {
     type: DataTypes.TEXT,
+    allowNull: true,
+    defaultValue: null,
+  },
+  // Added after the table shipped as well: nullable, so the migration needs no backfill
+  richReplies: {
+    type: DataTypes.BOOLEAN,
     allowNull: true,
     defaultValue: null,
   },

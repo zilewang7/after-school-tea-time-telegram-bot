@@ -264,6 +264,17 @@ const migrateThinkingEffortColumns = async (transaction: Transaction): Promise<v
 };
 
 /**
+ * The per-chat rich replies switch: a nullable boolean (NULL = off, the same as
+ * a chat without a row), stored as INTEGER like every sequelize BOOLEAN on
+ * sqlite. Old rows need no backfill and rolling the code back needs no schema
+ * change; a fresh database gets the column from the DTO at sync time.
+ */
+const migrateRichRepliesColumn = async (transaction: Transaction): Promise<void> => {
+  if (!(await tableExists('chat_settings', transaction))) return;
+  await ensureColumn('chat_settings', 'richReplies', 'INTEGER DEFAULT NULL', transaction);
+};
+
+/**
  * The share links of the control panel (design §6.1): one row per public
  * /s/<token> page. A system share (createdBy 0, source 'system') is the bot's
  * own link fallback in groups; user shares come from the panel.
@@ -710,6 +721,7 @@ export const runSchemaMigrations = async (): Promise<void> => {
     await migrateReplyMetricsResumeColumns(transaction);
     await migrateChatSettingsGeminiPriority(transaction);
     await migrateThinkingEffortColumns(transaction);
+    await migrateRichRepliesColumn(transaction);
     await sequelize.query(
       `INSERT OR IGNORE INTO schema_migrations (name, appliedAt)
        VALUES ('20260908_custom_emoji_phase1', :appliedAt)`,
@@ -825,6 +837,12 @@ export const runSchemaMigrations = async (): Promise<void> => {
     await sequelize.query(
       `INSERT OR IGNORE INTO schema_migrations (name, appliedAt)
        VALUES ('20261113_search_links', :appliedAt)`,
+      { replacements: { appliedAt: new Date().toISOString() }, transaction }
+    );
+    // chat_settings gained richReplies (migrateRichRepliesColumn)
+    await sequelize.query(
+      `INSERT OR IGNORE INTO schema_migrations (name, appliedAt)
+       VALUES ('20261114_chat_settings_rich_replies', :appliedAt)`,
       { replacements: { appliedAt: new Date().toISOString() }, transaction }
     );
   });
