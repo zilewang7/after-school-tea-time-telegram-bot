@@ -12,6 +12,8 @@
  *   accumulating and the newest one is sent after the penalty
  * - Final states are sticky: retried until delivered (bounded attempts)
  * - Sends (new messages / photos) share the same budget via runApiCall
+ * - A rich state (rich_message markdown instead of text and entities) is
+ *   never degraded here: a refusal goes back to its submitter, who decides
  */
 import { GrammyError } from 'grammy';
 import type { Api } from 'grammy';
@@ -21,6 +23,18 @@ import { toApiEntities } from './api-entities.js';
 import type { LinkPreviewOptions } from './link-preview.js';
 
 export type EditPriority = 'final' | 'content' | 'spinner';
+
+/** How a state is sent: text with entities, or a rich message (Bot API 10.1+) */
+export type EditFormat = 'text' | 'rich';
+
+export interface RichEditOptions {
+    /**
+     * Telegram refused the rich state (any API error but 429 and "message is
+     * not modified"); called once per refused send. The state then counts as
+     * failed: a rich state is never retried in another form here.
+     */
+    readonly onRejected?: (error: GrammyError) => void;
+}
 
 export interface SubmitEditOptions {
     /** Pre-rendered entities for the text (mutually exclusive with parseMode) */
@@ -33,6 +47,11 @@ export interface SubmitEditOptions {
     isFinal?: boolean;
     /** Link preview for this edit; undefined keeps Telegram's default */
     linkPreviewOptions?: LinkPreviewOptions;
+    /**
+     * Send the text as a rich message's markdown: entities, parse mode and
+     * link preview options are not sent with it (a rich edit takes none)
+     */
+    rich?: RichEditOptions;
 }
 
 interface CoordinatorConfig {
@@ -98,7 +117,9 @@ const currentConfig = (): CoordinatorConfig => {
 };
 
 interface DesiredState {
+    /** The message text, or the rich markdown of a rich state */
     text: string;
+    format: EditFormat;
     entities?: readonly RenderedEntity[];
     /** Serialized entities ('[]' when none) for cheap dedup comparison */
     entitiesJson: string;
@@ -110,6 +131,8 @@ interface DesiredState {
     linkPreviewJson: string;
     priority: EditPriority;
     isFinal: boolean;
+    /** Rich states only: who hears about a refusal */
+    onRichRejected?: (error: GrammyError) => void;
 }
 
 interface MessageEntry {
@@ -118,6 +141,8 @@ interface MessageEntry {
     desired: DesiredState | null;
     /** Last state successfully sent to Telegram */
     sentText?: string;
+    /** Unset reads as 'text': only a rich state ever sets 'rich' */
+    sentFormat?: EditFormat;
     sentEntitiesJson?: string;
     sentMarkupJson?: string;
     sentLinkPreviewJson?: string;
@@ -264,6 +289,8 @@ const resolveWaiters = (entry: MessageEntry, delivered: boolean): void => {
 
 const matchesSentState = (entry: MessageEntry, state: DesiredState): boolean => {
     if (entry.sentText !== state.text) return false;
+    // The same string as text and as rich markdown shows differently
+    if ((entry.sentFormat ?? 'text') !== state.format) return false;
     // Same text but different entities is still a real change
     if (
         entry.sentEntitiesJson !== undefined &&
@@ -297,6 +324,7 @@ const settleDelivered = (
     state: DesiredState
 ): void => {
     entry.sentText = state.text;
+    entry.sentFormat = state.format;
     entry.sentEntitiesJson = state.entitiesJson;
     entry.sentMarkupJson = state.replyMarkupJson;
     entry.sentLinkPreviewJson = state.linkPreviewJson;
@@ -353,6 +381,15 @@ const handleEditError = (
             settleFailed(coordinator, entry, state);
         }
         // else: entry stays dirty, drain retries the newest state after penalty
+        return;
+    }
+
+    if (state.format === 'rich' && error instanceof GrammyError) {
+        // Not degraded here: the submitter decides what replaces a refused
+        // rich state (a reply demotes itself to entities)
+        console.error('[edit-coordinator] Rich edit rejected:', message);
+        state.onRichRejected?.(error);
+        settleFailed(coordinator, entry, state);
         return;
     }
 
@@ -464,14 +501,21 @@ const flushEntry = async (
 
         recordCall(coordinator);
         const [error] = await to(
-            api.editMessageText(coordinator.chatId, entry.messageId, state.text, {
-                entities: state.entities?.length
-                    ? toApiEntities(state.entities)
-                    : undefined,
-                parse_mode: state.parseMode,
-                reply_markup: state.replyMarkup,
-                link_preview_options: state.linkPreviewOptions,
-            })
+            state.format === 'rich'
+                ? api.editMessageText(
+                      coordinator.chatId,
+                      entry.messageId,
+                      { markdown: state.text },
+                      { reply_markup: state.replyMarkup }
+                  )
+                : api.editMessageText(coordinator.chatId, entry.messageId, state.text, {
+                      entities: state.entities?.length
+                          ? toApiEntities(state.entities)
+                          : undefined,
+                      parse_mode: state.parseMode,
+                      reply_markup: state.replyMarkup,
+                      link_preview_options: state.linkPreviewOptions,
+                  })
         );
 
         if (!error) {
@@ -545,21 +589,26 @@ export const submitEdit = (
     if (entry.desired) {
         resolveWaiters(entry, true);
     }
-    const entities = options?.entities?.length ? options.entities : undefined;
+    const rich = options?.rich;
+    // A rich edit carries none of these: the markdown is the whole message
+    const entities = rich === undefined && options?.entities?.length ? options.entities : undefined;
+    const linkPreviewOptions = rich === undefined ? options?.linkPreviewOptions : undefined;
     const state: DesiredState = {
         text,
+        format: rich === undefined ? 'text' : 'rich',
         entities,
         entitiesJson: entities ? JSON.stringify(entities) : '[]',
-        parseMode: options?.parseMode,
+        parseMode: rich === undefined ? options?.parseMode : undefined,
         replyMarkup: options?.replyMarkup,
         replyMarkupJson:
             options?.replyMarkup === undefined
                 ? undefined
                 : JSON.stringify(options.replyMarkup),
-        linkPreviewOptions: options?.linkPreviewOptions,
-        linkPreviewJson: serializeLinkPreview(options?.linkPreviewOptions),
+        linkPreviewOptions,
+        linkPreviewJson: serializeLinkPreview(linkPreviewOptions),
         priority: isFinal ? 'final' : options?.priority ?? 'content',
         isFinal,
+        onRichRejected: rich?.onRejected,
     };
 
     if (matchesSentState(entry, state)) {
@@ -603,6 +652,7 @@ export const primeSentState = (
         coordinator.entries.set(messageId, entry);
     }
     entry.sentText = text;
+    entry.sentFormat = 'text';
     // Primed content is always plain text; an entity-carrying submit with the
     // same text must still be treated as a change
     entry.sentEntitiesJson = '[]';
