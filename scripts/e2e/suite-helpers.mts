@@ -113,9 +113,14 @@ export const switchModelWithKeyboard = async (model: string): Promise<number> =>
     return menu.id;
 };
 
-/** Switch unless this run already did: a case picked alone with --only still gets its model */
+/**
+ * Switch unless this run already did: a case picked alone with --only still
+ * gets its model. Typed /model, not the keyboard: the keyboard shows only the
+ * menu models, and a case may need one outside it (the first case covers the
+ * keyboard).
+ */
 export const ensureModel = async (model: string): Promise<void> => {
-    if (switchedModel !== model) await switchModelWithKeyboard(model);
+    if (switchedModel !== model) await setModelByCommand(model);
 };
 
 /** Id of the newest message in the test group, 0 when it reads empty */

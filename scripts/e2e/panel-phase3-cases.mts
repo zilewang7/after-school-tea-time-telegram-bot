@@ -71,6 +71,7 @@ const STATS_KEYS = [
     'kpis',
     'models',
     'outcomes',
+    'pricing',
     'range',
     'recentErrors',
     'series',

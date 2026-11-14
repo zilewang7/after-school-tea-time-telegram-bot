@@ -64,6 +64,39 @@ interface CaseResult {
 
 const CASE_GAP_MS = 4000; // pace userbot sends, keep the account flood-safe
 
+interface EntityRange {
+    readonly offset: number;
+    readonly length: number;
+}
+
+const quoteRangesOf = (message: DriverMessage): EntityRange[] =>
+    message.entities
+        .filter((entity) => String(entity['_']).includes('Blockquote'))
+        .map((entity) => ({ offset: Number(entity['offset']), length: Number(entity['length']) }))
+        .sort((first, second) => first.offset - second.offset);
+
+/**
+ * The visible text and entities outside the thinking quote: the model's
+ * thinking may name the markers in code spans ("**加粗**"), which is rendered
+ * right and says nothing about the answer.
+ */
+const outsideQuotes = (message: DriverMessage): { text: string; entityTypes: string[] } => {
+    const quotes = quoteRangesOf(message);
+    const insideQuote = (offset: number): boolean =>
+        quotes.some((quote) => quote.offset <= offset && offset < quote.offset + quote.length);
+    let text = '';
+    let cursor = 0;
+    for (const quote of quotes) {
+        text += message.text.slice(cursor, quote.offset);
+        cursor = Math.max(cursor, quote.offset + quote.length);
+    }
+    text += message.text.slice(cursor);
+    const entityTypes = message.entities
+        .filter((entity) => !String(entity['_']).includes('Blockquote') && !insideQuote(Number(entity['offset'])))
+        .map((entity) => String(entity['_']));
+    return { text, entityTypes };
+};
+
 /** Message links the bot rendered for its `#N` context references */
 const contextLinksOf = (message: DriverMessage): string[] =>
     message.entities
@@ -182,14 +215,14 @@ const cases: E2eCase[] = [
             );
             expect(Boolean(botMsg), 'reply visible in group via MTProto read-back');
             if (!botMsg) return;
+            const answer = outsideQuotes(botMsg);
             expect(
-                !botMsg.text.includes('**') && !botMsg.text.includes('`'),
-                'no raw markdown markers in visible text'
+                !answer.text.includes('**') && !answer.text.includes('`'),
+                `no raw markdown markers in the visible answer (got: ${answer.text.slice(0, 120)})`
             );
-            const entityTypes = botMsg.entities.map((e) => String(e['_']));
             expect(
-                entityTypes.some((t) => t.includes('Bold') || t.includes('Code')),
-                `markdown became a formatting entity (got: ${entityTypes.join(',') || 'none'})`
+                answer.entityTypes.some((type) => type.includes('Bold') || type.includes('Code')),
+                `markdown became a formatting entity (got: ${answer.entityTypes.join(',') || 'none'})`
             );
         },
     },
