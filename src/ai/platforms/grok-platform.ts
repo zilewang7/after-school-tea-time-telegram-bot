@@ -71,6 +71,19 @@ const grokReasoningForWire = (model: string, wire: EffortWire): GrokResponseRequ
     return effort === null ? undefined : { effort };
 };
 
+/**
+ * Every candidate with the downgraded reasoning: the accepted one is the base
+ * of every later round of the reply.
+ */
+const downgradedCandidates = (
+    candidates: readonly GrokResponseRequest[],
+    thinking: EffortWire
+): GrokResponseRequest[] =>
+    candidates.map((entry) => ({
+        ...entry,
+        reasoning: grokReasoningForWire(entry.model ?? 'unknown', thinking),
+    }));
+
 const errorMessageOf = (error: unknown): string =>
     error instanceof Error ? error.message : String(error);
 
@@ -276,7 +289,9 @@ export class GrokPlatform extends BasePlatform {
      * are. Every other 400 keeps the candidate walk.
      *
      * The whole walk is one sendWithRetry attempt: its signal ends whichever
-     * candidate is out when the attempt runs out of time.
+     * candidate is out when the attempt runs out of time. An attempt after
+     * one that downgraded the effort walks the downgraded candidates: the
+     * rejected effort would come back, and the walk would drop tools for it.
      */
     private async openFirstRound(
         candidates: readonly GrokResponseRequest[],
@@ -285,7 +300,8 @@ export class GrokPlatform extends BasePlatform {
         thinking: EffortWire | null
     ): Promise<FirstRound> {
         let lastError: unknown;
-        let attempts: readonly GrokResponseRequest[] = candidates;
+        let attempts: readonly GrokResponseRequest[] =
+            thinking !== null && thinking.degraded ? downgradedCandidates(candidates, thinking) : candidates;
 
         for (let index = 0; index < attempts.length; index += 1) {
             const candidate = attempts[index];
@@ -316,9 +332,7 @@ export class GrokPlatform extends BasePlatform {
                         fallbackReasoning?.effort ?? 'the vendor default',
                         error
                     );
-                    // Every later candidate carries the downgraded reasoning too:
-                    // the accepted one is the base of every later round.
-                    attempts = candidates.map((entry) => ({ ...entry, reasoning: fallbackReasoning }));
+                    attempts = downgradedCandidates(candidates, thinking);
                     index -= 1;
                     continue;
                 }

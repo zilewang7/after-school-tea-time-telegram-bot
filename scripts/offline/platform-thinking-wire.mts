@@ -2,8 +2,9 @@
  * Offline cases for the thinking-effort wire of every platform (design
  * 2026-1113-1742 §3.3 / appendix D): the request bodies of
  * `PlatformConfig.thinkingEffort` in its three modes, the legacy body when the
- * field is absent, the one-shot downgrade after a level 400, and the rule that
- * 401/429 never count as a thinking rejection.
+ * field is absent, the one-shot downgrade after a level 400 (kept by a retry
+ * after a transient error), and the rule that 401/429 never count as a
+ * thinking rejection.
  *
  * The Anthropic wire beyond the effort lives here too: the headers SDK 1.x
  * sends to the relay, max_tokens from the model catalog with its own one-shot
@@ -27,6 +28,8 @@ interface ScriptedReply {
     readonly path: string;
     readonly status: number;
     readonly body: string;
+    /** Extra response headers, e.g. a retry-after-ms that keeps a retry short */
+    readonly headers: Readonly<Record<string, string>>;
 }
 
 const scripted: ScriptedReply[] = [];
@@ -45,7 +48,7 @@ const stub = createServer((request, response) => {
             response.end(JSON.stringify({ error: { message: `unexpected request to ${path}` } }));
             return;
         }
-        response.writeHead(next.status, { 'Content-Type': 'application/json' });
+        response.writeHead(next.status, { 'Content-Type': 'application/json', ...next.headers });
         response.end(next.body);
     });
 });
@@ -126,7 +129,12 @@ const reset = (...replies: ScriptedReply[]): void => {
     recorded.length = 0;
 };
 
-const reply = (path: string, status: number, body: string): ScriptedReply => ({ path, status, body });
+const reply = (
+    path: string,
+    status: number,
+    body: string,
+    headers: Readonly<Record<string, string>> = {}
+): ScriptedReply => ({ path, status, body, headers });
 
 // ---- SSE fixtures ----
 
@@ -1062,6 +1070,42 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
                 lines.some((line) => line.includes('rejected thinking effort xhigh; retrying with high')),
                 `the downgrade is logged (got ${json(lines)})`
             );
+        },
+    },
+    {
+        name: 'grok keeps the downgraded effort and every tool when a transient error follows the downgrade',
+        body: async () => {
+            reset(
+                reply('/grok/v1/responses', 400, errorBody('Model grok-4.7 does not support parameter reasoningEffort.')),
+                // The SDK retries nothing: sendWithRetry opens round 1 again
+                reply('/grok/v1/responses', 503, errorBody('upstream overloaded'), { 'retry-after-ms': '1' }),
+                reply('/grok/v1/responses', 200, responsesAnswer('answer after the retry'))
+            );
+            const platform = new GrokPlatform();
+            const { result, lines } = await captureConsole(async () =>
+                drain(() =>
+                    platform.sendMessage(userTurn('hi'), {
+                        model: 'grok-4.7',
+                        timeout: 20000,
+                        thinkingEffort: { mode: 'explicit', value: 'xhigh' },
+                        tools: createTurnTools([weatherTool]),
+                    })
+                )
+            );
+            expect(result.text === 'answer after the retry', `the retry answers (got ${json(result)})`);
+            expect(recorded.length === 3, `the rejection, the 503 and the retry (got ${recorded.length})`);
+            const efforts = recorded.map((_entry, index) => effortOf(index));
+            expect(json(efforts) === json(['xhigh', 'high', 'high']), `the retry keeps the lower effort (got ${json(efforts)})`);
+            const toolsAt = (index: number): string => json(bodyOf(index).tools);
+            expect(
+                toolsAt(1) === toolsAt(0) && toolsAt(2) === toolsAt(0) && bodyOf(2).max_turns === bodyOf(0).max_turns,
+                `and the full tool set of the first request (got ${json(recorded.map((entry) => entry.body.tools))})`
+            );
+            expect(
+                toolsAt(0).includes('"x_search"') && toolsAt(0).includes('"code_interpreter"') && toolsAt(0).includes('lookup_weather'),
+                `the first request offers every tool (got ${toolsAt(0)})`
+            );
+            expect(countLinesWith(lines, 'rejected thinking effort') === 1, `one downgrade is logged (got ${json(lines)})`);
         },
     },
     {
