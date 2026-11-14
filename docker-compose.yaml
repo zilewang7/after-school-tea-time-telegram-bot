@@ -85,7 +85,7 @@ services:
       - DB_PATH=database.test.sqlite
       # Keep pnpm's store inside the container: it runs as root and would
       # otherwise create root-owned files in the mounted working tree.
-      - npm_config_store_dir=/tmp/pnpm-store
+      - pnpm_config_store_dir=/tmp/pnpm-store
       # Mini App control panel, test domain (see the k-on-bot service above).
       - WEBAPP_PORT=8080
       - WEBAPP_PUBLIC_URL=https://miniapp-test.heimaois.me
@@ -116,7 +116,7 @@ services:
         "/bin/sh",
         "-c",
         # dist is a volume now: empty it first, so files of deleted sources do not linger
-        "npm install -g pnpm@9.4.0 && pnpm install && rm -rf dist/* && pnpm build && node dist/index.js",
+        "npm install -g pnpm@11.28.9 && pnpm install && rm -rf dist/* && pnpm build && node dist/index.js",
       ]
     working_dir: /app/k-on-bot
     networks:

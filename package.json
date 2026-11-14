@@ -28,7 +28,7 @@
   "keywords": [],
   "author": "ddc",
   "license": "ISC",
-  "packageManager": "pnpm@9.4.0+sha512.f549b8a52c9d2b8536762f99c0722205efc5af913e77835dbccc3b0b0b2ca9e7dc8022b78062c17291c48e88749c70ce88eb5a74f1fa8c4bf5e18bb46c8bd83a",
+  "packageManager": "pnpm@11.28.9+sha512.35421cea2720eca3f5ad722b67e8ef18f4d3cd4745ed2fcfeb0dc288d4e9437fad3870d91ee6e83f268f0f6f7e0f62723317b19617bb45ee4333172ef51159f8",
   "devDependencies": {
     "@types/node": "^26.6.6",
     "@types/sqlite3": "^5.1.0",
@@ -56,20 +56,5 @@
     "ts-pattern": "^5.9.2",
     "undici": "^8.12.4",
     "zod": "^4.6.7"
-  },
-  "pnpm": {
-    "overrides": {
-      "@sequelize/sqlite3>sqlite3": "6.0.1",
-      "ip-address": "^10.7.5",
-      "uuid": "^11.1.1",
-      "hono": "^4.13.17",
-      "@hono/node-server": "^2.1.6",
-      "fast-uri": "^3.1.9",
-      "body-parser": "^2.4.0",
-      "qs": "^6.17.1",
-      "tar": "^7.5.22",
-      "node-gyp>undici": "^6.29.1",
-      "express": "^5.3.0"
-    }
   }
 }

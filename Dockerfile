@@ -6,7 +6,7 @@ ARG GIT_REPO
 ARG GIT_REF_URL=https://api.github.com/repos/zilewang7/after-school-tea-time-telegram-bot/git/refs/heads/master
 # Pinned so a rebuild never changes the tools under the app. PNPM_VERSION must
 # match "packageManager" in package.json.
-ARG PNPM_VERSION=9.4.0
+ARG PNPM_VERSION=11.28.9
 ARG PM2_VERSION=7.1.2
 
 WORKDIR /app

@@ -1,3 +1,36 @@
 packages:
   - 'webapp'
   - 'tools/checks'
+
+# pnpm 11 reads its settings here; the "pnpm" field of package.json is ignored.
+
+overrides:
+  '@sequelize/sqlite3>sqlite3': 6.0.1
+  ip-address: ^10.7.5
+  uuid: ^11.1.1
+  hono: ^4.13.17
+  '@hono/node-server': ^2.1.6
+  fast-uri: ^3.1.9
+  body-parser: ^2.4.0
+  qs: ^6.17.1
+  tar: ^7.5.22
+  'node-gyp>undici': ^6.29.1
+  express: ^5.3.0
+
+# Dependencies that may run install scripts. A dependency with such a script
+# that is not listed here fails the install, so a new one is reviewed first.
+allowBuilds:
+  sqlite3: true
+  esbuild: true
+  protobufjs: false
+  '@google/genai': false
+
+# `pnpm <script>` must never install by itself: worktrees and the export of
+# `pnpm verify` borrow the main checkout's node_modules through links, and an
+# install started there would write into the main checkout.
+verifyDepsBeforeRun: false
+
+# The owner's own package: a release is taken into use the same day, before
+# pnpm's one-day waiting period for new releases is over.
+minimumReleaseAgeExclude:
+  - telegram-md-entities
