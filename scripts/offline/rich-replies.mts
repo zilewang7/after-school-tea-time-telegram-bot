@@ -685,7 +685,9 @@ results.push(
         const logs = await runReply(started, { steps: textSteps(paragraphs) });
         const { telegram } = started;
         const richCalls = telegram.calls.filter(isRichCall);
-        expect(richCalls.length === 7, `seven frames fit the budget (got ${richCalls.length})`);
+        // Counted by content: a spinner refresh under load repeats a frame with another status word
+        const frameContents = new Set(richCalls.map((call) => (richMarkdownOf(call) ?? '').replace(RICH_STATUS_LINE, '')));
+        expect(frameContents.size === 7, `seven frames fit the budget (got ${frameContents.size})`);
         expect(
             richCalls.every((call) => (richMarkdownOf(call)?.length ?? 0) <= RICH_MAX_SOURCE_LENGTH + 100),
             'none of them over the budget'
