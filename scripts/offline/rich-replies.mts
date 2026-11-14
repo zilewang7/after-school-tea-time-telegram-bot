@@ -888,6 +888,54 @@ results.push(
 );
 
 results.push(
+    await runCase('case 8: a thinking past the budget with no link to put it behind demotes without rendering it', async () => {
+        // The switch read per call: no link can be created, while streaming or at the final
+        process.env.THINKING_LINK = '0';
+        try {
+            const started = await startReply({ richReplies: true });
+            // Shaped like a real chain of thought: headings, inline code, nested lists
+            const sections = Array.from({ length: 10 }, (_, section) =>
+                Array.from(
+                    { length: 250 },
+                    (_, step) =>
+                        `**步骤 ${section}.${step}**\n\n比较 \`value_${step}\` 与 *候选* 的差别：\n\n- 第一点，参见 #${step % 9}\n  - 细节 \`x${step}\`\n- 第二点 **重点**\n\n`
+                ).join('')
+            );
+            const thinkingLength = sections.join('').length;
+            let finalStartedAt = 0;
+            const logs = await runReply(
+                started,
+                { steps: [...sections.map((section) => ({ chunk: thinkingChunk(section) })), ...textSteps(['答案。'])] },
+                {
+                    beforeFinal: () => {
+                        finalStartedAt = performance.now();
+                    },
+                }
+            );
+            const finalMs = performance.now() - finalStartedAt;
+            expect(thinkingLength >= 200_000, `about 200k characters of thinking (got ${thinkingLength})`);
+            const fallbacks = fallbacksIn(logs);
+            expect(
+                fallbacks.length === 1 && fallbacks[0]?.endsWith(`reason=overflow detail=${thinkingLength}`) === true,
+                `demoted on the thinking's own length, nothing rendered (got ${json(fallbacks)})`
+            );
+            const final = editsOf(started.telegram, started.firstMessageId).at(-1);
+            expect(
+                final !== undefined && !isRichCall(final) && textOf(final).endsWith('答案。'),
+                `the entities path delivers the final (got ${json(final?.payload)})`
+            );
+            // Rendering this thinking as a rich quote took seconds, all of them blocking the bot
+            expect(finalMs < 2_000, `the final takes no seconds (got ${Math.round(finalMs)} ms)`);
+            expect(deliveredIn(logs).length === 0, 'no success line');
+            const [version] = await versionsOf(started);
+            expect(version?.text === '答案。' && version.thinkingLinkToken === undefined, 'the version stores the answer, no link');
+        } finally {
+            delete process.env.THINKING_LINK;
+        }
+    })
+);
+
+results.push(
     await runCase('case 9: a folded search footer trails the rich body as an entities link message; a small one stays inline', async () => {
         const folded = await startReply({ richReplies: true });
         const logs = await runReply(folded, {

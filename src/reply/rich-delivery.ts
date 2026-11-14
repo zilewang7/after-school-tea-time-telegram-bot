@@ -160,6 +160,14 @@ export const deliverRichFinal = async (
         return 'not-attempted';
     }
     if (placement === 'new-link' && !(await beginFinalThinkingLink(holder))) {
+        // No link: the thinking would have to go inline. One longer than the
+        // whole budget cannot fit, and rendering it (up to 500k characters)
+        // takes seconds that block the bot, so its length alone decides, as on
+        // the entities path.
+        if (thinking.length > RICH_MAX_SOURCE_LENGTH) {
+            demoteToEntities(holder, 'overflow', thinking.length);
+            return 'not-attempted';
+        }
         body = bodyWith(thinking) ?? body;
         if (body.length > RICH_MAX_SOURCE_LENGTH) {
             demoteToEntities(holder, 'overflow', body.length);
