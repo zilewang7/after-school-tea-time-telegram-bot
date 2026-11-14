@@ -44,6 +44,7 @@ import {
     keyboardLabels,
     OWNER_USER_ID,
     quietCase,
+    stalledRound,
     takeChatId,
     webLookup,
 } from './support/resume-bench.mts';
@@ -964,6 +965,35 @@ results.push(
                 await bench.continueReply(reply);
                 const final = telegram.calls.filter(isRichCall).at(-1);
                 expect(richMarkdownOf(final)?.includes('接着说完。') === true, `the resumed version is rich (got ${json(richMarkdownOf(final))})`);
+            } finally {
+                await updateChatSettings({ chatId, patch: { richReplies: false }, actor: OWNER });
+            }
+        })
+    )
+);
+
+results.push(
+    await runCase(
+        'the switch flipped while a reply runs does not change its form halfway',
+        quietCase(async () => {
+            const chatId = takeChatId();
+            const { telegram, vertex } = bench;
+            await updateChatSettings({ chatId, patch: { richReplies: true }, actor: OWNER });
+            try {
+                vertex.reset([stalledRound('还在想', '说到一半')]);
+                telegram.reset();
+                const asked = bench.askInBackground(chatId, '@AfterSchoolTeatimeBot 慢慢说');
+                await waitUntil('the answer to stream', () =>
+                    botMessageService.listActiveSessions().some((session) => session.chatId === chatId && session.textBuffer === '说到一半')
+                );
+                await updateChatSettings({ chatId, patch: { richReplies: false }, actor: OWNER });
+                await bench.stopReply(await bench.runningReplyOf(chatId));
+                await asked.done;
+                const final = telegram.callsOf('editMessageText').at(-1);
+                expect(
+                    richMarkdownOf(final) === '<blockquote expandable>还在想</blockquote>\n\n说到一半\n\n<p>[stopped]</p>',
+                    `the reply ends rich as it started (got ${json(final?.payload)})`
+                );
             } finally {
                 await updateChatSettings({ chatId, patch: { richReplies: false }, actor: OWNER });
             }
