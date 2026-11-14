@@ -4,6 +4,7 @@
 import OpenAI from 'openai';
 import type { ChatCompletionChunk } from 'openai/resources';
 import { BasePlatform } from './base-platform.js';
+import { attemptRequestOptions } from './attempt-request-options.js';
 import { transformToOpenAI, mergeConsecutiveMessages } from '../message-transformer.js';
 import {
     runToolLoop,
@@ -148,14 +149,14 @@ export class DeepSeekPlatform extends BasePlatform {
         const stream = await this.openChatWithEffortFallback(
             () =>
                 this.sendWithRetry(
-                    () =>
+                    (attemptSignal) =>
                         this.client.chat.completions.create({
                             model,
                             messages: openaiMessages,
                             stream: true,
                             stream_options: INCLUDE_USAGE_STREAM_OPTIONS,
                             ...this.thinkingParamsOf(thinkingWire),
-                        }, { signal }),
+                        }, attemptRequestOptions(attemptSignal)),
                     { timeout, maxRetries, signal }
                 ),
             thinkingWire,
@@ -236,7 +237,7 @@ export class DeepSeekPlatform extends BasePlatform {
                 const stream = await this.openChatWithEffortFallback(
                     () =>
                         this.sendWithRetry(
-                            () =>
+                            (attemptSignal) =>
                                 this.client.chat.completions.create({
                                     model,
                                     messages: currentMessages,
@@ -245,7 +246,7 @@ export class DeepSeekPlatform extends BasePlatform {
                                     stream: true,
                                     stream_options: INCLUDE_USAGE_STREAM_OPTIONS,
                                     ...this.thinkingParamsOf(thinkingWire),
-                                }, { signal }),
+                                }, attemptRequestOptions(attemptSignal)),
                             { timeout, maxRetries, signal }
                         ),
                     thinkingWire,

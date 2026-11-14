@@ -10,6 +10,7 @@
  */
 import Anthropic from '@anthropic-ai/sdk';
 import { BasePlatform } from './base-platform.js';
+import { attemptRequestOptions } from './attempt-request-options.js';
 import { transformToAnthropic } from '../message-transformer.js';
 import { runToolLoop, toAnthropicTools, type TurnTools } from '../tools/index.js';
 import {
@@ -202,7 +203,7 @@ export class AnthropicPlatform extends BasePlatform {
         roundOptions: { forceNoTools?: boolean }
     ): Promise<AsyncIterable<Anthropic.RawMessageStreamEvent>> {
         const open = () => this.sendWithRetry(
-            () => this.client.messages.create(
+            (attemptSignal) => this.client.messages.create(
                 this.buildRequest(messages, tools, {
                     model: options.model,
                     maxTokens: options.output.maxTokens,
@@ -210,7 +211,7 @@ export class AnthropicPlatform extends BasePlatform {
                     forceNoTools: roundOptions.forceNoTools,
                     thinking: options.thinking,
                 }),
-                { signal: options.signal }
+                attemptRequestOptions(attemptSignal)
             ),
             { timeout: options.timeout, maxRetries: options.maxRetries, signal: options.signal }
         );

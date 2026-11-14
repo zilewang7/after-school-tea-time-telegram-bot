@@ -12,6 +12,7 @@ import type {
     ResponseStreamEvent,
 } from 'openai/resources/responses/responses';
 import { BasePlatform } from './base-platform.js';
+import { attemptRequestOptions } from './attempt-request-options.js';
 import { toVisionImageMimeType } from '../supported-mime.js';
 import { imageModelChatError, isChatShapedRequest } from '../image-model-guard.js';
 import { isImageOutputModel } from '../model-kinds.js';
@@ -155,7 +156,7 @@ export class OpenAIPlatform extends BasePlatform {
 
         const stream = wire === null
             ? await this.sendWithRetry(
-                () => this.createResponseStream(request, signal),
+                (attemptSignal) => this.createResponseStream(request, attemptSignal),
                 { timeout, maxRetries, signal }
             )
             : await this.openReasonedStream(request, signal, wire, timeout, maxRetries);
@@ -195,7 +196,7 @@ export class OpenAIPlatform extends BasePlatform {
     ): Promise<Stream<ResponseStreamEvent>> {
         try {
             return await this.sendWithRetry(
-                () => this.createResponseStream(request, signal, false),
+                (attemptSignal) => this.createResponseStream(request, attemptSignal, false),
                 { timeout, maxRetries, signal }
             );
         } catch (error) {
@@ -213,7 +214,7 @@ export class OpenAIPlatform extends BasePlatform {
                 error
             );
             return await this.sendWithRetry(
-                () => this.createResponseStream(withReasoning(request, fallbackReasoning), signal, false),
+                (attemptSignal) => this.createResponseStream(withReasoning(request, fallbackReasoning), attemptSignal, false),
                 { timeout, maxRetries, signal }
             );
         }
@@ -350,7 +351,7 @@ export class OpenAIPlatform extends BasePlatform {
                 };
                 const stream = wire === null
                     ? await this.sendWithRetry(
-                        () => this.createResponseStream(request, signal),
+                        (attemptSignal) => this.createResponseStream(request, attemptSignal),
                         { timeout, maxRetries, signal }
                     )
                     : await this.openReasonedStream(request, signal, wire, timeout, maxRetries);
@@ -376,12 +377,13 @@ export class OpenAIPlatform extends BasePlatform {
         }
     }
 
+    /** One request of a sendWithRetry attempt, aborted with that attempt */
     private async createResponseStream(
         request: ResponseCreateParamsStreaming,
-        signal?: AbortSignal,
+        attemptSignal: AbortSignal,
         allowLegacyFallback = true
     ): Promise<Stream<ResponseStreamEvent>> {
-        const requestOptions = signal ? { signal } : undefined;
+        const requestOptions = attemptRequestOptions(attemptSignal);
 
         try {
             return await this.client.responses.create(request, requestOptions);
@@ -493,7 +495,8 @@ export class OpenAIPlatform extends BasePlatform {
         );
 
         // The attempt signal reaches the SDK, so a stop or a deadline cancels the
-        // request instead of leaving it to bill in the background of its retry
+        // request instead of leaving it to bill in the background of its retry;
+        // the retries are sendWithRetry's alone
         const generateFn = async (attemptSignal: AbortSignal) => {
             if (imageFiles.length > 0) {
                 console.log(`[openai] Tool: images.edit with ${imageFiles.length} reference image(s):`,
@@ -504,7 +507,7 @@ export class OpenAIPlatform extends BasePlatform {
                     prompt,
                     n: 1,
                     size: 'auto',
-                }, { signal: attemptSignal });
+                }, attemptRequestOptions(attemptSignal));
             }
             console.log('[openai] Tool: images.generate');
             return this.client.images.generate({
@@ -512,7 +515,7 @@ export class OpenAIPlatform extends BasePlatform {
                 prompt,
                 n: 1,
                 size: 'auto',
-            }, { signal: attemptSignal });
+            }, attemptRequestOptions(attemptSignal));
         };
 
         const response = await this.sendWithRetry(generateFn, {

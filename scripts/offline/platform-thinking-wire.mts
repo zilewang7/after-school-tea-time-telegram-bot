@@ -27,7 +27,6 @@ interface ScriptedReply {
     readonly path: string;
     readonly status: number;
     readonly body: string;
-    readonly headers?: Readonly<Record<string, string>>;
 }
 
 const scripted: ScriptedReply[] = [];
@@ -46,7 +45,7 @@ const stub = createServer((request, response) => {
             response.end(JSON.stringify({ error: { message: `unexpected request to ${path}` } }));
             return;
         }
-        response.writeHead(next.status, { 'Content-Type': 'application/json', ...next.headers });
+        response.writeHead(next.status, { 'Content-Type': 'application/json' });
         response.end(next.body);
     });
 });
@@ -361,8 +360,9 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
             const platform = new OpenAIPlatform();
             for (const status of [401, 404, 429]) {
                 reset(reply('/openai/v1/responses', status, errorBody('reasoning effort auth/quota problem')));
-                // The SDK retries 429 on its own too; none of those retries may
-                // change the effort, and the downgrade warn must never appear.
+                // sendWithRetry is the only retry (the SDK's are off) and
+                // maxRetries 1 leaves it none: a second request could only be
+                // a downgrade, and the downgrade warn must never appear.
                 const { result, lines } = await captureConsole(async () =>
                     drain(() =>
                         platform.sendMessage(userTurn('hi'), {
@@ -374,7 +374,7 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
                     )
                 );
                 expect(result.error !== null, `${status}: the reply fails`);
-                expect(recorded.length >= 1, `${status}: at least one request (got ${recorded.length})`);
+                expect(recorded.length === 1, `${status}: a single request (got ${recorded.length})`);
                 expect(
                     recorded.every((entry) => asRecord(entry.body.reasoning).effort === 'xhigh'),
                     `${status}: every body keeps xhigh (got ${json(recorded.map((entry) => entry.body.reasoning))})`
@@ -457,6 +457,8 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
             const platform = new AnthropicPlatform();
             for (const status of [401, 404, 429]) {
                 reset(reply('/anthropic/v1/messages', status, errorBody('output_config effort permission problem')));
+                // No retry at all with maxRetries 1 (the SDK's own are off): a
+                // second request could only be a downgrade
                 const { result, lines } = await captureConsole(async () =>
                     drain(() =>
                         platform.sendMessage(userTurn('hi'), {
@@ -468,7 +470,7 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
                     )
                 );
                 expect(result.error !== null, `${status}: the reply fails`);
-                expect(recorded.length >= 1, `${status}: at least one request (got ${recorded.length})`);
+                expect(recorded.length === 1, `${status}: a single request (got ${recorded.length})`);
                 expect(
                     recorded.every((entry) => json(entry.body.output_config) === json({ effort: 'xhigh' })),
                     `${status}: every body keeps the effort (got ${json(recorded.map((entry) => entry.body.output_config))})`
@@ -617,12 +619,9 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
         body: async () => {
             const platform = new AnthropicPlatform();
             for (const status of [401, 403, 404, 429, 500, 503]) {
-                // Every SDK retry of 429/5xx gets the same answer, without the backoff wait
-                const failure: ScriptedReply = {
-                    ...reply(ANTHROPIC_PATH, status, errorBody(OVER_LIMIT)),
-                    headers: { 'retry-after-ms': '1' },
-                };
-                reset(failure, failure, failure);
+                // The SDK retries nothing on its own and maxRetries 1 leaves
+                // sendWithRetry none: a second request could only be a downgrade
+                reset(reply(ANTHROPIC_PATH, status, errorBody(OVER_LIMIT)));
                 const { result, lines } = await captureConsole(async () =>
                     drain(() =>
                         platform.sendMessage(userTurn('hi'), {
@@ -634,7 +633,7 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
                     )
                 );
                 expect(result.error !== null, `${status}: the reply fails`);
-                expect(recorded.length >= 1, `${status}: at least one request (got ${recorded.length})`);
+                expect(recorded.length === 1, `${status}: a single request (got ${recorded.length})`);
                 expect(
                     recorded.every((entry) => entry.body.max_tokens === 128_000),
                     `${status}: every body keeps 128000 (got ${json(recorded.map((entry) => entry.body.max_tokens))})`
@@ -1082,7 +1081,7 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
                     )
                 );
                 expect(result.error !== null, `${status}: the reply fails`);
-                expect(recorded.length >= 1, `${status}: at least one request (got ${recorded.length})`);
+                expect(recorded.length === 1, `${status}: a single request, no SDK retry and no downgrade (got ${recorded.length})`);
                 expect(
                     recorded.every((entry) => asRecord(entry.body.reasoning).effort === 'xhigh'),
                     `${status}: every body keeps xhigh (got ${json(recorded.map((entry) => entry.body.reasoning))})`
@@ -1128,7 +1127,10 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
                 reset(reply(attempt.path, attempt.status, errorBody('reasoning effort permission problem')));
                 const { result, lines } = await captureConsole(async () => drain(attempt.send));
                 expect(result.error !== null, `${attempt.path} ${attempt.status}: the reply fails`);
-                expect(recorded.length >= 1, `${attempt.path} ${attempt.status}: at least one request (got ${recorded.length})`);
+                expect(
+                    recorded.length === 1,
+                    `${attempt.path} ${attempt.status}: a single request, no SDK retry and no downgrade (got ${recorded.length})`
+                );
                 expect(
                     recorded.every((entry) => entry.body.reasoning_effort === 'high'),
                     `${attempt.path} ${attempt.status}: every body keeps the effort (got ${json(recorded.map((entry) => entry.body.reasoning_effort))})`

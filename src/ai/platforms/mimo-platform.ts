@@ -6,6 +6,7 @@ import OpenAI from 'openai';
 import type { Stream } from 'openai/streaming';
 import type { ChatCompletionChunk } from 'openai/resources';
 import { BasePlatform } from './base-platform.js';
+import { attemptRequestOptions } from './attempt-request-options.js';
 import { transformToMimo, type MimoMessageParam } from '../message-transformer.js';
 import { prepareMimoMedia } from './mimo-media.js';
 import {
@@ -222,13 +223,13 @@ export class MimoPlatform extends BasePlatform {
         const stream = await this.openChatWithEffortFallback(
             () =>
                 this.sendWithRetry(
-                    () =>
+                    (attemptSignal) =>
                         this.client.chat.completions.create({
                             ...this.getRequestBody(model, thinkingWire),
                             messages,
                             stream: true,
                             stream_options: INCLUDE_USAGE_STREAM_OPTIONS,
-                        }, { signal }),
+                        }, attemptRequestOptions(attemptSignal)),
                     { timeout, maxRetries, signal }
                 ),
             thinkingWire,
@@ -267,7 +268,7 @@ export class MimoPlatform extends BasePlatform {
                 const stream = await this.openChatWithEffortFallback(
                     () =>
                         this.sendWithRetry(
-                            () =>
+                            (attemptSignal) =>
                                 this.client.chat.completions.create({
                                     ...this.getRequestBody(model, thinkingWire),
                                     messages: currentMessages,
@@ -275,7 +276,7 @@ export class MimoPlatform extends BasePlatform {
                                     ...(final ? { tool_choice: 'none' as const } : {}),
                                     stream: true,
                                     stream_options: INCLUDE_USAGE_STREAM_OPTIONS,
-                                }, { signal }),
+                                }, attemptRequestOptions(attemptSignal)),
                             { timeout, maxRetries, signal }
                         ),
                     thinkingWire,

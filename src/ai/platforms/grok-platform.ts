@@ -10,6 +10,7 @@ import type {
     ResponseStreamEvent,
 } from 'openai/resources/responses/responses';
 import { BasePlatform } from './base-platform.js';
+import { attemptRequestOptions } from './attempt-request-options.js';
 import { toVisionImageMimeType } from '../supported-mime.js';
 import { NO_TURN_TOOLS, type TurnTools } from '../tools/index.js';
 import {
@@ -145,7 +146,7 @@ export class GrokPlatform extends BasePlatform {
 
         const startedAt = Date.now();
         const firstRound = await this.sendWithRetry(
-            () => this.openFirstRound(candidates, functionTools.length > 0, signal, thinkingEffort),
+            (attemptSignal) => this.openFirstRound(candidates, functionTools.length > 0, attemptSignal, thinkingEffort),
             retryOptions
         );
 
@@ -159,7 +160,10 @@ export class GrokPlatform extends BasePlatform {
             supportsImageInput: this.getModelCapabilities(model).supportsImageInput,
             usageSink: config.usageSink,
             openContinuation: (continuation) =>
-                this.sendWithRetry(() => this.createResponseStream(continuation, signal), retryOptions),
+                this.sendWithRetry(
+                    (attemptSignal) => this.createResponseStream(continuation, attemptSignal),
+                    retryOptions
+                ),
         });
     }
 
@@ -249,15 +253,15 @@ export class GrokPlatform extends BasePlatform {
         };
     }
 
+    /** One request of a sendWithRetry attempt, aborted with that attempt */
     private async createResponseStream(
         request: GrokResponseRequest,
-        signal?: AbortSignal
+        attemptSignal: AbortSignal
     ): Promise<Stream<ResponseStreamEvent>> {
-        const requestOptions = signal ? { signal } : undefined;
         // The xAI-only fields (search tool flags, max_turns) are unknown to the SDK type
         const stream = await this.client.responses.create(
             request as unknown as ResponseCreateParamsStreaming,
-            requestOptions
+            attemptRequestOptions(attemptSignal)
         );
         return stream;
     }
@@ -270,11 +274,14 @@ export class GrokPlatform extends BasePlatform {
      * tool configuration" fallback: it downgrades the effort once for the
      * whole reply and retries the same candidate, so the tools stay as they
      * are. Every other 400 keeps the candidate walk.
+     *
+     * The whole walk is one sendWithRetry attempt: its signal ends whichever
+     * candidate is out when the attempt runs out of time.
      */
     private async openFirstRound(
         candidates: readonly GrokResponseRequest[],
         wantsFunctionTools: boolean,
-        signal: AbortSignal | undefined,
+        attemptSignal: AbortSignal,
         thinking: EffortWire | null
     ): Promise<FirstRound> {
         let lastError: unknown;
@@ -284,7 +291,7 @@ export class GrokPlatform extends BasePlatform {
             const candidate = attempts[index];
             if (candidate === undefined) continue;
             try {
-                const stream = await this.createResponseStream(candidate, signal);
+                const stream = await this.createResponseStream(candidate, attemptSignal);
                 if (wantsFunctionTools && functionToolNames(candidate.tools).length === 0) {
                     console.error('[grok] Every candidate with client tools was rejected, answering without them:', {
                         message: errorMessageOf(lastError),
