@@ -102,24 +102,23 @@ const SINGLE_ATTEMPT = 1;
 const PRIORITY_REQUEST_HEADER = 'X-Vertex-AI-LLM-Shared-Request-Type';
 const PRIORITY_REQUEST_VALUE = 'priority';
 
-// Hydrogen serves one thinking level above HIGH; the SDK's ThinkingLevel enum
-// (2.29.1) predates it, hence the single assertion in this file. A model that
-// does not take XHIGH answers 400 "Thinking level is unsupported" and the
-// request is retried at HIGH (see fallbackThinking in prepareRequest).
-const THINKING_LEVEL_XHIGH = 'XHIGH' as ThinkingLevel;
-
-/** The SDK level for a lower-case effort value, or undefined when it has none */
+/**
+ * The SDK level for a lower-case effort value, or undefined when it has none.
+ * XHIGH is the level above HIGH that Hydrogen serves; a model that does not
+ * take it answers 400 "Thinking level is unsupported" and the request is
+ * retried at HIGH (see fallbackThinking in prepareRequest).
+ */
 const THINKING_LEVEL_BY_EFFORT: ReadonlyMap<string, ThinkingLevel> = new Map([
     ['minimal', ThinkingLevel.MINIMAL],
     ['low', ThinkingLevel.LOW],
     ['medium', ThinkingLevel.MEDIUM],
     ['high', ThinkingLevel.HIGH],
-    ['xhigh', THINKING_LEVEL_XHIGH],
+    ['xhigh', ThinkingLevel.XHIGH],
 ]);
 
 /** The level the legacy policy sends for a Gemini 4 model (no thinkingEffort field) */
 const legacyThinkingLevelOf = (model: string): ThinkingLevel =>
-    supportsXhighThinkingLevel(model) ? THINKING_LEVEL_XHIGH : ThinkingLevel.HIGH;
+    supportsXhighThinkingLevel(model) ? ThinkingLevel.XHIGH : ThinkingLevel.HIGH;
 
 /** Everything needed to build an OpenCode Go client for one request */
 interface OpenCodeGoConfig {

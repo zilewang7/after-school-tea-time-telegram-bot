@@ -847,7 +847,7 @@ const runLaneCases = async (): Promise<void> => {
         expect(nested(thinkingConfig, 'includeThoughts') === true, 'includeThoughts survives the extraBody merge');
         // Production sends the same generationConfig.thinkingConfig shape, with
         // the level field set directly (src/ai/platforms/gemini-platform.ts
-        // THINKING_LEVEL_XHIGH); the SDK deep-merges extraBody, so the rest of
+        // ThinkingLevel.XHIGH); the SDK deep-merges extraBody, so the rest of
         // the generationConfig must survive exactly as the probe built it.
         expect(nested(generationConfig, 'maxOutputTokens') === 256, `the token cap survives the extraBody merge (got ${String(nested(generationConfig, 'maxOutputTokens'))})`);
         expect(nested(generationConfig, 'thinkingBudget') === undefined, 'the XHIGH request must not carry a thinkingBudget');
