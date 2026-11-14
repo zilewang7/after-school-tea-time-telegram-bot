@@ -94,10 +94,32 @@ export const isTimeoutError = (error: unknown): boolean => {
         .otherwise(() => false);
 };
 
+/** The longest a retry waits for a server that asks for more in retry-after */
+const MAX_SERVER_RETRY_WAIT_MS = 30_000;
+
 /**
- * Get appropriate wait time for retry based on error type
+ * The wait the server asked for: retry-after-ms, else retry-after in seconds
+ * or as an HTTP date. Null when it asked for none, or for nothing positive.
+ */
+const serverRetryWaitMs = (error: unknown): number | null => {
+    const milliseconds = Number.parseFloat(responseHeaderOf(error, 'retry-after-ms') ?? '');
+    if (milliseconds > 0) return milliseconds;
+    const retryAfter = responseHeaderOf(error, 'retry-after');
+    if (retryAfter === null) return null;
+    const seconds = Number.parseFloat(retryAfter);
+    const waitMs = Number.isNaN(seconds) ? Date.parse(retryAfter) - Date.now() : seconds * 1000;
+    return waitMs > 0 ? waitMs : null;
+};
+
+/**
+ * Get appropriate wait time for retry based on error type. A wait the server
+ * asked for comes first, capped: the SDKs honoured it while they retried on
+ * their own, and a fixed 5 s against "retry after 20 s" spends every attempt
+ * on more 429s.
  */
 export const getRetryWaitTime = (error: unknown): number => {
+    const requested = serverRetryWaitMs(error);
+    if (requested !== null) return Math.ceil(Math.min(requested, MAX_SERVER_RETRY_WAIT_MS));
     return match(error)
         .when(isRateLimitError, () => 5000)
         .when(isTimeoutError, () => 1000)

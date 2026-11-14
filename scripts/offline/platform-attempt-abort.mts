@@ -8,11 +8,13 @@
  *   close before the retry goes out, instead of the request streaming (and
  *   billing) next to its retry.
  * - The SDKs retry nothing on their own: a dropped connection and a 503 are
- *   retried by sendWithRetry alone, maxRetries requests in all.
+ *   retried by sendWithRetry alone, maxRetries requests in all, and a 429
+ *   waits what its retry-after-ms asks for.
  * - A stop while a stream is open still closes its request.
  * - src/shared/errors.ts classifies what the SDKs used to retry on their own
- *   (connection errors, 408, 409, 429, x-should-retry: true), checked on the
- *   SDKs' own error classes, so an SDK that renames them fails here.
+ *   (connection errors, 408, 409, 429, x-should-retry: true) and reads their
+ *   retry-after (capped at 30 s), checked on the SDKs' own error classes, so
+ *   an SDK that renames them fails here.
  *
  * One local stub serves every path under a base path of its own (one per case
  * too), so the paths of a case run side by side and a request one case left
@@ -50,6 +52,8 @@ const STOP_DELAY_MS = 300;
  * of holding the file until the SDK's own ten-minute timeout.
  */
 const CASE_DEADLINE_MS = 10_000;
+/** What a 'busy' 429 asks for in retry-after-ms; without it the retry would wait 5 s */
+const BUSY_RETRY_AFTER_MS = 50;
 const ANSWER = 'retry answered';
 const PARTIAL = 'partial';
 
@@ -69,6 +73,8 @@ type Step =
     | 'drop'
     /** 503 without retry-after */
     | 'unavailable'
+    /** 429 that asks for a BUSY_RETRY_AFTER_MS wait */
+    | 'busy'
     /** The stream starts with one event, then nothing more comes */
     | 'stream-then-hang';
 
@@ -206,8 +212,13 @@ const firstEventOf = (wire: Wire): string =>
         .with('messages', () => [messageStart, textBlockStart, textBlockDelta(PARTIAL)].map(namedEvent).join(''))
         .exhaustive();
 
-const sendJsonError = (response: ServerResponse, status: number, message: string): void => {
-    response.writeHead(status, { 'Content-Type': 'application/json' });
+const sendJsonError = (
+    response: ServerResponse,
+    status: number,
+    message: string,
+    headers: Readonly<Record<string, string>> = {}
+): void => {
+    response.writeHead(status, { 'Content-Type': 'application/json', ...headers });
     response.end(JSON.stringify({ error: { message, type: 'offline_stub' } }));
 };
 
@@ -229,6 +240,9 @@ const play = (step: Step | undefined, run: StubRun, request: IncomingMessage, re
             request.socket.destroy();
         })
         .with('unavailable', () => sendJsonError(response, 503, 'upstream overloaded'))
+        .with('busy', () =>
+            sendJsonError(response, 429, 'slow down', { 'retry-after-ms': String(BUSY_RETRY_AFTER_MS) })
+        )
         .with('stream-then-hang', () => {
             openResponses.add(response);
             response.writeHead(200, SSE_HEADERS);
@@ -272,7 +286,7 @@ const { DeepSeekPlatform } = await import('../../src/ai/platforms/deepseek-platf
 const { MimoPlatform } = await import('../../src/ai/platforms/mimo-platform.js');
 const { AnthropicPlatform } = await import('../../src/ai/platforms/anthropic-platform.js');
 const { createTurnTools } = await import('../../src/ai/tools/index.js');
-const { isRetryableError } = await import('../../src/shared/errors.js');
+const { getRetryWaitTime, isRetryableError } = await import('../../src/shared/errors.js');
 
 /** The constructors read their base URL from the env */
 const openAIAt = (baseUrl: string): IAIPlatform => {
@@ -540,6 +554,34 @@ const cases: Array<{ name: string; body: () => void | Promise<void> }> = [
         },
     },
     {
+        name: 'a retry waits as long as the server asks, at most 30 s',
+        body: () => {
+            const waits: Array<[string, unknown, number]> = [
+                ['retry-after-ms', openAIHttpError(429, { 'retry-after-ms': '250' }), 250],
+                ['retry-after in seconds', anthropicHttpError(503, { 'retry-after': '2' }), 2000],
+                ['a fraction of a second', openAIHttpError(429, { 'retry-after': '1.5' }), 1500],
+                ['retry-after-ms before retry-after', anthropicHttpError(429, { 'retry-after-ms': '40', 'retry-after': '3' }), 40],
+                ['two minutes, capped', openAIHttpError(429, { 'retry-after': '120' }), 30_000],
+                ['45 s in ms, capped', anthropicHttpError(529, { 'retry-after-ms': '45000' }), 30_000],
+                // Nothing usable asked for: the waits of before
+                ['zero', openAIHttpError(429, { 'retry-after-ms': '0' }), 5000],
+                ['unreadable', anthropicHttpError(503, { 'retry-after': 'soon' }), 2000],
+                ['a date in the past', openAIHttpError(429, { 'retry-after': new Date(Date.now() - 60_000).toUTCString() }), 5000],
+                ['a 429 without one', anthropicHttpError(429), 5000],
+                ['a 503 without one', openAIHttpError(503), 2000],
+                ['our own attempt timeout', new Error('Timeout'), 1000],
+                ['a connection error', new OpenAIConnectionError({ cause: networkCause() }), 2000],
+            ];
+            for (const [label, error, expected] of waits) {
+                const wait = getRetryWaitTime(error);
+                expect(wait === expected, `${label}: waits ${expected} ms (got ${wait})`);
+            }
+            // An HTTP date carries whole seconds
+            const dated = getRetryWaitTime(openAIHttpError(429, { 'retry-after': new Date(Date.now() + 10_000).toUTCString() }));
+            expect(dated > 8000 && dated <= 10_000, `an HTTP date ten seconds ahead (got ${dated})`);
+        },
+    },
+    {
         // Also warms every client up, so the timed cases below do not pay for a first connection
         name: 'every path answers through the stub',
         body: () =>
@@ -595,6 +637,20 @@ const cases: Array<{ name: string; body: () => void | Promise<void> }> = [
                 const { label, error } = result;
                 expect(ownRequestCount(result) === 2, `${label}: maxRetries requests, none from the SDK (got ${ownRequestCount(result)})`);
                 expect(error?.startsWith('503 ') === true, `${label}: the 503 ends the reply (got ${String(error)})`);
+            }),
+    },
+    {
+        name: 'a 429 is retried after the wait the server asked for',
+        body: () =>
+            runEveryPath({ steps: ['busy', 'answer'], timeout: 20000, maxRetries: 2 }, (result) => {
+                const { label, text, error, seen, firstOwn } = result;
+                expect(ownRequestCount(result) === 2, `${label}: the 429 and its retry, none from the SDK (got ${ownRequestCount(result)})`);
+                expect(error === null && text.includes(ANSWER), `${label}: the retry answers (got ${JSON.stringify({ text, error })})`);
+                const waitedMs = Math.round((seen[firstOwn + 1]?.arrivedAt ?? Infinity) - (seen[firstOwn]?.arrivedAt ?? 0));
+                expect(
+                    waitedMs >= BUSY_RETRY_AFTER_MS && waitedMs < 2000,
+                    `${label}: the retry waited the ${BUSY_RETRY_AFTER_MS} ms asked for, not the 5 s of a bare 429 (${waitedMs} ms)`
+                );
             }),
     },
     {
