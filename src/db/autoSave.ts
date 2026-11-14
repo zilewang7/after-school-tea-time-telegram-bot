@@ -422,8 +422,9 @@ const collectRichBlockMedia = (blocks: RichBlock[], found: CapturedMedia[]): voi
 /**
  * Pick the media file to attach for a rich message. The messages table has a
  * single file slot per row, so only one media is downloaded: the first photo
- * block, or the first media block of any kind when there is no photo. The hint
- * discloses how many media the message actually carries.
+ * block; without one, the first media block the model can read, so an archive
+ * (refused before its download) never takes the slot of a video; else the
+ * first media block. The hint discloses how many media the message carries.
  */
 const resolveRichMessageMedia = (
     richMessage: RichMessage | undefined,
@@ -439,7 +440,9 @@ const resolveRichMessageMedia = (
         const reason = error instanceof Error ? error.message : String(error);
         console.error(`[autoSave] media of rich message ${messageKey} could not be read: ${reason}`);
     }
-    const picked = found.find((m) => m.kind === 'photo') ?? found[0];
+    const picked = found.find((media) => media.kind === 'photo')
+        ?? found.find((media) => isGeminiSupportedMimeType(media.mime))
+        ?? found[0];
     if (!picked) return undefined;
     if (found.length > 1) {
         return {

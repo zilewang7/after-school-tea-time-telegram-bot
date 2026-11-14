@@ -309,6 +309,39 @@ results.push(
     })
 );
 
+const ARCHIVE_DOCUMENT: RichBlock = {
+    type: 'document',
+    document: { file_id: 'FAKE_ZIP', file_unique_id: 'FAKE_ZIP_U', file_name: 'src.zip', mime_type: 'application/zip', file_size: 2048 },
+};
+const CLIP_VIDEO: RichBlock = {
+    type: 'video',
+    video: { file_id: 'FAKE_VIDEO', file_unique_id: 'FAKE_VIDEO_U', width: 640, height: 360, duration: 5, mime_type: 'video/mp4', file_size: 8192 },
+};
+
+results.push(
+    await runCase('without a photo, the first file the model can read wins the slot over one it cannot', async () => {
+        const messageId = takeMessageId();
+        telegram.reset();
+        const row = await ingest(bot, richMessageUpdate(messageId, [ARCHIVE_DOCUMENT, CLIP_VIDEO]), messageId);
+        expect(
+            row?.mediaHint === 'a video (this rich message carries 2 media files, only this one is attached) — failed to download, you cannot see it',
+            `the video is attached and the archive counted (${row?.mediaHint})`
+        );
+        expect(
+            fileIdsAskedFor().includes('FAKE_VIDEO') && !fileIdsAskedFor().includes('FAKE_ZIP'),
+            `only the video was asked for (${JSON.stringify(fileIdsAskedFor())})`
+        );
+
+        const readableFirstId = takeMessageId();
+        telegram.reset();
+        const readableFirst = await ingest(bot, richMessageUpdate(readableFirstId, [REPORT_DOCUMENT, CLIP_VIDEO]), readableFirstId);
+        expect(
+            readableFirst?.mediaHint?.startsWith('a file: report.pdf, application/pdf (this rich message carries 2 media files') === true,
+            `a file the model can read keeps its place before the video (${readableFirst?.mediaHint})`
+        );
+    })
+);
+
 results.push(
     await runCase('an edit into a rich message with a document attaches the document', async () => {
         const messageId = takeMessageId();
