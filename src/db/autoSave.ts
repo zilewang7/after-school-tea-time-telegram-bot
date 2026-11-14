@@ -40,7 +40,7 @@ import { acquireOcr, isLuoxuOcrEnabled } from '../services/luoxu-ocr-service.js'
 import { convertTgsToWebm, normalizeShortVideo, renderTgsStill } from '../services/tgs-client.js';
 import { to } from 'await-to-js';
 import { readFile, unlink } from 'node:fs/promises';
-import type { Message as TgMessage, MessageEntity, MessageOrigin, RichBlock, RichMessage, User } from 'grammy/types';
+import type { Document, Message as TgMessage, MessageEntity, MessageOrigin, RichBlock, RichMessage, User } from 'grammy/types';
 import { upsertTelegramUser } from './queries/user-queries.js';
 import { harvestChatRegistry } from './queries/panel-registry.js';
 import { SettingsAudit } from './settingsAuditDTO.js';
@@ -165,6 +165,28 @@ const imageMimeFromDocument = (
  */
 export const verifiedMediaMime = (media: CapturedMedia, bytes: Buffer): string | undefined =>
     media.mimeGuessed ? (sniffMediaMime(bytes) ?? undefined) : media.mime;
+
+/** A file sent as a document: the message's own, or a rich message's document block (Bot API 10.3) */
+const captureDocument = (document: Document): CapturedMedia => {
+    const declaredMime = document.mime_type ?? 'application/octet-stream';
+    const fileName = document.file_name ?? 'unknown';
+    // A photo sent "as a file" keeps the name but loses the type: fall back
+    // to the extension, and let the download confirm the bytes.
+    const guessedMime = declaredMime.startsWith('image/')
+        ? undefined
+        : imageMimeFromDocument(document.file_name, document.file_size);
+    const mime = guessedMime ?? declaredMime;
+    return {
+        fileId: document.file_id,
+        fileUniqueId: document.file_unique_id,
+        mime,
+        kind: 'document',
+        sizeBytes: document.file_size,
+        hint: mime.startsWith('image/') ? 'a picture' : `a file: ${fileName}, ${declaredMime}`,
+        needsTgsConversion: false,
+        ...(guessedMime ? { mimeGuessed: true } : {}),
+    };
+};
 
 /**
  * Resolve a capturable media file from a Telegram message.
@@ -302,29 +324,7 @@ export const resolveCapturedMedia = (msg: TgMessage | undefined): CapturedMedia 
         };
     }
 
-    const document = msg.document;
-    if (document) {
-        const declaredMime = document.mime_type ?? 'application/octet-stream';
-        const fileName = document.file_name ?? 'unknown';
-        // A photo sent "as a file" keeps the name but loses the type: fall back
-        // to the extension, and let the download confirm the bytes.
-        const guessedMime = declaredMime.startsWith('image/')
-            ? undefined
-            : imageMimeFromDocument(document.file_name, document.file_size);
-        const mime = guessedMime ?? declaredMime;
-        return {
-            fileId: document.file_id,
-            fileUniqueId: document.file_unique_id,
-            mime,
-            kind: 'document',
-            sizeBytes: document.file_size,
-            hint: mime.startsWith('image/') ? 'a picture' : `a file: ${fileName}, ${declaredMime}`,
-            needsTgsConversion: false,
-            ...(guessedMime ? { mimeGuessed: true } : {}),
-        };
-    }
-
-    return undefined;
+    return msg.document ? captureDocument(msg.document) : undefined;
 };
 
 /**
