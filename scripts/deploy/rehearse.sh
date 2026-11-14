@@ -32,12 +32,14 @@
 #   2. restart, no change install and webapp build skipped
 #   3. a broken commit    the previous build keeps running, BUILD_COMMIT unchanged
 #   4. the fix            builds again
-#   5. origin unreachable, then an origin that never answers
+#   5. a broken commit that also changes the packages
+#                         the previous build starts with the packages it was built with
+#   6. origin unreachable, then an origin that never answers
 #                         starts the code it has; the fetch is given up in time
-#   6. the compiled bot   every module loads on this image, sqlite included, and
+#   7. the compiled bot   every module loads on this image, sqlite included, and
 #                         the database path default only applies inside a container
-#   7. the offline suite  only with --tests: the image's Node and libc run every case
-#   8. an image without pm2 (one built before pm2 moved into the Dockerfile)
+#   8. the offline suite  only with --tests: the image's Node and libc run every case
+#   9. an image without pm2 (one built before pm2 moved into the Dockerfile)
 #                         pm2 is installed at start instead of failing in a loop
 # And with the real pm2: a stop signal reaches the app, which gets the time
 # pm2.config.cjs grants it to finish.
@@ -146,10 +148,19 @@ echo "[stand-in pm2] $* (BUILD_COMMIT=$(cat dist/BUILD_COMMIT 2>/dev/null))"
 exec sleep 86400
 EOF
 chmod +x "$WORK/bin/pm2-runtime"
+# Removes one dependency from the package.json of the current directory
+cat > "$WORK/bin/drop-dependency.cjs" <<'EOF'
+const fs = require('fs');
+const manifest = JSON.parse(fs.readFileSync('package.json', 'utf8'));
+delete manifest.dependencies[process.argv[2]];
+fs.writeFileSync('package.json', JSON.stringify(manifest, null, 2) + '\n');
+EOF
 
 step "building the image"
 docker build --quiet -t "$IMAGE" --build-arg "GIT_REPO=$GIT_REPO" "$REPOSITORY_ROOT" > /dev/null || { echo "image build failed"; exit 1; }
-pass "image built: node $(docker run --rm "$IMAGE" node -v), pnpm $(docker run --rm "$IMAGE" pnpm -v), pm2 $(docker run --rm "$IMAGE" pm2 -v | tail -1)"
+# Asked outside the checkout: inside it pnpm answers with the version that
+# checkout pins, and the image holds a clone of GitHub master
+pass "image built: node $(docker run --rm "$IMAGE" node -v), pnpm $(docker run --rm -w / "$IMAGE" pnpm -v), pm2 $(docker run --rm "$IMAGE" pm2 -v | tail -1)"
 
 docker rm -f "$CONTAINER" > /dev/null 2>&1
 if [ "$FROM_PRODUCTION" -eq 1 ]; then
@@ -163,7 +174,7 @@ step "1. first start"
 since=$(timestamp_now)
 # The image holds a clone of GitHub master. Point it at the local origin and
 # take the first step by hand, then build.sh does what it does in production.
-# Only on the first start: a restart runs this command again, and scenario 5
+# Only on the first start: a restart runs this command again, and scenario 6
 # needs the remote to stay broken.
 docker run -d --init --name "$CONTAINER" \
     -v "$ORIGIN/.git:/origin.git:ro" \
@@ -224,7 +235,37 @@ check "the webapp was rebuilt" 'echo "$LAST_LOGS" | grep -q "building the webapp
 check "BUILD_COMMIT is $FIXED_COMMIT" '[ "$(in_container cat dist/BUILD_COMMIT)" = "$FIXED_COMMIT" ]'
 check "same number of files in dist" '[ "$(dist_file_count)" = "$COLD_FILE_COUNT" ]'
 
-step "5. origin unreachable"
+step "5. a commit that changes the packages and does not compile"
+# The commit is made inside the container, which has pnpm and the packages: the
+# checkout without one dependency, and the lockfile pnpm writes for that.
+DROPPED_PACKAGE=await-to-js
+LOCK_DIRECTORY=$(in_container sh -c "directory=\$(mktemp -d) && git archive HEAD | tar -x -C \$directory \
+    && cd \$directory && node /rehearsal-bin/drop-dependency.cjs $DROPPED_PACKAGE \
+    && pnpm install --lockfile-only > \$directory/install.log 2>&1; echo \$directory")
+in_container cat "$LOCK_DIRECTORY/package.json" > "$ORIGIN/package.json"
+in_container cat "$LOCK_DIRECTORY/pnpm-lock.yaml" > "$ORIGIN/pnpm-lock.yaml"
+check "a lockfile without $DROPPED_PACKAGE was written" '! grep -q "^  $DROPPED_PACKAGE@" "$ORIGIN/pnpm-lock.yaml"'
+grep -q "^  $DROPPED_PACKAGE@" "$ORIGIN/pnpm-lock.yaml" && in_container tail -5 "$LOCK_DIRECTORY/install.log" | sed 's/^/    /'
+printf '\nconst broken = ;\n' >> "$ORIGIN/src/index.ts"
+in_origin commit --quiet -am "rehearsal: a package removed and a syntax error"
+PACKAGES_COMMIT=$(in_origin rev-parse --short HEAD)
+restart_and_wait
+check "the packages of the new commit were installed" 'echo "$LAST_LOGS" | grep -q "installing dependencies"'
+check "the failure is logged with both commits" 'echo "$LAST_LOGS" | grep -q "BUILD FAILED for $PACKAGES_COMMIT; starting the previous build ($FIXED_COMMIT)"'
+check "the packages of the previous build were put back" 'echo "$LAST_LOGS" | grep -q "putting back the packages of the previous build" && ! echo "$LAST_LOGS" | grep -q "could not be put back"'
+check "$DROPPED_PACKAGE is installed again" 'in_container test -e "node_modules/$DROPPED_PACKAGE"'
+# pnpm's summary of a project: ".  |  -1 -" after the install, ".  |  +1 +" after putting back
+check "the install for the new commit removed one package, putting back added one" \
+    'echo "$LAST_LOGS" | grep -Eq "\| +-1 " && echo "$LAST_LOGS" | grep -Eq "\| +\+1 "'
+check "the install marker names the packages of the previous build" 'in_container sh -c "cat dist/.deps/pnpm-lock.yaml dist/.deps/pnpm-workspace.yaml | sha256sum | cut -d\" \" -f1 | cmp -s - node_modules/.k-on-bot-install-hash"'
+check "the checkout holds the manifests of the new commit again" 'in_container git diff --quiet HEAD'
+check "the bot is started with the previous build" 'echo "$LAST_LOGS" | grep -q "stand-in pm2\].*BUILD_COMMIT=$FIXED_COMMIT"'
+in_origin revert --quiet --no-edit HEAD
+FIXED_COMMIT=$(in_origin rev-parse --short HEAD)
+restart_and_wait
+check "the fix builds without another install" 'echo "$LAST_LOGS" | grep -q "\[deploy\] built $FIXED_COMMIT" && echo "$LAST_LOGS" | grep -q "install skipped"'
+
+step "6. origin unreachable"
 in_container git remote set-url origin /nonexistent.git
 restart_and_wait
 check "the failed fetch is logged" 'echo "$LAST_LOGS" | grep -q "fetch of rehearsal failed"'
@@ -239,7 +280,7 @@ check "a fetch that hangs is given up after ${FETCH_TIMEOUT_SECONDS}s" 'echo "$L
 check "the bot is started with the build it has" 'echo "$LAST_LOGS" | grep -q "stand-in pm2\].*BUILD_COMMIT=$FIXED_COMMIT"'
 check "the whole restart took ${hang_seconds}s" '[ "$hang_seconds" -lt 60 ]'
 
-step "6. the compiled bot loads on this image"
+step "7. the compiled bot loads on this image"
 # Placeholders for what the AI platforms want at import; no token, so the bot
 # stops right after every module has loaded.
 BOOT_OUTPUT=$(in_container env DB_PATH=/tmp/rehearsal-boot.sqlite GEMINI_API_KEY=x OPENAI_API_KEY=x \
@@ -257,7 +298,7 @@ check "the container is marked by /.dockerenv" 'in_container test -f /.dockerenv
 check "without DB_PATH the production file is the default inside a container" 'in_container node --input-type=module -e "$IMPORT_DB_CONFIG" > /dev/null 2>&1'
 check "the test instance must name its database" '! in_container env TEST_INSTANCE=1 node --input-type=module -e "$IMPORT_DB_CONFIG" > /dev/null 2>&1'
 
-step "7. the offline suite on this image"
+step "8. the offline suite on this image"
 if [ "$RUN_TESTS" -eq 1 ]; then
     TEST_OUTPUT=$(in_container pnpm run --silent test:offline -j 2 2>&1)
     echo "$TEST_OUTPUT" | grep -v '^PASS  ' | sed 's/^/    /'
@@ -266,7 +307,7 @@ else
     echo "  skipped (run with --tests)"
 fi
 
-step "8. an image without pm2"
+step "9. an image without pm2"
 in_container git remote set-url origin /origin.git
 # Neither the stand-in nor the pm2 of the image: what a container created from
 # an image older than this Dockerfile looks like
@@ -283,7 +324,7 @@ check "the missing pm2 is reported" 'echo "$LAST_LOGS" | grep -q "pm2 is not in 
 check "pm2 was installed and started the bot" 'echo "$LAST_LOGS" | grep -q "PM2.*App \[k-on-bot"'
 docker rm -f "$CONTAINER" > /dev/null 2>&1
 
-step "9. a stop signal reaches the app through init and the real pm2"
+step "10. a stop signal reaches the app through init and the real pm2"
 # A stand-in app that needs 3s to shut down: longer than pm2's default 1.6s,
 # shorter than the kill_timeout in pm2.config.cjs.
 cat > "$WORK/signal/app.js" <<'EOF'
