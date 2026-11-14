@@ -214,4 +214,6 @@ production.
   it times out.
 - pnpm refuses a version published less than a day ago. The exception is
   telegram-md-entities (`minimumReleaseAgeExclude`), the owner's own package.
+- In a worktree, run a webapp script with `pnpm --dir webapp run <script>`:
+  pnpm refuses `--filter` runs when `node_modules` is a link.
 - One-off scripts live in `tmp/` (git-ignored) and are deleted after use.

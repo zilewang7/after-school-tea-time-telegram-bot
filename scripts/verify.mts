@@ -50,10 +50,12 @@ const STEPS: readonly Step[] = [
     scriptStep('check-deps'),
     // The container builds the webapp at start and keeps the previous page when
     // that fails, so a commit whose webapp does not build must not be pushed.
-    // The output lands inside the export and goes away with it.
+    // The output lands inside the export and goes away with it. --dir, not
+    // --filter: pnpm 11 keeps the state of a filtered run in the root
+    // node_modules and refuses one that is a link, as the export's is.
     {
         name: 'webapp build',
-        pnpmArguments: ['--silent', '--filter', './webapp', 'build'],
+        pnpmArguments: ['--silent', '--dir', 'webapp', 'run', 'build'],
         environment: { WEBAPP_OUT_DIR: 'dist.verify' },
     },
     scriptStep('test:offline'),
