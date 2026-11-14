@@ -168,6 +168,7 @@ results.push(
             toolOverrides: null,
             geminiPriority: saved,
             thinkingEffort: null,
+            richReplies: false,
             updatedAt: null,
             updatedBy: null,
         };
@@ -178,6 +179,7 @@ results.push(
             settingsLocked: false,
             geminiPriority: saved,
             thinkingEffort: null,
+            richReplies: false,
         });
         expect(JSON.stringify(patch) === '{"paused":true}', `only the pause is sent (${JSON.stringify(patch)})`);
         const refusal = await refusalOf(() =>
@@ -202,6 +204,7 @@ results.push(
             toolOverrides: null,
             geminiPriority: true,
             thinkingEffort: null,
+            richReplies: false,
             updatedAt: null,
             updatedBy: null,
         };
@@ -212,6 +215,7 @@ results.push(
             settingsLocked: false,
             geminiPriority,
             thinkingEffort: null,
+            richReplies: false,
         });
         expect(JSON.stringify(changedSettingsOf(settings, draftWith(true))) === '{}', 'unchanged: an empty patch');
         const backToGlobal = changedSettingsOf(settings, draftWith(null));

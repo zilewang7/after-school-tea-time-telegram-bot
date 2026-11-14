@@ -10,6 +10,7 @@ export interface ChatSettingsDraft {
     geminiPriority: boolean | null;
     // null = model default, 'off' = thinking off, else a graded effort
     thinkingEffort: string | null;
+    richReplies: boolean;
 }
 
 /** Only the keys that differ from the saved settings; an invalid model is left out */
@@ -23,5 +24,6 @@ export const changedSettingsOf = (settings: ChatSettings, draft: ChatSettingsDra
     if (draft.geminiPriority !== settings.geminiPriority) changes.geminiPriority = draft.geminiPriority;
     // An explicit null goes out too: it is how the chat goes back to the model default
     if (draft.thinkingEffort !== settings.thinkingEffort) changes.thinkingEffort = draft.thinkingEffort;
+    if (draft.richReplies !== settings.richReplies) changes.richReplies = draft.richReplies;
     return changes;
 };

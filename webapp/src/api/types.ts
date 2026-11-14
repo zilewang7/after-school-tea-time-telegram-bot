@@ -120,6 +120,8 @@ export interface ChatSettings {
     geminiPriority: boolean | null;
     // Thinking level: null = the model default, 'off' = thinking off, else a graded effort
     thinkingEffort: string | null;
+    // Experimental rich replies; false unless the chat turned them on
+    richReplies: boolean;
     updatedAt: string | null;
     updatedBy: number | null;
 }
@@ -222,6 +224,8 @@ export interface ChatSettingsPatch {
     geminiPriority?: boolean | null;
     // null = model default, 'off' = thinking off, else a graded effort (the server's closed set)
     thinkingEffort?: string | null;
+    // Any member while the chat is unlocked, trial users included; a non-boolean is 400
+    richReplies?: boolean;
     expectedUpdatedAt?: string;
 }
 

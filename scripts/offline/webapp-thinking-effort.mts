@@ -54,6 +54,7 @@ const settingsWith = (thinkingEffort: string | null): ChatSettings => ({
     toolOverrides: null,
     geminiPriority: null,
     thinkingEffort,
+    richReplies: false,
     updatedAt: null,
     updatedBy: null,
 });
@@ -66,6 +67,7 @@ const draftWith = (thinkingEffort: string | null) => ({
     settingsLocked: false,
     geminiPriority: null,
     thinkingEffort,
+    richReplies: false,
 });
 
 const results: CaseResult[] = [];

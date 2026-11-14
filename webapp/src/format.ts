@@ -26,6 +26,7 @@ const AUDIT_KEY_LABELS: Partial<Record<string, string>> = {
     defaultGeminiPriority: '全局 Priority PayGo',
     toolOverrides: '工具开关',
     thinkingEffort: THINKING_EFFORT_LABEL,
+    richReplies: '富文本回复',
     exclude: '排除消息',
     include: '恢复消息',
     link: '拼接对话',
@@ -35,7 +36,7 @@ const AUDIT_KEY_LABELS: Partial<Record<string, string>> = {
 };
 
 // Boolean settings, audited as 'true' / 'false'
-const ON_OFF_AUDIT_KEYS = ['paused', 'settingsLocked', 'geminiPriority', 'defaultGeminiPriority'] as const;
+const ON_OFF_AUDIT_KEYS = ['paused', 'settingsLocked', 'richReplies', 'geminiPriority', 'defaultGeminiPriority'] as const;
 
 export const chatTypeLabel = (type: ChatType): string => CHAT_TYPE_LABELS[type];
 

@@ -32,7 +32,7 @@ interface ChatSettingsFormProps {
     onReload: () => void;
 }
 
-/** Model, thinking level, addendum, pause, Priority PayGo and (owner) lock, saved together as one PATCH of the changed keys */
+/** Model, thinking level, addendum, pause, rich replies, Priority PayGo and (owner) lock, saved together as one PATCH of the changed keys */
 export const ChatSettingsForm = ({
     chatId,
     settings,
@@ -118,6 +118,13 @@ export const ChatSettingsForm = ({
                 checked={form.paused}
                 disabled={disabled}
                 onChange={form.setPaused}
+            />
+            <ToggleRow
+                label="富文本回复"
+                description="实验功能：长回复会被客户端自动折叠、不便引用，其他 bot 可能读不到内容"
+                checked={form.richReplies}
+                disabled={disabled}
+                onChange={form.setRichReplies}
             />
             <GeminiPriorityField
                 choice={form.geminiPriority}
