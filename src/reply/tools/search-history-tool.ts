@@ -27,14 +27,18 @@ import {
 } from './history-args.js';
 import {
     attachmentLine,
+    firstContentLineOf,
     firstLineOf,
     formatArchiveStatus,
-    htmlToText,
+    indexedBodyOf,
     isInsideFolded,
     keywordWindow,
+    ocrBlocksOf,
+    ocrSourceAtLine,
     renderSearchList,
     searchListBudget,
     stripFoldedBlocks,
+    truncateChars,
     type SearchListRow,
 } from './history-text.js';
 import { historyToolError, historyToolSuccess } from './history-tool-result.js';
@@ -54,6 +58,7 @@ import { SEARCH_HISTORY_TOOL_NAME } from './tool-names.js';
 const BASE_DESCRIPTION =
     '检索本聊天的历史归档（luoxu 的全文索引，覆盖更早的消息、链接预览正文、Instant View 全文与图片 OCR 文本）。' +
     '返回按时间从新到旧的命中列表，每条带 hN 编号、时间、发送者、#N 或 t.me 链接、消息首行与命中处的上下文片段；不含正文全文，需要时用 read_history 读。' +
+    '索引里的图片 OCR 文字会被标注（如「（图片 OCR 文字）」），它不是消息正文，别当成发送者说的话。' +
     `事实：默认返回最新 ${HISTORY_DEFAULT_LIMIT} 条命中，limit 最多 ${HISTORY_MAX_LIMIT} 条（不是相关性排序）；` +
     'query 支持空格 AND、OR、"短语"、-排除、括号，中文不需要分词；省略 query 时按时间列出最近的消息；' +
     '用 sender / from / to 收窄，用 before 翻到更早的一页。' +
@@ -217,17 +222,37 @@ const buildRow = (
     anchor: string,
     replyTo: string | undefined
 ): SearchListRow => {
-    const body = raw ? stripFoldedBlocks(raw.text, raw.entities, 30).text : '';
-    const firstLine = firstLineOf(body || htmlToText(entry.indexedHtml), 80);
+    const blocks = ocrBlocksOf(entry);
+    const strippedRaw = raw ? stripFoldedBlocks(raw.text, raw.entities, 30).text : '';
+    let firstLine: string;
+    let firstLineOcr: ReturnType<typeof ocrSourceAtLine> = null;
+    if (strippedRaw.trim().length > 0) {
+        firstLine = firstLineOf(strippedRaw, 80);
+    } else {
+        // No text of its own: show the first content line, skipping the image
+        // marker (`[image]` alone says nothing) and labeling the line when it
+        // is an image's OCR text rather than the message body.
+        const content = firstContentLineOf(indexedBodyOf(entry));
+        firstLine = content.line >= 0 ? truncateChars(content.text, 80).text : '';
+        firstLineOcr = ocrSourceAtLine(blocks, content.line);
+    }
     const window = query ? keywordWindow(entry.indexedHtml, query) : null;
-    const inFolded = window?.term && raw ? isInsideFolded(window.term, raw.text, raw.entities) : false;
+    const inFolded = Boolean(window?.term && raw && isInsideFolded(window.term, raw.text, raw.entities));
+    const kwicOcr = window ? ocrSourceAtLine(blocks, window.line) : null;
     const attachments = attachmentLine(entry.indexedHtml, raw?.imageCount ?? null);
     return {
         entry,
         anchor,
         ...(entry.groupName ? { groupName: entry.groupName } : {}),
         firstLine,
-        ...(window ? { kwic: window.text, kwicInFolded: inFolded } : {}),
+        ...(firstLineOcr ? { firstLineOcr } : {}),
+        ...(window
+            ? {
+                  kwic: window.text,
+                  kwicInFolded: inFolded,
+                  ...(kwicOcr ? { kwicOcr } : {}),
+              }
+            : {}),
         ...(attachments ? { attachments } : {}),
         ...(replyTo ? { replyTo } : {}),
     };

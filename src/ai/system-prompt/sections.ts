@@ -142,7 +142,7 @@ const WORKSPACE_PREVIEW_LINE =
     '- `workspace_preview` 可以把工作区的 HTML/A2UI 草稿渲染成图查看。';
 
 const historyLine = (canFetchImages: boolean): string =>
-    '- 可以用 `search_history` 检索历史归档（本聊天；机主私聊时为全部归档群）中的消息（关键词 / 时间 / 发言人；含链接预览、Instant View 与图片 OCR 文本），用 `read_history` 读整条原文或某条消息前后的对话' +
+    '- 可以用 `search_history` 检索历史归档（本聊天；机主私聊时为全部归档群）中的消息（关键词 / 时间 / 发言人；含链接预览、Instant View 与图片 OCR 文本；图片 OCR 文字会被标注，不是消息正文），用 `read_history` 读整条原文或某条消息前后的对话' +
     (canFetchImages ? "；归档消息里的图可以用 `fetch_image(history='hN')` 读取。" : '。');
 
 const widgetLine = (workspace: boolean): string =>

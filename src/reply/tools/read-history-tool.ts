@@ -39,6 +39,7 @@ import { READ_HISTORY_TOOL_NAME } from './tool-names.js';
 
 const BASE_DESCRIPTION =
     '读取历史归档里某条消息的完整索引文本（含网页预览、Instant View 正文、图片 OCR），或读取某条消息前后一段时间内的对话。' +
+    '图片 OCR 文字会被标注为「（…OCR 文字，自动识别，不是消息正文）」，它不是发送者写的内容。' +
     `ids 接受 hN（本回复中出现过的编号）、#N（上下文里的编号）与 https://t.me/c/... 链接，一次最多 ${HISTORY_MAX_REFS} 条；around 接受同样的引用，minutes 默认 10 分钟。` +
     'bot 自己的回复以折叠块形式带思考过程与工具记录，默认省略为一行（保留首行 50 字），folded=true 时原样返回。';
 

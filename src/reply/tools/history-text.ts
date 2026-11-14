@@ -8,7 +8,10 @@
  * The index text is what luoxu indexed, not what the user wrote: marker lines
  * (`[image]`, `[webpage]`, `[instant view]`), OCR lines and preview fields all
  * live in the same string. So the renderer never claims to be quoting the
- * message body; it labels what it shows.
+ * message body; it labels what it shows. OCR is the sharpest case: the model
+ * must not read a screenshot's text as something the sender typed, so the OCR
+ * spans are recovered against the raw message (`ocrBlocksOf`) and labeled in
+ * every format.
  */
 import type { HistoryEntry } from './history-state.js';
 import type {
@@ -73,6 +76,8 @@ export interface KeywordWindow {
     readonly urlOnly: boolean;
     /** The matched term, when one was found */
     readonly term: string | null;
+    /** 0-based line of the index text the window was cut from */
+    readonly line: number;
 }
 
 const collapse = (text: string): string => text.replace(/\s+/g, ' ').trim();
@@ -99,23 +104,23 @@ export const keywordWindow = (
     const terms = literalTerms(query);
     const lines = html.split('\n');
 
-    const candidate = (line: string): KeywordWindow | null => {
+    const candidate = (line: string, index: number): KeywordWindow | null => {
         const text = collapse(htmlToText(line));
         if (!text) return null;
         const lower = text.toLowerCase();
         for (const term of terms) {
             const at = lower.indexOf(term.toLowerCase());
-            if (at >= 0) return { text: sliceWindow(text, at, radius), urlOnly: false, term };
+            if (at >= 0) return { text: sliceWindow(text, at, radius), urlOnly: false, term, line: index };
         }
-        return { text: sliceWindow(text, 0, radius), urlOnly: false, term: null };
+        return { text: sliceWindow(text, 0, radius), urlOnly: false, term: null, line: index };
     };
 
     let fallback: KeywordWindow | null = null;
-    for (const line of lines) {
+    for (const [index, line] of lines.entries()) {
         if (!line.includes(KEYWORD_OPEN)) continue;
         const text = collapse(htmlToText(line));
         if (!text) continue;
-        const window = candidate(line);
+        const window = candidate(line, index);
         if (!window) continue;
         if (URL_LINE.test(text) || text.startsWith('[')) {
             fallback ??= { ...window, urlOnly: true };
@@ -332,14 +337,170 @@ export const firstLineOf = (text: string, maxChars: number): string => {
 /** The message body as the index sees it: markers and OCR included */
 export const indexedBodyOf = (entry: HistoryEntry): string => htmlToText(entry.indexedHtml).trim();
 
+/**
+ * What one image in the index contributed. luoxu prepends an image marker and
+ * puts that image's OCR lines right after it, before the message body, with no
+ * delimiter between the two. The bot only receives the flattened index text and
+ * the raw message (`/messages`), so the boundary has to be recovered: whatever
+ * sits before the body starts is marker lines plus OCR text.
+ */
+export type OcrSource = 'image' | 'webpage image' | 'iv image';
+
+/** Marker line → what the OCR under it came from */
+const OCR_MARKER_SOURCES: ReadonlyMap<string, OcrSource> = new Map([
+    ['[image]', 'image'],
+    ['[webpage image]', 'webpage image'],
+    ['[iv image]', 'iv image'],
+]);
+
+/** How a model reads the source of OCR text; it is never the message body */
+export const ocrLabelOf = (source: OcrSource): string =>
+    source === 'image'
+        ? '图片 OCR 文字'
+        : source === 'webpage image'
+          ? '网页预览图 OCR 文字'
+          : 'IV 配图 OCR 文字';
+
+export interface OcrBlock {
+    readonly source: OcrSource;
+    /** First OCR line, 0-based, in the decoded index body */
+    readonly lineStart: number;
+    /** Exclusive */
+    readonly lineEnd: number;
+}
+
+/** Section markers the index puts *after* the message body; their lines are never OCR */
+const SECTION_MARKERS = ['[poll]', '[webpage]', '[instant view]', '[file]', '[audio]'] as const;
+
+/** Does `offset` end the message body (next is a preview section or the end)? */
+const bodyEndsAt = (body: string, offset: number): boolean => {
+    if (offset === body.length) return true;
+    if (body[offset] !== '\n') return false;
+    const line = body.slice(offset + 1).split('\n', 1)[0]?.trim() ?? '';
+    return SECTION_MARKERS.some((marker) => line.startsWith(marker));
+};
+
+/**
+ * Offset where the message's own text starts in the index body, or null when
+ * it is not in there. A bare indexOf is not enough: OCR text can repeat the
+ * body verbatim (a screenshot of the caption), so the occurrence followed by a
+ * preview section or the end of the text wins.
+ */
+const rawBodyOffsetOf = (body: string, rawText: string): number | null => {
+    if (rawText.length === 0) return null;
+    const find = (needle: string): number[] => {
+        const found: number[] = [];
+        for (let at = body.indexOf(needle); at >= 0; at = body.indexOf(needle, at + 1)) {
+            if (at === 0 || body[at - 1] === '\n') found.push(at);
+        }
+        return found;
+    };
+    const candidates = find(rawText);
+    if (candidates.length === 0) {
+        // The index body is trimmed at its edges, so text ending in whitespace
+        // only matches in its trimmed form (same start offset).
+        const trimmed = rawText.trim();
+        return trimmed === '' ? null : (find(trimmed)[0] ?? null);
+    }
+    const ending = candidates.find((at) => bodyEndsAt(body, at + rawText.length));
+    return ending ?? candidates[0] ?? null;
+};
+
+const isOcrImageMedia = (media: HistoryMedia | null | undefined): boolean => {
+    if (!media) return false;
+    if (media.type === 'photo') return true;
+    // luoxu OCRs documents whose mime is image/*: static stickers included
+    return media.mime !== null && media.mime.startsWith('image/');
+};
+
+/**
+ * The OCR spans of one indexed message, separated from the body by what
+ * `/messages` says the message really is. Empty when the raw message was not
+ * fetched or the boundary cannot be trusted — no label beats a wrong label.
+ */
+export const ocrBlocksOf = (entry: HistoryEntry): readonly OcrBlock[] => {
+    const rawText = entry.rawText;
+    if (rawText === undefined) return [];
+    const body = indexedBodyOf(entry);
+    const lines = body.split('\n');
+    const markers: { readonly line: number; readonly source: OcrSource }[] = [];
+    lines.forEach((line, index) => {
+        const source = OCR_MARKER_SOURCES.get(line.trim());
+        if (source) markers.push({ line: index, source });
+    });
+    if (markers.length === 0) return [];
+
+    let prefixEnd: number;
+    if (rawText.trim() === '') {
+        // No text of its own: markers + OCR are the whole index. Only an image
+        // medium qualifies, and a preview/poll/file section means the index has
+        // more than OCR in it (a photo can carry a link preview), so leave it.
+        if (!isOcrImageMedia(entry.media)) return [];
+        if (lines.some((line) => SECTION_MARKERS.some((marker) => line.trim().startsWith(marker)))) {
+            return [];
+        }
+        prefixEnd = lines.length;
+    } else {
+        const at = rawBodyOffsetOf(body, rawText);
+        if (at === null) return [];
+        prefixEnd = body.slice(0, at).split('\n').length - 1;
+    }
+
+    const blocks: OcrBlock[] = [];
+    for (const [index, marker] of markers.entries()) {
+        if (marker.line >= prefixEnd) break;
+        const next = markers[index + 1];
+        const end = Math.min(next ? next.line : prefixEnd, prefixEnd);
+        if (end > marker.line + 1) {
+            blocks.push({ source: marker.source, lineStart: marker.line + 1, lineEnd: end });
+        }
+    }
+    return blocks;
+};
+
+/** Which image OCR'd the given index-body line, if any */
+export const ocrSourceAtLine = (blocks: readonly OcrBlock[], line: number): OcrSource | null => {
+    for (const block of blocks) {
+        if (line >= block.lineStart && line < block.lineEnd) return block.source;
+    }
+    return null;
+};
+
+/** Wrap every OCR span in a label, so the model cannot read it as the body */
+export const annotateOcrText = (body: string, blocks: readonly OcrBlock[]): string => {
+    if (blocks.length === 0) return body;
+    const lines = body.split('\n');
+    for (const block of [...blocks].sort((a, b) => b.lineStart - a.lineStart)) {
+        const label = ocrLabelOf(block.source);
+        lines.splice(block.lineEnd, 0, `（${label}结束）`);
+        lines.splice(block.lineStart, 0, `（${label}，自动识别，不是消息正文）`);
+    }
+    return lines.join('\n');
+};
+
+/** First content line (markers skipped, so an image's OCR is not shown as `[image]`) */
+export const firstContentLineOf = (body: string): { readonly line: number; readonly text: string } => {
+    const lines = body.split('\n');
+    for (const [index, line] of lines.entries()) {
+        const text = line.trim();
+        if (text === '' || OCR_MARKER_SOURCES.has(text)) continue;
+        return { line: index, text: collapse(line) };
+    }
+    return { line: -1, text: '' };
+};
+
 export interface SearchListRow {
     readonly entry: HistoryEntry;
     /** `#12` when the message is in this turn's context, else a t.me link */
     readonly anchor: string;
     readonly groupName?: string;
     readonly firstLine: string;
+    /** The first line came from an image's OCR text, not from the message body */
+    readonly firstLineOcr?: OcrSource;
     readonly kwic?: string;
     readonly kwicInFolded?: boolean;
+    /** The hit sits in an image's OCR text, not in the message body */
+    readonly kwicOcr?: OcrSource;
     readonly attachments?: string;
     readonly replyTo?: string;
 }
@@ -409,10 +570,25 @@ const formatRow = (row: SearchListRow, timeZone: string, showGroup: boolean): st
     const reply = row.replyTo ? ` · 回复 ${row.replyTo}` : '';
     const lines = [`h${row.entry.h} · ${group}${time} · ${row.entry.fromName} · ${row.anchor}${reply}`];
     const annotation = annotationsOf(row.entry);
-    const body = [annotation, row.firstLine].filter((part) => part.length > 0).join(' ');
+    const firstLine = row.firstLineOcr
+        ? `（${ocrLabelOf(row.firstLineOcr)}）${row.firstLine}`
+        : row.firstLine;
+    const body = [annotation, firstLine].filter((part) => part.length > 0).join(' ');
     if (body) lines.push(`   ${neutralizeWireFormat(body)}`);
-    if (row.kwic) {
-        const note = row.kwicInFolded ? '（命中在折叠块内）' : '';
+    // An image-only message's first line is its OCR text, which is often also
+    // the line the keyword matched: showing it twice under two labels is noise.
+    const core = (text: string): string => collapse(text.split('…').join(''));
+    const firstCore = core(row.firstLine);
+    const duplicated =
+        row.firstLineOcr !== undefined &&
+        firstCore.length > 0 &&
+        core(row.kwic ?? '').startsWith(firstCore);
+    if (row.kwic && !duplicated) {
+        const where = [
+            row.kwicInFolded ? '折叠块内' : null,
+            row.kwicOcr ? `${ocrLabelOf(row.kwicOcr)}中` : null,
+        ].filter((part): part is string => part !== null);
+        const note = where.length > 0 ? `（命中在${where.join('、')}）` : '';
         lines.push(`   ${neutralizeWireFormat(row.kwic)}${note}`);
     }
     if (row.attachments) lines.push(`   附：${row.attachments}`);
@@ -479,8 +655,8 @@ export const renderFullMessage = (
     if (!options.folded && entry.rawText && entry.entities) {
         // Entities are offsets into the raw text; the index text may carry
         // marker/OCR/preview lines before it, so shift them by its position.
-        const at = body.indexOf(entry.rawText);
-        if (at >= 0) {
+        const at = rawBodyOffsetOf(body, entry.rawText);
+        if (at !== null) {
             stripped = stripFoldedBlocks(
                 body,
                 entry.entities.map((entity) => ({ ...entity, offset: entity.offset + at })),
@@ -490,8 +666,11 @@ export const renderFullMessage = (
             stripped = stripFoldedBlocks(entry.rawText, entry.entities, 50);
         }
     }
+    // OCR sits before the body, so folding (which happens later in the text)
+    // has not moved its lines: the spans are still valid here.
+    const annotated = annotateOcrText(stripped.text, ocrBlocksOf(entry));
     const budget = options.maxChars ?? 4000;
-    const cut = truncateChars(stripped.text, budget);
+    const cut = truncateChars(annotated, budget);
     const note = cut.truncated ? `\n（已截断，共 ${cut.total} 字）` : '';
     const head = annotation ? `${header}\n${annotation}` : header;
     return `${head}\n${neutralizeWireFormat(cut.text)}${note}`;
@@ -528,7 +707,8 @@ export const renderWindow = (
     let used = head.length;
     for (const row of rows) {
         const time = formatHistoryTime(row.entry.timestamp, timeZone).slice(11);
-        const body = truncateChars(indexedBodyOf(row.entry).replace(/\n+/g, ' '), header.perMessageChars);
+        const annotated = annotateOcrText(indexedBodyOf(row.entry), ocrBlocksOf(row.entry));
+        const body = truncateChars(annotated.replace(/\n+/g, ' '), header.perMessageChars);
         const annotation = annotationsOf(row.entry);
         const prefix = annotation ? ` ${annotation}` : '';
         const line = `h${row.entry.h} · ${time} · ${row.entry.fromName}${prefix}: ${neutralizeWireFormat(body.text)}` +

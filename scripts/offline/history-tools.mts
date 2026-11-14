@@ -878,4 +878,255 @@ cases.push(
     })
 );
 
+/**
+ * OCR labeling cases.
+ *
+ * luoxu's index text is `image markers + that image's OCR + message body +
+ * preview sections` with no delimiter, and `/messages` is what tells the bot
+ * which part is the body. These cases pin the boundary and the three render
+ * surfaces (list, full read, time window).
+ */
+const photoMedia = {
+    type: 'photo',
+    mime: 'image/jpeg',
+    size: 1024,
+    duration: null,
+    stickerEmoji: null,
+    fileName: null,
+    voice: false,
+} as const;
+
+const hitWith = (messageId: number, html: string) => ({
+    ...fixtureHit(),
+    messageId,
+    html,
+});
+
+cases.push(
+    await runCase('an image-only message labels its OCR text', async () => {
+        const html = [
+            '[image]',
+            'CNN：美国情报界仍在调查',
+            '公司<span class="keyword">拿到手了</span>',
+        ].join('\n');
+        const raw = rawMessage({ messageId: 2100, text: '', media: photoMedia });
+        const fake = fakeService({
+            search: async (request) =>
+                request.ids ? outcomeOf([hitWith(2100, html)]) : outcomeOf([hitWith(2100, html)]),
+            raw: [raw],
+        });
+        const state = createHistoryState();
+        const search = createSearchHistoryTool(buildOptions(fake, { state }));
+        const listed = await execute(search, { query: '拿到手了' });
+        expect(!listed.isError, 'the search succeeds');
+        expect(
+            listed.content.includes('[sent a picture] （图片 OCR 文字）CNN：美国情报界仍在调查'),
+            `the first line is OCR and says so (got ${listed.content.split('\n').find((line) => line.includes('CNN'))})`
+        );
+        expect(!listed.content.includes('[image]'), 'the bare image marker is not shown as a content line');
+        expect(
+            listed.content.includes('拿到手了（命中在图片 OCR 文字中）'),
+            'the keyword window is marked as an OCR hit'
+        );
+
+        const read = createReadHistoryTool(buildOptions(fake, { state }));
+        const full = await execute(read, { ids: ['h1'] });
+        expect(!full.isError, 'the full read succeeds');
+        const start = full.content.indexOf('（图片 OCR 文字，自动识别，不是消息正文）');
+        const bodyAt = full.content.indexOf('CNN：美国情报界仍在调查');
+        const end = full.content.indexOf('（图片 OCR 文字结束）');
+        expect(start >= 0, 'the OCR block opens with a label');
+        expect(start < bodyAt && bodyAt < end, 'the OCR text sits inside the labels');
+    })
+);
+
+cases.push(
+    await runCase('a picture caption is body text, the OCR above it is labeled', async () => {
+        // luoxu only highlights the queried terms, so each search needs its own
+        // payload; the index text (markers, OCR, caption) stays the same.
+        const indexLines = ['[image]', 'LSPosed管理器启用模块', '有点阴了'];
+        const highlighted = (term: string): string =>
+            indexLines
+                .map((line) =>
+                    line.includes(term)
+                        ? line.replace(term, `<span class="keyword">${term}</span>`)
+                        : line
+                )
+                .join('\n');
+        const raw = rawMessage({ messageId: 2200, text: '有点阴了', media: photoMedia });
+        const fake = fakeService({
+            search: async (request) =>
+                outcomeOf([hitWith(2200, highlighted(request.query ?? ''))]),
+            raw: [raw],
+        });
+        const state = createHistoryState();
+        const search = createSearchHistoryTool(buildOptions(fake, { state }));
+
+        const ocrHit = await execute(search, { query: 'LSPosed' });
+        expect(!ocrHit.isError, 'the OCR search succeeds');
+        expect(
+            ocrHit.content.includes('（命中在图片 OCR 文字中）'),
+            `a hit in OCR text says so (got ${ocrHit.content.split('\n').find((line) => line.includes('LSPosed'))})`
+        );
+        expect(
+            ocrHit.content.includes('[sent a picture] 有点阴了'),
+            'the caption is the first line and is not labeled OCR'
+        );
+
+        const bodyHit = await execute(search, { query: '有点阴了' });
+        expect(!bodyHit.isError, 'the caption search succeeds');
+        expect(!bodyHit.content.includes('命中在图片 OCR 文字中'), 'a hit in the caption is not called OCR');
+
+        const read = createReadHistoryTool(buildOptions(fake, { state }));
+        const full = await execute(read, { ids: ['h1'] });
+        const end = full.content.indexOf('（图片 OCR 文字结束）');
+        const caption = full.content.lastIndexOf('有点阴了');
+        expect(end >= 0 && caption > end, 'the caption follows the closed OCR block');
+        expect(full.content.includes('LSPosed管理器启用模块\n（图片 OCR 文字结束）'), 'the OCR block ends after the OCR lines');
+    })
+);
+
+cases.push(
+    await runCase('OCR text repeating the body does not move the boundary', async () => {
+        // The screenshot shows the caption itself: a bare indexOf would stop at
+        // the OCR copy and leave the real caption looking like OCR.
+        const html = ['[image]', '有点阴了', '其他文字', '有点阴了'].join('\n');
+        const fake = fakeService({
+            search: async () => outcomeOf([hitWith(2300, html)]),
+            raw: [rawMessage({ messageId: 2300, text: '有点阴了', media: photoMedia })],
+        });
+        const read = createReadHistoryTool(buildOptions(fake));
+        const full = await execute(read, { ids: ['https://t.me/c/2311128579/2300'] });
+        expect(
+            full.content.includes('有点阴了\n其他文字\n（图片 OCR 文字结束）\n有点阴了'),
+            `the last occurrence is the body (got ${full.content})`
+        );
+    })
+);
+
+cases.push(
+    await runCase('without the raw message nothing is labeled', async () => {
+        const html = ['[image]', '无原始正文时的 OCR'].join('\n');
+        const fake = fakeService({
+            search: async () => outcomeOf([hitWith(2400, html)]),
+            raw: [],
+        });
+        const state = createHistoryState();
+        const search = createSearchHistoryTool(buildOptions(fake, { state }));
+        const listed = await execute(search, { query: 'OCR' });
+        expect(!listed.isError, 'the search still succeeds');
+        expect(!listed.content.includes('（图片 OCR 文字）'), 'a row without a raw message is not labeled');
+        expect(!listed.content.includes('命中在图片 OCR 文字中'), 'and its keyword window is not labeled');
+
+        const read = createReadHistoryTool(buildOptions(fake, { state }));
+        const full = await execute(read, { ids: ['h1'] });
+        expect(!full.isError, 'the read still succeeds');
+        expect(!full.content.includes('不是消息正文'), 'a read without a raw message is not labeled');
+    })
+);
+
+cases.push(
+    await runCase('link-preview image OCR names its source', async () => {
+        const html = [
+            '[webpage image]',
+            '<span class="keyword">预览图上的字</span>',
+            'https://example.com/x',
+            '[webpage]',
+            'https://example.com/x',
+            'Example',
+            '标题',
+            '描述',
+        ].join('\n');
+        const raw = rawMessage({ messageId: 2500, text: 'https://example.com/x', media: null });
+        const fake = fakeService({
+            search: async () => outcomeOf([hitWith(2500, html)]),
+            raw: [raw],
+        });
+        const state = createHistoryState();
+        const listed = await execute(createSearchHistoryTool(buildOptions(fake, { state })), {
+            query: '预览图上的字',
+        });
+        expect(
+            listed.content.includes('（命中在网页预览图 OCR 文字中）'),
+            `the preview image is named as the OCR source (got ${listed.content})`
+        );
+        expect(listed.content.includes('https://example.com/x'), 'the URL line stays the first line');
+
+        const full = await execute(createReadHistoryTool(buildOptions(fake, { state })), { ids: ['h1'] });
+        expect(full.content.includes('（网页预览图 OCR 文字，自动识别，不是消息正文）'), 'the block carries its source');
+        expect(full.content.includes('（网页预览图 OCR 文字结束）\nhttps://example.com/x'), 'the body follows the block');
+    })
+);
+
+cases.push(
+    await runCase('a rich message without the image medium stays unlabeled', async () => {
+        // /messages reports no medium for rich text messages, so the body
+        // boundary is unknown: no label is better than the wrong one.
+        const html = ['[image]', '富文本消息里的照片 OCR', '富文本正文'].join('\n');
+        const fake = fakeService({
+            search: async () => outcomeOf([hitWith(2600, html)]),
+            raw: [rawMessage({ messageId: 2600, text: '', media: null })],
+        });
+        const read = createReadHistoryTool(buildOptions(fake));
+        const full = await execute(read, { ids: ['https://t.me/c/2311128579/2600'] });
+        expect(!full.isError, 'the read succeeds');
+        expect(!full.content.includes('不是消息正文'), 'no label without a known image medium');
+    })
+);
+
+cases.push(
+    await runCase('a time window labels OCR like the full read', async () => {
+        const center = hitWith(2700, ['[image]', '窗口里的 OCR 文字'].join('\n'));
+        const earlier = hitWith(2690, '窗口前一条');
+        const later = hitWith(2710, '窗口后一条');
+        const fake = fakeService({
+            search: async (request) => {
+                if (request.ids) return outcomeOf([center]);
+                if (request.end === center.timestamp) return outcomeOf([earlier]);
+                if (request.start === center.timestamp) return outcomeOf([later]);
+                return outcomeOf([center]);
+            },
+            raw: [
+                rawMessage({ messageId: 2690, text: '窗口前一条', senderId: 42 }),
+                rawMessage({ messageId: 2700, text: '', media: photoMedia }),
+                rawMessage({ messageId: 2710, text: '窗口后一条', senderId: 42 }),
+            ],
+        });
+        const state = createHistoryState();
+        state.remember({
+            channelId: CHANNEL_ID,
+            messageId: 2700,
+            timestamp: center.timestamp,
+            fromId: center.fromId,
+            fromName: center.fromName,
+            fromIsBot: false,
+            indexedHtml: center.html,
+        });
+        const read = createReadHistoryTool(buildOptions(fake, { state }));
+        const window = await execute(read, { around: 'h1', minutes: 10 });
+        expect(!window.isError, 'the window read succeeds');
+        expect(
+            window.content.includes('（图片 OCR 文字，自动识别，不是消息正文） 窗口里的 OCR 文字'),
+            `the OCR row names the OCR inline (got ${window.content})`
+        );
+        expect(!window.content.includes('窗口前一条 （图片 OCR 文字'), 'text rows carry no OCR label');
+    })
+);
+
+cases.push(
+    await runCase('the tool descriptions say OCR text is labeled', async () => {
+        const fake = fakeService({});
+        const search = createSearchHistoryTool(buildOptions(fake));
+        const read = createReadHistoryTool(buildOptions(fake));
+        expect(search.definition.description.includes('会被标注'), 'search_history states the label rule');
+        expect(
+            search.definition.description.includes('不是消息正文'),
+            'search_history says OCR text is not the message body'
+        );
+        expect(read.definition.description.includes('不是消息正文'), 'read_history states the label rule');
+        const firstContent = textKit.firstContentLineOf('[image]\n第一行内容');
+        expect(firstContent.line === 1 && firstContent.text === '第一行内容', 'markers are skipped for the first line');
+    })
+);
+
 reportResults(cases);
