@@ -4,7 +4,8 @@
  * counts as owner / full / trial, the cheap model a trial turn is pinned to,
  * the tools and image models a trial turn loses, the prompt sections that
  * follow the tier, the chat-settings rule that refuses a trial user's model
- * change, the refused generation commands, and `/apply`'s status answers.
+ * change (and lets them switch rich replies), the refused generation
+ * commands, and `/apply`'s status answers.
  *
  * Tiering is on (ACCESS_TIERS=1); the harness default keeps it off for the
  * existing suite. The MCP server is a local JSON-RPC stub, so a full turn can
@@ -87,7 +88,7 @@ const { createReplyTools } = await import('../../src/reply/tools/create-reply-to
 const { buildStaticSystemPrompt } = await import('../../src/ai/system-prompt/index.js');
 const { buildRuntimeContext } = await import('../../src/ai/system-prompt/runtime-context.js');
 const { resolveChatSettingsPatch } = await import('../../src/services/chat-settings-rules.js');
-const { ChatSettingsError, updateChatSettings } = await import(
+const { ChatSettingsError, getChatSettings, updateChatSettings } = await import(
     '../../src/services/chat-settings-service.js'
 );
 const {
@@ -570,6 +571,36 @@ const cases: { name: string; body: () => Promise<void> }[] = [
             expect((await codeOf(STRANGER_ID, false)) === 'trial', 'the service refuses a trial actor with code trial');
             expect((await codeOf(FULL_USER_ID, false)) === 'none', 'a full actor changes the model');
             expect((await codeOf(OWNER_ID, true)) === 'none', 'the owner changes the model');
+        },
+    },
+    {
+        name: 'a trial user may switch rich replies: they change no cost',
+        body: async () => {
+            const stranger = { userId: STRANGER_ID, isOwner: false };
+            expect((await resolveAccessTier(STRANGER_ID, OTHER_CHAT_ID)) === 'trial', 'the stranger is trial in this chat');
+
+            const switchedOn = await updateChatSettings({ chatId: OTHER_CHAT_ID, patch: { richReplies: true }, actor: stranger });
+            expect(
+                switchedOn.settings.richReplies && JSON.stringify(switchedOn.changedKeys) === JSON.stringify(['richReplies']),
+                `the service lets a trial actor switch them on (got ${JSON.stringify(switchedOn.changedKeys)})`
+            );
+
+            let refusal = 'none';
+            try {
+                await updateChatSettings({
+                    chatId: OTHER_CHAT_ID,
+                    patch: { richReplies: false, model: 'gemini-4-hydrogen' },
+                    actor: stranger,
+                });
+            } catch (error) {
+                if (!(error instanceof ChatSettingsError)) throw error;
+                refusal = error.code;
+            }
+            expect(refusal === 'trial', `next to a model change the patch is refused whole (got ${refusal})`);
+            expect(getChatSettings(OTHER_CHAT_ID)?.richReplies === true, 'nothing of the refused patch was saved');
+
+            const switchedOff = await updateChatSettings({ chatId: OTHER_CHAT_ID, patch: { richReplies: false }, actor: stranger });
+            expect(!switchedOff.settings.richReplies, 'and switch them off again');
         },
     },
     {

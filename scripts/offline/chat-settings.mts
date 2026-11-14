@@ -3,7 +3,8 @@
  * rules (free model ids, addendum normalization, lock and owner checks), the
  * audit trail and its retention; the Priority PayGo switch (the effective
  * value of design §8.2, the TOOL_CHAT_IDS rule, owner only, audit, reload);
- * then the bot side: `/model` and the `mdl:` buttons, the refusal of an image
+ * the rich replies switch (off by default, any member and trial users too,
+ * the lock, audit, reload, the reply snapshot); then the bot side: `/model` and the `mdl:` buttons, the refusal of an image
  * model (as a setting, and before a reply or retry when one is stored), the
  * reply and retry settings snapshots, and what a paused chat still answers.
  *
@@ -884,6 +885,101 @@ const cases: { name: string; body: () => Promise<void> }[] = [
             });
             expect(invalid.kind === 'rejected' && invalid.code === 'invalid', 'an unknown value is invalid');
             await service.loadChatSettingsCache();
+        },
+    },
+    {
+        name: "rich replies: off by default; a member switches them, audited 'false' → 'true'; a reload and the reply snapshot keep them",
+        body: async () => {
+            const chatId = -2301;
+            expect(service.getChatSettings(chatId) === undefined, 'the chat has no settings row');
+            expect(!service.defaultChatSettings(chatId).richReplies, 'a chat without a row reads as off');
+            expect(!service.snapshotReplySettings(chatId).richReplies, 'and its replies start with them off');
+
+            const switchedOn = await updateChatSettings({ chatId, patch: { richReplies: true }, actor: MEMBER });
+            expect(
+                switchedOn.settings.richReplies && JSON.stringify(switchedOn.changedKeys) === JSON.stringify(['richReplies']),
+                `a member switches them on, the only change (got ${JSON.stringify(switchedOn.changedKeys)})`
+            );
+            expect((await ChatSettingsRecord.findByPk(chatId))?.richReplies === true, 'the row holds the switch');
+            expect(service.snapshotReplySettings(chatId).richReplies, 'the reply snapshot carries it');
+            const repeat = await updateChatSettings({ chatId, patch: { richReplies: true }, actor: MEMBER });
+            expect(repeat.changedKeys.length === 0, 'the same value again changes nothing');
+
+            // The cache is replaced by what the rows hold
+            await service.loadChatSettingsCache();
+            expect(service.getChatSettings(chatId)?.richReplies === true, 'the switch survives a reload');
+            expect(service.snapshotReplySettings(chatId).richReplies, 'and so does the snapshot');
+            const otherKey = await updateChatSettings({ chatId, patch: { paused: true }, actor: MEMBER });
+            expect(
+                otherKey.settings.richReplies && JSON.stringify(otherKey.changedKeys) === JSON.stringify(['paused']),
+                'a patch of another key keeps it'
+            );
+
+            const switchedOff = await updateChatSettings({
+                chatId,
+                patch: { richReplies: false, paused: false },
+                actor: OWNER,
+            });
+            expect(
+                JSON.stringify(switchedOff.changedKeys) === JSON.stringify(['paused', 'richReplies']),
+                `the fixed key order puts it last (got ${JSON.stringify(switchedOff.changedKeys)})`
+            );
+            expect(!service.snapshotReplySettings(chatId).richReplies, 'switched off, the snapshot follows');
+
+            const transitions = (await auditOf(chatId))
+                .filter((row) => row.key === 'richReplies')
+                .map((row) => [row.oldValue, row.newValue, row.actorId]);
+            expect(
+                JSON.stringify(transitions) ===
+                    JSON.stringify([
+                        ['true', 'false', OWNER.userId],
+                        ['false', 'true', MEMBER.userId],
+                    ]),
+                `newest first: 'true' → 'false' by the owner, 'false' → 'true' by the member (got ${JSON.stringify(transitions)})`
+            );
+        },
+    },
+    {
+        name: 'rich replies: a locked chat refuses a member and the owner is not bound; a trial user may switch them',
+        body: async () => {
+            const chatId = -2302;
+            await updateChatSettings({ chatId, patch: { settingsLocked: true }, actor: OWNER });
+            const locked = await refusalOf(() => updateChatSettings({ chatId, patch: { richReplies: true }, actor: MEMBER }));
+            expect(locked === `locked: ${LOCKED_NOTICE}`, `a member is refused as locked (got ${locked})`);
+            expect(service.getChatSettings(chatId)?.richReplies === false, 'the refused patch changed nothing');
+            const owner = await updateChatSettings({ chatId, patch: { richReplies: true }, actor: OWNER });
+            expect(owner.settings.richReplies, 'the owner switches them in a locked chat');
+            await updateChatSettings({ chatId, patch: { settingsLocked: false, richReplies: false }, actor: OWNER });
+
+            // The trial rule covers the model and the thinking level only: rich replies cost nothing
+            const current = {
+                model: 'gemini-4-hydrogen',
+                promptAddendum: null,
+                paused: false,
+                settingsLocked: false,
+                toolOverrides: null,
+                geminiPriority: null,
+                thinkingEffort: null,
+                richReplies: false,
+            };
+            const trialActor = { actorIsOwner: false, geminiPriorityCanEnable: false, actorIsTrial: true };
+            const trial = resolveChatSettingsPatch(current, { richReplies: true }, trialActor);
+            expect(
+                trial.kind === 'resolved' &&
+                    JSON.stringify(trial.changes) ===
+                        JSON.stringify([{ key: 'richReplies', oldValue: 'false', newValue: 'true' }]),
+                `a trial user resolves, one change in the audit format (got ${JSON.stringify(trial)})`
+            );
+            const trialLocked = resolveChatSettingsPatch({ ...current, settingsLocked: true }, { richReplies: true }, trialActor);
+            expect(
+                trialLocked.kind === 'rejected' && trialLocked.code === 'locked',
+                'a locked chat refuses a trial user as well'
+            );
+            const trialWithModel = resolveChatSettingsPatch(current, { richReplies: true, model: 'gpt-6-astra' }, trialActor);
+            expect(
+                trialWithModel.kind === 'rejected' && trialWithModel.code === 'trial',
+                'next to a model change the whole patch is refused, as before'
+            );
         },
     },
     {

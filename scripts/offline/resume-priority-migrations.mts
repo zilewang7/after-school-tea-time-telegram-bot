@@ -2,10 +2,10 @@
  * Offline cases for the schema of Gemini resume and Priority PayGo (design
  * §10): reply_metrics gains roundRetries, tierRequested, the four priority
  * sums, resumedRounds, checkpointRounds and the thinking-effort columns;
- * chat_settings gains the nullable geminiPriority and thinkingEffort. A fresh
- * database gets them from the models at sync time and the migrations skip the
- * missing tables; an old database gets them from the migrations, keeps its
- * rows, and takes new rows afterwards. Every other offline file runs on a
+ * chat_settings gains the nullable geminiPriority, thinkingEffort and (later)
+ * richReplies. A fresh database gets them from the models at sync time and
+ * the migrations skip the missing tables; an old database gets them from the
+ * migrations, keeps its rows, and takes new rows afterwards. Every other offline file runs on a
  * fresh database, so without these cases a missing migration would only show
  * in production, as metric rows that never write.
  *
@@ -15,6 +15,8 @@ import { expect, reportResults, runCase, setupOfflineDb, type CaseResult } from 
 
 /** The chat of the chat_settings case; listed, so a stored "on" applies while the global switch is off */
 const PRIORITY_CHAT_ID = -1007700000002;
+/** The chat of the richReplies case */
+const RICH_REPLIES_CHAT_ID = -1007700000003;
 // Read once by the tool config, before src is imported
 process.env.TOOL_CHAT_IDS = String(PRIORITY_CHAT_ID);
 
@@ -28,6 +30,7 @@ const service = await import('../../src/services/chat-settings-service.js');
 type ReplyMetricInput = import('../../src/db/queries/reply-metrics.js').ReplyMetricInput;
 
 const OWNER = { userId: 4242, isOwner: true };
+const MEMBER = { userId: 5151, isOwner: false };
 
 const REPLY_METRICS_COLUMNS = [
     'roundRetries',
@@ -45,7 +48,11 @@ const REPLY_METRICS_COLUMNS = [
 ];
 
 // In name order, as appliedMigrations reads them
-const MIGRATION_NAMES = ['20261112_chat_settings_gemini_priority', '20261112_reply_metrics_resume_priority'];
+const MIGRATION_NAMES = [
+    '20261112_chat_settings_gemini_priority',
+    '20261112_reply_metrics_resume_priority',
+    '20261114_chat_settings_rich_replies',
+];
 
 // reply_metrics and chat_settings as they were before this change
 const OLD_REPLY_METRICS = `
@@ -69,6 +76,15 @@ const OLD_CHAT_SETTINGS = `
         chatId INTEGER PRIMARY KEY, model TEXT DEFAULT NULL, promptAddendum TEXT DEFAULT NULL,
         paused INTEGER NOT NULL DEFAULT 0, settingsLocked INTEGER NOT NULL DEFAULT 0,
         toolOverrides TEXT DEFAULT NULL, updatedAt TEXT NOT NULL, updatedBy INTEGER DEFAULT NULL
+    )`;
+
+// chat_settings as it was just before the rich replies switch: every other column is there
+const CHAT_SETTINGS_BEFORE_RICH_REPLIES = `
+    CREATE TABLE chat_settings (
+        chatId INTEGER PRIMARY KEY, model TEXT DEFAULT NULL, promptAddendum TEXT DEFAULT NULL,
+        paused INTEGER NOT NULL DEFAULT 0, settingsLocked INTEGER NOT NULL DEFAULT 0,
+        toolOverrides TEXT DEFAULT NULL, geminiPriority INTEGER DEFAULT NULL, thinkingEffort TEXT DEFAULT NULL,
+        updatedAt TEXT NOT NULL, updatedBy INTEGER DEFAULT NULL
     )`;
 
 const json = (value: unknown): string => JSON.stringify(value);
@@ -166,7 +182,8 @@ const cases: { name: string; body: () => Promise<void> }[] = [
             expect(hasEvery(await columnsOf('reply_metrics'), REPLY_METRICS_COLUMNS), 'reply_metrics has the new columns');
             expect((await columnsOf('chat_settings')).includes('geminiPriority'), 'chat_settings has geminiPriority');
             expect((await columnsOf('chat_settings')).includes('thinkingEffort'), 'and thinkingEffort');
-            expect(json(await appliedMigrations()) === json(MIGRATION_NAMES), 'both migrations are recorded');
+            expect((await columnsOf('chat_settings')).includes('richReplies'), 'and richReplies');
+            expect(json(await appliedMigrations()) === json(MIGRATION_NAMES), 'every migration is recorded');
 
             await sequelize.query('DROP TABLE reply_metrics');
             await sequelize.query('DROP TABLE chat_settings');
@@ -179,6 +196,7 @@ const cases: { name: string; body: () => Promise<void> }[] = [
             expect(hasEvery(await columnsOf('reply_metrics'), REPLY_METRICS_COLUMNS), 'sync creates reply_metrics with them');
             expect((await columnsOf('chat_settings')).includes('geminiPriority'), 'and chat_settings with geminiPriority');
             expect((await columnsOf('chat_settings')).includes('thinkingEffort'), 'and with thinkingEffort');
+            expect((await columnsOf('chat_settings')).includes('richReplies'), 'and with richReplies');
         },
     },
     {
@@ -293,6 +311,54 @@ const cases: { name: string; body: () => Promise<void> }[] = [
                 (await columnsOf('chat_settings')).filter((column) => column === 'geminiPriority').length === 1,
                 'a restart adds nothing'
             );
+        },
+    },
+    {
+        name: 'an old chat_settings table gains richReplies; its rows read as off and take the switch afterwards',
+        body: async () => {
+            const chatId = RICH_REPLIES_CHAT_ID;
+            const storedSwitch = async (): Promise<unknown[]> =>
+                sequelize.query('SELECT richReplies FROM chat_settings WHERE chatId = :chatId', {
+                    replacements: { chatId },
+                    type: QueryTypes.SELECT,
+                });
+            await sequelize.query('DROP TABLE chat_settings');
+            await sequelize.query(CHAT_SETTINGS_BEFORE_RICH_REPLIES);
+            await sequelize.query(
+                `INSERT INTO chat_settings (chatId, model, paused, settingsLocked, thinkingEffort, updatedAt, updatedBy)
+                 VALUES (${chatId}, 'old-model', 0, 0, 'high', '2026-11-13 10:00:00.000 +00:00', 4242)`
+            );
+            const before = await columnsOf('chat_settings');
+            expect(!before.includes('richReplies'), 'the old table has no richReplies');
+
+            await startUp();
+            const after = await columnsOf('chat_settings');
+            expect(
+                after.includes('richReplies') && after.length === before.length + 1,
+                `the migration adds it and nothing else (got ${json(after)})`
+            );
+            expect(json(await storedSwitch()) === json([{ richReplies: null }]), 'the old row is not backfilled: NULL');
+            await service.loadChatSettingsCache();
+            const old = service.getChatSettings(chatId);
+            expect(
+                old?.richReplies === false && old.model === 'old-model' && old.thinkingEffort === 'high',
+                `the old row reads as off and keeps its values (got ${json(old)})`
+            );
+            expect(!service.snapshotReplySettings(chatId).richReplies, 'so its replies start with them off');
+
+            // Not owner-only: a member switches them on
+            const { settings } = await service.updateChatSettings({ chatId, patch: { richReplies: true }, actor: MEMBER });
+            expect(settings.richReplies && settings.thinkingEffort === 'high', 'a member switches them on');
+            const stored = await storedSwitch();
+            expect(json(stored) === json([{ richReplies: 1 }]), `the migrated INTEGER column holds 1 (got ${json(stored)})`);
+            await service.loadChatSettingsCache();
+            const reloaded = service.getChatSettings(chatId)?.richReplies;
+            expect(reloaded === true, `a stored "on" reads back as true after a reload (got ${json(reloaded)})`);
+            expect(service.snapshotReplySettings(chatId).richReplies, 'and the reply snapshot carries it');
+
+            await startUp();
+            expect((await columnsOf('chat_settings')).length === after.length, 'a restart adds nothing');
+            expect(json(await appliedMigrations()) === json(MIGRATION_NAMES), 'each migration is recorded once');
         },
     },
 ];

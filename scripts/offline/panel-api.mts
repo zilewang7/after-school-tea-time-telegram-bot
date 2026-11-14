@@ -5,7 +5,8 @@
  * global default, the preview, rate limiting, /api/me, the dashboard, audit,
  * the error envelope, request logs, and the static fallback order. Then the
  * Priority PayGo switch (design §8.5): per chat (owner only, refused where it
- * cannot take effect) and global (a partial update, all keys or none).
+ * cannot take effect) and global (a partial update, all keys or none). The
+ * rich replies switch: off by default, any member, booleans only, the lock.
  *
  * Run: npx tsx scripts/offline/panel-api.mts
  */
@@ -30,6 +31,8 @@ const GROUP_TOOLS = -1001000000004;
 const GROUP_PRIORITY_LISTED = -1001000000005;
 /** Not in TOOL_CHAT_IDS: "on" only takes effect while the global switch is on */
 const GROUP_PRIORITY_UNLISTED = -1001000000006;
+/** The rich replies case's own chat, so its lock touches no other case */
+const GROUP_RICH = -1001000000007;
 
 process.env.OWNER_USER_ID = String(OWNER_ID);
 // Read once into the tool config, before src is imported
@@ -42,6 +45,7 @@ const registry = await import('../../src/db/queries/panel-registry.js');
 const { HarnessIssue } = await import('../../src/db/harnessIssueDTO.js');
 const { SettingsAudit } = await import('../../src/db/settingsAuditDTO.js');
 const { GlobalSetting } = await import('../../src/db/globalSettingDTO.js');
+const { ChatSettingsRecord } = await import('../../src/db/chatSettingsDTO.js');
 const { loadChatSettingsCache } = await import('../../src/services/chat-settings-service.js');
 const { loadModelCatalog } = await import('../../src/services/model-catalog-service.js');
 const { findModelCatalogEntry, setModelCatalog } = await import('../../src/config/model-catalog.js');
@@ -75,6 +79,7 @@ const memberships = new Map<string, 'member' | 'left' | 'throttled' | 'slow'>([
     [`${GROUP_TOOLS}:${ALICE.id}`, 'member'],
     [`${GROUP_PRIORITY_LISTED}:${ALICE.id}`, 'member'],
     [`${GROUP_PRIORITY_UNLISTED}:${ALICE.id}`, 'member'],
+    [`${GROUP_RICH}:${ALICE.id}`, 'member'],
     [`${GROUP_LEFT}:${ALICE.id}`, 'left'],
     [`${GROUP_THROTTLED}:${ALICE.id}`, 'throttled'],
     [`${GROUP_LEFT}:${BOB.id}`, 'slow'],
@@ -111,6 +116,7 @@ await registry.upsertChatNow({ id: GROUP_THROTTLED, type: 'supergroup', title: '
 await registry.upsertChatNow({ id: GROUP_TOOLS, type: 'supergroup', title: 'Tools' });
 await registry.upsertChatNow({ id: GROUP_PRIORITY_LISTED, type: 'supergroup', title: 'Priority listed' });
 await registry.upsertChatNow({ id: GROUP_PRIORITY_UNLISTED, type: 'supergroup', title: 'Priority unlisted' });
+await registry.upsertChatNow({ id: GROUP_RICH, type: 'supergroup', title: 'Rich replies' });
 await loadChatSettingsCache();
 
 // ---- request helpers --------------------------------------------------------
@@ -683,6 +689,48 @@ const cases: { name: string; body: () => Promise<void> }[] = [
             const clearedBody = await jsonOf(cleared);
             expect(cleared.status === 200 && clearedBody.settings.toolOverrides === null, 'null clears every override');
             expect((await auditCount(GROUP_TOOLS)) === before + 4, 'one audit row per accepted change');
+            clockMs += 60_000;
+        },
+    },
+    {
+        name: 'PATCH settings: rich replies — off by default, a member switches them, booleans only, a locked chat refuses a member',
+        body: async () => {
+            clockMs += 60_000;
+            const dashboardSettings = async () => (await jsonOf(await call(app, `/api/chats/${GROUP_RICH}`, { user: ALICE }))).settings;
+            const initial = await dashboardSettings();
+            expect(initial.richReplies === false, `a chat without a row reads as off (got ${JSON.stringify(initial)})`);
+
+            const before = await auditCount(GROUP_RICH);
+            for (const [label, value] of [
+                ['a string', 'true'],
+                ['a number', 1],
+                ['null', null],
+                ['an object', { on: true }],
+            ] as const) {
+                await expectError(await patchSettings(app, GROUP_RICH, ALICE, { richReplies: value }), 400, 'invalid', `rich replies as ${label}`);
+            }
+            expect((await auditCount(GROUP_RICH)) === before, 'the refused values wrote nothing');
+
+            const on = await patchSettings(app, GROUP_RICH, ALICE, { richReplies: true, expectedUpdatedAt: initial.updatedAt });
+            const onBody = await jsonOf(on);
+            expect(on.status === 200 && onBody.settings.richReplies === true, `a member switches them on (got ${on.status} ${JSON.stringify(onBody)})`);
+            expect((await ChatSettingsRecord.findByPk(GROUP_RICH))?.richReplies === true, 'the row holds the switch');
+            expect((await dashboardSettings()).richReplies === true, 'the dashboard shows it');
+            const [entry] = await SettingsAudit.findAll({ where: { scope: `chat:${GROUP_RICH}` }, order: [['id', 'DESC']], limit: 1 });
+            expect(
+                entry?.key === 'richReplies' && entry.oldValue === 'false' && entry.newValue === 'true' && entry.actorId === ALICE.id,
+                `audited 'false' → 'true' by the member (got ${JSON.stringify(entry)})`
+            );
+            const same = await patchSettings(app, GROUP_RICH, ALICE, { richReplies: true });
+            expect(same.status === 200 && (await auditCount(GROUP_RICH)) === before + 1, 'the same value again writes nothing');
+
+            expect((await patchSettings(app, GROUP_RICH, OWNER, { settingsLocked: true })).status === 200, 'the owner locks the chat');
+            await expectError(await patchSettings(app, GROUP_RICH, ALICE, { richReplies: false }), 403, 'locked', 'a member on a locked chat');
+            await expectError(await patchSettings(app, GROUP_RICH, ALICE, { richReplies: 'off' }), 403, 'locked', 'a bad value on a locked chat');
+            expect((await dashboardSettings()).richReplies === true, 'the refused patches changed nothing');
+            const ownerOff = await patchSettings(app, GROUP_RICH, OWNER, { richReplies: false });
+            expect(ownerOff.status === 200 && (await jsonOf(ownerOff)).settings.richReplies === false, 'the owner is not bound by the lock');
+            expect((await patchSettings(app, GROUP_RICH, OWNER, { settingsLocked: false })).status === 200, 'and unlocks');
             clockMs += 60_000;
         },
     },

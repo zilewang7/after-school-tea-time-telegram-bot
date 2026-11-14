@@ -2,9 +2,10 @@
  * Offline cases for the "继续" click itself (design 2026-1112-1123 §6.4,
  * §7.3; test plan §11 第 3 期 cases 10, 13 and 18, and the access tiers, with
  * whom Priority PayGo is asked for):
- * the order of the checks and what each failed check leaves behind, the
- * claim the click shares with 重试, the ways out that must give the
- * checkpoint and the claim back, and the log line of a missing checkpoint.
+ * the order of the checks and what each failed check leaves behind (and that
+ * the rich replies switch is not one of them), the claim the click shares
+ * with 重试, the ways out that must give the checkpoint and the claim back,
+ * and the log line of a missing checkpoint.
  * Same bench as reply-resume.mts: real handlers, the real Gemini platform on
  * the fake Vertex endpoint, the scratch database.
  *
@@ -315,6 +316,21 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
                 })})`
             );
             await updateChatSettings({ chatId, patch: { thinkingEffort: null }, actor: OWNER });
+        }),
+    },
+    {
+        name: 'case 10 (rich replies): a switch since the interrupt blocks nothing: presentation, not the request',
+        body: quietCase(async () => {
+            for (const [atInterrupt, atClick] of [[false, true], [true, false]] as const) {
+                const label = `rich replies ${String(atInterrupt)} → ${String(atClick)}`;
+                const chatId = takeChatId();
+                await updateChatSettings({ chatId, patch: { richReplies: atInterrupt }, actor: OWNER });
+                const reply = await failedReply(chatId);
+                await updateChatSettings({ chatId, patch: { richReplies: atClick }, actor: OWNER });
+                // No notice: the first click resumes the interrupted request
+                await expectContinues(reply, label);
+                await updateChatSettings({ chatId, patch: { richReplies: false }, actor: OWNER });
+            }
         }),
     },
     {
