@@ -8,10 +8,12 @@
  * The retry and continue cases go through the real handlers on the resume
  * bench (support/resume-bench.mts), which also gives a kept checkpoint.
  *
- * Case 1 is the guard of the default path: the full call log of a few replies
- * with the switch off is compared, call by call, with the log the code made
- * before rich delivery existed (fixtures/rich-guard-calls.json). Only when the
- * default path changes on purpose is the fixture recorded again:
+ * Case 1 guards the default path, for the replies of GUARD_SCENARIOS only: with
+ * the switch off, the full call log of each is compared, call by call, with
+ * the log the code made before rich delivery existed
+ * (fixtures/rich-guard-calls.json, recorded on a4beb40, the commit before the
+ * delivery code). Only when the default path changes on purpose is the
+ * fixture recorded again, on the code of that change:
  * RICH_GUARD_RECORD=1 npx tsx scripts/offline/rich-replies.mts
  *
  * Run: pnpm test:offline rich-replies
@@ -325,8 +327,19 @@ interface CallShape {
 /** Above this a string is kept as its hash: the long replies would make the fixture huge */
 const LONG_STRING = 300;
 
+/**
+ * The page tokens in links differ between runs: the signed search page token
+ * (/g/), the random thinking token of the fast page (/t/) and of the Mini App
+ * route (/think/), and the Mini App direct links (startapp=<kind letter><token>,
+ * the kind stays visible).
+ */
+const RUN_DEPENDENT_TOKENS: readonly (readonly [RegExp, string])[] = [
+    [/\/(g|t|think)\/[\w.~-]+/g, '/$1/<token>'],
+    [/startapp=([a-z])[\w-]+/g, 'startapp=$1<token>'],
+];
+
 const compactString = (value: string): string => {
-    const hidden = value.replace(/\/g\/[\w.~-]+/g, '/g/<token>');
+    const hidden = RUN_DEPENDENT_TOKENS.reduce((text, [pattern, mask]) => text.replace(pattern, mask), value);
     if (hidden.length <= LONG_STRING) return hidden;
     const digest = createHash('sha256').update(hidden).digest('hex').slice(0, 16);
     return `<${hidden.length} chars sha256:${digest} ${hidden.slice(0, 40)}…${hidden.slice(-20)}>`;
@@ -373,7 +386,22 @@ interface GuardScenario {
     readonly retry?: FailingStream;
 }
 
-/** The replies of the guard: every branch of the default path a rich reply also takes */
+/**
+ * The replies of the guard, each run through the real stream and final
+ * delivery (or the error path) with the switch off. Together they cover:
+ * - streaming: thinking then answer, the split into continuations, link mode
+ *   (the pending link with its card, the link going out), tool status lines
+ *   (the refresh of an empty message, the line under thinking and answer);
+ * - the final: inline thinking, a stop, a user edit's button, a link emitted
+ *   while streaming, a link the final creates, a stop with the link pending,
+ *   a folded search footer, an image after text, an image alone, a retry;
+ * - the error display: inline thinking, a pending link.
+ * Not covered: the timed status refreshes (spinner, a cleared line's linger;
+ * a refresh under content coalesces with the content edit, so only these
+ * would show it), an empty reply, errors with a kept checkpoint, 继续,
+ * /picbanana and /picgpt, refused or failed Telegram calls, stickers, files,
+ * widgets.
+ */
 const GUARD_SCENARIOS: readonly GuardScenario[] = [
     {
         name: 'thinking, then a dialect-heavy answer',
@@ -445,6 +473,56 @@ const GUARD_SCENARIOS: readonly GuardScenario[] = [
         name: 'an answer, then its retry',
         script: () => ({ steps: [{ chunk: textChunk('第一版。') }] }),
         retry: { steps: [{ chunk: thinkingChunk('重新想') }, ...textSteps(['第二版，', '更好。'])] },
+    },
+    {
+        name: 'link mode: the link goes out while streaming, the answer follows',
+        script: () => ({ steps: [...thinkingSteps(longThinking()), ...textSteps(['答案来了。', '第二句。'])] }),
+    },
+    {
+        name: 'link mode: an error while the link is still pending',
+        script: () => ({
+            steps: thinkingSteps(longThinking()),
+            failure: new Error('got status: 500 Internal Server Error'),
+        }),
+    },
+    {
+        name: 'link mode: a stop while the link is still pending',
+        script: (started) => ({
+            steps: [
+                ...thinkingSteps(longThinking()),
+                {
+                    chunk: thinkingChunk('不会显示'),
+                    frame: false,
+                    before: () => started.chatContext.session.streamController.abort(),
+                },
+            ],
+        }),
+    },
+    {
+        name: 'the answer first, then a long thinking: the final creates the link',
+        script: () => ({ steps: [...textSteps(['答案。']), ...thinkingSteps(longThinking())] }),
+    },
+    {
+        name: 'tool status lines before and while the answer streams',
+        script: () => ({
+            steps: [
+                // The editor's own refresh while the message is empty; later the
+                // line rides on the content edits, which its refresh coalesces into
+                { chunk: { type: 'status', status: { text: '🔍 正在搜索…', chatAction: 'typing' } } },
+                { chunk: thinkingChunk('先查一下资料。') },
+                { chunk: { type: 'status', status: { text: '📖 正在读网页…', chatAction: 'typing' } } },
+                { chunk: textChunk('先说一句，') },
+                // The line lingers after the tool ends: clearing it alone makes no call
+                { chunk: { type: 'status' }, frame: false },
+                { chunk: textChunk('再说一句。') },
+                { chunk: { type: 'status', status: { text: '🖼 正在画图…', chatAction: 'typing' } } },
+                { chunk: textChunk('画好了。') },
+            ],
+        }),
+    },
+    {
+        name: 'an image and no text',
+        script: () => ({ steps: [{ chunk: { type: 'image', imageData: PNG_BYTES }, frame: false }] }),
     },
 ];
 

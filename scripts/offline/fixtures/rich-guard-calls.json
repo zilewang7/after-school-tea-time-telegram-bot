@@ -1646,5 +1646,2695 @@
         }
       }
     }
+  ],
+  "link mode: the link goes out while streaming, the answer follows": [
+    {
+      "method": "sendChatAction",
+      "keys": [
+        "chat_id",
+        "action"
+      ],
+      "payload": {
+        "chat_id": "<chat>",
+        "action": "typing"
+      }
+    },
+    {
+      "method": "sendMessage",
+      "keys": [
+        "chat_id",
+        "text",
+        "business_connection_id",
+        "direct_messages_topic_id",
+        "reply_parameters",
+        "reply_markup"
+      ],
+      "payload": {
+        "chat_id": "<chat>",
+        "text": "✽ Thinking...",
+        "reply_parameters": {
+          "message_id": "<message 1>"
+        },
+        "reply_markup": {
+          "inline_keyboard": [
+            [
+              {
+                "text": "停止",
+                "callback_data": "resp:stop"
+              }
+            ]
+          ]
+        }
+      }
+    },
+    {
+      "method": "editMessageText",
+      "keys": [
+        "chat_id",
+        "message_id",
+        "text",
+        "entities",
+        "parse_mode",
+        "reply_markup",
+        "link_preview_options"
+      ],
+      "payload": {
+        "chat_id": "<chat>",
+        "message_id": "<message 2>",
+        "text": "<510 chars sha256:0ab1a929093b8ac9 S0\n\n推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理…推理推理推理\n✽ Thinking...>",
+        "entities": [
+          {
+            "type": "blockquote",
+            "offset": 0,
+            "length": 496
+          },
+          {
+            "type": "bold",
+            "offset": 0,
+            "length": 2
+          }
+        ],
+        "reply_markup": {
+          "inline_keyboard": [
+            [
+              {
+                "text": "停止",
+                "callback_data": "resp:stop"
+              }
+            ]
+          ]
+        }
+      }
+    },
+    {
+      "method": "editMessageText",
+      "keys": [
+        "chat_id",
+        "message_id",
+        "text",
+        "entities",
+        "parse_mode",
+        "reply_markup",
+        "link_preview_options"
+      ],
+      "payload": {
+        "chat_id": "<chat>",
+        "message_id": "<message 2>",
+        "text": "<1006 chars sha256:6955141bbd8aeaa6 S0\n\n推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理…推理推理推理\n✽ Thinking...>",
+        "entities": [
+          {
+            "type": "blockquote",
+            "offset": 0,
+            "length": 992
+          },
+          {
+            "type": "bold",
+            "offset": 0,
+            "length": 2
+          },
+          {
+            "type": "bold",
+            "offset": 706,
+            "length": 2
+          }
+        ],
+        "reply_markup": {
+          "inline_keyboard": [
+            [
+              {
+                "text": "停止",
+                "callback_data": "resp:stop"
+              }
+            ]
+          ]
+        }
+      }
+    },
+    {
+      "method": "editMessageText",
+      "keys": [
+        "chat_id",
+        "message_id",
+        "text",
+        "entities",
+        "parse_mode",
+        "reply_markup",
+        "link_preview_options"
+      ],
+      "payload": {
+        "chat_id": "<chat>",
+        "message_id": "<message 2>",
+        "text": "<1502 chars sha256:50af45026bb5f6b8 S0\n\n推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理…推理推理推理\n✽ Thinking...>",
+        "entities": [
+          {
+            "type": "blockquote",
+            "offset": 0,
+            "length": 1488
+          },
+          {
+            "type": "bold",
+            "offset": 0,
+            "length": 2
+          },
+          {
+            "type": "bold",
+            "offset": 706,
+            "length": 2
+          },
+          {
+            "type": "bold",
+            "offset": 1412,
+            "length": 2
+          }
+        ],
+        "reply_markup": {
+          "inline_keyboard": [
+            [
+              {
+                "text": "停止",
+                "callback_data": "resp:stop"
+              }
+            ]
+          ]
+        }
+      }
+    },
+    {
+      "method": "editMessageText",
+      "keys": [
+        "chat_id",
+        "message_id",
+        "text",
+        "entities",
+        "parse_mode",
+        "reply_markup",
+        "link_preview_options"
+      ],
+      "payload": {
+        "chat_id": "<chat>",
+        "message_id": "<message 2>",
+        "text": "<2002 chars sha256:020d5b804c39b5b9 S0\n\n推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理…推理推理推理\n✽ Thinking...>",
+        "entities": [
+          {
+            "type": "blockquote",
+            "offset": 0,
+            "length": 1988
+          },
+          {
+            "type": "bold",
+            "offset": 0,
+            "length": 2
+          },
+          {
+            "type": "bold",
+            "offset": 706,
+            "length": 2
+          },
+          {
+            "type": "bold",
+            "offset": 1412,
+            "length": 2
+          }
+        ],
+        "reply_markup": {
+          "inline_keyboard": [
+            [
+              {
+                "text": "停止",
+                "callback_data": "resp:stop"
+              }
+            ]
+          ]
+        }
+      }
+    },
+    {
+      "method": "editMessageText",
+      "keys": [
+        "chat_id",
+        "message_id",
+        "text",
+        "entities",
+        "parse_mode",
+        "reply_markup",
+        "link_preview_options"
+      ],
+      "payload": {
+        "chat_id": "<chat>",
+        "message_id": "<message 2>",
+        "text": "<2503 chars sha256:ce499ae7012948bd S0\n\n推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理…推理推理推理\n✽ Thinking...>",
+        "entities": [
+          {
+            "type": "expandable_blockquote",
+            "offset": 0,
+            "length": 1414
+          },
+          {
+            "type": "bold",
+            "offset": 0,
+            "length": 2
+          },
+          {
+            "type": "bold",
+            "offset": 708,
+            "length": 2
+          },
+          {
+            "type": "blockquote",
+            "offset": 1415,
+            "length": 1074
+          },
+          {
+            "type": "bold",
+            "offset": 1415,
+            "length": 2
+          },
+          {
+            "type": "bold",
+            "offset": 2123,
+            "length": 2
+          }
+        ],
+        "reply_markup": {
+          "inline_keyboard": [
+            [
+              {
+                "text": "停止",
+                "callback_data": "resp:stop"
+              }
+            ]
+          ]
+        }
+      }
+    },
+    {
+      "method": "editMessageText",
+      "keys": [
+        "chat_id",
+        "message_id",
+        "text",
+        "entities",
+        "parse_mode",
+        "reply_markup",
+        "link_preview_options"
+      ],
+      "payload": {
+        "chat_id": "<chat>",
+        "message_id": "<message 2>",
+        "text": "<3001 chars sha256:e64759557daae34e S0\n\n推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理…推理推理推理\n✽ Thinking...>",
+        "entities": [
+          {
+            "type": "expandable_blockquote",
+            "offset": 0,
+            "length": 2122
+          },
+          {
+            "type": "bold",
+            "offset": 0,
+            "length": 2
+          },
+          {
+            "type": "bold",
+            "offset": 708,
+            "length": 2
+          },
+          {
+            "type": "bold",
+            "offset": 1416,
+            "length": 2
+          },
+          {
+            "type": "blockquote",
+            "offset": 2123,
+            "length": 864
+          },
+          {
+            "type": "bold",
+            "offset": 2123,
+            "length": 2
+          },
+          {
+            "type": "bold",
+            "offset": 2831,
+            "length": 2
+          }
+        ],
+        "reply_markup": {
+          "inline_keyboard": [
+            [
+              {
+                "text": "停止",
+                "callback_data": "resp:stop"
+              }
+            ]
+          ]
+        }
+      }
+    },
+    {
+      "method": "editMessageText",
+      "keys": [
+        "chat_id",
+        "message_id",
+        "text",
+        "entities",
+        "parse_mode",
+        "reply_markup",
+        "link_preview_options"
+      ],
+      "payload": {
+        "chat_id": "<chat>",
+        "message_id": "<message 2>",
+        "text": "<3503 chars sha256:9adb12a322b5b556 S0\n\n推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理…推理推理推理\n✽ Thinking...>",
+        "entities": [
+          {
+            "type": "expandable_blockquote",
+            "offset": 0,
+            "length": 2122
+          },
+          {
+            "type": "bold",
+            "offset": 0,
+            "length": 2
+          },
+          {
+            "type": "bold",
+            "offset": 708,
+            "length": 2
+          },
+          {
+            "type": "bold",
+            "offset": 1416,
+            "length": 2
+          },
+          {
+            "type": "blockquote",
+            "offset": 2123,
+            "length": 1366
+          },
+          {
+            "type": "bold",
+            "offset": 2123,
+            "length": 2
+          },
+          {
+            "type": "bold",
+            "offset": 2831,
+            "length": 2
+          }
+        ],
+        "reply_markup": {
+          "inline_keyboard": [
+            [
+              {
+                "text": "停止",
+                "callback_data": "resp:stop"
+              }
+            ]
+          ]
+        }
+      }
+    },
+    {
+      "method": "editMessageText",
+      "keys": [
+        "chat_id",
+        "message_id",
+        "text",
+        "entities",
+        "parse_mode",
+        "reply_markup",
+        "link_preview_options"
+      ],
+      "payload": {
+        "chat_id": "<chat>",
+        "message_id": "<message 2>",
+        "text": "<1180 chars sha256:fafb5b982ccd519e 🧠 查看完整思考过程\nS4\n\n推理推理推理推理推理推理推理推理推理推理推理推理…推理推理推理\n✽ Thinking...>",
+        "entities": [
+          {
+            "type": "text_link",
+            "offset": 0,
+            "length": 11,
+            "url": "https://t.me/AfterSchoolTeatimeBot/panel?startapp=t<token>"
+          },
+          {
+            "type": "blockquote",
+            "offset": 12,
+            "length": 1154
+          },
+          {
+            "type": "bold",
+            "offset": 12,
+            "length": 2
+          },
+          {
+            "type": "bold",
+            "offset": 720,
+            "length": 2
+          }
+        ],
+        "reply_markup": {
+          "inline_keyboard": [
+            [
+              {
+                "text": "停止",
+                "callback_data": "resp:stop"
+              }
+            ]
+          ]
+        },
+        "link_preview_options": {
+          "url": "https://miniapp.test/t/<token>",
+          "show_above_text": false
+        }
+      }
+    },
+    {
+      "method": "editMessageText",
+      "keys": [
+        "chat_id",
+        "message_id",
+        "text",
+        "entities",
+        "parse_mode",
+        "reply_markup",
+        "link_preview_options"
+      ],
+      "payload": {
+        "chat_id": "<chat>",
+        "message_id": "<message 2>",
+        "text": "<1440 chars sha256:bdc88e83fc222789 🧠 查看完整思考过程\nS4\n\n推理推理推理推理推理推理推理推理推理推理推理推理…推理推理推理\n✽ Thinking...>",
+        "entities": [
+          {
+            "type": "text_link",
+            "offset": 0,
+            "length": 11,
+            "url": "https://t.me/AfterSchoolTeatimeBot/panel?startapp=t<token>"
+          },
+          {
+            "type": "blockquote",
+            "offset": 12,
+            "length": 1414
+          },
+          {
+            "type": "bold",
+            "offset": 12,
+            "length": 2
+          },
+          {
+            "type": "bold",
+            "offset": 720,
+            "length": 2
+          }
+        ],
+        "reply_markup": {
+          "inline_keyboard": [
+            [
+              {
+                "text": "停止",
+                "callback_data": "resp:stop"
+              }
+            ]
+          ]
+        },
+        "link_preview_options": {
+          "url": "https://miniapp.test/t/<token>",
+          "show_above_text": false
+        }
+      }
+    },
+    {
+      "method": "editMessageText",
+      "keys": [
+        "chat_id",
+        "message_id",
+        "text",
+        "entities",
+        "parse_mode",
+        "reply_markup",
+        "link_preview_options"
+      ],
+      "payload": {
+        "chat_id": "<chat>",
+        "message_id": "<message 2>",
+        "text": "🧠 查看完整思考过程\n共 2,106 词，发出约拆成 2 段",
+        "entities": [
+          {
+            "type": "text_link",
+            "offset": 0,
+            "length": 11,
+            "url": "https://t.me/AfterSchoolTeatimeBot/panel?startapp=t<token>"
+          },
+          {
+            "type": "italic",
+            "offset": 12,
+            "length": 19
+          }
+        ],
+        "link_preview_options": {
+          "url": "https://miniapp.test/t/<token>",
+          "show_above_text": false
+        }
+      }
+    },
+    {
+      "method": "sendMessage",
+      "keys": [
+        "chat_id",
+        "text",
+        "reply_parameters",
+        "reply_markup"
+      ],
+      "payload": {
+        "chat_id": "<chat>",
+        "text": "continued",
+        "reply_parameters": {
+          "message_id": "<message 1>"
+        },
+        "reply_markup": {
+          "inline_keyboard": [
+            [
+              {
+                "text": "停止",
+                "callback_data": "resp:stop"
+              }
+            ]
+          ]
+        }
+      }
+    },
+    {
+      "method": "editMessageText",
+      "keys": [
+        "chat_id",
+        "message_id",
+        "text",
+        "entities",
+        "parse_mode",
+        "reply_markup",
+        "link_preview_options"
+      ],
+      "payload": {
+        "chat_id": "<chat>",
+        "message_id": "<message 3>",
+        "text": "答案来了。第二句。\n✽ Thinking...",
+        "reply_markup": {
+          "inline_keyboard": [
+            [
+              {
+                "text": "停止",
+                "callback_data": "resp:stop"
+              }
+            ]
+          ]
+        }
+      }
+    },
+    {
+      "method": "editMessageText",
+      "keys": [
+        "chat_id",
+        "message_id",
+        "text",
+        "entities",
+        "parse_mode",
+        "reply_markup",
+        "link_preview_options"
+      ],
+      "payload": {
+        "chat_id": "<chat>",
+        "message_id": "<message 3>",
+        "text": "答案来了。第二句。"
+      }
+    }
+  ],
+  "link mode: an error while the link is still pending": [
+    {
+      "method": "sendChatAction",
+      "keys": [
+        "chat_id",
+        "action"
+      ],
+      "payload": {
+        "chat_id": "<chat>",
+        "action": "typing"
+      }
+    },
+    {
+      "method": "sendMessage",
+      "keys": [
+        "chat_id",
+        "text",
+        "business_connection_id",
+        "direct_messages_topic_id",
+        "reply_parameters",
+        "reply_markup"
+      ],
+      "payload": {
+        "chat_id": "<chat>",
+        "text": "✽ Thinking...",
+        "reply_parameters": {
+          "message_id": "<message 1>"
+        },
+        "reply_markup": {
+          "inline_keyboard": [
+            [
+              {
+                "text": "停止",
+                "callback_data": "resp:stop"
+              }
+            ]
+          ]
+        }
+      }
+    },
+    {
+      "method": "editMessageText",
+      "keys": [
+        "chat_id",
+        "message_id",
+        "text",
+        "entities",
+        "parse_mode",
+        "reply_markup",
+        "link_preview_options"
+      ],
+      "payload": {
+        "chat_id": "<chat>",
+        "message_id": "<message 2>",
+        "text": "<510 chars sha256:0ab1a929093b8ac9 S0\n\n推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理…推理推理推理\n✽ Thinking...>",
+        "entities": [
+          {
+            "type": "blockquote",
+            "offset": 0,
+            "length": 496
+          },
+          {
+            "type": "bold",
+            "offset": 0,
+            "length": 2
+          }
+        ],
+        "reply_markup": {
+          "inline_keyboard": [
+            [
+              {
+                "text": "停止",
+                "callback_data": "resp:stop"
+              }
+            ]
+          ]
+        }
+      }
+    },
+    {
+      "method": "editMessageText",
+      "keys": [
+        "chat_id",
+        "message_id",
+        "text",
+        "entities",
+        "parse_mode",
+        "reply_markup",
+        "link_preview_options"
+      ],
+      "payload": {
+        "chat_id": "<chat>",
+        "message_id": "<message 2>",
+        "text": "<1006 chars sha256:6955141bbd8aeaa6 S0\n\n推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理…推理推理推理\n✽ Thinking...>",
+        "entities": [
+          {
+            "type": "blockquote",
+            "offset": 0,
+            "length": 992
+          },
+          {
+            "type": "bold",
+            "offset": 0,
+            "length": 2
+          },
+          {
+            "type": "bold",
+            "offset": 706,
+            "length": 2
+          }
+        ],
+        "reply_markup": {
+          "inline_keyboard": [
+            [
+              {
+                "text": "停止",
+                "callback_data": "resp:stop"
+              }
+            ]
+          ]
+        }
+      }
+    },
+    {
+      "method": "editMessageText",
+      "keys": [
+        "chat_id",
+        "message_id",
+        "text",
+        "entities",
+        "parse_mode",
+        "reply_markup",
+        "link_preview_options"
+      ],
+      "payload": {
+        "chat_id": "<chat>",
+        "message_id": "<message 2>",
+        "text": "<1502 chars sha256:50af45026bb5f6b8 S0\n\n推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理…推理推理推理\n✽ Thinking...>",
+        "entities": [
+          {
+            "type": "blockquote",
+            "offset": 0,
+            "length": 1488
+          },
+          {
+            "type": "bold",
+            "offset": 0,
+            "length": 2
+          },
+          {
+            "type": "bold",
+            "offset": 706,
+            "length": 2
+          },
+          {
+            "type": "bold",
+            "offset": 1412,
+            "length": 2
+          }
+        ],
+        "reply_markup": {
+          "inline_keyboard": [
+            [
+              {
+                "text": "停止",
+                "callback_data": "resp:stop"
+              }
+            ]
+          ]
+        }
+      }
+    },
+    {
+      "method": "editMessageText",
+      "keys": [
+        "chat_id",
+        "message_id",
+        "text",
+        "entities",
+        "parse_mode",
+        "reply_markup",
+        "link_preview_options"
+      ],
+      "payload": {
+        "chat_id": "<chat>",
+        "message_id": "<message 2>",
+        "text": "<2002 chars sha256:020d5b804c39b5b9 S0\n\n推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理…推理推理推理\n✽ Thinking...>",
+        "entities": [
+          {
+            "type": "blockquote",
+            "offset": 0,
+            "length": 1988
+          },
+          {
+            "type": "bold",
+            "offset": 0,
+            "length": 2
+          },
+          {
+            "type": "bold",
+            "offset": 706,
+            "length": 2
+          },
+          {
+            "type": "bold",
+            "offset": 1412,
+            "length": 2
+          }
+        ],
+        "reply_markup": {
+          "inline_keyboard": [
+            [
+              {
+                "text": "停止",
+                "callback_data": "resp:stop"
+              }
+            ]
+          ]
+        }
+      }
+    },
+    {
+      "method": "editMessageText",
+      "keys": [
+        "chat_id",
+        "message_id",
+        "text",
+        "entities",
+        "parse_mode",
+        "reply_markup",
+        "link_preview_options"
+      ],
+      "payload": {
+        "chat_id": "<chat>",
+        "message_id": "<message 2>",
+        "text": "<2503 chars sha256:ce499ae7012948bd S0\n\n推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理…推理推理推理\n✽ Thinking...>",
+        "entities": [
+          {
+            "type": "expandable_blockquote",
+            "offset": 0,
+            "length": 1414
+          },
+          {
+            "type": "bold",
+            "offset": 0,
+            "length": 2
+          },
+          {
+            "type": "bold",
+            "offset": 708,
+            "length": 2
+          },
+          {
+            "type": "blockquote",
+            "offset": 1415,
+            "length": 1074
+          },
+          {
+            "type": "bold",
+            "offset": 1415,
+            "length": 2
+          },
+          {
+            "type": "bold",
+            "offset": 2123,
+            "length": 2
+          }
+        ],
+        "reply_markup": {
+          "inline_keyboard": [
+            [
+              {
+                "text": "停止",
+                "callback_data": "resp:stop"
+              }
+            ]
+          ]
+        }
+      }
+    },
+    {
+      "method": "editMessageText",
+      "keys": [
+        "chat_id",
+        "message_id",
+        "text",
+        "entities",
+        "parse_mode",
+        "reply_markup",
+        "link_preview_options"
+      ],
+      "payload": {
+        "chat_id": "<chat>",
+        "message_id": "<message 2>",
+        "text": "<3001 chars sha256:e64759557daae34e S0\n\n推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理…推理推理推理\n✽ Thinking...>",
+        "entities": [
+          {
+            "type": "expandable_blockquote",
+            "offset": 0,
+            "length": 2122
+          },
+          {
+            "type": "bold",
+            "offset": 0,
+            "length": 2
+          },
+          {
+            "type": "bold",
+            "offset": 708,
+            "length": 2
+          },
+          {
+            "type": "bold",
+            "offset": 1416,
+            "length": 2
+          },
+          {
+            "type": "blockquote",
+            "offset": 2123,
+            "length": 864
+          },
+          {
+            "type": "bold",
+            "offset": 2123,
+            "length": 2
+          },
+          {
+            "type": "bold",
+            "offset": 2831,
+            "length": 2
+          }
+        ],
+        "reply_markup": {
+          "inline_keyboard": [
+            [
+              {
+                "text": "停止",
+                "callback_data": "resp:stop"
+              }
+            ]
+          ]
+        }
+      }
+    },
+    {
+      "method": "editMessageText",
+      "keys": [
+        "chat_id",
+        "message_id",
+        "text",
+        "entities",
+        "parse_mode",
+        "reply_markup",
+        "link_preview_options"
+      ],
+      "payload": {
+        "chat_id": "<chat>",
+        "message_id": "<message 2>",
+        "text": "<3503 chars sha256:9adb12a322b5b556 S0\n\n推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理…推理推理推理\n✽ Thinking...>",
+        "entities": [
+          {
+            "type": "expandable_blockquote",
+            "offset": 0,
+            "length": 2122
+          },
+          {
+            "type": "bold",
+            "offset": 0,
+            "length": 2
+          },
+          {
+            "type": "bold",
+            "offset": 708,
+            "length": 2
+          },
+          {
+            "type": "bold",
+            "offset": 1416,
+            "length": 2
+          },
+          {
+            "type": "blockquote",
+            "offset": 2123,
+            "length": 1366
+          },
+          {
+            "type": "bold",
+            "offset": 2123,
+            "length": 2
+          },
+          {
+            "type": "bold",
+            "offset": 2831,
+            "length": 2
+          }
+        ],
+        "reply_markup": {
+          "inline_keyboard": [
+            [
+              {
+                "text": "停止",
+                "callback_data": "resp:stop"
+              }
+            ]
+          ]
+        }
+      }
+    },
+    {
+      "method": "editMessageText",
+      "keys": [
+        "chat_id",
+        "message_id",
+        "text",
+        "entities",
+        "parse_mode",
+        "reply_markup",
+        "link_preview_options"
+      ],
+      "payload": {
+        "chat_id": "<chat>",
+        "message_id": "<message 2>",
+        "text": "<1180 chars sha256:fafb5b982ccd519e 🧠 查看完整思考过程\nS4\n\n推理推理推理推理推理推理推理推理推理推理推理推理…推理推理推理\n✽ Thinking...>",
+        "entities": [
+          {
+            "type": "text_link",
+            "offset": 0,
+            "length": 11,
+            "url": "https://t.me/AfterSchoolTeatimeBot/panel?startapp=t<token>"
+          },
+          {
+            "type": "blockquote",
+            "offset": 12,
+            "length": 1154
+          },
+          {
+            "type": "bold",
+            "offset": 12,
+            "length": 2
+          },
+          {
+            "type": "bold",
+            "offset": 720,
+            "length": 2
+          }
+        ],
+        "reply_markup": {
+          "inline_keyboard": [
+            [
+              {
+                "text": "停止",
+                "callback_data": "resp:stop"
+              }
+            ]
+          ]
+        },
+        "link_preview_options": {
+          "url": "https://miniapp.test/t/<token>",
+          "show_above_text": false
+        }
+      }
+    },
+    {
+      "method": "editMessageText",
+      "keys": [
+        "chat_id",
+        "message_id",
+        "text",
+        "entities",
+        "parse_mode",
+        "reply_markup",
+        "link_preview_options"
+      ],
+      "payload": {
+        "chat_id": "<chat>",
+        "message_id": "<message 2>",
+        "text": "<1440 chars sha256:bdc88e83fc222789 🧠 查看完整思考过程\nS4\n\n推理推理推理推理推理推理推理推理推理推理推理推理…推理推理推理\n✽ Thinking...>",
+        "entities": [
+          {
+            "type": "text_link",
+            "offset": 0,
+            "length": 11,
+            "url": "https://t.me/AfterSchoolTeatimeBot/panel?startapp=t<token>"
+          },
+          {
+            "type": "blockquote",
+            "offset": 12,
+            "length": 1414
+          },
+          {
+            "type": "bold",
+            "offset": 12,
+            "length": 2
+          },
+          {
+            "type": "bold",
+            "offset": 720,
+            "length": 2
+          }
+        ],
+        "reply_markup": {
+          "inline_keyboard": [
+            [
+              {
+                "text": "停止",
+                "callback_data": "resp:stop"
+              }
+            ]
+          ]
+        },
+        "link_preview_options": {
+          "url": "https://miniapp.test/t/<token>",
+          "show_above_text": false
+        }
+      }
+    },
+    {
+      "method": "editMessageText",
+      "keys": [
+        "chat_id",
+        "message_id",
+        "text",
+        "entities",
+        "parse_mode",
+        "reply_markup",
+        "link_preview_options"
+      ],
+      "payload": {
+        "chat_id": "<chat>",
+        "message_id": "<message 2>",
+        "text": "🧠 查看完整思考过程\n共 2,106 词，发出约拆成 2 段\n\n⚠ got status: 500 Internal Server Error",
+        "entities": [
+          {
+            "type": "text_link",
+            "offset": 0,
+            "length": 11,
+            "url": "https://t.me/AfterSchoolTeatimeBot/panel?startapp=t<token>"
+          },
+          {
+            "type": "italic",
+            "offset": 12,
+            "length": 19
+          },
+          {
+            "type": "italic",
+            "offset": 33,
+            "length": 39
+          }
+        ],
+        "reply_markup": {
+          "inline_keyboard": [
+            [
+              {
+                "text": "重试",
+                "callback_data": "resp:retry"
+              }
+            ]
+          ]
+        },
+        "link_preview_options": {
+          "url": "https://miniapp.test/t/<token>",
+          "show_above_text": false
+        }
+      }
+    }
+  ],
+  "link mode: a stop while the link is still pending": [
+    {
+      "method": "sendChatAction",
+      "keys": [
+        "chat_id",
+        "action"
+      ],
+      "payload": {
+        "chat_id": "<chat>",
+        "action": "typing"
+      }
+    },
+    {
+      "method": "sendMessage",
+      "keys": [
+        "chat_id",
+        "text",
+        "business_connection_id",
+        "direct_messages_topic_id",
+        "reply_parameters",
+        "reply_markup"
+      ],
+      "payload": {
+        "chat_id": "<chat>",
+        "text": "✽ Thinking...",
+        "reply_parameters": {
+          "message_id": "<message 1>"
+        },
+        "reply_markup": {
+          "inline_keyboard": [
+            [
+              {
+                "text": "停止",
+                "callback_data": "resp:stop"
+              }
+            ]
+          ]
+        }
+      }
+    },
+    {
+      "method": "editMessageText",
+      "keys": [
+        "chat_id",
+        "message_id",
+        "text",
+        "entities",
+        "parse_mode",
+        "reply_markup",
+        "link_preview_options"
+      ],
+      "payload": {
+        "chat_id": "<chat>",
+        "message_id": "<message 2>",
+        "text": "<510 chars sha256:0ab1a929093b8ac9 S0\n\n推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理…推理推理推理\n✽ Thinking...>",
+        "entities": [
+          {
+            "type": "blockquote",
+            "offset": 0,
+            "length": 496
+          },
+          {
+            "type": "bold",
+            "offset": 0,
+            "length": 2
+          }
+        ],
+        "reply_markup": {
+          "inline_keyboard": [
+            [
+              {
+                "text": "停止",
+                "callback_data": "resp:stop"
+              }
+            ]
+          ]
+        }
+      }
+    },
+    {
+      "method": "editMessageText",
+      "keys": [
+        "chat_id",
+        "message_id",
+        "text",
+        "entities",
+        "parse_mode",
+        "reply_markup",
+        "link_preview_options"
+      ],
+      "payload": {
+        "chat_id": "<chat>",
+        "message_id": "<message 2>",
+        "text": "<1006 chars sha256:6955141bbd8aeaa6 S0\n\n推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理…推理推理推理\n✽ Thinking...>",
+        "entities": [
+          {
+            "type": "blockquote",
+            "offset": 0,
+            "length": 992
+          },
+          {
+            "type": "bold",
+            "offset": 0,
+            "length": 2
+          },
+          {
+            "type": "bold",
+            "offset": 706,
+            "length": 2
+          }
+        ],
+        "reply_markup": {
+          "inline_keyboard": [
+            [
+              {
+                "text": "停止",
+                "callback_data": "resp:stop"
+              }
+            ]
+          ]
+        }
+      }
+    },
+    {
+      "method": "editMessageText",
+      "keys": [
+        "chat_id",
+        "message_id",
+        "text",
+        "entities",
+        "parse_mode",
+        "reply_markup",
+        "link_preview_options"
+      ],
+      "payload": {
+        "chat_id": "<chat>",
+        "message_id": "<message 2>",
+        "text": "<1502 chars sha256:50af45026bb5f6b8 S0\n\n推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理…推理推理推理\n✽ Thinking...>",
+        "entities": [
+          {
+            "type": "blockquote",
+            "offset": 0,
+            "length": 1488
+          },
+          {
+            "type": "bold",
+            "offset": 0,
+            "length": 2
+          },
+          {
+            "type": "bold",
+            "offset": 706,
+            "length": 2
+          },
+          {
+            "type": "bold",
+            "offset": 1412,
+            "length": 2
+          }
+        ],
+        "reply_markup": {
+          "inline_keyboard": [
+            [
+              {
+                "text": "停止",
+                "callback_data": "resp:stop"
+              }
+            ]
+          ]
+        }
+      }
+    },
+    {
+      "method": "editMessageText",
+      "keys": [
+        "chat_id",
+        "message_id",
+        "text",
+        "entities",
+        "parse_mode",
+        "reply_markup",
+        "link_preview_options"
+      ],
+      "payload": {
+        "chat_id": "<chat>",
+        "message_id": "<message 2>",
+        "text": "<2002 chars sha256:020d5b804c39b5b9 S0\n\n推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理…推理推理推理\n✽ Thinking...>",
+        "entities": [
+          {
+            "type": "blockquote",
+            "offset": 0,
+            "length": 1988
+          },
+          {
+            "type": "bold",
+            "offset": 0,
+            "length": 2
+          },
+          {
+            "type": "bold",
+            "offset": 706,
+            "length": 2
+          },
+          {
+            "type": "bold",
+            "offset": 1412,
+            "length": 2
+          }
+        ],
+        "reply_markup": {
+          "inline_keyboard": [
+            [
+              {
+                "text": "停止",
+                "callback_data": "resp:stop"
+              }
+            ]
+          ]
+        }
+      }
+    },
+    {
+      "method": "editMessageText",
+      "keys": [
+        "chat_id",
+        "message_id",
+        "text",
+        "entities",
+        "parse_mode",
+        "reply_markup",
+        "link_preview_options"
+      ],
+      "payload": {
+        "chat_id": "<chat>",
+        "message_id": "<message 2>",
+        "text": "<2503 chars sha256:ce499ae7012948bd S0\n\n推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理…推理推理推理\n✽ Thinking...>",
+        "entities": [
+          {
+            "type": "expandable_blockquote",
+            "offset": 0,
+            "length": 1414
+          },
+          {
+            "type": "bold",
+            "offset": 0,
+            "length": 2
+          },
+          {
+            "type": "bold",
+            "offset": 708,
+            "length": 2
+          },
+          {
+            "type": "blockquote",
+            "offset": 1415,
+            "length": 1074
+          },
+          {
+            "type": "bold",
+            "offset": 1415,
+            "length": 2
+          },
+          {
+            "type": "bold",
+            "offset": 2123,
+            "length": 2
+          }
+        ],
+        "reply_markup": {
+          "inline_keyboard": [
+            [
+              {
+                "text": "停止",
+                "callback_data": "resp:stop"
+              }
+            ]
+          ]
+        }
+      }
+    },
+    {
+      "method": "editMessageText",
+      "keys": [
+        "chat_id",
+        "message_id",
+        "text",
+        "entities",
+        "parse_mode",
+        "reply_markup",
+        "link_preview_options"
+      ],
+      "payload": {
+        "chat_id": "<chat>",
+        "message_id": "<message 2>",
+        "text": "<3001 chars sha256:e64759557daae34e S0\n\n推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理…推理推理推理\n✽ Thinking...>",
+        "entities": [
+          {
+            "type": "expandable_blockquote",
+            "offset": 0,
+            "length": 2122
+          },
+          {
+            "type": "bold",
+            "offset": 0,
+            "length": 2
+          },
+          {
+            "type": "bold",
+            "offset": 708,
+            "length": 2
+          },
+          {
+            "type": "bold",
+            "offset": 1416,
+            "length": 2
+          },
+          {
+            "type": "blockquote",
+            "offset": 2123,
+            "length": 864
+          },
+          {
+            "type": "bold",
+            "offset": 2123,
+            "length": 2
+          },
+          {
+            "type": "bold",
+            "offset": 2831,
+            "length": 2
+          }
+        ],
+        "reply_markup": {
+          "inline_keyboard": [
+            [
+              {
+                "text": "停止",
+                "callback_data": "resp:stop"
+              }
+            ]
+          ]
+        }
+      }
+    },
+    {
+      "method": "editMessageText",
+      "keys": [
+        "chat_id",
+        "message_id",
+        "text",
+        "entities",
+        "parse_mode",
+        "reply_markup",
+        "link_preview_options"
+      ],
+      "payload": {
+        "chat_id": "<chat>",
+        "message_id": "<message 2>",
+        "text": "<3503 chars sha256:9adb12a322b5b556 S0\n\n推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理…推理推理推理\n✽ Thinking...>",
+        "entities": [
+          {
+            "type": "expandable_blockquote",
+            "offset": 0,
+            "length": 2122
+          },
+          {
+            "type": "bold",
+            "offset": 0,
+            "length": 2
+          },
+          {
+            "type": "bold",
+            "offset": 708,
+            "length": 2
+          },
+          {
+            "type": "bold",
+            "offset": 1416,
+            "length": 2
+          },
+          {
+            "type": "blockquote",
+            "offset": 2123,
+            "length": 1366
+          },
+          {
+            "type": "bold",
+            "offset": 2123,
+            "length": 2
+          },
+          {
+            "type": "bold",
+            "offset": 2831,
+            "length": 2
+          }
+        ],
+        "reply_markup": {
+          "inline_keyboard": [
+            [
+              {
+                "text": "停止",
+                "callback_data": "resp:stop"
+              }
+            ]
+          ]
+        }
+      }
+    },
+    {
+      "method": "editMessageText",
+      "keys": [
+        "chat_id",
+        "message_id",
+        "text",
+        "entities",
+        "parse_mode",
+        "reply_markup",
+        "link_preview_options"
+      ],
+      "payload": {
+        "chat_id": "<chat>",
+        "message_id": "<message 2>",
+        "text": "<1180 chars sha256:fafb5b982ccd519e 🧠 查看完整思考过程\nS4\n\n推理推理推理推理推理推理推理推理推理推理推理推理…推理推理推理\n✽ Thinking...>",
+        "entities": [
+          {
+            "type": "text_link",
+            "offset": 0,
+            "length": 11,
+            "url": "https://t.me/AfterSchoolTeatimeBot/panel?startapp=t<token>"
+          },
+          {
+            "type": "blockquote",
+            "offset": 12,
+            "length": 1154
+          },
+          {
+            "type": "bold",
+            "offset": 12,
+            "length": 2
+          },
+          {
+            "type": "bold",
+            "offset": 720,
+            "length": 2
+          }
+        ],
+        "reply_markup": {
+          "inline_keyboard": [
+            [
+              {
+                "text": "停止",
+                "callback_data": "resp:stop"
+              }
+            ]
+          ]
+        },
+        "link_preview_options": {
+          "url": "https://miniapp.test/t/<token>",
+          "show_above_text": false
+        }
+      }
+    },
+    {
+      "method": "editMessageText",
+      "keys": [
+        "chat_id",
+        "message_id",
+        "text",
+        "entities",
+        "parse_mode",
+        "reply_markup",
+        "link_preview_options"
+      ],
+      "payload": {
+        "chat_id": "<chat>",
+        "message_id": "<message 2>",
+        "text": "<1440 chars sha256:bdc88e83fc222789 🧠 查看完整思考过程\nS4\n\n推理推理推理推理推理推理推理推理推理推理推理推理…推理推理推理\n✽ Thinking...>",
+        "entities": [
+          {
+            "type": "text_link",
+            "offset": 0,
+            "length": 11,
+            "url": "https://t.me/AfterSchoolTeatimeBot/panel?startapp=t<token>"
+          },
+          {
+            "type": "blockquote",
+            "offset": 12,
+            "length": 1414
+          },
+          {
+            "type": "bold",
+            "offset": 12,
+            "length": 2
+          },
+          {
+            "type": "bold",
+            "offset": 720,
+            "length": 2
+          }
+        ],
+        "reply_markup": {
+          "inline_keyboard": [
+            [
+              {
+                "text": "停止",
+                "callback_data": "resp:stop"
+              }
+            ]
+          ]
+        },
+        "link_preview_options": {
+          "url": "https://miniapp.test/t/<token>",
+          "show_above_text": false
+        }
+      }
+    },
+    {
+      "method": "editMessageText",
+      "keys": [
+        "chat_id",
+        "message_id",
+        "text",
+        "entities",
+        "parse_mode",
+        "reply_markup",
+        "link_preview_options"
+      ],
+      "payload": {
+        "chat_id": "<chat>",
+        "message_id": "<message 2>",
+        "text": "🧠 查看完整思考过程\n共 2,106 词，发出约拆成 2 段",
+        "entities": [
+          {
+            "type": "text_link",
+            "offset": 0,
+            "length": 11,
+            "url": "https://t.me/AfterSchoolTeatimeBot/panel?startapp=t<token>"
+          },
+          {
+            "type": "italic",
+            "offset": 12,
+            "length": 19
+          }
+        ],
+        "reply_markup": {
+          "inline_keyboard": [
+            [
+              {
+                "text": "重试",
+                "callback_data": "resp:retry"
+              }
+            ]
+          ]
+        },
+        "link_preview_options": {
+          "url": "https://miniapp.test/t/<token>",
+          "show_above_text": false
+        }
+      }
+    }
+  ],
+  "the answer first, then a long thinking: the final creates the link": [
+    {
+      "method": "sendChatAction",
+      "keys": [
+        "chat_id",
+        "action"
+      ],
+      "payload": {
+        "chat_id": "<chat>",
+        "action": "typing"
+      }
+    },
+    {
+      "method": "sendMessage",
+      "keys": [
+        "chat_id",
+        "text",
+        "business_connection_id",
+        "direct_messages_topic_id",
+        "reply_parameters",
+        "reply_markup"
+      ],
+      "payload": {
+        "chat_id": "<chat>",
+        "text": "✽ Thinking...",
+        "reply_parameters": {
+          "message_id": "<message 1>"
+        },
+        "reply_markup": {
+          "inline_keyboard": [
+            [
+              {
+                "text": "停止",
+                "callback_data": "resp:stop"
+              }
+            ]
+          ]
+        }
+      }
+    },
+    {
+      "method": "editMessageText",
+      "keys": [
+        "chat_id",
+        "message_id",
+        "text",
+        "entities",
+        "parse_mode",
+        "reply_markup",
+        "link_preview_options"
+      ],
+      "payload": {
+        "chat_id": "<chat>",
+        "message_id": "<message 2>",
+        "text": "答案。\n✽ Thinking...",
+        "reply_markup": {
+          "inline_keyboard": [
+            [
+              {
+                "text": "停止",
+                "callback_data": "resp:stop"
+              }
+            ]
+          ]
+        }
+      }
+    },
+    {
+      "method": "editMessageText",
+      "keys": [
+        "chat_id",
+        "message_id",
+        "text",
+        "entities",
+        "parse_mode",
+        "reply_markup",
+        "link_preview_options"
+      ],
+      "payload": {
+        "chat_id": "<chat>",
+        "message_id": "<message 2>",
+        "text": "<514 chars sha256:4bde42c04ee1d14e S0\n\n推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理…推理\n答案。\n✽ Thinking...>",
+        "entities": [
+          {
+            "type": "expandable_blockquote",
+            "offset": 0,
+            "length": 496
+          },
+          {
+            "type": "bold",
+            "offset": 0,
+            "length": 2
+          }
+        ],
+        "reply_markup": {
+          "inline_keyboard": [
+            [
+              {
+                "text": "停止",
+                "callback_data": "resp:stop"
+              }
+            ]
+          ]
+        }
+      }
+    },
+    {
+      "method": "editMessageText",
+      "keys": [
+        "chat_id",
+        "message_id",
+        "text",
+        "entities",
+        "parse_mode",
+        "reply_markup",
+        "link_preview_options"
+      ],
+      "payload": {
+        "chat_id": "<chat>",
+        "message_id": "<message 2>",
+        "text": "<1010 chars sha256:67968b35e37c3182 S0\n\n推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理…推理\n答案。\n✽ Thinking...>",
+        "entities": [
+          {
+            "type": "expandable_blockquote",
+            "offset": 0,
+            "length": 992
+          },
+          {
+            "type": "bold",
+            "offset": 0,
+            "length": 2
+          },
+          {
+            "type": "bold",
+            "offset": 706,
+            "length": 2
+          }
+        ],
+        "reply_markup": {
+          "inline_keyboard": [
+            [
+              {
+                "text": "停止",
+                "callback_data": "resp:stop"
+              }
+            ]
+          ]
+        }
+      }
+    },
+    {
+      "method": "editMessageText",
+      "keys": [
+        "chat_id",
+        "message_id",
+        "text",
+        "entities",
+        "parse_mode",
+        "reply_markup",
+        "link_preview_options"
+      ],
+      "payload": {
+        "chat_id": "<chat>",
+        "message_id": "<message 2>",
+        "text": "<1506 chars sha256:a4d07715e444ceae S0\n\n推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理…推理\n答案。\n✽ Thinking...>",
+        "entities": [
+          {
+            "type": "expandable_blockquote",
+            "offset": 0,
+            "length": 1488
+          },
+          {
+            "type": "bold",
+            "offset": 0,
+            "length": 2
+          },
+          {
+            "type": "bold",
+            "offset": 706,
+            "length": 2
+          },
+          {
+            "type": "bold",
+            "offset": 1412,
+            "length": 2
+          }
+        ],
+        "reply_markup": {
+          "inline_keyboard": [
+            [
+              {
+                "text": "停止",
+                "callback_data": "resp:stop"
+              }
+            ]
+          ]
+        }
+      }
+    },
+    {
+      "method": "editMessageText",
+      "keys": [
+        "chat_id",
+        "message_id",
+        "text",
+        "entities",
+        "parse_mode",
+        "reply_markup",
+        "link_preview_options"
+      ],
+      "payload": {
+        "chat_id": "<chat>",
+        "message_id": "<message 2>",
+        "text": "<2006 chars sha256:ce62249a2e576f3f S0\n\n推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理…推理\n答案。\n✽ Thinking...>",
+        "entities": [
+          {
+            "type": "expandable_blockquote",
+            "offset": 0,
+            "length": 1988
+          },
+          {
+            "type": "bold",
+            "offset": 0,
+            "length": 2
+          },
+          {
+            "type": "bold",
+            "offset": 706,
+            "length": 2
+          },
+          {
+            "type": "bold",
+            "offset": 1412,
+            "length": 2
+          }
+        ],
+        "reply_markup": {
+          "inline_keyboard": [
+            [
+              {
+                "text": "停止",
+                "callback_data": "resp:stop"
+              }
+            ]
+          ]
+        }
+      }
+    },
+    {
+      "method": "editMessageText",
+      "keys": [
+        "chat_id",
+        "message_id",
+        "text",
+        "entities",
+        "parse_mode",
+        "reply_markup",
+        "link_preview_options"
+      ],
+      "payload": {
+        "chat_id": "<chat>",
+        "message_id": "<message 2>",
+        "text": "<2502 chars sha256:f7f9d379304e08d4 S0\n\n推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理…推理\n答案。\n✽ Thinking...>",
+        "entities": [
+          {
+            "type": "expandable_blockquote",
+            "offset": 0,
+            "length": 2484
+          },
+          {
+            "type": "bold",
+            "offset": 0,
+            "length": 2
+          },
+          {
+            "type": "bold",
+            "offset": 706,
+            "length": 2
+          },
+          {
+            "type": "bold",
+            "offset": 1412,
+            "length": 2
+          },
+          {
+            "type": "bold",
+            "offset": 2118,
+            "length": 2
+          }
+        ],
+        "reply_markup": {
+          "inline_keyboard": [
+            [
+              {
+                "text": "停止",
+                "callback_data": "resp:stop"
+              }
+            ]
+          ]
+        }
+      }
+    },
+    {
+      "method": "editMessageText",
+      "keys": [
+        "chat_id",
+        "message_id",
+        "text",
+        "entities",
+        "parse_mode",
+        "reply_markup",
+        "link_preview_options"
+      ],
+      "payload": {
+        "chat_id": "<chat>",
+        "message_id": "<message 2>",
+        "text": "<2998 chars sha256:5207ad109b57039f S0\n\n推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理…推理\n答案。\n✽ Thinking...>",
+        "entities": [
+          {
+            "type": "expandable_blockquote",
+            "offset": 0,
+            "length": 2980
+          },
+          {
+            "type": "bold",
+            "offset": 0,
+            "length": 2
+          },
+          {
+            "type": "bold",
+            "offset": 706,
+            "length": 2
+          },
+          {
+            "type": "bold",
+            "offset": 1412,
+            "length": 2
+          },
+          {
+            "type": "bold",
+            "offset": 2118,
+            "length": 2
+          },
+          {
+            "type": "bold",
+            "offset": 2824,
+            "length": 2
+          }
+        ],
+        "reply_markup": {
+          "inline_keyboard": [
+            [
+              {
+                "text": "停止",
+                "callback_data": "resp:stop"
+              }
+            ]
+          ]
+        }
+      }
+    },
+    {
+      "method": "editMessageText",
+      "keys": [
+        "chat_id",
+        "message_id",
+        "text",
+        "entities",
+        "parse_mode",
+        "reply_markup",
+        "link_preview_options"
+      ],
+      "payload": {
+        "chat_id": "<chat>",
+        "message_id": "<message 2>",
+        "text": "<3498 chars sha256:f237fa1d73c08c1b S0\n\n推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理…推理\n答案。\n✽ Thinking...>",
+        "entities": [
+          {
+            "type": "expandable_blockquote",
+            "offset": 0,
+            "length": 3480
+          },
+          {
+            "type": "bold",
+            "offset": 0,
+            "length": 2
+          },
+          {
+            "type": "bold",
+            "offset": 706,
+            "length": 2
+          },
+          {
+            "type": "bold",
+            "offset": 1412,
+            "length": 2
+          },
+          {
+            "type": "bold",
+            "offset": 2118,
+            "length": 2
+          },
+          {
+            "type": "bold",
+            "offset": 2824,
+            "length": 2
+          }
+        ],
+        "reply_markup": {
+          "inline_keyboard": [
+            [
+              {
+                "text": "停止",
+                "callback_data": "resp:stop"
+              }
+            ]
+          ]
+        }
+      }
+    },
+    {
+      "method": "editMessageText",
+      "keys": [
+        "chat_id",
+        "message_id",
+        "text",
+        "entities",
+        "parse_mode",
+        "reply_markup",
+        "link_preview_options"
+      ],
+      "payload": {
+        "chat_id": "<chat>",
+        "message_id": "<message 2>",
+        "text": "<3532 chars sha256:a74def66eeeac71b S0\n\n推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理…推理推理推理推理推理推理推理推理\n\nS5>",
+        "entities": [
+          {
+            "type": "expandable_blockquote",
+            "offset": 0,
+            "length": 3532
+          },
+          {
+            "type": "bold",
+            "offset": 0,
+            "length": 2
+          },
+          {
+            "type": "bold",
+            "offset": 706,
+            "length": 2
+          },
+          {
+            "type": "bold",
+            "offset": 1412,
+            "length": 2
+          },
+          {
+            "type": "bold",
+            "offset": 2118,
+            "length": 2
+          },
+          {
+            "type": "bold",
+            "offset": 2824,
+            "length": 2
+          },
+          {
+            "type": "bold",
+            "offset": 3530,
+            "length": 2
+          }
+        ]
+      }
+    },
+    {
+      "method": "sendMessage",
+      "keys": [
+        "chat_id",
+        "text",
+        "reply_parameters",
+        "reply_markup"
+      ],
+      "payload": {
+        "chat_id": "<chat>",
+        "text": "continued",
+        "reply_parameters": {
+          "message_id": "<message 1>"
+        },
+        "reply_markup": {
+          "inline_keyboard": [
+            [
+              {
+                "text": "停止",
+                "callback_data": "resp:stop"
+              }
+            ]
+          ]
+        }
+      }
+    },
+    {
+      "method": "editMessageText",
+      "keys": [
+        "chat_id",
+        "message_id",
+        "text",
+        "entities",
+        "parse_mode",
+        "reply_markup",
+        "link_preview_options"
+      ],
+      "payload": {
+        "chat_id": "<chat>",
+        "message_id": "<message 3>",
+        "text": "答案。\n✽ Thinking...",
+        "reply_markup": {
+          "inline_keyboard": [
+            [
+              {
+                "text": "停止",
+                "callback_data": "resp:stop"
+              }
+            ]
+          ]
+        }
+      }
+    },
+    {
+      "method": "editMessageText",
+      "keys": [
+        "chat_id",
+        "message_id",
+        "text",
+        "entities",
+        "parse_mode",
+        "reply_markup",
+        "link_preview_options"
+      ],
+      "payload": {
+        "chat_id": "<chat>",
+        "message_id": "<message 2>",
+        "text": "🧠 查看完整思考过程\n共 2,106 词，发出约拆成 2 段",
+        "entities": [
+          {
+            "type": "text_link",
+            "offset": 0,
+            "length": 11,
+            "url": "https://t.me/AfterSchoolTeatimeBot/panel?startapp=t<token>"
+          },
+          {
+            "type": "italic",
+            "offset": 12,
+            "length": 19
+          }
+        ],
+        "link_preview_options": {
+          "url": "https://miniapp.test/t/<token>",
+          "show_above_text": false
+        }
+      }
+    },
+    {
+      "method": "editMessageText",
+      "keys": [
+        "chat_id",
+        "message_id",
+        "text",
+        "entities",
+        "parse_mode",
+        "reply_markup",
+        "link_preview_options"
+      ],
+      "payload": {
+        "chat_id": "<chat>",
+        "message_id": "<message 3>",
+        "text": "答案。"
+      }
+    }
+  ],
+  "tool status lines before and while the answer streams": [
+    {
+      "method": "sendChatAction",
+      "keys": [
+        "chat_id",
+        "action"
+      ],
+      "payload": {
+        "chat_id": "<chat>",
+        "action": "typing"
+      }
+    },
+    {
+      "method": "sendMessage",
+      "keys": [
+        "chat_id",
+        "text",
+        "business_connection_id",
+        "direct_messages_topic_id",
+        "reply_parameters",
+        "reply_markup"
+      ],
+      "payload": {
+        "chat_id": "<chat>",
+        "text": "✽ Thinking...",
+        "reply_parameters": {
+          "message_id": "<message 1>"
+        },
+        "reply_markup": {
+          "inline_keyboard": [
+            [
+              {
+                "text": "停止",
+                "callback_data": "resp:stop"
+              }
+            ]
+          ]
+        }
+      }
+    },
+    {
+      "method": "editMessageText",
+      "keys": [
+        "chat_id",
+        "message_id",
+        "text",
+        "entities",
+        "parse_mode",
+        "reply_markup",
+        "link_preview_options"
+      ],
+      "payload": {
+        "chat_id": "<chat>",
+        "message_id": "<message 2>",
+        "text": "🔍 正在搜索…",
+        "reply_markup": {
+          "inline_keyboard": [
+            [
+              {
+                "text": "停止",
+                "callback_data": "resp:stop"
+              }
+            ]
+          ]
+        }
+      }
+    },
+    {
+      "method": "editMessageText",
+      "keys": [
+        "chat_id",
+        "message_id",
+        "text",
+        "entities",
+        "parse_mode",
+        "reply_markup",
+        "link_preview_options"
+      ],
+      "payload": {
+        "chat_id": "<chat>",
+        "message_id": "<message 2>",
+        "text": "先查一下资料。\n🔍 正在搜索…",
+        "entities": [
+          {
+            "type": "blockquote",
+            "offset": 0,
+            "length": 7
+          }
+        ],
+        "reply_markup": {
+          "inline_keyboard": [
+            [
+              {
+                "text": "停止",
+                "callback_data": "resp:stop"
+              }
+            ]
+          ]
+        }
+      }
+    },
+    {
+      "method": "editMessageText",
+      "keys": [
+        "chat_id",
+        "message_id",
+        "text",
+        "entities",
+        "parse_mode",
+        "reply_markup",
+        "link_preview_options"
+      ],
+      "payload": {
+        "chat_id": "<chat>",
+        "message_id": "<message 2>",
+        "text": "先查一下资料。\n📖 正在读网页…",
+        "entities": [
+          {
+            "type": "blockquote",
+            "offset": 0,
+            "length": 7
+          }
+        ],
+        "reply_markup": {
+          "inline_keyboard": [
+            [
+              {
+                "text": "停止",
+                "callback_data": "resp:stop"
+              }
+            ]
+          ]
+        }
+      }
+    },
+    {
+      "method": "editMessageText",
+      "keys": [
+        "chat_id",
+        "message_id",
+        "text",
+        "entities",
+        "parse_mode",
+        "reply_markup",
+        "link_preview_options"
+      ],
+      "payload": {
+        "chat_id": "<chat>",
+        "message_id": "<message 2>",
+        "text": "先查一下资料。\n先说一句，\n📖 正在读网页…",
+        "entities": [
+          {
+            "type": "expandable_blockquote",
+            "offset": 0,
+            "length": 7
+          }
+        ],
+        "reply_markup": {
+          "inline_keyboard": [
+            [
+              {
+                "text": "停止",
+                "callback_data": "resp:stop"
+              }
+            ]
+          ]
+        }
+      }
+    },
+    {
+      "method": "editMessageText",
+      "keys": [
+        "chat_id",
+        "message_id",
+        "text",
+        "entities",
+        "parse_mode",
+        "reply_markup",
+        "link_preview_options"
+      ],
+      "payload": {
+        "chat_id": "<chat>",
+        "message_id": "<message 2>",
+        "text": "先查一下资料。\n先说一句，再说一句。\n📖 正在读网页…",
+        "entities": [
+          {
+            "type": "expandable_blockquote",
+            "offset": 0,
+            "length": 7
+          }
+        ],
+        "reply_markup": {
+          "inline_keyboard": [
+            [
+              {
+                "text": "停止",
+                "callback_data": "resp:stop"
+              }
+            ]
+          ]
+        }
+      }
+    },
+    {
+      "method": "editMessageText",
+      "keys": [
+        "chat_id",
+        "message_id",
+        "text",
+        "entities",
+        "parse_mode",
+        "reply_markup",
+        "link_preview_options"
+      ],
+      "payload": {
+        "chat_id": "<chat>",
+        "message_id": "<message 2>",
+        "text": "先查一下资料。\n先说一句，再说一句。\n🖼 正在画图…",
+        "entities": [
+          {
+            "type": "expandable_blockquote",
+            "offset": 0,
+            "length": 7
+          }
+        ],
+        "reply_markup": {
+          "inline_keyboard": [
+            [
+              {
+                "text": "停止",
+                "callback_data": "resp:stop"
+              }
+            ]
+          ]
+        }
+      }
+    },
+    {
+      "method": "editMessageText",
+      "keys": [
+        "chat_id",
+        "message_id",
+        "text",
+        "entities",
+        "parse_mode",
+        "reply_markup",
+        "link_preview_options"
+      ],
+      "payload": {
+        "chat_id": "<chat>",
+        "message_id": "<message 2>",
+        "text": "先查一下资料。\n先说一句，再说一句。画好了。\n🖼 正在画图…",
+        "entities": [
+          {
+            "type": "expandable_blockquote",
+            "offset": 0,
+            "length": 7
+          }
+        ],
+        "reply_markup": {
+          "inline_keyboard": [
+            [
+              {
+                "text": "停止",
+                "callback_data": "resp:stop"
+              }
+            ]
+          ]
+        }
+      }
+    },
+    {
+      "method": "editMessageText",
+      "keys": [
+        "chat_id",
+        "message_id",
+        "text",
+        "entities",
+        "parse_mode",
+        "reply_markup",
+        "link_preview_options"
+      ],
+      "payload": {
+        "chat_id": "<chat>",
+        "message_id": "<message 2>",
+        "text": "先查一下资料。\n先说一句，再说一句。画好了。",
+        "entities": [
+          {
+            "type": "expandable_blockquote",
+            "offset": 0,
+            "length": 7
+          }
+        ]
+      }
+    }
+  ],
+  "an image and no text": [
+    {
+      "method": "sendChatAction",
+      "keys": [
+        "chat_id",
+        "action"
+      ],
+      "payload": {
+        "chat_id": "<chat>",
+        "action": "typing"
+      }
+    },
+    {
+      "method": "sendMessage",
+      "keys": [
+        "chat_id",
+        "text",
+        "business_connection_id",
+        "direct_messages_topic_id",
+        "reply_parameters",
+        "reply_markup"
+      ],
+      "payload": {
+        "chat_id": "<chat>",
+        "text": "✽ Thinking...",
+        "reply_parameters": {
+          "message_id": "<message 1>"
+        },
+        "reply_markup": {
+          "inline_keyboard": [
+            [
+              {
+                "text": "停止",
+                "callback_data": "resp:stop"
+              }
+            ]
+          ]
+        }
+      }
+    },
+    {
+      "method": "sendPhoto",
+      "keys": [
+        "chat_id",
+        "photo",
+        "reply_parameters"
+      ],
+      "payload": {
+        "chat_id": "<chat>",
+        "photo": "<input file>",
+        "reply_parameters": {
+          "message_id": "<message 1>"
+        }
+      }
+    },
+    {
+      "method": "deleteMessage",
+      "keys": [
+        "chat_id",
+        "message_id"
+      ],
+      "payload": {
+        "chat_id": "<chat>",
+        "message_id": "<message 2>"
+      }
+    }
   ]
 }
