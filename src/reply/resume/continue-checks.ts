@@ -128,6 +128,7 @@ export const checkContinue = async (
     if (chat === undefined || !sameToolsAndPrompt(chat, ctx.api, entry, plan)) return keep(TOOLS_CHANGED_NOTICE);
     if (settings.promptAddendum !== entry.context.promptAddendum) return keep(ADDENDUM_CHANGED_NOTICE);
     if (await anyContextMessageExcluded(entry)) return keep(CONTEXT_EXCLUDED_NOTICE);
+    // Rich replies are not compared: presentation only, the request stays the same
 
     return { kind: 'ready', plan };
 };

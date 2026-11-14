@@ -443,7 +443,7 @@ const cases: { name: string; body: () => Promise<void> }[] = [
             );
             expect(
                 JSON.stringify(Object.keys(body.settings).sort()) ===
-                    JSON.stringify(['geminiPriority', 'model', 'paused', 'promptAddendum', 'settingsLocked', 'thinkingEffort', 'toolOverrides', 'updatedAt', 'updatedBy']),
+                    JSON.stringify(['geminiPriority', 'model', 'paused', 'promptAddendum', 'richReplies', 'settingsLocked', 'thinkingEffort', 'toolOverrides', 'updatedAt', 'updatedBy']),
                 'settings keys'
             );
             expect(

@@ -102,6 +102,13 @@ export interface ReplySettingsSnapshot {
     geminiPriority: boolean;
     /** The thinking level as stored: null = the model default, 'off', else a graded effort */
     thinkingEffort: ThinkingEffortValue | null;
+    /**
+     * Experimental rich replies as the chat had them when the reply started.
+     * Presentation only: the model request does not depend on it, so a 继续
+     * does not compare it. Read here rather than from the cache, so a change
+     * while a reply runs does not switch its form halfway.
+     */
+    richReplies: boolean;
 }
 
 export interface ChatSettingsUpdateResult {
@@ -116,6 +123,7 @@ export const snapshotReplySettings = (chatId: number): ReplySettingsSnapshot => 
     toolOverrides: getChatSettings(chatId)?.toolOverrides ?? null,
     geminiPriority: resolveGeminiPriority(chatId),
     thinkingEffort: getChatSettings(chatId)?.thinkingEffort ?? null,
+    richReplies: getChatSettings(chatId)?.richReplies === true,
 });
 
 /** What a chat without a settings row behaves as; updatedAt is the epoch, updatedBy null */
@@ -128,6 +136,7 @@ export const defaultChatSettings = (chatId: number): ChatSettings => ({
     toolOverrides: null,
     geminiPriority: null,
     thinkingEffort: null,
+    richReplies: false,
     updatedAt: new Date(0),
     updatedBy: null,
 });
@@ -155,6 +164,7 @@ const persistChatSettings = async (
                 // Every column, or a value would live in the cache only and vanish on restart
                 geminiPriority: settings.geminiPriority,
                 thinkingEffort: settings.thinkingEffort,
+                richReplies: settings.richReplies,
                 updatedAt: settings.updatedAt,
                 updatedBy: settings.updatedBy,
             },

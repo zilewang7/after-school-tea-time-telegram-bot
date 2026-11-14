@@ -36,6 +36,11 @@ export interface ChatSettingsPatch {
      * the closed set. Members may change it; trial users may not.
      */
     thinkingEffort?: string | null;
+    /**
+     * Experimental rich replies. Presentation only and free, so the same rule
+     * as paused: any member while the chat is unlocked, trial users included.
+     */
+    richReplies?: boolean;
 }
 
 export type ChatSettingKey = keyof ChatSettingsPatch;
@@ -49,6 +54,7 @@ const CHAT_SETTING_KEYS: readonly ChatSettingKey[] = [
     'toolOverrides',
     'geminiPriority',
     'thinkingEffort',
+    'richReplies',
 ];
 
 /** `conflict`: the caller edited a version that someone else has since replaced */
@@ -63,6 +69,7 @@ export interface ChatSettingValues {
     toolOverrides: ToolOverrides | null;
     geminiPriority: boolean | null;
     thinkingEffort: ThinkingEffortValue | null;
+    richReplies: boolean;
 }
 
 /** Who asks, and what the chat allows; the service reads both before the rules run */
@@ -155,6 +162,7 @@ const auditValuesOf = (values: ChatSettingValues): Record<ChatSettingKey, string
     toolOverrides: canonicalToolOverridesJson(values.toolOverrides),
     geminiPriority: nullableFlagAuditText(values.geminiPriority),
     thinkingEffort: values.thinkingEffort,
+    richReplies: String(values.richReplies),
 });
 
 /** Whether one key's value actually changes (overrides compare as canonical JSON) */
@@ -166,6 +174,7 @@ const CHANGED: Record<ChatSettingKey, (current: ChatSettingValues, next: ChatSet
     toolOverrides: (current, next) => !toolOverridesEqual(current.toolOverrides, next.toolOverrides),
     geminiPriority: (current, next) => current.geminiPriority !== next.geminiPriority,
     thinkingEffort: (current, next) => current.thinkingEffort !== next.thinkingEffort,
+    richReplies: (current, next) => current.richReplies !== next.richReplies,
 };
 
 /** Normalize every key present in the patch; absent keys keep `current`. The first bad value wins */
@@ -194,6 +203,10 @@ const applyPatchValues = (current: ChatSettingValues, patch: ChatSettingsPatch):
         ? unchanged(current.thinkingEffort)
         : normalizeThinkingEffort(patch.thinkingEffort);
     if (!thinkingEffort.ok) return thinkingEffort;
+    const richReplies = patch.richReplies === undefined
+        ? unchanged(current.richReplies)
+        : normalizeFlag(patch.richReplies, 'richReplies');
+    if (!richReplies.ok) return richReplies;
     return {
         ok: true,
         value: {
@@ -204,6 +217,7 @@ const applyPatchValues = (current: ChatSettingValues, patch: ChatSettingsPatch):
             toolOverrides: toolOverrides.value,
             geminiPriority: geminiPriority.value,
             thinkingEffort: thinkingEffort.value,
+            richReplies: richReplies.value,
         },
     };
 };

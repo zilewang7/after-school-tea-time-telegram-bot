@@ -556,8 +556,9 @@ const cases: { name: string; body: () => Promise<void> }[] = [
                         toolOverrides: null,
                         geminiPriority: false,
                         thinkingEffort: null,
+                        richReplies: false,
                     }),
-                'the snapshot is model + addendum + tool switches + the effective Priority PayGo switch + the thinking level'
+                'the snapshot is model + addendum + tool switches + the effective Priority PayGo switch + the thinking level + rich replies'
             );
             expect(
                 JSON.stringify(service.snapshotReplySettings(-2999)) ===
@@ -567,6 +568,7 @@ const cases: { name: string; body: () => Promise<void> }[] = [
                         toolOverrides: null,
                         geminiPriority: false,
                         thinkingEffort: null,
+                        richReplies: false,
                     }),
                 'a chat without settings snapshots the global default'
             );
@@ -838,6 +840,7 @@ const cases: { name: string; body: () => Promise<void> }[] = [
                 toolOverrides: null,
                 geminiPriority: null,
                 thinkingEffort: null,
+                richReplies: false,
             };
             const member = resolveChatSettingsPatch(current, { thinkingEffort: 'high' }, {
                 actorIsOwner: false,

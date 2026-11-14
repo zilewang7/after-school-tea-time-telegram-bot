@@ -29,6 +29,8 @@ export interface ChatSettingsView {
     geminiPriority: boolean | null;
     /** The chat's thinking level; null = the model default, 'off', else a graded effort */
     thinkingEffort: ThinkingEffortValue | null;
+    /** Experimental rich replies; false when the chat never turned them on */
+    richReplies: boolean;
     /** ISO time; the epoch when the chat has never been changed */
     updatedAt: string;
     updatedBy: number | null;
@@ -65,6 +67,7 @@ export const toSettingsView = (settings: ChatSettings): ChatSettingsView => ({
     toolOverrides: settings.toolOverrides,
     geminiPriority: settings.geminiPriority,
     thinkingEffort: settings.thinkingEffort,
+    richReplies: settings.richReplies,
     updatedAt: settings.updatedAt.toISOString(),
     updatedBy: settings.updatedBy,
 });

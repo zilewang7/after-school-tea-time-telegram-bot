@@ -33,6 +33,8 @@ export interface ChatSettings {
     geminiPriority: boolean | null;
     /** Thinking level; null = the model default, 'off' = thinking off, else a graded effort */
     thinkingEffort: ThinkingEffortValue | null;
+    /** Experimental rich replies, presentation only; off unless the chat turned it on */
+    richReplies: boolean;
     updatedAt: Date;
     /** Telegram user id of the last writer */
     updatedBy: number | null;
@@ -65,6 +67,8 @@ const toChatSettings = (record: ChatSettingsRecord): ChatSettings => ({
     toolOverrides: parseStoredToolOverrides(record.toolOverrides ?? null),
     geminiPriority: storedNullableFlag(record.geminiPriority),
     thinkingEffort: storedThinkingEffortOf(record.thinkingEffort ?? null),
+    // NULL (a row from before the column) is off, like a chat without a row
+    richReplies: record.richReplies === true,
     updatedAt: record.updatedAt,
     updatedBy: record.updatedBy ?? null,
 });

@@ -23,6 +23,7 @@ const SETTING_KEYS: readonly ChatSettingKey[] = [
     'toolOverrides',
     'geminiPriority',
     'thinkingEffort',
+    'richReplies',
 ];
 const EXPECTED_UPDATED_AT_KEY = 'expectedUpdatedAt';
 const ALLOWED_KEYS: ReadonlySet<string> = new Set<string>([...SETTING_KEYS, EXPECTED_UPDATED_AT_KEY]);
@@ -94,6 +95,9 @@ export const toChatSettingsPatch = (body: JsonRecord, shape: SettingsPatchShape)
                 const normalized = normalizeThinkingEffort(value);
                 if (!normalized.ok) throw invalid(normalized.message);
                 patch.thinkingEffort = normalized.value;
+            })
+            .with('richReplies', () => {
+                patch.richReplies = booleanValue(value, key);
             })
             .exhaustive();
     }
