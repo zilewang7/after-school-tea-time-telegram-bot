@@ -8,14 +8,16 @@ overrides:
   '@sequelize/sqlite3>sqlite3': 6.0.1
   ip-address: ^10.7.5
   uuid: ^11.1.1
-  hono: ^4.13.17
-  '@hono/node-server': ^2.1.6
+  hono: ^4.13.18
+  '@hono/node-server': ^2.1.8
   fast-uri: ^3.1.9
   body-parser: ^2.4.0
   qs: ^6.17.1
   tar: ^7.5.22
   'node-gyp>undici': ^6.29.1
   express: ^5.3.0
+  # GHSA-474x-hrwr-fgx4: every @google-cloud/storage release asks for ^5.3.4
+  fast-xml-parser: ^5.12.0
 
 # Dependencies that may run install scripts. A dependency with such a script
 # that is not listed here fails the install, so a new one is reviewed first.
