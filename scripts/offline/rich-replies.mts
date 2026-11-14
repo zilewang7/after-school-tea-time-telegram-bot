@@ -1161,6 +1161,29 @@ results.push(
 );
 
 results.push(
+    await runCase('case 11: a long code block is cut for the error display without a construct-aware split', async () => {
+        // About 60k characters of code over a budget 2k shorter. The
+        // construct-aware raw splitter, quadratic on code blocks and tables,
+        // took seconds on this, blocking every chat while it ran.
+        const code = Array.from({ length: 1_500 }, (_, index) => `const value${index} = compute(${index}); // 第 ${index} 行`);
+        const answer = `完整文件：\n\n\`\`\`ts\n${code.join('\n')}\n\`\`\``;
+        const maxLength = answer.length - 2_000;
+        const startedAt = performance.now();
+        const display = buildRichErrorDisplay({ text: answer, errorLines: buildErrorLine(longFailure().message), maxLength });
+        const elapsed = performance.now() - startedAt;
+        expect(display.length <= maxLength, `the display fits (got ${display.length} of ${maxLength})`);
+        const cutMarkAt = display.indexOf('\n\n<p>…</p>');
+        const fences = display.slice(0, cutMarkAt).match(/^```/gm) ?? [];
+        expect(
+            display.startsWith('完整文件：\n\n```ts\nconst value0 = compute(0);') && cutMarkAt > 0 && fences.length === 2,
+            `the head of the code, its fence closed, then the cut mark (got ${json(display.slice(cutMarkAt - 80, cutMarkAt + 20))})`
+        );
+        expect(display.slice(cutMarkAt).includes(ERROR_LINE_START), 'the error line follows the cut mark');
+        expect(elapsed < 1_500, `built quickly (took ${Math.round(elapsed)} ms)`);
+    })
+);
+
+results.push(
     await runCase(
         'case 11: a kept checkpoint adds "已保留前 N 轮" to the rich error display',
         quietCase(async () => {

@@ -25,7 +25,6 @@ import {
 } from './google-search-document.js';
 import { renderThinkingQuote } from './quoted-render.js';
 import { joinRichBlocks } from './rich-blocks.js';
-import { splitRawByFits } from './smart-splitter.js';
 import { formatThinkingForStreaming } from './thinking-display.js';
 import { buildToolRecordSections } from './tool-records-formatter.js';
 
@@ -162,20 +161,40 @@ const CUT_MARK_BLOCK = toRichHtml(plainText('…'));
 /** Passes the cut gets before the display falls back to the error lines alone */
 const MAX_CUT_PASSES = 8;
 
+/** Cut this much more than the overflow, so that one pass usually settles it */
+const CUT_MARGIN = 500;
+
+const isHighSurrogate = (unit: number): boolean => unit >= 0xd800 && unit <= 0xdbff;
+
+/**
+ * Where the head of text ends when it may be at most target long: the last
+ * paragraph boundary, else the last line break, else target itself (never
+ * between the halves of a surrogate pair). A boundary in the first half is
+ * passed over: it would drop most of what is left. A plain search on
+ * purpose: the construct-aware raw splitter is quadratic on tables and code
+ * blocks, and answerMarkdown already closes what a cut leaves open.
+ */
+const headEndOf = (text: string, target: number): number => {
+    const floor = Math.floor(target / 2);
+    const paragraphEnd = text.lastIndexOf('\n\n', target);
+    if (paragraphEnd > floor) return paragraphEnd;
+    const lineEnd = text.lastIndexOf('\n', target);
+    if (lineEnd > floor) return lineEnd;
+    return isHighSurrogate(text.charCodeAt(target - 1)) ? target - 1 : target;
+};
+
 /**
  * The answer's head with a '…' paragraph, then the error lines, within
- * maxLength. The cut prefers a paragraph boundary (the splitter falls back to
- * a line, then a character). The rendered answer runs about as long as its
- * source, so each pass cuts what the last one was over by; one or two settle it.
+ * maxLength. The rendered answer runs about as long as its source, so each
+ * pass cuts what the last one was over by, plus a margin.
  */
 const cutAnswerToFit = (text: string, errorBlock: string, uncutLength: number, maxLength: number): string => {
     let head = text;
     let overflow = uncutLength - maxLength;
     for (let pass = 0; pass < MAX_CUT_PASSES && head !== ''; pass += 1) {
-        const target = head.length - overflow;
-        const kept = target <= 0 ? '' : splitRawByFits(head, (prefix) => prefix.length <= target).currentPart;
-        // The blank line after the last whole paragraph belongs to the cut
-        head = kept.replace(/\n+$/, '');
+        const target = head.length - overflow - CUT_MARGIN;
+        // Trailing blank lines and spaces of the head belong to the cut
+        head = target <= 0 ? '' : head.slice(0, headEndOf(head, target)).trimEnd();
         const display = joinRichBlocks([head === '' ? '' : answerMarkdown(head, 'strict'), CUT_MARK_BLOCK, errorBlock]);
         if (display.length <= maxLength) return display;
         overflow = display.length - maxLength;
