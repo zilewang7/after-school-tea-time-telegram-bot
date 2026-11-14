@@ -2,7 +2,7 @@ import { createServer } from 'node:http';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import type { MessageEntity, Sticker } from 'grammy/types';
+import type { MessageEntity, RichBlock, Sticker } from 'grammy/types';
 import {
   OFFLINE_CHAT_ID,
   expect,
@@ -137,6 +137,7 @@ const { CustomEmojiAsset } = await import('../../src/db/customEmojiAssetDTO.js')
 const { LinkPreviewCache } = await import('../../src/db/linkPreviewCacheDTO.js');
 const { runSchemaMigrations } = await import('../../src/db/schema-migrations.js');
 const { extractCustomEmojiOccurrences } = await import('../../src/services/custom-emoji-extractor.js');
+const { renderRichMessage } = await import('../../src/db/rich-message-text.js');
 const {
   replaceCustomEmojiAttachments,
   getCustomEmojiAttachmentsForMessages,
@@ -287,6 +288,47 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
         },
       });
       expect(rich[0]?.customEmojiId === 'rich-id' && rich[0].fallbackText === '🔥', 'rich text custom emoji is extracted');
+    },
+  },
+  {
+    name: 'custom emoji in button labels are extracted, with the alt text the stored text shows',
+    body: async () => {
+      // Bot API 10.3: a row of buttons, and a button inline in a paragraph
+      const blocks: RichBlock[] = [
+        {
+          type: 'buttons',
+          buttons: [{
+            text: ['签到 ', { type: 'custom_emoji', custom_emoji_id: 'button-row-id', alternative_text: '👍' }],
+            callback_data: 'sign-in',
+          }],
+        },
+        {
+          type: 'paragraph',
+          text: ['点 ', {
+            type: 'button',
+            button: {
+              text: [{ type: 'custom_emoji', custom_emoji_id: 'inline-button-id', alternative_text: '🔥' }],
+              url: 'https://example.com/hot',
+            },
+          }],
+        },
+      ];
+      const occurrences = extractCustomEmojiOccurrences({ rich_message: { blocks } });
+      expect(
+        occurrences.map((item) => item.customEmojiId).join(',') === 'button-row-id,inline-button-id',
+        `both labels are walked, in block order (${occurrences.map((item) => item.customEmojiId).join(',')})`
+      );
+      expect(
+        occurrences.every((item) => item.source === 'rich_message')
+          && occurrences[0]?.fallbackText === '👍'
+          && occurrences[1]?.fallbackText === '🔥',
+        'each fallback text is the alt text'
+      );
+      const stored = renderRichMessage({ blocks }, 'offline') ?? '';
+      expect(
+        stored.includes('[按钮] 签到 👍') && stored.includes('点 [🔥](https://example.com/hot)'),
+        `the stored text shows the same alt text (${stored})`
+      );
     },
   },
   {
