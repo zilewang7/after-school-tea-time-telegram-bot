@@ -1,8 +1,10 @@
 /**
- * Offline cases for the attempts of sendWithRetry on the SDK chat paths:
- * OpenAI Responses (plain, with an effort, the tool loop), Grok (round 1 and
- * a tool-loop continuation), DeepSeek and MiMo (plain and the tool loop) and
- * Anthropic Messages.
+ * Offline cases for the attempts of sendWithRetry on the SDK chat paths, a
+ * path for each call site: OpenAI Responses (plain, with an effort, after an
+ * effort downgrade, the tool loop), Grok (round 1 and a tool-loop
+ * continuation), DeepSeek and MiMo (plain and the tool loop) and Anthropic
+ * Messages (plain and after a max_tokens downgrade). The OpenAI image path
+ * shares the retry rules.
  *
  * - An attempt that runs out of time is aborted: the stub sees its connection
  *   close before the retry goes out, instead of the request streaming (and
@@ -54,6 +56,8 @@ const STOP_DELAY_MS = 300;
 const CASE_DEADLINE_MS = 10_000;
 /** What a 'busy' 429 asks for in retry-after-ms; without it the retry would wait 5 s */
 const BUSY_RETRY_AFTER_MS = 50;
+/** The attempts the OpenAI image path gives itself (executeImageGeneration) */
+const IMAGE_ATTEMPTS = 10;
 const ANSWER = 'retry answered';
 const PARTIAL = 'partial';
 
@@ -75,6 +79,10 @@ type Step =
     | 'unavailable'
     /** 429 that asks for a BUSY_RETRY_AFTER_MS wait */
     | 'busy'
+    /** 503 that asks for a 1 ms wait */
+    | 'briefly-unavailable'
+    /** 400 that blames a level the request carried (see levelRejectionOf): a one-shot downgrade */
+    | 'level-rejected'
     /** The stream starts with one event, then nothing more comes */
     | 'stream-then-hang';
 
@@ -205,6 +213,14 @@ const answerOf = (wire: Wire): string =>
         )
         .exhaustive();
 
+/** What a platform downgrades after, sending the round again within the same reply */
+const levelRejectionOf = (wire: Wire): string =>
+    match(wire)
+        .with('responses', () => 'reasoning.effort high is not supported by this model')
+        .with('chat', () => 'thinking is not supported by this model')
+        .with('messages', () => 'max_tokens: 128000 > 64000, which is the maximum allowed number of output tokens')
+        .exhaustive();
+
 const firstEventOf = (wire: Wire): string =>
     match(wire)
         .with('responses', () => namedEvent(outputTextDelta(PARTIAL)))
@@ -243,6 +259,8 @@ const play = (step: Step | undefined, run: StubRun, request: IncomingMessage, re
         .with('busy', () =>
             sendJsonError(response, 429, 'slow down', { 'retry-after-ms': String(BUSY_RETRY_AFTER_MS) })
         )
+        .with('briefly-unavailable', () => sendJsonError(response, 503, 'upstream overloaded', { 'retry-after-ms': '1' }))
+        .with('level-rejected', () => sendJsonError(response, 400, levelRejectionOf(run.wire)))
         .with('stream-then-hang', () => {
             openResponses.add(response);
             response.writeHead(200, SSE_HEADERS);
@@ -333,6 +351,15 @@ const CHAT_PATHS: readonly ChatPath[] = [
         build: openAIAt,
         thinkingEffort: { mode: 'explicit', value: 'high' },
     },
+    {
+        // The second sendWithRetry of openReasonedStream, after the effort was rejected
+        name: 'openai-effort-downgrade',
+        wire: 'responses',
+        model: 'gpt-5.4',
+        build: openAIAt,
+        thinkingEffort: { mode: 'explicit', value: 'high' },
+        leadingSteps: ['level-rejected'],
+    },
     { name: 'openai-tool-loop', wire: 'responses', model: 'gpt-5.4', build: openAIAt, withTools: true },
     { name: 'grok', wire: 'responses', model: 'grok-4.7', build: grokAt },
     {
@@ -348,6 +375,14 @@ const CHAT_PATHS: readonly ChatPath[] = [
     { name: 'mimo', wire: 'chat', model: 'mimo-v2.6-flash', build: mimoAt },
     { name: 'mimo-tool-loop', wire: 'chat', model: 'mimo-v2.6-flash', build: mimoAt, withTools: true },
     { name: 'anthropic', wire: 'messages', model: 'claude-sonnet-5-5', build: anthropicAt },
+    {
+        // openRoundStream's recursion after max_tokens was rejected
+        name: 'anthropic-downgrade',
+        wire: 'messages',
+        model: 'claude-sonnet-5-5',
+        build: anthropicAt,
+        leadingSteps: ['level-rejected'],
+    },
 ];
 
 const weatherTool: ToolHandler = {
@@ -400,6 +435,19 @@ const configOf = ({ path }: Subject, caseRun: CaseRun, signal: AbortSignal): Pla
     ...(path.thinkingEffort === undefined ? {} : { thinkingEffort: path.thinkingEffort }),
 });
 
+/** The reply's text, and the error that ended it instead of a clean end */
+const drainReply = async (platform: IAIPlatform, config: PlatformConfig): Promise<{ text: string; error: string | null }> => {
+    let text = '';
+    try {
+        for await (const chunk of await platform.sendMessage(question, config)) {
+            if (chunk.type === 'text') text += chunk.content ?? '';
+        }
+        return { text, error: null };
+    } catch (caught) {
+        return { text, error: caught instanceof Error ? caught.message : String(caught) };
+    }
+};
+
 const runSubject = async (subject: Subject, caseRun: CaseRun): Promise<SubjectResult> => {
     const controller = new AbortController();
     const stop: { at: number | null } = { at: null };
@@ -417,16 +465,7 @@ const runSubject = async (subject: Subject, caseRun: CaseRun): Promise<SubjectRe
         },
     };
     runs.set(subject.prefix, run);
-    let text = '';
-    let error: string | null = null;
-    try {
-        const stream = await subject.platform.sendMessage(question, configOf(subject, caseRun, controller.signal));
-        for await (const chunk of stream) {
-            if (chunk.type === 'text') text += chunk.content ?? '';
-        }
-    } catch (caught) {
-        error = caught instanceof Error ? caught.message : String(caught);
-    }
+    const { text, error } = await drainReply(subject.platform, configOf(subject, caseRun, controller.signal));
     return {
         label: subject.path.name,
         text,
@@ -652,6 +691,26 @@ const cases: Array<{ name: string; body: () => void | Promise<void> }> = [
                     `${label}: the retry waited the ${BUSY_RETRY_AFTER_MS} ms asked for, not the 5 s of a bare 429 (${waitedMs} ms)`
                 );
             }),
+    },
+    {
+        name: 'the OpenAI image path retries a 503 in sendWithRetry alone',
+        body: async () => {
+            const prefix = 'image-path';
+            const run: StubRun = {
+                wire: 'responses',
+                steps: Array.from({ length: IMAGE_ATTEMPTS }, (): Step => 'briefly-unavailable'),
+                seen: [],
+                onStreamStarted: () => undefined,
+            };
+            runs.set(prefix, run);
+            try {
+                const outcome = await quietly(() => drainReply(openAIAt(`${stub.url}/${prefix}`), { model: 'gpt-image-2' }));
+                expect(run.seen.length === IMAGE_ATTEMPTS, `${IMAGE_ATTEMPTS} attempts, none from the SDK (got ${run.seen.length})`);
+                expect(outcome.error?.startsWith('503 ') === true, `the last 503 ends the reply (got ${String(outcome.error)})`);
+            } finally {
+                runs.clear();
+            }
+        },
     },
     {
         name: 'a stop while the stream is open closes its request',
