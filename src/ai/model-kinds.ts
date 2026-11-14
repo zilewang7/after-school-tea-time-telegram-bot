@@ -6,7 +6,6 @@
  * `MODEL_TRAITS_SHADOW=1`). Export names and semantics stay as they were, so the
  * ten-plus call sites do not change.
  */
-import { platformTypeOf } from './platform-routing.js';
 import {
     runtimeIsImageOutputModel,
     runtimeSupportsGeminiFunctionTools,
@@ -16,20 +15,10 @@ import {
 
 /**
  * Models whose output is an image (the Nano Banana ids carry no `image` in
- * them; a missed image model rejects the chat persona with 400).
+ * them). They serve generate_image and the /pic commands only, never as the
+ * chat model: a missed one would take a chat request as an image prompt.
  */
 export const isImageOutputModel = (model: string): boolean => runtimeIsImageOutputModel(model);
-
-/**
- * Models whose chat system prompt is thrown away: on Gemini an image model's
- * systemInstruction is replaced wholesale by the image-generation instruction,
- * so the static head (and its note announcing the chat's prompt addendum) never
- * arrives. The addendum is then left out of the runtime block, where it would
- * read as part of the image description. OpenAI's image model keeps the full
- * static head and gets the addendum as usual.
- */
-export const replacesChatSystemPrompt = (model: string): boolean =>
-    isImageOutputModel(model) && platformTypeOf(model) === 'gemini';
 
 /** Gemini models that accept function declarations alongside the search tools */
 export const supportsGeminiFunctionTools = (model: string): boolean =>

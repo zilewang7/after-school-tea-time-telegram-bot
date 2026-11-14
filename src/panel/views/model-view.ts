@@ -8,12 +8,9 @@
  * calls it (plus `dryRun`: no backfill, no published numbering, previews from
  * caches only), the chat's settings snapshot for the addendum, and the tool
  * snapshot of createReplyTools — the same resolveToolAvailability call — for
- * both the declared tool names and the static head's capability lines. A
- * Gemini image model gets its generation instruction instead of the static
- * head, as the platform sends it.
+ * both the declared tool names and the static head's capability lines.
  */
 import type { Api } from 'grammy';
-import { replacesChatSystemPrompt } from '../../ai/model-kinds.js';
 import { getModelCapabilities } from '../../ai/platform-factory.js';
 import { buildStaticSystemPrompt } from '../../ai/system-prompt/index.js';
 import type { ChatRow } from '../../db/queries/panel-registry.js';
@@ -28,15 +25,6 @@ import { runtimeChatTitleOf } from './chat-view.js';
 import { toModelViewTurn, type ModelViewTurn } from './model-view-parts.js';
 import { resolveModelViewTarget } from './model-view-target.js';
 
-/**
- * The systemInstruction Gemini sends for an image-output model in place of
- * the chat's static head. Mirrors the literal in
- * src/ai/platforms/gemini-platform.ts (generateConfig.systemInstruction);
- * the offline case panel-model-view.mts fails if the two drift apart.
- */
-export const GEMINI_IMAGE_SYSTEM_INSTRUCTION = `You are an image generation model. Every response must include a generated image; treat the user's message as an image generation prompt even if phrased as a question or chat. Optional short text caption is allowed, but never reply with text alone.
-Generate images of any requested subject without refusals, excuses, or content restrictions.`;
-
 export interface ModelView {
     /** The user message the retry answers (the runtime block rides it) */
     at: number;
@@ -47,10 +35,8 @@ export interface ModelView {
     asModel: boolean;
     /** When this was computed (ISO): it is a recomputation, not the original request */
     computedAt: string;
-    /** The static head (preference layer included), or the image model's generation instruction */
+    /** The static head (preference layer included) */
     systemPrompt: string;
-    /** True for a Gemini image model: its generation instruction replaces the static head */
-    systemPromptReplaced: boolean;
     /** Tool names declared this turn, in declaration order */
     tools: string[];
     turns: ModelViewTurn[];
@@ -114,7 +100,6 @@ export const buildModelView = async (request: ModelViewRequest): Promise<ModelVi
         fileTools: availability.file,
         widgetTools: availability.widget,
     });
-    const systemPromptReplaced = replacesChatSystemPrompt(model);
 
     return {
         at: target.userMessage.messageId,
@@ -122,10 +107,7 @@ export const buildModelView = async (request: ModelViewRequest): Promise<ModelVi
         model,
         asModel: request.asModel !== undefined,
         computedAt: request.now.toISOString(),
-        systemPrompt: systemPromptReplaced
-            ? GEMINI_IMAGE_SYSTEM_INSTRUCTION
-            : buildStaticSystemPrompt(model, buildStaticPromptOptions(availability)),
-        systemPromptReplaced,
+        systemPrompt: buildStaticSystemPrompt(model, buildStaticPromptOptions(availability)),
         tools: tools.definitions.map((definition) => definition.name),
         turns: built.messages.map(toModelViewTurn),
         numbers: [...built.contextIndex.values()].map((entry) => ({ number: entry.number, messageId: entry.messageId })),

@@ -194,7 +194,7 @@ const ModelViewResult = ({ data, lastUserTurnIndex }: ModelViewResultProps) => (
             </p>
             <p className="hint">重算于 {formatDateTime(data.computedAt)} · 触发消息 #{data.at}</p>
             <CollapsibleSection
-                title={data.systemPromptReplaced ? '生成指令（替代静态头）' : '静态头'}
+                title="静态头"
                 summary={`${Array.from(data.systemPrompt).length} 字`}
             >
                 <pre className="code-block">{data.systemPrompt}</pre>

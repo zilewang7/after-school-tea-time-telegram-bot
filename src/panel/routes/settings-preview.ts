@@ -4,12 +4,9 @@
  * chat's current model and the requester as a sample roster (the real roster
  * is built per reply). Stores nothing, so it keeps the 24h read window.
  *
- * `injected` is false only for a hand-typed Gemini image model, whose system
- * prompt is replaced wholesale: the addendum is then left out, as the reply
- * path does. `estimatedTokens` is an upper bound at 1.3 tokens per character.
+ * `estimatedTokens` is an upper bound at 1.3 tokens per character.
  */
 import type { Hono } from 'hono';
-import { replacesChatSystemPrompt } from '../../ai/model-kinds.js';
 import { buildRuntimeContext } from '../../ai/system-prompt/runtime-context.js';
 import type { ContextUser } from '../../ai/types.js';
 import { resolveChatModel } from '../../config/chat-model.js';
@@ -49,17 +46,14 @@ export const registerSettingsPreviewRoute = (app: Hono<PanelEnv>): void => {
         const normalized = normalizePromptAddendum(body[PROMPT_ADDENDUM_KEY]);
         if (!normalized.ok) throw invalid(normalized.message);
 
-        const model = resolveChatModel(chatId);
-        const injected = !replacesChatSystemPrompt(model);
         const runtimeBlock = buildRuntimeContext(
-            model,
+            resolveChatModel(chatId),
             sampleRoster(auth.user),
             runtimeChatTitleOf(chat),
-            injected ? normalized.value : null
+            normalized.value
         );
         return context.json({
             runtimeBlock,
-            injected,
             estimatedTokens: estimateAddendumTokens(normalized.value),
         });
     });

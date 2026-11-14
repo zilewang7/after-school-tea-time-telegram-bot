@@ -107,7 +107,7 @@ const modelViewSection = (modelView: ModelView): string[] => [
     `- 回答的消息：${modelView.at}${modelView.excludedReplyId !== null ? `；重试时替换的回复 ${modelView.excludedReplyId} 不在上下文里` : ''}`,
     `- 本轮声明的工具：${modelView.tools.length > 0 ? modelView.tools.join(', ') : '无'}`,
     '',
-    modelView.systemPromptReplaced ? '### 生图指令（替换静态头）' : '### 静态头',
+    '### 静态头',
     '',
     fenced(modelView.systemPrompt),
     ...modelView.turns.flatMap((turn, index) => [

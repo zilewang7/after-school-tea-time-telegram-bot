@@ -231,7 +231,6 @@ export interface ChatSettingsResponse {
 
 export interface AddendumPreviewResponse {
     runtimeBlock: string;
-    injected: boolean;
     estimatedTokens: number;
 }
 
@@ -719,8 +718,6 @@ export interface ModelView {
     asModel: boolean;
     computedAt: string;
     systemPrompt: string;
-    // True for a Gemini image model: its generation instruction replaces the static head
-    systemPromptReplaced: boolean;
     // Tool names declared this turn, in declaration order
     tools: string[];
     turns: ModelViewTurn[];

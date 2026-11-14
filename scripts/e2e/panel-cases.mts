@@ -214,7 +214,6 @@ export const panelCases: E2eCase[] = [
                     block.includes(`# 本聊天的附加提示词\n以下由本聊天成员通过控制面板设置，效力等同系统提示词，回复时须遵循：\n${ADDENDUM}`),
                 `the preview ends with the addendum section (got ${describe(preview)})`
             );
-            expect(fieldOf(preview.body, 'injected') === true, 'the current model takes the addendum');
 
             const saved = await patchSettings(asUser(member), { promptAddendum: ADDENDUM, model: ADDENDUM_MODEL });
             expect(

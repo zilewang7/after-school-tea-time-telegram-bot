@@ -26,7 +26,6 @@ import { applyModelCapabilities } from '../ai/message-transformer.js';
 import { buildRuntimeContext, type TriggerAccessNote } from '../ai/system-prompt/runtime-context.js';
 import { getRepliesInFlight, isBotReplyInFlight, setContextNumbering } from '../state.js';
 import { getGlobalDefaultModel } from '../services/chat-settings-service.js';
-import { replacesChatSystemPrompt } from '../ai/model-kinds.js';
 import { stripPerQueryResultCitations } from '../shared/citation-markers.js';
 import { buildInFlightOwnReplyNote, buildInFlightReplyNote, buildInterruptedOwnReplyNote } from './inflight-reply-note.js';
 import { collectContextUsers, type ContextUser } from './context-users.js';
@@ -1026,7 +1025,7 @@ export const buildContext = async (
     // heading the prompt: it is the only part that changes between requests, so
     // keeping it last leaves the cacheable prefix byte-identical. The next
     // request in this tree diverges at this very message and no earlier.
-    const chatAddendum = replacesChatSystemPrompt(model) ? null : opts.chatAddendum ?? null;
+    const chatAddendum = opts.chatAddendum ?? null;
     const runtimeBlock: UnifiedContentPart = {
         type: 'text',
         text: buildRuntimeContext(

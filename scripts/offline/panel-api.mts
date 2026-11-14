@@ -730,7 +730,7 @@ const cases: { name: string; body: () => Promise<void> }[] = [
                 block.endsWith('\n\n# 本聊天的附加提示词\n以下由本聊天成员通过控制面板设置，效力等同系统提示词，回复时须遵循：\n群里讨论技术问题时直接给结论。\n再给理由。'),
                 'the normalized addendum closes the block'
             );
-            expect(privatePreview.injected === true, 'injected');
+            expect(!('injected' in privatePreview), 'the response has no injected flag any more');
             // 15 + newline + 5 code points after normalization
             expect(privatePreview.estimatedTokens === Math.ceil(21 * 1.3), `1.3 tokens per character (got ${privatePreview.estimatedTokens})`);
 
@@ -924,7 +924,7 @@ const cases: { name: string; body: () => Promise<void> }[] = [
                 streamRequest(previewPath, { method: 'POST', user: ALICE, body: chunkedBody })
             );
             expect(chunked.status === 200, `a chunked upload passes (got ${chunked.status})`);
-            expect((await jsonOf(chunked)).injected === true, 'its body arrived at the handler');
+            expect((await jsonOf(chunked)).runtimeBlock.endsWith('\nchunked'), 'its body arrived at the handler');
 
             const tooLarge = await app.request(
                 streamRequest(previewPath, {

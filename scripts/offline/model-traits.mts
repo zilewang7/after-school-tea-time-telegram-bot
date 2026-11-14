@@ -23,7 +23,6 @@ const { capabilitySeedIds } = await import('../../src/config/model-capability-se
 const catalogService = await import('../../src/services/model-catalog-service.js');
 const {
     isImageOutputModel,
-    replacesChatSystemPrompt,
     supportsGeminiFunctionTools,
     supportsGeminiImageSearchGrounding,
     supportsXhighThinkingLevel,
@@ -130,9 +129,6 @@ results.push(
             expect(resolveModelTraits(id).capabilities === null, `${id}: no capabilities`);
         }
         expect(resolveModelTraits('some-random-model').platform === 'openai', 'unknown ids route to openai');
-        expect(replacesChatSystemPrompt('gemini-nano-banana-2.1'), 'a Gemini image model drops the chat prompt');
-        expect(!replacesChatSystemPrompt('gemini-4-hydrogen'), 'a Gemini chat model keeps it');
-        expect(!replacesChatSystemPrompt('gpt-image-2.5-dev'), 'the OpenAI image model keeps it');
         expect(supportsGeminiImageSearchGrounding('gemini-nano-banana-2.1'), 'nano-banana can ground on images');
         expect(supportsGeminiImageSearchGrounding('gemini-3-pro-image') === false, 'gemini-3-pro-image cannot');
     })

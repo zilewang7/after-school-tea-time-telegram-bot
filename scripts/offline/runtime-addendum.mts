@@ -1,8 +1,7 @@
 /**
  * Offline cases for the chat prompt addendum: where it lands in the runtime
- * block, that an empty one changes nothing, the static head's announcement,
- * and which models skip it; then the same through buildContext against stored
- * messages.
+ * block, that an empty one changes nothing and the static head's
+ * announcement; then the same through buildContext against stored messages.
  *
  * The time line changes every minute, so it is swapped for the design doc's
  * sample before comparing byte for byte.
@@ -20,7 +19,6 @@ const db = await setupOfflineDb();
 const { buildRuntimeContext } = await import('../../src/ai/system-prompt/runtime-context.js');
 const { NOTES_SECTION } = await import('../../src/ai/system-prompt/sections.js');
 const { buildStaticSystemPrompt } = await import('../../src/ai/system-prompt/index.js');
-const { replacesChatSystemPrompt } = await import('../../src/ai/model-kinds.js');
 const { buildContext } = await import('../../src/reply/context-builder.js');
 const { buildStaticPromptOptions } = await import('../../src/reply/static-prompt-options.js');
 const { resolveToolAvailability } = await import('../../src/reply/tools/index.js');
@@ -182,16 +180,6 @@ const cases: { name: string; body: () => Promise<void> }[] = [
         },
     },
     {
-        name: 'only Gemini image models replace the chat system prompt',
-        body: async () => {
-            expect(replacesChatSystemPrompt('gemini-nano-banana-2.1'), 'gemini-nano-banana-2.1 replaces it');
-            expect(replacesChatSystemPrompt('gemini-3-pro-image'), 'gemini-3-pro-image replaces it');
-            expect(!replacesChatSystemPrompt('gpt-image-2.5-dev'), 'gpt-image-2.5-dev keeps the static head');
-            expect(!replacesChatSystemPrompt('gemini-4-argon'), 'a Gemini chat model keeps it');
-            expect(!replacesChatSystemPrompt('claude-sonnet-5'), 'a non-image model elsewhere keeps it');
-        },
-    },
-    {
         name: 'through buildContext the addendum rides only the trigger message runtime part, never the static head',
         body: async () => {
             const chatId = -4001;
@@ -250,35 +238,6 @@ const cases: { name: string; body: () => Promise<void> }[] = [
                 `the blocks differ only by the closing section (got ${JSON.stringify(runtimeWith)} vs ${JSON.stringify(runtimeWithout)})`
             );
             expect(!runtimeWithout.includes('# 本聊天的附加提示词'), 'the chat without one renders no section');
-        },
-    },
-    {
-        name: 'a hand-set Gemini image model id gets no addendum; gpt-image-2.5-dev keeps it',
-        body: async () => {
-            const trigger = await seedExchange(-4004);
-            const banana = await buildContext(trigger, {
-                model: 'gemini-nano-banana-2.1',
-                capabilities: VISION,
-                chatTitle: '测试群',
-                chatAddendum: ADDENDUM,
-            });
-            const bananaRuntime = lastTextOf(banana.messages);
-            expect(
-                bananaRuntime.startsWith(RUNTIME_MARKER) && bananaRuntime.includes('- 当前模型：gemini-nano-banana-2.1'),
-                'the runtime block is still there'
-            );
-            expect(
-                !textPartsOf(banana.messages).some((text) => text.includes('本聊天的附加提示词') || text.includes('回答前先说')),
-                'but the guard leaves the addendum out'
-            );
-
-            const gpt = await buildContext(trigger, {
-                model: 'gpt-image-2.5-dev',
-                capabilities: VISION,
-                chatTitle: '测试群',
-                chatAddendum: ADDENDUM,
-            });
-            expect(lastTextOf(gpt.messages).endsWith(ADDENDUM_SECTION), 'gpt-image-2.5-dev keeps its static head and the addendum');
         },
     },
     {

@@ -14,7 +14,6 @@ export const AddendumPreviewView = ({ state, currentValue }: AddendumPreviewView
         .with({ kind: 'failed' }, ({ message }) => <p className="error-text">{message}</p>)
         .with({ kind: 'ready' }, ({ previewedValue, result }) => (
             <div className="preview">
-                {!result.injected && <p className="notice warning">当前模型下附加提示词不生效</p>}
                 {previewedValue !== currentValue && <p className="hint">内容已修改，预览可能已过期</p>}
                 <pre className="code-block">{result.runtimeBlock}</pre>
                 <p className="hint">约 {result.estimatedTokens} token · 名册在实际回复时按上下文生成</p>
