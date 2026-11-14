@@ -1,0 +1,1650 @@
+{
+  "thinking, then a dialect-heavy answer": [
+    {
+      "method": "sendChatAction",
+      "keys": [
+        "chat_id",
+        "action"
+      ],
+      "payload": {
+        "chat_id": "<chat>",
+        "action": "typing"
+      }
+    },
+    {
+      "method": "sendMessage",
+      "keys": [
+        "chat_id",
+        "text",
+        "business_connection_id",
+        "direct_messages_topic_id",
+        "reply_parameters",
+        "reply_markup"
+      ],
+      "payload": {
+        "chat_id": "<chat>",
+        "text": "✽ Thinking...",
+        "reply_parameters": {
+          "message_id": "<message 1>"
+        },
+        "reply_markup": {
+          "inline_keyboard": [
+            [
+              {
+                "text": "停止",
+                "callback_data": "resp:stop"
+              }
+            ]
+          ]
+        }
+      }
+    },
+    {
+      "method": "editMessageText",
+      "keys": [
+        "chat_id",
+        "message_id",
+        "text",
+        "entities",
+        "parse_mode",
+        "reply_markup",
+        "link_preview_options"
+      ],
+      "payload": {
+        "chat_id": "<chat>",
+        "message_id": "<message 2>",
+        "text": "计划\n\n先想一想。\n✽ Thinking...",
+        "entities": [
+          {
+            "type": "blockquote",
+            "offset": 0,
+            "length": 9
+          },
+          {
+            "type": "bold",
+            "offset": 0,
+            "length": 2
+          }
+        ],
+        "reply_markup": {
+          "inline_keyboard": [
+            [
+              {
+                "text": "停止",
+                "callback_data": "resp:stop"
+              }
+            ]
+          ]
+        }
+      }
+    },
+    {
+      "method": "editMessageText",
+      "keys": [
+        "chat_id",
+        "message_id",
+        "text",
+        "entities",
+        "parse_mode",
+        "reply_markup",
+        "link_preview_options"
+      ],
+      "payload": {
+        "chat_id": "<chat>",
+        "message_id": "<message 2>",
+        "text": "计划\n\n先想一想。\n\n再想一想 #1。\n✽ Thinking...",
+        "entities": [
+          {
+            "type": "blockquote",
+            "offset": 0,
+            "length": 19
+          },
+          {
+            "type": "bold",
+            "offset": 0,
+            "length": 2
+          }
+        ],
+        "reply_markup": {
+          "inline_keyboard": [
+            [
+              {
+                "text": "停止",
+                "callback_data": "resp:stop"
+              }
+            ]
+          ]
+        }
+      }
+    },
+    {
+      "method": "editMessageText",
+      "keys": [
+        "chat_id",
+        "message_id",
+        "text",
+        "entities",
+        "parse_mode",
+        "reply_markup",
+        "link_preview_options"
+      ],
+      "payload": {
+        "chat_id": "<chat>",
+        "message_id": "<message 2>",
+        "text": "计划\n\n先想一想。\n\n再想一想 #1。\n结论\n✽ Thinking...",
+        "entities": [
+          {
+            "type": "expandable_blockquote",
+            "offset": 0,
+            "length": 19
+          },
+          {
+            "type": "bold",
+            "offset": 0,
+            "length": 2
+          },
+          {
+            "type": "bold",
+            "offset": 20,
+            "length": 2
+          }
+        ],
+        "reply_markup": {
+          "inline_keyboard": [
+            [
+              {
+                "text": "停止",
+                "callback_data": "resp:stop"
+              }
+            ]
+          ]
+        }
+      }
+    },
+    {
+      "method": "editMessageText",
+      "keys": [
+        "chat_id",
+        "message_id",
+        "text",
+        "entities",
+        "parse_mode",
+        "reply_markup",
+        "link_preview_options"
+      ],
+      "payload": {
+        "chat_id": "<chat>",
+        "message_id": "<message 2>",
+        "text": "计划\n\n先想一想。\n\n再想一想 #1。\n结论\n\n的\"重点\"后，下划线，剧透，a < b 和 List<String>。\n✽ Thinking...",
+        "entities": [
+          {
+            "type": "expandable_blockquote",
+            "offset": 0,
+            "length": 19
+          },
+          {
+            "type": "bold",
+            "offset": 0,
+            "length": 2
+          },
+          {
+            "type": "bold",
+            "offset": 20,
+            "length": 2
+          },
+          {
+            "type": "bold",
+            "offset": 25,
+            "length": 4
+          },
+          {
+            "type": "underline",
+            "offset": 31,
+            "length": 3
+          },
+          {
+            "type": "spoiler",
+            "offset": 35,
+            "length": 2
+          },
+          {
+            "type": "code",
+            "offset": 38,
+            "length": 5
+          }
+        ],
+        "reply_markup": {
+          "inline_keyboard": [
+            [
+              {
+                "text": "停止",
+                "callback_data": "resp:stop"
+              }
+            ]
+          ]
+        }
+      }
+    },
+    {
+      "method": "editMessageText",
+      "keys": [
+        "chat_id",
+        "message_id",
+        "text",
+        "entities",
+        "parse_mode",
+        "reply_markup",
+        "link_preview_options"
+      ],
+      "payload": {
+        "chat_id": "<chat>",
+        "message_id": "<message 2>",
+        "text": "计划\n\n先想一想。\n\n再想一想 #1。\n结论\n\n的\"重点\"后，下划线，剧透，a < b 和 List<String>。\n\n• A\n    • 价格: $5\n\n公式 $E = mc^2$，第一行\n第二行\n\nconst x = a ** b;\n✽ Thinking...",
+        "entities": [
+          {
+            "type": "expandable_blockquote",
+            "offset": 0,
+            "length": 19
+          },
+          {
+            "type": "bold",
+            "offset": 0,
+            "length": 2
+          },
+          {
+            "type": "bold",
+            "offset": 20,
+            "length": 2
+          },
+          {
+            "type": "bold",
+            "offset": 25,
+            "length": 4
+          },
+          {
+            "type": "underline",
+            "offset": 31,
+            "length": 3
+          },
+          {
+            "type": "spoiler",
+            "offset": 35,
+            "length": 2
+          },
+          {
+            "type": "code",
+            "offset": 38,
+            "length": 5
+          },
+          {
+            "type": "bold",
+            "offset": 63,
+            "length": 1
+          },
+          {
+            "type": "pre",
+            "offset": 102,
+            "length": 17,
+            "language": "ts"
+          }
+        ],
+        "reply_markup": {
+          "inline_keyboard": [
+            [
+              {
+                "text": "停止",
+                "callback_data": "resp:stop"
+              }
+            ]
+          ]
+        }
+      }
+    },
+    {
+      "method": "editMessageText",
+      "keys": [
+        "chat_id",
+        "message_id",
+        "text",
+        "entities",
+        "parse_mode",
+        "reply_markup",
+        "link_preview_options"
+      ],
+      "payload": {
+        "chat_id": "<chat>",
+        "message_id": "<message 2>",
+        "text": "计划\n\n先想一想。\n\n再想一想 #1。\n结论\n\n的\"重点\"后，下划线，剧透，a < b 和 List<String>。\n\n• A\n    • 价格: $5\n\n公式 $E = mc^2$，第一行\n第二行\n\nconst x = a ** b;\nTools\ntool usage: web_search x2",
+        "entities": [
+          {
+            "type": "expandable_blockquote",
+            "offset": 0,
+            "length": 19
+          },
+          {
+            "type": "bold",
+            "offset": 0,
+            "length": 2
+          },
+          {
+            "type": "bold",
+            "offset": 20,
+            "length": 2
+          },
+          {
+            "type": "bold",
+            "offset": 25,
+            "length": 4
+          },
+          {
+            "type": "underline",
+            "offset": 31,
+            "length": 3
+          },
+          {
+            "type": "spoiler",
+            "offset": 35,
+            "length": 2
+          },
+          {
+            "type": "code",
+            "offset": 38,
+            "length": 5
+          },
+          {
+            "type": "bold",
+            "offset": 63,
+            "length": 1
+          },
+          {
+            "type": "pre",
+            "offset": 102,
+            "length": 17,
+            "language": "ts"
+          },
+          {
+            "type": "bold",
+            "offset": 120,
+            "length": 5
+          },
+          {
+            "type": "expandable_blockquote",
+            "offset": 126,
+            "length": 25
+          }
+        ],
+        "reply_markup": {
+          "inline_keyboard": [
+            [
+              {
+                "text": "检测到用户编辑，是否重试",
+                "callback_data": "resp:retry"
+              }
+            ]
+          ]
+        }
+      }
+    }
+  ],
+  "a short answer with an image": [
+    {
+      "method": "sendChatAction",
+      "keys": [
+        "chat_id",
+        "action"
+      ],
+      "payload": {
+        "chat_id": "<chat>",
+        "action": "typing"
+      }
+    },
+    {
+      "method": "sendMessage",
+      "keys": [
+        "chat_id",
+        "text",
+        "business_connection_id",
+        "direct_messages_topic_id",
+        "reply_parameters",
+        "reply_markup"
+      ],
+      "payload": {
+        "chat_id": "<chat>",
+        "text": "✽ Thinking...",
+        "reply_parameters": {
+          "message_id": "<message 1>"
+        },
+        "reply_markup": {
+          "inline_keyboard": [
+            [
+              {
+                "text": "停止",
+                "callback_data": "resp:stop"
+              }
+            ]
+          ]
+        }
+      }
+    },
+    {
+      "method": "editMessageText",
+      "keys": [
+        "chat_id",
+        "message_id",
+        "text",
+        "entities",
+        "parse_mode",
+        "reply_markup",
+        "link_preview_options"
+      ],
+      "payload": {
+        "chat_id": "<chat>",
+        "message_id": "<message 2>",
+        "text": "图来了，\n✽ Thinking...",
+        "reply_markup": {
+          "inline_keyboard": [
+            [
+              {
+                "text": "停止",
+                "callback_data": "resp:stop"
+              }
+            ]
+          ]
+        }
+      }
+    },
+    {
+      "method": "editMessageText",
+      "keys": [
+        "chat_id",
+        "message_id",
+        "text",
+        "entities",
+        "parse_mode",
+        "reply_markup",
+        "link_preview_options"
+      ],
+      "payload": {
+        "chat_id": "<chat>",
+        "message_id": "<message 2>",
+        "text": "图来了，请看下面。\n✽ Thinking...",
+        "reply_markup": {
+          "inline_keyboard": [
+            [
+              {
+                "text": "停止",
+                "callback_data": "resp:stop"
+              }
+            ]
+          ]
+        }
+      }
+    },
+    {
+      "method": "editMessageText",
+      "keys": [
+        "chat_id",
+        "message_id",
+        "text",
+        "entities",
+        "parse_mode",
+        "reply_markup",
+        "link_preview_options"
+      ],
+      "payload": {
+        "chat_id": "<chat>",
+        "message_id": "<message 2>",
+        "text": "图来了，请看下面。"
+      }
+    },
+    {
+      "method": "sendPhoto",
+      "keys": [
+        "chat_id",
+        "photo",
+        "reply_parameters",
+        "caption"
+      ],
+      "payload": {
+        "chat_id": "<chat>",
+        "photo": "<input file>",
+        "reply_parameters": {
+          "message_id": "<message 1>"
+        },
+        "caption": "一张图"
+      }
+    }
+  ],
+  "an error after a partial answer": [
+    {
+      "method": "sendChatAction",
+      "keys": [
+        "chat_id",
+        "action"
+      ],
+      "payload": {
+        "chat_id": "<chat>",
+        "action": "typing"
+      }
+    },
+    {
+      "method": "sendMessage",
+      "keys": [
+        "chat_id",
+        "text",
+        "business_connection_id",
+        "direct_messages_topic_id",
+        "reply_parameters",
+        "reply_markup"
+      ],
+      "payload": {
+        "chat_id": "<chat>",
+        "text": "✽ Thinking...",
+        "reply_parameters": {
+          "message_id": "<message 1>"
+        },
+        "reply_markup": {
+          "inline_keyboard": [
+            [
+              {
+                "text": "停止",
+                "callback_data": "resp:stop"
+              }
+            ]
+          ]
+        }
+      }
+    },
+    {
+      "method": "editMessageText",
+      "keys": [
+        "chat_id",
+        "message_id",
+        "text",
+        "entities",
+        "parse_mode",
+        "reply_markup",
+        "link_preview_options"
+      ],
+      "payload": {
+        "chat_id": "<chat>",
+        "message_id": "<message 2>",
+        "text": "想到一半\n✽ Thinking...",
+        "entities": [
+          {
+            "type": "blockquote",
+            "offset": 0,
+            "length": 4
+          }
+        ],
+        "reply_markup": {
+          "inline_keyboard": [
+            [
+              {
+                "text": "停止",
+                "callback_data": "resp:stop"
+              }
+            ]
+          ]
+        }
+      }
+    },
+    {
+      "method": "editMessageText",
+      "keys": [
+        "chat_id",
+        "message_id",
+        "text",
+        "entities",
+        "parse_mode",
+        "reply_markup",
+        "link_preview_options"
+      ],
+      "payload": {
+        "chat_id": "<chat>",
+        "message_id": "<message 2>",
+        "text": "想到一半\n答到一半，\n✽ Thinking...",
+        "entities": [
+          {
+            "type": "expandable_blockquote",
+            "offset": 0,
+            "length": 4
+          }
+        ],
+        "reply_markup": {
+          "inline_keyboard": [
+            [
+              {
+                "text": "停止",
+                "callback_data": "resp:stop"
+              }
+            ]
+          ]
+        }
+      }
+    },
+    {
+      "method": "editMessageText",
+      "keys": [
+        "chat_id",
+        "message_id",
+        "text",
+        "entities",
+        "parse_mode",
+        "reply_markup",
+        "link_preview_options"
+      ],
+      "payload": {
+        "chat_id": "<chat>",
+        "message_id": "<message 2>",
+        "text": "想到一半\n答到一半，ts\nconst a\n✽ Thinking...",
+        "entities": [
+          {
+            "type": "expandable_blockquote",
+            "offset": 0,
+            "length": 4
+          },
+          {
+            "type": "code",
+            "offset": 10,
+            "length": 10
+          }
+        ],
+        "reply_markup": {
+          "inline_keyboard": [
+            [
+              {
+                "text": "停止",
+                "callback_data": "resp:stop"
+              }
+            ]
+          ]
+        }
+      }
+    },
+    {
+      "method": "editMessageText",
+      "keys": [
+        "chat_id",
+        "message_id",
+        "text",
+        "entities",
+        "parse_mode",
+        "reply_markup",
+        "link_preview_options"
+      ],
+      "payload": {
+        "chat_id": "<chat>",
+        "message_id": "<message 2>",
+        "text": "想到一半\n答到一半，```ts\nconst a\n\n⚠ got status: 500 Internal Server Error",
+        "entities": [
+          {
+            "type": "expandable_blockquote",
+            "offset": 0,
+            "length": 4
+          },
+          {
+            "type": "italic",
+            "offset": 25,
+            "length": 39
+          }
+        ],
+        "reply_markup": {
+          "inline_keyboard": [
+            [
+              {
+                "text": "重试",
+                "callback_data": "resp:retry"
+              }
+            ]
+          ]
+        }
+      }
+    }
+  ],
+  "a stop after a partial answer": [
+    {
+      "method": "sendChatAction",
+      "keys": [
+        "chat_id",
+        "action"
+      ],
+      "payload": {
+        "chat_id": "<chat>",
+        "action": "typing"
+      }
+    },
+    {
+      "method": "sendMessage",
+      "keys": [
+        "chat_id",
+        "text",
+        "business_connection_id",
+        "direct_messages_topic_id",
+        "reply_parameters",
+        "reply_markup"
+      ],
+      "payload": {
+        "chat_id": "<chat>",
+        "text": "✽ Thinking...",
+        "reply_parameters": {
+          "message_id": "<message 1>"
+        },
+        "reply_markup": {
+          "inline_keyboard": [
+            [
+              {
+                "text": "停止",
+                "callback_data": "resp:stop"
+              }
+            ]
+          ]
+        }
+      }
+    },
+    {
+      "method": "editMessageText",
+      "keys": [
+        "chat_id",
+        "message_id",
+        "text",
+        "entities",
+        "parse_mode",
+        "reply_markup",
+        "link_preview_options"
+      ],
+      "payload": {
+        "chat_id": "<chat>",
+        "message_id": "<message 2>",
+        "text": "说到一半\n✽ Thinking...",
+        "reply_markup": {
+          "inline_keyboard": [
+            [
+              {
+                "text": "停止",
+                "callback_data": "resp:stop"
+              }
+            ]
+          ]
+        }
+      }
+    },
+    {
+      "method": "editMessageText",
+      "keys": [
+        "chat_id",
+        "message_id",
+        "text",
+        "entities",
+        "parse_mode",
+        "reply_markup",
+        "link_preview_options"
+      ],
+      "payload": {
+        "chat_id": "<chat>",
+        "message_id": "<message 2>",
+        "text": "说到一半，还没说完\n✽ Thinking...",
+        "reply_markup": {
+          "inline_keyboard": [
+            [
+              {
+                "text": "停止",
+                "callback_data": "resp:stop"
+              }
+            ]
+          ]
+        }
+      }
+    },
+    {
+      "method": "editMessageText",
+      "keys": [
+        "chat_id",
+        "message_id",
+        "text",
+        "entities",
+        "parse_mode",
+        "reply_markup",
+        "link_preview_options"
+      ],
+      "payload": {
+        "chat_id": "<chat>",
+        "message_id": "<message 2>",
+        "text": "说到一半，还没说完\n\n[stopped]",
+        "reply_markup": {
+          "inline_keyboard": [
+            [
+              {
+                "text": "重试",
+                "callback_data": "resp:retry"
+              }
+            ]
+          ]
+        }
+      }
+    }
+  ],
+  "a long answer that splits, with an image": [
+    {
+      "method": "sendChatAction",
+      "keys": [
+        "chat_id",
+        "action"
+      ],
+      "payload": {
+        "chat_id": "<chat>",
+        "action": "typing"
+      }
+    },
+    {
+      "method": "sendMessage",
+      "keys": [
+        "chat_id",
+        "text",
+        "business_connection_id",
+        "direct_messages_topic_id",
+        "reply_parameters",
+        "reply_markup"
+      ],
+      "payload": {
+        "chat_id": "<chat>",
+        "text": "✽ Thinking...",
+        "reply_parameters": {
+          "message_id": "<message 1>"
+        },
+        "reply_markup": {
+          "inline_keyboard": [
+            [
+              {
+                "text": "停止",
+                "callback_data": "resp:stop"
+              }
+            ]
+          ]
+        }
+      }
+    },
+    {
+      "method": "editMessageText",
+      "keys": [
+        "chat_id",
+        "message_id",
+        "text",
+        "entities",
+        "parse_mode",
+        "reply_markup",
+        "link_preview_options"
+      ],
+      "payload": {
+        "chat_id": "<chat>",
+        "message_id": "<message 2>",
+        "text": "<970 chars sha256:6564821b86da257d 第 1 段：内容很长。内容很长。内容很长。内容很长。内容很长。内容很长。内容很长…。内容很长。\n✽ Thinking...>",
+        "reply_markup": {
+          "inline_keyboard": [
+            [
+              {
+                "text": "停止",
+                "callback_data": "resp:stop"
+              }
+            ]
+          ]
+        }
+      }
+    },
+    {
+      "method": "editMessageText",
+      "keys": [
+        "chat_id",
+        "message_id",
+        "text",
+        "entities",
+        "parse_mode",
+        "reply_markup",
+        "link_preview_options"
+      ],
+      "payload": {
+        "chat_id": "<chat>",
+        "message_id": "<message 2>",
+        "text": "<1928 chars sha256:4c1da7ff3b4380f6 第 1 段：内容很长。内容很长。内容很长。内容很长。内容很长。内容很长。内容很长…。内容很长。\n✽ Thinking...>",
+        "reply_markup": {
+          "inline_keyboard": [
+            [
+              {
+                "text": "停止",
+                "callback_data": "resp:stop"
+              }
+            ]
+          ]
+        }
+      }
+    },
+    {
+      "method": "editMessageText",
+      "keys": [
+        "chat_id",
+        "message_id",
+        "text",
+        "entities",
+        "parse_mode",
+        "reply_markup",
+        "link_preview_options"
+      ],
+      "payload": {
+        "chat_id": "<chat>",
+        "message_id": "<message 2>",
+        "text": "<2886 chars sha256:e6286d2a53931cec 第 1 段：内容很长。内容很长。内容很长。内容很长。内容很长。内容很长。内容很长…。内容很长。\n✽ Thinking...>",
+        "reply_markup": {
+          "inline_keyboard": [
+            [
+              {
+                "text": "停止",
+                "callback_data": "resp:stop"
+              }
+            ]
+          ]
+        }
+      }
+    },
+    {
+      "method": "editMessageText",
+      "keys": [
+        "chat_id",
+        "message_id",
+        "text",
+        "entities",
+        "parse_mode",
+        "reply_markup",
+        "link_preview_options"
+      ],
+      "payload": {
+        "chat_id": "<chat>",
+        "message_id": "<message 2>",
+        "text": "<3844 chars sha256:93678a32d93a5e68 第 1 段：内容很长。内容很长。内容很长。内容很长。内容很长。内容很长。内容很长…。内容很长。\n✽ Thinking...>",
+        "reply_markup": {
+          "inline_keyboard": [
+            [
+              {
+                "text": "停止",
+                "callback_data": "resp:stop"
+              }
+            ]
+          ]
+        }
+      }
+    },
+    {
+      "method": "editMessageText",
+      "keys": [
+        "chat_id",
+        "message_id",
+        "text",
+        "entities",
+        "parse_mode",
+        "reply_markup",
+        "link_preview_options"
+      ],
+      "payload": {
+        "chat_id": "<chat>",
+        "message_id": "<message 2>",
+        "text": "<3830 chars sha256:f6db98d9488975ed 第 1 段：内容很长。内容很长。内容很长。内容很长。内容很长。内容很长。内容很长…内容很长。内容很长。内容很长。内容很长。>"
+      }
+    },
+    {
+      "method": "sendMessage",
+      "keys": [
+        "chat_id",
+        "text",
+        "reply_parameters",
+        "reply_markup"
+      ],
+      "payload": {
+        "chat_id": "<chat>",
+        "text": "continued",
+        "reply_parameters": {
+          "message_id": "<message 1>"
+        },
+        "reply_markup": {
+          "inline_keyboard": [
+            [
+              {
+                "text": "停止",
+                "callback_data": "resp:stop"
+              }
+            ]
+          ]
+        }
+      }
+    },
+    {
+      "method": "editMessageText",
+      "keys": [
+        "chat_id",
+        "message_id",
+        "text",
+        "entities",
+        "parse_mode",
+        "reply_markup",
+        "link_preview_options"
+      ],
+      "payload": {
+        "chat_id": "<chat>",
+        "message_id": "<message 3>",
+        "text": "<1928 chars sha256:494f7beb57c00b1a 第 5 段：内容很长。内容很长。内容很长。内容很长。内容很长。内容很长。内容很长…。内容很长。\n✽ Thinking...>",
+        "reply_markup": {
+          "inline_keyboard": [
+            [
+              {
+                "text": "停止",
+                "callback_data": "resp:stop"
+              }
+            ]
+          ]
+        }
+      }
+    },
+    {
+      "method": "editMessageText",
+      "keys": [
+        "chat_id",
+        "message_id",
+        "text",
+        "entities",
+        "parse_mode",
+        "reply_markup",
+        "link_preview_options"
+      ],
+      "payload": {
+        "chat_id": "<chat>",
+        "message_id": "<message 3>",
+        "text": "<2886 chars sha256:a73fc8453a544a90 第 5 段：内容很长。内容很长。内容很长。内容很长。内容很长。内容很长。内容很长…。内容很长。\n✽ Thinking...>",
+        "reply_markup": {
+          "inline_keyboard": [
+            [
+              {
+                "text": "停止",
+                "callback_data": "resp:stop"
+              }
+            ]
+          ]
+        }
+      }
+    },
+    {
+      "method": "editMessageText",
+      "keys": [
+        "chat_id",
+        "message_id",
+        "text",
+        "entities",
+        "parse_mode",
+        "reply_markup",
+        "link_preview_options"
+      ],
+      "payload": {
+        "chat_id": "<chat>",
+        "message_id": "<message 3>",
+        "text": "<3844 chars sha256:96632553e591d27d 第 5 段：内容很长。内容很长。内容很长。内容很长。内容很长。内容很长。内容很长…。内容很长。\n✽ Thinking...>",
+        "reply_markup": {
+          "inline_keyboard": [
+            [
+              {
+                "text": "停止",
+                "callback_data": "resp:stop"
+              }
+            ]
+          ]
+        }
+      }
+    },
+    {
+      "method": "editMessageText",
+      "keys": [
+        "chat_id",
+        "message_id",
+        "text",
+        "entities",
+        "parse_mode",
+        "reply_markup",
+        "link_preview_options"
+      ],
+      "payload": {
+        "chat_id": "<chat>",
+        "message_id": "<message 3>",
+        "text": "<3830 chars sha256:36c2e1b2b25a63a5 第 5 段：内容很长。内容很长。内容很长。内容很长。内容很长。内容很长。内容很长…内容很长。内容很长。内容很长。内容很长。>"
+      }
+    },
+    {
+      "method": "sendMessage",
+      "keys": [
+        "chat_id",
+        "text",
+        "reply_parameters",
+        "reply_markup"
+      ],
+      "payload": {
+        "chat_id": "<chat>",
+        "text": "continued",
+        "reply_parameters": {
+          "message_id": "<message 1>"
+        },
+        "reply_markup": {
+          "inline_keyboard": [
+            [
+              {
+                "text": "停止",
+                "callback_data": "resp:stop"
+              }
+            ]
+          ]
+        }
+      }
+    },
+    {
+      "method": "editMessageText",
+      "keys": [
+        "chat_id",
+        "message_id",
+        "text",
+        "entities",
+        "parse_mode",
+        "reply_markup",
+        "link_preview_options"
+      ],
+      "payload": {
+        "chat_id": "<chat>",
+        "message_id": "<message 4>",
+        "text": "<970 chars sha256:90b8b2354c9d3a6a 第 9 段：内容很长。内容很长。内容很长。内容很长。内容很长。内容很长。内容很长…。内容很长。\n✽ Thinking...>",
+        "reply_markup": {
+          "inline_keyboard": [
+            [
+              {
+                "text": "停止",
+                "callback_data": "resp:stop"
+              }
+            ]
+          ]
+        }
+      }
+    },
+    {
+      "method": "editMessageText",
+      "keys": [
+        "chat_id",
+        "message_id",
+        "text",
+        "entities",
+        "parse_mode",
+        "reply_markup",
+        "link_preview_options"
+      ],
+      "payload": {
+        "chat_id": "<chat>",
+        "message_id": "<message 2>",
+        "text": "<3830 chars sha256:f6db98d9488975ed 第 1 段：内容很长。内容很长。内容很长。内容很长。内容很长。内容很长。内容很长…内容很长。内容很长。内容很长。内容很长。>",
+        "link_preview_options": {
+          "is_disabled": true
+        }
+      }
+    },
+    {
+      "method": "editMessageText",
+      "keys": [
+        "chat_id",
+        "message_id",
+        "text",
+        "entities",
+        "parse_mode",
+        "reply_markup",
+        "link_preview_options"
+      ],
+      "payload": {
+        "chat_id": "<chat>",
+        "message_id": "<message 3>",
+        "text": "<3830 chars sha256:36c2e1b2b25a63a5 第 5 段：内容很长。内容很长。内容很长。内容很长。内容很长。内容很长。内容很长…内容很长。内容很长。内容很长。内容很长。>",
+        "link_preview_options": {
+          "is_disabled": true
+        }
+      }
+    },
+    {
+      "method": "editMessageText",
+      "keys": [
+        "chat_id",
+        "message_id",
+        "text",
+        "entities",
+        "parse_mode",
+        "reply_markup",
+        "link_preview_options"
+      ],
+      "payload": {
+        "chat_id": "<chat>",
+        "message_id": "<message 4>",
+        "text": "<956 chars sha256:5b3f5a5943e1af6c 第 9 段：内容很长。内容很长。内容很长。内容很长。内容很长。内容很长。内容很长…内容很长。内容很长。内容很长。内容很长。>"
+      }
+    },
+    {
+      "method": "sendPhoto",
+      "keys": [
+        "chat_id",
+        "photo",
+        "reply_parameters"
+      ],
+      "payload": {
+        "chat_id": "<chat>",
+        "photo": "<input file>",
+        "reply_parameters": {
+          "message_id": "<message 1>"
+        }
+      }
+    },
+    {
+      "method": "editMessageReplyMarkup",
+      "keys": [
+        "chat_id",
+        "message_id",
+        "reply_markup"
+      ],
+      "payload": {
+        "chat_id": "<chat>",
+        "message_id": "<message 5>",
+        "reply_markup": {
+          "inline_keyboard": [
+            [
+              {
+                "text": "检测到用户编辑，是否重试",
+                "callback_data": "resp:retry"
+              }
+            ]
+          ]
+        }
+      }
+    }
+  ],
+  "an answer whose search footer folds": [
+    {
+      "method": "sendChatAction",
+      "keys": [
+        "chat_id",
+        "action"
+      ],
+      "payload": {
+        "chat_id": "<chat>",
+        "action": "typing"
+      }
+    },
+    {
+      "method": "sendMessage",
+      "keys": [
+        "chat_id",
+        "text",
+        "business_connection_id",
+        "direct_messages_topic_id",
+        "reply_parameters",
+        "reply_markup"
+      ],
+      "payload": {
+        "chat_id": "<chat>",
+        "text": "✽ Thinking...",
+        "reply_parameters": {
+          "message_id": "<message 1>"
+        },
+        "reply_markup": {
+          "inline_keyboard": [
+            [
+              {
+                "text": "停止",
+                "callback_data": "resp:stop"
+              }
+            ]
+          ]
+        }
+      }
+    },
+    {
+      "method": "editMessageText",
+      "keys": [
+        "chat_id",
+        "message_id",
+        "text",
+        "entities",
+        "parse_mode",
+        "reply_markup",
+        "link_preview_options"
+      ],
+      "payload": {
+        "chat_id": "<chat>",
+        "message_id": "<message 2>",
+        "text": "搜到了：答案。\n✽ Thinking...",
+        "reply_markup": {
+          "inline_keyboard": [
+            [
+              {
+                "text": "停止",
+                "callback_data": "resp:stop"
+              }
+            ]
+          ]
+        }
+      }
+    },
+    {
+      "method": "editMessageText",
+      "keys": [
+        "chat_id",
+        "message_id",
+        "text",
+        "entities",
+        "parse_mode",
+        "reply_markup",
+        "link_preview_options"
+      ],
+      "payload": {
+        "chat_id": "<chat>",
+        "message_id": "<message 2>",
+        "text": "搜到了：答案。",
+        "link_preview_options": {
+          "is_disabled": true
+        }
+      }
+    },
+    {
+      "method": "sendMessage",
+      "keys": [
+        "chat_id",
+        "text",
+        "entities",
+        "reply_parameters",
+        "reply_markup",
+        "link_preview_options"
+      ],
+      "payload": {
+        "chat_id": "<chat>",
+        "text": "🔍 查看完整搜索过程\n共搜索 131 次，引用 3 条来源",
+        "entities": [
+          {
+            "type": "text_link",
+            "offset": 0,
+            "length": 11,
+            "url": "https://miniapp.test/g/<token>"
+          },
+          {
+            "type": "italic",
+            "offset": 12,
+            "length": 18
+          }
+        ],
+        "reply_parameters": {
+          "message_id": "<message 1>"
+        },
+        "link_preview_options": {
+          "url": "https://miniapp.test/g/<token>",
+          "show_above_text": false
+        }
+      }
+    }
+  ],
+  "an answer, then its retry": [
+    {
+      "method": "sendChatAction",
+      "keys": [
+        "chat_id",
+        "action"
+      ],
+      "payload": {
+        "chat_id": "<chat>",
+        "action": "typing"
+      }
+    },
+    {
+      "method": "sendMessage",
+      "keys": [
+        "chat_id",
+        "text",
+        "business_connection_id",
+        "direct_messages_topic_id",
+        "reply_parameters",
+        "reply_markup"
+      ],
+      "payload": {
+        "chat_id": "<chat>",
+        "text": "✽ Thinking...",
+        "reply_parameters": {
+          "message_id": "<message 1>"
+        },
+        "reply_markup": {
+          "inline_keyboard": [
+            [
+              {
+                "text": "停止",
+                "callback_data": "resp:stop"
+              }
+            ]
+          ]
+        }
+      }
+    },
+    {
+      "method": "editMessageText",
+      "keys": [
+        "chat_id",
+        "message_id",
+        "text",
+        "entities",
+        "parse_mode",
+        "reply_markup",
+        "link_preview_options"
+      ],
+      "payload": {
+        "chat_id": "<chat>",
+        "message_id": "<message 2>",
+        "text": "第一版。\n✽ Thinking...",
+        "reply_markup": {
+          "inline_keyboard": [
+            [
+              {
+                "text": "停止",
+                "callback_data": "resp:stop"
+              }
+            ]
+          ]
+        }
+      }
+    },
+    {
+      "method": "editMessageText",
+      "keys": [
+        "chat_id",
+        "message_id",
+        "text",
+        "entities",
+        "parse_mode",
+        "reply_markup",
+        "link_preview_options"
+      ],
+      "payload": {
+        "chat_id": "<chat>",
+        "message_id": "<message 2>",
+        "text": "第一版。"
+      }
+    },
+    {
+      "method": "editMessageText",
+      "keys": [
+        "chat_id",
+        "message_id",
+        "text",
+        "entities",
+        "parse_mode",
+        "reply_markup",
+        "link_preview_options"
+      ],
+      "payload": {
+        "chat_id": "<chat>",
+        "message_id": "<message 2>",
+        "text": "✽ Thinking...",
+        "reply_markup": {
+          "inline_keyboard": [
+            [
+              {
+                "text": "停止",
+                "callback_data": "resp:stop"
+              }
+            ]
+          ]
+        }
+      }
+    },
+    {
+      "method": "sendChatAction",
+      "keys": [
+        "chat_id",
+        "action"
+      ],
+      "payload": {
+        "chat_id": "<chat>",
+        "action": "typing"
+      }
+    },
+    {
+      "method": "editMessageText",
+      "keys": [
+        "chat_id",
+        "message_id",
+        "text",
+        "entities",
+        "parse_mode",
+        "reply_markup",
+        "link_preview_options"
+      ],
+      "payload": {
+        "chat_id": "<chat>",
+        "message_id": "<message 2>",
+        "text": "重新想\n✽ Thinking...",
+        "entities": [
+          {
+            "type": "blockquote",
+            "offset": 0,
+            "length": 3
+          }
+        ],
+        "reply_markup": {
+          "inline_keyboard": [
+            [
+              {
+                "text": "停止",
+                "callback_data": "resp:stop"
+              }
+            ]
+          ]
+        }
+      }
+    },
+    {
+      "method": "editMessageText",
+      "keys": [
+        "chat_id",
+        "message_id",
+        "text",
+        "entities",
+        "parse_mode",
+        "reply_markup",
+        "link_preview_options"
+      ],
+      "payload": {
+        "chat_id": "<chat>",
+        "message_id": "<message 2>",
+        "text": "重新想\n第二版，\n✽ Thinking...",
+        "entities": [
+          {
+            "type": "expandable_blockquote",
+            "offset": 0,
+            "length": 3
+          }
+        ],
+        "reply_markup": {
+          "inline_keyboard": [
+            [
+              {
+                "text": "停止",
+                "callback_data": "resp:stop"
+              }
+            ]
+          ]
+        }
+      }
+    },
+    {
+      "method": "editMessageText",
+      "keys": [
+        "chat_id",
+        "message_id",
+        "text",
+        "entities",
+        "parse_mode",
+        "reply_markup",
+        "link_preview_options"
+      ],
+      "payload": {
+        "chat_id": "<chat>",
+        "message_id": "<message 2>",
+        "text": "重新想\n第二版，更好。\n✽ Thinking...",
+        "entities": [
+          {
+            "type": "expandable_blockquote",
+            "offset": 0,
+            "length": 3
+          }
+        ],
+        "reply_markup": {
+          "inline_keyboard": [
+            [
+              {
+                "text": "停止",
+                "callback_data": "resp:stop"
+              }
+            ]
+          ]
+        }
+      }
+    },
+    {
+      "method": "editMessageText",
+      "keys": [
+        "chat_id",
+        "message_id",
+        "text",
+        "entities",
+        "parse_mode",
+        "reply_markup",
+        "link_preview_options"
+      ],
+      "payload": {
+        "chat_id": "<chat>",
+        "message_id": "<message 2>",
+        "text": "重新想\n第二版，更好。",
+        "entities": [
+          {
+            "type": "expandable_blockquote",
+            "offset": 0,
+            "length": 3
+          }
+        ],
+        "reply_markup": {
+          "inline_keyboard": [
+            [
+              {
+                "text": "<",
+                "callback_data": "resp:prev"
+              },
+              {
+                "text": "重试",
+                "callback_data": "resp:retry"
+              }
+            ]
+          ]
+        }
+      }
+    }
+  ]
+}
