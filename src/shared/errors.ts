@@ -18,6 +18,33 @@ export const getErrorMessage = (error: unknown): string => {
 };
 
 /**
+ * The OpenAI and Anthropic SDKs' errors for a request that got no HTTP answer:
+ * "Connection error." (the network failure in .cause) and "Request timed out."
+ * (a subclass of the first).
+ */
+const SDK_CONNECTION_ERROR_NAMES: ReadonlySet<string> = new Set(['APIConnectionError', 'APIConnectionTimeoutError']);
+
+/**
+ * Read by name, so this lowest layer imports no SDK. Anthropic's classes set
+ * their name; OpenAI's leave it at 'Error', hence the class name as well.
+ */
+const isSdkConnectionError = (error: unknown): boolean =>
+    error instanceof Error &&
+    (SDK_CONNECTION_ERROR_NAMES.has(error.name) || SDK_CONNECTION_ERROR_NAMES.has(error.constructor.name));
+
+/** A Headers-like getter: the SDKs keep the response's Headers on an HTTP error */
+const hasHeaderGetter = (value: unknown): value is { get: (name: string) => unknown } =>
+    typeof value === 'object' && value !== null && 'get' in value && typeof value.get === 'function';
+
+/** A response header an SDK HTTP error carries; null when there is none */
+const responseHeaderOf = (error: unknown, name: string): string | null => {
+    const headers = typeof error === 'object' && error !== null && 'headers' in error ? error.headers : undefined;
+    if (!hasHeaderGetter(headers)) return null;
+    const value = headers.get(name);
+    return typeof value === 'string' ? value : null;
+};
+
+/**
  * Check if error is retryable
  */
 export const isRetryableError = (error: unknown): boolean => {
@@ -33,6 +60,12 @@ export const isRetryableError = (error: unknown): boolean => {
         .with({ message: P.string.includes('ECONNRESET') }, () => true)
         .with({ message: P.string.includes('socket hang up') }, () => true)
         .with({ status: P.number.gte(500).lte(599) }, () => true)
+        // What the OpenAI and Anthropic SDKs used to retry on their own. Their
+        // requests go out with maxRetries 0 now, so these are retried here or
+        // not at all.
+        .with({ status: P.union(408, 409, 429) }, () => true)
+        .when(isSdkConnectionError, () => true)
+        .when((candidate) => responseHeaderOf(candidate, 'x-should-retry') === 'true', () => true)
         .with({ code: 'ETIMEDOUT' }, () => true)
         .with({ code: 'ECONNRESET' }, () => true)
         .otherwise(() => false);
