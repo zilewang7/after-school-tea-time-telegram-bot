@@ -6,8 +6,9 @@
  * 401/429 never count as a thinking rejection.
  *
  * The Anthropic wire beyond the effort lives here too: the headers SDK 1.x
- * sends to the relay, named SSE events the consumer does not know, and the
- * request rules of API version 2026-10-21.
+ * sends to the relay, max_tokens from the model catalog with its own one-shot
+ * downgrade (composed with the effort one), named SSE events the consumer does
+ * not know, and the request rules of API version 2026-10-21.
  *
  * One local stub answers every OpenAI-compatible platform (each under its own
  * base path) with scripted rounds. Gemini has its own file
@@ -20,10 +21,13 @@ import { expect, reportResults, runCase, type CaseResult } from './harness.mts';
 import type { StreamChunk, UnifiedMessage } from '../../src/ai/types.js';
 import type { ToolHandler } from '../../src/ai/tools/index.js';
 
+type ModelCatalogEntry = import('../../src/config/model-catalog.js').ModelCatalogEntry;
+
 interface ScriptedReply {
     readonly path: string;
     readonly status: number;
     readonly body: string;
+    readonly headers?: Readonly<Record<string, string>>;
 }
 
 const scripted: ScriptedReply[] = [];
@@ -42,7 +46,7 @@ const stub = createServer((request, response) => {
             response.end(JSON.stringify({ error: { message: `unexpected request to ${path}` } }));
             return;
         }
-        response.writeHead(next.status, { 'Content-Type': 'application/json' });
+        response.writeHead(next.status, { 'Content-Type': 'application/json', ...next.headers });
         response.end(next.body);
     });
 });
@@ -69,6 +73,8 @@ const { AnthropicPlatform } = await import('../../src/ai/platforms/anthropic-pla
 const { DeepSeekPlatform } = await import('../../src/ai/platforms/deepseek-platform.js');
 const { MimoPlatform } = await import('../../src/ai/platforms/mimo-platform.js');
 const { GrokPlatform } = await import('../../src/ai/platforms/grok-platform.js');
+const { setModelCatalog } = await import('../../src/config/model-catalog.js');
+const { emptyModelCapabilities } = await import('../../src/config/model-capabilities.js');
 
 const json = (value: unknown): string => JSON.stringify(value);
 
@@ -187,6 +193,39 @@ const errorBody = (message: string): string => JSON.stringify({ error: { message
 
 const ANTHROPIC_PATH = '/anthropic/v1/messages';
 
+/** What a provider with a lower output ceiling answers to max_tokens 128000 */
+const OVER_LIMIT = 'max_tokens: 128000 > 64000, which is the maximum allowed number of output tokens for claude-sonnet-5-5';
+const EFFORT_REJECTED = 'output_config.effort: xhigh is not supported by this model';
+
+/** A Messages round that calls lookup_weather once and stops for tool_use */
+const messagesToolRound = (city: string): string =>
+    [
+        messageStart,
+        {
+            type: 'content_block_start',
+            index: 0,
+            content_block: { type: 'tool_use', id: `toolu_${city}`, name: 'lookup_weather', input: {} },
+        },
+        { type: 'content_block_delta', index: 0, delta: { type: 'input_json_delta', partial_json: json({ city }) } },
+        { type: 'content_block_stop', index: 0 },
+        { type: 'message_delta', delta: { stop_reason: 'tool_use', stop_sequence: null }, usage: { output_tokens: 5 } },
+        { type: 'message_stop' },
+    ]
+        .map(namedEvent)
+        .join('');
+
+/** A catalog row that only says how many output tokens the model has */
+const catalogRowWith = (id: string, outputTokens: number | null): ModelCatalogEntry => ({
+    id,
+    label: id,
+    platform: 'anthropic',
+    enabled: true,
+    capabilities: { ...emptyModelCapabilities(), schema: 1, outputTokens },
+    source: 'manual',
+    checkedOn: '2026-11-14',
+    confidence: 'high',
+});
+
 // ---- request body helpers ----
 
 const bodyOf = (index: number): Record<string, unknown> => recorded[index]?.body ?? {};
@@ -202,6 +241,13 @@ const thinkingOf = (index: number): Record<string, unknown> | undefined => {
 };
 
 const effortOf = (index: number): unknown => reasoningOf(index)?.effort;
+
+const maxTokensAt = (index: number): unknown => bodyOf(index).max_tokens;
+
+const outputConfigAt = (index: number): unknown => bodyOf(index).output_config;
+
+const countLinesWith = (lines: readonly string[], text: string): number =>
+    lines.filter((line) => line.includes(text)).length;
 
 const asArray = (value: unknown): unknown[] => (Array.isArray(value) ? value : []);
 
@@ -453,6 +499,222 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
                 `the API version is 2026-10-21 (got ${json(headers['anthropic-version'])})`
             );
             expect(!('x-api-key' in headers), `no x-api-key header (got ${json(Object.keys(headers))})`);
+        },
+    },
+    {
+        name: 'anthropic asks for the catalog output limit as max_tokens, 64000 for an unknown claude id',
+        body: async () => {
+            const platform = new AnthropicPlatform();
+            try {
+                setModelCatalog([]);
+                reset(reply(ANTHROPIC_PATH, 200, messagesAnswer('seed answer')));
+                await drainQuietly(() =>
+                    platform.sendMessage(userTurn('hi'), { model: 'claude-sonnet-5-5', timeout: 20000 })
+                );
+                expect(maxTokensAt(0) === 128_000, `the seed's 128000 goes out (got ${json(maxTokensAt(0))})`);
+
+                setModelCatalog([catalogRowWith('claude-opus-5-5', 100_000)], 'offline');
+                reset(reply(ANTHROPIC_PATH, 200, messagesAnswer('catalog answer')));
+                await drainQuietly(() =>
+                    platform.sendMessage(userTurn('hi'), {
+                        model: 'claude-opus-5-5',
+                        timeout: 20000,
+                        thinkingEffort: { mode: 'explicit', value: 'max' },
+                    })
+                );
+                expect(maxTokensAt(0) === 100_000, `a catalog row wins over the seed (got ${json(maxTokensAt(0))})`);
+
+                reset(reply(ANTHROPIC_PATH, 200, messagesAnswer('unknown answer')));
+                await drainQuietly(() =>
+                    platform.sendMessage(userTurn('hi'), { model: 'claude-offline-unknown', timeout: 20000 })
+                );
+                expect(maxTokensAt(0) === 64_000, `an unknown id gets 64000 (got ${json(maxTokensAt(0))})`);
+            } finally {
+                setModelCatalog([]);
+            }
+        },
+    },
+    {
+        name: 'anthropic drops max_tokens to 16000 once and keeps it for the later tool rounds',
+        body: async () => {
+            reset(
+                reply(ANTHROPIC_PATH, 400, errorBody(OVER_LIMIT)),
+                reply(ANTHROPIC_PATH, 200, messagesToolRound('Paris')),
+                reply(ANTHROPIC_PATH, 200, messagesAnswer('Paris is sunny.'))
+            );
+            const { result, lines } = await captureConsole(async () =>
+                drain(() =>
+                    new AnthropicPlatform().sendMessage(userTurn('Weather in Paris?'), {
+                        model: 'claude-sonnet-5-5',
+                        timeout: 20000,
+                        tools: createTurnTools([weatherTool]),
+                    })
+                )
+            );
+            expect(result.error === null && result.text.endsWith('Paris is sunny.'), `the reply completes (got ${json(result)})`);
+            expect(recorded.length === 3, `rejected round, its retry, the next round (got ${recorded.length})`);
+            expect(
+                json(recorded.map((_entry, index) => maxTokensAt(index))) === json([128_000, 16_000, 16_000]),
+                `128000, then 16000 for the retry and the later round (got ${json(recorded.map((entry) => entry.body.max_tokens))})`
+            );
+            expect(
+                countLinesWith(lines, 'claude-sonnet-5-5 rejected max_tokens 128000; retrying with 16000: ') === 1 &&
+                    countLinesWith(lines, 'maximum allowed number of output tokens') === 1,
+                `one warn line with the model and the error text (got ${json(lines)})`
+            );
+            expect(countLinesWith(lines, 'rejected thinking effort') === 0, 'no effort downgrade was involved');
+        },
+    },
+    {
+        name: 'anthropic does not lower max_tokens a second time in the same reply',
+        body: async () => {
+            reset(
+                reply(ANTHROPIC_PATH, 400, errorBody(OVER_LIMIT)),
+                reply(ANTHROPIC_PATH, 200, messagesToolRound('Oslo')),
+                reply(ANTHROPIC_PATH, 400, errorBody(OVER_LIMIT)),
+                reply(ANTHROPIC_PATH, 200, messagesAnswer('never sent'))
+            );
+            const { result, lines } = await captureConsole(async () =>
+                drain(() =>
+                    new AnthropicPlatform().sendMessage(userTurn('Weather in Oslo?'), {
+                        model: 'claude-sonnet-5-5',
+                        timeout: 20000,
+                        tools: createTurnTools([weatherTool]),
+                    })
+                )
+            );
+            expect(result.error !== null, `the second rejection fails the reply (got ${json(result)})`);
+            expect(recorded.length === 3, `no retry after the second rejection (got ${recorded.length})`);
+            expect(countLinesWith(lines, 'rejected max_tokens') === 1, `logged once (got ${json(lines)})`);
+        },
+    },
+    {
+        name: 'anthropic does not retry a 400 about something else',
+        body: async () => {
+            reset(
+                reply(ANTHROPIC_PATH, 400, errorBody('messages.1.content: text content blocks must be non-empty')),
+                reply(ANTHROPIC_PATH, 200, messagesAnswer('never sent'))
+            );
+            const { result, lines } = await captureConsole(async () =>
+                drain(() =>
+                    new AnthropicPlatform().sendMessage(userTurn('hi'), {
+                        model: 'claude-sonnet-5-5',
+                        timeout: 20000,
+                        thinkingEffort: { mode: 'explicit', value: 'xhigh' },
+                    })
+                )
+            );
+            expect(result.error !== null, 'the reply fails');
+            expect(recorded.length === 1, `a single request (got ${recorded.length})`);
+            expect(
+                countLinesWith(lines, 'rejected max_tokens') === 0 && countLinesWith(lines, 'rejected thinking effort') === 0,
+                `nothing was downgraded (got ${json(lines)})`
+            );
+        },
+    },
+    {
+        name: 'anthropic does not lower max_tokens on 401, 403, 404, 429 or 5xx',
+        body: async () => {
+            const platform = new AnthropicPlatform();
+            for (const status of [401, 403, 404, 429, 500, 503]) {
+                // Every SDK retry of 429/5xx gets the same answer, without the backoff wait
+                const failure: ScriptedReply = {
+                    ...reply(ANTHROPIC_PATH, status, errorBody(OVER_LIMIT)),
+                    headers: { 'retry-after-ms': '1' },
+                };
+                reset(failure, failure, failure);
+                const { result, lines } = await captureConsole(async () =>
+                    drain(() =>
+                        platform.sendMessage(userTurn('hi'), {
+                            model: 'claude-sonnet-5-5',
+                            timeout: 20000,
+                            maxRetries: 1,
+                            thinkingEffort: { mode: 'explicit', value: 'xhigh' },
+                        })
+                    )
+                );
+                expect(result.error !== null, `${status}: the reply fails`);
+                expect(recorded.length >= 1, `${status}: at least one request (got ${recorded.length})`);
+                expect(
+                    recorded.every((entry) => entry.body.max_tokens === 128_000),
+                    `${status}: every body keeps 128000 (got ${json(recorded.map((entry) => entry.body.max_tokens))})`
+                );
+                expect(countLinesWith(lines, 'rejected max_tokens') === 0, `${status}: no downgrade was logged (got ${json(lines)})`);
+            }
+        },
+    },
+    {
+        name: 'anthropic drops the effort, then max_tokens, and later rounds keep both',
+        body: async () => {
+            reset(
+                reply(ANTHROPIC_PATH, 400, errorBody(EFFORT_REJECTED)),
+                reply(ANTHROPIC_PATH, 400, errorBody(OVER_LIMIT)),
+                reply(ANTHROPIC_PATH, 200, messagesToolRound('Lima')),
+                reply(ANTHROPIC_PATH, 200, messagesAnswer('Lima is sunny.'))
+            );
+            const { result, lines } = await captureConsole(async () =>
+                drain(() =>
+                    new AnthropicPlatform().sendMessage(userTurn('Weather in Lima?'), {
+                        model: 'claude-sonnet-5-5',
+                        timeout: 20000,
+                        thinkingEffort: { mode: 'explicit', value: 'xhigh' },
+                        tools: createTurnTools([weatherTool]),
+                    })
+                )
+            );
+            expect(result.error === null && result.text.endsWith('Lima is sunny.'), `the reply completes (got ${json(result)})`);
+            expect(recorded.length === 4, `two rejections, the tool round, the answer (got ${recorded.length})`);
+            expect(
+                json(recorded.map((_entry, index) => maxTokensAt(index))) === json([128_000, 128_000, 16_000, 16_000]),
+                `max_tokens per request (got ${json(recorded.map((entry) => entry.body.max_tokens))})`
+            );
+            expect(
+                json(recorded.map((_entry, index) => outputConfigAt(index) ?? null)) ===
+                    json([{ effort: 'xhigh' }, null, null, null]),
+                `output_config per request (got ${json(recorded.map((entry) => entry.body.output_config))})`
+            );
+            expect(
+                countLinesWith(lines, 'rejected thinking effort xhigh') === 1 && countLinesWith(lines, 'rejected max_tokens') === 1,
+                `each downgrade is logged once (got ${json(lines)})`
+            );
+        },
+    },
+    {
+        name: 'anthropic drops max_tokens, then the effort, and neither happens twice',
+        body: async () => {
+            reset(
+                reply(ANTHROPIC_PATH, 400, errorBody(OVER_LIMIT)),
+                reply(ANTHROPIC_PATH, 400, errorBody(EFFORT_REJECTED)),
+                reply(ANTHROPIC_PATH, 200, messagesToolRound('Rome')),
+                // Names both parameters: with both downgrades spent it is final
+                reply(ANTHROPIC_PATH, 400, errorBody('output_config.effort xhigh needs max_tokens above 16000')),
+                reply(ANTHROPIC_PATH, 200, messagesAnswer('never sent'))
+            );
+            const { result, lines } = await captureConsole(async () =>
+                drain(() =>
+                    new AnthropicPlatform().sendMessage(userTurn('Weather in Rome?'), {
+                        model: 'claude-sonnet-5-5',
+                        timeout: 20000,
+                        thinkingEffort: { mode: 'explicit', value: 'xhigh' },
+                        tools: createTurnTools([weatherTool]),
+                    })
+                )
+            );
+            expect(result.error !== null, `the third rejection fails the reply (got ${json(result)})`);
+            expect(recorded.length === 4, `no retry after the third rejection (got ${recorded.length})`);
+            expect(
+                json(recorded.map((_entry, index) => maxTokensAt(index))) === json([128_000, 16_000, 16_000, 16_000]),
+                `max_tokens per request (got ${json(recorded.map((entry) => entry.body.max_tokens))})`
+            );
+            expect(
+                json(recorded.map((_entry, index) => outputConfigAt(index) ?? null)) ===
+                    json([{ effort: 'xhigh' }, { effort: 'xhigh' }, null, null]),
+                `output_config per request (got ${json(recorded.map((entry) => entry.body.output_config))})`
+            );
+            expect(
+                countLinesWith(lines, 'rejected thinking effort xhigh') === 1 && countLinesWith(lines, 'rejected max_tokens') === 1,
+                `each downgrade is logged once (got ${json(lines)})`
+            );
         },
     },
     {

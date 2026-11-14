@@ -17,6 +17,7 @@ import {
     toToolResultBlocks,
     type AnthropicRound,
 } from './anthropic/anthropic-tool-round.js';
+import { lowerMaxTokensAfter, maxTokensWireOf, type MaxTokensWire } from './anthropic/anthropic-max-tokens.js';
 import type { UsageSink } from '../usage/usage-types.js';
 import {
     anthropicEffortOf,
@@ -33,10 +34,27 @@ import type {
     ModelCapabilities,
 } from '../types.js';
 
-const MAX_OUTPUT_TOKENS = 16000;
-
 /** A 400 that blames the requested effort; every other status keeps its classification */
 const EFFORT_REJECTION = /effort|output[_\s]?config/i;
+
+/**
+ * Drop output_config.effort when `error` is a 400 that blames it and the reply
+ * sent an explicit effort that was not dropped yet; true when the round should
+ * be sent again (the adaptive thinking stays).
+ */
+const dropEffortAfter = (thinking: EffortWire | null, model: string, error: unknown): boolean => {
+    if (
+        thinking === null ||
+        thinking.degraded ||
+        thinking.mode !== 'explicit' ||
+        !isParamRejection(error, EFFORT_REJECTION)
+    ) {
+        return false;
+    }
+    thinking.degraded = true;
+    logEffortFallback('anthropic', model, thinking.value ?? 'explicit', 'adaptive thinking', error);
+    return true;
+};
 
 interface RequestOptions {
     model: string;
@@ -47,6 +65,8 @@ interface RequestOptions {
     usageSink?: UsageSink;
     /** The reply's thinking effort; null keeps the legacy adaptive-only request */
     thinking: EffortWire | null;
+    /** The reply's max_tokens; every round of the reply shares it and its downgrade */
+    output: MaxTokensWire;
 }
 
 export class AnthropicPlatform extends BasePlatform {
@@ -104,6 +124,7 @@ export class AnthropicPlatform extends BasePlatform {
             signal,
             usageSink,
             thinking: effortWireOf(config),
+            output: maxTokensWireOf(model),
         };
 
         if (tools && tools.definitions.length > 0) {
@@ -115,7 +136,13 @@ export class AnthropicPlatform extends BasePlatform {
     private buildRequest(
         messages: Anthropic.MessageParam[],
         tools: Anthropic.ToolUnion[],
-        options: { model: string; systemPrompt?: string; forceNoTools?: boolean; thinking?: EffortWire | null }
+        options: {
+            model: string;
+            maxTokens: number;
+            systemPrompt?: string;
+            forceNoTools?: boolean;
+            thinking?: EffortWire | null;
+        }
     ): Anthropic.MessageCreateParamsStreaming {
         const effort = options.thinking === undefined || options.thinking === null || options.thinking.degraded
             ? null
@@ -124,7 +151,7 @@ export class AnthropicPlatform extends BasePlatform {
                 : null;
         return {
             model: options.model,
-            max_tokens: MAX_OUTPUT_TOKENS,
+            max_tokens: options.maxTokens,
             messages,
             stream: true,
             ...(options.systemPrompt ? { system: options.systemPrompt } : {}),
@@ -161,20 +188,24 @@ export class AnthropicPlatform extends BasePlatform {
     }
 
     /**
-     * One Messages request with the reply-wide one-shot effort downgrade: a 400
-     * that blames output_config.effort retries the same round without it (the
-     * adaptive thinking stays). 401/404/429 are never a downgrade.
+     * One Messages request with the reply-wide one-shot downgrades: a 400 that
+     * blames max_tokens sends the same round again with the fallback limit, a
+     * 400 that blames output_config.effort sends it again without the effort.
+     * Each happens at most once per reply, in either order, and both state
+     * flags live on `options`, so later tool rounds keep what was dropped.
+     * 401/403/404/429/5xx are never a downgrade.
      */
     private async openRoundStream(
         messages: Anthropic.MessageParam[],
         tools: Anthropic.ToolUnion[],
         options: RequestOptions,
         roundOptions: { forceNoTools?: boolean }
-    ) {
+    ): Promise<AsyncIterable<Anthropic.RawMessageStreamEvent>> {
         const open = () => this.sendWithRetry(
             () => this.client.messages.create(
                 this.buildRequest(messages, tools, {
                     model: options.model,
+                    maxTokens: options.output.maxTokens,
                     systemPrompt: options.systemPrompt,
                     forceNoTools: roundOptions.forceNoTools,
                     thinking: options.thinking,
@@ -186,18 +217,14 @@ export class AnthropicPlatform extends BasePlatform {
         try {
             return await open();
         } catch (error) {
-            const thinking = options.thinking;
-            if (
-                thinking === null ||
-                thinking.degraded ||
-                thinking.mode !== 'explicit' ||
-                !isParamRejection(error, EFFORT_REJECTION)
-            ) {
-                throw error;
-            }
-            thinking.degraded = true;
-            logEffortFallback('anthropic', options.model, thinking.value ?? 'explicit', 'adaptive thinking', error);
-            return await open();
+            // max_tokens is checked first: its messages are the more specific
+            // ones. Every accepted downgrade flips a one-shot flag, so this
+            // recursion sends a round at most three times.
+            const lowered =
+                lowerMaxTokensAfter(options.output, options.model, error) ||
+                dropEffortAfter(options.thinking, options.model, error);
+            if (!lowered) throw error;
+            return await this.openRoundStream(messages, tools, options, roundOptions);
         }
     }
 
