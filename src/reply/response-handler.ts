@@ -822,10 +822,15 @@ export const processStream = async (
                 : undefined;
 
         // A rich reply streams one rich frame per update and never splits; a
-        // pending link message stays entities (it needs its preview card). A
-        // frame over the budget demotes the reply here, and the entities code
-        // below takes over from this very chunk.
+        // pending link message stays entities (it needs its preview card). The
+        // frame is only built when an update is due. One over the budget
+        // demotes the reply here, and the entities code below takes over from
+        // this very chunk.
         if (chatContext.delivery === 'rich' && linkForDisplay === undefined) {
+            const richUpdateDue =
+                (state.textBuffer || state.thinkingBuffer) &&
+                (toolStatusChanged || Date.now() - lastUpdateTime > updateInterval);
+            if (!richUpdateDue) continue;
             const frame = buildRichStreamingFrame({
                 thinking: isContinuationMessage(chatContext) ? '' : state.thinkingBuffer,
                 text: cleanReplyBody(state.textBuffer),
@@ -833,15 +838,10 @@ export const processStream = async (
                 resolveContextLink,
             });
             if (frame.length <= RICH_MAX_SOURCE_LENGTH) {
-                if (
-                    (state.textBuffer || state.thinkingBuffer) &&
-                    (toolStatusChanged || Date.now() - lastUpdateTime > updateInterval)
-                ) {
-                    await chatContext.editor.updateRich(frame, {
-                        replyMarkup: buildResponseButtons(chatContext.currentButtonState),
-                    });
-                    lastUpdateTime = Date.now();
-                }
+                await chatContext.editor.updateRich(frame, {
+                    replyMarkup: buildResponseButtons(chatContext.currentButtonState),
+                });
+                lastUpdateTime = Date.now();
                 continue;
             }
             demoteToEntities(chatContext, 'overflow', frame.length);
