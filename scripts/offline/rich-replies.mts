@@ -62,7 +62,7 @@ const bench = await createResumeBench();
 const responseHandler = await import('../../src/reply/response-handler.js');
 const botMessageService = await import('../../src/services/bot-message-service.js');
 const dbIndex = await import('../../src/db/index.js');
-const { markPendingEditWhileProcessing } = await import('../../src/state.js');
+const { markPendingEditWhileProcessing, setContextNumbering } = await import('../../src/state.js');
 const { updateChatSettings } = await import('../../src/services/chat-settings-service.js');
 const checks = await import('../../src/reply/resume/continue-checks.js');
 const { THINKING_LINK_LABEL } = await import('../../src/telegram/formatters/thinking-link.js');
@@ -1382,6 +1382,171 @@ results.push(
         expect(
             final.includes('最后确认一下语气👍</blockquote>') && final.endsWith('好的😄，一起开心🎉'),
             `the final keeps the thinking's last characters and the whole answer (got ${json(final)})`
+        );
+    })
+);
+
+/** The link a #N of the reply's context opens, as message-link.ts builds it */
+const messageLinkOf = (chatId: number, messageId: number): string =>
+    `https://t.me/c/${String(chatId).replace(/^-100/, '')}/${messageId}`;
+
+const anchorOf = (url: string, label: string): string => `<a href="${url}">${label}</a>`;
+
+results.push(
+    await runCase('case 17: a #N in the answer is a link in the rich frames and the final; code and unknown numbers stay text', async () => {
+        const started = await startReply({ richReplies: true });
+        const { chatId, userMessageId } = started;
+        const earlierMessageId = takeMessageId();
+        setContextNumbering(chatId, userMessageId, new Map([[1, earlierMessageId], [2, userMessageId]]));
+        const first = anchorOf(messageLinkOf(chatId, earlierMessageId), '#1');
+        const second = anchorOf(messageLinkOf(chatId, userMessageId), '#2');
+        await runReply(started, {
+            steps: paragraphSteps([
+                '见 #1 的说法',
+                '- 列表里 #2，代码 `#1` 和 #9 不变',
+                '<details><summary>折叠 #1</summary>\n\n里面 **#2**\n\n</details>',
+                '<code>#1</code>、[见 #1](https://example.com)、**Alice**#1 都不是',
+                // A line that starts with '#' is a heading to Telegram: the
+                // link's tag keeps it a paragraph, an unknown number is escaped
+                '#2 说得对\n#9 没这条',
+            ]),
+        });
+        const richTexts = editsOf(started.telegram, started.firstMessageId)
+            .filter(isRichCall)
+            .map((call) => richMarkdownOf(call) ?? '');
+        expect(
+            richTexts.length > 1 && richTexts.every((markdown) => markdown.includes(`见 ${first} 的说法`)),
+            `every rich call links #1 (got ${json(richTexts)})`
+        );
+        const final = richTexts.at(-1) ?? '';
+        for (const piece of [
+            `- 列表里 ${second}，代码 \`#1\` 和 #9 不变`,
+            `<summary>折叠 ${first}</summary>`,
+            `里面 <b>${second}</b>`,
+            // Code, a link already, and a reference glued to a word stay text
+            '<code>#1</code>、[见 #1](https://example.com)、<b>Alice</b>#1 都不是',
+            `\n\n${second} 说得对\\\n\\#9 没这条`,
+        ]) {
+            expect(final.includes(piece), `the final carries ${json(piece)} (got ${json(final)})`);
+        }
+        const [version] = await versionsOf(started);
+        expect(version?.text.includes('见 #1 的说法') === true, 'the stored text keeps the plain #1');
+    })
+);
+
+results.push(
+    await runCase('case 17: the rich error display links #N, in a cut head as well', async () => {
+        const url = 'https://t.me/c/42/7';
+        const resolveContextLink = (contextNumber: number): string | undefined => (contextNumber === 1 ? url : undefined);
+        const errorLines = buildErrorLine('出错了');
+        const whole = buildRichErrorDisplay({ text: '见 #1', errorLines, resolveContextLink, maxLength: RICH_MAX_SOURCE_LENGTH });
+        expect(whole.startsWith(`见 ${anchorOf(url, '#1')}`), `the uncut display links #1 (got ${json(whole.slice(0, 80))})`);
+        const head = `见 #1 ${'内容。'.repeat(400)}`;
+        const answerText = `${head}\n\n${'后文。'.repeat(2000)}`;
+        const cut = buildRichErrorDisplay({ text: answerText, errorLines, resolveContextLink, maxLength: 4000 });
+        expect(
+            cut.length <= 4000 && cut.startsWith(`见 ${anchorOf(url, '#1')}`) && cut.includes('<p>…</p>'),
+            `the cut display keeps the link in its head (got ${cut.length} characters, ${json(cut.slice(0, 80))})`
+        );
+        const unlinked = buildRichErrorDisplay({ text: '见 #1', errorLines, maxLength: RICH_MAX_SOURCE_LENGTH });
+        expect(unlinked.startsWith('见 #1'), `without a resolver #1 stays text (got ${json(unlinked.slice(0, 40))})`);
+    })
+);
+
+results.push(
+    await runCase('case 17: the error display cut never leaves part of a #N, and many links do not empty the head', async () => {
+        const errorLines = buildErrorLine('出错了');
+        const urls: Record<number, string> = { 1: 'https://t.me/c/42/1', 12: 'https://t.me/c/42/12' };
+        const resolveContextLink = (contextNumber: number): string | undefined => urls[contextNumber];
+        // One long line: the cut falls at a plain position, somewhere around
+        // the #12 as the budget moves one character at a time
+        const line = `${'字'.repeat(2000)} #12 ${'字'.repeat(1000)}`;
+        const linkedToOne: number[] = [];
+        let keptReference = false;
+        let cutBeforeReference = false;
+        for (let maxLength = 2400; maxLength <= 2700; maxLength += 1) {
+            const display = buildRichErrorDisplay({ text: line, errorLines, resolveContextLink, maxLength });
+            if (display.includes(`${urls[1]}"`)) linkedToOne.push(maxLength);
+            if (display.includes(`${urls[12]}"`)) keptReference = true;
+            if (!display.includes('#1')) cutBeforeReference = true;
+        }
+        expect(linkedToOne.length === 0, `no cut leaves #1 of #12 as a link (budgets ${json(linkedToOne)})`);
+        expect(
+            keptReference && cutBeforeReference,
+            `the sweep crosses #12: some budgets keep it whole, some cut before it (kept ${keptReference}, cut before ${cutBeforeReference})`
+        );
+
+        // A cut inside code, a link or a formula leaves it open, and the
+        // strict form would read what it held as text; a cut right after a
+        // '#12' glued to markup ('#12**x**' reads '#12x') leaves it bare.
+        // None of these #12 is a link in the whole display, so no cut may
+        // make one
+        const createdLinks: string[] = [];
+        for (const middle of [
+            ' [见 #12](https://example.com/x) ',
+            ' `#12` ',
+            ' $x #12$ ',
+            ' [PR](https://example.com/#12) ',
+            ' [见 #12](https://x.com/$1) 后 #3 ',
+            ' #12**x** ',
+            ' #12`x` ',
+            ' #12<b>x</b> ',
+            ' #12-15 ',
+        ]) {
+            const text = `${'字'.repeat(2000)}${middle}${'字'.repeat(1000)}`;
+            for (let maxLength = 2500; maxLength <= 2600; maxLength += 1) {
+                const display = buildRichErrorDisplay({ text, errorLines, resolveContextLink, maxLength });
+                if (display.includes(`${urls[12]}"`) || display.includes(`${urls[1]}"`)) {
+                    createdLinks.push(`${middle.trim()} at ${maxLength}`);
+                }
+            }
+        }
+        expect(createdLinks.length === 0, `no cut links a #12 the whole display shows as text (got ${json(createdLinks.slice(0, 4))})`);
+
+        // A cut never splits a surrogate pair
+        const emoji = '😀'.repeat(1500);
+        const splitPairs: number[] = [];
+        for (let maxLength = 2000; maxLength <= 2100; maxLength += 1) {
+            const display = buildRichErrorDisplay({ text: emoji, errorLines, resolveContextLink, maxLength });
+            if (/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/.test(display)) splitPairs.push(maxLength);
+        }
+        expect(splitPairs.length === 0, `no display holds half an emoji (budgets ${json(splitPairs.slice(0, 4))})`);
+
+        // References bunched at the top of a long line (about 50 rendered
+        // characters each): later passes scale by what the last cut took
+        // off, not by the head's average, so the cut settles with the head
+        const linkOfNumber = (contextNumber: number): string => `https://t.me/c/1234567890/${100_000 + contextNumber}`;
+        const references = Array.from({ length: 580 }, (_, index) => `#${(index % 99) + 1}，`).join('');
+        const bunched = buildRichErrorDisplay({
+            text: `${references}${'字'.repeat(30_000)}`,
+            errorLines,
+            resolveContextLink: linkOfNumber,
+            maxLength: RICH_MAX_SOURCE_LENGTH,
+        });
+        expect(
+            bunched.length <= RICH_MAX_SOURCE_LENGTH && bunched.startsWith(anchorOf(linkOfNumber(1), '#1')),
+            `the head of bunched references is kept (got ${bunched.length} characters, ${json(bunched.slice(0, 60))})`
+        );
+        // The other way round: the first cut takes only plain text off, so
+        // the next pass scales by 1 and would cut everything; it keeps half
+        const fewerPlain = buildRichErrorDisplay({
+            text: `${Array.from({ length: 650 }, (_, index) => `#${(index % 99) + 1}，`).join('')}${'字'.repeat(10_000)}`,
+            errorLines,
+            resolveContextLink: linkOfNumber,
+            maxLength: RICH_MAX_SOURCE_LENGTH,
+        });
+        expect(
+            fewerPlain.length <= RICH_MAX_SOURCE_LENGTH && fewerPlain.length > RICH_MAX_SOURCE_LENGTH / 2,
+            `a later pass keeps a head that fits (got ${fewerPlain.length} characters, ${json(fewerPlain.slice(0, 60))})`
+        );
+
+        // About 12 rendered characters per source character: the head is
+        // scaled down instead of dropped
+        const dense = '#1 '.repeat(3000);
+        const display = buildRichErrorDisplay({ text: dense, errorLines, resolveContextLink, maxLength: RICH_MAX_SOURCE_LENGTH });
+        expect(
+            display.length <= RICH_MAX_SOURCE_LENGTH && display.startsWith(anchorOf(urls[1] ?? '', '#1')),
+            `a head of linked references is kept (got ${display.length} characters, ${json(display.slice(0, 60))})`
         );
     })
 );

@@ -2,7 +2,8 @@
  * The reply body as one Telegram rich message (the chat's richReplies switch).
  *
  * Only the model's answer goes as markdown (`toRichMarkdown`): that is where
- * the native tables, headings and math come from. Everything the bot builds
+ * the native tables, headings and math come from, and its `#N` context
+ * references become links there (`textLinks`). Everything the bot builds
  * itself — the thinking quote, the [stopped] marker, the tool records, the
  * search footer, the status and error lines — is already an exact
  * {text, entities} message and goes as HTML blocks (`toRichHtml`), so no
@@ -15,9 +16,10 @@
 import { renderMarkdown, toRichHtml, toRichMarkdown } from 'telegram-md-entities';
 import type { RenderedMessage } from 'telegram-md-entities';
 import type { AgentStats, GroundingData } from '../../ai/types.js';
-import { linkifyContextNumbers, type ContextLinkResolver } from './context-links.js';
+import { contextTextLinker, linkifyContextNumbers, type ContextLinkResolver } from './context-links.js';
 import { plainText } from './entity-text.js';
 import { withCitations } from './final-message-builder.js';
+import { headEndOf } from './rich-answer-cut.js';
 import {
     isSearchGroundingStep,
     renderGoogleSearchFooter,
@@ -59,18 +61,24 @@ const swallowsFollowingBlocks = (markdown: string): boolean => {
 };
 
 /**
- * The answer as rich markdown that the blocks after it cannot fall into. A
- * streaming frame prefers the streaming form (what is still being typed shows
- * as intended); a final or error display prefers the strict form, the way the
- * entities final reads the answer. The other form is taken when the preferred
- * one leaves a construct open over what follows: a cut answer ending inside a
- * top-level fence needs the streaming close, while telegram-md-entities 0.8.0
- * closes a fence nested in a list item at column 0, which opens a new fence,
- * so there only the strict form keeps the following blocks outside.
+ * The answer as rich markdown that the blocks after it cannot fall into, its
+ * `#N` references linked. A streaming frame prefers the streaming form (what
+ * is still being typed shows as intended); a final or error display prefers
+ * the strict form, the way the entities final reads the answer. The other
+ * form is taken when the preferred one leaves a construct open over what
+ * follows: a cut answer ending inside a top-level fence needs the streaming
+ * close, while telegram-md-entities 0.8.0 closes a fence nested in a list
+ * item at column 0, which opens a new fence, so there only the strict form
+ * keeps the following blocks outside.
  */
-const answerMarkdown = (text: string, preferred: 'streaming' | 'strict'): string => {
-    const streamingForm = (): string => toRichMarkdown(text, { streaming: true });
-    const strictForm = (): string => toRichMarkdown(text);
+const answerMarkdown = (
+    text: string,
+    preferred: 'streaming' | 'strict',
+    resolveContextLink: ContextLinkResolver | undefined
+): string => {
+    const textLinks = contextTextLinker(resolveContextLink);
+    const streamingForm = (): string => toRichMarkdown(text, { streaming: true, textLinks });
+    const strictForm = (): string => toRichMarkdown(text, { textLinks });
     const first = preferred === 'streaming' ? streamingForm() : strictForm();
     if (!swallowsFollowingBlocks(first)) return first;
     const second = preferred === 'streaming' ? strictForm() : streamingForm();
@@ -98,7 +106,7 @@ export const buildRichStreamingFrame = (input: RichStreamingFrameInput): string 
                       input.resolveContextLink
                   )
               ),
-        input.text === '' ? '' : answerMarkdown(input.text, 'streaming'),
+        input.text === '' ? '' : answerMarkdown(input.text, 'streaming', input.resolveContextLink),
     ]);
 
 export interface RichReplyBodyInput {
@@ -136,7 +144,7 @@ export const buildRichReplyBody = (input: RichReplyBodyInput): string | null => 
     const inlineFooter = !input.searchFolded && footer.text.trim() !== '';
     return joinRichBlocks([
         thinkingQuoteBlock(input.thinking, input.resolveContextLink),
-        answerMarkdown(withCitations(input.text, searchGrounding), 'strict'),
+        answerMarkdown(withCitations(input.text, searchGrounding), 'strict', input.resolveContextLink),
         input.wasStoppedByUser ? toRichHtml(plainText('[stopped]')) : '',
         ...buildToolRecordSections(input.agentStats, groundingData).map((section) => toRichHtml(linkify(section))),
         inlineFooter ? toRichHtml(linkify(footer)) : '',
@@ -164,40 +172,64 @@ const MAX_CUT_PASSES = 8;
 /** Cut this much more than the overflow, so that one pass usually settles it */
 const CUT_MARGIN = 500;
 
-const isHighSurrogate = (unit: number): boolean => unit >= 0xd800 && unit <= 0xdbff;
+/** A link textLinks put on a `#N` (or one the answer wrote the same way) */
+const CONTEXT_ANCHOR = /<a href="[^"]*">#\d{1,3}<\/a>/g;
+
+const contextAnchorsOf = (markdown: string): string[] => markdown.match(CONTEXT_ANCHOR) ?? [];
 
 /**
- * Where the head of text ends when it may be at most target long: the last
- * paragraph boundary, else the last line break, else target itself (never
- * between the halves of a surrogate pair). A boundary in the first half is
- * passed over: it would drop most of what is left. A plain search on
- * purpose: the construct-aware raw splitter is quadratic on tables and code
- * blocks, and answerMarkdown already closes what a cut leaves open.
+ * The cut head as rich markdown. A cut can make a `#N` that the whole answer
+ * shows as text into a link: in a code span, a link label or a formula it
+ * cut open, or glued to what it cut off ('#12**x**' reads '#12x'). The
+ * head's links are then no longer the first links of the whole answer, and
+ * the head goes without links.
  */
-const headEndOf = (text: string, target: number): number => {
-    const floor = Math.floor(target / 2);
-    const paragraphEnd = text.lastIndexOf('\n\n', target);
-    if (paragraphEnd > floor) return paragraphEnd;
-    const lineEnd = text.lastIndexOf('\n', target);
-    if (lineEnd > floor) return lineEnd;
-    return isHighSurrogate(text.charCodeAt(target - 1)) ? target - 1 : target;
+const cutHeadMarkdown = (
+    head: string,
+    resolveContextLink: ContextLinkResolver | undefined,
+    wholeAnchors: readonly string[]
+): string => {
+    const linked = answerMarkdown(head, 'strict', resolveContextLink);
+    const anchors = contextAnchorsOf(linked);
+    const onlyLinksOfTheWhole =
+        anchors.length <= wholeAnchors.length && anchors.every((anchor, index) => anchor === wholeAnchors[index]);
+    return onlyLinksOfTheWhole ? linked : answerMarkdown(head, 'strict', undefined);
 };
 
 /**
  * The answer's head with a '…' paragraph, then the error lines, within
- * maxLength. The rendered answer runs about as long as its source, so each
- * pass cuts what the last one was over by, plus a margin.
+ * maxLength (where the head ends: headEndOf). The rendered answer is longer
+ * than its source (tags, and about 45 characters per `#N` link), so a pass
+ * cuts what the last one was over by, scaled back to source characters, plus
+ * a margin. The first pass scales by the whole answer's ratio, later ones by
+ * what the last cut took off: when the links bunch at the top, the average
+ * overstates what lies right before the cut. That ratio can be far off the
+ * other way too, so a later pass keeps at least half of the head.
  */
-const cutAnswerToFit = (text: string, errorBlock: string, uncutLength: number, maxLength: number): string => {
-    let head = text;
-    let overflow = uncutLength - maxLength;
+const cutAnswerToFit = (
+    input: RichErrorDisplayInput,
+    errorBlock: string,
+    uncut: { readonly displayLength: number; readonly answerBlock: string }
+): string => {
+    const { maxLength, resolveContextLink } = input;
+    const wholeAnchors = contextAnchorsOf(uncut.answerBlock);
+    let head = input.text;
+    let renderedHeadLength = uncut.answerBlock.length;
+    let overflow = uncut.displayLength - maxLength;
+    let renderedPerSourceCharacter = renderedHeadLength / Math.max(1, head.length);
     for (let pass = 0; pass < MAX_CUT_PASSES && head !== ''; pass += 1) {
-        const target = head.length - overflow - CUT_MARGIN;
+        const estimate = head.length - Math.ceil(overflow / Math.max(1, renderedPerSourceCharacter)) - CUT_MARGIN;
+        const target = pass === 0 ? estimate : Math.max(estimate, Math.floor(head.length / 2));
         // Trailing blank lines and spaces of the head belong to the cut
-        head = target <= 0 ? '' : head.slice(0, headEndOf(head, target)).trimEnd();
-        const display = joinRichBlocks([head === '' ? '' : answerMarkdown(head, 'strict'), CUT_MARK_BLOCK, errorBlock]);
+        const cutHead = target <= 0 ? '' : head.slice(0, headEndOf(head, target)).trimEnd();
+        const answerBlock = cutHead === '' ? '' : cutHeadMarkdown(cutHead, resolveContextLink, wholeAnchors);
+        const display = joinRichBlocks([answerBlock, CUT_MARK_BLOCK, errorBlock]);
         if (display.length <= maxLength) return display;
+        // The cut took at least a character off: the target is below the head's length
+        renderedPerSourceCharacter = (renderedHeadLength - answerBlock.length) / (head.length - cutHead.length);
         overflow = display.length - maxLength;
+        renderedHeadLength = answerBlock.length;
+        head = cutHead;
     }
     return joinRichBlocks([CUT_MARK_BLOCK, errorBlock]);
 };
@@ -209,12 +241,12 @@ const cutAnswerToFit = (text: string, errorBlock: string, uncutLength: number, m
  */
 export const buildRichErrorDisplay = (input: RichErrorDisplayInput): string => {
     const quoteBlock = thinkingQuoteBlock(input.thinking, input.resolveContextLink);
-    const answerBlock = input.text === '' ? '' : answerMarkdown(input.text, 'strict');
+    const answerBlock = input.text === '' ? '' : answerMarkdown(input.text, 'strict', input.resolveContextLink);
     const errorBlock = toRichHtml(input.errorLines);
     const whole = joinRichBlocks([quoteBlock, answerBlock, errorBlock]);
     if (whole.length <= input.maxLength) return whole;
     const withoutQuote = joinRichBlocks([answerBlock, errorBlock]);
     if (withoutQuote.length <= input.maxLength) return withoutQuote;
-    const uncutLength = joinRichBlocks([answerBlock, CUT_MARK_BLOCK, errorBlock]).length;
-    return cutAnswerToFit(input.text, errorBlock, uncutLength, input.maxLength);
+    const uncut = { displayLength: joinRichBlocks([answerBlock, CUT_MARK_BLOCK, errorBlock]).length, answerBlock };
+    return cutAnswerToFit(input, errorBlock, uncut);
 };

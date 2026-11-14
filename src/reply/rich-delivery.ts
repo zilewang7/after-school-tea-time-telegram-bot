@@ -40,6 +40,9 @@ export type ReplyDelivery = 'entities' | 'rich';
  * counts 32768 characters of rendered rich text; the source is longer than
  * what it renders, so this stays on the safe side without counting blocks
  * (a refusal of too many blocks demotes the reply like any other refusal).
+ * The tag of each `#N` context link (about 47 characters) counts too: an
+ * answer with hundreds of references reaches it early and goes on as
+ * entities, which link them as well.
  */
 export const RICH_MAX_SOURCE_LENGTH = 30_000;
 
