@@ -489,6 +489,10 @@ const createRecordingEditor = (): RecordingEditor => {
             contents.push(content);
             return true;
         },
+        updateRich: async (markdown) => {
+            contents.push(markdown);
+            return true;
+        },
         updateStatusOnly: async () => true,
         setStatus: (statusText) => {
             statusCalls.push(statusText);

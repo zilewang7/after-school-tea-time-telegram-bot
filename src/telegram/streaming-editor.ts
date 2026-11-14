@@ -6,8 +6,12 @@
  * Pacing, coalescing, 429 backoff and final-state retries are all handled by
  * the coordinator, so this module only tracks the current content and rotates
  * the status line.
+ *
+ * The content is either text with entities or a rich message's markdown
+ * (updateRich); the status line follows whichever form the content has.
  */
-import type { Api, RawApi } from 'grammy';
+import type { Api, GrammyError, RawApi } from 'grammy';
+import type { InlineKeyboardMarkup } from 'grammy/types';
 import type { MessageEntity as RenderedEntity } from 'telegram-md-entities';
 import { to } from '../shared/result.js';
 import {
@@ -16,7 +20,9 @@ import {
     discardPendingEdit,
     dropMessageState,
     runApiCall,
+    type EditFormat,
 } from './edit-coordinator.js';
+import { withRichStatusLine } from './formatters/rich-blocks.js';
 import type { LinkPreviewOptions } from './link-preview.js';
 
 /**
@@ -68,6 +74,11 @@ export interface StreamingEditorOptions {
     getButtons?: () => any;
     /** Initial content of the message (to skip identical first edits) */
     initialContent?: string;
+    /**
+     * Telegram refused a streaming rich frame (updateRich or its status
+     * refresh). Final rich updates report to their own callback instead.
+     */
+    onRichRejected?: (error: GrammyError) => void;
 }
 
 /**
@@ -84,6 +95,17 @@ export interface UpdateContentOptions {
 }
 
 /**
+ * Options for updateRich
+ */
+export interface UpdateRichOptions {
+    replyMarkup?: InlineKeyboardMarkup;
+    /** If true, don't append the status line (for final messages) */
+    isFinal?: boolean;
+    /** Final updates only: Telegram refused this state */
+    onRejected?: (error: GrammyError) => void;
+}
+
+/**
  * StreamingEditor interface
  */
 export interface StreamingEditor {
@@ -93,6 +115,14 @@ export interface StreamingEditor {
      * coordinator; final updates resolve once actually delivered.
      */
     updateContent: (content: string, options?: UpdateContentOptions) => Promise<boolean>;
+
+    /**
+     * Update the message as a rich message: `markdown` is the whole content,
+     * the status line is appended as its own italic paragraph unless final.
+     * Same delivery rules as updateContent. A refused streaming frame pauses
+     * the status refreshes until the next content update.
+     */
+    updateRich: (markdown: string, options?: UpdateRichOptions) => Promise<boolean>;
 
     /**
      * Update with just status text (no content yet)
@@ -141,6 +171,10 @@ interface EditorState {
     currentEntities: readonly RenderedEntity[] | undefined;
     /** Link preview the latest content carries (kept by the status refreshes) */
     currentLinkPreview: LinkPreviewOptions | undefined;
+    /** Whether the latest content is text with entities or rich markdown */
+    contentFormat: EditFormat;
+    /** Telegram refused the latest rich frame: the spinner must not send it again */
+    richPaused: boolean;
     spinnerTimer: ReturnType<typeof setInterval> | null;
     /** Pending lazy clear of a finished tool's status line */
     statusClearTimer: ReturnType<typeof setTimeout> | null;
@@ -160,8 +194,16 @@ export const createStreamingEditor = (options: StreamingEditorOptions): Streamin
         currentContent: null,
         currentEntities: undefined,
         currentLinkPreview: undefined,
+        contentFormat: 'text',
+        richPaused: false,
         spinnerTimer: null,
         statusClearTimer: null,
+    };
+
+    /** A refused streaming rich frame: stop re-sending it, tell the owner */
+    const rejectRichFrame = (error: GrammyError): void => {
+        state.richPaused = true;
+        options.onRichRejected?.(error);
     };
 
     if (initialContent) {
@@ -217,6 +259,17 @@ export const createStreamingEditor = (options: StreamingEditorOptions): Streamin
             return;
         }
 
+        if (state.contentFormat === 'rich') {
+            // A refused frame stays refused with any status line under it
+            if (state.richPaused) return;
+            void submitEdit(api, chatId, messageId, withRichStatusLine(state.currentContent ?? '', getStatusText()), {
+                replyMarkup: buttons,
+                priority,
+                rich: { onRejected: rejectRichFrame },
+            });
+            return;
+        }
+
         const statusText = getStatusText();
         const text = state.currentContent
             ? `${state.currentContent}\n${statusText}`
@@ -254,6 +307,7 @@ export const createStreamingEditor = (options: StreamingEditorOptions): Streamin
             state.currentContent = content;
             state.currentEntities = opts?.entities;
             state.currentLinkPreview = opts?.linkPreviewOptions;
+            state.contentFormat = 'text';
             const text = `${content}\n${getStatusText()}`;
 
             // Fire-and-forget: the coordinator always flushes the newest state
@@ -262,6 +316,35 @@ export const createStreamingEditor = (options: StreamingEditorOptions): Streamin
                 replyMarkup: opts?.replyMarkup,
                 linkPreviewOptions: opts?.linkPreviewOptions,
                 priority: 'content',
+            });
+            return true;
+        },
+
+        updateRich: async (markdown: string, opts?: UpdateRichOptions): Promise<boolean> => {
+            if (state.stopped && !opts?.isFinal) return false;
+
+            if (opts?.isFinal) {
+                cancelStatusClear();
+                stopSpinner();
+                // Final: await actual delivery; a refusal goes to the caller only
+                return submitEdit(api, chatId, messageId, markdown, {
+                    replyMarkup: opts.replyMarkup,
+                    isFinal: true,
+                    rich: { onRejected: opts.onRejected },
+                });
+            }
+
+            state.currentContent = markdown;
+            state.currentEntities = undefined;
+            state.currentLinkPreview = undefined;
+            state.contentFormat = 'rich';
+            state.richPaused = false;
+
+            // Fire-and-forget, like updateContent
+            void submitEdit(api, chatId, messageId, withRichStatusLine(markdown, getStatusText()), {
+                replyMarkup: opts?.replyMarkup,
+                priority: 'content',
+                rich: { onRejected: rejectRichFrame },
             });
             return true;
         },
