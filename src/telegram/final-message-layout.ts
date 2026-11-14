@@ -6,14 +6,26 @@
  * The final delivery and the stored-version refresh share this, so the layout a
  * live reply ends with and the one a replay produces stay identical (both are
  * rendered by `buildFinalMessages`).
+ *
+ * A chunk is either rendered text with entities or a rich message's markdown
+ * (a reply delivered as a rich message); the two kinds mix in one layout.
  */
-import type { Api, RawApi } from 'grammy';
+import { GrammyError, type Api, type RawApi } from 'grammy';
 import type { InlineKeyboardMarkup } from 'grammy/types';
 import { to } from '../shared/result.js';
 import { registerContinuation, unregisterBotReplyInFlight, unregisterContinuation } from '../state.js';
 import { toApiEntities } from './api-entities.js';
 import { runApiCall, submitEdit } from './edit-coordinator.js';
 import type { FinalMessageChunk } from './formatters/final-message-builder.js';
+
+/** One message of the layout sent as a rich message: its whole markdown */
+export interface RichLayoutChunk {
+    readonly richMarkdown: string;
+}
+
+export type LayoutChunk = FinalMessageChunk | RichLayoutChunk;
+
+export const isRichLayoutChunk = (chunk: LayoutChunk): chunk is RichLayoutChunk => 'richMarkdown' in chunk;
 
 export interface LayOutChunksInput {
     readonly api: Api<RawApi>;
@@ -25,9 +37,11 @@ export interface LayOutChunksInput {
     /** Existing text message ids in chat order (media messages excluded) */
     readonly messageIds: readonly number[];
     /** The final layout, one chunk per message; must not be empty */
-    readonly chunks: readonly FinalMessageChunk[];
+    readonly chunks: readonly LayoutChunk[];
     /** Buttons for the last chunk (the caller adds them to a media message itself) */
     readonly replyMarkup?: InlineKeyboardMarkup;
+    /** Telegram refused a rich chunk (its edit or its send) */
+    readonly onRichRejected?: (error: GrammyError) => void;
 }
 
 export interface LayOutChunksResult {
@@ -63,12 +77,18 @@ export const layOutChunks = async (input: LayOutChunksInput): Promise<LayOutChun
         const chunk = chunks[index];
         if (messageId === undefined || chunk === undefined) continue;
         const carriesButtons = index === chunks.length - 1;
-        const delivered = await submitEdit(api, chatId, messageId, chunk.text, {
-            entities: chunk.entities,
-            replyMarkup: carriesButtons ? input.replyMarkup : undefined,
-            linkPreviewOptions: chunk.linkPreviewOptions,
-            isFinal: true,
-        });
+        const delivered = isRichLayoutChunk(chunk)
+            ? await submitEdit(api, chatId, messageId, chunk.richMarkdown, {
+                  replyMarkup: carriesButtons ? input.replyMarkup : undefined,
+                  isFinal: true,
+                  rich: { onRejected: input.onRichRejected },
+              })
+            : await submitEdit(api, chatId, messageId, chunk.text, {
+                  entities: chunk.entities,
+                  replyMarkup: carriesButtons ? input.replyMarkup : undefined,
+                  linkPreviewOptions: chunk.linkPreviewOptions,
+                  isFinal: true,
+              });
         if (!delivered) allDelivered = false;
     }
 
@@ -79,17 +99,30 @@ export const layOutChunks = async (input: LayOutChunksInput): Promise<LayOutChun
         if (chunk === undefined) continue;
         const carriesButtons = index === chunks.length - 1;
         const [sendError, sent] = await to(
-            runApiCall(chatId, () =>
-                api.sendMessage(chatId, chunk.text, {
-                    entities: toApiEntities(chunk.entities),
-                    reply_parameters: { message_id: userMessageId },
-                    reply_markup: carriesButtons ? input.replyMarkup : undefined,
-                    link_preview_options: chunk.linkPreviewOptions,
-                })
+            runApiCall<{ readonly message_id: number }>(chatId, () =>
+                isRichLayoutChunk(chunk)
+                    ? api.sendRichMessage(
+                          chatId,
+                          { markdown: chunk.richMarkdown },
+                          {
+                              reply_parameters: { message_id: userMessageId },
+                              reply_markup: carriesButtons ? input.replyMarkup : undefined,
+                          }
+                      )
+                    : api.sendMessage(chatId, chunk.text, {
+                          entities: toApiEntities(chunk.entities),
+                          reply_parameters: { message_id: userMessageId },
+                          reply_markup: carriesButtons ? input.replyMarkup : undefined,
+                          link_preview_options: chunk.linkPreviewOptions,
+                      })
             )
         );
         if (sendError !== null) {
             console.error('[final-layout] failed to send an overflow chunk:', sendError);
+            // A 429 that escaped the retries is pacing, not a refusal of the content
+            if (isRichLayoutChunk(chunk) && sendError instanceof GrammyError && sendError.error_code !== 429) {
+                input.onRichRejected?.(sendError);
+            }
             allDelivered = false;
             break;
         }

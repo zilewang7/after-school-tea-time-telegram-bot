@@ -3,12 +3,19 @@
  * its chain of thought inline on the first message, when it moves behind the
  * long-CoT link message, when an overflowing GoogleSearch footer folds into one
  * compact link message at the end, and the chunk shapes all of them produce.
+ *
+ * And how `layOutChunks` writes a layout over the chat: entities chunks exactly
+ * as before, rich chunks as rich_message edits and sendRichMessage, a refused
+ * rich chunk reported and counted as not delivered.
  */
+import type { GrammyError } from 'grammy';
 import { expect, reportResults, runCase, type CaseResult } from './harness.mts';
+import { createFakeTelegram } from './fake-telegram.mts';
 
 const { LINK_COT_LENGTH, buildFinalChunks, renderedCoTLength, shouldLinkCoT } = await import(
     '../../src/reply/final-layout.js'
 );
+const { layOutChunks } = await import('../../src/telegram/final-message-layout.js');
 const { THINKING_LINK_LABEL } = await import('../../src/telegram/formatters/thinking-link.js');
 const { buildFinalMessages } = await import(
     '../../src/telegram/formatters/final-message-builder.js'
@@ -490,6 +497,158 @@ results.push(
             chunks.slice(0, -1).every((chunk) => !chunk.text.includes('GoogleSearch')),
             'both footer blocks leave the answer'
         );
+    })
+);
+
+// ---------------------------------------------------------------------------
+// layOutChunks: entities and rich chunks over the chat
+// ---------------------------------------------------------------------------
+
+let nextLayoutChat = -1009966000000;
+const USER_MESSAGE_ID = 41;
+const FIRST_MESSAGE_ID = 42;
+const BUTTONS = { inline_keyboard: [[{ text: '重试', callback_data: 'resp:retry' }]] };
+
+const ENTITIES_CHUNKS = [
+    {
+        text: '粗体 正文',
+        entities: [{ type: 'bold' as const, offset: 0, length: 2 }],
+        linkPreviewOptions: { is_disabled: true },
+    },
+    { text: '第二条', entities: [] },
+];
+
+results.push(
+    await runCase('layOutChunks: entities chunks go out exactly as before', async () => {
+        const telegram = createFakeTelegram();
+        const chatId = (nextLayoutChat -= 1);
+        const laidOut = await layOutChunks({
+            api: telegram.api,
+            chatId,
+            userMessageId: USER_MESSAGE_ID,
+            firstMessageId: FIRST_MESSAGE_ID,
+            messageIds: [FIRST_MESSAGE_ID],
+            chunks: ENTITIES_CHUNKS,
+            replyMarkup: BUTTONS,
+        });
+        expect(laidOut.allDelivered && laidOut.messageIds.length === 2, 'both chunks are in the chat');
+        const [edit, send] = telegram.calls;
+        expect(
+            JSON.stringify(Object.keys(edit?.payload ?? {})) ===
+                JSON.stringify(['chat_id', 'message_id', 'text', 'entities', 'parse_mode', 'reply_markup', 'link_preview_options']),
+            `the edit has the keys it always had (got ${JSON.stringify(Object.keys(edit?.payload ?? {}))})`
+        );
+        expect(
+            JSON.stringify(edit?.payload) ===
+                JSON.stringify({
+                    chat_id: chatId,
+                    message_id: FIRST_MESSAGE_ID,
+                    text: '粗体 正文',
+                    entities: [{ type: 'bold', offset: 0, length: 2 }],
+                    link_preview_options: { is_disabled: true },
+                }),
+            `the edit carries text, entities and the preview option (got ${JSON.stringify(edit?.payload)})`
+        );
+        expect(
+            JSON.stringify(Object.keys(send?.payload ?? {})) ===
+                JSON.stringify(['chat_id', 'text', 'entities', 'reply_parameters', 'reply_markup', 'link_preview_options']),
+            `the send has the keys it always had (got ${JSON.stringify(Object.keys(send?.payload ?? {}))})`
+        );
+        expect(
+            send?.method === 'sendMessage' &&
+                JSON.stringify(send.payload) ===
+                    JSON.stringify({
+                        chat_id: chatId,
+                        text: '第二条',
+                        entities: [],
+                        reply_parameters: { message_id: USER_MESSAGE_ID },
+                        reply_markup: BUTTONS,
+                    }),
+            `the send replies to the question and carries the buttons (got ${JSON.stringify(send?.payload)})`
+        );
+    })
+);
+
+results.push(
+    await runCase('layOutChunks: a rich chunk is a rich_message edit, an extra one a sendRichMessage', async () => {
+        const telegram = createFakeTelegram();
+        const chatId = (nextLayoutChat -= 1);
+        const linkChunk = { text: '🧠 链接', entities: [], linkPreviewOptions: { url: 'https://miniapp.test/t/x' } };
+        const laidOut = await layOutChunks({
+            api: telegram.api,
+            chatId,
+            userMessageId: USER_MESSAGE_ID,
+            firstMessageId: FIRST_MESSAGE_ID,
+            messageIds: [FIRST_MESSAGE_ID],
+            chunks: [linkChunk, { richMarkdown: '## 标题\n\n| a | b |\n|---|---|' }],
+            replyMarkup: BUTTONS,
+        });
+        expect(laidOut.allDelivered, 'delivered');
+        const [edit, send] = telegram.calls;
+        expect(edit?.method === 'editMessageText' && edit.payload.text === '🧠 链接', 'the link chunk stays an entities edit');
+        expect(
+            JSON.stringify((edit?.payload ?? {}).link_preview_options) === JSON.stringify({ url: 'https://miniapp.test/t/x' }),
+            'with its preview card'
+        );
+        expect(
+            send?.method === 'sendRichMessage' &&
+                JSON.stringify(send.payload) ===
+                    JSON.stringify({
+                        chat_id: chatId,
+                        rich_message: { markdown: '## 标题\n\n| a | b |\n|---|---|' },
+                        reply_parameters: { message_id: USER_MESSAGE_ID },
+                        reply_markup: BUTTONS,
+                    }),
+            `the rich chunk the chat lacks is sent as a rich message (got ${JSON.stringify(send?.payload)})`
+        );
+        expect(laidOut.messageIds.length === 2 && laidOut.currentMessageId === laidOut.messageIds[1], 'the sent message ends the reply');
+
+        // Laid over an existing message, the rich chunk is an edit
+        const again = createFakeTelegram();
+        await layOutChunks({
+            api: again.api,
+            chatId: (nextLayoutChat -= 1),
+            userMessageId: USER_MESSAGE_ID,
+            firstMessageId: FIRST_MESSAGE_ID,
+            messageIds: [FIRST_MESSAGE_ID],
+            chunks: [{ richMarkdown: '**正文**' }],
+        });
+        const [richEdit] = again.calls;
+        expect(
+            richEdit?.method === 'editMessageText' &&
+                richEdit.payload.text === undefined &&
+                JSON.stringify(richEdit.payload.rich_message) === JSON.stringify({ markdown: '**正文**' }),
+            `the rich chunk is edited in through rich_message (got ${JSON.stringify(richEdit?.payload)})`
+        );
+    })
+);
+
+results.push(
+    await runCase('layOutChunks: a refused rich chunk is reported and the layout is not delivered', async () => {
+        for (const kind of ['edit', 'send'] as const) {
+            const telegram = createFakeTelegram({
+                refuse: (call) =>
+                    call.payload.rich_message !== undefined
+                        ? { error_code: 400, description: `Bad Request: rich ${kind} refused` }
+                        : null,
+            });
+            const rejections: GrammyError[] = [];
+            const laidOut = await layOutChunks({
+                api: telegram.api,
+                chatId: (nextLayoutChat -= 1),
+                userMessageId: USER_MESSAGE_ID,
+                firstMessageId: FIRST_MESSAGE_ID,
+                messageIds: kind === 'edit' ? [FIRST_MESSAGE_ID] : [],
+                chunks: [{ richMarkdown: '正文' }],
+                onRichRejected: (error) => rejections.push(error),
+            });
+            expect(!laidOut.allDelivered, `${kind}: not delivered`);
+            expect(
+                rejections.length === 1 && rejections[0]?.description === `Bad Request: rich ${kind} refused`,
+                `${kind}: the refusal is reported once (got ${rejections.map((error) => error.description).join(', ')})`
+            );
+            expect(telegram.calls.length === 1, `${kind}: nothing else is tried`);
+        }
     })
 );
 
