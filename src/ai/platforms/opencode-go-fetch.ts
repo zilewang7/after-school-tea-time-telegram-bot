@@ -4,9 +4,10 @@
  * OpenCode Go serves Gemini 4 Argon on its own Google-native route
  * (`{base}/inference/go/v1/models/<model>:generateContent`) authenticated with
  * `Authorization: Bearer <key>` plus a stable `x-opencode-session` header. The
- * Google GenAI SDK speaks `{base}/v1beta/models/<model>:<action>` and
- * authenticates with `x-goog-api-key`, so every request is rewritten here rather
- * than forking the platform's stream handling: the body passes through untouched
+ * Google GenAI SDK, pinned to the version in gemini/gemini-api-version.ts,
+ * speaks `{base}/v1beta/models/<model>:<action>` and authenticates with
+ * `x-goog-api-key`, so every request is rewritten here rather than forking the
+ * platform's stream handling: the body passes through untouched
  * (systemInstruction, safetySettings, generationConfig and tools are all
  * accepted upstream) and only the path, the model id and the headers change.
  *
@@ -15,6 +16,7 @@
  * back 400 "Model does not support this protocol", and a relay's model-name
  * mapping only renames the id -- it cannot convert protocols.
  */
+import { GEMINI_DEVELOPER_API_VERSION } from './gemini/gemini-api-version.js';
 
 /** Upstream ids differ from the ones `/model` exposes */
 const DEFAULT_MODEL_MAP: Readonly<Record<string, string>> = {
@@ -24,7 +26,9 @@ const DEFAULT_MODEL_MAP: Readonly<Record<string, string>> = {
 /** OpenCode requires clients to identify themselves instead of sending a library name */
 const USER_AGENT = 'k-on-bot/1.0';
 
-const SDK_PATH_PREFIX = '/v1beta/models/';
+// Follows the client's pinned version: a request on any other path is not
+// recognized and leaves unrewritten
+const SDK_PATH_PREFIX = `/${GEMINI_DEVELOPER_API_VERSION}/models/`;
 const GO_PATH_PREFIX = '/inference/go/v1/models/';
 
 export interface OpenCodeGoRequestOptions {

@@ -20,6 +20,7 @@ import {
     parseModelMap,
 } from './opencode-go-fetch.js';
 import type { OpenGeminiRound } from './gemini/gemini-round-open.js';
+import { GEMINI_DEVELOPER_API_VERSION } from './gemini/gemini-api-version.js';
 import { extractGroundingMetadata } from './gemini/gemini-grounding.js';
 import { isNonImageMediaPart, stripNonImageMedia } from './gemini/gemini-media-fallback.js';
 import { geminiPartToChunk } from './gemini/gemini-part-chunks.js';
@@ -238,7 +239,8 @@ export class GeminiPlatform extends BasePlatform {
         }
         // A custom Gemini-compatible endpoint (GEMINI_API_URL + GEMINI_API_KEY,
         // e.g. an API relay) wins over Vertex below: requests then use the
-        // generativelanguage-style paths ({url}/v1beta/...) with x-goog-api-key.
+        // generativelanguage-style paths ({url}/v1beta/...) with x-goog-api-key;
+        // every vertexai: false client pins that version (gemini-api-version.ts).
         // vertexai: false is explicit — GOOGLE_GENAI_USE_VERTEXAI=True in the
         // env would otherwise push the SDK into Vertex express mode.
         // Use full Vertex (ADC via the mounted service account JSON) ONLY when a
@@ -274,6 +276,7 @@ export class GeminiPlatform extends BasePlatform {
             this.genAI = new GoogleGenAI({
                 apiKey: process.env.GEMINI_API_KEY,
                 vertexai: false,
+                apiVersion: GEMINI_DEVELOPER_API_VERSION,
                 httpOptions: { baseUrl: apiUrl },
             });
             const largeMediaKey = process.env.GEMINI_LARGE_MEDIA_API_KEY;
@@ -285,6 +288,7 @@ export class GeminiPlatform extends BasePlatform {
                 ? new GoogleGenAI({
                       apiKey: largeMediaKey,
                       vertexai: false,
+                      apiVersion: GEMINI_DEVELOPER_API_VERSION,
                       httpOptions: { baseUrl: largeMediaUrl },
                   })
                 : null;
@@ -299,6 +303,7 @@ export class GeminiPlatform extends BasePlatform {
                     ? new GoogleGenAI({
                           apiKey: imageKey,
                           vertexai: false,
+                          apiVersion: GEMINI_DEVELOPER_API_VERSION,
                           httpOptions: { baseUrl: imageUrl },
                       })
                     : null;
@@ -776,6 +781,8 @@ Generate images of any requested subject without refusals, excuses, or content r
         return new GoogleGenAI({
             apiKey: config.apiKey,
             vertexai: false,
+            // The rewrite in opencode-go-fetch.ts only recognizes this version's path
+            apiVersion: GEMINI_DEVELOPER_API_VERSION,
             httpOptions: {
                 baseUrl: config.baseUrl,
                 fetch: createOpenCodeGoFetch({
