@@ -46,8 +46,9 @@ import {
  * PerQueryResult markers are dropped after the superscripts are placed, so a
  * version stored before the cleanup does not show them when it is replayed and
  * a support whose segment text carries a marker still finds its segment.
+ * The rich body places the same markers (rich-reply-body.ts).
  */
-const withCitations = (text: string, grounding: GroundingData | undefined): string => {
+export const withCitations = (text: string, grounding: GroundingData | undefined): string => {
     if (grounding === undefined || !getRenderConfig().groundingCitations) {
         return stripPerQueryResultCitations(text);
     }
