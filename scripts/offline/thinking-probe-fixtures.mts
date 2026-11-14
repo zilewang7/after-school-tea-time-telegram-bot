@@ -858,6 +858,42 @@ const runLaneCases = async (): Promise<void> => {
         expect(nested(baselineConfig, 'thinkingLevel') === undefined, 'baseline sends no level at all');
     }));
 
+    results.push(await runCase('Gemini lane: the relay lane asks for /v1beta like production, Vertex keeps v1beta1', async () => {
+        // @google/genai 3 defaults a non-Vertex client to /v1; the lane pins the
+        // version production's relay client pins
+        const candidate = candidateOf('gemini', 'gemini-3.8-flash', 'baseline', null);
+        const relayLane: ProbeLaneConfiguration = {
+            platform: 'gemini',
+            laneId: 'fixture-relay',
+            baseUrl: 'http://stub.invalid/relay',
+            host: 'stub.invalid',
+            apiKey: 'offline-key',
+            vertexai: false,
+            project: null,
+            location: null,
+            problems: [],
+        };
+        const relayScripted = scriptedFetch([sse(geminiChunk(12))]);
+        const relayLanes = createProbeLanes(testEnvironment(), {
+            fetch: relayScripted.fetch,
+            lanes: { ...fixtureLaneConfigurations(), gemini: relayLane },
+        });
+        const observation = await relayLanes.gemini.send(candidate, { maxOutputTokens: 256, timeoutMs: 5_000 });
+        expect(observation.outcome === 'accepted', `accepted (got ${observation.outcome}/${observation.errorClass ?? ''})`);
+        expect(
+            relayScripted.requests[0]?.url === 'http://stub.invalid/relay/v1beta/models/gemini-3.8-flash:streamGenerateContent?alt=sse',
+            `the relay request goes to /v1beta (got ${relayScripted.requests[0]?.url ?? 'no request'})`
+        );
+
+        const { lane: vertexLane, requests: vertexRequests } = laneWithScriptedReplies('gemini', [sse(geminiChunk(12))]);
+        await vertexLane.send(candidate, { maxOutputTokens: 256, timeoutMs: 5_000 });
+        const vertexPath = new URL(vertexRequests[0]?.url ?? 'http://none').pathname;
+        expect(
+            vertexPath === '/v1beta1/publishers/google/models/gemini-3.8-flash:streamGenerateContent',
+            `the Vertex lane keeps the SDK's v1beta1 (got ${vertexPath})`
+        );
+    }));
+
     results.push(await runCase('Gemini lane: 400 unsupported level becomes rejected_effort, not an error', async () => {
         const candidate = candidateOf('gemini', 'gemini-4-argon', 'level', 'xhigh');
         const observation = await drainLane('gemini', candidate, jsonReply(400, { error: { code: 400, message: 'Thinking level is unsupported: THINKING_LEVEL_XHIGH' } }));

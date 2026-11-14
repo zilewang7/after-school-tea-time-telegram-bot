@@ -51,6 +51,14 @@ interface TruncatedObservation extends ProbeObservation {
     readonly truncated: boolean;
 }
 
+/**
+ * The relay lane (GEMINI_API_URL) asks for the version production pins on its
+ * non-Vertex clients (src/ai/platforms/gemini/gemini-api-version.ts):
+ * @google/genai 3 would otherwise send /v1 where the relay was measured on
+ * /v1beta. A copy, not an import: the probe never loads src/ai/platforms.
+ */
+const GEMINI_RELAY_API_VERSION = 'v1beta';
+
 /** The fetch signature both SDKs accept, so tests can inject a scripted one */
 export type ProbeFetch = (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
 
@@ -450,6 +458,7 @@ export const createProbeLanes = (
                   : {
                         vertexai: false,
                         apiKey: geminiConfiguration.apiKey ?? undefined,
+                        apiVersion: GEMINI_RELAY_API_VERSION,
                         httpOptions: {
                             ...(geminiConfiguration.baseUrl === null ? {} : { baseUrl: geminiConfiguration.baseUrl }),
                             fetch: dispatch.fetch,
