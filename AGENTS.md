@@ -47,7 +47,7 @@ runs from the same directory. Most rules below exist because of that.
 | Lint | `pnpm lint` | ~2 s |
 | Dependency guard | `pnpm check-deps` (never writes; `--tighten` after fixing a baseline entry) | ~1 s |
 | All three checks, working tree | `pnpm check` | ~15 s |
-| Everything, on the committed tree | `pnpm verify` (required before pushing `master`) | ~1.5 min |
+| Everything, on the committed tree | `pnpm verify`: checks, webapp build, offline suite (required before pushing `master`) | ~1.5 min |
 | Write-lock regression | `pnpm test:lock` | ~5 s |
 | e2e against the test bot | `pnpm test:e2e:bot` (`:full`, `:tools`); ask first, one run at a time | minutes |
 | Production data | `npx tsx scripts/prod-query.mts --tables` / `--schema T` / `"SELECT …"` | |
@@ -189,7 +189,9 @@ it does not, a restart is still safe, a recreate is not.
    says whether a reply is in flight.
 3. `pnpm deploy:check --wait`. The `version` of `/api/health` is the commit
    the running build came from; if a build fails the previous build keeps
-   running and this command says so.
+   running and this command says so. The start script also puts back the
+   packages that build was installed with (`dist/.deps`), so old code never
+   runs on the new commit's packages.
 4. After a live test in a chat, read what the model filed about its tools:
    `npx tsx scripts/prod-query.mts "SELECT id, kind, toolName, title FROM harness_issues WHERE status = 'open' ORDER BY id DESC LIMIT 10"`.
 
@@ -210,4 +212,6 @@ production.
 - On this host `pnpm install` reaches the registry directly:
   `NO_PROXY=registry.npmjs.org pnpm install`. Through the host's HTTP proxy
   it times out.
+- pnpm refuses a version published less than a day ago. The exception is
+  telegram-md-entities (`minimumReleaseAgeExclude`), the owner's own package.
 - One-off scripts live in `tmp/` (git-ignored) and are deleted after use.
