@@ -34,12 +34,14 @@
 #   4. the fix            builds again
 #   5. a broken commit that also changes the packages
 #                         the previous build starts with the packages it was built with
-#   6. origin unreachable, then an origin that never answers
+#   6. a new container whose node_modules another pnpm laid out
+#                         the refused install is repeated into an empty directory
+#   7. origin unreachable, then an origin that never answers
 #                         starts the code it has; the fetch is given up in time
-#   7. the compiled bot   every module loads on this image, sqlite included, and
+#   8. the compiled bot   every module loads on this image, sqlite included, and
 #                         the database path default only applies inside a container
-#   8. the offline suite  only with --tests: the image's Node and libc run every case
-#   9. an image without pm2 (one built before pm2 moved into the Dockerfile)
+#   9. the offline suite  only with --tests: the image's Node and libc run every case
+#  10. an image without pm2 (one built before pm2 moved into the Dockerfile)
 #                         pm2 is installed at start instead of failing in a loop
 # And with the real pm2: a stop signal reaches the app, which gets the time
 # pm2.config.cjs grants it to finish.
@@ -174,7 +176,7 @@ step "1. first start"
 since=$(timestamp_now)
 # The image holds a clone of GitHub master. Point it at the local origin and
 # take the first step by hand, then build.sh does what it does in production.
-# Only on the first start: a restart runs this command again, and scenario 6
+# Only on the first start: a restart runs this command again, and scenario 7
 # needs the remote to stay broken.
 docker run -d --init --name "$CONTAINER" \
     -v "$ORIGIN/.git:/origin.git:ro" \
@@ -194,7 +196,7 @@ LAST_LOGS=$(logs_since_start "$since")
 check "built $GOOD_COMMIT" 'echo "$LAST_LOGS" | grep -q "\[deploy\] built $GOOD_COMMIT"'
 check "BUILD_COMMIT is $GOOD_COMMIT" '[ "$(in_container cat dist/BUILD_COMMIT)" = "$GOOD_COMMIT" ]'
 check "server and webapp output exist" 'in_container test -f dist/index.js && in_container test -f webapp/dist/index.html'
-check "the check tools were not installed" '! in_container test -d tools/checks/node_modules/typescript'
+check "the check tools were not installed" '! in_container test -e tools/checks/node_modules/oxlint'
 check "pm2 is started through the config" 'echo "$LAST_LOGS" | grep -q "stand-in pm2\] start scripts/deploy/pm2.config.cjs"'
 if [ "$failures" -gt 0 ]; then
     # Everything below builds on this start: show what happened and stop
@@ -204,6 +206,8 @@ if [ "$failures" -gt 0 ]; then
 fi
 COLD_FILE_COUNT=$(dist_file_count)
 echo "  dist holds $COLD_FILE_COUNT files"
+# With --from-production this is the case scenario 6 plays without production's volumes
+echo "$LAST_LOGS" | grep -q "emptying node_modules" && echo "  note: the install was refused and repeated into an empty node_modules"
 echo "  $(echo "$LAST_LOGS" | grep '\[deploy\] built')"
 
 step "2. restart without a new commit"
@@ -265,7 +269,32 @@ FIXED_COMMIT=$(in_origin rev-parse --short HEAD)
 restart_and_wait
 check "the fix builds without another install" 'echo "$LAST_LOGS" | grep -q "\[deploy\] built $FIXED_COMMIT" && echo "$LAST_LOGS" | grep -q "install skipped"'
 
-step "6. origin unreachable"
+step "6. a new container meets packages another pnpm laid out"
+# What a recreated container finds after the image moved to another pnpm: no
+# build to fall back on, and a node_modules volume that a frozen install
+# refuses. Here the record of how node_modules was laid out is changed by hand.
+in_container node -e "
+const fs = require('fs');
+const path = 'node_modules/.modules.yaml';
+const layout = JSON.parse(fs.readFileSync(path, 'utf8'));
+layout.publicHoistPattern = ['*rehearsal*'];
+fs.writeFileSync(path, JSON.stringify(layout));
+fs.rmSync('node_modules/.k-on-bot-install-hash');
+// pnpm skips every check while its own record says nothing changed
+for (const name of fs.readdirSync('node_modules')) {
+    if (name.startsWith('.pnpm-workspace-state')) fs.rmSync('node_modules/' + name);
+}
+fs.rmSync('dist', { recursive: true });
+fs.rmSync('webapp/dist', { recursive: true });"
+restart_and_wait
+check "the frozen install was refused" 'echo "$LAST_LOGS" | grep -q "ERR_PNPM_"'
+check "node_modules was emptied and installed again" 'echo "$LAST_LOGS" | grep -q "emptying node_modules and installing once more"'
+check "built $FIXED_COMMIT" 'echo "$LAST_LOGS" | grep -q "\[deploy\] built $FIXED_COMMIT"'
+check "server and webapp output exist" 'in_container test -f dist/index.js && in_container test -f webapp/dist/index.html'
+check "the check tools were not installed" '! in_container test -e tools/checks/node_modules/oxlint'
+echo "  $(echo "$LAST_LOGS" | grep '\[deploy\] built')"
+
+step "7. origin unreachable"
 in_container git remote set-url origin /nonexistent.git
 restart_and_wait
 check "the failed fetch is logged" 'echo "$LAST_LOGS" | grep -q "fetch of rehearsal failed"'
@@ -280,7 +309,7 @@ check "a fetch that hangs is given up after ${FETCH_TIMEOUT_SECONDS}s" 'echo "$L
 check "the bot is started with the build it has" 'echo "$LAST_LOGS" | grep -q "stand-in pm2\].*BUILD_COMMIT=$FIXED_COMMIT"'
 check "the whole restart took ${hang_seconds}s" '[ "$hang_seconds" -lt 60 ]'
 
-step "7. the compiled bot loads on this image"
+step "8. the compiled bot loads on this image"
 # Placeholders for what the AI platforms want at import; no token, so the bot
 # stops right after every module has loaded.
 BOOT_OUTPUT=$(in_container env DB_PATH=/tmp/rehearsal-boot.sqlite GEMINI_API_KEY=x OPENAI_API_KEY=x \
@@ -298,7 +327,7 @@ check "the container is marked by /.dockerenv" 'in_container test -f /.dockerenv
 check "without DB_PATH the production file is the default inside a container" 'in_container node --input-type=module -e "$IMPORT_DB_CONFIG" > /dev/null 2>&1'
 check "the test instance must name its database" '! in_container env TEST_INSTANCE=1 node --input-type=module -e "$IMPORT_DB_CONFIG" > /dev/null 2>&1'
 
-step "8. the offline suite on this image"
+step "9. the offline suite on this image"
 if [ "$RUN_TESTS" -eq 1 ]; then
     TEST_OUTPUT=$(in_container pnpm run --silent test:offline -j 2 2>&1)
     echo "$TEST_OUTPUT" | grep -v '^PASS  ' | sed 's/^/    /'
@@ -307,7 +336,7 @@ else
     echo "  skipped (run with --tests)"
 fi
 
-step "9. an image without pm2"
+step "10. an image without pm2"
 in_container git remote set-url origin /origin.git
 # Neither the stand-in nor the pm2 of the image: what a container created from
 # an image older than this Dockerfile looks like
@@ -324,7 +353,7 @@ check "the missing pm2 is reported" 'echo "$LAST_LOGS" | grep -q "pm2 is not in 
 check "pm2 was installed and started the bot" 'echo "$LAST_LOGS" | grep -q "PM2.*App \[k-on-bot"'
 docker rm -f "$CONTAINER" > /dev/null 2>&1
 
-step "10. a stop signal reaches the app through init and the real pm2"
+step "11. a stop signal reaches the app through init and the real pm2"
 # A stand-in app that needs 3s to shut down: longer than pm2's default 1.6s,
 # shorter than the kill_timeout in pm2.config.cjs.
 cat > "$WORK/signal/app.js" <<'EOF'

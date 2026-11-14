@@ -52,8 +52,26 @@ install_dependencies() {
     fi
     log "installing dependencies"
     install_attempted=1
-    run_install || return 1
+    if ! run_install; then
+        # With a previous build in place the packages it runs on stay as they are
+        [ -f dist/index.js ] && return 1
+        # A container that was just created has no build, but node_modules is a
+        # volume and may hold what the pnpm of the previous image laid out. A
+        # pnpm of another major refuses a frozen install into that (other
+        # hoisting defaults, another store). Nothing can start from those
+        # packages anyway, so install into an empty directory once.
+        log "the install failed and there is no previous build to protect: emptying node_modules and installing once more"
+        empty_installed_packages || { log "node_modules could not be emptied"; return 1; }
+        run_install || return 1
+    fi
     echo "$LOCK_HASH" > "$INSTALL_MARKER"
+}
+
+# node_modules is a mount point: its content goes, the directory stays
+empty_installed_packages() {
+    find node_modules -mindepth 1 -delete 2> /dev/null
+    find webapp/node_modules tools/checks/node_modules -delete 2> /dev/null
+    [ -z "$(ls -A node_modules 2> /dev/null)" ]
 }
 
 # A build keeps the manifests its packages were installed from (dist/.deps),
