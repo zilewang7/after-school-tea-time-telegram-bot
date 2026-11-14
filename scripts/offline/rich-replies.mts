@@ -23,6 +23,7 @@ import { createHash } from 'node:crypto';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { GrammyError, InputFile } from 'grammy';
+import { renderMarkdown } from 'telegram-md-entities';
 import { expect, reportResults, runCase, takeMessageId, type CaseResult } from './harness.mts';
 import {
     callbackUpdate,
@@ -570,6 +571,21 @@ results.push(
     })
 );
 
+/**
+ * Whether `needle` shows inside a code block of the document, read by the
+ * package's CommonMark parser (the referee the delivery itself uses)
+ */
+const landsInCode = (markdown: string, needle: string): boolean => {
+    const rendered = renderMarkdown(markdown);
+    const at = rendered.text.lastIndexOf(needle);
+    return (
+        at === -1 ||
+        rendered.entities.some(
+            (entity) => (entity.type === 'pre' || entity.type === 'code') && entity.offset <= at && at < entity.offset + entity.length
+        )
+    );
+};
+
 results.push(
     await runCase('case 3: a fence open mid-stream is closed before the status line', async () => {
         const started = await startReply({ richReplies: true });
@@ -582,6 +598,28 @@ results.push(
         );
         const final = richMarkdownOf(editsOf(started.telegram, started.firstMessageId).at(-1));
         expect(final === '代码如下：\n\n```ts\nconst a = 1;\n```\n\n结束。', `the final is the whole answer (got ${json(final)})`);
+    })
+);
+
+results.push(
+    await runCase('case 3: a fence open inside a list item keeps the status line and [stopped] outside the code', async () => {
+        const started = await startReply({ richReplies: true });
+        await runReply(started, {
+            steps: [
+                ...textSteps(['步骤：\n\n1. 安装：\n   ```bash\n   npm i']),
+                {
+                    chunk: textChunk('不会显示'),
+                    frame: false,
+                    before: () => started.chatContext.session.streamController.abort(),
+                },
+            ],
+        });
+        const [frame] = editsOf(started.telegram, started.firstMessageId);
+        const frameMarkdown = richMarkdownOf(frame) ?? '';
+        expect(RICH_STATUS_LINE.test(frameMarkdown), 'the frame ends with the status paragraph');
+        expect(!landsInCode(frameMarkdown, 'Thinking...'), `which no code block swallows (got ${json(frameMarkdown)})`);
+        const final = richMarkdownOf(editsOf(started.telegram, started.firstMessageId).at(-1)) ?? '';
+        expect(final.endsWith('\n\n<p>[stopped]</p>') && !landsInCode(final, '[stopped]'), `nor the stop marker (got ${json(final)})`);
     })
 );
 

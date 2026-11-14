@@ -8,12 +8,11 @@
  * {text, entities} message and goes as HTML blocks (`toRichHtml`), so no
  * runtime string is ever re-escaped as markdown.
  *
- * The answer is always converted in streaming mode, also for the final: a
- * stopped or failed answer is a cut prefix, and even a finished one may leave
- * a fence or a tag open. Closing it keeps the blocks after the answer outside
- * of it (strict CommonMark would run an open fence over them).
+ * Blocks follow the answer (the status line, [stopped], tool records, the
+ * footer, the error line), so the answer must not leave a construct open over
+ * them: see answerMarkdown.
  */
-import { toRichHtml, toRichMarkdown } from 'telegram-md-entities';
+import { renderMarkdown, toRichHtml, toRichMarkdown } from 'telegram-md-entities';
 import type { RenderedMessage } from 'telegram-md-entities';
 import type { AgentStats, GroundingData } from '../../ai/types.js';
 import { linkifyContextNumbers, type ContextLinkResolver } from './context-links.js';
@@ -34,6 +33,49 @@ const thinkingQuoteBlock = (thinking: string | undefined, resolveContextLink?: C
     thinking === undefined || thinking === ''
         ? ''
         : toRichHtml(linkifyContextNumbers(renderThinkingQuote(thinking, { expandable: true }), resolveContextLink));
+
+/** A paragraph standing in for the blocks that follow the answer */
+const TAIL_PROBE = 'rich-tail-probe';
+
+const COVERING_ENTITY_TYPES: ReadonlySet<string> = new Set(['pre', 'code', 'blockquote', 'expandable_blockquote']);
+
+/**
+ * Whether a block placed after this markdown would land inside one of its
+ * constructs (an open code fence, an open <details>). The package's CommonMark
+ * parser reads the document as Telegram's GFM-based parser does here.
+ */
+const swallowsFollowingBlocks = (markdown: string): boolean => {
+    const rendered = renderMarkdown(`${markdown}\n\n${TAIL_PROBE}`);
+    const probeAt = rendered.text.lastIndexOf(TAIL_PROBE);
+    return (
+        probeAt === -1 ||
+        rendered.entities.some(
+            (entity) =>
+                COVERING_ENTITY_TYPES.has(entity.type) &&
+                entity.offset <= probeAt &&
+                probeAt < entity.offset + entity.length
+        )
+    );
+};
+
+/**
+ * The answer as rich markdown that the blocks after it cannot fall into. A
+ * streaming frame prefers the streaming form (what is still being typed shows
+ * as intended); a final or error display prefers the strict form, the way the
+ * entities final reads the answer. The other form is taken when the preferred
+ * one leaves a construct open over what follows: a cut answer ending inside a
+ * top-level fence needs the streaming close, while telegram-md-entities 0.8.0
+ * closes a fence nested in a list item at column 0, which opens a new fence,
+ * so there only the strict form keeps the following blocks outside.
+ */
+const answerMarkdown = (text: string, preferred: 'streaming' | 'strict'): string => {
+    const streamingForm = (): string => toRichMarkdown(text, { streaming: true });
+    const strictForm = (): string => toRichMarkdown(text);
+    const first = preferred === 'streaming' ? streamingForm() : strictForm();
+    if (!swallowsFollowingBlocks(first)) return first;
+    const second = preferred === 'streaming' ? strictForm() : streamingForm();
+    return swallowsFollowingBlocks(second) ? first : second;
+};
 
 export interface RichStreamingFrameInput {
     /** The thinking display buffer; empty on a continuation, which never shows it */
@@ -56,7 +98,7 @@ export const buildRichStreamingFrame = (input: RichStreamingFrameInput): string 
                       input.resolveContextLink
                   )
               ),
-        input.text === '' ? '' : toRichMarkdown(input.text, { streaming: true }),
+        input.text === '' ? '' : answerMarkdown(input.text, 'streaming'),
     ]);
 
 export interface RichReplyBodyInput {
@@ -94,7 +136,7 @@ export const buildRichReplyBody = (input: RichReplyBodyInput): string | null => 
     const inlineFooter = !input.searchFolded && footer.text.trim() !== '';
     return joinRichBlocks([
         thinkingQuoteBlock(input.thinking, input.resolveContextLink),
-        toRichMarkdown(withCitations(input.text, searchGrounding), { streaming: true }),
+        answerMarkdown(withCitations(input.text, searchGrounding), 'strict'),
         input.wasStoppedByUser ? toRichHtml(plainText('[stopped]')) : '',
         ...buildToolRecordSections(input.agentStats, groundingData).map((section) => toRichHtml(linkify(section))),
         inlineFooter ? toRichHtml(linkify(footer)) : '',
@@ -115,6 +157,6 @@ export interface RichErrorDisplayInput {
 export const buildRichErrorDisplay = (input: RichErrorDisplayInput): string =>
     joinRichBlocks([
         thinkingQuoteBlock(input.thinking, input.resolveContextLink),
-        input.text === '' ? '' : toRichMarkdown(input.text, { streaming: true }),
+        input.text === '' ? '' : answerMarkdown(input.text, 'strict'),
         toRichHtml(input.errorLines),
     ]);
