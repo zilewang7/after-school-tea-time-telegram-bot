@@ -303,7 +303,7 @@ const handleChatRetry = async (
     }
 
     // Create chat context for retry (reuses same flow as normal messages)
-    const chatContext = createChatContextForRetry(ctx, session);
+    const chatContext = createChatContextForRetry(ctx, session, 'chat', { richReplies: settings.richReplies });
 
     // Get original user message
     const [msgErr, userMessage] = await to(getMessage(chatId, botResponse.userMessageId));

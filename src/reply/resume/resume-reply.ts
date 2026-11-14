@@ -180,7 +180,8 @@ export const resumeReply = async (
     const session = await startResumedSession(ctx, entry, plan, registry);
     if (session === null) return;
 
-    const chatContext = createChatContextForRetry(ctx, session);
+    // The switch as the click found it: presentation only, the checks never compare it
+    const chatContext = createChatContextForRetry(ctx, session, 'chat', { richReplies: plan.settings.richReplies });
     seedFromCheckpoint(chatContext, entry);
 
     const [flowErr] = await to(continueFromCheckpoint(ctx, chatContext, entry, plan));

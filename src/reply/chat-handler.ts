@@ -306,7 +306,7 @@ export const handleReply = async (
     );
 
     // Create chat context (includes processing message and typing indicator)
-    const chatContext = await createChatContext(ctx, { model });
+    const chatContext = await createChatContext(ctx, { model, richReplies: settings.richReplies });
     if (!chatContext) {
         console.error('[chat-handler] Failed to create chat context');
         return;

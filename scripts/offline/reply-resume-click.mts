@@ -321,14 +321,19 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
     {
         name: 'case 10 (rich replies): a switch since the interrupt blocks nothing: presentation, not the request',
         body: quietCase(async () => {
+            /** Whether the calls since the last reset showed the reply as a rich message */
+            const wentRich = (): boolean =>
+                telegram.calls.some((call) => call.method === 'sendRichMessage' || call.payload.rich_message !== undefined);
             for (const [atInterrupt, atClick] of [[false, true], [true, false]] as const) {
                 const label = `rich replies ${String(atInterrupt)} → ${String(atClick)}`;
                 const chatId = takeChatId();
                 await updateChatSettings({ chatId, patch: { richReplies: atInterrupt }, actor: OWNER });
                 const reply = await failedReply(chatId);
+                expect(wentRich() === atInterrupt, `${label}: the interrupted version follows the switch it started with`);
                 await updateChatSettings({ chatId, patch: { richReplies: atClick }, actor: OWNER });
                 // No notice: the first click resumes the interrupted request
                 await expectContinues(reply, label);
+                expect(wentRich() === atClick, `${label}: the resumed version follows the switch at the click`);
                 await updateChatSettings({ chatId, patch: { richReplies: false }, actor: OWNER });
             }
         }),
