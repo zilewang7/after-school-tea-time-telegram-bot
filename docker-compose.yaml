@@ -116,7 +116,9 @@ services:
         "/bin/sh",
         "-c",
         # dist is a volume now: empty it first, so files of deleted sources do not linger
-        "npm install -g pnpm@11.28.9 && pnpm install && rm -rf dist/* && pnpm build && node dist/index.js",
+        # confirmModulesPurge: the volumes outlive the pnpm that filled them, and pnpm
+        # has no terminal here to ask whether it may lay node_modules out again
+        "npm install -g pnpm@11.28.9 && pnpm install --config.confirmModulesPurge=false && rm -rf dist/* && pnpm build && node dist/index.js",
       ]
     working_dir: /app/k-on-bot
     networks:
