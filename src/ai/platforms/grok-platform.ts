@@ -73,7 +73,9 @@ const grokReasoningForWire = (model: string, wire: EffortWire): GrokResponseRequ
 
 /**
  * Every candidate with the downgraded reasoning: the accepted one is the base
- * of every later round of the reply.
+ * of every later round of the reply. A candidate built without reasoning (the
+ * last search fallback) stays without it, so a model that refuses the
+ * parameter outright still has one request it accepts.
  */
 const downgradedCandidates = (
     candidates: readonly GrokResponseRequest[],
@@ -81,7 +83,8 @@ const downgradedCandidates = (
 ): GrokResponseRequest[] =>
     candidates.map((entry) => ({
         ...entry,
-        reasoning: grokReasoningForWire(entry.model ?? 'unknown', thinking),
+        reasoning:
+            entry.reasoning === undefined ? undefined : grokReasoningForWire(entry.model ?? 'unknown', thinking),
     }));
 
 const errorMessageOf = (error: unknown): string =>

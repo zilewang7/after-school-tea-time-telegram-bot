@@ -1109,6 +1109,53 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
         },
     },
     {
+        name: 'grok answers without reasoning when the model refuses the parameter at every effort',
+        body: async () => {
+            const refusal = (): ScriptedReply =>
+                reply('/grok/v1/responses', 400, errorBody('Model grok-4.7 does not support parameter reasoningEffort.'));
+            const answer = reply('/grok/v1/responses', 200, responsesAnswer('answer without reasoning'));
+            const transient = reply('/grok/v1/responses', 503, errorBody('upstream overloaded'), { 'retry-after-ms': '1' });
+            // The first walk alone, then a 503 right after the downgrade: the
+            // retry walks the downgraded list again
+            const scenarios = [
+                { label: 'first walk', replies: [refusal(), ...Array.from({ length: 5 }, refusal), answer] },
+                { label: 'after a 503', replies: [refusal(), transient, ...Array.from({ length: 5 }, refusal), answer] },
+            ];
+            for (const scenario of scenarios) {
+                reset(...scenario.replies);
+                const platform = new GrokPlatform();
+                const { result } = await captureConsole(async () =>
+                    drain(() =>
+                        platform.sendMessage(userTurn('hi'), {
+                            model: 'grok-4.7',
+                            timeout: 20000,
+                            thinkingEffort: { mode: 'explicit', value: 'xhigh' },
+                            tools: createTurnTools([weatherTool]),
+                        })
+                    )
+                );
+                expect(
+                    result.text === 'answer without reasoning',
+                    `${scenario.label}: the candidate without reasoning answers (got ${json(result)})`
+                );
+                const last = recorded.length - 1;
+                const signatures = recorded.map((entry) =>
+                    json({ reasoning: entry.body.reasoning, tools: entry.body.tools, maxTurns: entry.body.max_turns })
+                );
+                expect(
+                    bodyOf(last).reasoning === undefined &&
+                        json(bodyOf(last).tools).includes('"web_search"') &&
+                        json(bodyOf(last).tools).includes('lookup_weather'),
+                    `${scenario.label}: the last request is web search plus the client tool, no reasoning (got ${json(bodyOf(last))})`
+                );
+                expect(
+                    new Set(signatures.slice(-6)).size === 6,
+                    `${scenario.label}: no request of the downgraded walk is sent twice (got ${json(signatures)})`
+                );
+            }
+        },
+    },
+    {
         name: 'grok does not downgrade on 401, 404 or 429',
         body: async () => {
             const platform = new GrokPlatform();
