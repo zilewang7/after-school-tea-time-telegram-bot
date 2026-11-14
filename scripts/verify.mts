@@ -1,6 +1,6 @@
 /**
- * Verifies the committed state: type check, lint, dependency guard and the
- * whole offline suite, run on a clean export of HEAD.
+ * Verifies the committed state: type check, lint, dependency guard, the webapp
+ * build and the whole offline suite, run on a clean export of HEAD.
  *
  *   pnpm verify           verify HEAD (skips when this tree already passed)
  *   pnpm verify --force   verify again even if it already passed
@@ -34,8 +34,30 @@ const REPOSITORY_ROOT = fileURLToPath(new URL('../', import.meta.url));
 const EXPORT_PARENT = join(tmpdir(), 'k-on-bot-verify');
 const RECORD_FILE_NAME = 'k-on-bot-verified-trees';
 
-/** package.json scripts, in the order they run; the first failure stops the run */
-const STEPS = ['typecheck', 'lint', 'check-deps', 'test:offline'] as const;
+interface Step {
+    name: string;
+    /** pnpm arguments, run inside the export */
+    pnpmArguments: readonly string[];
+    environment?: Readonly<Record<string, string>>;
+}
+
+const scriptStep = (script: string): Step => ({ name: script, pnpmArguments: ['run', '--silent', script] });
+
+/** In the order they run; the first failure stops the run */
+const STEPS: readonly Step[] = [
+    scriptStep('typecheck'),
+    scriptStep('lint'),
+    scriptStep('check-deps'),
+    // The container builds the webapp at start and keeps the previous page when
+    // that fails, so a commit whose webapp does not build must not be pushed.
+    // The output lands inside the export and goes away with it.
+    {
+        name: 'webapp build',
+        pnpmArguments: ['--silent', '--filter', './webapp', 'build'],
+        environment: { WEBAPP_OUT_DIR: 'dist.verify' },
+    },
+    scriptStep('test:offline'),
+];
 
 /** Installed packages are not part of a commit: the export borrows this checkout's */
 const INSTALLED_DIRECTORIES = ['node_modules', 'webapp/node_modules', 'tools/checks/node_modules'] as const;
@@ -132,16 +154,17 @@ const prePushHookEnabled = (): boolean => {
     return configured.stdout.trim() === '.githooks';
 };
 
-/** Runs one package.json script inside the export; true when it passed */
-const runStep = (step: string, directory: string): boolean => {
-    console.log(`\n── ${step} ──`);
+/** Runs one step inside the export; true when it passed */
+const runStep = (step: Step, directory: string): boolean => {
+    console.log(`\n── ${step.name} ──`);
     const startedAt = performance.now();
-    const outcome = spawnSync('pnpm', ['run', '--silent', step], {
+    const outcome = spawnSync('pnpm', [...step.pnpmArguments], {
         cwd: directory,
         stdio: ['ignore', 'inherit', 'inherit'],
+        env: { ...process.env, ...step.environment },
     });
     const seconds = ((performance.now() - startedAt) / 1000).toFixed(0);
-    console.log(`${outcome.status === 0 ? 'passed' : 'FAILED'}: ${step} (${seconds}s)`);
+    console.log(`${outcome.status === 0 ? 'passed' : 'FAILED'}: ${step.name} (${seconds}s)`);
     return outcome.status === 0;
 };
 
@@ -179,7 +202,7 @@ const main = (): number => {
     try {
         const failedStep = STEPS.find((step) => !runStep(step, directory));
         if (failedStep !== undefined) {
-            console.log(`\nverification FAILED at ${failedStep} for ${shortCommit}`);
+            console.log(`\nverification FAILED at ${failedStep.name} for ${shortCommit}`);
             return 1;
         }
     } finally {
