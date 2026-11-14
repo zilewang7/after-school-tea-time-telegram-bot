@@ -37,7 +37,7 @@
   "dependencies": {
     "@anthropic-ai/sdk": "^0.122.0",
     "@google-cloud/storage": "^7.21.0",
-    "@google/genai": "^2.29.1",
+    "@google/genai": "^3.3.0",
     "@grammyjs/auto-retry": "^2.0.2",
     "@hono/node-server": "^2.1.8",
     "@modelcontextprotocol/sdk": "^1.32.2",
