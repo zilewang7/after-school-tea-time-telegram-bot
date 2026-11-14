@@ -48,6 +48,7 @@ export {
 } from './chat-settings-cache.js';
 export {
     GEMINI_PRIORITY_NOT_ALLOWED_MESSAGE,
+    IMAGE_MODEL_NOT_CHAT_MESSAGE,
     MODEL_ID_MAX_LENGTH,
     PROMPT_ADDENDUM_MAX_CODE_POINTS,
     countCodePoints,

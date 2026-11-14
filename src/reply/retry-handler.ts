@@ -32,6 +32,7 @@ import {
 import { formatUserDisplayName } from '../shared/user-display-name.js';
 import { sendBotNotice } from '../services/bot-notice-service.js';
 import { TRIAL_COMMAND_REFUSAL_TEXT } from './commands/trial-refusal.js';
+import { refuseImageChatModel } from './image-model-refusal.js';
 import { triggerAccessNoteOf } from './trigger-access-note.js';
 import { buildStaticPromptOptions } from './static-prompt-options.js';
 import { to } from '../shared/result.js';
@@ -284,6 +285,8 @@ const handleChatRetry = async (
     // cheap model whatever the chat says (design D2).
     const settings = snapshotReplySettings(chatId);
     const model = effectiveReplyModel(access, settings.model);
+    // Before the retry session: the reply and its buttons stay as they are
+    if (await refuseImageChatModel(ctx, model)) return;
     // The presser's tier was decided above; reuse it so the two cannot disagree
     const triggerAccess = await resolveTriggerAccess(
         ctx.from?.id ?? null,

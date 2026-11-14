@@ -52,6 +52,7 @@ import { effectiveReplyModel, resolveAccessTier, resolveTriggerAccess } from '..
 import { formatUserDisplayName } from '../shared/user-display-name.js';
 import { buildStaticPromptOptions } from './static-prompt-options.js';
 import { refuseTrialGeneration } from './commands/trial-refusal.js';
+import { refuseImageChatModel } from './image-model-refusal.js';
 import { triggerAccessNoteOf } from './trigger-access-note.js';
 import { stopIfChatPaused } from './chat-pause.js';
 import { markRequestStarted, recordContextSize, recordThinkingEffort } from '../services/reply-metrics-draft.js';
@@ -288,6 +289,8 @@ export const handleReply = async (
     );
     const access = triggerAccess.tier;
     const model = effectiveReplyModel(access, settings.model);
+    // Before the media wait and the placeholder: nothing about this reply starts
+    if (await refuseImageChatModel(ctx, model)) return;
     const capabilities = getModelCapabilities(model);
 
     // Resolve the context tree (reply chain + any messages /chat pulled in)

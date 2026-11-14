@@ -2,7 +2,8 @@
  * GET /api/chats/:chatId/conversations/:rootId/model-view?at=&asModel= —
  * members only. What the model would see if retry were pressed now on a reply
  * of this conversation (views/model-view.ts). `asModel` (same rule as the
- * model setting: any trimmed id up to 64 characters) only changes this view.
+ * model setting: any trimmed id up to 64 characters, no image model) only
+ * changes this view.
  * The response is capped at 2 MB.
  */
 import type { Hono } from 'hono';

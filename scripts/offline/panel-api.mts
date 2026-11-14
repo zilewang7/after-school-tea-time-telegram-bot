@@ -326,6 +326,8 @@ const cases: { name: string; body: () => Promise<void> }[] = [
                 ['empty model', { model: '' }],
                 ['blank model', { model: '   ' }],
                 ['model over 64 characters', { model: 'm'.repeat(65) }],
+                ['a Gemini image model', { model: 'gemini-nano-banana-2.1' }],
+                ['an OpenAI image model', { model: 'gpt-image-2.5-dev' }],
                 ['model of the wrong type', { model: 42 }],
                 ['unknown key', { colour: 'red' }],
                 ['unknown key next to a known one', { model: 'gpt-x', colour: 'red' }],
@@ -354,6 +356,11 @@ const cases: { name: string; body: () => Promise<void> }[] = [
                 );
             }
             expect((await auditCount(GROUP_MAIN)) === before, 'nothing was written');
+            const imageRefusal = await jsonOf(await patchSettings(app, GROUP_MAIN, ALICE, { model: 'gemini-nano-banana-2.1' }));
+            expect(
+                imageRefusal.error?.message === '生图模型不能设为对话模型。要画图直接让 bot 画，或用 /picbanana、/picgpt。',
+                `an image model is refused with its own message (got ${JSON.stringify(imageRefusal)})`
+            );
 
             const accepted = await patchSettings(app, GROUP_MAIN, ALICE, { model: '  my-own-model-v9  ' });
             const body = await jsonOf(accepted);
@@ -698,16 +705,19 @@ const cases: { name: string; body: () => Promise<void> }[] = [
             for (const [label, body] of [
                 ['empty id', { defaultModel: '' }],
                 ['over 64 characters', { defaultModel: 'g'.repeat(65) }],
+                ['an image model', { defaultModel: 'gemini-nano-banana-2.1' }],
                 ['wrong type', { defaultModel: 7 }],
                 ['missing key', {}],
                 ['unknown key', { defaultModel: 'a', extra: 1 }],
             ] as const) {
                 await expectError(await call(app, '/api/global', { user: OWNER, method: 'PATCH', body }), 400, 'invalid', label);
             }
+            const after = await jsonOf(await call(app, '/api/global', { user: OWNER }));
+            expect(after.defaultModel === 'env-default-model' && after.source === 'env', 'none of them was stored');
         },
     },
     {
-        name: 'the preview renders the runtime block; private chats say so; image models are not injected',
+        name: 'the preview renders the runtime block; private chats say so',
         body: async () => {
             const previewOf = async (chatId: number, user: InitDataUserInput, promptAddendum: unknown) =>
                 jsonOf(await call(app, `/api/chats/${chatId}/settings/preview`, { user, method: 'POST', body: { promptAddendum } }));
@@ -728,11 +738,7 @@ const cases: { name: string; body: () => Promise<void> }[] = [
             expect(groupPreview.runtimeBlock.includes('- 当前群聊：Main'), 'a group renders its title');
             expect(!groupPreview.runtimeBlock.includes('# 本聊天的附加提示词') && groupPreview.estimatedTokens === 0, 'null: no section, 0 tokens');
             expect(groupPreview.runtimeBlock.includes('- 当前模型：my-own-model-v9'), "the chat's current model");
-
-            await patchSettings(app, GROUP_MAIN, ALICE, { model: 'gemini-nano-banana-2.1' });
-            const imagePreview = await previewOf(GROUP_MAIN, ALICE, '画猫');
-            expect(imagePreview.injected === false, 'a Gemini image model: injected false');
-            expect(!imagePreview.runtimeBlock.includes('画猫'), 'and the addendum is left out');
+            // The cases below expect the group to follow the global default
             await patchSettings(app, GROUP_MAIN, ALICE, { model: null });
 
             await expectError(

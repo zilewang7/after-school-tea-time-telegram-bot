@@ -3,8 +3,8 @@
  * numbering it shares with buildContext: `at` on a bot message (continuation
  * id included) answers its user message and leaves that reply out; the
  * runtime block rides a user turn; a Gemini turn with gs:// media keeps the
- * tools and the static head of a plain turn of the same chat; a hand-typed
- * Gemini image model shows the generation instruction; every member sees the
+ * tools and the static head of a plain turn of the same chat; asModel takes
+ * another chat model and refuses an image model; every member sees the
  * preference layer; the dry run sends nothing over the network, writes no
  * snapshot and publishes no numbering, and shows a placeholder where a
  * preview is not cached; the tree and buildContext give the same `#N` (reply
@@ -12,7 +12,6 @@
  *
  * Run: npx tsx scripts/offline/panel-model-view.mts
  */
-import { readFileSync } from 'node:fs';
 import { GrammyError } from 'grammy';
 import { expect, reportResults, runCase, setupOfflineDb, type CaseResult } from './harness.mts';
 import { signInitData, type InitDataUserInput } from '../lib/init-data.mts';
@@ -28,6 +27,7 @@ const GROUP = -1001000000201;
 const PREFERENCE = '你是 PREFERENCE-LAYER-7Q 这个 bot，说话简短。';
 const ADDENDUM = 'ADDENDUM-9Z：回答前先说收到。';
 const IMAGE_MODEL = 'gemini-nano-banana-2.1';
+const OTHER_CHAT_MODEL = 'gemini-4-hydrogen';
 
 process.env.OWNER_USER_ID = String(OWNER_ID);
 process.env.BOT_USER_ID = String(BOT_USER_ID);
@@ -47,7 +47,6 @@ const { saveMessageLinks } = await import('../../src/db/queries/context-queries.
 const { loadChatSettingsCache, updateChatSettings } = await import('../../src/services/chat-settings-service.js');
 const { buildContext } = await import('../../src/reply/context-builder.js');
 const { getContextNumbering } = await import('../../src/state.js');
-const { GEMINI_IMAGE_SYSTEM_INSTRUCTION } = await import('../../src/panel/views/model-view.js');
 const { createPanelApp } = await import('../../src/panel/app.js');
 
 type MembershipLookup = import('../../src/panel/access/membership.js').MembershipLookup;
@@ -277,15 +276,19 @@ const cases: { name: string; body: () => Promise<void> }[] = [
         },
     },
     {
-        name: 'a hand-typed Gemini image model shows the generation instruction, without the addendum',
+        name: 'asModel looks at another chat model; an image model or an id over 64 characters is a 400',
         body: async () => {
-            const { status, body: view } = await get(`${C1}/model-view?asModel=${IMAGE_MODEL}`);
-            expect(status === 200 && view.model === IMAGE_MODEL && view.asModel === true, `asModel is applied (got ${status} ${view.model})`);
-            expect(view.systemPromptReplaced === true && view.systemPrompt === GEMINI_IMAGE_SYSTEM_INSTRUCTION, 'the generation instruction replaces the static head');
-            expect(view.tools.length === 0, 'no tools');
-            expect(!turnTexts(view).some((text) => text.includes(ADDENDUM)), 'the addendum is left out for the image model');
-            const platformSource = readFileSync(new URL('../../src/ai/platforms/gemini-platform.ts', import.meta.url), 'utf8');
-            expect(platformSource.includes(GEMINI_IMAGE_SYSTEM_INSTRUCTION), 'the shown instruction is the one gemini-platform.ts sends');
+            const { status, body: view } = await get(`${C1}/model-view?asModel=${OTHER_CHAT_MODEL}`);
+            expect(status === 200 && view.model === OTHER_CHAT_MODEL && view.asModel === true, `asModel is applied (got ${status} ${view.model})`);
+            expect(view.systemPrompt.startsWith(PREFERENCE), 'the static head as the chat model gets it');
+            expect(turnTexts(view).some((text) => text.includes(ADDENDUM)), 'the addendum rides along as for any chat model');
+            for (const imageModel of [IMAGE_MODEL, 'gpt-image-2.5-dev']) {
+                const refused = await get(`${C1}/model-view?asModel=${imageModel}`);
+                expect(
+                    refused.status === 400 && refused.body.error?.code === 'invalid' && refused.body.error?.message.includes('生图模型'),
+                    `asModel=${imageModel} is a 400 naming the reason (got ${refused.status} ${JSON.stringify(refused.body)})`
+                );
+            }
             const tooLong = await get(`${C1}/model-view?asModel=${'m'.repeat(65)}`);
             expect(tooLong.status === 400, `asModel over 64 characters is a 400 (got ${tooLong.status})`);
         },

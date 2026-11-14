@@ -19,6 +19,7 @@ import { resolveChatModel } from '../config/chat-model.js';
 import { isOwnerUser } from '../config/owner.js';
 import { resolveAccessTier } from '../services/access-tier.js';
 import { resolveModelTraits } from '../ai/model-traits.js';
+import { isImageOutputModel } from '../ai/model-kinds.js';
 import { TRIAL_CALLBACK_REFUSAL_TEXT, TRIAL_MODEL_REFUSAL_TEXT } from '../reply/commands/trial-refusal.js';
 import {
     THINKING_EFFORT_LABELS,
@@ -28,6 +29,7 @@ import {
 } from '../services/thinking-effort-values.js';
 import {
     ChatSettingsError,
+    IMAGE_MODEL_NOT_CHAT_MESSAGE,
     getChatSettings,
     updateChatSettings,
     type ChatSettingsErrorCode,
@@ -153,7 +155,8 @@ const buildThinkingKeyboard = (chatId: number): InlineKeyboard => {
 const refusalNoticeOf = (code: ChatSettingsErrorCode): string =>
     match(code)
         .with('locked', () => '本聊天的设置已被机主锁定')
-        // Callers never pass a blank id, so the only invalid id is a long one
+        // Callers never pass a blank id and refuse an image model before, so
+        // the only invalid id is a long one
         .with('invalid', () => '模型 id 过长')
         .with('forbidden', () => '没有权限修改本聊天的设置')
         // /model never sends an expected version, kept for exhaustiveness
@@ -176,8 +179,9 @@ type ModelChangeOutcome =
 
 /**
  * Set the chat's model to `requested` (a trimmed, non-empty id, or `default`
- * to follow the global default). Any id is accepted, menu or not; refusals
- * (locked chat, id too long) come back as a notice, never echoing the id.
+ * to follow the global default). Any chat model id is accepted, menu or not;
+ * refusals (image model, locked chat, id too long) come back as a notice,
+ * never echoing the id.
  */
 const applyModelChange = async (
     chatId: number,
@@ -186,6 +190,10 @@ const applyModelChange = async (
 ): Promise<ModelChangeOutcome> => {
     const previousModel = resolveChatModel(chatId);
     const followGlobal = requested === FOLLOW_GLOBAL_REQUEST;
+    // The settings rules refuse it too, but their 'invalid' reads as 模型 id 过长 here
+    if (!followGlobal && isImageOutputModel(requested)) {
+        return { kind: 'refused', notice: IMAGE_MODEL_NOT_CHAT_MESSAGE };
+    }
     try {
         await updateChatSettings({
             chatId,

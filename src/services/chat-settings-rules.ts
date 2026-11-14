@@ -10,6 +10,7 @@ import {
     type ToolOverrides,
 } from './tool-overrides.js';
 import { normalizeThinkingEffort, type ThinkingEffortValue } from './thinking-effort-values.js';
+import { isImageOutputModel } from '../ai/model-kinds.js';
 
 export const MODEL_ID_MAX_LENGTH = 64;
 export const PROMPT_ADDENDUM_MAX_CODE_POINTS = 2000;
@@ -91,7 +92,15 @@ type Normalized<T> = { ok: true; value: T } | { ok: false; message: string };
 
 export const countCodePoints = (text: string): number => Array.from(text).length;
 
-/** A model id: any trimmed non-empty string up to 64 characters; null = follow global */
+/** Never echoes the id: the `/model` refusal reuses it as a callback toast */
+export const IMAGE_MODEL_NOT_CHAT_MESSAGE = '生图模型不能设为对话模型。要画图直接让 bot 画，或用 /picbanana、/picgpt。';
+
+/**
+ * A model id: any trimmed non-empty string up to 64 characters that is no
+ * image model; null = follow global. An image model only serves
+ * generate_image and the /pic commands: as the chat model its platform would
+ * turn the whole conversation into one image prompt.
+ */
 export const normalizeModelId = (raw: unknown): Normalized<string | null> => {
     if (raw === null) return { ok: true, value: null };
     if (typeof raw !== 'string') return { ok: false, message: '模型 id 必须是字符串或 null' };
@@ -100,6 +109,7 @@ export const normalizeModelId = (raw: unknown): Normalized<string | null> => {
     if (countCodePoints(trimmed) > MODEL_ID_MAX_LENGTH) {
         return { ok: false, message: `模型 id 不能超过 ${MODEL_ID_MAX_LENGTH} 个字符` };
     }
+    if (isImageOutputModel(trimmed)) return { ok: false, message: IMAGE_MODEL_NOT_CHAT_MESSAGE };
     return { ok: true, value: trimmed };
 };
 

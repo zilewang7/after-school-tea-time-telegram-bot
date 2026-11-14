@@ -3,8 +3,9 @@
  * rules (free model ids, addendum normalization, lock and owner checks), the
  * audit trail and its retention; the Priority PayGo switch (the effective
  * value of design §8.2, the TOOL_CHAT_IDS rule, owner only, audit, reload);
- * then the bot side: `/model` and the `mdl:` buttons, the reply and retry
- * settings snapshots, and what a paused chat still answers.
+ * then the bot side: `/model` and the `mdl:` buttons, the refusal of an image
+ * model (as a setting, and before a reply or retry when one is stored), the
+ * reply and retry settings snapshots, and what a paused chat still answers.
  *
  * Run: npx tsx scripts/offline/chat-settings.mts
  */
@@ -56,7 +57,9 @@ const { menuLoad } = await import('../../src/cmd/menu.js');
 const { registerChatHandler, handleReply } = await import('../../src/reply/chat-handler.js');
 const { handleRetryRequest } = await import('../../src/reply/retry-handler.js');
 
-const { ChatSettingsError, updateChatSettings, updateGlobalDefaultModel } = service;
+const { imageChatModelRefusalText } = await import('../../src/reply/image-model-refusal.js');
+
+const { ChatSettingsError, IMAGE_MODEL_NOT_CHAT_MESSAGE, updateChatSettings, updateGlobalDefaultModel } = service;
 const { resolveChatSettingsPatch } = await import('../../src/services/chat-settings-rules.js');
 
 const OWNER = { userId: 4242, isOwner: true };
@@ -1080,6 +1083,146 @@ const cases: { name: string; body: () => Promise<void> }[] = [
             expect(resolveChatModel(chatId) === 'owner-after-lock', 'the owner changes a locked chat');
             await press(chatId, OWNER.userId, 'mdl:default');
             expect(service.getChatSettings(chatId)?.model === null, 'by button as well');
+        },
+    },
+    {
+        name: 'an image model is never the chat model: /model, mdl:, the rules and the global default refuse it, nothing is saved',
+        body: async () => {
+            const chatId = -3006;
+            await updateChatSettings({ chatId, patch: { model: 'chat-model-before' }, actor: MEMBER });
+            const auditBefore = (await auditOf(chatId)).length;
+
+            for (const imageModel of [GEMINI_IMAGE_MODEL, OPENAI_IMAGE_MODEL, 'gemini-3-pro-image']) {
+                await sendText(chatId, MEMBER.userId, `/model ${imageModel}`);
+                expect(
+                    telegram.callsOf('sendMessage').length === 1 && lastReply().text === IMAGE_MODEL_NOT_CHAT_MESSAGE,
+                    `/model ${imageModel} is refused with the image notice (got ${JSON.stringify(lastReply().text)})`
+                );
+                expect(!lastReply().text.includes(imageModel) && !lastReply().hasKeyboard, 'no id echoed, no menu');
+            }
+            await press(chatId, MEMBER.userId, `mdl:${GEMINI_IMAGE_MODEL}`);
+            expect(
+                lastToastOf(telegram) === IMAGE_MODEL_NOT_CHAT_MESSAGE && telegram.callsOf('editMessageText').length === 0,
+                `a button with an image id only toasts (got ${String(lastToastOf(telegram))})`
+            );
+            await sendText(chatId, OWNER.userId, `/model ${GEMINI_IMAGE_MODEL}`);
+            expect(lastReply().text === IMAGE_MODEL_NOT_CHAT_MESSAGE, 'the owner is refused too');
+
+            // Every other entry point (the panel, the global default) goes through the rules
+            const direct = await refusalOf(() =>
+                updateChatSettings({ chatId, patch: { model: `  ${OPENAI_IMAGE_MODEL} ` }, actor: OWNER })
+            );
+            expect(direct === `invalid: ${IMAGE_MODEL_NOT_CHAT_MESSAGE}`, `the rules refuse it, trimmed or not (got ${direct})`);
+            const globalBefore = service.getGlobalDefaultModel();
+            const global = await refusalOf(() => updateGlobalDefaultModel(GEMINI_IMAGE_MODEL, OWNER));
+            expect(global === `invalid: ${IMAGE_MODEL_NOT_CHAT_MESSAGE}`, `the global default refuses it (got ${global})`);
+            expect(service.getGlobalDefaultModel() === globalBefore, 'the global default is untouched');
+
+            expect(resolveChatModel(chatId) === 'chat-model-before', 'the chat keeps its model');
+            expect((await auditOf(chatId)).length === auditBefore, 'and no audit row was written');
+            await sendText(chatId, MEMBER.userId, '/model gemini-4-hydrogen');
+            expect(resolveChatModel(chatId) === 'gemini-4-hydrogen', 'a chat model is still accepted');
+        },
+    },
+    {
+        name: 'a stored or env image model refuses the reply and the retry before anything starts; the value stays',
+        body: async () => {
+            const chatId = -3007;
+            // Stored before the settings refused image models
+            await ChatSettingsRecord.create({ chatId, model: GEMINI_IMAGE_MODEL, updatedAt: new Date() });
+            await service.loadChatSettingsCache();
+            expect(resolveChatModel(chatId) === GEMINI_IMAGE_MODEL, 'the stored image model is loaded as it is');
+
+            // Telegram goes through a transformer; anything reaching fetch is a model request
+            const realFetch = globalThis.fetch;
+            let fetchCalls = 0;
+            globalThis.fetch = (input, init) => {
+                fetchCalls += 1;
+                return realFetch(input, init);
+            };
+            const savedDefault = process.env.DEFAULT_MODEL;
+            const savedGlobal = service.getGlobalDefaultModelSource() === 'panel' ? service.getGlobalDefaultModel() : null;
+            try {
+                const userMessageId = takeBotMessageId();
+                const text = '@AfterSchoolTeatimeBot 画只猫';
+                await dbIndex.saveMessage({ chatId, messageId: userMessageId, userId: MEMBER.userId, date: new Date(), userName: 'member', message: text });
+                const replyTelegram = createFakeTelegram();
+                await quietly(() =>
+                    handleReply(contextOf(messageUpdate({ chatId, messageId: userMessageId, userId: MEMBER.userId, text }), replyTelegram), { mention: true })
+                );
+                const notices = replyTelegram.callsOf('sendMessage');
+                expect(
+                    notices.length === 1 && notices[0]?.payload.text === imageChatModelRefusalText(GEMINI_IMAGE_MODEL),
+                    `one notice naming the stored model (got ${JSON.stringify(notices.map((call) => call.payload.text))})`
+                );
+                expect(
+                    replyTelegram.callsOf('sendChatAction').length === 0 && replyTelegram.callsOf('editMessageText').length === 0,
+                    'no typing, no placeholder'
+                );
+                expect(fetchCalls === 0, `no model request (got ${fetchCalls} fetch call(s))`);
+                expect(
+                    (await dbIndex.BotResponse.findOne({ where: { chatId, userMessageId } })) === null,
+                    'no reply record'
+                );
+
+                // Retry of an earlier reply: refused the same way, its versions untouched
+                const firstMessageId = takeBotMessageId();
+                await dbIndex.BotResponse.create({
+                    messageId: firstMessageId,
+                    chatId,
+                    userMessageId,
+                    currentVersionIndex: 0,
+                    versions: JSON.stringify([{ versionId: 1, createdAt: new Date().toISOString(), messageIds: [firstMessageId], currentMessageId: firstMessageId, text: '旧回复', wasStoppedByUser: false }]),
+                    buttonState: dbIndex.ButtonState.HAS_VERSIONS,
+                    metadata: JSON.stringify({ model: 'gemini-4-hydrogen', hasImage: false }),
+                });
+                const retryTelegram = createFakeTelegram();
+                await quietly(() =>
+                    handleRetryRequest(
+                        contextOf(callbackUpdate({ chatId, messageId: firstMessageId, userId: MEMBER.userId, data: 'resp:retry' }), retryTelegram),
+                        firstMessageId
+                    )
+                );
+                expect(
+                    retryTelegram.callsOf('sendMessage').length === 1 &&
+                        retryTelegram.callsOf('sendMessage')[0]?.payload.text === imageChatModelRefusalText(GEMINI_IMAGE_MODEL),
+                    'the retry sends the same notice'
+                );
+                expect(
+                    retryTelegram.callsOf('editMessageText').length === 0 && retryTelegram.callsOf('editMessageReplyMarkup').length === 0,
+                    'and leaves the reply and its buttons alone'
+                );
+                const retried = await dbIndex.getBotResponse(chatId, firstMessageId);
+                expect(retried?.getVersions().length === 1, 'no new version');
+                expect(fetchCalls === 0, `still no model request (got ${fetchCalls})`);
+                expect(service.getChatSettings(chatId)?.model === GEMINI_IMAGE_MODEL, 'the stored value is not rewritten');
+
+                // The env default is refused the same way when the chat follows it
+                await ChatSettingsRecord.destroy({ where: { chatId } });
+                await service.loadChatSettingsCache();
+                await updateGlobalDefaultModel(null, OWNER);
+                process.env.DEFAULT_MODEL = OPENAI_IMAGE_MODEL;
+                // A wrong setup here would start a real reply: stop before it
+                if (resolveChatModel(chatId) !== OPENAI_IMAGE_MODEL) {
+                    throw new Error(`the chat does not follow the env default (got ${resolveChatModel(chatId)})`);
+                }
+                const envTelegram = createFakeTelegram();
+                const envMessageId = takeBotMessageId();
+                await dbIndex.saveMessage({ chatId, messageId: envMessageId, userId: MEMBER.userId, date: new Date(), userName: 'member', message: text });
+                await quietly(() =>
+                    handleReply(contextOf(messageUpdate({ chatId, messageId: envMessageId, userId: MEMBER.userId, text }), envTelegram), { mention: true })
+                );
+                const envNotices = envTelegram.callsOf('sendMessage').map((call) => call.payload.text);
+                expect(
+                    JSON.stringify(envNotices) === JSON.stringify([imageChatModelRefusalText(OPENAI_IMAGE_MODEL)]),
+                    `an env default image model is refused, named (got ${JSON.stringify(envNotices)})`
+                );
+                expect(fetchCalls === 0, `no model request for the env default either (got ${fetchCalls})`);
+            } finally {
+                globalThis.fetch = realFetch;
+                process.env.DEFAULT_MODEL = savedDefault;
+                await updateGlobalDefaultModel(savedGlobal, OWNER);
+            }
         },
     },
     {
