@@ -425,10 +425,20 @@ const collectRichBlockMedia = (blocks: RichBlock[], found: CapturedMedia[]): voi
  * block, or the first media block of any kind when there is no photo. The hint
  * discloses how many media the message actually carries.
  */
-const resolveRichMessageMedia = (richMessage: RichMessage | undefined): CapturedMedia | undefined => {
+const resolveRichMessageMedia = (
+    richMessage: RichMessage | undefined,
+    messageKey: string
+): CapturedMedia | undefined => {
     if (!richMessage) return undefined;
     const found: CapturedMedia[] = [];
-    collectRichBlockMedia(richMessage.blocks, found);
+    try {
+        collectRichBlockMedia(richMessage.blocks, found);
+    } catch (error) {
+        // A block shaped unlike its type (a later Bot API change) must not cost
+        // the message: its text is stored, with the files found before it
+        const reason = error instanceof Error ? error.message : String(error);
+        console.error(`[autoSave] media of rich message ${messageKey} could not be read: ${reason}`);
+    }
     const picked = found.find((m) => m.kind === 'photo') ?? found[0];
     if (!picked) return undefined;
     if (found.length > 1) {
@@ -739,7 +749,7 @@ export const autoUpdate = (bot: Bot, options: AutoSaveOptions = {}) => {
             // command message must stay out of telegram_messages (design §3.5)
             if (SHARE_COMMAND_PATTERN().test(newText)) return;
             const resolvedEditedMedia = resolveCapturedMedia(editedMsg)
-                ?? resolveRichMessageMedia(editedMsg.rich_message);
+                ?? resolveRichMessageMedia(editedMsg.rich_message, messageKey);
             const newQuoteText = renderTextWithEntities(
                 editedMsg.quote?.text,
                 editedMsg.quote?.entities
@@ -1079,7 +1089,7 @@ export const autoSave = (bot: Bot, options: AutoSaveOptions = {}) => {
 
                 const messageKey = `${ctx.chat.id}/${ctx.message.message_id}`;
                 const media = resolveCapturedMedia(ctx.update.message)
-                    ?? resolveRichMessageMedia(ctx.update.message?.rich_message);
+                    ?? resolveRichMessageMedia(ctx.update.message?.rich_message, messageKey);
 
                 // Restore URLs hidden in text_link entities before storing, so the
                 // saved text carries the full original information (and link-preview

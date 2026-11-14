@@ -419,4 +419,32 @@ results.push(
     })
 );
 
+// A photo block without its photo sizes: no Bot API allows it today
+const PHOTO_WITHOUT_SIZES: RichBlock = JSON.parse('{"type":"photo","caption":{"text":"没有图的图片块"}}');
+
+results.push(
+    await runCase('a known block in a shape its type does not allow never drops the message', async () => {
+        const messageId = takeMessageId();
+        telegram.reset();
+        const { result: row, errors } = await withLoggedErrors(() =>
+            handleAndRead(bot, richMessageUpdate(messageId, [REPORT_DOCUMENT, PHOTO_WITHOUT_SIZES]), messageId)
+        );
+        const rowText = row?.text ?? '';
+        expect(row !== null, 'the message is stored');
+        expect(
+            rowText.includes('[文件] report.pdf 周报') && rowText.includes('[图片] 没有图的图片块'),
+            `with the text of both blocks (${rowText})`
+        );
+        expect(
+            row?.mediaHint === 'a file: report.pdf, application/pdf — failed to download, you cannot see it',
+            `the file found before the broken block is still attached (${row?.mediaHint})`
+        );
+        expect(
+            loggedForMessage(errors, messageId).some((line) => line.includes('media of rich message')),
+            `one line names the message (${JSON.stringify(errors)})`
+        );
+        expect(!errors.some((line) => line.includes('DROPPED')), 'nothing is dropped');
+    })
+);
+
 reportResults(results);
