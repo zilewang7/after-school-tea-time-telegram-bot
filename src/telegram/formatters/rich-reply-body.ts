@@ -9,6 +9,12 @@
  * {text, entities} message and goes as HTML blocks (`toRichHtml`), so no
  * runtime string is ever re-escaped as markdown.
  *
+ * An answer may embed pictures (`![图注](g1)` on a paragraph of its own). The
+ * delivery scans them out first (`rich-inline-media/scan.ts`): the answer's
+ * clean text is what everything else sees, and the assembly text with its
+ * sentinels is this module's input, where each sentinel becomes a media block
+ * (`rich-inline-media/media-blocks.ts`).
+ *
  * Blocks follow the answer (the status line, [stopped], tool records, the
  * footer, the error line), so the answer must not leave a construct open over
  * them: see answerMarkdown.
@@ -27,6 +33,8 @@ import {
 } from './google-search-document.js';
 import { renderThinkingQuote } from './quoted-render.js';
 import { joinRichBlocks } from './rich-blocks.js';
+import { replaceMediaSentinels, type RichInlineMedia } from './rich-inline-media/media-blocks.js';
+import { stripInlineMarkersForDisplay } from './rich-inline-media/scan.js';
 import { formatThinkingForStreaming } from './thinking-display.js';
 import { buildToolRecordSections } from './tool-records-formatter.js';
 
@@ -93,11 +101,19 @@ export interface RichStreamingFrameInput {
     /** The answer has started: the whole thinking collapses */
     readonly answerStarted: boolean;
     readonly resolveContextLink?: ContextLinkResolver;
+    /**
+     * The reply may embed pictures: a marker's paragraph is hidden in the frame
+     * (the pictures appear when the final is written). Off keeps a public
+     * picture URL as today, and only hides internal ids.
+     */
+    readonly inlineImagesEnabled?: boolean;
 }
 
 /** One streaming frame without the status line (the streaming editor appends it) */
-export const buildRichStreamingFrame = (input: RichStreamingFrameInput): string =>
-    joinRichBlocks([
+export const buildRichStreamingFrame = (input: RichStreamingFrameInput): string => {
+    // A marker the model is still writing must not reach the frame
+    const text = stripInlineMarkersForDisplay(input.text, { embed: input.inlineImagesEnabled === true });
+    return joinRichBlocks([
         input.thinking === ''
             ? ''
             : toRichHtml(
@@ -106,12 +122,76 @@ export const buildRichStreamingFrame = (input: RichStreamingFrameInput): string 
                       input.resolveContextLink
                   )
               ),
-        input.text === '' ? '' : answerMarkdown(input.text, 'streaming', input.resolveContextLink),
+        text === '' ? '' : answerMarkdown(text, 'streaming', input.resolveContextLink),
     ]);
+};
+
+export interface RichAnswerInput {
+    /** The answer as stored: the model's markdown, markers included */
+    readonly text: string;
+    readonly groundingData?: readonly GroundingData[];
+    readonly resolveContextLink?: ContextLinkResolver;
+    /** The pictures the body embeds: each scanned sentinel becomes a media block */
+    readonly inlineMedia?: readonly RichInlineMedia[];
+}
+
+/**
+ * The answer section as rich markdown: the citations, the `#N` links, and the
+ * media blocks in place of the sentinels. This is the snapshot a version keeps
+ * (the replay puts it into the body as it is, without rendering it again).
+ */
+export const buildRichAnswer = (input: RichAnswerInput): string => {
+    const searchGrounding = (input.groundingData ?? []).find(isSearchGroundingStep);
+    const markdown = answerMarkdown(withCitations(input.text, searchGrounding), 'strict', input.resolveContextLink);
+    return replaceMediaSentinels(markdown, input.inlineMedia ?? []);
+};
 
 export interface RichReplyBodyInput {
-    /** The model's answer as stored (raw markdown) */
+    /** The model's answer as stored (raw markdown; the assembly text when it embeds pictures) */
     readonly text: string;
+    /** The thinking shown as a collapsed quote; undefined when it lives behind the link message */
+    readonly thinking?: string;
+    readonly groundingData?: GroundingData[];
+    /** The search footer, built once for the fold decision */
+    readonly googleSearch: GoogleSearchDocument;
+    readonly agentStats?: AgentStats;
+    readonly wasStoppedByUser: boolean;
+    /** The footer went to the search link message: the body leaves it out */
+    readonly searchFolded: boolean;
+    readonly resolveContextLink?: ContextLinkResolver;
+    /** The pictures the body embeds (empty for a reply without inline pictures) */
+    readonly inlineMedia?: readonly RichInlineMedia[];
+}
+
+/** Whether a footer document shows anything at all (an empty one is never folded either) */
+export const searchFooterPresent = (document: GoogleSearchDocument): boolean =>
+    renderGoogleSearchFooter(document).text.trim() !== '';
+
+/**
+ * The blocks around the answer: [stopped], the tool records, the inline search
+ * footer. Live and replay build them the same way, from the same inputs.
+ */
+const bodyBlocksAround = (
+    input: RichReplyBodyFromAnswerInput,
+    linkify: (message: RenderedMessage) => RenderedMessage
+): readonly string[] => {
+    const groundingData = input.groundingData ?? [];
+    const footer = renderGoogleSearchFooter(input.googleSearch);
+    const inlineFooter = !input.searchFolded && footer.text.trim() !== '';
+    return [
+        input.wasStoppedByUser ? toRichHtml(plainText('[stopped]')) : '',
+        ...buildToolRecordSections(input.agentStats, groundingData).map((section) => toRichHtml(linkify(section))),
+        inlineFooter ? toRichHtml(linkify(footer)) : '',
+    ];
+};
+
+export interface RichReplyBodyFromAnswerInput {
+    /**
+     * The answer section as the body shows it, already rendered (citations,
+     * `#N` links and media blocks in place). A replay must pass the stored
+     * snapshot: rendering it again would change it.
+     */
+    readonly answerMarkdown: string;
     /** The thinking shown as a collapsed quote; undefined when it lives behind the link message */
     readonly thinking?: string;
     readonly groundingData?: GroundingData[];
@@ -124,31 +204,49 @@ export interface RichReplyBodyInput {
     readonly resolveContextLink?: ContextLinkResolver;
 }
 
-/** Whether a footer document shows anything at all (an empty one is never folded either) */
-export const searchFooterPresent = (document: GoogleSearchDocument): boolean =>
-    renderGoogleSearchFooter(document).text.trim() !== '';
-
 /**
- * The final body: thinking quote, answer, [stopped], tool records, inline
- * search footer, in the order the entities layout shows them. null for a reply
- * without answer text (media only, thinking only, empty): the entities path
- * owns those.
+ * The final body built around an already rendered answer section: thinking
+ * quote, answer, [stopped], tool records, inline search footer, in the order
+ * the entities layout shows them. null when the body would be empty (no
+ * answer text and no media block): the entities path owns those.
+ *
+ * Live (from buildRichAnswer) and replay (from the stored snapshot) share this,
+ * so a version shows exactly what the reply showed.
  */
-export const buildRichReplyBody = (input: RichReplyBodyInput): string | null => {
-    if (input.text.trim() === '') return null;
+export const buildRichReplyBodyFromAnswer = (input: RichReplyBodyFromAnswerInput): string | null => {
+    if (input.answerMarkdown.trim() === '') return null;
     const linkify = (message: RenderedMessage): RenderedMessage =>
         linkifyContextNumbers(message, input.resolveContextLink);
-    const groundingData = input.groundingData ?? [];
-    const searchGrounding = groundingData.find(isSearchGroundingStep);
-    const footer = renderGoogleSearchFooter(input.googleSearch);
-    const inlineFooter = !input.searchFolded && footer.text.trim() !== '';
     return joinRichBlocks([
         thinkingQuoteBlock(input.thinking, input.resolveContextLink),
-        answerMarkdown(withCitations(input.text, searchGrounding), 'strict', input.resolveContextLink),
-        input.wasStoppedByUser ? toRichHtml(plainText('[stopped]')) : '',
-        ...buildToolRecordSections(input.agentStats, groundingData).map((section) => toRichHtml(linkify(section))),
-        inlineFooter ? toRichHtml(linkify(footer)) : '',
+        input.answerMarkdown,
+        ...bodyBlocksAround(input, linkify),
     ]);
+};
+
+/**
+ * The final body from the raw answer (the live path): the answer is rendered
+ * here, then the blocks around it are added by buildRichReplyBodyFromAnswer.
+ * null for a reply without answer text and without embedded pictures (media
+ * only, thinking only, empty): the entities path owns those.
+ */
+export const buildRichReplyBody = (input: RichReplyBodyInput): string | null => {
+    if (input.text.trim() === '' && (input.inlineMedia?.length ?? 0) === 0) return null;
+    return buildRichReplyBodyFromAnswer({
+        answerMarkdown: buildRichAnswer({
+            text: input.text,
+            ...(input.groundingData === undefined ? {} : { groundingData: input.groundingData }),
+            ...(input.resolveContextLink === undefined ? {} : { resolveContextLink: input.resolveContextLink }),
+            ...(input.inlineMedia === undefined ? {} : { inlineMedia: input.inlineMedia }),
+        }),
+        ...(input.thinking === undefined ? {} : { thinking: input.thinking }),
+        ...(input.groundingData === undefined ? {} : { groundingData: input.groundingData }),
+        googleSearch: input.googleSearch,
+        ...(input.agentStats === undefined ? {} : { agentStats: input.agentStats }),
+        wasStoppedByUser: input.wasStoppedByUser,
+        searchFolded: input.searchFolded,
+        ...(input.resolveContextLink === undefined ? {} : { resolveContextLink: input.resolveContextLink }),
+    });
 };
 
 export interface RichErrorDisplayInput {
@@ -161,6 +259,8 @@ export interface RichErrorDisplayInput {
     readonly resolveContextLink?: ContextLinkResolver;
     /** The longest display (markdown source length) the caller can send */
     readonly maxLength: number;
+    /** The reply may embed pictures: its half-written markers are hidden too */
+    readonly inlineImagesEnabled?: boolean;
 }
 
 /** The paragraph that stands for the end of an answer the error display cut */
@@ -237,16 +337,19 @@ const cutAnswerToFit = (
 /**
  * What survived the failure, then the italic error lines. Over maxLength the
  * thinking quote goes first, then the end of the answer (see cutAnswerToFit).
- * Display only: the stored version keeps the whole text.
+ * Display only: the stored version keeps the whole text. A half-written picture
+ * marker (the failure can interrupt the model mid-marker) is hidden like in the
+ * frames.
  */
 export const buildRichErrorDisplay = (input: RichErrorDisplayInput): string => {
+    const text = stripInlineMarkersForDisplay(input.text, { embed: input.inlineImagesEnabled === true });
     const quoteBlock = thinkingQuoteBlock(input.thinking, input.resolveContextLink);
-    const answerBlock = input.text === '' ? '' : answerMarkdown(input.text, 'strict', input.resolveContextLink);
+    const answerBlock = text === '' ? '' : answerMarkdown(text, 'strict', input.resolveContextLink);
     const errorBlock = toRichHtml(input.errorLines);
     const whole = joinRichBlocks([quoteBlock, answerBlock, errorBlock]);
     if (whole.length <= input.maxLength) return whole;
     const withoutQuote = joinRichBlocks([answerBlock, errorBlock]);
     if (withoutQuote.length <= input.maxLength) return withoutQuote;
     const uncut = { displayLength: joinRichBlocks([answerBlock, CUT_MARK_BLOCK, errorBlock]).length, answerBlock };
-    return cutAnswerToFit(input, errorBlock, uncut);
+    return cutAnswerToFit({ ...input, text }, errorBlock, uncut);
 };

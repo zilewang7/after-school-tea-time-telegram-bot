@@ -92,7 +92,7 @@ const continueFromCheckpoint = async (
     // The checkpoint's tool state, this attempt's signal and Bot API. No
     // workspace manifest is added: round 1 of the checkpoint already carries it
     const signal = session.streamController.signal;
-    const { tools } = createReplyTools(
+    const { tools, toolState } = createReplyTools(
         model,
         buildReplyToolContext({
             chat,
@@ -106,6 +106,10 @@ const continueFromCheckpoint = async (
         plan.access,
         entry.toolState
     );
+    // The resumed version keeps the checkpoint's picture ids (gN/imgN/sN) alive
+    // and resolves #N against the context it was built on
+    chatContext.mediaState = toolState.media;
+    chatContext.contextIndex = entry.context.contextIndex;
 
     // The continue validated the setting against the checkpoint, so this is the
     // same thinking level the interrupted version asked for

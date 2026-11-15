@@ -148,6 +148,37 @@ const migrateCustomEmojiSchema = async (transaction: Transaction): Promise<void>
   );
 };
 
+/**
+ * The pictures of one bot reply (`message_media`, v5 unified media): one row
+ * per picture of one message, `ordinal` 1-based in delivery order. The table
+ * is new, so raw SQL like `message_attachments`; the DTO registers with sync
+ * and finds the table already there.
+ */
+const migrateMessageMedia = async (transaction: Transaction): Promise<void> => {
+  await sequelize.query(`
+    CREATE TABLE IF NOT EXISTS message_media (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      chatId INTEGER NOT NULL,
+      messageId INTEGER NOT NULL,
+      ordinal INTEGER NOT NULL,
+      mediaKey VARCHAR(255) NOT NULL,
+      mimeType VARCHAR(255) NOT NULL,
+      sizeBytes INTEGER NOT NULL,
+      caption TEXT,
+      placement VARCHAR(255) NOT NULL,
+      createdAt DATETIME NOT NULL
+    )
+  `, { transaction });
+  await sequelize.query(
+    'CREATE UNIQUE INDEX IF NOT EXISTS message_media_chat_id_message_id_ordinal_unique ON message_media (chatId, messageId, ordinal)',
+    { transaction }
+  );
+  await sequelize.query(
+    'CREATE INDEX IF NOT EXISTS message_media_chat_id_message_id ON message_media (chatId, messageId)',
+    { transaction }
+  );
+};
+
 const migratePreviewOcrRevision = async (transaction: Transaction): Promise<void> => {
   const tables = await sequelize.query<{ name: string }>(
     "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'link_preview_cache'",
@@ -710,6 +741,7 @@ export const runSchemaMigrations = async (): Promise<void> => {
 
   await sequelize.transaction(async (transaction) => {
     await migrateCustomEmojiSchema(transaction);
+    await migrateMessageMedia(transaction);
     await migratePreviewOcrRevision(transaction);
     await migrateMediaCacheDurationSeconds(transaction);
     await migrateHarnessIssuePanelColumns(transaction);
@@ -765,6 +797,12 @@ export const runSchemaMigrations = async (): Promise<void> => {
     await sequelize.query(
       `INSERT OR IGNORE INTO schema_migrations (name, appliedAt)
        VALUES ('20261108_chat_settings_tool_overrides', :appliedAt)`,
+      { replacements: { appliedAt: new Date().toISOString() }, transaction }
+    );
+    // message_media is a brand-new table, created by migrateMessageMedia above
+    await sequelize.query(
+      `INSERT OR IGNORE INTO schema_migrations (name, appliedAt)
+       VALUES ('20261115_message_media', :appliedAt)`,
       { replacements: { appliedAt: new Date().toISOString() }, transaction }
     );
     // share_links is a brand-new table, created by migrateShareLinks above

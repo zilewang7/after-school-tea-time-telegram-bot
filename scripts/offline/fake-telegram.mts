@@ -9,7 +9,7 @@
  * setupOfflineDb.
  */
 import { Api, Bot, Context, type Transformer } from 'grammy';
-import type { Chat, MessageEntity, Update, User, UserFromGetMe } from 'grammy/types';
+import type { Chat, MessageEntity, RichBlock, RichMessage, Update, User, UserFromGetMe } from 'grammy/types';
 import type { StubServer } from './support/stub-server.mts';
 
 export interface TelegramCall {
@@ -37,9 +37,22 @@ export interface FakeTelegramOptions {
      * `{ ok: false, … }`, null lets the call through
      */
     readonly refuse?: (call: TelegramCall) => TelegramRefusal | null;
+    /**
+     * The `rich_message.blocks` a rich send or edit answers with. Default:
+     * one photo block per `tg://photo?id=` reference in the markdown, so a
+     * caller that counts delivered pictures (`onDelivered`) can be tested.
+     */
+    readonly richBlocks?: (call: TelegramCall) => RichBlock[];
 }
 
-const SENDING_METHODS: ReadonlySet<string> = new Set(['sendMessage', 'sendPhoto', 'sendDocument', 'sendRichMessage']);
+/** sendMediaGroup answers with one message per item; the rest with one message */
+const SENDING_METHODS: ReadonlySet<string> = new Set([
+    'sendMessage',
+    'sendPhoto',
+    'sendDocument',
+    'sendAnimation',
+    'sendRichMessage',
+]);
 let nextSentMessageId = 500_000;
 
 const asRecord = (value: unknown): Record<string, unknown> =>
@@ -47,9 +60,42 @@ const asRecord = (value: unknown): Record<string, unknown> =>
         ? Object.fromEntries(Object.entries(value))
         : {};
 
+/** One offline photo block per markdown media reference */
+const photoBlocksOf = (markdown: string): RichBlock[] => {
+    const ids = [...markdown.matchAll(/tg:\/\/photo\?id=([A-Za-z0-9_-]+)/g)].map((match) => match[1] ?? '');
+    return ids.map((id) => ({
+        type: 'photo',
+        photo: [
+            {
+                file_id: `offline-rich-file-${id}`,
+                file_unique_id: `offline-rich-unique-${id}`,
+                width: 800,
+                height: 600,
+                file_size: 4096,
+            },
+        ],
+    }));
+};
+
+const messageStub = (chatId: number, richMessage?: RichMessage) => {
+    nextSentMessageId += 1;
+    return {
+        message_id: nextSentMessageId,
+        date: 0,
+        chat: { id: chatId, type: 'supergroup', title: '测试群' },
+        ...(richMessage === undefined ? {} : { rich_message: richMessage }),
+    };
+};
+
 /** Install the answering transformer on an Api; returns the recorder */
 const recordInto = (api: Api, options: FakeTelegramOptions = {}): FakeTelegram => {
     const calls: TelegramCall[] = [];
+    const richBlocksOf = (call: TelegramCall): RichBlock[] => {
+        if (options.richBlocks !== undefined) return options.richBlocks(call);
+        const richMessage = asRecord(call.payload.rich_message);
+        const markdown = typeof richMessage.markdown === 'string' ? richMessage.markdown : '';
+        return photoBlocksOf(markdown);
+    };
     const answer = async (method: string, payload: unknown) => {
         const fields = asRecord(payload);
         const call: TelegramCall = { method, payload: fields };
@@ -58,13 +104,29 @@ const recordInto = (api: Api, options: FakeTelegramOptions = {}): FakeTelegram =
         if (refusal !== null) {
             return { ok: false, error_code: refusal.error_code, description: refusal.description };
         }
-        if (!SENDING_METHODS.has(method)) return { ok: true, result: true };
-        nextSentMessageId += 1;
         const chatId = typeof fields.chat_id === 'number' ? fields.chat_id : 0;
-        return {
-            ok: true,
-            result: { message_id: nextSentMessageId, date: 0, chat: { id: chatId, type: 'supergroup', title: '测试群' } },
-        };
+        // An album answers with one message per item, in the order sent
+        if (method === 'sendMediaGroup') {
+            const media = Array.isArray(fields.media) ? fields.media : [];
+            return { ok: true, result: media.map(() => messageStub(chatId)) };
+        }
+        // Editing a rich message answers with the message it became, blocks
+        // included: the delivery layer checks the picture count it got back
+        if (method === 'editMessageText' && fields.rich_message !== undefined) {
+            return {
+                ok: true,
+                result: {
+                    ...messageStub(chatId, { blocks: richBlocksOf(call) }),
+                    message_id: typeof fields.message_id === 'number' ? fields.message_id : nextSentMessageId,
+                },
+            };
+        }
+        if (!SENDING_METHODS.has(method)) return { ok: true, result: true };
+        const richMessage =
+            fields.rich_message === undefined
+                ? undefined
+                : { blocks: richBlocksOf(call) };
+        return { ok: true, result: messageStub(chatId, richMessage) };
     };
     // The transformer is generic over every method: one cast at this boundary
     const offlineTransformer = (_previous: unknown, method: string, payload: unknown) => answer(method, payload);

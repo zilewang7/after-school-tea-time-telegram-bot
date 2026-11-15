@@ -20,7 +20,7 @@ import type { BotResponse, ResponseVersion } from '../../db/index.js';
 import {
     loadLinkPreviewMediaDescriptors,
     loadMessageAlbumMedia,
-    versionMediaDescriptorOf,
+    versionMediaDescriptorsOf,
     type MediaDescriptor,
     type MessageMediaItem,
 } from '../media/media-content.js';
@@ -42,6 +42,11 @@ export type ShareMedia = MediaDescriptor;
 /** One attachment of a share bubble: the stored message that owns the file */
 export interface ShareMediaItem extends ShareMedia {
     messageId: number;
+    /**
+     * 0-based picture position inside that message's media list; absent for the
+     * first / only picture, which every URL before v5 already pointed at
+     */
+    index?: number;
 }
 
 export interface ShareReplyContent {
@@ -56,8 +61,11 @@ export interface ShareReplyContent {
     model: string | null;
     text: string;
     widget: ShareWidgetContent | null;
-    /** The version's attachment (image / sticker / video / file); bytes via the media route */
-    media: ShareMedia | null;
+    /**
+     * The version's pictures in delivery order (v5), or its legacy single image
+     * / sticker / file; bytes via the media route, one index per picture
+     */
+    media: ShareMedia[];
     /** Server-side only: the snapshot the preview image is rendered from */
     preview: PreviewSnapshot;
 }
@@ -253,7 +261,7 @@ export const loadReplyShareContent = async (
         model: typeof version.model === 'string' && version.model !== '' ? version.model : null,
         text: typeof version.text === 'string' ? version.text : '',
         widget,
-        media: versionMediaDescriptorOf(version),
+        media: versionMediaDescriptorsOf(version),
         preview: previewSnapshotOfReply(chatTitle, version, widget),
     };
 };
@@ -290,7 +298,7 @@ const botBubbleOf = (
     replyTo: ShareReplyTarget | null
 ): ShareBotBubble => {
     const version = response?.getCurrentVersion() ?? null;
-    const descriptor = version === null ? null : versionMediaDescriptorOf(version);
+    const descriptors = version === null ? [] : versionMediaDescriptorsOf(version);
     return {
         kind: 'bot',
         messageId: message.messageId,
@@ -298,7 +306,11 @@ const botBubbleOf = (
         text: version !== null && typeof version.text === 'string' ? version.text : (message.text ?? ''),
         widget: version === null ? null : widgetOf(version),
         replyTo,
-        media: descriptor === null ? [] : [{ messageId: message.messageId, ...descriptor }],
+        media: descriptors.map((descriptor, index) => ({
+            messageId: message.messageId,
+            ...(index === 0 ? {} : { index }),
+            ...descriptor,
+        })),
     };
 };
 

@@ -9,6 +9,7 @@ import { BiliDanmakuSnapshot } from "./biliDanmakuSnapshotDTO.js";
 import { MessageLink } from "./messageLinkDTO.js";
 import { TelegramUser } from "./telegramUserDTO.js";
 import { MessageAttachment } from "./messageAttachmentDTO.js";
+import { MessageMedia, type StoredMessageMedia } from "./messageMediaDTO.js";
 import { CustomEmojiAsset } from "./customEmojiAssetDTO.js";
 import { MessageRevision } from './messageRevisionDTO.js';
 import { HarnessIssue } from './harnessIssueDTO.js';
@@ -30,6 +31,13 @@ import './modelCatalogDTO.js';
 import './modelCapabilityProposalDTO.js';
 import { getBlob } from "../util.js";
 import { addAsyncFileSaveTask, removeAsyncFileSaveTask, findFirstMessageIdByContinuation } from '../state.js';
+import {
+    deleteMessageMediaForKeys,
+    deleteMessageMediaForMessages,
+    listMessageMedia,
+    listMessageMediaForMessages,
+    replaceMessageMedia,
+} from './queries/message-media-queries.js';
 import { backfillAnimationMediaKind, backfillCatalogCapabilities, backfillCatalogLabels, backfillCatalogSeedsOnly, backfillCatalogSuperseded, backfillPanelRegistry, ensureCapabilityProposalIndexes, ensureModelPriceIndexes, runSchemaMigrations } from './schema-migrations.js';
 
 // sync database (the imports above ensure every table is registered before sync)
@@ -310,6 +318,12 @@ export {
     MessageLink,
     TelegramUser,
     MessageAttachment,
+    MessageMedia,
+    listMessageMedia,
+    listMessageMediaForMessages,
+    replaceMessageMedia,
+    deleteMessageMediaForMessages,
+    deleteMessageMediaForKeys,
     CustomEmojiAsset,
     MessageRevision,
     HarnessIssue,
@@ -318,6 +332,7 @@ export {
     UserAccess,
     ButtonState,
     type ResponseVersion,
+    type StoredMessageMedia,
     type StoredFile,
     type ResponseMetadata,
     type StoredSticker,

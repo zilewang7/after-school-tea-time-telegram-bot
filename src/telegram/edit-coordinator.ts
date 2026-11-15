@@ -17,10 +17,17 @@
  */
 import { GrammyError } from 'grammy';
 import type { Api } from 'grammy';
+import type { Message } from 'grammy/types';
 import type { MessageEntity as RenderedEntity } from 'telegram-md-entities';
 import { to } from '../shared/result.js';
 import { toApiEntities } from './api-entities.js';
 import type { LinkPreviewOptions } from './link-preview.js';
+import {
+    richMediaBytesOf,
+    richMediaFieldOf,
+    richMediaIdentityOf,
+    type RichMediaPayload,
+} from './formatters/rich-inline-media/payload.js';
 
 export type EditPriority = 'final' | 'content' | 'spinner';
 
@@ -34,6 +41,18 @@ export interface RichEditOptions {
      * failed: a rich state is never retried in another form here.
      */
     readonly onRejected?: (error: GrammyError) => void;
+    /**
+     * The pictures the markdown embeds, uploaded with the same request. A
+     * state that carries them is not retried by the coordinator: each attempt
+     * would upload every byte again (§5.8).
+     */
+    readonly media?: readonly RichMediaPayload[];
+    /**
+     * Telegram answered with the edited message (it can, for a rich edit): the
+     * caller checks the delivered photo blocks, the one silent way a picture is
+     * lost (a caption that breaks the media block line).
+     */
+    readonly onDelivered?: (message: Message) => void;
 }
 
 export interface SubmitEditOptions {
@@ -81,6 +100,18 @@ const BASE_CONFIG: CoordinatorConfig = {
     transientPenaltyMs: 2_000,
     fallback429PenaltyMs: 30_000,
 };
+
+/**
+ * Attempts a final rich state carrying pictures gets. One: every retry would
+ * upload all bytes again (up to 40MB per package), and the delivery degrades to
+ * the entities path instead of spending the reply's time on uploads. grammY's
+ * auto-retry sits below this, so one attempt can still upload a few times.
+ */
+const MEDIA_FINAL_MAX_ATTEMPTS = 1;
+
+/** The attempt cap of a state: a final state with pictures is not retried */
+const attemptCapOf = (state: DesiredState, isFinalCap: number): number =>
+    state.isFinal && (state.media?.length ?? 0) > 0 ? MEDIA_FINAL_MAX_ATTEMPTS : isFinalCap;
 
 /**
  * Multiplier for the pacing durations (EDIT_COORDINATOR_TIME_SCALE), so the
@@ -131,8 +162,14 @@ interface DesiredState {
     linkPreviewJson: string;
     priority: EditPriority;
     isFinal: boolean;
+    /** Rich states only: the pictures the markdown embeds */
+    media?: readonly RichMediaPayload[];
+    /** Serialized media identity ('none' when the state carries no picture) */
+    mediaJson: string;
     /** Rich states only: who hears about a refusal */
     onRichRejected?: (error: GrammyError) => void;
+    /** Rich states only: who hears about the delivered message */
+    onRichDelivered?: (message: Message) => void;
 }
 
 interface MessageEntry {
@@ -144,6 +181,7 @@ interface MessageEntry {
     /** Unset reads as 'text': only a rich state ever sets 'rich' */
     sentFormat?: EditFormat;
     sentEntitiesJson?: string;
+    sentMediaJson?: string;
     sentMarkupJson?: string;
     sentLinkPreviewJson?: string;
     /** Flush attempts for the current desired state (reset on new submit) */
@@ -306,6 +344,10 @@ const matchesSentState = (entry: MessageEntry, state: DesiredState): boolean => 
     ) {
         return false;
     }
+    // Same text and entities but other pictures is a real change
+    if (entry.sentMediaJson !== undefined && entry.sentMediaJson !== state.mediaJson) {
+        return false;
+    }
     // Unknown sent markup (e.g. primed state) only compares text
     if (entry.sentMarkupJson === undefined) return true;
     return entry.sentMarkupJson === state.replyMarkupJson;
@@ -314,6 +356,10 @@ const matchesSentState = (entry: MessageEntry, state: DesiredState): boolean => 
 /** Stable comparison key for link preview options */
 const serializeLinkPreview = (options?: LinkPreviewOptions): string =>
     options ? JSON.stringify(options) : 'none';
+
+/** The message a rich edit answered with; null for the plain `true` an edit usually answers */
+const editedMessageOf = (result: true | Message): Message | null =>
+    typeof result === 'object' && result !== null ? result : null;
 
 /**
  * Mark a state as delivered; remove the entry when a final state lands
@@ -326,6 +372,7 @@ const settleDelivered = (
     entry.sentText = state.text;
     entry.sentFormat = state.format;
     entry.sentEntitiesJson = state.entitiesJson;
+    entry.sentMediaJson = state.mediaJson;
     entry.sentMarkupJson = state.replyMarkupJson;
     entry.sentLinkPreviewJson = state.linkPreviewJson;
     if (entry.desired === state) {
@@ -371,7 +418,7 @@ const handleEditError = (
         const penaltyMs = getRetryPenaltyMs(error);
         applyPenalty(coordinator, penaltyMs);
         entry.attempts++;
-        const cap = state.isFinal ? BASE_CONFIG.finalMaxAttempts : BASE_CONFIG.transientMaxAttempts;
+        const cap = attemptCapOf(state, state.isFinal ? BASE_CONFIG.finalMaxAttempts : BASE_CONFIG.transientMaxAttempts);
         console.warn(
             `[edit-coordinator] 429 on edit (chat ${coordinator.chatId}, msg ${entry.messageId}), ` +
             `backing off ${Math.round(penaltyMs / 1000)}s, attempt ${entry.attempts}/${cap}`
@@ -437,7 +484,7 @@ const handleEditError = (
     // Network / unknown errors: transient, retry with a small penalty
     entry.attempts++;
     applyPenalty(coordinator, currentConfig().transientPenaltyMs);
-    const cap = state.isFinal ? BASE_CONFIG.finalMaxAttempts : BASE_CONFIG.transientMaxAttempts;
+    const cap = attemptCapOf(state, state.isFinal ? BASE_CONFIG.finalMaxAttempts : BASE_CONFIG.transientMaxAttempts);
     console.warn(
         `[edit-coordinator] Edit network error (attempt ${entry.attempts}/${cap}):`,
         message
@@ -500,12 +547,19 @@ const flushEntry = async (
         }
 
         recordCall(coordinator);
-        const [error] = await to(
+        if (state.media !== undefined && state.media.length > 0) {
+            // Every attempt uploads the whole package again: make the cost visible
+            console.log(
+                `[rich-inline] media payload chat=${coordinator.chatId} msg=${entry.messageId} ` +
+                `pictures=${state.media.length} bytes=${richMediaBytesOf(state.media)} attempt=${entry.attempts + 1}`
+            );
+        }
+        const [error, result] = await to(
             state.format === 'rich'
                 ? api.editMessageText(
                       coordinator.chatId,
                       entry.messageId,
-                      { markdown: state.text },
+                      { markdown: state.text, ...richMediaFieldOf(state.media) },
                       { reply_markup: state.replyMarkup }
                   )
                 : api.editMessageText(coordinator.chatId, entry.messageId, state.text, {
@@ -520,6 +574,9 @@ const flushEntry = async (
 
         if (!error) {
             settleDelivered(coordinator, entry, state);
+            // A rich edit may answer with the message: the caller checks its blocks
+            const delivered = editedMessageOf(result);
+            if (delivered !== null) state.onRichDelivered?.(delivered);
             return;
         }
         handleEditError(coordinator, entry, state, error);
@@ -593,6 +650,7 @@ export const submitEdit = (
     // A rich edit carries none of these: the markdown is the whole message
     const entities = rich === undefined && options?.entities?.length ? options.entities : undefined;
     const linkPreviewOptions = rich === undefined ? options?.linkPreviewOptions : undefined;
+    const media = rich?.media;
     const state: DesiredState = {
         text,
         format: rich === undefined ? 'text' : 'rich',
@@ -608,7 +666,10 @@ export const submitEdit = (
         linkPreviewJson: serializeLinkPreview(linkPreviewOptions),
         priority: isFinal ? 'final' : options?.priority ?? 'content',
         isFinal,
+        media,
+        mediaJson: richMediaIdentityOf(media),
         onRichRejected: rich?.onRejected,
+        onRichDelivered: rich?.onDelivered,
     };
 
     if (matchesSentState(entry, state)) {
@@ -656,6 +717,7 @@ export const primeSentState = (
     // Primed content is always plain text; an entity-carrying submit with the
     // same text must still be treated as a change
     entry.sentEntitiesJson = '[]';
+    entry.sentMediaJson = 'none';
     entry.sentMarkupJson = undefined;
     // The priming send carried no preview options
     entry.sentLinkPreviewJson = 'none';

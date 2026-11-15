@@ -63,7 +63,6 @@ const { createSendImageTool } = await import('../../src/reply/tools/send-image-t
 const { parseGenerateImageArgs } = await import('../../src/reply/tools/image-tool-args.js');
 const { resolveImageReferences } = await import('../../src/reply/tools/image-references.js');
 const { buildImageCaption, IMAGE_CAPTION_MAX_LENGTH } = await import('../../src/reply/tools/image-message.js');
-const { ONE_ATTACHMENT_PER_REPLY } = await import('../../src/reply/tools/reply-media-state.js');
 const { buildReplyToolContext } = await import('../../src/reply/tools/reply-tool-context.js');
 const { widgetDeliveryOf } = await import('../../src/telegram/widget-precheck.js');
 const { createReplyMediaState } = await import('../../src/reply/tools/reply-media-state.js');
@@ -1037,11 +1036,24 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
             expect(sent.content.includes('本次生成的图 g2'), 'the result names the version it sent');
             expect(!sent.modelImages || sent.modelImages.length === 0, 'no echo: the model has just looked at it');
 
+            // Since v5 a reply may carry several pictures: drawing again and
+            // sending a second picture are both part of one reply
             const again = await runTool(tool, { prompt: '再改一版' });
-            expect(again.isError && again.content === ONE_ATTACHMENT_PER_REPLY, 'after sending, drawing has nowhere to go');
-            expect(model.requests.length === 2, 'and the image model is not asked again');
+            expect(
+                !again.isError && again.content.startsWith('已生成 g3（'),
+                `drawing again is allowed after a picture went out (got ${json(again.content)})`
+            );
+            expect(model.requests.length === 3, 'and the image model is asked again');
             const resend = await runTool(send, { image_id: 'g1' });
-            expect(resend.isError && resend.content === ONE_ATTACHMENT_PER_REPLY, 'a second send is refused too');
+            expect(
+                !resend.isError && resend.images.length === 1,
+                `a second send joins the reply's pictures (got ${json(resend.content)})`
+            );
+            expect(
+                state.imageCount === 2 && state.imageBytes === PNG_BYTES.length * 2,
+                `the reply counts both pictures (got ${state.imageCount})`
+            );
+            expect(resend.content.includes('第 2/10 张'), 'the result says where the picture landed');
         },
     },
     {

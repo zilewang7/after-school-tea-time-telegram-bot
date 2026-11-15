@@ -11,7 +11,6 @@
  * injection, and the search service's one fetch is a stubbed global.
  */
 import { expect, reportResults, runCase, type CaseResult } from './harness.mts';
-import { createUnusedApi } from './fake-telegram.mts';
 
 // The platforms build their clients at import time; nothing here sends a request
 for (const key of ['GEMINI_API_KEY', 'OPENAI_API_KEY', 'DEEPSEEK_API_KEY', 'GROK_API_KEY', 'MIMO_API_KEY']) {
@@ -56,7 +55,6 @@ const {
     createSearchImagesTool,
     createFetchImageTool,
     createSendImageTool,
-    createGenerateImageTool,
 } = replyTools;
 
 const candidateJson = (index: number, overrides: Record<string, unknown> = {}): Record<string, unknown> => ({
@@ -225,7 +223,7 @@ const cases = [
         },
     },
     {
-        name: 'one reply gets one picture: after send_image a drawing has nowhere to go',
+        name: 'one reply gets several pictures: send_image may be called again',
         body: async (): Promise<void> => {
             const state = createReplyMediaState();
             const tool = searchToolWith(state, searchStub());
@@ -249,34 +247,13 @@ const cases = [
                 'the model gets the very picture it sent back into its context'
             );
 
-            const second = await send.execute({ search_id: 's2' }, AbortSignal.abort());
-            expect(second.isError && second.content.includes('已经有一个附件'), 'a second send is refused');
-
-            const draw = createGenerateImageTool(
-                {
-                    chatId: -100,
-                    chatTitle: '测试群',
-                    triggerMessageId: 1,
-                    requester: { userId: 42, name: '张三' },
-                    contextIndex: new Map(),
-                    signal: AbortSignal.abort(),
-                    // The draw is refused before any Bot API call; this client fails one
-                    api: createUnusedApi(),
-                },
-                state,
-                {
-                    dependencies: {
-                        sendMessage: async () => {
-                            throw new Error('must not be called');
-                        },
-                        loadMessageImages: async () => [],
-                        loadAnimationFrame: async () => null,
-                        fetchImage: async () => ({ ok: false, error: 'offline' }),
-                    },
-                }
-            );
-            const drawing = await draw.execute({ prompt: '一只狗' }, AbortSignal.abort());
-            expect(drawing.isError && drawing.content.includes('已经有一个附件'), 'drawing is refused too');
+            // Since v5 a reply carries up to ten pictures: a second send joins
+            // the first one (drawing again is allowed as well, see tools-image)
+            const second = await send.execute({ search_id: 's2', caption: '第二张' }, AbortSignal.abort());
+            expect(!second.isError && second.images.length === 1, `a second send joins the reply (got ${second.content})`);
+            expect(second.images[0]?.caption === '第二张', 'with its own caption');
+            expect(second.content.includes('第 2/10 张'), `the result counts the reply (got ${second.content})`);
+            expect(state.imageCount === 2, 'both pictures are on the reply');
         },
     },
     {

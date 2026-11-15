@@ -138,7 +138,7 @@ cases.push(
             model: 'gemini-4-argon',
             text: '见 https://t.me/c/1415974153/2',
             widget: { html: '<div>x</div>', caption: 'tg://user?id=42', imageBase64: null },
-            media: null,
+            media: [],
             preview: { chatTitle: null, createdAt: '2026-11-10T00:00:00.000Z', text: 'preview' },
         };
         const redacted = redactShareContent(content);

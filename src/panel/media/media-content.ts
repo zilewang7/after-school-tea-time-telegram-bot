@@ -11,7 +11,12 @@ import { Readable } from 'node:stream';
 import type { Context } from 'hono';
 import { Op } from '@sequelize/core';
 import { LinkPreviewCache, MediaCache, getMessage, type BotResponse, type ResponseVersion } from '../../db/index.js';
-import { findBotResponseInChat, listSubImageMessages, type ContextMessage } from '../../db/queries/context-queries.js';
+import {
+    findBotResponseInChat,
+    listSubImageMessages,
+    type ContextMessage,
+} from '../../db/queries/context-queries.js';
+import { listMessageMedia } from '../../db/queries/message-media-queries.js';
 import { sniffMediaMime } from '../../ai/image-generation/image-mime.js';
 import { getGcsObjectSize, openGcsReadStream } from '../../services/gcs-service.js';
 import { extractFirstUrl } from '../../services/luoxu-preview-service.js';
@@ -127,21 +132,84 @@ export const versionMediaDescriptorOf = (version: ResponseVersion): MediaDescrip
     return null;
 };
 
+/**
+ * The media a stored bot version carries, in delivery order (v5 unified media).
+ *
+ * A version with a `media[]` list shows every picture it delivered — inline
+ * ones in body order, then the album / single attachment messages. Older
+ * versions have no list and keep showing their one image / sticker / file slot.
+ */
+export const versionMediaDescriptorsOf = (version: ResponseVersion): MediaDescriptor[] => {
+    const media = version.media;
+    if (Array.isArray(media) && media.length > 0) {
+        return media.map((item) => ({
+            // Every stored reply picture is a still photo; a sticker / file never
+            // enters `media[]` (it rides the legacy single slot instead)
+            kind: kindOf(item.mimeType, false),
+            mimeType: item.mimeType,
+            sizeBytes: item.sizeBytes,
+            fileName: null,
+        }));
+    }
+    const single = versionMediaDescriptorOf(version);
+    return single === null ? [] : [single];
+};
+
+/**
+ * The bytes / object of one reply picture: its content-addressed media_cache
+ * entry, which delivers as an inline BLOB or as a >20 MB gs:// reference.
+ */
+const cachedReplyMediaOf = async (
+    mediaKey: string,
+    sizeBytes: number
+): Promise<ResolvedMedia | null> => {
+    const cached = await MediaCache.findByPk(mediaKey);
+    if (cached === null) return null;
+    const descriptor: MediaDescriptor = {
+        kind: kindOf(cached.mime, false),
+        mimeType: cached.mime,
+        sizeBytes: cached.sizeBytes ?? sizeBytes,
+        fileName: null,
+    };
+    if (cached.data !== null) return { ...descriptor, inlineData: cached.data, gsUri: null };
+    if (cached.fileUri !== null) return { ...descriptor, inlineData: null, gsUri: cached.fileUri };
+    return null;
+};
+
 const chooseVersion = (response: BotResponse | null, versionId: number | null): ResponseVersion | null => {
     if (response === null) return null;
     if (versionId === null) return response.getCurrentVersion();
     return response.getVersions().find((version) => version.versionId === versionId) ?? null;
 };
 
-/** The media a bot version carries, with its bytes when inline */
+/**
+ * The media a bot version carries, with its bytes when inline: `mediaIndex`
+ * (0-based) picks one picture of the v5 `media[]` list; 0 is the only valid
+ * index for a legacy version.
+ */
 export const resolveVersionMedia = async (
     chatId: number,
     firstMessageId: number,
-    versionId: number | null
+    versionId: number | null,
+    mediaIndex = 0
 ): Promise<ResolvedMedia | null> => {
     const response = await findBotResponseInChat(chatId, firstMessageId);
     const version = chooseVersion(response, versionId);
     if (version === null) return null;
+
+    const media = version.media;
+    if (Array.isArray(media) && media.length > 0) {
+        const item = media[mediaIndex];
+        if (item === undefined) return null;
+        if (item.mediaKey !== undefined && item.mediaKey !== '') {
+            const resolved = await cachedReplyMediaOf(item.mediaKey, item.sizeBytes);
+            if (resolved !== null) return resolved;
+        }
+        // The cache may have lost this picture while the version still keeps its
+        // legacy single image: only index 0 has that copy, and it is the same one
+        if (mediaIndex !== 0) return null;
+    }
+    if (mediaIndex !== 0) return null;
 
     const imageBase64 = version.imageBase64;
     if (typeof imageBase64 === 'string' && imageBase64 !== '') {
@@ -161,13 +229,31 @@ export const resolveVersionMedia = async (
 };
 
 /**
- * The media a message row carries. Bytes come from the content-addressed cache
- * (inline, or a gs:// object for >20 MB) and fall back to the legacy per-message
- * `file` BLOB. Null when the message has no media or the retention took it.
+ * The media a message row carries. A bot reply stores its pictures as
+ * `message_media` rows (v5 unified media), so `mediaIndex` picks one of them in
+ * delivery order; anything else reads the content-addressed cache (inline, or a
+ * gs:// object for >20 MB) and falls back to the legacy per-message `file`
+ * BLOB. Null when the message has no media or the retention took it.
  */
-export const resolveMessageMedia = async (chatId: number, messageId: number): Promise<ResolvedMedia | null> => {
+export const resolveMessageMedia = async (
+    chatId: number,
+    messageId: number,
+    mediaIndex = 0
+): Promise<ResolvedMedia | null> => {
     const message = await getMessage(chatId, messageId);
     if (message === null) return null;
+
+    const storedMedia = await listMessageMedia(chatId, messageId);
+    if (storedMedia.length > 0) {
+        const item = storedMedia[mediaIndex];
+        if (item === undefined) return null;
+        const resolved = await cachedReplyMediaOf(item.mediaKey, item.sizeBytes);
+        if (resolved !== null) return resolved;
+        // Only the first picture may still have the row's legacy single copy
+        if (mediaIndex !== 0) return null;
+    } else if (mediaIndex !== 0) {
+        return null;
+    }
 
     const fileUniqueId = message.fileUniqueId;
     if (fileUniqueId !== null) {

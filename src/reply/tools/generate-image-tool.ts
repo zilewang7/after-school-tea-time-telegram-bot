@@ -61,7 +61,8 @@ export { IMAGE_ASPECT_RATIOS } from './image-tool-args.js';
 
 const descriptionOf = (hasSticker: boolean, bananaOnly: boolean): string =>
     '生成新图片或基于现有图片进行修改。生成结果不会自动发出：每次生成得到一个编号（g1、g2…），' +
-    `用 send_image(image_id='g1') 发出满意的那张；同一条回复最多生成 ${MAX_GENERATED_IMAGES} 张。` +
+    `用 send_image(image_id='g1') 发出满意的那张（可以多次 send_image，本条回复最多 10 张图片，多张作为一条相册发出）；` +
+    `同一条回复最多生成 ${MAX_GENERATED_IMAGES} 张。` +
     '参考或修改上下文已有图片（含消息附件、链接预览图片及历史生成图）时，在 references 中指定消息编号；' +
     '动图（GIF/动态贴纸）取首帧；同条消息含多张图片时用 image 指定序号（从 1 开始，消息附件在前，链接预览图片在后）。' +
     '参考本次已生成的图片（继续修改）、搜索候选或已读取图片时，在 web_references 中填入 image_id（g1 或 img1）或 search_id。' +
@@ -302,13 +303,16 @@ export const createGenerateImageTool = (
         statusText: '🎨 正在画图…',
         chatAction: 'upload_photo',
         execute: async (rawArgs, signal) => {
-            if (state.hasReplyImage || state.hasReplySticker || state.hasReplyFile) {
+            // Pictures may already be on the reply: a drawn picture is only a
+            // candidate until send_image adds it, so drawing after sending is fine.
+            // A sticker or file, though, still excludes pictures.
+            if (state.hasReplySticker || state.hasReplyFile) {
                 return imageToolError(ONE_ATTACHMENT_PER_REPLY);
             }
             if (state.generated.size >= MAX_GENERATED_IMAGES) {
                 return imageToolError(
                     `本条回复已经画了 ${MAX_GENERATED_IMAGES} 张（${generatedImageIds(state).join(' ')}），不能再画。` +
-                        "用 send_image(image_id='gN') 选一张发出。"
+                        "用 send_image(image_id='gN') 把要发的发出去，可以多次 send_image 一起发（最多 10 张）。"
                 );
             }
 

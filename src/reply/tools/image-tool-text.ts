@@ -79,7 +79,9 @@ const nextStepLines = (input: SearchTextInput, unseen: readonly SearchCandidate[
             lines.push(`- 单张看大图：fetch_image(search_id='${unseen[0]?.id ?? 's1'}')`);
         }
     }
-    lines.push(`- 确定要发：send_image(search_id='${set.candidates[0]?.id ?? 's1'}')`);
+    lines.push(
+        `- 确定要发：send_image(search_id='${set.candidates[0]?.id ?? 's1'}')；可以多次 send_image，一起作为本条回复的图片发出（相册）`
+    );
     return lines;
 };
 
@@ -135,7 +137,7 @@ export const formatFetchResult = (input: {
     return [
         `已读取 ${image.id}${origin}：${size}${image.mimeType}，${Math.round(image.dataLength / 1024)}KB${note}。`,
         `来源页：${image.sourcePage}`,
-        `可以直接作为 generate_image 的参考图（web_references），或 send_image(image_id='${image.id}') 发出。`,
+        `可以直接作为 generate_image 的参考图（web_references），或 send_image(image_id='${image.id}') 发出（可多次 send_image 一起发）。`,
     ].join('\n');
 };
 
@@ -150,7 +152,7 @@ export const formatAvatarResult = (input: {
     const tier = input.view === 'thumbnail' ? '160 档缩略图' : '640 档';
     return [
         `已读取 ${input.id}：${input.label}（${tier} ${input.mimeType}，${Math.round(input.dataLength / 1024)}KB）。`,
-        `可以直接作为 generate_image 的参考图（web_references），或 send_image(image_id='${input.id}') 发出。`,
+        `可以直接作为 generate_image 的参考图（web_references），或 send_image(image_id='${input.id}') 发出（可多次 send_image 一起发）。`,
     ].join('\n');
 };
 
@@ -161,6 +163,10 @@ export const formatAvatarReuse = (id: string, label: string): string =>
 
 /** What send_image says once the picture is on its way */
 export const formatSendResult = (input: {
+    /** 1-based position of this picture in the reply's list */
+    readonly index: number;
+    /** How many pictures one reply may carry */
+    readonly limit: number;
     readonly candidateId?: string;
     readonly imageId?: string;
     /** A picture generate_image drew in this reply */
@@ -181,8 +187,12 @@ export const formatSendResult = (input: {
             : `#${input.contextNumber ?? '?'} 的图`;
     const note = input.note ? `（${input.note}）` : '';
     const kind = input.animated === true ? '动图' : '图片';
+    const position =
+        input.index > 1
+            ? `这是本条回复的第 ${input.index}/${input.limit} 张，会和其它图片一起发出。`
+            : `这是本条回复的第 1/${input.limit} 张；还可以继续 send_image 加图（多张会作为一条相册发出）。`;
     return [
-        `已把${source}的${kind}发到聊天里${note}，会附在你这条回复后面。`,
+        `已把${source}的${kind}发到聊天里${note}，会附在你这条回复后面。${position}`,
         ...(input.animated === true ? ['发出去的是会动的 GIF；下面给你看的是它的第一帧。'] : []),
         ...(input.sourcePage ? [`来源页：${input.sourcePage}`] : []),
     ].join('\n');
@@ -204,4 +214,8 @@ export const mediaToolErrors = {
     downloadFailed: (reason: string) => `图片没取到：${reason}`,
     notAnImage: '这张不是 PNG/JPEG/WebP/GIF 图片，发不了。换一张候选试试。',
     tooLarge: (megabytes: number) => `图片超过 ${megabytes}MB，发不了。换一张候选试试。`,
+    imageLimitReached: (limit: number) =>
+        `这条回复已经有 ${limit} 张图片了（每条回复最多 ${limit} 张），这张发不了；可以用 send_image 之外的其它回答继续。`,
+    imageTotalTooLarge: (megabytes: number) =>
+        `这条回复的图片总大小超过 ${megabytes}MB 了，这张发不了；可以先少发几张。`,
 };

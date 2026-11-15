@@ -8,7 +8,7 @@
  * server, and `modelParts` is reduced to whether there were any.
  */
 import { sniffMediaMime } from '../../ai/image-generation/image-mime.js';
-import { versionMediaDescriptorOf } from '../media/media-content.js';
+import { versionMediaDescriptorsOf } from '../media/media-content.js';
 import type { AgentStats } from '../../ai/types.js';
 import { getMessage, type BotResponse, type ResponseVersion } from '../../db/index.js';
 import type { SignedWidgetSigner } from '../share/signed-widget.js';
@@ -38,8 +38,8 @@ export interface ReplySummaryView {
     toolSummary: ToolUsageView[];
     errorMessage: string | null;
     wasStoppedByUser: boolean;
-    /** The current version's image / sticker / file, when the panel can show it */
-    media: MediaView | null;
+    /** The current version's pictures / sticker / file, in delivery order */
+    media: MediaView[];
 }
 
 export interface AttachmentView {
@@ -80,8 +80,8 @@ export interface ReplyVersionView {
     errorMessage: string | null;
     wasStoppedByUser: boolean;
     attachments: AttachmentView[];
-    /** The version's image / sticker / file bytes, served by its signed `/m/…` URL */
-    media: MediaView | null;
+    /** The version's pictures / sticker / file, each served by its own signed `/m/…` URL */
+    media: MediaView[];
     /** The chat UI card this version sent; absent without a widget or a signer */
     widget?: ReplyWidgetView;
     hasModelParts: boolean;
@@ -115,16 +115,20 @@ export const modelOfVersion = (version: ResponseVersion, response: BotResponse):
     return typeof metadataModel === 'string' && metadataModel !== '' ? metadataModel : null;
 };
 
-/** The signed media of one version, or null when it has none the panel can show */
-export const mediaViewOfVersion = (
+/**
+ * The signed media of one version in delivery order (v5: several pictures),
+ * empty when it has none the panel can show.
+ */
+export const mediaViewsOfVersion = (
     signer: SignedMediaSigner | undefined,
     chatId: number,
     messageId: number,
     version: ResponseVersion
-): MediaView | null => {
-    if (signer === undefined) return null;
-    const descriptor = versionMediaDescriptorOf(version);
-    return descriptor === null ? null : toMediaView(signer, chatId, messageId, version.versionId, descriptor);
+): MediaView[] => {
+    if (signer === undefined) return [];
+    return versionMediaDescriptorsOf(version).map((descriptor, mediaIndex) =>
+        toMediaView(signer, chatId, messageId, version.versionId, descriptor, mediaIndex)
+    );
 };
 
 /** The tree node's summary of the current version; a bot row without bot_responses keeps its text */
@@ -144,7 +148,7 @@ export const toReplySummaryView = (
             toolSummary: [],
             errorMessage: null,
             wasStoppedByUser: false,
-            media: null,
+            media: [],
         };
     }
     const versions = response.getVersions();
@@ -159,7 +163,7 @@ export const toReplySummaryView = (
         toolSummary: current === null ? [] : toToolUsageViews(parseAgentStats(current.agentStats)),
         errorMessage: current === null ? null : textOrNull(current.errorMessage),
         wasStoppedByUser: current?.wasStoppedByUser === true,
-        media: current === null ? null : mediaViewOfVersion(mediaSigner, response.chatId, response.messageId, current),
+        media: current === null ? [] : mediaViewsOfVersion(mediaSigner, response.chatId, response.messageId, current),
     };
 };
 
@@ -252,7 +256,7 @@ const toVersionView = (
         errorMessage: textOrNull(version.errorMessage),
         wasStoppedByUser: version.wasStoppedByUser === true,
         attachments: attachmentsOf(version),
-        media: mediaViewOfVersion(options.mediaSigner, response.chatId, response.messageId, version),
+        media: mediaViewsOfVersion(options.mediaSigner, response.chatId, response.messageId, version),
         ...(widget === undefined ? {} : { widget }),
         hasModelParts: hasModelParts(version),
         metrics,

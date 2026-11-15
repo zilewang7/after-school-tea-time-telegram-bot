@@ -354,6 +354,9 @@ const handleChatRetry = async (
         settings.toolOverrides,
         access
     );
+    // Picture references and context numbers resolve as in the first answer
+    chatContext.mediaState = toolState.media;
+    chatContext.contextIndex = contextIndex;
     // Same manifest injection as the first answer: the panel and a retry must
     // send the same volatile tail.
     await appendWorkspaceTailForReply({
@@ -366,6 +369,7 @@ const handleChatRetry = async (
         handoff: availability.handoff,
         fileTools: availability.file,
         widgetTools: availability.widget,
+        richInlineImages: settings.richReplies === true && availability.sendImage,
     });
 
     const systemPrompt = buildStaticSystemPrompt(model, buildStaticPromptOptions(availability));

@@ -55,6 +55,8 @@ const belongsToConversation = async (chatId: number, rootId: number, messageId: 
  * One attachment of a share, or null when the share does not expose it.
  * `versionId` is the reply share's pinned version; conversation shares read
  * each bot message's current version, and user messages their own media.
+ * `mediaIndex` is the 0-based picture position within that media list (v5: a
+ * reply may carry several); it also indexes a message's captured link previews.
  */
 /** One captured link-preview item of a message, by its position in the bubble's list */
 const previewMediaOf = async (
@@ -75,7 +77,7 @@ export const loadShareMedia = async (
     row: ShareRow,
     messageId: number,
     rawSlot: string,
-    previewIndex = 0
+    mediaIndex = 0
 ): Promise<ResolvedMedia | null> => {
     const slot = parseSlot(rawSlot);
     if (slot === null) return null;
@@ -84,16 +86,16 @@ export const loadShareMedia = async (
         if (row.firstMessageId === null || row.firstMessageId !== messageId) return null;
         // A reply share is bot output only: it never exposes a user's link preview
         if (slot === 'preview') return null;
-        return withinSlot(await resolveVersionMedia(row.chatId, messageId, row.versionId), slot);
+        return withinSlot(await resolveVersionMedia(row.chatId, messageId, row.versionId, mediaIndex), slot);
     }
 
     if (row.rootId === null || !(await belongsToConversation(row.chatId, row.rootId, messageId))) return null;
     // The page never shows a message a member took out of the model's context
     const excluded = await listExcludedMessageIds(row.chatId);
     if (excluded.has(messageId)) return null;
-    if (slot === 'preview') return previewMediaOf(row.chatId, messageId, previewIndex);
+    if (slot === 'preview') return previewMediaOf(row.chatId, messageId, mediaIndex);
     const response = await findBotResponseInChat(row.chatId, messageId);
-    if (response !== null) return withinSlot(await resolveVersionMedia(row.chatId, messageId, null), slot);
+    if (response !== null) return withinSlot(await resolveVersionMedia(row.chatId, messageId, null, mediaIndex), slot);
     if ((await getMessage(row.chatId, messageId)) === null) return null;
-    return withinSlot(await resolveMessageMedia(row.chatId, messageId), slot);
+    return withinSlot(await resolveMessageMedia(row.chatId, messageId, mediaIndex), slot);
 };

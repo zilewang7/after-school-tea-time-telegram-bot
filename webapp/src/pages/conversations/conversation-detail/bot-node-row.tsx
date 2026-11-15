@@ -99,7 +99,9 @@ export const BotNodeRow = ({ row, node, chatId, member, pending, onExclude, onRe
                 </Link>
             )}
 
-            {reply.media !== null && <MediaAttachmentView media={reply.media} compact />}
+            {reply.media.map((media) => (
+                <MediaAttachmentView key={media.url} media={media} compact />
+            ))}
 
             {thinkingText !== null && thinkingText !== '' && (
                 <CollapsibleSection title="思考" summary={`${thinkingLength} 字`}>

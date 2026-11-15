@@ -26,6 +26,12 @@ export interface SignedMediaPayload {
     m: number;
     /** 1-based version id; only present for k='ver' */
     v?: number;
+    /**
+     * 0-based picture position inside the message's / version's media list.
+     * Absent means 0, so every URL minted before v5 multi-picture replies
+     * keeps exactly its old payload.
+     */
+    i?: number;
     /** MediaCache key of a link-preview item; only present for k='cache' */
     u?: string;
     k: SignedMediaKind;
@@ -37,6 +43,8 @@ export interface SignedMediaTarget {
     chatId: number;
     messageId: number;
     versionId?: number;
+    /** 0-based picture position in the media list; 0/absent = the first picture */
+    mediaIndex?: number;
     /** Cache key of one link-preview attachment (kind 'cache') */
     mediaKey?: string;
     kind: SignedMediaKind;
@@ -65,6 +73,8 @@ const isPayload = (value: unknown): value is SignedMediaPayload => {
         Number.isSafeInteger(candidate.c)
         && Number.isSafeInteger(candidate.m)
         && (candidate.v === undefined || Number.isSafeInteger(candidate.v))
+        && (candidate.i === undefined
+            || (typeof candidate.i === 'number' && Number.isSafeInteger(candidate.i) && candidate.i >= 0))
         && (candidate.u === undefined || typeof candidate.u === 'string')
         && (candidate.k === 'msg' || candidate.k === 'ver' || candidate.k === 'cache')
         && Number.isSafeInteger(candidate.e)
@@ -93,6 +103,11 @@ export const createMediaSigner = (options: MediaSignerOptions): SignedMediaSigne
                 c: target.chatId,
                 m: target.messageId,
                 ...(target.versionId === undefined ? {} : { v: target.versionId }),
+                // Only a picture past the first carries the index: a single
+                // picture's URL stays the payload earlier builds minted
+                ...(target.mediaIndex === undefined || target.mediaIndex === 0
+                    ? {}
+                    : { i: target.mediaIndex }),
                 ...(target.mediaKey === undefined ? {} : { u: target.mediaKey }),
                 k: target.kind,
                 e: expiresAtSeconds,

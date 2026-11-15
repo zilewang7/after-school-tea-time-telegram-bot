@@ -51,7 +51,7 @@ import {
     takeChatId,
     webLookup,
 } from './support/resume-bench.mts';
-import type { GroundingData, StreamChunk } from '../../src/ai/types.js';
+import type { AIResponse, GroundingData, StreamChunk } from '../../src/ai/types.js';
 import type { CommandType } from '../../src/db/botResponseDTO.js';
 
 type ChatContext = import('../../src/reply/response-handler.js').ChatContext;
@@ -67,7 +67,11 @@ const { updateChatSettings } = await import('../../src/services/chat-settings-se
 const checks = await import('../../src/reply/resume/continue-checks.js');
 const { THINKING_LINK_LABEL } = await import('../../src/telegram/formatters/thinking-link.js');
 const { SEARCH_LINK_LABEL } = await import('../../src/telegram/formatters/google-search-link.js');
-const { RICH_MAX_SOURCE_LENGTH } = await import('../../src/reply/rich-delivery.js');
+const { RICH_MAX_SOURCE_LENGTH, prepareInlineReply, deliverRichFinal } = await import(
+    '../../src/reply/rich-delivery.js'
+);
+const { buildGoogleSearchDocument } = await import('../../src/telegram/formatters/google-search-document.js');
+const { createReplyMediaState } = await import('../../src/reply/tools/reply-media-state.js');
 const { buildRichErrorDisplay } = await import('../../src/telegram/formatters/rich-reply-body.js');
 const { buildErrorLine } = await import('../../src/telegram/formatters/error-display.js');
 
@@ -176,10 +180,16 @@ interface ReplyOptions {
     readonly commandType?: CommandType;
     /** Telegram refusals for this reply's calls */
     readonly refuse?: FakeTelegramOptions['refuse'];
+    /** The blocks a rich call answers with (the default counts the media blocks of the markdown) */
+    readonly richBlocks?: FakeTelegramOptions['richBlocks'];
 }
 
 const startReply = async (options: ReplyOptions): Promise<StartedReply> => {
-    const telegram = createFakeTelegram(options.refuse === undefined ? {} : { refuse: options.refuse });
+    const fakeOptions: FakeTelegramOptions = {
+        ...(options.refuse === undefined ? {} : { refuse: options.refuse }),
+        ...(options.richBlocks === undefined ? {} : { richBlocks: options.richBlocks }),
+    };
+    const telegram = createFakeTelegram(fakeOptions);
     const chatId = nextChat();
     const userMessageId = takeMessageId();
     const ctx = contextOf(messageUpdate({ chatId, messageId: userMessageId, userId: USER_ID, text: '问个问题' }), telegram);
@@ -1548,6 +1558,422 @@ results.push(
             display.length <= RICH_MAX_SOURCE_LENGTH && display.startsWith(anchorOf(urls[1] ?? '', '#1')),
             `a head of linked references is kept (got ${display.length} characters, ${json(display.slice(0, 60))})`
         );
+    })
+);
+
+
+// ---------------------------------------------------------------------------
+// Inline pictures (v5): parse, L1/L2/L3, uploads and the delivered-block check
+// ---------------------------------------------------------------------------
+
+/** PNG magic + a distinguishing byte: both sniff as a picture, no two are identical */
+const pictureBytes = (marker: number): Buffer => Buffer.concat([PNG_BYTES, Buffer.from([marker])]);
+
+type RefBytes = { readonly data: Buffer; readonly mimeType: string };
+
+/** Resolve every ref to a distinct picture, except the ones the case wants to fail */
+const pictureResolver = (
+    options: { readonly missing?: readonly string[]; readonly calls?: string[] } = {}
+): ((ref: string) => Promise<RefBytes | null>) => {
+    let drawn = 0;
+    return async (ref: string) => {
+        options.calls?.push(ref);
+        if (options.missing?.includes(ref) === true) return null;
+        drawn += 1;
+        return { data: pictureBytes(drawn), mimeType: 'image/png' };
+    };
+};
+
+/** Start a reply whose streamed answer is the given text, as the stream would leave it */
+const startInlineReply = async (
+    text: string,
+    options: { readonly refuse?: FakeTelegramOptions['refuse']; readonly richBlocks?: FakeTelegramOptions['richBlocks'] } = {}
+): Promise<StartedReply> => {
+    const started = await startReply({ richReplies: true, ...options });
+    started.chatContext.session.textBuffer = text;
+    return started;
+};
+
+/** The response a never-streamed reply hands the final delivery */
+const EMPTY_RESPONSE: AIResponse = { text: '', thinkingText: '', images: [] };
+
+type RichFinalResult = import('../../src/reply/rich-delivery.js').RichFinalResult;
+
+const deliverInline = async (started: StartedReply, refBytes: (ref: string) => Promise<RefBytes | null>): Promise<RichFinalResult> => {
+    await prepareInlineReply(started.chatContext, { resolveRef: refBytes });
+    return deliverRichFinal(started.chatContext, {
+        response: EMPTY_RESPONSE,
+        googleSearch: buildGoogleSearchDocument([]),
+        wasStoppedByUser: false,
+    });
+};
+
+/** The media entries of a rich call: their ids and the upload each carries */
+const richMediaOf = (call: TelegramCall | undefined): readonly { readonly id: string; readonly upload: unknown }[] => {
+    const media = asRecord(call?.payload.rich_message).media;
+    if (!Array.isArray(media)) return [];
+    return media.map((item) => {
+        const entry = asRecord(item);
+        return { id: typeof entry.id === 'string' ? entry.id : '', upload: asRecord(entry.media).media };
+    });
+};
+
+const MEDIA_BLOCK = /!\[\]\(tg:\/\/photo\?id=([A-Za-z0-9_-]+)(?:\s+"([^"]*)")?\)/g;
+
+/** The media ids a body's markdown references, in order (a repeated reference repeats the id) */
+const bodyMediaIdsOf = (markdown: string): string[] =>
+    [...markdown.matchAll(MEDIA_BLOCK)].map((matched) => matched[1] ?? '');
+
+const richCallsOf = (started: StartedReply): TelegramCall[] =>
+    editsOf(started.telegram, started.firstMessageId).filter(isRichCall);
+
+results.push(
+    await runCase('inline: one picture becomes a media block and one upload of the same id', async () => {
+        const started = await startInlineReply('第一段。\n\n![图一](g1)\n\n第二段。');
+        const result = await deliverInline(started, pictureResolver());
+        expect(result.kind === 'delivered', `delivered (got ${json(result)})`);
+        const final = richCallsOf(started).at(-1);
+        const markdown = richMarkdownOf(final) ?? '';
+        expect(
+            markdown === '第一段。\n\n![](tg://photo?id=img1 "图一")\n\n第二段。',
+            `the block stands where the marker was (got ${json(markdown)})`
+        );
+        expect(json(bodyMediaIdsOf(markdown)) === json(['img1']), 'the body references the media id');
+        const media = richMediaOf(final);
+        expect(
+            media.length === 1 && media[0]?.id === 'img1' && media[0]?.upload instanceof InputFile,
+            `the request uploads exactly that id (got ${json(media.map((item) => item.id))})`
+        );
+        // What the reply stores and shows elsewhere has no marker left
+        expect(
+            started.chatContext.session.textBuffer === '第一段。\n\n第二段。',
+            `the stored text is the clean one (got ${json(started.chatContext.session.textBuffer)})`
+        );
+        expect(started.chatContext.inlineDelivery === 'rich', 'the pictures went inline');
+        expect(
+            started.chatContext.richAnswerMarkdown === markdown,
+            `the snapshot is the answer section as delivered (got ${json(started.chatContext.richAnswerMarkdown)})`
+        );
+        expect(started.chatContext.inlineImages?.length === 1, 'one picture stays on the reply');
+    })
+);
+
+results.push(
+    await runCase('inline: 2 and 5 pictures keep the markdown references and the uploads in one order', async () => {
+        for (const count of [2, 5]) {
+            const markers = Array.from({ length: count }, (_, index) => `![图 ${index + 1}](g${index + 1})`);
+            const started = await startInlineReply(`前言。\n\n${markers.join('\n\n')}\n\n结尾。`);
+            const result = await deliverInline(started, pictureResolver());
+            expect(result.kind === 'delivered', `${count} pictures: delivered`);
+            const final = richCallsOf(started).at(-1);
+            const markdown = richMarkdownOf(final) ?? '';
+            const ids = Array.from({ length: count }, (_, index) => `img${index + 1}`);
+            expect(json(bodyMediaIdsOf(markdown)) === json(ids), `${count} pictures: the body references ${json(ids)}`);
+            const media = richMediaOf(final);
+            expect(json(media.map((item) => item.id)) === json(ids), `${count} pictures: one upload per id, in order`);
+            expect(
+                media.every((item) => item.upload instanceof InputFile),
+                `${count} pictures: every media entry carries bytes`
+            );
+            expect(markdown.includes('前言。') && markdown.includes('结尾。'), `${count} pictures: the text around them stays`);
+        }
+    })
+);
+
+results.push(
+    await runCase('inline: the same ref twice is one upload and two blocks with the first caption', async () => {
+        const calls: string[] = [];
+        const started = await startInlineReply('![甲](g1)\n\n中间\n\n![乙](g1)');
+        const result = await deliverInline(started, pictureResolver({ calls }));
+        expect(result.kind === 'delivered', 'delivered');
+        expect(json(calls) === json(['g1']), `the picture is resolved once (got ${json(calls)})`);
+        const final = richCallsOf(started).at(-1);
+        const markdown = richMarkdownOf(final) ?? '';
+        expect(json(bodyMediaIdsOf(markdown)) === json(['img1', 'img1']), `both places reference img1 (got ${json(markdown)})`);
+        expect(json(richMediaOf(final).map((item) => item.id)) === json(['img1']), 'one upload');
+        expect(markdown.includes('"甲"') && !markdown.includes('"乙"'), 'the first caption is the one the blocks take');
+    })
+);
+
+results.push(
+    await runCase('inline: a caption with quotes, ampersands and brackets never breaks the media block', async () => {
+        const started = await startInlineReply('![他说"你好"&<b>](g1)');
+        const result = await deliverInline(started, pictureResolver());
+        expect(result.kind === 'delivered', 'delivered');
+        const markdown = richMarkdownOf(richCallsOf(started).at(-1)) ?? '';
+        expect(
+            markdown === '![](tg://photo?id=img1 "他说&quot;你好&quot;&amp;&lt;b&gt;")',
+            `the title uses HTML entities, never a backslash (got ${json(markdown)})`
+        );
+        expect(!markdown.includes('\\'), 'no backslash escape reaches the title');
+    })
+);
+
+results.push(
+    await runCase('inline: a pure picture reply is a body with only its media block', async () => {
+        const started = await startInlineReply('![只有图](g1)');
+        const result = await deliverInline(started, pictureResolver());
+        expect(result.kind === 'delivered', `delivered (got ${json(result)})`);
+        expect(started.chatContext.session.textBuffer === '', `stored text is empty (got ${json(started.chatContext.session.textBuffer)})`);
+        const final = richCallsOf(started).at(-1);
+        expect(richMarkdownOf(final) === '![](tg://photo?id=img1 "只有图")', `the body is the block alone (got ${json(richMarkdownOf(final))})`);
+        expect(richMediaOf(final).length === 1, 'and it carries its upload');
+    })
+);
+
+results.push(
+    await runCase('inline: an answer too long for any rich body demotes and still hands the pictures on', async () => {
+        // Past the rich budget even without the media block: the entities layout takes over
+        const started = await startInlineReply(`${'很长的一段。'.repeat(5500)}\n\n![图](g1)`);
+        const logs = await withLogs(async () => {
+            const result = await deliverInline(started, pictureResolver());
+            expect(result.kind === 'not-attempted', `nothing rich was sent (got ${json(result)})`);
+            expect(started.chatContext.delivery === 'entities', 'the reply is demoted by the overflow');
+            expect(started.chatContext.inlineImages?.length === 1, 'the resolved picture stays for the entities path');
+            expect(started.chatContext.session.textBuffer.includes('![') === false, 'the stored text has no marker left');
+        });
+        expect(richCallsOf(started).length === 0, 'no rich call was made');
+        const fallbacks = fallbacksIn(logs);
+        expect(
+            fallbacks.length === 1 && fallbacks[0]?.includes('reason=overflow') === true,
+            `one overflow line (got ${json(fallbacks)})`
+        );
+    })
+);
+
+results.push(
+    await runCase('inline: a picture that does not resolve keeps its caption as text and blocks nothing', async () => {
+        const started = await startInlineReply('正文在前。\n\n![失败的图](g1)');
+        const result = await deliverInline(started, pictureResolver({ missing: ['g1'] }));
+        expect(result.kind === 'delivered', 'the reply is delivered without it');
+        const final = richCallsOf(started).at(-1);
+        const markdown = richMarkdownOf(final) ?? '';
+        expect(markdown.includes('正文在前。') && markdown.includes('（图片：失败的图）'), `the caption stays as text (got ${json(markdown)})`);
+        expect(bodyMediaIdsOf(markdown).length === 0, 'no media block is left');
+        expect(richMediaOf(final).length === 0, 'and nothing is uploaded');
+        expect(started.chatContext.inlineDelivery !== 'attachments', 'there is nothing to fall back to');
+    })
+);
+
+/** Refuse every rich body that carries an upload, the way a bad media payload is refused */
+const refuseRichWithMedia = (call: TelegramCall): { readonly error_code: number; readonly description: string } | null =>
+    Array.isArray(asRecord(call.payload.rich_message).media)
+        ? { error_code: 400, description: 'Bad Request: wrong file identifier/HTTP URL specified' }
+        : null;
+
+results.push(
+    await runCase('inline: a refused body with pictures is delivered rich without them (L2) and the pictures follow as attachments', async () => {
+        const started = await startInlineReply('正文。\n\n![图](g1)', { refuse: refuseRichWithMedia });
+        const logs = await withLogs(async () => {
+            const result = await deliverInline(started, pictureResolver());
+            expect(result.kind === 'delivered', `delivered through L2 (got ${json(result)})`);
+            expect(result.fallback?.images.length === 1, 'the picture comes back as an attachment');
+            expect(started.chatContext.inlineDelivery === 'attachments', 'the version stores it as an attachment delivery');
+            expect(started.chatContext.inlineImages?.length === 0, 'nothing stayed inline');
+            const answer = started.chatContext.richAnswerMarkdown ?? '';
+            expect(
+                answer === '正文。\n\n<p><i>（另有 1 张图未能内嵌发送）</i></p>',
+                `the snapshot is the L2 answer with its note (got ${json(answer)})`
+            );
+        });
+        const rich = richCallsOf(started);
+        expect(rich.length === 2, `one body with pictures, then one without (got ${rich.length})`);
+        const [first, second] = rich;
+        expect(richMediaOf(first).length === 1, 'the first attempt uploaded the picture');
+        expect(richMediaOf(second).length === 0, 'the second attempt carries no upload');
+        expect(richMarkdownOf(second)?.includes('（另有 1 张图未能内嵌发送）') === true, 'and its body says what happened');
+        expect(fallbacksIn(logs).length === 0, 'the reply stayed rich: no demotion');
+        expect(deliveredIn(logs).length === 1, 'one success line');
+    })
+);
+
+results.push(
+    await runCase('inline: a refused L2 demotes to entities and hands the pictures to the entities path', async () => {
+        const started = await startInlineReply('正文。\n\n![图](g1)', {
+            refuse: (call) => (call.payload.rich_message === undefined ? null : { error_code: 400, description: 'Bad Request: rich refused' }),
+        });
+        const logs = await withLogs(async () => {
+            const result = await deliverInline(started, pictureResolver());
+            expect(result.kind === 'rejected', `rejected (got ${json(result)})`);
+            expect(result.fallback?.images.length === 1, 'the pictures go to the entities path');
+            expect(started.chatContext.delivery === 'entities', 'the reply is demoted');
+            expect(started.chatContext.inlineDelivery === 'dropped', 'no inline delivery is stored');
+            expect(started.chatContext.inlineImages?.length === 0, 'and no inline picture is left');
+        });
+        const rich = richCallsOf(started);
+        expect(rich.length === 2, `the body was tried with pictures and without (got ${rich.length})`);
+        const fallbacks = fallbacksIn(logs);
+        expect(
+            fallbacks.length === 1 && fallbacks[0]?.endsWith('reason=final-rejected detail=Bad Request: rich refused') === true,
+            `one demotion line (got ${json(fallbacks)})`
+        );
+        expect(deliveredIn(logs).length === 0, 'no success line');
+    })
+);
+
+results.push(
+    await runCase('inline: a 429 on the body with pictures goes straight to entities, one upload only', async () => {
+        const started = await startInlineReply('正文。\n\n![图](g1)', {
+            refuse: (call) =>
+                Array.isArray(asRecord(call.payload.rich_message).media)
+                    ? { error_code: 429, description: 'Too Many Requests: retry after 1' }
+                    : null,
+        });
+        const logs = await withLogs(async () => {
+            const result = await deliverInline(started, pictureResolver());
+            expect(result.kind === 'rejected', `rejected (got ${json(result)})`);
+            expect(result.fallback?.images.length === 1, 'the picture still goes out as an attachment');
+        });
+        const rich = richCallsOf(started);
+        expect(rich.length === 1, `the media body was tried once (got ${rich.length})`);
+        expect(richMediaOf(rich[0]).length === 1, 'and it was the one with the upload');
+        // The coordinator logged the payload before sending it
+        expect(logs.some((line) => line.includes('[rich-inline] media payload') && line.includes('pictures=1')) === true, 'the upload cost is logged');
+        const fallbacks = fallbacksIn(logs);
+        expect(
+            fallbacks.length === 1 && fallbacks[0]?.endsWith('reason=final-rejected detail=not delivered') === true,
+            `429 exhaustion demotes without a refusal text (got ${json(fallbacks)})`
+        );
+    })
+);
+
+results.push(
+    await runCase('inline: the delivered photo blocks are counted; a mismatch is reported, never hidden', async () => {
+        // Telegram answered with a message whose blocks lost the picture
+        const started = await startInlineReply('正文。\n\n![图](g1)', { richBlocks: () => [] });
+        const logs = await withLogs(async () => {
+            const result = await deliverInline(started, pictureResolver());
+            expect(result.kind === 'delivered', 'the message is already in the chat: delivery stays');
+        });
+        expect(
+            logs.some((line) => line.includes('[rich-inline] media blocks mismatch') && line.includes('expected=1 delivered=0')),
+            `the mismatch is logged (got ${json(logs.filter((line) => line.includes('[rich-inline]')))})`
+        );
+    })
+);
+
+results.push(
+    await runCase('inline: a body sent as a new rich message carries its uploads too (long thinking at the final)', async () => {
+        // The answer streams first (with the marker), the long thinking only arrives at the final
+        const started = await startInlineReply('答案。\n\n![图](g1)');
+        const { chatContext } = started;
+        chatContext.session.thinkingBuffer = longThinking();
+        const result = await deliverInline(started, pictureResolver());
+        expect(result.kind === 'delivered', `delivered (got ${json(result)})`);
+        const link = chatContext.session.thinkingLink;
+        expect(link !== undefined && link.emitted === false, 'the final created the link');
+        const sent = started.telegram.callsOf('sendRichMessage');
+        expect(sent.length === 1, `the body went out as a new rich message (got ${sent.length})`);
+        const markdown = richMarkdownOf(sent[0]) ?? '';
+        expect(json(bodyMediaIdsOf(markdown)) === json(['img1']), `its body references the media id (got ${json(markdown)})`);
+        expect(json(richMediaOf(sent[0]).map((item) => item.id)) === json(['img1']), 'and it uploads it');
+        expect(markdown.startsWith('答案。'), 'the body starts with the answer, not the thinking');
+    })
+);
+
+results.push(
+    await runCase('inline: two refused pictures still deliver one L2 body and hand both back as attachments', async () => {
+        const started = await startInlineReply('正文。\n\n![图一](g1)\n\n![图二](g2)', { refuse: refuseRichWithMedia });
+        const result = await deliverInline(started, pictureResolver());
+        expect(result.kind === 'delivered', `delivered through L2 (got ${json(result)})`);
+        expect(result.fallback?.images.length === 2, `both pictures come back (got ${result.fallback?.images.length})`);
+        const answer = started.chatContext.richAnswerMarkdown ?? '';
+        expect(answer.includes('（另有 2 张图未能内嵌发送）'), `the note counts them (got ${json(answer)})`);
+        const rich = richCallsOf(started);
+        expect(
+            rich.length === 2 && richMediaOf(rich[0]).length === 2 && richMediaOf(rich[1]).length === 0,
+            'L1 with both uploads, then L2 without'
+        );
+    })
+);
+
+results.push(
+    await runCase('inline: a reply without pictures sends the same rich payload as before', async () => {
+        const started = await startInlineReply('只有文字，没有图。');
+        const result = await deliverInline(started, pictureResolver());
+        expect(result.kind === 'delivered', 'delivered');
+        expect(result.fallback === undefined, 'nothing to attach');
+        const final = richCallsOf(started).at(-1);
+        expect(richMarkdownOf(final) === '只有文字，没有图。', 'the body is the answer');
+        expect(
+            json(Object.keys(asRecord(final?.payload.rich_message))) === json(['markdown']),
+            `rich_message has no media key (got ${json(Object.keys(asRecord(final?.payload.rich_message)))})`
+        );
+        expect(started.chatContext.inlineDelivery === 'rich', 'the reply is a rich delivery for the version');
+        expect(started.chatContext.inlineImages?.length === 0, 'without inline pictures');
+    })
+);
+
+// ---------------------------------------------------------------------------
+// Inline pictures end to end: the real stream and the real final delivery
+// ---------------------------------------------------------------------------
+
+/** The reply's tool state with one drawn picture, so `g1` resolves without network */
+const mediaStateWithOnePicture = (): import('../../src/reply/tools/reply-media-state.js').ReplyMediaState => {
+    const state = createReplyMediaState();
+    state.generated.set('g1', { id: 'g1', data: PNG_BYTES, mimeType: 'image/png' });
+    return state;
+};
+
+results.push(
+    await runCase('inline e2e: a marker in the stream ends as a media block inside the final rich body', async () => {
+        const started = await startReply({ richReplies: true });
+        started.chatContext.mediaState = mediaStateWithOnePicture();
+        started.chatContext.contextIndex = new Map();
+        const logs = await runReply(started, { steps: textSteps(['答案。\n\n![图一](g1)']) });
+        const { telegram } = started;
+        // The streaming frames hid the marker; the picture only appears when the final is written
+        const edits = editsOf(telegram, started.firstMessageId);
+        expect(
+            edits.slice(0, -1).every((call) => !(richMarkdownOf(call) ?? '').includes('![图一]')),
+            'no streaming frame shows the marker'
+        );
+        const final = edits.at(-1);
+        const markdown = richMarkdownOf(final) ?? '';
+        expect(
+            markdown === '答案。\n\n![](tg://photo?id=img1 "图一")',
+            `the final body carries the media block (got ${json(markdown)})`
+        );
+        expect(json(richMediaOf(final).map((item) => item.id)) === json(['img1']), 'and uploads it with the same edit');
+        expect(telegram.callsOf('sendPhoto').length === 0 && telegram.callsOf('sendMediaGroup').length === 0, 'no picture message follows it');
+        // The stored version and the next context read the clean text, the snapshot is the body's answer
+        const [version] = await versionsOf(started);
+        expect(version?.text === '答案。', `the stored text has no marker (got ${json(version?.text)})`);
+        expect(version?.richAnswerMarkdown === markdown, 'the version snapshot is the answer section as delivered');
+        expect(deliveredIn(logs).length === 1, 'one success line');
+    })
+);
+
+results.push(
+    await runCase('inline e2e: a demoted reply hides the marker and the picture goes out as an attachment (L3)', async () => {
+        let richFrames = 0;
+        const started = await startReply({
+            richReplies: true,
+            refuse: (call) => {
+                if (call.payload.rich_message === undefined) return null;
+                richFrames += 1;
+                return richFrames === 2 ? { error_code: 400, description: 'Bad Request: too many rich blocks' } : null;
+            },
+        });
+        started.chatContext.mediaState = mediaStateWithOnePicture();
+        started.chatContext.contextIndex = new Map();
+        const logs = await runReply(started, {
+            steps: textSteps(['第一段。', '第二段。\n\n![图一](g1)', '\n\n第三段。']),
+        });
+        const { telegram } = started;
+        const textsAfterDemotion = telegram.calls
+            .slice(telegram.calls.findIndex((call) => call.method === 'editMessageText' && call.payload.rich_message === undefined))
+            .map((call) => textOf(call))
+            .filter((text) => text !== '');
+        expect(
+            textsAfterDemotion.every((text) => !text.includes('![图一]')),
+            `no entities frame or final shows the marker (got ${json(textsAfterDemotion)})`
+        );
+        const [version] = await versionsOf(started);
+        expect(version?.text === '第一段。第二段。\n\n第三段。', `the stored text is the clean one (got ${json(version?.text)})`);
+        expect(telegram.callsOf('sendPhoto').length === 1, `the picture went out once as an attachment (got ${telegram.callsOf('sendPhoto').length})`);
+        expect(fallbacksIn(logs).length === 1, 'the demotion is logged');
+        expect(deliveredIn(logs).length === 0, 'no rich success line');
     })
 );
 

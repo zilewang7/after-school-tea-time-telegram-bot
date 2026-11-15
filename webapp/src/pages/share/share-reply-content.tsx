@@ -25,8 +25,14 @@ export const ShareReplyContent = ({ token, reply }: ShareReplyContentProps) => (
         {reply.widget !== null && (
             <ShareWidgetView token={token} index={0} caption={reply.widget.caption} autoFocus />
         )}
-        {reply.media !== null && (
-            <ShareMediaAttachment token={token} messageId={reply.firstMessageId} media={reply.media} />
-        )}
+        {reply.media.map((media, index) => (
+            <ShareMediaAttachment
+                key={`${media.mimeType}:${index}`}
+                token={token}
+                messageId={reply.firstMessageId}
+                media={media}
+                index={index === 0 ? undefined : index}
+            />
+        ))}
     </section>
 );

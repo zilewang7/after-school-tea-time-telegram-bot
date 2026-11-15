@@ -99,6 +99,7 @@ export const buildModelView = async (request: ModelViewRequest): Promise<ModelVi
         handoff: availability.handoff,
         fileTools: availability.file,
         widgetTools: availability.widget,
+        richInlineImages: settings.richReplies === true && availability.sendImage,
     });
 
     return {

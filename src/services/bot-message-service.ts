@@ -10,11 +10,14 @@ import {
     getBotResponse,
     findBotResponseByMessageId,
     findProcessingResponses,
+    replaceMessageMedia,
     writeBotMessageRow,
     type ResponseVersion,
+    type StoredMessageMedia,
     type ResponseMetadata,
     type StoredFile,
     type StoredSticker,
+    type BotResponse,
     type CommandType,
 } from '../db/index.js';
 import type { StoredWidget } from '../db/botResponseDTO.js';
@@ -32,7 +35,9 @@ import { searchPageLinkOfToken, type SearchPageLink } from '../shared/search-pag
 import { stripPerQueryResultCitations } from '../shared/citation-markers.js';
 import { stripContextLabel } from '../reply/context-label.js';
 import { toApiEntities } from '../telegram/api-entities.js';
-import { layOutChunks } from '../telegram/final-message-layout.js';
+import { isRichLayoutChunk, layOutChunks, type LayoutChunk } from '../telegram/final-message-layout.js';
+import { buildRichLayoutOfVersion, type RichReplayMedia } from '../telegram/formatters/rich-layout-of-version.js';
+import type { ContextLinkResolver } from '../telegram/formatters/context-links.js';
 import { buildResponseButtons } from '../cmd/menus/index.js';
 import { to, isErr, type Result } from '../shared/result.js';
 import {
@@ -46,6 +51,14 @@ import {
     unregisterReplyInFlight,
 } from '../state.js';
 import { runApiCall } from '../telegram/edit-coordinator.js';
+import {
+    replyMediaKeyOf,
+    type ReplyImageDelivery,
+    type ReplyImageDeliveryMode,
+    type ReplyMediaPlacement,
+    type StoredReplyMedia,
+} from '../shared/reply-media.js';
+import { getCachedMedia, putCachedMedia } from './media-cache-service.js';
 import { decideFinalButtonState } from './final-button-state.js';
 import { sniffMediaMime } from '../ai/image-generation/image-mime.js';
 import { buildImageCaption } from '../reply/tools/image-message.js';
@@ -56,6 +69,7 @@ import {
 } from '../telegram/reply-widget-send.js';
 import { editWidgetReplyMarkup } from '../telegram/widget-api.js';
 import { sendReplyImageMessage } from '../telegram/reply-image-send.js';
+import { sendReplyImagesMessage, type ReplyImageUpload } from '../telegram/reply-images-send.js';
 import { isWidgetRenderConfigured, renderWidgetPng } from '../widget-image/index.js';
 import { ensureSystemReplyShare, findActiveShare, previewLinkUrlOf } from '../panel/share/share-link-service.js';
 import type { ShareLinkRecord } from '../panel/share/share-types.js';
@@ -66,7 +80,6 @@ import {
     widgetMiniAppLink,
 } from '../reply/widget-link-fallback.js';
 import { resolveChatModel } from '../config/chat-model.js';
-import type { ContextLinkResolver } from '../telegram/formatters/context-links.js';
 import type { AgentStats, FileDelivery, StickerDelivery, WidgetDelivery } from '../ai/types.js';
 import { classifyErrorKind, summarizeErrorMessage, type ErrorKind } from '../shared/error-kind.js';
 import { createReplyMetricsDraft, type ReplyMetricsDraft } from './reply-metrics-draft.js';
@@ -167,6 +180,18 @@ export interface BotMessageSession {
     textBuffer: string;
     thinkingBuffer: string;
     images: Buffer[];
+    /** Captions of `images`, by index (v5 multi-image delivery; absent for old sessions) */
+    imageCaptions?: (string | undefined)[];
+    /** Inline pictures of a rich reply, resolved to bytes (C2 writes before finalize) */
+    inlineMedia?: ReplyImageDelivery[];
+    /** How the inline pictures actually went out: rich body, fallback attachments, or nowhere */
+    inlineDelivery?: ReplyImageDeliveryMode;
+    /** The answer section exactly as the rich body delivered it (replay snapshot; C2 writes) */
+    richAnswerMarkdown?: string;
+    /** Rich assembly text with media sentinels (C2 writes; display only, never stored) */
+    inlineAssemblyText?: string;
+    /** Ids of the messages carrying delivered pictures (one image or an album), in delivery order */
+    mediaMessageIds?: number[];
     /** The sticker this reply sent, when it chose one instead of an image */
     sticker?: StickerDelivery;
     /** The sticker's webp for storage and the next context; absent if download failed */
@@ -354,6 +379,9 @@ export const createSession = async (
         textBuffer: '',
         thinkingBuffer: '',
         images: [],
+        imageCaptions: [],
+        inlineMedia: [],
+        mediaMessageIds: [],
         groundingData: [],
         agentStats: undefined,
         streamController,
@@ -501,6 +529,108 @@ const finishLiveThinkingOf = (session: BotMessageSession): void => {
     }
 };
 
+/** The pictures a reply actually delivered, ready for the version and the media cache */
+interface DeliveredReplyPictures {
+    /** Version `media[]`: inline body pictures first, then trailing attachments */
+    readonly stored: StoredReplyMedia[];
+    /** Bytes to ensure in media_cache, one per stored picture */
+    readonly writes: readonly {
+        readonly mediaKey: string;
+        readonly mimeType: string;
+        readonly sizeBytes: number;
+        readonly data: Buffer;
+    }[];
+}
+
+/**
+ * The reply's pictures in delivery order. Inline pictures come from the rich
+ * path (`session.inlineMedia`, one entry per media id); the trailing pictures
+ * are the ones the delivery actually sent (`session.images`, captioned by
+ * `session.imageCaptions`). A failed picture never reaches either list.
+ */
+const deliveredReplyPicturesOf = (session: BotMessageSession): DeliveredReplyPictures => {
+    const stored: StoredReplyMedia[] = [];
+    const writes: DeliveredReplyPictures['writes'][number][] = [];
+    const add = (
+        data: Buffer,
+        mimeType: string,
+        placement: ReplyMediaPlacement,
+        options: { readonly id?: string; readonly caption?: string } = {}
+    ): void => {
+        if (data.length === 0) return;
+        const mediaKey = replyMediaKeyOf(data);
+        stored.push({
+            placement,
+            ...(options.id === undefined ? {} : { id: options.id }),
+            mediaKey,
+            mimeType,
+            sizeBytes: data.length,
+            ...(options.caption === undefined || options.caption === '' ? {} : { caption: options.caption }),
+        });
+        writes.push({ mediaKey, mimeType, sizeBytes: data.length, data });
+    };
+
+    // A body id may be referenced several times; the version keeps one entry per id
+    const seenInlineIds = new Set<string>();
+    for (const picture of session.inlineMedia ?? []) {
+        const id = picture.id;
+        if (id !== undefined) {
+            if (seenInlineIds.has(id)) continue;
+            seenInlineIds.add(id);
+        }
+        add(picture.data, picture.mimeType, 'inline', { id, caption: picture.caption });
+    }
+    session.images.forEach((data, index) => {
+        add(data, sniffMediaMime(data) ?? 'image/png', 'attachment', {
+            caption: session.imageCaptions?.[index],
+        });
+    });
+
+    return { stored, writes };
+};
+
+/**
+ * Put the delivered pictures in media_cache once (content-addressed): a hit
+ * only refreshes the LRU stamp, a miss inserts the bytes. Never fails the
+ * finalize; a missing row only degrades later replays/panel reads.
+ */
+const cacheDeliveredReplyPictures = async (pictures: DeliveredReplyPictures): Promise<void> => {
+    for (const picture of pictures.writes) {
+        try {
+            const cached = await getCachedMedia(picture.mediaKey);
+            if (cached !== null) continue;
+            await putCachedMedia({
+                fileUniqueId: picture.mediaKey,
+                mime: picture.mimeType,
+                kind: 'photo',
+                data: picture.data,
+                sizeBytes: picture.sizeBytes,
+            });
+        } catch (error) {
+            console.error('[bot-message-service] media cache write failed:', picture.mediaKey, error);
+        }
+    }
+};
+
+/** The message_media rows of the delivered pictures (ordinal is 1-based delivery order) */
+const messageMediaRowsOf = (stored: readonly StoredReplyMedia[]): StoredMessageMedia[] =>
+    stored.map((media, index) => ({
+        ordinal: index + 1,
+        mediaKey: media.mediaKey ?? '',
+        mimeType: media.mimeType,
+        sizeBytes: media.sizeBytes,
+        ...(media.caption === undefined ? {} : { caption: media.caption }),
+        placement: media.placement,
+    }));
+
+/** The version delivery form the session's rich path reported, if any */
+const versionDeliveryOf = (session: BotMessageSession): 'rich' | 'rich-text' | undefined => {
+    if (session.inlineDelivery === 'rich') return 'rich';
+    // L2: the rich body went out without inline pictures; the snapshot marks it
+    if (session.inlineDelivery === 'attachments' && session.richAnswerMarkdown !== undefined) return 'rich-text';
+    return undefined;
+};
+
 /**
  * Finalize session - save to database and cleanup
  */
@@ -527,7 +657,25 @@ const finalizeSession = async (
     // and raw PerQueryResult markers here too
     session.textBuffer = stripPerQueryResultCitations(stripContextLabel(session.textBuffer));
 
-    const image = session.images[0];
+    // The pictures this reply actually delivered, inline first then trailing
+    // attachments; an errored reply keeps none (the delivery clears them too).
+    const deliveredPictures =
+        options?.errorMessage === undefined
+            ? deliveredReplyPicturesOf(session)
+            : { stored: [], writes: [] };
+    await cacheDeliveredReplyPictures(deliveredPictures);
+    const inlinePictures = deliveredPictures.stored.filter((media) => media.placement === 'inline');
+    // Only one static attachment and nothing inline keeps the legacy slots
+    // (imageBase64 in the version, bytes in the message row): old readers and
+    // old tests keep working for the single-image path.
+    const legacySinglePicture =
+        deliveredPictures.stored.length === 1
+        && deliveredPictures.stored[0]?.placement === 'attachment'
+        && inlinePictures.length === 0
+            ? deliveredPictures.writes[0]
+            : undefined;
+    const attachmentPictures = deliveredPictures.stored.filter((media) => media.placement === 'attachment');
+
     const sticker = session.sticker;
     const file = session.file;
     const widget = session.widget;
@@ -539,12 +687,53 @@ const finalizeSession = async (
     // The row keeps picture bytes only: a file is named by its mediaHint, its
     // bytes live in the version (for a version switch), never in the prompt.
     // A card's rendered PNG takes the same slot, so the next context sees it.
-    const pictureBuffer = sticker ? session.stickerBytes : image;
+    const pictureBuffer = sticker ? session.stickerBytes : legacySinglePicture?.data;
     const rowPicture = pictureBuffer ?? widgetImage;
     const mediaMime = rowPicture ? sniffMediaMime(rowPicture) : null;
-    // Only the delivered attachment has a caption; stickers have none
-    const imageCaption = image && options?.imageCaption ? options.imageCaption : undefined;
+    // Only the legacy single attachment has a caption in the legacy slots;
+    // multi-image and inline versions keep every caption in `media[]`.
+    const imageCaption =
+        legacySinglePicture === undefined
+            ? undefined
+            : session.imageCaptions?.[0] ?? options?.imageCaption;
     const fileCaption = file?.caption;
+
+    // The rich delivery form the images went out as (absent = entities layout)
+    const reportedDelivery = versionDeliveryOf(session);
+    const richSnapshot = session.richAnswerMarkdown;
+    const versionDelivery =
+        reportedDelivery !== undefined && richSnapshot !== undefined
+            ? reportedDelivery
+            : undefined;
+    if (reportedDelivery !== undefined && versionDelivery === undefined) {
+        console.warn('[bot-message-service] rich delivery without an answer snapshot; replay degrades to entities');
+    }
+    // The ids of the picture messages that are part of this version; absent for
+    // an inline-only reply (the pictures ride the body message itself).
+    const attachmentMessageIds =
+        attachmentPictures.length === 0
+            ? []
+            : (session.mediaMessageIds ?? []).filter((id) => session.messageIds.includes(id));
+    if (attachmentPictures.length > 0 && attachmentMessageIds.length !== attachmentPictures.length) {
+        console.warn(
+            '[bot-message-service] picture messages and delivered pictures differ:',
+            attachmentPictures.length,
+            attachmentMessageIds.length,
+        );
+    }
+    // A picture message the session still names but the delivered list lost (an
+    // error after sending) stays out of the text layout; its bytes cannot be
+    // replayed, so the version keeps the id but no media entry
+    const retainedMediaMessageIds =
+        attachmentPictures.length > 0
+            ? attachmentMessageIds
+            : (session.mediaMessageIds ?? []).filter((id) => session.messageIds.includes(id));
+    if (attachmentPictures.length === 0 && retainedMediaMessageIds.length > 0) {
+        console.warn(
+            '[bot-message-service] picture messages without stored pictures:',
+            retainedMediaMessageIds.length,
+        );
+    }
 
     // Build version data
     const version: ResponseVersion = {
@@ -590,6 +779,17 @@ const finalizeSession = async (
               }),
         imageBase64: pictureBuffer?.toString('base64'),
         imageCaption: sticker !== undefined || file !== undefined ? undefined : imageCaption,
+        // The rich layout this version went out as, plus the replay snapshot;
+        // only a delivered rich body has them (see versionDeliveryOf)
+        ...(versionDelivery === undefined || richSnapshot === undefined
+            ? {}
+            : {
+                  delivery: versionDelivery,
+                  richAnswerMarkdown: richSnapshot,
+                  richRenderer: 'v1' as const,
+              }),
+        ...(deliveredPictures.stored.length === 0 ? {} : { media: deliveredPictures.stored }),
+        ...(retainedMediaMessageIds.length === 0 ? {} : { mediaMessageIds: retainedMediaMessageIds }),
         ...(sticker === undefined
             ? {}
             : {
@@ -636,7 +836,11 @@ const finalizeSession = async (
         // The metadata names the model of the latest version (a retry may
         // use another one) and whether the reply ever carried an attachment
         const carriesAttachment =
-            session.images.length > 0 || sticker !== undefined || file !== undefined || widget !== undefined;
+            session.images.length > 0 ||
+            deliveredPictures.stored.length > 0 ||
+            sticker !== undefined ||
+            file !== undefined ||
+            widget !== undefined;
         response.setMetadata({
             ...response.getMetadata(),
             model: session.model,
@@ -649,9 +853,23 @@ const finalizeSession = async (
         await response.save();
     }
 
+    // The context/panel read source: the same delivered list the version keeps
+    // (a switch or an error replaces it whole, so stale rows cannot survive)
+    await replaceMessageMedia(
+        session.chatId,
+        session.firstMessageId,
+        messageMediaRowsOf(deliveredPictures.stored),
+    );
+
     // Also save to Message table for context building: the bot's reply is
     // ONE row with text + its first image, overwritten whole so nothing of an
     // earlier version survives in it
+    // Multi-image and inline versions keep their bytes in media_cache and point
+    // the row at the first picture; the legacy single attachment keeps the BLOB.
+    const rowFileUniqueId =
+        (rowPicture === null || rowPicture === undefined) && deliveredPictures.stored.length > 0
+            ? deliveredPictures.stored[0]?.mediaKey ?? null
+            : null;
     await writeBotMessageRow({
         chatId: session.chatId,
         messageId: session.firstMessageId,
@@ -661,7 +879,11 @@ const finalizeSession = async (
             text: session.textBuffer,
             wasStoppedByUser: options?.wasStoppedByUser ?? false,
             // "has an attachment": its caption joins the stored text
-            hasImage: pictureBuffer !== undefined || file !== undefined || widget !== undefined,
+            hasImage:
+                pictureBuffer !== undefined ||
+                file !== undefined ||
+                widget !== undefined ||
+                deliveredPictures.stored.length > 0,
             imageCaption:
                 sticker !== undefined
                     ? undefined
@@ -673,14 +895,15 @@ const finalizeSession = async (
         }),
         modelParts: options?.modelParts ?? null,
         file: rowPicture ?? null,
-        fileMime: mediaMime,
+        fileMime: mediaMime ?? (rowFileUniqueId === null ? null : deliveredPictures.stored[0]?.mimeType ?? null),
+        fileUniqueId: rowFileUniqueId,
         ...(sticker !== undefined
             ? { mediaHint: 'sticker' }
             : file !== undefined
               ? { mediaHint: `a file: ${file.name}, ${file.mimeType}` }
               : widget !== undefined
                 ? { mediaHint: 'a widget' }
-              : rowPicture !== undefined
+              : rowPicture !== undefined || rowFileUniqueId !== null
                 ? { mediaHint: 'a picture' }
                 : {}),
     });
@@ -706,7 +929,7 @@ const finalizeSession = async (
 
     // After the cleanup, and never throwing: a failed metrics write costs the
     // panel one row, not the reply its finalize
-    await recordReplyMetric(session, {
+    await recordReplyMetric({ ...session, deliveredImageCount: deliveredPictures.stored.length }, {
         versionId: version.versionId,
         errorMessage: options?.errorMessage,
         errorKind: options?.errorKind,
@@ -872,9 +1095,13 @@ const buildVersionMessages = (
  * final delivery does: a reply without model text still shows its thinking
  * or tool records above the image, in a text message that can be edited.
  */
-const isMediaOnlyVersion = (version: ResponseVersion): boolean =>
-    Boolean(version.imageBase64 || version.fileBase64 || version.sticker || version.widget) &&
-    !buildVersionMessages(version)[0]?.text;
+const isMediaOnlyVersion = (version: ResponseVersion): boolean => {
+    // A rich body is an editable message even when pictures ride inside it
+    if (version.delivery !== undefined) return false;
+    const hasPictures = (version.media?.length ?? 0) > 0;
+    const hasLegacyMedia = Boolean(version.imageBase64 || version.fileBase64 || version.sticker || version.widget);
+    return (hasPictures || hasLegacyMedia) && !buildVersionMessages(version)[0]?.text;
+};
 
 /**
  * Start a retry for an existing response. `options.model` is the model the
@@ -960,6 +1187,219 @@ const widgetImageOf = async (widget: StoredWidget): Promise<Buffer | null> => {
     return rendered.png;
 };
 
+/** One picture of a stored version, with its bytes loaded for re-delivery when the cache still has them */
+interface VersionPicture {
+    readonly placement: ReplyMediaPlacement;
+    readonly id?: string;
+    readonly mimeType: string;
+    readonly caption?: string;
+    readonly fileId?: string;
+    readonly data?: Buffer;
+}
+
+/** The version's pictures: `media[]` when present, else the legacy single-image slot */
+const versionPicturesOf = async (version: ResponseVersion): Promise<VersionPicture[]> => {
+    const pictures: VersionPicture[] = [];
+    for (const media of version.media ?? []) {
+        let bytes: Buffer | null = null;
+        if (media.mediaKey !== undefined) {
+            try {
+                const cached = await getCachedMedia(media.mediaKey);
+                bytes = cached?.data ?? null;
+            } catch (error) {
+                console.error('[bot-message-service] media cache read failed:', media.mediaKey, error);
+            }
+        }
+        pictures.push({
+            placement: media.placement,
+            ...(media.id === undefined ? {} : { id: media.id }),
+            mimeType: media.mimeType,
+            ...(media.caption === undefined ? {} : { caption: media.caption }),
+            ...(media.fileId === undefined ? {} : { fileId: media.fileId }),
+            ...(bytes === null ? {} : { data: bytes }),
+        });
+    }
+    if (pictures.length === 0 && version.imageBase64 !== undefined) {
+        const data = Buffer.from(version.imageBase64, 'base64');
+        pictures.push({
+            placement: 'attachment',
+            mimeType: sniffMediaMime(data) ?? 'image/png',
+            ...(version.imageCaption === undefined ? {} : { caption: version.imageCaption }),
+            data,
+        });
+    }
+    return pictures;
+};
+
+/** The version's picture messages: stored ids, or the legacy single image message */
+const versionMediaMessageIdsOf = (version: ResponseVersion): number[] => {
+    if (version.mediaMessageIds !== undefined) return [...version.mediaMessageIds];
+    if (version.imageBase64 !== undefined) {
+        // A media-only legacy version has the picture as its only message; one
+        // with text carries the picture after it
+        if (version.messageIds.length === 1) return [version.currentMessageId];
+        if (version.currentMessageId !== version.messageIds[0]) return [version.currentMessageId];
+    }
+    return [];
+};
+
+/** The version's text/body messages: `messageIds` without the picture messages */
+const versionTextMessageIdsOf = (version: ResponseVersion): number[] => {
+    const mediaIds = new Set(versionMediaMessageIdsOf(version));
+    return version.messageIds.filter((messageId) => !mediaIds.has(messageId));
+};
+
+/** Uploads for a replay: `sendReplyImagesMessage` takes rendered captions, one per picture */
+const pictureUploadsOf = (
+    pictures: readonly VersionPicture[],
+    resolveContextLink: ContextLinkResolver | undefined
+): ReplyImageUpload[] =>
+    pictures.flatMap((picture) => (
+        picture.data === undefined
+            ? []
+            : [{
+                  data: picture.data,
+                  captionFields: buildImageCaption(picture.caption, resolveContextLink),
+              }]
+    ));
+
+/** Inline pictures of a stored version, ready for the rich replay layout */
+const inlineReplayMediaOf = (pictures: readonly VersionPicture[]): RichReplayMedia[] =>
+    pictures.flatMap((picture) => (
+        picture.placement !== 'inline' || picture.id === undefined || picture.data === undefined
+            ? []
+            : [{ id: picture.id, data: picture.data, mimeType: picture.mimeType }]
+    ));
+
+interface SwitchToRichVersionInput {
+    readonly ctx: Context;
+    readonly chatId: number;
+    readonly firstMessageId: number;
+    readonly userMessageId: number;
+    readonly response: BotResponse;
+    readonly versions: ResponseVersion[];
+    readonly newIndex: number;
+    readonly newVersion: ResponseVersion;
+    readonly oldVersion: ResponseVersion;
+    readonly versionButtons: ReturnType<typeof buildResponseButtons>;
+    readonly pictures: readonly VersionPicture[];
+    readonly resolveContextLink: ContextLinkResolver | undefined;
+}
+
+/**
+ * Switch to a version that was delivered as a rich message: replay its body
+ * from the stored snapshot (inline pictures uploaded again), re-send its
+ * trailing pictures as an album after the body, and delete the old version's
+ * picture messages. null when the snapshot cannot form a body (the caller then
+ * replays the version with the entities layout).
+ *
+ * An album cannot carry an inline keyboard, so with trailing pictures the
+ * buttons land on the rich body message (the reply's carrier).
+ */
+const switchToRichVersion = async (input: SwitchToRichVersionInput): Promise<boolean | null> => {
+    const { ctx, chatId, firstMessageId, newVersion, oldVersion, pictures, resolveContextLink } = input;
+    const thinkingLink = thinkingLinkRefOfVersion(newVersion) ?? undefined;
+    const searchLink = searchLinkOfVersion(newVersion);
+    const replay = buildRichLayoutOfVersion({
+        version: newVersion,
+        ...(thinkingLink === undefined ? {} : { thinkingLink }),
+        ...(searchLink === undefined ? {} : { searchLink }),
+        media: inlineReplayMediaOf(pictures),
+        ...(resolveContextLink === undefined ? {} : { resolveContextLink }),
+    });
+    if (replay.bodyMissing) return null;
+    if (replay.missingInlineIds.length > 0) {
+        console.warn(
+            '[bot-message-service] rich replay without picture bytes, blocks removed:',
+            replay.missingInlineIds.join(',')
+        );
+    }
+
+    // The old version's separate picture messages go first (a switch deletes them)
+    for (const mediaId of versionMediaMessageIdsOf(oldVersion)) {
+        await to(ctx.api.deleteMessage(chatId, mediaId));
+    }
+
+    const attachmentPictures = pictures.filter((picture) => picture.placement === 'attachment');
+    const hasAttachmentPictures = attachmentPictures.length > 0;
+    const richBodyIndex = replay.chunks.findIndex((chunk) => isRichLayoutChunk(chunk));
+    const laidOut = await layOutChunks({
+        api: ctx.api,
+        chatId,
+        userMessageId: input.userMessageId,
+        firstMessageId,
+        messageIds: versionTextMessageIdsOf(oldVersion),
+        chunks: replay.chunks,
+        // An inline-only rich reply keeps the live layout's last-chunk buttons;
+        // with trailing pictures the keyboard goes on the body message instead
+        ...(hasAttachmentPictures ? {} : { replyMarkup: input.versionButtons }),
+    });
+
+    const newMessageIds = [...laidOut.messageIds];
+    let currentMessageId = laidOut.currentMessageId;
+    let mediaMessageIds: number[] = [];
+    if (hasAttachmentPictures) {
+        currentMessageId = laidOut.messageIds[richBodyIndex] ?? laidOut.currentMessageId;
+        const uploads = pictureUploadsOf(attachmentPictures, resolveContextLink);
+        const [mediaError, sentIds] = await sendReplyImagesMessage({
+            api: ctx.api,
+            chatId,
+            images: uploads,
+            target: { reply_parameters: { message_id: input.userMessageId } },
+            runApiCall: (operation) => runApiCall(chatId, operation),
+        });
+        if (mediaError !== null) {
+            console.error('[bot-message-service] rich version replay: pictures failed:', mediaError.message);
+        } else {
+            newMessageIds.push(...sentIds);
+            mediaMessageIds = sentIds;
+        }
+        if (input.versionButtons !== undefined) {
+            const [markupError] = await to(
+                runApiCall(chatId, () =>
+                    ctx.api.editMessageReplyMarkup(chatId, currentMessageId, {
+                        reply_markup: input.versionButtons,
+                    })
+                )
+            );
+            if (markupError !== null && !markupError.message.includes('message is not modified')) {
+                console.warn('[bot-message-service] rich version replay: buttons update failed:', markupError.message);
+            }
+        }
+    }
+
+    newVersion.messageIds = newMessageIds;
+    newVersion.currentMessageId = currentMessageId;
+    if (newVersion.media !== undefined) {
+        newVersion.mediaMessageIds = mediaMessageIds.length > 0 ? mediaMessageIds : undefined;
+    }
+    input.response.currentVersionIndex = input.newIndex;
+    input.response.setVersions(input.versions);
+    await input.response.save();
+
+    // The context/panel read source and the bot row follow the version on screen
+    await replaceMessageMedia(chatId, firstMessageId, messageMediaRowsOf(newVersion.media ?? []));
+    const rowMedia = newVersion.media?.[0];
+    await writeBotMessageRow({
+        chatId,
+        messageId: firstMessageId,
+        replyToId: input.userMessageId,
+        date: new Date(),
+        text: botRowTextOf({
+            text: newVersion.text,
+            wasStoppedByUser: newVersion.wasStoppedByUser,
+            hasImage: (newVersion.media?.length ?? 0) > 0,
+            imageCaption: undefined,
+        }),
+        modelParts: newVersion.modelParts ?? null,
+        file: null,
+        fileMime: rowMedia?.mimeType ?? null,
+        fileUniqueId: rowMedia?.mediaKey ?? null,
+        ...(rowMedia === undefined ? {} : { mediaHint: 'a picture' }),
+    });
+    return true;
+};
+
 /**
  * Switch to a different version
  */
@@ -990,6 +1430,38 @@ export const switchVersion = async (
     if (!oldVersion || !newVersion) return false;
 
     const resolveContextLink = buildMessageLinkResolver(chatId, response.userMessageId);
+    // Pictures this version delivered (v5 media[], or the legacy single slot);
+    // the trailing ones are re-sent as messages after the text, inline ones
+    // only belong to a rich body.
+    const newPictures = await versionPicturesOf(newVersion);
+    const pictureAttachments = newPictures.filter((picture) => picture.placement === 'attachment');
+
+    // "继续" only on the failed latest version, never on an older one
+    const versionButtons = buildResponseButtons(ButtonState.HAS_VERSIONS, newIndex, versions.length, {
+        resumable: showsResumableVersion(chatId, firstMessageId, versions, newIndex),
+    });
+
+    // A version delivered as a rich message replays its rich body (stored
+    // snapshot, inline pictures uploaded again); a version whose snapshot
+    // cannot form a body falls back to the entities layout below
+    if (newVersion.delivery !== undefined) {
+        const switched = await switchToRichVersion({
+            ctx,
+            chatId,
+            firstMessageId,
+            userMessageId: response.userMessageId,
+            response,
+            versions,
+            newIndex,
+            newVersion,
+            oldVersion,
+            versionButtons,
+            pictures: newPictures,
+            resolveContextLink,
+        });
+        if (switched !== null) return switched;
+        console.warn('[bot-message-service] rich replay unavailable; using the entities layout');
+    }
 
     // Format content using formatters; errored versions re-show their error line
     const contentChunks = buildVersionMessages(newVersion, resolveContextLink);
@@ -999,16 +1471,12 @@ export const switchVersion = async (
         !content.text &&
         !newVersion.imageBase64 &&
         !newVersion.fileBase64 &&
+        (newVersion.media?.length ?? 0) === 0 &&
         newVersion.sticker === undefined &&
         newVersion.widget === undefined
     ) {
         content = plainText('[Empty response]');
     }
-
-    // "继续" only on the failed latest version, never on an older one
-    const versionButtons = buildResponseButtons(ButtonState.HAS_VERSIONS, newIndex, versions.length, {
-        resumable: showsResumableVersion(chatId, firstMessageId, versions, newIndex),
-    });
 
     const imageBuffer = newVersion.imageBase64 ? Buffer.from(newVersion.imageBase64, 'base64') : null;
     const sticker = newVersion.sticker;
@@ -1145,16 +1613,58 @@ export const switchVersion = async (
             },
         });
     };
-    const sendVersionMedia = async (): Promise<Result<number>> => {
-        if (storedWidget !== undefined) return sendVersionWidget();
-        if (fileBuffer !== null) return sendVersionFile();
-        if (sticker !== undefined) return sendVersionSticker();
-        if (imageBuffer !== null) return sendVersionImage(imageBuffer);
+    // The trailing pictures of a v5 version: single stays the old photo path
+    // (the button rides the picture), several become one album (or one message
+    // per picture when the reply has no text to carry the keyboard, per the
+    // album probe decision).
+    const sentPictureMessageIds: number[] = [];
+    const sendVersionPictures = async (useAlbum: boolean): Promise<Result<number[]>> => {
+        const uploads = pictureUploadsOf(pictureAttachments, resolveContextLink);
+        if (uploads.length === 0) return [new Error('version has no picture bytes'), undefined];
+        // The buttons belong to a single-picture version; a multi-picture one
+        // that lost pictures is still a multi-picture version (the caller puts
+        // the keyboard on the text carrier)
+        const single = pictureAttachments.length === 1;
+        const sent = await sendReplyImagesMessage({
+            api: ctx.api,
+            chatId,
+            images: uploads,
+            target: {
+                reply_parameters: { message_id: response.userMessageId },
+                ...(single ? { reply_markup: versionButtons } : {}),
+            },
+            runApiCall: (operation) => runApiCall(chatId, operation),
+            useAlbum: single ? undefined : useAlbum,
+        });
+        if (!isErr(sent)) sentPictureMessageIds.push(...sent[1]);
+        return sent;
+    };
+    // The visual media of the version as message ids: a widget/file/sticker or
+    // one message, or the pictures' messages (album ids or one per picture)
+    const sendVersionMediaMessages = async (useAlbum: boolean): Promise<Result<number[]>> => {
+        if (storedWidget !== undefined) {
+            const [error, messageId] = await sendVersionWidget();
+            return error ? [error, undefined] : [null, [messageId]];
+        }
+        if (fileBuffer !== null) {
+            const [error, messageId] = await sendVersionFile();
+            return error ? [error, undefined] : [null, [messageId]];
+        }
+        if (sticker !== undefined) {
+            const [error, messageId] = await sendVersionSticker();
+            return error ? [error, undefined] : [null, [messageId]];
+        }
+        if (pictureAttachments.length > 0) return sendVersionPictures(useAlbum);
+        if (imageBuffer !== null) {
+            const [error, messageId] = await sendVersionImage(imageBuffer);
+            return error ? [error, undefined] : [null, [messageId]];
+        }
         return [new Error('version has no media'), undefined];
     };
 
     const hasMedia =
         imageBuffer !== null ||
+        newPictures.length > 0 ||
         fileBuffer !== null ||
         sticker !== undefined ||
         storedWidget !== undefined;
@@ -1171,10 +1681,39 @@ export const switchVersion = async (
         if (msgId === undefined) continue;
         await to(ctx.api.deleteMessage(chatId, msgId));
     }
+    // A picture message the stored list forgot (older state) is still the
+    // version's and must not survive the switch
+    const deletedOldIds = new Set(oldVersion.messageIds.slice(1));
+    for (const mediaId of versionMediaMessageIdsOf(oldVersion)) {
+        if (deletedOldIds.has(mediaId) || mediaId === oldVersion.messageIds[0]) continue;
+        await to(ctx.api.deleteMessage(chatId, mediaId));
+    }
 
     const oldFirstMsgId = oldVersion.messageIds[0] ?? firstMessageId;
     const newMessageIds: number[] = [];
     let currentMessageId = firstMessageId;
+    // The buttons are placed by the sender for one attachment; an album (or a
+    // multi-picture version that lost pictures) takes none, so the last
+    // text/body message — or the last single picture of a text-less reply —
+    // gets them after the switch.
+    let buttonsPlaced = false;
+    /** How many separate picture messages the version expects: one keeps the buttons */
+    const mediaCarriesButtons = pictureAttachments.length <= 1;
+    /** Append sent media messages and keep the button carrier right */
+    const recordSentMedia = (
+        ids: readonly number[],
+        textCarrier: number | null,
+        carriesButtons: boolean
+    ): void => {
+        if (ids.length === 0) return;
+        newMessageIds.push(...ids);
+        if (carriesButtons && ids.length === 1) {
+            currentMessageId = ids[0] ?? currentMessageId;
+            buttonsPlaced = true;
+            return;
+        }
+        currentMessageId = textCarrier ?? ids[ids.length - 1] ?? currentMessageId;
+    };
 
     const editMessage = async (
         editor: MessageEditor,
@@ -1197,11 +1736,11 @@ export const switchVersion = async (
         await to(ctx.api.deleteMessage(chatId, oldFirstMsgId));
 
         if (newIsMediaOnly) {
-            // Old was text → new is media-only
-            const [sendErr, sentMsg] = await sendVersionMedia();
+            // Old was text → new is media-only: several pictures go out one by
+            // one (an album has no text message to carry the keyboard)
+            const [sendErr, sentIds] = await sendVersionMediaMessages(false);
             if (!sendErr) {
-                newMessageIds.push(sentMsg);
-                currentMessageId = sentMsg;
+                recordSentMedia(sentIds, null, mediaCarriesButtons);
             } else {
                 console.error('[bot-message-service] Failed to send media:', sendErr);
                 return false;
@@ -1242,12 +1781,14 @@ export const switchVersion = async (
                 currentMessageId = chunkMsg.message_id;
             }
 
-            // Send the visual attachment after text if present
+            // Send the version's pictures after the text (several pictures as
+            // one album: the keyboard stays on the last text message)
             if (hasMedia) {
-                const [mediaErr, mediaMsg] = await sendVersionMedia();
+                const [mediaErr, mediaIds] = await sendVersionMediaMessages(true);
                 if (!mediaErr) {
-                    newMessageIds.push(mediaMsg);
-                    currentMessageId = mediaMsg;
+                    recordSentMedia(mediaIds, currentMessageId, mediaCarriesButtons);
+                } else {
+                    console.error('[bot-message-service] Failed to send the version media:', mediaErr);
                 }
             }
         }
@@ -1255,10 +1796,9 @@ export const switchVersion = async (
         // Both old and new are media-only: delete old media, send the new one
         await to(ctx.api.deleteMessage(chatId, oldFirstMsgId));
 
-        const [sendErr, sentMsg] = await sendVersionMedia();
+        const [sendErr, sentIds] = await sendVersionMediaMessages(false);
         if (!sendErr) {
-            newMessageIds.push(sentMsg);
-            currentMessageId = sentMsg;
+            recordSentMedia(sentIds, null, mediaCarriesButtons);
         } else {
             console.error('[bot-message-service] Failed to send image:', sendErr);
             return false;
@@ -1297,13 +1837,28 @@ export const switchVersion = async (
             );
         }
 
-        // Send the visual attachment after text if present
+        // Send the version's pictures after the text; an album keeps the
+        // buttons on the last text message (see recordSentMedia)
         if (hasMedia) {
-            const [sendErr, sentMsg] = await sendVersionMedia();
+            const [sendErr, sentIds] = await sendVersionMediaMessages(true);
             if (!sendErr) {
-                newMessageIds.push(sentMsg);
-                currentMessageId = sentMsg;
+                recordSentMedia(sentIds, currentMessageId, mediaCarriesButtons);
+            } else {
+                console.error('[bot-message-service] Failed to send the version media:', sendErr);
             }
+        }
+    }
+
+    // An album cannot carry an inline keyboard: put the buttons on the switch's
+    // carrier (last text/body message, or the last single picture when textless)
+    if (versionButtons !== undefined && hasMedia && !buttonsPlaced) {
+        const [markupError] = await to(
+            runApiCall(chatId, () =>
+                ctx.api.editMessageReplyMarkup(chatId, currentMessageId, { reply_markup: versionButtons })
+            )
+        );
+        if (markupError !== null && !markupError.message.includes('message is not modified')) {
+            console.warn('[bot-message-service] version switch: buttons update failed:', markupError.message);
         }
     }
 
@@ -1313,13 +1868,27 @@ export const switchVersion = async (
     // Update messageIds in the version (they may have changed due to re-sending)
     newVersion.messageIds = newMessageIds;
     newVersion.currentMessageId = currentMessageId;
+    if (newVersion.media !== undefined) {
+        // Only the pictures actually re-sent can be listed as messages
+        newVersion.mediaMessageIds =
+            sentPictureMessageIds.length > 0 ? [...sentPictureMessageIds] : undefined;
+    }
     response.setVersions(versions);
 
     await response.save();
 
+    // The context/panel read source follows the version now on screen
+    await replaceMessageMedia(chatId, firstMessageId, messageMediaRowsOf(newVersion.media ?? []));
+
     // Also overwrite the Message row with the new version's content, so the
     // context reads this version only — never its text next to another's image
     const rowPicture = imageBuffer ?? widgetImage;
+    // Multi-image and inline versions keep their bytes in media_cache and point
+    // the row at the first picture; the legacy single attachment keeps the BLOB.
+    const rowFileUniqueId =
+        (rowPicture === null || rowPicture === undefined) && (newVersion.media?.length ?? 0) > 0
+            ? newVersion.media?.[0]?.mediaKey ?? null
+            : null;
     await writeBotMessageRow({
         chatId,
         messageId: firstMessageId,
@@ -1340,19 +1909,45 @@ export const switchVersion = async (
         }),
         modelParts: newVersion.modelParts ?? null,
         file: rowPicture,
-        fileMime: rowPicture ? sniffMediaMime(rowPicture) : null,
+        fileMime: rowPicture
+            ? sniffMediaMime(rowPicture)
+            : rowFileUniqueId === null
+              ? null
+              : newVersion.media?.[0]?.mimeType ?? null,
+        fileUniqueId: rowFileUniqueId,
         ...(newVersion.sticker !== undefined
             ? { mediaHint: 'sticker' }
             : storedFile !== undefined
               ? { mediaHint: `a file: ${storedFile.name}, ${storedFile.mimeType}` }
               : storedWidget !== undefined
                 ? { mediaHint: 'a widget' }
-                : imageBuffer
+                : imageBuffer !== null || rowFileUniqueId !== null
                   ? { mediaHint: 'a picture' }
                   : {}),
     });
 
     return true;
+};
+
+/**
+ * Put the reply's buttons on a message again after a layout; an album cannot
+ * carry a keyboard, so its carrier is a text/body message (or the last picture
+ * of a text-less reply). Returns false on a real failure.
+ */
+const reapplyButtonsOn = async (
+    api: Api,
+    chatId: number,
+    messageId: number,
+    buttons: ReturnType<typeof buildResponseButtons>
+): Promise<boolean> => {
+    if (buttons === undefined) return true;
+    const [error] = await to(
+        runApiCall(chatId, () => api.editMessageReplyMarkup(chatId, messageId, { reply_markup: buttons }))
+    );
+    if (error === null) return true;
+    if (error.message.includes('message is not modified')) return true;
+    console.warn('[bot-message-service] buttons update failed:', error.message);
+    return false;
 };
 
 /**
@@ -1373,8 +1968,28 @@ export const refreshToFinalState = async (
     const version = versions[response.currentVersionIndex];
     if (!version) return false;
 
+    const resolveContextLink = buildMessageLinkResolver(chatId, response.userMessageId);
+    // A rich version is replayed from its snapshot (with its pictures), never
+    // re-rendered; an unbuildable snapshot still falls back to the entities layout
+    const replayPictures = version.delivery === undefined ? [] : await versionPicturesOf(version);
+    const richReplay = version.delivery === undefined
+        ? null
+        : buildRichLayoutOfVersion({
+              version,
+              ...(thinkingLinkRefOfVersion(version) === null
+                  ? {}
+                  : { thinkingLink: thinkingLinkRefOfVersion(version) ?? undefined }),
+              ...(searchLinkOfVersion(version) === undefined
+                  ? {}
+                  : { searchLink: searchLinkOfVersion(version) }),
+              media: inlineReplayMediaOf(replayPictures),
+              ...(resolveContextLink === undefined ? {} : { resolveContextLink }),
+          });
+
     // Errored versions keep their error line across refreshes (display-only)
-    const chunks = buildVersionMessages(version, buildMessageLinkResolver(chatId, response.userMessageId));
+    const chunks: LayoutChunk[] = richReplay !== null && !richReplay.bodyMissing
+        ? [...richReplay.chunks]
+        : buildVersionMessages(version, resolveContextLink);
     if (chunks.length === 0) {
         chunks.push(plainText('[Empty response]'));
     }
@@ -1383,14 +1998,24 @@ export const refreshToFinalState = async (
         resumable: showsResumableVersion(chatId, firstMessageId, versions, response.currentVersionIndex),
     });
 
-    // Media messages can't be edited to text: pair chunks with text messages only.
-    // When a visual attachment exists it is the last message (currentMessageId) and carries the buttons.
-    const hasMedia = Boolean(
-        version.imageBase64 || version.fileBase64 || version.sticker || version.widget
-    );
-    const textMessageIds = hasMedia
-        ? version.messageIds.filter((id) => id !== version.currentMessageId)
-        : version.messageIds;
+    // Picture messages and the other attachments cannot be edited to text:
+    // pair the chunks with the version's text/body messages only. The stored
+    // order keeps the text first, then the picture messages (single image or
+    // album) exactly as the delivery wrote them.
+    const mediaMessageIds = versionMediaMessageIdsOf(version);
+    const hasMedia = mediaMessageIds.length > 0
+        || Boolean(version.fileBase64 || version.sticker || version.widget);
+    const textMessageIds = versionTextMessageIdsOf(version);
+
+    // A text-less picture version has no chunk to lay out: refreshing it only
+    // re-applies the buttons (the pictures themselves cannot be edited).
+    const pictureOnly = hasMedia && mediaMessageIds.length > 0 && !version.text.trim() && version.delivery === undefined;
+    if (pictureOnly) {
+        if (buttons) {
+            await reapplyButtonsOn(api, chatId, version.currentMessageId, buttons);
+        }
+        return true;
+    }
 
     // Lay the stored layout over the reply's text messages: edits in order, sends
     // the missing chunks, deletes the ones the final layout no longer needs. The
@@ -1406,18 +2031,22 @@ export const refreshToFinalState = async (
     });
     let allDelivered = laidOut.allDelivered;
 
-    // A media message ends the reply: new text chunks land after it in the chat,
-    // so the stored order keeps the media before them too.
-    const editedCount = Math.min(chunks.length, textMessageIds.length);
+    // The text/body messages come first in the stored order, then the picture
+    // messages the delivery appended (a single image or the album's ids).
+    const currentIsMedia = mediaMessageIds.includes(version.currentMessageId);
+    // With trailing pictures the buttons land on the rich body message; an
+    // inline-only rich reply keeps the live layout's last-chunk carrier
+    const richBodyIndex = richReplay === null || richReplay.bodyMissing
+        ? -1
+        : richReplay.chunks.findIndex((chunk) => isRichLayoutChunk(chunk));
+    const richBodyMessageId = richBodyIndex < 0 ? undefined : laidOut.messageIds[richBodyIndex];
     const nextMessageIds = hasMedia
-        ? [
-              ...laidOut.messageIds.slice(0, editedCount),
-              version.currentMessageId,
-              ...laidOut.messageIds.slice(editedCount),
-          ]
+        ? [...laidOut.messageIds, ...mediaMessageIds]
         : laidOut.messageIds;
     const nextCurrentMessageId = hasMedia
-        ? version.currentMessageId
+        ? currentIsMedia
+            ? version.currentMessageId
+            : richBodyMessageId ?? laidOut.currentMessageId
         : laidOut.currentMessageId;
     const messageIdsChanged =
         nextMessageIds.length !== version.messageIds.length ||
@@ -1430,16 +2059,12 @@ export const refreshToFinalState = async (
         await response.save();
     }
 
-    // The media message carries the buttons: refresh its markup separately
+    // An album takes no inline keyboard: the buttons land on the reply's
+    // carrier (last text/body message, or the last picture of a text-less
+    // reply). The single-image legacy path keeps them on the picture message.
     if (hasMedia && buttons) {
-        const [markupErr] = await to(
-            runApiCall(chatId, () =>
-                api.editMessageReplyMarkup(chatId, version.currentMessageId, {
-                    reply_markup: buttons,
-                })
-            )
-        );
-        if (markupErr && version.widget !== undefined && version.widget.deliveredAs !== 'link') {
+        const markupDelivered = await reapplyButtonsOn(api, chatId, version.currentMessageId, buttons);
+        if (!markupDelivered && version.widget !== undefined && version.widget.deliveredAs !== 'link') {
             // A native widget message can only be edited through the client that sent it
             const [widgetErr] = await to(
                 editWidgetReplyMarkup(chatId, version.currentMessageId, buttons)
@@ -1448,8 +2073,7 @@ export const refreshToFinalState = async (
                 console.warn('[bot-message-service] Refresh: widget markup update failed:', widgetErr);
                 allDelivered = false;
             }
-        } else if (markupErr && !markupErr.message.includes('message is not modified')) {
-            console.warn('[bot-message-service] Refresh: markup update failed:', markupErr.message);
+        } else if (!markupDelivered) {
             allDelivered = false;
         }
     }

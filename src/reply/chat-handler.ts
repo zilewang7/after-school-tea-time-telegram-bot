@@ -362,6 +362,10 @@ export const handleReply = async (
         settings.toolOverrides,
         access
     );
+    // The reply's picture references resolve through its tool state (gN/imgN/sN)
+    // and the context numbering the request just used (#N)
+    chatContext.mediaState = toolState.media;
+    chatContext.contextIndex = contextIndex;
     // The workspace manifest is volatile, so it rides the trigger message after
     // the tool snapshot is known (the static prompt stays byte-identical).
     await appendWorkspaceTailForReply({
@@ -374,6 +378,8 @@ export const handleReply = async (
         handoff: availability.handoff,
         fileTools: availability.file,
         widgetTools: availability.widget,
+        // A rich reply may embed pictures; the note is volatile, like the manifest
+        richInlineImages: settings.richReplies === true && availability.sendImage,
     });
 
     const systemPrompt = buildStaticSystemPrompt(model, buildStaticPromptOptions(availability));

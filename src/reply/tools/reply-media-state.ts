@@ -1,7 +1,9 @@
 /**
  * The media working set of one reply: what search_images found, what
  * fetch_image pulled into the model's context, what generate_image drew, and
- * the one-attachment-per-reply flag.
+ * the reply's pictures (up to MAX_REPLY_IMAGES, one album when several go out
+ * as attachments) and the other attachment kinds, which stay exclusive with
+ * pictures.
  *
  * There are no quotas here on purpose. Searching, paging and reading are the
  * model's call — the only real bound is the tool-round budget it is told about
@@ -90,9 +92,13 @@ export interface GeneratedImage {
     readonly mimeType: SniffedMediaMime;
 }
 
-/** One attachment per reply: an image, a sticker or a file */
+/**
+ * Pictures and the other attachment kinds are exclusive: a reply either
+ * carries pictures or one sticker/file/card. A sticker, file or card asked for
+ * after a picture (or the other way round) gets this answer.
+ */
 export const ONE_ATTACHMENT_PER_REPLY =
-    '这条回复已经有一个附件（图片/贴纸/文件/组件），每条回复只能发一个。';
+    '这条回复已经有一个附件（图片/贴纸/文件/组件），图片与贴纸/文件/组件不能同时发。';
 
 /**
  * The file this reply is writing with send_file. Parts are appended in call
@@ -126,8 +132,12 @@ export interface ReplyMediaState {
      * tool, so a continued reply goes on counting toward the same limit.
      */
     reverseSearchCount: number;
-    /** Set by the image this reply will deliver */
+    /** Set once this reply has at least one picture */
     hasReplyImage: boolean;
+    /** Pictures added so far, across every send_image call (limit MAX_REPLY_IMAGES) */
+    imageCount: number;
+    /** Total bytes of those pictures (limit MAX_REPLY_IMAGE_TOTAL_BYTES) */
+    imageBytes: number;
     /** Set by the sticker this reply will deliver */
     hasReplySticker: boolean;
     /** The file this reply is writing; absent until send_file is called */
@@ -150,6 +160,8 @@ export const createReplyMediaState = (): ReplyMediaState => ({
     thumbnailCount: 0,
     reverseSearchCount: 0,
     hasReplyImage: false,
+    imageCount: 0,
+    imageBytes: 0,
     hasReplySticker: false,
     hasReplyFile: false,
     hasReplyWidget: false,

@@ -24,7 +24,7 @@ import {
 } from '../telegram/index.js';
 import { runApiCall } from '../telegram/edit-coordinator.js';
 import { sendReplyFileMessage } from '../telegram/reply-file-send.js';
-import { sendReplyImageMessage } from '../telegram/reply-image-send.js';
+import { sendReplyImagesMessage, type ReplyImageUpload } from '../telegram/reply-images-send.js';
 import {
     sendReplyWidgetLinkMessage,
     sendReplyWidgetMessage,
@@ -120,12 +120,23 @@ import {
     deliverRichFinal,
     demoteToEntities,
     initialDeliveryOf,
+    prepareInlineReply,
     RICH_MAX_SOURCE_LENGTH,
     type ReplyDelivery,
-    type RichFinalOutcome,
+    type RichFinalResult,
 } from './rich-delivery.js';
+import { stripInlineMarkersForDisplay } from '../telegram/formatters/rich-inline-media/scan.js';
+import { parseMediaRef, resolveMediaRef } from './tools/media-ref-resolver.js';
 import { getToolConfig } from '../config/tool-config.js';
 import { stripPerQueryResultCitations } from '../shared/citation-markers.js';
+import {
+    MAX_REPLY_IMAGES,
+    replyMediaKeyOf,
+    type ReplyImageDelivery,
+    type ReplyImageDeliveryMode,
+} from '../shared/reply-media.js';
+import type { ContextIndex } from './context-index.js';
+import type { ReplyMediaState } from './tools/reply-media-state.js';
 import { noteStreamChunk } from '../services/reply-metrics-draft.js';
 import { findStickerByPackIndex } from '../services/sticker-catalog.js';
 import { downloadStickerPreview } from '../services/sticker-set-service.js';
@@ -190,6 +201,29 @@ export interface ChatContext {
      * ever demoted from rich to entities (see rich-delivery.ts)
      */
     delivery: ReplyDelivery;
+    /** The form the reply started with; `delivery` may only demote from it */
+    initialDelivery: ReplyDelivery;
+    /**
+     * Whether the answer's inline image markers are interpreted. Decided when
+     * the context is built: only a reply that starts rich has a body to embed
+     * pictures into.
+     */
+    inlineImagesEnabled: boolean;
+    /**
+     * The answer with inline picture markers replaced by sentinels, for the
+     * rich body renderer. Set by prepareInlineReply; display only.
+     */
+    inlineAssemblyText?: string;
+    /** Pictures parsed out of the inline markers (placement 'inline') */
+    inlineImages?: ReplyImageDelivery[];
+    /** How the reply's pictures were actually delivered, for version storage */
+    inlineDelivery?: ReplyImageDeliveryMode;
+    /** The answer section exactly as the rich body delivered it (replay snapshot) */
+    richAnswerMarkdown?: string;
+    /** This reply's tool state: `gN`/`imgN`/`sN` references resolve through it */
+    mediaState?: ReplyMediaState;
+    /** The context numbering the request used: `#N` references resolve through it */
+    contextIndex?: ContextIndex;
 }
 
 /**
@@ -236,6 +270,9 @@ export const createChatContext = async (
         return null;
     }
 
+    // The form is decided once; the inline-picture gate follows it
+    const initialDelivery = initialDeliveryOf(options.richReplies === true, options.commandType ?? 'chat');
+
     // Create chat context
     const chatContext: ChatContext = {
         ctx,
@@ -248,7 +285,9 @@ export const createChatContext = async (
         currentButtonState: ButtonState.PROCESSING,
         isFinalized: false,
         commandType: options.commandType ?? 'chat',
-        delivery: initialDeliveryOf(options.richReplies === true, options.commandType ?? 'chat'),
+        delivery: initialDelivery,
+        initialDelivery,
+        inlineImagesEnabled: initialDelivery === 'rich',
     };
 
     // Create StreamingEditor with idle update callback
@@ -326,7 +365,12 @@ export const processChunk = (
         .with({ type: 'image' }, ({ imageData, imageCaption }) => ({
             ...state,
             images: imageData ? [...state.images, imageData] : state.images,
-            // Only the first image is delivered, so only its caption is kept
+            // One caption per picture, same order; a picture without one keeps an
+            // undefined slot so the two lists stay aligned
+            imageCaptions: imageData
+                ? [...(state.imageCaptions ?? []), imageCaption]
+                : state.imageCaptions,
+            // Only the first image is delivered, so only its caption is kept here
             imageCaption:
                 imageData && state.images.length === 0 ? imageCaption : state.imageCaption,
         }))
@@ -427,6 +471,7 @@ const formatStateForDisplay = (
     resolveContextLink?: ContextLinkResolver,
     thinkingLink?: ThinkingLinkRef,
     suppressThinking = false,
+    inlineImagesEnabled = false,
 ): RenderedMessage => {
     // Link mode: the CoT lives behind the link, so the message only shows the
     // fixed-height link + last-two-sections preview instead of a quote
@@ -458,9 +503,13 @@ const formatStateForDisplay = (
     if (state.textBuffer) {
         // The whole text is cleaned here, not just the opening: a label the
         // model dropped further down must not show up mid-stream and then
-        // disappear in the final edit
+        // disappear in the final edit. Inline picture markers are hidden the
+        // same way (a demoted reply shows the text, never a half-written ref).
+        const displayText = inlineImagesEnabled
+            ? stripInlineMarkersForDisplay(state.textBuffer, { embed: true })
+            : state.textBuffer;
         parts.push(
-            renderMarkdown(cleanReplyBody(state.textBuffer), { streaming: isProcessing })
+            renderMarkdown(cleanReplyBody(displayText), { streaming: isProcessing })
         );
     }
 
@@ -488,7 +537,8 @@ const finalizeCurrentMessage = async (
         false,
         contextLinkResolverFor(chatContext),
         undefined,
-        isContinuationMessage(chatContext)
+        isContinuationMessage(chatContext),
+        chatContext.inlineImagesEnabled
     );
 
     // Update message with final content (no status text - isFinal)
@@ -809,6 +859,7 @@ export const processStream = async (
         session.textBuffer = state.fullText;
         session.thinkingBuffer = state.fullThinking;
         session.images = state.images;
+        session.imageCaptions = state.imageCaptions ?? [];
         session.groundingData = state.groundingData;
         session.agentStats = state.agentStats;
 
@@ -836,6 +887,7 @@ export const processStream = async (
                 text: cleanReplyBody(state.textBuffer),
                 answerStarted: state.textBuffer !== '',
                 resolveContextLink,
+                inlineImagesEnabled: chatContext.inlineImagesEnabled,
             });
             if (frame.length <= RICH_MAX_SOURCE_LENGTH) {
                 await chatContext.editor.updateRich(frame, {
@@ -852,7 +904,8 @@ export const processStream = async (
             true,
             resolveContextLink,
             linkForDisplay,
-            isContinuationMessage(chatContext)
+            isContinuationMessage(chatContext),
+            chatContext.inlineImagesEnabled
         );
 
         // A pending link message is bounded by design: the message-budget split
@@ -1041,6 +1094,7 @@ export const processStream = async (
         thinkingText: state.thinkingBuffer,
         images: state.images,
         imageCaption: state.imageCaption,
+        imageCaptions: state.imageCaptions ?? [],
         stickers: state.stickers,
         files: state.files,
         widgets: state.widgets,
@@ -1075,55 +1129,202 @@ const healEditDetectedButtons = async (chatContext: ChatContext): Promise<void> 
     }
 };
 
-/**
- * Send the reply's image after its text, with the caption the model wrote
- * for it; a photo Telegram refuses goes out as a document, caption included,
- * and a refused caption is tried once more as plain text. Returns the id of
- * the message that carries the image, null when nothing went through.
- */
-const sendReplyImage = async (
+/** One inline marker's ref resolved to uploadable bytes; null = leave the caption text */
+const resolveInlineRef = async (
     chatContext: ChatContext,
-    image: Buffer,
-    captionFields: ImageCaptionFields
-): Promise<number | null> => {
-    const { ctx, chatId, userMessageId } = chatContext;
-
-    // GIF goes out as an animation, everything else as a photo; the fallbacks
-    // (document, then photo) live in the shared sender
-    const sent = await sendReplyImageMessage({
-        api: ctx.api,
-        chatId,
-        image,
-        captionFields,
-        target: { reply_parameters: { message_id: userMessageId } },
-        runApiCall: (operation) => runApiCall(chatId, operation),
+    ref: string
+): Promise<{ readonly data: Buffer; readonly mimeType: string } | null> => {
+    const { mediaState, contextIndex } = chatContext;
+    if (mediaState === undefined || contextIndex === undefined) return null;
+    const parsed = parseMediaRef(ref);
+    if (parsed === null) return null;
+    const resolution = await resolveMediaRef(parsed, {
+        state: mediaState,
+        chatId: chatContext.chatId,
+        contextIndex,
+        signal: chatContext.session.streamController.signal,
     });
-    if (isErr(sent)) {
-        console.error('[response-handler] image send failed:', sent[0]);
-        return null;
-    }
-    return sent[1];
+    // A GIF never embeds: the rich body takes static pictures only
+    if (!resolution.ok || resolution.mimeType === 'image/gif') return null;
+    return { data: resolution.data, mimeType: resolution.mimeType };
+};
+
+/** One picture of the reply as the response carries it: bytes plus its caption */
+interface ReplyPicture {
+    readonly data: Buffer;
+    readonly caption?: string;
+}
+
+/** The reply's attachment pictures, with the per-image caption list as authority */
+const replyPicturesOf = (response: AIResponse): ReplyPicture[] =>
+    response.images.map((data, index) => ({
+        data,
+        caption: response.imageCaptions?.[index] ?? (index === 0 ? response.imageCaption : undefined),
+    }));
+
+/** Put a picture list back on the response (per-image captions included) */
+const applyReplyPictures = (response: AIResponse, pictures: readonly ReplyPicture[]): void => {
+    response.images = pictures.map((picture) => picture.data);
+    response.imageCaptions = pictures.map((picture) => picture.caption);
+    response.imageCaption = pictures[0]?.caption;
 };
 
 /**
- * Send the reply's (first) image and make it the last message of the reply.
- * An image that went out neither as a photo nor as a document is dropped
- * from the session, so it is not stored as part of the reply either (B7).
- * Returns whether it went out.
+ * Keep the attachment list honest against pictures the reply already carries
+ * elsewhere: the same bytes are never sent twice (a model that writes
+ * `![x](g1)` and also calls `send_image(image_id='g1')` gets one picture), and
+ * attachments fill only the budget the placed pictures leave (inline first,
+ * so the reply stays within its picture limit).
  */
-const deliverReplyImage = async (
+const pruneAttachments = (
+    response: AIResponse,
+    placed: readonly ReplyImageDelivery[],
+    budget: number,
     chatContext: ChatContext,
-    image: Buffer | undefined,
-    captionFields: ImageCaptionFields
-): Promise<boolean> => {
+    where: 'inline body' | 'fallback'
+): void => {
+    const placedKeys = new Set(placed.map((image) => replyMediaKeyOf(image.data)));
+    let duplicates = 0;
+    const kept = replyPicturesOf(response).filter((picture) => {
+        if (!placedKeys.has(replyMediaKeyOf(picture.data))) return true;
+        duplicates += 1;
+        return false;
+    });
+    if (duplicates > 0) {
+        console.log(
+            `[rich-inline] ${duplicates} attachment picture(s) already ${where === 'inline body' ? 'in the body' : 'in the fallback list'}, skipped chat=${chatContext.chatId}`
+        );
+    }
+    const limited = kept.slice(0, Math.max(0, budget));
+    if (kept.length > limited.length) {
+        console.warn(
+            `[rich-inline] ${kept.length - limited.length} attachment picture(s) dropped over the reply limit ` +
+                `chat=${chatContext.chatId} inline=${placed.length} limit=${MAX_REPLY_IMAGES}`
+        );
+    }
+    applyReplyPictures(response, limited);
+};
+
+/**
+ * The pictures that did not stay inside the rich body go out as trailing
+ * messages: L2's fallback, or everything a demoted/entities reply had parsed.
+ * Inline pictures come first (they had positions), then the send_image
+ * attachments, and the reply's total picture limit applies to the merged list.
+ */
+const settlePicturesAfterRich = (
+    response: AIResponse,
+    chatContext: ChatContext,
+    richResult: RichFinalResult
+): void => {
+    // L1: the body holds them; attachments only fill the remaining budget
+    if (richResult.kind === 'delivered' && chatContext.inlineDelivery === 'rich') {
+        const inBody = chatContext.inlineImages ?? [];
+        if (inBody.length > 0) {
+            pruneAttachments(response, inBody, MAX_REPLY_IMAGES - inBody.length, chatContext, 'inline body');
+        }
+        return;
+    }
+
+    const fallback =
+        richResult.fallback?.images ??
+        (richResult.kind === 'delivered' ? [] : chatContext.inlineImages ?? []);
+    if (fallback.length === 0) return;
+
+    // The body could not take them: they lead the attachment list (inline first)
+    pruneAttachments(response, fallback, MAX_REPLY_IMAGES - fallback.length, chatContext, 'fallback');
+    const merged = [
+        ...fallback.map((image): ReplyPicture => ({ data: image.data, caption: image.caption })),
+        ...replyPicturesOf(response),
+    ].slice(0, MAX_REPLY_IMAGES);
+    applyReplyPictures(response, merged);
+};
+
+/** Hand the finalize layer what the rich path produced (it only reads the session) */
+const copyInlineToSession = (chatContext: ChatContext): void => {
     const { session } = chatContext;
-    const imageMessageId = image ? await sendReplyImage(chatContext, image, captionFields) : null;
-    if (imageMessageId === null) {
+    session.inlineAssemblyText = chatContext.inlineAssemblyText;
+    session.richAnswerMarkdown = chatContext.richAnswerMarkdown;
+    session.inlineMedia = chatContext.inlineImages ?? [];
+    session.inlineDelivery = chatContext.inlineDelivery ?? 'dropped';
+};
+
+/** The reply's pictures: the caption text the model wrote, and the rendered uploads */
+interface ReplyImagePlan {
+    /** Raw caption per picture, same order (`undefined` = none), for storage/context */
+    readonly captions: readonly (string | undefined)[];
+    /** Rendered caption fields per picture, same order */
+    readonly uploads: readonly ReplyImageUpload[];
+}
+
+/**
+ * The reply's pictures and their captions, rendered once for whichever layout
+ * delivers them. The per-image list is the authority; the single `imageCaption`
+ * is the pre-multi-picture field old versions and old callers still use.
+ */
+const replyImagePlanOf = (response: AIResponse, resolveContextLink?: ContextLinkResolver): ReplyImagePlan => {
+    const captions = response.images.map(
+        (_, index) => response.imageCaptions?.[index] ?? (index === 0 ? response.imageCaption : undefined)
+    );
+    return {
+        captions,
+        uploads: response.images.map((data, index) => ({
+            data,
+            captionFields: buildImageCaption(captions[index], resolveContextLink),
+        })),
+    };
+};
+
+/**
+ * Send the reply's pictures after its text: one album when there are several
+ * stills, one message each otherwise, GIFs as separate animations after the
+ * stills. The session keeps only the pictures that actually went out, plus the
+ * ids the reply's messages list needs.
+ *
+ * Where the keyboard goes follows the album rules: one picture is its own last
+ * message (as before); several keep the keyboard on the reply's text/body
+ * message, or on the last picture when the reply has no text message at all.
+ */
+const deliverReplyImages = async (
+    chatContext: ChatContext,
+    plan: ReplyImagePlan,
+    hasTextMessage: boolean
+): Promise<boolean> => {
+    const { chatId, session, userMessageId } = chatContext;
+    const dropped = new Set<number>();
+    const sent = await sendReplyImagesMessage({
+        api: chatContext.ctx.api,
+        chatId,
+        images: plan.uploads,
+        target: { reply_parameters: { message_id: userMessageId } },
+        runApiCall: (operation) => runApiCall(chatId, operation),
+        // An album takes no keyboard; a reply with no text message needs the
+        // keyboard on the last picture instead, so it sends them one by one
+        useAlbum: plan.uploads.length > 1 && hasTextMessage,
+        onDropped: (index) => dropped.add(index),
+    });
+    if (isErr(sent)) {
+        console.error('[response-handler] image send failed:', sent[0]);
         session.images = [];
+        session.imageCaptions = [];
         return false;
     }
-    session.messageIds.push(imageMessageId);
-    session.currentMessageId = imageMessageId;
+
+    const messageIds = sent[1];
+    session.messageIds.push(...messageIds);
+    session.mediaMessageIds = [...(session.mediaMessageIds ?? []), ...messageIds];
+
+    // Finalize stores the pictures that reached the chat, not the produced ones
+    const delivered = plan.uploads
+        .map((_, index) => index)
+        .filter((index) => !dropped.has(index));
+    session.images = delivered.map((index) => plan.uploads[index]?.data).filter((data): data is Buffer => data !== undefined);
+    session.imageCaptions = delivered.map((index) => plan.captions[index]);
+
+    if (plan.uploads.length === 1 || !hasTextMessage) {
+        // The last picture is where the keyboard goes in both cases
+        const lastId = messageIds[messageIds.length - 1];
+        if (lastId !== undefined) session.currentMessageId = lastId;
+    }
     return true;
 };
 
@@ -1403,26 +1604,24 @@ const editCurrentMessageButtons = async (
 };
 
 /**
- * Send the reply's one attachment: a file, a sticker, its first image or its
- * widget. The tools keep these exclusive, so the order only decides the
- * unlikely case of a stored response carrying two. Returns whether anything
- * went out.
+ * Send the reply's attachment: its widget, file, sticker or its pictures. The
+ * tools keep the categories exclusive, so the order only decides the unlikely
+ * case of a stored response carrying two. Returns whether anything went out.
  */
 const deliverReplyMedia = async (
     chatContext: ChatContext,
     response: AIResponse,
-    imageCaptionFields: ImageCaptionFields,
-    fileCaptionFields: ImageCaptionFields,
-    widgetCaptionFields: ImageCaptionFields
+    captions: ReplyCaptions,
+    hasTextMessage: boolean
 ): Promise<boolean> => {
     const widget = response.widgets?.[0];
-    if (widget) return deliverReplyWidget(chatContext, widget, widgetCaptionFields);
+    if (widget) return deliverReplyWidget(chatContext, widget, captions.widget);
     const file = response.files?.[0];
-    if (file) return deliverReplyFile(chatContext, file, fileCaptionFields);
+    if (file) return deliverReplyFile(chatContext, file, captions.file);
     const sticker = response.stickers?.[0];
     if (sticker) return deliverReplySticker(chatContext, sticker);
     if (response.images.length > 0) {
-        return deliverReplyImage(chatContext, response.images[0], imageCaptionFields);
+        return deliverReplyImages(chatContext, captions.images, hasTextMessage);
     }
     return false;
 };
@@ -1619,15 +1818,22 @@ const buildReplyFinalLayout = async (
     };
 };
 
-/** The captions of the reply's one attachment, rendered once */
+/** The reply's attachment captions, rendered once */
 interface ReplyCaptions {
-    readonly image: ImageCaptionFields;
+    readonly images: ReplyImagePlan;
     readonly file: ImageCaptionFields;
     readonly widget: ImageCaptionFields;
 }
 
+/** Every attachment caption of the reply, from its (possibly merged) response */
+const replyCaptionsOf = (response: AIResponse, resolveContextLink?: ContextLinkResolver): ReplyCaptions => ({
+    images: replyImagePlanOf(response, resolveContextLink),
+    file: buildImageCaption(response.files?.[0]?.caption, resolveContextLink),
+    widget: buildImageCaption(response.widgets?.[0]?.caption, resolveContextLink),
+});
+
 /**
- * Once the reply's text layout is in the chat: its one attachment, the
+ * Once the reply's text layout is in the chat: its attachment, the
  * finalization, then the buttons on the reply's last message (or the
  * edit-detected heal when it has none).
  */
@@ -1635,7 +1841,8 @@ const finishAfterTextLayout = async (
     chatContext: ChatContext,
     response: AIResponse,
     captions: ReplyCaptions,
-    finalizeOptions: FinalizeOptions
+    finalizeOptions: FinalizeOptions,
+    hasTextMessage: boolean
 ): Promise<void> => {
     const { chatId, session } = chatContext;
     const hasMedia =
@@ -1645,13 +1852,7 @@ const finishAfterTextLayout = async (
         (response.widgets?.length ?? 0) > 0;
 
     if (hasMedia) {
-        await deliverReplyMedia(
-            chatContext,
-            response,
-            captions.image,
-            captions.file,
-            captions.widget
-        );
+        await deliverReplyMedia(chatContext, response, captions, hasTextMessage);
     }
 
     await finalizeKeepingCheckpoint(chatContext, finalizeOptions, response.streamEnded === true);
@@ -1701,22 +1902,20 @@ export const sendFinalResponse = async (
     const finalResponse: AIResponse = { ...response, agentStats };
     const googleSearchDocument = await prepareFinalFooter(chatContext, finalResponse);
 
-    // Only the first image is delivered, and it carries the reply's image caption
-    const imageCaptionFields = buildImageCaption(response.imageCaption, resolveContextLink);
-    // The file's caption rides on the file itself, so a version switch keeps it
-    const fileCaptionFields = buildImageCaption(response.files?.[0]?.caption, resolveContextLink);
-    // The widget's caption sits below the card; the HTML itself is final
-    const widgetCaptionFields = buildImageCaption(response.widgets?.[0]?.caption, resolveContextLink);
-    const captions: ReplyCaptions = { image: imageCaptionFields, file: fileCaptionFields, widget: widgetCaptionFields };
-    const finalizeOptions = {
-        modelParts: response.modelParts,
-        wasStoppedByUser,
-        imageCaption: response.imageCaption,
-    };
+    // Inline pictures: the answer is scanned once, before any delivery decision,
+    // so the clean text is what the entities fallback and the storage read and
+    // the body keeps the sentinel text its renderer needs. A reply that started
+    // as entities has nothing to embed (zero change for every other reply).
+    if (chatContext.inlineImagesEnabled) {
+        await prepareInlineReply(chatContext, {
+            resolveRef: (ref) => resolveInlineRef(chatContext, ref),
+            ...(session.textBuffer === '' ? { text: response.text } : {}),
+        });
+    }
 
     // A rich reply lays its body out as one rich message; a body that did not
     // go through is demoted and laid out again below over the messages it left
-    const richOutcome: RichFinalOutcome =
+    const richResult: RichFinalResult =
         chatContext.delivery === 'rich'
             ? await deliverRichFinal(chatContext, {
                   response: finalResponse,
@@ -1724,9 +1923,24 @@ export const sendFinalResponse = async (
                   wasStoppedByUser,
                   resolveContextLink,
               })
-            : 'not-attempted';
-    if (richOutcome === 'delivered') {
-        await finishAfterTextLayout(chatContext, response, captions, finalizeOptions);
+            : { kind: 'not-attempted' };
+
+    // Pictures the body did not keep go out as trailing messages; a delivered
+    // body keeps them inside (attachments dedupe and fill the rest of the
+    // budget), L2/L3 (and a demoted reply) lead the attachment list instead
+    settlePicturesAfterRich(response, chatContext, richResult);
+    copyInlineToSession(chatContext);
+
+    // The captions are rendered after the rich outcome: a body that fell back
+    // to attachments hands its pictures over here as well
+    const captions = replyCaptionsOf(response, resolveContextLink);
+    const finalizeOptions = {
+        modelParts: response.modelParts,
+        wasStoppedByUser,
+        imageCaption: response.imageCaption ?? response.imageCaptions?.[0],
+    };
+    if (richResult.kind === 'delivered') {
+        await finishAfterTextLayout(chatContext, response, captions, finalizeOptions, true);
         return;
     }
 
@@ -1750,7 +1964,7 @@ export const sendFinalResponse = async (
     // message gets the complete CoT (or the long-CoT link) and every text
     // message is rewritten to its final chunk, so the live chat matches a replay.
     // After a refused rich layout the messages must be rewritten in any case.
-    if ((layout.reLayout || richOutcome === 'rejected') && finalChunks.length > 0) {
+    if ((layout.reLayout || richResult.kind === 'rejected') && finalChunks.length > 0) {
         console.log(
             `[response-handler] Final layout replaces the streamed messages: chunks=${finalChunks.length} messages=${session.messageIds.length}`
         );
@@ -1775,7 +1989,7 @@ export const sendFinalResponse = async (
             console.warn('[response-handler] Final layout did not fully deliver');
         }
 
-        await finishAfterTextLayout(chatContext, response, captions, finalizeOptions);
+        await finishAfterTextLayout(chatContext, response, captions, finalizeOptions, true);
         return;
     }
 
@@ -1818,13 +2032,7 @@ export const sendFinalResponse = async (
             (response.stickers?.length ?? 0) > 0 ||
             (response.widgets?.length ?? 0) > 0
         ) {
-            await deliverReplyMedia(
-                chatContext,
-                response,
-                imageCaptionFields,
-                fileCaptionFields,
-                widgetCaptionFields
-            );
+            await deliverReplyMedia(chatContext, response, captions, true);
         }
 
         // Finalize session (saves to both Message and BotResponse tables)
@@ -1908,13 +2116,7 @@ export const sendFinalResponse = async (
         }
 
         // Send the attachment as last message (buttons will be added after finalize)
-        const mediaDelivered = await deliverReplyMedia(
-            chatContext,
-            response,
-            imageCaptionFields,
-            fileCaptionFields,
-            widgetCaptionFields
-        );
+        const mediaDelivered = await deliverReplyMedia(chatContext, response, captions, hasText);
 
         if (!hasText) {
             if (mediaDelivered) {
@@ -2032,6 +2234,7 @@ export const handleResponseError = async (
             thinkingText: chatContext.currentState?.thinkingBuffer || '',
             images: chatContext.currentState?.images || [],
             imageCaption: chatContext.currentState?.imageCaption,
+            imageCaptions: chatContext.currentState?.imageCaptions ?? [],
             stickers: chatContext.currentState?.stickers ?? [],
             files: chatContext.currentState?.files ?? [],
             widgets: chatContext.currentState?.widgets ?? [],
@@ -2057,6 +2260,18 @@ export const handleResponseError = async (
     // The error edit below carries text only: an image produced before the
     // failure never reached the chat, so it is not stored as part of the reply
     session.images = [];
+
+    // A reply that embeds pictures may have been cut inside a marker; the
+    // version, the next context and the error display read the clean text
+    if (chatContext.inlineImagesEnabled) {
+        session.textBuffer = stripInlineMarkersForDisplay(session.textBuffer, { embed: true });
+        if (chatContext.currentState !== undefined) {
+            chatContext.currentState.textBuffer = stripInlineMarkersForDisplay(
+                chatContext.currentState.textBuffer,
+                { embed: true }
+            );
+        }
+    }
 
     // A checkpoint at hand: the failed version and its row count the tools of
     // the kept rounds, and whether it is kept is decided before the row is written
@@ -2132,6 +2347,7 @@ export const handleResponseError = async (
             keptRounds: keptCheckpoint?.checkpoint.loop.completedRounds,
             errorButtons,
             resolveContextLink: contextLinkResolverFor(chatContext),
+            inlineImagesEnabled: chatContext.inlineImagesEnabled,
         });
         if (delivered) {
             console.error('[response-handler]', error);
@@ -2170,6 +2386,9 @@ export const createChatContextForRetry = (
     const typing = createTypingIndicator(ctx.api, chatId);
     typing.start();
 
+    // The form this version starts with; the inline-picture gate follows it
+    const initialDelivery = initialDeliveryOf(options.richReplies === true, commandType);
+
     // Create chat context
     const chatContext: ChatContext = {
         ctx,
@@ -2183,7 +2402,9 @@ export const createChatContextForRetry = (
         isFinalized: false,
         commandType,
         // The switch as the click found it, not as the first version had it
-        delivery: initialDeliveryOf(options.richReplies === true, commandType),
+        delivery: initialDelivery,
+        initialDelivery,
+        inlineImagesEnabled: initialDelivery === 'rich',
     };
 
     // Create StreamingEditor with idle update callback

@@ -5,6 +5,7 @@ import { saveMessage, findBotResponseByMessageId, BotResponse, MediaCache, LinkP
 import { MessageAttachment } from './messageAttachmentDTO.js';
 import { CustomEmojiAsset } from './customEmojiAssetDTO.js';
 import { MessageRevision } from './messageRevisionDTO.js';
+import { deleteMessageMediaForKeys } from './queries/message-media-queries.js';
 import { sequelize } from './config.js';
 import { parseChatCommand, serializeChatCommand } from "../reply/commands/chat-command-parser.js";
 import { withBusyRetry } from "./busy-retry.js";
@@ -1490,6 +1491,7 @@ const mutateInChunks = async <T>(
 interface StaleMessageDeleteCounts {
     attachments: number;
     revisions: number;
+    media: number;
     messages: number;
 }
 
@@ -1497,7 +1499,7 @@ const deleteStaleMessagesInChunks = async (
     candidateKeys: MessageKey[],
     cutoff: Date
 ): Promise<StaleMessageDeleteCounts> => {
-    const counts: StaleMessageDeleteCounts = { attachments: 0, revisions: 0, messages: 0 };
+    const counts: StaleMessageDeleteCounts = { attachments: 0, revisions: 0, media: 0, messages: 0 };
     for (let start = 0; start < candidateKeys.length; start += CLEANUP_BATCH_SIZE) {
         const candidates = candidateKeys.slice(start, start + CLEANUP_BATCH_SIZE);
         const deleted = await sequelize.transaction(async (transaction) => {
@@ -1513,7 +1515,7 @@ const deleteStaleMessagesInChunks = async (
             });
             const keys = stillStale.map(messageKeyOf);
             if (keys.length === 0) {
-                return { attachments: 0, revisions: 0, messages: 0 };
+                return { attachments: 0, revisions: 0, media: 0, messages: 0 };
             }
             const attachments = await MessageAttachment.destroy({
                 where: { [Op.or]: keys },
@@ -1523,6 +1525,8 @@ const deleteStaleMessagesInChunks = async (
                 where: { [Op.or]: keys },
                 transaction,
             });
+            // The pictures of the reply (media_cache bytes are LRU-cleaned)
+            const media = await deleteMessageMediaForKeys(keys, transaction);
             const messages = await Message.destroy({
                 where: {
                     [Op.and]: [
@@ -1532,10 +1536,11 @@ const deleteStaleMessagesInChunks = async (
                 },
                 transaction,
             });
-            return { attachments, revisions, messages };
+            return { attachments, revisions, media, messages };
         });
         counts.attachments += deleted.attachments;
         counts.revisions += deleted.revisions;
+        counts.media += deleted.media;
         counts.messages += deleted.messages;
         await new Promise((resolve) => setImmediate(resolve));
     }
@@ -1566,6 +1571,7 @@ export const clearExpiredData = async (): Promise<void> => {
         );
         const attachmentResult = staleMessageDeleteCounts.attachments;
         const revisionResult = staleMessageDeleteCounts.revisions;
+        const mediaResult = staleMessageDeleteCounts.media;
         const messageResult = staleMessageDeleteCounts.messages;
 
         // /chat 拉进上下文的边：消息本体都删了，边没有意义
@@ -1687,7 +1693,7 @@ export const clearExpiredData = async (): Promise<void> => {
         );
 
         const elapsedMs = Date.now() - startedAt;
-        const summary = `Cleared ${messageResult} messages, ${attachmentResult} attachments, ${revisionResult} revisions, ${messageLinkResult} message links, ${botResponseResult} bot responses before ${oneWeekAgo.toISOString()}; dropped ${exclusionResult} orphaned context exclusions; cleared media bytes of ${mediaClearedCount} messages before ${oneWeekAgo.toISOString()}; deleted ${staleGcsRows.length} GCS refs; evicted ${mediaCacheResult} media cache entries, ${emojiAssetResult} emoji assets, ${linkPreviewResult} link previews, ${tgLinkResult} tg message link snapshots, ${workspaceResult} workspace files; cleared ${settingsAuditResult} settings audit rows before ${oneYearAgo.toISOString()} (${elapsedMs}ms)`;
+        const summary = `Cleared ${messageResult} messages, ${attachmentResult} attachments, ${revisionResult} revisions, ${mediaResult} reply media rows, ${messageLinkResult} message links, ${botResponseResult} bot responses before ${oneWeekAgo.toISOString()}; dropped ${exclusionResult} orphaned context exclusions; cleared media bytes of ${mediaClearedCount} messages before ${oneWeekAgo.toISOString()}; deleted ${staleGcsRows.length} GCS refs; evicted ${mediaCacheResult} media cache entries, ${emojiAssetResult} emoji assets, ${linkPreviewResult} link previews, ${tgLinkResult} tg message link snapshots, ${workspaceResult} workspace files; cleared ${settingsAuditResult} settings audit rows before ${oneYearAgo.toISOString()} (${elapsedMs}ms)`;
         recordCleanupRun(summary, elapsedMs);
         if (elapsedMs > CLEANUP_SLOW_MS) {
             console.warn(`[autoClear] slow cleanup — ${summary}`);

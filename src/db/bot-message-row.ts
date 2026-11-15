@@ -24,6 +24,12 @@ export interface BotMessageRow {
     readonly modelParts: Message['modelParts'];
     readonly file: Buffer | null;
     readonly fileMime: string | null;
+    /**
+     * media_cache key of the first picture (multi-image and inline versions
+     * keep their bytes there instead of a row BLOB); undefined/null keeps the
+     * legacy row-bytes behaviour.
+     */
+    readonly fileUniqueId?: string | null;
     /** `sticker` marks a sticker's webp; the context labels it accordingly */
     readonly mediaHint?: string | null;
 }
@@ -43,8 +49,8 @@ export const writeBotMessageRow = async (row: BotMessageRow): Promise<void> => {
         file: row.file,
         fileMime: row.fileMime,
         mediaHint: row.mediaHint ?? null,
-        // A cached-media reference would win over `file` when a context reads the row
-        fileUniqueId: null,
+        // A cached-media reference wins over `file` when a context reads the row
+        fileUniqueId: row.fileUniqueId ?? null,
     };
 
     const existing = await Message.findOne({ where: { chatId: row.chatId, messageId: row.messageId } });

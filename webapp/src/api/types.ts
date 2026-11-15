@@ -547,8 +547,8 @@ export interface ReplySummary {
     toolSummary: ToolUsageView[];
     errorMessage: string | null;
     wasStoppedByUser: boolean;
-    // The current version's attachment, when the panel can show it
-    media: MediaAttachment | null;
+    // The current version's attachments in delivery order (v5 replies may carry several)
+    media: MediaAttachment[];
 }
 
 export type ReplyOutcome = 'ok' | 'error' | 'stopped' | 'empty';
@@ -676,8 +676,8 @@ export interface ReplyVersion {
     errorMessage: string | null;
     wasStoppedByUser: boolean;
     attachments: ReplyAttachment[];
-    // The version's attachment bytes, served by its signed /m/… URL
-    media: MediaAttachment | null;
+    // The version's attachments in delivery order, each served by its signed /m/… URL
+    media: MediaAttachment[];
     // The rendered card and its signed viewing URLs; undefined for versions without a widget
     widget?: ReplyWidget;
     hasModelParts: boolean;
@@ -1154,6 +1154,8 @@ export interface PublicShareMedia {
 export interface PublicShareMediaItem extends PublicShareMedia {
     // A media group item has its own message id
     messageId: number;
+    // 0-based picture position inside that message's list; absent for the first / only picture
+    index?: number;
 }
 
 /** A reply share's pinned version */
@@ -1166,7 +1168,8 @@ export interface PublicShareReply {
     model: string | null;
     text: string;
     widget: PublicShareWidget | null;
-    media: PublicShareMedia | null;
+    // The pinned version's attachments in delivery order
+    media: PublicShareMedia[];
 }
 
 /** The message a bubble answers, when it is part of the shared conversation */

@@ -209,17 +209,65 @@ const cases: { name: string; body: () => Promise<void> }[] = [
             expect(reply.model === 'gemini-4-argon', 'model');
             expect(reply.text === '一段**加粗**的正文', 'the raw markdown text');
             expect(asRecord(reply.widget).caption === '卡片说明', 'the widget caption only');
-            const media = asRecord(reply.media);
-            expect(!Array.isArray(reply.media), 'a reply share keeps one attachment object');
+            const mediaList = Array.isArray(reply.media) ? reply.media.map(asRecord) : [];
+            expect(mediaList.length === 1 && !Array.isArray(mediaList[0]), 'a legacy reply share lists one attachment');
+            const media = asRecord(mediaList[0]);
             expect(media.kind === 'image', 'the image attachment');
             expect(media.mimeType === 'image/png', 'the sniffed image mime');
             expect(media.fileName === null, 'visual media has no file name');
+            expect(!Object.hasOwn(media, 'messageId'), 'a reply attachment names no message of its own');
 
             // Server-side only facts never leave the process
             expect(!raw.includes('不应外发的 HTML'), 'no widget HTML');
             expect(!raw.includes(PNG_1PX), 'no image bytes');
             expect(!raw.includes('preview-bytes'), 'no preview card bytes');
             expect(!raw.includes('"preview"'), 'no preview snapshot');
+        },
+    },
+    {
+        name: 'the public API lists every picture of a multi-picture reply',
+        body: async () => {
+            const messageId = takeMessageId();
+            const keys = [`public-multi-${messageId}-1`, `public-multi-${messageId}-2`];
+            for (const key of keys) {
+                await db.MediaCache.upsert({
+                    fileUniqueId: key,
+                    data: Buffer.from(PNG_1PX, 'base64'),
+                    fileUri: null,
+                    sizeBytes: Buffer.from(PNG_1PX, 'base64').length,
+                    durationSeconds: null,
+                    mime: 'image/png',
+                    kind: 'photo',
+                    lastUsedAt: new Date(),
+                });
+            }
+            const share = await replyShare(GROUP, messageId, [
+                versionOf(1, {
+                    text: '两张内嵌图',
+                    media: keys.map((key, index) => ({
+                        placement: index === 0 ? 'inline' : 'attachment',
+                        mediaKey: key,
+                        mimeType: 'image/png',
+                        sizeBytes: Buffer.from(PNG_1PX, 'base64').length,
+                    })),
+                }),
+            ]);
+
+            const response = await app.request(`/api/public/shares/${share.token}`);
+            const raw = await response.text();
+            expect(response.status === 200, `200 for a multi-picture reply share (got ${response.status})`);
+            const reply = asRecord(asRecord(asRecord(JSON.parse(raw)).share).reply);
+            const media = Array.isArray(reply.media) ? reply.media.map(asRecord) : [];
+            expect(media.length === 2, `both pictures are listed (got ${JSON.stringify(reply.media)})`);
+            expect(
+                media.every((item) => item.kind === 'image' && item.mimeType === 'image/png' && item.fileName === null),
+                'each item carries its facts'
+            );
+            expect(
+                media.every((item) => !Object.hasOwn(item, 'messageId')),
+                'a reply attachment names no message of its own'
+            );
+            expect(!raw.includes(PNG_1PX), 'no image bytes in the public JSON');
         },
     },
     {

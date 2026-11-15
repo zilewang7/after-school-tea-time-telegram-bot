@@ -111,7 +111,8 @@ export interface CapabilityOptions {
 }
 
 const searchImageLines = (canDraw: boolean): string[] => [
-    '- `search_images` 可检索网络图片（首次返回 3 张缩略图，可通过 `search=\'q1\'` 翻页或更换 `query`），`send_image` 可将候选图发送到聊天' +
+    '- `search_images` 可检索网络图片（首次返回 3 张缩略图，可通过 `search=\'q1\'` 翻页或更换 `query`）；' +
+        '`send_image` 可把候选图发到聊天，也能多次调用：一条回复最多 10 张图片，多张会作为一条相册发出' +
         (canDraw ? '；`generate_image` 用于生成新图或编辑现有图片，生成结果用 `send_image` 发出。' : '。'),
 ];
 

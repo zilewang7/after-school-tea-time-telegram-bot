@@ -22,13 +22,15 @@ export const toMediaView = (
     chatId: number,
     messageId: number,
     versionId: number | null,
-    descriptor: MediaDescriptor
+    descriptor: MediaDescriptor,
+    mediaIndex = 0
 ): MediaView => ({
     ...descriptor,
     url: signer.sign({
         chatId,
         messageId,
         ...(versionId === null ? {} : { versionId }),
+        ...(mediaIndex === 0 ? {} : { mediaIndex }),
         kind: versionId === null ? 'msg' : 'ver',
     }).path,
 });

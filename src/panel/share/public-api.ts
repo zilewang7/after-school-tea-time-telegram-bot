@@ -46,6 +46,11 @@ export interface PublicShareMediaView {
 export interface PublicShareMediaItemView extends PublicShareMediaView {
     /** A media group item has its own message id; its bytes come from that one */
     messageId: number;
+    /**
+     * 0-based picture position inside that message's media list (v5 several
+     * pictures per reply); absent for the first / only picture
+     */
+    index?: number;
 }
 
 export interface PublicShareReplyView {
@@ -56,7 +61,8 @@ export interface PublicShareReplyView {
     model: string | null;
     text: string;
     widget: PublicShareWidgetView | null;
-    media: PublicShareMediaView | null;
+    /** The pinned version's pictures in delivery order (empty when it has none) */
+    media: PublicShareMediaView[];
 }
 
 /** The message a bubble answers, when it is part of the shared conversation */
@@ -123,6 +129,7 @@ const mediaViewOf = (media: ShareMedia | null): PublicShareMediaView | null =>
 /** A bubble attachment, which also names the message its bytes belong to */
 const mediaItemViewOf = (item: ShareMediaItem): PublicShareMediaItemView => ({
     messageId: item.messageId,
+    ...(item.index === undefined || item.index === 0 ? {} : { index: item.index }),
     ...mediaFieldsOf(item),
 });
 
@@ -134,7 +141,7 @@ const replyViewOf = (content: ShareReplyContent): PublicShareReplyView => ({
     model: content.model,
     text: content.text,
     widget: widgetViewOf(content.widget),
-    media: mediaViewOf(content.media),
+    media: content.media.map(mediaFieldsOf),
 });
 
 const replyTargetViewOf = (target: ShareReplyTarget | null): PublicShareReplyTargetView | null =>

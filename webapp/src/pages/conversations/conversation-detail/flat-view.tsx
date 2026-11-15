@@ -86,7 +86,9 @@ const BotBubble = ({ node, chatId }: { node: BotNode; chatId: number }) => {
                     {text === null ? <p className="hint">（无正文，点开看版本详情）</p> : <FoldableText text={text} foldLines={12} foldChars={800} />}
                 </Link>
             )}
-            {reply.media !== null && <MediaAttachmentView media={reply.media} />}
+            {reply.media.map((media) => (
+                <MediaAttachmentView key={media.url} media={media} />
+            ))}
             {reply.errorMessage !== null && <p className="error-text prewrap">⚠ {reply.errorMessage}</p>}
         </article>
     );

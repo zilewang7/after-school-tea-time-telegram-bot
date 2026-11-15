@@ -453,20 +453,20 @@ const cases: { name: string; body: () => Promise<void> }[] = [
         },
     },
     {
-        name: 'a reply share keeps one single attachment object',
+        name: 'a legacy reply share lists its one pinned attachment in the list form',
         body: async () => {
             const replyShare = await createReplyShare(botImageId);
             const body = await jsonOf(await app.request(`/api/public/shares/${replyShare.token}`));
             const replyMedia = body.share?.reply?.media;
             expect(
-                typeof replyMedia === 'object' && replyMedia !== null && !Array.isArray(replyMedia),
-                `the reply keeps one attachment object (got ${JSON.stringify(replyMedia)})`
+                Array.isArray(replyMedia) && replyMedia.length === 1,
+                `the reply lists one attachment (got ${JSON.stringify(replyMedia)})`
             );
             expect(
-                replyMedia.kind === 'image' && replyMedia.mimeType === 'image/png',
+                replyMedia[0]?.kind === 'image' && replyMedia[0]?.mimeType === 'image/png',
                 'the pinned version picture facts'
             );
-            expect(!Object.hasOwn(replyMedia, 'messageId'), 'a reply attachment names no message of its own');
+            expect(!Object.hasOwn(replyMedia[0] ?? {}, 'messageId'), 'a reply attachment names no message of its own');
 
             const page = await (await app.request(`/s/${replyShare.token}`)).text();
             const imgPrefix = `<img src="/s/${replyShare.token}/media/`;
@@ -477,6 +477,115 @@ const cases: { name: string; body: () => Promise<void> }[] = [
             expect(page.split(imgPrefix).length - 1 === 1, 'a reply page renders one figure');
             const served = await app.request(`/s/${replyShare.token}/media/${botImageId}/image`);
             expect(served.status === 200 && (await bytesOf(served)).equals(PNG_BYTES), 'the reply media route');
+        },
+    },
+    {
+        name: 'a reply share with several pictures renders and serves each by index',
+        body: async () => {
+            const botId = takeMessageId();
+            const pictures = ['reply-a', 'reply-b', 'reply-c'].map((label) => photoBytes(label));
+            const keys = pictures.map((_bytes, index) => `reply-multi-${botId}-${index + 1}`);
+            for (const [index, key] of keys.entries()) {
+                await cachePhoto(key, pictures[index] ?? photoBytes(`reply-multi-${index}`));
+            }
+            await saveMessage(botId, BOT_USER_ID, '', { replyToId: shareParentId });
+            await makeReply(botId, shareParentId, [
+                versionOf(1, {
+                    text: '三张图',
+                    media: pictures.map((bytes, index) => ({
+                        placement: index === 0 ? 'inline' : 'attachment',
+                        mediaKey: keys[index] ?? '',
+                        mimeType: 'image/jpeg',
+                        sizeBytes: bytes.length,
+                    })),
+                }),
+            ]);
+            const replyShare = await createReplyShare(botId);
+
+            const body = await jsonOf(await app.request(`/api/public/shares/${replyShare.token}`));
+            const replyMedia = body.share?.reply?.media;
+            expect(
+                Array.isArray(replyMedia) && replyMedia.length === 3,
+                `the reply lists all three pictures (got ${JSON.stringify(replyMedia)})`
+            );
+            expect(
+                replyMedia.every((item: any) => item.kind === 'image' && item.mimeType === 'image/jpeg'),
+                'every item is a picture'
+            );
+
+            const page = await (await app.request(`/s/${replyShare.token}`)).text();
+            const imgPrefix = `<img src="/s/${replyShare.token}/media/${botId}/image`;
+            expect(page.includes(`${imgPrefix}"`), 'the first picture renders without an index');
+            expect(page.includes(`${imgPrefix}?i=1"`), 'the second picture names index 1');
+            expect(page.includes(`${imgPrefix}?i=2"`), 'the third picture names index 2');
+            expect(page.split('<figure class="image">').length - 1 === 3, 'the page renders three figures');
+
+            for (const [index, bytes] of pictures.entries()) {
+                const query = index === 0 ? '' : `?i=${index}`;
+                const served = await app.request(`/s/${replyShare.token}/media/${botId}/image${query}`);
+                expect(served.status === 200, `picture ${index + 1} answers 200 (got ${served.status})`);
+                expect((await bytesOf(served)).equals(bytes), `picture ${index + 1} serves its own bytes`);
+            }
+            expect(
+                (await app.request(`/s/${replyShare.token}/media/${botId}/image?i=9`)).status === 404,
+                'an index past the list is a 404'
+            );
+            expect(
+                (await app.request(`/s/${replyShare.token}/media/${botId}/file?i=1`)).status === 404,
+                'a picture is not served in the file slot'
+            );
+        },
+    },
+    {
+        name: 'a conversation share lists every picture of a bot reply and renders each index',
+        body: async () => {
+            const rootId = takeMessageId();
+            await saveMessage(rootId, ALICE.id, '画两张');
+            const botId = takeMessageId();
+            const pictures = ['bot-bubble-a', 'bot-bubble-b'].map((label) => photoBytes(label));
+            const keys = pictures.map((_bytes, index) => `bot-bubble-${botId}-${index + 1}`);
+            for (const [index, key] of keys.entries()) {
+                await cachePhoto(key, pictures[index] ?? photoBytes(`bot-bubble-${index}`));
+            }
+            await saveMessage(botId, BOT_USER_ID, '', { replyToId: rootId });
+            await makeReply(botId, rootId, [
+                versionOf(1, {
+                    text: '两张图',
+                    media: pictures.map((bytes, index) => ({
+                        placement: 'inline',
+                        mediaKey: keys[index] ?? '',
+                        mimeType: 'image/jpeg',
+                        sizeBytes: bytes.length,
+                    })),
+                }),
+            ]);
+            const share = await createConversationShare(rootId);
+
+            const body = await jsonOf(await app.request(`/api/public/shares/${share.token}`));
+            const bubbles: any[] = Array.isArray(body.share?.conversation?.bubbles)
+                ? body.share.conversation.bubbles
+                : [];
+            const botBubble = bubbles.find((bubble: any) => bubble.messageId === botId);
+            expect(
+                Array.isArray(botBubble?.media) && botBubble.media.length === 2,
+                `the bot bubble lists both pictures (got ${JSON.stringify(botBubble?.media)})`
+            );
+            expect(
+                botBubble.media.every((item: any) => item.messageId === botId),
+                'both pictures belong to the bot reply message'
+            );
+            expect(botBubble.media[0]?.index === undefined, 'the first picture needs no index');
+            expect(botBubble.media[1]?.index === 1, 'the second picture names its position');
+
+            const page = await (await app.request(`/s/${share.token}`)).text();
+            const imgPrefix = `<img src="/s/${share.token}/media/${botId}/image`;
+            expect(page.includes(`${imgPrefix}"`), 'the first picture renders');
+            expect(page.includes(`${imgPrefix}?i=1"`), 'the second picture renders with its index');
+            const second = await app.request(`/s/${share.token}/media/${botId}/image?i=1`);
+            expect(
+                second.status === 200 && (await bytesOf(second)).equals(pictures[1] ?? Buffer.alloc(0)),
+                'the second picture route serves the second bytes'
+            );
         },
     },
     {

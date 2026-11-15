@@ -11,16 +11,30 @@
  * (a reply delivered as a rich message); the two kinds mix in one layout.
  */
 import { GrammyError, type Api, type RawApi } from 'grammy';
-import type { InlineKeyboardMarkup } from 'grammy/types';
+import type { InlineKeyboardMarkup, Message } from 'grammy/types';
 import { to } from '../shared/result.js';
 import { registerContinuation, unregisterBotReplyInFlight, unregisterContinuation } from '../state.js';
 import { toApiEntities } from './api-entities.js';
 import { runApiCall, submitEdit } from './edit-coordinator.js';
 import type { FinalMessageChunk } from './formatters/final-message-builder.js';
+import {
+    richMediaBytesOf,
+    richMediaFieldOf,
+    type RichMediaPayload,
+} from './formatters/rich-inline-media/payload.js';
+
+export type { RichMediaPayload } from './formatters/rich-inline-media/payload.js';
+export { richMediaPayloadOf } from './formatters/rich-inline-media/payload.js';
 
 /** One message of the layout sent as a rich message: its whole markdown */
 export interface RichLayoutChunk {
     readonly richMarkdown: string;
+    /**
+     * The pictures the markdown embeds, uploaded with the same call. Absent (or
+     * empty) when the body has none: the request must then stay exactly the
+     * one a body without pictures sends.
+     */
+    readonly richMedia?: readonly RichMediaPayload[];
 }
 
 export type LayoutChunk = FinalMessageChunk | RichLayoutChunk;
@@ -42,6 +56,12 @@ export interface LayOutChunksInput {
     readonly replyMarkup?: InlineKeyboardMarkup;
     /** Telegram refused a rich chunk (its edit or its send) */
     readonly onRichRejected?: (error: GrammyError) => void;
+    /**
+     * Telegram answered a rich edit or send with the message: the caller can
+     * check the delivered blocks (a caption that breaks a media block line
+     * loses a picture without an error).
+     */
+    readonly onRichDelivered?: (message: Message) => void;
 }
 
 export interface LayOutChunksResult {
@@ -90,7 +110,11 @@ export const layOutChunks = async (input: LayOutChunksInput): Promise<LayOutChun
             ? await submitEdit(api, chatId, messageId, chunk.richMarkdown, {
                   replyMarkup: carriesButtons ? input.replyMarkup : undefined,
                   isFinal: true,
-                  rich: { onRejected: input.onRichRejected },
+                  rich: {
+                      onRejected: input.onRichRejected,
+                      ...(chunk.richMedia === undefined ? {} : { media: chunk.richMedia }),
+                      ...(input.onRichDelivered === undefined ? {} : { onDelivered: input.onRichDelivered }),
+                  },
               })
             : await submitEdit(api, chatId, messageId, chunk.text, {
                   entities: chunk.entities,
@@ -109,11 +133,11 @@ export const layOutChunks = async (input: LayOutChunksInput): Promise<LayOutChun
         if (chunk === undefined) continue;
         const carriesButtons = index === chunks.length - 1;
         const [sendError, sent] = await to(
-            runApiCall<{ readonly message_id: number }>(chatId, () =>
+            runApiCall<Message>(chatId, () =>
                 isRichLayoutChunk(chunk)
                     ? api.sendRichMessage(
                           chatId,
-                          { markdown: chunk.richMarkdown },
+                          { markdown: chunk.richMarkdown, ...richMediaFieldOf(chunk.richMedia) },
                           {
                               reply_parameters: { message_id: userMessageId },
                               reply_markup: carriesButtons ? input.replyMarkup : undefined,
@@ -135,6 +159,14 @@ export const layOutChunks = async (input: LayOutChunksInput): Promise<LayOutChun
             }
             allDelivered = false;
             break;
+        }
+        if (isRichLayoutChunk(chunk)) {
+            if (chunk.richMedia !== undefined && chunk.richMedia.length > 0) {
+                console.log(
+                    `[rich-inline] media payload chat=${chatId} pictures=${chunk.richMedia.length} bytes=${richMediaBytesOf(chunk.richMedia)} sent`
+                );
+            }
+            input.onRichDelivered?.(sent);
         }
         messageIds.push(sent.message_id);
         registerContinuation(chatId, sent.message_id, firstMessageId);

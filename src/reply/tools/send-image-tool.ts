@@ -3,12 +3,15 @@
  * model gives the chat an image it did not draw — search candidates, pictures
  * it already read, a picture from the context, or any public image url.
  *
+ * A reply may carry several pictures now: the tool may be called again and
+ * each picture is appended to the reply's attachment list (one album when
+ * there are several stills). The per-picture ids and limits live in
+ * `ReplyMediaState`, so the model reads "the k-th of ten" instead of a
+ * one-attachment rule.
+ *
  * A GIF goes out as an animation (`sendAnimation`, see the delivery layer); the
  * model is shown its still frame, because a model reads a GIF as one frame
  * anyway and the still is all it needs to caption it.
- *
- * Sharing one "this reply already has an image" flag with generate_image keeps
- * delivery and version storage to their one-image assumption.
  *
  * A picture the reply did not already show the model comes back as a
  * model-only image: the model has to see what it is about to send, or it
@@ -18,32 +21,31 @@
  * already in the conversation — attaching it again would only double its
  * tokens.
  */
-import { sniffMediaMime, type SniffedMediaMime } from '../../ai/image-generation/image-mime.js';
 import type { ToolHandler } from '../../ai/tools/tool-types.js';
-import { fetchImageBytes } from '../../services/image-fetch-service.js';
-import { loadMessageImages } from '../commands/reference-images.js';
-import { loadContextImages, type MessageImageLoader } from './image-references.js';
+import {
+    MAX_REPLY_IMAGE_BYTES,
+    MAX_REPLY_IMAGES,
+    MAX_REPLY_IMAGE_TOTAL_BYTES,
+} from '../../shared/reply-media.js';
 import { imageToolError } from './image-tool-result.js';
 import { formatSendResult, mediaToolErrors } from './image-tool-text.js';
-import {
-    downloadCandidateMedia,
-    MAX_ORIGINAL_IMAGE_BYTES,
-    type ImageFetch,
-    type ImageDownloadDependencies,
-} from './image-source-download.js';
 import { parseSendImageArgs } from './media-tool-args.js';
-import type { ReplyToolContext } from './reply-tool-context.js';
 import {
-    ONE_ATTACHMENT_PER_REPLY,
-    type ReplyMediaState,
-    type SearchCandidate,
-} from './reply-media-state.js';
+    parseMediaRef,
+    PRODUCTION_MEDIA_REF_DEPENDENCIES,
+    resolveMediaRef,
+    type MediaRef,
+    type MediaRefDependencies,
+} from './media-ref-resolver.js';
+import type { ReplyToolContext } from './reply-tool-context.js';
+import { ONE_ATTACHMENT_PER_REPLY, type ReplyMediaState } from './reply-media-state.js';
 import { SEND_IMAGE_TOOL_NAME } from './tool-names.js';
 
 const DESCRIPTION =
-    '将一张已有图片发送到聊天（附于当前回复末尾，每条回复最多附带一张图片或贴纸）。' +
-    '支持传入 image_id（generate_image 本次生成的 g1、fetch_image 已读的 img1）、' +
-    'search_id（搜索候选编号）、message（上下文消息编号 #N）或 url（http(s) 图片直链）。GIF 候选将作为动图发送。';
+    '将一张已有图片发送到聊天（附在当前回复末尾，可与其它图片一起发出）。' +
+    `支持传入 image_id（generate_image 本次生成的 g1、fetch_image 已读的 img1）、` +
+    'search_id（搜索候选编号）、message（上下文消息编号 #N）或 url（http(s) 图片直链）。' +
+    `每条回复最多 ${MAX_REPLY_IMAGES} 张，多张会作为一条相册发出；GIF 候选将作为动图单独发送。`;
 
 const INPUT_SCHEMA = {
     type: 'object',
@@ -66,15 +68,13 @@ const INPUT_SCHEMA = {
         url: { type: 'string', description: 'http(s) 图片直链，可以是任意公开地址' },
         caption: {
             type: 'string',
-            description: '随图发出的配文；不需要就省略。',
+            description: '随这张图发出的配文；不需要就省略。',
         },
     },
 };
 
-export interface SendImageToolDependencies {
-    readonly fetchImage: ImageFetch;
-    readonly loadMessageImages: MessageImageLoader;
-}
+/** The downloader and image loader the resolver needs; injectable for tests */
+export type SendImageToolDependencies = MediaRefDependencies;
 
 export interface SendImageToolOptions {
     readonly state: ReplyMediaState;
@@ -82,161 +82,26 @@ export interface SendImageToolOptions {
     readonly dependencies?: SendImageToolDependencies;
 }
 
-const PRODUCTION_DEPENDENCIES: SendImageToolDependencies = {
-    fetchImage: fetchImageBytes,
-    loadMessageImages,
-};
-
-interface MediaBytes {
-    /** What the chat receives: a GIF stays a GIF */
-    readonly data: Buffer;
-    readonly mimeType: SniffedMediaMime;
-    /** What the model sees (and already saw, for a fetched image) */
-    readonly still: { readonly data: Buffer; readonly mimeType: SniffedMediaMime };
-}
-
-type ResolvedBytes =
-    | (MediaBytes & {
-          readonly ok: true;
-          readonly sourcePage: string;
-          readonly title?: string;
-          /** Why this is not the original, when it is not */
-          readonly note?: string;
-          readonly candidateId?: string;
-          readonly imageId?: string;
-          /** `g1`: a picture this reply drew and has not sent */
-          readonly generatedId?: string;
-          readonly contextNumber?: number;
-      })
-    | { readonly ok: false; readonly error: string };
-
-const urlCandidate = (url: string): SearchCandidate => {
-    let domain = url;
-    try {
-        domain = new URL(url).hostname.replace(/^www\./, '');
-    } catch {
-        // Kept as the raw url; it was validated before this point
+/** The reference the parsed arguments name; the parser guarantees exactly one */
+const mediaRefOfArgs = (args: {
+    readonly searchId: string | undefined;
+    readonly imageId: string | undefined;
+    readonly message: number | undefined;
+    readonly image: number | undefined;
+    readonly url: string | undefined;
+}): MediaRef | null => {
+    if (args.imageId !== undefined) return parseMediaRef(args.imageId);
+    if (args.message !== undefined) {
+        return { kind: 'message', number: args.message, image: args.image ?? 1 };
     }
-    return {
-        id: 'url',
-        searchId: 'url',
-        title: url,
-        sourcePage: url,
-        domain,
-        imageUrl: url,
-        thumbnailUrl: url,
-        sendKind: 'static',
-    };
+    if (args.searchId !== undefined) return parseMediaRef(args.searchId);
+    if (args.url !== undefined) return { kind: 'url', url: args.url };
+    return null;
 };
 
 export const createSendImageTool = (options: SendImageToolOptions): ToolHandler => {
     const { state, context } = options;
-    const dependencies = options.dependencies ?? PRODUCTION_DEPENDENCIES;
-    const downloadDependencies: ImageDownloadDependencies = {
-        fetchImage: dependencies.fetchImage,
-        signal: context.signal,
-    };
-
-    const resolveMessageImage = async (
-        contextNumber: number,
-        imageIndex: number
-    ): Promise<ResolvedBytes> => {
-        const entry = context.contextIndex.get(contextNumber);
-        if (!entry) {
-            return { ok: false, error: `#${contextNumber} 不在当前上下文里` };
-        }
-
-        const images = await loadContextImages(context.chatId, entry, dependencies.loadMessageImages);
-        if (images.length === 0) {
-            return { ok: false, error: `#${contextNumber} 这条消息没有可用的图片` };
-        }
-
-        const stored = images[imageIndex - 1];
-        if (!stored) {
-            return {
-                ok: false,
-                error: `#${contextNumber} 只有 ${images.length} 张图，没有第 ${imageIndex} 张`,
-            };
-        }
-
-        // A picture kept in cloud storage is one of the >20MB originals
-        if (stored.kind === 'cloud') {
-            return { ok: false, error: mediaToolErrors.tooLarge(MAX_ORIGINAL_IMAGE_BYTES / 1024 / 1024) };
-        }
-
-        const data = stored.data;
-        const mimeType = sniffMediaMime(data);
-        if (!mimeType) return { ok: false, error: mediaToolErrors.notAnImage };
-        if (data.length > MAX_ORIGINAL_IMAGE_BYTES) {
-            return { ok: false, error: mediaToolErrors.tooLarge(MAX_ORIGINAL_IMAGE_BYTES / 1024 / 1024) };
-        }
-
-        return {
-            ok: true,
-            data,
-            mimeType,
-            still: { data, mimeType },
-            sourcePage: '',
-            contextNumber,
-        };
-    };
-
-    const resolveBytes = async (args: {
-        readonly searchId: string | undefined;
-        readonly imageId: string | undefined;
-        readonly message: number | undefined;
-        readonly image: number | undefined;
-        readonly url: string | undefined;
-    }): Promise<ResolvedBytes> => {
-        if (args.imageId !== undefined) {
-            // A picture the model drew in this reply, or one fetch_image read
-            const drawn = state.generated.get(args.imageId);
-            if (drawn) {
-                return {
-                    ok: true,
-                    data: drawn.data,
-                    mimeType: drawn.mimeType,
-                    still: { data: drawn.data, mimeType: drawn.mimeType },
-                    sourcePage: '',
-                    generatedId: drawn.id,
-                };
-            }
-            const existing = state.fetched.get(args.imageId);
-            if (!existing) return { ok: false, error: mediaToolErrors.unknownFetched(args.imageId) };
-            return {
-                ok: true,
-                data: existing.data,
-                mimeType: existing.mimeType,
-                still: existing.still,
-                sourcePage: existing.sourcePage,
-                ...(existing.title === undefined ? {} : { title: existing.title }),
-                imageId: existing.id,
-                ...(existing.candidateId === undefined ? {} : { candidateId: existing.candidateId }),
-            };
-        }
-
-        if (args.message !== undefined) return resolveMessageImage(args.message, args.image ?? 1);
-
-        const candidate =
-            args.searchId !== undefined
-                ? state.candidates.get(args.searchId)
-                : urlCandidate(args.url ?? '');
-        if (!candidate) return { ok: false, error: mediaToolErrors.unknownCandidate(args.searchId ?? '') };
-        const downloaded = await downloadCandidateMedia(candidate, downloadDependencies);
-        if (!downloaded.ok) return { ok: false, error: mediaToolErrors.downloadFailed(downloaded.error) };
-
-        const { media } = downloaded;
-        return {
-            ok: true,
-            data: media.deliverable.data,
-            mimeType: media.deliverable.mimeType,
-            still: media.still,
-            sourcePage: candidate.sourcePage,
-            ...(candidate.title === candidate.sourcePage ? {} : { title: candidate.title }),
-            ...(media.deliverable.note === undefined ? {} : { note: media.deliverable.note }),
-            ...(args.searchId === undefined ? {} : { candidateId: args.searchId }),
-        };
-    };
+    const dependencies = options.dependencies ?? PRODUCTION_MEDIA_REF_DEPENDENCIES;
 
     return {
         definition: {
@@ -247,26 +112,47 @@ export const createSendImageTool = (options: SendImageToolOptions): ToolHandler 
         statusText: '📤 正在发图…',
         chatAction: 'upload_photo',
         execute: async (rawArgs) => {
-            if (state.hasReplyImage || state.hasReplySticker || state.hasReplyFile || state.hasReplyWidget) {
+            // Stickers, files and cards keep their one-attachment-per-reply rule;
+            // pictures among themselves are a list now
+            if (state.hasReplySticker || state.hasReplyFile || state.hasReplyWidget) {
                 return imageToolError(ONE_ATTACHMENT_PER_REPLY);
             }
 
             const parsed = parseSendImageArgs(rawArgs);
             if (!parsed.ok) return imageToolError(parsed.error);
             const args = parsed.args;
-            if (
-                args.searchId === undefined &&
-                args.imageId === undefined &&
-                args.message === undefined &&
-                args.url === undefined
-            ) {
-                return imageToolError(mediaToolErrors.noImageSource);
-            }
+            const ref = mediaRefOfArgs(args);
+            if (ref === null) return imageToolError(mediaToolErrors.noImageSource);
 
-            const resolved = await resolveBytes(args);
+            const resolved = await resolveMediaRef(ref, {
+                state,
+                chatId: context.chatId,
+                contextIndex: context.contextIndex,
+                ...(context.signal === undefined ? {} : { signal: context.signal }),
+                dependencies,
+            });
             if (!resolved.ok) return imageToolError(resolved.error);
 
+            // The picture joins the reply's attachment list; the limits are the
+            // reply's, not this call's
+            const nextCount = state.imageCount + 1;
+            if (nextCount > MAX_REPLY_IMAGES) {
+                return imageToolError(mediaToolErrors.imageLimitReached(MAX_REPLY_IMAGES));
+            }
+            if (resolved.data.length > MAX_REPLY_IMAGE_BYTES) {
+                return imageToolError(mediaToolErrors.tooLarge(MAX_REPLY_IMAGE_BYTES / 1024 / 1024));
+            }
+            const nextBytes = state.imageBytes + resolved.data.length;
+            if (nextBytes > MAX_REPLY_IMAGE_TOTAL_BYTES) {
+                return imageToolError(
+                    mediaToolErrors.imageTotalTooLarge(MAX_REPLY_IMAGE_TOTAL_BYTES / 1024 / 1024)
+                );
+            }
+
+            state.imageCount = nextCount;
+            state.imageBytes = nextBytes;
             state.hasReplyImage = true;
+
             const animated = resolved.mimeType === 'image/gif';
             const note = resolved.note;
             const label =
@@ -277,6 +163,8 @@ export const createSendImageTool = (options: SendImageToolOptions): ToolHandler 
 
             return {
                 content: formatSendResult({
+                    index: state.imageCount,
+                    limit: MAX_REPLY_IMAGES,
                     ...(resolved.candidateId === undefined ? {} : { candidateId: resolved.candidateId }),
                     ...(resolved.imageId === undefined ? {} : { imageId: resolved.imageId }),
                     ...(resolved.generatedId === undefined ? {} : { generatedId: resolved.generatedId }),

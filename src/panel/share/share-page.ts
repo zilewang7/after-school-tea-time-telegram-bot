@@ -329,8 +329,11 @@ const widgetFigure = (token: string, index: number, widget: ShareWidgetContent):
     ].join('');
 };
 
-const mediaSrcOf = (token: string, messageId: number, media: ShareMedia): string =>
-    mediaSrc(token, messageId, media.kind === 'file' ? 'file' : 'image');
+/** Where one attachment's bytes load from; `index` past 0 names a later picture */
+const mediaSrcOf = (token: string, messageId: number, media: ShareMedia, index = 0): string => {
+    const path = mediaSrc(token, messageId, media.kind === 'file' ? 'file' : 'image');
+    return index === 0 ? path : `${path}?i=${index}`;
+};
 
 /** One captured link-preview attachment (its own media route slot + index) */
 const previewFigure = (token: string, messageId: number, media: ShareMedia, index: number): string =>
@@ -341,12 +344,13 @@ const mediaFigure = (
     token: string,
     messageId: number,
     media: ShareMedia,
-    target: { slot: 'preview'; index: number } | null = null
+    target: { slot?: 'image' | 'file' | 'preview'; index?: number } = {}
 ): string => {
+    const mediaIndex = target.index ?? 0;
     const src = escapeHtml(
-        target === null
-            ? mediaSrcOf(token, messageId, media)
-            : mediaSrc(token, messageId, 'preview') + `?i=${target.index}`
+        target.slot === 'preview'
+            ? `${mediaSrc(token, messageId, 'preview')}?i=${mediaIndex}`
+            : mediaSrcOf(token, messageId, media, mediaIndex)
     );
     if (media.kind === 'image') {
         return ['<figure class="image">', `<img src="${src}" alt="图片" loading="lazy">`, '</figure>'].join('');
@@ -411,7 +415,7 @@ const botBubble = (
 ): string => {
     const attachments: string[] = [];
     if (widget !== null && widgetIndex !== null) attachments.push(widgetFigure(token, widgetIndex, widget));
-    attachments.push(...media.map((item) => mediaFigure(token, item.messageId, item)));
+    attachments.push(...media.map((item) => mediaFigure(token, item.messageId, item, { index: item.index })));
     return [
         '<article class="bubble bot">',
         `<div class="bubble-head"><span class="author">${BOT_NAME}</span><span class="time">${escapeHtml(formatTime(createdAt))}</span></div>`,
@@ -427,7 +431,7 @@ const userBubble = (token: string, bubble: ShareUserBubble): string => {
         .map((preview, index) => previewFigure(token, bubble.messageId, preview, index))
         .join('');
     const media = [
-        ...bubble.media.map((item) => mediaFigure(token, item.messageId, item)),
+        ...bubble.media.map((item) => mediaFigure(token, item.messageId, item, { index: item.index })),
         previews,
         bubble.media.length > 0 || bubble.mediaHint === null
             ? ''
@@ -452,7 +456,11 @@ const renderReplyBody = (input: SharePageInput, content: ShareReplyContent): str
         content.createdAt,
         content.text,
         content.widget,
-        content.media === null ? [] : [{ messageId: content.firstMessageId, ...content.media }],
+        content.media.map((media, index) => ({
+            messageId: content.firstMessageId,
+            ...(index === 0 ? {} : { index }),
+            ...media,
+        })),
         content.widget === null ? null : 0,
         null
     );

@@ -57,6 +57,7 @@ export const ShareBubble = ({ token, bubble, widgetIndex, autoFocusWidget = fals
                     token={token}
                     messageId={item.messageId}
                     media={item}
+                    index={item.index}
                 />
             ))}
             {bubble.previewMedia.map((preview, index) => (

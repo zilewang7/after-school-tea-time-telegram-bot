@@ -63,7 +63,9 @@ const ReplyBody = ({ version, focusWidget }: ReplyBodyProps) => {
                 <FoldableText text={version.text} foldLines={12} foldChars={900} />
             )}
 
-            {version.media !== null && <MediaAttachmentView media={version.media} />}
+            {version.media.map((media) => (
+                <MediaAttachmentView key={media.url} media={media} />
+            ))}
 
             {version.thinkingText !== null && version.thinkingText !== '' && (
                 <CollapsibleSection
@@ -91,7 +93,7 @@ const ReplyBody = ({ version, focusWidget }: ReplyBodyProps) => {
                 <WidgetView widget={version.widget} hasImage={widgetHasImage} autoFocus={focusWidget} />
             )}
 
-            {version.media === null && attachments.length > 0 && (
+            {version.media.length === 0 && attachments.length > 0 && (
                 <CollapsibleSection title="附件" summary={`${attachments.length} 个`}>
                     <p className="prewrap hint">{attachmentsText}</p>
                 </CollapsibleSection>

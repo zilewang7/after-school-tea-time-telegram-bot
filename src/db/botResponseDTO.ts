@@ -11,6 +11,7 @@ import {
     Model,
 } from '@sequelize/core';
 import { sequelize } from './config.js';
+import type { StoredReplyMedia } from '../shared/reply-media.js';
 
 /**
  * Button state for bot responses
@@ -133,6 +134,22 @@ export interface ResponseVersion {
     fileBase64?: string;
     /** Set when the attachment was a chat UI card */
     widget?: StoredWidget;
+    /**
+     * How the version's pictures actually reached the chat (v5 unified media):
+     * `rich` = inline pictures in the rich body, `rich-text` = rich body
+     * without inline pictures (a fallback), absent = the entities layout
+     * (legacy versions and plain replies). Readers prefer `media` and fall
+     * back to the legacy single-image `imageBase64` slot.
+     */
+    delivery?: 'rich' | 'rich-text';
+    /** Renderer generation of `richAnswerMarkdown`, so a later dialect upgrade can rebuild instead of replaying an old snapshot */
+    richRenderer?: 'v1';
+    /** The answer section exactly as the rich body delivered it (replay snapshot; never context/panel text) */
+    richAnswerMarkdown?: string;
+    /** Every picture this version delivered, in delivery order (inline pictures first, then attachments) */
+    media?: StoredReplyMedia[];
+    /** Message ids of the pictures sent as separate messages: one id, or the album's ids */
+    mediaMessageIds?: number[];
 }
 
 /**

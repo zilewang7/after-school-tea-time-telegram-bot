@@ -12,6 +12,8 @@ import { Message } from '../messageDTO.js';
 import type { StoredWidget } from '../botResponseDTO.js';
 import { MessageLink } from '../messageLinkDTO.js';
 import { listExcludedMessageIds } from './context-exclusions.js';
+import type { StoredMessageMedia } from '../messageMediaDTO.js';
+import { listMessageMedia } from './message-media-queries.js';
 import type { UnifiedContentPart } from '../../ai/types.js';
 
 const botUserName = process.env.BOT_NAME || 'Bot';
@@ -905,23 +907,31 @@ interface ResolvedMedia {
     kind: string | null;
 }
 
+/**
+ * One content-addressed media_cache entry. Large media lives in GCS; past the
+ * TTL autoClear has (or soon will) delete the object, so it reports expired
+ * rather than feeding a dead gs:// reference.
+ */
+const resolveCachedMedia = async (mediaKey: string): Promise<ResolvedMedia | null> => {
+    const cached = await getCachedMedia(mediaKey);
+    if (!cached) return null;
+    if (cached.fileUri) {
+        const ageMs = Date.now() - new Date(cached.createdAt).getTime();
+        if (ageMs > MEDIA_URI_TTL_MS) {
+            return { expired: true, sizeBytes: cached.sizeBytes, durationSeconds: cached.durationSeconds, mime: cached.mime, kind: cached.kind };
+        }
+        return { fileUri: cached.fileUri, sizeBytes: cached.sizeBytes, durationSeconds: cached.durationSeconds, mime: cached.mime, kind: cached.kind };
+    }
+    if (cached.data) {
+        return { bytes: cached.data, sizeBytes: cached.sizeBytes ?? cached.data.length, durationSeconds: cached.durationSeconds, mime: cached.mime, kind: cached.kind };
+    }
+    return null;
+};
+
 const resolveFileBytes = async (msg: Message): Promise<ResolvedMedia | null> => {
     if (msg.fileUniqueId) {
-        const cached = await getCachedMedia(msg.fileUniqueId);
-        if (cached) {
-            if (cached.fileUri) {
-                // Large media in GCS. Past the TTL autoClear has (or soon will) delete
-                // the object, so mark expired rather than feed a dead gs://.
-                const ageMs = Date.now() - new Date(cached.createdAt).getTime();
-                if (ageMs > MEDIA_URI_TTL_MS) {
-                    return { expired: true, sizeBytes: cached.sizeBytes, durationSeconds: cached.durationSeconds, mime: cached.mime, kind: cached.kind };
-                }
-                return { fileUri: cached.fileUri, sizeBytes: cached.sizeBytes, durationSeconds: cached.durationSeconds, mime: cached.mime, kind: cached.kind };
-            }
-            if (cached.data) {
-                return { bytes: cached.data, sizeBytes: cached.sizeBytes ?? cached.data.length, durationSeconds: cached.durationSeconds, mime: cached.mime, kind: cached.kind };
-            }
-        }
+        const cached = await resolveCachedMedia(msg.fileUniqueId);
+        if (cached) return cached;
     }
     if (msg.file) {
         return { bytes: msg.file, sizeBytes: msg.file.length, mime: msg.fileMime, kind: null };
@@ -933,89 +943,141 @@ const resolveFileBytes = async (msg: Message): Promise<ResolvedMedia | null> => 
 const hasFileRef = (msg: Message): boolean => Boolean(msg.file || msg.fileUniqueId);
 
 /**
+ * One resolved media as the part the model receives:
+ * - expired GCS media → short text note (won't be fed to the model)
+ * - gs:// reference → media part with fileUri (large media)
+ * - inline bytes → image part (images / legacy null-mime) or media part
+ */
+const mediaPartOf = (f: ResolvedMedia): UnifiedContentPart => {
+    if (f.expired) {
+        return { type: 'text', text: '[system] media expired (older than 7 days), not available' };
+    }
+    if (f.fileUri) {
+        return {
+            type: 'media',
+            fileUri: f.fileUri,
+            sizeBytes: f.sizeBytes ?? undefined,
+            durationSeconds: f.durationSeconds ?? undefined,
+            mimeType: f.mime ?? 'application/octet-stream',
+            mediaKind: f.kind ?? undefined,
+        };
+    }
+    const { mime, kind } = f;
+    const bytes = f.bytes ?? Buffer.alloc(0);
+    const base64 = bytes.toString('base64');
+    if (mime === null || mime.startsWith('image/')) {
+        return {
+            type: 'image',
+            imageData: base64,
+            sizeBytes: f.sizeBytes ?? bytes.length,
+            mimeType: mime ?? 'image/png',
+            // Kept on images too: a static sticker is an image, and the
+            // context builder needs the kind to nudge about its pack emoji
+            mediaKind: f.kind ?? undefined,
+        };
+    }
+    return {
+        type: 'media',
+        mediaData: base64,
+        sizeBytes: f.sizeBytes ?? bytes.length,
+        durationSeconds: f.durationSeconds ?? undefined,
+        mimeType: mime,
+        mediaKind: kind ?? undefined,
+    };
+};
+
+/** One message's files as context parts, plus the captions a v5 reply keeps per picture */
+export interface MessageFileContents {
+    parts: UnifiedContentPart[];
+    /**
+     * Caption of each picture, by 1-based picture position in `parts` (`#N 的第
+     * k 张图`); only a v5 bot reply stores per-picture captions, so entries are
+     * holes for every other message.
+     */
+    captions: (string | undefined)[];
+}
+
+const EMPTY_MESSAGE_FILES: MessageFileContents = { parts: [], captions: [] };
+
+/**
+ * A v5 bot reply stores its pictures as `message_media` rows, in delivery
+ * order: this is what turns an N-picture reply into N parts. The message row's
+ * own file slot only mirrors the first picture, so it is not merged in (that
+ * would duplicate the first one); when the retention cleared every cached
+ * picture the rows produce no part and the caller falls back to the row.
+ */
+const storedMediaFileContents = async (
+    storedMedia: readonly StoredMessageMedia[]
+): Promise<MessageFileContents> => {
+    const resolved = await Promise.all(storedMedia.map((item) => resolveCachedMedia(item.mediaKey)));
+    const parts: UnifiedContentPart[] = [];
+    const captions: (string | undefined)[] = [];
+    for (const [index, media] of resolved.entries()) {
+        if (media === null) continue;
+        parts.push(mediaPartOf(media));
+        captions.push(storedMedia[index]?.caption);
+    }
+    return { parts, captions };
+};
+
+/**
+ * A message row's own files: its file plus the items of its Telegram album,
+ * ascending by message id (album updates may arrive out of order).
+ */
+const legacyFileContentsOf = async (message: Message, childIds: readonly number[]): Promise<MessageFileContents> => {
+    const files: ResolvedMedia[] = [];
+
+    const mainFile = await resolveFileBytes(message);
+    if (mainFile) files.push(mainFile);
+
+    const subImages: (ResolvedMedia & { messageId: number })[] = [];
+    for (const replyId of childIds) {
+        const msg = await getMessage(message.chatId, replyId);
+        if (
+            msg &&
+            hasFileRef(msg) &&
+            msg.text?.match(/sub image of \[(\w+)\]/)?.[1] === String(message.messageId)
+        ) {
+            const resolved = await resolveFileBytes(msg);
+            if (resolved) subImages.push({ messageId: replyId, ...resolved });
+        }
+    }
+    subImages.sort((a, b) => a.messageId - b.messageId);
+    for (const sub of subImages) files.push(sub);
+
+    return { parts: files.map(mediaPartOf), captions: [] };
+};
+
+/**
+ * A message's files as context parts. A bot reply's v5 pictures come from its
+ * `message_media` rows in delivery order; everything else (user messages,
+ * Telegram albums, replies stored before v5) reads the message row as before.
+ */
+export const getMessageFileContents = async (
+    chatId: number,
+    messageId: number
+): Promise<MessageFileContents> => {
+    const message = await getMessage(chatId, messageId);
+    if (!message) return EMPTY_MESSAGE_FILES;
+
+    const storedMedia = await listMessageMedia(chatId, messageId);
+    if (storedMedia.length > 0) {
+        const contents = await storedMediaFileContents(storedMedia);
+        if (contents.parts.length > 0) return contents;
+    }
+
+    const childIds = await getChildMessageIds(chatId, messageId);
+    if (!hasFileRef(message) && !childIds.length) return EMPTY_MESSAGE_FILES;
+    return legacyFileContentsOf(message, childIds);
+};
+
+/**
  * Get file contents (images/audio/video) from a message and its sub-images
  */
 export const getFileContentsOfMessage = async (
     chatId: number,
     messageId: number
-): Promise<UnifiedContentPart[]> => {
-    const message = await getMessage(chatId, messageId);
-    if (!message) return [];
-
-    const childIds = await getChildMessageIds(chatId, messageId);
-    if (!hasFileRef(message) && !childIds.length) return [];
-
-    const files: ResolvedMedia[] = [];
-
-    // Add main message file
-    const mainFile = await resolveFileBytes(message);
-    if (mainFile) {
-        files.push(mainFile);
-    }
-
-    // Collect sub-image files, sorted by messageId to ensure correct order
-    // (Telegram media group updates may arrive out of order)
-    const subImages: (ResolvedMedia & { messageId: number })[] = [];
-    for (const replyId of childIds) {
-        const msg = await getMessage(chatId, replyId);
-        if (
-            msg &&
-            hasFileRef(msg) &&
-            msg.text?.match(/sub image of \[(\w+)\]/)?.[1] === String(messageId)
-        ) {
-            const resolved = await resolveFileBytes(msg);
-            if (resolved) {
-                subImages.push({ messageId: replyId, ...resolved });
-            }
-        }
-    }
-    subImages.sort((a, b) => a.messageId - b.messageId);
-    for (const sub of subImages) {
-        files.push(sub);
-    }
-
-    // Convert to UnifiedContentPart format.
-    // - expired GCS media → short text note (won't be fed to the model)
-    // - gs:// reference → media part with fileUri (large media)
-    // - inline bytes → image part (images / legacy null-mime) or media part
-    return files.map((f): UnifiedContentPart => {
-        if (f.expired) {
-            return { type: 'text', text: '[system] media expired (older than 7 days), not available' };
-        }
-        if (f.fileUri) {
-            return {
-                type: 'media',
-                fileUri: f.fileUri,
-                sizeBytes: f.sizeBytes ?? undefined,
-                durationSeconds: f.durationSeconds ?? undefined,
-                mimeType: f.mime ?? 'application/octet-stream',
-                mediaKind: f.kind ?? undefined,
-            };
-        }
-        const { mime, kind } = f;
-        const bytes = f.bytes ?? Buffer.alloc(0);
-        const base64 = bytes.toString('base64');
-        if (mime === null || mime.startsWith('image/')) {
-            return {
-                type: 'image',
-                imageData: base64,
-                sizeBytes: f.sizeBytes ?? bytes.length,
-                mimeType: mime ?? 'image/png',
-                // Kept on images too: a static sticker is an image, and the
-                // context builder needs the kind to nudge about its pack emoji
-                mediaKind: f.kind ?? undefined,
-            };
-        }
-        return {
-            type: 'media',
-            mediaData: base64,
-            sizeBytes: f.sizeBytes ?? bytes.length,
-            durationSeconds: f.durationSeconds ?? undefined,
-            mimeType: mime,
-            mediaKind: kind ?? undefined,
-        };
-    });
-};
+): Promise<UnifiedContentPart[]> => (await getMessageFileContents(chatId, messageId)).parts;
 
 /**
  * Check if a message has any associated files
@@ -1028,6 +1090,7 @@ export const messageHasFiles = async (
     if (!message) return false;
 
     if (hasFileRef(message)) return true;
+    if ((await listMessageMedia(chatId, messageId)).length > 0) return true;
 
     const childIds = await getChildMessageIds(chatId, messageId);
     for (const replyId of childIds) {

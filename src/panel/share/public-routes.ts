@@ -245,7 +245,9 @@ export const registerSharePublicRoutes = (app: Hono<PanelEnv>, options: SharePub
         return widgetDocumentResponse(widgetDocumentOf(widget.html, themeOf(context.req.query('theme'))));
     });
 
-    // GET /s/<token>/media/<messageId>/<slot>: one attachment of the shared content
+    // GET /s/<token>/media/<messageId>/<slot>: one attachment of the shared content.
+    // `?i=` is the 0-based picture position: a v5 reply may carry several pictures
+    // (and the `preview` slot already numbered a message's captured link previews).
     app.get('/s/:token/media/:messageId/:slot', async (context) => {
         const blocked = blockedBy(context);
         if (blocked !== null) return blocked;
@@ -254,9 +256,9 @@ export const registerSharePublicRoutes = (app: Hono<PanelEnv>, options: SharePub
         const row = await findShareRowByToken(context.req.param('token'));
         if (row === null || row.revokedAt !== null) return context.text('Not Found', 404);
         const rawIndex = context.req.query('i');
-        const previewIndex = rawIndex === undefined ? 0 : Number(rawIndex);
-        if (!Number.isSafeInteger(previewIndex) || previewIndex < 0) return context.text('Not Found', 404);
-        const media = await loadShareMedia(row, messageId, context.req.param('slot'), previewIndex);
+        const mediaIndex = rawIndex === undefined ? 0 : Number(rawIndex);
+        if (!Number.isSafeInteger(mediaIndex) || mediaIndex < 0) return context.text('Not Found', 404);
+        const media = await loadShareMedia(row, messageId, context.req.param('slot'), mediaIndex);
         if (media === null) return context.text('Not Found', 404);
         return serveMedia(context, media);
     });

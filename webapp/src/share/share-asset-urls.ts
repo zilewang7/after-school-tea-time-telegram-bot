@@ -10,7 +10,11 @@ export type ShareMediaSlot = 'image' | 'file' | 'preview';
 export const shareWidgetUrlOf = (token: string, index: number): string =>
     `/s/${encodeURIComponent(token)}/widget/${index}`;
 
-/** One attachment of the shared content; the server refuses media the share does not expose */
+/**
+ * One attachment of the shared content; the server refuses media the share does
+ * not expose. `index` (0-based) picks a later picture of the same message: a v5
+ * reply may carry several, and a link preview's items were already numbered.
+ */
 export const shareMediaUrlOf = (
     token: string,
     messageId: number,

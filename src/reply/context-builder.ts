@@ -6,10 +6,11 @@ import { match } from 'ts-pattern';
 import type { Message } from '../db/messageDTO.js';
 import {
     getContextMessage,
-    getFileContentsOfMessage,
+    getMessageFileContents,
     loadWidgetSurfaces,
     toContextMessage,
     type ContextMessage,
+    type MessageFileContents,
     type WidgetSurfaceInfo,
 } from '../db/queries/context-queries.js';
 import { assembleContextMessages, isSubImage, type ContextNumbering } from './context-assembly.js';
@@ -454,15 +455,19 @@ export const stripLeakedWireFormat = (text: string): string => {
 };
 
 /**
- * The message's own attachments (its file plus album sub-images) as context
- * parts, unfiltered by model capabilities. A message whose media was left out
- * (`/chat r` videos) contributes no part at all — the bytes are never loaded.
+ * The message's own attachments (its file plus album sub-images, or a v5 bot
+ * reply's stored pictures) as context parts, unfiltered by model capabilities.
+ * A message whose media was left out (`/chat r` videos) contributes no part at
+ * all — the bytes are never loaded.
+ *
+ * A v5 bot reply may keep all its pictures in `message_media` rows; the message
+ * row's own file slot mirrors the first one, which is enough to enter here.
  */
-const loadMessageFiles = async (msg: ContextMessage): Promise<UnifiedContentPart[]> => {
-    if (msg.mediaOmitted) return [];
+const loadMessageFiles = async (msg: ContextMessage): Promise<MessageFileContents> => {
+    if (msg.mediaOmitted) return { parts: [], captions: [] };
     return msg.file || msg.fileUniqueId
-        ? getFileContentsOfMessage(msg.chatId, msg.messageId)
-        : [];
+        ? getMessageFileContents(msg.chatId, msg.messageId)
+        : { parts: [], captions: [] };
 };
 
 /**
@@ -598,6 +603,19 @@ const buildAssistantTextTurn = (
 };
 
 /**
+ * The pictures' captions as one short line: the model wrote them in the reply,
+ * so it must be able to tell which picture carried which words (`#N 的第 k 张图`).
+ * Only pictures that kept a caption are named; no captions means no line.
+ */
+const captionNoteOf = (captions: readonly (string | undefined)[]): string => {
+    const named = captions.flatMap((caption, index) => {
+        const text = caption?.trim().replace(/\s+/g, ' ');
+        return text === undefined || text === '' ? [] : [`第 ${index + 1} 张「${text}」`];
+    });
+    return named.length === 0 ? '' : `\n[system] 图注：${named.join('；')}`;
+};
+
+/**
  * The reply's attachment bytes, replayed in their own **user-role** turn.
  *
  * Pictures must not ride an assistant turn: Gemini reads assistant inlineData as
@@ -610,7 +628,7 @@ const buildAssistantTextTurn = (
  */
 const buildAssistantAttachmentTurn = (
     msg: ContextMessage,
-    fileContents: UnifiedContentPart[],
+    contents: MessageFileContents,
     inputs: TurnInputs
 ): BuiltTurn => {
     const contextNumber = inputs.index.numberOf.get(msg.messageId);
@@ -621,10 +639,10 @@ const buildAssistantAttachmentTurn = (
     return {
         message: {
             role: 'user',
-            content: [{ type: 'text', text: note }, ...fileContents],
+            content: [{ type: 'text', text: `${note}${captionNoteOf(contents.captions)}` }, ...contents.parts],
         },
         // The attachment pictures stay this message's for tools (#N 的第 k 张图)
-        images: contextImagesOf(fileContents, 'attachment'),
+        images: contextImagesOf(contents.parts, 'attachment'),
     };
 };
 
@@ -763,13 +781,13 @@ const buildUserMessage = async (
  */
 const buildMessageContent = async (
     msg: ContextMessage,
-    fileContents: UnifiedContentPart[],
+    contents: MessageFileContents,
     inputs: TurnInputs
 ): Promise<BuiltTurn[]> => {
-    if (!msg.fromBotSelf) return [await buildUserMessage(msg, fileContents, inputs)];
-    const textTurn = buildAssistantTextTurn(msg, inputs, fileContents.length > 0);
-    if (fileContents.length === 0) return [textTurn];
-    const attachmentTurn = buildAssistantAttachmentTurn(msg, fileContents, inputs);
+    if (!msg.fromBotSelf) return [await buildUserMessage(msg, contents.parts, inputs)];
+    const textTurn = buildAssistantTextTurn(msg, inputs, contents.parts.length > 0);
+    if (contents.parts.length === 0) return [textTurn];
+    const attachmentTurn = buildAssistantAttachmentTurn(msg, contents, inputs);
     // A reply that carried nothing but attachments has no text turn to keep
     return textTurn.message.content.length === 0 ? [attachmentTurn] : [textTurn, attachmentTurn];
 };
@@ -975,8 +993,8 @@ export const buildContext = async (
     for (const contextMsg of contextMessages) {
         // Loaded once: the turn is built from these parts, and the tool index
         // keeps the pictures among them before any capability filtering
-        const fileContents = await loadMessageFiles(contextMsg);
-        const builtTurns = await buildMessageContent(contextMsg, fileContents, {
+        const contents = await loadMessageFiles(contextMsg);
+        const builtTurns = await buildMessageContent(contextMsg, contents, {
             capabilities: modelCapabilities,
             index,
             exclusions: assembled.exclusions,

@@ -231,8 +231,13 @@ export interface AIResponse {
     text: string;
     thinkingText: string;
     images: Buffer[];
-    /** Caption of the first image */
+    /** Caption of the first image; the per-image list below is the authority */
     imageCaption?: string;
+    /**
+     * One caption per image in `images`, same order; an image without a caption
+     * keeps an `undefined` slot so the two arrays stay aligned.
+     */
+    imageCaptions?: (string | undefined)[];
     /** Stickers this reply sends (delivery keeps the first) */
     stickers?: StickerDelivery[];
     /** Files this reply sends (delivery keeps the last) */
@@ -366,8 +371,10 @@ export interface ResponseState {
     /** Total chars truncated from thinking to avoid telegram flood */
     thinkingTruncatedChars: number;
     images: Buffer[];
-    /** Caption of the first image */
+    /** Caption of the first image; the per-image list below is the authority */
     imageCaption?: string;
+    /** One caption per image in `images`, same order (`undefined` when absent) */
+    imageCaptions?: (string | undefined)[];
     /** Stickers collected so far; only the first is delivered */
     stickers: StickerDelivery[];
     /** Files collected so far; only the last (newest content) is delivered */

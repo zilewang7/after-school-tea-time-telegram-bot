@@ -16,12 +16,14 @@ interface ShareMediaAttachmentProps {
 export const ShareMediaAttachment = ({ token, messageId, media, slot, index }: ShareMediaAttachmentProps) => {
     const item = useMemo<MediaItem>(() => {
         const resolvedSlot = slot ?? (media.kind === 'file' ? 'file' : 'image');
+        // A preview always names its position; a picture only when it is not the first
+        const resolvedIndex = resolvedSlot === 'preview' ? (index ?? 0) : index;
         return {
             kind: media.kind,
             mimeType: media.mimeType,
             sizeBytes: media.sizeBytes,
             fileName: media.fileName,
-            url: shareMediaUrlOf(token, messageId, resolvedSlot, resolvedSlot === 'preview' ? (index ?? 0) : undefined),
+            url: shareMediaUrlOf(token, messageId, resolvedSlot, resolvedIndex),
         };
     }, [token, messageId, media, slot, index]);
     return <MediaAttachmentView media={item} />;

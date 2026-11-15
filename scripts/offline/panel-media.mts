@@ -231,15 +231,212 @@ const cases: { name: string; body: () => Promise<void> }[] = [
             ]);
 
             const detail = await jsonOf(await call(`/api/chats/${GROUP}/replies/${botId}`, ALICE));
-            const first = detail.versions?.[0]?.media;
-            const second = detail.versions?.[1]?.media;
-            expect(first?.kind === 'image' && first?.mimeType === 'image/png', 'the first version is a picture');
-            expect(second?.kind === 'sticker' && second?.mimeType === 'video/webm', 'the second version is an animated sticker');
+            const first = detail.versions?.[0]?.media ?? [];
+            const second = detail.versions?.[1]?.media ?? [];
+            expect(
+                Array.isArray(first) && first.length === 1 && first[0]?.kind === 'image' && first[0]?.mimeType === 'image/png',
+                `the first version is one picture (got ${JSON.stringify(first)})`
+            );
+            expect(
+                Array.isArray(second) && second.length === 1 && second[0]?.kind === 'sticker' && second[0]?.mimeType === 'video/webm',
+                `the second version is an animated sticker (got ${JSON.stringify(second)})`
+            );
 
-            const picture = await app.request(first.url);
+            const picture = await app.request(first[0].url);
             expect(picture.status === 200 && picture.headers.get('Content-Type') === 'image/png', 'the picture bytes');
-            const clip = await app.request(second.url);
+            const clip = await app.request(second[0].url);
             expect(clip.status === 200 && clip.headers.get('Content-Type') === 'video/webm', 'the sticker clip bytes');
+        },
+    },
+    {
+        name: 'a version with several pictures signs one URL per picture, in delivery order',
+        body: async () => {
+            const { rootId, botId } = await seedConversation();
+            const pictures = ['multi-1', 'multi-2', 'multi-3'].map((label) =>
+                Buffer.concat([PNG_BYTES, Buffer.from(`-${label}`)])
+            );
+            const keys = pictures.map((_bytes, index) => `version-media-${botId}-${index + 1}`);
+            for (const [index, key] of keys.entries()) {
+                await putCachedMedia({
+                    fileUniqueId: key,
+                    mime: 'image/png',
+                    kind: 'photo',
+                    data: pictures[index] ?? PNG_BYTES,
+                    sizeBytes: pictures[index]?.length ?? PNG_BYTES.length,
+                });
+            }
+            await makeReply(botId, rootId, [
+                versionOf(1, {
+                    media: pictures.map((bytes, index) => ({
+                        placement: index === 0 ? 'inline' : 'attachment',
+                        mediaKey: keys[index] ?? '',
+                        mimeType: 'image/png',
+                        sizeBytes: bytes.length,
+                    })),
+                }),
+            ]);
+
+            const detail = await jsonOf(await call(`/api/chats/${GROUP}/replies/${botId}`, ALICE));
+            const media = detail.versions?.[0]?.media ?? [];
+            expect(
+                Array.isArray(media) && media.length === 3,
+                `the version lists all three pictures (got ${JSON.stringify(media)})`
+            );
+            expect(
+                media.every((item: any) => item.kind === 'image' && item.mimeType === 'image/png'),
+                'every item is a picture'
+            );
+            const urls = media.map((item: any) => item.url);
+            expect(urls.every((url: unknown) => typeof url === 'string' && url.startsWith('/m/')), 'signed URLs');
+            expect(new Set(urls).size === 3, 'each picture has its own signed URL');
+
+            // The first picture keeps the pre-v5 payload (no index); later ones name it
+            const payloadOf = (url: string): any =>
+                JSON.parse(Buffer.from(url.slice('/m/'.length).split('.')[0] ?? '', 'base64url').toString('utf8'));
+            expect(payloadOf(urls[0]).i === undefined, 'the first picture needs no index in its payload');
+            expect(payloadOf(urls[1]).i === 1 && payloadOf(urls[2]).i === 2, 'later pictures carry their 0-based index');
+
+            for (const [index, url] of urls.entries()) {
+                const served = await app.request(url);
+                expect(served.status === 200, `picture ${index + 1} answers 200 (got ${served.status})`);
+                expect(
+                    (await bytesOf(served)).equals(pictures[index] ?? Buffer.alloc(0)),
+                    `picture ${index + 1} serves its own bytes`
+                );
+            }
+
+            // A validly signed index past the list resolves to nothing: same 404
+            const indexSigner = createMediaSigner({ botToken: BOT_TOKEN });
+            const past = indexSigner.sign({ chatId: GROUP, messageId: botId, versionId: 1, mediaIndex: 9, kind: 'ver' });
+            expect((await app.request(past.path)).status === 404, 'an index past the list is a 404');
+            const otherVersion = indexSigner.sign({ chatId: GROUP, messageId: botId, versionId: 99, mediaIndex: 1, kind: 'ver' });
+            expect((await app.request(otherVersion.path)).status === 404, 'a missing version is still a 404');
+        },
+    },
+    {
+        name: 'a legacy single-image version keeps its old URL and bytes',
+        body: async () => {
+            const { rootId, botId } = await seedConversation();
+            await makeReply(botId, rootId, [versionOf(1, { imageBase64: PNG_BYTES.toString('base64') })]);
+            const detail = await jsonOf(await call(`/api/chats/${GROUP}/replies/${botId}`, ALICE));
+            const media = detail.versions?.[0]?.media ?? [];
+            expect(media.length === 1 && media[0]?.kind === 'image', 'one legacy picture');
+            const url: string = media[0]?.url ?? '';
+            const encoded = url.slice('/m/'.length).split('.')[0] ?? '';
+            const payload: any = JSON.parse(Buffer.from(encoded, 'base64url').toString('utf8'));
+            expect(payload.i === undefined, 'the legacy payload names no picture index');
+            const served = await app.request(url);
+            expect(served.status === 200 && (await bytesOf(served)).equals(PNG_BYTES), 'the legacy bytes are served');
+        },
+    },
+    {
+        name: 'a version whose cache lost a picture falls back to its legacy first image',
+        body: async () => {
+            const { rootId, botId } = await seedConversation();
+            await makeReply(botId, rootId, [
+                versionOf(1, {
+                    imageBase64: PNG_BYTES.toString('base64'),
+                    media: [
+                        { placement: 'inline', mediaKey: `never-cached-${botId}`, mimeType: 'image/png', sizeBytes: PNG_BYTES.length },
+                        { placement: 'attachment', mediaKey: `never-cached-b-${botId}`, mimeType: 'image/png', sizeBytes: PNG_BYTES.length },
+                    ],
+                }),
+            ]);
+            const detail = await jsonOf(await call(`/api/chats/${GROUP}/replies/${botId}`, ALICE));
+            const media = detail.versions?.[0]?.media ?? [];
+            expect(media.length === 2, 'the version still lists both pictures');
+            const first = await app.request(media[0]?.url ?? '');
+            expect(first.status === 200, `the first picture falls back to the version's legacy bytes (got ${first.status})`);
+            expect((await bytesOf(first)).equals(PNG_BYTES), 'the fallback serves the legacy bytes');
+            expect((await app.request(media[1]?.url ?? '')).status === 404, 'the second picture has no fallback copy');
+        },
+    },
+    {
+        name: 'a tree bot node lists every picture of the current version',
+        body: async () => {
+            const { rootId, botId } = await seedConversation();
+            const pictures = ['tree-1', 'tree-2'].map((label) =>
+                Buffer.concat([PNG_BYTES, Buffer.from(`-${label}`)])
+            );
+            const keys = pictures.map((_bytes, index) => `tree-media-${botId}-${index + 1}`);
+            for (const [index, key] of keys.entries()) {
+                await putCachedMedia({
+                    fileUniqueId: key,
+                    mime: 'image/png',
+                    kind: 'photo',
+                    data: pictures[index] ?? PNG_BYTES,
+                    sizeBytes: pictures[index]?.length ?? PNG_BYTES.length,
+                });
+            }
+            await makeReply(botId, rootId, [
+                versionOf(1, {
+                    media: pictures.map((bytes, index) => ({
+                        placement: 'inline',
+                        mediaKey: keys[index] ?? '',
+                        mimeType: 'image/png',
+                        sizeBytes: bytes.length,
+                    })),
+                }),
+            ]);
+
+            const tree = await jsonOf(await call(`/api/chats/${GROUP}/conversations/${rootId}`, ALICE));
+            const node = findNode(tree, botId);
+            const media = node?.reply?.media ?? [];
+            expect(
+                Array.isArray(media) && media.length === 2,
+                `the bot node lists both pictures (got ${JSON.stringify(media)})`
+            );
+            expect(
+                media.every((item: any) => item.kind === 'image' && item.url?.startsWith('/m/')),
+                'each picture has its own signed URL'
+            );
+            for (const [index, url] of media.map((item: any) => item.url).entries()) {
+                const served = await app.request(url);
+                expect(served.status === 200, `tree picture ${index + 1} answers 200 (got ${served.status})`);
+                expect(
+                    (await bytesOf(served)).equals(pictures[index] ?? Buffer.alloc(0)),
+                    `tree picture ${index + 1} serves its own bytes`
+                );
+            }
+        },
+    },
+    {
+        name: 'a cleared picture of a multi-picture version answers 404 while the others still load',
+        body: async () => {
+            const { rootId, botId } = await seedConversation();
+            const pictures = ['gone-1', 'gone-2'].map((label) =>
+                Buffer.concat([PNG_BYTES, Buffer.from(`-${label}`)])
+            );
+            const keys = pictures.map((_bytes, index) => `cleared-media-${botId}-${index + 1}`);
+            // Only the second picture's bytes are still in the cache
+            await putCachedMedia({
+                fileUniqueId: keys[1] ?? '',
+                mime: 'image/png',
+                kind: 'photo',
+                data: pictures[1] ?? PNG_BYTES,
+                sizeBytes: pictures[1]?.length ?? PNG_BYTES.length,
+            });
+            await makeReply(botId, rootId, [
+                versionOf(1, {
+                    media: pictures.map((bytes, index) => ({
+                        placement: index === 0 ? 'inline' : 'attachment',
+                        mediaKey: keys[index] ?? '',
+                        mimeType: 'image/png',
+                        sizeBytes: bytes.length,
+                    })),
+                }),
+            ]);
+
+            const detail = await jsonOf(await call(`/api/chats/${GROUP}/replies/${botId}`, ALICE));
+            const media = detail.versions?.[0]?.media ?? [];
+            expect(media.length === 2, 'the version still describes both pictures');
+            expect((await app.request(media[0]?.url ?? '')).status === 404, 'the cleared picture is a 404');
+            const second = await app.request(media[1]?.url ?? '');
+            expect(second.status === 200, `the surviving picture still loads (got ${second.status})`);
+            expect(
+                (await bytesOf(second)).equals(pictures[1] ?? Buffer.alloc(0)),
+                'the surviving picture keeps its own bytes'
+            );
         },
     },
     {

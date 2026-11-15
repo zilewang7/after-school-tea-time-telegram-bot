@@ -27,6 +27,12 @@ export interface ReplyMetricSource {
     readonly textBuffer: string;
     /** Delivered images only: a failed send or an error clears them */
     readonly images: readonly Buffer[];
+    /**
+     * Pictures the reply actually delivered when that count differs from
+     * `images` (v5: inline rich pictures live in the session, not in `images`;
+     * an errored reply delivers none). Falls back to `images.length`.
+     */
+    readonly deliveredImageCount?: number;
     readonly sticker?: unknown;
     readonly file?: unknown;
     readonly agentStats?: AgentStats;
@@ -109,7 +115,7 @@ export const buildReplyMetricInput = (source: ReplyMetricSource, attempt: Finali
     const usage = metrics.usage.totals();
     const toolUsage = toolUsageOf(source.agentStats, metrics.toolUsageBaseline);
     const failed = attempt.errorMessage !== undefined;
-    const imageCount = source.images.length;
+    const imageCount = source.deliveredImageCount ?? source.images.length;
     const hasSticker = source.sticker !== undefined;
     const hasFile = source.file !== undefined;
 

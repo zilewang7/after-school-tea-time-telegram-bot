@@ -24,10 +24,12 @@ export const registerSignedMediaRoute = (app: Hono<PanelEnv>, options: SignedMed
     app.get('/m/:token', async (context) => {
         const payload = options.signer.verify(context.req.param('token'));
         if (payload === null) return notFound();
+        // `i` is a picture's 0-based position; an old token has none and means the first
+        const mediaIndex = payload.i ?? 0;
         const media = await match(payload)
-            .with({ k: 'ver' }, () => resolveVersionMedia(payload.c, payload.m, payload.v ?? null))
+            .with({ k: 'ver' }, () => resolveVersionMedia(payload.c, payload.m, payload.v ?? null, mediaIndex))
             .with({ k: 'cache' }, () => (payload.u === undefined ? Promise.resolve(null) : resolveCachedMediaByKey(payload.u)))
-            .with({ k: 'msg' }, () => resolveMessageMedia(payload.c, payload.m))
+            .with({ k: 'msg' }, () => resolveMessageMedia(payload.c, payload.m, mediaIndex))
             .exhaustive();
         if (media === null) return notFound();
         return serveMedia(context, media);
