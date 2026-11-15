@@ -23,7 +23,7 @@
       ],
       "payload": {
         "chat_id": "<chat>",
-        "text": "✽ Thinking...",
+        "text": "<status>",
         "reply_parameters": {
           "message_id": "<message 1>"
         },
@@ -53,7 +53,7 @@
       "payload": {
         "chat_id": "<chat>",
         "message_id": "<message 2>",
-        "text": "计划\n\n先想一想。\n✽ Thinking...",
+        "text": "计划\n\n先想一想。\n<status>",
         "entities": [
           {
             "type": "blockquote",
@@ -92,7 +92,7 @@
       "payload": {
         "chat_id": "<chat>",
         "message_id": "<message 2>",
-        "text": "计划\n\n先想一想。\n\n再想一想 #1。\n✽ Thinking...",
+        "text": "计划\n\n先想一想。\n\n再想一想 #1。\n<status>",
         "entities": [
           {
             "type": "blockquote",
@@ -131,7 +131,7 @@
       "payload": {
         "chat_id": "<chat>",
         "message_id": "<message 2>",
-        "text": "计划\n\n先想一想。\n\n再想一想 #1。\n结论\n✽ Thinking...",
+        "text": "计划\n\n先想一想。\n\n再想一想 #1。\n结论\n<status>",
         "entities": [
           {
             "type": "expandable_blockquote",
@@ -175,7 +175,7 @@
       "payload": {
         "chat_id": "<chat>",
         "message_id": "<message 2>",
-        "text": "计划\n\n先想一想。\n\n再想一想 #1。\n结论\n\n的\"重点\"后，下划线，剧透，a < b 和 List<String>。\n✽ Thinking...",
+        "text": "计划\n\n先想一想。\n\n再想一想 #1。\n结论\n\n的\"重点\"后，下划线，剧透，a < b 和 List<String>。\n<status>",
         "entities": [
           {
             "type": "expandable_blockquote",
@@ -239,7 +239,7 @@
       "payload": {
         "chat_id": "<chat>",
         "message_id": "<message 2>",
-        "text": "计划\n\n先想一想。\n\n再想一想 #1。\n结论\n\n的\"重点\"后，下划线，剧透，a < b 和 List<String>。\n\n• A\n    • 价格: $5\n\n公式 $E = mc^2$，第一行\n第二行\n\nconst x = a ** b;\n✽ Thinking...",
+        "text": "计划\n\n先想一想。\n\n再想一想 #1。\n结论\n\n的\"重点\"后，下划线，剧透，a < b 和 List<String>。\n\n• A\n    • 价格: $5\n\n公式 $E = mc^2$，第一行\n第二行\n\nconst x = a ** b;\n<status>",
         "entities": [
           {
             "type": "expandable_blockquote",
@@ -410,7 +410,7 @@
       ],
       "payload": {
         "chat_id": "<chat>",
-        "text": "✽ Thinking...",
+        "text": "<status>",
         "reply_parameters": {
           "message_id": "<message 1>"
         },
@@ -440,7 +440,7 @@
       "payload": {
         "chat_id": "<chat>",
         "message_id": "<message 2>",
-        "text": "图来了，\n✽ Thinking...",
+        "text": "图来了，\n<status>",
         "reply_markup": {
           "inline_keyboard": [
             [
@@ -467,7 +467,7 @@
       "payload": {
         "chat_id": "<chat>",
         "message_id": "<message 2>",
-        "text": "图来了，请看下面。\n✽ Thinking...",
+        "text": "图来了，请看下面。\n<status>",
         "reply_markup": {
           "inline_keyboard": [
             [
@@ -539,7 +539,7 @@
       ],
       "payload": {
         "chat_id": "<chat>",
-        "text": "✽ Thinking...",
+        "text": "<status>",
         "reply_parameters": {
           "message_id": "<message 1>"
         },
@@ -569,7 +569,7 @@
       "payload": {
         "chat_id": "<chat>",
         "message_id": "<message 2>",
-        "text": "想到一半\n✽ Thinking...",
+        "text": "想到一半\n<status>",
         "entities": [
           {
             "type": "blockquote",
@@ -603,7 +603,7 @@
       "payload": {
         "chat_id": "<chat>",
         "message_id": "<message 2>",
-        "text": "想到一半\n答到一半，\n✽ Thinking...",
+        "text": "想到一半\n答到一半，\n<status>",
         "entities": [
           {
             "type": "expandable_blockquote",
@@ -637,7 +637,7 @@
       "payload": {
         "chat_id": "<chat>",
         "message_id": "<message 2>",
-        "text": "想到一半\n答到一半，ts\nconst a\n✽ Thinking...",
+        "text": "想到一半\n答到一半，ts\nconst a\n<status>",
         "entities": [
           {
             "type": "expandable_blockquote",
@@ -726,7 +726,7 @@
       ],
       "payload": {
         "chat_id": "<chat>",
-        "text": "✽ Thinking...",
+        "text": "<status>",
         "reply_parameters": {
           "message_id": "<message 1>"
         },
@@ -756,7 +756,7 @@
       "payload": {
         "chat_id": "<chat>",
         "message_id": "<message 2>",
-        "text": "说到一半\n✽ Thinking...",
+        "text": "说到一半\n<status>",
         "reply_markup": {
           "inline_keyboard": [
             [
@@ -783,7 +783,7 @@
       "payload": {
         "chat_id": "<chat>",
         "message_id": "<message 2>",
-        "text": "说到一半，还没说完\n✽ Thinking...",
+        "text": "说到一半，还没说完\n<status>",
         "reply_markup": {
           "inline_keyboard": [
             [
@@ -848,7 +848,7 @@
       ],
       "payload": {
         "chat_id": "<chat>",
-        "text": "✽ Thinking...",
+        "text": "<status>",
         "reply_parameters": {
           "message_id": "<message 1>"
         },
@@ -878,7 +878,7 @@
       "payload": {
         "chat_id": "<chat>",
         "message_id": "<message 2>",
-        "text": "<970 chars sha256:6564821b86da257d 第 1 段：内容很长。内容很长。内容很长。内容很长。内容很长。内容很长。内容很长…。内容很长。\n✽ Thinking...>",
+        "text": "<965 chars sha256:7a043dbdfec961ed 第 1 段：内容很长。内容很长。内容很长。内容很长。内容很长。内容很长。内容很长…。内容很长。内容很长。\n<status>>",
         "reply_markup": {
           "inline_keyboard": [
             [
@@ -905,7 +905,7 @@
       "payload": {
         "chat_id": "<chat>",
         "message_id": "<message 2>",
-        "text": "<1928 chars sha256:4c1da7ff3b4380f6 第 1 段：内容很长。内容很长。内容很长。内容很长。内容很长。内容很长。内容很长…。内容很长。\n✽ Thinking...>",
+        "text": "<1923 chars sha256:12155446e46ce380 第 1 段：内容很长。内容很长。内容很长。内容很长。内容很长。内容很长。内容很长…。内容很长。内容很长。\n<status>>",
         "reply_markup": {
           "inline_keyboard": [
             [
@@ -932,7 +932,7 @@
       "payload": {
         "chat_id": "<chat>",
         "message_id": "<message 2>",
-        "text": "<2886 chars sha256:e6286d2a53931cec 第 1 段：内容很长。内容很长。内容很长。内容很长。内容很长。内容很长。内容很长…。内容很长。\n✽ Thinking...>",
+        "text": "<2881 chars sha256:1565999f633fbbf4 第 1 段：内容很长。内容很长。内容很长。内容很长。内容很长。内容很长。内容很长…。内容很长。内容很长。\n<status>>",
         "reply_markup": {
           "inline_keyboard": [
             [
@@ -959,7 +959,7 @@
       "payload": {
         "chat_id": "<chat>",
         "message_id": "<message 2>",
-        "text": "<3844 chars sha256:93678a32d93a5e68 第 1 段：内容很长。内容很长。内容很长。内容很长。内容很长。内容很长。内容很长…。内容很长。\n✽ Thinking...>",
+        "text": "<3839 chars sha256:4ddce97d0fb1effd 第 1 段：内容很长。内容很长。内容很长。内容很长。内容很长。内容很长。内容很长…。内容很长。内容很长。\n<status>>",
         "reply_markup": {
           "inline_keyboard": [
             [
@@ -1029,7 +1029,7 @@
       "payload": {
         "chat_id": "<chat>",
         "message_id": "<message 3>",
-        "text": "<1928 chars sha256:494f7beb57c00b1a 第 5 段：内容很长。内容很长。内容很长。内容很长。内容很长。内容很长。内容很长…。内容很长。\n✽ Thinking...>",
+        "text": "<1923 chars sha256:8e870ff2e2411f9b 第 5 段：内容很长。内容很长。内容很长。内容很长。内容很长。内容很长。内容很长…。内容很长。内容很长。\n<status>>",
         "reply_markup": {
           "inline_keyboard": [
             [
@@ -1056,7 +1056,7 @@
       "payload": {
         "chat_id": "<chat>",
         "message_id": "<message 3>",
-        "text": "<2886 chars sha256:a73fc8453a544a90 第 5 段：内容很长。内容很长。内容很长。内容很长。内容很长。内容很长。内容很长…。内容很长。\n✽ Thinking...>",
+        "text": "<2881 chars sha256:bdf7f0171cc056ec 第 5 段：内容很长。内容很长。内容很长。内容很长。内容很长。内容很长。内容很长…。内容很长。内容很长。\n<status>>",
         "reply_markup": {
           "inline_keyboard": [
             [
@@ -1083,7 +1083,7 @@
       "payload": {
         "chat_id": "<chat>",
         "message_id": "<message 3>",
-        "text": "<3844 chars sha256:96632553e591d27d 第 5 段：内容很长。内容很长。内容很长。内容很长。内容很长。内容很长。内容很长…。内容很长。\n✽ Thinking...>",
+        "text": "<3839 chars sha256:831ff3d852c8f4d5 第 5 段：内容很长。内容很长。内容很长。内容很长。内容很长。内容很长。内容很长…。内容很长。内容很长。\n<status>>",
         "reply_markup": {
           "inline_keyboard": [
             [
@@ -1153,7 +1153,7 @@
       "payload": {
         "chat_id": "<chat>",
         "message_id": "<message 4>",
-        "text": "<970 chars sha256:90b8b2354c9d3a6a 第 9 段：内容很长。内容很长。内容很长。内容很长。内容很长。内容很长。内容很长…。内容很长。\n✽ Thinking...>",
+        "text": "<965 chars sha256:c55ab09e40dbb4c7 第 9 段：内容很长。内容很长。内容很长。内容很长。内容很长。内容很长。内容很长…。内容很长。内容很长。\n<status>>",
         "reply_markup": {
           "inline_keyboard": [
             [
@@ -1285,7 +1285,7 @@
       ],
       "payload": {
         "chat_id": "<chat>",
-        "text": "✽ Thinking...",
+        "text": "<status>",
         "reply_parameters": {
           "message_id": "<message 1>"
         },
@@ -1315,7 +1315,7 @@
       "payload": {
         "chat_id": "<chat>",
         "message_id": "<message 2>",
-        "text": "搜到了：答案。\n✽ Thinking...",
+        "text": "搜到了：答案。\n<status>",
         "reply_markup": {
           "inline_keyboard": [
             [
@@ -1408,7 +1408,7 @@
       ],
       "payload": {
         "chat_id": "<chat>",
-        "text": "✽ Thinking...",
+        "text": "<status>",
         "reply_parameters": {
           "message_id": "<message 1>"
         },
@@ -1438,7 +1438,7 @@
       "payload": {
         "chat_id": "<chat>",
         "message_id": "<message 2>",
-        "text": "第一版。\n✽ Thinking...",
+        "text": "第一版。\n<status>",
         "reply_markup": {
           "inline_keyboard": [
             [
@@ -1482,7 +1482,7 @@
       "payload": {
         "chat_id": "<chat>",
         "message_id": "<message 2>",
-        "text": "✽ Thinking...",
+        "text": "<status>",
         "reply_markup": {
           "inline_keyboard": [
             [
@@ -1520,7 +1520,7 @@
       "payload": {
         "chat_id": "<chat>",
         "message_id": "<message 2>",
-        "text": "重新想\n✽ Thinking...",
+        "text": "重新想\n<status>",
         "entities": [
           {
             "type": "blockquote",
@@ -1554,7 +1554,7 @@
       "payload": {
         "chat_id": "<chat>",
         "message_id": "<message 2>",
-        "text": "重新想\n第二版，\n✽ Thinking...",
+        "text": "重新想\n第二版，\n<status>",
         "entities": [
           {
             "type": "expandable_blockquote",
@@ -1588,7 +1588,7 @@
       "payload": {
         "chat_id": "<chat>",
         "message_id": "<message 2>",
-        "text": "重新想\n第二版，更好。\n✽ Thinking...",
+        "text": "重新想\n第二版，更好。\n<status>",
         "entities": [
           {
             "type": "expandable_blockquote",
@@ -1671,7 +1671,7 @@
       ],
       "payload": {
         "chat_id": "<chat>",
-        "text": "✽ Thinking...",
+        "text": "<status>",
         "reply_parameters": {
           "message_id": "<message 1>"
         },
@@ -1701,7 +1701,7 @@
       "payload": {
         "chat_id": "<chat>",
         "message_id": "<message 2>",
-        "text": "<510 chars sha256:0ab1a929093b8ac9 S0\n\n推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理…推理推理推理\n✽ Thinking...>",
+        "text": "<505 chars sha256:436dccafe66e0eb6 S0\n\n推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理…理推理推理推理推理推理\n<status>>",
         "entities": [
           {
             "type": "blockquote",
@@ -1740,7 +1740,7 @@
       "payload": {
         "chat_id": "<chat>",
         "message_id": "<message 2>",
-        "text": "<1006 chars sha256:6955141bbd8aeaa6 S0\n\n推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理…推理推理推理\n✽ Thinking...>",
+        "text": "<1001 chars sha256:3cc706393184fabd S0\n\n推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理…理推理推理推理推理推理\n<status>>",
         "entities": [
           {
             "type": "blockquote",
@@ -1784,7 +1784,7 @@
       "payload": {
         "chat_id": "<chat>",
         "message_id": "<message 2>",
-        "text": "<1502 chars sha256:50af45026bb5f6b8 S0\n\n推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理…推理推理推理\n✽ Thinking...>",
+        "text": "<1497 chars sha256:764dc42ac822ee1b S0\n\n推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理…理推理推理推理推理推理\n<status>>",
         "entities": [
           {
             "type": "blockquote",
@@ -1833,7 +1833,7 @@
       "payload": {
         "chat_id": "<chat>",
         "message_id": "<message 2>",
-        "text": "<2002 chars sha256:020d5b804c39b5b9 S0\n\n推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理…推理推理推理\n✽ Thinking...>",
+        "text": "<1997 chars sha256:e1f1f4cd06e0a357 S0\n\n推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理…理推理推理推理推理推理\n<status>>",
         "entities": [
           {
             "type": "blockquote",
@@ -1882,7 +1882,7 @@
       "payload": {
         "chat_id": "<chat>",
         "message_id": "<message 2>",
-        "text": "<2503 chars sha256:ce499ae7012948bd S0\n\n推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理…推理推理推理\n✽ Thinking...>",
+        "text": "<2498 chars sha256:c688046184ea0e07 S0\n\n推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理…理推理推理推理推理推理\n<status>>",
         "entities": [
           {
             "type": "expandable_blockquote",
@@ -1941,7 +1941,7 @@
       "payload": {
         "chat_id": "<chat>",
         "message_id": "<message 2>",
-        "text": "<3001 chars sha256:e64759557daae34e S0\n\n推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理…推理推理推理\n✽ Thinking...>",
+        "text": "<2996 chars sha256:5e08c472d3296371 S0\n\n推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理…理推理推理推理推理推理\n<status>>",
         "entities": [
           {
             "type": "expandable_blockquote",
@@ -2005,7 +2005,7 @@
       "payload": {
         "chat_id": "<chat>",
         "message_id": "<message 2>",
-        "text": "<3503 chars sha256:9adb12a322b5b556 S0\n\n推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理…推理推理推理\n✽ Thinking...>",
+        "text": "<3498 chars sha256:759d37a13fde19c1 S0\n\n推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理…理推理推理推理推理推理\n<status>>",
         "entities": [
           {
             "type": "expandable_blockquote",
@@ -2069,7 +2069,7 @@
       "payload": {
         "chat_id": "<chat>",
         "message_id": "<message 2>",
-        "text": "<1180 chars sha256:fafb5b982ccd519e 🧠 查看完整思考过程\nS4\n\n推理推理推理推理推理推理推理推理推理推理推理推理…推理推理推理\n✽ Thinking...>",
+        "text": "<1175 chars sha256:3df4d575ca53e14b 🧠 查看完整思考过程\nS4\n\n推理推理推理推理推理推理推理推理推理推理推理推理…理推理推理推理推理推理\n<status>>",
         "entities": [
           {
             "type": "text_link",
@@ -2123,7 +2123,7 @@
       "payload": {
         "chat_id": "<chat>",
         "message_id": "<message 2>",
-        "text": "<1440 chars sha256:bdc88e83fc222789 🧠 查看完整思考过程\nS4\n\n推理推理推理推理推理推理推理推理推理推理推理推理…推理推理推理\n✽ Thinking...>",
+        "text": "<1435 chars sha256:2fefc1d1ffb7c7db 🧠 查看完整思考过程\nS4\n\n推理推理推理推理推理推理推理推理推理推理推理推理…理推理推理推理推理推理\n<status>>",
         "entities": [
           {
             "type": "text_link",
@@ -2237,7 +2237,7 @@
       "payload": {
         "chat_id": "<chat>",
         "message_id": "<message 3>",
-        "text": "答案来了。第二句。\n✽ Thinking...",
+        "text": "答案来了。第二句。\n<status>",
         "reply_markup": {
           "inline_keyboard": [
             [
@@ -2292,7 +2292,7 @@
       ],
       "payload": {
         "chat_id": "<chat>",
-        "text": "✽ Thinking...",
+        "text": "<status>",
         "reply_parameters": {
           "message_id": "<message 1>"
         },
@@ -2322,7 +2322,7 @@
       "payload": {
         "chat_id": "<chat>",
         "message_id": "<message 2>",
-        "text": "<510 chars sha256:0ab1a929093b8ac9 S0\n\n推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理…推理推理推理\n✽ Thinking...>",
+        "text": "<505 chars sha256:436dccafe66e0eb6 S0\n\n推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理…理推理推理推理推理推理\n<status>>",
         "entities": [
           {
             "type": "blockquote",
@@ -2361,7 +2361,7 @@
       "payload": {
         "chat_id": "<chat>",
         "message_id": "<message 2>",
-        "text": "<1006 chars sha256:6955141bbd8aeaa6 S0\n\n推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理…推理推理推理\n✽ Thinking...>",
+        "text": "<1001 chars sha256:3cc706393184fabd S0\n\n推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理…理推理推理推理推理推理\n<status>>",
         "entities": [
           {
             "type": "blockquote",
@@ -2405,7 +2405,7 @@
       "payload": {
         "chat_id": "<chat>",
         "message_id": "<message 2>",
-        "text": "<1502 chars sha256:50af45026bb5f6b8 S0\n\n推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理…推理推理推理\n✽ Thinking...>",
+        "text": "<1497 chars sha256:764dc42ac822ee1b S0\n\n推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理…理推理推理推理推理推理\n<status>>",
         "entities": [
           {
             "type": "blockquote",
@@ -2454,7 +2454,7 @@
       "payload": {
         "chat_id": "<chat>",
         "message_id": "<message 2>",
-        "text": "<2002 chars sha256:020d5b804c39b5b9 S0\n\n推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理…推理推理推理\n✽ Thinking...>",
+        "text": "<1997 chars sha256:e1f1f4cd06e0a357 S0\n\n推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理…理推理推理推理推理推理\n<status>>",
         "entities": [
           {
             "type": "blockquote",
@@ -2503,7 +2503,7 @@
       "payload": {
         "chat_id": "<chat>",
         "message_id": "<message 2>",
-        "text": "<2503 chars sha256:ce499ae7012948bd S0\n\n推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理…推理推理推理\n✽ Thinking...>",
+        "text": "<2498 chars sha256:c688046184ea0e07 S0\n\n推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理…理推理推理推理推理推理\n<status>>",
         "entities": [
           {
             "type": "expandable_blockquote",
@@ -2562,7 +2562,7 @@
       "payload": {
         "chat_id": "<chat>",
         "message_id": "<message 2>",
-        "text": "<3001 chars sha256:e64759557daae34e S0\n\n推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理…推理推理推理\n✽ Thinking...>",
+        "text": "<2996 chars sha256:5e08c472d3296371 S0\n\n推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理…理推理推理推理推理推理\n<status>>",
         "entities": [
           {
             "type": "expandable_blockquote",
@@ -2626,7 +2626,7 @@
       "payload": {
         "chat_id": "<chat>",
         "message_id": "<message 2>",
-        "text": "<3503 chars sha256:9adb12a322b5b556 S0\n\n推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理…推理推理推理\n✽ Thinking...>",
+        "text": "<3498 chars sha256:759d37a13fde19c1 S0\n\n推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理…理推理推理推理推理推理\n<status>>",
         "entities": [
           {
             "type": "expandable_blockquote",
@@ -2690,7 +2690,7 @@
       "payload": {
         "chat_id": "<chat>",
         "message_id": "<message 2>",
-        "text": "<1180 chars sha256:fafb5b982ccd519e 🧠 查看完整思考过程\nS4\n\n推理推理推理推理推理推理推理推理推理推理推理推理…推理推理推理\n✽ Thinking...>",
+        "text": "<1175 chars sha256:3df4d575ca53e14b 🧠 查看完整思考过程\nS4\n\n推理推理推理推理推理推理推理推理推理推理推理推理…理推理推理推理推理推理\n<status>>",
         "entities": [
           {
             "type": "text_link",
@@ -2744,7 +2744,7 @@
       "payload": {
         "chat_id": "<chat>",
         "message_id": "<message 2>",
-        "text": "<1440 chars sha256:bdc88e83fc222789 🧠 查看完整思考过程\nS4\n\n推理推理推理推理推理推理推理推理推理推理推理推理…推理推理推理\n✽ Thinking...>",
+        "text": "<1435 chars sha256:2fefc1d1ffb7c7db 🧠 查看完整思考过程\nS4\n\n推理推理推理推理推理推理推理推理推理推理推理推理…理推理推理推理推理推理\n<status>>",
         "entities": [
           {
             "type": "text_link",
@@ -2858,7 +2858,7 @@
       ],
       "payload": {
         "chat_id": "<chat>",
-        "text": "✽ Thinking...",
+        "text": "<status>",
         "reply_parameters": {
           "message_id": "<message 1>"
         },
@@ -2888,7 +2888,7 @@
       "payload": {
         "chat_id": "<chat>",
         "message_id": "<message 2>",
-        "text": "<510 chars sha256:0ab1a929093b8ac9 S0\n\n推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理…推理推理推理\n✽ Thinking...>",
+        "text": "<505 chars sha256:436dccafe66e0eb6 S0\n\n推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理…理推理推理推理推理推理\n<status>>",
         "entities": [
           {
             "type": "blockquote",
@@ -2927,7 +2927,7 @@
       "payload": {
         "chat_id": "<chat>",
         "message_id": "<message 2>",
-        "text": "<1006 chars sha256:6955141bbd8aeaa6 S0\n\n推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理…推理推理推理\n✽ Thinking...>",
+        "text": "<1001 chars sha256:3cc706393184fabd S0\n\n推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理…理推理推理推理推理推理\n<status>>",
         "entities": [
           {
             "type": "blockquote",
@@ -2971,7 +2971,7 @@
       "payload": {
         "chat_id": "<chat>",
         "message_id": "<message 2>",
-        "text": "<1502 chars sha256:50af45026bb5f6b8 S0\n\n推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理…推理推理推理\n✽ Thinking...>",
+        "text": "<1497 chars sha256:764dc42ac822ee1b S0\n\n推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理…理推理推理推理推理推理\n<status>>",
         "entities": [
           {
             "type": "blockquote",
@@ -3020,7 +3020,7 @@
       "payload": {
         "chat_id": "<chat>",
         "message_id": "<message 2>",
-        "text": "<2002 chars sha256:020d5b804c39b5b9 S0\n\n推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理…推理推理推理\n✽ Thinking...>",
+        "text": "<1997 chars sha256:e1f1f4cd06e0a357 S0\n\n推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理…理推理推理推理推理推理\n<status>>",
         "entities": [
           {
             "type": "blockquote",
@@ -3069,7 +3069,7 @@
       "payload": {
         "chat_id": "<chat>",
         "message_id": "<message 2>",
-        "text": "<2503 chars sha256:ce499ae7012948bd S0\n\n推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理…推理推理推理\n✽ Thinking...>",
+        "text": "<2498 chars sha256:c688046184ea0e07 S0\n\n推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理…理推理推理推理推理推理\n<status>>",
         "entities": [
           {
             "type": "expandable_blockquote",
@@ -3128,7 +3128,7 @@
       "payload": {
         "chat_id": "<chat>",
         "message_id": "<message 2>",
-        "text": "<3001 chars sha256:e64759557daae34e S0\n\n推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理…推理推理推理\n✽ Thinking...>",
+        "text": "<2996 chars sha256:5e08c472d3296371 S0\n\n推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理…理推理推理推理推理推理\n<status>>",
         "entities": [
           {
             "type": "expandable_blockquote",
@@ -3192,7 +3192,7 @@
       "payload": {
         "chat_id": "<chat>",
         "message_id": "<message 2>",
-        "text": "<3503 chars sha256:9adb12a322b5b556 S0\n\n推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理…推理推理推理\n✽ Thinking...>",
+        "text": "<3498 chars sha256:759d37a13fde19c1 S0\n\n推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理…理推理推理推理推理推理\n<status>>",
         "entities": [
           {
             "type": "expandable_blockquote",
@@ -3256,7 +3256,7 @@
       "payload": {
         "chat_id": "<chat>",
         "message_id": "<message 2>",
-        "text": "<1180 chars sha256:fafb5b982ccd519e 🧠 查看完整思考过程\nS4\n\n推理推理推理推理推理推理推理推理推理推理推理推理…推理推理推理\n✽ Thinking...>",
+        "text": "<1175 chars sha256:3df4d575ca53e14b 🧠 查看完整思考过程\nS4\n\n推理推理推理推理推理推理推理推理推理推理推理推理…理推理推理推理推理推理\n<status>>",
         "entities": [
           {
             "type": "text_link",
@@ -3310,7 +3310,7 @@
       "payload": {
         "chat_id": "<chat>",
         "message_id": "<message 2>",
-        "text": "<1440 chars sha256:bdc88e83fc222789 🧠 查看完整思考过程\nS4\n\n推理推理推理推理推理推理推理推理推理推理推理推理…推理推理推理\n✽ Thinking...>",
+        "text": "<1435 chars sha256:2fefc1d1ffb7c7db 🧠 查看完整思考过程\nS4\n\n推理推理推理推理推理推理推理推理推理推理推理推理…理推理推理推理推理推理\n<status>>",
         "entities": [
           {
             "type": "text_link",
@@ -3419,7 +3419,7 @@
       ],
       "payload": {
         "chat_id": "<chat>",
-        "text": "✽ Thinking...",
+        "text": "<status>",
         "reply_parameters": {
           "message_id": "<message 1>"
         },
@@ -3449,7 +3449,7 @@
       "payload": {
         "chat_id": "<chat>",
         "message_id": "<message 2>",
-        "text": "答案。\n✽ Thinking...",
+        "text": "答案。\n<status>",
         "reply_markup": {
           "inline_keyboard": [
             [
@@ -3476,7 +3476,7 @@
       "payload": {
         "chat_id": "<chat>",
         "message_id": "<message 2>",
-        "text": "<514 chars sha256:4bde42c04ee1d14e S0\n\n推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理…推理\n答案。\n✽ Thinking...>",
+        "text": "<509 chars sha256:3fd8b8a08b6766b3 S0\n\n推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理…理推理推理推理\n答案。\n<status>>",
         "entities": [
           {
             "type": "expandable_blockquote",
@@ -3515,7 +3515,7 @@
       "payload": {
         "chat_id": "<chat>",
         "message_id": "<message 2>",
-        "text": "<1010 chars sha256:67968b35e37c3182 S0\n\n推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理…推理\n答案。\n✽ Thinking...>",
+        "text": "<1005 chars sha256:75b5ac9d7505db88 S0\n\n推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理…理推理推理推理\n答案。\n<status>>",
         "entities": [
           {
             "type": "expandable_blockquote",
@@ -3559,7 +3559,7 @@
       "payload": {
         "chat_id": "<chat>",
         "message_id": "<message 2>",
-        "text": "<1506 chars sha256:a4d07715e444ceae S0\n\n推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理…推理\n答案。\n✽ Thinking...>",
+        "text": "<1501 chars sha256:48b1d8bf2cd5bbe9 S0\n\n推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理…理推理推理推理\n答案。\n<status>>",
         "entities": [
           {
             "type": "expandable_blockquote",
@@ -3608,7 +3608,7 @@
       "payload": {
         "chat_id": "<chat>",
         "message_id": "<message 2>",
-        "text": "<2006 chars sha256:ce62249a2e576f3f S0\n\n推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理…推理\n答案。\n✽ Thinking...>",
+        "text": "<2001 chars sha256:c0654f8610b871cb S0\n\n推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理…理推理推理推理\n答案。\n<status>>",
         "entities": [
           {
             "type": "expandable_blockquote",
@@ -3657,7 +3657,7 @@
       "payload": {
         "chat_id": "<chat>",
         "message_id": "<message 2>",
-        "text": "<2502 chars sha256:f7f9d379304e08d4 S0\n\n推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理…推理\n答案。\n✽ Thinking...>",
+        "text": "<2497 chars sha256:28f220209e50f64c S0\n\n推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理…理推理推理推理\n答案。\n<status>>",
         "entities": [
           {
             "type": "expandable_blockquote",
@@ -3711,7 +3711,7 @@
       "payload": {
         "chat_id": "<chat>",
         "message_id": "<message 2>",
-        "text": "<2998 chars sha256:5207ad109b57039f S0\n\n推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理…推理\n答案。\n✽ Thinking...>",
+        "text": "<2993 chars sha256:84a1dee7528d7309 S0\n\n推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理…理推理推理推理\n答案。\n<status>>",
         "entities": [
           {
             "type": "expandable_blockquote",
@@ -3770,7 +3770,7 @@
       "payload": {
         "chat_id": "<chat>",
         "message_id": "<message 2>",
-        "text": "<3498 chars sha256:f237fa1d73c08c1b S0\n\n推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理…推理\n答案。\n✽ Thinking...>",
+        "text": "<3493 chars sha256:a9028d72bfb240cd S0\n\n推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理推理…理推理推理推理\n答案。\n<status>>",
         "entities": [
           {
             "type": "expandable_blockquote",
@@ -3909,7 +3909,7 @@
       "payload": {
         "chat_id": "<chat>",
         "message_id": "<message 3>",
-        "text": "答案。\n✽ Thinking...",
+        "text": "答案。\n<status>",
         "reply_markup": {
           "inline_keyboard": [
             [
@@ -3998,7 +3998,7 @@
       ],
       "payload": {
         "chat_id": "<chat>",
-        "text": "✽ Thinking...",
+        "text": "<status>",
         "reply_parameters": {
           "message_id": "<message 1>"
         },
@@ -4294,7 +4294,7 @@
       ],
       "payload": {
         "chat_id": "<chat>",
-        "text": "✽ Thinking...",
+        "text": "<status>",
         "reply_parameters": {
           "message_id": "<message 1>"
         },

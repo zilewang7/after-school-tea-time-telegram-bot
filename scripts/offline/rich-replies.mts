@@ -12,8 +12,10 @@
  * the switch off, the full call log of each is compared, call by call, with
  * the log the code made before rich delivery existed
  * (fixtures/rich-guard-calls.json, recorded on a4beb40, the commit before the
- * delivery code). Only when the default path changes on purpose is the
- * fixture recorded again, on the code of that change:
+ * delivery code; recorded again when the rotating idle status word was sealed
+ * out of the log, which only normalizes that wall-clock-dependent text). Only
+ * when the default path changes on purpose is the fixture recorded again, on
+ * the code of that change:
  * RICH_GUARD_RECORD=1 npx tsx scripts/offline/rich-replies.mts
  *
  * Run: pnpm test:offline rich-replies
@@ -348,10 +350,20 @@ const LONG_STRING = 300;
  * (/g/), the random thinking token of the fast page (/t/) and of the Mini App
  * route (/think/), and the Mini App direct links (startapp=<kind letter><token>,
  * the kind stays visible).
+ *
+ * The idle status word rotates on a wall-clock timer (streaming-editor.ts: one
+ * of twelve symbol+word pairs, at most one rotation every 3 seconds), so a
+ * loaded machine can catch a frame on another rotation than the recorded one —
+ * and a long frame's hash would differ with it. The word is sealed here, before
+ * the hash, so the guard pins the calls and not the pacing.
  */
 const RUN_DEPENDENT_TOKENS: readonly (readonly [RegExp, string])[] = [
     [/\/(g|t|think)\/[\w.~-]+/g, '/$1/<token>'],
     [/startapp=([a-z])[\w-]+/g, 'startapp=$1<token>'],
+    [
+        /[✽◐◑◒◓●◯◈◇◆▲▼]\s+(?:Thinking|Processing|Analyzing|Computing|Synthesizing|Reasoning|Generating|Composing|Reflecting|Iterating|Optimizing|Finalizing)\.\.\./g,
+        '<status>',
+    ],
 ];
 
 const compactString = (value: string): string => {
@@ -360,6 +372,15 @@ const compactString = (value: string): string => {
     const digest = createHash('sha256').update(hidden).digest('hex').slice(0, 16);
     return `<${hidden.length} chars sha256:${digest} ${hidden.slice(0, 40)}…${hidden.slice(-20)}>`;
 };
+
+/**
+ * A status-only refresh: when the rotating word changes while nothing else does,
+ * the editor re-sends the same content with the new word. After the seal it is
+ * the call before it, and under load it may appear (or not) between two frames,
+ * so it is dropped and the log does not depend on the wall clock.
+ */
+const withoutStatusRefreshes = (calls: readonly CallShape[]): CallShape[] =>
+    calls.filter((call, index) => index === 0 || json(call) !== json(calls[index - 1]));
 
 /** Ids and signed page tokens differ between runs; everything else is compared as sent */
 const normalizeCalls = (calls: readonly TelegramCall[]): CallShape[] => {
@@ -386,11 +407,29 @@ const normalizeCalls = (calls: readonly TelegramCall[]): CallShape[] => {
         }
         return value;
     };
-    return calls.map((call) => ({
-        method: call.method,
-        keys: Object.keys(call.payload),
-        payload: normalize(call.payload, ''),
-    }));
+    return withoutStatusRefreshes(
+        calls.map((call) => ({
+            method: call.method,
+            keys: Object.keys(call.payload),
+            payload: normalize(call.payload, ''),
+        }))
+    );
+};
+
+/**
+ * The typing indicator re-sends its action every 5 seconds (typing-indicator.ts),
+ * so a scenario that runs long on a loaded machine can log one more than the
+ * recording did. The recording says how many replies started (one action each),
+ * so the extra ones are dropped; their payload is the same as the kept one.
+ */
+const capChatActions = (calls: readonly CallShape[], expected: readonly unknown[]): CallShape[] => {
+    const expectedCount = expected.filter((call) => asRecord(call).method === 'sendChatAction').length;
+    let seen = 0;
+    return calls.filter((call) => {
+        if (call.method !== 'sendChatAction') return true;
+        seen += 1;
+        return seen <= expectedCount;
+    });
 };
 
 interface GuardScenario {
@@ -569,23 +608,60 @@ results.push(
             const actualCalls = recorded[scenario.name] ?? [];
             const stored = expected[scenario.name];
             const expectedCalls: unknown[] = Array.isArray(stored) ? stored : [];
+            // The typing indicator re-sends its action every 5 seconds: on a
+            // loaded machine one extra can appear. The fixture pins how many
+            // replies sent it, not how long the machine took.
+            const pacedCalls = capChatActions(actualCalls, expectedCalls);
             const firstDifference = Array.from(
-                { length: Math.max(actualCalls.length, expectedCalls.length) },
+                { length: Math.max(pacedCalls.length, expectedCalls.length) },
                 (_, index) => index
-            ).find((index) => json(actualCalls[index]) !== json(expectedCalls[index]));
+            ).find((index) => json(pacedCalls[index]) !== json(expectedCalls[index]));
             expect(
                 firstDifference === undefined,
                 firstDifference === undefined
-                    ? `${scenario.name}: all ${actualCalls.length} calls as before`
+                    ? `${scenario.name}: all ${pacedCalls.length} calls as before`
                     : `${scenario.name}: call ${firstDifference} differs\n  expected ${json(
                           expectedCalls[firstDifference]
-                      )}\n  actual   ${json(actualCalls[firstDifference])}`
+                      )}\n  actual   ${json(pacedCalls[firstDifference])}`
             );
             expect(
-                actualCalls.every((call) => call.method !== 'sendRichMessage' && !call.keys.includes('rich_message')),
+                pacedCalls.every((call) => call.method !== 'sendRichMessage' && !call.keys.includes('rich_message')),
                 `${scenario.name}: no rich call at all`
             );
         }
+    })
+);
+
+results.push(
+    await runCase('case 1: a rotated status word and a repeated typing action are no call-log change', async () => {
+        // The two wall-clock artifacts a loaded machine can add to a guard run:
+        // the idle status word rotates (measured 2026-11-15: a shared-process run
+        // flaked at a call carrying "✽ Thinking...") and the typing indicator
+        // re-sends its action. Both are sealed out before comparing.
+        const frame = (text: string): TelegramCall => ({
+            method: 'editMessageText',
+            payload: { chat_id: -1, message_id: 2, text },
+        });
+        const longFrame = (status: string): TelegramCall => frame(`${'内容'.repeat(400)}\n${status}`);
+        const recordedStatus = normalizeCalls([frame('答案。\n✽ Thinking...'), longFrame('✽ Thinking...')]);
+        const rotated = normalizeCalls([frame('答案。\n◈ Composing...'), longFrame('◈ Composing...')]);
+        expect(json(recordedStatus) === json(rotated), 'the rotating word is sealed, in a short and a hashed frame');
+
+        // A status-only refresh after the seal is the same call as the one before it
+        const refreshed = normalizeCalls([
+            frame('答案。\n◐ Processing...'),
+            frame('答案。\n◑ Analyzing...'),
+        ]);
+        expect(refreshed.length === 1, `a status-only refresh is dropped (got ${refreshed.length})`);
+
+        // The typing indicator's extra action is dropped against the recording's count
+        const action = (): TelegramCall => ({ method: 'sendChatAction', payload: { chat_id: -1, action: 'typing' } });
+        const withRefresh = normalizeCalls([action(), frame('一'), action(), frame('二')]);
+        const recordedActions = normalizeCalls([action(), frame('一'), frame('二')]);
+        expect(
+            json(capChatActions(withRefresh, recordedActions)) === json(recordedActions),
+            'the extra typing action is dropped, its payload is the kept one'
+        );
     })
 );
 
