@@ -522,6 +522,29 @@ results.push(
 );
 
 results.push(
+    await runCase('a stray closing tag in the answer is text, not a block wrapper', async () => {
+        // Someone explaining HTML ends a line with `</p>`: only a line that is
+        // one whole <p> element is unwrapped, this one must keep its characters.
+        const blocks = parseRichAnswer(
+            ['正文：HTML 的段落标签写作 </p>', '', '<p><i>（另有 1 张图未能内嵌发送）</i></p>'].join('\n'),
+            [mediaItem(0)]
+        );
+        const answer = blocks[0];
+        const answerText = answer?.kind === 'paragraph' ? answer.runs.map((run) => run.text).join('') : '';
+        expect(
+            answerText === '正文：HTML 的段落标签写作 </p>',
+            `the answer keeps its own closing tag (got ${JSON.stringify(answerText)})`
+        );
+        const note = blocks[1];
+        const noteText = note?.kind === 'paragraph' ? note.runs.map((run) => run.text).join('') : '';
+        expect(
+            noteText === '（另有 1 张图未能内嵌发送）',
+            `the whole <p> line is still unwrapped (got ${JSON.stringify(noteText)})`
+        );
+    })
+);
+
+results.push(
     await runCase('a fenced tg://photo example is code, not a picture to map', async () => {
         const blocks = parseRichAnswer(FENCE_WITH_MEDIA_TEXT_SNAPSHOT, [mediaItem(0)]);
         expect(kindsOf(blocks) === 'pre,photo', `fence then picture (got ${kindsOf(blocks)})`);

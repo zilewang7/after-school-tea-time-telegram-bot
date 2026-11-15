@@ -963,6 +963,8 @@ a.button {
 
 .rich-answer__list-item {
     margin: 2px 0;
+    /* A list item's continuation lines are hard breaks in the runs: keep them */
+    white-space: pre-wrap;
 }
 
 .rich-answer__quote {
@@ -1035,6 +1037,7 @@ a.button {
     border: 1px solid var(--color-separator);
     text-align: left;
     vertical-align: top;
+    white-space: pre-wrap;
 }
 
 .rich-answer__table th {

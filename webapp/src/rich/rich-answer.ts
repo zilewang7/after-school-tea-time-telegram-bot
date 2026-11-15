@@ -241,11 +241,11 @@ const stripBlockParagraphTags = (lines: readonly string[]): string[] => {
             continue;
         }
         const leading = /^\s*/u.exec(line)?.[0] ?? '';
-        const body = line
-            .slice(leading.length)
-            .replace(/^<p>\s*/iu, '')
-            .replace(/\s*<\/p>$/iu, '');
-        stripped.push(`${leading}${body}`);
+        const body = line.slice(leading.length);
+        // Only a line that is one whole <p> element is unwrapped: a stray tag in
+        // the answer's own text (someone explaining HTML) is text, not markup.
+        const paragraph = /^<p\b[^>]*>([\s\S]*)<\/p>\s*$/iu.exec(body);
+        stripped.push(`${leading}${paragraph === null ? body : (paragraph[1] ?? '')}`);
     }
     return stripped;
 };
