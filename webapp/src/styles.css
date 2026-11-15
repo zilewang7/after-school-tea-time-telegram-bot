@@ -897,6 +897,184 @@ a.button {
     overflow-wrap: anywhere;
 }
 
+/* A rich reply's answer blocks (v5.1): the snapshot's order with its pictures
+   in place, styled like the chat client showed it. */
+.rich-answer {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    overflow-wrap: anywhere;
+}
+
+.rich-answer.compact {
+    gap: 4px;
+    font-size: 14px;
+}
+
+.rich-answer__paragraph {
+    margin: 0;
+    white-space: pre-wrap;
+}
+
+.rich-answer__heading {
+    margin: 4px 0 0;
+    line-height: 1.3;
+    font-weight: 600;
+}
+
+.rich-answer__heading--1 {
+    font-size: 20px;
+}
+
+.rich-answer__heading--2 {
+    font-size: 18px;
+}
+
+.rich-answer__heading--3 {
+    font-size: 17px;
+}
+
+.rich-answer__heading--4 {
+    font-size: 16px;
+}
+
+.rich-answer__heading--5 {
+    font-size: 15px;
+}
+
+.rich-answer__heading--6 {
+    font-size: 14px;
+}
+
+.rich-answer.compact .rich-answer__heading {
+    margin-top: 2px;
+}
+
+.rich-answer__list {
+    margin: 0;
+    padding-left: 22px;
+}
+
+.rich-answer__list-item {
+    margin: 2px 0;
+}
+
+.rich-answer__quote {
+    margin: 0;
+    padding: 2px 0 2px 10px;
+    border-left: 3px solid var(--color-accent);
+    color: var(--color-text);
+}
+
+.rich-answer__inline-quote {
+    border-left: 2px solid var(--color-separator);
+    padding-left: 6px;
+}
+
+.rich-answer__pre {
+    margin: 0;
+    padding: 8px 10px;
+    border: 1px solid var(--color-separator);
+    border-radius: var(--radius);
+    background: var(--color-page-bg);
+    overflow-x: auto;
+    white-space: pre;
+    font: 13px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+.rich-answer.compact .rich-answer__pre {
+    padding: 6px 8px;
+    font-size: 12px;
+}
+
+.rich-answer__code {
+    padding: 0 3px;
+    border-radius: 4px;
+    background: var(--color-page-bg);
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 0.92em;
+}
+
+.rich-answer__link {
+    color: var(--color-link);
+    text-decoration: none;
+}
+
+.rich-answer__link:hover,
+.rich-answer__link:focus {
+    text-decoration: underline;
+}
+
+.rich-answer__divider {
+    margin: 4px 0;
+    border: 0;
+    border-top: 1px solid var(--color-separator);
+}
+
+.rich-answer__table-wrap {
+    max-width: 100%;
+    overflow-x: auto;
+}
+
+.rich-answer__table {
+    width: max-content;
+    max-width: 100%;
+    border-collapse: collapse;
+    font-size: 14px;
+}
+
+.rich-answer__table th,
+.rich-answer__table td {
+    padding: 4px 8px;
+    border: 1px solid var(--color-separator);
+    text-align: left;
+    vertical-align: top;
+}
+
+.rich-answer__table th {
+    background: var(--color-page-bg);
+    font-weight: 600;
+}
+
+.rich-answer__figure {
+    margin: 0;
+}
+
+.rich-answer__caption {
+    margin-top: 4px;
+    color: var(--color-hint);
+    font-size: 13px;
+    white-space: pre-wrap;
+}
+
+.rich-answer__spoiler {
+    padding: 0 2px;
+    border-radius: 4px;
+    background: var(--color-hint);
+    color: transparent;
+    cursor: pointer;
+    user-select: none;
+}
+
+.rich-answer__spoiler.revealed {
+    background: transparent;
+    color: inherit;
+    cursor: auto;
+}
+
+.rich-answer__plain {
+    margin: 0;
+    color: var(--color-hint);
+}
+
+.rich-answer__detail-link {
+    display: inline-block;
+    margin-top: 4px;
+    color: var(--color-link);
+    font-size: 13px;
+    text-decoration: none;
+}
+
 /* The flat (share-style) conversation view: chronological chat bubbles, no indentation */
 .flat-conversation {
     display: flex;

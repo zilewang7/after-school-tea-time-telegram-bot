@@ -6,6 +6,8 @@ import { CollapsibleSection } from '../../../components/collapsible-section';
 import { FoldableText } from '../../../components/foldable-text';
 import { MediaAttachmentView } from '../../../components/media-attachment-view';
 import { formatDateTime } from '../../../format';
+import { parseRichAnswer } from '../../../rich/rich-answer';
+import { RichAnswerView } from '../../../rich/rich-answer-view';
 import { replyPath } from '../../../routing/paths';
 import { ReplyTargetBlock } from './reply-target-block';
 
@@ -64,6 +66,15 @@ const ObserverBubble = ({ node }: { node: ObserverUserNode }) => (
 const BotBubble = ({ node, chatId }: { node: BotNode; chatId: number }) => {
     const reply = node.reply;
     const text = reply.text === null || reply.text === '' ? null : reply.text;
+    // A v5.1 rich reply keeps its answer as a snapshot with the pictures in place
+    const richBlocks = useMemo(
+        () =>
+            reply.richAnswerMarkdown === undefined || reply.richAnswerMarkdown === ''
+                ? null
+                : parseRichAnswer(reply.richAnswerMarkdown, reply.media),
+        [reply.richAnswerMarkdown, reply.media]
+    );
+    const detailPath = replyPath(chatId, node.messageId);
     return (
         <article className={node.excluded ? 'flat-bubble bot excluded' : 'flat-bubble bot'}>
             <p className="flat-bubble-head">
@@ -79,16 +90,24 @@ const BotBubble = ({ node, chatId }: { node: BotNode; chatId: number }) => {
                 <span className="hint tree-date">{formatDateTime(node.date)}</span>
             </p>
             {node.replyTo !== null && <ReplyTargetBlock target={node.replyTo} />}
-            {reply.versionCount === 0 ? (
+            {richBlocks !== null ? (
+                <>
+                    <RichAnswerView blocks={richBlocks} media={reply.media} compact showCaptions={false} />
+                    {reply.versionCount > 0 && (
+                        <Link className="rich-answer__detail-link" to={detailPath}>
+                            版本详情 ›
+                        </Link>
+                    )}
+                </>
+            ) : reply.versionCount === 0 ? (
                 text === null ? <p className="hint">（无正文）</p> : <FoldableText text={text} foldLines={12} foldChars={800} />
             ) : (
-                <Link className="flat-text-link" to={replyPath(chatId, node.messageId)}>
+                <Link className="flat-text-link" to={detailPath}>
                     {text === null ? <p className="hint">（无正文，点开看版本详情）</p> : <FoldableText text={text} foldLines={12} foldChars={800} />}
                 </Link>
             )}
-            {reply.media.map((media) => (
-                <MediaAttachmentView key={media.url} media={media} />
-            ))}
+            {richBlocks === null &&
+                reply.media.map((media) => <MediaAttachmentView key={media.url} media={media} />)}
             {reply.errorMessage !== null && <p className="error-text prewrap">⚠ {reply.errorMessage}</p>}
         </article>
     );

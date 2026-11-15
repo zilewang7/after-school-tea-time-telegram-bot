@@ -40,6 +40,12 @@ export interface ReplySummaryView {
     wasStoppedByUser: boolean;
     /** The current version's pictures / sticker / file, in delivery order */
     media: MediaView[];
+    /**
+     * The current version's rendered answer section, only when it embeds a
+     * picture: the Mini App lays the tree node out the way Telegram does.
+     * Absent for a text-only rich answer and for every entities version.
+     */
+    richAnswerMarkdown?: string;
 }
 
 export interface AttachmentView {
@@ -82,6 +88,12 @@ export interface ReplyVersionView {
     attachments: AttachmentView[];
     /** The version's pictures / sticker / file, each served by its own signed `/m/…` URL */
     media: MediaView[];
+    /**
+     * The rendered answer section of a rich version (design 2026-1115-2355):
+     * media blocks `![](tg://photo?id=imgK "caption")` stand where the model put
+     * the picture. Absent for entities versions and for an empty answer.
+     */
+    richAnswerMarkdown?: string;
     /** The chat UI card this version sent; absent without a widget or a signer */
     widget?: ReplyWidgetView;
     hasModelParts: boolean;
@@ -131,6 +143,20 @@ export const mediaViewsOfVersion = (
     );
 };
 
+/**
+ * The rendered answer section a rich delivery wrote. Only a version that went
+ * out as a rich message has one (`delivery` is rich or rich-text); an entities
+ * version never does, and a blank snapshot is no answer.
+ */
+const richAnswerSnapshotOf = (version: ResponseVersion | null): string | undefined => {
+    if (version === null || version.delivery === undefined) return undefined;
+    const markdown = version.richAnswerMarkdown;
+    return typeof markdown === 'string' && markdown.trim() !== '' ? markdown : undefined;
+};
+
+/** Whether the snapshot embeds a picture by media id, i.e. the node needs the layout */
+const snapshotEmbedsPictures = (markdown: string): boolean => markdown.includes('tg://photo?id=');
+
 /** The tree node's summary of the current version; a bot row without bot_responses keeps its text */
 export const toReplySummaryView = (
     response: BotResponse | undefined,
@@ -153,6 +179,10 @@ export const toReplySummaryView = (
     }
     const versions = response.getVersions();
     const current = response.getCurrentVersion();
+    // The tree hands the snapshot over only when it can put pictures back in
+    // place; a text-only rich answer already reads correctly as `text`.
+    const snapshot = richAnswerSnapshotOf(current);
+    const treeSnapshot = snapshot !== undefined && snapshotEmbedsPictures(snapshot) ? snapshot : undefined;
     return {
         firstMessageId: response.messageId,
         versionCount: versions.length,
@@ -164,6 +194,7 @@ export const toReplySummaryView = (
         errorMessage: current === null ? null : textOrNull(current.errorMessage),
         wasStoppedByUser: current?.wasStoppedByUser === true,
         media: current === null ? [] : mediaViewsOfVersion(mediaSigner, response.chatId, response.messageId, current),
+        ...(treeSnapshot === undefined ? {} : { richAnswerMarkdown: treeSnapshot }),
     };
 };
 
@@ -245,6 +276,7 @@ const toVersionView = (
     options: ReplyDetailOptions
 ): ReplyVersionView => {
     const widget = widgetViewOf(version, response, options);
+    const snapshot = richAnswerSnapshotOf(version);
     return {
         versionId: version.versionId,
         createdAt: textOrNull(version.createdAt) ?? '',
@@ -257,6 +289,7 @@ const toVersionView = (
         wasStoppedByUser: version.wasStoppedByUser === true,
         attachments: attachmentsOf(version),
         media: mediaViewsOfVersion(options.mediaSigner, response.chatId, response.messageId, version),
+        ...(snapshot === undefined ? {} : { richAnswerMarkdown: snapshot }),
         ...(widget === undefined ? {} : { widget }),
         hasModelParts: hasModelParts(version),
         metrics,

@@ -5,6 +5,8 @@ import { CollapsibleSection } from '../../../components/collapsible-section';
 import { MediaAttachmentView } from '../../../components/media-attachment-view';
 import { FoldableText } from '../../../components/foldable-text';
 import { formatDateTime } from '../../../format';
+import { parseRichAnswer } from '../../../rich/rich-answer';
+import { RichAnswerView } from '../../../rich/rich-answer-view';
 import { replyPath } from '../../../routing/paths';
 import { NodeMenu } from './node-menu';
 import type { TreeRow } from './tree-layout';
@@ -56,6 +58,15 @@ export const BotNodeRow = ({ row, node, chatId, member, pending, onExclude, onRe
         () => (thinkingText === null ? 0 : Array.from(thinkingText).length),
         [thinkingText]
     );
+    // A v5.1 rich reply keeps its answer as a snapshot with the pictures in
+    // place; the tree shows it compact instead of the text plus thumbnails.
+    const richBlocks = useMemo(
+        () =>
+            reply.richAnswerMarkdown === undefined || reply.richAnswerMarkdown === ''
+                ? null
+                : parseRichAnswer(reply.richAnswerMarkdown, reply.media),
+        [reply.richAnswerMarkdown, reply.media]
+    );
     const detailPath = replyPath(chatId, node.messageId);
     const handleExclude = useCallback(() => onExclude(node.messageId), [onExclude, node.messageId]);
     const handleRestore = useCallback(() => onRestore(node.messageId), [onRestore, node.messageId]);
@@ -79,9 +90,18 @@ export const BotNodeRow = ({ row, node, chatId, member, pending, onExclude, onRe
                 )}
             </div>
 
-            {/* A notice (/model's switch text, /chat's help) has no versions to
-                open: its detail route would 404, so the text is not a link */}
-            {reply.versionCount === 0 ? (
+            {richBlocks !== null ? (
+                <div className="tree-node-body">
+                    <RichAnswerView blocks={richBlocks} media={reply.media} compact showCaptions={false} />
+                    {reply.versionCount > 0 && (
+                        <Link className="rich-answer__detail-link" to={detailPath}>
+                            版本详情 ›
+                        </Link>
+                    )}
+                </div>
+            ) : /* A notice (/model's switch text, /chat's help) has no versions to
+                   open: its detail route would 404, so the text is not a link */
+            reply.versionCount === 0 ? (
                 <div className="tree-node-body">
                     {reply.text === null || reply.text === '' ? (
                         <p className="hint">（无正文）</p>
@@ -99,9 +119,8 @@ export const BotNodeRow = ({ row, node, chatId, member, pending, onExclude, onRe
                 </Link>
             )}
 
-            {reply.media.map((media) => (
-                <MediaAttachmentView key={media.url} media={media} compact />
-            ))}
+            {richBlocks === null &&
+                reply.media.map((media) => <MediaAttachmentView key={media.url} media={media} compact />)}
 
             {thinkingText !== null && thinkingText !== '' && (
                 <CollapsibleSection title="思考" summary={`${thinkingLength} 字`}>

@@ -652,6 +652,160 @@ const cases: { name: string; body: () => Promise<void> }[] = [
             expect(served.status === 200 && (await bytesOf(served)).equals(PNG_BYTES), 'the linked message media is served');
         },
     },
+    {
+        // v5.1: the Mini App renders a rich reply the way Telegram does, so the
+        // version hands it the rendered answer snapshot and where each picture
+        // sits (design 2026-1115-2355 §三.1).
+        name: 'a rich version exposes its answer snapshot and where each picture sits',
+        body: async () => {
+            const { rootId, botId } = await seedConversation();
+            const richSnapshot = [
+                '### 今天的图形',
+                '',
+                '![](tg://photo?id=img1 "第一张：红色圆形")',
+                '',
+                '**第二段**，见图二。',
+                '',
+                '![](tg://photo?id=img2 "第二张：绿色三角形")',
+            ].join('\n');
+            await makeReply(botId, rootId, [
+                versionOf(1, {
+                    delivery: 'rich',
+                    richRenderer: 'v1',
+                    richAnswerMarkdown: richSnapshot,
+                    media: [
+                        {
+                            placement: 'inline',
+                            id: 'img1',
+                            mediaKey: 'out:sha256:inline-one',
+                            mimeType: 'image/png',
+                            sizeBytes: PNG_BYTES.length,
+                            caption: '第一张：红色圆形',
+                        },
+                        {
+                            placement: 'inline',
+                            id: 'img2',
+                            mediaKey: 'out:sha256:inline-two',
+                            mimeType: 'image/png',
+                            sizeBytes: PNG_BYTES.length,
+                            caption: '第二张：绿色三角形',
+                        },
+                    ],
+                }),
+                versionOf(2, {
+                    imageBase64: PNG_BYTES.toString('base64'),
+                    imageCaption: '旧版单图图注',
+                    // A stale snapshot on an entities version must stay hidden
+                    richAnswerMarkdown: 'entities 版本不该出现快照',
+                }),
+                versionOf(3, {
+                    delivery: 'rich-text',
+                    richRenderer: 'v1',
+                    richAnswerMarkdown: '只能把图片放在下面了。',
+                }),
+            ]);
+
+            const detail = await jsonOf(await call(`/api/chats/${GROUP}/replies/${botId}`, ALICE));
+            const rich = detail.versions?.[0] ?? {};
+            expect(rich.richAnswerMarkdown === richSnapshot, `the rich version carries its answer snapshot (got ${JSON.stringify(rich.richAnswerMarkdown)})`);
+            expect(Array.isArray(rich.media) && rich.media.length === 2, `two pictures (got ${JSON.stringify(rich.media)})`);
+            const inline = rich.media[0] ?? {};
+            expect(
+                inline.placement === 'inline' && inline.id === 'img1' && inline.caption === '第一张：红色圆形',
+                `an inline picture names its placement, media id and caption (got ${JSON.stringify(inline)})`
+            );
+            expect(
+                rich.media[1]?.id === 'img2' && rich.media[1]?.caption === '第二张：绿色三角形',
+                `the second inline picture too (got ${JSON.stringify(rich.media[1])})`
+            );
+            expect(
+                String(inline.url).startsWith('/m/'),
+                `and still carries its signed URL (got ${JSON.stringify(inline.url)})`
+            );
+
+            // An entities version has no snapshot, and its legacy single picture
+            // is a trailing attachment carrying the stored caption
+            const entities = detail.versions?.[1] ?? {};
+            expect(!('richAnswerMarkdown' in entities), `an entities version has no snapshot (got ${JSON.stringify(entities.richAnswerMarkdown)})`);
+            const legacy = entities.media?.[0] ?? {};
+            expect(
+                legacy.placement === 'attachment' && legacy.caption === '旧版单图图注' && legacy.id === undefined,
+                `the legacy single picture is an attachment with its caption and no id (got ${JSON.stringify(legacy)})`
+            );
+
+            // A rich-text fallback (L2) has a snapshot but no inline pictures:
+            // the detail shows its text snapshot, the media list stays empty
+            const fallback = detail.versions?.[2] ?? {};
+            expect(
+                fallback.richAnswerMarkdown === '只能把图片放在下面了。',
+                `a rich-text version still carries its snapshot (got ${JSON.stringify(fallback.richAnswerMarkdown)})`
+            );
+            expect(
+                Array.isArray(fallback.media) && fallback.media.length === 0,
+                `and has no picture in the body (got ${JSON.stringify(fallback.media)})`
+            );
+        },
+    },
+    {
+        // The tree payload only grows for a rich answer that embeds pictures;
+        // text-only rich and entities replies keep the payload they had.
+        name: 'a tree summary carries the answer snapshot only when the answer embeds pictures',
+        body: async () => {
+            const inlineSnapshot = '开头。\n\n![](tg://photo?id=img1 "一张")';
+            const summaryOfReply = async (versions: ResponseVersion[]): Promise<any> => {
+                const { rootId, botId } = await seedConversation();
+                await makeReply(botId, rootId, versions);
+                const tree = await jsonOf(await call(`/api/chats/${GROUP}/conversations/${rootId}`, ALICE));
+                return findNode(tree, botId)?.reply;
+            };
+
+            const withPictures = await summaryOfReply([
+                versionOf(1, {
+                    delivery: 'rich',
+                    richRenderer: 'v1',
+                    richAnswerMarkdown: inlineSnapshot,
+                    media: [
+                        {
+                            placement: 'inline',
+                            id: 'img1',
+                            mediaKey: 'out:sha256:summary-inline',
+                            mimeType: 'image/png',
+                            sizeBytes: PNG_BYTES.length,
+                            caption: '一张',
+                        },
+                    ],
+                }),
+            ]);
+            expect(
+                withPictures?.richAnswerMarkdown === inlineSnapshot,
+                `the summary carries the snapshot when pictures sit inside it (got ${JSON.stringify(withPictures?.richAnswerMarkdown)})`
+            );
+            expect(
+                withPictures?.media?.[0]?.placement === 'inline' && withPictures?.media?.[0]?.id === 'img1',
+                `and its media keeps the inline placement (got ${JSON.stringify(withPictures?.media?.[0])})`
+            );
+
+            const textOnly = await summaryOfReply([
+                versionOf(1, {
+                    delivery: 'rich-text',
+                    richRenderer: 'v1',
+                    richAnswerMarkdown: '只能把图片放在下面了。\n\n（另有 2 张图未能内嵌发送）',
+                }),
+            ]);
+            expect(
+                !('richAnswerMarkdown' in (textOnly ?? {})),
+                `a text-only rich answer adds no snapshot to the tree (got ${JSON.stringify(textOnly?.richAnswerMarkdown)})`
+            );
+
+            const entities = await summaryOfReply([
+                versionOf(1, { imageBase64: PNG_BYTES.toString('base64'), imageCaption: '图注' }),
+            ]);
+            expect(
+                !('richAnswerMarkdown' in (entities ?? {})),
+                `an entities reply adds no snapshot either (got ${JSON.stringify(entities?.richAnswerMarkdown)})`
+            );
+        },
+    },
 ];
 
 const results: CaseResult[] = [];

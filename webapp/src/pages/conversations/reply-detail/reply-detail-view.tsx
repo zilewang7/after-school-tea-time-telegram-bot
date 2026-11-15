@@ -8,6 +8,8 @@ import { FoldableText } from '../../../components/foldable-text';
 import { formatDateTime } from '../../../format';
 import { formatBytes } from '../../../format-metrics';
 import { conversationPath } from '../../../routing/paths';
+import { parseRichAnswer } from '../../../rich/rich-answer';
+import { RichAnswerView } from '../../../rich/rich-answer-view';
 import { ShareBar } from '../../../share/share-bar';
 import type { ShareTarget } from '../../../share/share-link';
 import { ReplyMetricsPanel } from './reply-metrics-panel';
@@ -55,17 +57,32 @@ const ReplyBody = ({ version, focusWidget }: ReplyBodyProps) => {
         () => (version.thinkingText === null ? 0 : Array.from(version.thinkingText).length),
         [version.thinkingText]
     );
+    // A v5.1 rich version keeps the answer as its delivered snapshot: its
+    // pictures are blocks in that markdown, so the body renders the snapshot
+    // instead of the clean text plus a row of attachments.
+    const richBlocks = useMemo(
+        () =>
+            version.richAnswerMarkdown === undefined || version.richAnswerMarkdown === ''
+                ? null
+                : parseRichAnswer(version.richAnswerMarkdown, version.media),
+        [version.richAnswerMarkdown, version.media]
+    );
     return (
         <>
-            {version.text === '' ? (
+            {richBlocks !== null ? (
+                richBlocks.length === 0 && version.media.length === 0 ? (
+                    <p className="placeholder">这一版没有正文</p>
+                ) : (
+                    <RichAnswerView blocks={richBlocks} media={version.media} />
+                )
+            ) : version.text === '' ? (
                 <p className="placeholder">这一版没有正文</p>
             ) : (
                 <FoldableText text={version.text} foldLines={12} foldChars={900} />
             )}
 
-            {version.media.map((media) => (
-                <MediaAttachmentView key={media.url} media={media} />
-            ))}
+            {richBlocks === null &&
+                version.media.map((media) => <MediaAttachmentView key={media.url} media={media} />)}
 
             {version.thinkingText !== null && version.thinkingText !== '' && (
                 <CollapsibleSection

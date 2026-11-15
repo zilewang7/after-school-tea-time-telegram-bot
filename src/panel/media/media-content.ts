@@ -33,6 +33,18 @@ export interface MediaDescriptor {
     sizeBytes: number | null;
     /** Download name for documents, null for visual media */
     fileName: string | null;
+    /**
+     * The caption the reply stored for this picture, which the Mini App shows
+     * under it in a rich reply. Optional: only reply-version pictures keep one.
+     */
+    caption?: string | null;
+    /**
+     * Where the version delivered this picture: inside the rich body or as a
+     * trailing message / album item. Optional: only reply-version pictures say.
+     */
+    placement?: 'inline' | 'attachment';
+    /** Inline only: the media id the answer snapshot's block references (`img1`) */
+    id?: string | null;
 }
 
 /** A descriptor plus the bytes (inline) or the object (GCS) they live in */
@@ -117,6 +129,9 @@ export const versionMediaDescriptorOf = (version: ResponseVersion): MediaDescrip
             mimeType,
             sizeBytes: base64ByteLength(imageBase64),
             fileName: null,
+            // The legacy single picture went out as one trailing message
+            placement: 'attachment',
+            caption: version.imageCaption ?? null,
         };
     }
     const file = version.file;
@@ -149,6 +164,9 @@ export const versionMediaDescriptorsOf = (version: ResponseVersion): MediaDescri
             mimeType: item.mimeType,
             sizeBytes: item.sizeBytes,
             fileName: null,
+            placement: item.placement,
+            caption: item.caption ?? null,
+            id: item.id ?? null,
         }));
     }
     const single = versionMediaDescriptorOf(version);

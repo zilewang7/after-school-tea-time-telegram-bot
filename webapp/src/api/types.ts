@@ -379,6 +379,11 @@ export interface MediaAttachment {
     // Download name for documents
     fileName: string | null;
     url: string;
+    // v5.1 rich replies: the picture's caption source, where it went, and the
+    // media id the rich answer snapshot references (`img1`…). Absent on older rows.
+    caption?: string | null;
+    placement?: 'inline' | 'attachment';
+    id?: string | null;
 }
 
 /** The message a node answers, as the flat view's reply block shows it */
@@ -549,6 +554,8 @@ export interface ReplySummary {
     wasStoppedByUser: boolean;
     // The current version's attachments in delivery order (v5 replies may carry several)
     media: MediaAttachment[];
+    // The rich answer snapshot, only for v5.1 rich replies with inline pictures
+    richAnswerMarkdown?: string;
 }
 
 export type ReplyOutcome = 'ok' | 'error' | 'stopped' | 'empty';
@@ -678,6 +685,8 @@ export interface ReplyVersion {
     attachments: ReplyAttachment[];
     // The version's attachments in delivery order, each served by its signed /m/… URL
     media: MediaAttachment[];
+    // The rich answer snapshot (rich/rich-text versions only), rendered with its pictures in place
+    richAnswerMarkdown?: string;
     // The rendered card and its signed viewing URLs; undefined for versions without a widget
     widget?: ReplyWidget;
     hasModelParts: boolean;
