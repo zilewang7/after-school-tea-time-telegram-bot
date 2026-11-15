@@ -71,8 +71,8 @@ importers:
         specifier: ^6.0.1
         version: 6.0.1
       telegram-md-entities:
-        specifier: ^0.8.3
-        version: 0.8.3(micromark-util-types@2.0.2)(micromark@4.0.2)
+        specifier: ^0.9.0
+        version: 0.9.0(micromark-util-types@2.0.2)(micromark@4.0.2)
       ts-pattern:
         specifier: ^5.9.2
         version: 5.9.2
@@ -2079,6 +2079,10 @@ packages:
 
   telegram-md-entities@0.8.3:
     resolution: {integrity: sha512-VWR2aFERSgikFUPYlzBLI8I7rTp+9VcnRU7cPKxVHGE9C07vEqAki6TmdIBX6Llcn55zK3KR8RjD+D/xclmWCw==}
+    engines: {node: '>=18'}
+
+  telegram-md-entities@0.9.0:
+    resolution: {integrity: sha512-EXszOUm4h03hMPTWGKn+mza2DKSkLINGK9YNxOOfXiaY0zC22IVmWKau7riEP2tBSG5nYtDXtFKl5iiDECb8WQ==}
     engines: {node: '>=18'}
 
   tinyglobby@0.2.17:
@@ -4243,6 +4247,22 @@ snapshots:
       - supports-color
 
   telegram-md-entities@0.8.3(micromark-util-types@2.0.2)(micromark@4.0.2):
+    dependencies:
+      mdast-util-from-markdown: 2.0.3
+      mdast-util-gfm: 3.1.0
+      micromark-extension-cjk-friendly: 2.0.1(micromark-util-types@2.0.2)(micromark@4.0.2)
+      micromark-extension-cjk-friendly-gfm-strikethrough: 2.0.1(micromark-util-types@2.0.2)(micromark@4.0.2)
+      micromark-extension-gfm: 3.0.0
+      micromark-util-chunked: 2.0.1
+      micromark-util-classify-character: 2.0.1
+      micromark-util-resolve-all: 2.0.1
+      ts-pattern: 5.9.2
+    transitivePeerDependencies:
+      - micromark
+      - micromark-util-types
+      - supports-color
+
+  telegram-md-entities@0.9.0(micromark-util-types@2.0.2)(micromark@4.0.2):
     dependencies:
       mdast-util-from-markdown: 2.0.3
       mdast-util-gfm: 3.1.0
