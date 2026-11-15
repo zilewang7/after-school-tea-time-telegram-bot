@@ -19,6 +19,13 @@
  * the addendum already in place), and the two instructions contradict each
  * other. This is the harness-side cleanup the contradiction asks for.
  *
+ * The same rounds sometimes end a claim with an empty `[]` instead: the
+ * search ran but returned no sources, so there was no index to write
+ * (2026-11-15 hydrogen `…不用寄回** []。`, 2026-11-08 argon `…溢价[]。`, both
+ * after searches with no sources). Every `[]` in the stored bot prose so far
+ * was this, but `[]` is also an empty list, so only one where a citation
+ * goes is dropped: right before sentence punctuation or the end of a line.
+ *
  * Code spans and fenced blocks are content, not prose — `🇺🇸 美国极限优化 [2.5]`
  * is a node name — and link text (`[1.2](url)`) must keep its label. A dotted
  * number in prose (`[1.2, 2.5]` as an interval) would be caught as well; that
@@ -26,11 +33,28 @@
  * a marker that cannot be told apart from one.
  */
 
-/** One or more `1.2` / `1.2.3` indices, comma separated, plus the spaces before it */
-const CITATION_MARKER = /[ \t]*\[\d+(?:\.\d+){1,3}(?:\s*,\s*\d+(?:\.\d+){1,3})*\]/g;
+/**
+ * One or more `1.2` / `1.2.3` indices, comma separated, or none at all (the
+ * empty marker), plus the spaces before it
+ */
+const CITATION_MARKER = /[ \t]*\[(?:\d+(?:\.\d+){1,3}(?:\s*,\s*\d+(?:\.\d+){1,3})*)?\]/g;
 
 /** The same shape without the leading spaces, for the "anything to strip" test */
-const CITATION_CANDIDATE = /\[\d+(?:\.\d+){1,3}(?:\s*,\s*\d+(?:\.\d+){1,3})*\]/;
+const CITATION_CANDIDATE = /\[(?:\d+(?:\.\d+){1,3}(?:\s*,\s*\d+(?:\.\d+){1,3})*)?\]/;
+
+/**
+ * Where an empty marker may stand: before sentence punctuation (past a closing
+ * emphasis) or at the end of a line. `用 [] 包起来` is an empty list.
+ */
+const AFTER_EMPTY_MARKER = /[*_~]*[ \t]*(?:$|\r?\n|[。，、；：！？…）」』】》”’,.;:!?)"'])/y;
+
+/** Whether an empty `[]` ending at `markerEnd` stands where a citation goes */
+const emptyMarkerAt = (text: string, markerStart: number, markerEnd: number): boolean => {
+    // `[foo][]` is a collapsed reference link
+    if (text[markerStart - 1] === ']') return false;
+    AFTER_EMPTY_MARKER.lastIndex = markerEnd;
+    return AFTER_EMPTY_MARKER.test(text);
+};
 
 /** An opening fence: up to three spaces, then three or more backticks or tildes */
 const FENCE_OPENING = /^ {0,3}(`{3,}|~{3,})/;
@@ -104,6 +128,7 @@ export const stripPerQueryResultCitations = (text: string): string => {
         const markerEnd = offset + match.length;
         if (text[markerEnd] === '(') return match;
         if (text[markerStart - 1] === '!') return match;
+        if (match.endsWith('[]') && !emptyMarkerAt(text, markerStart, markerEnd)) return match;
         return needsWordSeparator(
             text.slice(Math.max(0, offset - 1), offset),
             text.slice(markerEnd, markerEnd + 1)

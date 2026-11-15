@@ -5,9 +5,10 @@
  * `[i.j.k]` marker after every grounded claim. The API normally consumes the
  * markers, but a long tool loop can end on an answer round that carries no
  * grounding metadata at all, and then they reach the group verbatim (measured
- * 2026-11-12: four of thirty-two hydrogen replies). These cases pin the
- * stripper, its code / link protections, and the two wiring points that keep
- * the marker out of the chat and out of the replayed context.
+ * 2026-11-12: four of thirty-two hydrogen replies), or as an empty `[]` when
+ * the search had no sources. These cases pin the stripper, its code / link
+ * protections, and the two wiring points that keep the marker out of the chat
+ * and out of the replayed context.
  *
  * Run: npx tsx scripts/offline/citation-markers.mts
  */
@@ -39,6 +40,36 @@ results.push(
         );
         expect(strip('一行[1.2]\n二行') === '一行\n二行', 'a marker before a line break goes');
         expect(strip('') === '' && strip('没有引用的普通回复') === '没有引用的普通回复', 'plain text passes through');
+    })
+);
+
+results.push(
+    await runCase('an empty marker where a citation goes is stripped, an empty list is not', async () => {
+        const strip = stripPerQueryResultCitations;
+
+        // The shapes of the 2026-11-15 hydrogen and 2026-11-08 argon replies
+        expect(
+            strip('眼镜还白送不用寄回** []。[截图](https://t.me/c/1/2) 🤣') ===
+                '眼镜还白送不用寄回**。[截图](https://t.me/c/1/2) 🤣',
+            'before a full stop, past the bold close'
+        );
+        expect(strip('送上了热搜 []。\n3. 下一条') === '送上了热搜。\n3. 下一条', 'the space before it goes too');
+        expect(strip('顶级曝光 []；而且') === '顶级曝光；而且', 'before a semicolon');
+        expect(strip('（如 `a.com/b`）[]：\n\n1. 点') === '（如 `a.com/b`）：\n\n1. 点', 'after a parenthesis');
+        expect(strip('**钱全退[]**，好') === '**钱全退**，好', 'inside the bold, before its close');
+        expect(strip('一行 []\n二行') === '一行\n二行', 'at the end of a line');
+        expect(strip('结尾 []') === '结尾', 'at the end of the text');
+        expect(strip('see it [].') === 'see it.', 'before ASCII punctuation');
+
+        const emptyLists = ['用 [] 包起来', '[] 表示空列表', '返回 [] 或 null', 'a = [] + b'];
+        for (const text of emptyLists) {
+            expect(strip(text) === text, `an empty list in prose stays: ${text}`);
+        }
+        expect(strip('写成 `[]`。') === '写成 `[]`。', 'an empty list in code stays');
+        expect(strip('```\nx = []\n```') === '```\nx = []\n```', 'and in a fence');
+        expect(strip('看 [foo][]。') === '看 [foo][]。', 'a collapsed reference link stays');
+        expect(strip('空链接 [](https://a.com)。') === '空链接 [](https://a.com)。', 'an empty-label link stays');
+        expect(strip('图 ![]。') === '图 ![]。', 'an image opener stays');
     })
 );
 
