@@ -35,7 +35,7 @@ import { searchPageLinkOfToken, type SearchPageLink } from '../shared/search-pag
 import { stripPerQueryResultCitations } from '../shared/citation-markers.js';
 import { stripContextLabel } from '../reply/context-label.js';
 import { toApiEntities } from '../telegram/api-entities.js';
-import { isRichLayoutChunk, layOutChunks, type LayoutChunk } from '../telegram/final-message-layout.js';
+import { layOutChunks, type LayoutChunk } from '../telegram/final-message-layout.js';
 import { buildRichLayoutOfVersion, type RichReplayMedia } from '../telegram/formatters/rich-layout-of-version.js';
 import type { ContextLinkResolver } from '../telegram/formatters/context-links.js';
 import { buildResponseButtons } from '../cmd/menus/index.js';
@@ -1191,6 +1191,8 @@ const widgetImageOf = async (widget: StoredWidget): Promise<Buffer | null> => {
 interface VersionPicture {
     readonly placement: ReplyMediaPlacement;
     readonly id?: string;
+    /** media_cache key as stored in the version (absent for the legacy slot) */
+    readonly mediaKey?: string;
     readonly mimeType: string;
     readonly caption?: string;
     readonly fileId?: string;
@@ -1213,6 +1215,7 @@ const versionPicturesOf = async (version: ResponseVersion): Promise<VersionPictu
         pictures.push({
             placement: media.placement,
             ...(media.id === undefined ? {} : { id: media.id }),
+            ...(media.mediaKey === undefined ? {} : { mediaKey: media.mediaKey }),
             mimeType: media.mimeType,
             ...(media.caption === undefined ? {} : { caption: media.caption }),
             ...(media.fileId === undefined ? {} : { fileId: media.fileId }),
@@ -1315,14 +1318,15 @@ const switchToRichVersion = async (input: SwitchToRichVersionInput): Promise<boo
         );
     }
 
-    // The old version's separate picture messages go first (a switch deletes them)
-    for (const mediaId of versionMediaMessageIdsOf(oldVersion)) {
-        await to(ctx.api.deleteMessage(chatId, mediaId));
-    }
-
     const attachmentPictures = pictures.filter((picture) => picture.placement === 'attachment');
+    // Bytes a replay can send; a picture whose cache entry is gone is degraded
+    // out of the version below, never silently listed as shown
+    const replayableAttachments = attachmentPictures.filter((picture) => picture.data !== undefined);
     const hasAttachmentPictures = attachmentPictures.length > 0;
-    const richBodyIndex = replay.chunks.findIndex((chunk) => isRichLayoutChunk(chunk));
+    const droppedAttachments = new Set<number>();
+
+    // 1) Replay the rich body FIRST. The old version's pictures stay in the
+    // chat until the new one is complete: a refused body must not lose them.
     const laidOut = await layOutChunks({
         api: ctx.api,
         chatId,
@@ -1331,45 +1335,102 @@ const switchToRichVersion = async (input: SwitchToRichVersionInput): Promise<boo
         messageIds: versionTextMessageIdsOf(oldVersion),
         chunks: replay.chunks,
         // An inline-only rich reply keeps the live layout's last-chunk buttons;
-        // with trailing pictures the keyboard goes on the body message instead
+        // trailing pictures place the keyboard after they are sent (M6 below)
         ...(hasAttachmentPictures ? {} : { replyMarkup: input.versionButtons }),
     });
+    if (!laidOut.allDelivered || !laidOut.richDelivered) {
+        console.error(
+            '[bot-message-service] rich version switch: the rich body was not delivered;',
+            'messages may be changed but the version is not switched'
+        );
+        return false;
+    }
 
     const newMessageIds = [...laidOut.messageIds];
     let currentMessageId = laidOut.currentMessageId;
     let mediaMessageIds: number[] = [];
+    let replayedMedia = newVersion.media;
     if (hasAttachmentPictures) {
-        currentMessageId = laidOut.messageIds[richBodyIndex] ?? laidOut.currentMessageId;
-        const uploads = pictureUploadsOf(attachmentPictures, resolveContextLink);
+        const uploads = pictureUploadsOf(replayableAttachments, resolveContextLink);
         const [mediaError, sentIds] = await sendReplyImagesMessage({
             api: ctx.api,
             chatId,
             images: uploads,
             target: { reply_parameters: { message_id: input.userMessageId } },
             runApiCall: (operation) => runApiCall(chatId, operation),
+            onDropped: (index) => droppedAttachments.add(index),
         });
         if (mediaError !== null) {
-            console.error('[bot-message-service] rich version replay: pictures failed:', mediaError.message);
-        } else {
-            newMessageIds.push(...sentIds);
-            mediaMessageIds = sentIds;
-        }
-        if (input.versionButtons !== undefined) {
-            const [markupError] = await to(
-                runApiCall(chatId, () =>
-                    ctx.api.editMessageReplyMarkup(chatId, currentMessageId, {
-                        reply_markup: input.versionButtons,
-                    })
-                )
+            // The old pictures are still there; nothing was written (B3)
+            console.error(
+                '[bot-message-service] rich version switch: the pictures were not delivered;',
+                'messages may be changed but the version is not switched:',
+                mediaError.message
             );
-            if (markupError !== null && !markupError.message.includes('message is not modified')) {
-                console.warn('[bot-message-service] rich version replay: buttons update failed:', markupError.message);
+            return false;
+        }
+        const keptPictures = replayableAttachments.filter((_, index) => !droppedAttachments.has(index));
+        if (keptPictures.length !== sentIds.length) {
+            console.error(
+                '[bot-message-service] rich version switch: picture sends and pictures disagree;',
+                'messages may be changed but the version is not switched'
+            );
+            return false;
+        }
+        newMessageIds.push(...sentIds);
+        mediaMessageIds = sentIds;
+
+        // The live carrier rule (response-handler.ts deliverReplyImages): one
+        // picture — or a reply with no text message — puts the keyboard on the
+        // picture; several keep the last layout chunk (the search link message
+        // when the GoogleSearch footer is folded). A degraded replay keeps the
+        // same rule for the pictures it can still show.
+        currentMessageId = sentIds.length === 1 ? sentIds[0] ?? laidOut.currentMessageId : laidOut.currentMessageId;
+        if (input.versionButtons !== undefined) {
+            await reapplyButtonsOn(ctx.api, chatId, currentMessageId, input.versionButtons);
+        }
+
+        // m2: list only the pictures the chat really shows, so media[] and
+        // mediaMessageIds always agree
+        if (keptPictures.length !== attachmentPictures.length && newVersion.media !== undefined) {
+            const keptKeys = new Set(
+                keptPictures.flatMap((picture) => (picture.mediaKey === undefined ? [] : [picture.mediaKey]))
+            );
+            const shownMedia = newVersion.media.filter(
+                (item) => item.placement !== 'attachment' || (item.mediaKey !== undefined && keptKeys.has(item.mediaKey))
+            );
+            const shownAttachments = shownMedia.filter((item) => item.placement === 'attachment').length;
+            if (shownAttachments !== keptPictures.length) {
+                console.error(
+                    '[bot-message-service] rich version switch: the version media cannot be reduced to the shown pictures;',
+                    'messages may be changed but the version is not switched'
+                );
+                return false;
             }
+            replayedMedia = shownMedia;
+            console.warn(
+                '[bot-message-service] rich version switch: replaying',
+                keptPictures.length,
+                'of',
+                attachmentPictures.length,
+                'pictures; the version now lists only the shown ones'
+            );
         }
     }
 
+    // 2) The new body and pictures are in the chat: replace the old pictures
+    for (const mediaId of versionMediaMessageIdsOf(oldVersion)) {
+        const [deleteError] = await to(ctx.api.deleteMessage(chatId, mediaId));
+        if (deleteError !== null) {
+            console.warn('[bot-message-service] rich version switch: old picture message not deleted:', deleteError.message);
+        }
+    }
+
+    // 3) Persist only after every chat step succeeded (a failed switch leaves
+    // the stored version where it was)
     newVersion.messageIds = newMessageIds;
     newVersion.currentMessageId = currentMessageId;
+    if (replayedMedia !== undefined) newVersion.media = replayedMedia;
     if (newVersion.media !== undefined) {
         newVersion.mediaMessageIds = mediaMessageIds.length > 0 ? mediaMessageIds : undefined;
     }
@@ -1435,6 +1496,8 @@ export const switchVersion = async (
     // only belong to a rich body.
     const newPictures = await versionPicturesOf(newVersion);
     const pictureAttachments = newPictures.filter((picture) => picture.placement === 'attachment');
+    // Pictures whose bytes media_cache still has; the rest cannot be replayed
+    const replayableAttachments = pictureAttachments.filter((picture) => picture.data !== undefined);
 
     // "继续" only on the failed latest version, never on an older one
     const versionButtons = buildResponseButtons(ButtonState.HAS_VERSIONS, newIndex, versions.length, {
@@ -1618,8 +1681,9 @@ export const switchVersion = async (
     // per picture when the reply has no text to carry the keyboard, per the
     // album probe decision).
     const sentPictureMessageIds: number[] = [];
+    const droppedPictureIndexes = new Set<number>();
     const sendVersionPictures = async (useAlbum: boolean): Promise<Result<number[]>> => {
-        const uploads = pictureUploadsOf(pictureAttachments, resolveContextLink);
+        const uploads = pictureUploadsOf(replayableAttachments, resolveContextLink);
         if (uploads.length === 0) return [new Error('version has no picture bytes'), undefined];
         // The buttons belong to a single-picture version; a multi-picture one
         // that lost pictures is still a multi-picture version (the caller puts
@@ -1635,6 +1699,7 @@ export const switchVersion = async (
             },
             runApiCall: (operation) => runApiCall(chatId, operation),
             useAlbum: single ? undefined : useAlbum,
+            onDropped: (index) => droppedPictureIndexes.add(index),
         });
         if (!isErr(sent)) sentPictureMessageIds.push(...sent[1]);
         return sent;
@@ -1675,21 +1740,30 @@ export const switchVersion = async (
     // Determine if first message type changes (text <-> media-only)
     const firstMessageTypeChanged = newIsMediaOnly !== oldIsMediaOnly;
 
-    // Delete old version's extra messages (keep first unless type changed)
+    const oldFirstMsgId = oldVersion.messageIds[0] ?? firstMessageId;
+    // The old version's media messages are deleted only once the new version is
+    // fully in the chat (B3: a failed switch must not take the old pictures with
+    // it). The first message is deferred too when it is the old media itself.
+    const deferredOldMediaIds = new Set<number>(versionMediaMessageIdsOf(oldVersion));
+    if (oldIsMediaOnly) deferredOldMediaIds.add(oldFirstMsgId);
+    /** Delete the old version's media messages after the new one is in the chat */
+    const deleteDeferredOldMediaMessages = async (): Promise<void> => {
+        for (const messageId of deferredOldMediaIds) {
+            const [error] = await to(ctx.api.deleteMessage(chatId, messageId));
+            if (error !== null && !error.message.includes('message to delete not found')) {
+                console.warn('[bot-message-service] version switch: old media message not deleted:', error.message);
+            }
+        }
+    };
+
+    // Delete old version's extra text messages (keep the first one; media
+    // messages wait for the new version, see above)
     for (let i = 1; i < oldVersion.messageIds.length; i++) {
         const msgId = oldVersion.messageIds[i];
-        if (msgId === undefined) continue;
+        if (msgId === undefined || deferredOldMediaIds.has(msgId)) continue;
         await to(ctx.api.deleteMessage(chatId, msgId));
     }
-    // A picture message the stored list forgot (older state) is still the
-    // version's and must not survive the switch
-    const deletedOldIds = new Set(oldVersion.messageIds.slice(1));
-    for (const mediaId of versionMediaMessageIdsOf(oldVersion)) {
-        if (deletedOldIds.has(mediaId) || mediaId === oldVersion.messageIds[0]) continue;
-        await to(ctx.api.deleteMessage(chatId, mediaId));
-    }
 
-    const oldFirstMsgId = oldVersion.messageIds[0] ?? firstMessageId;
     const newMessageIds: number[] = [];
     let currentMessageId = firstMessageId;
     // The buttons are placed by the sender for one attachment; an album (or a
@@ -1732,8 +1806,11 @@ export const switchVersion = async (
     };
 
     if (firstMessageTypeChanged) {
-        // Type mismatch: delete old first message, send new one
-        await to(ctx.api.deleteMessage(chatId, oldFirstMsgId));
+        // Type mismatch: delete old first message, send new one; an old media
+        // message stays until the new version has been sent
+        if (!deferredOldMediaIds.has(oldFirstMsgId)) {
+            await to(ctx.api.deleteMessage(chatId, oldFirstMsgId));
+        }
 
         if (newIsMediaOnly) {
             // Old was text → new is media-only: several pictures go out one by
@@ -1788,14 +1865,20 @@ export const switchVersion = async (
                 if (!mediaErr) {
                     recordSentMedia(mediaIds, currentMessageId, mediaCarriesButtons);
                 } else {
-                    console.error('[bot-message-service] Failed to send the version media:', mediaErr);
+                    // A half-version (media[] with no delivered picture messages)
+                    // must never be saved (m2); the fallback text stays in the chat
+                    console.error(
+                        '[bot-message-service] version switch: the media was not delivered;',
+                        'messages may be changed but the version is not switched:',
+                        mediaErr.message
+                    );
+                    return false;
                 }
             }
         }
     } else if (newIsMediaOnly) {
-        // Both old and new are media-only: delete old media, send the new one
-        await to(ctx.api.deleteMessage(chatId, oldFirstMsgId));
-
+        // Both old and new are media-only: send the new media first, the old
+        // media messages go after the switch is complete (see below)
         const [sendErr, sentIds] = await sendVersionMediaMessages(false);
         if (!sendErr) {
             recordSentMedia(sentIds, null, mediaCarriesButtons);
@@ -1844,7 +1927,57 @@ export const switchVersion = async (
             if (!sendErr) {
                 recordSentMedia(sentIds, currentMessageId, mediaCarriesButtons);
             } else {
-                console.error('[bot-message-service] Failed to send the version media:', sendErr);
+                console.error(
+                    '[bot-message-service] version switch: the media was not delivered;',
+                    'messages may be changed but the version is not switched:',
+                    sendErr.message
+                );
+                return false;
+            }
+        }
+    }
+
+    // A picture the replay cannot show (its bytes are gone from media_cache, or
+    // the send dropped it) leaves the stored list (m2): media[] and
+    // mediaMessageIds must describe the same pictures. The text still switches,
+    // so the version is trimmed rather than the whole switch refused.
+    let replayedMedia = newVersion.media;
+    if (pictureAttachments.length > 0 && newVersion.media !== undefined) {
+        const keptPictures = replayableAttachments.filter((_, index) => !droppedPictureIndexes.has(index));
+        if (keptPictures.length !== sentPictureMessageIds.length) {
+            console.error(
+                '[bot-message-service] version switch: picture sends and pictures disagree;',
+                'messages may be changed but the version is not switched'
+            );
+            return false;
+        }
+        if (keptPictures.length !== pictureAttachments.length) {
+            const keptKeys = new Set(
+                keptPictures.flatMap((picture) => (picture.mediaKey === undefined ? [] : [picture.mediaKey]))
+            );
+            const shownMedia = newVersion.media.filter(
+                (item) => item.placement !== 'attachment' || (item.mediaKey !== undefined && keptKeys.has(item.mediaKey))
+            );
+            if (shownMedia.filter((item) => item.placement === 'attachment').length !== keptPictures.length) {
+                console.error(
+                    '[bot-message-service] version switch: the version media cannot be reduced to the shown pictures;',
+                    'messages may be changed but the version is not switched'
+                );
+                return false;
+            }
+            replayedMedia = shownMedia;
+            console.warn(
+                '[bot-message-service] version switch: replaying',
+                keptPictures.length,
+                'of',
+                pictureAttachments.length,
+                'pictures; the version now lists only the shown ones'
+            );
+            // One remaining picture is a single-picture version now: the live
+            // rule puts the keyboard on it (refresh normalizes the same way)
+            if (!newIsMediaOnly && keptPictures.length === 1 && sentPictureMessageIds[0] !== undefined) {
+                currentMessageId = sentPictureMessageIds[0];
+                buttonsPlaced = false;
             }
         }
     }
@@ -1862,12 +1995,16 @@ export const switchVersion = async (
         }
     }
 
+    // The new version is fully in the chat: the old media messages go now
+    await deleteDeferredOldMediaMessages();
+
     // Update BotResponse database
     response.currentVersionIndex = newIndex;
 
     // Update messageIds in the version (they may have changed due to re-sending)
     newVersion.messageIds = newMessageIds;
     newVersion.currentMessageId = currentMessageId;
+    if (replayedMedia !== undefined) newVersion.media = replayedMedia;
     if (newVersion.media !== undefined) {
         // Only the pictures actually re-sent can be listed as messages
         newVersion.mediaMessageIds =
@@ -2034,20 +2171,22 @@ export const refreshToFinalState = async (
     // The text/body messages come first in the stored order, then the picture
     // messages the delivery appended (a single image or the album's ids).
     const currentIsMedia = mediaMessageIds.includes(version.currentMessageId);
-    // With trailing pictures the buttons land on the rich body message; an
-    // inline-only rich reply keeps the live layout's last-chunk carrier
-    const richBodyIndex = richReplay === null || richReplay.bodyMissing
-        ? -1
-        : richReplay.chunks.findIndex((chunk) => isRichLayoutChunk(chunk));
-    const richBodyMessageId = richBodyIndex < 0 ? undefined : laidOut.messageIds[richBodyIndex];
     const nextMessageIds = hasMedia
         ? [...laidOut.messageIds, ...mediaMessageIds]
         : laidOut.messageIds;
-    const nextCurrentMessageId = hasMedia
-        ? currentIsMedia
-            ? version.currentMessageId
-            : richBodyMessageId ?? laidOut.currentMessageId
-        : laidOut.currentMessageId;
+    // Live carrier rule (response-handler.ts deliverReplyImages): one picture
+    // puts the keyboard on that picture (rich-text fallbacks included); several
+    // keep the last layout message — the search link message when the footer is
+    // folded. A sticker / file / widget version keeps its media message carrier.
+    const nextCurrentMessageId = !hasMedia
+        ? laidOut.currentMessageId
+        : mediaMessageIds.length > 0
+            ? mediaMessageIds.length === 1
+                ? mediaMessageIds[0] ?? laidOut.currentMessageId
+                : laidOut.currentMessageId
+            : currentIsMedia
+                ? version.currentMessageId
+                : laidOut.currentMessageId;
     const messageIdsChanged =
         nextMessageIds.length !== version.messageIds.length ||
         nextMessageIds.some((messageId, index) => messageId !== version.messageIds[index]) ||

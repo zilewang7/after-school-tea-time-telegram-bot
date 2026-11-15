@@ -4,22 +4,38 @@
  * and the media block itself (caption escaping measured on the real API, see
  * tmp/phase0-probe.md).
  *
- * The cases are pure strings and rendered bodies: no Telegram call, no
- * database. The end-to-end delivery cases (L1 → L2 → L3, media payloads, the
- * coordinator) live in rich-replies.mts.
+ * Most cases are pure strings and rendered bodies. Two pin what must not change
+ * around them: a fenced code block keeps its bytes when the blank lines next to
+ * a removed marker fold, and a picture over the reply's limit keeps its caption
+ * as text in the body (that case runs the real delivery on the scratch
+ * database, whose pictures are fetched through the reply's media state).
+ *
+ * The end-to-end delivery cases (L1 → L2 → L3, media payloads, the coordinator)
+ * live in rich-replies.mts.
  *
  * Run: pnpm test:offline rich-inline-media
  */
-import { expect, reportResults, runCase, type CaseResult } from './harness.mts';
+import {
+    expect,
+    reportResults,
+    runCase,
+    setupOfflineDb,
+    takeMessageId,
+    type CaseResult,
+} from './harness.mts';
 
 // telegram-md-entities renders documents without any network; the placeholders
 // keep the formatter import chain constructing its clients
 for (const key of ['GEMINI_API_KEY', 'OPENAI_API_KEY', 'DEEPSEEK_API_KEY', 'GROK_API_KEY', 'MIMO_API_KEY']) {
     process.env[key] ||= 'offline-placeholder';
 }
+process.env.BOT_USER_ID = '7777';
+
+// The over-limit case delivers a whole reply, which finalizes into the scratch database
+await setupOfflineDb();
 
 const { collectRichImages } = await import('../../src/telegram/formatters/rich-inline-media/collect.js');
-const { mediaSentinelOf, replaceMediaSentinels, richMediaBlockOf, richHtmlMediaBlockOf, escapeCaptionTitle } =
+const { mediaSentinelOf, replaceMediaSentinels, replaceSentinelsWithCaptionText, richMediaBlockOf, richHtmlMediaBlockOf, escapeCaptionTitle } =
     await import('../../src/telegram/formatters/rich-inline-media/media-blocks.js');
 const { scanInlineMarkers, stripInlineMarkersForDisplay } = await import(
     '../../src/telegram/formatters/rich-inline-media/scan.js'
@@ -28,11 +44,74 @@ const { buildRichAnswer, buildRichReplyBody, buildRichReplyBodyFromAnswer, build
     await import('../../src/telegram/formatters/rich-reply-body.js');
 const { buildErrorLine } = await import('../../src/telegram/formatters/error-display.js');
 const { buildGoogleSearchDocument } = await import('../../src/telegram/formatters/google-search-document.js');
+const { createFakeTelegram, contextOf, endOpenReplies, messageUpdate, quietly, trackReply } = await import(
+    './fake-telegram.mts'
+);
+const responseHandler = await import('../../src/reply/response-handler.js');
+const { createReplyMediaState } = await import('../../src/reply/tools/reply-media-state.js');
+
+const PNG_BYTES = Buffer.from(
+    'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9ZlZkAAAAASUVORK5CYII=',
+    'base64'
+);
+
+const asRecord = (value: unknown): Record<string, unknown> =>
+    typeof value === 'object' && value !== null && !Array.isArray(value)
+        ? Object.fromEntries(Object.entries(value))
+        : {};
+
+/** The markdown of the last rich message the fake Telegram received */
+const richMarkdownOf = (telegram: {
+    readonly callsOf: (method: string) => readonly { readonly payload: Readonly<Record<string, unknown>> }[];
+}): string => {
+    const edits = telegram.callsOf('editMessageText').filter((call) => call.payload.rich_message !== undefined);
+    const richMessage = asRecord(edits.at(-1)?.payload.rich_message);
+    return typeof richMessage.markdown === 'string' ? richMessage.markdown : '';
+};
 
 /** An empty search footer: no GoogleSearch step in this reply */
 const NO_FOOTER = buildGoogleSearchDocument([]);
 
 const media = (id: string, caption: string): { id: string; caption: string } => ({ id, caption });
+
+/** Deliver one rich reply whose answer references the fetched pictures inline */
+const deliverInlineAnswer = async (text: string, pictureIds: readonly string[]) => {
+    const telegram = createFakeTelegram();
+    const chatId = -1006666000101;
+    const userMessageId = takeMessageId();
+    const ctx = contextOf(messageUpdate({ chatId, messageId: userMessageId, userId: 42, text: '发图' }), telegram);
+    const chatContext = await quietly(() =>
+        responseHandler.createChatContext(ctx, { model: 'offline-model', richReplies: true })
+    );
+    if (chatContext === null) throw new Error('offline: no chat context');
+    trackReply(chatContext);
+
+    const state = createReplyMediaState();
+    for (const id of pictureIds) {
+        const data = Buffer.concat([PNG_BYTES, Buffer.from(id)]);
+        state.fetched.set(id, {
+            id,
+            data,
+            mimeType: 'image/png',
+            still: { data, mimeType: 'image/png' },
+            sourcePage: `https://example.test/${id}`,
+            title: `图片 ${id}`,
+            imageUrl: `https://example.test/${id}.png`,
+        });
+    }
+    chatContext.mediaState = state;
+    chatContext.contextIndex = new Map();
+    chatContext.session.textBuffer = text;
+    await quietly(() =>
+        responseHandler.sendFinalResponse(chatContext, {
+            text,
+            thinkingText: '',
+            images: [],
+            groundingData: [],
+        })
+    );
+    return { telegram, chatContext };
+};
 
 const results: CaseResult[] = [];
 
@@ -417,4 +496,124 @@ results.push(
     })
 );
 
+results.push(
+    await runCase('scan: two fenced code blocks keep their bytes when a removed marker folds the blank lines', async () => {
+        const text = [
+            '前言。',
+            '',
+            '```ts',
+            'const a = 1;',
+            '',
+            '',
+            '',
+            'const b = 2;',
+            '```',
+            '',
+            '![图注](g1)',
+            '',
+            '```py',
+            'x = 1',
+            '',
+            '',
+            '',
+            'y = 2',
+            '```',
+        ].join('\n');
+        const scanned = scanInlineMarkers(text, { embed: true });
+        expect(scanned.placements.length === 1, 'the marker between the blocks is the picture');
+        expect(
+            scanned.cleanText ===
+                [
+                    '前言。',
+                    '',
+                    '```ts',
+                    'const a = 1;',
+                    '',
+                    '',
+                    '',
+                    'const b = 2;',
+                    '```',
+                    '',
+                    '```py',
+                    'x = 1',
+                    '',
+                    '',
+                    '',
+                    'y = 2',
+                    '```',
+                ].join('\n'),
+            `the code bytes are untouched, only the marker paragraph goes (got ${JSON.stringify(scanned.cleanText)})`
+        );
+        expect(
+            scanned.assemblyText ===
+                [
+                    '前言。',
+                    '',
+                    '```ts',
+                    'const a = 1;',
+                    '',
+                    '',
+                    '',
+                    'const b = 2;',
+                    '```',
+                    '',
+                    mediaSentinelOf('img1'),
+                    '',
+                    '```py',
+                    'x = 1',
+                    '',
+                    '',
+                    '',
+                    'y = 2',
+                    '```',
+                ].join('\n'),
+            `the body source keeps the code bytes and the sentinel (got ${JSON.stringify(scanned.assemblyText)})`
+        );
+        // Outside a fence the rule still applies: the marker's blank run folds
+        expect(scanned.cleanText.includes('```\n\n```py'), 'the blank run the removed marker left folds to one line');
+        // A frame the user sees while streaming obeys the same rule
+        const display = stripInlineMarkersForDisplay(text, { embed: true });
+        expect(display.includes('const a = 1;\n\n\n\nconst b = 2;'), 'the display text keeps the code bytes too');
+    })
+);
+
+results.push(
+    await runCase('delivery: ten pictures inline, the over-limit captions kept as body text', async () => {
+        const ids = Array.from({ length: 12 }, (_, index) => `img${index + 1}`);
+        const captions = ids.map((_, index) => `内嵌图注${index + 1}`);
+        const text = `开头。\n\n${ids
+            .map((id, index) => `![${captions[index]}](${id})`)
+            .join('\n\n')}\n\n结尾。`;
+        const { telegram, chatContext } = await deliverInlineAnswer(text, ids);
+        const markdown = richMarkdownOf(telegram);
+        const pictureIds = [...markdown.matchAll(/tg:\/\/photo\?id=([A-Za-z0-9_-]+)/g)].map((match) => match[1]);
+        expect(
+            JSON.stringify(pictureIds) === JSON.stringify(ids.slice(0, 10)),
+            `the body carries the first ten pictures (got ${JSON.stringify(pictureIds)})`
+        );
+        expect(!markdown.includes('⟦media:'), 'no sentinel reaches the body');
+        const keptCaptions = [...markdown.matchAll(/（图片：([^）]*)）/g)].map((match) => match[1]);
+        expect(
+            JSON.stringify(keptCaptions) === JSON.stringify([captions[10], captions[11]]),
+            `the two over-limit captions stay as body text (got ${JSON.stringify(keptCaptions)})`
+        );
+        expect(!markdown.includes('![内嵌图注'), 'no raw image marker is left');
+        expect(
+            chatContext.inlineImages?.length === 10,
+            `ten pictures are resolved for the body (got ${chatContext.inlineImages?.length})`
+        );
+        expect(
+            chatContext.session.inlineMedia?.length === 10,
+            `ten pictures are stored as inline media (got ${chatContext.session.inlineMedia?.length})`
+        );
+        expect(!chatContext.session.textBuffer.includes('!['), 'the stored clean text carries no marker');
+        // A dropped picture without a caption leaves nothing behind
+        expect(
+            replaceSentinelsWithCaptionText(mediaSentinelOf('img1'), new Map([['img1', '']])) === '',
+            'an empty caption disappears with its sentinel'
+        );
+    })
+);
+
+endOpenReplies();
 reportResults(results);

@@ -149,17 +149,20 @@ const planScan = (
     return { edits, placements: [...placements.values()] };
 };
 
+/** An open fenced code block: its marker character and length */
+interface FenceState {
+    readonly char: string;
+    readonly length: number;
+}
+
 /** Whether a line is inside a fenced code block as of its predecessor state */
-const opensFence = (line: string): { readonly char: string; readonly length: number } | null => {
+const opensFence = (line: string): FenceState | null => {
     const matched = FENCE.exec(line);
     if (matched === null) return null;
     return { char: matched[1]?.[0] ?? '`', length: matched[1]?.length ?? 3 };
 };
 
-const closesFence = (
-    line: string,
-    open: { readonly char: string; readonly length: number }
-): boolean => {
+const closesFence = (line: string, open: FenceState): boolean => {
     const matched = FENCE.exec(line);
     return (
         matched !== null &&
@@ -177,7 +180,7 @@ const closesFence = (
  */
 const cleanLeftovers = (text: string): string => {
     const lines = text.split('\n');
-    let fence: { readonly char: string; readonly length: number } | null = null;
+    let fence: FenceState | null = null;
     const cleaned = lines.map((line) => {
         if (fence !== null) {
             if (closesFence(line, fence)) fence = null;
@@ -196,9 +199,61 @@ const cleanLeftovers = (text: string): string => {
     return cleaned.join('\n');
 };
 
-/** Merge the blank lines a removed marker left, and trim the document's edges */
-const normalizeBlocks = (text: string): string =>
-    text.replace(/\n{3,}/g, '\n\n').replace(/^[ \t]+$/gm, '').replace(/^\n+|\n+$/g, '');
+/**
+ * Merge the blank lines a removed marker left, and trim the document's edges.
+ * Fenced code keeps its bytes: a code block is the answer's text, so the fold
+ * and the edge trim apply to the text outside the fences only.
+ */
+const normalizeBlocks = (text: string): string => {
+    /** One source line, and whether a fenced code block owns it verbatim */
+    interface SourceLine {
+        readonly text: string;
+        readonly inFence: boolean;
+    }
+    const lines: SourceLine[] = [];
+    let fence: FenceState | null = null;
+    for (const line of text.split('\n')) {
+        if (fence !== null) {
+            lines.push({ text: line, inFence: true });
+            if (closesFence(line, fence)) fence = null;
+            continue;
+        }
+        const opening = opensFence(line);
+        if (opening !== null) {
+            lines.push({ text: line, inFence: true });
+            fence = opening;
+            continue;
+        }
+        lines.push({ text: line.trim() === '' ? '' : line, inFence: false });
+    }
+
+    // Trim the document's edges: a fence line is content, never an edge
+    let start = 0;
+    let end = lines.length;
+    while (start < end && lines[start]?.inFence === false && lines[start]?.text === '') start += 1;
+    while (end > start && lines[end - 1]?.inFence === false && lines[end - 1]?.text === '') end -= 1;
+
+    // Fold a run of blank lines outside the fences to one blank line
+    const normalized: string[] = [];
+    let blank = false;
+    for (let index = start; index < end; index += 1) {
+        const line = lines[index];
+        if (line === undefined) continue;
+        if (line.inFence) {
+            normalized.push(line.text);
+            blank = false;
+            continue;
+        }
+        if (line.text === '') {
+            if (!blank) normalized.push('');
+            blank = true;
+            continue;
+        }
+        normalized.push(line.text);
+        blank = false;
+    }
+    return normalized.join('\n');
+};
 
 /** Apply edits to one source, as one of the two derived texts */
 const applyEdits = (

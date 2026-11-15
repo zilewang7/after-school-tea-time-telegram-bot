@@ -1052,15 +1052,20 @@ const legacyFileContentsOf = async (message: Message, childIds: readonly number[
  * A message's files as context parts. A bot reply's v5 pictures come from its
  * `message_media` rows in delivery order; everything else (user messages,
  * Telegram albums, replies stored before v5) reads the message row as before.
+ *
+ * `storedMediaRows` is a caller's pre-loaded row list for this message (a whole
+ * context reads them in one batch). It is authoritative: `[]` means "this
+ * message has none", saving the per-message read on the context hot path.
  */
 export const getMessageFileContents = async (
     chatId: number,
-    messageId: number
+    messageId: number,
+    storedMediaRows?: readonly StoredMessageMedia[]
 ): Promise<MessageFileContents> => {
     const message = await getMessage(chatId, messageId);
     if (!message) return EMPTY_MESSAGE_FILES;
 
-    const storedMedia = await listMessageMedia(chatId, messageId);
+    const storedMedia = storedMediaRows ?? (await listMessageMedia(chatId, messageId));
     if (storedMedia.length > 0) {
         const contents = await storedMediaFileContents(storedMedia);
         if (contents.parts.length > 0) return contents;

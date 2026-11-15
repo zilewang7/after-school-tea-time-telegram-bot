@@ -58,6 +58,49 @@ const uploadOf = (image: ReplyImageUpload): InputFile => new InputFile(image.dat
 
 const isAnimated = (image: ReplyImageUpload): boolean => sniffMediaMime(image.data) === 'image/gif';
 
+/** One delivery's shape: stills in album order, then each animation */
+interface ReplyImageOrder {
+    /** Input indices of the stills that go out, in delivery order (one album at most) */
+    readonly stills: readonly number[];
+    /** Input indices of the animations, in delivery order, after the stills */
+    readonly animations: readonly number[];
+    /** Input indices of the stills past one album's size: dropped */
+    readonly surplus: readonly number[];
+    /** Every delivered input index, in the order the chat receives them */
+    readonly all: readonly number[];
+}
+
+const deliveryOrderPartsOf = (images: readonly ReplyImageUpload[]): ReplyImageOrder => {
+    const stills: number[] = [];
+    const animations: number[] = [];
+    const surplus: number[] = [];
+    images.forEach((image, index) => {
+        if (isAnimated(image)) {
+            animations.push(index);
+            return;
+        }
+        if (stills.length < MAX_ALBUM_IMAGES) stills.push(index);
+        else surplus.push(index);
+    });
+    return { stills, animations, surplus, all: [...stills, ...animations] };
+};
+
+/**
+ * The order the chat receives the reply's pictures in: the stills first (one
+ * album, or one message each), each animation after them. The pictures a reply
+ * stores follow this order, not the order the tools produced them, so a
+ * reader of the version sees the same order the chat showed.
+ */
+export const deliveryOrderOf = (images: readonly ReplyImageUpload[]): readonly number[] =>
+    deliveryOrderPartsOf(images).all;
+
+/** The pictures behind a list of input indices */
+const uploadsAt = (images: readonly ReplyImageUpload[], indices: readonly number[]): ReplyImageUpload[] =>
+    indices.flatMap((index) => {
+        const image = images[index];
+        return image === undefined ? [] : [image];
+    });
+
 /**
  * The stills in one album call; null when Telegram refused it (the caller then
  * sends them one by one, which also gives each caption its own plain-text
@@ -137,10 +180,6 @@ export const sendReplyImagesMessage = async (input: SendReplyImagesInput): Promi
     const { images } = input;
     if (images.length === 0) return [new Error('the reply has no images to send'), undefined];
 
-    const stills = images.filter((image) => !isAnimated(image));
-    const animations = images.filter(isAnimated);
-    const messageIds: number[] = [];
-
     // One picture of any kind takes the path the reply always took
     if (images.length === 1) {
         const only = images[0];
@@ -149,37 +188,37 @@ export const sendReplyImagesMessage = async (input: SendReplyImagesInput): Promi
         return sent[0] !== null ? [sent[0], undefined] : [null, [sent[1]]];
     }
 
-    if (stills.length >= MIN_ALBUM_IMAGES && input.useAlbum !== false) {
-        const album = await sendAlbum(input, stills.slice(0, MAX_ALBUM_IMAGES));
+    const order = deliveryOrderPartsOf(images);
+    const messageIds: number[] = [];
+    const sendOneAt = async (index: number): Promise<void> => {
+        const image = images[index];
+        if (image === undefined) return;
+        const sent = await sendOneOrNull(input, image, index);
+        if (sent !== null) messageIds.push(sent);
+    };
+
+    if (order.stills.length >= MIN_ALBUM_IMAGES && input.useAlbum !== false) {
+        const album = await sendAlbum(input, uploadsAt(images, order.stills));
         if (album[0] === null) {
             messageIds.push(...album[1]);
         } else {
             // Album refused: the same pictures go out one message each
-            for (const image of stills.slice(0, MAX_ALBUM_IMAGES)) {
-                const sent = await sendOneOrNull(input, image, input.images.indexOf(image));
-                if (sent !== null) messageIds.push(sent);
-            }
+            for (const index of order.stills) await sendOneAt(index);
         }
     } else {
         // One still, or an album is not allowed for this delivery: one message each
-        for (const image of stills.slice(0, MAX_ALBUM_IMAGES)) {
-            const sent = await sendOneOrNull(input, image, input.images.indexOf(image));
-            if (sent !== null) messageIds.push(sent);
-        }
+        for (const index of order.stills) await sendOneAt(index);
     }
 
     // Past an album's size there is no Telegram shape for them: drop the rest
     // loudly instead of sending a second album
-    for (const extra of stills.slice(MAX_ALBUM_IMAGES)) {
+    for (const index of order.surplus) {
         console.warn(`[reply-images] still picture beyond ${MAX_ALBUM_IMAGES} dropped`);
-        input.onDropped?.(input.images.indexOf(extra));
+        input.onDropped?.(index);
     }
 
     // Animations never ride an album; each is its own message, after the stills
-    for (const animation of animations) {
-        const sent = await sendOneOrNull(input, animation, input.images.indexOf(animation));
-        if (sent !== null) messageIds.push(sent);
-    }
+    for (const index of order.animations) await sendOneAt(index);
 
     if (messageIds.length === 0) {
         return [new Error('no picture of the reply could be sent'), undefined];

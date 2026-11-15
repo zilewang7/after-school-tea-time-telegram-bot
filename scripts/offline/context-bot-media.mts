@@ -27,6 +27,8 @@ delete process.env.LUOXU_PREVIEW_URL;
 
 const db = await setupOfflineDb();
 const { Message, putCachedMedia } = db;
+const { MessageMedia } = await import('../../src/db/messageMediaDTO.js');
+const { serializeChatCommand } = await import('../../src/reply/commands/chat-command-parser.js');
 const { buildContext } = await import('../../src/reply/context-builder.js');
 const { replaceMessageMedia, listMessageMedia, deleteMessageMediaForMessages } = await import(
     '../../src/db/queries/message-media-queries.js'
@@ -61,6 +63,7 @@ interface SeedOptions {
     fileUniqueId?: string | null;
     fileMime?: string | null;
     mediaHint?: string | null;
+    chatCommand?: string | null;
 }
 
 const seedMessage = async (options: SeedOptions = {}): Promise<number> => {
@@ -78,7 +81,7 @@ const seedMessage = async (options: SeedOptions = {}): Promise<number> => {
         fileMime: options.fileMime ?? null,
         fileUniqueId: options.fileUniqueId ?? null,
         replyToId: options.replyToId ?? null,
-        chatCommand: null,
+        chatCommand: options.chatCommand ?? null,
         modelParts: null,
         mediaHint: options.mediaHint ?? null,
         forwardOrigin: null,
@@ -128,6 +131,14 @@ const seedBotReply = async (
         legacyFirstBytes?: Buffer;
         /** indexes whose bytes the model cannot read as an image (label checks) */
         unreadable?: number[];
+        /**
+         * false: the message row keeps no media slot at all, so only the
+         * message_media rows say this reply carried pictures (an interrupted or
+         * legacy row write). Default true: the row mirrors the first picture.
+         */
+        rowSlot?: boolean;
+        /** Overrides the row's media hint (`a video` marks a /chat r anchor) */
+        mediaHint?: string;
     } = {}
 ): Promise<SeededBotReply> => {
     const captions = options.captions ?? [];
@@ -145,8 +156,8 @@ const seedBotReply = async (
         fromBot: true,
         replyToId: userMessageId,
         text: '画好了',
-        mediaHint: 'some pictures',
-        fileUniqueId: keys[0] ?? null,
+        mediaHint: options.mediaHint ?? 'some pictures',
+        fileUniqueId: options.rowSlot === false ? null : keys[0] ?? null,
         fileMime: 'image/png',
         ...(options.legacyFirstBytes === undefined ? {} : { file: options.legacyFirstBytes }),
     });
@@ -190,6 +201,52 @@ const imagePartsOf = (message: UnifiedMessage): UnifiedContentPart[] =>
 
 const bytesOfPart = (part: UnifiedContentPart): Buffer =>
     part.type === 'image' && part.imageData !== undefined ? Buffer.from(part.imageData, 'base64') : Buffer.alloc(0);
+
+/**
+ * Build once while counting the reads of `message_media` rows: the rows are what
+ * says a reply carried pictures, so the count shows whether the context reads
+ * them in one batch or once per message. Every read goes through
+ * `MessageMedia.findAll` (the model method is replaced, then put back).
+ */
+const mediaQueriesDuringBuild = async (
+    messageId: number
+): Promise<{ queries: number; imageParts: number; turns: number }> => {
+    const originalFindAll = MessageMedia.findAll;
+    let queries = 0;
+    Object.defineProperty(MessageMedia, 'findAll', {
+        configurable: true,
+        writable: true,
+        value: function countingFindAll(this: unknown, ...args: unknown[]) {
+            queries += 1;
+            return Reflect.apply(originalFindAll, this, args);
+        },
+    });
+    try {
+        const messages = await build(messageId);
+        return {
+            queries,
+            imageParts: messages.reduce((total, message) => total + imagePartsOf(message).length, 0),
+            turns: messages.length,
+        };
+    } finally {
+        Object.defineProperty(MessageMedia, 'findAll', {
+            configurable: true,
+            writable: true,
+            value: originalFindAll,
+        });
+    }
+};
+
+/** A root message plus `count` text-only bot replies, alternating with user lines; returns the last trigger */
+const seedPlainBotChain = async (count: number): Promise<number> => {
+    const rootId = await seedMessage({ text: '开始' });
+    let parentId = rootId;
+    for (let index = 0; index < count; index += 1) {
+        const botId = await seedMessage({ fromBot: true, replyToId: parentId, text: `第 ${index + 1} 条` });
+        parentId = await seedMessage({ replyToId: botId, text: `回应 ${index + 1}` });
+    }
+    return parentId;
+};
 
 const cases: CaseResult[] = [];
 
@@ -370,6 +427,95 @@ cases.push(
         const images = imagePartsOf(carrier);
         expect(images.length === 1, `the single picture replays once (got ${images.length})`);
         expect(bytesOfPart(images[0] ?? { type: 'text' }).equals(bytes), 'the single picture bytes');
+    })
+);
+
+cases.push(
+    await runCase('stored picture rows reach the context when the message row kept no media slot', async () => {
+        const reply = await seedBotReply('lost-slot', 2, { captions: ['第一张的说明'], rowSlot: false });
+
+        // The premise: neither file nor fileUniqueId says this reply has media
+        const row = await Message.findOne({ where: { chatId: OFFLINE_CHAT_ID, messageId: reply.botMessageId } });
+        expect(row?.file === null && row.fileUniqueId === null, 'the message row has no media slot at all');
+        expect(
+            (await listMessageMedia(OFFLINE_CHAT_ID, reply.botMessageId)).length === 2,
+            'two message_media rows say the reply carried pictures'
+        );
+
+        const messages = await build(reply.userMessageId);
+        const carrier = carrierOf(messages);
+        const images = imagePartsOf(carrier);
+        expect(images.length === 2, `both stored pictures come back (got ${images.length})`);
+        for (const [index, part] of images.entries()) {
+            expect(
+                bytesOfPart(part).equals(reply.bytes[index] ?? Buffer.alloc(0)),
+                `picture ${index + 1} carries its delivery position's bytes`
+            );
+            expect(part.type === 'image' && part.mimeType === 'image/png', `picture ${index + 1} is a PNG part`);
+        }
+        expect(
+            textAt(carrier, 0).includes('图注：第 1 张「第一张的说明」'),
+            `the stored caption still names its picture (got ${JSON.stringify(textAt(carrier, 0))})`
+        );
+
+        const botNumber = [...lastContextIndex.values()].find((entry) => entry.messageId === reply.botMessageId)?.number;
+        expect(lastContextIndex.get(botNumber ?? 0)?.imageCount === 2, 'the tool index counts both pictures');
+        const references = await resolveImageReferences(
+            [{ message: botNumber ?? 0, image: 2 }],
+            { chatId: OFFLINE_CHAT_ID, contextIndex: lastContextIndex, loadMessageImages: async () => [] }
+        );
+        expect(references.ok, '#N 的第 2 张图 resolves for a reply whose only media source is message_media');
+        if (references.ok) {
+            expect(
+                references.images[0]?.data.equals(reply.bytes[1] ?? Buffer.alloc(0)) === true,
+                'the reference serves the second stored picture'
+            );
+        }
+    })
+);
+
+cases.push(
+    await runCase('plain text replies cost one fixed media read, not one per message', async () => {
+        const one = await mediaQueriesDuringBuild(await seedPlainBotChain(1));
+        const many = await mediaQueriesDuringBuild(await seedPlainBotChain(10));
+
+        expect(one.imageParts === 0 && many.imageParts === 0, 'text-only replies contribute no media part');
+        expect(many.turns > one.turns, `the long chain really adds turns (${one.turns} → ${many.turns})`);
+        // One batch read per build, whatever the context length: the rows are
+        // what tells the turn builder a reply has pictures.
+        expect(
+            one.queries === 1 && many.queries === 1,
+            `exactly one message_media read per build (1 reply: ${one.queries}, 10 replies: ${many.queries})`
+        );
+        expect(
+            many.queries === one.queries,
+            `the media read does not grow with the message count (1 reply: ${one.queries}, 10 replies: ${many.queries})`
+        );
+    })
+);
+
+cases.push(
+    await runCase('a /chat r video anchor keeps its stored pictures out of the context', async () => {
+        const reply = await seedBotReply('omitted-anchor', 2, { rowSlot: false, mediaHint: 'a video' });
+        const commandId = await seedMessage({
+            replyToId: reply.botMessageId,
+            text: '/chat r',
+            chatCommand: serializeChatCommand({
+                selection: { type: 'recent' },
+                userScope: { type: 'anyone', limit: Infinity },
+                prompt: null,
+            }),
+        });
+
+        const messages = await build(commandId);
+        const images = messages.flatMap((message) => imagePartsOf(message));
+        expect(images.length === 0, `no picture bytes load for a /chat r video anchor (got ${images.length})`);
+        const botNumber = [...lastContextIndex.values()].find((entry) => entry.messageId === reply.botMessageId)?.number;
+        expect(botNumber !== undefined, 'the anchor reply is still in the context');
+        expect(
+            lastContextIndex.get(botNumber ?? 0)?.imageCount === 0,
+            'the anchor is numbered with no pictures'
+        );
     })
 );
 

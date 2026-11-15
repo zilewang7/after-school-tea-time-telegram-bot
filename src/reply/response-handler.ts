@@ -24,7 +24,7 @@ import {
 } from '../telegram/index.js';
 import { runApiCall } from '../telegram/edit-coordinator.js';
 import { sendReplyFileMessage } from '../telegram/reply-file-send.js';
-import { sendReplyImagesMessage, type ReplyImageUpload } from '../telegram/reply-images-send.js';
+import { deliveryOrderOf, sendReplyImagesMessage, type ReplyImageUpload } from '../telegram/reply-images-send.js';
 import {
     sendReplyWidgetLinkMessage,
     sendReplyWidgetMessage,
@@ -131,6 +131,8 @@ import { getToolConfig } from '../config/tool-config.js';
 import { stripPerQueryResultCitations } from '../shared/citation-markers.js';
 import {
     MAX_REPLY_IMAGES,
+    MAX_REPLY_IMAGE_TOTAL_BYTES,
+    replyImageBytesOf,
     replyMediaKeyOf,
     type ReplyImageDelivery,
     type ReplyImageDeliveryMode,
@@ -1170,16 +1172,27 @@ const applyReplyPictures = (response: AIResponse, pictures: readonly ReplyPictur
 };
 
 /**
+ * The session's pictures mean "the pictures that reached the chat". The stream
+ * put the response's whole production list there; from the final delivery on,
+ * only the delivery writes it, so a reply whose pictures were all pruned, or
+ * one that went out as a widget/file/sticker, stores no ghost attachment.
+ */
+const resetSessionPictures = (session: ChatContext['session']): void => {
+    session.images = [];
+    session.imageCaptions = [];
+};
+
+/**
  * Keep the attachment list honest against pictures the reply already carries
  * elsewhere: the same bytes are never sent twice (a model that writes
  * `![x](g1)` and also calls `send_image(image_id='g1')` gets one picture), and
- * attachments fill only the budget the placed pictures leave (inline first,
- * so the reply stays within its picture limit).
+ * attachments fill only the budget the placed pictures leave (inline first, so
+ * the reply stays within its picture count and its total byte budget).
  */
 const pruneAttachments = (
     response: AIResponse,
     placed: readonly ReplyImageDelivery[],
-    budget: number,
+    countBudget: number,
     chatContext: ChatContext,
     where: 'inline body' | 'fallback'
 ): void => {
@@ -1195,11 +1208,35 @@ const pruneAttachments = (
             `[rich-inline] ${duplicates} attachment picture(s) already ${where === 'inline body' ? 'in the body' : 'in the fallback list'}, skipped chat=${chatContext.chatId}`
         );
     }
-    const limited = kept.slice(0, Math.max(0, budget));
-    if (kept.length > limited.length) {
+    const countLimited = kept.slice(0, Math.max(0, countBudget));
+    const overLimit = kept.length - countLimited.length;
+    // The reply has one byte budget: the placed pictures have spent theirs first
+    const placedBytes = replyImageBytesOf(placed);
+    const byteBudget = Math.max(0, MAX_REPLY_IMAGE_TOTAL_BYTES - placedBytes);
+    const limited: ReplyPicture[] = [];
+    let bytes = 0;
+    let overBytes = 0;
+    for (const picture of countLimited) {
+        // Telegram takes the pictures in order: the first one over the byte
+        // budget ends the attachment list
+        if (overBytes > 0 || bytes + picture.data.length > byteBudget) {
+            overBytes += 1;
+            continue;
+        }
+        limited.push(picture);
+        bytes += picture.data.length;
+    }
+    if (overLimit > 0) {
         console.warn(
-            `[rich-inline] ${kept.length - limited.length} attachment picture(s) dropped over the reply limit ` +
+            `[rich-inline] ${overLimit} attachment picture(s) dropped over the reply limit ` +
                 `chat=${chatContext.chatId} inline=${placed.length} limit=${MAX_REPLY_IMAGES}`
+        );
+    }
+    if (overBytes > 0) {
+        console.warn(
+            `[rich-inline] ${overBytes} attachment picture(s) dropped over the reply byte budget ` +
+                `chat=${chatContext.chatId} inline=${placed.length} bytes=${placedBytes} ` +
+                `limit=${MAX_REPLY_IMAGE_TOTAL_BYTES}`
         );
     }
     applyReplyPictures(response, limited);
@@ -1209,7 +1246,8 @@ const pruneAttachments = (
  * The pictures that did not stay inside the rich body go out as trailing
  * messages: L2's fallback, or everything a demoted/entities reply had parsed.
  * Inline pictures come first (they had positions), then the send_image
- * attachments, and the reply's total picture limit applies to the merged list.
+ * attachments, and the reply's picture count and byte budget apply to the
+ * merged list.
  */
 const settlePicturesAfterRich = (
     response: AIResponse,
@@ -1239,12 +1277,18 @@ const settlePicturesAfterRich = (
     applyReplyPictures(response, merged);
 };
 
-/** Hand the finalize layer what the rich path produced (it only reads the session) */
-const copyInlineToSession = (chatContext: ChatContext): void => {
+/**
+ * Hand the finalize layer what the rich path produced (it only reads the
+ * session). Only a body that actually embedded the pictures keeps them as
+ * inline media: a demoted or fallback reply sends the same pictures as
+ * attachments, and storing them there too would double every media row.
+ */
+const copyInlineToSession = (chatContext: ChatContext, richResult: RichFinalResult): void => {
     const { session } = chatContext;
     session.inlineAssemblyText = chatContext.inlineAssemblyText;
     session.richAnswerMarkdown = chatContext.richAnswerMarkdown;
-    session.inlineMedia = chatContext.inlineImages ?? [];
+    const embeddedInBody = richResult.kind === 'delivered' && chatContext.inlineDelivery === 'rich';
+    session.inlineMedia = embeddedInBody ? chatContext.inlineImages ?? [] : [];
     session.inlineDelivery = chatContext.inlineDelivery ?? 'dropped';
 };
 
@@ -1313,12 +1357,18 @@ const deliverReplyImages = async (
     session.messageIds.push(...messageIds);
     session.mediaMessageIds = [...(session.mediaMessageIds ?? []), ...messageIds];
 
-    // Finalize stores the pictures that reached the chat, not the produced ones
-    const delivered = plan.uploads
-        .map((_, index) => index)
-        .filter((index) => !dropped.has(index));
-    session.images = delivered.map((index) => plan.uploads[index]?.data).filter((data): data is Buffer => data !== undefined);
-    session.imageCaptions = delivered.map((index) => plan.captions[index]);
+    // Finalize stores the pictures that reached the chat, not the produced
+    // ones, and in the order the chat received them: the sender puts the stills
+    // before the animations, and version media/message_media/#N follow it.
+    session.images = [];
+    session.imageCaptions = [];
+    for (const index of deliveryOrderOf(plan.uploads)) {
+        if (dropped.has(index)) continue;
+        const upload = plan.uploads[index];
+        if (upload === undefined) continue;
+        session.images.push(upload.data);
+        session.imageCaptions.push(plan.captions[index]);
+    }
 
     if (plan.uploads.length === 1 || !hasTextMessage) {
         // The last picture is where the keyboard goes in both cases
@@ -1927,9 +1977,13 @@ export const sendFinalResponse = async (
 
     // Pictures the body did not keep go out as trailing messages; a delivered
     // body keeps them inside (attachments dedupe and fill the rest of the
-    // budget), L2/L3 (and a demoted reply) lead the attachment list instead
+    // count and byte budget), L2/L3 (and a demoted reply) lead the attachment
+    // list instead. The response is final here, so the session drops the
+    // production list the stream synced: only the delivery writes it from now
+    // on, which is what finalize stores as "the pictures that reached the chat".
     settlePicturesAfterRich(response, chatContext, richResult);
-    copyInlineToSession(chatContext);
+    copyInlineToSession(chatContext, richResult);
+    resetSessionPictures(session);
 
     // The captions are rendered after the rich outcome: a body that fell back
     // to attachments hands its pictures over here as well

@@ -32,6 +32,7 @@ export const RICH_INLINE_TAIL =
     '- 单独写一段 `![图注](引用)`（整行只有它，前后各空一行），图片就出现在这一段的位置；图注可省略，可写行内格式。\n' +
     '- 引用可以是本轮 generate_image 生成的 `g1`、fetch_image 读过的 `img1`、search_images 的 `s1`、' +
     '上下文消息里图片的 `#12`（第 2 张写 `#12:2`），或公开图片直链 `https://…`。\n' +
+    '- 正文只内嵌静态图片：动图 GIF 写成内嵌标记不会显示（图注会留在正文），要发 GIF 请用 send_image。\n' +
     '- 每条回复最多 10 张图片（正文内嵌与 send_image 合计）。想把图附在回复末尾（相册）而不是正文某个位置时，仍用 send_image，可多次调用。';
 
 /** Append the inline-picture note after the workspace manifest */

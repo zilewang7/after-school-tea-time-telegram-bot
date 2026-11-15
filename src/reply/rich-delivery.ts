@@ -176,10 +176,15 @@ export const prepareInlineReply = async (
 
     const placements = scanned.placements.slice(0, MAX_REPLY_IMAGES);
     const dropped = scanned.placements.slice(MAX_REPLY_IMAGES);
+    // A picture past the limit keeps its caption as text where the block would
+    // have been, like one that fails to resolve: the answer still says what it
+    // meant there. An empty caption leaves nothing.
+    const captionText = new Map<string, string>();
     for (const placement of dropped) {
         console.warn(
             `[rich-inline] inline picture dropped chat=${holder.chatId} ref=${placement.ref} reason=over-limit`
         );
+        captionText.set(placement.mediaId, placement.caption);
     }
     const resolved = await Promise.all(
         placements.map(async (placement) => {
@@ -197,7 +202,6 @@ export const prepareInlineReply = async (
     );
 
     const images: ReplyImageDelivery[] = [];
-    const captionText = new Map<string, string>();
     let totalBytes = 0;
     placements.forEach((placement, index) => {
         const bytes = resolved[index];

@@ -13,6 +13,8 @@ import {
     type MessageFileContents,
     type WidgetSurfaceInfo,
 } from '../db/queries/context-queries.js';
+import { listMessageMediaForMessages } from '../db/queries/message-media-queries.js';
+import type { StoredMessageMedia } from '../db/messageMediaDTO.js';
 import { assembleContextMessages, isSubImage, type ContextNumbering } from './context-assembly.js';
 import { getLinkPreviewParts } from '../services/luoxu-preview-service.js';
 import {
@@ -454,20 +456,29 @@ export const stripLeakedWireFormat = (text: string): string => {
     return stripPerQueryResultCitations(cleaned.replace(/^\n+/, ''));
 };
 
+/** No attachments: shared by every message that has none */
+const NO_MESSAGE_FILES: MessageFileContents = { parts: [], captions: [] };
+
 /**
  * The message's own attachments (its file plus album sub-images, or a v5 bot
  * reply's stored pictures) as context parts, unfiltered by model capabilities.
  * A message whose media was left out (`/chat r` videos) contributes no part at
- * all — the bytes are never loaded.
+ * all — the bytes are never loaded, whatever the other sources say.
  *
- * A v5 bot reply may keep all its pictures in `message_media` rows; the message
- * row's own file slot mirrors the first one, which is enough to enter here.
+ * A v5 reply's pictures are `message_media` rows of their own, so the batch's
+ * rows for this message count as a source too: a reply whose row lost its file
+ * slot (an interrupted write, a future path that skips the mirror) still
+ * replays them. `storedMediaRows` is empty for the messages without rows, and
+ * passing it on saves the per-message read.
  */
-const loadMessageFiles = async (msg: ContextMessage): Promise<MessageFileContents> => {
-    if (msg.mediaOmitted) return { parts: [], captions: [] };
-    return msg.file || msg.fileUniqueId
-        ? getMessageFileContents(msg.chatId, msg.messageId)
-        : { parts: [], captions: [] };
+const loadMessageFiles = async (
+    msg: ContextMessage,
+    storedMediaRows: readonly StoredMessageMedia[]
+): Promise<MessageFileContents> => {
+    if (msg.mediaOmitted) return NO_MESSAGE_FILES;
+    return msg.file || msg.fileUniqueId || storedMediaRows.length > 0
+        ? getMessageFileContents(msg.chatId, msg.messageId, storedMediaRows)
+        : NO_MESSAGE_FILES;
 };
 
 /**
@@ -969,7 +980,7 @@ export const buildContext = async (
     if (!dryRun) publishContextNumbering(chatId, messageId, index);
     const repliesInFlightElsewhere = findRepliesInFlightElsewhere(chatId, messageId, index);
 
-    const [contextUsers, customEmojiPlan, widgetSurfaces] = await Promise.all([
+    const [contextUsers, customEmojiPlan, widgetSurfaces, storedMediaByMessageId] = await Promise.all([
         collectContextUsers(contextMessages),
         buildCustomEmojiContextPlan(
             chatId,
@@ -987,13 +998,25 @@ export const buildContext = async (
                 )
                 .map((contextMessage) => contextMessage.messageId)
         ),
+        // One read for the whole context: a v5 reply's stored pictures are rows
+        // of their own and decide whether its attachment turn exists at all, so
+        // asking per message would scale with the context length. The map is
+        // authoritative for every message it does not name (no rows), which
+        // also saves the per-message read of these rows.
+        listMessageMediaForMessages(
+            chatId,
+            contextMessages.map((contextMessage) => contextMessage.messageId)
+        ),
     ]);
 
     const turns: MediaDedupeInput[] = [];
     for (const contextMsg of contextMessages) {
         // Loaded once: the turn is built from these parts, and the tool index
         // keeps the pictures among them before any capability filtering
-        const contents = await loadMessageFiles(contextMsg);
+        const contents = await loadMessageFiles(
+            contextMsg,
+            storedMediaByMessageId.get(contextMsg.messageId) ?? []
+        );
         const builtTurns = await buildMessageContent(contextMsg, contents, {
             capabilities: modelCapabilities,
             index,
