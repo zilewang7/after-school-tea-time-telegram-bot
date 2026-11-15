@@ -41,7 +41,13 @@ export type RichAnswerBlock =
     | { readonly kind: 'paragraph'; readonly runs: readonly RichAnswerRun[] }
     | { readonly kind: 'heading'; readonly size: 1 | 2 | 3 | 4 | 5 | 6; readonly runs: readonly RichAnswerRun[] }
     | { readonly kind: 'pre'; readonly language: string | null; readonly text: string }
-    | { readonly kind: 'list'; readonly ordered: boolean; readonly items: readonly RichAnswerListItem[] }
+    | {
+          readonly kind: 'list';
+          readonly ordered: boolean;
+          /** Ordered lists only: the first item's number when it is not 1 (`<ol start>`) */
+          readonly start?: number;
+          readonly items: readonly RichAnswerListItem[];
+      }
     | { readonly kind: 'quote'; readonly blocks: readonly RichAnswerBlock[] }
     | {
           readonly kind: 'table';
@@ -94,11 +100,24 @@ const isKeptStyle = (style: string): boolean => {
 const sameStyles = (left: readonly string[], right: readonly string[]): boolean =>
     left.length === right.length && left.every((style, index) => style === right[index]);
 
+/**
+ * The snapshot dialect writes a hard line break as a trailing `\` before the
+ * newline. A lone trailing backslash has no next line to break: it is a marker
+ * with nothing to carry, and renderMarkdown would show it literally.
+ */
+const withoutDanglingHardBreak = (text: string): string => {
+    if (!text.endsWith('\\')) return text;
+    let backslashes = 0;
+    for (let index = text.length - 1; index >= 0 && text[index] === '\\'; index -= 1) backslashes += 1;
+    return backslashes % 2 === 1 ? text.slice(0, -1) : text;
+};
+
 /** `renderMarkdown` + `styleSegments`: the package's view of one line of inline markdown */
 export const inlineRuns = (text: string): RichAnswerRun[] => {
-    if (text === '') return [];
+    const source = withoutDanglingHardBreak(text);
+    if (source === '') return [];
     const runs: RichAnswerRun[] = [];
-    for (const segment of styleSegments(renderMarkdown(text))) {
+    for (const segment of styleSegments(renderMarkdown(source))) {
         const styles = segment.styles.filter(isKeptStyle);
         const previous = runs[runs.length - 1];
         if (previous !== undefined && sameStyles(previous.styles, styles)) {
@@ -119,7 +138,6 @@ const DIVIDER = /^\s{0,3}(?:-{3,}|\*{3,}|_{3,})\s*$/;
 const QUOTE_LINE = /^\s{0,3}>\s?(.*)$/;
 const LIST_ITEM = /^(\s*)([-*+]|\d+[.)])\s+(.*)$/;
 const MEDIA_BLOCK = /^!\[\]\(tg:\/\/photo\?id=([A-Za-z0-9_-]+)(?:\s+"([^"]*)")?\)\s*$/;
-const MEDIA_BLOCK_ANYWHERE = /!\[\]\(tg:\/\/photo\?id=([A-Za-z0-9_-]+)(?:\s+"([^"]*)")?\)/g;
 const TABLE_SEPARATOR_CELL = /^:?-{1,}:?$/;
 
 const headingSizeOf = (level: number): 1 | 2 | 3 | 4 | 5 | 6 => {
@@ -179,14 +197,57 @@ const decodeMediaTitle = (title: string | null): string =>
         .replace(/&gt;/g, '>')
         .replace(/&amp;/g, '&');
 
-/** Distinct media ids the snapshot references, in first-appearance order */
+/**
+ * Distinct media ids the body references, in first-appearance order. Only real
+ * media blocks count: a code fence showing `tg://photo?id=…` is an example,
+ * not a picture the version delivered.
+ */
 const snapshotMediaIds = (markdown: string): string[] => {
     const ids: string[] = [];
-    for (const match of markdown.matchAll(MEDIA_BLOCK_ANYWHERE)) {
-        const id = match[1];
+    let inFence = false;
+    for (const line of markdown.replace(/\r\n?/g, '\n').split('\n')) {
+        if (inFence) {
+            if (FENCE_CLOSE.test(line)) inFence = false;
+            continue;
+        }
+        if (FENCE_OPEN.test(line)) {
+            inFence = true;
+            continue;
+        }
+        const id = MEDIA_BLOCK.exec(line)?.[1];
         if (id !== undefined && !ids.includes(id)) ids.push(id);
     }
     return ids;
+};
+
+/**
+ * Rich bodies mix two dialects: the answer markdown, and blocks the bot built
+ * as HTML (`toRichHtml` — the L2 "pictures could not be embedded" note). A
+ * block-level `<p>` is not markdown and would show as literal tags, so strip
+ * the tags at line boundaries; code fences keep every character.
+ */
+const stripBlockParagraphTags = (lines: readonly string[]): string[] => {
+    const stripped: string[] = [];
+    let inFence = false;
+    for (const line of lines) {
+        if (inFence) {
+            stripped.push(line);
+            if (FENCE_CLOSE.test(line)) inFence = false;
+            continue;
+        }
+        if (FENCE_OPEN.test(line)) {
+            inFence = true;
+            stripped.push(line);
+            continue;
+        }
+        const leading = /^\s*/u.exec(line)?.[0] ?? '';
+        const body = line
+            .slice(leading.length)
+            .replace(/^<p>\s*/iu, '')
+            .replace(/\s*<\/p>$/iu, '');
+        stripped.push(`${leading}${body}`);
+    }
+    return stripped;
 };
 
 type PhotoResolution = { readonly mediaIndex: number } | { readonly caption: string };
@@ -236,7 +297,7 @@ const createMediaMapping = (
 // ---- block parsing --------------------------------------------------------
 
 const parseBlocks = (markdown: string, resolvePhoto: (id: string, captionTitle: string | null) => PhotoResolution): RichAnswerBlock[] => {
-    const lines = markdown.replace(/\r\n?/g, '\n').split('\n');
+    const lines = stripBlockParagraphTags(markdown.replace(/\r\n?/g, '\n').split('\n'));
     const blocks: RichAnswerBlock[] = [];
     let index = 0;
 
@@ -324,14 +385,52 @@ const parseBlocks = (markdown: string, resolvePhoto: (id: string, captionTitle: 
         if (listItem !== null) {
             const ordered = isOrderedMarker(listItem[2] ?? '');
             const items: RichAnswerListItem[] = [];
-            let match: RegExpExecArray | null = listItem;
-            while (match !== null) {
-                if (isOrderedMarker(match[2] ?? '') !== ordered) break;
-                items.push({ depth: depthOfIndent(match[1] ?? ''), runs: inlineRuns(match[3] ?? '') });
+            let start: number | undefined;
+            // A list item may run over several lines: toRichMarkdown writes the
+            // rest as indented lines (a trailing `\\` on the marker line is its
+            // hard break), so they join the current item until the next marker.
+            let itemLines: string[] | null = null;
+            let itemDepth = 0;
+            const pushItem = (): void => {
+                if (itemLines === null) return;
+                items.push({ depth: itemDepth, runs: inlineRuns(itemLines.join('\n')) });
+                itemLines = null;
+            };
+            while (index < lines.length) {
+                const current = lines[index] ?? '';
+                if (current.trim() === '') {
+                    // A blank line either separates loose items of this list or ends it
+                    let lookahead = index;
+                    while (lookahead < lines.length && (lines[lookahead] ?? '').trim() === '') lookahead += 1;
+                    const next = lookahead < lines.length ? LIST_ITEM.exec(lines[lookahead] ?? '') : null;
+                    index = lookahead;
+                    if (next !== null && isOrderedMarker(next[2] ?? '') === ordered) continue;
+                    break;
+                }
+                const marker = LIST_ITEM.exec(current);
+                if (marker !== null) {
+                    if (isOrderedMarker(marker[2] ?? '') !== ordered) break;
+                    pushItem();
+                    itemDepth = depthOfIndent(marker[1] ?? '');
+                    itemLines = [marker[3] ?? ''];
+                    if (ordered && start === undefined) start = Number.parseInt(marker[2] ?? '', 10);
+                    index += 1;
+                    continue;
+                }
+                if (itemLines === null) break;
+                // An unindented block opener ends the list instead of joining
+                // the item: the markdown would have started a new block there
+                if (!/^\s/u.test(current) && startsBlock(lines, index)) break;
+                itemLines.push(current.replace(/^\s+/u, ''));
                 index += 1;
-                match = index < lines.length ? LIST_ITEM.exec(lines[index] ?? '') : null;
             }
-            blocks.push({ kind: 'list', ordered, items });
+            pushItem();
+            blocks.push({
+                kind: 'list',
+                ordered,
+                ...(start === undefined || start === 1 ? {} : { start }),
+                items,
+            });
             continue;
         }
 

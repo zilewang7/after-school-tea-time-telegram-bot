@@ -179,19 +179,21 @@ function RichAnswerBlockView({ block, media, compact, showCaptions }: BlockProps
             </pre>
         ))
         .with({ kind: 'list' }, (list) => {
-            const ListTag = list.ordered ? 'ol' : 'ul';
-            return (
-                <ListTag className="rich-answer__list">
-                    {list.items.map((item, index) => (
-                        <li
-                            key={index}
-                            className="rich-answer__list-item"
-                            style={{ marginInlineStart: `${item.depth * 16}px` }}
-                        >
-                            <RichAnswerRuns runs={item.runs} />
-                        </li>
-                    ))}
-                </ListTag>
+            const items = list.items.map((item, index) => (
+                <li
+                    key={index}
+                    className="rich-answer__list-item"
+                    style={{ marginInlineStart: `${item.depth * 16}px` }}
+                >
+                    <RichAnswerRuns runs={item.runs} />
+                </li>
+            ));
+            return list.ordered ? (
+                <ol className="rich-answer__list" start={list.start}>
+                    {items}
+                </ol>
+            ) : (
+                <ul className="rich-answer__list">{items}</ul>
             );
         })
         .with({ kind: 'quote' }, (quote) => (

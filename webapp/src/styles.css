@@ -909,6 +909,12 @@ a.button {
 .rich-answer.compact {
     gap: 4px;
     font-size: 14px;
+    /* The tree / flat view folds a long reply like `.tree-node-text` does:
+       the details page shows it in full. */
+    max-height: 9.5em;
+    overflow: hidden;
+    -webkit-mask-image: linear-gradient(to bottom, #000 80%, transparent);
+    mask-image: linear-gradient(to bottom, #000 80%, transparent);
 }
 
 .rich-answer__paragraph {

@@ -376,4 +376,174 @@ results.push(
     })
 );
 
+
+// ---- v5.2 production-shaped fixtures (design-critic review) -----------------
+// A real rich snapshot's list items are `- title\\` + indented continuation
+// lines (toRichMarkdown's hard breaks), and loose items are separated by blank
+// lines while still being one list.
+const MULTI_LINE_LIST_SNAPSHOT = [
+    '- <b>排位与咖位：0 分战神</b>\\',
+    '  在牌桌排位里它确实是铁打的 <b>0 分守门员</b>，连图鉴都给它排在 01 号。',
+    '- <b>生态设定：奶狗的终极天敌</b>\\',
+    '  第一段说明，结尾还断了一次。\\',
+    '  第二段说明。',
+    '- <b>商业化含金量</b>\\',
+    '  最后一项的说明。',
+].join('\n');
+
+const LOOSE_LIST_SNAPSHOT = [
+    '- <b>第一项</b>\\',
+    '  第一项说明。',
+    '',
+    '- <b>第二项</b>\\',
+    '  第二项说明。',
+    '',
+    '- <b>第三项</b>',
+].join('\n');
+
+const NESTED_LIST_SNAPSHOT = [
+    '- <b>项目一</b>\\',
+    '  项目一说明',
+    '  - 子项甲\\',
+    '    子项甲说明',
+    '  - 子项乙',
+    '- <b>项目二</b>',
+].join('\n');
+
+// A real L2 fallback body: the answer markdown plus a block the bot built with
+// toRichHtml — a block-level `<p>`, which markdown does not understand.
+const L2_HTML_NOTE_SNAPSHOT = [
+    '这一版正文只走富文本排版，图片作为附件跟在后面。',
+    '',
+    '<p><i>（另有 2 张图未能内嵌发送）</i></p>',
+].join('\n');
+
+// A fenced example mentioning tg://photo must not join the media mapping.
+const FENCE_WITH_MEDIA_TEXT_SNAPSHOT = [
+    '```ts',
+    "const shot = '![](tg://photo?id=fake)';",
+    '```',
+    '',
+    '![](tg://photo?id=img1 "真实图")',
+].join('\n');
+
+const itemTextsOf = (block: Extract<RichAnswerBlock, { kind: 'list' }>): string[] =>
+    block.items.map((item) => item.runs.map((run) => run.text).join(''));
+
+const listTextOf = (blocks: readonly RichAnswerBlock[]): string => runTextsOf(blocks).join('\n');
+
+results.push(
+    await runCase('a multi-line list item keeps its continuation and loses the hard-break backslash', async () => {
+        const blocks = parseRichAnswer(MULTI_LINE_LIST_SNAPSHOT, []);
+        expect(kindsOf(blocks) === 'list', `the three loose items form one list (got ${kindsOf(blocks)})`);
+        const list = firstOfKind(blocks, 'list');
+        expect(list !== undefined && list.items.length === 3, `three items (got ${String(list?.items.length)})`);
+        expect(
+            list !== undefined && list.items.every((item) => item.depth === 0),
+            `all items are top level (got ${list?.items.map((item) => item.depth).join(',')})`
+        );
+        const texts = list === undefined ? [] : itemTextsOf(list);
+        expect(
+            texts[0] === '排位与咖位：0 分战神\n在牌桌排位里它确实是铁打的 0 分守门员，连图鉴都给它排在 01 号。',
+            `the first item joins its continuation after a newline (got ${JSON.stringify(texts[0])})`
+        );
+        expect(
+            texts[1] === '生态设定：奶狗的终极天敌\n第一段说明，结尾还断了一次。\n第二段说明。',
+            `a continuation hard break inside the item stays a newline (got ${JSON.stringify(texts[1])})`
+        );
+        expect(
+            texts[2] === '商业化含金量\n最后一项的说明。',
+            `the last item loses the dangling backslash (got ${JSON.stringify(texts[2])})`
+        );
+        expect(!listTextOf(blocks).includes('\\'), 'no literal backslash is rendered anywhere');
+        const first = list?.items[0]?.runs ?? [];
+        expect(stylesOfText(first, '排位与咖位：0 分战神').includes('bold'), 'the item title keeps its bold');
+    })
+);
+
+results.push(
+    await runCase('a loose list stays one list across blank lines', async () => {
+        const blocks = parseRichAnswer(LOOSE_LIST_SNAPSHOT, []);
+        expect(kindsOf(blocks) === 'list', `blank lines do not split the list (got ${kindsOf(blocks)})`);
+        const list = firstOfKind(blocks, 'list');
+        expect(list !== undefined && list.items.length === 3, `three items in one list (got ${String(list?.items.length)})`);
+        expect(
+            list !== undefined && itemTextsOf(list).join('|') === '第一项\n第一项说明。|第二项\n第二项说明。|第三项',
+            `each item keeps its own continuation (got ${JSON.stringify(list === undefined ? [] : itemTextsOf(list))})`
+        );
+    })
+);
+
+results.push(
+    await runCase('consecutive items and a nested list live in one list with depths', async () => {
+        const blocks = parseRichAnswer(NESTED_LIST_SNAPSHOT, []);
+        expect(kindsOf(blocks) === 'list', `one list block (got ${kindsOf(blocks)})`);
+        const list = firstOfKind(blocks, 'list');
+        expect(
+            list !== undefined && list.items.map((item) => item.depth).join(',') === '0,1,1,0',
+            `the nested items carry depth 1 (got ${list?.items.map((item) => item.depth).join(',')})`
+        );
+        const texts = list === undefined ? [] : itemTextsOf(list);
+        expect(
+            texts.join('|') === '项目一\n项目一说明|子项甲\n子项甲说明|子项乙|项目二',
+            `each item keeps its own text (got ${JSON.stringify(texts)})`
+        );
+        expect(!listTextOf(blocks).includes('\\'), 'no literal backslash is rendered anywhere');
+    })
+);
+
+results.push(
+    await runCase('an ordered list that does not start at one reports its start', async () => {
+        const blocks = parseRichAnswer(['3. 第三项', '4. 第四项'].join('\n'), []);
+        const list = firstOfKind(blocks, 'list');
+        expect(list !== undefined && list.ordered === true, 'it is an ordered list');
+        expect(list !== undefined && list.start === 3, `the list reports its first number (got ${String(list?.start)})`);
+        expect(list !== undefined && list.items.length === 2, 'both items are one list');
+    })
+);
+
+results.push(
+    await runCase('a block-level <p> from the L2 note renders as an italic paragraph', async () => {
+        const blocks = parseRichAnswer(L2_HTML_NOTE_SNAPSHOT, L2_MEDIA);
+        expect(kindsOf(blocks) === 'paragraph,paragraph', `the note is its own paragraph (got ${kindsOf(blocks)})`);
+        const note = blocks[1];
+        const noteText = note?.kind === 'paragraph' ? note.runs.map((run) => run.text).join('') : '';
+        expect(noteText === '（另有 2 张图未能内嵌发送）', `the tag is stripped, the text kept (got ${JSON.stringify(noteText)})`);
+        expect(
+            note?.kind === 'paragraph' && note.runs.some((run) => run.styles.includes('italic')),
+            'the note keeps its italic style'
+        );
+        expect(!listTextOf(blocks).includes('<p>') && !listTextOf(blocks).includes('</p>'), 'no literal <p> tag is rendered');
+        expect(
+            JSON.stringify(unreferencedMediaIndexes(blocks, L2_MEDIA.length)) === '[0,1]',
+            'the L2 attachments still follow the body'
+        );
+    })
+);
+
+results.push(
+    await runCase('a fenced tg://photo example is code, not a picture to map', async () => {
+        const blocks = parseRichAnswer(FENCE_WITH_MEDIA_TEXT_SNAPSHOT, [mediaItem(0)]);
+        expect(kindsOf(blocks) === 'pre,photo', `fence then picture (got ${kindsOf(blocks)})`);
+        const pre = firstOfKind(blocks, 'pre');
+        expect(
+            pre !== undefined && pre.text.includes('tg://photo?id=fake'),
+            'the code keeps its literal example'
+        );
+        // The only real id is img1: with no media ids it takes the inline entry
+        const photo = firstOfKind(blocks, 'photo');
+        expect(photo?.mediaIndex === 0, `the real picture maps to the inline entry (got ${String(photo?.mediaIndex)})`);
+    })
+);
+
+results.push(
+    await runCase('a dangling hard break at a paragraph end shows no backslash', async () => {
+        const blocks = parseRichAnswer('段落结尾带反斜杠\\', []);
+        expect(
+            listTextOf(blocks) === '段落结尾带反斜杠',
+            `the lone backslash is dropped (got ${JSON.stringify(listTextOf(blocks))})`
+        );
+    })
+);
+
 reportResults(results);

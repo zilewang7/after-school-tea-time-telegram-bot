@@ -144,12 +144,14 @@ export const mediaViewsOfVersion = (
 };
 
 /**
- * The rendered answer section a rich delivery wrote. Only a version that went
- * out as a rich message has one (`delivery` is rich or rich-text); an entities
- * version never does, and a blank snapshot is no answer.
+ * The rendered answer section a rich delivery wrote with the v1 dialect. Both
+ * claims are required: `delivery` says the body went out as a rich message
+ * (rich or rich-text, never entities), and `richRenderer === 'v1'` says the
+ * webapp's v1 parser reads this snapshot's dialect — a version without the
+ * claim (or a later renderer) keeps the old text rendering instead.
  */
 const richAnswerSnapshotOf = (version: ResponseVersion | null): string | undefined => {
-    if (version === null || version.delivery === undefined) return undefined;
+    if (version === null || version.delivery === undefined || version.richRenderer !== 'v1') return undefined;
     const markdown = version.richAnswerMarkdown;
     return typeof markdown === 'string' && markdown.trim() !== '' ? markdown : undefined;
 };

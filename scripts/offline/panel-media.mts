@@ -806,6 +806,79 @@ const cases: { name: string; body: () => Promise<void> }[] = [
             );
         },
     },
+    {
+        // v5.2: the snapshot is the v1 dialect the webapp parses. A version
+        // without that renderer claim keeps the old text rendering, so a future
+        // dialect can never be read as v1 (design 2026-1115-2355 §六).
+        name: 'a snapshot is sent only for a version that claims the v1 renderer',
+        body: async () => {
+            const inlineSnapshot = '开头。\n\n![](tg://photo?id=img1 "一张")';
+            const inlineMedia = [
+                {
+                    placement: 'inline' as const,
+                    id: 'img1',
+                    mediaKey: 'out:sha256:renderer-gate',
+                    mimeType: 'image/png',
+                    sizeBytes: PNG_BYTES.length,
+                    caption: '一张',
+                },
+            ];
+            const { rootId, botId } = await seedConversation();
+            await makeReply(botId, rootId, [
+                versionOf(1, {
+                    delivery: 'rich',
+                    richRenderer: 'v1',
+                    richAnswerMarkdown: inlineSnapshot,
+                    media: inlineMedia,
+                }),
+                versionOf(2, {
+                    delivery: 'rich',
+                    // No renderer claim: a dialect this panel cannot parse
+                    richAnswerMarkdown: '未来方言的快照。',
+                    media: inlineMedia,
+                }),
+            ]);
+
+            const detail = await jsonOf(await call(`/api/chats/${GROUP}/replies/${botId}`, ALICE));
+            expect(
+                detail.versions?.[0]?.richAnswerMarkdown === inlineSnapshot,
+                `a v1 version carries its snapshot (got ${JSON.stringify(detail.versions?.[0]?.richAnswerMarkdown)})`
+            );
+            expect(
+                !('richAnswerMarkdown' in (detail.versions?.[1] ?? {})),
+                `a version without the v1 renderer carries none (got ${JSON.stringify(detail.versions?.[1]?.richAnswerMarkdown)})`
+            );
+
+            // The tree summary follows the same gate: the current version is the
+            // v1 one, so it has the snapshot; a reply whose only version makes no
+            // renderer claim keeps its payload without it.
+            const summary = findNode(
+                await jsonOf(await call(`/api/chats/${GROUP}/conversations/${rootId}`, ALICE)),
+                botId
+            )?.reply;
+            expect(
+                summary?.richAnswerMarkdown === inlineSnapshot,
+                `the v1 summary carries the snapshot (got ${JSON.stringify(summary?.richAnswerMarkdown)})`
+            );
+
+            const { rootId: otherRootId, botId: otherBotId } = await seedConversation();
+            await makeReply(otherBotId, otherRootId, [
+                versionOf(1, {
+                    delivery: 'rich',
+                    richAnswerMarkdown: inlineSnapshot,
+                    media: inlineMedia,
+                }),
+            ]);
+            const unclaimedSummary = findNode(
+                await jsonOf(await call(`/api/chats/${GROUP}/conversations/${otherRootId}`, ALICE)),
+                otherBotId
+            )?.reply;
+            expect(
+                !('richAnswerMarkdown' in (unclaimedSummary ?? {})),
+                `a summary without the v1 renderer claim carries none (got ${JSON.stringify(unclaimedSummary?.richAnswerMarkdown)})`
+            );
+        },
+    },
 ];
 
 const results: CaseResult[] = [];
