@@ -70,6 +70,7 @@ const PNG_BYTES = Buffer.from(
     'base64'
 );
 const JPEG_BYTES = Buffer.concat([Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10]), Buffer.from('JFIF offline jpeg')]);
+const WEBP_BYTES = Buffer.concat([Buffer.from('RIFF'), Buffer.from([0x20, 0, 0, 0]), Buffer.from('WEBPVP8 offline webp')]);
 /** Different pictures for one reply: the cache is content-addressed, so they must differ */
 const pictureBytes = (label: string): Buffer => Buffer.concat([PNG_BYTES, Buffer.from(`-${label}`)]);
 
@@ -179,6 +180,28 @@ const attachmentMediaOf = (mediaKey: string, sizeBytes: number, caption?: string
     sizeBytes,
     ...(caption === undefined ? {} : { caption }),
 });
+
+/**
+ * The fake Api answers methods it does not model (sendSticker) with `true`, so a
+ * sticker switch would store no message id. Wrap that one method locally to get
+ * a message back; everything else stays on the fake transformer.
+ */
+const stickerSendingTelegram = (): {
+    readonly telegram: ReturnType<typeof createFakeTelegram>;
+    readonly sentStickerMessageIds: number[];
+} => {
+    const telegram = createFakeTelegram();
+    const sentStickerMessageIds: number[] = [];
+    Object.assign(telegram.api, {
+        sendSticker: async (chatId: number) => {
+            const messageId = takeMessageId();
+            sentStickerMessageIds.push(messageId);
+            telegram.calls.push({ method: 'sendSticker', payload: { chat_id: chatId } });
+            return { message_id: messageId, date: 0, chat: { id: chatId, type: 'supergroup' } };
+        },
+    });
+    return { telegram, sentStickerMessageIds };
+};
 
 /** A 400 for any sending call: a switch's media can never reach the chat */
 const refusingMediaSends = (call: { readonly method: string; readonly payload: Readonly<Record<string, unknown>> }) =>
@@ -1438,6 +1461,326 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
                 asRecord(markup?.payload).message_id === version?.currentMessageId,
                 `the buttons land on the last layout message (got ${JSON.stringify(markup?.payload.message_id)})`
             );
+        },
+    },
+    {
+        name: 'switchVersion: a rich version with a sticker re-sends the sticker, never a photo',
+        body: async () => {
+            const chatId = -1009300000301;
+            const userMessageId = takeMessageId();
+            const replyId = takeMessageId();
+            const oldStickerMessageId = takeMessageId();
+            await seedResponse({
+                chatId,
+                firstMessageId: replyId,
+                userMessageId,
+                currentVersionIndex: 0,
+                buttonState: dbIndex.ButtonState.HAS_VERSIONS,
+                versions: [
+                    {
+                        text: '旧版正文',
+                        messageIds: [replyId, oldStickerMessageId],
+                        currentMessageId: oldStickerMessageId,
+                        imageBase64: WEBP_BYTES.toString('base64'),
+                        sticker: { packIndex: 0, label: '猫猫', emoji: '🐱', fileId: 'old-sticker-file', fileUniqueId: 'old-sticker-unique' },
+                    },
+                    {
+                        text: '新版正文',
+                        messageIds: [replyId],
+                        currentMessageId: replyId,
+                        delivery: 'rich',
+                        richRenderer: 'v1',
+                        richAnswerMarkdown: '新版正文',
+                        imageBase64: WEBP_BYTES.toString('base64'),
+                        sticker: { packIndex: 1, label: '狗狗', emoji: '🐶', fileId: 'new-sticker-file', fileUniqueId: 'new-sticker-unique' },
+                    },
+                ],
+            });
+            await seedRow({ chatId, messageId: replyId, text: '旧版正文', file: WEBP_BYTES, fileMime: 'image/webp' });
+            await db.Message.update({ mediaHint: 'sticker' }, { where: { chatId, messageId: replyId } });
+
+            const { telegram, sentStickerMessageIds } = stickerSendingTelegram();
+            const ctx = contextOf(messageUpdate({ chatId, messageId: takeMessageId(), userId: 42, text: '切换' }), telegram);
+            const { result: switched, lines } = await captureConsole(() => botMessageService.switchVersion(ctx, replyId, 'next'));
+            expect(switched, `the sticker version is switchable (log: ${lines.slice(-3).join(' | ')})`);
+            expect(sentStickerMessageIds.length === 1, `the sticker is re-sent (got ${sentStickerMessageIds.length})`);
+            expect(telegram.callsOf('sendPhoto').length === 0, 'the sticker webp is never sent as a photo');
+            const version = (await dbIndex.getBotResponse(chatId, replyId))?.getVersions()[1];
+            expect(
+                version?.messageIds.length === 2 && version?.currentMessageId === sentStickerMessageIds[0],
+                `the new sticker message carries the buttons (got ${JSON.stringify({ ids: version?.messageIds, current: version?.currentMessageId })})`
+            );
+            expect(
+                telegram.callsOf('deleteMessage').some((call) => call.payload.message_id === oldStickerMessageId),
+                'the old sticker message is deleted'
+            );
+            const row = await rowOf(chatId, replyId);
+            expect(
+                row?.mediaHint === 'sticker' && row.fileMime === 'image/webp' && row.file?.equals(WEBP_BYTES) === true,
+                `the row keeps the sticker slot (got ${JSON.stringify({ hint: row?.mediaHint, mime: row?.fileMime })})`
+            );
+        },
+    },
+    {
+        name: 'switchVersion: a rich version with a file re-sends the document, never a photo',
+        body: async () => {
+            const chatId = -1009300000302;
+            const userMessageId = takeMessageId();
+            const replyId = takeMessageId();
+            const fileBytes = Buffer.from('# notes');
+            await seedResponse({
+                chatId,
+                firstMessageId: replyId,
+                userMessageId,
+                currentVersionIndex: 0,
+                buttonState: dbIndex.ButtonState.HAS_VERSIONS,
+                versions: [
+                    { text: '旧版正文', messageIds: [replyId], currentMessageId: replyId },
+                    {
+                        text: '新版正文',
+                        messageIds: [replyId],
+                        currentMessageId: replyId,
+                        delivery: 'rich-text',
+                        richRenderer: 'v1',
+                        richAnswerMarkdown: '新版正文',
+                        file: { name: 'notes.md', mimeType: 'text/markdown', sizeBytes: fileBytes.length },
+                        fileBase64: fileBytes.toString('base64'),
+                    },
+                ],
+            });
+            await seedRow({ chatId, messageId: replyId, text: '旧版正文' });
+
+            const telegram = createFakeTelegram();
+            const ctx = contextOf(messageUpdate({ chatId, messageId: takeMessageId(), userId: 42, text: '切换' }), telegram);
+            const { result: switched, lines } = await captureConsole(() => botMessageService.switchVersion(ctx, replyId, 'next'));
+            expect(switched, `the file version is switchable (log: ${lines.slice(-3).join(' | ')})`);
+            expect(telegram.callsOf('sendDocument').length === 1, `the document is re-sent (got ${telegram.callsOf('sendDocument').length})`);
+            expect(telegram.callsOf('sendPhoto').length === 0, 'a file version never goes out as a photo');
+            const version = (await dbIndex.getBotResponse(chatId, replyId))?.getVersions()[1];
+            expect(
+                version?.messageIds.length === 2 && version?.currentMessageId === version.messageIds[1],
+                `the new document message carries the buttons (got ${JSON.stringify({ ids: version?.messageIds, current: version?.currentMessageId })})`
+            );
+            const row = await rowOf(chatId, replyId);
+            expect(
+                row?.mediaHint === 'a file: notes.md, text/markdown' && row.file === null,
+                `the row names the file without storing bytes (got ${JSON.stringify({ hint: row?.mediaHint, hasFile: row?.file !== null })})`
+            );
+        },
+    },
+    {
+        name: 'refresh: a file version keeps its attachment message (no deleteMessage)',
+        body: async () => {
+            const chatId = -1009300000303;
+            const userMessageId = takeMessageId();
+            const replyId = takeMessageId();
+            const fileMessageId = takeMessageId();
+            const fileBytes = Buffer.from('# notes');
+            await seedResponse({
+                chatId,
+                firstMessageId: replyId,
+                userMessageId,
+                currentVersionIndex: 0,
+                buttonState: dbIndex.ButtonState.HAS_VERSIONS,
+                versions: [{
+                    text: '正文',
+                    messageIds: [replyId, fileMessageId],
+                    currentMessageId: fileMessageId,
+                    file: { name: 'notes.md', mimeType: 'text/markdown', sizeBytes: fileBytes.length },
+                    fileBase64: fileBytes.toString('base64'),
+                }],
+            });
+            await seedRow({ chatId, messageId: replyId, text: '正文' });
+
+            const telegram = createFakeTelegram();
+            const { result: refreshed, lines } = await captureConsole(() => botMessageService.refreshToFinalState(telegram.api, chatId, replyId));
+            expect(refreshed, `the refresh succeeded (log: ${lines.slice(-2).join(' | ')})`);
+            expect(telegram.callsOf('deleteMessage').length === 0, `the file message is not deleted (got ${JSON.stringify(telegram.callsOf('deleteMessage').map((call) => call.payload.message_id))})`);
+            const version = (await dbIndex.getBotResponse(chatId, replyId))?.getVersions()[0];
+            expect(
+                JSON.stringify(version?.messageIds) === JSON.stringify([replyId, fileMessageId]),
+                `the message list keeps the file message (got ${JSON.stringify(version?.messageIds)})`
+            );
+            expect(version?.currentMessageId === fileMessageId, 'the file message stays the carrier');
+            const markup = telegram.callsOf('editMessageReplyMarkup').at(-1);
+            expect(asRecord(markup?.payload).message_id === fileMessageId, `the buttons land on the file message (got ${JSON.stringify(markup?.payload.message_id)})`);
+        },
+    },
+    {
+        name: 'refresh: a widget-link version keeps its link message (no deleteMessage)',
+        body: async () => {
+            const chatId = -1009300000304;
+            const userMessageId = takeMessageId();
+            const replyId = takeMessageId();
+            const linkMessageId = takeMessageId();
+            await seedResponse({
+                chatId,
+                firstMessageId: replyId,
+                userMessageId,
+                currentVersionIndex: 0,
+                buttonState: dbIndex.ButtonState.HAS_VERSIONS,
+                versions: [{
+                    text: '正文',
+                    messageIds: [replyId, linkMessageId],
+                    currentMessageId: linkMessageId,
+                    widget: {
+                        mode: 'html',
+                        html: '<p>hi</p>',
+                        htmlBytes: 9,
+                        zlibBytes: 12,
+                        deliveredAs: 'link',
+                        shareUrl: 'https://miniapp.test/s/token',
+                        messageId: linkMessageId,
+                    },
+                }],
+            });
+            await seedRow({ chatId, messageId: replyId, text: '正文' });
+
+            const telegram = createFakeTelegram();
+            const { result: refreshed, lines } = await captureConsole(() => botMessageService.refreshToFinalState(telegram.api, chatId, replyId));
+            expect(refreshed, `the refresh succeeded (log: ${lines.slice(-2).join(' | ')})`);
+            expect(telegram.callsOf('deleteMessage').length === 0, 'the widget link message is not deleted');
+            const version = (await dbIndex.getBotResponse(chatId, replyId))?.getVersions()[0];
+            expect(
+                JSON.stringify(version?.messageIds) === JSON.stringify([replyId, linkMessageId]) && version?.currentMessageId === linkMessageId,
+                `the link message stays (got ${JSON.stringify({ ids: version?.messageIds, current: version?.currentMessageId })})`
+            );
+            const markup = telegram.callsOf('editMessageReplyMarkup').at(-1);
+            expect(asRecord(markup?.payload).message_id === linkMessageId, 'the buttons land on the link message');
+        },
+    },
+    {
+        name: 'switchVersion: a rich version whose attachment bytes are all gone still switches body-only',
+        body: async () => {
+            const chatId = -1009300000305;
+            const userMessageId = takeMessageId();
+            const replyId = takeMessageId();
+            const gone = [pictureBytes('gone-a'), pictureBytes('gone-b')];
+            await seedResponse({
+                chatId,
+                firstMessageId: replyId,
+                userMessageId,
+                currentVersionIndex: 0,
+                buttonState: dbIndex.ButtonState.HAS_VERSIONS,
+                versions: [
+                    { text: '旧版正文', messageIds: [replyId], currentMessageId: replyId },
+                    {
+                        text: '新版正文',
+                        messageIds: [replyId],
+                        currentMessageId: replyId,
+                        delivery: 'rich-text',
+                        richRenderer: 'v1',
+                        richAnswerMarkdown: '新版正文',
+                        media: gone.map((picture) => attachmentMediaOf(replyMediaKeyOf(picture), picture.length)),
+                    },
+                ],
+            });
+            await seedRow({ chatId, messageId: replyId, text: '旧版正文' });
+
+            const telegram = createFakeTelegram();
+            const ctx = contextOf(messageUpdate({ chatId, messageId: takeMessageId(), userId: 42, text: '切换' }), telegram);
+            const { result: switched, lines } = await captureConsole(() => botMessageService.switchVersion(ctx, replyId, 'next'));
+            expect(switched, `the body switches even when no picture bytes are left (log: ${lines.slice(-2).join(' | ')})`);
+            expect(
+                telegram.callsOf('sendPhoto').length === 0 && telegram.callsOf('sendMediaGroup').length === 0 && telegram.callsOf('sendDocument').length === 0,
+                'no picture send is attempted'
+            );
+            const version = (await dbIndex.getBotResponse(chatId, replyId))?.getVersions()[1];
+            expect((version?.media ?? []).length === 0, `the version keeps no lost picture (got ${JSON.stringify(version?.media)})`);
+            expect(version?.currentMessageId === replyId, 'the body message carries the buttons');
+            expect((await dbIndex.listMessageMedia(chatId, replyId)).length === 0, 'message_media has no ghost picture');
+        },
+    },
+    {
+        name: 'switchVersion: two identical pictures lose only the dropped one (index trimming)',
+        body: async () => {
+            const chatId = -1009300000306;
+            const userMessageId = takeMessageId();
+            const replyId = takeMessageId();
+            const picture = pictureBytes('same-bytes');
+            const key = await cachePicture(picture);
+            await seedResponse({
+                chatId,
+                firstMessageId: replyId,
+                userMessageId,
+                currentVersionIndex: 0,
+                buttonState: dbIndex.ButtonState.HAS_VERSIONS,
+                versions: [
+                    { text: '旧版正文', messageIds: [replyId], currentMessageId: replyId },
+                    {
+                        text: '新版正文',
+                        messageIds: [replyId],
+                        currentMessageId: replyId,
+                        media: [attachmentMediaOf(key, picture.length), attachmentMediaOf(key, picture.length)],
+                    },
+                ],
+            });
+            await seedRow({ chatId, messageId: replyId, text: '旧版正文' });
+
+            // The album is refused, then the first fallback picture is refused
+            // as photo and as document: only the second one reaches the chat
+            let staticAttempts = 0;
+            const telegram = createFakeTelegram({
+                refuse: (call) => {
+                    if (call.method === 'sendMediaGroup') {
+                        return { error_code: 400, description: 'Bad Request: offline test refuses the album' };
+                    }
+                    if (call.method === 'sendPhoto' || call.method === 'sendDocument') {
+                        staticAttempts += 1;
+                        return staticAttempts <= 2
+                            ? { error_code: 400, description: 'Bad Request: offline test refuses the first picture' }
+                            : null;
+                    }
+                    return null;
+                },
+            });
+            const ctx = contextOf(messageUpdate({ chatId, messageId: takeMessageId(), userId: 42, text: '切换' }), telegram);
+            const { result: switched, lines } = await captureConsole(() => botMessageService.switchVersion(ctx, replyId, 'next'));
+            expect(switched, `the switch succeeds with one of two identical pictures (log: ${lines.slice(-2).join(' | ')})`);
+            const version = (await dbIndex.getBotResponse(chatId, replyId))?.getVersions()[1];
+            expect(
+                (version?.media ?? []).length === 1 && (version?.media ?? [])[0]?.mediaKey === key,
+                `only the shown copy stays (got ${JSON.stringify(version?.media?.map((item) => item.mediaKey))})`
+            );
+            expect((version?.mediaMessageIds ?? []).length === 1, 'one picture message and one listed picture');
+        },
+    },
+    {
+        name: 'switchVersion: a refused media send keeps the old first text message',
+        body: async () => {
+            const chatId = -1009300000307;
+            const userMessageId = takeMessageId();
+            const replyId = takeMessageId();
+            const picture = pictureBytes('kept-old-text');
+            const key = await cachePicture(picture);
+            await seedResponse({
+                chatId,
+                firstMessageId: replyId,
+                userMessageId,
+                currentVersionIndex: 0,
+                buttonState: dbIndex.ButtonState.HAS_VERSIONS,
+                versions: [
+                    { text: '旧版正文', messageIds: [replyId], currentMessageId: replyId },
+                    {
+                        text: '',
+                        messageIds: [replyId],
+                        currentMessageId: replyId,
+                        media: [attachmentMediaOf(key, picture.length)],
+                    },
+                ],
+            });
+            await seedRow({ chatId, messageId: replyId, text: '旧版正文' });
+
+            const telegram = createFakeTelegram({ refuse: refusingMediaSends });
+            const ctx = contextOf(messageUpdate({ chatId, messageId: takeMessageId(), userId: 42, text: '切换' }), telegram);
+            const { result: switched, lines } = await captureConsole(() => botMessageService.switchVersion(ctx, replyId, 'next'));
+            expect(switched === false, `the switch fails when the media cannot be sent (got ${String(switched)}; log: ${lines.slice(-2).join(' | ')})`);
+            expect(
+                telegram.callsOf('deleteMessage').length === 0,
+                `the old text message is not deleted before the new media is out (got ${JSON.stringify(telegram.callsOf('deleteMessage').map((call) => call.payload.message_id))})`
+            );
+            const response = await dbIndex.getBotResponse(chatId, replyId);
+            expect(response?.currentVersionIndex === 0, 'the current version is unchanged');
         },
     },
 ];

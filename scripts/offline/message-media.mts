@@ -169,6 +169,28 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
             expect(await MessageMedia.count({ where: { chatId: staleChat } }) === 1, 'only the fresh row is left');
         },
     },
+    {
+        name: 'listMessageMediaForMessages batches a list longer than one SQLite page',
+        body: async () => {
+            const messageId = takeMessageId();
+            await dbIndex.replaceMessageMedia(CHAT, messageId, [mediaRow(1, 'long-a'), mediaRow(2, 'long-b')]);
+            // The batch boundary is 500: put the one message with pictures behind it
+            const ids = Array.from({ length: 620 }, (_value, index) => 8_000_000 + index);
+            ids.push(messageId);
+            const byMessageId = await dbIndex.listMessageMediaForMessages(CHAT, ids);
+            expect(
+                byMessageId.get(messageId)?.length === 2 && byMessageId.size === 1,
+                `the picture rows survive the batching (got ${byMessageId.size} messages)`
+            );
+            expect(
+                byMessageId.get(messageId)?.map((item) => item.ordinal).join(',') === '1,2',
+                'the ordinal order is kept inside the message'
+            );
+            // A very long list without pictures reads as empty, not an error
+            const many = Array.from({ length: 40_000 }, (_value, index) => 9_000_000 + index);
+            expect((await dbIndex.listMessageMediaForMessages(CHAT, many)).size === 0, 'a long picture-less list is empty');
+        },
+    },
 ];
 
 const results: CaseResult[] = [];

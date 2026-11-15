@@ -24,8 +24,14 @@ export const listMessageMedia = async (
 };
 
 /**
+ * SQLite's bound-variable limit is far below the message count of a long
+ * context: one query per page keeps the whole build from failing.
+ */
+const MEDIA_MESSAGE_ID_BATCH = 500;
+
+/**
  * The pictures of many messages of one chat, keyed by message id; messages
- * without pictures are absent. One query for a whole context/tree page.
+ * without pictures are absent. Chunked, so a long context stays one map.
  */
 export const listMessageMediaForMessages = async (
   chatId: number,
@@ -34,15 +40,18 @@ export const listMessageMediaForMessages = async (
   const byMessageId = new Map<number, StoredMessageMedia[]>();
   if (messageIds.length === 0) return byMessageId;
 
-  const rows = await MessageMedia.findAll({
-    where: { chatId, messageId: { [Op.in]: [...messageIds] } },
-    order: [['messageId', 'ASC'], ['ordinal', 'ASC']],
-  });
-  for (const row of rows) {
-    const media = byMessageId.get(row.messageId);
-    const item = toStoredMessageMedia(row);
-    if (media === undefined) byMessageId.set(row.messageId, [item]);
-    else media.push(item);
+  for (let start = 0; start < messageIds.length; start += MEDIA_MESSAGE_ID_BATCH) {
+    const batch = messageIds.slice(start, start + MEDIA_MESSAGE_ID_BATCH);
+    const rows = await MessageMedia.findAll({
+      where: { chatId, messageId: { [Op.in]: [...batch] } },
+      order: [['messageId', 'ASC'], ['ordinal', 'ASC']],
+    });
+    for (const row of rows) {
+      const media = byMessageId.get(row.messageId);
+      const item = toStoredMessageMedia(row);
+      if (media === undefined) byMessageId.set(row.messageId, [item]);
+      else media.push(item);
+    }
   }
   return byMessageId;
 };

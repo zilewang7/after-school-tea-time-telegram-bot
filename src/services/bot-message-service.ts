@@ -1237,9 +1237,16 @@ const versionPicturesOf = async (version: ResponseVersion): Promise<VersionPictu
 /** The version's picture messages: stored ids, or the legacy single image message */
 const versionMediaMessageIdsOf = (version: ResponseVersion): number[] => {
     if (version.mediaMessageIds !== undefined) return [...version.mediaMessageIds];
-    if (version.imageBase64 !== undefined) {
-        // A media-only legacy version has the picture as its only message; one
-        // with text carries the picture after it
+    // A legacy attachment slot (picture, file, sticker or widget) is a separate
+    // message: a media-only version has it as its only message, one with text
+    // carries it after the text. Without this the refresh laid the text over it
+    // and deleted it (BL2), for v5-era and pre-v5 versions alike.
+    const hasLegacyAttachment =
+        version.imageBase64 !== undefined ||
+        version.fileBase64 !== undefined ||
+        version.sticker !== undefined ||
+        version.widget !== undefined;
+    if (hasLegacyAttachment) {
         if (version.messageIds.length === 1) return [version.currentMessageId];
         if (version.currentMessageId !== version.messageIds[0]) return [version.currentMessageId];
     }
@@ -1265,6 +1272,26 @@ const pictureUploadsOf = (
                   captionFields: buildImageCaption(picture.caption, resolveContextLink),
               }]
     ));
+
+/**
+ * The version media list without the attachments that were not replayed. The
+ * attachment order inside `media[]` is the delivery order, so an attachment
+ * index (its position among the attachment entries) picks exactly one entry —
+ * a key set cannot: two identical pictures share one key and one of them may
+ * still be shown.
+ */
+const mediaWithoutUnsentAttachments = (
+    media: readonly StoredReplyMedia[],
+    keptAttachmentIndexes: ReadonlySet<number>
+): StoredReplyMedia[] => {
+    let attachmentIndex = 0;
+    return media.filter((item) => {
+        if (item.placement !== 'attachment') return true;
+        const kept = keptAttachmentIndexes.has(attachmentIndex);
+        attachmentIndex += 1;
+        return kept;
+    });
+};
 
 /** Inline pictures of a stored version, ready for the rich replay layout */
 const inlineReplayMediaOf = (pictures: readonly VersionPicture[]): RichReplayMedia[] =>
@@ -1350,7 +1377,18 @@ const switchToRichVersion = async (input: SwitchToRichVersionInput): Promise<boo
     let currentMessageId = laidOut.currentMessageId;
     let mediaMessageIds: number[] = [];
     let replayedMedia = newVersion.media;
-    if (hasAttachmentPictures) {
+    let mediaConverged = false;
+    const inlineMedia = (newVersion.media ?? []).filter((item) => item.placement === 'inline');
+    if (hasAttachmentPictures && replayableAttachments.length === 0) {
+        // Every trailing picture's bytes are gone from media_cache: the body
+        // still switches, the version keeps only its inline pictures. A lost
+        // cache entry must not make the version unswitchable forever.
+        replayedMedia = inlineMedia;
+        mediaConverged = true;
+        console.warn(
+            '[bot-message-service] rich version switch: no trailing picture bytes left; replaying the body only'
+        );
+    } else if (hasAttachmentPictures) {
         const uploads = pictureUploadsOf(replayableAttachments, resolveContextLink);
         const [mediaError, sentIds] = await sendReplyImagesMessage({
             api: ctx.api,
@@ -1369,8 +1407,16 @@ const switchToRichVersion = async (input: SwitchToRichVersionInput): Promise<boo
             );
             return false;
         }
-        const keptPictures = replayableAttachments.filter((_, index) => !droppedAttachments.has(index));
-        if (keptPictures.length !== sentIds.length) {
+        // The upload indexes map back to the attachment entry they came from
+        const keptAttachmentIndexes = new Set<number>();
+        let uploadIndex = 0;
+        attachmentPictures.forEach((picture, attachmentIndex) => {
+            if (picture.data === undefined) return;
+            if (!droppedAttachments.has(uploadIndex)) keptAttachmentIndexes.add(attachmentIndex);
+            uploadIndex += 1;
+        });
+        const keptCount = keptAttachmentIndexes.size;
+        if (keptCount !== sentIds.length) {
             console.error(
                 '[bot-message-service] rich version switch: picture sends and pictures disagree;',
                 'messages may be changed but the version is not switched'
@@ -1391,16 +1437,12 @@ const switchToRichVersion = async (input: SwitchToRichVersionInput): Promise<boo
         }
 
         // m2: list only the pictures the chat really shows, so media[] and
-        // mediaMessageIds always agree
-        if (keptPictures.length !== attachmentPictures.length && newVersion.media !== undefined) {
-            const keptKeys = new Set(
-                keptPictures.flatMap((picture) => (picture.mediaKey === undefined ? [] : [picture.mediaKey]))
-            );
-            const shownMedia = newVersion.media.filter(
-                (item) => item.placement !== 'attachment' || (item.mediaKey !== undefined && keptKeys.has(item.mediaKey))
-            );
+        // mediaMessageIds always agree; the attachment ORDER picks the entries,
+        // so two identical pictures can lose just one of them
+        if (keptCount !== attachmentPictures.length) {
+            const shownMedia = mediaWithoutUnsentAttachments(newVersion.media ?? [], keptAttachmentIndexes);
             const shownAttachments = shownMedia.filter((item) => item.placement === 'attachment').length;
-            if (shownAttachments !== keptPictures.length) {
+            if (shownAttachments !== keptCount) {
                 console.error(
                     '[bot-message-service] rich version switch: the version media cannot be reduced to the shown pictures;',
                     'messages may be changed but the version is not switched'
@@ -1408,9 +1450,10 @@ const switchToRichVersion = async (input: SwitchToRichVersionInput): Promise<boo
                 return false;
             }
             replayedMedia = shownMedia;
+            mediaConverged = true;
             console.warn(
                 '[bot-message-service] rich version switch: replaying',
-                keptPictures.length,
+                keptCount,
                 'of',
                 attachmentPictures.length,
                 'pictures; the version now lists only the shown ones'
@@ -1430,9 +1473,13 @@ const switchToRichVersion = async (input: SwitchToRichVersionInput): Promise<boo
     // the stored version where it was)
     newVersion.messageIds = newMessageIds;
     newVersion.currentMessageId = currentMessageId;
-    if (replayedMedia !== undefined) newVersion.media = replayedMedia;
+    if (mediaConverged) {
+        newVersion.media = replayedMedia !== undefined && replayedMedia.length > 0 ? [...replayedMedia] : undefined;
+    }
     if (newVersion.media !== undefined) {
         newVersion.mediaMessageIds = mediaMessageIds.length > 0 ? mediaMessageIds : undefined;
+    } else if (mediaConverged) {
+        newVersion.mediaMessageIds = undefined;
     }
     input.response.currentVersionIndex = input.newIndex;
     input.response.setVersions(input.versions);
@@ -1505,9 +1552,22 @@ export const switchVersion = async (
     });
 
     // A version delivered as a rich message replays its rich body (stored
-    // snapshot, inline pictures uploaded again); a version whose snapshot
-    // cannot form a body falls back to the entities layout below
-    if (newVersion.delivery !== undefined) {
+    // snapshot, inline pictures uploaded again). A rich version that also
+    // carries a non-picture attachment (sticker / file / widget) takes the
+    // entities replay instead: that path re-sends the attachment and writes the
+    // row slot, which the rich replay does not (BL1). The body becomes the
+    // entities layout on the switch — an accepted degradation.
+    const hasNonPictureAttachment =
+        newVersion.sticker !== undefined ||
+        newVersion.file !== undefined ||
+        newVersion.widget !== undefined;
+    if (newVersion.delivery !== undefined && hasNonPictureAttachment) {
+        console.warn(
+            '[bot-message-service] version switch: the rich version carries a non-picture attachment;',
+            'replaying it with the entities layout (the rich layout is not replayed)'
+        );
+    }
+    if (newVersion.delivery !== undefined && !hasNonPictureAttachment) {
         const switched = await switchToRichVersion({
             ctx,
             chatId,
@@ -1741,17 +1801,18 @@ export const switchVersion = async (
     const firstMessageTypeChanged = newIsMediaOnly !== oldIsMediaOnly;
 
     const oldFirstMsgId = oldVersion.messageIds[0] ?? firstMessageId;
-    // The old version's media messages are deleted only once the new version is
-    // fully in the chat (B3: a failed switch must not take the old pictures with
-    // it). The first message is deferred too when it is the old media itself.
+    // The old version's media messages — and the old first message when its type
+    // changes — are deleted only once the new version is fully in the chat
+    // (B3: a failed switch must not take the old content with it).
     const deferredOldMediaIds = new Set<number>(versionMediaMessageIdsOf(oldVersion));
-    if (oldIsMediaOnly) deferredOldMediaIds.add(oldFirstMsgId);
-    /** Delete the old version's media messages after the new one is in the chat */
-    const deleteDeferredOldMediaMessages = async (): Promise<void> => {
-        for (const messageId of deferredOldMediaIds) {
+    const deferredOldMessageIds = new Set<number>(deferredOldMediaIds);
+    if (oldIsMediaOnly || firstMessageTypeChanged) deferredOldMessageIds.add(oldFirstMsgId);
+    /** Delete the old version's replaced messages after the new one is in the chat */
+    const deleteDeferredOldMessages = async (): Promise<void> => {
+        for (const messageId of deferredOldMessageIds) {
             const [error] = await to(ctx.api.deleteMessage(chatId, messageId));
             if (error !== null && !error.message.includes('message to delete not found')) {
-                console.warn('[bot-message-service] version switch: old media message not deleted:', error.message);
+                console.warn('[bot-message-service] version switch: old message not deleted:', error.message);
             }
         }
     };
@@ -1806,12 +1867,8 @@ export const switchVersion = async (
     };
 
     if (firstMessageTypeChanged) {
-        // Type mismatch: delete old first message, send new one; an old media
-        // message stays until the new version has been sent
-        if (!deferredOldMediaIds.has(oldFirstMsgId)) {
-            await to(ctx.api.deleteMessage(chatId, oldFirstMsgId));
-        }
-
+        // Type mismatch: the old first message is deleted only after the new
+        // version is in the chat (a refused send must keep the old content)
         if (newIsMediaOnly) {
             // Old was text → new is media-only: several pictures go out one by
             // one (an album has no text message to carry the keyboard)
@@ -1940,25 +1997,29 @@ export const switchVersion = async (
     // A picture the replay cannot show (its bytes are gone from media_cache, or
     // the send dropped it) leaves the stored list (m2): media[] and
     // mediaMessageIds must describe the same pictures. The text still switches,
-    // so the version is trimmed rather than the whole switch refused.
+    // so the version is trimmed rather than the whole switch refused. The
+    // attachment ORDER picks the entries, so two identical pictures can lose
+    // exactly the dropped one.
     let replayedMedia = newVersion.media;
     if (pictureAttachments.length > 0 && newVersion.media !== undefined) {
-        const keptPictures = replayableAttachments.filter((_, index) => !droppedPictureIndexes.has(index));
-        if (keptPictures.length !== sentPictureMessageIds.length) {
+        const keptAttachmentIndexes = new Set<number>();
+        let uploadIndex = 0;
+        pictureAttachments.forEach((picture, attachmentIndex) => {
+            if (picture.data === undefined) return;
+            if (!droppedPictureIndexes.has(uploadIndex)) keptAttachmentIndexes.add(attachmentIndex);
+            uploadIndex += 1;
+        });
+        const keptCount = keptAttachmentIndexes.size;
+        if (keptCount !== sentPictureMessageIds.length) {
             console.error(
                 '[bot-message-service] version switch: picture sends and pictures disagree;',
                 'messages may be changed but the version is not switched'
             );
             return false;
         }
-        if (keptPictures.length !== pictureAttachments.length) {
-            const keptKeys = new Set(
-                keptPictures.flatMap((picture) => (picture.mediaKey === undefined ? [] : [picture.mediaKey]))
-            );
-            const shownMedia = newVersion.media.filter(
-                (item) => item.placement !== 'attachment' || (item.mediaKey !== undefined && keptKeys.has(item.mediaKey))
-            );
-            if (shownMedia.filter((item) => item.placement === 'attachment').length !== keptPictures.length) {
+        if (keptCount !== pictureAttachments.length) {
+            const shownMedia = mediaWithoutUnsentAttachments(newVersion.media, keptAttachmentIndexes);
+            if (shownMedia.filter((item) => item.placement === 'attachment').length !== keptCount) {
                 console.error(
                     '[bot-message-service] version switch: the version media cannot be reduced to the shown pictures;',
                     'messages may be changed but the version is not switched'
@@ -1968,14 +2029,14 @@ export const switchVersion = async (
             replayedMedia = shownMedia;
             console.warn(
                 '[bot-message-service] version switch: replaying',
-                keptPictures.length,
+                keptCount,
                 'of',
                 pictureAttachments.length,
                 'pictures; the version now lists only the shown ones'
             );
             // One remaining picture is a single-picture version now: the live
             // rule puts the keyboard on it (refresh normalizes the same way)
-            if (!newIsMediaOnly && keptPictures.length === 1 && sentPictureMessageIds[0] !== undefined) {
+            if (!newIsMediaOnly && keptCount === 1 && sentPictureMessageIds[0] !== undefined) {
                 currentMessageId = sentPictureMessageIds[0];
                 buttonsPlaced = false;
             }
@@ -1995,8 +2056,8 @@ export const switchVersion = async (
         }
     }
 
-    // The new version is fully in the chat: the old media messages go now
-    await deleteDeferredOldMediaMessages();
+    // The new version is fully in the chat: the old replaced messages go now
+    await deleteDeferredOldMessages();
 
     // Update BotResponse database
     response.currentVersionIndex = newIndex;
