@@ -26,6 +26,7 @@ import {
 } from '../media/media-content.js';
 import { getLinkPreviewParts } from '../../services/luoxu-preview-service.js';
 import { plainExcerptOf } from '../views/excerpt.js';
+import { richAnswerSnapshotOf } from '../views/rich-snapshot.js';
 import { redactShareContent } from './share-redaction.js';
 import type { PreviewSnapshot } from './share-types.js';
 
@@ -60,6 +61,12 @@ export interface ShareReplyContent {
     createdAt: string;
     model: string | null;
     text: string;
+    /**
+     * The version's rendered answer body (v5.3): present when it delivered a
+     * rich body with the v1 renderer, so the page lays the pictures out where
+     * the model put them. Absent for entities and other renderers.
+     */
+    richAnswerMarkdown?: string;
     widget: ShareWidgetContent | null;
     /**
      * The version's pictures in delivery order (v5), or its legacy single image
@@ -108,6 +115,8 @@ export interface ShareBotBubble {
     messageId: number;
     createdAt: string;
     text: string;
+    /** The current version's rendered answer body, same gate as a reply share */
+    richAnswerMarkdown?: string;
     widget: ShareWidgetContent | null;
     /** The message this reply answers; null when it is outside the share */
     replyTo: ShareReplyTarget | null;
@@ -250,6 +259,7 @@ export const loadReplyShareContent = async (
     const chat = await findChat(chatId);
     const chatTitle = chat?.title ?? null;
     const widget = widgetOf(version);
+    const snapshot = richAnswerSnapshotOf(version);
     return {
         kind: 'reply',
         chatId,
@@ -260,6 +270,7 @@ export const loadReplyShareContent = async (
         createdAt: version.createdAt,
         model: typeof version.model === 'string' && version.model !== '' ? version.model : null,
         text: typeof version.text === 'string' ? version.text : '',
+        ...(snapshot === undefined ? {} : { richAnswerMarkdown: snapshot }),
         widget,
         media: versionMediaDescriptorsOf(version),
         preview: previewSnapshotOfReply(chatTitle, version, widget),
@@ -299,11 +310,13 @@ const botBubbleOf = (
 ): ShareBotBubble => {
     const version = response?.getCurrentVersion() ?? null;
     const descriptors = version === null ? [] : versionMediaDescriptorsOf(version);
+    const snapshot = richAnswerSnapshotOf(version);
     return {
         kind: 'bot',
         messageId: message.messageId,
         createdAt: message.date.toISOString(),
         text: version !== null && typeof version.text === 'string' ? version.text : (message.text ?? ''),
+        ...(snapshot === undefined ? {} : { richAnswerMarkdown: snapshot }),
         widget: version === null ? null : widgetOf(version),
         replyTo,
         media: descriptors.map((descriptor, index) => ({

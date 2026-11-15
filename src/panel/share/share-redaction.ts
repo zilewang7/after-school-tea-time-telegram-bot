@@ -13,6 +13,7 @@ import type {
     ShareBotBubble,
     ShareBubble,
     ShareContent,
+    ShareMedia,
     ShareReplyTarget,
     ShareUserBubble,
     ShareWidgetContent,
@@ -59,6 +60,16 @@ export const redactSensitiveIds = (text: string): string =>
 const redactWidget = (widget: ShareWidgetContent | null): ShareWidgetContent | null =>
     widget === null ? null : { ...widget, caption: widget.caption === null ? null : redactSensitiveIds(widget.caption) };
 
+/**
+ * One attachment's caption is a public string too (the picture's original
+ * caption markdown): it may carry the same Telegram links as the body, so it
+ * goes through the same redaction before either surface renders it.
+ */
+const redactMedia = <T extends ShareMedia>(media: T): T => ({
+    ...media,
+    ...(typeof media.caption === 'string' ? { caption: redactSensitiveIds(media.caption) } : {}),
+});
+
 const redactReplyTarget = (target: ShareReplyTarget | null): ShareReplyTarget | null =>
     target === null
         ? null
@@ -75,12 +86,17 @@ const redactUserBubble = (bubble: ShareUserBubble): ShareUserBubble => ({
     quote: bubble.quote === null ? null : redactSensitiveIds(bubble.quote),
     previewText: bubble.previewText === null ? null : redactSensitiveIds(bubble.previewText),
     mediaHint: bubble.mediaHint === null ? null : redactSensitiveIds(bubble.mediaHint),
+    media: bubble.media.map(redactMedia),
     replyTo: redactReplyTarget(bubble.replyTo),
 });
 
 const redactBotBubble = (bubble: ShareBotBubble): ShareBotBubble => ({
     ...bubble,
     text: redactSensitiveIds(bubble.text),
+    media: bubble.media.map(redactMedia),
+    ...(bubble.richAnswerMarkdown === undefined
+        ? {}
+        : { richAnswerMarkdown: redactSensitiveIds(bubble.richAnswerMarkdown) }),
     widget: redactWidget(bubble.widget),
     replyTo: redactReplyTarget(bubble.replyTo),
 });
@@ -95,6 +111,10 @@ export const redactShareContent = (content: ShareContent): ShareContent =>
               ...content,
               chatTitle: content.chatTitle === null ? null : redactSensitiveIds(content.chatTitle),
               text: redactSensitiveIds(content.text),
+              ...(content.richAnswerMarkdown === undefined
+                  ? {}
+                  : { richAnswerMarkdown: redactSensitiveIds(content.richAnswerMarkdown) }),
+              media: content.media.map(redactMedia),
               widget: redactWidget(content.widget),
           }
         : {

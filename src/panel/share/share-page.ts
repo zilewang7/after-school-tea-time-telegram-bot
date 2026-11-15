@@ -14,6 +14,7 @@
  * iframe from our own origin, media only from the share's own media route.
  */
 import { escapeHtml, markdownExcerpt, markdownToHtml } from './markdown-html.js';
+import { renderRichAnswerHtml } from './rich-answer-html.js';
 import type {
     ShareContent,
     ShareConversationContent,
@@ -158,6 +159,35 @@ figcaption { color: var(--muted); font-size: 13px; margin-top: 6px; }
 .not-found { text-align: center; padding: 64px 16px; }
 .not-found h1 { font-size: 20px; margin: 0 0 8px; }
 .not-found p { color: var(--muted); margin: 0; }
+/* A rich reply's answer blocks (v5.3): the snapshot's order with its pictures
+   in place. The container keeps the md text rules (pre-wrap, links, code,
+   spoilers) and adds the block styles Telegram showed. */
+.md.rich { white-space: normal; }
+.md.rich p { margin: 6px 0; white-space: pre-wrap; }
+.md.rich > :first-child { margin-top: 0; }
+.md.rich > :last-child { margin-bottom: 0; }
+.md.rich .rich-heading { margin: 10px 0 4px; font-weight: 600; line-height: 1.3; }
+.md.rich .rich-heading--1 { font-size: 20px; }
+.md.rich .rich-heading--2 { font-size: 18px; }
+.md.rich .rich-heading--3 { font-size: 17px; }
+.md.rich .rich-heading--4 { font-size: 16px; }
+.md.rich .rich-heading--5 { font-size: 15px; }
+.md.rich .rich-heading--6 { font-size: 14px; }
+.md.rich ul, .md.rich ol { margin: 6px 0; padding-left: 22px; }
+.md.rich li { margin: 2px 0; white-space: pre-wrap; }
+.md.rich blockquote { margin: 6px 0; padding: 2px 12px; border-left: 3px solid var(--line); color: var(--muted); }
+.md.rich blockquote blockquote { margin: 4px 0; }
+.md.rich hr { border: 0; border-top: 1px solid var(--line); margin: 10px 0; }
+.md.rich .rich-table { max-width: 100%; overflow-x: auto; margin: 8px 0; }
+.md.rich table { border-collapse: collapse; font-size: 14px; }
+.md.rich th, .md.rich td { border: 1px solid var(--line); padding: 4px 8px; text-align: left; vertical-align: top; white-space: pre-wrap; }
+.md.rich th { background: var(--card-soft); font-weight: 600; }
+.md.rich pre { margin: 8px 0; }
+.md.rich .rich-figure { margin: 10px 0; }
+.md.rich figcaption { white-space: pre-wrap; }
+@media (hover: none) {
+  .md .tg-spoiler { color: inherit; background: var(--card-soft); }
+}
 `.trim();
 
 /**
@@ -344,16 +374,22 @@ const mediaFigure = (
     token: string,
     messageId: number,
     media: ShareMedia,
-    target: { slot?: 'image' | 'file' | 'preview'; index?: number } = {}
+    target: { slot?: 'image' | 'file' | 'preview'; index?: number; caption?: string | null } = {}
 ): string => {
     const mediaIndex = target.index ?? 0;
+    // The bytes route picks the file slot for documents and the image slot for
+    // pictures; withinSlot on the server rejects the wrong one with a 404
     const src = escapeHtml(
         target.slot === 'preview'
             ? `${mediaSrc(token, messageId, 'preview')}?i=${mediaIndex}`
             : mediaSrcOf(token, messageId, media, mediaIndex)
     );
+    const caption =
+        typeof target.caption === 'string' && target.caption.trim() !== ''
+            ? `<figcaption>${markdownToHtml(target.caption)}</figcaption>`
+            : '';
     if (media.kind === 'image') {
-        return ['<figure class="image">', `<img src="${src}" alt="图片" loading="lazy">`, '</figure>'].join('');
+        return ['<figure class="image">', `<img src="${src}" alt="图片" loading="lazy">`, caption, '</figure>'].join('');
     }
     if (media.kind === 'sticker') {
         return [
@@ -403,24 +439,73 @@ const previewTextBlock = (previewText: string | null): string =>
               '</details>',
           ].join('');
 
-/** One bot reply bubble; `widgetIndex` is the iframe order on this page */
-const botBubble = (
+/** The share media route URL of one picture in a version's `media[]` (index 0 omits `?i=`) */
+const versionPhotoUrlOf = (token: string, messageId: number): ((mediaIndex: number) => string) => {
+    const path = mediaSrc(token, messageId, 'image');
+    return (mediaIndex) => (mediaIndex === 0 ? path : `${path}?i=${mediaIndex}`);
+};
+
+/** The rich body of a bot bubble plus the pictures the snapshot did not place */
+const richBodyOf = (
     token: string,
-    createdAt: string,
-    text: string,
-    widget: ShareWidgetContent | null,
-    media: readonly ShareMediaItem[],
-    widgetIndex: number | null,
-    replyTo: ShareReplyTarget | null
-): string => {
+    messageId: number,
+    snapshot: string,
+    media: readonly ShareMediaItem[]
+): { body: string; leftover: string[] } => {
+    const rendered = renderRichAnswerHtml(snapshot, media, versionPhotoUrlOf(token, messageId));
+    const referenced = new Set(rendered.referencedMediaIndexes);
+    const leftover = media
+        .filter((_item, index) => !referenced.has(index))
+        .map((item) => mediaFigure(token, item.messageId, item, { index: item.index, caption: item.caption }));
+    return { body: `<div class="md rich">${rendered.html}</div>`, leftover };
+};
+
+interface BotBubbleInput {
+    readonly token: string;
+    /** The bot message whose version this bubble shows (owns its media route ids) */
+    readonly messageId: number;
+    readonly createdAt: string;
+    readonly text: string;
+    readonly richAnswerMarkdown: string | undefined;
+    readonly widget: ShareWidgetContent | null;
+    readonly media: readonly ShareMediaItem[];
+    /** The iframe order on this page; null without a widget */
+    readonly widgetIndex: number | null;
+    readonly replyTo: ShareReplyTarget | null;
+}
+
+/** One bot reply bubble; `widgetIndex` is the iframe order on this page */
+/** The rich body, or null when there is none / this renderer cannot produce one */
+const richBodyOrNull = (input: BotBubbleInput): { body: string; leftover: string[] } | null => {
+    if (input.richAnswerMarkdown === undefined) return null;
+    try {
+        const rendered = richBodyOf(input.token, input.messageId, input.richAnswerMarkdown, input.media);
+        // An empty render (e.g. only empty block-level <p> tags) keeps the old body
+        return rendered.body === '<div class="md rich"></div>' ? null : rendered;
+    } catch {
+        // The public page must never 500 on a snapshot: show the stored text
+        return null;
+    }
+};
+
+const botBubble = (input: BotBubbleInput): string => {
+    const rich = richBodyOrNull(input);
     const attachments: string[] = [];
-    if (widget !== null && widgetIndex !== null) attachments.push(widgetFigure(token, widgetIndex, widget));
-    attachments.push(...media.map((item) => mediaFigure(token, item.messageId, item, { index: item.index })));
+    if (input.widget !== null && input.widgetIndex !== null) {
+        attachments.push(widgetFigure(input.token, input.widgetIndex, input.widget));
+    }
+    if (rich === null) {
+        attachments.push(...input.media.map((item) => mediaFigure(input.token, item.messageId, item, { index: item.index })));
+    } else {
+        // The snapshot placed its pictures itself; only the rest follows the body
+        attachments.push(...rich.leftover);
+    }
+    const body = rich === null ? textBlock(input.text, '（无正文）') : rich.body;
     return [
         '<article class="bubble bot">',
-        `<div class="bubble-head"><span class="author">${BOT_NAME}</span><span class="time">${escapeHtml(formatTime(createdAt))}</span></div>`,
-        replyTargetBlock(replyTo),
-        textBlock(text, '（无正文）'),
+        `<div class="bubble-head"><span class="author">${BOT_NAME}</span><span class="time">${escapeHtml(formatTime(input.createdAt))}</span></div>`,
+        replyTargetBlock(input.replyTo),
+        body,
         ...attachments,
         '</article>',
     ].join('');
@@ -451,19 +536,21 @@ const userBubble = (token: string, bubble: ShareUserBubble): string => {
 
 /** The reply page's single bubble */
 const renderReplyBody = (input: SharePageInput, content: ShareReplyContent): string =>
-    botBubble(
-        input.token,
-        content.createdAt,
-        content.text,
-        content.widget,
-        content.media.map((media, index) => ({
+    botBubble({
+        token: input.token,
+        messageId: content.firstMessageId,
+        createdAt: content.createdAt,
+        text: content.text,
+        richAnswerMarkdown: content.richAnswerMarkdown,
+        widget: content.widget,
+        media: content.media.map((media, index) => ({
             messageId: content.firstMessageId,
             ...(index === 0 ? {} : { index }),
             ...media,
         })),
-        content.widget === null ? null : 0,
-        null
-    );
+        widgetIndex: content.widget === null ? null : 0,
+        replyTo: null,
+    });
 
 /** The conversation page: bubbles in message order, widgets numbered as they appear */
 const renderConversationBody = (input: SharePageInput, content: ShareConversationContent): string => {
@@ -472,15 +559,17 @@ const renderConversationBody = (input: SharePageInput, content: ShareConversatio
         .map((bubble) => {
             if (bubble.kind === 'user') return userBubble(input.token, bubble);
             const index = bubble.widget === null ? null : widgetIndex++;
-            return botBubble(
-                input.token,
-                bubble.createdAt,
-                bubble.text,
-                bubble.widget,
-                bubble.media,
-                index,
-                bubble.replyTo
-            );
+            return botBubble({
+                token: input.token,
+                messageId: bubble.messageId,
+                createdAt: bubble.createdAt,
+                text: bubble.text,
+                richAnswerMarkdown: bubble.richAnswerMarkdown,
+                widget: bubble.widget,
+                media: bubble.media,
+                widgetIndex: index,
+                replyTo: bubble.replyTo,
+            });
         })
         .join('');
 };

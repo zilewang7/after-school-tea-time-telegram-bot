@@ -569,4 +569,33 @@ results.push(
     })
 );
 
+results.push(
+    await runCase('a picture inside a quote is referenced like any other block', async () => {
+        const media = [mediaItem(0, { id: 'img1', caption: '引用里的图' })];
+        const snapshot = [
+            '> 引用开头。',
+            '>',
+            '> ![](tg://photo?id=img1 "引用里的图")',
+            '>',
+            '> 引用结尾。',
+        ].join('\n');
+        const blocks = parseRichAnswer(snapshot, media);
+        expect(kindsOf(blocks) === 'quote', `the quoted body is one quote block (got ${kindsOf(blocks)})`);
+        const quote = firstOfKind(blocks, 'quote');
+        const inner = quote?.blocks ?? [];
+        expect(
+            inner.map((block) => block.kind).join(',') === 'paragraph,photo,paragraph',
+            `the quoted picture stays a picture block (got ${inner.map((block) => block.kind).join(',')})`
+        );
+        expect(
+            JSON.stringify(referencedMediaIndexes(blocks)) === '[0]',
+            `the quoted picture is referenced (got ${JSON.stringify(referencedMediaIndexes(blocks))})`
+        );
+        expect(
+            !inner.some((block) => block.kind === 'plain'),
+            'the quoted picture is not degraded to its caption text'
+        );
+    })
+);
+
 reportResults(results);

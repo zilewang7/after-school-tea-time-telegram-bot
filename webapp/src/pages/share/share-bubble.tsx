@@ -1,6 +1,10 @@
+import { useMemo } from 'react';
 import type { PublicShareBubble, PublicShareReplyTarget } from '../../api';
 import { FoldableText } from '../../components/foldable-text';
 import { formatDateTime } from '../../format';
+import { unreferencedMediaIndexes } from '../../rich/rich-answer';
+import { RichAnswerFigure, RichAnswerView } from '../../rich/rich-answer-view';
+import { shareRichAnswerBlocksOf, shareRichMediaItemsOf } from '../../share/share-rich-media';
 import { ShareMediaAttachment } from './share-attachments';
 import { ShareWidgetView } from './share-widget-view';
 
@@ -37,6 +41,20 @@ export const ShareBubble = ({ token, bubble, widgetIndex, autoFocusWidget = fals
     const authorName = authorNameOf(bubble);
     const quote = bubble.quote ?? null;
     const previewText = bubble.previewText ?? null;
+    // A bot bubble of a v5.3 rich reply carries its answer snapshot: the body
+    // renders with its pictures in place. A user bubble never has one.
+    const richBlocks = useMemo(
+        () => (bubble.kind === 'bot' ? shareRichAnswerBlocksOf(bubble.richAnswerMarkdown, bubble.media) : null),
+        [bubble.kind, bubble.richAnswerMarkdown, bubble.media]
+    );
+    const richMedia = useMemo(
+        () => (richBlocks === null ? [] : shareRichMediaItemsOf(token, bubble.media)),
+        [richBlocks, token, bubble.media]
+    );
+    const leftoverIndexes = useMemo(
+        () => (richBlocks === null ? [] : unreferencedMediaIndexes(richBlocks, bubble.media.length)),
+        [richBlocks, bubble.media.length]
+    );
 
     return (
         <article className={`share-bubble ${bubble.kind}`}>
@@ -46,20 +64,32 @@ export const ShareBubble = ({ token, bubble, widgetIndex, autoFocusWidget = fals
             </p>
             {bubble.replyTo !== null && <ReplyTargetLine target={bubble.replyTo} />}
             {quote !== null && quote !== '' && <blockquote className="quote">{quote}</blockquote>}
-            {bubble.text === '' ? (
+            {richBlocks !== null ? (
+                <RichAnswerView blocks={richBlocks} media={richMedia} appendUnreferenced={false} />
+            ) : bubble.text === '' ? (
                 <p className="hint">（无正文）</p>
             ) : (
                 <FoldableText text={bubble.text} foldLines={10} foldChars={600} />
             )}
-            {bubble.media.map((item, index) => (
-                <ShareMediaAttachment
-                    key={`${item.messageId}:${item.mimeType}:${index}`}
-                    token={token}
-                    messageId={item.messageId}
-                    media={item}
-                    index={item.index}
-                />
-            ))}
+            {richBlocks === null
+                ? bubble.media.map((item, index) => (
+                      <ShareMediaAttachment
+                          key={`${item.messageId}:${item.mimeType}:${index}`}
+                          token={token}
+                          messageId={item.messageId}
+                          media={item}
+                          index={item.index}
+                      />
+                  ))
+                : leftoverIndexes.map((index) => (
+                      <RichAnswerFigure
+                          key={`leftover:${index}`}
+                          media={richMedia}
+                          mediaIndex={index}
+                          compact={false}
+                          showCaptions
+                      />
+                  ))}
             {bubble.previewMedia.map((preview, index) => (
                 <ShareMediaAttachment
                     key={`${preview.kind}:${preview.sizeBytes ?? 0}:${index}`}

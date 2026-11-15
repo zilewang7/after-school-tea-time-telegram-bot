@@ -157,6 +157,13 @@ const callApi = async (target: PanelApp, path: string, user: InitDataUserInput, 
 
 const textOf = async (response: Response): Promise<string> => response.text();
 
+/** The rendered page body: the `<head>` CSS names the same rich classes */
+const mainOf = (html: string): string => {
+    const start = html.indexOf('<main>');
+    const end = html.indexOf('</main>');
+    return start < 0 || end < 0 ? html : html.slice(start, end);
+};
+
 const cases: { name: string; body: () => Promise<void> }[] = [
     {
         name: 'the share page carries the OG tags Telegram needs',
@@ -496,6 +503,309 @@ const cases: { name: string; body: () => Promise<void> }[] = [
             const inlineTheme = await app.request(`${signed.path}&theme=dark`);
             expect(inlineTheme.status === 200, 'the early webapp &theme= form is tolerated');
             expect((await app.request('/w/forged.token')).status === 404, 'a malformed token is 404');
+        },
+    },
+    // v5.3: a rich reply's share page lays the body out like the chat did
+    // (design 2026-1116-0310 §三.2): pictures in place, captions under them,
+    // and only the pictures the snapshot did not place appended at the end.
+    {
+        name: 'a rich reply share puts its pictures where the model put them',
+        body: async () => {
+            const messageId = takeMessageId();
+            const snapshot = [
+                '开头的一段**粗体**正文。',
+                '',
+                '![](tg://photo?id=img1 "第一张：红色圆形")',
+                '',
+                '两张图的解释：第一张是红色圆形。',
+                '',
+                '![](tg://photo?id=img2 "第二张：绿色三角形")',
+                '',
+                '结尾一段，带一个会被脱敏的链接：[来源](https://t.me/c/-1001234567890/42)。',
+            ].join('\n');
+            const share = await replyShare(GROUP, messageId, [
+                versionOf(1, {
+                    text: '原始 **markdown** 正文',
+                    delivery: 'rich',
+                    richRenderer: 'v1',
+                    richAnswerMarkdown: snapshot,
+                    media: [
+                        {
+                            placement: 'inline',
+                            id: 'img1',
+                            mimeType: 'image/png',
+                            sizeBytes: 101,
+                            caption: '第一张：红色圆形',
+                        },
+                        {
+                            placement: 'inline',
+                            id: 'img2',
+                            mimeType: 'image/png',
+                            sizeBytes: 102,
+                            caption: '第二张：绿色三角形',
+                        },
+                    ],
+                }),
+            ]);
+            const html = await textOf(await app.request(`/s/${share.token}`));
+            expect(html.includes('<div class="md rich">'), 'the rich body container');
+            const firstFigure = html.indexOf('<figure class="rich-figure">');
+            const secondFigure = html.indexOf('<figure class="rich-figure">', firstFigure + 1);
+            expect(firstFigure > 0 && secondFigure > firstFigure, 'both pictures render in the body');
+            expect(html.indexOf('<div class="md rich">') < firstFigure, 'the body starts before the first picture');
+            const firstSrc = `/s/${share.token}/media/${messageId}/image`;
+            expect(html.includes(`<img src="${firstSrc}" alt="图片" loading="lazy">`), 'the first picture URL (index 0 has no ?i=)');
+            expect(html.includes(`<img src="${firstSrc}?i=1"`), 'the second picture names its media index');
+            expect(html.includes('<figcaption>第一张：红色圆形</figcaption>'), 'the first caption');
+            expect(html.includes('<figcaption>第二张：绿色三角形</figcaption>'), 'the second caption');
+            const between = html.slice(firstFigure, secondFigure);
+            expect(between.includes('两张图的解释'), 'the paragraph between the pictures stays between them');
+            expect(html.indexOf('结尾一段') > secondFigure, 'the last paragraph stays after the last picture');
+            expect(html.includes('<strong>粗体</strong>'), 'the snapshot inline markup renders');
+            expect(!html.includes('![]('), 'no raw media block syntax');
+            expect(!html.includes('<b>'), 'no raw inline tags');
+            expect(!html.includes('原始 **markdown** 正文'), 'the raw version text is not the body');
+            expect(html.includes('[data-deletion]'), 'the snapshot is redacted like every other public string');
+            expect(!html.includes('-1001234567890'), 'no internal chat id leaks through the snapshot');
+        },
+    },
+    {
+        name: 'a rich-text fallback appends its pictures once, after the body',
+        body: async () => {
+            const messageId = takeMessageId();
+            const share = await replyShare(GROUP, messageId, [
+                versionOf(1, {
+                    text: '只能把图放在下面了。',
+                    delivery: 'rich-text',
+                    richRenderer: 'v1',
+                    richAnswerMarkdown: '正文第一段。\n\n<p><i>（另有 2 张图未能内嵌发送）</i></p>\n\n正文第二段。',
+                    widget: { mode: 'a2ui', html: '<div>卡片</div>', htmlBytes: 12, zlibBytes: 20 },
+                    media: [
+                        { placement: 'attachment', mimeType: 'image/png', sizeBytes: 201, caption: '附件图注一' },
+                        { placement: 'attachment', mimeType: 'image/png', sizeBytes: 202, caption: '附件图注二**加粗**' },
+                    ],
+                }),
+            ]);
+            const html = await textOf(await app.request(`/s/${share.token}`));
+            expect(html.includes('<em>（另有 2 张图未能内嵌发送）</em>'), 'the L2 note renders as text');
+            expect(!html.includes('<p><i>'), 'the block-level <p> wrapper is stripped');
+            expect(!mainOf(html).includes('<figure class="rich-figure">'), 'the body has no inline picture');
+            const bodyEnd = html.indexOf('</div>', html.indexOf('<div class="md rich">'));
+            const widget = html.indexOf(`<iframe class="widget" src="/s/${share.token}/widget/0"`);
+            const appended = html.indexOf('<figure class="image">');
+            expect(bodyEnd > 0 && widget > bodyEnd, 'the widget still comes after the body');
+            expect(appended > widget, 'the pictures the snapshot did not place come after the widget');
+            expect(html.split('<figure class="image">').length - 1 === 2, 'both attachment pictures appended once');
+            const src = `/s/${share.token}/media/${messageId}/image`;
+            expect(html.includes(`src="${src}"`), 'the first attachment (index 0 has no ?i=)');
+            expect(html.includes(`src="${src}?i=1"`), 'the second attachment names its index');
+            expect(html.includes('<figcaption>附件图注一</figcaption>'), 'the first leftover caption');
+            expect(html.includes('<figcaption>附件图注二<strong>加粗</strong></figcaption>'), 'the second leftover caption is markdown');
+        },
+    },
+    {
+        name: 'a conversation share renders a rich bot bubble in place, user bubbles unchanged',
+        body: async () => {
+            const rootId = takeMessageId();
+            const botId = takeMessageId();
+            await saveMessage(GROUP, rootId, ALICE.id, '用户的问题');
+            await saveMessage(GROUP, botId, 9999, '', { replyToId: rootId });
+            const response = await db.createBotResponse(GROUP, botId, rootId, { model: 'offline-model', hasImage: false });
+            response.setVersions([
+                versionOf(1, {
+                    text: 'bot 的回答',
+                    delivery: 'rich',
+                    richRenderer: 'v1',
+                    richAnswerMarkdown: '先看图：\n\n![](tg://photo?id=img1 "一张")',
+                    media: [
+                        {
+                            placement: 'inline',
+                            id: 'img1',
+                            mimeType: 'image/png',
+                            sizeBytes: 301,
+                            caption: '一张',
+                        },
+                    ],
+                }),
+            ]);
+            response.currentVersionIndex = 0;
+            await response.save();
+            const created = await service.createUserShare({
+                kind: 'conversation',
+                chatId: GROUP,
+                rootId,
+                createdBy: ALICE.id,
+            });
+            expect(created.ok, 'created');
+            if (!created.ok) return;
+            const token = created.share.token;
+            const html = await textOf(await app.request(`/s/${token}`));
+            const userBubble = html.indexOf('<article class="bubble user">');
+            const botBubbleStart = html.indexOf('<article class="bubble bot">');
+            expect(userBubble > 0 && botBubbleStart > userBubble, 'user bubble before the bot bubble');
+            const figure = html.indexOf('<figure class="rich-figure">', botBubbleStart);
+            expect(figure > botBubbleStart, 'the bot bubble renders its picture inside the rich body');
+            expect(html.includes(`<img src="/s/${token}/media/${botId}/image"`), 'the bubble message id owns the picture URL');
+            expect(html.includes('<figcaption>一张</figcaption>'), 'the caption');
+            expect(html.slice(0, botBubbleStart).includes('用户的问题'), 'the user bubble text is unchanged');
+            expect(
+                !html.slice(userBubble, botBubbleStart).includes('<figure class="rich-figure">'),
+                'no picture in the user bubble'
+            );
+        },
+    },
+    {
+        name: 'an entities version with a stale snapshot keeps the old rendering',
+        body: async () => {
+            const messageId = takeMessageId();
+            const share = await replyShare(GROUP, messageId, [
+                versionOf(1, {
+                    text: '一段**加粗**的正文',
+                    richAnswerMarkdown: '这是 entities 版本不该出现的快照。',
+                }),
+            ]);
+            const html = await textOf(await app.request(`/s/${share.token}`));
+            const body = mainOf(html);
+            expect(!body.includes('class="md rich"'), 'no rich container without the delivery/rendered claim');
+            expect(!body.includes('<figure class="rich-figure">'), 'no rich body');
+            // The body is exactly the old path: one text block, no rich layout
+            const botBody = mainOf(html);
+            expect(botBody.startsWith('<main><article class="bubble bot">'), 'the old bot bubble body starts the page');
+            expect(botBody.endsWith('</article>'), 'and ends it');
+            expect(
+                html.includes('<div class="md">一段<strong>加粗</strong>的正文</div>'),
+                'the old text rendering is unchanged'
+            );
+            expect(botBody.split('<div class="md">').length - 1 === 1, 'one plain text block, no extra body');
+            expect(!html.includes('不该出现的快照'), 'the stale snapshot never reaches the page');
+        },
+    },
+    {
+        // B1/M3/M4 (design §八): every public string is redacted in the one gate,
+        // captions are markdown, and leftover pictures keep their caption
+        name: 'rich captions are redacted, rendered, and leftover pictures keep theirs',
+        body: async () => {
+            const messageId = takeMessageId();
+            const leakyCaption =
+                '**粗体**图注与<b>标签</b>，来源 [链接](https://t.me/c/-1009876543210/77)，用户 [提及](tg://user?id=123456789)。';
+            const share = await replyShare(GROUP, messageId, [
+                versionOf(1, {
+                    delivery: 'rich',
+                    richRenderer: 'v1',
+                    richAnswerMarkdown: '正文。\n\n![](tg://photo?id=img1 "第一张图注")',
+                    media: [
+                        {
+                            placement: 'inline',
+                            id: 'img1',
+                            mimeType: 'image/png',
+                            sizeBytes: 101,
+                            caption: leakyCaption,
+                        },
+                        { placement: 'attachment', mimeType: 'image/png', sizeBytes: 102, caption: '附件图注**加粗**' },
+                    ],
+                }),
+            ]);
+            const html = await textOf(await app.request(`/s/${share.token}`));
+            const body = mainOf(html);
+            expect(body.includes('class="md rich"'), 'the rich body');
+            // M3: the stored caption is markdown, rendered as the chat showed it
+            expect(
+                body.includes('<figcaption><strong>粗体</strong>图注与<strong>标签</strong>'),
+                `the inline caption markdown (got ${body.slice(0, 600)})`
+            );
+            expect(body.includes('<figcaption>附件图注<strong>加粗</strong></figcaption>'), 'the leftover caption markdown');
+            // B1: both caption strings went through the share redaction gate
+            expect(body.includes('[data-deletion]'), 'the captions are redacted');
+            expect(!html.includes('-1009876543210'), 'no internal chat id leaks through a caption');
+            expect(!html.includes('123456789'), 'no user tg id leaks through a caption');
+            // M1: the block tags are emitted without whitespace text nodes
+            const richStart = body.indexOf('<div class="md rich">');
+            const richEnd = body.indexOf('</div>', richStart);
+            const richBody = body.slice(richStart, richEnd);
+            expect(!richBody.includes('\n'), 'no whitespace between blocks');
+            expect(html.includes('.md.rich { white-space: normal; }'), 'the container does not cascade pre-wrap');
+            expect(
+                html.includes('.md.rich p { margin: 6px 0; white-space: pre-wrap; }'),
+                'paragraphs keep their own whitespace like the Mini App'
+            );
+            expect(html.includes('@media (hover: none)'), 'spoilers are readable on touch devices');
+        },
+    },
+    {
+        // m2 (design §八): a snapshot this renderer cannot produce keeps the old text
+        name: 'an empty rich render falls back to the stored text, never a 500',
+        body: async () => {
+            const messageId = takeMessageId();
+            const share = await replyShare(GROUP, messageId, [
+                versionOf(1, {
+                    text: '旧文本正文**加粗**',
+                    delivery: 'rich',
+                    richRenderer: 'v1',
+                    richAnswerMarkdown: '<p></p>',
+                }),
+            ]);
+            const response = await app.request(`/s/${share.token}`);
+            const html = await textOf(response);
+            expect(response.status === 200, 'the page never 500s on a snapshot');
+            const body = mainOf(html);
+            expect(!body.includes('class="md rich"'), 'no empty rich container');
+            expect(body.includes('<div class="md">旧文本正文<strong>加粗</strong></div>'), 'the old text block is the fallback');
+        },
+    },
+    {
+        // M4 (design §八): a rich reply's file attachment keeps its download slot
+        name: 'a rich reply file attachment keeps its download slot',
+        body: async () => {
+            const messageId = takeMessageId();
+            const fileBytes = Buffer.from('attachment-bytes');
+            const share = await replyShare(GROUP, messageId, [
+                versionOf(1, {
+                    delivery: 'rich',
+                    richRenderer: 'v1',
+                    richAnswerMarkdown: '正文。',
+                    file: { name: 'report.md', mimeType: 'text/markdown', sizeBytes: fileBytes.length },
+                    fileBase64: fileBytes.toString('base64'),
+                }),
+            ]);
+            const html = await textOf(await app.request(`/s/${share.token}`));
+            const body = mainOf(html);
+            const href = `/s/${share.token}/media/${messageId}/file`;
+            expect(body.includes(`href="${href}"`), `the file chip uses the file slot (got ${body.slice(0, 500)})`);
+            expect(body.includes('report.md'), 'the download name');
+            const response = await app.request(href);
+            expect(response.status === 200, `the file slot serves the bytes (got ${response.status})`);
+            expect(Buffer.from(await response.arrayBuffer()).equals(fileBytes), 'the stored file bytes');
+        },
+    },
+    {
+        name: 'a rich snapshot cannot inject HTML or unsafe links',
+        body: async () => {
+            const messageId = takeMessageId();
+            const share = await replyShare(GROUP, messageId, [
+                versionOf(1, {
+                    delivery: 'rich',
+                    richRenderer: 'v1',
+                    richAnswerMarkdown: [
+                        '第一段。',
+                        '',
+                        '<script>alert(1)</script>',
+                        '',
+                        '[点我](javascript:alert(2))',
+                        '',
+                        '[内部图](tg://photo?id=img1)',
+                        '',
+                        '![](tg://photo?id=ghost "仅有图注")',
+                    ].join('\n'),
+                }),
+            ]);
+            const html = await textOf(await app.request(`/s/${share.token}`));
+            expect(!html.includes('<script>alert(1)'), 'the injected tag is not live markup');
+            expect(html.includes('&lt;script&gt;alert(1)&lt;/script&gt;'), 'it is shown as text');
+            expect(!/href="javascript:/i.test(html), 'a javascript: link never becomes an anchor');
+            expect(!html.includes('href="tg://photo'), 'an internal picture reference never becomes a link');
+            expect(!mainOf(html).includes('<figure class="rich-figure">'), 'an unmatched picture has no figure');
+            expect(html.includes('仅有图注'), 'its caption stays as text');
+            expect(!html.includes('![]('), 'no raw media block syntax');
         },
     },
 ];

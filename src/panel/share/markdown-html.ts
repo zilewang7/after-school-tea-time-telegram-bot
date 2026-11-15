@@ -20,8 +20,14 @@ const HTML_ESCAPES: Readonly<Record<string, string>> = {
 
 export const escapeHtml = (text: string): string => text.replace(/[&<>"']/g, (character) => HTML_ESCAPES[character] ?? character);
 
+/** Telegram's internal picture reference: never a link a reader can follow */
+const INTERNAL_MEDIA_LINK = /^tg:\/\/photo\?/i;
+
 /** Only these schemes may become an anchor; anything else stays plain text */
-export const isSafeLinkUrl = (url: string): boolean => /^(https?|tg):/i.test(url.trim());
+export const isSafeLinkUrl = (url: string): boolean => {
+    const trimmed = url.trim();
+    return /^(https?|tg):/i.test(trimmed) && !INTERNAL_MEDIA_LINK.test(trimmed);
+};
 
 interface TagPair {
     open: string;

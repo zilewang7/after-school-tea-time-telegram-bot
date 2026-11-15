@@ -9,6 +9,7 @@
  */
 import { sniffMediaMime } from '../../ai/image-generation/image-mime.js';
 import { versionMediaDescriptorsOf } from '../media/media-content.js';
+import { richAnswerSnapshotOf, snapshotEmbedsPictures } from './rich-snapshot.js';
 import type { AgentStats } from '../../ai/types.js';
 import { getMessage, type BotResponse, type ResponseVersion } from '../../db/index.js';
 import type { SignedWidgetSigner } from '../share/signed-widget.js';
@@ -142,22 +143,6 @@ export const mediaViewsOfVersion = (
         toMediaView(signer, chatId, messageId, version.versionId, descriptor, mediaIndex)
     );
 };
-
-/**
- * The rendered answer section a rich delivery wrote with the v1 dialect. Both
- * claims are required: `delivery` says the body went out as a rich message
- * (rich or rich-text, never entities), and `richRenderer === 'v1'` says the
- * webapp's v1 parser reads this snapshot's dialect — a version without the
- * claim (or a later renderer) keeps the old text rendering instead.
- */
-const richAnswerSnapshotOf = (version: ResponseVersion | null): string | undefined => {
-    if (version === null || version.delivery === undefined || version.richRenderer !== 'v1') return undefined;
-    const markdown = version.richAnswerMarkdown;
-    return typeof markdown === 'string' && markdown.trim() !== '' ? markdown : undefined;
-};
-
-/** Whether the snapshot embeds a picture by media id, i.e. the node needs the layout */
-const snapshotEmbedsPictures = (markdown: string): boolean => markdown.includes('tg://photo?id=');
 
 /** The tree node's summary of the current version; a bot row without bot_responses keeps its text */
 export const toReplySummaryView = (

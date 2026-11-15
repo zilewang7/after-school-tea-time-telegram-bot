@@ -559,6 +559,186 @@ const cases: { name: string; body: () => Promise<void> }[] = [
             expect(shareUrls.shareTokenOfUrl('https://miniapp.test/c/-100') === null, 'another path is not a token');
         },
     },
+    // v5.3: the Mini App share page needs the snapshot and where each picture
+    // sits (design 2026-1116-0310 §三.1); the fields appear only when present.
+    {
+        name: 'the public JSON carries a rich reply snapshot and its media placement',
+        body: async () => {
+            const messageId = takeMessageId();
+            const snapshot = [
+                '开头。',
+                '',
+                '![](tg://photo?id=img1 "第一张：红色圆形")',
+                '',
+                '中间。',
+                '',
+                '![](tg://photo?id=img2 "第二张：绿色三角形")',
+                '',
+                '结尾。',
+            ].join('\n');
+            const share = await replyShare(GROUP, messageId, [
+                versionOf(1, {
+                    text: '原始正文',
+                    delivery: 'rich',
+                    richRenderer: 'v1',
+                    richAnswerMarkdown: snapshot,
+                    media: [
+                        {
+                            placement: 'inline',
+                            id: 'img1',
+                            mimeType: 'image/png',
+                            sizeBytes: 101,
+                            // B1: a caption is a public string too
+                            caption: '第一张：**红色**圆形 [来源](https://t.me/c/-1009876543210/77) [提及](tg://user?id=123456789)',
+                        },
+                        {
+                            placement: 'inline',
+                            id: 'img2',
+                            mimeType: 'image/png',
+                            sizeBytes: 102,
+                            caption: '第二张：绿色三角形',
+                        },
+                        { placement: 'attachment', mimeType: 'image/png', sizeBytes: 103 },
+                    ],
+                }),
+            ]);
+            const body = await jsonOf(await app.request(`/api/public/shares/${share.token}`));
+            const reply = asRecord(body.share)['reply'];
+            const replyView = asRecord(reply);
+            expect(replyView.richAnswerMarkdown === snapshot, `the reply snapshot (got ${JSON.stringify(replyView.richAnswerMarkdown)})`);
+            const media = Array.isArray(replyView.media) ? replyView.media.map(asRecord) : [];
+            expect(media.length === 3, `all three pictures, order unchanged (got ${JSON.stringify(media)})`);
+            expect(
+                media[0]?.placement === 'inline' && media[0]?.id === 'img1',
+                `an inline picture names its placement and media id (got ${JSON.stringify(media[0])})`
+            );
+            expect(
+                typeof media[0]?.caption === 'string' && media[0].caption.includes('[data-deletion]'),
+                `the caption is redacted (got ${JSON.stringify(media[0]?.caption)})`
+            );
+            expect(
+                !JSON.stringify(media).includes('-1009876543210') && !JSON.stringify(media).includes('123456789'),
+                'no internal id leaks through a caption'
+            );
+            expect(media[1]?.id === 'img2' && media[1]?.caption === '第二张：绿色三角形', 'the second inline picture too');
+            expect(
+                media[2]?.placement === 'attachment' && !('id' in (media[2] ?? {})) && !('caption' in (media[2] ?? {})),
+                `an attachment has no id and no null caption placeholder (got ${JSON.stringify(media[2])})`
+            );
+        },
+    },
+    {
+        name: 'a rich conversation bubble carries its snapshot, a user bubble never does',
+        body: async () => {
+            const rootId = takeMessageId();
+            const botId = takeMessageId();
+            const snapshot = '先看图：\n\n![](tg://photo?id=img1 "一张")';
+            await saveMessage(GROUP, rootId, ALICE.id, '用户的问题');
+            await saveMessage(GROUP, botId, BOT_USER_ID, '', { replyToId: rootId });
+            const response = await db.createBotResponse(GROUP, botId, rootId, { model: 'offline-model', hasImage: false });
+            response.setVersions([
+                versionOf(1, {
+                    text: 'bot 的回答',
+                    delivery: 'rich',
+                    richRenderer: 'v1',
+                    richAnswerMarkdown: snapshot,
+                    media: [
+                        {
+                            placement: 'inline',
+                            id: 'img1',
+                            mimeType: 'image/png',
+                            sizeBytes: 301,
+                            caption: '一张',
+                        },
+                    ],
+                }),
+            ]);
+            response.currentVersionIndex = 0;
+            await response.save();
+            const created = await service.createUserShare({
+                kind: 'conversation',
+                chatId: GROUP,
+                rootId,
+                createdBy: ALICE.id,
+            });
+            if (!created.ok) throw new Error(`could not create the conversation share: ${created.reason}`);
+            const body = await jsonOf(await app.request(`/api/public/shares/${created.share.token}`));
+            const conversation = asRecord(asRecord(body.share)['conversation']);
+            const bubbles = Array.isArray(conversation.bubbles) ? conversation.bubbles.map(asRecord) : [];
+            const userBubble = bubbles.find((bubble) => bubble.kind === 'user');
+            const botBubble = bubbles.find((bubble) => bubble.kind === 'bot');
+            expect(botBubble?.richAnswerMarkdown === snapshot, `the bot bubble snapshot (got ${JSON.stringify(botBubble?.richAnswerMarkdown)})`);
+            expect(!('richAnswerMarkdown' in (userBubble ?? {})), 'a user bubble never carries a snapshot');
+            const botMedia = botBubble?.media;
+            const media = Array.isArray(botMedia) ? botMedia.map(asRecord) : [];
+            expect(
+                media[0]?.placement === 'inline' && media[0]?.id === 'img1' && media[0]?.caption === '一张',
+                `the bubble media keeps its placement (got ${JSON.stringify(media[0])})`
+            );
+        },
+    },
+    {
+        // m6 (design §八): the new fields are additive, so an old reader keeps
+        // working and an old server's JSON keeps the old shape exactly.
+        name: 'the rich fields are additive: old shapes stay valid and new ones only add',
+        body: async () => {
+            const oldMessageId = takeMessageId();
+            const oldShare = await replyShare(GROUP, oldMessageId, [
+                versionOf(1, {
+                    text: '旧版正文',
+                    imageBase64: PNG_1PX,
+                    imageCaption: '旧图注',
+                }),
+            ]);
+            const oldBody = await jsonOf(await app.request(`/api/public/shares/${oldShare.token}`));
+            const oldReply = asRecord(asRecord(oldBody.share)['reply']);
+            expect(!('richAnswerMarkdown' in oldReply), 'an old reply has no snapshot key (not even null)');
+            const oldMedia = Array.isArray(oldReply.media) ? oldReply.media.map(asRecord) : [];
+            // The legacy single picture now names its placement, which old
+            // readers ignore; everything they knew keeps its shape.
+            expect(oldMedia[0]?.kind === 'image' && oldMedia[0]?.mimeType === 'image/png', 'the old media fields');
+            expect(!('id' in (oldMedia[0] ?? {})), 'no id placeholder');
+
+            const newMessageId = takeMessageId();
+            const newShare = await replyShare(GROUP, newMessageId, [
+                versionOf(1, {
+                    delivery: 'rich',
+                    richRenderer: 'v1',
+                    richAnswerMarkdown: '正文。\n\n![](tg://photo?id=img1 "图")',
+                    media: [{ placement: 'inline', id: 'img1', mimeType: 'image/png', sizeBytes: 10, caption: '图' }],
+                }),
+            ]);
+            const newBody = await jsonOf(await app.request(`/api/public/shares/${newShare.token}`));
+            const newReply = asRecord(asRecord(newBody.share)['reply']);
+            // Every key an old reader consumed is still present and typed the same
+            expect(typeof newReply.firstMessageId === 'number', 'firstMessageId');
+            expect(typeof newReply.versionId === 'number', 'versionId');
+            expect(typeof newReply.createdAt === 'string', 'createdAt');
+            expect(typeof newReply.text === 'string', 'text');
+            expect(Array.isArray(newReply.media), 'media stays an array');
+            expect(typeof newReply.richAnswerMarkdown === 'string', 'the new snapshot is additive');
+        },
+    },
+    {
+        name: 'a version without a v1 snapshot adds no rich fields to the public JSON',
+        body: async () => {
+            const messageId = takeMessageId();
+            const share = await replyShare(GROUP, messageId, [
+                versionOf(1, {
+                    text: '旧版正文',
+                    imageBase64: PNG_1PX,
+                    richAnswerMarkdown: 'entities 版本不该出现的快照',
+                    media: [{ placement: 'attachment', mimeType: 'image/png', sizeBytes: 401 }],
+                }),
+            ]);
+            const body = await jsonOf(await app.request(`/api/public/shares/${share.token}`));
+            const replyView = asRecord(asRecord(body.share)['reply']);
+            expect(!('richAnswerMarkdown' in replyView), `no snapshot without the v1 claim (got ${JSON.stringify(replyView.richAnswerMarkdown)})`);
+            const media = Array.isArray(replyView.media) ? replyView.media.map(asRecord) : [];
+            expect(media[0]?.placement === 'attachment', 'the stored placement still shows');
+            expect(!('id' in (media[0] ?? {})), 'no id placeholder');
+        },
+    },
 ];
 
 const results: CaseResult[] = [];

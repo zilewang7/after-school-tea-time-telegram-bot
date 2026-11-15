@@ -124,8 +124,13 @@ interface FigureProps {
     readonly showCaptions: boolean;
 }
 
-/** One picture of the body: the media view plus its caption runs */
-function RichAnswerFigure({ media, mediaIndex, compact, showCaptions }: FigureProps) {
+/**
+ * One picture with its caption runs, the same `<figure>`/`<figcaption>` the
+ * answer body uses. Share pages render the media the snapshot does not place
+ * (an L2 fallback's pictures, a `send_image` album) through this, so both
+ * surfaces show those pictures with their captions the same way.
+ */
+export function RichAnswerFigure({ media, mediaIndex, compact, showCaptions }: FigureProps) {
     const item = media[mediaIndex];
     const caption = item?.caption ?? '';
     const captionRuns = useMemo(
@@ -279,16 +284,28 @@ export interface RichAnswerViewProps {
     /** Tree / flat view: smaller frames, no captions by default */
     readonly compact?: boolean;
     readonly showCaptions?: boolean;
+    /**
+     * Whether the view appends the media the snapshot does not reference (an L2
+     * fallback's pictures, a `send_image` album) at its end. Share pages lay the
+     * leftovers around their widget instead, so they pass false.
+     */
+    readonly appendUnreferenced?: boolean;
 }
 
 /**
  * The rich answer as blocks, then every attachment the snapshot did not place
  * (an L2 fallback's pictures, a `send_image` album) in chat order.
  */
-export const RichAnswerView = ({ blocks, media, compact = false, showCaptions = true }: RichAnswerViewProps) => {
+export const RichAnswerView = ({
+    blocks,
+    media,
+    compact = false,
+    showCaptions = true,
+    appendUnreferenced = true,
+}: RichAnswerViewProps) => {
     const unreferenced = useMemo(
-        () => unreferencedMediaIndexes(blocks, media.length),
-        [blocks, media.length]
+        () => (appendUnreferenced ? unreferencedMediaIndexes(blocks, media.length) : []),
+        [appendUnreferenced, blocks, media.length]
     );
     const className = useMemo(() => (compact ? 'rich-answer compact' : 'rich-answer'), [compact]);
     return (

@@ -197,10 +197,15 @@ const decodeMediaTitle = (title: string | null): string =>
         .replace(/&gt;/g, '>')
         .replace(/&amp;/g, '&');
 
+/** The quote markers in front of a line (`> `, `>> `, up to three spaces indentation) */
+const QUOTE_PREFIX = /^\s{0,3}(?:>\s?)+/;
+
 /**
  * Distinct media ids the body references, in first-appearance order. Only real
  * media blocks count: a code fence showing `tg://photo?id=…` is an example,
- * not a picture the version delivered.
+ * not a picture the version delivered. A picture inside a quote is a picture
+ * like any other — the block parser resolves it in the quote's recursive pass —
+ * so the quote markers are stripped before the block is matched.
  */
 const snapshotMediaIds = (markdown: string): string[] => {
     const ids: string[] = [];
@@ -214,7 +219,7 @@ const snapshotMediaIds = (markdown: string): string[] => {
             inFence = true;
             continue;
         }
-        const id = MEDIA_BLOCK.exec(line)?.[1];
+        const id = MEDIA_BLOCK.exec(line.replace(QUOTE_PREFIX, ''))?.[1];
         if (id !== undefined && !ids.includes(id)) ids.push(id);
     }
     return ids;

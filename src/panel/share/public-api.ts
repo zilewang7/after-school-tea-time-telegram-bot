@@ -40,6 +40,15 @@ export interface PublicShareMediaView {
     sizeBytes: number | null;
     /** Download name for documents */
     fileName: string | null;
+    /**
+     * The picture's caption, when the version stored one: the Mini App renders
+     * it under the picture in a rich body. Absent otherwise.
+     */
+    caption?: string | null;
+    /** Where the version delivered the picture; absent for non-version media */
+    placement?: 'inline' | 'attachment';
+    /** Inline only: the media id the answer snapshot's block references (`img1`) */
+    id?: string | null;
 }
 
 /** One attachment of a share bubble: the message whose file it is */
@@ -60,6 +69,11 @@ export interface PublicShareReplyView {
     createdAt: string;
     model: string | null;
     text: string;
+    /**
+     * The pinned version's rendered answer body when it delivered a rich body
+     * with the v1 renderer: the Mini App lays the pictures out in place.
+     */
+    richAnswerMarkdown?: string;
     widget: PublicShareWidgetView | null;
     /** The pinned version's pictures in delivery order (empty when it has none) */
     media: PublicShareMediaView[];
@@ -80,6 +94,8 @@ export interface PublicShareBubbleView {
     /** User bubbles only */
     authorName?: string;
     text: string;
+    /** Bot bubbles only: the current version's rendered answer body */
+    richAnswerMarkdown?: string;
     /** User bubbles only: the part of another message this one quotes */
     quote?: string | null;
     /** User bubbles only: readable text of the captured web preview */
@@ -120,6 +136,11 @@ const mediaFieldsOf = (media: ShareMedia): PublicShareMediaView => ({
     mimeType: media.mimeType,
     sizeBytes: media.sizeBytes,
     fileName: media.fileName,
+    // Only what the descriptor really carries: a null placeholder would make
+    // every user-message attachment look like a version picture
+    ...(typeof media.caption === 'string' ? { caption: media.caption } : {}),
+    ...(media.placement === undefined ? {} : { placement: media.placement }),
+    ...(typeof media.id === 'string' ? { id: media.id } : {}),
 });
 
 /** The single attachment forms (a reply's version, a link preview) */
@@ -140,6 +161,7 @@ const replyViewOf = (content: ShareReplyContent): PublicShareReplyView => ({
     createdAt: content.createdAt,
     model: content.model,
     text: content.text,
+    ...(content.richAnswerMarkdown === undefined ? {} : { richAnswerMarkdown: content.richAnswerMarkdown }),
     widget: widgetViewOf(content.widget),
     media: content.media.map(mediaFieldsOf),
 });
@@ -179,6 +201,7 @@ const bubbleViewOf = (bubble: ShareBubble): PublicShareBubbleView => {
         messageId: bubble.messageId,
         createdAt: bubble.createdAt,
         text: bubble.text,
+        ...(bubble.richAnswerMarkdown === undefined ? {} : { richAnswerMarkdown: bubble.richAnswerMarkdown }),
         mediaHint: null,
         widget: widgetViewOf(bubble.widget),
         media: bubble.media.map(mediaItemViewOf),

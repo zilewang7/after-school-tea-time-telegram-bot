@@ -1157,6 +1157,12 @@ export interface PublicShareMedia {
     sizeBytes: number | null;
     // Download name for documents
     fileName: string | null;
+    // v5.3 rich shares: the picture's caption source, where the version delivered
+    // it, and the media id the answer snapshot references (`img1`…). Optional:
+    // older payloads do not carry them.
+    caption?: string | null;
+    placement?: 'inline' | 'attachment';
+    id?: string | null;
 }
 
 /** One attachment of a share bubble, plus the message whose file it is */
@@ -1179,6 +1185,9 @@ export interface PublicShareReply {
     widget: PublicShareWidget | null;
     // The pinned version's attachments in delivery order
     media: PublicShareMedia[];
+    // The rich answer snapshot (rich/rich-text versions only): the body renders
+    // with its pictures in place instead of the plain text
+    richAnswerMarkdown?: string;
 }
 
 /** The message a bubble answers, when it is part of the shared conversation */
@@ -1213,6 +1222,8 @@ export interface PublicShareBubble {
     previewMedia: PublicShareMedia[];
     // The bubble this one answers; null when it is outside the share
     replyTo: PublicShareReplyTarget | null;
+    // Bot bubbles of a rich reply only: the answer snapshot with its pictures in place
+    richAnswerMarkdown?: string;
 }
 
 export interface PublicShareConversation {
