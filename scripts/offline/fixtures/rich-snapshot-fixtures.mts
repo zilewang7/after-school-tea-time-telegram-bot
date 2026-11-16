@@ -1,7 +1,7 @@
 /**
  * The rich-answer snapshot fixtures shared by the two renderers (v5.3 design
  * 2026-1116-0310 §五.6/§八 M2): the SSR port
- * (`src/panel/share/rich-answer-html.ts`) and the Mini App parser
+ * (`src/telegram/formatters/rich-answer-html.ts`) and the Mini App parser
  * (`webapp/src/rich/rich-answer.ts`) must read the same dialect the same way.
  *
  * Both sides' offline tests import this file, so a fixture added here is

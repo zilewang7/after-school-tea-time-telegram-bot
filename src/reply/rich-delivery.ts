@@ -41,12 +41,16 @@ import type { GoogleSearchDocument } from '../telegram/formatters/google-search-
 import { searchLinkStatsOf, toSearchLinkChunk } from '../telegram/formatters/google-search-link.js';
 import { TELEGRAM_MAX_LENGTH } from '../telegram/formatters/message-budget.js';
 import { joinRichBlocks } from '../telegram/formatters/rich-blocks.js';
+import { estimateAnswerMarkdown, foldWouldTrigger, type RichBodyLength } from '../telegram/formatters/rich-body-length.js';
+import type { RichAnswerHtmlMedia } from '../telegram/formatters/rich-answer-html.js';
 import { replaceSentinelsWithCaptionText } from '../telegram/formatters/rich-inline-media/media-blocks.js';
 import { scanInlineMarkers } from '../telegram/formatters/rich-inline-media/scan.js';
 import {
     buildRichAnswer,
     buildRichErrorDisplay,
-    buildRichReplyBodyFromAnswer,
+    joinRichReplyBodyParts,
+    measureRichReplyBodyParts,
+    richReplyBodyPartsOf,
     searchFooterPresent,
 } from '../telegram/formatters/rich-reply-body.js';
 import { thinkingLinkSummaryOf, toThinkingLinkChunk } from '../telegram/formatters/thinking-link.js';
@@ -378,8 +382,28 @@ export const deliverRichFinal = async (
                   ...(groundingData === undefined ? {} : { groundingData }),
                   ...(input.resolveContextLink === undefined ? {} : { resolveContextLink: input.resolveContextLink }),
               }), mediaNoteBlock(inlineImages.length)]);
-    const bodyOf = (answerMarkdown: string, thinkingToShow: string | undefined): string | null =>
-        buildRichReplyBodyFromAnswer({
+    // The media objects the answer section's picture blocks map onto, so the
+    // fold estimate counts each picture (and its caption) the way the body sends it
+    const answerMedia: RichAnswerHtmlMedia[] = inlineImages.flatMap((image) =>
+        image.id === undefined ? [] : [{ id: image.id, caption: image.caption ?? null }]
+    );
+    const bodyKinds = inlineImages.length > 0 ? (['media', 'plain'] as const) : (['media'] as const);
+    type BodyKind = (typeof bodyKinds)[number];
+    /** A composed body with the fold-length estimate of the same parts */
+    type BodyCandidate = { readonly markdown: string; readonly stats: RichBodyLength };
+    type PickedBody = BodyCandidate & { readonly kind: BodyKind };
+    // The answer section is the expensive parse; two candidate bodies (with and
+    // without the thinking quote) share it
+    const answerLengthCache = new Map<string, RichBodyLength>();
+    const answerLengthOf = (answerMarkdown: string): RichBodyLength => {
+        const cached = answerLengthCache.get(answerMarkdown);
+        if (cached !== undefined) return cached;
+        const length = estimateAnswerMarkdown(answerMarkdown, answerMedia);
+        answerLengthCache.set(answerMarkdown, length);
+        return length;
+    };
+    const bodyOf = (answerMarkdown: string, thinkingToShow: string | undefined): BodyCandidate | null => {
+        const parts = richReplyBodyPartsOf({
             answerMarkdown,
             ...(thinkingToShow === undefined ? {} : { thinking: thinkingToShow }),
             ...(groundingData === undefined ? {} : { groundingData }),
@@ -389,21 +413,35 @@ export const deliverRichFinal = async (
             searchFolded,
             ...(input.resolveContextLink === undefined ? {} : { resolveContextLink: input.resolveContextLink }),
         });
+        if (parts === null) return null;
+        return {
+            markdown: joinRichReplyBodyParts(parts),
+            stats: measureRichReplyBodyParts(parts, answerLengthOf(answerMarkdown)),
+        };
+    };
+    /** The component breakdown of a length forecast, for the live calibration of the overhead constants */
+    const logLength = (phase: string, stats: RichBodyLength): void => {
+        console.log(
+            `[rich] length chat=${holder.chatId} first=${session.firstMessageId} phase=${phase} ` +
+            `units=${stats.units} bytes=${stats.serializedBytes} blocks=${stats.blockCount} ` +
+            `entities=${stats.entityCount} urls=${stats.linkUrlBytes} media=${stats.mediaCount} degraded=${stats.degraded}`
+        );
+    };
     const payloads: RichMediaPayload[] = inlineImages
         .filter((image) => image.id !== undefined)
         .map((image) => richMediaPayloadOf(image.id ?? '', image.data));
 
-    const placement = thinkingPlacementOf(session, thinking);
-    const bodyKinds = inlineImages.length > 0 ? (['media', 'plain'] as const) : (['media'] as const);
-    type BodyKind = (typeof bodyKinds)[number];
-    const bodyOfKind = (kind: BodyKind, thinkingToShow: string | undefined): string | null =>
+    let placement = thinkingPlacementOf(session, thinking);
+    const bodyOfKind = (kind: BodyKind, thinkingToShow: string | undefined): BodyCandidate | null =>
         bodyOf(kind === 'media' ? answerWithMedia : answerPlain, thinkingToShow);
 
     /** The first body that fits the budget, in preference order (with pictures first) */
-    const pickBody = (thinkingToShow: string | undefined): { readonly kind: BodyKind; readonly body: string } | null => {
+    const pickBody = (thinkingToShow: string | undefined): PickedBody | null => {
         for (const kind of bodyKinds) {
-            const body = bodyOfKind(kind, thinkingToShow);
-            if (body !== null && body.length <= RICH_MAX_SOURCE_LENGTH) return { kind, body };
+            const candidate = bodyOfKind(kind, thinkingToShow);
+            if (candidate !== null && candidate.markdown.length <= RICH_MAX_SOURCE_LENGTH) {
+                return { kind, ...candidate };
+            }
         }
         return null;
     };
@@ -427,13 +465,55 @@ export const deliverRichFinal = async (
         return { kind: 'rejected', ...(fallback === undefined ? {} : { fallback }) };
     };
 
+    /**
+     * Move the thinking out of the body into a new link message ("link mode"):
+     * the body is re-picked without the quote and the layout leads with the
+     * link. null keeps the reply as it was (the body without the quote does not
+     * fit either, or no link could be created).
+     */
+    const moveThinkingToLink = async (): Promise<PickedBody | null> => {
+        const withoutQuote = pickBody(undefined);
+        if (withoutQuote === null) return null;
+        if (!(await beginFinalThinkingLink(holder))) return null;
+        placement = 'link';
+        bodyThinking = undefined;
+        return withoutQuote;
+    };
+
     // The thinking shows in the body only when it is not behind a link
     let bodyThinking: string | undefined = placement === 'inline' ? thinking : undefined;
     let picked = pickBody(bodyThinking);
     if (picked === null) {
-        const firstBody = bodyOfKind(bodyKinds[0], bodyThinking);
-        if (firstBody === null) return { kind: 'not-attempted' };
-        return abandonOverflow(firstBody.length);
+        // The body over the source budget may fit without the thinking quote:
+        // link the thinking instead of handing the reply to the entities layout.
+        const moved = placement === 'inline' && thinking.trim() !== '' ? await moveThinkingToLink() : null;
+        if (moved === null) {
+            const firstBody = bodyOfKind(bodyKinds[0], bodyThinking);
+            if (firstBody === null) return { kind: 'not-attempted' };
+            return abandonOverflow(firstBody.markdown.length);
+        }
+        console.log(`[rich] overflow chat=${holder.chatId} first=${session.firstMessageId} thinking=link`);
+        picked = moved;
+    } else if (placement === 'inline' && thinking.trim() !== '' && foldWouldTrigger(picked.stats)) {
+        // Telegram would fold this body ("显示更多"): move the quote behind a link
+        // so the unfolded part shows answer text. Rule A applies even when the
+        // answer alone still folds: the head shows more of it.
+        logLength('with-quote', picked.stats);
+        const moved = await moveThinkingToLink();
+        if (moved !== null) {
+            console.log(
+                `[rich] fold chat=${holder.chatId} first=${session.firstMessageId} units=${picked.stats.units} ` +
+                `bytes=${picked.stats.serializedBytes} thinking=link`
+            );
+            picked = moved;
+        } else {
+            // No link can be created (switch off, or the store failed): keep the
+            // inline quote, exactly as before this decision existed
+            console.warn(
+                `[rich] fold predicted but no link chat=${holder.chatId} first=${session.firstMessageId} ` +
+                `units=${picked.stats.units} bytes=${picked.stats.serializedBytes}`
+            );
+        }
     }
     if (placement === 'new-link' && !(await beginFinalThinkingLink(holder))) {
         // No link: the thinking would have to go inline. One longer than the
@@ -506,7 +586,7 @@ export const deliverRichFinal = async (
         return { refusal, delivered: laidOut.richDelivered };
     };
 
-    const finishDelivered = (kind: BodyKind, body: string): RichFinalResult => {
+    const finishDelivered = (kind: BodyKind, body: string, stats: RichBodyLength): RichFinalResult => {
         // A body with pictures delivered them inline; a picture-free body (L2) leaves them to the attachments
         holder.inlineDelivery = kind === 'plain' ? 'attachments' : 'rich';
         holder.richAnswerMarkdown = kind === 'media' ? answerWithMedia : answerPlain;
@@ -517,24 +597,29 @@ export const deliverRichFinal = async (
             );
         }
         holder.inlineImages = kind === 'media' ? inlineImages : [];
+        const folds = foldWouldTrigger(stats);
         console.log(
             `[rich] delivered chat=${holder.chatId} first=${session.firstMessageId} chars=${body.length} ` +
+            `units=${stats.units} bytes=${stats.serializedBytes} fold=${folds} ` +
             `link=${link !== undefined} searchLink=${searchFolded}`
         );
+        // The body the chat received can be folded: keep its breakdown for the
+        // constants calibration against an MTProto `part` read-back
+        if (folds) logLength('delivered', stats);
         return kind === 'media' ? { kind: 'delivered' } : { kind: 'delivered', fallback: { images: [...inlineImages] } };
     };
 
-    const first = await layOut(picked.kind, picked.body);
-    if (first.delivered) return finishDelivered(picked.kind, picked.body);
+    const first = await layOut(picked.kind, picked.markdown);
+    if (first.delivered) return finishDelivered(picked.kind, picked.markdown, picked.stats);
 
     // A non-429 refusal of a body with pictures: keep the reply rich without
     // them (L2). A 429 exhaustion goes straight to entities (L3): still being
     // rate limited, another rich body would only be refused again.
     if (picked.kind === 'media' && inlineImages.length > 0 && first.refusal !== undefined) {
         const plainPicked = bodyOfKind('plain', bodyThinking);
-        if (plainPicked !== null && plainPicked.length <= RICH_MAX_SOURCE_LENGTH) {
-            const second = await layOut('plain', plainPicked);
-            if (second.delivered) return finishDelivered('plain', plainPicked);
+        if (plainPicked !== null && plainPicked.markdown.length <= RICH_MAX_SOURCE_LENGTH) {
+            const second = await layOut('plain', plainPicked.markdown);
+            if (second.delivered) return finishDelivered('plain', plainPicked.markdown, plainPicked.stats);
         }
     }
 

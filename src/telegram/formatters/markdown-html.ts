@@ -1,5 +1,7 @@
 /**
- * Markdown to safe HTML for the public share page (design §5.7).
+ * Markdown to safe HTML for the server-rendered pages (design §5.7): the public
+ * share page, the search page, the thinking page and the rich-answer display
+ * blocks (`rich-answer-html.ts`).
  *
  * The markdown is the bot's stored reply text (or a user's message text on a
  * conversation share). It goes through telegram-md-entities' renderer, which

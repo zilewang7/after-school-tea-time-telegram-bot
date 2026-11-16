@@ -16,7 +16,7 @@ import type {
     GoogleSearchQuery,
     GoogleSearchSource,
 } from '../../telegram/formatters/google-search-document.js';
-import { escapeHtml } from '../share/markdown-html.js';
+import { escapeHtml } from '../../telegram/formatters/markdown-html.js';
 import type { SearchPageRenderInput } from './search-types.js';
 
 const BOT_NAME = 'k-on-bot';

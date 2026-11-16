@@ -13,8 +13,8 @@
  * whitelisted entities (markdown-html.ts), widgets only load in a sandboxed
  * iframe from our own origin, media only from the share's own media route.
  */
-import { escapeHtml, markdownExcerpt, markdownToHtml } from './markdown-html.js';
-import { renderRichAnswerHtml } from './rich-answer-html.js';
+import { escapeHtml, markdownExcerpt, markdownToHtml } from '../../telegram/formatters/markdown-html.js';
+import { renderRichAnswerHtml } from '../../telegram/formatters/rich-answer-html.js';
 import type {
     ShareContent,
     ShareConversationContent,

@@ -1,10 +1,12 @@
 /**
- * A rich reply's stored answer snapshot (`richAnswerMarkdown`) as safe HTML for
- * the public share page (v5.3 design 2026-1116-0310 §3.2).
+ * A rich reply's stored answer snapshot (`richAnswerMarkdown`) as a block tree
+ * and as safe HTML (v5.3 design 2026-1116-0310 §3.2).
  *
- * The public page is server-rendered and must stay readable without JavaScript,
- * so this is the SSR port of the Mini App's `webapp/src/rich/rich-answer.ts`
- * parser: the same block dialect (fences, headings, lists with depth, quotes,
+ * Two consumers share the block dialect: the public share page (server-rendered,
+ * must stay readable without JavaScript) and the fold-length counter
+ * (`rich-body-length.ts`), which measures a rich body's rendered text before
+ * Telegram folds it. This is the SSR port of the Mini App's
+ * `webapp/src/rich/rich-answer.ts` parser: the same block dialect (fences, headings, lists with depth, quotes,
  * tables, dividers, paragraphs, media blocks outside fences, block-level `<p>`
  * unwrapping, dangling hard breaks) and the same picture mapping (exact media
  * id, then the remaining inline entries in snapshot-id order, caption-only

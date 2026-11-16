@@ -1,6 +1,6 @@
 /**
  * Offline cases for the SSR share page's rich-answer renderer (v5.3 design
- * 2026-1116-0310 §三.2/§五.6/§八 M2): `src/panel/share/rich-answer-html.ts` is
+ * 2026-1116-0310 §三.2/§五.6/§八 M2): `src/telegram/formatters/rich-answer-html.ts` is
  * the server port of the Mini App's `parseRichAnswer`, because the public page
  * must stay readable without JavaScript. Both consume the shared fixtures of
  * `fixtures/rich-snapshot-fixtures.mts`, and for every block this test compares
@@ -15,7 +15,7 @@ import {
     unreferencedMediaIndexes,
     type RichAnswerHtmlBlock,
     type RichAnswerHtmlMedia,
-} from '../../src/panel/share/rich-answer-html.js';
+} from '../../src/telegram/formatters/rich-answer-html.js';
 import {
     inlineRuns,
     parseRichAnswer,

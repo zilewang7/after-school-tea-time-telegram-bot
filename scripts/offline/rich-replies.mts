@@ -733,8 +733,10 @@ results.push(
         expect(versions[0]?.thinkingLinkToken === undefined, 'no thinking link');
         expect(
             deliveredIn(logs).length === 1 &&
-                deliveredIn(logs)[0] ===
-                    `[rich] delivered chat=${started.chatId} first=${started.firstMessageId} chars=${finalMarkdown.length} link=false searchLink=false`,
+                deliveredIn(logs)[0]?.startsWith(
+                    `[rich] delivered chat=${started.chatId} first=${started.firstMessageId} chars=${finalMarkdown.length} `
+                ) === true &&
+                deliveredIn(logs)[0]?.endsWith('link=false searchLink=false') === true,
             `one success line (got ${json(deliveredIn(logs))})`
         );
         expect(fallbacksIn(logs).length === 0, 'no fallback');
@@ -2050,6 +2052,605 @@ results.push(
         expect(telegram.callsOf('sendPhoto').length === 1, `the picture went out once as an attachment (got ${telegram.callsOf('sendPhoto').length})`);
         expect(fallbacksIn(logs).length === 1, 'the demotion is logged');
         expect(deliveredIn(logs).length === 0, 'no rich success line');
+    })
+);
+
+// ---------------------------------------------------------------------------
+// The fold: a body Telegram would collapse ("显示更多") moves the CoT behind a link
+// ---------------------------------------------------------------------------
+
+/**
+ * The CoT of the fold cases: inline-sized (≤4,000, so the final can show it as
+ * the collapsed quote) and long enough, with FOLD_ANSWER, to take the body over
+ * the fold budget. It streams after the answer: a CoT this long would activate
+ * the streaming link mode first (trigger 3,850 rendered units), and the final
+ * would then find the thinking already behind a link.
+ */
+const FOLD_THINKING = '想'.repeat(3_900);
+/** The fold cases' answer: 3,000 units / 9,016 serialized bytes, under both fold limits alone */
+const FOLD_ANSWER = '答'.repeat(3_000);
+/** FOLD_ANSWER alone, as `rich-body-length.ts` counts it: 3,000 units, 9,000 text bytes + 16 for its block */
+const FOLD_ANSWER_UNITS = 3_000;
+const FOLD_ANSWER_BYTES = 9_016;
+/** FOLD_THINKING + FOLD_ANSWER with the quote: 6,902 units, 20,758 serialized bytes */
+const FOLD_BODY_UNITS = 6_902;
+const FOLD_BODY_BYTES = 20_758;
+
+/** The `[rich] fold … thinking=link` lines: the body would fold, so the quote moved behind a link */
+const foldMovesIn = (lines: readonly string[]): string[] => lines.filter((line) => line.startsWith('[rich] fold chat='));
+/** The `[rich] fold predicted but no link` lines: the body would fold, but no link could be created */
+const foldWithoutLinkIn = (lines: readonly string[]): string[] =>
+    lines.filter((line) => line.startsWith('[rich] fold predicted but no link'));
+/** The `[rich] overflow … thinking=link` lines: the with-quote body did not fit the source budget */
+const overflowMovesIn = (lines: readonly string[]): string[] => lines.filter((line) => line.startsWith('[rich] overflow'));
+
+/** The link the final created: the reply's first message, entities, with the fast-page card */
+const expectFinalThinkingLink = (started: StartedReply, label: string): void => {
+    const link = started.chatContext.session.thinkingLink;
+    const firstFinal = editsOf(started.telegram, started.firstMessageId).at(-1);
+    expect(
+        link !== undefined &&
+            link.emitted === false &&
+            firstFinal !== undefined &&
+            !isRichCall(firstFinal) &&
+            textOf(firstFinal).startsWith(THINKING_LINK_LABEL),
+        `${label}: the final created the link and the first message became it (got ${json(firstFinal?.payload)})`
+    );
+    expect(
+        asRecord(firstFinal?.payload.link_preview_options).url === link?.fastPageUrl,
+        `${label}: the link message carries the fast-page card`
+    );
+};
+
+results.push(
+    await runCase('fold: a body Telegram would fold moves the thinking behind a link message', async () => {
+        const started = await startReply({ richReplies: true });
+        const logs = await runReply(started, {
+            steps: [...textSteps([FOLD_ANSWER]), ...thinkingSteps(FOLD_THINKING)],
+        });
+        const { telegram, chatContext } = started;
+
+        const foldMoves = foldMovesIn(logs);
+        expect(
+            foldMoves.length === 1 &&
+                foldMoves[0] ===
+                    `[rich] fold chat=${started.chatId} first=${started.firstMessageId} ` +
+                        `units=${FOLD_BODY_UNITS} bytes=${FOLD_BODY_BYTES} thinking=link`,
+            `one fold line, measured with the quote (got ${json(foldMoves)})`
+        );
+        expect(overflowMovesIn(logs).length === 0, 'the body fit the source budget with the quote');
+
+        expectFinalThinkingLink(started, 'fold');
+        const sent = telegram.callsOf('sendRichMessage');
+        expect(sent.length === 1, `one rich body was sent (got ${sent.length})`);
+        const body = richMarkdownOf(sent[0]) ?? '';
+        expect(body === FOLD_ANSWER, `the body is the answer alone, the quote moved out (got ${json(body.slice(0, 60))})`);
+        expect(!body.includes('<blockquote'), 'no quote in the delivered body');
+
+        const delivered = deliveredIn(logs);
+        expect(
+            delivered.length === 1 &&
+                delivered[0] ===
+                    `[rich] delivered chat=${started.chatId} first=${started.firstMessageId} ` +
+                        `chars=${FOLD_ANSWER.length} units=${FOLD_ANSWER_UNITS} bytes=${FOLD_ANSWER_BYTES} ` +
+                        'fold=false link=true searchLink=false',
+            `one success line: the answer alone, the link (got ${json(delivered)})`
+        );
+        expect(fallbacksIn(logs).length === 0, 'no fallback');
+
+        const versions = await versionsOf(started);
+        const [version, ...more] = versions;
+        expect(version !== undefined && more.length === 0, 'one version');
+        expect(version?.thinkingLinkToken === chatContext.session.thinkingLink?.token, 'the version stores the link token');
+        expect(
+            version?.richAnswerMarkdown === FOLD_ANSWER && version.richAnswerMarkdown?.includes('<blockquote') !== true,
+            `the snapshot is the answer, no quote (got ${json(version?.richAnswerMarkdown?.slice(0, 40))})`
+        );
+        expect(version?.thinkingText === FOLD_THINKING, 'the thinking is stored for the page and a replay');
+        expect(
+            version?.messageIds.length === 2 && version.messageIds[1] === chatContext.session.messageIds[1],
+            `the link message and the body are the version's messages (got ${json(version?.messageIds)})`
+        );
+    })
+);
+
+results.push(
+    await runCase('fold: a body below both fold budgets keeps the thinking quote inline', async () => {
+        const started = await startReply({ richReplies: true });
+        const thinking = '先想一想。';
+        const answer = '这是答案。';
+        const logs = await runReply(started, { steps: [...thinkingSteps(thinking), ...textSteps([answer])] });
+        const body = richMarkdownOf(editsOf(started.telegram, started.firstMessageId).at(-1)) ?? '';
+        expect(
+            body === `<blockquote expandable>${thinking}</blockquote>\n\n${answer}`,
+            `the final keeps the quote in the body (got ${json(body)})`
+        );
+        expect(
+            foldMovesIn(logs).length === 0 && foldWithoutLinkIn(logs).length === 0 && overflowMovesIn(logs).length === 0,
+            'no fold or overflow was even predicted'
+        );
+        expect(started.telegram.callsOf('sendRichMessage').length === 0, "the body stays in the reply's message");
+        const delivered = deliveredIn(logs);
+        expect(
+            delivered.length === 1 &&
+                delivered[0] ===
+                    `[rich] delivered chat=${started.chatId} first=${started.firstMessageId} ` +
+                        'chars=48 units=12 bytes=88 fold=false link=false searchLink=false',
+            `one success line without a link (got ${json(delivered)})`
+        );
+        expect(fallbacksIn(logs).length === 0, 'no fallback');
+        const [version] = await versionsOf(started);
+        expect(version?.thinkingLinkToken === undefined, 'no thinking link was created');
+        expect(version?.thinkingText === thinking, 'the quote stays with the version');
+    })
+);
+
+results.push(
+    await runCase('fold: rule A moves a short thinking quote even when the answer alone still folds', async () => {
+        // No minimum CoT: 40 characters of thinking are moved out as well
+        const started = await startReply({ richReplies: true });
+        const thinking = '想'.repeat(40);
+        const answer = '答'.repeat(6_000);
+        const logs = await runReply(started, { steps: [...thinkingSteps(thinking), ...textSteps([answer])] });
+        const foldMoves = foldMovesIn(logs);
+        expect(
+            foldMoves.length === 1 &&
+                foldMoves[0] ===
+                    `[rich] fold chat=${started.chatId} first=${started.firstMessageId} ` +
+                        'units=6042 bytes=18178 thinking=link',
+            `the short quote still moves (got ${json(foldMoves)})`
+        );
+        expectFinalThinkingLink(started, 'rule A');
+        const sent = started.telegram.callsOf('sendRichMessage');
+        expect(sent.length === 1 && richMarkdownOf(sent[0]) === answer, 'the body is the answer alone');
+        const delivered = deliveredIn(logs);
+        expect(
+            delivered.length === 1 &&
+                delivered[0] ===
+                    `[rich] delivered chat=${started.chatId} first=${started.firstMessageId} ` +
+                        `chars=${answer.length} units=6000 bytes=18016 fold=true link=true searchLink=false`,
+            `the body still folds, and still leads with the link (got ${json(delivered)})`
+        );
+        expect(fallbacksIn(logs).length === 0, 'no fallback');
+        const [version] = await versionsOf(started);
+        expect(version?.thinkingLinkToken !== undefined, 'the link is stored even though the body still folds');
+    })
+);
+
+results.push(
+    await runCase('fold: with THINKING_LINK off the quote stays inline and the reply is not demoted', async () => {
+        // The switch is read per call; a matching delete in finally, so a failing
+        // case cannot leak it to the cases after it
+        process.env.THINKING_LINK = '0';
+        try {
+            const started = await startReply({ richReplies: true });
+            const thinking = '想'.repeat(40);
+            const answer = '答'.repeat(6_000);
+            const logs = await runReply(started, { steps: [...thinkingSteps(thinking), ...textSteps([answer])] });
+            const body = richMarkdownOf(editsOf(started.telegram, started.firstMessageId).at(-1)) ?? '';
+            expect(
+                body === `<blockquote expandable>${thinking}</blockquote>\n\n${answer}`,
+                `the quote stays in the body (got ${json(body.slice(0, 60))})`
+            );
+            const predicted = foldWithoutLinkIn(logs);
+            expect(
+                predicted.length === 1 &&
+                    predicted[0] ===
+                        `[rich] fold predicted but no link chat=${started.chatId} first=${started.firstMessageId} ` +
+                            'units=6042 bytes=18178',
+                `the move is predicted and skipped without a link (got ${json(predicted)})`
+            );
+            expect(foldMovesIn(logs).length === 0, 'no quote was moved without a link');
+            expect(started.telegram.callsOf('sendRichMessage').length === 0, 'the body stays in its own message');
+            expect(started.chatContext.session.thinkingLink === undefined, 'no link message was created');
+            const delivered = deliveredIn(logs);
+            expect(
+                delivered.length === 1 &&
+                    delivered[0] ===
+                        `[rich] delivered chat=${started.chatId} first=${started.firstMessageId} ` +
+                            `chars=${body.length} units=6042 bytes=18178 fold=true link=false searchLink=false`,
+                `delivered as it is, without a link (got ${json(delivered)})`
+            );
+            expect(fallbacksIn(logs).length === 0, 'no demotion');
+            const [version] = await versionsOf(started);
+            expect(version?.thinkingLinkToken === undefined, 'no link token');
+        } finally {
+            delete process.env.THINKING_LINK;
+        }
+    })
+);
+
+results.push(
+    await runCase('fold: a body over the source budget only with its quote links the thinking instead of demoting', async () => {
+        // The final adds the tool records the stream never shows. The last
+        // streamed frame (with the quote) is 29,948 source characters and fits;
+        // the final body is 30,032 and does not, while the body without the
+        // quote (29,934) does.
+        const thinking = '想'.repeat(60);
+        const answer = '答'.repeat(29_850);
+        const answerChunks = Array.from({ length: 5 }, (_, index) => answer.slice(index * 5_970, (index + 1) * 5_970));
+        const started = await startReply({ richReplies: true });
+        const logs = await runReply(started, {
+            steps: [
+                { chunk: thinkingChunk(thinking) },
+                ...textSteps(answerChunks),
+                {
+                    chunk: { type: 'done', agentStats: { toolUsage: [{ name: 'web_search', count: 2 }] } },
+                    frame: false,
+                },
+            ],
+        });
+        const { telegram } = started;
+        const overflows = overflowMovesIn(logs);
+        expect(
+            overflows.length === 1 &&
+                overflows[0] ===
+                    `[rich] overflow chat=${started.chatId} first=${started.firstMessageId} thinking=link`,
+            `one overflow move (got ${json(overflows)})`
+        );
+        expect(foldMovesIn(logs).length === 0, 'the with-quote body never fit the source budget');
+        expectFinalThinkingLink(started, 'overflow');
+        const sent = telegram.callsOf('sendRichMessage');
+        expect(sent.length === 1, `one rich body delivered (got ${sent.length})`);
+        const body = richMarkdownOf(sent[0]) ?? '';
+        expect(
+            body === `${answer}\n\n<p><b>Tools</b></p>\n\n<blockquote expandable>tool usage: web_search x2</blockquote>`,
+            `the answer and its tool record, the quote moved out (got ${json(body.slice(0, 40))}…${json(body.slice(-60))})`
+        );
+        const delivered = deliveredIn(logs);
+        expect(
+            delivered.length === 1 &&
+                delivered[0] ===
+                    `[rich] delivered chat=${started.chatId} first=${started.firstMessageId} chars=${body.length} ` +
+                        'units=29883 bytes=89647 fold=true link=true searchLink=false',
+            `rich delivered, no demotion (got ${json(delivered)})`
+        );
+        expect(fallbacksIn(logs).length === 0, 'no fallback: the answer alone fits the budget');
+        expect(telegram.callsOf('sendMessage').length === 1, 'the placeholder only: no continuation');
+        const [version] = await versionsOf(started);
+        expect(version?.thinkingLinkToken !== undefined, 'the version stores the link token');
+        expect(version?.richAnswerMarkdown === answer, `the snapshot is the answer, no quote (got ${json(version?.richAnswerMarkdown?.length)})`);
+        expect(version?.thinkingText === thinking, 'the thinking is stored');
+        expect(version?.text === answer, 'the stored text is the whole answer');
+    })
+);
+
+results.push(
+    await runCase('fold: a stopped reply moves the quote too, and the [stopped] block stays', async () => {
+        const started = await startReply({ richReplies: true });
+        const thinking = '想'.repeat(40);
+        const answer = '答'.repeat(6_000);
+        const logs = await runReply(started, {
+            steps: [
+                ...thinkingSteps(thinking),
+                ...textSteps([answer]),
+                {
+                    chunk: textChunk('不会显示'),
+                    frame: false,
+                    before: () => started.chatContext.session.streamController.abort(),
+                },
+            ],
+        });
+        const foldMoves = foldMovesIn(logs);
+        expect(
+            foldMoves.length === 1 &&
+                foldMoves[0] ===
+                    `[rich] fold chat=${started.chatId} first=${started.firstMessageId} units=6053 bytes=18205 thinking=link`,
+            `one fold line with the stopped body's length (got ${json(foldMoves)})`
+        );
+        expectFinalThinkingLink(started, 'stopped');
+        const sent = started.telegram.callsOf('sendRichMessage');
+        expect(sent.length === 1, `one rich body sent (got ${sent.length})`);
+        const body = richMarkdownOf(sent[0]) ?? '';
+        expect(
+            body === `${answer}\n\n<p>[stopped]</p>`,
+            `the answer and the stop marker, no quote (got ${json(body.slice(-60))})`
+        );
+        const delivered = deliveredIn(logs);
+        expect(
+            delivered.length === 1 &&
+                delivered[0] ===
+                    `[rich] delivered chat=${started.chatId} first=${started.firstMessageId} chars=${body.length} ` +
+                        'units=6011 bytes=18043 fold=true link=true searchLink=false',
+            `delivered rich after the stop (got ${json(delivered)})`
+        );
+        expect(fallbacksIn(logs).length === 0, 'no fallback');
+        const [version] = await versionsOf(started);
+        expect(version?.wasStoppedByUser === true, 'the stop is stored');
+        expect(version?.thinkingLinkToken !== undefined, 'the link is stored');
+        expect(version?.richAnswerMarkdown === answer, 'the snapshot is the answer');
+    })
+);
+
+results.push(
+    await runCase('fold: an inline picture rides the same rich body after the quote moves', async () => {
+        const thinking = '想'.repeat(3_000);
+        const answer = '答'.repeat(4_700);
+        const mediaBlock = '![](tg://photo?id=img1 "图一")';
+        const started = await startInlineReply(`${answer}\n\n![图一](g1)`);
+        started.chatContext.session.thinkingBuffer = thinking;
+        let result: RichFinalResult | undefined;
+        const logs = await withLogs(async () => {
+            result = await deliverInline(started, pictureResolver());
+        });
+        expect(
+            result !== undefined && result.kind === 'delivered' && result.fallback === undefined,
+            `delivered, no fallback (got ${json(result)})`
+        );
+        expect(started.chatContext.inlineDelivery === 'rich', 'the picture went inline');
+        expect(started.chatContext.inlineImages?.length === 1, 'one picture stays on the reply');
+        const foldMoves = foldMovesIn(logs);
+        expect(
+            foldMoves.length === 1 &&
+                foldMoves[0] ===
+                    `[rich] fold chat=${started.chatId} first=${started.firstMessageId} units=7704 bytes=23692 thinking=link`,
+            `one fold line, the picture counted too (got ${json(foldMoves)})`
+        );
+        expectFinalThinkingLink(started, 'inline picture');
+        const sent = started.telegram.callsOf('sendRichMessage');
+        expect(sent.length === 1, `the body went out as a new rich message (got ${sent.length})`);
+        const body = richMarkdownOf(sent[0]) ?? '';
+        expect(body === `${answer}\n\n${mediaBlock}`, `the answer and its media block, no quote (got ${json(body.slice(-60))})`);
+        expect(json(richMediaOf(sent[0]).map((item) => item.id)) === json(['img1']), 'the same call uploads the picture');
+        expect(json(bodyMediaIdsOf(body)) === json(['img1']), 'the body references the media id');
+        expect(started.telegram.callsOf('sendPhoto').length === 0, 'no picture message follows');
+        const delivered = deliveredIn(logs);
+        expect(
+            delivered.length === 1 &&
+                delivered[0] ===
+                    `[rich] delivered chat=${started.chatId} first=${started.firstMessageId} chars=${body.length} ` +
+                        'units=4702 bytes=14650 fold=false link=true searchLink=false',
+            `delivered rich with the picture (got ${json(delivered)})`
+        );
+        expect(fallbacksIn(logs).length === 0, 'no fallback');
+        expect(
+            started.chatContext.richAnswerMarkdown === `${answer}\n\n${mediaBlock}` &&
+                started.chatContext.richAnswerMarkdown?.includes('<blockquote') !== true,
+            `the snapshot is the body's answer section (got ${json(started.chatContext.richAnswerMarkdown?.slice(-40))})`
+        );
+    })
+);
+
+results.push(
+    await runCase('fold: a replayed version leads with the thinking link and brings no quote back', async () => {
+        const started = await startReply({ richReplies: true });
+        await runReply(started, { steps: [...textSteps([FOLD_ANSWER]), ...thinkingSteps(FOLD_THINKING)] });
+        const { telegram, chatContext } = started;
+        const [version] = await versionsOf(started);
+        expect(version?.thinkingLinkToken !== undefined, 'the version stores the link token');
+        const snapshot = version?.richAnswerMarkdown ?? '';
+        expect(
+            snapshot === FOLD_ANSWER && !snapshot.includes('<blockquote'),
+            `the snapshot is the answer, no quote (got ${json(snapshot.slice(0, 40))})`
+        );
+        const bodyMessageId = version?.messageIds[1];
+        expect(
+            version?.messageIds.length === 2 && bodyMessageId !== undefined,
+            `the link message and the body are stored (got ${json(version?.messageIds)})`
+        );
+
+        // Replaying the version must lay out the same two messages, no quote
+        telegram.reset();
+        const refreshed = await quietly(() =>
+            botMessageService.refreshToFinalState(telegram.api, started.chatId, started.firstMessageId)
+        );
+        expect(refreshed === true, 'the stored layout replays');
+        const replayEdits = editsOf(telegram);
+        const linkEdit = replayEdits.filter((call) => call.payload.message_id === started.firstMessageId).at(-1);
+        expect(
+            linkEdit !== undefined && !isRichCall(linkEdit) && textOf(linkEdit).startsWith(THINKING_LINK_LABEL),
+            `the first message is the link again (got ${json(linkEdit?.payload)})`
+        );
+        expect(
+            asRecord(linkEdit?.payload.link_preview_options).url === chatContext.session.thinkingLink?.fastPageUrl,
+            'with its fast-page card'
+        );
+        const bodyEdit = replayEdits.filter((call) => call.payload.message_id === bodyMessageId).at(-1);
+        expect(
+            bodyEdit !== undefined && richMarkdownOf(bodyEdit) === FOLD_ANSWER,
+            `the body replays without the quote (got ${json(richMarkdownOf(bodyEdit))})`
+        );
+        expect(
+            replayEdits.filter(isRichCall).every((call) => (richMarkdownOf(call) ?? '').includes('<blockquote') === false),
+            'no rich replay call carries a quote'
+        );
+    })
+);
+
+// ---------------------------------------------------------------------------
+// Fold follow-ups: a stream-emitted link, the L2 fallback, an inline footer
+// ---------------------------------------------------------------------------
+
+results.push(
+    await runCase('fold: a stream-emitted thinking link is not duplicated and no fold move is decided', async () => {
+        // The CoT streams first and reaches the streaming link trigger, so the
+        // link is emitted while the answer starts and the final sees the
+        // thinking already behind it (placement 'link'): the fold decision does
+        // not run at all, even though the answer alone folds.
+        const thinking = longThinking();
+        const answer = '答'.repeat(6_000);
+        const started = await startReply({ richReplies: true });
+        const logs = await runReply(started, { steps: [...thinkingSteps(thinking), ...textSteps([answer])] });
+        const { telegram, chatContext } = started;
+
+        const link = chatContext.session.thinkingLink;
+        expect(link !== undefined && link.emitted === true, 'the stream emitted the link');
+        expect(
+            foldMovesIn(logs).length === 0 && foldWithoutLinkIn(logs).length === 0 && overflowMovesIn(logs).length === 0,
+            'the final decides no fold move: the quote is already behind the link'
+        );
+
+        const firstFinal = editsOf(telegram, started.firstMessageId).at(-1);
+        expect(
+            firstFinal !== undefined && !isRichCall(firstFinal) && textOf(firstFinal).startsWith(THINKING_LINK_LABEL),
+            `the first message is the emitted link (got ${json(firstFinal?.payload)})`
+        );
+        expect(
+            asRecord(firstFinal?.payload.link_preview_options).url === link?.fastPageUrl,
+            'with its fast-page card'
+        );
+        // One link message only: it was edited in place, never sent again
+        expect(
+            telegram.callsOf('sendMessage').every((call) => textOf(call).startsWith(THINKING_LINK_LABEL) === false),
+            `no second link message was sent (got ${json(telegram.callsOf('sendMessage').map(textOf))})`
+        );
+
+        const bodyMessageId = chatContext.session.messageIds[1];
+        expect(bodyMessageId !== undefined, 'the body has its own continuation');
+        const bodyFinal = editsOf(telegram, bodyMessageId).at(-1);
+        expect(
+            richMarkdownOf(bodyFinal) === answer && richMarkdownOf(bodyFinal)?.includes('<blockquote') === false,
+            `the body is the answer alone, no quote (got ${json(richMarkdownOf(bodyFinal)?.slice(0, 60))})`
+        );
+        expect(telegram.callsOf('sendRichMessage').length === 0, 'the body was not sent as a new message');
+
+        const delivered = deliveredIn(logs);
+        expect(
+            delivered.length === 1 &&
+                delivered[0] ===
+                    `[rich] delivered chat=${started.chatId} first=${started.firstMessageId} ` +
+                        `chars=${answer.length} units=6000 bytes=18016 fold=true link=true searchLink=false`,
+            `delivered without a fold move (got ${json(delivered)})`
+        );
+        expect(fallbacksIn(logs).length === 0, 'no fallback');
+        // The delivered body still folds: its breakdown is logged for calibration
+        expect(
+            logs.some((line) => line.startsWith('[rich] length') && line.includes('phase=delivered')),
+            'the folded delivered body logs its length breakdown'
+        );
+
+        const versions = await versionsOf(started);
+        const [version] = versions;
+        expect(version?.thinkingLinkToken === link?.token, 'the version stores the emitted link token');
+        expect(version?.richAnswerMarkdown === answer, 'the snapshot is the answer');
+        expect(version?.thinkingText === thinking, 'the thinking is stored');
+        expect(version?.messageIds.length === 2, `the link message and the body (got ${json(version?.messageIds)})`);
+    })
+);
+
+results.push(
+    await runCase('fold: a refused media body falls back to the picture-free rich body, no demotion', async () => {
+        // The fold move takes the quote out, then the media-rich body is refused:
+        // L2 keeps the reply rich with the picture-free body (still quote-free)
+        // and the picture goes out as an attachment.
+        const thinking = '想'.repeat(3_000);
+        const answer = '答'.repeat(4_700);
+        const mediaBlock = '![](tg://photo?id=img1 "图一")';
+        const answerPlain = `${answer}\n\n<p><i>（另有 1 张图未能内嵌发送）</i></p>`;
+        const started = await startReply({ richReplies: true, refuse: refuseRichWithMedia });
+        started.chatContext.mediaState = mediaStateWithOnePicture();
+        started.chatContext.contextIndex = new Map();
+        const logs = await runReply(started, {
+            steps: [...thinkingSteps(thinking), ...textSteps([`${answer}\n\n![图一](g1)`])],
+        });
+        const { telegram, chatContext } = started;
+
+        const foldMoves = foldMovesIn(logs);
+        expect(
+            foldMoves.length === 1 &&
+                foldMoves[0] ===
+                    `[rich] fold chat=${started.chatId} first=${started.firstMessageId} units=7704 bytes=23692 thinking=link`,
+            `one fold line, the picture counted (got ${json(foldMoves)})`
+        );
+        expect(
+            logs.some((line) => line.startsWith('[rich] length') && line.includes('phase=with-quote')),
+            'the folded forecast logs its length breakdown before the move'
+        );
+        expectFinalThinkingLink(started, 'L2');
+
+        // L1 carried the upload and was refused; L2 is the same answer without it
+        const sent = telegram.callsOf('sendRichMessage');
+        expect(
+            sent.length === 2 && json(richMediaOf(sent[0]).map((item) => item.id)) === json(['img1']),
+            `the media body was tried once (got ${json(sent.map((call) => richMediaOf(call).map((item) => item.id)))})`
+        );
+        expect(json(richMediaOf(sent[1]).map((item) => item.id)) === json([]), 'the delivered body carries no media');
+        const refusedBody = richMarkdownOf(sent[0]) ?? '';
+        const body = richMarkdownOf(sent[1]) ?? '';
+        expect(
+            refusedBody === `${answer}\n\n${mediaBlock}` && refusedBody.includes('<blockquote') === false,
+            `the refused body was quote-free and carried the media block (got ${json(refusedBody.slice(-60))})`
+        );
+        expect(
+            body === answerPlain && body.includes(thinking) === false,
+            `the delivered body is the answer with its media note, no quote (got ${json(body.slice(-60))})`
+        );
+
+        expect(chatContext.delivery === 'rich', 'the reply stays rich');
+        expect(fallbacksIn(logs).length === 0, 'no demotion to entities');
+        expect(telegram.callsOf('sendPhoto').length === 1, 'the picture went out once as an attachment');
+        expect(chatContext.inlineDelivery === 'attachments', 'the version records the attachment delivery');
+        expect(chatContext.inlineImages?.length === 0, 'nothing stayed inline');
+
+        const delivered = deliveredIn(logs);
+        expect(
+            delivered.length === 1 &&
+                delivered[0] ===
+                    `[rich] delivered chat=${started.chatId} first=${started.firstMessageId} ` +
+                        `chars=${body.length} units=4715 bytes=14179 fold=false link=true searchLink=false`,
+            `one success line: the picture-free body and the link (got ${json(delivered)})`
+        );
+
+        const [version] = await versionsOf(started);
+        expect(version?.thinkingLinkToken !== undefined, 'the version stores the link token');
+        expect(version?.richAnswerMarkdown === answerPlain, 'the snapshot is the L2 answer with its note');
+        expect(version?.delivery === 'rich-text', `the version records the rich-text delivery (got ${json(version?.delivery)})`);
+        expect(version?.text === answer, 'the stored text is the clean answer');
+    })
+);
+
+results.push(
+    await runCase('fold: the inline search footer stays in the delivered body after the quote moves', async () => {
+        // The footer fits one message, so it rides the body as a block; moving
+        // the quote out must not drop it, and the answer alone still folds.
+        const thinking = '想'.repeat(40);
+        const answer = '答'.repeat(6_000);
+        const started = await startReply({ richReplies: true });
+        const logs = await runReply(started, {
+            steps: [
+                ...thinkingSteps(thinking),
+                ...textSteps([answer]),
+                { chunk: { type: 'grounding', groundingMetadata: smallFooter() }, frame: false },
+            ],
+        });
+        const { telegram } = started;
+
+        const foldMoves = foldMovesIn(logs);
+        expect(
+            foldMoves.length === 1 &&
+                foldMoves[0] ===
+                    `[rich] fold chat=${started.chatId} first=${started.firstMessageId} units=6078 bytes=18411 thinking=link`,
+            `one fold line with the footer block counted (got ${json(foldMoves)})`
+        );
+        expectFinalThinkingLink(started, 'footer');
+        const sent = telegram.callsOf('sendRichMessage');
+        expect(sent.length === 1, `one rich body sent (got ${sent.length})`);
+        const body = richMarkdownOf(sent[0]) ?? '';
+        expect(
+            body.startsWith(`${answer}\n\n`) && body.includes(thinking) === false,
+            `the answer comes first, the quote moved out (got ${json(body.slice(0, 60))})`
+        );
+        expect(
+            body.includes('<b>GoogleSearch</b>') && body.includes('小查询 1') && body.includes('小查询 2') && body.includes('小来源'),
+            `the inline footer stays in the body (got ${json(body.slice(-200))})`
+        );
+        expect(body.includes('<blockquote expandable>'), "the footer keeps its own blockquote");
+        expect(telegram.callsOf('sendMessage').length === 1, 'the footer was not turned into a link message');
+
+        const delivered = deliveredIn(logs);
+        expect(
+            delivered.length === 1 &&
+                delivered[0] ===
+                    `[rich] delivered chat=${started.chatId} first=${started.firstMessageId} ` +
+                        `chars=${body.length} units=6036 bytes=18249 fold=true link=true searchLink=false`,
+            `delivered with the footer, still folding (got ${json(delivered)})`
+        );
+        expect(fallbacksIn(logs).length === 0, 'no fallback');
+
+        const [version] = await versionsOf(started);
+        expect(version?.thinkingLinkToken !== undefined, 'the version stores the link token');
+        expect(version?.richAnswerMarkdown === answer, 'the snapshot is the answer, the footer is rebuilt on replay');
+        expect(version?.searchLinkToken === undefined, 'the footer was not folded into a link');
     })
 );
 

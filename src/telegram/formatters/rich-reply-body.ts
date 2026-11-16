@@ -33,16 +33,30 @@ import {
 } from './google-search-document.js';
 import { renderThinkingQuote } from './quoted-render.js';
 import { joinRichBlocks } from './rich-blocks.js';
+import {
+    combineRichBodyLengths,
+    estimateRenderedMessage,
+    type RichBodyLength,
+} from './rich-body-length.js';
 import { replaceMediaSentinels, type RichInlineMedia } from './rich-inline-media/media-blocks.js';
 import { stripInlineMarkersForDisplay } from './rich-inline-media/scan.js';
 import { formatThinkingForStreaming } from './thinking-display.js';
 import { buildToolRecordSections } from './tool-records-formatter.js';
 
-/** The collapsed thinking quote of a final or error display */
-const thinkingQuoteBlock = (thinking: string | undefined, resolveContextLink?: ContextLinkResolver): string =>
+/** The collapsed thinking quote of a final or error display, before HTML serialization */
+const thinkingQuoteMessage = (
+    thinking: string | undefined,
+    resolveContextLink?: ContextLinkResolver
+): RenderedMessage | undefined =>
     thinking === undefined || thinking === ''
-        ? ''
-        : toRichHtml(linkifyContextNumbers(renderThinkingQuote(thinking, { expandable: true }), resolveContextLink));
+        ? undefined
+        : linkifyContextNumbers(renderThinkingQuote(thinking, { expandable: true }), resolveContextLink);
+
+/** The collapsed thinking quote of a final or error display */
+const thinkingQuoteBlock = (thinking: string | undefined, resolveContextLink?: ContextLinkResolver): string => {
+    const message = thinkingQuoteMessage(thinking, resolveContextLink);
+    return message === undefined ? '' : toRichHtml(message);
+};
 
 /** A paragraph standing in for the blocks that follow the answer */
 const TAIL_PROBE = 'rich-tail-probe';
@@ -171,17 +185,17 @@ export const searchFooterPresent = (document: GoogleSearchDocument): boolean =>
  * The blocks around the answer: [stopped], the tool records, the inline search
  * footer. Live and replay build them the same way, from the same inputs.
  */
-const bodyBlocksAround = (
+const bodyBlockMessages = (
     input: RichReplyBodyFromAnswerInput,
     linkify: (message: RenderedMessage) => RenderedMessage
-): readonly string[] => {
+): readonly RenderedMessage[] => {
     const groundingData = input.groundingData ?? [];
     const footer = renderGoogleSearchFooter(input.googleSearch);
     const inlineFooter = !input.searchFolded && footer.text.trim() !== '';
     return [
-        input.wasStoppedByUser ? toRichHtml(plainText('[stopped]')) : '',
-        ...buildToolRecordSections(input.agentStats, groundingData).map((section) => toRichHtml(linkify(section))),
-        inlineFooter ? toRichHtml(linkify(footer)) : '',
+        ...(input.wasStoppedByUser ? [plainText('[stopped]')] : []),
+        ...buildToolRecordSections(input.agentStats, groundingData).map((section) => linkify(section)),
+        ...(inlineFooter ? [linkify(footer)] : []),
     ];
 };
 
@@ -205,24 +219,68 @@ export interface RichReplyBodyFromAnswerInput {
 }
 
 /**
- * The final body built around an already rendered answer section: thinking
- * quote, answer, [stopped], tool records, inline search footer, in the order
- * the entities layout shows them. null when the body would be empty (no
- * answer text and no media block): the entities path owns those.
- *
- * Live (from buildRichAnswer) and replay (from the stored snapshot) share this,
- * so a version shows exactly what the reply showed.
+ * A final body before composition: the thinking quote, the answer section and
+ * the blocks after it. The delivery both composes the body from this and
+ * measures it (the fold decision), so the two always read the same sources.
  */
-export const buildRichReplyBodyFromAnswer = (input: RichReplyBodyFromAnswerInput): string | null => {
+export interface RichReplyBodyParts {
+    /** The collapsed thinking quote; undefined when the thinking lives behind the link */
+    readonly thinking?: RenderedMessage;
+    readonly answerMarkdown: string;
+    /** [stopped], the tool records, the inline search footer, in layout order */
+    readonly blocks: readonly RenderedMessage[];
+}
+
+/**
+ * The parts of a final body built around an already rendered answer section.
+ * null when the body would be empty (no answer text): the entities path owns
+ * those.
+ */
+export const richReplyBodyPartsOf = (input: RichReplyBodyFromAnswerInput): RichReplyBodyParts | null => {
     if (input.answerMarkdown.trim() === '') return null;
     const linkify = (message: RenderedMessage): RenderedMessage =>
         linkifyContextNumbers(message, input.resolveContextLink);
-    return joinRichBlocks([
-        thinkingQuoteBlock(input.thinking, input.resolveContextLink),
-        input.answerMarkdown,
-        ...bodyBlocksAround(input, linkify),
-    ]);
+    const thinking = thinkingQuoteMessage(input.thinking, input.resolveContextLink);
+    return {
+        ...(thinking === undefined ? {} : { thinking }),
+        answerMarkdown: input.answerMarkdown,
+        blocks: bodyBlockMessages(input, linkify),
+    };
 };
+
+/** The body markdown of its parts, in the order the entities layout shows them */
+export const joinRichReplyBodyParts = (parts: RichReplyBodyParts): string =>
+    joinRichBlocks([
+        parts.thinking === undefined ? '' : toRichHtml(parts.thinking),
+        parts.answerMarkdown,
+        ...parts.blocks.map((block) => toRichHtml(block)),
+    ]);
+
+/**
+ * The final body built around an already rendered answer section. Live (from
+ * buildRichAnswer) and replay (from the stored snapshot) share this, so a
+ * version shows exactly what the reply showed.
+ */
+export const buildRichReplyBodyFromAnswer = (input: RichReplyBodyFromAnswerInput): string | null => {
+    const parts = richReplyBodyPartsOf(input);
+    return parts === null ? null : joinRichReplyBodyParts(parts);
+};
+
+/**
+ * Fold-length estimate of a body, from the same parts the body is composed of.
+ * The caller passes the answer section's own length, which it may cache: the
+ * answer section is the expensive parse and usually the same for two candidate
+ * bodies (with and without the thinking quote).
+ */
+export const measureRichReplyBodyParts = (
+    parts: RichReplyBodyParts,
+    answerLength: RichBodyLength
+): RichBodyLength =>
+    combineRichBodyLengths([
+        answerLength,
+        ...(parts.thinking === undefined ? [] : [estimateRenderedMessage(parts.thinking)]),
+        ...parts.blocks.map((block) => estimateRenderedMessage(block)),
+    ]);
 
 /**
  * The final body from the raw answer (the live path): the answer is rendered

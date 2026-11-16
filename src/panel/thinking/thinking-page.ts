@@ -14,7 +14,7 @@
  * is the rendered final version (and polls nothing, so it cannot loop).
  */
 import { match } from 'ts-pattern';
-import { escapeHtml, markdownToHtml } from '../share/markdown-html.js';
+import { escapeHtml, markdownToHtml } from '../../telegram/formatters/markdown-html.js';
 import type { ThinkingDocument, ThinkingStatus } from './thinking-types.js';
 
 const BOT_NAME = 'k-on-bot';
