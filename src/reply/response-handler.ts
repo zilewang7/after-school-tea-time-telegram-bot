@@ -35,6 +35,7 @@ import { ensureSystemReplyShare, previewLinkUrlOf } from '../panel/share/share-l
 import type { ShareLinkRecord } from '../panel/share/share-types.js';
 import { toApiEntities } from '../telegram/api-entities.js';
 import { buildMessageLinkResolver } from '../telegram/message-link.js';
+import type { AccessTier } from '../services/access-tier.js';
 import { createContextLabelStripper, stripContextLabel } from './context-label.js';
 import {
     linkifyContextNumbers,
@@ -238,6 +239,8 @@ export interface CreateChatContextOptions {
     commandType?: CommandType;
     /** The chat's rich replies switch as the reply's settings snapshot has it; off when absent */
     richReplies?: boolean;
+    /** The trigger user's tier: the trial quota prices this attempt by it */
+    accessTier?: AccessTier;
 }
 
 /** A refused streaming rich frame hands the reply to the entities path */
@@ -265,6 +268,7 @@ export const createChatContext = async (
     const session = await createSession(ctx, userMessageId, {
         model: options.model,
         commandType: options.commandType,
+        ...(options.accessTier === undefined ? {} : { accessTier: options.accessTier }),
     });
     if (!session) {
         typing.stop();

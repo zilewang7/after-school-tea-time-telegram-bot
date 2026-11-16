@@ -272,18 +272,32 @@ results.push(
 );
 
 results.push(
-    await runCase('a relay-only image id stays unpriced when ephone quotes CNY', async () => {
+    await runCase('a relay-only image id quoted in CNY stays on its manual row', async () => {
         const pipeline = await runPipeline();
         expect(candidateOf(pipeline.candidates, 'gpt-image-2.5-dev', 'standard') === undefined, 'no candidate');
         expect(
             pipeline.warnings.some((warning) => warning.includes('gpt-image-2.5-dev') && warning.includes('CNY')),
             `the reason is a warning (got ${pipeline.warnings.join(' | ')})`
         );
+        // The seed row is manual (design D5): with no candidate the daily run
+        // only says it keeps the row, so it never deletes or overwrites it.
+        const current = seedPriceEntries();
+        const manual = current.find((row) => row.model === 'gpt-image-2.5-dev' && row.tier === 'standard');
+        const diff = diffPriceCandidates(pipeline.candidates, current, { now: NOW });
+        expect(
+            manual !== undefined && manual.perImageUsd === 0.1048 && manual.source === 'manual',
+            'the manual per-image row is in the table'
+        );
+        expect(diff.drafts.every((draft) => draft.model !== 'gpt-image-2.5-dev'), 'no draft touches the manual row');
+        expect(
+            diff.warnings.some((warning) => warning.includes('gpt-image-2.5-dev') && warning.includes('保留现有行')),
+            `the watcher says it keeps the row (got ${diff.warnings.join(' | ')})`
+        );
     })
 );
 
 results.push(
-    await runCase('a USD per-call ephone price would price the image model per image', async () => {
+    await runCase('a USD per-call ephone price is proposed as an update of the manual image row', async () => {
         const ephone = {
             data: {
                 model_info: [
@@ -303,10 +317,19 @@ results.push(
         const candidate = requireCandidate(pipeline.candidates, 'gpt-image-2.5-dev', 'standard');
         expect(candidate.sourceKind === 'ephone' && candidate.entry.confidence === 'low', 'an ephone-only image row');
         expect(isNear(candidate.entry.perImageUsd, 0.06), `the per-call price becomes perImageUsd (got ${String(candidate.entry.perImageUsd)})`);
-        const diff = diffPriceCandidates(pipeline.candidates, seedPriceEntries(), { now: NOW });
+        const current = seedPriceEntries();
+        const diff = diffPriceCandidates(pipeline.candidates, current, { now: NOW });
         const draft = diff.drafts.find((candidateDraft) => candidateDraft.model === 'gpt-image-2.5-dev');
-        expect(draft !== undefined && draft.kind === 'new_model', 'the unpriced image model becomes a new_model proposal');
+        expect(
+            draft?.kind === 'update' && draft.baseline !== null && draft.baseline.perImageUsd === 0.1048,
+            'the manual row becomes an update proposal that names it as the baseline'
+        );
         expect(isNear(draft?.entry.perImageUsd, 0.06), 'the proposal keeps the per-image price');
+        // A proposal, not a write: the table the caller passed in is unchanged
+        expect(
+            current.find((row) => row.model === 'gpt-image-2.5-dev')?.perImageUsd === 0.1048,
+            'the manual row is not overwritten by the run'
+        );
     })
 );
 

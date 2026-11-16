@@ -2,7 +2,7 @@
  * GET /api/stats from reply_metrics: one query for the window's rows (the
  * samples every table and percentile is computed from in Node) and, for the
  * cost estimate, one usage aggregation per price segment of the window (design
- * §4.2, see price-segments.ts): a window that contains a price change is split
+ * §4.2, see usage-price-segments.ts): a window that contains a price change is split
  * at the change instants, and each segment is priced at the price in force
  * when it started.
  */
@@ -14,15 +14,16 @@ import {
 } from '../../db/queries/reply-metrics.js';
 import { listChats, type ChatRow } from '../../db/queries/panel-registry.js';
 import { loadPriceTableMeta, type PriceTableMeta } from '../../services/model-price-service.js';
-import { roundRatio, roundUsd, type ChatStatsRow, type CostGroupView, type PricingMeta, type StatsResponse } from '../views/stats-view.js';
 import {
     mergePricedUsageGroups,
     rollupCostByModel,
     totalCost,
     type PricedUsageGroup,
-} from './cost-estimate.js';
+} from '../../services/usage-cost.js';
+import { pricedUsageGroupsInWindow } from '../../services/usage-price-segments.js';
+import { roundRatio, roundUsd, type ChatStatsRow, type CostGroupView, type PricingMeta, type StatsResponse } from '../views/stats-view.js';
+import { buildImageCostGroups } from './image-cost.js';
 import { groupRowsBy } from './metric-samples.js';
-import { pricedUsageGroupsInWindow } from './price-segments.js';
 import {
     buildErrorKindCounts,
     buildKpis,
@@ -120,7 +121,14 @@ export const buildStats = async (request: StatsRequest): Promise<StatsResponse> 
 
     // One row per (model, route) whatever the price did inside the window
     const mergedPricedGroups = mergePricedUsageGroups(pricedGroups);
-    const cost = totalCost(mergedPricedGroups);
+    const chatCost = totalCost(mergedPricedGroups);
+    // The window's rows already carry the in-reply image generations: no extra SQL
+    const imageCost = buildImageCostGroups(rows);
+    // Chat + images; null only when neither had a price
+    const totalUsd =
+        chatCost.costUsd === null && imageCost.imageCostUsd === null
+            ? null
+            : (chatCost.costUsd ?? 0) + (imageCost.imageCostUsd ?? 0);
     const chatTitles = chats === null ? null : new Map([...chats].map(([chatId, chat]) => [chatId, chat.title]));
 
     return {
@@ -130,11 +138,17 @@ export const buildStats = async (request: StatsRequest): Promise<StatsResponse> 
         to: window.until.toISOString(),
         bucket: window.bucket,
         timeZone: STATS_TIME_ZONE,
-        kpis: buildKpis(rows, cost),
+        kpis: buildKpis(rows, { costUsd: totalUsd, pricedReplyRatio: chatCost.pricedReplyRatio }),
         outcomes: countOutcomes(rows),
         models: buildModelRows(rows, rollupCostByModel(mergedPricedGroups)),
         costGroups: mergedPricedGroups.map(toCostGroupView),
-        cost: { costUsd: roundUsd(cost.costUsd), pricedReplyRatio: roundRatio(cost.pricedReplyRatio) },
+        imageCostGroups: imageCost.groups,
+        cost: {
+            costUsd: roundUsd(totalUsd),
+            imageCostUsd: imageCost.imageCostUsd,
+            imageGenerations: imageCost.imageGenerations,
+            pricedReplyRatio: roundRatio(chatCost.pricedReplyRatio),
+        },
         pricing,
         tools: buildToolRows(rows),
         errorKinds: buildErrorKindCounts(rows),

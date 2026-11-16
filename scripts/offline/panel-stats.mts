@@ -32,6 +32,8 @@ const GROUP_CALC = -1001300000003;
 const GROUP_CONV = -1001300000004;
 /** Priority PayGo rows, inserted by their own case after the others ran */
 const GROUP_PRIORITY = -1001300000005;
+/** In-reply image generation rows, inserted by their own case after the others ran */
+const GROUP_IMAGE = -1001300000006;
 
 process.env.OWNER_USER_ID = String(OWNER_ID);
 process.env.DEFAULT_MODEL = 'env-default-model';
@@ -52,6 +54,7 @@ const { STATS_TIME_ZONE } = await import('../../src/panel/stats/time-buckets.js'
 const { modelCatalogVersion } = await import('../../src/config/model-catalog.js');
 const { priceTableVersion } = await import('../../src/config/model-pricing.js');
 const { PriceChangeProposal } = await import('../../src/db/priceChangeProposalDTO.js');
+const { listReplyMetricsByReply } = await import('../../src/panel/views/reply-metrics-view.js');
 
 type MembershipLookup = import('../../src/panel/access/membership.js').MembershipLookup;
 type ReplyMetricInput = import('../../src/db/queries/reply-metrics.js').ReplyMetricInput;
@@ -326,7 +329,7 @@ const cases: { name: string; body: () => Promise<void> }[] = [
             const body = member.body;
             expect(
                 json(Object.keys(body).sort()) ===
-                    json(['bucket', 'chatId', 'chats', 'cost', 'costGroups', 'errorKinds', 'from', 'kpis', 'models', 'outcomes', 'pricing', 'range', 'recentErrors', 'series', 'timeZone', 'to', 'tools']),
+                    json(['bucket', 'chatId', 'chats', 'cost', 'costGroups', 'errorKinds', 'from', 'imageCostGroups', 'kpis', 'models', 'outcomes', 'pricing', 'range', 'recentErrors', 'series', 'timeZone', 'to', 'tools']),
                 `top-level keys (got ${json(Object.keys(body))})`
             );
             expect(
@@ -706,6 +709,109 @@ cases.push({
         expect(
             dashboard.body.summary?.costUsd === cost.costUsd,
             `the dashboard summary prices the same way (got ${dashboard.body.summary?.costUsd})`
+        );
+    },
+});
+
+cases.push({
+    name: 'image generation cost: per-row pictures in the total, the per-model groups and the reply detail',
+    body: async () => {
+        await registry.upsertChatNow({ id: GROUP_IMAGE, type: 'supergroup', title: 'Image' });
+        const startedAt = new Date(Date.now() - HOUR_MS);
+        const bananaRow = metricRow({
+            chatId: GROUP_IMAGE,
+            startedAt,
+            imageGenerationUsage: [
+                {
+                    model: 'gemini-nano-banana-2.1',
+                    generations: 2,
+                    generationsWithUsage: 2,
+                    promptTokens: 78,
+                    cachedTokens: 0,
+                    cacheWriteTokens: null,
+                    outputTokens: 2240,
+                    thoughtsTokens: 1308,
+                    imageOutputTokens: 2240,
+                },
+            ],
+        });
+        const callBilledRow = metricRow({
+            chatId: GROUP_IMAGE,
+            startedAt,
+            model: 'deepseek-flash',
+            platform: 'deepseek',
+            promptTokens: 500,
+            cachedTokens: 0,
+            outputTokens: 50,
+            thoughtsTokens: 0,
+            imageGenerationUsage: [
+                {
+                    model: 'gpt-image-2.5-dev',
+                    generations: 1,
+                    generationsWithUsage: 0,
+                    promptTokens: null,
+                    cachedTokens: null,
+                    cacheWriteTokens: null,
+                    outputTokens: null,
+                    thoughtsTokens: null,
+                    imageOutputTokens: null,
+                },
+            ],
+        });
+        await insertReplyMetric(bananaRow);
+        await insertReplyMetric(callBilledRow);
+
+        const usd = (value: number): number => Math.round(value * 1e6) / 1e6;
+        // banana: 78 input + 2240 image-output tokens; argon row: 600 uncached, 400 cached, 100 output
+        const bananaImage = (78 * 1.5 + 2240 * 30) / 1e6;
+        const argonChat = (600 * 2 + 400 * 0.1 + 100 * 10) / 1e6;
+        // gpt-image is call-billed: one picture at the per-image price, no usage
+        const gptImage = 0.1048;
+        const deepseekChat = (500 * 0.3 + 50 * 1.2) / 1e6;
+        const imageTotal = bananaImage + gptImage;
+        const chatTotal = argonChat + deepseekChat;
+
+        const stats = await quietly(() => call(`/api/stats?chatId=${GROUP_IMAGE}&range=7d`, OWNER));
+        expect(stats.status === 200, `200 (got ${stats.status})`);
+        const { kpis, models, cost, imageCostGroups } = stats.body;
+        expect(
+            cost.imageGenerations === 3 && cost.imageCostUsd === usd(imageTotal),
+            `the image totals (got ${json(cost)})`
+        );
+        expect(
+            cost.costUsd === usd(chatTotal + imageTotal) && kpis.costUsd === cost.costUsd,
+            `the total is chat + images (got ${cost.costUsd}, want ${usd(chatTotal + imageTotal)})`
+        );
+        const bananaGroup = imageCostGroups.find((group: any) => group.model === 'gemini-nano-banana-2.1');
+        const gptGroup = imageCostGroups.find((group: any) => group.model === 'gpt-image-2.5-dev');
+        expect(
+            bananaGroup?.generations === 2 &&
+                bananaGroup?.generationsWithUsage === 2 &&
+                bananaGroup?.costUsd === usd(bananaImage) &&
+                bananaGroup?.pricing === 'priced',
+            `banana priced by its tokens (got ${json(bananaGroup)})`
+        );
+        expect(
+            gptGroup?.generations === 1 &&
+                gptGroup?.generationsWithUsage === 0 &&
+                gptGroup?.costUsd === usd(gptImage) &&
+                gptGroup?.pricing === 'priced',
+            `gpt-image priced per image, no usage (got ${json(gptGroup)})`
+        );
+        expect(
+            models.every(
+                (row: any) => row.model !== 'gemini-nano-banana-2.1' && row.model !== 'gpt-image-2.5-dev'
+            ),
+            'the per-model table still lists chat models only'
+        );
+
+        const detail = await listReplyMetricsByReply(GROUP_IMAGE, bananaRow.firstMessageId, { access: 'member' });
+        const viewed = [...detail.values()][0]?.[0];
+        expect(
+            viewed?.costUsd === usd(argonChat + bananaImage) &&
+                viewed?.imageCostUsd === usd(bananaImage) &&
+                viewed?.imageGenerations === 2,
+            `the reply detail prices the pictures too (got ${json(viewed)})`
         );
     },
 });

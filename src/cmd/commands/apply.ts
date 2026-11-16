@@ -12,6 +12,7 @@ import { isPanelRunning } from '../../panel/panel-state.js';
 import { resolveAccessTier } from '../../services/access-tier.js';
 import { notifyOwnerOfApplication } from '../../services/access-application-notify.js';
 import { sendBotNotice } from '../../services/bot-notice-service.js';
+import { estimateTrialSpend, type TrialSpend } from '../../services/trial-quota.js';
 import { latestApplicationOf } from '../../services/user-access-cache.js';
 import {
     AccessApplicationError,
@@ -34,25 +35,39 @@ const formatTime = (date: Date): string => {
     return date.toLocaleString('zh-CN', { hour12: false, timeZone });
 };
 
+/** Amounts in the status copy carry two decimals: $3.00 */
+const usdText = (value: number): string => `$${value.toFixed(2)}`;
+
+/**
+ * The trial spend cap line of the status: it is the user's own number, from
+ * the same estimate the reply gate makes, so the two cannot disagree.
+ */
+const quotaLineOf = (spend: TrialSpend): string =>
+    `体验额度：已用约 ${usdText(spend.usedUsd)} / ${usdText(spend.limitUsd)}` +
+    (spend.exceeded ? '（已用完，回复、重试、继续和生图都会被拒绝）' : '');
+
 /** The current application state and how to proceed */
-const statusTextOf = (userId: number): string => {
+const statusTextOf = (userId: number, spend: TrialSpend): string => {
+    const quotaLine = quotaLineOf(spend);
     const application = latestApplicationOf(userId);
-    if (application === null) return `${APPLY_HEADER}\n${USAGE}`;
+    if (application === null) return `${APPLY_HEADER}\n${quotaLine}\n${USAGE}`;
     return match(application.status)
         .with(
             'pending',
-            () => `你有一条待审核的准入申请（提交于 ${formatTime(application.createdAt)}），请等待机主审核。`
+            () =>
+                `你有一条待审核的准入申请（提交于 ${formatTime(application.createdAt)}），请等待机主审核。\n` +
+                quotaLine
         )
         .with(
             'rejected',
             () =>
                 `你上次的准入申请未通过。${application.comment === null ? '' : `\n机主留言：${application.comment}`}\n` +
-                `补充信息后可以重新申请。\n${USAGE}`
+                `补充信息后可以重新申请。\n${quotaLine}\n${USAGE}`
         )
         .with(
             'approved',
             () =>
-                '你当前的等级是体验用户（准入可能已被取消）。可以重新提交申请。\n' + USAGE
+                '你当前的等级是体验用户（准入可能已被取消）。可以重新提交申请。\n' + quotaLine + `\n${USAGE}`
         )
         .exhaustive();
 };
@@ -72,7 +87,9 @@ const replyWithStatus = async (ctx: Context): Promise<void> => {
     const keyboard = isPanelRunning() ? miniAppKeyboardForChat(ctx.chat, '打开准入申请') : null;
     // Only promise the Mini App entry when it is actually reachable from here
     const miniAppHint = keyboard === null ? '' : '\n也可以打开 Mini App 的「准入」页填写。';
-    const text = `${statusTextOf(ctx.from.id)}${miniAppHint}`;
+    // Only reached for a trial user (the command checked the tier first)
+    const spend = await estimateTrialSpend(ctx.from.id);
+    const text = `${statusTextOf(ctx.from.id, spend)}${miniAppHint}`;
     await sendBotNotice(ctx, text, keyboard === null ? undefined : { reply_markup: keyboard });
 };
 

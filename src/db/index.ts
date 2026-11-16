@@ -38,7 +38,7 @@ import {
     listMessageMediaForMessages,
     replaceMessageMedia,
 } from './queries/message-media-queries.js';
-import { backfillAnimationMediaKind, backfillCatalogCapabilities, backfillCatalogLabels, backfillCatalogSeedsOnly, backfillCatalogSuperseded, backfillPanelRegistry, ensureCapabilityProposalIndexes, ensureModelPriceIndexes, runSchemaMigrations } from './schema-migrations.js';
+import { backfillAnimationMediaKind, backfillCatalogCapabilities, backfillCatalogLabels, backfillCatalogSeedsOnly, backfillCatalogSuperseded, backfillGptImagePrice, backfillPanelRegistry, ensureCapabilityProposalIndexes, ensureModelPriceIndexes, ensureReplyMetricUserIndex, runSchemaMigrations } from './schema-migrations.js';
 
 // sync database (the imports above ensure every table is registered before sync)
 // Exported so callers can await schema readiness instead of racing the migration;
@@ -53,6 +53,10 @@ export const dbReady = enableWriteAheadLog()
     // Partial unique indexes for pending proposals; the DTOs created the tables above
     .then(() => ensureModelPriceIndexes())
     .then(() => ensureCapabilityProposalIndexes())
+    // The trial quota's per-user index (sync does not add it to an existing table)
+    .then(() => ensureReplyMetricUserIndex())
+    // The relay-only GPT image price row: existing databases have no seed row for it
+    .then(() => backfillGptImagePrice())
     // One-off: the first catalog watch auto-added old models; keep the seeded menu
     .then(() => backfillCatalogSeedsOnly())
     // One-off: the first catalog seed stored ids as labels; use display names

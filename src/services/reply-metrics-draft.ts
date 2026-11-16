@@ -8,9 +8,13 @@
 import { platformTypeOf } from '../ai/platform-routing.js';
 import type { AgentToolUsage, PlatformType, StreamChunk } from '../ai/types.js';
 import { createUsageSink } from '../ai/usage/usage-sink.js';
-import type { UsageSink } from '../ai/usage/usage-types.js';
+import type { RoundUsage, UsageSink } from '../ai/usage/usage-types.js';
 import type { CommandType } from '../db/botResponseDTO.js';
+import type { ImageGenerationUsage } from '../db/queries/reply-metric-rows.js';
 import type { ContextIndex } from '../reply/context-index.js';
+import type { AccessTier } from './access-tier.js';
+
+export type { ImageGenerationUsage } from '../db/queries/reply-metric-rows.js';
 
 export interface ReplyMetricsDraft {
     readonly platform: PlatformType;
@@ -44,6 +48,13 @@ export interface ReplyMetricsDraft {
     thinkingEffortSent: string | null;
     /** The degradation chain, e.g. 'xhigh->high'; null = none */
     thinkingEffortFallback: string | null;
+    /** The trigger user's tier when the attempt started; null only for a caller that named no tier */
+    readonly accessTier: AccessTier | null;
+    /**
+     * The attempt's successful generate_image calls, per image model. Written
+     * by the generate_image tool while the reply runs; the quota prices them.
+     */
+    readonly imageGenerations: ImageGenerationUsage[];
     /** Passed to the platform with the request */
     readonly usage: UsageSink;
 }
@@ -52,6 +63,8 @@ export interface ReplyMetricsDraftInput {
     readonly model: string;
     readonly commandType: CommandType;
     readonly triggerUserId: number | null;
+    /** The trigger user's tier; absent = a caller from before the tier feature */
+    readonly accessTier?: AccessTier | null;
 }
 
 export const createReplyMetricsDraft = (input: ReplyMetricsDraftInput): ReplyMetricsDraft => ({
@@ -70,6 +83,8 @@ export const createReplyMetricsDraft = (input: ReplyMetricsDraftInput): ReplyMet
     thinkingEffortRequested: null,
     thinkingEffortSent: null,
     thinkingEffortFallback: null,
+    accessTier: input.accessTier ?? null,
+    imageGenerations: [],
     usage: createUsageSink(),
 });
 
@@ -88,6 +103,40 @@ export const recordContextSize = (draft: ReplyMetricsDraft, contextIndex: Contex
 export const recordReferenceImages = (draft: ReplyMetricsDraft, imageCount: number): void => {
     draft.contextMessages = null;
     draft.contextImages = imageCount;
+};
+
+/** A token total plus one round's report; null when neither reported the field */
+const addReported = (total: number | null, next: number | null): number | null => {
+    if (next === null) return total;
+    return (total ?? 0) + next;
+};
+
+/**
+ * One successful generate_image call. A reply may draw with more than one model
+ * (banana and gpt), so the attempt keeps one entry per model; token usage is
+ * added only for the generations that reported it. `usage` is null for a
+ * call-billed model — the relay bills the call, so the count alone is priced.
+ */
+export const recordImageGeneration = (
+    draft: ReplyMetricsDraft,
+    model: string,
+    usage: RoundUsage | null
+): void => {
+    const index = draft.imageGenerations.findIndex((entry) => entry.model === model);
+    const existing = index === -1 ? undefined : draft.imageGenerations[index];
+    const next: ImageGenerationUsage = {
+        model,
+        generations: (existing?.generations ?? 0) + 1,
+        generationsWithUsage: (existing?.generationsWithUsage ?? 0) + (usage === null ? 0 : 1),
+        promptTokens: addReported(existing?.promptTokens ?? null, usage?.promptTokens ?? null),
+        cachedTokens: addReported(existing?.cachedTokens ?? null, usage?.cachedTokens ?? null),
+        cacheWriteTokens: addReported(existing?.cacheWriteTokens ?? null, usage?.cacheWriteTokens ?? null),
+        outputTokens: addReported(existing?.outputTokens ?? null, usage?.outputTokens ?? null),
+        thoughtsTokens: addReported(existing?.thoughtsTokens ?? null, usage?.thoughtsTokens ?? null),
+        imageOutputTokens: addReported(existing?.imageOutputTokens ?? null, usage?.imageOutputTokens ?? null),
+    };
+    if (index === -1) draft.imageGenerations.push(next);
+    else draft.imageGenerations.splice(index, 1, next);
 };
 
 /**

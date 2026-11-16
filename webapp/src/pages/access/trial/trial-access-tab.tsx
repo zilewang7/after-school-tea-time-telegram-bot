@@ -31,7 +31,7 @@ export const TrialAccessTab = () => {
 
     return (
         <>
-            <AccessStatusCard application={application} trialModel={me.trialModel} />
+            <AccessStatusCard application={application} trialModel={me.trialModel} spend={me.trialSpend} />
             {canApply && <AccessApplicationForm onCreated={handleCreated} />}
         </>
     );

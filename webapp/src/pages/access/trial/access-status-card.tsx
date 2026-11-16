@@ -6,12 +6,20 @@ import { accessStatusBadgeClass, accessStatusLabel } from '../access-labels';
 interface AccessStatusCardProps {
     application: AccessApplicationSelf | null;
     trialModel: string;
+    /** The trial spend cap's amounts; null for the owner and full users */
+    spend: { usedUsd: number; limitUsd: number } | null;
 }
 
+/** "体验额度：已用约 $1.23 / $3.00", with the spent-out state spelled out */
+const quotaTextOf = (spend: NonNullable<AccessStatusCardProps['spend']>): string =>
+    `体验额度：已用约 $${spend.usedUsd.toFixed(2)} / $${spend.limitUsd.toFixed(2)}` +
+    (spend.usedUsd >= spend.limitUsd ? '（已用完，生成会被拒绝）' : '');
+
 /** The applicant's current status, or what a trial user can do today */
-export const AccessStatusCard = ({ application, trialModel }: AccessStatusCardProps) => (
+export const AccessStatusCard = ({ application, trialModel, spend }: AccessStatusCardProps) => (
     <section className="section">
         <h2 className="section-title">当前状态</h2>
+        {spend !== null && <p className="hint">{quotaTextOf(spend)}</p>}
         {match(application)
             .with(null, () => (
                 <>

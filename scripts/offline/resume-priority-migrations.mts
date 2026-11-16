@@ -24,6 +24,7 @@ await setupOfflineDb();
 const { QueryTypes } = await import('@sequelize/core');
 const { sequelize } = await import('../../src/db/config.js');
 const { runSchemaMigrations } = await import('../../src/db/schema-migrations.js');
+const { backfillGptImagePrice, ensureReplyMetricUserIndex } = await import('../../src/db/schema-migrations.js');
 const { findReplyMetricsByReply, insertReplyMetric } = await import('../../src/db/queries/reply-metrics.js');
 const service = await import('../../src/services/chat-settings-service.js');
 
@@ -45,6 +46,9 @@ const REPLY_METRICS_COLUMNS = [
     'thinkingEffortRequested',
     'thinkingEffortSent',
     'thinkingEffortFallback',
+    // Added with the trial quota and image billing (2026-1116-1500)
+    'accessTier',
+    'imageGenerationUsage',
 ];
 
 // In name order, as appliedMigrations reads them
@@ -52,6 +56,7 @@ const MIGRATION_NAMES = [
     '20261112_chat_settings_gemini_priority',
     '20261112_reply_metrics_resume_priority',
     '20261114_chat_settings_rich_replies',
+    '20261116_trial_quota_metrics',
 ];
 
 // reply_metrics and chat_settings as they were before this change
@@ -122,10 +127,11 @@ const appliedMigrations = async (): Promise<string[]> => {
 const hasEvery = (columns: readonly string[], wanted: readonly string[]): boolean =>
     wanted.every((column) => columns.includes(column));
 
-/** Startup as dbReady runs it: migrations first, then a plain sync */
+/** Startup as dbReady runs it: migrations first, then a plain sync, then the post-sync index */
 const startUp = async (): Promise<void> => {
     await runSchemaMigrations();
     await sequelize.sync();
+    await ensureReplyMetricUserIndex();
 };
 
 const metricInput = (fields: Partial<ReplyMetricInput>): ReplyMetricInput => ({
@@ -262,6 +268,90 @@ const cases: { name: string; body: () => Promise<void> }[] = [
             await startUp();
             expect((await columnsOf('reply_metrics')).length === after.length, 'a restart adds no column');
             expect(json(await appliedMigrations()) === json(MIGRATION_NAMES), 'each migration is recorded once');
+
+            // The trial quota columns: the old row carries nothing, a new row keeps tier and image generations
+            expect(
+                old?.accessTier === null && old.imageGenerationUsage.length === 0,
+                `the old row charges no trial budget (got ${json(old)})`
+            );
+            const imageGenerationUsage = [
+                {
+                    model: 'gemini-nano-banana-2.1',
+                    generations: 1,
+                    generationsWithUsage: 1,
+                    promptTokens: 39,
+                    cachedTokens: null,
+                    cacheWriteTokens: null,
+                    outputTokens: 1813,
+                    thoughtsTokens: 654,
+                    imageOutputTokens: 1120,
+                },
+            ];
+            await insertReplyMetric(
+                metricInput({
+                    versionId: 3,
+                    triggerUserId: 9911,
+                    accessTier: 'trial',
+                    imageGenerationUsage,
+                })
+            );
+            const writtenTrial = (await findReplyMetricsByReply(-1007700000001, 11)).find(
+                (trialRow) => trialRow.versionId === 3
+            );
+            expect(
+                writtenTrial?.accessTier === 'trial' && json(writtenTrial.imageGenerationUsage) === json(imageGenerationUsage),
+                `a trial row written after the migration keeps its tier and image usage (got ${json(writtenTrial)})`
+            );
+            const indexRows: unknown[] = await sequelize.query(
+                "SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'reply_metrics_trigger_user'",
+                { type: QueryTypes.SELECT }
+            );
+            expect(indexRows.length === 1, 'the quota lookup index exists after startup');
+        },
+    },
+    {
+        name: 'the GPT image price backfill leaves a fresh table to the seed and inserts the row once into a populated one',
+        body: async () => {
+            await sequelize.query('DROP TABLE model_price_entries');
+            await sequelize.query(`
+                CREATE TABLE model_price_entries (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT, model TEXT NOT NULL, tier TEXT NOT NULL,
+                    inputPerM REAL NOT NULL, cachedInputPerM REAL NOT NULL, cacheWritePerM REAL DEFAULT NULL,
+                    outputPerM REAL NOT NULL, imageOutputPerM REAL DEFAULT NULL, perImageUsd REAL DEFAULT NULL,
+                    effectiveFrom TEXT NOT NULL, effectiveTo TEXT DEFAULT NULL, source TEXT NOT NULL,
+                    sourceUrl TEXT DEFAULT NULL, checkedOn TEXT NOT NULL, confidence TEXT NOT NULL,
+                    note TEXT DEFAULT NULL, createdAt TEXT NOT NULL, updatedAt TEXT NOT NULL
+                )
+            `);
+            // A fresh (empty) table: loadModelPrices seeds every row, this row included
+            await backfillGptImagePrice();
+            const empty: unknown[] = await sequelize.query('SELECT COUNT(*) AS count FROM model_price_entries', {
+                type: QueryTypes.SELECT,
+            });
+            expect(json(empty) === json([{ count: 0 }]), `nothing is inserted into an empty table (got ${json(empty)})`);
+
+            // A populated database: the manual row appears once, priced per call
+            await sequelize.query(
+                `INSERT INTO model_price_entries (model, tier, inputPerM, cachedInputPerM, outputPerM, effectiveFrom,
+                                                  source, checkedOn, confidence, createdAt, updatedAt)
+                 VALUES ('gemini-4-argon', 'standard', 2, 0.1, 10, '1970-01-01T00:00:00.000Z',
+                         'manual', '2026-11-13', 'high', :now, :now)`,
+                { replacements: { now: new Date().toISOString() } }
+            );
+            await backfillGptImagePrice();
+            await backfillGptImagePrice();
+            const rows: unknown[] = await sequelize.query(
+                `SELECT model, perImageUsd FROM model_price_entries WHERE model = 'gpt-image-2.5-dev'`,
+                { type: QueryTypes.SELECT }
+            );
+            expect(
+                json(rows) === json([{ model: 'gpt-image-2.5-dev', perImageUsd: 0.1048 }]),
+                `the call-billed picture row is inserted once (got ${json(rows)})`
+            );
+
+            // Put the real table back for the cases behind this one
+            await sequelize.query('DROP TABLE model_price_entries');
+            await sequelize.sync();
         },
     },
     {

@@ -14,12 +14,16 @@ import { sendMessage } from '../../ai/platform-factory.js';
 import {
     generateImage,
     IMAGE_MODEL_CHOICES,
+    type ImageModelChoice,
     type ImageReference,
     type SendImageRequest,
 } from '../../ai/image-generation/generate-image.js';
 import { failureLogDetail } from '../../ai/image-generation/image-generation-failure.js';
 import { sniffImageMime } from '../../ai/image-generation/image-mime.js';
 import type { ToolHandler } from '../../ai/tools/tool-types.js';
+import { createUsageSink } from '../../ai/usage/index.js';
+import type { RoundUsage, UsageSink } from '../../ai/usage/usage-types.js';
+import { CALL_BILLED_IMAGE_MODELS, GEMINI_IMAGE_MODEL, OPENAI_IMAGE_MODEL } from '../../config/models.js';
 import { fetchImageBytes } from '../../services/image-fetch-service.js';
 import type { StickerCatalogEntry } from '../../services/sticker-catalog.js';
 import {
@@ -170,7 +174,42 @@ export interface GenerateImageToolOptions {
     readonly sticker?: StickerReferenceSource;
     /** Trial turn: banana is the only model on offer (design D3) */
     readonly bananaOnly?: boolean;
+    /**
+     * Where every successful generation is reported: the image model id and
+     * its round usage (null for call-billed models, which report no tokens).
+     * Absent = generations are not priced.
+     */
+    readonly recordImageGeneration?: (model: string, usage: RoundUsage | null) => void;
 }
+
+/** The image model a call picked, as the reply metrics key it */
+const modelIdOf = (choice: ImageModelChoice): string =>
+    choice === 'gpt' ? OPENAI_IMAGE_MODEL : GEMINI_IMAGE_MODEL;
+
+/**
+ * The sink's totals in the round shape the metrics draft adds up; null when a
+ * sink was not created or the platform reported no usage at all.
+ */
+const roundUsageOf = (sink: UsageSink | undefined): RoundUsage | null => {
+    if (sink === undefined) return null;
+    const totals = sink.totals();
+    const usage: RoundUsage = {
+        promptTokens: totals.promptTokens,
+        cachedTokens: totals.cachedTokens,
+        cacheWriteTokens: totals.cacheWriteTokens,
+        outputTokens: totals.outputTokens,
+        thoughtsTokens: totals.thoughtsTokens,
+        imageOutputTokens: totals.imageOutputTokens,
+    };
+    const reported =
+        usage.promptTokens !== null ||
+        usage.cachedTokens !== null ||
+        usage.cacheWriteTokens !== null ||
+        usage.outputTokens !== null ||
+        usage.thoughtsTokens !== null ||
+        usage.imageOutputTokens !== null;
+    return reported ? usage : null;
+};
 
 const PRODUCTION_DEPENDENCIES: GenerateImageToolDependencies = {
     sendMessage,
@@ -293,6 +332,7 @@ export const createGenerateImageTool = (
     const dependencies = options.dependencies ?? PRODUCTION_DEPENDENCIES;
     const hasSticker = options.sticker !== undefined;
     const bananaOnly = options.bananaOnly === true;
+    const recordImageGeneration = options.recordImageGeneration;
 
     return {
         definition: {
@@ -349,6 +389,13 @@ export const createGenerateImageTool = (
                 );
             }
 
+            const modelId = modelIdOf(args.model);
+            // A call-billed model has no token usage to price: only its count
+            // reaches the metrics, so no sink rides its request.
+            const usageSink =
+                recordImageGeneration === undefined || CALL_BILLED_IMAGE_MODELS.has(modelId)
+                    ? undefined
+                    : createUsageSink();
             const outcome = await generateImage(
                 {
                     prompt: args.prompt,
@@ -356,7 +403,11 @@ export const createGenerateImageTool = (
                     aspectRatio: args.aspectRatio,
                     model: args.model,
                 },
-                { sendMessage: dependencies.sendMessage, signal: AbortSignal.any([signal, context.signal]) }
+                {
+                    sendMessage: dependencies.sendMessage,
+                    signal: AbortSignal.any([signal, context.signal]),
+                    ...(usageSink === undefined ? {} : { usageSink }),
+                }
             );
             // The ratio only reaches the Gemini side; logging it for gpt would lie
             const aspectNote = args.model === 'banana' ? `, aspect=${args.aspectRatio ?? 'auto'}` : '';
@@ -377,6 +428,9 @@ export const createGenerateImageTool = (
                     `${outcome.image.mimeType} ${outcome.image.data.length}B ` +
                     `(${state.generated.size}/${MAX_GENERATED_IMAGES} for this reply, not sent)`
             );
+            // After the picture is kept: a failed generation never reaches this
+            // point, so only what was actually drawn is priced.
+            recordImageGeneration?.(modelId, roundUsageOf(usageSink));
             return imageToolSuccess(drawn, args, MAX_GENERATED_IMAGES - state.generated.size, outcome.grounding);
         },
     };

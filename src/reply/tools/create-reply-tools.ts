@@ -113,6 +113,10 @@ export const createReplyTools = (
                           : {}),
                       // Trial users may draw, but only with banana (design D3)
                       ...(access === 'trial' ? { bananaOnly: true } : {}),
+                      // Drawn pictures are priced into this attempt's metrics row
+                      ...(context.recordImageGeneration === undefined
+                          ? {}
+                          : { recordImageGeneration: context.recordImageGeneration }),
                   }),
               ]
             : []),

@@ -23,16 +23,16 @@ const {
 } = await import('../../src/ai/usage/index.js');
 const { MODEL_PRICES, findModelPrice, SUBSCRIPTION_ROUTES } = await import('../../src/config/model-pricing.js');
 const { estimateCostUsd, priceUsageGroup, rollupCostByModel, totalCost } = await import(
-    '../../src/panel/stats/cost-estimate.js'
+    '../../src/services/usage-cost.js'
 );
 const { aggregateUsageByModelRoute, insertReplyMetric } = await import('../../src/db/queries/reply-metrics.js');
 const { listReplyMetricsByReply } = await import('../../src/panel/views/reply-metrics-view.js');
-const { OPENAI_IMAGE_MODEL } = await import('../../src/config/models.js');
+const { OPENAI_IMAGE_MODEL, CALL_BILLED_IMAGE_MODELS } = await import('../../src/config/models.js');
 
 type ReplyMetricInput = import('../../src/db/queries/reply-metrics.js').ReplyMetricInput;
 type RoundUsage = import('../../src/ai/usage/index.js').RoundUsage;
 type ModelPrice = import('../../src/config/model-pricing.js').ModelPrice;
-type UsageTotals = import('../../src/panel/stats/cost-estimate.js').UsageTotals;
+type UsageTotals = import('../../src/services/usage-cost.js').UsageTotals;
 
 const json = (value: unknown): string => JSON.stringify(value);
 
@@ -390,14 +390,15 @@ const cases: { name: string; body: () => Promise<void> }[] = [
         },
     },
     {
-        name: 'the price table: complete entries, the relay-only image id stays unpriced',
+        name: 'the price table: complete token entries, the call-billed image id priced per image',
         body: async () => {
             const entries = Object.entries(MODEL_PRICES);
             expect(
-                entries.length === 16,
-                `the appendix models, gemini-4-carbon and both Anthropic ids (got ${entries.length})`
+                entries.length === 17,
+                `the appendix models, gemini-4-carbon, both Anthropic ids and the image id (got ${entries.length})`
             );
             for (const [model, price] of entries) {
+                if (CALL_BILLED_IMAGE_MODELS.has(model)) continue;
                 const numbers = [price.inputPerM, price.cachedInputPerM, price.outputPerM];
                 expect(
                     numbers.every((value) => Number.isFinite(value) && value > 0) &&
@@ -407,7 +408,20 @@ const cases: { name: string; body: () => Promise<void> }[] = [
                     `${model}: positive prices, cache no dearer than input, https source, checked date`
                 );
             }
-            expect(findModelPrice(OPENAI_IMAGE_MODEL) === null, `${OPENAI_IMAGE_MODEL} has no official price`);
+            // The relay bills the call, not its tokens: zero token prices and a
+            // per-image price instead (design D5).
+            const image = findModelPrice(OPENAI_IMAGE_MODEL);
+            expect(
+                image !== null &&
+                    image.inputPerM === 0 &&
+                    image.cachedInputPerM === 0 &&
+                    image.outputPerM === 0 &&
+                    image.perImageUsd === 0.1048 &&
+                    image.sourceUrl.startsWith('https://') &&
+                    /^\d{4}-\d{2}-\d{2}$/.test(image.checkedOn),
+                `${OPENAI_IMAGE_MODEL}: call-billed, $0.1048 per image (got ${json(image)})`
+            );
+            expect(CALL_BILLED_IMAGE_MODELS.has(OPENAI_IMAGE_MODEL), 'the image id is in the call-billed set');
             expect(findModelPrice('my-own-model') === null, 'a free-form id is unpriced');
             expect(findModelPrice('toString') === null && findModelPrice('__proto__') === null, 'no prototype keys');
             expect(SUBSCRIPTION_ROUTES.has('opencode-go') && SUBSCRIPTION_ROUTES.size === 1, 'opencode-go is the subscription lane');

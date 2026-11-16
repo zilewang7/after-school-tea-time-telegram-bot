@@ -45,6 +45,8 @@ const { CHECKPOINT_REGISTRY_LIMITS } = await import('../../src/reply/resume/chec
 const { Message } = await import('../../src/db/messageDTO.js');
 const { setAccessMembershipLookup } = await import('../../src/services/access-membership.js');
 const { TRIAL_MODEL } = await import('../../src/config/trial-access.js');
+const { insertReplyMetric } = await import('../../src/db/queries/reply-metrics.js');
+const { TRIAL_QUOTA_CONTINUE_NOTICE } = await import('../../src/reply/commands/trial-refusal.js');
 
 const OWNER = { userId: OWNER_USER_ID, isOwner: true };
 /** An access group that is none of the bench's chats */
@@ -53,6 +55,57 @@ const CLAIMED_NOTICE = '正在处理';
 /** The Priority PayGo request header, as fetch saw it (lower-cased) */
 const PRIORITY_HEADER = 'x-vertex-ai-llm-shared-request-type';
 const BUSY_NOTICE = '正在处理，请稍后再点';
+
+/** One trial-tier spend row worth `costUsd` ($1.5 per 1M hydrogen input tokens) */
+const insertTrialSpendRow = async (userId: number, costUsd: number): Promise<void> => {
+    const row: import('../../src/db/queries/reply-metrics.js').ReplyMetricInput = {
+        chatId: -1007700000001,
+        userMessageId: 1,
+        firstMessageId: 2,
+        versionId: 1,
+        triggerUserId: userId,
+        accessTier: 'trial',
+        model: TRIAL_MODEL,
+        platform: 'gemini',
+        route: null,
+        commandType: 'chat',
+        isRetry: false,
+        startedAt: new Date('2026-11-15T00:00:00Z'),
+        requestStartedAt: null,
+        firstChunkAt: null,
+        finishedAt: new Date(),
+        outcome: 'ok',
+        errorKind: null,
+        errorSummary: null,
+        rounds: 1,
+        toolCalls: 0,
+        toolFailures: 0,
+        toolUsage: [],
+        promptTokens: Math.round((costUsd / 1.5) * 1_000_000),
+        cachedTokens: 0,
+        cacheWriteTokens: null,
+        outputTokens: 0,
+        thoughtsTokens: null,
+        imageOutputTokens: null,
+        contextMessages: 1,
+        contextImages: 0,
+        textChars: 1,
+        thinkingChars: 0,
+        hasImage: false,
+        imageCount: 0,
+        hasSticker: false,
+        hasFile: false,
+        roundRetries: null,
+        tierRequested: null,
+        priorityRounds: null,
+        priorityPromptTokens: null,
+        priorityCachedTokens: null,
+        priorityOutputTokens: null,
+        resumedRounds: null,
+        checkpointRounds: null,
+    };
+    await insertReplyMetric(row);
+};
 
 const kept = (reply: AskedReply): boolean => bench.entryOf(reply) !== undefined && bench.markOf(reply) !== undefined;
 
@@ -634,6 +687,37 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
                 const groupReply = await failedReply(groupChatId);
                 await expectContinues(groupReply, 'access group member', TRIAL_USER_ID);
             } finally {
+                process.env.ACCESS_TIERS = '0';
+                delete process.env.ACCESS_GROUP_IDS;
+                setAccessMembershipLookup(null);
+            }
+        }),
+    },
+    {
+        name: 'the trial spend cap: over it a continue click only toasts and keeps the checkpoint; raising it continues',
+        body: quietCase(async () => {
+            process.env.ACCESS_TIERS = '1';
+            process.env.ACCESS_GROUP_IDS = String(ROSTER_GROUP_ID);
+            setAccessMembershipLookup(async () => ({ status: 'left' }));
+            const previousLimit = process.env.TRIAL_SPEND_LIMIT_USD;
+            try {
+                // The question itself is a trial turn; it fails after round 1 so
+                // its checkpoint is kept (the cap is still the default here)
+                const reply = await bench.failedAfterRound1(
+                    { label: 'cap', thinking: ['先查一下'], calls: [webLookup('k-on')] },
+                    { userId: TRIAL_USER_ID }
+                );
+                await insertTrialSpendRow(TRIAL_USER_ID, 1);
+
+                process.env.TRIAL_SPEND_LIMIT_USD = '0.5';
+                await expectNoticeOnly(reply, TRIAL_QUOTA_CONTINUE_NOTICE, 'over the cap', TRIAL_USER_ID);
+
+                // The owner raises the cap: the same click continues the checkpoint
+                process.env.TRIAL_SPEND_LIMIT_USD = '1000';
+                await expectContinues(reply, 'cap raised', TRIAL_USER_ID);
+            } finally {
+                if (previousLimit === undefined) delete process.env.TRIAL_SPEND_LIMIT_USD;
+                else process.env.TRIAL_SPEND_LIMIT_USD = previousLimit;
                 process.env.ACCESS_TIERS = '0';
                 delete process.env.ACCESS_GROUP_IDS;
                 setAccessMembershipLookup(null);

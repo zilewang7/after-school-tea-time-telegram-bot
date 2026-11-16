@@ -1,5 +1,6 @@
 import { QueryTypes, type Transaction } from '@sequelize/core';
 import type { ModelCapabilitiesNormalization, ModelCatalogCapabilities } from '../config/model-capabilities.js';
+import { GPT_IMAGE_CALL_USD } from '../config/model-pricing.js';
 import { isJsonObject } from '../shared/json-object.js';
 import { sequelize } from './config.js';
 
@@ -306,6 +307,19 @@ const migrateRichRepliesColumn = async (transaction: Transaction): Promise<void>
 };
 
 /**
+ * The trial quota's columns of reply_metrics (design 2026-1116-1500): the
+ * trigger user's tier and the attempt's image-generation usage. All nullable
+ * (NULL/empty = nothing recorded), so old rows need no backfill and the quota
+ * only counts rows the feature wrote. A fresh database gets them from the DTO
+ * at sync time.
+ */
+const migrateReplyMetricsTrialQuotaColumns = async (transaction: Transaction): Promise<void> => {
+  if (!(await tableExists('reply_metrics', transaction))) return;
+  await ensureColumn('reply_metrics', 'accessTier', 'VARCHAR(255) DEFAULT NULL', transaction);
+  await ensureColumn('reply_metrics', 'imageGenerationUsage', 'TEXT DEFAULT NULL', transaction);
+};
+
+/**
  * The share links of the control panel (design §6.1): one row per public
  * /s/<token> page. A system share (createdBy 0, source 'system') is the bot's
  * own link fallback in groups; user shares come from the panel.
@@ -571,6 +585,64 @@ export const ensureCapabilityProposalIndexes = async (): Promise<void> => {
   );
 };
 
+/**
+ * The trial quota's lookup index. sequelize.sync() does not add an index to a
+ * table that already exists, so an existing database needs this statement; on
+ * a fresh one the DTO created the same index and this is a no-op. Runs after
+ * sequelize.sync(), idempotent.
+ */
+export const ensureReplyMetricUserIndex = async (): Promise<void> => {
+  await sequelize.query(
+    `CREATE INDEX IF NOT EXISTS reply_metrics_trigger_user
+       ON reply_metrics (triggerUserId, accessTier, startedAt)`
+  );
+};
+
+/**
+ * The relay-only GPT image id had no price row until the image-billing design
+ * (2026-1116-1500): an existing database has no seed row for it after startup
+ * (seedIfEmpty only fills a fresh one), so insert the manual per-call row here.
+ * A fresh database is left alone: seedIfEmpty() then seeds every row including
+ * this one (SEED_SPECS), so the table is never half-seeded by this backfill.
+ * Runs after sync (model_price_entries exists) and before loadModelPrices()
+ * reads the table; recorded in schema_migrations so it happens once.
+ */
+export const backfillGptImagePrice = async (): Promise<void> => {
+  const name = '20261116_gpt_image_price';
+  const applied = await sequelize.query<{ name: string }>(
+    'SELECT name FROM schema_migrations WHERE name = :name',
+    { type: QueryTypes.SELECT, replacements: { name } }
+  );
+  if (applied.length > 0) return;
+  const counts = await sequelize.query<{ count: number }>(
+    'SELECT COUNT(*) AS count FROM model_price_entries',
+    { type: QueryTypes.SELECT }
+  );
+  // seedIfEmpty() (loadModelPrices) fills a fresh table from SEED_SPECS, gpt row included
+  if ((counts[0]?.count ?? 0) === 0) return;
+  const now = new Date().toISOString();
+  await sequelize.transaction(async (transaction) => {
+    await sequelize.query(
+      `INSERT INTO model_price_entries
+         (model, tier, inputPerM, cachedInputPerM, cacheWritePerM, outputPerM,
+          imageOutputPerM, perImageUsd, effectiveFrom, effectiveTo, source,
+          sourceUrl, checkedOn, confidence, note, createdAt, updatedAt)
+       SELECT 'gpt-image-2.5-dev', 'standard', 0, 0, NULL, 0, NULL, :perImageUsd,
+              '1970-01-01T00:00:00.000Z', NULL, 'manual',
+              'https://api.ephone.ai/api/pricing', '2026-11-16', 'low',
+              'relay bills per call (CNY 0.7 on 2026-11-16); list-price estimate',
+              :now, :now
+       WHERE NOT EXISTS (SELECT 1 FROM model_price_entries WHERE model = 'gpt-image-2.5-dev')`,
+      { replacements: { perImageUsd: GPT_IMAGE_CALL_USD, now }, transaction }
+    );
+    await sequelize.query(
+      `INSERT OR IGNORE INTO schema_migrations (name, appliedAt)
+       VALUES (:name, :appliedAt)`,
+      { replacements: { name, appliedAt: now }, transaction }
+    );
+  });
+};
+
 /** The capability source a legacy catalog row's source maps to */
 const capabilitySourceOfRowSource = (source: string): string | undefined => {
   if (source === 'manual') return 'manual';
@@ -754,6 +826,7 @@ export const runSchemaMigrations = async (): Promise<void> => {
     await migrateChatSettingsGeminiPriority(transaction);
     await migrateThinkingEffortColumns(transaction);
     await migrateRichRepliesColumn(transaction);
+    await migrateReplyMetricsTrialQuotaColumns(transaction);
     await sequelize.query(
       `INSERT OR IGNORE INTO schema_migrations (name, appliedAt)
        VALUES ('20260908_custom_emoji_phase1', :appliedAt)`,
@@ -881,6 +954,12 @@ export const runSchemaMigrations = async (): Promise<void> => {
     await sequelize.query(
       `INSERT OR IGNORE INTO schema_migrations (name, appliedAt)
        VALUES ('20261114_chat_settings_rich_replies', :appliedAt)`,
+      { replacements: { appliedAt: new Date().toISOString() }, transaction }
+    );
+    // reply_metrics gained the trial-quota columns (migrateReplyMetricsTrialQuotaColumns)
+    await sequelize.query(
+      `INSERT OR IGNORE INTO schema_migrations (name, appliedAt)
+       VALUES ('20261116_trial_quota_metrics', :appliedAt)`,
       { replacements: { appliedAt: new Date().toISOString() }, transaction }
     );
   });

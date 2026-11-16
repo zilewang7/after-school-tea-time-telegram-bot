@@ -3,6 +3,11 @@
  * config/model-pricing.ts (design §6.5). Nothing here is stored: a price
  * change re-estimates history.
  *
+ * Lives in services because two callers price rows with it: the panel's
+ * statistics (which aggregates a window) and the trial quota (which sums one
+ * user's rows). Both must use the same rules, so the primitives sit below the
+ * panel layer; the reply path may import services too.
+ *
  * Each (model, route) group gets one flag:
  * - unpriced: the model has no list price; cost null ("未定价")
  * - subscription: a flat-fee route (opencode-go); cost 0
@@ -14,9 +19,14 @@
  * Rounds served at Vertex's priority tier are priced at the model's priority
  * price (design §8.4). A model without one prices them at the standard price,
  * and its group says so with `priorityAtStandardPrice`.
+ *
+ * In-reply image generations (`imageGenerationUsage`) are priced per row at the
+ * price in force when the row started: a generation with usage by its tokens,
+ * one without usage by the model's per-image price (design D4/D5).
  */
-import { findModelPrice, SUBSCRIPTION_ROUTES, type ModelPrice, type TierPrice } from '../../config/model-pricing.js';
-import type { UsageGroupRow } from '../../db/queries/reply-metrics.js';
+import { findModelPrice, findPriceAt, SUBSCRIPTION_ROUTES, type ModelPrice, type TierPrice } from '../config/model-pricing.js';
+import type { ReplyMetricRecord, UsageGroupRow } from '../db/queries/reply-metrics.js';
+import type { ImageGenerationUsage } from '../db/queries/reply-metric-rows.js';
 
 export type PricingFlag = 'priced' | 'subscription' | 'unpriced' | 'no_usage';
 /** A model across its routes: `partial` when some routes have a cost and others none */
@@ -98,8 +108,8 @@ const perImageRowsOf = (price: ModelPrice, group: UsageGroupRow): number =>
 /**
  * Cost of one (model, route) group. `price` overrides the current list price:
  * a price-segmented estimate passes the price in force when the group's rows
- * started (design §4.2). undefined = the current price (the existing callers),
- * null = the model was unpriced for those rows.
+ * started. undefined = the current price (the existing callers), null = the
+ * model was unpriced for those rows.
  */
 export const priceUsageGroup = (group: UsageGroupRow, price?: ModelPrice | null): PricedUsageGroup => {
     const effectivePrice = price === undefined ? findModelPrice(group.model) : price;
@@ -120,6 +130,136 @@ export const priceUsageGroup = (group: UsageGroupRow, price?: ModelPrice | null)
         pricing: 'priced',
         pricedReplies,
         priorityAtStandardPrice: group.priorityRounds > 0 && effectivePrice.priority === undefined,
+    };
+};
+
+/** A row has usage when both prompt and output were reported (design §6.5) */
+const hasUsage = (row: ReplyMetricRecord): boolean => row.promptTokens !== null && row.outputTokens !== null;
+
+/**
+ * One reply_metrics row as a cost group of its own, so the same pricing rules
+ * apply: the reply detail, the trial quota and the image cost all price a
+ * single attempt with this shape.
+ */
+export const replyRowUsageGroup = (row: ReplyMetricRecord): UsageGroupRow => {
+    const withUsage = hasUsage(row);
+    const tokens = (value: number | null): number => (withUsage ? value ?? 0 : 0);
+    return {
+        model: row.model,
+        route: row.route,
+        replies: 1,
+        repliesWithUsage: withUsage ? 1 : 0,
+        promptTokens: tokens(row.promptTokens),
+        cachedTokens: tokens(row.cachedTokens),
+        cacheWriteTokens: tokens(row.cacheWriteTokens),
+        outputTokens: tokens(row.outputTokens),
+        thoughtsTokens: tokens(row.thoughtsTokens),
+        imageOutputTokens: tokens(row.imageOutputTokens),
+        unsplitImageOutputTokens:
+            withUsage && row.imageOutputTokens === null && row.imageCount > 0 ? row.outputTokens ?? 0 : 0,
+        imagesWithoutUsage: withUsage ? 0 : row.imageCount,
+        imageRowsWithoutUsage: !withUsage && row.imageCount > 0 ? 1 : 0,
+        // Same rules as the SQL aggregate: rounds always, tokens only with usage
+        priorityRounds: row.priorityRounds ?? 0,
+        priorityPromptTokens: tokens(row.priorityPromptTokens),
+        priorityCachedTokens: tokens(row.priorityCachedTokens),
+        priorityOutputTokens: tokens(row.priorityOutputTokens),
+    };
+};
+
+export interface ReplyRowCost {
+    /** null when the row's model was unpriced for it, or nothing was reported */
+    readonly costUsd: number | null;
+    readonly pricing: PricingFlag;
+    /** Priority rounds priced at the standard price: the model has no priority price */
+    readonly priorityAtStandardPrice: boolean;
+}
+
+/** One row's chat-token cost at the price in force when it started */
+export const replyRowCostUsd = (row: ReplyMetricRecord): ReplyRowCost => {
+    const priced = priceUsageGroup(replyRowUsageGroup(row), findPriceAt(row.model, row.startedAt));
+    return {
+        costUsd: priced.costUsd,
+        pricing: priced.pricing,
+        priorityAtStandardPrice: priced.priorityAtStandardPrice,
+    };
+};
+
+/** One image model's generations within a row, as the group the pricing rules price */
+const imageGenerationGroupOf = (usage: ImageGenerationUsage): UsageGroupRow => {
+    const withoutUsage = Math.max(0, usage.generations - usage.generationsWithUsage);
+    // A generation that reported its output as image tokens without the IMAGE
+    // split was billed as image output: the same rule the row aggregate uses
+    const unsplitImageOutput =
+        usage.generationsWithUsage > 0 && usage.imageOutputTokens === null ? usage.outputTokens ?? 0 : 0;
+    return {
+        model: usage.model,
+        route: 'image',
+        replies: 0,
+        repliesWithUsage: usage.generationsWithUsage,
+        promptTokens: usage.promptTokens ?? 0,
+        cachedTokens: usage.cachedTokens ?? 0,
+        cacheWriteTokens: usage.cacheWriteTokens ?? 0,
+        outputTokens: usage.outputTokens ?? 0,
+        thoughtsTokens: usage.thoughtsTokens ?? 0,
+        imageOutputTokens: usage.imageOutputTokens ?? 0,
+        unsplitImageOutputTokens: unsplitImageOutput,
+        imagesWithoutUsage: withoutUsage,
+        imageRowsWithoutUsage: withoutUsage,
+        priorityRounds: 0,
+        priorityPromptTokens: 0,
+        priorityCachedTokens: 0,
+        priorityOutputTokens: 0,
+    };
+};
+
+export interface ImageGenerationEntryCost {
+    readonly model: string;
+    readonly generations: number;
+    readonly generationsWithUsage: number;
+    /** null when the model was unpriced for this row, or no generation could be priced */
+    readonly costUsd: number | null;
+    readonly pricing: PricingFlag;
+    /** Generations the price covers: those with usage, plus the per-image fallback ones */
+    readonly pricedGenerations: number;
+}
+
+/** One image-model entry of a row, priced at the price in force when the row started */
+export const imageGenerationEntryCost = (row: ReplyMetricRecord, usage: ImageGenerationUsage): ImageGenerationEntryCost => {
+    const priced = priceUsageGroup(imageGenerationGroupOf(usage), findPriceAt(usage.model, row.startedAt));
+    return {
+        model: usage.model,
+        generations: usage.generations,
+        generationsWithUsage: usage.generationsWithUsage,
+        costUsd: priced.costUsd,
+        pricing: priced.pricing,
+        pricedGenerations: priced.pricedReplies,
+    };
+};
+
+export interface ImageGenerationCost {
+    /** Sum of the priced entries; null when no generation of the row was priced */
+    readonly costUsd: number | null;
+    readonly generations: number;
+    /** Generations the priced entries cover */
+    readonly pricedGenerations: number;
+}
+
+/** The in-reply image generations of one row, priced at the price in force when it started */
+export const imageGenerationCostUsd = (row: ReplyMetricRecord): ImageGenerationCost => {
+    const costs: number[] = [];
+    let generations = 0;
+    let pricedGenerations = 0;
+    for (const usage of row.imageGenerationUsage) {
+        const entry = imageGenerationEntryCost(row, usage);
+        generations += entry.generations;
+        pricedGenerations += entry.pricedGenerations;
+        if (entry.costUsd !== null) costs.push(entry.costUsd);
+    }
+    return {
+        costUsd: costs.length === 0 ? null : sumOf(costs),
+        generations,
+        pricedGenerations,
     };
 };
 

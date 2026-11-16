@@ -82,6 +82,7 @@ import {
 import { resolveChatModel } from '../config/chat-model.js';
 import type { AgentStats, FileDelivery, StickerDelivery, WidgetDelivery } from '../ai/types.js';
 import { classifyErrorKind, summarizeErrorMessage, type ErrorKind } from '../shared/error-kind.js';
+import type { AccessTier } from './access-tier.js';
 import { createReplyMetricsDraft, type ReplyMetricsDraft } from './reply-metrics-draft.js';
 import { recordReplyMetric } from './reply-metric-record.js';
 import { pushRecentReplyError } from './recent-reply-errors.js';
@@ -270,6 +271,8 @@ export interface CreateSessionOptions {
     dbAnchorMessageId?: number;
     /** Command type for retry routing */
     commandType?: CommandType;
+    /** The trigger user's tier when the attempt starts; recorded for the trial quota */
+    accessTier?: AccessTier;
 }
 
 /**
@@ -312,6 +315,7 @@ export const createSession = async (
         model: options.model,
         commandType: options.commandType ?? 'chat',
         triggerUserId: ctx.from?.id ?? null,
+        accessTier: options.accessTier ?? null,
     });
 
     // For retry, we reuse the existing first message
@@ -1111,7 +1115,7 @@ const isMediaOnlyVersion = (version: ResponseVersion): boolean => {
 export const startRetry = async (
     ctx: Context,
     firstMessageId: number,
-    options?: { model?: string }
+    options?: { model?: string; accessTier?: AccessTier }
 ): Promise<BotMessageSession | null> => {
     if (!ctx.chat) return null;
 
@@ -1135,6 +1139,7 @@ export const startRetry = async (
             model,
             isRetry: true,
             existingFirstMessageId: firstMessageId,
+            ...(options?.accessTier === undefined ? {} : { accessTier: options.accessTier }),
         });
     }
 
@@ -1152,6 +1157,7 @@ export const startRetry = async (
             model,
             isRetry: true,
             dbAnchorMessageId: firstMessageId,
+            ...(options?.accessTier === undefined ? {} : { accessTier: options.accessTier }),
         });
     }
 

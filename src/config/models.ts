@@ -10,6 +10,13 @@ export const OPENAI_IMAGE_MODEL = "gpt-image-2.5-dev";
 export const GEMINI_IMAGE_MODEL = "gemini-nano-banana-2.1";
 
 /**
+ * Image ids the relay bills per call rather than per token: a generation is
+ * recorded as a count only (no token usage), so the cost estimate prices it by
+ * the model's perImageUsd instead of mixing token prices into a call fee.
+ */
+export const CALL_BILLED_IMAGE_MODELS: ReadonlySet<string> = new Set([OPENAI_IMAGE_MODEL]);
+
+/**
  * `name` is the menu button text and the label the catalog stores, so it uses
  * the display name the sources publish (models.dev, ephone), not the id: the
  * price watcher adds new models with that same style, and a menu mixing both

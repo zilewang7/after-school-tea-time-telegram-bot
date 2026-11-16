@@ -17,8 +17,10 @@ import type { BotResponse } from '../../db/index.js';
 import { loadContextExclusions } from '../../db/queries/context-queries.js';
 import { effectiveReplyModel, resolveAccessTier, type AccessTier } from '../../services/access-tier.js';
 import { snapshotReplySettings, type ReplySettingsSnapshot } from '../../services/chat-settings-service.js';
+import { checkTrialQuota } from '../../services/trial-quota.js';
 import { resumableMarkOf } from '../../state.js';
 import { isCallbackChatPaused, PAUSED_CALLBACK_NOTICE } from '../chat-pause.js';
+import { TRIAL_QUOTA_CONTINUE_NOTICE } from '../commands/trial-refusal.js';
 import { buildStaticPromptOptions } from '../static-prompt-options.js';
 import { buildReplyToolContext, createReplyTools } from '../tools/index.js';
 import { toolDefinitionsJsonOf } from './canonical-json.js';
@@ -118,6 +120,11 @@ export const checkContinue = async (
     // In an access group the click itself proves membership; elsewhere this asks Telegram
     const access = await resolveAccessTier(ctx.from?.id ?? null, response.chatId);
     const plan: ResumePlan = { model: effectiveReplyModel(access, settings.model), access, settings };
+    // The presser's trial spend cap (design 2026-1116-1500 §D7 #4): a used-up
+    // quota keeps the checkpoint and the buttons, so a later click can still
+    // continue once the owner has raised it
+    const trialSpend = await checkTrialQuota(access, ctx.from?.id ?? null);
+    if (trialSpend !== null && trialSpend.exceeded) return keep(TRIAL_QUOTA_CONTINUE_NOTICE);
     // Thought signatures belong to the model that wrote them
     if (plan.model !== entry.request.model) return keep(MODEL_CHANGED_NOTICE);
     // The thinking level is part of the request shape the checkpoint expects;

@@ -22,6 +22,29 @@ export interface ToolUsageEntry {
     readonly failed: number;
 }
 
+/** The trigger user's tier, as the reply recorded it; NULL on rows from before the trial quota */
+export type ReplyAccessTier = 'owner' | 'full' | 'trial';
+
+export const REPLY_ACCESS_TIERS: readonly ReplyAccessTier[] = ['owner', 'full', 'trial'];
+
+/**
+ * This attempt's generate_image calls of one image model, added up. A reply can
+ * draw with more than one model, hence one entry per model. `generations` is
+ * the number of pictures; the token fields count only the generations that
+ * reported usage and are null when none did (call-billed models report none).
+ */
+export interface ImageGenerationUsage {
+    readonly model: string;
+    readonly generations: number;
+    readonly generationsWithUsage: number;
+    readonly promptTokens: number | null;
+    readonly cachedTokens: number | null;
+    readonly cacheWriteTokens: number | null;
+    readonly outputTokens: number | null;
+    readonly thoughtsTokens: number | null;
+    readonly imageOutputTokens: number | null;
+}
+
 /** Everything one row stores; `toolUsage` is empty when no tool ran */
 export interface ReplyMetricInput {
     readonly chatId: number;
@@ -81,6 +104,13 @@ export interface ReplyMetricInput {
     readonly thinkingEffortRequested?: string | null;
     readonly thinkingEffortSent?: string | null;
     readonly thinkingEffortFallback?: string | null;
+    /**
+     * The trial-quota columns. Optional on the input for the same reason as the
+     * thinking-effort ones: a caller from before the feature stores NULL/empty,
+     * while a stored row always carries them (stated by the record below).
+     */
+    readonly accessTier?: ReplyAccessTier | null;
+    readonly imageGenerationUsage?: readonly ImageGenerationUsage[];
 }
 
 export interface ReplyMetricRecord extends ReplyMetricInput {
@@ -88,6 +118,8 @@ export interface ReplyMetricRecord extends ReplyMetricInput {
     readonly thinkingEffortRequested: string | null;
     readonly thinkingEffortSent: string | null;
     readonly thinkingEffortFallback: string | null;
+    readonly accessTier: ReplyAccessTier | null;
+    readonly imageGenerationUsage: readonly ImageGenerationUsage[];
 }
 
 const integerOrNull = (value: unknown): number | null =>
@@ -113,6 +145,45 @@ const errorKindOf = (value: unknown): ErrorKind | null => ERROR_KINDS.find((kind
 
 const requestedTierOf = (value: unknown): RequestedTier | null =>
     REQUESTED_TIERS.find((tier) => tier === value) ?? null;
+
+const accessTierOf = (value: unknown): ReplyAccessTier | null =>
+    REPLY_ACCESS_TIERS.find((tier) => tier === value) ?? null;
+
+const imageGenerationEntryOf = (value: unknown): ImageGenerationUsage | null => {
+    if (!isJsonObject(value) || typeof value.model !== 'string') return null;
+    const generations = integerOrNull(value.generations);
+    if (generations === null || generations <= 0) return null;
+    return {
+        model: value.model,
+        generations,
+        generationsWithUsage: integerOrNull(value.generationsWithUsage) ?? 0,
+        promptTokens: integerOrNull(value.promptTokens),
+        cachedTokens: integerOrNull(value.cachedTokens),
+        cacheWriteTokens: integerOrNull(value.cacheWriteTokens),
+        outputTokens: integerOrNull(value.outputTokens),
+        thoughtsTokens: integerOrNull(value.thoughtsTokens),
+        imageOutputTokens: integerOrNull(value.imageOutputTokens),
+    };
+};
+
+/** The stored JSON of the attempt's image generations; NULL when it drew nothing */
+export const serializeImageGenerationUsage = (
+    entries: readonly ImageGenerationUsage[]
+): string | null => (entries.length === 0 ? null : JSON.stringify(entries));
+
+const parseImageGenerationUsage = (value: unknown): ImageGenerationUsage[] => {
+    if (typeof value !== 'string' || value === '') return [];
+    try {
+        const parsed: unknown = JSON.parse(value);
+        if (!Array.isArray(parsed)) return [];
+        return parsed.flatMap((entry) => {
+            const generation = imageGenerationEntryOf(entry);
+            return generation === null ? [] : [generation];
+        });
+    } catch {
+        return [];
+    }
+};
 
 const toolUsageEntryOf = (value: unknown): ToolUsageEntry | null => {
     if (!isJsonObject(value) || typeof value.name !== 'string') return null;
@@ -214,5 +285,7 @@ export const parseReplyMetricRow = (row: unknown): ReplyMetricRecord | null => {
         thinkingEffortRequested: stringOrNull(row.thinkingEffortRequested),
         thinkingEffortSent: stringOrNull(row.thinkingEffortSent),
         thinkingEffortFallback: stringOrNull(row.thinkingEffortFallback),
+        accessTier: accessTierOf(row.accessTier),
+        imageGenerationUsage: parseImageGenerationUsage(row.imageGenerationUsage),
     };
 };

@@ -8,6 +8,7 @@ import { accessTiersEnabled, getAccessGroupIds, TRIAL_MODEL } from '../../config
 import { findBotResponseInChat } from '../../db/queries/context-queries.js';
 import { findChat } from '../../db/queries/panel-registry.js';
 import { getGlobalDefaultModel } from '../../services/chat-settings-service.js';
+import { estimateTrialSpend } from '../../services/trial-quota.js';
 import { latestApplicationOf, type LatestApplicationSummary } from '../../services/user-access-cache.js';
 import { countPendingApplications } from '../../services/user-access-service.js';
 import { listAccessibleChats } from '../access/chat-access.js';
@@ -57,6 +58,9 @@ export const registerMeRoute = (app: Hono<PanelEnv>): void => {
                 auth.user.isOwner ? accessGroupsOf() : Promise.resolve(null),
             ]);
         const startTarget = await buildStartTarget(target, hintChatId, auth.access, replyExists);
+        // The trial spend cap's amounts: only a trial requester has one, and the
+        // figure comes from the same estimate the reply gate uses (design D1)
+        const trialSpend = accessTier === 'trial' ? await estimateTrialSpend(auth.user.id) : null;
 
         return context.json({
             user: {
@@ -78,6 +82,11 @@ export const registerMeRoute = (app: Hono<PanelEnv>): void => {
             trialModel: TRIAL_MODEL,
             accessTieringEnabled: accessTiersEnabled(),
             accessApplication: toAccessApplicationSelf(latestApplicationOf(auth.user.id)),
+            // null for the owner and full users: their spend is not capped
+            trialSpend:
+                trialSpend === null
+                    ? null
+                    : { usedUsd: trialSpend.usedUsd, limitUsd: trialSpend.limitUsd },
             pendingAccessApplications,
         });
     });

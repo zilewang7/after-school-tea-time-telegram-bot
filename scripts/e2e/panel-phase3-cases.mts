@@ -68,6 +68,7 @@ const STATS_KEYS = [
     'costGroups',
     'errorKinds',
     'from',
+    'imageCostGroups',
     'kpis',
     'models',
     'outcomes',

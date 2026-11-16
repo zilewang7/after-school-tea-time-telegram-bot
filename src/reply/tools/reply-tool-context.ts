@@ -3,6 +3,7 @@
  */
 import type { Api } from 'grammy';
 import type { Chat } from 'grammy/types';
+import type { RoundUsage } from '../../ai/usage/usage-types.js';
 import type { ContextIndex } from '../context-index.js';
 
 export interface ToolRequester {
@@ -31,6 +32,12 @@ export interface ReplyToolContext {
     readonly signal: AbortSignal;
     /** Bot API client; sticker tools resolve the pack through it */
     readonly api: Api;
+    /**
+     * One successful generate_image call: the image model id and its round
+     * usage (null for call-billed models, which report none). The reply's
+     * metrics draft collects these; absent = nothing prices the generation.
+     */
+    readonly recordImageGeneration?: (model: string, usage: RoundUsage | null) => void;
 }
 
 /** The stored row of the trigger message, as far as tools care */
@@ -48,6 +55,7 @@ export const buildReplyToolContext = (input: {
     readonly conversationRootIds?: readonly number[];
     readonly signal: AbortSignal;
     readonly api: Api;
+    readonly recordImageGeneration?: (model: string, usage: RoundUsage | null) => void;
 }): ReplyToolContext => ({
     chatId: input.chat.id,
     chatTitle: input.chat.type === 'private' ? undefined : input.chat.title,
@@ -60,4 +68,7 @@ export const buildReplyToolContext = (input: {
     conversationRootIds: input.conversationRootIds,
     signal: input.signal,
     api: input.api,
+    ...(input.recordImageGeneration === undefined
+        ? {}
+        : { recordImageGeneration: input.recordImageGeneration }),
 });

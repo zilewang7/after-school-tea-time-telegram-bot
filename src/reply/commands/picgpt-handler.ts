@@ -15,6 +15,7 @@ import {
     handleResponseError,
 } from './../response-handler.js';
 import type { UnifiedContentPart } from '../../ai/types.js';
+import { type AccessTier } from '../../services/access-tier.js';
 import { markRequestStarted, recordReferenceImages } from '../../services/reply-metrics-draft.js';
 import { sendBotNotice } from '../../services/bot-notice-service.js';
 
@@ -69,11 +70,16 @@ export const checkPicgptCommand = async (
 };
 
 /**
- * Handle /picgpt command
+ * Handle /picgpt command. `access` is the trigger user's tier the caller
+ * already resolved; it rides into the attempt so the metrics row knows whether
+ * the spend was a trial user's. The OpenAI image model behind this command is
+ * call-billed (design D5), so the attempt carries no token usage: pricing is
+ * per image.
  */
 export const handlePicgptCommand = async (
     ctx: Context,
-    commandData: PicgptCommandData
+    commandData: PicgptCommandData,
+    access: AccessTier | null = null
 ): Promise<void> => {
     if (!ctx.message || !ctx.chat) return;
 
@@ -83,7 +89,11 @@ export const handlePicgptCommand = async (
     });
 
     // Create chat context with picgpt command type
-    const chatContext = await createChatContext(ctx, { model: OPENAI_IMAGE_MODEL, commandType: 'picgpt' });
+    const chatContext = await createChatContext(ctx, {
+        model: OPENAI_IMAGE_MODEL,
+        commandType: 'picgpt',
+        ...(access === null ? {} : { accessTier: access }),
+    });
     if (!chatContext) {
         console.error('[picgpt] Failed to create chat context');
         return;
@@ -103,13 +113,13 @@ export const handlePicgptCommand = async (
     const { metrics } = chatContext.session;
     recordReferenceImages(metrics, commandData.referenceImages.length);
 
-    // Send to OpenAI image model
+    // Send to OpenAI image model; no usageSink: this model is call-billed, so
+    // its row is priced per image and token usage would only mislead the panel
     markRequestStarted(metrics);
     const streamResult = await to(
         sendMessage(messages, {
             model: OPENAI_IMAGE_MODEL,
             signal: chatContext.session.streamController.signal,
-            usageSink: metrics.usage,
         })
     );
 

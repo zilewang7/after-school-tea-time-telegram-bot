@@ -15,6 +15,7 @@ import {
     handleResponseError,
 } from './../response-handler.js';
 import type { UnifiedContentPart } from '../../ai/types.js';
+import { type AccessTier } from '../../services/access-tier.js';
 import { markRequestStarted, recordReferenceImages } from '../../services/reply-metrics-draft.js';
 import { sendBotNotice } from '../../services/bot-notice-service.js';
 
@@ -69,11 +70,14 @@ export const checkPicbananaCommand = async (
 };
 
 /**
- * Handle /picbanana command
+ * Handle /picbanana command. `access` is the trigger user's tier the caller
+ * already resolved (the command branch gated on it); it rides into the attempt
+ * so the metrics row knows whether the spend was a trial user's.
  */
 export const handlePicbananaCommand = async (
     ctx: Context,
-    commandData: PicbananaCommandData
+    commandData: PicbananaCommandData,
+    access: AccessTier | null = null
 ): Promise<void> => {
     if (!ctx.message || !ctx.chat) return;
 
@@ -83,7 +87,11 @@ export const handlePicbananaCommand = async (
     });
 
     // Create chat context with picbanana command type
-    const chatContext = await createChatContext(ctx, { model: GEMINI_IMAGE_MODEL, commandType: 'picbanana' });
+    const chatContext = await createChatContext(ctx, {
+        model: GEMINI_IMAGE_MODEL,
+        commandType: 'picbanana',
+        ...(access === null ? {} : { accessTier: access }),
+    });
     if (!chatContext) {
         console.error('[picbanana] Failed to create chat context');
         return;

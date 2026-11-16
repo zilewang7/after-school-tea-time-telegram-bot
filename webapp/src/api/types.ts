@@ -79,6 +79,8 @@ export interface MeResponse {
     accessTier: AccessTier;
     // The model a trial user's replies are fixed to
     trialModel: string;
+    // The trial spend cap's amounts (USD); null for the owner and full users
+    trialSpend: { usedUsd: number; limitUsd: number } | null;
     // false when ACCESS_TIERS=0: the tiering feature is off and everyone keeps full access
     accessTieringEnabled: boolean;
     // The requester's latest application; null when they never applied
@@ -631,8 +633,12 @@ export interface ReplyMetric {
     thinkingEffortSent: string | null;
     // The resolver's degradation chain, e.g. 'xhigh->high'; null = none
     thinkingEffortFallback: string | null;
-    // This attempt alone, priced like the statistics (priority rounds at the priority price)
+    // This attempt alone, priced like the statistics (priority rounds at the priority price);
+    // includes this reply's in-reply image generations
     costUsd: number | null;
+    // The image part of costUsd and how many pictures it covers
+    imageCostUsd: number | null;
+    imageGenerations: number;
     pricing: PricingFlag;
     // Priority rounds priced at the standard price: the model has no priority price
     priorityAtStandardPrice: boolean;
@@ -902,6 +908,15 @@ export interface CostGroupView {
     priorityAtStandardPrice: boolean;
 }
 
+/** In-reply image generations of one image model, priced per image (design D6) */
+export interface ImageCostGroupView {
+    model: string;
+    generations: number;
+    generationsWithUsage: number;
+    costUsd: number | null;
+    pricing: PricingFlag;
+}
+
 export interface ToolStatsRow {
     name: string;
     calls: number;
@@ -1003,7 +1018,16 @@ export interface StatsResponse {
     // Most replies first
     models: ModelStatsRow[];
     costGroups: CostGroupView[];
-    cost: { costUsd: number | null; pricedReplyRatio: number | null };
+    // In-reply image generations, most generations first; empty when there are none
+    imageCostGroups: ImageCostGroupView[];
+    cost: {
+        // Chat plus in-reply images (design D6)
+        costUsd: number | null;
+        pricedReplyRatio: number | null;
+        // Image generations alone; null when the range has none
+        imageCostUsd: number | null;
+        imageGenerations: number;
+    };
     // The price table the estimate used
     pricing: PricingMeta;
     // Most calls first

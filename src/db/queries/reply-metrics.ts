@@ -9,6 +9,7 @@ import { sequelize } from '../config.js';
 import { ReplyMetric } from '../replyMetricDTO.js';
 import {
     parseReplyMetricRow,
+    serializeImageGenerationUsage,
     serializeToolUsage,
     storedDateOf,
     type ReplyMetricInput,
@@ -16,8 +17,11 @@ import {
 } from './reply-metric-rows.js';
 
 export {
+    REPLY_ACCESS_TIERS,
     REPLY_OUTCOMES,
     REQUESTED_TIERS,
+    type ImageGenerationUsage,
+    type ReplyAccessTier,
     type ReplyMetricInput,
     type ReplyMetricRecord,
     type ReplyOutcome,
@@ -71,7 +75,12 @@ export interface UsageGroupRow {
 }
 
 export const insertReplyMetric = async (input: ReplyMetricInput): Promise<void> => {
-    await ReplyMetric.create({ ...input, toolUsage: serializeToolUsage(input.toolUsage) });
+    await ReplyMetric.create({
+        ...input,
+        accessTier: input.accessTier ?? null,
+        toolUsage: serializeToolUsage(input.toolUsage),
+        imageGenerationUsage: serializeImageGenerationUsage(input.imageGenerationUsage ?? []),
+    });
 };
 
 const parseRows = (rows: readonly unknown[]): ReplyMetricRecord[] =>
@@ -114,6 +123,21 @@ export const findReplyMetricsInWindow = async (window: MetricWindow): Promise<Re
     const rows: unknown[] = await sequelize.query(
         `SELECT * FROM reply_metrics WHERE ${windowCondition(window)} ORDER BY startedAt, id`,
         { replacements: windowReplacements(window), type: QueryTypes.SELECT }
+    );
+    return parseRows(rows);
+};
+
+/**
+ * The attempts one user was charged for as a trial user, oldest first: the
+ * trial quota's data. Only rows with accessTier = 'trial' count, so nothing
+ * spent before the quota existed (or while the user was full) is in it.
+ */
+export const findTrialReplyMetricsByUser = async (userId: number): Promise<ReplyMetricRecord[]> => {
+    const rows: unknown[] = await sequelize.query(
+        `SELECT * FROM reply_metrics
+         WHERE triggerUserId = :userId AND accessTier = 'trial'
+         ORDER BY startedAt, id`,
+        { replacements: { userId }, type: QueryTypes.SELECT }
     );
     return parseRows(rows);
 };

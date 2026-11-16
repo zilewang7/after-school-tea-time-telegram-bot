@@ -31,7 +31,7 @@ import {
 } from '../services/access-tier.js';
 import { formatUserDisplayName } from '../shared/user-display-name.js';
 import { sendBotNotice } from '../services/bot-notice-service.js';
-import { TRIAL_COMMAND_REFUSAL_TEXT } from './commands/trial-refusal.js';
+import { TRIAL_COMMAND_REFUSAL_TEXT, refuseTrialQuota } from './commands/trial-refusal.js';
 import { refuseImageChatModel } from './image-model-refusal.js';
 import { triggerAccessNoteOf } from './trigger-access-note.js';
 import { buildStaticPromptOptions } from './static-prompt-options.js';
@@ -39,9 +39,11 @@ import { to } from '../shared/result.js';
 import {
     markRequestStarted,
     recordContextSize,
+    recordImageGeneration,
     recordReferenceImages,
     recordThinkingEffort,
 } from '../services/reply-metrics-draft.js';
+import { checkTrialQuota, type TrialSpend } from '../services/trial-quota.js';
 import {
     createChatContextForRetry,
     processStream,
@@ -85,11 +87,15 @@ export const handleRetryRequest = async (
         await sendBotNotice(ctx, TRIAL_COMMAND_REFUSAL_TEXT);
         return;
     }
+    // The spend cap is the presser's too (design 2026-1116-1500 §D7 #3): a
+    // trial user whose cap is used up starts no retry at all
+    const trialSpend = await checkTrialQuota(access, ctx.from?.id ?? null);
+    if (await refuseTrialQuota(ctx, trialSpend)) return;
 
     return match(commandType)
-        .with('picbanana', () => handlePicbananaRetry(ctx, botResponse))
-        .with('picgpt', () => handlePicgptRetry(ctx, botResponse))
-        .with('chat', () => handleChatRetry(ctx, botResponse, access))
+        .with('picbanana', () => handlePicbananaRetry(ctx, botResponse, access))
+        .with('picgpt', () => handlePicgptRetry(ctx, botResponse, access))
+        .with('chat', () => handleChatRetry(ctx, botResponse, access, trialSpend))
         .exhaustive();
 };
 
@@ -98,14 +104,18 @@ export const handleRetryRequest = async (
  */
 const handlePicbananaRetry = async (
     ctx: Context,
-    botResponse: Awaited<ReturnType<typeof getBotResponse>>
+    botResponse: Awaited<ReturnType<typeof getBotResponse>>,
+    access: AccessTier
 ): Promise<void> => {
     if (!botResponse || !ctx.chat) return;
 
     const chatId = ctx.chat.id;
 
-    // Start retry session
-    const session = await startRetry(ctx, botResponse.messageId, { model: GEMINI_IMAGE_MODEL });
+    // Start retry session; the attempt records the presser's tier
+    const session = await startRetry(ctx, botResponse.messageId, {
+        model: GEMINI_IMAGE_MODEL,
+        accessTier: access,
+    });
     if (!session) {
         console.error('[retry-handler] Failed to create retry session for picbanana');
         return;
@@ -187,14 +197,18 @@ const handlePicbananaRetry = async (
  */
 const handlePicgptRetry = async (
     ctx: Context,
-    botResponse: Awaited<ReturnType<typeof getBotResponse>>
+    botResponse: Awaited<ReturnType<typeof getBotResponse>>,
+    access: AccessTier
 ): Promise<void> => {
     if (!botResponse || !ctx.chat) return;
 
     const chatId = ctx.chat.id;
 
-    // Start retry session
-    const session = await startRetry(ctx, botResponse.messageId, { model: OPENAI_IMAGE_MODEL });
+    // Start retry session; the attempt records the presser's tier
+    const session = await startRetry(ctx, botResponse.messageId, {
+        model: OPENAI_IMAGE_MODEL,
+        accessTier: access,
+    });
     if (!session) {
         console.error('[retry-handler] Failed to create retry session for picgpt');
         return;
@@ -238,13 +252,13 @@ const handlePicgptRetry = async (
     const messages = buildContextFromParts(contentParts);
     recordReferenceImages(session.metrics, referenceImages.length);
 
-    // Send to OpenAI image model
+    // Send to OpenAI image model; no usageSink: call-billed model (design D5),
+    // its row is priced per image, token usage would only mislead the panel
     markRequestStarted(session.metrics);
     const [streamErr, stream] = await to(
         sendMessage(messages, {
             model: OPENAI_IMAGE_MODEL,
             signal: session.streamController.signal,
-            usageSink: session.metrics.usage,
         })
     );
     if (streamErr) {
@@ -274,7 +288,9 @@ const handlePicgptRetry = async (
 const handleChatRetry = async (
     ctx: Context,
     botResponse: Awaited<ReturnType<typeof getBotResponse>>,
-    access: AccessTier
+    access: AccessTier,
+    /** The quota check made by the caller, reused for the runtime tail */
+    trialSpend: TrialSpend | null
 ): Promise<void> => {
     if (!botResponse || !ctx.chat) return;
 
@@ -295,8 +311,8 @@ const handleChatRetry = async (
         access
     );
 
-    // Start retry session
-    const session = await startRetry(ctx, botResponse.messageId, { model });
+    // Start retry session; the attempt records the presser's tier
+    const session = await startRetry(ctx, botResponse.messageId, { model, accessTier: access });
     if (!session) {
         console.error('[retry-handler] Failed to create retry session');
         return;
@@ -321,7 +337,7 @@ const handleChatRetry = async (
         chatTitle: chatTitleOf(ctx.chat),
         chatAddendum: settings.promptAddendum,
         excludeMessageIds: [botResponse.messageId], // Exclude the bot response we're retrying
-        triggerAccess: triggerAccessNoteOf(triggerAccess),
+        triggerAccess: triggerAccessNoteOf(triggerAccess, trialSpend),
     }));
     if (ctxErr || !builtContext) {
         console.error('[retry-handler] Failed to build context:', ctxErr);
@@ -350,6 +366,9 @@ const handleChatRetry = async (
             conversationRootIds: builtContext.conversationRootIds,
             signal,
             api: ctx.api,
+            // A picture drawn inside this retried reply is billed to this attempt
+            recordImageGeneration: (imageModel, usage) =>
+                recordImageGeneration(session.metrics, imageModel, usage),
         }),
         settings.toolOverrides,
         access

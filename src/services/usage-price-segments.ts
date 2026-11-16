@@ -6,15 +6,19 @@
  * was made under, and changing a price never rewrites the past.
  *
  * The slices add up to exactly the unsegmented aggregation, so the merged
- * usage (cost-estimate.ts `mergeUsageGroupRows`) is the row the API shows.
+ * usage (usage-cost.ts `mergeUsageGroupRows`) is the row the API shows.
+ *
+ * Lives in services because both the panel statistics and the trial quota may
+ * price a window; the per-row helpers of usage-cost.ts are the equivalent for
+ * a single reply.
  */
-import { findPriceAt, priceChangeInstants } from '../../config/model-pricing.js';
+import { findPriceAt, priceChangeInstants } from '../config/model-pricing.js';
 import {
     aggregateUsageByModelRoute,
     type MetricWindow,
     type UsageGroupRow,
-} from '../../db/queries/reply-metrics.js';
-import { priceUsageGroup, type PricedUsageGroup } from './cost-estimate.js';
+} from '../db/queries/reply-metrics.js';
+import { priceUsageGroup, type PricedUsageGroup } from './usage-cost.js';
 
 /** One price segment of the window: `[start, until)` */
 export interface PriceSegment {

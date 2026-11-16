@@ -97,7 +97,7 @@ const { getLastCleanupRun } = await import('../../src/services/cleanup-status.js
 const { createUsageSink } = await import('../../src/ai/usage/index.js');
 const { classifyErrorKind, summarizeErrorMessage } = await import('../../src/shared/error-kind.js');
 const { AppError } = await import('../../src/shared/errors.js');
-const { aggregateUsageByModelRoute, findReplyMetricsByReply, findReplyMetricsInWindow, insertReplyMetric } = await import(
+const { aggregateUsageByModelRoute, findReplyMetricsByReply, findReplyMetricsInWindow, findTrialReplyMetricsByUser, insertReplyMetric } = await import(
     '../../src/db/queries/reply-metrics.js'
 );
 const { listReplyMetricsByReply } = await import('../../src/panel/views/reply-metrics-view.js');
@@ -231,6 +231,24 @@ const NO_THINKING_COLUMNS = {
     thinkingEffortRequested: null,
     thinkingEffortSent: null,
     thinkingEffortFallback: null,
+};
+
+/** The trial-quota columns: the trigger user's tier and the attempt's image generations */
+const trialQuotaColumnsOf = (
+    row:
+        | {
+              readonly accessTier: string | null;
+              readonly imageGenerationUsage: readonly unknown[];
+          }
+        | undefined
+) => ({
+    accessTier: row?.accessTier ?? null,
+    imageGenerationUsage: row?.imageGenerationUsage ?? [],
+});
+
+const NO_TRIAL_QUOTA_COLUMNS = {
+    accessTier: null,
+    imageGenerationUsage: [],
 };
 
 /** A stored row with every column given; tokens of one round with usage */
@@ -777,6 +795,90 @@ const cases: { name: string; body: () => Promise<void> }[] = [
         },
     },
     {
+        name: 'the trial quota columns: the tier and the per-model image generations round-trip, and the query keeps only trial rows',
+        body: async () => {
+            const chatId = -1005100000022;
+            const quotaUserId = 9911;
+            // Two banana pictures and one call-billed gpt picture, as the tool records them
+            const imageGenerations = [
+                {
+                    model: 'gemini-nano-banana-2.1',
+                    generations: 2,
+                    generationsWithUsage: 2,
+                    promptTokens: 78,
+                    cachedTokens: 0,
+                    cacheWriteTokens: null,
+                    outputTokens: 2240,
+                    thoughtsTokens: 1308,
+                    imageOutputTokens: 2240,
+                },
+                {
+                    model: 'gpt-image-2.5-dev',
+                    generations: 1,
+                    generationsWithUsage: 0,
+                    promptTokens: null,
+                    cachedTokens: null,
+                    cacheWriteTokens: null,
+                    outputTokens: null,
+                    thoughtsTokens: null,
+                    imageOutputTokens: null,
+                },
+            ];
+            await insertReplyMetric(
+                storedRow(chatId, 9201, {
+                    triggerUserId: quotaUserId,
+                    accessTier: 'trial',
+                    startedAt: new Date(Date.now() - 60_000),
+                    imageGenerationUsage: imageGenerations,
+                })
+            );
+            const [row] = await findReplyMetricsByReply(chatId, 9201);
+            expect(
+                json(trialQuotaColumnsOf(row)) === json({ accessTier: 'trial', imageGenerationUsage: imageGenerations }),
+                `the row keeps the tier and every model's generations (got ${json(trialQuotaColumnsOf(row))})`
+            );
+
+            // A row from before the quota (and a caller that named no tier) stays NULL/empty
+            await insertReplyMetric(storedRow(chatId, 9203, { triggerUserId: quotaUserId }));
+            const [legacy] = await findReplyMetricsByReply(chatId, 9203);
+            expect(
+                json(trialQuotaColumnsOf(legacy)) === json(NO_TRIAL_QUOTA_COLUMNS),
+                `a row from before the quota carries NULL and no generations (got ${json(trialQuotaColumnsOf(legacy))})`
+            );
+
+            // The quota query: one user's trial rows only, oldest first
+            await insertReplyMetric(
+                storedRow(chatId, 9205, {
+                    triggerUserId: quotaUserId,
+                    accessTier: 'trial',
+                    startedAt: new Date(Date.now() - 120_000),
+                })
+            );
+            await insertReplyMetric(
+                storedRow(chatId, 9207, { triggerUserId: quotaUserId, accessTier: 'full' })
+            );
+            await insertReplyMetric(
+                storedRow(chatId, 9209, { triggerUserId: 9912, accessTier: 'trial' })
+            );
+            const trialRows = await findTrialReplyMetricsByUser(quotaUserId);
+            expect(
+                json(trialRows.map((trialRow) => trialRow.firstMessageId)) === json([9205, 9201]),
+                `only this user's trial rows, oldest first (got ${json(trialRows.map((trialRow) => trialRow.firstMessageId))})`
+            );
+
+            // A malformed stored JSON reads as "drew nothing" instead of failing the row
+            await insertReplyMetric(storedRow(chatId, 9211, { triggerUserId: quotaUserId, accessTier: 'trial' }));
+            await sequelize.query(
+                `UPDATE reply_metrics SET imageGenerationUsage = 'not-json' WHERE firstMessageId = 9211`
+            );
+            const [malformed] = await findReplyMetricsByReply(chatId, 9211);
+            expect(
+                malformed !== undefined && malformed.imageGenerationUsage.length === 0,
+                'malformed image generation JSON reads as empty (got ' + json(malformed?.imageGenerationUsage) + ')'
+            );
+        },
+    },
+    {
         name: 'the usage aggregate sums the priority part: rounds over every row, tokens over rows with usage',
         body: async () => {
             const chatId = -1005100000018;
@@ -1021,7 +1123,7 @@ const cases: { name: string; body: () => Promise<void> }[] = [
         },
     },
     {
-        name: 'the real /picgpt handler: reference images as the context, the images API usage as the round',
+        name: 'the real /picgpt handler: reference images as the context, a call-billed picture and no token usage',
         body: async () => {
             const chatId = -1005100000011;
             const ctx = contextOf(
@@ -1046,8 +1148,12 @@ const cases: { name: string; body: () => Promise<void> }[] = [
                 `an image command row (got ${json(row)})`
             );
             expect(
-                row?.rounds === 1 && row.promptTokens === 31 && row.outputTokens === 1056 && row.imageOutputTokens === 1056,
-                `the images API usage, all output as image output (got ${json(row)})`
+                row?.rounds === 0 &&
+                    row.promptTokens === null &&
+                    row.outputTokens === null &&
+                    row.imageOutputTokens === null &&
+                    row.imageGenerationUsage.length === 0,
+                `the relay bills the call, so only the picture is recorded (got ${json(row)})`
             );
         },
     },

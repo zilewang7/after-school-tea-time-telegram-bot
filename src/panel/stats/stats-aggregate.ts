@@ -16,7 +16,7 @@ import {
     type StatsKpis,
     type ToolStatsRow,
 } from '../views/stats-view.js';
-import type { CostTotals, ModelCostRollup } from './cost-estimate.js';
+import type { CostTotals, ModelCostRollup } from '../../services/usage-cost.js';
 import {
     durationMsOf,
     firstChunkMsOf,

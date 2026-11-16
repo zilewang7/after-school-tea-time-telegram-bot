@@ -1,5 +1,10 @@
 import { useMemo } from 'react';
-import type { OutcomeCounts, PricingMeta, StatsKpis as StatsKpisData } from '../../api';
+import type {
+    OutcomeCounts,
+    PricingMeta,
+    StatsKpis as StatsKpisData,
+    StatsResponse,
+} from '../../api';
 import { formatCount, formatMs, formatPercent, formatPriceTableVersion, formatUsd } from '../../format-metrics';
 
 interface KpiCard {
@@ -20,10 +25,20 @@ const outcomeSummaryOf = (outcomes: OutcomeCounts): string =>
 
 interface StatsKpisProps {
     kpis: StatsKpisData;
-    cost: { costUsd: number | null; pricedReplyRatio: number | null };
+    /** `costUsd` is chat plus in-reply images; the image part gets its own line */
+    cost: StatsResponse['cost'];
     outcomes: OutcomeCounts;
     pricing: PricingMeta;
 }
+
+/** The spend lines of the cost card: chat+images total, and the image part when there is one */
+const costDetailOf = (cost: StatsKpisProps['cost'], pricing: PricingMeta): string =>
+    [
+        `已定价 ${formatPercent(cost.pricedReplyRatio)}`,
+        ...(cost.imageGenerations > 0 ? [`含生图 ${formatUsd(cost.imageCostUsd)}`] : []),
+        '按官方标价估算',
+        `价格表 ${formatPriceTableVersion(pricing.version)}`,
+    ].join(' · ');
 
 /** The 2×2 number cards on top of the statistics (design §7) */
 export const StatsKpis = ({ kpis, cost, outcomes, pricing }: StatsKpisProps) => {
@@ -51,7 +66,7 @@ export const StatsKpis = ({ kpis, cost, outcomes, pricing }: StatsKpisProps) => 
                 key: 'cost',
                 label: '估算费用',
                 value: formatUsd(cost.costUsd),
-                detail: `已定价 ${formatPercent(cost.pricedReplyRatio)} · 按官方标价估算 · 价格表 ${formatPriceTableVersion(pricing.version)}`,
+                detail: costDetailOf(cost, pricing),
             },
         ],
         [kpis, cost, outcomes, pricing]

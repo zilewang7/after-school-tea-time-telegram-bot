@@ -91,6 +91,12 @@ export class ReplyMetric extends Model<
   declare thinkingEffortSent: string | null;
   // The degradation chain, e.g. 'xhigh->high'; NULL = none
   declare thinkingEffortFallback: string | null;
+  // The trigger user's tier when the attempt started: owner | full | trial.
+  // NULL on rows from before the trial quota; only 'trial' rows count against it
+  declare accessTier: string | null;
+  // JSON [{ model, generations, generationsWithUsage, promptTokens, ... }] of
+  // this attempt's successful generate_image calls; NULL when it drew nothing
+  declare imageGenerationUsage: string | null;
 }
 
 // Fresh option objects per column: Sequelize normalizes attribute definitions in place
@@ -155,6 +161,9 @@ ReplyMetric.init({
   thinkingEffortRequested: { type: DataTypes.TEXT, allowNull: true, defaultValue: null },
   thinkingEffortSent: { type: DataTypes.TEXT, allowNull: true, defaultValue: null },
   thinkingEffortFallback: { type: DataTypes.TEXT, allowNull: true, defaultValue: null },
+  // Added with the trial quota; NULL on rows from before it (they never charge the budget)
+  accessTier: { type: DataTypes.STRING, allowNull: true, defaultValue: null },
+  imageGenerationUsage: { type: DataTypes.TEXT, allowNull: true, defaultValue: null },
 }, {
   sequelize,
   tableName: 'reply_metrics',
@@ -164,5 +173,7 @@ ReplyMetric.init({
     { name: 'reply_metrics_time', fields: ['startedAt'] },
     // Reply detail: every attempt of one reply
     { name: 'reply_metrics_chat_first', fields: ['chatId', 'firstMessageId'] },
+    // The trial quota: one user's charged attempts, oldest first
+    { name: 'reply_metrics_trigger_user', fields: ['triggerUserId', 'accessTier', 'startedAt'] },
   ],
 });

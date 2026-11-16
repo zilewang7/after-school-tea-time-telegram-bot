@@ -37,6 +37,21 @@ export const ACCESS_REVIEW_COMMENT_MAX_CODE_POINTS = 500;
 /** Feature switch: ACCESS_TIERS=0 disables tiering (rollback without a code revert) */
 export const accessTiersEnabled = (): boolean => process.env.ACCESS_TIERS !== '0';
 
+/** The default cumulative budget of one trial user, in USD */
+const DEFAULT_TRIAL_SPEND_LIMIT_USD = 3;
+
+/**
+ * What one trial user may cost in total, in USD. An invalid or missing value
+ * falls back to the default: a 0/negative limit would block every trial user at
+ * once, so it is not a way to turn the quota off (ACCESS_TIERS=0 is).
+ */
+export const trialSpendLimitUsd = (): number => {
+    const raw = process.env.TRIAL_SPEND_LIMIT_USD;
+    if (raw === undefined || raw.trim() === '') return DEFAULT_TRIAL_SPEND_LIMIT_USD;
+    const parsed = Number(raw);
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_TRIAL_SPEND_LIMIT_USD;
+};
+
 /** Only group ids (negative) can be access groups; a positive entry would be a private chat */
 const groupIdsOf = (raw: string | undefined): number[] => parseChatIdList(raw).filter((id) => id < 0);
 

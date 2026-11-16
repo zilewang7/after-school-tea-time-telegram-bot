@@ -17,8 +17,9 @@
  * Not in the estimate (the page says so): the relay's group discount on
  * GPT / Claude, Vertex credits and promotional rebates, DeepSeek off-peak
  * (peak price below, so the estimate runs high), Gemini search grounding and
- * xAI server-side tool fees, long-context tiers, and every cost of /picgpt
- * (gpt-image-2.5-dev is a relay-only id without an official price).
+ * xAI server-side tool fees, long-context tiers, and the GPU cost of /pic and
+ * /vid (no model list price). /picgpt's relay-only image id is priced manually
+ * per call (GPT_IMAGE_CALL_USD).
  */
 
 /** The three text prices of one service tier, USD per 1M tokens */
@@ -180,7 +181,26 @@ const seedEntriesFor = (spec: SeedSpec): readonly PriceEntry[] => {
  * USD per 1M tokens, with the promotional windows the Vertex page had on
  * 2026-11-13.
  */
+/**
+ * ephone lists the relay-only GPT image id per call: CNY 0.7 on 2026-11-16,
+ * converted at 6.678399 CNY/USD → $0.1048. Like the rest of the estimate this
+ * is the list price (group discounts are not modelled), so it runs high.
+ */
+export const GPT_IMAGE_CALL_USD = 0.1048;
+
 export const SEED_SPECS: readonly SeedSpec[] = [
+    // Relay-only id that ephone sells per call (CNY 0.7 on 2026-11-16 at
+    // 6.678399 CNY/USD). Token prices are 0 because the relay bills the call,
+    // not its tokens; the estimate uses perImageUsd for every image row.
+    {
+        model: 'gpt-image-2.5-dev',
+        inputPerM: 0,
+        cachedInputPerM: 0,
+        outputPerM: 0,
+        perImageUsd: GPT_IMAGE_CALL_USD,
+        sourceUrl: 'https://api.ephone.ai/api/pricing',
+        checkedOn: '2026-11-16',
+    },
     // >272K input: the whole request at 0.20 / 0.02 / 0.75 (not modelled)
     { model: 'gpt-6-luna', inputPerM: 0.1, cachedInputPerM: 0.01, outputPerM: 0.5, sourceUrl: OPENAI_PRICING, checkedOn: '2026-11-07' },
     // >272K: 4 / 0.40 / 15

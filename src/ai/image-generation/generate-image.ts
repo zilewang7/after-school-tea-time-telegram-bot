@@ -26,6 +26,7 @@ import type {
     UnifiedContentPart,
     UnifiedMessage,
 } from '../types.js';
+import type { UsageSink } from '../usage/usage-types.js';
 import { drainImageStream, type GeneratedImage } from './drain-image-stream.js';
 import {
     classifyGenerationError,
@@ -79,6 +80,11 @@ export interface ImageGenerationOptions {
     readonly signal: AbortSignal;
     /** Defaults to IMAGE_GENERATION_TIMEOUT_MS */
     readonly timeoutMs?: number;
+    /**
+     * Rides the platform config so the image model's round usage reaches the
+     * reply metrics; absent = nobody prices this generation.
+     */
+    readonly usageSink?: UsageSink;
 }
 
 export type ImageGenerationOutcome =
@@ -121,7 +127,8 @@ const requestConfig = (
     choice: ImageModelChoice,
     request: ImageGenerationRequest,
     signal: AbortSignal,
-    timeoutMs: number
+    timeoutMs: number,
+    usageSink: UsageSink | undefined
 ): PlatformConfig =>
     choice === 'gpt'
         ? {
@@ -130,6 +137,7 @@ const requestConfig = (
               // Its image path retries inside the platform; nothing to add here
               maxRetries: 1,
               timeout: timeoutMs,
+              ...(usageSink === undefined ? {} : { usageSink }),
           }
         : {
               model: GEMINI_IMAGE_MODEL,
@@ -138,6 +146,7 @@ const requestConfig = (
               // The platform's per-attempt timeout must not undercut the deadline
               timeout: timeoutMs,
               imageOutput: imageOutputFor(request),
+              ...(usageSink === undefined ? {} : { usageSink }),
           };
 
 export const generateImage = async (
@@ -152,7 +161,7 @@ export const generateImage = async (
     try {
         const stream = await options.sendMessage(
             buildRequestMessages(request),
-            requestConfig(choice, request, AbortSignal.any([options.signal, deadline]), timeoutMs)
+            requestConfig(choice, request, AbortSignal.any([options.signal, deadline]), timeoutMs, options.usageSink)
         );
         const drained = await drainImageStream(stream);
 

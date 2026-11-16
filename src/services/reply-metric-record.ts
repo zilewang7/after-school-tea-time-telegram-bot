@@ -168,6 +168,8 @@ export const buildReplyMetricInput = (source: ReplyMetricSource, attempt: Finali
         thinkingEffortRequested: metrics.thinkingEffortRequested,
         thinkingEffortSent: metrics.thinkingEffortSent,
         thinkingEffortFallback: metrics.thinkingEffortFallback,
+        accessTier: metrics.accessTier,
+        imageGenerationUsage: metrics.imageGenerations,
     };
 };
 

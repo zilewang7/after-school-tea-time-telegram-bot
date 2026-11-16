@@ -19,7 +19,11 @@ import { recallAction } from '../../reply/commands/generation-actions.js';
 import { runGeneration } from '../../reply/commands/generation-runner.js';
 import { isCallbackChatPaused, PAUSED_CALLBACK_NOTICE } from '../../reply/chat-pause.js';
 import { resolveAccessTier } from '../../services/access-tier.js';
-import { TRIAL_CALLBACK_REFUSAL_TEXT } from '../../reply/commands/trial-refusal.js';
+import { checkTrialQuota } from '../../services/trial-quota.js';
+import {
+    TRIAL_CALLBACK_REFUSAL_TEXT,
+    TRIAL_QUOTA_CALLBACK_TEXT,
+} from '../../reply/commands/trial-refusal.js';
 
 const EXPIRED = '这个任务已经过期了（bot 重启过），请重新发一次命令';
 
@@ -102,11 +106,21 @@ export const registerGenerationCallbacks = (bot: Bot): void => {
             return;
         }
 
-        // A reroll/retry/rewrite starts a new generation: a trial user may not
-        // run the comfy commands in the first place (design D3)
-        if (generatesAgain(callback.action) && (await resolveAccessTier(ctx.from?.id ?? null, ctx.chat?.id ?? null)) === 'trial') {
-            await ctx.answerCallbackQuery({ text: TRIAL_CALLBACK_REFUSAL_TEXT });
-            return;
+        // A reroll/retry/rewrite starts a new generation: a used-up trial spend
+        // cap blocks it, and a trial user may not run the comfy commands at all
+        // (design D3 / 2026-1116-1500 §D7 #5). Cancel costs nothing: of a
+        // trial presser it is answered as usual below.
+        if (generatesAgain(callback.action)) {
+            const access = await resolveAccessTier(ctx.from?.id ?? null, ctx.chat?.id ?? null);
+            const trialSpend = await checkTrialQuota(access, ctx.from?.id ?? null);
+            if (trialSpend !== null && trialSpend.exceeded) {
+                await ctx.answerCallbackQuery({ text: TRIAL_QUOTA_CALLBACK_TEXT });
+                return;
+            }
+            if (access === 'trial') {
+                await ctx.answerCallbackQuery({ text: TRIAL_CALLBACK_REFUSAL_TEXT });
+                return;
+            }
         }
 
         if (generatesAgain(callback.action) && isCallbackChatPaused(ctx)) {

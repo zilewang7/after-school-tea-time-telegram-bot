@@ -19,6 +19,7 @@ import { startRetry } from '../../services/index.js';
 import {
     markRequestStarted,
     recordContextSize,
+    recordImageGeneration,
     recordResumedRounds,
     recordThinkingEffort,
 } from '../../services/reply-metrics-draft.js';
@@ -101,6 +102,9 @@ const continueFromCheckpoint = async (
             conversationRootIds: entry.context.conversationRootIds,
             signal,
             api: ctx.api,
+            // A picture drawn after the resume is billed to this new attempt
+            recordImageGeneration: (imageModel, usage) =>
+                recordImageGeneration(session.metrics, imageModel, usage),
         }),
         plan.settings.toolOverrides,
         plan.access,
@@ -158,7 +162,9 @@ const startResumedSession = async (
     plan: ResumePlan,
     registry: CheckpointRegistry
 ): Promise<BotMessageSession | null> => {
-    const [startErr, session] = await to(startRetry(ctx, entry.firstMessageId, { model: plan.model }));
+    const [startErr, session] = await to(
+        startRetry(ctx, entry.firstMessageId, { model: plan.model, accessTier: plan.access })
+    );
     if (startErr || !session) {
         console.error('[resume] Failed to start the resumed version; the checkpoint is kept:', startErr);
         registry.putBack(entry);

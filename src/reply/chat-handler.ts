@@ -49,13 +49,19 @@ import { isChatCommandText } from './commands/chat-command-parser.js';
 import { chatTitleOf } from '../telegram/chat-title.js';
 import { snapshotReplySettings } from '../services/chat-settings-service.js';
 import { effectiveReplyModel, resolveAccessTier, resolveTriggerAccess } from '../services/access-tier.js';
+import { checkTrialQuota } from '../services/trial-quota.js';
 import { formatUserDisplayName } from '../shared/user-display-name.js';
 import { buildStaticPromptOptions } from './static-prompt-options.js';
-import { refuseTrialGeneration } from './commands/trial-refusal.js';
+import { refuseTrialGeneration, refuseTrialQuota } from './commands/trial-refusal.js';
 import { refuseImageChatModel } from './image-model-refusal.js';
 import { triggerAccessNoteOf } from './trigger-access-note.js';
 import { stopIfChatPaused } from './chat-pause.js';
-import { markRequestStarted, recordContextSize, recordThinkingEffort } from '../services/reply-metrics-draft.js';
+import {
+    markRequestStarted,
+    recordContextSize,
+    recordImageGeneration,
+    recordThinkingEffort,
+} from '../services/reply-metrics-draft.js';
 import { checkpointSinkFor } from './resume/keep-checkpoint.js';
 import { captureResumeFacts } from './resume/resume-facts.js';
 import { priorityRequestOf } from './priority-request.js';
@@ -289,6 +295,12 @@ export const handleReply = async (
     );
     const access = triggerAccess.tier;
     const model = effectiveReplyModel(access, settings.model);
+    // The trial spend cap, decided before the media wait, the typing indicator
+    // and the placeholder: a used-up quota costs the user one notice and
+    // nothing else (design 2026-1116-1500 §D7 #1). The same value fills the
+    // runtime tail of a reply that is allowed to start.
+    const trialSpend = await checkTrialQuota(access, ctx.from?.id ?? null);
+    if (await refuseTrialQuota(ctx, trialSpend)) return;
     // Before the media wait and the placeholder: nothing about this reply starts
     if (await refuseImageChatModel(ctx, model)) return;
     const capabilities = getModelCapabilities(model);
@@ -306,7 +318,11 @@ export const handleReply = async (
     );
 
     // Create chat context (includes processing message and typing indicator)
-    const chatContext = await createChatContext(ctx, { model, richReplies: settings.richReplies });
+    const chatContext = await createChatContext(ctx, {
+        model,
+        richReplies: settings.richReplies,
+        accessTier: access,
+    });
     if (!chatContext) {
         console.error('[chat-handler] Failed to create chat context');
         return;
@@ -331,7 +347,7 @@ export const handleReply = async (
         model,
         chatTitle: chatTitleOf(ctx.chat),
         chatAddendum: settings.promptAddendum,
-        triggerAccess: triggerAccessNoteOf(triggerAccess),
+        triggerAccess: triggerAccessNoteOf(triggerAccess, trialSpend),
     }));
     if (isErr(ctxResult)) {
         await handleResponseError(chatContext, ctxResult[0]);
@@ -358,6 +374,9 @@ export const handleReply = async (
             conversationRootIds: built.conversationRootIds,
             signal,
             api: ctx.api,
+            // A picture drawn inside this reply is billed to the same attempt
+            recordImageGeneration: (imageModel, usage) =>
+                recordImageGeneration(chatContext.session.metrics, imageModel, usage),
         }),
         settings.toolOverrides,
         access
@@ -472,13 +491,14 @@ export const registerChatHandler = (bot: Bot): void => {
                     isVidCommandText(text);
 
                 if (isGenerationCommand) {
-                    // A trial user may only draw with banana; refuse before the
-                    // media wait (the paid commands would never run anyway)
+                    // The trigger user's tier decides both the trial spend cap
+                    // and the denied commands; both stop before the media wait
+                    const access = await resolveAccessTier(ctx.from?.id ?? null, ctx.chat?.id ?? null);
+                    // The cap first: a used-up quota is the trial user's current
+                    // situation, and it also stops the commands they may not run
+                    if (await refuseTrialQuota(ctx, await checkTrialQuota(access, ctx.from?.id ?? null))) return;
                     const generationCommand = generationCommandName(text);
-                    if (generationCommand !== null) {
-                        const access = await resolveAccessTier(ctx.from?.id ?? null, ctx.chat?.id ?? null);
-                        if (await refuseTrialGeneration(ctx, access, generationCommand)) return;
-                    }
+                    if (generationCommand !== null && (await refuseTrialGeneration(ctx, access, generationCommand))) return;
                     // These read reference images during the check, so wait for
                     // the current + reply target media first (with feedback).
                     await awaitMediaWithFeedback(ctx, collectImmediateMediaIds(ctx));
@@ -495,12 +515,12 @@ export const registerChatHandler = (bot: Bot): void => {
 
                     const [, picbananaData] = await checkPicbananaCommand(ctx);
                     if (picbananaData) {
-                        await handlePicbananaCommand(ctx, picbananaData);
+                        await handlePicbananaCommand(ctx, picbananaData, access);
                         return;
                     }
                     const [, picgptData] = await checkPicgptCommand(ctx);
                     if (picgptData) {
-                        await handlePicgptCommand(ctx, picgptData);
+                        await handlePicgptCommand(ctx, picgptData, access);
                         return;
                     }
                     return;

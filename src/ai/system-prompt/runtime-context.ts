@@ -67,10 +67,25 @@ export interface TriggerAccessNote {
     /** pending / rejected / approved; null = no application yet */
     readonly applicationStatus: 'pending' | 'approved' | 'rejected' | null;
     readonly applicationComment: string | null;
+    /**
+     * The trial spend cap's amounts (USD), from the same quota check the gate
+     * used; absent when the quota feature is off. Display only: the enforcement
+     * is the gate's.
+     */
+    readonly usedUsd?: number | null;
+    readonly limitUsd?: number | null;
 }
 
 /** One line's worth of text: newlines would forge extra prompt lines */
 const oneLine = (text: string): string => text.replace(/\s+/g, ' ').trim();
+
+/** The spend-cap part of the trigger line; empty when the quota is not reported */
+const triggerSpendText = (trigger: TriggerAccessNote): string => {
+    const used = trigger.usedUsd;
+    const limit = trigger.limitUsd;
+    if (typeof used !== 'number' || typeof limit !== 'number') return '';
+    return `，体验额度：已用约 $${used.toFixed(2)} / $${limit.toFixed(2)}`;
+};
 
 const triggerAccessLine = (trigger: TriggerAccessNote): string => {
     const who = oneLine(trigger.name ?? (trigger.userId === null ? '未知用户' : `用户 ${trigger.userId}`));
@@ -87,7 +102,7 @@ const triggerAccessLine = (trigger: TriggerAccessNote): string => {
               : trigger.applicationStatus === 'rejected'
                 ? `已拒绝${comment}`
                 : '已通过（准入已被取消）';
-    return `- 本次回复的触发用户：${who}（${id}，体验用户；准入申请：${application}）`;
+    return `- 本次回复的触发用户：${who}（${id}，体验用户；准入申请：${application}）${triggerSpendText(trigger)}`;
 };
 
 /**

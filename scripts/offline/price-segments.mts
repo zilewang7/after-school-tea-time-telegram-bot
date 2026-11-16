@@ -31,8 +31,8 @@ const { findModelPrice, findPriceAt, priceChangeInstants, priceTableVersion } = 
 );
 const { insertReplyMetric } = await import('../../src/db/queries/reply-metrics.js');
 const { listReplyMetricsByReply } = await import('../../src/panel/views/reply-metrics-view.js');
-const { mergeUsageGroupRows, priceUsageGroup } = await import('../../src/panel/stats/cost-estimate.js');
-const { priceSegmentsOf } = await import('../../src/panel/stats/price-segments.js');
+const { mergeUsageGroupRows, priceUsageGroup } = await import('../../src/services/usage-cost.js');
+const { priceSegmentsOf } = await import('../../src/services/usage-price-segments.js');
 const { PriceChangeProposal } = await import('../../src/db/priceChangeProposalDTO.js');
 
 type ReplyMetricInput = import('../../src/db/queries/reply-metrics.js').ReplyMetricInput;

@@ -73,7 +73,9 @@ export const ReplyMetricsPanel = ({ metrics }: ReplyMetricsPanelProps) => {
             },
             {
                 label: '成本',
-                value: `${formatUsd(metrics.costUsd)}（${pricingNoteOf(metrics.pricing, metrics.priorityAtStandardPrice)}）`,
+                value:
+                    `${formatUsd(metrics.costUsd)}（${pricingNoteOf(metrics.pricing, metrics.priorityAtStandardPrice)}）` +
+                    (metrics.imageGenerations > 0 ? `，含生图 ${formatUsd(metrics.imageCostUsd)}` : ''),
             }
         );
         const priorityText = priorityTextOf(metrics);

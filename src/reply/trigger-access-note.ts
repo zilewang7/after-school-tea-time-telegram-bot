@@ -3,17 +3,24 @@
  *
  * Only a trial turn carries the note (the static head explains what the tier
  * may use); a full turn adds nothing to the volatile tail, so its prompt stays
- * exactly as before the feature.
+ * exactly as before the feature. `spend` is the value of the same quota check
+ * the caller gated on: the note may only report a number that was enforced.
  */
 import type { TriggerAccessNote } from '../ai/system-prompt/runtime-context.js';
 import type { TriggerAccessInfo } from '../services/access-tier.js';
+import type { TrialSpend } from '../services/trial-quota.js';
 
-export const triggerAccessNoteOf = (trigger: TriggerAccessInfo): TriggerAccessNote | null =>
+export const triggerAccessNoteOf = (
+    trigger: TriggerAccessInfo,
+    spend: TrialSpend | null = null
+): TriggerAccessNote | null =>
     trigger.tier === 'trial'
         ? {
               userId: trigger.userId,
               name: trigger.name,
               applicationStatus: trigger.application?.status ?? null,
               applicationComment: trigger.application?.comment ?? null,
+              usedUsd: spend?.usedUsd ?? null,
+              limitUsd: spend?.limitUsd ?? null,
           }
         : null;

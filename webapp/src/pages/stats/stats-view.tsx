@@ -10,6 +10,7 @@ import { TokenSplitBar } from './charts/token-split-bar';
 import type { TokenSegment } from './charts/token-split-bar';
 import { platformSeriesOf } from './platform-series';
 import { StatsErrors } from './stats-errors';
+import { StatsImageCost } from './stats-image-cost';
 import { StatsKpis } from './stats-kpis';
 import { StatsModelTable } from './stats-model-table';
 import { StatsNotes } from './stats-notes';
@@ -106,6 +107,11 @@ export const StatsView = ({ data, refreshing }: StatsViewProps) => {
             )}
 
             <StatsModelTable rows={data.models} />
+            <StatsImageCost
+                rows={data.imageCostGroups}
+                totalUsd={data.cost.imageCostUsd}
+                generations={data.cost.imageGenerations}
+            />
             <StatsTools tools={data.tools} kpis={data.kpis} />
             <TokenSplitBar
                 title="token"

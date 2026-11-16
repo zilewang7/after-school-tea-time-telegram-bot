@@ -638,6 +638,10 @@ const cases: { name: string; body: () => Promise<void> }[] = [
             const status = sentTextOf(telegram);
             expect(status.includes('你是体验用户'), `no application shows the header (got ${JSON.stringify(status)})`);
             expect(status.includes('用法：/apply 你是谁 | 你要做什么'), 'and the usage');
+            expect(
+                status.includes('体验额度：已用约 $0.00 / $3.00'),
+                `and the trial spend cap line (got ${JSON.stringify(status)})`
+            );
             // The Mini App hint rides only when the panel is running and the
             // button can be attached; this case runs without the panel
             expect(!status.includes('Mini App'), 'no Mini App hint while the panel is not running');

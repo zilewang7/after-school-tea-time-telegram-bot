@@ -7,17 +7,16 @@
  *
  * Units: times ISO, durations milliseconds, cost USD at list price.
  */
-import { findPriceAt } from '../../config/model-pricing.js';
 import type {
     ReplyMetricRecord,
     ReplyOutcome,
     RequestedTier,
     ToolUsageEntry,
 } from '../../db/queries/reply-metrics.js';
-import { findReplyMetricsByReply, type UsageGroupRow } from '../../db/queries/reply-metrics.js';
+import { findReplyMetricsByReply } from '../../db/queries/reply-metrics.js';
+import { imageGenerationCostUsd, replyRowCostUsd, type PricingFlag } from '../../services/usage-cost.js';
 import type { ErrorKind } from '../../shared/error-kind.js';
-import { priceUsageGroup, type PricingFlag } from '../stats/cost-estimate.js';
-import { durationMsOf, firstChunkMsOf, hasUsage } from '../stats/metric-samples.js';
+import { durationMsOf, firstChunkMsOf } from '../stats/metric-samples.js';
 import type { VisibleAccess } from '../types.js';
 import { roundUsd } from './stats-view.js';
 
@@ -78,10 +77,15 @@ export interface ReplyMetricView {
     /** The degradation chain, e.g. 'xhigh->high'; null = none */
     readonly thinkingEffortFallback: string | null;
     /**
-     * This attempt alone, priced like the statistics (priority rounds at the
-     * priority price); null when unpriced or without usage
+     * This attempt alone: chat tokens + the pictures it drew, priced like the
+     * statistics (priority rounds at the priority price); null when nothing
+     * was priced or reported
      */
     readonly costUsd: number | null;
+    /** The image-generation part of costUsd; null when no generation was priced */
+    readonly imageCostUsd: number | null;
+    /** Pictures drawn inside this attempt (generate_image), whatever their usage */
+    readonly imageGenerations: number;
     readonly pricing: PricingFlag;
     /** Priority rounds priced at the standard price: the model has no priority price */
     readonly priorityAtStandardPrice: boolean;
@@ -95,36 +99,13 @@ export interface MemberReplyMetricView extends ReplyMetricView {
 /** versionId → that version's rows, oldest first (normally exactly one) */
 export type ReplyMetricsByVersion = ReadonlyMap<number, readonly ReplyMetricView[]>;
 
-/** One row as a cost group of its own, so the same pricing rules apply */
-const asUsageGroup = (row: ReplyMetricRecord): UsageGroupRow => {
-    const withUsage = hasUsage(row);
-    const tokens = (value: number | null): number => (withUsage ? value ?? 0 : 0);
-    return {
-        model: row.model,
-        route: row.route,
-        replies: 1,
-        repliesWithUsage: withUsage ? 1 : 0,
-        promptTokens: tokens(row.promptTokens),
-        cachedTokens: tokens(row.cachedTokens),
-        cacheWriteTokens: tokens(row.cacheWriteTokens),
-        outputTokens: tokens(row.outputTokens),
-        thoughtsTokens: tokens(row.thoughtsTokens),
-        imageOutputTokens: tokens(row.imageOutputTokens),
-        unsplitImageOutputTokens:
-            withUsage && row.imageOutputTokens === null && row.imageCount > 0 ? row.outputTokens ?? 0 : 0,
-        imagesWithoutUsage: withUsage ? 0 : row.imageCount,
-        imageRowsWithoutUsage: !withUsage && row.imageCount > 0 ? 1 : 0,
-        // Same rules as the SQL aggregate: rounds always, tokens only with usage
-        priorityRounds: row.priorityRounds ?? 0,
-        priorityPromptTokens: tokens(row.priorityPromptTokens),
-        priorityCachedTokens: tokens(row.priorityCachedTokens),
-        priorityOutputTokens: tokens(row.priorityOutputTokens),
-    };
-};
-
 export const toReplyMetricView = (row: ReplyMetricRecord): ReplyMetricView => {
-    // This attempt alone, at the price in force when it started (design §4.2)
-    const priced = priceUsageGroup(asUsageGroup(row), findPriceAt(row.model, row.startedAt));
+    // This attempt alone, at the price in force when it started (design §4.2):
+    // its chat tokens plus the pictures it drew
+    const chat = replyRowCostUsd(row);
+    const images = imageGenerationCostUsd(row);
+    const totalUsd =
+        chat.costUsd === null && images.costUsd === null ? null : (chat.costUsd ?? 0) + (images.costUsd ?? 0);
     return {
         id: row.id,
         versionId: row.versionId,
@@ -171,9 +152,11 @@ export const toReplyMetricView = (row: ReplyMetricRecord): ReplyMetricView => {
         thinkingEffortRequested: row.thinkingEffortRequested,
         thinkingEffortSent: row.thinkingEffortSent,
         thinkingEffortFallback: row.thinkingEffortFallback,
-        costUsd: roundUsd(priced.costUsd),
-        pricing: priced.pricing,
-        priorityAtStandardPrice: priced.priorityAtStandardPrice,
+        costUsd: roundUsd(totalUsd),
+        imageCostUsd: roundUsd(images.costUsd),
+        imageGenerations: images.generations,
+        pricing: chat.pricing,
+        priorityAtStandardPrice: chat.priorityAtStandardPrice,
     };
 };
 

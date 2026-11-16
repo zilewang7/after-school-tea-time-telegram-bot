@@ -184,6 +184,21 @@ results.push(
         expect(hydrogen?.priority?.inputPerM === 2.7 && hydrogen?.priority.outputPerM === 13.5, 'hydrogen priority price');
         const sonnet = pricing.findPriceAt('claude-sonnet-5-5', at('2026-11-13T00:00:00Z'));
         expect(sonnet?.cachedInputPerM === 0.1, 'sonnet-5-5 cache-hit price is half of sonnet-5');
+        // The relay-only image id is billed per call, so its seed row carries
+        // zero token prices and a per-image price (design D5).
+        const gptImage = pricing.findPriceAt('gpt-image-2.5-dev', at('2026-11-16T00:00:00Z'));
+        expect(
+            gptImage !== null &&
+                gptImage.inputPerM === 0 &&
+                gptImage.cachedInputPerM === 0 &&
+                gptImage.outputPerM === 0 &&
+                gptImage.perImageUsd === 0.1048,
+            `the call-billed image row is priced per image (got ${JSON.stringify(gptImage)})`
+        );
+        expect(
+            gptImage?.sourceUrl === 'https://api.ephone.ai/api/pricing' && gptImage.checkedOn === '2026-11-16',
+            'the manual row names the ephone source and its check date'
+        );
         expect(pricing.findPriceAt('no-such-model', at('2026-11-13T00:00:00Z')) === null, 'unknown ids stay unpriced');
     })
 );

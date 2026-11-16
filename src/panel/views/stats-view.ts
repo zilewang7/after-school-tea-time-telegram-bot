@@ -10,8 +10,9 @@
  */
 import type { PriceSource, PriceTier } from '../../config/model-pricing.js';
 import type { ReplyOutcome } from '../../db/queries/reply-metrics.js';
+import type { ModelPricingFlag, PricingFlag } from '../../services/usage-cost.js';
 import type { ErrorKind } from '../../shared/error-kind.js';
-import type { ModelPricingFlag, PricingFlag } from '../stats/cost-estimate.js';
+import type { ImageCostGroupView } from '../stats/image-cost.js';
 import type { StatsBucket, StatsRangeKey } from '../stats/stats-window.js';
 
 /**
@@ -68,7 +69,7 @@ export interface StatsKpis extends PriorityHitCounts {
     readonly cacheHitRate: number | null;
     readonly avgContextMessages: number | null;
     readonly avgContextImages: number | null;
-    // Cost (estimate at list price, see costGroups)
+    // Cost (estimate at list price, chat tokens + in-reply images, see costGroups)
     readonly costUsd: number | null;
     readonly pricedReplyRatio: number | null;
 }
@@ -246,7 +247,16 @@ export interface StatsResponse {
     /** Most replies first */
     readonly models: readonly ModelStatsRow[];
     readonly costGroups: readonly CostGroupView[];
-    readonly cost: { readonly costUsd: number | null; readonly pricedReplyRatio: number | null };
+    /** The window's in-reply image generations, per image model (design D6) */
+    readonly imageCostGroups: readonly ImageCostGroupView[];
+    readonly cost: {
+        /** Chat + in-reply images; null only when neither was priced */
+        readonly costUsd: number | null;
+        /** The image part of costUsd; null without a priced generation */
+        readonly imageCostUsd: number | null;
+        readonly imageGenerations: number;
+        readonly pricedReplyRatio: number | null;
+    };
     /** The price table the estimate used (design §4.3) */
     readonly pricing: PricingMeta;
     /** Most calls first */

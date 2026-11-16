@@ -951,10 +951,16 @@ const cases: { name: string; body: () => Promise<void> }[] = [
             expect(trial.accessApplication?.status === 'pending', 'with their latest application');
             expect(trial.accessApplication?.identity === undefined, 'without the internal review fields');
             expect(trial.pendingAccessApplications === null, 'and no review badge');
+            expect(
+                JSON.stringify(trial.trialSpend) === JSON.stringify({ usedUsd: 0, limitUsd: 3 }),
+                `a trial user gets the spend cap amounts (got ${JSON.stringify(trial.trialSpend)})`
+            );
 
             const full = await jsonOf(await call(app, '/api/me', { user: PANEL_FULL }));
             expect(full.accessTier === 'full', `a listed user reads as full (got ${JSON.stringify(full.accessTier)})`);
             expect(full.pendingAccessApplications === null, 'and no review badge either');
+            expect(full.trialSpend === null, 'a full user has no spend cap to show');
+            expect(owner.trialSpend === null, 'and neither does the owner');
         },
     },
     {
