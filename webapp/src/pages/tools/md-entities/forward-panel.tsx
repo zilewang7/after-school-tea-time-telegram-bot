@@ -1,15 +1,15 @@
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import type { ChangeEvent } from 'react';
 import { match } from 'ts-pattern';
 import {
     MESSAGE_ENTITY_LIMIT,
-    MESSAGE_ENTITY_WARN_LIMIT,
+    entityBudgetOf,
     markdownToRendered,
     renderedToClipboardPayload,
     withQuoteStyle,
 } from '../../../tools/entity-convert';
 import { renderedToIosMarkdown, renderedToTelegramMarkdown } from '../../../tools/telegram-markdown';
-import type { ChannelPlan } from '../../../tools/types';
+import type { ChannelPlan, RenderedMarkdown } from '../../../tools/types';
 import { ChannelActions } from './channel-actions';
 import type { ChannelAction } from './channel-actions';
 import { ChannelStatus } from './channel-status';
@@ -31,6 +31,10 @@ const SAMPLE_MARKDOWN = [
 
 const dialectLabelOf = (plan: ChannelPlan): string => (plan.markdownDialect === 'ios' ? 'iOS 方言' : 'Telegram 方言');
 
+/** The toggle forces every quote collapsible; unchecked keeps the source styles */
+const withQuoteChoice = (rendered: RenderedMarkdown, collapsedQuotes: boolean): RenderedMarkdown =>
+    collapsedQuotes ? withQuoteStyle(rendered, true) : rendered;
+
 interface ForwardPanelProps {
     plan: ChannelPlan;
 }
@@ -40,26 +44,32 @@ export const ForwardPanel = ({ plan }: ForwardPanelProps) => {
     const [markdown, setMarkdown] = useState(SAMPLE_MARKDOWN);
     const [collapsedQuotes, setCollapsedQuotes] = useState(false);
     const preview = useForwardPreview(markdown, collapsedQuotes);
-    const { status, copyRich, copyPlainText, reportFailure } = useCopyActions();
+    const { status, copyRich, copyPlainText, reportFailure, clearStatus } = useCopyActions();
     const hasContent = markdown.trim() !== '';
+    const macosUnavailable = plan.platform === 'macos';
+
+    // The outcome line describes a copy of content that no longer exists
+    useEffect(() => {
+        clearStatus();
+    }, [clearStatus, markdown, plan.platform, collapsedQuotes]);
+
     // Telegram counts the sent text, not the markdown source: a long link URL must not inflate it
     const previewMeta = useMemo(() => {
         if (preview.kind !== 'ready') return null;
         const textLength = preview.rendered.text.length;
-        const parts = Math.ceil(textLength / TELEGRAM_MAX_LENGTH);
         const entities = preview.rendered.entities.length;
-        const entityRisk = entities >= MESSAGE_ENTITY_WARN_LIMIT;
-        const entityOver = entities > MESSAGE_ENTITY_LIMIT;
-        if (parts > 1) {
-            return { label: `${textLength} 字符 · 约 ${parts} 条`, over: true, parts, entities, entityRisk, entityOver };
-        }
+        const budget = entityBudgetOf(preview.rendered);
+        const over = budget.parts > 1;
         return {
-            label: `${textLength} 字符 · ${entities} 个实体`,
-            over: false,
-            parts,
+            label: over
+                ? `${textLength} 字符 · 约 ${budget.parts} 条`
+                : `${textLength} 字符 · ${entities} 个实体`,
+            over,
+            parts: budget.parts,
             entities,
-            entityRisk,
-            entityOver,
+            maxEntitiesPerPart: budget.maxEntitiesPerPart,
+            entityRisk: budget.risk,
+            entityOver: budget.over,
         };
     }, [preview]);
 
@@ -71,8 +81,10 @@ export const ForwardPanel = ({ plan }: ForwardPanelProps) => {
     const handleCopyRich = useCallback(() => {
         if (markdown.trim() === '') return;
         try {
-            const rendered = withQuoteStyle(markdownToRendered(markdown), collapsedQuotes);
-            const payload = renderedToClipboardPayload(rendered, plan.target);
+            const payload = renderedToClipboardPayload(
+                withQuoteChoice(markdownToRendered(markdown), collapsedQuotes),
+                plan.target
+            );
             copyRich(payload.html, payload.plainText);
         } catch {
             reportFailure('转换失败：这段 Markdown 无法生成富文本。');
@@ -82,7 +94,7 @@ export const ForwardPanel = ({ plan }: ForwardPanelProps) => {
     const handleCopyMarkdown = useCallback(() => {
         if (markdown.trim() === '') return;
         try {
-            const rendered = withQuoteStyle(markdownToRendered(markdown), collapsedQuotes);
+            const rendered = withQuoteChoice(markdownToRendered(markdown), collapsedQuotes);
             const text =
                 plan.markdownDialect === 'ios' ? renderedToIosMarkdown(rendered) : renderedToTelegramMarkdown(rendered);
             copyPlainText(text, `Markdown 文本（${dialectLabelOf(plan)}）`);
@@ -105,7 +117,9 @@ export const ForwardPanel = ({ plan }: ForwardPanelProps) => {
             {
                 id: 'rich-html',
                 label: '复制富文本',
-                hint: '到 Telegram 输入框粘贴，格式会保留',
+                hint: macosUnavailable
+                    ? 'macOS 原生客户端不读 HTML 剪贴板'
+                    : '到 Telegram 输入框粘贴，格式会保留',
                 recommended: plan.recommended === 'rich-html',
                 disabled: !hasContent,
                 onSelect: handleCopyRich,
@@ -113,7 +127,9 @@ export const ForwardPanel = ({ plan }: ForwardPanelProps) => {
             {
                 id: 'markdown',
                 label: '复制 Markdown 文本',
-                hint: `粘贴后由客户端按 ${dialectLabelOf(plan)} 转换`,
+                hint: macosUnavailable
+                    ? 'macOS 原生客户端不会转换 Markdown'
+                    : `粘贴后由客户端按 ${dialectLabelOf(plan)} 转换`,
                 recommended: plan.recommended === 'markdown',
                 disabled: !hasContent,
                 onSelect: handleCopyMarkdown,
@@ -127,7 +143,7 @@ export const ForwardPanel = ({ plan }: ForwardPanelProps) => {
                 onSelect: handleCopyPlain,
             },
         ],
-        [hasContent, plan, handleCopyRich, handleCopyMarkdown, handleCopyPlain]
+        [hasContent, macosUnavailable, plan, handleCopyRich, handleCopyMarkdown, handleCopyPlain]
     );
 
     return (
@@ -172,7 +188,7 @@ export const ForwardPanel = ({ plan }: ForwardPanelProps) => {
                 {previewMeta !== null && previewMeta.entityRisk && (
                     <p className="notice warning">
                         {previewMeta.over
-                            ? `实体 ${previewMeta.entities} 个，${previewMeta.entityOver ? '超出' : '接近'} Telegram 单条消息的实体上限（约 ${MESSAGE_ENTITY_LIMIT} 个）；拆成约 ${previewMeta.parts} 条发送时每条分别计数，是否被吞取决于拆分位置。`
+                            ? `实体 ${previewMeta.entities} 个；拆成约 ${previewMeta.parts} 条后，其中一条最多约 ${previewMeta.maxEntitiesPerPart} 个，${previewMeta.entityOver ? '超出' : '接近'}单条上限（约 ${MESSAGE_ENTITY_LIMIT} 个）；${previewMeta.entityOver ? '超出的部分发送时会被静默丢掉。' : '继续增加格式就可能被丢弃。'}`
                             : `实体 ${previewMeta.entities} 个，${previewMeta.entityOver ? '超出' : '接近'} Telegram 单条消息的实体上限（约 ${MESSAGE_ENTITY_LIMIT} 个）；超出的部分发送时可能被静默丢掉。`}
                     </p>
                 )}

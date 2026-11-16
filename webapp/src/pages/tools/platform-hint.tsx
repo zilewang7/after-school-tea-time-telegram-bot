@@ -30,7 +30,9 @@ export const PlatformHint = ({ info, plan }: PlatformHintProps) => (
         <div className="tools-platform-row">
             <span className="tools-platform-label">当前平台</span>
             <span className="tools-platform-value">{PLATFORM_LABELS[info.platform]}</span>
-            <span className="hint">推荐通道：{CHANNEL_LABELS[plan.recommended]}</span>
+            <span className="hint">
+                推荐通道：{plan.recommended === null ? '无' : CHANNEL_LABELS[plan.recommended]}
+            </span>
         </div>
         <CollapsibleSection title="能力自检" summary={null}>
             <ul className="tools-check-list">

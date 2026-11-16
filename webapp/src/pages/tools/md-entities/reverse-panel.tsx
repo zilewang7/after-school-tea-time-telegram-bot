@@ -1,7 +1,8 @@
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import type { ChangeEvent, ClipboardEvent } from 'react';
 import { match } from 'ts-pattern';
-import { clipboardHtmlToMarkdown } from '../../../tools/entity-convert';
+import { clipboardHtmlToMarkdown, escapePlainMarkdown } from '../../../tools/entity-convert';
+import { reverseNoteOf } from '../../../tools/platform-channel';
 import type { ChannelPlan, ClipboardConversion } from '../../../tools/types';
 import { ChannelStatus } from './channel-status';
 import { ParsedSummary, parsedSummaryOf } from './parsed-summary';
@@ -17,6 +18,8 @@ type PasteState =
 const EMPTY_MESSAGE = '剪贴板里没有可识别的文本内容。';
 const READ_FAILED_MESSAGE = '读取剪贴板失败，请改用粘贴。';
 const PARSE_FAILED_MESSAGE = '富文本解析失败，请尝试用纯文本粘贴。';
+const PLAIN_WARNING =
+    '没有富文本（HTML）可解析，只有纯文本；部分客户端（如 iOS / macOS）复制消息本身就不带 HTML。';
 
 interface ReversePanelProps {
     plan: ChannelPlan;
@@ -24,25 +27,45 @@ interface ReversePanelProps {
     readSupported: boolean;
 }
 
-/** Direction 2: a Telegram message pasted from the clipboard -> markdown */
+/**
+ * Direction 2: a Telegram message pasted from the clipboard -> markdown.
+ * Text typed into the paste box takes the plain branch, so the result below
+ * always matches what the box shows.
+ */
 export const ReversePanel = ({ plan, readSupported }: ReversePanelProps) => {
     const [state, setState] = useState<PasteState>({ kind: 'idle' });
+    const [inputText, setInputText] = useState('');
     const [markdown, setMarkdown] = useState('');
     const [reading, setReading] = useState(false);
-    const { status, copyPlainText } = useCopyActions();
+    const { status, copyPlainText, clearStatus } = useCopyActions();
+
+    // The outcome line describes a copy of content that no longer exists
+    useEffect(() => {
+        clearStatus();
+    }, [clearStatus, markdown]);
 
     const applyRich = useCallback((html: string) => {
         try {
             const conversion = clipboardHtmlToMarkdown(html);
+            setInputText('');
             setState({ kind: 'rich', conversion });
             setMarkdown(conversion.markdown);
         } catch {
+            setInputText('');
             setState({ kind: 'error', message: PARSE_FAILED_MESSAGE });
+            setMarkdown('');
         }
     }, []);
 
     const applyPlain = useCallback((text: string) => {
+        setInputText('');
         setState({ kind: 'plain', text });
+        setMarkdown('');
+    }, []);
+
+    const applyEmpty = useCallback(() => {
+        setInputText('');
+        setState({ kind: 'error', message: EMPTY_MESSAGE });
         setMarkdown('');
     }, []);
 
@@ -52,7 +75,6 @@ export const ReversePanel = ({ plan, readSupported }: ReversePanelProps) => {
             const data = event.clipboardData;
             const html = data.getData('text/html');
             const plain = data.getData('text/plain');
-            event.currentTarget.value = '';
             if (html.trim() !== '') {
                 applyRich(html);
                 return;
@@ -61,10 +83,17 @@ export const ReversePanel = ({ plan, readSupported }: ReversePanelProps) => {
                 applyPlain(plain);
                 return;
             }
-            setState({ kind: 'error', message: EMPTY_MESSAGE });
+            applyEmpty();
         },
-        [applyRich, applyPlain]
+        [applyRich, applyPlain, applyEmpty]
     );
+
+    const handleInputChange = useCallback((event: ChangeEvent<HTMLTextAreaElement>) => {
+        const text = event.target.value;
+        setInputText(text);
+        setMarkdown('');
+        setState(text.trim() === '' ? { kind: 'idle' } : { kind: 'plain', text });
+    }, []);
 
     const handleReadClipboard = useCallback(() => {
         setReading(true);
@@ -73,7 +102,7 @@ export const ReversePanel = ({ plan, readSupported }: ReversePanelProps) => {
                 const items = await navigator.clipboard.read();
                 const [item] = items;
                 if (item === undefined) {
-                    setState({ kind: 'error', message: EMPTY_MESSAGE });
+                    applyEmpty();
                     return;
                 }
                 if (item.types.includes('text/html')) {
@@ -84,18 +113,21 @@ export const ReversePanel = ({ plan, readSupported }: ReversePanelProps) => {
                     applyPlain(await (await item.getType('text/plain')).text());
                     return;
                 }
-                setState({ kind: 'error', message: EMPTY_MESSAGE });
+                applyEmpty();
             } catch {
+                setInputText('');
                 setState({ kind: 'error', message: READ_FAILED_MESSAGE });
+                setMarkdown('');
             } finally {
                 setReading(false);
             }
         })();
-    }, [applyRich, applyPlain]);
+    }, [applyRich, applyPlain, applyEmpty]);
 
     const handleUsePlainAsMarkdown = useCallback(() => {
         if (state.kind !== 'plain') return;
-        setMarkdown(state.text);
+        // Literal text, not source to reinterpret: `**` was two asterisks
+        setMarkdown(escapePlainMarkdown(state.text));
     }, [state]);
 
     const handleMarkdownChange = useCallback(
@@ -109,17 +141,20 @@ export const ReversePanel = ({ plan, readSupported }: ReversePanelProps) => {
     }, [markdown, copyPlainText]);
 
     const summary = useMemo(() => (state.kind === 'rich' ? parsedSummaryOf(state.conversion) : null), [state]);
+    const reverseNote = reverseNoteOf(plan.platform);
 
     return (
         <>
             <section className="section">
                 <h2 className="section-title">粘贴 Telegram 消息</h2>
                 <PasteZone
+                    value={inputText}
+                    onChange={handleInputChange}
                     onPaste={handlePaste}
                     onReadClipboard={readSupported ? handleReadClipboard : null}
                     reading={reading}
                 />
-                <p className="hint">{plan.note}</p>
+                {reverseNote !== '' && <p className="hint">{reverseNote}</p>}
                 {match(state)
                     .with({ kind: 'idle' }, () => (
                         <p className="hint">在 Telegram 里复制一条带格式的消息，再粘贴到这里；富文本会还原成 Markdown。</p>
@@ -127,10 +162,7 @@ export const ReversePanel = ({ plan, readSupported }: ReversePanelProps) => {
                     .with({ kind: 'error' }, ({ message }) => <p className="error-text">{message}</p>)
                     .with({ kind: 'plain' }, ({ text }) => (
                         <>
-                            <p className="notice warning">
-                                剪贴板里没有富文本（HTML），只拿到了纯文本；部分客户端（如 iOS/macOS）复制消息本身就不带
-                                HTML。
-                            </p>
+                            <p className="notice warning">{PLAIN_WARNING}</p>
                             <pre className="code-block prewrap tools-plain-text">{text}</pre>
                             {markdown === '' && (
                                 <button type="button" className="button secondary" onClick={handleUsePlainAsMarkdown}>

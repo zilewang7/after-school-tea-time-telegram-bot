@@ -25,6 +25,8 @@ export interface CopyActions {
     copyRich: (html: string, plainText: string) => void;
     copyPlainText: (text: string, label: string) => void;
     reportFailure: (message: string) => void;
+    /** Drop the outcome of an earlier copy once the content it described changed */
+    clearStatus: () => void;
 }
 
 /** Clipboard actions plus the outcome line both panels show under their buttons */
@@ -54,5 +56,7 @@ export const useCopyActions = (): CopyActions => {
 
     const reportFailure = useCallback((message: string) => setStatus(errorStatus(message)), []);
 
-    return { status, copyRich, copyPlainText, reportFailure };
+    const clearStatus = useCallback(() => setStatus(null), []);
+
+    return { status, copyRich, copyPlainText, reportFailure, clearStatus };
 };

@@ -1,8 +1,8 @@
 /**
  * Which copy channel a platform should offer. The platform matrix is the one
- * from the design doc: the HTML clipboard works on tdesktop/Android/Web, iOS
- * needs the markdown channel (its client converts markdown on paste), macOS
- * native is unverified and gets the markdown channel with a warning.
+ * from the design doc: the HTML clipboard works on tdesktop/Android/Web and iOS
+ * needs the markdown channel (its client converts markdown on paste). The
+ * native macOS client does neither, so no channel is recommended there.
  */
 import type { ChannelPlan, ClientPlatform, ClipboardTarget, RichChannel } from './types';
 
@@ -30,7 +30,8 @@ export const resolveClipboardTarget = (platform: ClientPlatform): ClipboardTarge
 };
 
 interface ChannelCopy {
-    recommended: RichChannel;
+    /** null: no copy channel is known to work for this client */
+    recommended: RichChannel | null;
     dialect: 'ios' | 'telegram';
     note: string;
 }
@@ -52,9 +53,9 @@ const channelCopyOf = (platform: ClientPlatform, htmlSupported: boolean): Channe
     }
     if (platform === 'macos') {
         return {
-            recommended: 'markdown',
+            recommended: null,
             dialect: 'ios',
-            note: 'macOS 原生客户端对 HTML 剪贴板支持有限，Markdown 通道也可能不生效；建议使用桌面版 Telegram。',
+            note: 'macOS 原生客户端两个通道都不可用；请改用桌面版 Telegram。',
         };
     }
     if (platform === 'web') {
@@ -89,3 +90,17 @@ export const channelPlanOf = (platform: ClientPlatform, htmlSupported: boolean):
         note: copy.note,
     };
 };
+
+/** What the reverse direction can get out of each client's clipboard */
+const REVERSE_NOTES: Readonly<Record<ClientPlatform, string>> = {
+    tdesktop: 'Desktop 复制消息时会写入 HTML，粘贴到这里即可还原格式。代码块的语言名在导出时丢失，属正常。',
+    android:
+        'Android 复制消息时会写入 HTML，粘贴到这里即可还原。注意 Android 不认行内代码，那部分会变成普通文字。',
+    ios: 'iOS 复制消息时不写 HTML，只能拿到纯文本 —— 这是客户端限制，不是本工具的问题。',
+    macos: 'macOS 原生客户端复制消息时不写 HTML，只能拿到纯文本 —— 这是客户端限制，不是本工具的问题。',
+    web: 'Telegram 网页版复制消息时会写入 HTML（WebK 还会带上精确实体 JSON），粘贴到这里即可还原。',
+    unknown: '',
+};
+
+/** One-line guidance for direction 2 on the client the clipboard came from */
+export const reverseNoteOf = (platform: ClientPlatform): string => REVERSE_NOTES[platform];

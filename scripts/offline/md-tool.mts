@@ -11,13 +11,21 @@
 import { expect, reportResults, runCase, type CaseResult } from './harness.mts';
 import {
     clipboardHtmlToMarkdown,
+    entityBudgetOf,
+    escapePlainMarkdown,
     markdownToRendered,
     renderedToClipboardPayload,
     renderedToPreviewHtml,
 } from '../../webapp/src/tools/entity-convert.ts';
 import { entitiesToClipboardHtml } from '../../webapp/src/tools/clipboard-html.ts';
 import { renderedToIosMarkdown, renderedToTelegramMarkdown } from '../../webapp/src/tools/telegram-markdown.ts';
-import { channelPlanOf, resolveClientPlatform, resolveClipboardTarget } from '../../webapp/src/tools/platform-channel.ts';
+import {
+    channelPlanOf,
+    resolveClientPlatform,
+    resolveClipboardTarget,
+    reverseNoteOf,
+} from '../../webapp/src/tools/platform-channel.ts';
+import { renderMarkdown } from 'telegram-md-entities';
 
 const markdownSamples: Record<string, string> = {
     inline: '**bold** *italic* __underline__ ~~strike~~ ||spoiler|| `code` [link](https://example.com/a?b=1&c=2)',
@@ -231,10 +239,68 @@ const cases = [
             expect(channelPlanOf('android', true).recommended === 'rich-html', 'android prefers rich html');
             expect(channelPlanOf('ios', true).recommended === 'markdown', 'ios uses markdown');
             expect(channelPlanOf('ios', true).markdownDialect === 'ios', 'ios dialect');
-            expect(channelPlanOf('macos', true).recommended === 'markdown', 'macos falls back to markdown');
+            expect(channelPlanOf('macos', true).recommended === null, 'macos has no working channel');
             expect(channelPlanOf('tdesktop', false).recommended === 'plain', 'no html support falls back to plain');
             expect(channelPlanOf('unknown', false).recommended === 'markdown', 'unknown without html tries markdown');
             expect(channelPlanOf('android', true).note.length > 0, 'a note is always provided');
+        },
+    },
+    {
+        name: 'the entity warning counts entities per split part',
+        body: async () => {
+            const dense = {
+                text: 'a '.repeat(600).trim(),
+                entities: Array.from({ length: 600 }, (_, index) => ({
+                    type: 'bold' as const,
+                    offset: index * 2,
+                    length: 1,
+                })),
+            };
+            const single = entityBudgetOf(dense);
+            expect(single.parts === 1, 'dense entities stay in one message');
+            expect(single.maxEntitiesPerPart === 600 && single.over, 'single message is over the cap');
+
+            const longPlain = entityBudgetOf({ text: 'x'.repeat(9000), entities: [] });
+            expect(longPlain.parts === 3 && !longPlain.risk && !longPlain.over, 'long text without entities never warns');
+
+            const spread = entityBudgetOf({
+                text: `${'a'.repeat(4096)}${'b'.repeat(4096)}`,
+                entities: [
+                    ...Array.from({ length: 300 }, (_, index) => ({ type: 'bold' as const, offset: index, length: 1 })),
+                    ...Array.from({ length: 300 }, (_, index) => ({
+                        type: 'bold' as const,
+                        offset: 4096 + index,
+                        length: 1,
+                    })),
+                ],
+            });
+            expect(spread.parts === 2 && spread.maxEntitiesPerPart === 300, 'each split part is counted on its own');
+            expect(spread.over, '300 entities in a part is over the cap');
+        },
+    },
+    {
+        name: 'plain text becomes markdown that shows the same text',
+        body: async () => {
+            const samples = [
+                'plain **stars** and __init__ and ||spoiler||',
+                '# heading\n- bullet\n1. item',
+                'back`tick` [link](x) a|b ~~strike~~ *em*',
+                'no specials at all',
+            ];
+            for (const text of samples) {
+                expect(renderMarkdown(escapePlainMarkdown(text)).text === text, `round trip: ${JSON.stringify(text)}`);
+            }
+            expect(escapePlainMarkdown('**x**').includes('\\*\\*x\\*\\*'), 'literal asterisks are escaped');
+        },
+    },
+    {
+        name: 'each client gets a reverse-direction note',
+        body: async () => {
+            for (const platform of ['tdesktop', 'android', 'ios', 'macos', 'web'] as const) {
+                expect(reverseNoteOf(platform).length > 0, `${platform} has a reverse note`);
+            }
+            expect(reverseNoteOf('unknown') === '', 'unknown platform has no note');
+            expect(reverseNoteOf('ios').includes('纯文本'), 'ios reverse note is about plain text only');
         },
     },
     {

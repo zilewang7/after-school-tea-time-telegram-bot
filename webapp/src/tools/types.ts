@@ -53,7 +53,8 @@ export interface ClipboardConversion {
 export interface ChannelPlan {
     platform: ClientPlatform;
     target: ClipboardTarget;
-    recommended: RichChannel;
+    /** null when no copy channel is known to work for this client (native macOS) */
+    recommended: RichChannel | null;
     /** Which markdown dialect the "copy markdown" button uses for this platform */
     markdownDialect: MarkdownDialect;
     /** True when the WebView can put text/html on the clipboard */

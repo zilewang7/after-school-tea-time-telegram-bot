@@ -22,6 +22,9 @@ export type ForwardPreview =
 /**
  * Markdown -> entities + preview HTML, debounced so the editor stays
  * responsive on long input. Copy actions convert the current value directly.
+ *
+ * The collapse toggle makes every quote collapsible; unchecked keeps the
+ * source styles, so a <details> block stays an expandable quote on its own.
  */
 export const useForwardPreview = (
     markdown: string,
@@ -32,7 +35,7 @@ export const useForwardPreview = (
         if (debounced.trim() === '') return { kind: 'empty' };
         try {
             const base = markdownToRendered(debounced);
-            const rendered = withQuoteStyle(base, collapsedQuotes);
+            const rendered = collapsedQuotes ? withQuoteStyle(base, true) : base;
             return {
                 kind: 'ready',
                 rendered,

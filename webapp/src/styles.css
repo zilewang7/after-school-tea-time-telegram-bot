@@ -34,6 +34,12 @@
     box-sizing: border-box;
 }
 
+html {
+    /* The two direction panels differ in height; reserve the scrollbar gutter
+     * so switching them does not shift the page sideways. */
+    scrollbar-gutter: stable;
+}
+
 html,
 body {
     margin: 0;
