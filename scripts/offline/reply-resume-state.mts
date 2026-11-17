@@ -29,6 +29,7 @@ const bench = await createResumeBench();
 const { telegram, vertex } = bench;
 const { MAX_HARNESS_ISSUES_PER_REPLY } = await import('../../src/reply/tools/harness-issue-state.js');
 const { MAX_SEARCHES_PER_REPLY } = await import('../../src/reply/tools/search-by-image-tool.js');
+const { clearLuoxuResponseCache } = await import('../../src/services/luoxu-response-cache.js');
 
 const answerOf = (answers: readonly FunctionAnswer[], name: string): FunctionAnswer[] =>
     answers.filter((item) => item.name === name);
@@ -54,6 +55,9 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
             expect(entry?.toolState.media.generated.size === 1, `g1 was drawn (got ${json(entry?.toolState.media.generated.size)})`);
             expect(entry?.toolState.history.entries().length !== 0, 'and the history hits were numbered');
             const luoxuBefore = bench.luoxuRequests.length;
+            // Round 2 reads h1's raw text: the short response cache would answer
+            // that /messages call from round 1, and this case checks the read happened
+            clearLuoxuResponseCache();
 
             vertex.reset([
                 roundOf({

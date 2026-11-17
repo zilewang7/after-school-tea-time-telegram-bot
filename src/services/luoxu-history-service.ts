@@ -4,8 +4,12 @@
  * luoxu indexes every message of a few groups into PostgreSQL + PGroonga, so
  * "what was said last month" is a query rather than a feature this bot has to
  * store: this service is the thin client for `/search`, `/messages` and
- * `/names`. It keeps no cache of its own — the per-reply history state does
- * that, because ids are only meaningful while one reply is being generated.
+ * `/names`. The per-reply history state maps ids to hits, because ids are only
+ * meaningful while one reply is being generated; repeated reads inside a short
+ * window are served by `luoxu-response-cache`.
+ *
+ * `/message-image` bytes are kept inline in MediaCache (7-day LRU) so the same
+ * archived picture is downloaded once; larger originals are not cached.
  *
  * Failures are typed instead of thrown as strings: each tool turns one kind
  * into one sentence for the model, and the model decides what to do next.
@@ -13,6 +17,11 @@
  * luoxu is reached through the same base URL as the preview service
  * (`LUOXU_PREVIEW_URL`); chat ids are translated by `toLuoxuChannelId`.
  */
+
+import { createHash } from 'node:crypto';
+import { withBusyRetry } from '../db/busy-retry.js';
+import { getCachedMedia, putCachedMedia } from './media-cache-service.js';
+import { cachedLuoxuJson, clearLuoxuResponseCache, isLuoxuCacheEnabled } from './luoxu-response-cache.js';
 
 /** Why a history request could not be answered */
 export type HistoryFailureKind =
@@ -49,6 +58,8 @@ export interface HistoryHit {
     /** The whole indexed text, HTML-escaped; keyword spans only with a query */
     readonly html: string;
     readonly editedAt: number | null;
+    /** Unix seconds luoxu recorded the deletion; null while the message still exists */
+    readonly deletedAt: number | null;
 }
 
 export interface HistorySearchOptions {
@@ -214,9 +225,41 @@ const MAX_IDS_PER_REQUEST = 50;
 /** One image handed to a model is bounded well below luoxu's own 200MB cap */
 export const HISTORY_IMAGE_MAX_BYTES = 32 * 1024 * 1024;
 
+/**
+ * The JSON response caches: repeated reads of the same page inside one reply (a
+ * retried tool call, a page read again while the model thinks) reuse a response
+ * for a moment. `/search` tolerates 30s of indexing lag; `/messages` 60s matches
+ * the deletion-marking window; names and message media barely change.
+ */
+const SEARCH_CACHE_TTL_MS = 30 * 1000;
+const SEARCH_CACHE_MAX = 8;
+const MESSAGES_CACHE_TTL_MS = 60 * 1000;
+const MESSAGES_CACHE_MAX = 64;
+const NAMES_CACHE_TTL_MS = 10 * 60 * 1000;
+const NAMES_CACHE_MAX = 64;
+const IMAGES_CACHE_TTL_MS = 5 * 60 * 1000;
+const IMAGES_CACHE_MAX = 64;
+
 /** Coverage changes slowly and its aggregate costs luoxu ~0.26s per group */
 const STATS_TTL_MS = 10 * 60 * 1000;
 const STATS_CACHE_MAX = 32;
+
+/**
+ * An archived image is kept inline only up to the size the history tools would
+ * hand a model anyway (`MAX_ORIGINAL_IMAGE_BYTES` in reply/tools; services may
+ * not import that layer). Larger originals stay download-only: caching them
+ * would just bloat the SQLite file.
+ */
+const HISTORY_IMAGE_CACHE_MAX_BYTES = 8 * 1024 * 1024;
+
+/** MediaCache key of one archived image; the thumbnail is a row of its own */
+const historyImageCacheKey = (channelId: number, messageId: number, which: string, thumb: boolean): string =>
+    `luoxu-history-image:${createHash('sha256')
+        .update(`${channelId}:${messageId}:${which}:${thumb ? 1 : 0}`)
+        .digest('hex')}`;
+
+/** One download per image, shared by every concurrent caller (tools, replies) */
+const inflightHistoryImages = new Map<string, Promise<HistoryImageBytes | null>>();
 
 const requestSignal = (timeoutMs: number, signal?: AbortSignal): AbortSignal =>
     signal ? AbortSignal.any([signal, AbortSignal.timeout(timeoutMs)]) : AbortSignal.timeout(timeoutMs);
@@ -253,6 +296,7 @@ const parseHit = (raw: unknown, fallbackChannelId: number | null): HistoryHit | 
         fromName: stringOf(raw.from_name) ?? '',
         html,
         editedAt: numberOf(raw.edited),
+        deletedAt: numberOf(raw.deleted),
     };
 };
 
@@ -368,47 +412,14 @@ export interface HistoryServiceOptions {
     readonly fetchImpl?: typeof fetch;
 }
 
-interface StatsCacheEntry {
-    readonly expiresAt: number;
-    readonly value: Promise<HistoryStats>;
-}
-
 /**
- * Archive coverage per baseUrl+chat, shared by every reply of this process:
- * one search per reply would otherwise pay luoxu's ~0.26s aggregate every time.
- * The promise is cached too, so two concurrent replies make one request.
+ * Archive coverage is cached in the shared response cache: one search per reply
+ * would otherwise pay luoxu's ~0.26s aggregate every time, and two concurrent
+ * replies share one request.
  */
-const statsCache = new Map<string, StatsCacheEntry>();
-
-const statsCacheKey = (baseUrl: string, channelId: number | null): string =>
-    `${baseUrl}|${channelId === null ? 'all' : channelId}`;
-
-const cachedStats = (
-    baseUrl: string,
-    channelId: number | null,
-    load: () => Promise<HistoryStats>
-): Promise<HistoryStats> => {
-    const key = statsCacheKey(baseUrl, channelId);
-    const cached = statsCache.get(key);
-    if (cached && cached.expiresAt > Date.now()) return cached.value;
-
-    const value = load();
-    const entry: StatsCacheEntry = { expiresAt: Date.now() + STATS_TTL_MS, value };
-    // A failure must not be remembered for the whole TTL
-    value.catch(() => {
-        if (statsCache.get(key) === entry) statsCache.delete(key);
-    });
-    if (statsCache.size >= STATS_CACHE_MAX) {
-        const oldest = statsCache.keys().next();
-        if (!oldest.done) statsCache.delete(oldest.value);
-    }
-    statsCache.set(key, entry);
-    return value;
-};
-
 /** Test hook: forget every cached coverage snapshot */
 export const clearHistoryStatsCache = (): void => {
-    statsCache.clear();
+    clearLuoxuResponseCache('stats');
 };
 
 const buildSearchUrl = (baseUrl: string, options: HistorySearchOptions): string => {
@@ -500,22 +511,24 @@ export const createHistoryService = (options: HistoryServiceOptions): HistorySer
             throw new HistoryRequestError('bad-query', '按消息 id 读取必须指定聊天');
         }
         const url = buildSearchUrl(baseUrl, searchOptions);
-        const payload = await call(
-            url,
-            searchOptions.timeoutMs ?? HISTORY_SEARCH_TIMEOUT_MS,
-            searchOptions.signal,
-            '检索'
-        );
-        if (!isRecord(payload) || !Array.isArray(payload.messages)) {
-            throw new HistoryRequestError('unavailable', '检索返回了意料之外的格式');
-        }
-        const groups = parseGroups(payload.groupinfo);
-        const hits: HistoryHit[] = [];
-        for (const raw of payload.messages) {
-            const hit = parseHit(raw, searchOptions.channelId);
-            if (hit) hits.push(hit);
-        }
-        return { groups, hasMore: payload.has_more === true, hits };
+        return cachedLuoxuJson('search', url, SEARCH_CACHE_TTL_MS, SEARCH_CACHE_MAX, async () => {
+            const payload = await call(
+                url,
+                searchOptions.timeoutMs ?? HISTORY_SEARCH_TIMEOUT_MS,
+                searchOptions.signal,
+                '检索'
+            );
+            if (!isRecord(payload) || !Array.isArray(payload.messages)) {
+                throw new HistoryRequestError('unavailable', '检索返回了意料之外的格式');
+            }
+            const groups = parseGroups(payload.groupinfo);
+            const hits: HistoryHit[] = [];
+            for (const raw of payload.messages) {
+                const hit = parseHit(raw, searchOptions.channelId);
+                if (hit) hits.push(hit);
+            }
+            return { groups, hasMore: payload.has_more === true, hits };
+        });
     };
 
     const findSenders = async (
@@ -524,22 +537,25 @@ export const createHistoryService = (options: HistoryServiceOptions): HistorySer
         callOptions: { readonly timeoutMs?: number; readonly signal?: AbortSignal } = {}
     ): Promise<readonly HistorySender[]> => {
         const params = new URLSearchParams({ g: String(channelId), q: name });
-        const payload = await call(
-            `${baseUrl}/names?${params.toString()}`,
-            callOptions.timeoutMs ?? HISTORY_NAMES_TIMEOUT_MS,
-            callOptions.signal,
-            '发言人解析'
-        );
-        if (!isRecord(payload) || !Array.isArray(payload.names)) return [];
-        const senders: HistorySender[] = [];
-        for (const item of payload.names) {
-            if (!Array.isArray(item)) continue;
-            const uid = numberOf(item[0]);
-            const senderName = stringOf(item[1]);
-            if (uid === null || senderName === null) continue;
-            senders.push({ uid, name: senderName });
-        }
-        return senders;
+        const url = `${baseUrl}/names?${params.toString()}`;
+        return cachedLuoxuJson('names', url, NAMES_CACHE_TTL_MS, NAMES_CACHE_MAX, async () => {
+            const payload = await call(
+                url,
+                callOptions.timeoutMs ?? HISTORY_NAMES_TIMEOUT_MS,
+                callOptions.signal,
+                '发言人解析'
+            );
+            if (!isRecord(payload) || !Array.isArray(payload.names)) return [];
+            const senders: HistorySender[] = [];
+            for (const item of payload.names) {
+                if (!Array.isArray(item)) continue;
+                const uid = numberOf(item[0]);
+                const senderName = stringOf(item[1]);
+                if (uid === null || senderName === null) continue;
+                senders.push({ uid, name: senderName });
+            }
+            return senders;
+        });
     };
 
     const messages = async (
@@ -552,33 +568,37 @@ export const createHistoryService = (options: HistoryServiceOptions): HistorySer
             g: String(channelId),
             ids: ids.slice(0, MAX_IDS_PER_REQUEST).join(','),
         });
-        const payload = await call(
-            `${baseUrl}/messages?${params.toString()}`,
-            callOptions.timeoutMs ?? HISTORY_MESSAGES_TIMEOUT_MS,
-            callOptions.signal,
-            '读取原文'
-        );
-        if (!isRecord(payload) || !Array.isArray(payload.messages)) {
-            throw new HistoryRequestError('unavailable', '读取原文返回了意料之外的格式');
-        }
-        const out: HistoryRawMessage[] = [];
-        for (const raw of payload.messages) {
-            const message = parseRawMessage(raw);
-            if (message) out.push(message);
-        }
-        return out;
+        const url = `${baseUrl}/messages?${params.toString()}`;
+        return cachedLuoxuJson('messages', url, MESSAGES_CACHE_TTL_MS, MESSAGES_CACHE_MAX, async () => {
+            const payload = await call(
+                url,
+                callOptions.timeoutMs ?? HISTORY_MESSAGES_TIMEOUT_MS,
+                callOptions.signal,
+                '读取原文'
+            );
+            if (!isRecord(payload) || !Array.isArray(payload.messages)) {
+                throw new HistoryRequestError('unavailable', '读取原文返回了意料之外的格式');
+            }
+            const out: HistoryRawMessage[] = [];
+            for (const raw of payload.messages) {
+                const message = parseRawMessage(raw);
+                if (message) out.push(message);
+            }
+            return out;
+        });
     };
 
     const stats = async (
         channelId: number | null,
         callOptions: { readonly timeoutMs?: number; readonly signal?: AbortSignal } = {}
     ): Promise<HistoryStats> => {
-        const load = async (): Promise<HistoryStats> => {
-            const params = new URLSearchParams();
-            if (channelId !== null) params.set('g', String(channelId));
-            const suffix = params.toString();
+        const params = new URLSearchParams();
+        if (channelId !== null) params.set('g', String(channelId));
+        const suffix = params.toString();
+        const url = `${baseUrl}/stats${suffix ? `?${suffix}` : ''}`;
+        return cachedLuoxuJson('stats', url, STATS_TTL_MS, STATS_CACHE_MAX, async () => {
             const payload = await call(
-                `${baseUrl}/stats${suffix ? `?${suffix}` : ''}`,
+                url,
                 callOptions.timeoutMs ?? HISTORY_STATS_TIMEOUT_MS,
                 callOptions.signal,
                 '归档统计'
@@ -592,8 +612,7 @@ export const createHistoryService = (options: HistoryServiceOptions): HistorySer
                 if (group) groups.push(group);
             }
             return { groups };
-        };
-        return cachedStats(baseUrl, channelId, load);
+        });
     };
 
     const images = async (
@@ -602,38 +621,93 @@ export const createHistoryService = (options: HistoryServiceOptions): HistorySer
         callOptions: { readonly timeoutMs?: number; readonly signal?: AbortSignal } = {}
     ): Promise<HistoryImageManifest> => {
         const params = new URLSearchParams({ g: String(channelId), id: String(messageId) });
-        const payload = await call(
-            `${baseUrl}/message-images?${params.toString()}`,
-            callOptions.timeoutMs ?? HISTORY_IMAGES_TIMEOUT_MS,
-            callOptions.signal,
-            '读取消息图片',
-            'missing'
-        );
-        if (!isRecord(payload) || !Array.isArray(payload.images)) {
-            throw new HistoryRequestError('unavailable', '读取消息图片返回了意料之外的格式');
-        }
-        const items: HistoryImageItem[] = [];
-        for (const raw of payload.images) {
-            const item = parseImageItem(raw);
-            if (item) items.push(item);
-        }
-        return { images: items, media: parseMedia(payload.media) };
+        const url = `${baseUrl}/message-images?${params.toString()}`;
+        return cachedLuoxuJson('images', url, IMAGES_CACHE_TTL_MS, IMAGES_CACHE_MAX, async () => {
+            const payload = await call(
+                url,
+                callOptions.timeoutMs ?? HISTORY_IMAGES_TIMEOUT_MS,
+                callOptions.signal,
+                '读取消息图片',
+                'missing'
+            );
+            if (!isRecord(payload) || !Array.isArray(payload.images)) {
+                throw new HistoryRequestError('unavailable', '读取消息图片返回了意料之外的格式');
+            }
+            const items: HistoryImageItem[] = [];
+            for (const raw of payload.images) {
+                const item = parseImageItem(raw);
+                if (item) items.push(item);
+            }
+            return { images: items, media: parseMedia(payload.media) };
+        });
     };
 
+    /**
+     * Bytes of one archived image, kept inline in MediaCache after the first
+     * download. Only successful downloads are stored; a 404 stays null and is
+     * retried next time, because luoxu may still be able to produce the image.
+     */
     const imageBytes = async (
         channelId: number,
         messageId: number,
         which: string,
         callOptions: { readonly thumb?: boolean; readonly timeoutMs?: number; readonly signal?: AbortSignal } = {}
     ): Promise<HistoryImageBytes | null> => {
+        const thumb = callOptions.thumb === true;
         const params = new URLSearchParams({ g: String(channelId), id: String(messageId), which });
-        if (callOptions.thumb === true) params.set('thumb', '1');
-        return callBytes(
-            `${baseUrl}/message-image?${params.toString()}`,
-            callOptions.timeoutMs ?? HISTORY_IMAGE_BYTES_TIMEOUT_MS,
-            callOptions.signal,
-            '下载消息图片'
-        );
+        if (thumb) params.set('thumb', '1');
+        const url = `${baseUrl}/message-image?${params.toString()}`;
+        const download = (): Promise<HistoryImageBytes | null> =>
+            callBytes(
+                url,
+                callOptions.timeoutMs ?? HISTORY_IMAGE_BYTES_TIMEOUT_MS,
+                callOptions.signal,
+                '下载消息图片'
+            );
+
+        // Unconfigured or disabled: the same call as before the cache, nothing read or written
+        if (!baseUrl || !isLuoxuCacheEnabled()) return download();
+
+        const cacheKey = historyImageCacheKey(channelId, messageId, which, thumb);
+        const running = inflightHistoryImages.get(cacheKey);
+        if (running !== undefined) return running;
+
+        const load = async (): Promise<HistoryImageBytes | null> => {
+            const cached = await getCachedMedia(cacheKey).catch((error: unknown) => {
+                // A cache problem must not fail a read that worked without one
+                console.error('[luoxu-history] failed to read the image cache:', error);
+                return null;
+            });
+            if (cached !== null && cached.data !== null) return { data: cached.data, mime: cached.mime };
+
+            const downloaded = await download();
+            if (downloaded === null || downloaded.data.length > HISTORY_IMAGE_CACHE_MAX_BYTES) return downloaded;
+            try {
+                await withBusyRetry(
+                    () =>
+                        putCachedMedia({
+                            fileUniqueId: cacheKey,
+                            data: downloaded.data,
+                            sizeBytes: downloaded.data.length,
+                            mime: downloaded.mime,
+                            kind: 'history-image',
+                        }),
+                    'luoxu history image'
+                );
+            } catch (error) {
+                // Same: the bytes are already in hand, a cache write failure is not a read failure
+                console.error('[luoxu-history] failed to cache image bytes:', error);
+            }
+            return downloaded;
+        };
+
+        const pending = load();
+        inflightHistoryImages.set(cacheKey, pending);
+        try {
+            return await pending;
+        } finally {
+            if (inflightHistoryImages.get(cacheKey) === pending) inflightHistoryImages.delete(cacheKey);
+        }
     };
 
     return { search, findSenders, messages, stats, images, imageBytes };

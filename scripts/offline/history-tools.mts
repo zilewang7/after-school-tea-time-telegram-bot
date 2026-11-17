@@ -76,6 +76,7 @@ const hitOf = (message: FixtureMessage) => ({
     fromName: message.from_name,
     html: message.html,
     editedAt: null,
+    deletedAt: null,
 });
 
 const fixtureHit = () => hitOf(fixtureMessage());
@@ -745,6 +746,7 @@ cases.push(
             fromName: '张三',
             html: longHtml,
             editedAt: null,
+            deletedAt: null,
         }));
         const fake = fakeService({
             search: async () => outcomeOf(hits),

@@ -93,6 +93,8 @@ declare global {
             GCS_BUCKET?: string
             GOOGLE_APPLICATION_CREDENTIALS?: string
             LUOXU_PREVIEW_URL?: string
+            /** '0' bypasses the luoxu read caches (JSON TTL/LRU and archived image bytes) */
+            LUOXU_CACHE?: string
             /** Sliding batch window for merging a burst of triggers (default 500ms) */
             MENTION_BATCH_WINDOW_MS?: string
             /** Control panel HTTP port; unset = no panel server (set in compose, never in .env) */
