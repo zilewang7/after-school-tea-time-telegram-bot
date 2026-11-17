@@ -15,7 +15,8 @@ type MigratedTable =
   | 'media_cache'
   | 'harness_issues'
   | 'chat_settings'
-  | 'reply_metrics';
+  | 'reply_metrics'
+  | 'telegram_messages';
 
 /**
  * Whether the table exists yet. Migrations run before sync, so on a fresh
@@ -214,6 +215,17 @@ const migrateMediaCacheDurationSeconds = async (transaction: Transaction): Promi
   );
   if (tables.length === 0) return;
   await ensureColumn('media_cache', 'durationSeconds', 'INTEGER', transaction);
+};
+
+/**
+ * When Telegram no longer has the message (see Message.deletedAt). The column
+ * is nullable and stays NULL on every row the deletion watcher has not proven
+ * deleted, so old rows need no backfill; readers treat NULL as "not known
+ * deleted". A fresh database gets the column from the DTO at sync time.
+ */
+const migrateMessageDeletedAt = async (transaction: Transaction): Promise<void> => {
+  if (!(await tableExists('telegram_messages', transaction))) return;
+  await ensureColumn('telegram_messages', 'deletedAt', 'DATETIME', transaction);
 };
 
 /**
@@ -827,6 +839,7 @@ export const runSchemaMigrations = async (): Promise<void> => {
     await migrateThinkingEffortColumns(transaction);
     await migrateRichRepliesColumn(transaction);
     await migrateReplyMetricsTrialQuotaColumns(transaction);
+    await migrateMessageDeletedAt(transaction);
     await sequelize.query(
       `INSERT OR IGNORE INTO schema_migrations (name, appliedAt)
        VALUES ('20260908_custom_emoji_phase1', :appliedAt)`,
@@ -876,6 +889,12 @@ export const runSchemaMigrations = async (): Promise<void> => {
     await sequelize.query(
       `INSERT OR IGNORE INTO schema_migrations (name, appliedAt)
        VALUES ('20261115_message_media', :appliedAt)`,
+      { replacements: { appliedAt: new Date().toISOString() }, transaction }
+    );
+    // telegram_messages gained deletedAt (migrateMessageDeletedAt)
+    await sequelize.query(
+      `INSERT OR IGNORE INTO schema_migrations (name, appliedAt)
+       VALUES ('20261118_message_deleted_at', :appliedAt)`,
       { replacements: { appliedAt: new Date().toISOString() }, transaction }
     );
     // share_links is a brand-new table, created by migrateShareLinks above

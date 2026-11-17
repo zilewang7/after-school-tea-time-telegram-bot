@@ -42,6 +42,14 @@ export class Message extends Model<InferAttributes<Message>, InferCreationAttrib
   declare viaBot: string | null;
   /** Text recognized in this message's images, for models that can't see them */
   declare ocrText: string | null;
+  /**
+   * When Telegram no longer has this message (deleted by its sender or an
+   * admin). The Bot API never reports deletions, so this is written by the
+   * luoxu deletion watcher; NULL means "not known to be deleted", which is
+   * also every row stored before the watcher existed. Context building only
+   * adds a `[deleted]` annotation — the row keeps its text, media and links.
+   */
+  declare deletedAt: Date | null;
 }
 
 Message.init({
@@ -130,6 +138,11 @@ Message.init({
   },
   ocrText: {
     type: DataTypes.TEXT,
+    allowNull: true,
+    defaultValue: null,
+  },
+  deletedAt: {
+    type: DataTypes.DATE,
     allowNull: true,
     defaultValue: null,
   },

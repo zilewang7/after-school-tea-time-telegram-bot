@@ -23,6 +23,7 @@ import { startPanel, stopPanel } from './panel/index.js';
 import { loadModelPrices } from './services/model-price-service.js';
 import { loadModelCatalog } from './services/model-catalog-service.js';
 import { startPriceWatch } from './services/price-watch-service.js';
+import { startDeletedMessageWatch } from './services/luoxu-deleted-service.js';
 
 if (!process.env.BOT_TOKEN) {
     throw new Error('BOT_TOKEN must be provided');
@@ -157,6 +158,10 @@ async function main() {
     // alters the multi-GB message table; writes still must not race DDL.
     await dbReady;
     console.log('[db] Schema ready');
+    // Deleted messages are only visible to luoxu's MTProto account; this polls
+    // its deletion list and marks rows, so the model can see `[deleted]`.
+    // No-op without LUOXU_PREVIEW_URL; never on the reply path.
+    startDeletedMessageWatch();
     // Price table and model catalog live in SQLite; both loaders fall back to the
     // built-in seed on failure, so a broken row never blocks startup.
     await loadModelPrices();

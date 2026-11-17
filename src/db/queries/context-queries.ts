@@ -47,6 +47,12 @@ export interface ContextMessage {
     /** Text recognized in this message's images (models that can't see them) */
     ocrText: string | null;
     /**
+     * When Telegram no longer has the message. Only a `[deleted]` marker is
+     * added for it — the text, media and previews stay exactly as stored.
+     * NULL/undefined means the deletion watcher has not proven it deleted.
+     */
+    deletedAt: Date | null;
+    /**
      * The message is in the context for its words only: its media is
      * deliberately left out (a video `/chat r` pulled in). Set while the reply
      * tree is assembled, never stored.
@@ -83,6 +89,7 @@ export const toContextMessage = (msg: Message): ContextMessage => ({
     forwardFromId: msg.forwardFromId,
     viaBot: msg.viaBot,
     ocrText: msg.ocrText,
+    deletedAt: msg.deletedAt,
     mediaOmitted: false,
 });
 
@@ -313,6 +320,7 @@ export const getContextMessage = async (
             forwardFromId: null,
             viaBot: null,
             ocrText: null,
+            deletedAt: null,
             mediaOmitted: false,
         };
     }
@@ -341,6 +349,7 @@ export const getContextMessage = async (
             forwardFromId: null,
             viaBot: null,
             ocrText: null,
+            deletedAt: null,
             mediaOmitted: false,
         };
     }

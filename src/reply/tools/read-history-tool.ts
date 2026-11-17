@@ -107,6 +107,7 @@ const ensureEntry = async (
                 fromName: hit.fromName,
                 fromIsBot: hit.fromId !== null && hit.fromId === options.botUserId,
                 indexedHtml: hit.html,
+                deletedAt: hit.deletedAt,
                 ...(groupName ? { groupName } : {}),
             }),
         };

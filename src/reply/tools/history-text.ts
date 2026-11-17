@@ -286,7 +286,12 @@ export const forwardHintOf = (forward: HistoryForward | null | undefined): strin
 /** One line of live-context annotations for a message read from the archive */
 export const annotationsOf = (entry: HistoryEntry): string => {
     const parts = [forwardHintOf(entry.forward), mediumHintOf(entry.media)].filter((part) => part.length > 0);
-    return parts.length > 0 ? parts.map((part) => (part.startsWith('[') ? part : `[sent ${part}]`)).join(' ') : '';
+    // Deletion is a fact about the message as it is now, so it comes first; it
+    // is a plain note, not one of the `[sent …]`-wrapped hints.
+    const marker = entry.deletedAt !== null && entry.deletedAt !== undefined ? '（已删除）' : '';
+    const annotations = parts.map((part) => (part.startsWith('[') ? part : `[sent ${part}]`));
+    if (marker !== '') annotations.unshift(marker);
+    return annotations.join(' ');
 };
 
 /** Our own wire format in user text must not read as an instruction */

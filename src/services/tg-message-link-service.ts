@@ -133,6 +133,12 @@ export interface TgMessageLinkPlanEntry {
     parsed: ParsedTelegramMessageLink;
     /** Within the media budget: its attachments may ride along */
     withMedia: boolean;
+    /**
+     * Set when the same canonical link was already planned for a newer message
+     * of this context: the entry renders one pointer line to that message
+     * instead of repeating the snapshot, and does not consume the block budget.
+     */
+    duplicateOfMessageId?: number;
 }
 
 export type TgMessageLinkPlan = TgMessageLinkPlanEntry[];
@@ -656,6 +662,8 @@ export const planTgMessageLinkPreviews = (
     const maxWithMedia = options.maxWithMedia ?? MAX_BLOCKS_WITH_MEDIA;
     const plan = new Map<number, TgMessageLinkPlan>();
     let blocks = 0;
+    // canonical URL → the message whose full snapshot the budget was spent on
+    const planned = new Map<string, number>();
 
     for (let index = messages.length - 1; index >= 0 && blocks < maxBlocks; index -= 1) {
         const message = messages[index];
@@ -667,8 +675,16 @@ export const planTgMessageLinkPreviews = (
 
         const entries: TgMessageLinkPlan = [];
         for (const parsed of links) {
+            const plannedFor = planned.get(parsed.url);
+            if (plannedFor !== undefined) {
+                // The snapshot is already paid for: a pointer line costs its
+                // tokens, not a second block of the per-context budget.
+                entries.push({ parsed, withMedia: false, duplicateOfMessageId: plannedFor });
+                continue;
+            }
             if (blocks >= maxBlocks) break;
             entries.push({ parsed, withMedia: blocks < maxWithMedia });
+            planned.set(parsed.url, message.messageId);
             blocks += 1;
         }
         if (entries.length) plan.set(message.messageId, entries);
@@ -897,6 +913,25 @@ const renderFromDb = async (
     return parts;
 };
 
+/**
+ * One pointer line for a link whose full snapshot is already injected under
+ * another message of this context (`#N`). Keeps the URL so the model can still
+ * tell which link it names.
+ */
+const buildDuplicateSnapshotNote = (
+    url: string,
+    snapshotMessageId: number,
+    contextNumbers: ReadonlyMap<number, number>
+): UnifiedContentPart => {
+    const number = contextNumbers.get(snapshotMessageId);
+    return {
+        type: 'text',
+        text: number === undefined
+            ? `[system] 消息链接：${url} → 同一链接的快照已在本上下文中注入，不重复。`
+            : `[system] 消息链接：${url} → 同一链接的快照已在 #${number} 注入，不重复。`,
+    };
+};
+
 const renderOne = async (
     chatId: number,
     entry: TgMessageLinkPlanEntry,
@@ -904,6 +939,12 @@ const renderOne = async (
     chatTitle: string | null
 ): Promise<UnifiedContentPart[]> => {
     const { url, link } = entry.parsed;
+
+    // The same canonical link was already planned for another message: one
+    // pointer line, never the snapshot twice.
+    if (entry.duplicateOfMessageId !== undefined) {
+        return [buildDuplicateSnapshotNote(url, entry.duplicateOfMessageId, contextNumbers)];
+    }
 
     // A same-chat link whose target is already numbered in this context: point
     // at the number instead of repeating the message and its media.

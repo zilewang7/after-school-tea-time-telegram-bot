@@ -59,6 +59,7 @@ const BASE_DESCRIPTION =
     '检索本聊天的历史归档（luoxu 的全文索引，覆盖更早的消息、链接预览正文、Instant View 全文与图片 OCR 文本）。' +
     '返回按时间从新到旧的命中列表，每条带 hN 编号、时间、发送者、#N 或 t.me 链接、消息首行与命中处的上下文片段；不含正文全文，需要时用 read_history 读。' +
     '索引里的图片 OCR 文字会被标注（如「（图片 OCR 文字）」），它不是消息正文，别当成发送者说的话。' +
+    '已被 Telegram 删除的消息会标注（已删除）：内容仍是归档里的索引与原文，可以照常读取引用，只是它已不在聊天里。' +
     `事实：默认返回最新 ${HISTORY_DEFAULT_LIMIT} 条命中，limit 最多 ${HISTORY_MAX_LIMIT} 条（不是相关性排序）；` +
     'query 支持空格 AND、OR、"短语"、-排除、括号，中文不需要分词；省略 query 时按时间列出最近的消息；' +
     '用 sender / from / to 收窄，用 before 翻到更早的一页。' +
@@ -379,6 +380,7 @@ export const createSearchHistoryTool = (options: HistoryToolOptions): ToolHandle
                     fromIsBot:
                         message?.senderIsBot ?? (hit.fromId !== null && hit.fromId === options.botUserId),
                     indexedHtml: hit.html,
+                    deletedAt: hit.deletedAt,
                     ...(groupName ? { groupName } : {}),
                     ...(message
                         ? {

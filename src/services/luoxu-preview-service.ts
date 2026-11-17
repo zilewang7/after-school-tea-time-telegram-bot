@@ -339,13 +339,117 @@ const buildPreviewText = (preview: CachedLinkPreview): string => {
     return lines.join('\n');
 };
 
+/** One cached preview's context parts plus the identity of its content */
+export interface LinkPreviewContent {
+    readonly parts: UnifiedContentPart[];
+    /**
+     * Identity of the preview's content: the fields injected plus the media
+     * bytes (a gs:// URI for cloud media). The URL and the embed URL are left
+     * out on purpose, so the same content reached through two spellings of a
+     * link (share/tracking parameters) shares one identity.
+     */
+    readonly identity: string;
+}
+
+const mediaIdentityOf = (cached: { fileUri: string | null; data: Buffer | null }): string => {
+    if (cached.fileUri) return `uri:${cached.fileUri}`;
+    if (cached.data) return `sha256:${createHash('sha256').update(cached.data).digest('hex')}`;
+    return 'missing';
+};
+
+const previewIdentityOf = (
+    preview: CachedLinkPreview,
+    mediaIdentities: readonly string[]
+): string =>
+    createHash('sha256')
+        .update(JSON.stringify({
+            siteName: preview.siteName,
+            title: preview.title,
+            author: preview.author,
+            description: preview.description,
+            fullText: preview.fullText,
+            ocrText: preview.ocrText,
+            media: mediaIdentities,
+        }))
+        .digest('hex');
+
 /**
  * Build the context parts (text + media) for the first URL found in a message
  * text, reading only from the cache — acquisition happens in autoSave. Returns
- * [] when disabled, no URL, cache miss, or status 'none'.
+ * null when disabled, no URL, cache miss, or status 'none'.
  *
  * `includeOcrFallback` adds the text recognized in the preview images, for
  * models that would otherwise receive nothing at all about them.
+ */
+export const getLinkPreviewWithIdentity = async (
+    text: string | null | undefined,
+    options: {
+        includeOcrFallback?: boolean;
+        /** false: the text parts only, no media bytes are read (the panel's tree view) */
+        withMedia?: boolean;
+    } = {}
+): Promise<LinkPreviewContent | null> => {
+    if (!isLuoxuPreviewEnabled()) return null;
+    const url = extractFirstUrl(text);
+    if (!url) return null;
+
+    const preview = await getLinkPreviewFromCache(url);
+    if (!preview || preview.status !== 'ready') return null;
+
+    const parts: UnifiedContentPart[] = [{ type: 'text', text: buildPreviewText(preview) }];
+
+    if (options.includeOcrFallback && preview.ocrText) {
+        parts.push({ type: 'text', text: buildOcrFallbackPart(preview.ocrText) });
+    }
+
+    const mediaIdentities: string[] = [];
+    if (options.withMedia !== false) {
+        for (const item of preview.mediaItems) {
+            const cached = await getCachedMedia(item.mediaKey);
+            if (!cached) continue; // media expired (autoClear) → text-only degrade
+
+            if (cached.fileUri) {
+                const ageMs = Date.now() - new Date(cached.createdAt).getTime();
+                if (ageMs > MEDIA_URI_TTL_MS) continue;
+                mediaIdentities.push(mediaIdentityOf(cached));
+                parts.push({
+                    type: 'media',
+                    fileUri: cached.fileUri,
+                    sizeBytes: cached.sizeBytes ?? undefined,
+                    mimeType: cached.mime,
+                    mediaKind: cached.kind,
+                });
+                continue;
+            }
+
+            if (!cached.data) continue;
+            mediaIdentities.push(mediaIdentityOf(cached));
+            const base64 = cached.data.toString('base64');
+            if (cached.mime.startsWith('image/')) {
+                parts.push({
+                    type: 'image',
+                    imageData: base64,
+                    sizeBytes: cached.sizeBytes ?? cached.data.length,
+                    mimeType: cached.mime,
+                });
+            } else {
+                parts.push({
+                    type: 'media',
+                    mediaData: base64,
+                    sizeBytes: cached.sizeBytes ?? cached.data.length,
+                    mimeType: cached.mime,
+                    mediaKind: cached.kind,
+                });
+            }
+        }
+    }
+
+    return { parts, identity: previewIdentityOf(preview, mediaIdentities) };
+};
+
+/**
+ * The parts only (see getLinkPreviewWithIdentity). The panel's tree view and
+ * the share page show one preview per message and do not need the identity.
  */
 export const getLinkPreviewParts = async (
     text: string | null | undefined,
@@ -354,57 +458,5 @@ export const getLinkPreviewParts = async (
         /** false: the text parts only, no media bytes are read (the panel's tree view) */
         withMedia?: boolean;
     } = {}
-): Promise<UnifiedContentPart[]> => {
-    if (!isLuoxuPreviewEnabled()) return [];
-    const url = extractFirstUrl(text);
-    if (!url) return [];
-
-    const preview = await getLinkPreviewFromCache(url);
-    if (!preview || preview.status !== 'ready') return [];
-
-    const parts: UnifiedContentPart[] = [{ type: 'text', text: buildPreviewText(preview) }];
-
-    if (options.includeOcrFallback && preview.ocrText) {
-        parts.push({ type: 'text', text: buildOcrFallbackPart(preview.ocrText) });
-    }
-    if (options.withMedia === false) return parts;
-
-    for (const item of preview.mediaItems) {
-        const cached = await getCachedMedia(item.mediaKey);
-        if (!cached) continue; // media expired (autoClear) → text-only degrade
-
-        if (cached.fileUri) {
-            const ageMs = Date.now() - new Date(cached.createdAt).getTime();
-            if (ageMs > MEDIA_URI_TTL_MS) continue;
-            parts.push({
-                type: 'media',
-                fileUri: cached.fileUri,
-                sizeBytes: cached.sizeBytes ?? undefined,
-                mimeType: cached.mime,
-                mediaKind: cached.kind,
-            });
-            continue;
-        }
-
-        if (!cached.data) continue;
-        const base64 = cached.data.toString('base64');
-        if (cached.mime.startsWith('image/')) {
-            parts.push({
-                type: 'image',
-                imageData: base64,
-                sizeBytes: cached.sizeBytes ?? cached.data.length,
-                mimeType: cached.mime,
-            });
-        } else {
-            parts.push({
-                type: 'media',
-                mediaData: base64,
-                sizeBytes: cached.sizeBytes ?? cached.data.length,
-                mimeType: cached.mime,
-                mediaKind: cached.kind,
-            });
-        }
-    }
-
-    return parts;
-};
+): Promise<UnifiedContentPart[]> =>
+    (await getLinkPreviewWithIdentity(text, options))?.parts ?? [];

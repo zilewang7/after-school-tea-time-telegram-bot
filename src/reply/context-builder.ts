@@ -16,7 +16,7 @@ import {
 import { listMessageMediaForMessages } from '../db/queries/message-media-queries.js';
 import type { StoredMessageMedia } from '../db/messageMediaDTO.js';
 import { assembleContextMessages, isSubImage, type ContextNumbering } from './context-assembly.js';
-import { getLinkPreviewParts } from '../services/luoxu-preview-service.js';
+import { getLinkPreviewWithIdentity } from '../services/luoxu-preview-service.js';
 import {
     getTgMessageLinkPreviewParts,
     planTgMessageLinkPreviews,
@@ -342,7 +342,11 @@ const buildReplyAnnotations = async (
 
 /**
  * The square-bracket annotations of a user message's header, in header order:
- * forward origin, inline bot, reply context, attached media.
+ * deletion, forward origin, inline bot, reply context, attached media.
+ *
+ * `[deleted]` is only a marker: the message keeps its body, media, previews and
+ * reply edges — the model is told that whoever it answers can no longer see
+ * the original message, nothing about the content changes.
  */
 const headerAnnotationsOf = (
     msg: ContextMessage,
@@ -350,6 +354,9 @@ const headerAnnotationsOf = (
     mediaVisible: boolean
 ): string[] => {
     const annotations: string[] = [];
+    if (msg.deletedAt) {
+        annotations.push('[deleted]');
+    }
     if (msg.forwardOrigin) {
         annotations.push(`[forwarded from ${msg.forwardOrigin}]`);
     }
@@ -581,7 +588,9 @@ const buildAssistantTextTurn = (
     })();
 
     const contextNumber = inputs.index.numberOf.get(msg.messageId);
-    const numberLabel = contextNumber === undefined ? '' : `[#${contextNumber}]\n`;
+    // A deleted reply keeps its body and attachments; only the mark is added
+    const deletionMark = msg.deletedAt ? ' [deleted]' : '';
+    const numberLabel = contextNumber === undefined ? '' : `[#${contextNumber}]${deletionMark}\n`;
     // The file message itself, named (the bytes are not replayed)
     const fileNote = msg.mediaHint?.startsWith('a file: ') ? `[sent ${msg.mediaHint}]\n` : '';
     // A card's HTML is never replayed either. What the model reads back is the
@@ -667,6 +676,12 @@ interface TurnInputs {
     customEmojiAtlasParts: UnifiedContentPart[];
     answeredElsewhereNumber?: number;
     messageLinkPlan?: TgMessageLinkPlan;
+    /**
+     * Link previews already injected in this context, by content identity →
+     * the `#N` that carries them. Shared across the messages of one build so a
+     * preview repeated by several messages is paid for once.
+     */
+    seenLinkPreviews: Map<string, number>;
     /** The widget each bot message of the context carried, by message id */
     widgetSurfaces: ReadonlyMap<number, WidgetSurfaceInfo>;
     chatTitle: string | null;
@@ -691,6 +706,7 @@ const buildUserMessage = async (
         customEmojiAtlasParts,
         answeredElsewhereNumber,
         messageLinkPlan,
+        seenLinkPreviews,
         chatTitle,
     } = inputs;
     const replyAnnotations = await buildReplyAnnotations(msg, index, inputs.exclusions);
@@ -735,11 +751,32 @@ const buildUserMessage = async (
     }
 
     // Link preview (text + media) for the first URL, served from the
-    // URL-addressed cache filled by autoSave via luoxu.
-    const previewParts = await getLinkPreviewParts(msg.text, {
+    // URL-addressed cache filled by autoSave via luoxu. The same preview
+    // content reached through several messages (a link re-posted, or the
+    // group's x.com → fxtwitter conversion pulled in beside the original) is
+    // injected once: the first occurrence keeps the block, later ones get one
+    // pointer line, and their preview media never reaches the context a second
+    // time.
+    let previewParts: UnifiedContentPart[] = [];
+    const linkPreview = await getLinkPreviewWithIdentity(msg.text, {
         includeOcrFallback: !capabilities.supportsImageInput,
     });
-    parts.push(...previewParts);
+    if (linkPreview !== null) {
+        const keptAt = seenLinkPreviews.get(linkPreview.identity);
+        if (keptAt !== undefined) {
+            parts.push({
+                type: 'text',
+                text: `[system] 链接预览与 #${keptAt} 相同，不再重复。`,
+            });
+        } else {
+            const contextNumber = index.numberOf.get(msg.messageId);
+            if (contextNumber !== undefined) {
+                seenLinkPreviews.set(linkPreview.identity, contextNumber);
+            }
+            previewParts = linkPreview.parts;
+            parts.push(...previewParts);
+        }
+    }
 
     // t.me message links: the linked message (+ the one it replies to) and its
     // media, read from the snapshot cache or our own database.
@@ -1010,6 +1047,10 @@ export const buildContext = async (
     ]);
 
     const turns: MediaDedupeInput[] = [];
+    // One preview block per distinct preview content in this build (see
+    // buildUserMessage): the first message that carries it keeps the parts,
+    // every later one gets a pointer line.
+    const seenLinkPreviews = new Map<string, number>();
     for (const contextMsg of contextMessages) {
         // Loaded once: the turn is built from these parts, and the tool index
         // keeps the pictures among them before any capability filtering
@@ -1025,6 +1066,7 @@ export const buildContext = async (
             customEmojiAtlasParts: contextMsg.messageId === messageId ? customEmojiPlan.atlasParts : [],
             answeredElsewhereNumber: repliesInFlightElsewhere.get(contextMsg.messageId),
             messageLinkPlan: messageLinkPlan.get(contextMsg.messageId),
+            seenLinkPreviews,
             widgetSurfaces,
             chatTitle: opts.chatTitle ?? null,
             dryRun,

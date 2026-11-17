@@ -33,6 +33,12 @@ export interface HistoryMessageInput {
     readonly media?: HistoryMedia | null;
     /** Where it was forwarded from */
     readonly forward?: HistoryForward | null;
+    /**
+     * Unix seconds of the deletion luoxu recorded for this message, or null
+     * when it is not known deleted. Only a marker in the rendered result —
+     * the entry itself (text, media, ids) is unchanged.
+     */
+    readonly deletedAt?: number | null;
 }
 
 export interface HistoryEntry extends HistoryMessageInput {
@@ -67,6 +73,8 @@ const merge = (existing: HistoryEntry, input: HistoryMessageInput): HistoryEntry
     replyToId: input.replyToId ?? existing.replyToId,
     media: input.media ?? existing.media,
     forward: input.forward ?? existing.forward,
+    // Deletion is monotonic: once known it stays known
+    deletedAt: input.deletedAt ?? existing.deletedAt,
 });
 
 export const createHistoryState = (): HistoryState => {
