@@ -162,6 +162,47 @@ results.push(
 );
 
 results.push(
+    await runCase('without a cursor the watcher resumes after the newest stored mark', async () => {
+        resetDeletedMessageWatch();
+        // Later than every mark another case wrote, so the maximum is known
+        const resumedAt = 1_810_000_000;
+        await seedMessage({ text: 'marked earlier', deletedAt: new Date(resumedAt * 1000) });
+        const requests: string[] = [];
+        luoxu.handle((request, response) => {
+            requests.push(request.url ?? '');
+            response.writeHead(200, { 'Content-Type': 'application/json' });
+            response.end(JSON.stringify({ deleted: [], has_more: false }));
+        });
+
+        await pollDeletedMessagesOnce();
+        expect(requests.length === 1, 'one request');
+        expect(
+            requests[0]?.includes(`since=${resumedAt}&`) === true,
+            `the cursor is the stored mark in unix seconds (got ${requests[0]})`
+        );
+    })
+);
+
+results.push(
+    await runCase('with no stored mark the watcher starts at the retention window', async () => {
+        resetDeletedMessageWatch();
+        await Message.update({ deletedAt: null }, { where: {} });
+        const requests: string[] = [];
+        luoxu.handle((request, response) => {
+            requests.push(request.url ?? '');
+            response.writeHead(200, { 'Content-Type': 'application/json' });
+            response.end(JSON.stringify({ deleted: [], has_more: false }));
+        });
+
+        await pollDeletedMessagesOnce();
+        const since = Number(new URL(requests[0] ?? 'http://x/', 'http://x/').searchParams.get('since'));
+        const expected = Math.floor(Date.now() / 1000) - 7 * 24 * 60 * 60;
+        expect(Number.isFinite(since), `a numeric cursor was sent (request: ${requests[0]})`);
+        expect(Math.abs(since - expected) < 120, `cursor is ~7 days ago in seconds (got ${since}, expected ~${expected})`);
+    })
+);
+
+results.push(
     await runCase('an unreachable luoxu changes nothing and does not throw', async () => {
         resetDeletedMessageWatch();
         const messageId = await seedMessage({ text: 'still here' });

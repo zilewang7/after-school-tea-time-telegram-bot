@@ -48,7 +48,11 @@ interface DeletedPage {
     readonly hasMore: boolean;
 }
 
-/** Unix seconds of the newest mark already in the database, or null */
+/**
+ * Unix seconds of the newest mark already in the database, or null. The whole
+ * watcher speaks seconds (that is what `/deleted`'s `since` and `t` use), so
+ * the stored DATETIME is converted here, not at every comparison.
+ */
 const latestMarkedAt = async (): Promise<number | null> => {
     const rows = await sequelize.query<{ latest: string | null }>(
         'SELECT MAX(deletedAt) AS latest FROM telegram_messages',
@@ -57,7 +61,7 @@ const latestMarkedAt = async (): Promise<number | null> => {
     const latest = rows[0]?.latest ?? null;
     if (latest === null) return null;
     const parsed = Date.parse(latest);
-    return Number.isFinite(parsed) ? parsed : null;
+    return Number.isFinite(parsed) ? Math.floor(parsed / 1000) : null;
 };
 
 const luoxuBaseUrl = (): string => process.env.LUOXU_PREVIEW_URL ?? '';
@@ -175,7 +179,7 @@ export const pollDeletedMessagesOnce = async (since?: number): Promise<number> =
     let at = since ?? cursor;
     if (at === null) {
         const latest = await latestMarkedAt();
-        at = latest === null ? Date.now() - RETENTION_MS : latest;
+        at = latest === null ? Math.floor((Date.now() - RETENTION_MS) / 1000) : latest;
     }
 
     for (let page = 0; page < MAX_PAGES_PER_POLL; page += 1) {
