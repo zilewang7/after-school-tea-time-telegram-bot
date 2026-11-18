@@ -42,6 +42,7 @@ import {
     formatActionTime,
     renderModelOverview,
     renderModelSwitch,
+    renderThinkingSwitch,
     type ChatMenuView,
     type ChatModelView,
     type ChatThinkingView,
@@ -225,12 +226,14 @@ const thinkingToastOf = (requested: ThinkingEffortValue | null): string => {
     return `思考等级已设为 ${THINKING_EFFORT_LABELS[requested]}`;
 };
 
-/** Store one thinking setting; the menu then re-renders the overview */
+/** Store one thinking setting; the message becomes the record of that change */
 const applyThinkingChange = async (
     chatId: number,
     userId: number,
     requested: ThinkingEffortValue | null
 ): Promise<ThinkingChangeOutcome> => {
+    // Captured before the write: the record names the level it replaced
+    const previous = chatThinkingViewOf(chatId);
     try {
         await updateChatSettings({
             chatId,
@@ -245,7 +248,11 @@ const applyThinkingChange = async (
     }
     return {
         kind: 'changed',
-        text: renderModelOverview(chatMenuViewOf(chatId)),
+        text: renderThinkingSwitch({
+            current: chatMenuViewOf(chatId),
+            previous,
+            actionTime: formatActionTime(),
+        }),
         toast: thinkingToastOf(requested),
     };
 };

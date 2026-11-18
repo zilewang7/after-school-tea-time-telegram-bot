@@ -16,6 +16,8 @@
  *   the current model's catalog efforts, the toggle models add 关闭思考,
  *   `thk:` never falls into the `mdl:` otherwise branch, and a stored value the
  *   new model does not offer is shown with the vendor-default note.
+ * - A thinking-level change leaves the same record a model switch does: the new
+ *   level, the model, the level it replaced and the time.
  *
  * Run: npx tsx scripts/offline/model-menu.mts
  */
@@ -108,6 +110,12 @@ const lastEditText = (): string => {
     const text = telegram.callsOf('editMessageText').at(-1)?.payload.text;
     return typeof text === 'string' ? text : '';
 };
+
+const FOOTER = '\n\n只对本聊天生效。点击下方按钮选择模型或思考等级，也可用 /model +模型名 手动指定';
+
+/** The buttons the last in-place text edit showed (the change record's keyboard) */
+const lastEditedKeyboardRows = (): MenuButton[][] =>
+    rowsOfMarkup(fieldsOf(telegram.callsOf('editMessageText').at(-1)?.payload.reply_markup));
 
 const thinkingOf = (chatId: number): string | null =>
     service.getChatSettings(chatId)?.thinkingEffort ?? null;
@@ -397,7 +405,7 @@ const cases: { name: string; body: () => Promise<void> }[] = [
         },
     },
     {
-        name: 'picking an effort stores it, audits it and the overview follows; default and off too',
+        name: 'picking an effort stores it, audits it and the record names what it replaced; default and off too',
         body: async () => {
             const chatId = -7008;
             await setModelFor(chatId, 'gemini-4-hydrogen');
@@ -410,9 +418,24 @@ const cases: { name: string; body: () => Promise<void> }[] = [
                 lastToastOf(telegram) === '思考等级已设为 极高',
                 `the toast names the level (got ${String(lastToastOf(telegram))})`
             );
+            const record = lastEditText();
             expect(
-                lastEditText().includes('思考等级：极高（本聊天设置）'),
-                `the menu text follows the change (got ${json(lastEditText())})`
+                record.startsWith(
+                    '思考等级切换为：极高\n当前模型：gemini-4-hydrogen（本聊天单独设置）\n上一个思考等级：模型默认（高）\n操作时间：'
+                ) &&
+                    /\n操作时间：\d{2}:\d{2}:\d{2} \S+/.test(record) &&
+                    record.endsWith(FOOTER),
+                `the record states the change, the model, the replaced level and the time (got ${json(record)})`
+            );
+            expect(
+                json(lastEditedKeyboardRows()) ===
+                    json([
+                        [
+                            { text: '🧩 模型选择', data: 'mdl:expand' },
+                            { text: '🧠 思考等级', data: 'thk:expand' },
+                        ],
+                    ]),
+                `the record keeps the dual keyboard (got ${json(lastEditedKeyboardRows())})`
             );
             const audit = (await chatAuditOf(chatId)).find((entry) => entry.key === 'thinkingEffort');
             expect(audit?.oldValue === null && audit?.newValue === 'xhigh', `the write is audited (got ${json(audit)})`);
@@ -421,8 +444,10 @@ const cases: { name: string; body: () => Promise<void> }[] = [
             expect(thinkingOf(chatId) === null, '模型默认 clears the stored value');
             expect(lastToastOf(telegram) === '已恢复模型默认', `the default toast (got ${String(lastToastOf(telegram))})`);
             expect(
-                lastEditText().includes('思考等级：模型默认（高）'),
-                `the overview goes back to the vendor default (got ${json(lastEditText())})`
+                lastEditText().startsWith(
+                    '思考等级切换为：模型默认（高）\n当前模型：gemini-4-hydrogen（本聊天单独设置）\n上一个思考等级：极高\n操作时间：'
+                ),
+                `the record names the level it replaced (got ${json(lastEditText())})`
             );
 
             const deepseekChat = -7009;
@@ -432,8 +457,10 @@ const cases: { name: string; body: () => Promise<void> }[] = [
             expect(thinkingOf(deepseekChat) === 'off', `the off switch is stored (got ${String(thinkingOf(deepseekChat))})`);
             expect(lastToastOf(telegram) === '已关闭思考', `the off toast (got ${String(lastToastOf(telegram))})`);
             expect(
-                lastEditText().includes('思考等级：关闭思考（本聊天设置）'),
-                `the overview says thinking is off (got ${json(lastEditText())})`
+                lastEditText().startsWith(
+                    '思考等级切换为：关闭思考\n当前模型：deepseek-flash（本聊天单独设置）\n上一个思考等级：模型默认（思考开）\n操作时间：'
+                ),
+                `the toggle record reads like the others (got ${json(lastEditText())})`
             );
         },
     },

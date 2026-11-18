@@ -6,6 +6,8 @@
  * The same overview also states the chat's thinking level (thinking-effort
  * design 2026-1113-1742 §4.1): the stored value, its source and — for a value
  * the current model does not offer — the fact that the vendor default applies.
+ * A change replaces the overview with a record of that change, for the model
+ * and the thinking level alike.
  */
 import { match } from 'ts-pattern';
 import { concatMessages, type RenderedMessage } from 'telegram-md-entities';
@@ -52,6 +54,15 @@ export interface ChatMenuView {
 export interface ModelSwitchView {
     readonly current: ChatMenuView;
     readonly previousModel: string;
+    /** See formatActionTime */
+    readonly actionTime: string;
+}
+
+/** What a thinking-level change reports: the new value and the stored one it replaced */
+export interface ThinkingSwitchView {
+    readonly current: ChatMenuView;
+    /** The chat's thinking view before the change */
+    readonly previous: ChatThinkingView;
     /** See formatActionTime */
     readonly actionTime: string;
 }
@@ -109,6 +120,16 @@ export const thinkingSummaryOf = (thinking: ChatThinkingView): string => {
     return `${label}（本聊天设置）`;
 };
 
+/**
+ * The value a change record names: the stored choice only, without the source
+ * or the applicability notes — the record tells what changed, not how it applies.
+ */
+const thinkingChoiceLabelOf = (thinking: ChatThinkingView): string => {
+    if (thinking.value === null) return `模型默认（${defaultThinkingTextOf(thinking)}）`;
+    if (thinking.value === 'off') return '关闭思考';
+    return THINKING_EFFORT_LABELS[thinking.value];
+};
+
 const openaiReasoningPrefixes: readonly string[] = ['gpt-5', 'gpt-6', 'o1', 'o3', 'o4'];
 
 /**
@@ -151,6 +172,25 @@ export const renderModelSwitch = (change: ModelSwitchView): RenderedMessage =>
         plainText(thinkingSummaryOf(change.current.thinking)),
         plainText('\n上一个模型：'),
         codeText(change.previousModel),
+        plainText('\n操作时间：'),
+        codeText(change.actionTime),
+        FOOTER
+    );
+
+/**
+ * After a thinking-level change: the same record a model switch leaves, so the
+ * menu message says what changed, what it replaced and when — the plain
+ * overview would hide the fact that a change just happened.
+ */
+export const renderThinkingSwitch = (change: ThinkingSwitchView): RenderedMessage =>
+    concatMessages(
+        plainText('思考等级切换为：'),
+        plainText(thinkingChoiceLabelOf(change.current.thinking)),
+        plainText('\n当前模型：'),
+        codeText(change.current.model.model),
+        plainText(sourceNoteOf(change.current.model.source)),
+        plainText('\n上一个思考等级：'),
+        plainText(thinkingChoiceLabelOf(change.previous)),
         plainText('\n操作时间：'),
         codeText(change.actionTime),
         FOOTER
