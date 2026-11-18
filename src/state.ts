@@ -326,8 +326,11 @@ const MAX_CONTEXT_NUMBERINGS = 200;
 
 /**
  * Record the numbering of one assembled context, keyed by the user message the
- * reply answers. Retries and version switches overwrite the same key, so the
- * links rendered for a response always match the context it was built from.
+ * reply answers. A value is the message its `#N` link opens: the message the
+ * number stands for, except a bot reply's number, which opens the first message
+ * carrying that reply's body. Retries and version switches overwrite the same
+ * key, so the links rendered for a response always match the context it was
+ * built from.
  */
 export const setContextNumbering = (
     chatId: number,

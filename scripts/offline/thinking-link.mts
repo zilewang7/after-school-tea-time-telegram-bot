@@ -52,6 +52,9 @@ const linkService = await import('../../src/panel/thinking/thinking-link-service
 const thinkingStreamModule = await import('../../src/panel/thinking/thinking-stream.js');
 const thinkingStore = await import('../../src/panel/thinking/thinking-store.js');
 const dbIndex = await import('../../src/db/index.js');
+const { buildContext } = await import('../../src/reply/context-builder.js');
+const { getContextNumbering } = await import('../../src/state.js');
+const { buildMessageLinkResolver } = await import('../../src/telegram/message-link.js');
 
 const { THINKING_LINK_LABEL } = await import('../../src/telegram/formatters/thinking-link.js');
 
@@ -431,6 +434,74 @@ results.push(
         });
         const live = thinkingStreamModule.thinkingStream.read(attemptKey);
         expect(live?.done === true, 'finalize marks the live thinking as finished');
+    })
+);
+
+results.push(
+    await runCase('a later context links this reply to its body, not to the link message', async () => {
+        const { telegram, chatContext, response } = await runLinkReply();
+        const firstMessageId = chatContext.session.firstMessageId;
+        await quietly(() => responseHandler.sendFinalResponse(chatContext, response));
+
+        const stored = await dbIndex.getBotResponse(chatContext.chatId, firstMessageId);
+        const version = stored?.getVersions().at(-1);
+        const bodyMessageId = version?.messageIds[1];
+        expect(
+            version?.thinkingLinkToken !== undefined &&
+                bodyMessageId !== undefined &&
+                bodyMessageId !== firstMessageId,
+            `the stored reply leads with the link message and continues with the body (got ${JSON.stringify(version?.messageIds)})`
+        );
+        if (bodyMessageId === undefined) return;
+        const bodyEdit = telegram
+            .callsOf('editMessageText')
+            .filter((call) => call.payload.message_id === bodyMessageId)
+            .at(-1);
+        expect(
+            payloadText(bodyEdit?.payload ?? {}).includes('答案来了'),
+            'the second message is the one carrying the answer'
+        );
+
+        // A user message answering the reply: the next context numbers it, and
+        // its `#N` must open the body message a reader can read
+        const followUpId = takeMessageId();
+        await db.Message.create({
+            chatId: chatContext.chatId,
+            messageId: followUpId,
+            fromBotSelf: false,
+            userId: USER_ID,
+            date: new Date(),
+            userName: 'tester',
+            text: '这一条回复说了什么',
+            quoteText: null,
+            file: null,
+            fileMime: null,
+            fileUniqueId: null,
+            replyToId: firstMessageId,
+            chatCommand: null,
+            modelParts: null,
+            mediaHint: null,
+            forwardOrigin: null,
+            forwardFromId: null,
+            viaBot: null,
+            ocrText: null,
+        });
+        const followUp = await db.Message.findOne({
+            where: { chatId: chatContext.chatId, messageId: followUpId },
+        });
+        if (!followUp) throw new Error('the follow-up message is not stored');
+        await buildContext(followUp);
+
+        const numbering = getContextNumbering(chatContext.chatId, followUpId);
+        expect(
+            numbering?.get(1) === bodyMessageId,
+            `the reply's number opens its body (got ${numbering?.get(1)})`
+        );
+        const resolver = buildMessageLinkResolver(chatContext.chatId, followUpId);
+        expect(
+            resolver?.(1) === `https://t.me/c/${String(chatContext.chatId).slice(4)}/${bodyMessageId}`,
+            `the reply's number links to its body (got ${resolver?.(1)})`
+        );
     })
 );
 

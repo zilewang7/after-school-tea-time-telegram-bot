@@ -302,7 +302,7 @@ const cases: E2eCase[] = [
             const urls = contextLinksOf(botMsg);
             expect(
                 urls.includes(expectedUrl),
-                `the cited number links to the bot's own reply, i.e. its first message (want ${expectedUrl}, got: ${urls.join(',') || 'none'})`
+                `the cited number links to the bot's own reply, i.e. the first message carrying its body (want ${expectedUrl}, got: ${urls.join(',') || 'none'})`
             );
         },
     },

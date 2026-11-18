@@ -18,6 +18,7 @@ import {
     openCodeGoSessionId,
 } from '../ai/index.js';
 import {
+    getContextNumbering,
     getMediaGroupIdTemp,
     isAsyncFileSavePending,
     isAsyncPreviewPending,
@@ -412,6 +413,8 @@ export const handleReply = async (
         tools,
         toolState,
         contextIndex,
+        // A continued reply renders its `#N` links with the same numbering
+        numbering: getContextNumbering(chatId, userMessageId),
         conversationRootIds: built.conversationRootIds,
         promptAddendum: settings.promptAddendum,
         thinkingEffort: settings.thinkingEffort,

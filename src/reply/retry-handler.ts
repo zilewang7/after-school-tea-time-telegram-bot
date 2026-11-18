@@ -53,6 +53,7 @@ import {
 import type { UnifiedContentPart } from '../ai/types.js';
 import { checkpointSinkFor } from './resume/keep-checkpoint.js';
 import { captureResumeFacts } from './resume/resume-facts.js';
+import { getContextNumbering } from '../state.js';
 import { priorityRequestOf } from './priority-request.js';
 import { thinkingRequestOf } from './thinking-request.js';
 
@@ -401,6 +402,8 @@ const handleChatRetry = async (
         tools,
         toolState,
         contextIndex,
+        // A continued reply renders its `#N` links with the same numbering
+        numbering: getContextNumbering(chatId, botResponse.userMessageId),
         conversationRootIds: builtContext.conversationRootIds,
         promptAddendum: settings.promptAddendum,
         thinkingEffort: settings.thinkingEffort,

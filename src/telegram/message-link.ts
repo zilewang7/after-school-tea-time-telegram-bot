@@ -3,8 +3,11 @@
  *
  * The numbering only exists inside one assembled context, so it is looked up
  * from the registry buildContext fills, keyed by the user message the reply
- * belongs to. Resolved lazily at render time: the registry is written after the
- * chat context (and its editor) already exist.
+ * belongs to. A value is already the message its link should open: a bot
+ * reply's number is stored as the first message carrying its body, never as
+ * the long-CoT link message that may lead the reply. Resolved lazily at render
+ * time: the registry is written after the chat context (and its editor)
+ * already exist.
  */
 import { getContextNumbering } from '../state.js';
 import type { ContextLinkResolver } from './formatters/context-links.js';

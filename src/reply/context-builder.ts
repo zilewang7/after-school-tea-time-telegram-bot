@@ -13,6 +13,7 @@ import {
     type MessageFileContents,
     type WidgetSurfaceInfo,
 } from '../db/queries/context-queries.js';
+import { findBotReplyBodyMessageIds } from '../db/queries/bot-reply-body-queries.js';
 import { listMessageMediaForMessages } from '../db/queries/message-media-queries.js';
 import type { StoredMessageMedia } from '../db/messageMediaDTO.js';
 import { assembleContextMessages, isSubImage, type ContextNumbering } from './context-assembly.js';
@@ -200,18 +201,32 @@ const oneLineExcerpt = (text: string, maxChars: number): string => {
  * model writes back into clickable message links. Display-only: the reply that
  * gets persisted keeps the plain numbers.
  *
- * A bot reply split across several Telegram messages is stored under its
- * firstMessageId alone (see session.finalize), so the number maps to the first
- * message of the reply — which is exactly where the link should land.
+ * A bot reply is stored under its first message id alone (see session.finalize),
+ * but that message is not always the answer: a long-CoT reply leads with the
+ * link message that hides the thinking, so its number opens the message the
+ * body starts in (see findBotReplyBodyMessageIds).
  */
-const publishContextNumbering = (
+const publishContextNumbering = async (
     chatId: number,
     userMessageId: number,
     index: ContextNumbering
-): void => {
+): Promise<void> => {
+    const botReplyIds = [...index.byId.values()]
+        .filter((message) => message.fromBotSelf)
+        .map((message) => message.messageId);
+    // Display-only: a failed read must not fail the reply. Its bot numbers then
+    // open the stored reply ids, as they did before the body layout was known.
+    let bodyMessageIds = new Map<number, number>();
+    try {
+        bodyMessageIds = await findBotReplyBodyMessageIds(chatId, botReplyIds);
+    } catch (error) {
+        console.warn('[context-builder] bot reply link targets failed, keeping the stored ids:', error);
+    }
     const messageIdOf = new Map<number, number>();
     for (const [messageId, contextNumber] of index.numberOf) {
-        messageIdOf.set(contextNumber, messageId);
+        // A bot reply's link target is its first body message; everything else
+        // links to the message the number stands for.
+        messageIdOf.set(contextNumber, bodyMessageIds.get(messageId) ?? messageId);
     }
     setContextNumbering(chatId, userMessageId, messageIdOf);
 };
@@ -1014,7 +1029,7 @@ export const buildContext = async (
                 text: contextMessage.text,
             }))
     );
-    if (!dryRun) publishContextNumbering(chatId, messageId, index);
+    if (!dryRun) await publishContextNumbering(chatId, messageId, index);
     const repliesInFlightElsewhere = findRepliesInFlightElsewhere(chatId, messageId, index);
 
     const [contextUsers, customEmojiPlan, widgetSurfaces, storedMediaByMessageId] = await Promise.all([

@@ -20,6 +20,12 @@ export interface ResumeFactsInput {
     readonly tools: TurnTools;
     readonly toolState: ReplyToolState;
     readonly contextIndex: ContextIndex;
+    /**
+     * The display numbering buildContext just published, when the caller has
+     * it: a bot reply's number opens the message its body starts in, which the
+     * context index does not know. Falls back to the index's own ids.
+     */
+    readonly numbering?: ReadonlyMap<number, number>;
     readonly conversationRootIds: readonly number[];
     readonly promptAddendum: string | null;
     /** The chat's thinking level setting the request used; null = the model default */
@@ -30,7 +36,7 @@ export interface ResumeFactsInput {
     readonly builtAt: number;
 }
 
-/** `#N` → message id; the same numbering buildContext published for the links */
+/** `#N` → message id from the context index alone; the fallback when the published numbering is gone */
 const numberingOf = (contextIndex: ContextIndex): Map<number, number> =>
     new Map([...contextIndex].map(([number, entry]) => [number, entry.messageId] as const));
 
@@ -69,7 +75,7 @@ export const thinkingEffortRefusalNoticeOf = (
 export const captureResumeFacts = (input: ResumeFactsInput): ReplyResumeFacts => ({
     toolState: input.toolState,
     context: {
-        numbering: numberingOf(input.contextIndex),
+        numbering: input.numbering ?? numberingOf(input.contextIndex),
         contextIndex: input.contextIndex,
         conversationRootIds: [...input.conversationRootIds],
         promptAddendum: input.promptAddendum,
