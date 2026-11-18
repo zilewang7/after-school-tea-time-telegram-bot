@@ -242,6 +242,21 @@ cases.push(
 );
 
 cases.push(
+    await runCase('the search_history description explains whole-word matching and prefix search', async () => {
+        const tool = createSearchHistoryTool(buildOptions(fakeService({})));
+        const description = tool.definition.description;
+        expect(description.includes('整词索引'), 'it says Latin words are indexed whole');
+        expect(description.includes('docker*'), 'it shows the word-tail prefix form');
+        expect(description.includes('*ocker'), 'it says a mid-word fragment cannot be searched');
+        expect(description.includes('纯单词'), 'it says the marker only works on a bare word');
+        expect(description.includes('#FooBar*'), 'it shows the symbol pitfall of issue #11');
+        expect(description.includes('时有时无'), 'it says the implicit prefix fallback is unreliable');
+        const queryDescription = propertyDescriptionOf(tool.definition.inputSchema, 'query');
+        expect(queryDescription.includes('docker*'), 'the query parameter repeats the prefix form');
+    })
+);
+
+cases.push(
     await runCase('read arguments need exactly one of ids and around', async () => {
         expect(!args.parseHistoryReadArgs({}).ok, 'neither ids nor around is refused');
         expect(!args.parseHistoryReadArgs({ ids: ['h1'], around: 'h2' }).ok, 'both together are refused');
@@ -285,6 +300,22 @@ cases.push(
         const urlOnly = textKit.keywordWindow('https://<span class="keyword">foo</span>.com/x', 'foo');
         expect(urlOnly !== null && urlOnly.urlOnly, 'a highlight that only exists in a URL is flagged');
         expect(textKit.keywordWindow('<b>no highlight</b>', 'foo') === null, 'no highlight means no window');
+    })
+);
+
+cases.push(
+    await runCase('the keyword window follows a prefix query', async () => {
+        expect(
+            textKit.literalTerms('dock*').join('|') === 'dock',
+            'the prefix marker is not part of the literal term'
+        );
+        expect(
+            textKit.literalTerms('显卡 OR -dock*').join('|') === '显卡|dock',
+            'the operators and the marker are both dropped'
+        );
+        const window = textKit.keywordWindow('<span class="keyword">Docker</span> 这样写', 'dock*');
+        expect(window !== null && window.term === 'dock', 'the window centers the prefix word');
+        expect(window !== null && window.text.includes('Docker'), 'the prefix hit is in the window');
     })
 );
 
@@ -516,7 +547,18 @@ cases.push(
         const result = await execute(tool, { query: '不存在的东西' });
         expect(!result.isError, 'no hits is not an error');
         expect(result.content.includes('没有找到匹配的历史消息'), 'it says there is no match');
-        expect(result.content.includes('本群归档：42 条消息，2024-01-02 03:04 至 2024-02-03 04:05'), 'and how far back the archive goes');
+        expect(
+            result.content.includes('本群归档：42 条消息，2024-01-02 03:04 至 2024-02-03 04:05'),
+            'and how far back the archive goes'
+        );
+        expect(!result.content.includes('词尾加 *'), 'a Chinese miss gets no prefix hint');
+        const latin = await execute(tool, { query: 'FooBar' });
+        expect(latin.content.includes('词尾加 *'), 'a Latin miss explains the word-tail prefix form');
+        expect(!latin.content.includes('放宽时间'), 'an unfiltered miss suggests no filter change');
+        const starred = await execute(tool, { query: 'FooBar*' });
+        expect(!starred.content.includes('词尾加 *'), 'a query that already uses the marker gets no advice');
+        const narrowed = await execute(tool, { query: 'FooBar', sender: '123456' });
+        expect(narrowed.content.includes('放宽时间'), 'a narrowed miss also suggests loosening the filter');
     })
 );
 

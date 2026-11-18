@@ -61,7 +61,10 @@ export const literalTerms = (query: string | null | undefined): readonly string[
     const tokens = query.replace(/[()]/g, ' ').split(/\s+/);
     const terms: string[] = [];
     for (const token of tokens) {
-        const bare = token.replace(/^["']|["']$/g, '').replace(/^-/, '');
+        // A trailing `*` is Groonga's prefix marker (docker*): the highlight in
+        // the index text is the matched word itself, so the window looks for the
+        // literal word without it.
+        const bare = token.replace(/^["']|["']$/g, '').replace(/^-/, '').replace(/^\*+|\*+$/g, '');
         if (!bare) continue;
         if (/^(OR|AND|NOT)$/i.test(bare)) continue;
         terms.push(bare);

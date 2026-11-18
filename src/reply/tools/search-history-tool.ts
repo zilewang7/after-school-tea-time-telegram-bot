@@ -56,13 +56,17 @@ import {
 import { SEARCH_HISTORY_TOOL_NAME } from './tool-names.js';
 
 const BASE_DESCRIPTION =
-    '检索本聊天的历史归档（luoxu 的全文索引，覆盖更早的消息、链接预览正文、Instant View 全文与图片 OCR 文本）。' +
-    '返回按时间从新到旧的命中列表，每条带 hN 编号、时间、发送者、#N 或 t.me 链接、消息首行与命中处的上下文片段；不含正文全文，需要时用 read_history 读。' +
+    '检索本聊天的历史归档（luoxu 全文索引：更早的消息、链接预览正文、Instant View、图片 OCR 文本）。' +
+    '返回按时间从新到旧的命中列表，每条带 hN、时间、发送者、#N 或 t.me 链接、消息首行与命中处片段；不含正文全文，需要时用 read_history 读。' +
     '索引里的图片 OCR 文字会被标注（如「（图片 OCR 文字）」），它不是消息正文，别当成发送者说的话。' +
-    '已被 Telegram 删除的消息会标注（已删除）：内容仍是归档里的索引与原文，可以照常读取引用，只是它已不在聊天里。' +
+    '已被 Telegram 删除的消息会标注（已删除）：内容仍在索引与原文里，可以照常引用，只是它已不在聊天里。' +
     `事实：默认返回最新 ${HISTORY_DEFAULT_LIMIT} 条命中，limit 最多 ${HISTORY_MAX_LIMIT} 条（不是相关性排序）；` +
-    'query 支持空格 AND、OR、"短语"、-排除、括号，中文不需要分词；省略 query 时按时间列出最近的消息；' +
-    '用 sender / from / to 收窄，用 before 翻到更早的一页。' +
+    'query 规则：空格 = AND、OR = 或、- = 排除、括号分组；中文按字索引，连续中文片段可搜；' +
+    '英文/驼峰词（如 FixupX）按整词索引、大小写不敏感，docker 不含 dockerfile：要词首前缀就写 docker*，' +
+    '* 只加在纯单词上（#FooBar* 无效，写 FooBar* 或整标签），词中片段（*ocker）搜不到；' +
+    '不写 * 时前缀匹配时有时无（按年份段、词序都会变），要前缀就写 *；' +
+    '英文多词用空格 AND（引号短语不可靠）；没命中换词尾 * 或更常见的整词再试，别凭一次结果断定归档里没有；' +
+    '省略 query 时按时间列出最近的消息；用 sender / from / to 收窄，用 before 翻到更早的一页。' +
     '返回的头部会带归档覆盖的消息数与时间范围（跨群时为全部归档群合计）。';
 
 const inputSchemaOf = (channelId: number | null): Readonly<Record<string, unknown>> => ({
@@ -70,7 +74,7 @@ const inputSchemaOf = (channelId: number | null): Readonly<Record<string, unknow
     properties: {
         query: {
             type: 'string',
-            description: `关键词，例如 "显卡 推荐"、RAG OR 检索、"Agent Memory"；上限 ${HISTORY_MAX_QUERY_CHARS} 字符。省略则按时间列最近消息。`,
+            description: `关键词，例如 "显卡 推荐"、RAG OR 检索、docker*；英文/驼峰词按整词匹配，要词首前缀就在纯单词词尾加 *；上限 ${HISTORY_MAX_QUERY_CHARS} 字符。省略则按时间列最近消息。`,
         },
         sender: {
             type: 'string',
@@ -284,6 +288,21 @@ const summarizeSearchArgs = (
         limit: args.limit ?? null,
     });
 
+/**
+ * A zero-hit Latin query is usually the whole-word index rather than an empty
+ * archive: a prefix of a word that also exists on its own can miss. Say it where
+ * the model reads the empty result, and only when the suggestion is actionable
+ * (`FooBar*` needs no marker advice, and a narrowed search also has a filter to
+ * loosen).
+ */
+const latinMissHintOf = (query: string | null, narrowed: boolean): string => {
+    if (query === null || query.includes('*') || !/[A-Za-z]/.test(query)) return '';
+    const advice = '英文/驼峰词按整词匹配：要词首前缀就在纯单词词尾加 *（如 dock*），词中片段搜不到';
+    return narrowed
+        ? `（${advice}；也试试放宽时间/发言人再搜，别就此断定归档里没有。）`
+        : `（${advice}。换个写法再试，别就此断定归档里没有。）`;
+};
+
 export const createSearchHistoryTool = (options: HistoryToolOptions): ToolHandler => {
     const timeZone = historyTimeZoneOf(options);
     // The owner's private chat has no luoxu channel, so its searches are cross-group
@@ -359,7 +378,12 @@ export const createSearchHistoryTool = (options: HistoryToolOptions): ToolHandle
             ].filter((part): part is string => part !== null);
 
             if (hits.length === 0) {
-                const empty = `历史检索：${conditions.join('，')}，范围=${scopeLabel}，没有找到匹配的历史消息。`;
+                const narrowed =
+                    searchArgs.sender !== null ||
+                    searchArgs.from !== null ||
+                    searchArgs.to !== null ||
+                    searchArgs.before !== null;
+                const empty = `历史检索：${conditions.join('，')}，范围=${scopeLabel}，没有找到匹配的历史消息。${latinMissHintOf(searchArgs.query, narrowed)}`;
                 return historyToolSuccess(status === null ? empty : `${empty}\n${status}`);
             }
 
