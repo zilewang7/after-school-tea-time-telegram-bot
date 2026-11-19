@@ -56,12 +56,18 @@ export const ShareBubble = ({ token, bubble, widgetIndex, autoFocusWidget = fals
         [richBlocks, bubble.media.length]
     );
 
-    return (
-        <article className={`share-bubble ${bubble.kind}`}>
-            <p className="share-bubble-head">
-                <span className="share-bubble-author">{authorName}</span>
-                <span className="hint">{formatDateTime(bubble.createdAt)}</span>
-            </p>
+    // A deleted message starts folded; its head stays visible. Its widget must
+    // not scroll into view while the body is hidden.
+    const deleted = bubble.deleted;
+    const head = (
+        <>
+            <span className="share-bubble-author">{authorName}</span>
+            {deleted && <span className="badge">已删除</span>}
+            <span className="hint">{formatDateTime(bubble.createdAt)}</span>
+        </>
+    );
+    const body = (
+        <>
             {bubble.replyTo !== null && <ReplyTargetLine target={bubble.replyTo} />}
             {quote !== null && quote !== '' && <blockquote className="quote">{quote}</blockquote>}
             {richBlocks !== null ? (
@@ -112,8 +118,24 @@ export const ShareBubble = ({ token, bubble, widgetIndex, autoFocusWidget = fals
                     token={token}
                     index={widgetIndex}
                     caption={bubble.widget.caption}
-                    autoFocus={autoFocusWidget}
+                    autoFocus={autoFocusWidget && !deleted}
                 />
+            )}
+        </>
+    );
+
+    return (
+        <article className={`share-bubble ${bubble.kind}`}>
+            {deleted ? (
+                <details className="share-fold">
+                    <summary className="share-bubble-head">{head}</summary>
+                    <div className="share-fold-body">{body}</div>
+                </details>
+            ) : (
+                <>
+                    <p className="share-bubble-head">{head}</p>
+                    {body}
+                </>
             )}
         </article>
     );

@@ -521,6 +521,8 @@ export interface MemberUserNode extends TreeNodePosition {
     linkPreview: string | null;
     ocrText: string | null;
     excluded: boolean;
+    // Deleted in Telegram: the tree folds the body by default
+    deleted: boolean;
     // The message this one answers, when it can be resolved
     replyTo: ReplyTarget | null;
     // Every attachment of the bubble in display order (own media first, then the rest of its media group)
@@ -534,6 +536,8 @@ export interface MemberUserNode extends TreeNodePosition {
 export interface BotNode extends TreeNodePosition {
     kind: 'bot';
     excluded: boolean;
+    // Deleted in Telegram: the tree folds the body by default
+    deleted: boolean;
     // Members only: observers get null
     replyTo: ReplyTarget | null;
     reply: ReplySummary;
@@ -1334,6 +1338,8 @@ export interface PublicShareBubble {
     kind: 'user' | 'bot';
     messageId: number;
     createdAt: string;
+    // Deleted in Telegram: the bubble folds its body by default
+    deleted: boolean;
     // The user's display name; absent on bot bubbles
     authorName?: string;
     text: string;

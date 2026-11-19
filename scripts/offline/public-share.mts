@@ -33,12 +33,13 @@ process.env.BOT_USER_ID = String(BOT_USER_ID);
 process.env.LUOXU_PREVIEW_URL = 'http://luoxu.test';
 delete process.env.ALLOWED_CHAT_IDS;
 
-await setupOfflineDb();
+const offlineDb = await setupOfflineDb();
 const registry = await import('../../src/db/queries/panel-registry.js');
 const db = await import('../../src/db/index.js');
 const service = await import('../../src/panel/share/share-link-service.js');
 const store = await import('../../src/panel/share/share-store.js');
 const publicApi = await import('../../src/panel/share/public-api.js');
+const exclusions = await import('../../src/db/queries/context-exclusions.js');
 const shareUrls = await import('../../src/panel/share/share-urls.js');
 const startParam = await import('../../src/panel/auth/start-param.js');
 const { createPanelApp } = await import('../../src/panel/app.js');
@@ -165,6 +166,12 @@ const asRecord = (value: unknown): Record<string, unknown> =>
     typeof value === 'object' && value !== null && !Array.isArray(value)
         ? Object.fromEntries(Object.entries(value))
         : {};
+
+/** The bubbles of a public conversation share view */
+const bubblesOf = (shareView: Record<string, unknown>): Record<string, unknown>[] => {
+    const bubbles = asRecord(shareView['conversation'])['bubbles'];
+    return Array.isArray(bubbles) ? bubbles.map(asRecord) : [];
+};
 
 const cases: { name: string; body: () => Promise<void> }[] = [
     {
@@ -312,6 +319,11 @@ const cases: { name: string; body: () => Promise<void> }[] = [
             const userBubble = bubbles[0] ?? {};
             expect(userBubble.kind === 'user' && userBubble.messageId === rootId, 'the user bubble');
             expect(userBubble.authorName === 'Alice', 'the display name');
+            expect(
+                bubbles.every((bubble) => typeof bubble.deleted === 'boolean'),
+                'every bubble states whether its message is deleted'
+            );
+            expect(userBubble.deleted === false, 'the root is not deleted here');
             const userMedia = Array.isArray(userBubble.media) ? userBubble.media.map(asRecord) : [];
             expect(
                 userMedia.length === 1 &&
@@ -326,6 +338,7 @@ const cases: { name: string; body: () => Promise<void> }[] = [
 
             const botBubble = bubbles[1] ?? {};
             expect(botBubble.kind === 'bot' && botBubble.messageId === botId, 'the bot bubble');
+            expect(botBubble.deleted === false, 'the bot message is not deleted here');
             expect(botBubble.text === 'bot 的回答', 'the bot text');
             expect(botBubble.mediaHint === null, 'a bot bubble has no media hint');
             expect(asRecord(botBubble.widget).caption === '会话说明', 'the bot widget caption');
@@ -337,6 +350,28 @@ const cases: { name: string; body: () => Promise<void> }[] = [
             expect(
                 botReplyTo.messageId === rootId && botReplyTo.authorName === 'Alice' && botReplyTo.snippet === '用户的问题',
                 `the bot bubble names the message it answers (got ${JSON.stringify(botBubble.replyTo)})`
+            );
+
+            // The public API reads the database per request: marking the row is enough
+            await offlineDb.Message.update(
+                { deletedAt: new Date('2026-11-18T12:00:00.000Z') },
+                { where: { chatId: GROUP, messageId: rootId } }
+            );
+            const markedBody = await jsonOf(await app.request(`/api/public/shares/${created.share.token}`));
+            const markedBubbles = bubblesOf(asRecord(markedBody.share));
+            const markedUser = markedBubbles.find((bubble) => bubble.messageId === rootId);
+            const markedBot = markedBubbles.find((bubble) => bubble.messageId === botId);
+            expect(markedUser?.deleted === true, `the deleted message is flagged (got ${JSON.stringify(markedUser?.deleted)})`);
+            expect(markedBot?.deleted === false, 'the bubble that is still there is not flagged');
+
+            await exclusions.excludeMessage({ chatId: GROUP, messageId: rootId, actorId: ALICE.id });
+            const excludedBody = await jsonOf(await app.request(`/api/public/shares/${created.share.token}`));
+            const excludedBubbles = bubblesOf(asRecord(excludedBody.share));
+            expect(excludedBubbles.length === markedBubbles.length - 1, `the excluded bubble leaves the share (got ${excludedBubbles.length})`);
+            expect(!excludedBubbles.some((bubble) => bubble.messageId === rootId), 'the excluded message is gone');
+            expect(
+                excludedBubbles.every((bubble) => typeof bubble.deleted === 'boolean'),
+                'the remaining bubble keeps the deleted field'
             );
         },
     },

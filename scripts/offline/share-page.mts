@@ -30,7 +30,7 @@ process.env.WEBAPP_SHARE_SECRET = 'offline-share-secret';
 process.env.BOT_USER_ID = '9999';
 delete process.env.ALLOWED_CHAT_IDS;
 
-await setupOfflineDb();
+const offlineDb = await setupOfflineDb();
 const registry = await import('../../src/db/queries/panel-registry.js');
 const db = await import('../../src/db/index.js');
 const service = await import('../../src/panel/share/share-link-service.js');
@@ -402,11 +402,37 @@ const cases: { name: string; body: () => Promise<void> }[] = [
             expect(html.includes('↳ 回复') && html.includes('Alice'), 'the bot bubble names the message it answers');
             expect(html.includes(`src="/s/${created.share.token}/widget/0"`), 'the conversation widget');
             expect(html.includes('2 条消息') || html.includes('对话分享'), 'conversation meta');
+            expect(!mainOf(html).includes('bubble-fold'), 'nothing folds while no message is deleted');
             expect(
                 (await app.request(`/s/${created.share.token}/media/${rootId}/image`)).status === 200,
                 'the user image is served'
             );
+
+            // The page reads the database per request, so marking the row is enough
+            await offlineDb.Message.update(
+                { deletedAt: new Date('2026-11-18T12:00:00.000Z') },
+                { where: { chatId: GROUP, messageId: rootId } }
+            );
+            const folded = await textOf(await app.request(`/s/${created.share.token}`));
+            expect(folded.includes('<details class="bubble-fold">'), 'a deleted bubble folds by default');
+            expect(folded.includes('<summary class="bubble-head">'), 'the bubble head is the summary');
+            expect(folded.includes('<span class="deleted-flag">已删除</span>'), 'the summary names the deletion');
+            expect(folded.includes('用户的问题'), 'the folded text is still in the page (folded, not hidden)');
+            expect(folded.split('<details class="bubble-fold">').length - 1 === 1, 'exactly the deleted bubble folds');
+            const userBubbleStart = folded.indexOf('<article class="bubble user">');
+            const botBubbleStart = folded.indexOf('<article class="bubble bot">');
+            expect(
+                userBubbleStart > 0 && folded.slice(userBubbleStart, botBubbleStart).includes('<details class="bubble-fold">'),
+                'the user bubble is the folded one'
+            );
+            expect(
+                !folded.slice(botBubbleStart, folded.indexOf('</main>')).includes('bubble-fold'),
+                'a bubble that is not deleted keeps its markup'
+            );
+
             await exclusions.excludeMessage({ chatId: GROUP, messageId: rootId, actorId: ALICE.id });
+            const excludedHtml = await textOf(await app.request(`/s/${created.share.token}`));
+            expect(!excludedHtml.includes('用户的问题'), 'an excluded message is not on the page at all');
             expect(
                 (await app.request(`/s/${created.share.token}/media/${rootId}/image`)).status === 404,
                 'an excluded message is not exposed'

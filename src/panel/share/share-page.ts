@@ -111,6 +111,19 @@ body {
 .bubble-head { display: flex; align-items: baseline; gap: 8px; margin-bottom: 6px; }
 .author { font-weight: 600; font-size: 14px; }
 .time { color: var(--muted); font-size: 12px; }
+.deleted-flag {
+  border: 1px solid var(--line); border-radius: 999px; padding: 0 8px;
+  color: var(--muted); font-size: 12px; line-height: 18px; white-space: nowrap;
+}
+/* A deleted bubble folds its body into <details>: the browser is the whole fold. */
+.bubble-fold > summary { list-style: none; cursor: pointer; }
+.bubble-fold > summary::-webkit-details-marker { display: none; }
+.bubble-fold > summary.bubble-head { margin-bottom: 0; }
+.bubble-fold[open] > summary.bubble-head { margin-bottom: 6px; }
+.bubble-fold > summary::after {
+  content: '展开'; margin-left: auto; color: var(--muted); font-size: 12px; font-weight: 400;
+}
+.bubble-fold[open] > summary::after { content: '收起'; }
 .md { white-space: pre-wrap; overflow-wrap: anywhere; }
 .md strong { font-weight: 700; }
 .md a { color: var(--accent); text-decoration: none; }
@@ -412,6 +425,22 @@ const mediaFigure = (
 const textBlock = (markdown: string, emptyLabel: string): string =>
     markdown === '' ? `<div class="md empty">${escapeHtml(emptyLabel)}</div>` : `<div class="md">${markdownToHtml(markdown)}</div>`;
 
+/** The bubble head: author, time, and the flag when the message was deleted */
+const bubbleHead = (authorName: string, createdAt: string, deleted: boolean): string => {
+    const author = `<span class="author">${escapeHtml(authorName)}</span>`;
+    const time = `<span class="time">${escapeHtml(formatTime(createdAt))}</span>`;
+    return deleted
+        ? `<summary class="bubble-head">${author}${time}<span class="deleted-flag">已删除</span></summary>`
+        : `<div class="bubble-head">${author}${time}</div>`;
+};
+
+/**
+ * A deleted bubble is folded by default. `<details>` keeps the body in the
+ * document but out of the way until the reader opens it, with no script.
+ */
+const bubbleContent = (head: string, deleted: boolean, body: readonly string[]): string[] =>
+    deleted ? ['<details class="bubble-fold">', head, ...body, '</details>'] : [head, ...body];
+
 /** The message a bubble answers: `↳ 回复 黑猫：…` */
 const replyTargetBlock = (target: ShareReplyTarget | null): string => {
     if (target === null) return '';
@@ -465,6 +494,7 @@ interface BotBubbleInput {
     /** The bot message whose version this bubble shows (owns its media route ids) */
     readonly messageId: number;
     readonly createdAt: string;
+    readonly deleted: boolean;
     readonly text: string;
     readonly richAnswerMarkdown: string | undefined;
     readonly widget: ShareWidgetContent | null;
@@ -503,10 +533,11 @@ const botBubble = (input: BotBubbleInput): string => {
     const body = rich === null ? textBlock(input.text, '（无正文）') : rich.body;
     return [
         '<article class="bubble bot">',
-        `<div class="bubble-head"><span class="author">${BOT_NAME}</span><span class="time">${escapeHtml(formatTime(input.createdAt))}</span></div>`,
-        replyTargetBlock(input.replyTo),
-        body,
-        ...attachments,
+        ...bubbleContent(bubbleHead(BOT_NAME, input.createdAt, input.deleted), input.deleted, [
+            replyTargetBlock(input.replyTo),
+            body,
+            ...attachments,
+        ]),
         '</article>',
     ].join('');
 };
@@ -524,12 +555,13 @@ const userBubble = (token: string, bubble: ShareUserBubble): string => {
     ].join('');
     return [
         '<article class="bubble user">',
-        `<div class="bubble-head"><span class="author">${escapeHtml(bubble.authorName)}</span><span class="time">${escapeHtml(formatTime(bubble.createdAt))}</span></div>`,
-        replyTargetBlock(bubble.replyTo),
-        quoteBlock(bubble.quote),
-        textBlock(bubble.text, '（无正文）'),
-        media,
-        previewTextBlock(bubble.previewText),
+        ...bubbleContent(bubbleHead(bubble.authorName, bubble.createdAt, bubble.deleted), bubble.deleted, [
+            replyTargetBlock(bubble.replyTo),
+            quoteBlock(bubble.quote),
+            textBlock(bubble.text, '（无正文）'),
+            media,
+            previewTextBlock(bubble.previewText),
+        ]),
         '</article>',
     ].join('');
 };
@@ -540,6 +572,8 @@ const renderReplyBody = (input: SharePageInput, content: ShareReplyContent): str
         token: input.token,
         messageId: content.firstMessageId,
         createdAt: content.createdAt,
+        // A reply share shows one response version: there is no message to fold
+        deleted: false,
         text: content.text,
         richAnswerMarkdown: content.richAnswerMarkdown,
         widget: content.widget,
@@ -563,6 +597,7 @@ const renderConversationBody = (input: SharePageInput, content: ShareConversatio
                 token: input.token,
                 messageId: bubble.messageId,
                 createdAt: bubble.createdAt,
+                deleted: bubble.deleted,
                 text: bubble.text,
                 richAnswerMarkdown: bubble.richAnswerMarkdown,
                 widget: bubble.widget,

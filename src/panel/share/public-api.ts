@@ -91,6 +91,8 @@ export interface PublicShareBubbleView {
     kind: 'user' | 'bot';
     messageId: number;
     createdAt: string;
+    /** Telegram no longer has the message; the Mini App folds it by default */
+    deleted: boolean;
     /** User bubbles only */
     authorName?: string;
     text: string;
@@ -182,6 +184,7 @@ const bubbleViewOf = (bubble: ShareBubble): PublicShareBubbleView => {
             kind: 'user',
             messageId: bubble.messageId,
             createdAt: bubble.createdAt,
+            deleted: bubble.deleted,
             authorName: bubble.authorName,
             text: bubble.text,
             quote: bubble.quote,
@@ -200,6 +203,7 @@ const bubbleViewOf = (bubble: ShareBubble): PublicShareBubbleView => {
         kind: 'bot',
         messageId: bubble.messageId,
         createdAt: bubble.createdAt,
+        deleted: bubble.deleted,
         text: bubble.text,
         ...(bubble.richAnswerMarkdown === undefined ? {} : { richAnswerMarkdown: bubble.richAnswerMarkdown }),
         mediaHint: null,

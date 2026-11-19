@@ -19,37 +19,62 @@ interface FlatViewProps {
 const numberLabelOf = (number: number | null): string | null => (number === null ? null : `#${number}`);
 
 /** One user message as a chat bubble; observers get a placeholder instead (their text is redacted) */
-const MemberBubble = ({ node }: { node: MemberUserNode }) => (
-    <article className={node.excluded ? 'flat-bubble user excluded' : 'flat-bubble user'}>
-        <p className="flat-bubble-head">
+const MemberBubble = ({ node }: { node: MemberUserNode }) => {
+    // A deleted or excluded bubble shows only its head until it is opened.
+    const folded = node.excluded || node.deleted;
+    const head = (
+        <>
             <span className="tree-author">{node.author.name}</span>
             {node.author.username !== null && <span className="chat-username">@{node.author.username}</span>}
             {numberLabelOf(node.number) !== null && <span className="tree-number">{numberLabelOf(node.number)}</span>}
+            {node.deleted && <span className="badge">已删除</span>}
             {node.excluded && <span className="badge warning">已排除</span>}
             <span className="hint tree-date">{formatDateTime(node.date)}</span>
-        </p>
-        {node.replyTo !== null && <ReplyTargetBlock target={node.replyTo} />}
-        {node.quote !== null && <blockquote className="quote">{node.quote}</blockquote>}
-        {node.text !== null && node.text !== '' && <FoldableText text={node.text} foldLines={12} foldChars={800} />}
-        {node.media.map((item) => (
-            <MediaAttachmentView key={item.url} media={item} />
-        ))}
-        {node.previewMedia.map((preview) => (
-            <MediaAttachmentView key={preview.url} media={preview} />
-        ))}
-        {node.media.length === 0 && node.mediaHint !== null && <p className="hint">[{node.mediaHint}]</p>}
-        {node.linkPreview !== null && (
-            <CollapsibleSection title="网页预览" summary={null}>
-                <FoldableText text={node.linkPreview} foldLines={10} />
-            </CollapsibleSection>
-        )}
-        {node.ocrText !== null && node.ocrText !== '' && (
-            <CollapsibleSection title="图片文字" summary={null}>
-                <FoldableText text={node.ocrText} foldLines={10} />
-            </CollapsibleSection>
-        )}
-    </article>
-);
+        </>
+    );
+    const body = (
+        <>
+            {node.replyTo !== null && <ReplyTargetBlock target={node.replyTo} />}
+            {node.quote !== null && <blockquote className="quote">{node.quote}</blockquote>}
+            {node.text !== null && node.text !== '' && (
+                <FoldableText text={node.text} foldLines={12} foldChars={800} />
+            )}
+            {node.media.map((item) => (
+                <MediaAttachmentView key={item.url} media={item} />
+            ))}
+            {node.previewMedia.map((preview) => (
+                <MediaAttachmentView key={preview.url} media={preview} />
+            ))}
+            {node.media.length === 0 && node.mediaHint !== null && <p className="hint">[{node.mediaHint}]</p>}
+            {node.linkPreview !== null && (
+                <CollapsibleSection title="网页预览" summary={null}>
+                    <FoldableText text={node.linkPreview} foldLines={10} />
+                </CollapsibleSection>
+            )}
+            {node.ocrText !== null && node.ocrText !== '' && (
+                <CollapsibleSection title="图片文字" summary={null}>
+                    <FoldableText text={node.ocrText} foldLines={10} />
+                </CollapsibleSection>
+            )}
+        </>
+    );
+
+    return (
+        <article className={node.excluded ? 'flat-bubble user excluded' : 'flat-bubble user'}>
+            {folded ? (
+                <details className="flat-fold">
+                    <summary className="flat-bubble-head">{head}</summary>
+                    <div className="flat-fold-body">{body}</div>
+                </details>
+            ) : (
+                <>
+                    <p className="flat-bubble-head">{head}</p>
+                    {body}
+                </>
+            )}
+        </article>
+    );
+};
 
 const ObserverBubble = ({ node }: { node: ObserverUserNode }) => (
     <article className="flat-bubble user redacted">
@@ -75,20 +100,25 @@ const BotBubble = ({ node, chatId }: { node: BotNode; chatId: number }) => {
         [reply.richAnswerMarkdown, reply.media]
     );
     const detailPath = replyPath(chatId, node.messageId);
-    return (
-        <article className={node.excluded ? 'flat-bubble bot excluded' : 'flat-bubble bot'}>
-            <p className="flat-bubble-head">
-                <span className="tree-author">bot</span>
-                {numberLabelOf(node.number) !== null && <span className="tree-number">{numberLabelOf(node.number)}</span>}
-                {reply.versionCount > 0 && (
-                    <span className="badge">
-                        v{reply.currentVersion ?? reply.versionCount}/{reply.versionCount}
-                    </span>
-                )}
-                {reply.model !== null && <span className="hint">{reply.model}</span>}
-                {node.excluded && <span className="badge warning">已排除</span>}
-                <span className="hint tree-date">{formatDateTime(node.date)}</span>
-            </p>
+    // A deleted or excluded reply shows only its head until it is opened.
+    const folded = node.excluded || node.deleted;
+    const head = (
+        <>
+            <span className="tree-author">bot</span>
+            {numberLabelOf(node.number) !== null && <span className="tree-number">{numberLabelOf(node.number)}</span>}
+            {reply.versionCount > 0 && (
+                <span className="badge">
+                    v{reply.currentVersion ?? reply.versionCount}/{reply.versionCount}
+                </span>
+            )}
+            {reply.model !== null && <span className="hint">{reply.model}</span>}
+            {node.deleted && <span className="badge">已删除</span>}
+            {node.excluded && <span className="badge warning">已排除</span>}
+            <span className="hint tree-date">{formatDateTime(node.date)}</span>
+        </>
+    );
+    const body = (
+        <>
             {node.replyTo !== null && <ReplyTargetBlock target={node.replyTo} />}
             {richBlocks !== null ? (
                 <>
@@ -100,15 +130,39 @@ const BotBubble = ({ node, chatId }: { node: BotNode; chatId: number }) => {
                     )}
                 </>
             ) : reply.versionCount === 0 ? (
-                text === null ? <p className="hint">（无正文）</p> : <FoldableText text={text} foldLines={12} foldChars={800} />
+                text === null ? (
+                    <p className="hint">（无正文）</p>
+                ) : (
+                    <FoldableText text={text} foldLines={12} foldChars={800} />
+                )
             ) : (
                 <Link className="flat-text-link" to={detailPath}>
-                    {text === null ? <p className="hint">（无正文，点开看版本详情）</p> : <FoldableText text={text} foldLines={12} foldChars={800} />}
+                    {text === null ? (
+                        <p className="hint">（无正文，点开看版本详情）</p>
+                    ) : (
+                        <FoldableText text={text} foldLines={12} foldChars={800} />
+                    )}
                 </Link>
             )}
             {richBlocks === null &&
                 reply.media.map((media) => <MediaAttachmentView key={media.url} media={media} />)}
             {reply.errorMessage !== null && <p className="error-text prewrap">⚠ {reply.errorMessage}</p>}
+        </>
+    );
+
+    return (
+        <article className={node.excluded ? 'flat-bubble bot excluded' : 'flat-bubble bot'}>
+            {folded ? (
+                <details className="flat-fold">
+                    <summary className="flat-bubble-head">{head}</summary>
+                    <div className="flat-fold-body">{body}</div>
+                </details>
+            ) : (
+                <>
+                    <p className="flat-bubble-head">{head}</p>
+                    {body}
+                </>
+            )}
         </article>
     );
 };

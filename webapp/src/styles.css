@@ -800,6 +800,44 @@ a.button {
     gap: 6px;
 }
 
+/* A deleted or excluded node: the head stays, the body folds behind 「内容」 */
+.node-fold {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.node-fold-summary {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    list-style: none;
+    cursor: pointer;
+    color: var(--color-link);
+    font-size: 14px;
+}
+
+.node-fold-summary::-webkit-details-marker {
+    display: none;
+}
+
+.node-fold-summary::after {
+    content: '展开';
+    margin-left: auto;
+    color: var(--color-hint);
+    font-size: 12px;
+}
+
+.node-fold[open] > .node-fold-summary::after {
+    content: '收起';
+}
+
+.node-fold-body {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
 .tree-number {
     font-weight: 600;
     color: var(--color-hint);
@@ -1121,6 +1159,39 @@ a.button {
     flex-wrap: wrap;
     align-items: baseline;
     gap: 6px;
+}
+
+/* A deleted or excluded bubble: the head row stays, the body folds behind it */
+.flat-fold {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+details.flat-fold > .flat-bubble-head {
+    list-style: none;
+    cursor: pointer;
+}
+
+details.flat-fold > .flat-bubble-head::-webkit-details-marker {
+    display: none;
+}
+
+details.flat-fold > .flat-bubble-head::after {
+    content: '展开';
+    margin-left: auto;
+    color: var(--color-hint);
+    font-size: 12px;
+}
+
+details.flat-fold[open] > .flat-bubble-head::after {
+    content: '收起';
+}
+
+.flat-fold-body {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
 }
 
 .flat-text-link {
@@ -1762,6 +1833,43 @@ a.button {
     font-size: 13px;
     font-weight: 600;
     overflow-wrap: anywhere;
+}
+
+/* A deleted bubble: the head row stays, the body folds behind it */
+.share-fold {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+details.share-fold > .share-bubble-head {
+    list-style: none;
+    cursor: pointer;
+    justify-content: flex-start;
+}
+
+details.share-fold > .share-bubble-head::-webkit-details-marker {
+    display: none;
+}
+
+details.share-fold > .share-bubble-head > .hint {
+    margin-left: auto;
+}
+
+details.share-fold > .share-bubble-head::after {
+    content: '展开';
+    color: var(--color-hint);
+    font-size: 12px;
+}
+
+details.share-fold[open] > .share-bubble-head::after {
+    content: '收起';
+}
+
+.share-fold-body {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
 }
 
 /* The message a share bubble answers */

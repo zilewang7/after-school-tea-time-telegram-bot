@@ -92,6 +92,8 @@ export interface ShareUserBubble {
     kind: 'user';
     messageId: number;
     createdAt: string;
+    /** Telegram no longer has the message (the deletion watcher marked it) */
+    deleted: boolean;
     authorName: string;
     text: string;
     /** The part of the target message the author quoted */
@@ -114,6 +116,8 @@ export interface ShareBotBubble {
     kind: 'bot';
     messageId: number;
     createdAt: string;
+    /** Telegram no longer has the message (the deletion watcher marked it) */
+    deleted: boolean;
     text: string;
     /** The current version's rendered answer body, same gate as a reply share */
     richAnswerMarkdown?: string;
@@ -293,6 +297,7 @@ const userBubbleOf = (
     kind: 'user',
     messageId: message.messageId,
     createdAt: message.date.toISOString(),
+    deleted: message.deletedAt !== null,
     authorName: message.userName,
     text: message.text ?? '',
     quote: message.quoteText,
@@ -315,6 +320,7 @@ const botBubbleOf = (
         kind: 'bot',
         messageId: message.messageId,
         createdAt: message.date.toISOString(),
+        deleted: message.deletedAt !== null,
         text: version !== null && typeof version.text === 'string' ? version.text : (message.text ?? ''),
         ...(snapshot === undefined ? {} : { richAnswerMarkdown: snapshot }),
         widget: version === null ? null : widgetOf(version),
@@ -363,6 +369,7 @@ export const loadConversationShareContent = async (
     const chainRoot = await findRootMessage(chatId, rootId, { recover: false });
     if (chainRoot?.messageId !== rootId) return null;
 
+    // Excluded messages must never enter a share: keep the defaults that leave them out.
     const messages = await getRepliesHistory(chatId, rootId, { recover: false });
     const ordered = [...messages].sort((a, b) => a.messageId - b.messageId);
     const botMessageIds = ordered.filter((message) => message.fromBotSelf).map((message) => message.messageId);

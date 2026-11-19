@@ -237,7 +237,7 @@ const cases: { name: string; body: () => Promise<void> }[] = [
                     bot.reply.toolSummary[0]?.failed === 1,
                 `the bot node is complete for the observer (got ${JSON.stringify(bot)})`
             );
-            expect(keysOf(bot).join(',') === 'date,edge,excluded,kind,messageId,number,parentId,reply,replyTo', 'the bot node has the documented fields');
+            expect(keysOf(bot).join(',') === 'date,deleted,edge,excluded,kind,messageId,number,parentId,reply,replyTo', 'the bot node has the documented fields');
             expect(bot.replyTo === null, 'an observer gets no reply target (it can be a redacted user message)');
         },
     },
@@ -272,11 +272,11 @@ const cases: { name: string; body: () => Promise<void> }[] = [
                 `a reply to the bot reads as the model reads it (got ${JSON.stringify(helper?.annotations)})`
             );
             expect(
-                keysOf(root).length === 19 &&
+                keysOf(root).length === 20 &&
                     Array.isArray(root.media) &&
                     root.media.length === 0 &&
                     root.previewMedia.length === 0,
-                `a member's user node has 19 fields and no media here (got ${keysOf(root).join(', ')})`
+                `a member's user node has 20 fields and no media here (got ${keysOf(root).join(', ')})`
             );
             expect(root.replyTo === null, 'the root answers nothing');
             const followUp = tree.nodes.find((node: any) => node.messageId === followUpId);
@@ -295,6 +295,34 @@ const cases: { name: string; body: () => Promise<void> }[] = [
                     bot.replyTo.snippet === 'ROOT-SECRET 今天吃什么',
                 `a member sees who the bot answered (got ${JSON.stringify(bot?.replyTo)})`
             );
+        },
+    },
+    {
+        name: 'deleted messages are flagged on member user nodes and bot nodes, never on an observer placeholder',
+        body: async () => {
+            const deletionTime = new Date('2026-11-18T12:00:00.000Z');
+            await db.Message.update({ deletedAt: deletionTime }, { where: { chatId: GROUP, messageId: rootId } });
+            await db.Message.update({ deletedAt: deletionTime }, { where: { chatId: GROUP, messageId: replyId } });
+
+            const member = await jsonOf(await call(TREE_PATH, ALICE));
+            const deletedRoot = member.nodes.find((node: any) => node.messageId === rootId);
+            expect(deletedRoot?.deleted === true, `a deleted user message is flagged for a member (got ${JSON.stringify(deletedRoot?.deleted)})`);
+            const deletedBot = member.nodes.find((node: any) => node.kind === 'bot');
+            expect(deletedBot?.deleted === true, 'a deleted bot reply is flagged as well');
+            for (const messageId of [helperId, followUpId]) {
+                const alive = member.nodes.find((node: any) => node.messageId === messageId);
+                expect(alive?.deleted === false, `message ${messageId} is not flagged`);
+            }
+
+            const observed = await jsonOf(await call(TREE_PATH, OWNER));
+            for (const node of observed.nodes.filter((node: any) => node.kind === 'user')) {
+                expect(
+                    JSON.stringify(keysOf(node)) === JSON.stringify(OBSERVER_USER_KEYS) && !('deleted' in node),
+                    `the observer's user node ${node.messageId} keeps exactly its eight fields (got ${keysOf(node).join(', ')})`
+                );
+            }
+            const observedBot = observed.nodes.find((node: any) => node.kind === 'bot');
+            expect(observedBot?.deleted === true, 'the bot node carries the flag for the observer too');
         },
     },
     {

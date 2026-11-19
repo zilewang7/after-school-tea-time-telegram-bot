@@ -183,6 +183,7 @@ const l2BubbleOf = (media: PublicShareMediaItem[]): PublicShareBubble => ({
     kind: 'bot',
     messageId: 1121448,
     createdAt: '2026-11-16T03:00:00.000Z',
+    deleted: false,
     text: '原始文本',
     mediaHint: null,
     widget: null,

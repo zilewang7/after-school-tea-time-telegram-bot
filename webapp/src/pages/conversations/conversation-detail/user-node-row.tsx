@@ -59,23 +59,10 @@ export const UserNodeRow = ({ row, node, member, pending, onExclude, onRestore }
         );
     }
 
-    return (
-        <li className={excluded ? 'tree-node user-node excluded' : 'tree-node user-node'} style={style}>
-            <NodeHead number={node.number} excluded={excluded} date={node.date} parentNumber={row.parentNumber}>
-                <span className="tree-author">{node.author.name}</span>
-                {node.author.username !== null && <span className="chat-username">@{node.author.username}</span>}
-                {excluded && <span className="badge warning">已排除</span>}
-                {member && (
-                    <NodeMenu
-                        node={node}
-                        member
-                        pending={pending}
-                        onExclude={handleExclude}
-                        onRestore={handleRestore}
-                    />
-                )}
-            </NodeHead>
-
+    // A deleted or excluded message starts folded; its head stays visible.
+    const folded = excluded || node.deleted;
+    const body = (
+        <>
             {node.annotations.length > 0 && <p className="hint tree-annotations">{node.annotations.join(' ')}</p>}
             {node.quote !== null && <blockquote className="quote">{node.quote}</blockquote>}
 
@@ -96,6 +83,35 @@ export const UserNodeRow = ({ row, node, member, pending, onExclude, onRestore }
                 <CollapsibleSection title="图片文字" summary={null}>
                     <FoldableText text={node.ocrText} foldLines={10} />
                 </CollapsibleSection>
+            )}
+        </>
+    );
+
+    return (
+        <li className={excluded ? 'tree-node user-node excluded' : 'tree-node user-node'} style={style}>
+            <NodeHead number={node.number} excluded={excluded} date={node.date} parentNumber={row.parentNumber}>
+                <span className="tree-author">{node.author.name}</span>
+                {node.author.username !== null && <span className="chat-username">@{node.author.username}</span>}
+                {node.deleted && <span className="badge">已删除</span>}
+                {excluded && <span className="badge warning">已排除</span>}
+                {member && (
+                    <NodeMenu
+                        node={node}
+                        member
+                        pending={pending}
+                        onExclude={handleExclude}
+                        onRestore={handleRestore}
+                    />
+                )}
+            </NodeHead>
+
+            {folded ? (
+                <details className="node-fold">
+                    <summary className="node-fold-summary">内容</summary>
+                    <div className="node-fold-body">{body}</div>
+                </details>
+            ) : (
+                body
             )}
         </li>
     );

@@ -71,25 +71,10 @@ export const BotNodeRow = ({ row, node, chatId, member, pending, onExclude, onRe
     const handleExclude = useCallback(() => onExclude(node.messageId), [onExclude, node.messageId]);
     const handleRestore = useCallback(() => onRestore(node.messageId), [onRestore, node.messageId]);
 
-    return (
-        <li className={node.excluded ? 'tree-node bot-node excluded' : 'tree-node bot-node'} style={style}>
-            <div className="tree-node-head">
-                <span className={node.excluded ? 'tree-number excluded' : 'tree-number'}>
-                    {node.number === null ? '┄' : `#${node.number}`}
-                </span>
-                {row.parentNumber !== null && <span className="hint">↳ 回复 #{row.parentNumber}</span>}
-                <span className="tree-author">bot</span>
-                {versionLabel !== null && <span className="badge">{versionLabel}</span>}
-                {reply.versionCount === 0 && <span className="badge">提示</span>}
-                {reply.model !== null && <span className="hint">{reply.model}</span>}
-                {reply.wasStoppedByUser && <span className="badge">已停止</span>}
-                {node.excluded && <span className="badge warning">已排除</span>}
-                <span className="hint tree-date">{formatDateTime(node.date)}</span>
-                {member && (
-                    <NodeMenu node={node} member pending={pending} onExclude={handleExclude} onRestore={handleRestore} />
-                )}
-            </div>
-
+    // A deleted or excluded reply starts folded; its head stays visible.
+    const folded = node.excluded || node.deleted;
+    const body = (
+        <>
             {richBlocks !== null ? (
                 <div className="tree-node-body">
                     <RichAnswerView blocks={richBlocks} media={reply.media} compact showCaptions={false} />
@@ -130,6 +115,37 @@ export const BotNodeRow = ({ row, node, chatId, member, pending, onExclude, onRe
             {toolLine !== null && <p className="hint">{toolLine}</p>}
             {reply.errorMessage !== null && (
                 <p className="error-text prewrap">⚠ {previewOf(reply.errorMessage)}</p>
+            )}
+        </>
+    );
+
+    return (
+        <li className={node.excluded ? 'tree-node bot-node excluded' : 'tree-node bot-node'} style={style}>
+            <div className="tree-node-head">
+                <span className={node.excluded ? 'tree-number excluded' : 'tree-number'}>
+                    {node.number === null ? '┄' : `#${node.number}`}
+                </span>
+                {row.parentNumber !== null && <span className="hint">↳ 回复 #{row.parentNumber}</span>}
+                <span className="tree-author">bot</span>
+                {versionLabel !== null && <span className="badge">{versionLabel}</span>}
+                {reply.versionCount === 0 && <span className="badge">提示</span>}
+                {reply.model !== null && <span className="hint">{reply.model}</span>}
+                {reply.wasStoppedByUser && <span className="badge">已停止</span>}
+                {node.deleted && <span className="badge">已删除</span>}
+                {node.excluded && <span className="badge warning">已排除</span>}
+                <span className="hint tree-date">{formatDateTime(node.date)}</span>
+                {member && (
+                    <NodeMenu node={node} member pending={pending} onExclude={handleExclude} onRestore={handleRestore} />
+                )}
+            </div>
+
+            {folded ? (
+                <details className="node-fold">
+                    <summary className="node-fold-summary">内容</summary>
+                    <div className="node-fold-body">{body}</div>
+                </details>
+            ) : (
+                body
             )}
         </li>
     );

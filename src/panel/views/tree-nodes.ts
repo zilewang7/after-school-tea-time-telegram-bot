@@ -64,6 +64,8 @@ export interface MemberUserNode extends NodePosition {
     linkPreview: string | null;
     ocrText: string | null;
     excluded: boolean;
+    /** Telegram no longer has the message (the deletion watcher marked it) */
+    deleted: boolean;
     /** The message this one answers, when it can be resolved */
     replyTo: ReplyTargetView | null;
     /**
@@ -80,6 +82,8 @@ export interface MemberUserNode extends NodePosition {
 export interface BotNode extends NodePosition {
     kind: 'bot';
     excluded: boolean;
+    /** Telegram no longer has the message (the deletion watcher marked it) */
+    deleted: boolean;
     /** Members only: observers get null (the target is usually a redacted user message) */
     replyTo: ReplyTargetView | null;
     reply: ReplySummaryView;
@@ -104,6 +108,9 @@ export interface MemberNodeExtras {
 const LEGACY_EOF_MARKER = /\s*<<EOF\s*$/;
 
 const isExcluded = (message: ContextMessage): boolean => message.excludedFromContext === true;
+
+/** A stored deletion mark: luoxu proved Telegram no longer has the message */
+const isDeleted = (message: ContextMessage): boolean => message.deletedAt !== null;
 
 const SUPERGROUP_ID_UPPER_BOUND = -1_000_000_000_000;
 
@@ -148,6 +155,7 @@ export const toMemberUserNode = (
     linkPreview: extras.linkPreview,
     ocrText: message.ocrText,
     excluded: isExcluded(message),
+    deleted: isDeleted(message),
     replyTo,
     media,
     previewMedia,
@@ -167,6 +175,7 @@ export const toBotNode = (
     edge: position.edge,
     kind: 'bot',
     excluded: isExcluded(message),
+    deleted: isDeleted(message),
     replyTo,
     reply,
 });
