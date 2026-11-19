@@ -40,16 +40,19 @@ export type InitDataVerification =
     | { ok: false; reason: InitDataRejection };
 
 export interface VerifyInitDataOptions {
-    /** Oldest accepted auth_date, as an age in seconds (reads 24h, writes 5 min) */
+    /** Oldest accepted auth_date, as an age in seconds */
     maxAgeSeconds: number;
     /** Current time in Unix seconds; defaults to the clock */
     nowSeconds?: number;
 }
 
-/** Read requests accept initData up to a day old */
-export const READ_MAX_AGE_SECONDS = 24 * 60 * 60;
-/** Write requests need initData from the last five minutes */
-export const WRITE_MAX_AGE_SECONDS = 5 * 60;
+/**
+ * initData is accepted up to a day old on every request (design 2026-1119-1740
+ * §变更4): the Mini App does not refresh it while open, so a write window
+ * shorter than the read one only forced the user to reopen the panel. Writes
+ * are still authorized per request and audited.
+ */
+export const INIT_DATA_MAX_AGE_SECONDS = 24 * 60 * 60;
 /** auth_date may run ahead of our clock by at most this much */
 export const FUTURE_TOLERANCE_SECONDS = 300;
 

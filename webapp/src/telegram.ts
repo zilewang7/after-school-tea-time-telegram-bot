@@ -88,14 +88,6 @@ export const getTelegramWebApp = (): TelegramWebApp | null => {
     return webApp;
 };
 
-/** auth_date in unix seconds, or null when missing or malformed */
-export const readAuthDate = (webApp: TelegramWebApp): number | null => {
-    const raw = webApp.initDataUnsafe.auth_date;
-    if (raw === undefined) return null;
-    const seconds = Number(raw);
-    return Number.isFinite(seconds) && seconds > 0 ? seconds : null;
-};
-
 export const readStartParam = (webApp: TelegramWebApp): string | null => {
     const startParam = webApp.initDataUnsafe.start_param;
     return startParam === undefined || startParam === '' ? null : startParam;

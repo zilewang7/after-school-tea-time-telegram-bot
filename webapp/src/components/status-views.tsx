@@ -11,7 +11,8 @@ interface ErrorViewProps {
 }
 
 export const ErrorView = ({ failure, onRetry, message }: ErrorViewProps) => {
-    // initData does not refresh while the panel is open, so retrying a 401 cannot help
+    // 401 = the credential is invalid or its initData is older than 24h; it never refreshes
+    // while the panel stays open, so retrying cannot help
     const canRetry = !(failure.kind === 'http' && failure.status === 401);
     return (
         <div className="placeholder">

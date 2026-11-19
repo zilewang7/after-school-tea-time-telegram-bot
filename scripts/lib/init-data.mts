@@ -13,13 +13,14 @@
  */
 import { createHmac } from 'node:crypto';
 import {
-    READ_MAX_AGE_SECONDS,
-    WRITE_MAX_AGE_SECONDS,
+    INIT_DATA_MAX_AGE_SECONDS,
     verifyInitData,
     type InitDataVerification,
 } from '../../src/panel/auth/init-data.js';
 
-export { READ_MAX_AGE_SECONDS, WRITE_MAX_AGE_SECONDS };
+// One window for every request (design 2026-1119-1740 §变更4): a write is as
+// acceptable as a read, so a Mini App open for longer than five minutes saves.
+export { INIT_DATA_MAX_AGE_SECONDS };
 
 /** The `user` field as Telegram serializes it */
 export interface InitDataUserInput {
@@ -101,7 +102,7 @@ export const verify = (
     options: { maxAgeSeconds?: number; nowSeconds?: number } = {}
 ): InitDataVerification =>
     verifyInitData(raw, botToken, {
-        maxAgeSeconds: options.maxAgeSeconds ?? READ_MAX_AGE_SECONDS,
+        maxAgeSeconds: options.maxAgeSeconds ?? INIT_DATA_MAX_AGE_SECONDS,
         ...(options.nowSeconds !== undefined ? { nowSeconds: options.nowSeconds } : {}),
     });
 

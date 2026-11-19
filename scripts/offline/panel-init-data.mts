@@ -1,16 +1,15 @@
 /**
  * Offline cases for the panel's initData verification: a known-answer vector
  * (hash computed independently with Python's hmac), sign/verify round trips,
- * `signature` being part of the signed data, tampering, the read / write age
- * windows and the future-time limit.
+ * `signature` being part of the signed data, tampering, the single 24-hour age
+ * window and the future-time limit.
  *
  * Run: npx tsx scripts/offline/panel-init-data.mts
  */
 import { expect, reportResults, runCase, type CaseResult } from './harness.mts';
 import {
+    INIT_DATA_MAX_AGE_SECONDS,
     PLACEHOLDER_SIGNATURE,
-    READ_MAX_AGE_SECONDS,
-    WRITE_MAX_AGE_SECONDS,
     resignInitData,
     signInitData,
     tamperInitData,
@@ -66,7 +65,7 @@ const signedAt = (authDate: number, startParam?: string): string =>
 
 const reasonOf = (raw: string | undefined, options: { maxAgeSeconds?: number; nowSeconds?: number } = {}): string => {
     const result = verifyInitData(raw, BOT_TOKEN, {
-        maxAgeSeconds: options.maxAgeSeconds ?? READ_MAX_AGE_SECONDS,
+        maxAgeSeconds: options.maxAgeSeconds ?? INIT_DATA_MAX_AGE_SECONDS,
         nowSeconds: options.nowSeconds ?? NOW,
     });
     return result.ok ? 'ok' : result.reason;
@@ -87,7 +86,7 @@ const cases: { name: string; body: () => Promise<void> }[] = [
                 'a hash that left the signature out is refused'
             );
             const result = verifyInitData(vectorRaw(VECTOR_HASH), BOT_TOKEN, {
-                maxAgeSeconds: READ_MAX_AGE_SECONDS,
+                maxAgeSeconds: INIT_DATA_MAX_AGE_SECONDS,
                 nowSeconds: NOW + 10,
             });
             expect(
@@ -167,7 +166,7 @@ const cases: { name: string; body: () => Promise<void> }[] = [
             expect(reasonOf(foreign) === 'bad_hash', 'signed with another token: bad_hash');
             expect(
                 (() => {
-                    const result = verifyInitData(raw, '', { maxAgeSeconds: READ_MAX_AGE_SECONDS, nowSeconds: NOW });
+                    const result = verifyInitData(raw, '', { maxAgeSeconds: INIT_DATA_MAX_AGE_SECONDS, nowSeconds: NOW });
                     return !result.ok && result.reason === 'bad_hash';
                 })(),
                 'an empty bot token accepts nothing'
@@ -175,15 +174,16 @@ const cases: { name: string; body: () => Promise<void> }[] = [
         },
     },
     {
-        name: 'reads accept 24 hours, writes 5 minutes, both inclusive',
+        name: 'every request accepts initData up to 24 hours old, the boundary included',
         body: async () => {
-            const at = (age: number, maxAgeSeconds: number) =>
-                reasonOf(signedAt(NOW - age), { maxAgeSeconds, nowSeconds: NOW });
-            expect(at(READ_MAX_AGE_SECONDS, READ_MAX_AGE_SECONDS) === 'ok', 'read: exactly 24h old passes');
-            expect(at(READ_MAX_AGE_SECONDS + 1, READ_MAX_AGE_SECONDS) === 'expired', 'read: one second more expires');
-            expect(at(WRITE_MAX_AGE_SECONDS, WRITE_MAX_AGE_SECONDS) === 'ok', 'write: exactly 5 min old passes');
-            expect(at(WRITE_MAX_AGE_SECONDS + 1, WRITE_MAX_AGE_SECONDS) === 'expired', 'write: one second more expires');
-            expect(at(WRITE_MAX_AGE_SECONDS + 1, READ_MAX_AGE_SECONDS) === 'ok', 'the same payload is still fine to read');
+            expect(INIT_DATA_MAX_AGE_SECONDS === 24 * 60 * 60, 'there is one window and it is one day');
+            const at = (age: number): string => reasonOf(signedAt(NOW - age), { nowSeconds: NOW });
+            expect(at(0) === 'ok', 'fresh initData passes');
+            expect(at(23 * 60 * 60) === 'ok', 'an ordinary panel session passes');
+            expect(at(INIT_DATA_MAX_AGE_SECONDS - 1) === 'ok', '23:59:59 old passes');
+            expect(at(INIT_DATA_MAX_AGE_SECONDS) === 'ok', 'exactly 24h old passes (the boundary is inclusive)');
+            expect(at(INIT_DATA_MAX_AGE_SECONDS + 1) === 'expired', 'one second more expires');
+            expect(at(24 * 60 * 60) === 'ok', 'a time once only writable now reads exactly the same');
         },
     },
     {

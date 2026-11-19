@@ -1,5 +1,4 @@
 import type { WriteFailureView } from '../api';
-import { EXPIRED_WRITE_NOTICE, useInitDataExpired } from '../hooks/use-init-data-expired';
 import { useSaveMainButton } from '../hooks/use-save-main-button';
 import { useClosingConfirmation } from '../hooks/use-telegram-guards';
 
@@ -25,7 +24,7 @@ interface SaveBarProps {
 }
 
 /**
- * In-page save button mirrored by Telegram's MainButton, with the initData age notice and save outcome.
+ * In-page save button mirrored by Telegram's MainButton, with the save outcome.
  * While there are unsaved changes, closing the panel asks for confirmation first.
  */
 export const SaveBar = ({
@@ -40,19 +39,17 @@ export const SaveBar = ({
     onSave,
     onRefresh,
 }: SaveBarProps) => {
-    const expired = useInitDataExpired();
     const saving = status.kind === 'saving';
-    useSaveMainButton({ writable, dirty, valid, saving, expired, label: actionLabel, onSave });
+    useSaveMainButton({ writable, dirty, valid, saving, label: actionLabel, onSave });
     useClosingConfirmation(writable && dirty);
 
     if (!writable) return null;
     return (
         <div className="save-bar">
-            {expired && <p className="notice warning">{EXPIRED_WRITE_NOTICE}</p>}
             <button
                 type="button"
                 className="button primary"
-                disabled={!dirty || !valid || saving || expired}
+                disabled={!dirty || !valid || saving}
                 onClick={onSave}
             >
                 {saving ? `${actionLabel}中…` : actionLabel}

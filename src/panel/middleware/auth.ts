@@ -4,9 +4,8 @@
  * Two credentials are accepted, in this order:
  *
  * 1. `X-Init-Data` (never a query parameter), as the Telegram Mini App sends
- *    it; verified with the age limit of the request kind — writes (PATCH / PUT /
- *    DELETE / POST, except the settings preview) need initData from the last 5
- *    minutes, reads from the last 24 hours.
+ *    it; verified with one age limit for reads and writes alike (24 hours,
+ *    design 2026-1119-1740 §变更4).
  * 2. `kob_web` cookie, a browser session created by `POST /api/auth/code`
  *    (design §5.4). A cookie session is server-issued, not a replay, so it
  *    needs no short window; writes get a same-origin check instead.
@@ -20,7 +19,7 @@ import { isOwnerUser } from '../../config/owner.js';
 import { touchPanelUserDebounced } from '../../db/queries/panel-registry.js';
 import { createChatAccessResolver } from '../access/chat-access.js';
 import type { MembershipChecker } from '../access/membership.js';
-import { READ_MAX_AGE_SECONDS, WRITE_MAX_AGE_SECONDS, verifyInitData } from '../auth/init-data.js';
+import { INIT_DATA_MAX_AGE_SECONDS, verifyInitData } from '../auth/init-data.js';
 import { WEB_SESSION_COOKIE, type WebSessionStore } from '../auth/web-session.js';
 import { panelUserOfWebSession } from '../auth/web-user.js';
 import type { PanelEnv } from '../context.js';
@@ -31,9 +30,10 @@ export const INIT_DATA_HEADER = 'X-Init-Data';
 
 const READ_METHODS: ReadonlySet<string> = new Set(['GET', 'HEAD', 'OPTIONS']);
 
-/** POST that only renders and stores nothing, so it keeps the read window */
+/** POST that only renders and stores nothing: a cookie write needs no same-origin check for it */
 const PREVIEW_PATH = /^\/api\/chats\/[^/]+\/settings\/preview$/;
 
+/** Whether a cookie-authenticated request is a write, for the same-origin check (initData has one window) */
 export const isWriteRequest = (method: string, path: string): boolean => {
     if (READ_METHODS.has(method)) return false;
     return !(method === 'POST' && PREVIEW_PATH.test(path));
@@ -86,11 +86,8 @@ export const createAuthMiddleware =
         const hasHeader = headerValue !== undefined && headerValue !== '';
 
         if (hasHeader) {
-            const maxAgeSeconds = isWriteRequest(context.req.method, context.req.path)
-                ? WRITE_MAX_AGE_SECONDS
-                : READ_MAX_AGE_SECONDS;
             const verification = verifyInitData(headerValue, options.botToken, {
-                maxAgeSeconds,
+                maxAgeSeconds: INIT_DATA_MAX_AGE_SECONDS,
                 nowSeconds: Math.floor(options.now() / 1000),
             });
             if (!verification.ok) {

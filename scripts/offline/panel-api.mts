@@ -15,7 +15,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { GrammyError } from 'grammy';
 import { expect, reportResults, runCase, setupOfflineDb, type CaseResult } from './harness.mts';
-import { signInitData, type InitDataUserInput } from '../lib/init-data.mts';
+import { INIT_DATA_MAX_AGE_SECONDS, signInitData, type InitDataUserInput } from '../lib/init-data.mts';
 
 const BOT_TOKEN = '123456789:AAFakeOfflineTokenForPanelTests_0123';
 const OWNER_ID = 4242;
@@ -291,36 +291,62 @@ const cases: { name: string; body: () => Promise<void> }[] = [
         },
     },
     {
-        name: 'writes need initData from the last 5 minutes; reads and the preview 24 hours',
+        name: 'every request accepts initData from the last 24 hours, writes included, and one second more is 401',
         body: async () => {
-            const stale = { user: ALICE, age: 301 };
-            await expectError(
-                await call(app, `/api/chats/${GROUP_MAIN}/settings`, { ...stale, method: 'PATCH', body: { paused: false } }),
-                401,
-                'unauthorized',
-                'PATCH with 301s-old initData'
-            );
-            const fresh = await call(app, `/api/chats/${GROUP_MAIN}/settings`, {
+            expect(INIT_DATA_MAX_AGE_SECONDS === 24 * 60 * 60, 'the panel has one window and it is one day');
+            const atBoundary = await call(app, `/api/chats/${GROUP_MAIN}/settings`, {
                 user: ALICE,
-                age: 300,
+                age: INIT_DATA_MAX_AGE_SECONDS,
                 method: 'PATCH',
                 body: { paused: false },
             });
-            expect(fresh.status === 200, `PATCH with 300s-old initData passes (got ${fresh.status})`);
-            const read = await call(app, `/api/chats/${GROUP_MAIN}`, { user: ALICE, age: 3600 });
-            expect(read.status === 200, `GET with hour-old initData passes (got ${read.status})`);
+            expect(
+                atBoundary.status === 200,
+                `a PATCH with exactly 24h-old initData passes (got ${atBoundary.status})`
+            );
+            const oldWrite = await call(app, `/api/chats/${GROUP_MAIN}/settings`, {
+                user: ALICE,
+                age: 301,
+                method: 'PATCH',
+                body: { paused: false },
+            });
+            expect(oldWrite.status === 200, `a 5-minute-old write is no longer refused (got ${oldWrite.status})`);
+            await expectError(
+                await call(app, `/api/chats/${GROUP_MAIN}/settings`, {
+                    user: ALICE,
+                    age: INIT_DATA_MAX_AGE_SECONDS + 1,
+                    method: 'PATCH',
+                    body: { paused: false },
+                }),
+                401,
+                'unauthorized',
+                'PATCH one second past the window'
+            );
+            await expectError(
+                await call(app, '/api/global', {
+                    user: OWNER,
+                    age: INIT_DATA_MAX_AGE_SECONDS + 1,
+                    method: 'PATCH',
+                    body: { defaultModel: null },
+                }),
+                401,
+                'unauthorized',
+                'PATCH /api/global one second past the window'
+            );
+            const read = await call(app, `/api/chats/${GROUP_MAIN}`, { user: ALICE, age: INIT_DATA_MAX_AGE_SECONDS });
+            expect(read.status === 200, `GET at the boundary passes (got ${read.status})`);
             const preview = await call(app, `/api/chats/${GROUP_MAIN}/settings/preview`, {
                 user: ALICE,
-                age: 3600,
+                age: INIT_DATA_MAX_AGE_SECONDS,
                 method: 'POST',
                 body: { promptAddendum: 'hi' },
             });
-            expect(preview.status === 200, `the preview keeps the read window (got ${preview.status})`);
+            expect(preview.status === 200, `the preview uses the same window (got ${preview.status})`);
             await expectError(
-                await call(app, '/api/global', { user: OWNER, age: 301, method: 'PATCH', body: { defaultModel: null } }),
+                await call(app, `/api/chats/${GROUP_MAIN}`, { user: ALICE, age: INIT_DATA_MAX_AGE_SECONDS + 1 }),
                 401,
                 'unauthorized',
-                'PATCH /api/global with stale initData'
+                'GET one second past the window'
             );
         },
     },
