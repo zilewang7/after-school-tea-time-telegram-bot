@@ -71,6 +71,8 @@ export interface PromptTemplateDetailView extends PromptTemplateItemView {
 
 /** One entry of a chat's template list */
 export interface ChatPromptTemplateView extends PromptTemplateItemView {
+    /** The whole content: the session row expands it, so it shows no second truncation */
+    content: string;
     /** The chat manually enables it (loads regardless of the model) */
     enabledInChat: boolean;
     /** The session auto switch would load it for the viewer's model */
@@ -211,6 +213,8 @@ export const registerPromptTemplateRoutes = (app: Hono<PanelEnv>): void => {
         const enabledIds = new Set(settings.promptTemplateIds ?? []);
         const templates: ChatPromptTemplateView[] = visible.map((template) => ({
             ...itemViewOf(template, names),
+            // The expanded row shows the whole content, not the 120-code-point preview
+            content: template.content,
             enabledInChat: enabledIds.has(template.id),
             autoMatchesViewerModel:
                 isAutoCandidate(template, {

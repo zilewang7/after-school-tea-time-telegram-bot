@@ -120,7 +120,7 @@ export interface PromptTemplateSummary {
     id: number;
     name: string;
     contentLength: number;
-    // The beginning of the content, for the list and the session's template rows
+    // The beginning of the content, for the management list
     contentPreview: string;
     // Model id globs (`*` only); [] = every model
     modelPatterns: string[];
@@ -175,6 +175,8 @@ export interface PromptTemplateDeleteResponse {
 
 /** One entry of GET /api/chats/:chatId/prompt-templates */
 export interface ChatPromptTemplateSummary extends PromptTemplateSummary {
+    // The whole content: the session row expands it, so it shows no preview truncation
+    content: string;
     // Enabled manually in this chat: it always loads, whatever the model
     enabledInChat: boolean;
     // The rule matches the viewer's model, so an open auto switch would load it

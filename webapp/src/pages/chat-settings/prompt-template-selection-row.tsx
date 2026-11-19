@@ -38,7 +38,7 @@ interface PromptTemplateSelectionRowProps {
     onToggle: (templateId: number) => void;
 }
 
-/** One visible template in the chat settings: switch, rule, status and a folded content preview */
+/** One visible template in the chat settings: switch, rule, status and content folded behind a link */
 export const PromptTemplateSelectionRow = ({
     template,
     selected,
@@ -82,11 +82,16 @@ export const PromptTemplateSelectionRow = ({
                     {matchHint && <span className="hint">当前模型匹配，打开自动加载后生效</span>}
                     {!template.enabled && <span className="hint">模板已停用，所有会话都不加载</span>}
                     <span className="hint">{promptTemplateChatCountLabel(template.chatCount)}</span>
+                    <button
+                        type="button"
+                        className="link-button"
+                        aria-expanded={contentOpen}
+                        onClick={handleToggleContent}
+                    >
+                        {contentOpen ? '收起内容' : `查看内容（${template.contentLength} 字）`}
+                    </button>
                 </p>
-                <button type="button" className="button secondary" onClick={handleToggleContent}>
-                    {contentOpen ? '收起内容' : `查看内容（${template.contentLength} 字）`}
-                </button>
-                {contentOpen && <p className="prewrap">{template.contentPreview}</p>}
+                {contentOpen && <p className="prewrap">{template.content}</p>}
             </div>
         </li>
     );

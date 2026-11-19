@@ -423,6 +423,24 @@ p {
     gap: 8px;
 }
 
+/* A button that reads as a link, e.g. folding a row's content open */
+.link-button {
+    padding: 0;
+    border: none;
+    background: none;
+    color: var(--color-link);
+    font: inherit;
+    font-size: 14px;
+    font-weight: 500;
+    text-align: left;
+    cursor: pointer;
+}
+
+.link-button:disabled {
+    opacity: 0.5;
+    cursor: default;
+}
+
 .save-bar,
 .save-failure,
 .preview {

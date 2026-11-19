@@ -161,6 +161,7 @@ interface TemplateDetailView extends TemplateItemView {
 }
 
 interface ChatTemplateItemView extends TemplateItemView {
+    content: string;
     enabledInChat: boolean;
     autoMatchesViewerModel: boolean;
 }
@@ -216,6 +217,7 @@ const chatTemplateItemOf = (value: unknown): ChatTemplateItemView => {
     const chatItem = objectOf(value);
     return {
         ...item,
+        content: textOf(chatItem.content) ?? '',
         enabledInChat: chatItem.enabledInChat === true,
         autoMatchesViewerModel: chatItem.autoMatchesViewerModel === true,
     };
@@ -405,7 +407,8 @@ const bobGroupTemplate = await templatesService.createPromptTemplate(
 const aliceGlobalTemplate = await templatesService.createPromptTemplate(
     {
         name: 'Alice 全局模板',
-        content: 'Alice 全局内容',
+        // Longer than the 120-code-point preview, so the chat list must carry the whole content
+        content: `Alice 全局内容${'长'.repeat(150)}`,
         modelPatterns: ['viewer-model*'],
         sortOrder: 70,
         visibility: 'global',
@@ -2296,6 +2299,15 @@ const cases: { name: string; body: () => Promise<void> }[] = [
             );
             expect(itemNamed(bobView, 'Alice 群可见模板').autoMatchesViewerModel, 'Alice is a known member here, so her group template is visible');
             expect(itemNamed(bobView, 'Alice 全局模板').autoMatchesViewerModel, 'so is her global template');
+            const longTemplateItem = itemNamed(bobView, 'Alice 全局模板');
+            expect(
+                longTemplateItem.content === aliceGlobalTemplate.content,
+                'the chat list carries the whole content, not only the truncated preview'
+            );
+            expect(
+                longTemplateItem.contentPreview.endsWith('…') && longTemplateItem.contentPreview.length === 121,
+                'the preview field itself stays truncated at 120 code points'
+            );
             expect(bobView.some((item) => item.id === bobGroupTemplate.id), 'Bob sees his own group template');
             expect(
                 !itemNamed(bobView, 'Bob 群可见模板').autoMatchesViewerModel,
