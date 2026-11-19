@@ -1,7 +1,6 @@
-import { useCallback, useMemo } from 'react';
+import { useCallback, useMemo, useState } from 'react';
 import { match } from 'ts-pattern';
 import type { ChatPromptTemplateSummary } from '../../api';
-import { FoldableText } from '../../components/foldable-text';
 import { promptTemplateChatCountLabel, promptTemplateCreatorNameOf, promptTemplatePatternsLabel } from '../../prompt-templates';
 
 type TemplateStatus = 'disabled' | 'manual' | 'auto' | 'none';
@@ -39,7 +38,7 @@ interface PromptTemplateSelectionRowProps {
     onToggle: (templateId: number) => void;
 }
 
-/** One visible template in the chat settings: manual enable switch, rule, status and content start */
+/** One visible template in the chat settings: switch, rule, status and a folded content preview */
 export const PromptTemplateSelectionRow = ({
     template,
     selected,
@@ -54,7 +53,9 @@ export const PromptTemplateSelectionRow = ({
     // A disabled template cannot be enabled again here; an existing record may still be removed
     const toggleDisabled = disabled || (!template.enabled && !selected);
     const matchHint = !selected && template.enabled && template.autoMatchesViewerModel && !auto;
-    const hasPreview = template.contentPreview !== '';
+    // The content starts folded: a long list of templates would otherwise fill the whole page
+    const [contentOpen, setContentOpen] = useState(false);
+    const handleToggleContent = useCallback(() => setContentOpen((open) => !open), []);
 
     return (
         <li>
@@ -82,7 +83,10 @@ export const PromptTemplateSelectionRow = ({
                     {!template.enabled && <span className="hint">模板已停用，所有会话都不加载</span>}
                     <span className="hint">{promptTemplateChatCountLabel(template.chatCount)}</span>
                 </p>
-                {hasPreview && <FoldableText text={template.contentPreview} foldLines={3} foldChars={240} />}
+                <button type="button" className="button secondary" onClick={handleToggleContent}>
+                    {contentOpen ? '收起内容' : `查看内容（${template.contentLength} 字）`}
+                </button>
+                {contentOpen && <p className="prewrap">{template.contentPreview}</p>}
             </div>
         </li>
     );
