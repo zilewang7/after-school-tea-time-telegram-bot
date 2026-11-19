@@ -46,9 +46,12 @@ const INPUT_SCHEMA = {
 
 const REJECTION_LOG_MAX_CHARS = 200;
 
-const reject = (message: string): ToolResult => {
+const reject = (message: string, traceArgument?: string): ToolResult => {
     console.warn(`[leave_handoff] rejected: ${Array.from(message).slice(0, REJECTION_LOG_MAX_CHARS).join('')}`);
-    return workspaceToolError(message);
+    return workspaceToolError(
+        message,
+        traceArgument === undefined ? undefined : { argument: traceArgument }
+    );
 };
 
 export interface LeaveHandoffToolOptions {
@@ -70,12 +73,16 @@ export const createLeaveHandoffTool = (options: LeaveHandoffToolOptions): ToolHa
         statusText: '🗂️ 正在写交接文档…',
         execute: async (rawArgs) => {
             const parsed = parseLeaveHandoffArgs(rawArgs);
-            if (!parsed.ok) return reject(parsed.error);
-            const ref = resolveWorkspaceRef(state, undefined);
-            if (!ref.ok) return reject(ref.error);
-
+            if (!parsed.ok) {
+                const written = typeof rawArgs.content === 'string' ? Array.from(rawArgs.content.trim()).length : 0;
+                return reject(parsed.error, `${written} 字`);
+            }
             const text = parsed.value.content.trim();
             const chars = Array.from(text);
+            const traceArgument = `${chars.length} 字`;
+            const ref = resolveWorkspaceRef(state, undefined);
+            if (!ref.ok) return reject(ref.error, traceArgument);
+
             const truncated = chars.length > HANDOFF_TOOL_MAX_CHARS;
             const content = truncated ? chars.slice(0, HANDOFF_TOOL_MAX_CHARS).join('') : text;
 
@@ -91,7 +98,8 @@ export const createLeaveHandoffTool = (options: LeaveHandoffToolOptions): ToolHa
             if (!result.ok) {
                 return reject(
                     `${result.error}\n本轮已无法补救（收尾轮调不到 workspace_list / workspace_delete）；` +
-                        '下一条回复先清理工作区再写。'
+                        '下一条回复先清理工作区再写。',
+                    traceArgument
                 );
             }
 
@@ -110,7 +118,16 @@ export const createLeaveHandoffTool = (options: LeaveHandoffToolOptions): ToolHa
             const truncation = truncated
                 ? `\n原文 ${chars.length} 字符，只保存了前 ${HANDOFF_TOOL_MAX_CHARS} 字符（注入只取前 2000，其余可 workspace_read）。`
                 : '';
-            return workspaceToolSuccess(`${base}同一会话的下一轮回复会看到全文（上限 2000 字符）。${truncation}`);
+            return workspaceToolSuccess(
+                `${base}同一会话的下一轮回复会看到全文（上限 2000 字符）。${truncation}`,
+                undefined,
+                {
+                    argument: traceArgument,
+                    result: truncated
+                        ? `已写 handoff.md · 截断为 ${HANDOFF_TOOL_MAX_CHARS}`
+                        : '已写 handoff.md',
+                }
+            );
         },
     };
 };

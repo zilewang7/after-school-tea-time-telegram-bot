@@ -1380,6 +1380,11 @@ details.flat-fold[open] > .flat-bubble-head::after {
     overflow-wrap: anywhere;
 }
 
+/* A failed call of the per-call log */
+.tool-call-failed {
+    color: var(--color-destructive);
+}
+
 /* Statistics (phase 3) */
 
 .range-row {

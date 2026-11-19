@@ -12,6 +12,7 @@ import { resolveWorkspaceRef, type WorkspaceState } from '../workspace/workspace
 import { parseWorkspaceCopyArgs } from './workspace-tool-args.js';
 import { workspaceToolError, workspaceToolSuccess } from './workspace-tool-result.js';
 import { WORKSPACE_COPY_TOOL_NAME } from './tool-names.js';
+import { traceBytes, traceWorkspacePath } from './tool-trace.js';
 
 const DESCRIPTION =
     '把工作区里的一个文件复制成新路径，用来「先留一版再改」；目标已存在会失败，绝不覆盖。' +
@@ -69,7 +70,12 @@ export const createWorkspaceCopyTool = (options: WorkspaceCopyToolOptions): Tool
                 `工作区 ${result.fileCount} 个文件，已用 ${formatBytes(result.totalBytes)} / ` +
                 `${formatBytes(state.quota.maxConversationBytes)}`;
             return workspaceToolSuccess(
-                `已复制《${result.from}》→《${result.to}》（${label}）：${formatBytes(result.sizeBytes)}（${usage}）。`
+                `已复制《${result.from}》→《${result.to}》（${label}）：${formatBytes(result.sizeBytes)}（${usage}）。`,
+                undefined,
+                {
+                    argument: `${traceWorkspacePath(ref.ref.token, result.from)} → ${result.to}`,
+                    result: traceBytes(result.sizeBytes),
+                }
             );
         },
     };

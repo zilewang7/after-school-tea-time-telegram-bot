@@ -32,6 +32,7 @@ import { plainText } from '../telegram/formatters/entity-text.js';
 import { appendErrorLine } from '../telegram/formatters/error-display.js';
 import { formatErrorForUser } from '../shared/errors.js';
 import { searchPageLinkOfToken, type SearchPageLink } from '../shared/search-page.js';
+import { toolLogPageLinkOfToken, type ToolLogPageLink } from '../shared/tool-log-page.js';
 import { stripPerQueryResultCitations } from '../shared/citation-markers.js';
 import { stripContextLabel } from '../reply/context-label.js';
 import { toApiEntities } from '../telegram/api-entities.js';
@@ -109,6 +110,14 @@ export type SessionThinkingLink = ThinkingLinkRef & { key: string; emitted: bool
  * re-deciding the fold.
  */
 export type SessionSearchLink = SearchPageLink;
+
+/**
+ * The folded Tools block link of a reply being delivered: the public tool-log
+ * page of the version the delivery stores (design 2026-1119-1835 §13.1). Its
+ * token is what the version keeps, so a replay shows the same link message
+ * without re-deciding the fold.
+ */
+export type SessionToolLogLink = ToolLogPageLink;
 
 /**
  * Stream controller for aborting streams
@@ -225,6 +234,13 @@ export interface BotMessageSession {
      * means the reply keeps the inline footer.
      */
     searchLink?: SessionSearchLink;
+
+    /**
+     * The folded Tools block this reply is showing as its last message. Set by
+     * the final layout when the block cannot fit one message; absent means the
+     * reply keeps the inline block.
+     */
+    toolLogLink?: SessionToolLogLink;
 
     // Stream control
     streamController: StreamController;
@@ -752,6 +768,7 @@ const finalizeSession = async (
             ? {}
             : { thinkingLinkToken: session.thinkingLink.token }),
         ...(session.searchLink === undefined ? {} : { searchLinkToken: session.searchLink.token }),
+        ...(session.toolLogLink === undefined ? {} : { toolLogLinkToken: session.toolLogLink.token }),
         groundingData: session.groundingData.length ? session.groundingData : undefined,
         agentStats: session.agentStats,
         errorMessage: options?.errorMessage,
@@ -1056,6 +1073,17 @@ const searchLinkOfVersion = (version: ResponseVersion): SearchPageLink | undefin
 };
 
 /**
+ * The tool-log page a stored version replays. Only the token decides the fold:
+ * a version that kept one shows the link message, a version from before the
+ * feature has none and renders the inline block as it always did.
+ */
+const toolLogLinkOfVersion = (version: ResponseVersion): ToolLogPageLink | undefined => {
+    const token = version.toolLogLinkToken;
+    if (token === undefined || token === '') return undefined;
+    return toolLogPageLinkOfToken(token) ?? undefined;
+};
+
+/**
  * The messages a stored version shows: the final layout of its text,
  * thinking and records, plus an errored version's error line (display-only,
  * never stored)
@@ -1072,6 +1100,8 @@ const buildVersionMessages = (
         thinkingLink: thinkingLinkRefOfVersion(version) ?? undefined,
         // A folded GoogleSearch footer replays as the reply's last message
         searchLink: searchLinkOfVersion(version),
+        // A folded Tools block replays the same way, before the search link
+        toolsLink: toolLogLinkOfVersion(version),
         // The same footer document the live layout had, so the replay assembles
         // the same chunks (attached tail, own message, or folded link)
         googleSearch: buildGoogleSearchDocument(version.groundingData ?? []),
@@ -1336,10 +1366,12 @@ const switchToRichVersion = async (input: SwitchToRichVersionInput): Promise<boo
     const { ctx, chatId, firstMessageId, newVersion, oldVersion, pictures, resolveContextLink } = input;
     const thinkingLink = thinkingLinkRefOfVersion(newVersion) ?? undefined;
     const searchLink = searchLinkOfVersion(newVersion);
+    const toolsLink = toolLogLinkOfVersion(newVersion);
     const replay = buildRichLayoutOfVersion({
         version: newVersion,
         ...(thinkingLink === undefined ? {} : { thinkingLink }),
         ...(searchLink === undefined ? {} : { searchLink }),
+        ...(toolsLink === undefined ? {} : { toolsLink }),
         media: inlineReplayMediaOf(pictures),
         ...(resolveContextLink === undefined ? {} : { resolveContextLink }),
     });
@@ -2186,6 +2218,9 @@ export const refreshToFinalState = async (
               ...(searchLinkOfVersion(version) === undefined
                   ? {}
                   : { searchLink: searchLinkOfVersion(version) }),
+              ...(toolLogLinkOfVersion(version) === undefined
+                  ? {}
+                  : { toolsLink: toolLogLinkOfVersion(version) }),
               media: inlineReplayMediaOf(replayPictures),
               ...(resolveContextLink === undefined ? {} : { resolveContextLink }),
           });

@@ -55,6 +55,18 @@ export interface ToolModelImage {
     readonly caption: string;
 }
 
+/**
+ * How one call reads in the Tools block's per-call log (design 2026-1119-1835).
+ * A handler fills what only it knows (hit counts, candidate ids, sizes); the
+ * dispatcher derives a generic summary when it does not.
+ */
+export interface ToolCallTrace {
+    /** Display form of the arguments; absent = derive one from the raw JSON */
+    readonly argument?: string;
+    /** Display form of the outcome; absent = derive one from the result content */
+    readonly result?: string;
+}
+
 export interface ToolResult {
     /** What the model reads back */
     readonly content: string;
@@ -71,6 +83,8 @@ export interface ToolResult {
     readonly modelImages?: readonly ToolModelImage[];
     /** Record for the merged Tools/Sources block; null = usage count only */
     readonly record: GroundingData | null;
+    /** Display trace for the per-call log; absent = derived generically */
+    readonly trace?: ToolCallTrace;
 }
 
 export interface ToolHandler {

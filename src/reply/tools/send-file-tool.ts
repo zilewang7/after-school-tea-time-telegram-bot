@@ -26,6 +26,7 @@ import {
     type ReplyMediaState,
 } from './reply-media-state.js';
 import { SEND_FILE_TOOL_NAME } from './tool-names.js';
+import { traceBytes, traceText } from './tool-trace.js';
 
 const BASE_DESCRIPTION =
     '把你写的文本内容作为文件发到聊天（附在当前回复末尾，每条回复最多一个附件）。' +
@@ -165,6 +166,10 @@ export const createSendFileTool = (options: SendFileToolOptions): ToolHandler =>
                     images: [],
                     files: [fileDeliveryOf(draft)],
                     record: null,
+                    trace: {
+                        argument: `工作区 ${traceText(args.workspacePath)}`,
+                        result: traceBytes(bytes),
+                    },
                 };
             }
 
@@ -225,6 +230,10 @@ export const createSendFileTool = (options: SendFileToolOptions): ToolHandler =>
                 images: [],
                 files: [fileDeliveryOf(draft)],
                 record: null,
+                trace: {
+                    argument: `${draft.name}${args.append ? '（追加）' : ''}`,
+                    result: traceBytes(totalBytes),
+                },
             };
         },
     };

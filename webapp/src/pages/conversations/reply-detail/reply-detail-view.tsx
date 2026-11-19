@@ -95,6 +95,8 @@ const ReplyBody = ({ version, focusWidget }: ReplyBodyProps) => {
 
             {(version.tools.toolUsage.length > 0 ||
                 version.tools.calls.length > 0 ||
+                version.tools.callLog.length > 0 ||
+                version.tools.toolCallsTruncated > 0 ||
                 version.tools.sources.length > 0 ||
                 version.tools.searches.length > 0 ||
                 version.tools.codeInterpreter.length > 0) && (

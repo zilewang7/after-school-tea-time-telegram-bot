@@ -14,6 +14,7 @@ import { widgetDraftSizeLineOf } from '../workspace/workspace-widget-size.js';
 import { parseWorkspaceWriteArgs } from './workspace-tool-args.js';
 import { workspaceToolError, workspaceToolSuccess } from './workspace-tool-result.js';
 import { WORKSPACE_WRITE_TOOL_NAME } from './tool-names.js';
+import { traceBytes, traceWorkspacePath } from './tool-trace.js';
 
 const DESCRIPTION =
     '把文本写进本会话的模型工作区（按会话保留，7 天未使用自动清理）。' +
@@ -95,7 +96,15 @@ export const createWorkspaceWriteTool = (options: WorkspaceWriteToolOptions): To
                   ? `已追加到《${result.path}》（${label}）：现在 ${size}（${usage}）。`
                   : `已覆盖《${result.path}》（${label}）：原 ${formatBytes(result.replacedBytes ?? 0)} → ${size}（${usage}）。`;
             const draftLine = widgetDraftSizeLineOf(result.path, result.content, options.widgetLimits);
-            return workspaceToolSuccess(draftLine === '' ? content : `${content}\n${draftLine}`);
+            const mode = parsed.value.append ? '（追加）' : parsed.value.overwrite ? '（覆盖）' : '';
+            return workspaceToolSuccess(
+                draftLine === '' ? content : `${content}\n${draftLine}`,
+                undefined,
+                {
+                    argument: `${traceWorkspacePath(ref.ref.token, result.path)}${mode}`,
+                    result: `${traceBytes(result.sizeBytes)}${result.created ? '（新建）' : ''}`,
+                }
+            );
         },
     };
 };

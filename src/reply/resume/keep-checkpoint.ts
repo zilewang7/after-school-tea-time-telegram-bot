@@ -99,11 +99,18 @@ export const prepareCheckpointKeep = (
 
 /**
  * A failed reply's version and metrics row count the tools its kept rounds
- * ran; without this every failed row shows no tool calls.
+ * ran; without this every failed row shows no tool calls. The kept rounds'
+ * per-call log comes along, so the failed version's Tools block shows the
+ * calls it did run (design 2026-1119-1835 §7).
  */
 const fillToolUsageFromCheckpoint = (session: BotMessageSession, checkpoint: ToolLoopCheckpoint): void => {
     const toolUsage: AgentToolUsage[] = checkpoint.toolUsage.map((usage) => ({ ...usage }));
-    session.agentStats = { ...session.agentStats, toolUsage };
+    const toolCalls = (checkpoint.toolCalls ?? []).map((record) => ({ ...record }));
+    session.agentStats = {
+        ...session.agentStats,
+        toolUsage,
+        ...(toolCalls.length > 0 ? { toolCalls } : {}),
+    };
 };
 
 /**
@@ -154,14 +161,19 @@ export const keepPreparedCheckpoint = (
 /**
  * A stopped reply has no tool usage of its own unless its stream ended (only
  * the done chunk carries it). With a checkpoint at hand it takes the kept
- * rounds' usage, as a failed one does, so the stopped version shows its tools
- * and its row counts them.
+ * rounds' usage and per-call log, as a failed one does, so the stopped version
+ * shows its tools and its row counts them.
  */
 export const fillStoppedToolUsage = (holder: CheckpointHolder): void => {
     try {
         const { session, lastCheckpoint } = holder;
         if (lastCheckpoint === undefined) return;
-        if ((session.agentStats?.toolUsage?.length ?? 0) > 0) return;
+        const hasToolUsage = (session.agentStats?.toolUsage?.length ?? 0) > 0;
+        const keptCalls = lastCheckpoint.toolCalls ?? [];
+        // Usage and calls are filled together: a version with counts but no
+        // log (or the other way round) would read inconsistently
+        const hasToolCalls = (session.agentStats?.toolCalls?.length ?? 0) > 0;
+        if (hasToolUsage && (keptCalls.length === 0 || hasToolCalls)) return;
         fillToolUsageFromCheckpoint(session, lastCheckpoint);
     } catch (error) {
         giveUpKeeping(holder, error);

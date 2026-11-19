@@ -152,6 +152,10 @@ export const createSendStickerTool = (options: SendStickerToolOptions): ToolHand
                 stickers: [sticker],
                 ...(modelImages === undefined ? {} : { modelImages }),
                 record: null,
+                trace: {
+                    argument: `${padPackIndex(entry.packIndex)} ${entry.label}`,
+                    result: duplicate === '' ? '已发出' : `已发出${duplicate}`,
+                },
             };
         },
     };

@@ -11,6 +11,11 @@
  * all and the caller passed a page link — turns into one compact link message
  * at the end of the reply instead of a chain of quote-block fragments. Without
  * a page link an overflowing footer keeps the old merged split, which cuts it.
+ *
+ * The tool records get the same treatment (design 2026-1119-1835): the Tools
+ * block rides on the last answer message when it fits, becomes one message of
+ * its own when it does not, and folds into the public tool-log page link when
+ * it cannot fit one message at all. The Sources block stays small and inline.
  */
 import { concatMessages, renderMarkdown, splitMessage } from 'telegram-md-entities';
 import type { RenderedMessage } from 'telegram-md-entities';
@@ -18,7 +23,10 @@ import type { AgentStats, GroundingData } from '../../ai/types.js';
 import { getRenderConfig } from '../../config/render-config.js';
 import { stripPerQueryResultCitations } from '../../shared/citation-markers.js';
 import type { SearchPageLink } from '../../shared/search-page.js';
-import { buildToolRecordSections } from './tool-records-formatter.js';
+import type { ToolLogPageLink } from '../../shared/tool-log-page.js';
+import { buildToolRecordParts } from './tool-records-formatter.js';
+import type { ToolLogDocument } from './tool-log-document.js';
+import { toToolLogLinkChunk } from './tool-log-link.js';
 import {
     buildGoogleSearchDocument,
     isSearchGroundingStep,
@@ -77,6 +85,19 @@ export interface FinalMessageBuildOptions {
      * when the footer overflows, a replay whose stored version has the token.
      */
     searchLink?: SearchPageLink;
+    /**
+     * Public page of a folded Tools block (design 2026-1119-1835 §13.1): the
+     * per-call log cannot fit one message, so it becomes one compact link
+     * message at the end of the reply and the inline block is left out. Its
+     * presence is the layout decision, like `searchLink`.
+     */
+    toolsLink?: ToolLogPageLink;
+    /**
+     * The prebuilt tool-log document. Optional: the block is always assembled
+     * from the same data, this only spares the caller's payload a second parse
+     * when it already built the document for the fold trigger and the page.
+     */
+    toolLog?: ToolLogDocument;
     /**
      * The prebuilt footer document. Optional: the footer is always assembled in
      * two phases, this only spares the caller's grounding payload a second
@@ -236,8 +257,12 @@ const splitAnswer = (
 interface ReplyLayoutParts {
     /** The collapsed CoT quote (inline mode only) */
     readonly quote?: RenderedMessage;
-    /** Answer text, [stopped] marker and tool-call records */
+    /** Answer text and the [stopped] marker; the record blocks are laid out apart */
     readonly answer: RenderedMessage;
+    /** The Tools/Sources blocks in layout order; a folded Tools block is left out */
+    readonly toolSections: readonly RenderedMessage[];
+    /** The Tools block's content, for the folded link message */
+    readonly toolLog: ToolLogDocument;
     /** The GoogleSearch footer, every block of it, or an empty message */
     readonly footer: RenderedMessage;
     readonly footerPresent: boolean;
@@ -254,6 +279,8 @@ const layoutPartsOf = (options: FinalMessageBuildOptions): ReplyLayoutParts => {
         groundingData,
         googleSearch,
         agentStats,
+        toolLog,
+        toolsLink,
         wasStoppedByUser,
         maxLength = TELEGRAM_MAX_LENGTH,
         resolveContextLink,
@@ -268,7 +295,14 @@ const layoutPartsOf = (options: FinalMessageBuildOptions): ReplyLayoutParts => {
     const document = googleSearch ?? buildGoogleSearchDocument(groundingData ?? []);
     const footer = renderGoogleSearchFooter(document);
     const footerPresent = footer.text.trim() !== '';
-    const toolSections = buildToolRecordSections(agentStats, groundingData ?? []);
+
+    // The tool records are laid out apart from the answer so a block that does
+    // not fit the answer tail moves whole instead of being cut. A folded Tools
+    // block is left out entirely: the link message at the end carries it.
+    const recordParts = buildToolRecordParts(agentStats, groundingData ?? []);
+    const toolSections = [toolsLink === undefined ? recordParts.tools : null, recordParts.sources].filter(
+        (section): section is RenderedMessage => section !== null
+    );
 
     // The CoT quote is rendered on its own so a split can keep it whole: the
     // first message carries the complete thinking (see splitAfterQuote).
@@ -289,12 +323,13 @@ const layoutPartsOf = (options: FinalMessageBuildOptions): ReplyLayoutParts => {
     // stay a pure link (design §4.4). With a body the marker rides on it.
     const stoppedMarkerFits =
         wasStoppedByUser === true &&
-        (thinkingLink === undefined || Boolean(text) || toolSections.length > 0 || footerPresent);
+        (thinkingLink === undefined ||
+            Boolean(text) ||
+            toolSections.length > 0 ||
+            toolsLink !== undefined ||
+            footerPresent);
     if (stoppedMarkerFits) {
         answerParts.push('\n\n', plainText('[stopped]'));
-    }
-    for (const section of toolSections) {
-        answerParts.push('\n', section);
     }
 
     const answer = answerParts.length ? concatMessages(...answerParts) : concatMessages();
@@ -302,6 +337,8 @@ const layoutPartsOf = (options: FinalMessageBuildOptions): ReplyLayoutParts => {
     return {
         quote,
         answer,
+        toolSections,
+        toolLog: toolLog ?? recordParts.document,
         footer,
         footerPresent,
         document,
@@ -311,91 +348,126 @@ const layoutPartsOf = (options: FinalMessageBuildOptions): ReplyLayoutParts => {
 };
 
 /**
- * Today's layout: the footer is one more record section of the body and the
- * split may cut it. Only reached when the footer needs more than one message
- * and no page link was passed — the fallback that keeps old versions and a
- * switched-off feature rendering exactly as before.
+ * Today's layout: the records and the footer are more sections of the body and
+ * the split may cut them. Only reached when the footer needs more than one
+ * message and no page link was passed — the fallback that keeps old versions
+ * and a switched-off feature rendering exactly as before.
  */
 const mergedChunks = (parts: ReplyLayoutParts): FinalMessageChunk[] => {
-    const { quote, answer, footer, footerPresent, document, maxLength, resolveContextLink } =
+    const { quote, answer, toolSections, footer, footerPresent, document, maxLength, resolveContextLink } =
         parts;
     const body = linkifyContextNumbers(
-        footerPresent ? concatMessages(answer, '\n', footer) : answer,
+        concatMessages(
+            answer,
+            ...toolSections.flatMap((section) => ['\n' as const, section]),
+            ...(footerPresent ? ['\n' as const, footer] : [])
+        ),
         resolveContextLink
     );
     return applyLinkPreviewPolicy(splitAnswer(quote, body, maxLength), document.firstQueryUrl);
 };
 
 /**
- * Put the whole footer on the last answer chunk when it still fits there;
+ * Put each whole section on the last chunk when it still fits there, otherwise
+ * as one message of its own. A section that cannot fit one message at all is
+ * split — the fallback for a folded block whose page link is unavailable.
+ */
+const appendWholeSections = (
+    chunks: readonly RenderedMessage[],
+    sections: readonly RenderedMessage[],
+    maxLength: number
+): RenderedMessage[] => {
+    let result = [...chunks];
+    for (const section of sections) {
+        const last = result[result.length - 1];
+        if (last === undefined) {
+            result = splitMessage(section, { maxLength, maxEntities: TELEGRAM_MAX_ENTITIES });
+            continue;
+        }
+        const combined = concatMessages(last, '\n', section);
+        if (splitMessage(combined, { maxLength, maxEntities: TELEGRAM_MAX_ENTITIES }).length <= 1) {
+            result[result.length - 1] = combined;
+        } else {
+            result = [...result, ...splitMessage(section, { maxLength, maxEntities: TELEGRAM_MAX_ENTITIES })];
+        }
+    }
+    return result;
+};
+
+/**
+ * Put the whole footer on the last body chunk when it still fits there;
  * otherwise it goes out as one message of its own. The footer is never split
  * at this stage — the folded link message exists for the case where it cannot
  * fit one message at all.
  */
 const attachFooter = (
-    answerChunks: readonly RenderedMessage[],
+    bodyChunks: readonly RenderedMessage[],
     footer: RenderedMessage,
     maxLength: number
 ): RenderedMessage[] => {
-    const last = answerChunks[answerChunks.length - 1];
+    const last = bodyChunks[bodyChunks.length - 1];
     if (last === undefined) return [footer];
     const combined = concatMessages(last, '\n', footer);
     const fits = splitMessage(combined, { maxLength, maxEntities: TELEGRAM_MAX_ENTITIES }).length <= 1;
-    return fits ? [...answerChunks.slice(0, -1), combined] : [...answerChunks, footer];
+    return fits ? [...bodyChunks.slice(0, -1), combined] : [...bodyChunks, footer];
 };
 
-/** Two-phase layout: answer chunks, then the footer folded or kept whole */
+/** Two-phase layout: answer chunks, whole record blocks, then the footer/link messages */
 const twoPhaseChunks = (
     parts: ReplyLayoutParts,
-    searchLink: SearchPageLink | undefined
+    searchLink: SearchPageLink | undefined,
+    toolsLink: ToolLogPageLink | undefined
 ): FinalMessageChunk[] => {
-    const answer = linkifyContextNumbers(parts.answer, parts.resolveContextLink);
-    const answerChunks = splitAnswer(parts.quote, answer, parts.maxLength);
+    const linkify = (message: RenderedMessage): RenderedMessage =>
+        linkifyContextNumbers(message, parts.resolveContextLink);
+    const answer = linkify(parts.answer);
+    let bodyChunks = splitAnswer(parts.quote, answer, parts.maxLength);
+    bodyChunks = appendWholeSections(bodyChunks, parts.toolSections.map(linkify), parts.maxLength);
 
-    // No footer: nothing to fold (a stale page link must never add an empty
-    // message), and the answer keeps the normal preview policy.
-    if (!parts.footerPresent) {
-        return applyLinkPreviewPolicy(answerChunks, parts.document.firstQueryUrl);
+    // Link messages carry the preview cards of the blocks they fold
+    const linkChunks: FinalMessageChunk[] = [];
+    if (toolsLink !== undefined) {
+        linkChunks.push(toToolLogLinkChunk(toolsLink, parts.toolLog));
     }
 
-    // A page link is only passed when the layout is folded (the live layout saw
-    // an overflowing footer, or a stored version carries the page token): the
-    // whole footer becomes one small message at the end and the answer carries
-    // no preview card.
-    if (searchLink !== undefined) {
-        return [
-            ...disablePreviews(answerChunks),
-            toSearchLinkChunk(searchLink, searchLinkStatsOf(parts.document)),
-        ];
+    if (parts.footerPresent) {
+        if (searchLink !== undefined) {
+            // The footer is folded: the whole footer becomes one small message at
+            // the end and the body carries no preview card.
+            linkChunks.push(toSearchLinkChunk(searchLink, searchLinkStatsOf(parts.document)));
+        } else {
+            const footer = linkify(parts.footer);
+            const footerChunks = splitMessage(footer, {
+                maxLength: parts.maxLength,
+                maxEntities: TELEGRAM_MAX_ENTITIES,
+            });
+            const footerChunk = footerChunks[0];
+            if (footerChunks.length > 1 || footerChunk === undefined) {
+                // No page link was available: keep today's merged split, which cuts
+                // the footer rather than dropping it.
+                console.warn(
+                    '[final-message-builder] the GoogleSearch footer needs more than one message and no search page link was passed; keeping the merged split'
+                );
+                const merged = mergedChunks(parts);
+                return linkChunks.length > 0 ? [...disablePreviews(merged), ...linkChunks] : merged;
+            }
+            bodyChunks = attachFooter(bodyChunks, footerChunk, parts.maxLength);
+        }
     }
 
-    const footer = linkifyContextNumbers(parts.footer, parts.resolveContextLink);
-    const footerChunks = splitMessage(footer, {
-        maxLength: parts.maxLength,
-        maxEntities: TELEGRAM_MAX_ENTITIES,
-    });
-    const footerChunk = footerChunks[0];
-    if (footerChunks.length > 1 || footerChunk === undefined) {
-        // No page link was available: keep today's merged split, which cuts the
-        // footer rather than dropping it.
-        console.warn(
-            '[final-message-builder] the GoogleSearch footer needs more than one message and no search page link was passed; keeping the merged split'
-        );
-        return mergedChunks(parts);
+    if (linkChunks.length > 0) {
+        // The folded blocks' cards ride on their own link messages: the body keeps none.
+        return [...disablePreviews(bodyChunks), ...linkChunks];
     }
-
-    return applyLinkPreviewPolicy(
-        attachFooter(answerChunks, footerChunk, parts.maxLength),
-        parts.document.firstQueryUrl
-    );
+    return applyLinkPreviewPolicy(bodyChunks, parts.document.firstQueryUrl);
 };
 
 /**
- * Body chunks: answer text, [stopped] marker, tool records and the search
- * footer. The answer and the footer are laid out in two phases — a footer that
- * fits one message is never cut in half, and an overflowing one either folds
- * into the page link message or falls back to today's merged split.
+ * Body chunks: answer text, [stopped] marker, the Tools/Sources blocks and the
+ * search footer. Records and footer are laid out apart from the answer — a
+ * block that fits one message is never cut in half; an overflowing one either
+ * folds into its page link message or falls back to today's merged split.
  */
 const buildBodyChunks = (
     options: FinalMessageBuildOptions
-): FinalMessageChunk[] => twoPhaseChunks(layoutPartsOf(options), options.searchLink);
+): FinalMessageChunk[] => twoPhaseChunks(layoutPartsOf(options), options.searchLink, options.toolsLink);

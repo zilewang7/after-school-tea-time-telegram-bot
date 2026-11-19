@@ -8,16 +8,19 @@
 import { match } from 'ts-pattern';
 import { IMAGE_GENERATION_TIMEOUT_MS } from '../../ai/image-generation/generate-image.js';
 import type { ImageGenerationFailure } from '../../ai/image-generation/image-generation-failure.js';
-import type { ToolResult } from '../../ai/tools/tool-types.js';
+import type { ToolCallTrace, ToolResult } from '../../ai/tools/tool-types.js';
 import type { GroundingCitation, GroundingData } from '../../ai/types.js';
 import type { GenerateImageArgs } from './image-tool-args.js';
 import { MAX_GENERATED_IMAGES, type GeneratedImage } from './reply-media-state.js';
 import { GENERATE_IMAGE_TOOL_NAME } from './tool-names.js';
+import { traceBytes, traceParts, traceQuote } from './tool-trace.js';
 
 /** The image model's own words are quoted, never dumped whole */
 const MODEL_TEXT_MAX_CHARS = 500;
 /** Prompt excerpt on the Tools block line */
 const RECORD_PROMPT_CHARS = 40;
+/** Prompt excerpt on the per-call log line */
+const TRACE_PROMPT_CHARS = 28;
 
 /** `PNG`, `JPEG`: the model reads this far more easily than a mime type */
 const mimeLabel = (mimeType: string): string => mimeType.replace(/^image\//, '').toUpperCase();
@@ -51,12 +54,41 @@ export const describeImageGenerationFailure = (failure: ImageGenerationFailure):
         .with({ kind: 'error' }, ({ message }) => `生图失败：${message}`)
         .exhaustive();
 
-export const imageToolError = (content: string): ToolResult => ({
+export const imageToolError = (content: string, trace?: ToolCallTrace): ToolResult => ({
     content,
     isError: true,
     images: [],
     record: null,
+    ...(trace === undefined ? {} : { trace }),
 });
+
+/**
+ * The arguments of one drawing call as the log shows them: the prompt excerpt
+ * plus only the choices that differ from the defaults.
+ */
+export const describeGenerateImageArgument = (
+    args: GenerateImageArgs,
+    /** Pictures actually handed to the model; 0 for a failure before they resolved */
+    referenceCount = 0
+): string =>
+    traceParts(
+        traceQuote(args.prompt, TRACE_PROMPT_CHARS),
+        args.model === 'gpt' ? 'gpt' : null,
+        args.model === 'banana' && args.aspectRatio !== undefined ? args.aspectRatio : null,
+        referenceCount > 0 ? `参考 ${referenceCount} 张` : null
+    );
+
+/** The failure's kind as one short log word (the renderer adds 「失败：」) */
+export const describeImageGenerationFailureTrace = (failure: ImageGenerationFailure): string =>
+    match(failure)
+        .with({ kind: 'busy' }, () => '服务繁忙')
+        .with({ kind: 'timeout' }, () => '超时')
+        .with({ kind: 'stopped' }, () => '已停止')
+        .with({ kind: 'blocked' }, () => '被安全过滤拦下')
+        .with({ kind: 'no-image' }, () => '没有出图')
+        .with({ kind: 'text-only' }, () => '只回文字没出图')
+        .with({ kind: 'error' }, () => '生图出错')
+        .exhaustive();
 
 /** The pages Google's image search grounded the drawing in */
 const imageCitations = (grounding: GroundingData | null): GroundingCitation[] =>
@@ -71,7 +103,9 @@ export const imageToolSuccess = (
     args: GenerateImageArgs,
     /** Draws this reply still has after this one */
     remaining: number,
-    grounding: GroundingData | null = null
+    grounding: GroundingData | null = null,
+    /** Pictures actually handed to the model (references + web references) */
+    referenceCount = 0
 ): ToolResult => {
     const promptLine = args.prompt.replace(/\s+/g, ' ').trim();
     const imageSearchQueries = grounding?.imageSearchQueries ?? [];
@@ -105,6 +139,10 @@ export const imageToolSuccess = (
                 ...imageSearchQueries.map((query) => `参考图搜索: ${excerpt(query, RECORD_PROMPT_CHARS)}`),
             ],
             citations: imageCitations(grounding),
+        },
+        trace: {
+            argument: describeGenerateImageArgument(args, referenceCount),
+            result: `${id} ${mimeLabel(image.mimeType)} ${traceBytes(image.data.length)}`,
         },
     };
 };

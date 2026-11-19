@@ -23,7 +23,11 @@ import type {
 import { loadMessageImages } from '../commands/reference-images.js';
 import { loadAnimationFrame, type AnimationFrameLoader } from './animation-frame.js';
 import { imageToolError } from './image-tool-result.js';
-import { parseSearchByImageArgs, type ParsedSearchByImageArgs } from './media-tool-args.js';
+import {
+    parseSearchByImageArgs,
+    type ParsedSearchByImageArgs,
+    type SearchByImageArgs,
+} from './media-tool-args.js';
 import { loadContextImages, type MessageImageLoader } from './image-references.js';
 import { downloadCandidateMedia, type ImageFetch } from './image-source-download.js';
 import {
@@ -34,6 +38,7 @@ import {
 import type { ReplyToolContext } from './reply-tool-context.js';
 import { formatReverseSearchResult } from './reverse-image-text.js';
 import { SEARCH_BY_IMAGE_TOOL_NAME } from './tool-names.js';
+import { traceParts } from './tool-trace.js';
 
 const DESCRIPTION =
     '以图搜图：将图片上传至 Yandex 图片搜索，返回包含该图的网页、其他尺寸、相似图与识别标签。' +
@@ -168,6 +173,16 @@ const registerResults = (state: ReplyMediaState, result: ParsedReverseSearch): R
     return { sizes, similar };
 };
 
+/** `#3 第 2 张` / `img1` / `s3`: the one picture source the call named */
+const describeSearchByImageArgument = (args: SearchByImageArgs): string => {
+    if (args.message !== undefined) {
+        return args.image === undefined || args.image === 1
+            ? `#${args.message}`
+            : `#${args.message} 第 ${args.image} 张`;
+    }
+    return args.imageId ?? args.searchId ?? '';
+};
+
 export const createSearchByImageTool = (options: SearchByImageToolOptions): ToolHandler => {
     const { state, context } = options;
     const dependencies: SearchByImageDependencies = {
@@ -241,6 +256,7 @@ export const createSearchByImageTool = (options: SearchByImageToolOptions): Tool
                 return imageToolError(`本次回复已经做过 ${MAX_SEARCHES_PER_REPLY} 次以图搜图，达到上限。`);
             }
 
+            const traceArgument = describeSearchByImageArgument(args.args);
             const resolved = await resolveSource(args);
             if (!resolved.ok) return imageToolError(resolved.error);
 
@@ -259,6 +275,8 @@ export const createSearchByImageTool = (options: SearchByImageToolOptions): Tool
                     `similar=${registered.similar.length} tags=${outcome.result.tags.length}`
             );
 
+            const totalResults =
+                outcome.result.sites.length + registered.sizes.length + registered.similar.length;
             return {
                 content: formatReverseSearchResult({
                     result: outcome.result,
@@ -270,6 +288,17 @@ export const createSearchByImageTool = (options: SearchByImageToolOptions): Tool
                 isError: false,
                 images: [],
                 record: null,
+                trace: {
+                    argument: traceArgument,
+                    result:
+                        totalResults === 0
+                            ? '无结果'
+                            : traceParts(
+                                  `来源 ${outcome.result.sites.length}`,
+                                  `尺寸 ${registered.sizes.length}`,
+                                  `相似 ${registered.similar.length}`
+                              ),
+                },
             };
         },
     };

@@ -203,7 +203,7 @@ export async function* runGrokToolLoop(
 
     yield {
         type: 'done',
-        agentStats: stats.build(tally.snapshot()),
+        agentStats: stats.build(tally.snapshot(), tally.calls()),
         // A response's output_text covers its own round only, so a reply of
         // several rounds is exactly what was streamed
         rawResponse: roundCount === 1 ? lastResponse : undefined,

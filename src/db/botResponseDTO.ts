@@ -112,6 +112,12 @@ export interface ResponseVersion {
      * the feature, or whose footer fit one message anyway.
      */
     searchLinkToken?: string;
+    /**
+     * Signed token of the folded Tools block this version shows as a link
+     * message instead of the inline block (design 2026-1119-1835); absent when
+     * the block fit one message or the version is from before the feature.
+     */
+    toolLogLinkToken?: string;
     /** Grounding/search data */
     groundingData?: any[];
     /** Agent stats / tool usage summary */

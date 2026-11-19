@@ -45,7 +45,9 @@ import {
     type ImageFetch,
 } from './image-source-download.js';
 import {
+    describeGenerateImageArgument,
     describeImageGenerationFailure,
+    describeImageGenerationFailureTrace,
     imageToolError,
     imageToolSuccess,
 } from './image-tool-result.js';
@@ -416,7 +418,10 @@ export const createGenerateImageTool = (
                     `[generate_image] model=${args.model}${aspectNote}, ${referenceImages.length} reference(s): ` +
                         failureLogDetail(outcome.failure)
                 );
-                return imageToolError(describeImageGenerationFailure(outcome.failure));
+                return imageToolError(describeImageGenerationFailure(outcome.failure), {
+                    argument: describeGenerateImageArgument(args, referenceImages.length),
+                    result: describeImageGenerationFailureTrace(outcome.failure),
+                });
             }
 
             const id = nextGeneratedImageId(state);
@@ -431,7 +436,13 @@ export const createGenerateImageTool = (
             // After the picture is kept: a failed generation never reaches this
             // point, so only what was actually drawn is priced.
             recordImageGeneration?.(modelId, roundUsageOf(usageSink));
-            return imageToolSuccess(drawn, args, MAX_GENERATED_IMAGES - state.generated.size, outcome.grounding);
+            return imageToolSuccess(
+                drawn,
+                args,
+                MAX_GENERATED_IMAGES - state.generated.size,
+                outcome.grounding,
+                referenceImages.length
+            );
         },
     };
 };

@@ -23,6 +23,7 @@ import {
     type SearchSet,
 } from './reply-media-state.js';
 import { SEARCH_IMAGES_TOOL_NAME } from './tool-names.js';
+import { traceParts, traceQuote } from './tool-trace.js';
 
 const DESCRIPTION_WITH_IMAGES =
     '检索网络图片（表情包、梗图、截图、新闻图、参考照片等），返回候选编号 s1、s2… 及其尺寸、格式与来源页。' +
@@ -215,6 +216,10 @@ export const createSearchImagesTool = (options: SearchImagesToolOptions): ToolHa
             const parsed = parseSearchImagesArgs(rawArgs);
             if (!parsed.ok) return imageToolError(parsed.error);
             const args = parsed.args;
+            const traceArgument = traceParts(
+                args.searchId === undefined ? traceQuote(args.query ?? '') : `${args.searchId} 翻页`,
+                args.view === 'details' ? 'details' : null
+            );
 
             const resolved = await resolveSet(options, args);
             if (!resolved.ok) return imageToolError(resolved.error);
@@ -247,6 +252,18 @@ export const createSearchImagesTool = (options: SearchImagesToolOptions): ToolHa
                 canSeeImages: dependencies.canSeeImages,
                 reused,
             });
+            const unseenAfter = unseenCandidates(set).length;
+            const traceResult =
+                args.searchId === undefined
+                    ? traceParts(
+                          reused ? `复用 ${set.id}` : set.id,
+                          `${set.candidates.length} 条候选`,
+                          attached.length > 0 ? `附 ${attached.length} 张` : null
+                      )
+                    : traceParts(
+                          attached.length > 0 ? `附 ${attached.length} 张` : `${set.candidates.length} 条候选`,
+                          `剩 ${unseenAfter} 张`
+                      );
 
             return {
                 content,
@@ -258,6 +275,7 @@ export const createSearchImagesTool = (options: SearchImagesToolOptions): ToolHa
                     searchQueries: [`${SEARCH_IMAGES_TOOL_NAME}: ${set.id} 「${set.query}」`],
                     citations: [],
                 },
+                trace: { argument: traceArgument, result: traceResult },
             };
         },
     };

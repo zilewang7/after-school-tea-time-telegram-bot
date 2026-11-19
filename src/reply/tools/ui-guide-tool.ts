@@ -12,6 +12,7 @@ import type { ToolHandler } from '../../ai/tools/tool-types.js';
 import { getWidgetGuide } from '../../ai/widget/guides/index.js';
 import { imageToolError } from './image-tool-result.js';
 import { GET_UI_GUIDE_TOOL_NAME } from './tool-names.js';
+import { traceChars, traceParts } from './tool-trace.js';
 
 const DESCRIPTION =
     '取生成聊天内 UI 卡片的完整写作规范。决定要用 send_widget 之前先调用一次：' +
@@ -51,6 +52,13 @@ export const createUiGuideTool = (): ToolHandler => ({
             isError: false,
             images: [],
             record: null,
+            trace: {
+                argument: guide.kind,
+                result: traceParts(
+                    `规范 v${guide.version}`,
+                    traceChars(Array.from(guide.text).length)
+                ),
+            },
         };
     },
 });

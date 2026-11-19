@@ -54,6 +54,7 @@ import {
     type HistoryToolOptions,
 } from './history-tool-shared.js';
 import { SEARCH_HISTORY_TOOL_NAME } from './tool-names.js';
+import { traceDateRange, traceParts, traceQuote, traceText } from './tool-trace.js';
 
 const BASE_DESCRIPTION =
     '检索本聊天的历史归档（luoxu 全文索引：更早的消息、链接预览正文、Instant View、图片 OCR 文本）。' +
@@ -320,6 +321,14 @@ export const createSearchHistoryTool = (options: HistoryToolOptions): ToolHandle
             const parsed = parseHistorySearchArgs(args, defaultScope);
             if (!parsed.ok) return historyToolError(parsed.error);
             const searchArgs = parsed.value;
+            const traceArgument = traceParts(
+                searchArgs.query === null ? '最近消息' : traceQuote(searchArgs.query),
+                searchArgs.sender === null ? null : `sender=${traceText(searchArgs.sender)}`,
+                traceDateRange(searchArgs.from, searchArgs.to),
+                searchArgs.before === null ? null : `before=${traceText(searchArgs.before)}`,
+                searchArgs.limit === HISTORY_DEFAULT_LIMIT ? null : `limit=${searchArgs.limit}`,
+                searchArgs.scope === 'all' && defaultScope !== 'all' ? '全部群' : null
+            );
 
             if (searchArgs.scope === 'all' && !isOwner(options)) {
                 return historyToolError('跨群检索仅机主可用。');
@@ -384,7 +393,10 @@ export const createSearchHistoryTool = (options: HistoryToolOptions): ToolHandle
                     searchArgs.to !== null ||
                     searchArgs.before !== null;
                 const empty = `历史检索：${conditions.join('，')}，范围=${scopeLabel}，没有找到匹配的历史消息。${latinMissHintOf(searchArgs.query, narrowed)}`;
-                return historyToolSuccess(status === null ? empty : `${empty}\n${status}`);
+                return historyToolSuccess(status === null ? empty : `${empty}\n${status}`, {
+                    argument: traceArgument,
+                    result: '无命中',
+                });
             }
 
             const currentChannel = options.channelId;
@@ -453,7 +465,10 @@ export const createSearchHistoryTool = (options: HistoryToolOptions): ToolHandle
                 timeZone,
                 searchListBudget(searchArgs.limit)
             );
-            return historyToolSuccess(text);
+            return historyToolSuccess(text, {
+                argument: traceArgument,
+                result: `${hits.length}${outcome.hasMore ? '+' : ''} 条命中`,
+            });
         },
     };
     return withHistoryLogging(handler, options.context.chatId, (args) =>

@@ -7,7 +7,7 @@ import { match } from 'ts-pattern';
 import type { ConversationExport } from './conversation-export.js';
 import type { ModelView } from './model-view.js';
 import type { ReplyDetailView, ReplyVersionView } from './reply-view.js';
-import type { ToolRecordsView } from './tool-records-view.js';
+import type { ToolCallView, ToolRecordsView } from './tool-records-view.js';
 import type { BotNode, MemberUserNode, TreeNode } from './tree-nodes.js';
 
 const longestBacktickRun = (text: string): number => {
@@ -62,13 +62,38 @@ const nodeSection = (node: TreeNode): string[] =>
         .with({ kind: 'user', redacted: true }, (user) => [`### ${numberLabel(user.number)} · 用户消息 · ${user.date}`])
         .exhaustive();
 
+/** A call at least this slow shows its duration, as the Telegram block does */
+const SLOW_CALL_MS = 3000;
+
+/** `3.4s` for a slow call's duration; one decimal, never `0.0s` */
+const formatCallSeconds = (ms: number): string => `${Math.max(0.1, Math.round(ms / 100) / 10).toFixed(1)}s`;
+
+/** `1. name: argument → result`; a failed call says so, a slow one ends with its seconds */
+const callLineOf = (call: ToolCallView, index: number): string => {
+    let line = `${index + 1}. ${call.name}`;
+    if (call.argument !== null && call.argument !== '') line += `: ${call.argument}`;
+    if (call.failed) {
+        line += call.result === null || call.result === '' ? ' → 失败' : ` → 失败：${call.result}`;
+    } else if (call.result !== null && call.result !== '') {
+        line += ` → ${call.result}`;
+    }
+    if (call.ms !== null && call.ms >= SLOW_CALL_MS) line += ` · ${formatCallSeconds(call.ms)}`;
+    return line;
+};
+
 const toolLines = (tools: ToolRecordsView): string[] => {
     const lines: string[] = [];
     if (tools.mode !== null) lines.push(`- 模式：${tools.mode}`);
     for (const usage of tools.toolUsage) {
         lines.push(`- ${usage.name} ×${usage.count}${usage.failed > 0 ? `（${usage.failed} 次失败）` : ''}`);
     }
-    for (const call of tools.calls) lines.push(`- 调用：${call}`);
+    if (tools.callLog.length > 0) {
+        // The per-call log replaces the merged grounding lines of the same calls
+        tools.callLog.forEach((call, index) => lines.push(`- ${callLineOf(call, index)}`));
+        if (tools.toolCallsTruncated > 0) lines.push(`- …另有 ${tools.toolCallsTruncated} 次调用未记录`);
+    } else {
+        for (const call of tools.calls) lines.push(`- 调用：${call}`);
+    }
     for (const summary of tools.codeInterpreter) lines.push(`- code interpreter：${summary}`);
     for (const source of tools.sources) lines.push(`- 来源：${source.title ?? source.uri} <${source.uri}>`);
     for (const search of tools.searches) {

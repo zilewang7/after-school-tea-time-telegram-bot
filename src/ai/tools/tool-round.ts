@@ -1,8 +1,10 @@
 /**
  * One round of client tool calls, shared by every platform's tool loop.
  */
-import type { AgentToolUsage, StreamChunk } from '../types.js';
+import type { AgentToolCallRecord, AgentToolUsage, StreamChunk } from '../types.js';
 import { isTimeFreeToolName } from '../../reply/tools/tool-names.js';
+import { TOOL_LOG_MAX_RECORDS } from '../../shared/tool-log.js';
+import { buildToolCallRecord } from './tool-call-record.js';
 import type { ToolCall, ToolResult, TurnTools } from './tool-types.js';
 
 export interface ExecutedToolCall {
@@ -116,22 +118,36 @@ export const toolTimeSpentMs = (executedCalls: readonly ExecutedToolCall[]): num
         0
     );
 
-/** Per-reply call counts for agentStats.toolUsage */
+/** Per-reply call counts for agentStats.toolUsage, plus the per-call log */
 export interface ToolUsageTally {
     count(name: string): void;
     /** The call just counted ended in an error result */
     fail(name: string): void;
+    /** The call just counted (and only then) gets its display record, in call order */
+    record(record: AgentToolCallRecord): void;
+    /** The records so far, in call order, as a copy: a checkpoint keeps its own */
+    calls(): AgentToolCallRecord[];
+    /** Records the safety cap dropped; 0 normally */
+    truncatedCount(): number;
     snapshot(): AgentToolUsage[];
 }
 
-/** `initial`: a snapshot to continue from (a resumed reply), in its order */
-export const createToolUsageTally = (initial: readonly AgentToolUsage[] = []): ToolUsageTally => {
+/**
+ * `initialUsage` / `initialCalls`: what a resumed reply already counted and
+ * logged, in their order. Call order is preserved across the resume.
+ */
+export const createToolUsageTally = (
+    initialUsage: readonly AgentToolUsage[] = [],
+    initialCalls: readonly AgentToolCallRecord[] = []
+): ToolUsageTally => {
     // Map keeps first-use order, which is the order the usage line shows
-    const countsByName = new Map<string, number>(initial.map((usage) => [usage.name, usage.count]));
+    const countsByName = new Map<string, number>(initialUsage.map((usage) => [usage.name, usage.count]));
     const failuresByName = new Map<string, number>();
-    for (const usage of initial) {
+    for (const usage of initialUsage) {
         if (usage.failed !== undefined) failuresByName.set(usage.name, usage.failed);
     }
+    const records: AgentToolCallRecord[] = initialCalls.slice(0, TOOL_LOG_MAX_RECORDS).map((record) => ({ ...record }));
+    let droppedCount = Math.max(0, initialCalls.length - TOOL_LOG_MAX_RECORDS);
     return {
         count: (name) => {
             countsByName.set(name, (countsByName.get(name) ?? 0) + 1);
@@ -139,6 +155,15 @@ export const createToolUsageTally = (initial: readonly AgentToolUsage[] = []): T
         fail: (name) => {
             failuresByName.set(name, (failuresByName.get(name) ?? 0) + 1);
         },
+        record: (record) => {
+            if (records.length >= TOOL_LOG_MAX_RECORDS) {
+                droppedCount += 1;
+                return;
+            }
+            records.push({ ...record });
+        },
+        calls: () => records.map((record) => ({ ...record })),
+        truncatedCount: () => droppedCount,
         snapshot: () =>
             Array.from(countsByName, ([name, count]) => {
                 const failed = failuresByName.get(name) ?? 0;
@@ -225,6 +250,19 @@ export async function* runToolRound(
         const executed: ExecutedToolCall = { call, result, durationMs };
         executedCalls.push(executed);
         const products = productsOf(result);
+        if (counted) {
+            // Before onCallExecuted: the checkpoint kept when the reply stops
+            // here must already hold the call that just ran. Building the
+            // record never throws, and a failure of it must not end the round.
+            try {
+                tally.record(buildToolCallRecord(call, result, durationMs));
+            } catch (error) {
+                console.warn(
+                    `[tools] could not record the ${call.name} call: ` +
+                        (error instanceof Error ? error.message : String(error))
+                );
+            }
+        }
         hooks.onCallExecuted?.({
             executed,
             products,

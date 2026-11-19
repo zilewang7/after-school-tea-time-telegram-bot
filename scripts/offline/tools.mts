@@ -283,6 +283,8 @@ const { GEMINI_IMAGE_MODEL, OPENAI_IMAGE_MODEL } = await import('../../src/confi
 const { toToolName, stripSchemaMeta } = await import('../../src/ai/tools/tool-wire-formats.js');
 const { createTurnTools } = await import('../../src/ai/tools/turn-tools.js');
 const { runToolRound, createToolUsageTally } = await import('../../src/ai/tools/tool-round.js');
+const { buildToolCallRecord } = await import('../../src/ai/tools/tool-call-record.js');
+const { TOOL_LOG_MAX_RECORDS } = await import('../../src/shared/tool-log.js');
 const { buildMcpToolHandlers } = await import('../../src/ai/tools/mcp-tool-handlers.js');
 const mcp = await import('../../src/ai/mcp/index.js');
 const replyTools = await import('../../src/reply/tools/index.js');
@@ -800,6 +802,183 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
                     json(mixedTally.snapshot()) === '[{"name":"search","count":1}]' &&
                     mixed.returned.length === 2,
                 `next to an offered one, only that one shows and counts (got ${json(mixed.items)})`
+            );
+        },
+    },
+    {
+        name: 'every offered call leaves one per-call record, in call order, before its checkpoint hook',
+        body: async () => {
+            const offered = (name: string) => ({ name, description: name, inputSchema: { type: 'object' } });
+            const tools: TurnTools = {
+                definitions: [offered('draw'), offered('search'), offered('fail')],
+                execute: async (toolCall) => {
+                    if (toolCall.name === 'draw') {
+                        return okResult('drawn', { trace: { argument: '「赛博朋克猫」', result: 'g1 PNG 1024KB' } });
+                    }
+                    if (toolCall.name === 'fail') {
+                        return { content: '查询语法有误。请检查括号。', isError: true, images: [], record: null };
+                    }
+                    return okResult('found 2 results');
+                },
+                statusOf: (name) => ({ text: `running ${name}`, chatAction: 'typing' }),
+            };
+            const tally = createToolUsageTally();
+            // Each hook sees the call that just ran: the checkpoint a stop keeps must include it
+            const seenBeforeHook: string[][] = [];
+            const calls = [
+                call('draw'),
+                call('search', json({ query: '灭蛾 方法', before: 'h9' })),
+                call('nope'),
+                call('fail'),
+            ];
+            const { result: drained, lines } = await captureConsole(async () =>
+                drain(
+                    runToolRound(tools, calls, tally, undefined, {
+                        onCallExecuted: () => {
+                            seenBeforeHook.push(tally.calls().map((record) => record.name));
+                        },
+                    })
+                )
+            );
+
+            expect(drained.returned.length === 4, `every call runs, the unoffered one included (got ${drained.returned.length})`);
+            expect(
+                json(seenBeforeHook) ===
+                    json([
+                        ['draw'],
+                        ['draw', 'search'],
+                        // The unoffered call has no record: nothing ran for the turn
+                        ['draw', 'search'],
+                        ['draw', 'search', 'fail'],
+                    ]),
+                `each record is in the tally before its own hook fires (got ${json(seenBeforeHook)})`
+            );
+            const records = tally.calls();
+            expect(
+                json(records.map(({ name, argument, result, failed }) => ({ name, argument, result, failed }))) ===
+                    json([
+                        { name: 'draw', argument: '「赛博朋克猫」', result: 'g1 PNG 1024KB' },
+                        { name: 'search', argument: '「灭蛾 方法」 · before=h9', result: '15 字' },
+                        { name: 'fail', result: '查询语法有误', failed: true },
+                    ]),
+                `one record per offered call, in call order (got ${json(records)})`
+            );
+            expect(
+                records.every((record) => typeof record.ms === 'number' && record.ms >= 0),
+                `each record carries the handler's wall time (got ${json(records)})`
+            );
+            expect(lines.length === 0, `recording never warns (got ${json(lines)})`);
+            // A checkpoint keeps its own copy: a later read cannot change it
+            const handedOver = tally.calls();
+            const firstRecord = handedOver[0];
+            if (firstRecord !== undefined) firstRecord.name = 'tampered';
+            expect(tally.calls()[0]?.name === 'draw', 'calls() hands out a copy');
+
+            // The safety cap counts beyond the stored limit instead of growing
+            const capped = createToolUsageTally(
+                [],
+                Array.from({ length: TOOL_LOG_MAX_RECORDS + 2 }, (_value, index) => ({ name: 'x', argument: `a${index}`, ms: 1 }))
+            );
+            expect(
+                capped.calls().length === TOOL_LOG_MAX_RECORDS && capped.truncatedCount() === 2,
+                `records stop at the cap and the rest are counted (got ${capped.calls().length} / ${capped.truncatedCount()})`
+            );
+            capped.record({ name: 'x', ms: 1 });
+            expect(
+                capped.calls().length === TOOL_LOG_MAX_RECORDS && capped.truncatedCount() === 3,
+                'a late record only counts as dropped'
+            );
+        },
+    },
+    {
+        name: 'the generic fallback summarizes a call without a handler trace and never shows a body',
+        body: async () => {
+            const recordOf = (
+                name: string,
+                argumentsJson: string,
+                content: string,
+                isError = false,
+                trace?: { argument?: string; result?: string }
+            ) =>
+                buildToolCallRecord(
+                    { id: 'c1', name, argumentsJson },
+                    { content, isError, images: [], record: null, ...(trace === undefined ? {} : { trace }) },
+                    1200
+                );
+
+            const search = recordOf(
+                'searxng_web_search',
+                json({ query: '灭蛾 方法', limit: 20, token: 'secret-token' }),
+                'result text'
+            );
+            expect(
+                json(search) ===
+                    json({ name: 'searxng_web_search', argument: '「灭蛾 方法」 · limit=20', result: '11 字', ms: 1200 }),
+                `the primary key first, then up to two filters; a credential key never shows (got ${json(search)})`
+            );
+            expect(
+                recordOf('web_url_read', json({ url: 'https://ipm.ucanr.edu/guide/clothes-moths/?token=sig#top' }), 'page').argument ===
+                    'ipm.ucanr.edu/guide/clothes-moths/',
+                'a URL keeps host and path only: no query, no hash'
+            );
+            expect(
+                recordOf('mcp_tool', json({ content: 'TOP SECRET', text: 'also secret', body: 'still secret' }), 'ok').argument ===
+                    undefined,
+                'an argument made only of body text shows nothing'
+            );
+            expect(recordOf('mcp_tool', json({ query: 'a'.repeat(48) }), 'ok').argument === '…', 'a value that looks like a key is hidden');
+            expect(
+                recordOf('read_history', json({ ids: ['h101', 'h102', 'h103', 'h104'] }), 'ok').argument === 'h101、h102 +2',
+                'an array shows its first two items and how many more there were'
+            );
+            expect(
+                recordOf('mcp_tool', json({ engines: { a: 1, b: 2 } }), 'ok').argument === 'engines=[2 字段]',
+                'an object is never recursed into'
+            );
+            expect(
+                recordOf('resolve-library-id', json({ libraryName: 'grammy' }), 'ok').argument === '「grammy」',
+                'a name read from a whitelisted key is quoted as text'
+            );
+
+            // A malformed argument JSON never throws; its raw text is what is left to show
+            const broken = recordOf('mcp_tool', '{"content":"SECRET', 'ok');
+            expect(
+                broken.argument === '{"content":"SECRET',
+                `a malformed argument JSON falls back to its raw text (got ${json(broken.argument)})`
+            );
+
+            // Results: the error's first sentence, an empty result, links, or the size
+            const failure = recordOf('search_history', '{}', '查询语法有误。请检查括号。', true);
+            expect(
+                failure.failed === true && failure.result === '查询语法有误',
+                `a failure shows its first sentence without the full stop (got ${json(failure)})`
+            );
+            expect(recordOf('mcp_tool', '{}', '   ').result === '无内容', 'an empty result says so');
+            expect(
+                recordOf('web_url_read', '{}', 'a https://x.example/a and b https://y.example/b').result === '2 条链接',
+                'a page with links counts them'
+            );
+            expect(recordOf('web_url_read', '{}', 'x'.repeat(1234)).result === '1.2K 字', 'a long text shows its size');
+            expect(recordOf('mcp_tool', '{}', 'ok').failed === undefined, 'a successful call has no failed flag');
+
+            // The trace a handler writes wins over the generic summary
+            const traced = recordOf('generate_image', json({ prompt: '猫', content: 'body' }), 'raw', false, {
+                argument: '「赛博朋克猫」',
+                result: 'g1 PNG 1024KB',
+            });
+            expect(
+                json(traced) ===
+                    json({ name: 'generate_image', argument: '「赛博朋克猫」', result: 'g1 PNG 1024KB', ms: 1200 }),
+                `the handler's display trace wins (got ${json(traced)})`
+            );
+            const tracedFailure = recordOf('send_sms_to_owner', '{}', 'raw', true, { result: '超时（可能已发出）' });
+            expect(
+                tracedFailure.failed === true && tracedFailure.result === '超时（可能已发出）',
+                `a failed call's trace is its reason (got ${json(tracedFailure)})`
+            );
+            expect(
+                recordOf('mcp_tool', json({ query: 'x' }), 'ok', false, { argument: '' }).argument === undefined,
+                'an explicit empty trace argument means no argument'
             );
         },
     },

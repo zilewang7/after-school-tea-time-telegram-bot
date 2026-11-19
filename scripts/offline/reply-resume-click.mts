@@ -31,6 +31,8 @@ import {
     type AskedReply,
 } from './support/resume-bench.mts';
 
+import type { AgentToolCallRecord } from '../../src/ai/types.js';
+
 const bench = await createResumeBench();
 const { telegram, vertex, registry } = bench;
 const { updateChatSettings } = await import('../../src/services/chat-settings-service.js');
@@ -258,6 +260,11 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
             vertex.reset([roundOf({ label: 'r1', calls: [webLookup('a')] }), failingRound()]);
             await bench.retryReply(reply);
             expect(bench.entryOf(reply)?.failedVersionId === 2, 'version 2 is kept');
+            const failedVersion = await bench.latestVersion(reply);
+            expect(
+                json(failedVersion.agentStats?.toolCalls?.map((record: AgentToolCallRecord) => record.argument)) === json(['「a」']),
+                `the failed version shows the call its kept round ran (got ${json(failedVersion.agentStats)})`
+            );
             // A switch holds the reply's claim from the click until it has stored the version on screen
             await bench.press(reply, 'resp:prev');
             await bench.settled(reply, 'the switch to version 1');
@@ -590,6 +597,10 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
             await bench.continueReply(reply);
             const failed = await bench.latestVersion(reply);
             expect(failed.versionId === 2 && failed.errorMessage !== undefined, `version 2 failed (got ${json({ id: failed.versionId, error: failed.errorMessage })})`);
+            expect(
+                json(failed.agentStats?.toolCalls?.map((record: AgentToolCallRecord) => record.name)) === json(['web_lookup']),
+                `the version that failed before a new round shows the checkpoint's call (got ${json(failed.agentStats)})`
+            );
             const again = bench.entryOf(reply);
             expect(
                 again?.failedVersionId === 2 && again.loop.state === original?.loop.state && bench.markOf(reply)?.versionId === 2,

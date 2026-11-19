@@ -5,7 +5,7 @@
  */
 import type { Response } from 'openai/resources/responses/responses';
 import { isJsonObject } from '../../../shared/json-object.js';
-import type { AgentStats, AgentToolUsage } from '../../types.js';
+import type { AgentStats, AgentToolCallRecord, AgentToolUsage } from '../../types.js';
 import { fieldOf, listOf } from './grok-response-fields.js';
 
 type ToolCounts = Map<string, number>;
@@ -159,8 +159,15 @@ const sortedUsage = (counts: ToolCounts): AgentToolUsage[] =>
 export interface GrokAgentStats {
     /** Count what one round's response reports */
     addResponse(response: Response): void;
-    /** The reply's stats with its client tool calls; undefined when there is nothing to show */
-    build(clientToolUsage: readonly AgentToolUsage[]): AgentStats | undefined;
+    /**
+     * The reply's stats with its client tool calls; undefined when there is
+     * nothing to show. The call records keep their call order (the usage line
+     * is sorted by count instead).
+     */
+    build(
+        clientToolUsage: readonly AgentToolUsage[],
+        clientToolCalls: readonly AgentToolCallRecord[]
+    ): AgentStats | undefined;
 }
 
 export const createGrokAgentStats = (isMultiAgent: boolean): GrokAgentStats => {
@@ -184,8 +191,8 @@ export const createGrokAgentStats = (isMultiAgent: boolean): GrokAgentStats => {
                 reasoningTokens = (reasoningTokens ?? 0) + roundReasoningTokens;
             }
         },
-        build: (clientToolUsage) => {
-            if (responseCount === 0 && clientToolUsage.length === 0) {
+        build: (clientToolUsage, clientToolCalls) => {
+            if (responseCount === 0 && clientToolUsage.length === 0 && clientToolCalls.length === 0) {
                 return undefined;
             }
 
@@ -199,6 +206,10 @@ export const createGrokAgentStats = (isMultiAgent: boolean): GrokAgentStats => {
                 mode: isMultiAgent ? '16 agents' : undefined,
                 reasoningTokens,
                 toolUsage: sortedUsage(toolCounts),
+                // Call order, unlike the usage line: the log is a sequence
+                ...(clientToolCalls.length > 0
+                    ? { toolCalls: clientToolCalls.map((record) => ({ ...record })) }
+                    : {}),
                 codeInterpreterSummary,
             };
 
@@ -206,6 +217,7 @@ export const createGrokAgentStats = (isMultiAgent: boolean): GrokAgentStats => {
                 !stats.mode &&
                 !stats.reasoningTokens &&
                 !stats.toolUsage?.length &&
+                !stats.toolCalls?.length &&
                 !stats.codeInterpreterSummary?.length
             ) {
                 return undefined;

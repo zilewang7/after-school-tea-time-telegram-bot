@@ -620,6 +620,19 @@ export interface SourceView {
     title: string | null;
 }
 
+/** One executed tool call of a version's per-call log (design 2026-1119-1835) */
+export interface ToolCallView {
+    name: string;
+    // Display form of the arguments, already truncated; null when the tool had none
+    argument: string | null;
+    // Display form of the outcome, already truncated; null when there is none
+    result: string | null;
+    // The tool answered with an error
+    failed: boolean;
+    // Wall time of the handler; null when not reported
+    ms: number | null;
+}
+
 /** One search-grounding step (Gemini's built-in search) */
 export interface SearchGroundingView {
     queries: string[];
@@ -633,6 +646,10 @@ export interface ToolRecords {
     toolUsage: ToolUsageView[];
     // One line per distinct tool call, e.g. `search_history: 关键词`, in call order
     calls: string[];
+    // One entry per executed call, in call order; empty on versions stored before the log existed
+    callLog: ToolCallView[];
+    // Calls the record safety cap dropped; 0 normally
+    toolCallsTruncated: number;
     // Sources cited by the tool steps, one per URL, first-seen order
     sources: SourceView[];
     // Code interpreter summaries, as reported

@@ -74,6 +74,7 @@ import {
     type GoogleSearchDocument,
 } from '../telegram/formatters/google-search-document.js';
 import { beginSearchLink } from '../panel/search/search-link-service.js';
+import { beginToolLogLink } from '../panel/tool-log/tool-log-link-service.js';
 import {
     STREAMING_MAX_ENTITIES,
     STREAMING_MAX_LENGTH,
@@ -81,6 +82,8 @@ import {
 } from '../telegram/formatters/message-budget.js';
 import { layOutChunks } from '../telegram/final-message-layout.js';
 import { buildFinalChunks, renderedCoTLength, shouldLinkCoT } from './final-layout.js';
+import { toolLogPlanOfDocument } from '../telegram/formatters/tool-records-formatter.js';
+import { buildToolLogDocument, type ToolLogDocument } from '../telegram/formatters/tool-log-document.js';
 import { splitRawByFits, splitAtLastNewline } from '../telegram/formatters/smart-splitter.js';
 import { buildImageCaption, type ImageCaptionFields } from './tools/image-message.js';
 import {
@@ -1756,6 +1759,32 @@ const prepareFinalFooter = async (
 };
 
 /**
+ * The Tools block of the final delivery, prepared once for whichever layout
+ * delivers it (rich or entities). A block too long for one Telegram message
+ * becomes the public log page's link message (design 2026-1119-1835 §13.1):
+ * the page is generated once and stored before any message goes out, because
+ * Telegram's preview crawler fetches once and never refreshes the card.
+ */
+const prepareFinalToolLog = async (
+    chatContext: ChatContext,
+    response: AIResponse
+): Promise<ToolLogDocument> => {
+    const { session } = chatContext;
+    const document = buildToolLogDocument(response.agentStats, response.groundingData ?? []);
+    if (toolLogPlanOfDocument(document) !== 'overflows') return document;
+    const link = await beginToolLogLink({
+        chatId: chatContext.chatId,
+        firstMessageId: session.firstMessageId,
+        versionId: session.versionCount + 1,
+        model: session.model,
+        createdAt: new Date().toISOString(),
+        document,
+    });
+    if (link !== null) session.toolLogLink = link;
+    return document;
+};
+
+/**
  * Render the reply's final layout from its complete text and thinking.
  *
  * The stream's messages are built from partial display buffers: the first one
@@ -1770,7 +1799,8 @@ const buildReplyFinalLayout = async (
     response: AIResponse,
     resolveContextLink: ContextLinkResolver | undefined,
     wasStoppedByUser: boolean,
-    googleSearchDocument: GoogleSearchDocument
+    googleSearchDocument: GoogleSearchDocument,
+    toolLogDocument: ToolLogDocument
 ): Promise<ReplyFinalLayout> => {
     const { session } = chatContext;
 
@@ -1794,6 +1824,8 @@ const buildReplyFinalLayout = async (
             wasStoppedByUser,
             resolveContextLink,
             searchLink: session.searchLink,
+            toolsLink: session.toolLogLink,
+            toolLog: toolLogDocument,
             googleSearch: googleSearchDocument,
         });
         if (session.thinkingLink.emitted !== true) {
@@ -1818,6 +1850,8 @@ const buildReplyFinalLayout = async (
               wasStoppedByUser,
               resolveContextLink,
               searchLink: session.searchLink,
+              toolsLink: session.toolLogLink,
+              toolLog: toolLogDocument,
               googleSearch: googleSearchDocument,
           })
         : undefined;
@@ -1848,6 +1882,8 @@ const buildReplyFinalLayout = async (
             groundingData: response.groundingData,
             resolveContextLink,
             searchLink: session.searchLink,
+            toolsLink: session.toolLogLink,
+            toolLog: toolLogDocument,
             googleSearch: googleSearchDocument,
         });
         return { chunks: streamedChunks, reLayout: false };
@@ -1864,6 +1900,8 @@ const buildReplyFinalLayout = async (
         wasStoppedByUser,
         resolveContextLink,
         searchLink: session.searchLink,
+        toolsLink: session.toolLogLink,
+        toolLog: toolLogDocument,
         googleSearch: googleSearchDocument,
     });
     return {
@@ -1955,6 +1993,8 @@ export const sendFinalResponse = async (
     // A stopped reply shows the tools of its kept rounds
     const finalResponse: AIResponse = { ...response, agentStats };
     const googleSearchDocument = await prepareFinalFooter(chatContext, finalResponse);
+    // The Tools block folds into the public log page before anything is sent
+    const toolLogDocument = await prepareFinalToolLog(chatContext, finalResponse);
 
     // Inline pictures: the answer is scanned once, before any delivery decision,
     // so the clean text is what the entities fallback and the storage read and
@@ -2009,7 +2049,8 @@ export const sendFinalResponse = async (
         finalResponse,
         resolveContextLink,
         wasStoppedByUser,
-        googleSearchDocument
+        googleSearchDocument,
+        toolLogDocument
     );
     const finalChunks = layout.chunks;
     let finalMessage: FinalMessageChunk = finalChunks[0] ?? { text: '', entities: [] };

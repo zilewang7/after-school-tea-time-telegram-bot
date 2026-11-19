@@ -2,8 +2,8 @@
  * The final layout of one reply: the chunks `buildFinalMessages` renders, plus
  * the decision whether a split reply keeps its chain of thought inline (a
  * collapsed quote on the first message) or hands it to the long-CoT link
- * message, and whether an overflowing GoogleSearch footer becomes one compact
- * link message at the end.
+ * message, and whether an overflowing GoogleSearch footer or Tools block
+ * becomes one compact link message at the end.
  *
  * The final delivery and the stored-version refresh build their layout here, so
  * the chat a live reply ends with matches what a version replay shows.
@@ -15,6 +15,8 @@ import { renderThinkingQuote } from '../telegram/formatters/quoted-render.js';
 import type { ContextLinkResolver } from '../telegram/formatters/context-links.js';
 import type { ThinkingLinkRef } from '../telegram/formatters/thinking-link.js';
 import type { SearchPageLink } from '../shared/search-page.js';
+import type { ToolLogPageLink } from '../shared/tool-log-page.js';
+import type { ToolLogDocument } from '../telegram/formatters/tool-log-document.js';
 import type { AgentStats, GroundingData } from '../ai/types.js';
 
 /**
@@ -34,6 +36,13 @@ export interface FinalLayoutInput {
      * Passing it always folds; the version replay keys the fold off its token.
      */
     readonly searchLink?: SearchPageLink;
+    /**
+     * Folded Tools block: one compact link message ends the reply. Passing it
+     * always folds; the version replay keys the fold off its token.
+     */
+    readonly toolsLink?: ToolLogPageLink;
+    /** Prebuilt tool-log document, so a large per-call log is parsed once */
+    readonly toolLog?: ToolLogDocument;
     /** Prebuilt footer document, so a large grounding payload is parsed once */
     readonly googleSearch?: GoogleSearchDocument;
     readonly agentStats?: AgentStats;
@@ -49,6 +58,8 @@ export const buildFinalChunks = (input: FinalLayoutInput): FinalMessageChunk[] =
         thinking: input.thinking,
         thinkingLink: input.thinkingLink,
         searchLink: input.searchLink,
+        toolsLink: input.toolsLink,
+        toolLog: input.toolLog,
         googleSearch: input.googleSearch,
         agentStats: input.agentStats,
         groundingData: input.groundingData,

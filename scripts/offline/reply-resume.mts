@@ -34,6 +34,8 @@ import {
     type AskedReply,
 } from './support/resume-bench.mts';
 
+import type { AgentToolCallRecord } from '../../src/ai/types.js';
+
 const bench = await createResumeBench();
 const { telegram, vertex } = bench;
 const { STOPPED_DURING_CALL_NOTE } = await import('../../src/ai/platforms/gemini/gemini-round-contents.js');
@@ -228,6 +230,11 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
                 grounding: groundingOf(['round one query'], ['https://grounded.test/a']),
             });
             const failed = await bench.latestVersion(reply);
+            expect(
+                json(failed.agentStats?.toolCalls?.map((record: AgentToolCallRecord) => ({ name: record.name, argument: record.argument }))) ===
+                    json([{ name: 'web_lookup', argument: '「k-on」' }]),
+                `the failed version shows the call its kept round ran (got ${json(failed.agentStats)})`
+            );
             expect(failed.thinkingLinkToken !== undefined, 'the interrupted version had its thinking link');
             expect(bench.entryOf(reply)?.context.numbering.get(1) === reply.userMessageId, '#1 is the question');
             // Only the resume itself can publish the numbering again
@@ -464,6 +471,10 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
             expect(json(usageRounds(log.lines.slice(linesBefore))) === json(['2', '3']), `rounds 2 and 3 (got ${json(usageRounds(log.lines.slice(linesBefore)))})`);
             const version = await bench.latestVersion(reply);
             expect(json(version.agentStats?.toolUsage) === json([{ name: 'web_lookup', count: 3 }]), `cumulative usage (got ${json(version.agentStats)})`);
+            expect(
+                json(version.agentStats?.toolCalls?.map((record: AgentToolCallRecord) => record.argument)) === json(['「a」', '「b」', '「c」']),
+                `the per-call log is the kept calls, then the new one, in order (got ${json(version.agentStats?.toolCalls)})`
+            );
         }),
     },
     {
@@ -549,6 +560,11 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
                 failedRow?.outcome === 'error' && failedRow.toolCalls === 2 && failedRow.checkpointRounds === 1 && failedRow.rounds === 1,
                 `the failed row carries its tool usage (got ${json({ outcome: failedRow?.outcome, toolCalls: failedRow?.toolCalls, checkpointRounds: failedRow?.checkpointRounds })})`
             );
+            const firstFailedVersion = await bench.latestVersion(reply);
+            expect(
+                json(firstFailedVersion.agentStats?.toolCalls?.map((record: AgentToolCallRecord) => record.argument)) === json(['「a」', '「b」']),
+                `the failed version shows its kept calls in order (got ${json(firstFailedVersion.agentStats?.toolCalls)})`
+            );
 
             vertex.reset([roundOf({ label: 'r2', thinking: ['第二轮'], calls: [webLookup('c')] }), answer('都查完了。')]);
             telegram.reset();
@@ -569,6 +585,10 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
                 `only the new tool call (got ${json(resumed?.toolUsage)})`
             );
             expect(json(version.agentStats?.toolUsage) === json([{ name: 'web_lookup', count: 3 }]), 'while the version shows all three');
+            expect(
+                json(version.agentStats?.toolCalls?.map((record: AgentToolCallRecord) => record.argument)) === json(['「a」', '「b」', '「c」']),
+                `the resumed log is the kept calls then the new one (got ${json(version.agentStats?.toolCalls)})`
+            );
             expect(resumed?.textChars === version.text.length && version.text.includes('第一轮的话。'), `textChars is the whole version (got ${json(resumed?.textChars)})`);
             const allThinking = '第一轮想了很久很久'.length + '第二轮'.length + 'thinking before 都查完了。'.length;
             expect(resumed?.thinkingChars === allThinking, `thinkingChars include the replay (got ${json(resumed?.thinkingChars)}, expected ${allThinking})`);
@@ -637,6 +657,10 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
                 expect(json(finalButtonsOf(telegram)) === json(['<', '继续', '重试']), `[<] [继续] [重试] (got ${json(finalButtonsOf(telegram))})`);
                 expect(bench.entryOf(reply)?.failedVersionId === 2, 'the checkpoint is kept on the stopped version');
                 expect(json(version.agentStats?.toolUsage) === json([{ name: 'send_file', count: 1 }]), `the stopped version shows the kept tools (got ${json(version.agentStats)})`);
+                expect(
+                    json(version.agentStats?.toolCalls?.map((record: AgentToolCallRecord) => record.name)) === json(['send_file']),
+                    `the stopped version shows the kept call too (got ${json(version.agentStats)})`
+                );
                 const stoppedRow = (await bench.rowsOf(reply))[1];
                 expect(
                     stoppedRow?.outcome === 'stopped' && stoppedRow.toolCalls === 0 && stoppedRow.resumedRounds === 1 && stoppedRow.checkpointRounds === 1,

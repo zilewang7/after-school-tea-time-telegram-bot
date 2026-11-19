@@ -5,11 +5,18 @@
  * A tool-using reply used to render one `MCPTools` + `Sources` pair per agent
  * step (plus `Agent Stats`), so a five-step answer flooded the chat with ten
  * sections and pushed the tail into a second message. The steps are merged here
- * instead: one block for the calls themselves — usage counts first, then one
- * line per call in call order — and one for the sources, deduplicated and
- * numbered once across all steps. Nothing is dropped along the way: every call
- * and every source the old sections printed is still here, only the exact
- * repeats (a call made twice, a page cited by two steps) collapse.
+ * instead: one block for the calls themselves and one for the sources,
+ * deduplicated and numbered once across all steps.
+ *
+ * A reply that carries a per-call log (`agentStats.toolCalls`, design
+ * 2026-1119-1835) shows one numbered line per executed call — what it searched,
+ * read, drew or sent, and what came back — after the usage front line. A
+ * version stored before that exists keeps the old merged `searchQueries` lines
+ * byte for byte, so a replay of an old reply renders exactly as it did.
+ *
+ * The block is also measured as a whole (`toolLogPlan`): the delivery moves it
+ * to its own message when it no longer fits the answer, and folds it into the
+ * public log page when it cannot fit one message at all.
  *
  * Only tool steps are merged. Gemini's search grounding keeps its own
  * `GoogleSearch` block — see google-search-formatter.ts — and its steps are
@@ -18,11 +25,17 @@
  * Built directly as entities (bold title + expandable blockquote), so titles
  * and URLs never need escaping.
  */
-import { concatMessages, wrapInBlockquote } from 'telegram-md-entities';
+import { concatMessages, splitMessage, wrapInBlockquote } from 'telegram-md-entities';
 import type { RenderedMessage } from 'telegram-md-entities';
 import type { AgentStats, GroundingCitation, GroundingData } from '../../ai/types.js';
 import { boldText, linkText, plainText } from './entity-text.js';
 import { isSearchGroundingStep } from './google-search-formatter.js';
+import { TELEGRAM_MAX_ENTITIES, TELEGRAM_MAX_LENGTH } from './message-budget.js';
+import {
+    buildToolLogDocument,
+    toolLogBodyLines,
+    type ToolLogDocument,
+} from './tool-log-document.js';
 
 /** Code-interpreter summaries are capped like before: one line, never a dump */
 const SUMMARY_MAX_LENGTH = 120;
@@ -54,7 +67,7 @@ const getCitationDisplayTitle = (uri: string, title?: string): string => {
 };
 
 /* ------------------------------------------------------------------ *
- * What the reply did
+ * Legacy shape: versions stored before the per-call log
  * ------------------------------------------------------------------ */
 
 /** A count alone reads like that many results: say how many calls failed */
@@ -97,8 +110,8 @@ const searchLines = (metadata: GroundingData): RenderedMessage[] =>
         .filter((query) => query.trim().length > 0)
         .map((query) => plainText(query));
 
-/** Call lines of every tool step, in call order, without the calls repeated */
-const collectToolLines = (
+/** Legacy call lines: the merged, deduplicated searchQueries of every tool step */
+const collectLegacyToolLines = (
     agentStats: AgentStats | undefined,
     groundingData: GroundingData[]
 ): RenderedMessage[] => {
@@ -114,6 +127,36 @@ const collectToolLines = (
         return true;
     });
 };
+
+/* ------------------------------------------------------------------ *
+ * Per-call log: versions that carry agentStats.toolCalls
+ * ------------------------------------------------------------------ */
+
+/** Whether this version carries the per-call log (and shows the new shape) */
+const hasPerCallRecords = (agentStats: AgentStats | undefined): boolean =>
+    (agentStats?.toolCalls?.length ?? 0) > 0;
+
+/** The Tools block of one document (per-call log shape) */
+const renderToolLogSection = (document: ToolLogDocument): RenderedMessage | null => {
+    const lines = toolLogBodyLines(document).map((line) => plainText(line));
+    return lines.length ? buildSection('Tools', joinLines(lines)) : null;
+};
+
+/** The Tools block of one version: the per-call log, or the legacy merged lines */
+const renderToolsSection = (
+    agentStats: AgentStats | undefined,
+    groundingData: GroundingData[]
+): RenderedMessage | null => {
+    if (hasPerCallRecords(agentStats)) {
+        return renderToolLogSection(buildToolLogDocument(agentStats, groundingData));
+    }
+    const lines = collectLegacyToolLines(agentStats, groundingData);
+    return lines.length ? buildSection('Tools', joinLines(lines)) : null;
+};
+
+/* ------------------------------------------------------------------ *
+ * Sources
+ * ------------------------------------------------------------------ */
 
 /**
  * The sources of one tool step, whatever shape its provider reports them in:
@@ -155,34 +198,72 @@ const collectCitations = (groundingData: GroundingData[]): GroundingCitation[] =
     return [...byUri.values()];
 };
 
-/**
- * The tool blocks of one reply: at most two, each an expandable blockquote that
- * hides its content until tapped. Gemini's search grounding is not one of them.
- */
+/** The Sources block: one numbered line per cited page, first-seen order */
+const renderSourcesSection = (groundingData: GroundingData[]): RenderedMessage | null => {
+    const citations = collectCitations(groundingData);
+    if (citations.length === 0) return null;
+    const sourceLines = citations.map((citation, index) =>
+        concatMessages(
+            `[${index + 1}] `,
+            linkText(getCitationDisplayTitle(citation.uri, citation.title), citation.uri)
+        )
+    );
+    return buildSection('Sources', joinLines(sourceLines));
+};
+
+/* ------------------------------------------------------------------ *
+ * The blocks of one reply, and the fold plan of the Tools one
+ * ------------------------------------------------------------------ */
+
+/** The two blocks of one reply, kept apart so the layout can move or fold Tools */
+export interface ToolRecordParts {
+    /** The Tools block; null when the reply used no tool */
+    readonly tools: RenderedMessage | null;
+    /** The Sources block; null when no tool step cited a page */
+    readonly sources: RenderedMessage | null;
+    /** The Tools block's content, for the fold plan and the public log page */
+    readonly document: ToolLogDocument;
+}
+
+export const buildToolRecordParts = (
+    agentStats: AgentStats | undefined,
+    groundingData: GroundingData[]
+): ToolRecordParts => ({
+    tools: renderToolsSection(agentStats, groundingData),
+    sources: renderSourcesSection(groundingData),
+    document: buildToolLogDocument(agentStats, groundingData),
+});
+
+/** The blocks of one reply in layout order, each an expandable blockquote */
 export const buildToolRecordSections = (
     agentStats: AgentStats | undefined,
     groundingData: GroundingData[]
 ): RenderedMessage[] => {
-    const sections: RenderedMessage[] = [];
-
-    const toolLines = collectToolLines(agentStats, groundingData);
-    if (toolLines.length) {
-        sections.push(buildSection('Tools', joinLines(toolLines)));
-    }
-
-    const citations = collectCitations(groundingData);
-    if (citations.length) {
-        const sourceLines = citations.map((citation, index) =>
-            concatMessages(
-                `[${index + 1}] `,
-                linkText(
-                    getCitationDisplayTitle(citation.uri, citation.title),
-                    citation.uri
-                )
-            )
-        );
-        sections.push(buildSection('Sources', joinLines(sourceLines)));
-    }
-
-    return sections;
+    const parts = buildToolRecordParts(agentStats, groundingData);
+    return [parts.tools, parts.sources].filter((section): section is RenderedMessage => section !== null);
 };
+
+/** Whether the Tools block needs at most one Telegram message, or none, or several */
+export type ToolLogPlan = 'none' | 'fits' | 'overflows';
+
+/**
+ * The fold trigger (design 2026-1119-1835 §13.1): render the whole Tools block
+ * and measure it with the same budgets the final split uses. `overflows` means
+ * the block alone needs more than one message — exactly when the chat shows the
+ * compact link message instead (or, without a page link, the old merged split).
+ */
+export const toolLogPlanOfDocument = (document: ToolLogDocument): ToolLogPlan => {
+    const section = renderToolLogSection(document);
+    if (section === null) return 'none';
+    const chunks = splitMessage(section, {
+        maxLength: TELEGRAM_MAX_LENGTH,
+        maxEntities: TELEGRAM_MAX_ENTITIES,
+    });
+    return chunks.length <= 1 ? 'fits' : 'overflows';
+};
+
+/** The plan of raw reply data; callers that already built the document use the variant above */
+export const toolLogPlan = (
+    agentStats: AgentStats | undefined,
+    groundingData: GroundingData[]
+): ToolLogPlan => toolLogPlanOfDocument(buildToolLogDocument(agentStats, groundingData));

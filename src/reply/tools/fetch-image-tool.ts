@@ -12,7 +12,7 @@
  * Reading the same image twice returns the first read: the bytes are already in
  * the conversation, and only the id is needed for send_image / generate_image.
  */
-import type { ToolHandler, ToolModelImage, ToolResult } from '../../ai/tools/tool-types.js';
+import type { ToolCallTrace, ToolHandler, ToolModelImage, ToolResult } from '../../ai/tools/tool-types.js';
 import { fetchImageBytes } from '../../services/image-fetch-service.js';
 import {
     downloadStickerPreview,
@@ -44,6 +44,7 @@ import {
 } from './reply-media-state.js';
 import { padPackIndex, resolveStickerQuery } from './sticker-query.js';
 import { FETCH_IMAGE_TOOL_NAME } from './tool-names.js';
+import { traceParts, traceRef, traceText, traceUrl } from './tool-trace.js';
 
 const DESCRIPTION =
     '将一张图片加载到当前上下文中（仅模型可见，不发送给用户），用于查看细节、识别文字或作为生图参考。' +
@@ -176,11 +177,40 @@ const hostOfUrl = (raw: string): string => {
     }
 };
 
+const textArgOf = (args: Readonly<Record<string, unknown>>, key: string): string | undefined => {
+    const value = args[key];
+    return typeof value === 'string' && value.trim() !== '' ? value.trim() : undefined;
+};
+
+/** `· 第2张` when the call picked one picture of an archived message */
+const imageIndexSuffixOf = (args: Readonly<Record<string, unknown>>): string => {
+    const image = args['image'];
+    return typeof image === 'number' && Number.isInteger(image) && image > 1 ? ` · 第${image}张` : '';
+};
+
+/**
+ * The argument summary of one call: the source lane the model picked, in the
+ * same short form the log shows. A url is only its host + path (a query string
+ * can carry a secret).
+ */
+export const describeFetchImageArgument = (args: Readonly<Record<string, unknown>>): string | null => {
+    const sticker = textArgOf(args, 'sticker');
+    if (sticker !== undefined) return traceText(sticker);
+    const history = textArgOf(args, 'history');
+    if (history !== undefined) return `${traceRef(history)}${imageIndexSuffixOf(args)}`;
+    const avatar = textArgOf(args, 'avatar');
+    if (avatar !== undefined) return `${traceText(avatar)} 头像`;
+    const searchId = textArgOf(args, 'search_id');
+    if (searchId !== undefined) return traceText(searchId);
+    const imageId = textArgOf(args, 'image_id');
+    if (imageId !== undefined) return traceText(imageId);
+    const url = textArgOf(args, 'url');
+    if (url !== undefined) return traceUrl(url);
+    return null;
+};
+
 export const describeFetchImageRequest = (args: Readonly<Record<string, unknown>>): string => {
-    const textOf = (key: string): string | undefined => {
-        const value = args[key];
-        return typeof value === 'string' && value.trim() !== '' ? value.trim() : undefined;
-    };
+    const textOf = (key: string): string | undefined => textArgOf(args, key);
     const sticker = textOf('sticker');
     if (sticker !== undefined) return `sticker=${sticker}`;
     const history = textOf('history');
@@ -202,9 +232,12 @@ export const fetchImageRejectionLine = (request: string, message: string): strin
         .slice(0, REJECTION_LOG_MAX_CHARS)
         .join('');
 
-const reject = (request: string, message: string): ToolResult => {
+const reject = (request: string, message: string, traceArgument: string | null): ToolResult => {
     console.warn(`[fetch_image] rejected: ${fetchImageRejectionLine(request, message)}`);
-    return imageToolError(message);
+    return imageToolError(
+        message,
+        traceArgument === null ? undefined : { argument: traceArgument }
+    );
 };
 
 export const createFetchImageTool = (options: FetchImageToolOptions): ToolHandler => {
@@ -232,14 +265,17 @@ export const createFetchImageTool = (options: FetchImageToolOptions): ToolHandle
         chatAction: 'typing',
         execute: async (rawArgs, signal) => {
             const request = describeFetchImageRequest(rawArgs);
+            const traceArgument = describeFetchImageArgument(rawArgs);
+            const traceOf = (result: string): ToolCallTrace =>
+                traceArgument === null ? { result } : { argument: traceArgument, result };
             const parsed = parseFetchImageArgs(rawArgs);
-            if (!parsed.ok) return reject(request, parsed.error);
+            if (!parsed.ok) return reject(request, parsed.error, traceArgument);
             const args = parsed.args;
 
             // Re-reading is free: the bytes already ride the conversation
             if (args.imageId !== undefined) {
                 const existing = state.fetched.get(args.imageId);
-                if (!existing) return reject(request, mediaToolErrors.unknownFetched(args.imageId));
+                if (!existing) return reject(request, mediaToolErrors.unknownFetched(args.imageId), traceArgument);
                 return {
                     content:
                         `已经读过 ${existing.id}（${existing.mimeType}，${Math.round(existing.data.length / 1024)}KB），` +
@@ -248,11 +284,12 @@ export const createFetchImageTool = (options: FetchImageToolOptions): ToolHandle
                     isError: false,
                     images: [],
                     record: null,
+                    trace: traceOf('已读过'),
                 };
             }
 
             if (args.history !== undefined) {
-                if (!options.history) return reject(request, '这一轮没有历史归档工具，读不了归档里的图。');
+                if (!options.history) return reject(request, '这一轮没有历史归档工具，读不了归档里的图。', traceArgument);
                 const resolved = await loadHistoryImage(
                     options.history,
                     args.history,
@@ -260,7 +297,7 @@ export const createFetchImageTool = (options: FetchImageToolOptions): ToolHandle
                     args.view,
                     signal
                 );
-                if (!resolved.ok) return reject(request, resolved.error);
+                if (!resolved.ok) return reject(request, resolved.error, traceArgument);
                 const { image } = resolved;
 
                 const id = nextFetchedImageId(state);
@@ -290,12 +327,21 @@ export const createFetchImageTool = (options: FetchImageToolOptions): ToolHandle
                         searchQueries: [`${FETCH_IMAGE_TOOL_NAME}: ${image.reference}`],
                         citations: [{ uri: image.sourcePage, title: `${image.reference} ${image.label}` }],
                     },
+                    trace: traceOf(
+                        traceParts(
+                            `${id} ${image.label}`,
+                            image.total > 1 ? `${image.index}/${image.total}` : null,
+                            image.width !== null && image.height !== null
+                                ? `${image.width}×${image.height}`
+                                : null
+                        )
+                    ),
                 };
             }
 
             if (args.sticker !== undefined) {
                 const resolvedQuery = resolveStickerQuery(args.sticker, state);
-                if (!resolvedQuery.ok) return reject(request, resolvedQuery.error);
+                if (!resolvedQuery.ok) return reject(request, resolvedQuery.error, traceArgument);
                 const entry = resolvedQuery.entry;
                 const existing = [...state.fetchedStickers.entries()].find(
                     ([, packIndex]) => packIndex === entry.packIndex
@@ -309,9 +355,10 @@ export const createFetchImageTool = (options: FetchImageToolOptions): ToolHandle
                         isError: false,
                         images: [],
                         record: null,
+                        trace: traceOf(`已预览过 ${existing[0]}`),
                     };
                 }
-                if (!options.sticker) return reject(request, '这个模型/这一轮没有配置贴纸预览。');
+                if (!options.sticker) return reject(request, '这个模型/这一轮没有配置贴纸预览。', traceArgument);
 
                 let preview: StickerPreview;
                 try {
@@ -327,7 +374,7 @@ export const createFetchImageTool = (options: FetchImageToolOptions): ToolHandle
                         error instanceof StickerSetError
                             ? error.message
                             : `贴纸读不出来：${error instanceof Error ? error.message : String(error)}`;
-                    return reject(request, message);
+                    return reject(request, message, traceArgument);
                 }
 
                 const id = nextFetchedStickerId(state);
@@ -341,13 +388,14 @@ export const createFetchImageTool = (options: FetchImageToolOptions): ToolHandle
                     images: [],
                     modelImages: [{ data: preview.data, mimeType: preview.mimeType, caption }],
                     record: null,
+                    trace: traceOf(`${id} 预览 320`),
                 };
             }
 
             if (args.avatar !== undefined) {
-                if (options.avatar === undefined) return reject(request, '这一轮没有配置头像读取。');
+                if (options.avatar === undefined) return reject(request, '这一轮没有配置头像读取。', traceArgument);
                 const lane = await readAvatar(args.avatar, args.view, state, options.avatar, signal);
-                if (!lane.ok) return reject(request, lane.error);
+                if (!lane.ok) return reject(request, lane.error, traceArgument);
                 return lane.result;
             }
 
@@ -356,17 +404,23 @@ export const createFetchImageTool = (options: FetchImageToolOptions): ToolHandle
                     ? state.candidates.get(args.searchId)
                     : candidateOfUrl(args.url ?? '');
             if (!candidate) {
-                return reject(request, mediaToolErrors.unknownCandidate(args.searchId ?? ''));
+                return reject(request, mediaToolErrors.unknownCandidate(args.searchId ?? ''), traceArgument);
             }
 
             const downloaded = await downloadCandidateMedia(candidate, dependencies, {
                 preferThumbnail: args.view === 'thumbnail',
             });
-            if (!downloaded.ok) return reject(request, mediaToolErrors.downloadFailed(downloaded.error));
+            if (!downloaded.ok) {
+                return reject(request, mediaToolErrors.downloadFailed(downloaded.error), traceArgument);
+            }
 
             const { media } = downloaded;
             if (media.deliverable.data.length > MAX_ORIGINAL_IMAGE_BYTES) {
-                return reject(request, mediaToolErrors.tooLarge(MAX_ORIGINAL_IMAGE_BYTES / 1024 / 1024));
+                return reject(
+                    request,
+                    mediaToolErrors.tooLarge(MAX_ORIGINAL_IMAGE_BYTES / 1024 / 1024),
+                    traceArgument
+                );
             }
 
             const id = nextFetchedImageId(state);
@@ -421,6 +475,14 @@ export const createFetchImageTool = (options: FetchImageToolOptions): ToolHandle
                     searchQueries: [`${FETCH_IMAGE_TOOL_NAME}: ${args.searchId ?? candidate.domain}`],
                     citations: [{ uri: candidate.sourcePage, title: candidate.title }],
                 },
+                trace: traceOf(
+                    traceParts(
+                        id,
+                        candidate.width !== undefined && candidate.height !== undefined
+                            ? `${candidate.width}×${candidate.height}`
+                            : null
+                    )
+                ),
             };
         },
     };

@@ -48,7 +48,7 @@
  */
 import { match, P } from 'ts-pattern';
 import { FinishReason, type GenerateContentResponse } from '@google/genai';
-import type { AgentToolUsage, StreamChunk } from '../../types.js';
+import type { AgentToolCallRecord, AgentToolUsage, StreamChunk } from '../../types.js';
 import {
     createRoundTextSeparator,
     type RoundTextSeparatorState,
@@ -206,10 +206,22 @@ const logFollowWithoutCalls = (
 
 const doneChunk = (lastChunk: GenerateContentResponse | null, tally: ToolUsageTally): StreamChunk => {
     const toolUsage = tally.snapshot();
+    const toolCalls = tally.calls();
+    const toolCallsTruncated = tally.truncatedCount();
+    const hasAgentStats = toolUsage.length > 0 || toolCalls.length > 0 || toolCallsTruncated > 0;
     return {
         type: 'done',
         rawResponse: lastChunk === null ? null : withoutFunctionCallParts(lastChunk),
-        ...(toolUsage.length > 0 ? { agentStats: { toolUsage } } : {}),
+        ...(hasAgentStats
+            ? {
+                  agentStats: {
+                      ...(toolUsage.length > 0 ? { toolUsage } : {}),
+                      // A resume's done is cumulative: the kept rounds' calls, then its own
+                      ...(toolCalls.length > 0 ? { toolCalls } : {}),
+                      ...(toolCallsTruncated > 0 ? { toolCallsTruncated } : {}),
+                  },
+              }
+            : {}),
     };
 };
 
@@ -218,6 +230,8 @@ interface LoopBeginning {
     readonly state: GeminiLoopState;
     readonly startedAt: number;
     readonly toolUsage: readonly AgentToolUsage[];
+    /** A resume: the kept rounds' per-call log; empty on a fresh reply */
+    readonly toolCalls: readonly AgentToolCallRecord[];
     readonly separator: RoundTextSeparatorState | undefined;
     readonly thoughtSummary: ThoughtSummaryFilterState | undefined;
     /** A resume: the rounds kept from the interrupted version */
@@ -231,6 +245,7 @@ const beginningOf = (start: GeminiLoopStart): LoopBeginning =>
             state: initialLoopState(fresh.firstRequest),
             startedAt: fresh.startedAt,
             toolUsage: [],
+            toolCalls: [],
             separator: undefined,
             thoughtSummary: undefined,
             resumedAfterRounds: undefined,
@@ -240,6 +255,7 @@ const beginningOf = (start: GeminiLoopStart): LoopBeginning =>
             // The wall time goes on from the checkpoint's: the gap before the resume does not count
             startedAt: Date.now() - snapshot.elapsedMs,
             toolUsage: snapshot.toolUsage,
+            toolCalls: snapshot.toolCalls,
             separator: snapshot.separator,
             thoughtSummary: snapshot.thoughtSummary,
             resumedAfterRounds: snapshot.loop.roundNumber - 1,
@@ -271,7 +287,7 @@ async function* runRounds(
     const { startedAt } = beginning;
     // The summary's own clock: a resume's line covers this request only
     const summaryStartedAt = beginning.resumedAfterRounds === undefined ? startedAt : Date.now();
-    const tally = createToolUsageTally(beginning.toolUsage);
+    const tally = createToolUsageTally(beginning.toolUsage, beginning.toolCalls);
     const separator = createRoundTextSeparator(beginning.separator);
     // One filter per reply: the summarizer-stream decision holds across rounds, and across a resume
     const thoughtSummary = createThoughtSummaryFilter(beginning.thoughtSummary);
@@ -292,6 +308,8 @@ async function* runRounds(
                 loop: stateAt(),
                 elapsedMs: elapsedMs(),
                 toolUsage: tally.snapshot(),
+                // Already holds the call that just ran: runToolRound records before onCallExecuted
+                toolCalls: tally.calls(),
                 journal: [...journal, ...pendingProducts],
                 separator: separator.state(),
                 thoughtSummary: thoughtSummary.state(),

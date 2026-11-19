@@ -10,7 +10,12 @@
  * handed out. The data inside (parts, buffers, strings) is shared by reference
  * with the running loop, never copied, and must not be mutated by anyone.
  */
-import type { AgentToolUsage, PlatformType, StreamChunk } from '../types.js';
+import type {
+    AgentToolCallRecord,
+    AgentToolUsage,
+    PlatformType,
+    StreamChunk,
+} from '../types.js';
 
 export interface ToolLoopCheckpoint {
     /** The platform that made it; only that platform can resume it */
@@ -19,6 +24,11 @@ export interface ToolLoopCheckpoint {
     readonly completedRounds: number;
     /** Tool usage of the kept rounds, as agentStats.toolUsage would show it */
     readonly toolUsage: readonly AgentToolUsage[];
+    /**
+     * Per-call log of the kept rounds, in call order (design 2026-1119-1835).
+     * Optional: a resume's new version shows the kept calls plus its own.
+     */
+    readonly toolCalls?: readonly AgentToolCallRecord[];
     /**
      * Every chunk the kept rounds produced, in order, at the granularity they
      * were yielded: thinking, text, images, stickers, files, widgets and tool

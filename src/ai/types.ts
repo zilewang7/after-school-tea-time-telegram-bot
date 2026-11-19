@@ -63,6 +63,25 @@ export interface AgentToolUsage {
 }
 
 /**
+ * One executed tool call, as the Tools block's log shows it (design
+ * 2026-1119-1835). Collected in `runToolRound` for every offered call the reply
+ * executed, in call order; versions stored before it existed have none and keep
+ * their legacy rendering.
+ */
+export interface AgentToolCallRecord {
+    /** The tool name the model called, as the usage line shows it */
+    name: string;
+    /** Display form of the arguments, already truncated, e.g. 「灭蛾 方法」· before=h9 */
+    argument?: string;
+    /** Display form of the outcome, e.g. 5 条命中; on failure the short reason (the renderer adds 「失败：」) */
+    result?: string;
+    /** The tool answered with an error; absent when it did not (same scope as AgentToolUsage.failed) */
+    failed?: boolean;
+    /** Wall time of the handler; shown only when the call was slow */
+    ms?: number;
+}
+
+/**
  * One entry of the context user roster, injected into the system prompt so the
  * model can mention (@) people correctly.
  */
@@ -83,6 +102,13 @@ export interface AgentStats {
     mode?: string;
     reasoningTokens?: number;
     toolUsage?: AgentToolUsage[];
+    /**
+     * Per-call log of the reply, in call order (design 2026-1119-1835). Absent
+     * on versions stored before it existed: those keep the legacy Tools block.
+     */
+    toolCalls?: AgentToolCallRecord[];
+    /** Calls dropped by the record safety cap; absent when nothing was dropped */
+    toolCallsTruncated?: number;
     codeInterpreterSummary?: string[];
 }
 

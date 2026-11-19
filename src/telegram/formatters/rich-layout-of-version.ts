@@ -4,9 +4,9 @@
  * The answer section is replayed from `version.richAnswerMarkdown` (the live
  * rendering, kept for exactly this), while the blocks around it — the thinking
  * quote, `[stopped]`, tool records and the inline search footer — are rebuilt
- * by the same formatter the live body used. A long-CoT link and a folded
- * search footer replay as their own messages, exactly where the live layout
- * put them.
+ * by the same formatter the live body used. A long-CoT link, a folded search
+ * footer and a folded Tools block replay as their own messages, exactly where
+ * the live layout put them.
  *
  * Inline pictures need bytes at replay time: `media` carries them (loaded from
  * media_cache by the caller). A picture whose bytes are gone loses its block
@@ -18,11 +18,14 @@
 import type { ResponseVersion } from '../../db/botResponseDTO.js';
 import type { StoredReplyMedia } from '../../shared/reply-media.js';
 import type { SearchPageLink } from '../../shared/search-page.js';
+import type { ToolLogPageLink } from '../../shared/tool-log-page.js';
 import { richMediaPayloadOf, type LayoutChunk } from '../final-message-layout.js';
 import { buildGoogleSearchDocument } from './google-search-document.js';
 import { searchLinkStatsOf, toSearchLinkChunk } from './google-search-link.js';
 import type { ContextLinkResolver } from './context-links.js';
 import { buildRichReplyBodyFromAnswer } from './rich-reply-body.js';
+import { buildToolLogDocument } from './tool-log-document.js';
+import { toToolLogLinkChunk } from './tool-log-link.js';
 import { thinkingLinkSummaryOf, toThinkingLinkChunk, type ThinkingLinkRef } from './thinking-link.js';
 
 /** One inline picture whose bytes a replay still has */
@@ -38,6 +41,8 @@ export interface RichLayoutOfVersionInput {
     readonly thinkingLink?: ThinkingLinkRef;
     /** The folded search footer's link message; absent when the footer fit inline */
     readonly searchLink?: SearchPageLink;
+    /** The folded Tools block's link message; absent when the block fit inline */
+    readonly toolsLink?: ToolLogPageLink;
     /** Inline pictures with bytes, in body order; ids not here lose their block */
     readonly media: readonly RichReplayMedia[];
     /** Context-link resolver for the rebuilt blocks around the answer */
@@ -95,6 +100,7 @@ export const buildRichLayoutOfVersion = (input: RichLayoutOfVersionInput): RichL
         : stripInlineMediaBlocks(snapshot, missingIdSet);
 
     const googleSearch = buildGoogleSearchDocument(version.groundingData ?? []);
+    const toolLog = buildToolLogDocument(version.agentStats, version.groundingData ?? []);
     const bodyMarkdown = buildRichReplyBodyFromAnswer({
         answerMarkdown,
         // A version that showed the CoT link never showed the quote
@@ -106,6 +112,7 @@ export const buildRichLayoutOfVersion = (input: RichLayoutOfVersionInput): RichL
         ...(version.agentStats === undefined ? {} : { agentStats: version.agentStats }),
         wasStoppedByUser: version.wasStoppedByUser,
         searchFolded: input.searchLink !== undefined,
+        toolsFolded: input.toolsLink !== undefined,
         ...(input.resolveContextLink === undefined
             ? {}
             : { resolveContextLink: input.resolveContextLink }),
@@ -132,6 +139,9 @@ export const buildRichLayoutOfVersion = (input: RichLayoutOfVersionInput): RichL
                 ? {}
                 : { richMedia: bodyMedia.map((media) => richMediaPayloadOf(media.id, media.data)) }),
         });
+    }
+    if (input.toolsLink !== undefined) {
+        chunks.push(toToolLogLinkChunk(input.toolsLink, toolLog));
     }
     if (input.searchLink !== undefined) {
         chunks.push(toSearchLinkChunk(input.searchLink, searchLinkStatsOf(googleSearch)));

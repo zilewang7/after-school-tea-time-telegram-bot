@@ -9,7 +9,7 @@
  * separator state are copies taken at the hand-over.
  */
 import { isMatching, P } from 'ts-pattern';
-import type { AgentToolUsage, StreamChunk } from '../../types.js';
+import type { AgentToolCallRecord, AgentToolUsage, StreamChunk } from '../../types.js';
 import type { RoundTextSeparatorState } from '../../tools/round-text-separator.js';
 import type { ToolLoopCheckpoint } from '../../tools/tool-loop-checkpoint.js';
 import type { GeminiLoopState } from './gemini-loop-state.js';
@@ -34,6 +34,8 @@ export interface GeminiSnapshot {
     readonly loop: GeminiLoopState;
     readonly elapsedMs: number;
     readonly toolUsage: readonly AgentToolUsage[];
+    /** Per-call log of the kept rounds, in call order */
+    readonly toolCalls: readonly AgentToolCallRecord[];
     readonly journal: readonly StreamChunk[];
     readonly separator: RoundTextSeparatorState;
     readonly thoughtSummary: ThoughtSummaryFilterState;
@@ -51,6 +53,8 @@ export const toGeminiCheckpoint = (snapshot: GeminiSnapshot): ToolLoopCheckpoint
         platform: 'gemini',
         completedRounds: snapshot.loop.roundNumber - 1,
         toolUsage: snapshot.toolUsage,
+        // Absent when no call ran yet, so an early checkpoint keeps its shape
+        ...(snapshot.toolCalls.length > 0 ? { toolCalls: snapshot.toolCalls } : {}),
         journal: snapshot.journal,
         state,
     };
@@ -103,6 +107,8 @@ export const geminiSnapshotOf = (checkpoint: ToolLoopCheckpoint): GeminiSnapshot
         loop: state.loop,
         elapsedMs: state.elapsedMs,
         toolUsage: checkpoint.toolUsage,
+        // A checkpoint stored before the per-call log existed has none
+        toolCalls: checkpoint.toolCalls ?? [],
         journal: checkpoint.journal,
         separator: state.separator,
         thoughtSummary: state.thoughtSummary,

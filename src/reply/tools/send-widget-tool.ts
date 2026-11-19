@@ -22,6 +22,7 @@ import {
 } from '../../telegram/widget-precheck.js';
 import { normalizeWorkspacePath, readWorkspaceFile, touchWorkspaceFile } from '../../services/workspace-service.js';
 import { resolveWorkspaceRef, type WorkspaceState } from '../workspace/workspace-state.js';
+import { traceBytes, traceParts } from './tool-trace.js';
 
 const BASE_DESCRIPTION =
     '把一张聊天内 UI 卡片作为这条回复的附件发到聊天（每条回复最多一个附件）。' +
@@ -139,6 +140,8 @@ export const createSendWidgetTool = (options: SendWidgetToolOptions): ToolHandle
             let htmlArg = rawArgs.html;
             let surfaceArg = rawArgs.surface;
             const rawWorkspacePath = rawArgs.workspace_path;
+            const fromWorkspace = !isAbsent(rawWorkspacePath);
+            const traceArgument = traceParts(mode, fromWorkspace ? '工作区' : null);
             if (!isAbsent(rawWorkspacePath)) {
                 if (workspace === null) {
                     return reject('工作区工具当前没有开启，不能从工作区取卡片内容。');
@@ -186,6 +189,9 @@ export const createSendWidgetTool = (options: SendWidgetToolOptions): ToolHandle
                 const widget = widgetDeliveryOf('a2ui', compiled.html, caption, surfaceForStorage(surfaceArg));
                 state.widget = widget;
                 state.hasReplyWidget = true;
+                const traceResult =
+                    `卡片 ${traceBytes(checked.size.rawBytes)}` +
+                    `（zlib ${traceBytes(checked.size.zlibBytes)}）`;
                 return {
                     content:
                         `已准备卡片（a2ui，raw ${checked.size.rawBytes}B / 压缩后 ${checked.size.zlibBytes}B），` +
@@ -195,6 +201,7 @@ export const createSendWidgetTool = (options: SendWidgetToolOptions): ToolHandle
                     images: [],
                     widgets: [widget],
                     record: null,
+                    trace: { argument: traceArgument, result: traceResult },
                 };
             }
 
@@ -209,6 +216,8 @@ export const createSendWidgetTool = (options: SendWidgetToolOptions): ToolHandle
             const widget = widgetDeliveryOf('html', htmlRaw, caption, undefined);
             state.widget = widget;
             state.hasReplyWidget = true;
+            const traceResult =
+                `卡片 ${traceBytes(checked.size.rawBytes)}（zlib ${traceBytes(checked.size.zlibBytes)}）`;
             return {
                 content:
                     `已准备卡片（html，raw ${checked.size.rawBytes}B / 压缩后 ${checked.size.zlibBytes}B），` +
@@ -218,6 +227,7 @@ export const createSendWidgetTool = (options: SendWidgetToolOptions): ToolHandle
                 images: [],
                 widgets: [widget],
                 record: null,
+                trace: { argument: traceArgument, result: traceResult },
             };
         },
     };

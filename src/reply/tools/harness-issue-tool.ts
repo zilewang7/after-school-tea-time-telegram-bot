@@ -9,7 +9,7 @@
  * sees only those of the chat it replies in, marked `[user]`.
  */
 import { match } from 'ts-pattern';
-import type { ToolHandler, ToolResult } from '../../ai/tools/tool-types.js';
+import type { ToolCallTrace, ToolHandler, ToolResult } from '../../ai/tools/tool-types.js';
 import { parseHarnessIssueInput, type HarnessIssueInputProblem } from '../../services/harness-issue-input.js';
 import {
     createHarnessIssue,
@@ -26,12 +26,14 @@ import {
 } from '../../services/harness-issue-service.js';
 import { MAX_HARNESS_ISSUES_PER_REPLY, type HarnessIssueState } from './harness-issue-state.js';
 import { CREATE_HARNESS_ISSUE_TOOL_NAME, LIST_HARNESS_ISSUES_TOOL_NAME } from './tool-names.js';
+import { traceQuote } from './tool-trace.js';
 
-const ok = (content: string): ToolResult => ({
+const ok = (content: string, trace?: ToolCallTrace): ToolResult => ({
     content,
     isError: false,
     images: [],
     record: null,
+    ...(trace === undefined ? {} : { trace }),
 });
 
 const failed = (content: string): ToolResult => ({
@@ -176,7 +178,10 @@ export const createListHarnessIssuesTool = (options: ListHarnessIssuesToolOption
                     ? [`没有匹配的 issue（${filterLabel}）。`]
                     : [...records.map(formatRecord), `共 ${records.length} 条（${filterLabel}）。`];
             lines.push(formatStats(stats));
-            return ok(lines.join('\n'));
+            return ok(lines.join('\n'), {
+                argument: `${statusArg}${query === undefined ? '' : traceQuote(query, 24)}`,
+                result: `${records.length} 条（共 ${stats.total} 条）`,
+            });
         } catch (error) {
             return failed(`读取 issue 列表失败：${error instanceof Error ? error.message : String(error)}`);
         }
@@ -223,7 +228,10 @@ export const createCreateHarnessIssueTool = (
             console.log(
                 `[harness-issue] created #${record.id} kind=${record.kind}${record.toolName ? ` tool=${record.toolName}` : ''}`
             );
-            return ok(`已记录 #${record.id}（open, ${record.kind}）。维护者会在后续迭代里处理。`);
+            return ok(`已记录 #${record.id}（open, ${record.kind}）。维护者会在后续迭代里处理。`, {
+                argument: `${kind}${traceQuote(title, 24)}${severity === null ? '' : ` · ${severity}`}`,
+                result: `#${record.id}`,
+            });
         } catch (error) {
             return failed(`记录失败：${error instanceof Error ? error.message : String(error)}`);
         }

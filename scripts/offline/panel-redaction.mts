@@ -142,6 +142,8 @@ const seedBotReply = async (chatId: number, userMessageId: number, text: string)
             text: '',
             errorMessage: '429 Too Many Requests',
             wasStoppedByUser: false,
+            // A version stored before the per-call log existed: usage counts only
+            agentStats: { toolUsage: [{ name: 'web_search', count: 1 }] },
         },
         {
             versionId: 2,
@@ -154,7 +156,17 @@ const seedBotReply = async (chatId: number, userMessageId: number, text: string)
             wasStoppedByUser: false,
             imageBase64: IMAGE_BASE64,
             modelParts: [{ thoughtSignature: 'sig' }],
-            agentStats: { toolUsage: [{ name: 'search_history', count: 2, failed: 1 }] },
+            agentStats: {
+                toolUsage: [{ name: 'search_history', count: 2, failed: 1 }],
+                // The per-call log; the nameless record is a guard case, not a real write
+                toolCalls: [
+                    { name: 'search_history', argument: '「吃什么」', result: '2 条命中' },
+                    { name: 'fetch_image', argument: 'h101', result: '图片超过 8MB', failed: true, ms: 3400 },
+                    { name: 'read_history' },
+                    { argument: 'no tool name' },
+                ],
+                toolCallsTruncated: 3,
+            },
             groundingData: [
                 {
                     provider: 'mcp',
@@ -378,6 +390,19 @@ const cases: { name: string; body: () => Promise<void> }[] = [
                     second.tools.toolUsage[0]?.failed === 1,
                 `tool records merged like the Telegram rendering (got ${JSON.stringify(second.tools)})`
             );
+            expect(
+                JSON.stringify(second.tools.callLog) ===
+                    JSON.stringify([
+                        { name: 'search_history', argument: '「吃什么」', result: '2 条命中', failed: false, ms: null },
+                        { name: 'fetch_image', argument: 'h101', result: '图片超过 8MB', failed: true, ms: 3400 },
+                        { name: 'read_history', argument: null, result: null, failed: false, ms: null },
+                    ]) && second.tools.toolCallsTruncated === 3,
+                `the per-call log keeps order, guards, failures and durations (got ${JSON.stringify(second.tools.callLog)}, truncated ${second.tools.toolCallsTruncated})`
+            );
+            expect(
+                JSON.stringify(first.tools.callLog) === '[]' && first.tools.toolCallsTruncated === 0,
+                `a version stored before the log has an empty one (got ${JSON.stringify(first.tools)})`
+            );
             expect(observed.rootId === rootId && observed.userMessageId === rootId, 'the reply knows its conversation');
 
             const member = await jsonOf(await call(`/api/chats/${GROUP}/replies/${replyId}`, ALICE));
@@ -509,6 +534,13 @@ const cases: { name: string; body: () => Promise<void> }[] = [
             );
             const markdown = await (await call(`${TREE_PATH}/export?format=md`, ALICE)).text();
             expect(markdown.includes('等同于现在点重试，重算于'), 'the md states that the model view is recomputed');
+            expect(
+                markdown.includes('- 1. search_history: 「吃什么」 → 2 条命中') &&
+                    markdown.includes('- 2. fetch_image: h101 → 失败：图片超过 8MB · 3.4s') &&
+                    markdown.includes('- …另有 3 次调用未记录') &&
+                    !markdown.includes('- 调用：search_history: 吃什么'),
+                'the md export lists the per-call log instead of the merged lines'
+            );
             expect((await call(`${TREE_PATH}/export?format=pdf`, ALICE)).status === 400, 'an unknown format is a 400');
         },
     },

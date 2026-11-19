@@ -100,7 +100,13 @@ const weatherTool: ToolHandler = {
         executions.push({ name: 'lookup_weather', args });
         // The clock may run out here, between two rounds
         afterToolExecution?.();
-        return { content: `sunny in ${String(args.city)}`, isError: false, images: [], record: null };
+        return {
+            content: `sunny in ${String(args.city)}`,
+            isError: false,
+            images: [],
+            record: null,
+            trace: { argument: String(args.city), result: '晴' },
+        };
     },
 };
 
@@ -199,6 +205,13 @@ const asArray = (value: unknown): unknown[] => (Array.isArray(value) ? value : [
 const withoutRoundsLeft = (text: string): string => text.replace(/\n\n\[工具轮次\][^\n]*(?:\n\[时间\][^\n]*)?/g, '');
 const json = (value: unknown): string =>
     JSON.stringify(value, (_key, item: unknown) => (typeof item === 'string' ? withoutRoundsLeft(item) : item));
+
+/** The per-call log a done chunk carries, without its real-clock duration */
+const callLogOf = (chunks: readonly StreamChunk[]): unknown[] => {
+    const done = chunks.find((chunk) => chunk.type === 'done');
+    const records = done?.type === 'done' ? done.agentStats?.toolCalls : undefined;
+    return (records ?? []).map(({ name, argument, result, failed }) => ({ name, argument, result, failed }));
+};
 
 const toolsOf = (request: RecordedRequest | undefined): Record<string, unknown>[] =>
     asArray(request?.body.tools).map(asRecord);
@@ -452,6 +465,10 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
                 `done carries server-side and client usage of every round (got ${json(done?.agentStats)})`
             );
             expect(done?.rawResponse === undefined, 'a reply of several rounds keeps exactly what was streamed');
+            expect(
+                json(callLogOf(chunks)) === json([{ name: 'lookup_weather', argument: 'Paris', result: '晴' }]),
+                `only the client call has a record; the server tools are counted alone (got ${json(callLogOf(chunks))})`
+            );
         },
     },
     {
@@ -470,7 +487,10 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
             expect(json(request?.body.reasoning) === json({ effort: 'high' }), 'reasoning stays on');
             expect(textOf(chunks) === 'Sixteen agents agree.', 'the answer streams');
             const done = chunks.at(-1);
-            expect(done?.type === 'done' && done.agentStats?.mode === '16 agents', 'the mode is reported');
+            expect(
+                done?.type === 'done' && done.agentStats?.mode === '16 agents' && done.agentStats?.toolCalls === undefined,
+                'the mode is reported, and server-side tools leave no per-call log'
+            );
             expect(
                 new GrokPlatform().getModelCapabilities(MULTI_AGENT_MODEL).supportsClientTools === false &&
                     new GrokPlatform().getModelCapabilities(MODEL).supportsClientTools === true,
@@ -497,8 +517,11 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
                 );
                 const done = chunks.at(-1);
                 expect(
-                    textOf(chunks) === 'Hello.' && done?.type === 'done' && asRecord(done.rawResponse).id === 'resp_plain',
-                    'the answer streams and done carries its response, as today'
+                    textOf(chunks) === 'Hello.' &&
+                        done?.type === 'done' &&
+                        asRecord(done.rawResponse).id === 'resp_plain' &&
+                        done.agentStats === undefined,
+                    `${tools ? 'zero definitions' : 'no tools'}: the answer streams, done carries its response and no agentStats`
                 );
             }
         },
@@ -790,6 +813,10 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
                         ]),
                 `the unoffered call shows no status and is not counted (got ${json(statuses)} / ${json(done?.agentStats)})`
             );
+            expect(
+                json(callLogOf(chunks)) === json([{ name: 'lookup_weather', argument: 'Paris', result: '晴' }]),
+                `the unoffered call leaves no record (got ${json(callLogOf(chunks))})`
+            );
 
             // A round whose only function call is unoffered is not the answer
             reset(
@@ -898,6 +925,14 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
                         done?.type === 'done' &&
                         json(done.agentStats?.toolUsage) === json([{ name: 'lookup_weather', count: 2 }]),
                     `${label}: a status per call, one clear, and both calls counted (got ${json(done?.agentStats)})`
+                );
+                expect(
+                    json(callLogOf(chunks)) ===
+                        json([
+                            { name: 'lookup_weather', argument: 'Paris', result: '晴' },
+                            { name: 'lookup_weather', argument: 'Tokyo', result: '晴' },
+                        ]),
+                    `${label}: the per-call log keeps the stream's order (got ${json(callLogOf(chunks))})`
                 );
                 expect(!lines.some((line) => line.includes('differ from the closing response')), `${label}: no mismatch warning`);
             }
@@ -1085,8 +1120,9 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
                             { name: 'code_interpreter', count: 1 },
                             { name: 'x_search', count: 1 },
                         ]) &&
-                    json(done.agentStats?.codeInterpreterSummary) === json(['1 log block | 42']),
-                `custom tool calls count as x_search (got ${json(done?.agentStats)})`
+                    json(done.agentStats?.codeInterpreterSummary) === json(['1 log block | 42']) &&
+                    done.agentStats?.toolCalls === undefined,
+                `custom tool calls count as x_search, with no per-call log (got ${json(done?.agentStats)})`
             );
         },
     },
@@ -1113,6 +1149,10 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
             expect(
                 done?.type === 'done' && json(done.agentStats?.toolUsage) === json([{ name: 'lookup_weather', count: 1 }]),
                 'done still closes the reply with its tally'
+            );
+            expect(
+                json(callLogOf(chunks)) === json([{ name: 'lookup_weather', result: '5 字' }]),
+                `the call that ran before the stop has its record; city is not a whitelisted argument key (got ${json(callLogOf(chunks))})`
             );
         },
     },

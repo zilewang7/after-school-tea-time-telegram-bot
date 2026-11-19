@@ -20,6 +20,7 @@ import { resolveWorkspaceRef, type WorkspaceState } from '../workspace/workspace
 import { parseWorkspacePreviewArgs } from './workspace-tool-args.js';
 import { workspaceToolError, workspaceToolSuccess } from './workspace-tool-result.js';
 import { WORKSPACE_PREVIEW_TOOL_NAME } from './tool-names.js';
+import { traceParts, traceWorkspacePath } from './tool-trace.js';
 
 const DESCRIPTION =
     '把工作区里的 HTML/A2UI 草稿渲染成 600px 宽的图片给你自己看（静态首帧），同时报告体积与 widget 预检结果。' +
@@ -165,13 +166,23 @@ export const createWorkspacePreviewTool = (options: WorkspacePreviewToolOptions)
             const content =
                 `已渲染《${file.path}》（${label}）预览：${rendered.width}×${rendered.height} PNG，已附上（静态首帧）。` +
                 `${budget}；${precheckLine}`;
-            return workspaceToolSuccess(content, [
+            return workspaceToolSuccess(
+                content,
+                [
+                    {
+                        data: rendered.png,
+                        mimeType: 'image/png',
+                        caption: `[workspace_preview] ${file.path}`,
+                    },
+                ],
                 {
-                    data: rendered.png,
-                    mimeType: 'image/png',
-                    caption: `[workspace_preview] ${file.path}`,
-                },
-            ]);
+                    argument: traceParts(
+                        traceWorkspacePath(ref.ref.token, file.path),
+                        parsed.value.theme === 'dark' ? 'dark' : null
+                    ),
+                    result: `${rendered.width}×${rendered.height} PNG · ${precheck.ok ? '预检通过' : '预检不通过'}`,
+                }
+            );
         },
     };
 };

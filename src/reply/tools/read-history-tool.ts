@@ -13,7 +13,13 @@
  */
 import type { ToolHandler, ToolResult } from '../../ai/tools/tool-types.js';
 import { HISTORY_MESSAGES_TIMEOUT_MS } from '../../services/luoxu-history-service.js';
-import { parseHistoryReadArgs, parseHistoryReference, HISTORY_MAX_REFS, HISTORY_REF_HINT } from './history-args.js';
+import {
+    parseHistoryReadArgs,
+    parseHistoryReference,
+    HISTORY_MAX_REFS,
+    HISTORY_REF_HINT,
+    type HistoryReadArgs,
+} from './history-args.js';
 import {
     attachmentSummary,
     formatHistoryTime,
@@ -36,6 +42,7 @@ import {
     type HistoryToolOptions,
 } from './history-tool-shared.js';
 import { READ_HISTORY_TOOL_NAME } from './tool-names.js';
+import { traceChars, traceParts, traceRef } from './tool-trace.js';
 
 const BASE_DESCRIPTION =
     '读取历史归档里某条消息的完整索引文本（含网页预览、Instant View 正文、图片 OCR），或读取某条消息前后一段时间内的对话。' +
@@ -192,7 +199,8 @@ const readFull = async (
     options: HistoryToolOptions,
     refs: readonly string[],
     folded: boolean,
-    signal: AbortSignal
+    signal: AbortSignal,
+    traceArgument: string
 ): Promise<ToolResult> => {
     const entries: HistoryEntry[] = [];
     const seen = new Set<string>();
@@ -210,6 +218,8 @@ const readFull = async (
     const contextNumbers = contextNumbersOf(options.context);
     const currentChannel = options.channelId;
     const blocks: string[] = [];
+    let rendered = 0;
+    let omitted = 0;
     let used = 0;
     for (const entry of entries) {
         const fresh = options.state.findByMessage(entry.channelId, entry.messageId) ?? entry;
@@ -222,20 +232,33 @@ const readFull = async (
             showGroup: fresh.channelId !== currentChannel,
         });
         if (used + block.length > MAX_FULL_CHARS_TOTAL) {
-            blocks.push(`（其余 ${entries.length - blocks.length} 条因长度省略，可减少 ids 分次读）`);
+            omitted = entries.length - rendered;
+            blocks.push(`（其余 ${omitted} 条因长度省略，可减少 ids 分次读）`);
             break;
         }
         blocks.push(block);
+        rendered += 1;
         used += block.length + 2;
     }
-    return historyToolSuccess([withNotice('历史阅读：'), ...blocks].join('\n\n'));
+    const renderedChars = blocks
+        .slice(0, rendered)
+        .reduce((total, block) => total + Array.from(block).length, 0);
+    return historyToolSuccess([withNotice('历史阅读：'), ...blocks].join('\n\n'), {
+        argument: traceArgument,
+        result: traceParts(
+            `${rendered} 条全文`,
+            renderedChars > 0 ? traceChars(renderedChars) : null,
+            omitted > 0 ? `省略 ${omitted} 条` : null
+        ),
+    });
 };
 
 const readWindow = async (
     options: HistoryToolOptions,
     around: string,
     minutes: number,
-    signal: AbortSignal
+    signal: AbortSignal,
+    traceArgument: string
 ): Promise<ToolResult> => {
     const resolved = await resolveReference(options, around, signal);
     if ('error' in resolved) return historyToolError(resolved.error);
@@ -348,7 +371,21 @@ const readWindow = async (
         timeZone,
         WINDOW_CHARS_TOTAL
     );
-    return historyToolSuccess(text);
+    return historyToolSuccess(text, {
+        argument: traceArgument,
+        result: `${rows.length} 条消息`,
+    });
+};
+
+/** `h101、h102、h103 → …` or `around h101 · 10 分钟`: what the call asked to read */
+const describeReadArgsTrace = (args: HistoryReadArgs): string => {
+    if (args.around !== null) {
+        return traceParts(`around ${traceRef(args.around)}`, `${args.minutes} 分钟`);
+    }
+    const shown = args.refs.slice(0, 3).map((ref) => traceRef(ref));
+    const rest = args.refs.length - shown.length;
+    const refs = `${shown.join('、')}${rest > 0 ? `+${rest}` : ''}`;
+    return traceParts(`${refs}${args.folded ? '（含折叠）' : ''}`);
 };
 
 const summarizeReadArgs = (args: Readonly<Record<string, unknown>>): string =>
@@ -371,10 +408,11 @@ const handlerOf = (options: HistoryToolOptions): ToolHandler => ({
         const parsed = parseHistoryReadArgs(args);
         if (!parsed.ok) return historyToolError(parsed.error);
         const readArgs = parsed.value;
+        const traceArgument = describeReadArgsTrace(readArgs);
         if (readArgs.around) {
-            return readWindow(options, readArgs.around, readArgs.minutes, signal);
+            return readWindow(options, readArgs.around, readArgs.minutes, signal, traceArgument);
         }
-        return readFull(options, readArgs.refs, readArgs.folded, signal);
+        return readFull(options, readArgs.refs, readArgs.folded, signal, traceArgument);
     },
 });
 

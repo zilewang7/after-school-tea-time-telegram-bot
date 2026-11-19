@@ -14,6 +14,7 @@ import { widgetDraftSizeLineOf } from '../workspace/workspace-widget-size.js';
 import { parseWorkspaceEditArgs } from './workspace-tool-args.js';
 import { workspaceToolError, workspaceToolSuccess } from './workspace-tool-result.js';
 import { WORKSPACE_EDIT_TOOL_NAME } from './tool-names.js';
+import { traceBytes, traceWorkspacePath } from './tool-trace.js';
 
 const DESCRIPTION =
     '把文件里的一段文本替换成新文本。old_string 必须在文件中唯一出现（要替换所有出现用 replace_all=true），' +
@@ -79,7 +80,16 @@ export const createWorkspaceEditTool = (options: WorkspaceEditToolOptions): Tool
             const label = `${ref.ref.label} ${ref.ref.token}`;
             const content = `已修改《${result.path}》（${label}）：替换 ${result.replacements} 处，现在 ${formatBytes(result.sizeBytes)}。`;
             const draftLine = widgetDraftSizeLineOf(result.path, result.content, options.widgetLimits);
-            return workspaceToolSuccess(draftLine === '' ? content : `${content}\n${draftLine}`);
+            return workspaceToolSuccess(
+                draftLine === '' ? content : `${content}\n${draftLine}`,
+                undefined,
+                {
+                    argument: `${traceWorkspacePath(ref.ref.token, result.path)}${
+                        parsed.value.replaceAll ? '（全部）' : ''
+                    }`,
+                    result: `替换 ${result.replacements} 处 · ${traceBytes(result.sizeBytes)}`,
+                }
+            );
         },
     };
 };

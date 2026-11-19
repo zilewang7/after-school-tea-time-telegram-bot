@@ -19,6 +19,7 @@ import { isWidgetDraftPath, widgetDraftListDetailOf } from '../workspace/workspa
 import { parseWorkspaceListArgs } from './workspace-tool-args.js';
 import { workspaceToolError, workspaceToolSuccess } from './workspace-tool-result.js';
 import { WORKSPACE_LIST_TOOL_NAME } from './tool-names.js';
+import { traceWorkspacePath } from './tool-trace.js';
 
 const DESCRIPTION =
     '列出工作区里的文件（路径、大小、最近修改时间、首行摘要），按最近修改排序；' +
@@ -98,9 +99,12 @@ export const createWorkspaceListTool = (options: WorkspaceListToolOptions): Tool
                 (parsed.value.prefix === '' ? '。' : `；${parsed.value.prefix} 下 ${snapshot.files.length} 个。`) +
                 widgetHint;
 
+            const traceArgument = traceWorkspacePath(ref.ref.token, parsed.value.prefix);
             if (snapshot.files.length === 0) {
                 return workspaceToolSuccess(
-                    `${header}\n${parsed.value.prefix === '' ? '工作区是空的。用 workspace_write 创建草稿。' : '这个目录下没有文件。'}`
+                    `${header}\n${parsed.value.prefix === '' ? '工作区是空的。用 workspace_write 创建草稿。' : '这个目录下没有文件。'}`,
+                    undefined,
+                    { argument: traceArgument, result: '空目录' }
                 );
             }
 
@@ -116,7 +120,13 @@ export const createWorkspaceListTool = (options: WorkspaceListToolOptions): Tool
                         : formatBytes(file.sizeBytes);
                 return `- ${file.path}（${detail}，${formatWorkspaceTime(file.updatedAt)}）${summary}`;
             });
-            return workspaceToolSuccess(`${header}\n${lines.join('\n')}`);
+            return workspaceToolSuccess(`${header}\n${lines.join('\n')}`, undefined, {
+                argument: traceArgument,
+                result:
+                    parsed.value.prefix === ''
+                        ? `共 ${snapshot.usage.fileCount} 个文件`
+                        : `${snapshot.files.length} 个文件`,
+            });
         },
     };
 };

@@ -17,6 +17,7 @@ import type { ContextIndex } from '../context-index.js';
 import { parseAvatarTarget } from './avatar-args.js';
 import { formatAvatarResult, formatAvatarReuse } from './image-tool-text.js';
 import { nextFetchedImageId, type ReplyMediaState } from './reply-media-state.js';
+import { traceText } from './tool-trace.js';
 
 export interface AvatarLaneOptions {
     /** The chat this reply happens in: `avatar='chat'` */
@@ -45,6 +46,7 @@ export const readAvatar = async (
     });
     if (!parsed.ok) return { ok: false, error: parsed.error };
 
+    const traceArgument = `${traceText(text)} 头像`;
     const key = `${avatarTargetKey(parsed.target)}:${view}`;
     const existingId = state.readAvatars.get(key);
     if (existingId !== undefined) {
@@ -56,6 +58,7 @@ export const readAvatar = async (
                 isError: false,
                 images: [],
                 record: null,
+                trace: { argument: traceArgument, result: '已读过' },
             },
         };
     }
@@ -96,6 +99,10 @@ export const readAvatar = async (
                 { data: avatar.data, mimeType: avatar.mimeType, caption: `头像 ${id}：${avatar.label}` },
             ],
             record: null,
+            trace: {
+                argument: traceArgument,
+                result: `${id} 头像 ${view === 'thumbnail' ? '160 档' : '640 档'}`,
+            },
         },
     };
 };

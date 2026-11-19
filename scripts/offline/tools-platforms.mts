@@ -118,7 +118,13 @@ const weatherTool: ToolHandler = {
         executions.push({ name: 'lookup_weather', args });
         // The clock may run out here, between two rounds
         afterToolExecution?.();
-        return { content: `sunny in ${String(args.city)}`, isError: false, images: [], record: null };
+        return {
+            content: `sunny in ${String(args.city)}`,
+            isError: false,
+            images: [],
+            record: null,
+            trace: { argument: String(args.city), result: '晴' },
+        };
     },
 };
 
@@ -208,6 +214,13 @@ const asArray = (value: unknown): unknown[] => (Array.isArray(value) ? value : [
 const withoutRoundsLeft = (text: string): string => text.replace(/\n\n\[工具轮次\][^\n]*(?:\n\[时间\][^\n]*)?/g, '');
 const json = (value: unknown): string =>
     JSON.stringify(value, (_key, item: unknown) => (typeof item === 'string' ? withoutRoundsLeft(item) : item));
+
+/** The per-call log a done chunk carries, without its real-clock duration */
+const callLogOf = (chunks: readonly StreamChunk[]): unknown[] => {
+    const done = chunks.at(-1);
+    const records = done?.type === 'done' ? done.agentStats?.toolCalls : undefined;
+    return (records ?? []).map(({ name, argument, result, failed }) => ({ name, argument, result, failed }));
+};
 
 // ---- Responses API (OpenAI) fixtures ----
 
@@ -529,6 +542,14 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
                     asRecord(done.rawResponse).id === 'resp_offline',
                 `done carries the tally and the answering response (got ${json(done)})`
             );
+            expect(
+                json(callLogOf(chunks)) ===
+                    json([
+                        { name: 'lookup_weather', argument: 'Paris', result: '晴' },
+                        { name: 'lookup_weather', argument: 'Tokyo', result: '晴' },
+                    ]),
+                `done carries the per-call log in the stream's call order (got ${json(callLogOf(chunks))})`
+            );
         },
     },
     {
@@ -711,6 +732,14 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
                         ]),
                 `is_error comes from each result (got ${json(toolResults)})`
             );
+            expect(
+                json(callLogOf(chunks)) ===
+                    json([
+                        { name: 'lookup_weather', argument: 'Paris', result: '晴' },
+                        { name: 'broken_tool', result: 'service unavailable', failed: true },
+                    ]),
+                `done carries both calls, the failed one marked (got ${json(callLogOf(chunks))})`
+            );
         },
     },
     {
@@ -837,6 +866,11 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
                 json(continuation[1]) === json({ role: 'tool', tool_call_id: 'call_oslo', content: 'sunny in Oslo' }),
                 `the tool message answers the same call id (got ${json(continuation[1])})`
             );
+            expect(
+                json(callLogOf(chunks)) ===
+                    json([{ name: 'lookup_weather', argument: 'Oslo', result: '晴' }]),
+                `done carries the streamed call (got ${json(callLogOf(chunks))})`
+            );
         },
     },
     {
@@ -898,6 +932,13 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
                 `the plain OpenAI request keeps its reasoning params (got ${json(recordedRequests[0]?.body.reasoning)})`
             );
             expect(executions.length === 0, 'no tool runs');
+            expect(
+                replies.every((chunks) => {
+                    const done = chunks.at(-1);
+                    return done?.type === 'done' && done.agentStats === undefined;
+                }),
+                `a reply without tools keeps its done shape: no agentStats (got ${json(replies.map((chunks) => chunks.at(-1)?.type))})`
+            );
         },
     },
     {
@@ -952,6 +993,10 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
             expect(
                 /\[工具轮次\].*[0-9]/.test(String(continuation[1]?.content)),
                 `the tool result says how many rounds are left (got ${json(continuation[1]?.content)})`
+            );
+            expect(
+                json(callLogOf(chunks)) === json([{ name: 'lookup_weather', argument: 'Rome', result: '晴' }]),
+                `done carries the call (got ${json(callLogOf(chunks))})`
             );
 
             resetStub([

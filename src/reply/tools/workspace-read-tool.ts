@@ -12,6 +12,7 @@ import { resolveWorkspaceRef, type WorkspaceState } from '../workspace/workspace
 import { parseWorkspaceReadArgs } from './workspace-tool-args.js';
 import { workspaceToolError, workspaceToolSuccess } from './workspace-tool-result.js';
 import { WORKSPACE_READ_TOOL_NAME } from './tool-names.js';
+import { traceWorkspacePath } from './tool-trace.js';
 
 const DESCRIPTION =
     '读取工作区里的文本文件，按行返回并带行号。默认读前 200 行；文件更长时用 offset/limit 分页，' +
@@ -101,7 +102,10 @@ export const createWorkspaceReadTool = (options: WorkspaceReadToolOptions): Tool
                 `显示第 ${start + 1}–${start + shown.length} 行。`;
             const remaining = totalLines - index;
             const tail = remaining > 0 ? `\n… 还有 ${remaining} 行，用 offset=${index + 1} 继续。` : '';
-            return workspaceToolSuccess(`${header}\n${shown.join('\n')}${tail}`);
+            return workspaceToolSuccess(`${header}\n${shown.join('\n')}${tail}`, undefined, {
+                argument: `${traceWorkspacePath(ref.ref.token, file.path)} 第 ${start + 1}–${start + shown.length} 行`,
+                result: `共 ${totalLines} 行`,
+            });
         },
     };
 };

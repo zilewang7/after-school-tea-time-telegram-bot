@@ -8,6 +8,7 @@ import { resolveWorkspaceRef, type WorkspaceState } from '../workspace/workspace
 import { parseWorkspaceDeleteArgs } from './workspace-tool-args.js';
 import { workspaceToolError, workspaceToolSuccess } from './workspace-tool-result.js';
 import { WORKSPACE_DELETE_TOOL_NAME } from './tool-names.js';
+import { traceBytes, traceWorkspacePath } from './tool-trace.js';
 
 const DESCRIPTION = '删除工作区里的一个文件，释放配额。删除后无法恢复。';
 
@@ -56,7 +57,12 @@ export const createWorkspaceDeleteTool = (options: WorkspaceDeleteToolOptions): 
             const label = `${ref.ref.label} ${ref.ref.token}`;
             return workspaceToolSuccess(
                 `已删除《${result.path}》（${label}）：释放 ${formatBytes(result.freedBytes)}；` +
-                    `工作区 ${result.fileCount} 个文件，已用 ${formatBytes(result.totalBytes)}。`
+                    `工作区 ${result.fileCount} 个文件，已用 ${formatBytes(result.totalBytes)}。`,
+                undefined,
+                {
+                    argument: traceWorkspacePath(ref.ref.token, result.path),
+                    result: `释放 ${traceBytes(result.freedBytes)}`,
+                }
             );
         },
     };

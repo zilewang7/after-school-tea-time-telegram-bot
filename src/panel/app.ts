@@ -14,6 +14,7 @@ import { Api } from 'grammy';
 import { Hono, type Context } from 'hono';
 import { getToolConfig } from '../config/tool-config.js';
 import { searchLinkEnabled } from '../shared/search-page.js';
+import { toolLogLinkEnabled } from '../shared/tool-log-page.js';
 import { createMembershipChecker, type MembershipLookup } from './access/membership.js';
 import type { ChatNameLookup } from './chat-names.js';
 import type { PanelEnv } from './context.js';
@@ -59,6 +60,7 @@ import { registerSearchPublicRoutes } from './search/search-routes.js';
 import { registerStaticRoutes } from './static.js';
 import { thinkingLinkEnabled } from './thinking/thinking-config.js';
 import { registerPublicThinkingApiRoutes, registerThinkingPublicRoutes } from './thinking/thinking-routes.js';
+import { registerToolLogPublicRoutes } from './tool-log/tool-log-routes.js';
 
 export interface PanelAppOptions {
     botToken: string;
@@ -109,6 +111,11 @@ export interface PanelAppOptions {
      * fast page exists (design 2026-1113-1831 §3.5). Default: the env.
      */
     searchEnabled?: boolean;
+    /**
+     * TOOL_LOG_LINK is on and WEBAPP_PUBLIC_URL is set: the public tool-call log
+     * fast page exists (design 2026-1119-1835 §13.2). Default: the env.
+     */
+    toolLogEnabled?: boolean;
 }
 
 const BODY_LIMIT_BYTES = 32 * 1024;
@@ -128,6 +135,7 @@ export const createPanelApp = (options: PanelAppOptions): Hono<PanelEnv> => {
     const shareEnabled = options.shareEnabled ?? getToolConfig().shareEnabled;
     const thinkingEnabled = options.thinkingEnabled ?? thinkingLinkEnabled();
     const searchEnabled = options.searchEnabled ?? searchLinkEnabled();
+    const toolLogEnabled = options.toolLogEnabled ?? toolLogLinkEnabled();
     const webAuth = options.webAuth ?? getWebAuthRuntime();
     const bodyLimit = createBodyLimit({
         maxSize: BODY_LIMIT_BYTES,
@@ -218,6 +226,9 @@ export const createPanelApp = (options: PanelAppOptions): Hono<PanelEnv> => {
     // /g/<token> is the GoogleSearch fast page: SSR like /t, registered before the
     // static catch-all so it never serves the SPA
     registerSearchPublicRoutes(app, { enabled: searchEnabled, now });
+    // /x/<token> is the public tool-call log page: SSR like /g, registered before
+    // the static catch-all so it never serves the SPA
+    registerToolLogPublicRoutes(app, { enabled: toolLogEnabled, now });
 
     registerStaticRoutes(app, options.staticRoot);
     // Methods outside HTTP_METHODS reach nothing above

@@ -40,6 +40,7 @@ import {
 import type { ReplyToolContext } from './reply-tool-context.js';
 import { ONE_ATTACHMENT_PER_REPLY, type ReplyMediaState } from './reply-media-state.js';
 import { SEND_IMAGE_TOOL_NAME } from './tool-names.js';
+import { traceParts, traceUrl } from './tool-trace.js';
 
 const DESCRIPTION =
     '将一张已有图片发送到聊天（附在当前回复末尾，可与其它图片一起发出）。' +
@@ -160,6 +161,14 @@ export const createSendImageTool = (options: SendImageToolOptions): ToolHandler 
                 resolved.imageId ??
                 resolved.generatedId ??
                 (resolved.contextNumber === undefined ? 'url' : `#${resolved.contextNumber}`);
+            // The log names a url by its host only: a query string can carry a secret
+            const traceArgument = args.url === undefined ? label : traceUrl(args.url);
+            const captionChars = Array.from(args.caption.trim()).length;
+            const traceResult = traceParts(
+                `第 ${state.imageCount}/${MAX_REPLY_IMAGES} 张`,
+                animated ? '动图' : null,
+                captionChars > 0 ? `配文 ${captionChars} 字` : null
+            );
 
             return {
                 content: formatSendResult({
@@ -215,6 +224,7 @@ export const createSendImageTool = (options: SendImageToolOptions): ToolHandler 
                                   },
                               ],
                           },
+                trace: { argument: traceArgument, result: traceResult },
             };
         },
     };

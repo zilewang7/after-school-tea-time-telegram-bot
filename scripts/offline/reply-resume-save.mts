@@ -38,7 +38,13 @@ import {
     type FakeTelegram,
 } from './fake-telegram.mts';
 import { withFakeClock } from './support/gemini-loop-fixtures.mts';
-import type { AgentToolUsage, PlatformConfig, StreamChunk, UnifiedMessage } from '../../src/ai/types.js';
+import type {
+    AgentToolCallRecord,
+    AgentToolUsage,
+    PlatformConfig,
+    StreamChunk,
+    UnifiedMessage,
+} from '../../src/ai/types.js';
 import type { ToolLoopCheckpoint } from '../../src/ai/tools/tool-loop-checkpoint.js';
 
 const MODEL = 'gemini-4-carbon';
@@ -125,6 +131,12 @@ platform.sendMessage = async (_messages: UnifiedMessage[], config: PlatformConfi
 const TOOL_USAGE: AgentToolUsage[] = [
     { name: 'search_history', count: 2 },
     { name: 'fetch_image', count: 1, failed: 1 },
+];
+
+const TOOL_CALLS: AgentToolCallRecord[] = [
+    { name: 'search_history', argument: '「灭蛾」', result: '10 条命中', ms: 40 },
+    { name: 'search_history', argument: '「户鞘谷蛾」', result: '3 条命中', ms: 60 },
+    { name: 'fetch_image', argument: 'h101', result: '格式读不了', failed: true, ms: 120 },
 ];
 
 const checkpointOf = (completedRounds: number, fields: Partial<ToolLoopCheckpoint> = {}): ToolLoopCheckpoint => ({
@@ -321,7 +333,7 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
         name: 'case 2: an error with a checkpoint offers [继续] [重试], says how many rounds are kept, and the row records them',
         body: async () => {
             const run = await runReply(takeChatId(), [
-                ...keptRounds(2),
+                ...keptRounds(2, { toolCalls: TOOL_CALLS }),
                 { fail: new Error('got status: 429 RESOURCE_EXHAUSTED') },
             ]);
             expect(requests.at(-1)?.checkpointSink !== undefined, 'the chat handler passes a checkpoint sink');
@@ -357,6 +369,10 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
             expect(
                 json(version?.agentStats?.toolUsage) === json(TOOL_USAGE) && version?.errorMessage !== undefined,
                 'the stored failed version carries the tool usage too'
+            );
+            expect(
+                json(version?.agentStats?.toolCalls) === json(TOOL_CALLS),
+                `and the kept rounds' per-call log (got ${json(version?.agentStats?.toolCalls)})`
             );
         },
     },
@@ -417,7 +433,7 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
             const sticker = await runReply(takeChatId(), [
                 { chunk: { type: 'text', content: '先发给你' } },
                 { chunk: { type: 'sticker', sticker: STICKER } },
-                { checkpoint: checkpointOf(1) },
+                { checkpoint: checkpointOf(1, { toolCalls: TOOL_CALLS }) },
                 { stop: 'then-chunk' },
             ]);
             expect(sticker.telegram.callsOf('sendSticker')[0]?.payload.sticker === 'file-7', 'the sticker goes out');
@@ -432,6 +448,11 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
             expect(!stickerText.includes('已保留') && !stickerText.includes('⚠'), `no extra text (got ${json(stickerText)})`);
             const [stickerRow] = await rowsOf(sticker);
             expect(stickerRow?.outcome === 'stopped' && stickerRow.checkpointRounds === 1, `the stopped row (got ${json(stickerRow?.checkpointRounds)})`);
+            const stickerVersion = (await storedOf(sticker)).getVersions().at(-1);
+            expect(
+                json(stickerVersion?.agentStats?.toolCalls) === json(TOOL_CALLS),
+                `the stopped version shows the kept rounds' calls (got ${json(stickerVersion?.agentStats?.toolCalls)})`
+            );
             expect(markOf(sticker)?.versionId === 1 && entryOf(sticker)?.loop.completedRounds === 1, 'marked and kept');
 
             // The stop reaches the stream as the SDK's abort error: handleResponseError's stop branch

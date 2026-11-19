@@ -12,6 +12,7 @@ import { resolveWorkspaceRef, type WorkspaceState } from '../workspace/workspace
 import { parseWorkspaceFindArgs } from './workspace-tool-args.js';
 import { workspaceToolError, workspaceToolSuccess } from './workspace-tool-result.js';
 import { WORKSPACE_FIND_TOOL_NAME } from './tool-names.js';
+import { traceParts, traceQuote, traceWorkspacePath } from './tool-trace.js';
 
 const DESCRIPTION =
     '在工作区里按字面量搜索文件内容，返回 路径:行号 和那一行。默认搜整个会话；' +
@@ -75,13 +76,22 @@ export const createWorkspaceFindTool = (options: WorkspaceFindToolOptions): Tool
                 maxLineChars: MAX_FIND_LINE_CHARS,
             });
             const label = `${ref.ref.label} ${ref.ref.token}`;
+            const traceArgument = traceWorkspacePath(
+                ref.ref.token,
+                traceParts(
+                    traceQuote(parsed.value.query, 32),
+                    parsed.value.path ?? (parsed.value.prefix === '' ? null : parsed.value.prefix)
+                )
+            );
             if (parsed.value.path !== null && result.scannedFiles === 0) {
                 return reject(`工作区（${label}）里没有《${parsed.value.path}》；用 workspace_list 看看现有文件。`);
             }
             if (result.scannedFiles === 0) {
                 const where = parsed.value.prefix === '' ? '' : `（${parsed.value.prefix} 下）`;
                 return workspaceToolSuccess(
-                    `工作区（${label}）里没有可搜索的文件${where}；先用 workspace_write 创建草稿。`
+                    `工作区（${label}）里没有可搜索的文件${where}；先用 workspace_write 创建草稿。`,
+                    undefined,
+                    { argument: traceArgument, result: '没有可搜索的文件' }
                 );
             }
             const scope =
@@ -93,7 +103,12 @@ export const createWorkspaceFindTool = (options: WorkspaceFindToolOptions): Tool
             if (result.totalHits === 0) {
                 return workspaceToolSuccess(
                     `在${scope}（${label}）里没有找到「${parsed.value.query}」；扫描了 ${result.scannedFiles} 个文件。` +
-                        '可以用 workspace_list 看路径，或换个词/加 prefix。'
+                        '可以用 workspace_list 看路径，或换个词/加 prefix。',
+                    undefined,
+                    {
+                        argument: traceArgument,
+                        result: `0 处（扫描 ${result.scannedFiles} 个文件）`,
+                    }
                 );
             }
             const lines = result.hits.map((hit) => `${hit.path}:${hit.lineNumber}| ${hit.line}`);
@@ -102,7 +117,15 @@ export const createWorkspaceFindTool = (options: WorkspaceFindToolOptions): Tool
             return workspaceToolSuccess(
                 `在${scope}（${label}）里找到 ${result.totalHits} 处「${parsed.value.query}」（扫描 ${result.scannedFiles} 个文件）：\n` +
                     lines.join('\n') +
-                    tail
+                    tail,
+                undefined,
+                {
+                    argument: traceArgument,
+                    result: traceParts(
+                        `${result.totalHits} 处（扫描 ${result.scannedFiles} 个文件）`,
+                        result.truncated && hidden > 0 ? `仅显示前 ${result.hits.length} 处` : null
+                    ),
+                }
             );
         },
     };

@@ -18,6 +18,8 @@ const EMPTY_CONTENT: ToolResult = {
     isError: true,
     images: [],
     record: null,
+    // The text itself never reaches the log: only its length does
+    trace: { argument: '0 字', result: '正文为空' },
 };
 
 /** The trimmed `content` argument; empty when missing, not a string or blank */
@@ -28,6 +30,20 @@ const describeOutcome = (outcome: OwnerSmsOutcome): string =>
         .with({ kind: 'sent' }, ({ verified }) => (verified === true ? 'ok (confirmed)' : 'ok'))
         .with({ kind: 'failed' }, { sendStarted: true }, ({ kind }) => `error (${kind}, may have gone out)`)
         .otherwise(({ kind }) => `error (${kind})`);
+
+/** The outcome as one log word; the renderer adds 「失败：」 to an error */
+const smsTraceResult = (outcome: OwnerSmsOutcome): string =>
+    match(outcome)
+        .with({ kind: 'sent' }, ({ verified }) => (verified === true ? '已发送（已核对）' : '已发送'))
+        .with({ kind: 'rejected' }, () => '发送失败')
+        .with({ kind: 'connect-failed' }, () => '连接失败')
+        .with({ kind: 'http-refused' }, () => '发送失败')
+        .with({ kind: 'failed' }, () => '不确定是否已发出')
+        .with({ kind: 'timeout', sendStarted: true }, () => '超时（可能已发出）')
+        .with({ kind: 'timeout', sendStarted: false }, () => '超时')
+        .with({ kind: 'stopped', sendStarted: true }, () => '已停止（可能已发出）')
+        .with({ kind: 'stopped', sendStarted: false }, () => '已停止')
+        .exhaustive();
 
 /** One line per call; never the content or the token */
 const logSend = (context: ReplyToolContext, contentLength: number, status: string): void => {
@@ -60,6 +76,10 @@ export const createSendSmsTool = (context: ReplyToolContext): ToolHandler => ({
 
         const outcome = await getOwnerSmsSender().send(buildOwnerSmsText(context, content), signal);
         logSend(context, content.length, describeOutcome(outcome));
-        return ownerSmsToolResult(outcome);
+        // The trace rides on the result, not in it: the result text is unchanged
+        return {
+            ...ownerSmsToolResult(outcome),
+            trace: { argument: `${Array.from(content).length} 字`, result: smsTraceResult(outcome) },
+        };
     },
 });

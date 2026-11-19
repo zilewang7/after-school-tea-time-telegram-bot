@@ -201,6 +201,29 @@ const summaryOf = (handedOver: readonly HandedOver[]): string =>
         }))
     );
 
+/**
+ * The chunks as the consumer saw them, but for the per-call log's real-clock
+ * duration: a handler's wall time can differ between two runs of one script,
+ * and nothing but the slow-call note ever shows it.
+ */
+const withoutCallDurations = (chunks: readonly StreamChunk[]): unknown[] =>
+    chunks.map((chunk) => {
+        if (chunk.type !== 'done' || chunk.agentStats?.toolCalls === undefined) return chunk;
+        const { toolCalls, ...agentStats } = chunk.agentStats;
+        return {
+            ...chunk,
+            agentStats: {
+                ...agentStats,
+                toolCalls: toolCalls.map((record) => ({
+                    name: record.name,
+                    argument: record.argument,
+                    result: record.result,
+                    failed: record.failed,
+                })),
+            },
+        };
+    });
+
 /** Every checkpoint: unchanged since the hand-over, plain data, no status and no replay in its journal */
 const expectValues = (handedOver: readonly HandedOver[], label: string): void => {
     handedOver.forEach(({ checkpoint, frozen }, index) => {
@@ -274,6 +297,26 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
                 'after lookup_b: its picture, the same Buffer'
             );
 
+            // The per-call log ends at the call each checkpoint was taken after
+            expect(beforeCalls?.toolCalls === undefined, 'before the calls: no per-call records');
+            expect(
+                json(afterFirst?.toolCalls?.map((record) => record.name)) === json(['lookup_a']),
+                `after lookup_a: its record, and only it (got ${json(afterFirst?.toolCalls)})`
+            );
+            expect(
+                json(afterSecond?.toolCalls?.map((record) => record.name)) === json(['lookup_a', 'lookup_b']),
+                `after lookup_b: both records, in call order (got ${json(afterSecond?.toolCalls)})`
+            );
+            expect(
+                json(nextRound?.toolCalls) === json(afterSecond?.toolCalls),
+                'the next round keeps the same log: no new call ran'
+            );
+            const done = chunks.find((chunk) => chunk.type === 'done');
+            expect(
+                done?.type === 'done' && json(done.agentStats?.toolCalls) === json(nextRound?.toolCalls),
+                `the done chunk carries the kept rounds' per-call log (got ${json(done?.type === 'done' ? done.agentStats : undefined)})`
+            );
+
             // Moment 1: the next request, as it was then sent
             const next = loopOf(nextRound);
             expect(
@@ -332,12 +375,20 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
                     afterCall.request.final && answersOf(afterCall, 0)[0]?.notice === LAST_TOOL_ROUND_NOTICE,
                     'after the call that used the budget up: the next round is final and the answer says so'
                 );
+                expect(
+                    json(handedOver[1]?.checkpoint.toolCalls?.map((record) => record.name)) === json(['lookup_a']),
+                    `after the call that used the budget up: its record is in the checkpoint (got ${json(handedOver[1]?.checkpoint.toolCalls)})`
+                );
                 const nextRound = loopOf(handedOver[2]?.checkpoint);
                 expect(
                     nextRound.request.final && nextRound.toolTimeMs >= TOOL_LOOP_DEADLINE_MS && nextRound.mayAskAgain,
                     'the round-1 checkpoint: final next, the tool time spent, may still ask again'
                 );
                 const finalCalls = handedOver[3]?.checkpoint;
+                expect(
+                    json(finalCalls?.toolCalls?.map((record) => record.name)) === json(['lookup_a']),
+                    `the final round's call never ran and leaves no record (got ${json(finalCalls?.toolCalls)})`
+                );
                 const finalLoop = loopOf(finalCalls);
                 expect(
                     finalCalls?.completedRounds === 2 && finalLoop.request.final && !finalLoop.mayAskAgain,
@@ -509,6 +560,27 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
         },
     },
     {
+        name: '1h. a stop inside a call: the last checkpoint holds the call that just ran',
+        body: async () => {
+            const controller = new AbortController();
+            reset([callsRound('r1', [{ name: 'lookup_a' }, { name: 'lookup_b' }]), answer('never sent')]);
+            duringTool = () => controller.abort();
+
+            const { error, handedOver } = await runTurn({ signal: controller.signal, stopSignal: controller.signal });
+
+            expect(error === null, `the reply ends as stopped (got ${errorMessage(error)})`);
+            expect(json(executions) === '["lookup_a"]', `the second call never ran (got ${json(executions)})`);
+            expect(handedOver.length === 2, `two checkpoints (got ${summaryOf(handedOver)})`);
+            const [, afterCall] = handedOver.map((item) => item.checkpoint);
+            expect(
+                json(afterCall?.toolCalls?.map((record) => record.name)) === json(['lookup_a']),
+                `the last checkpoint holds the call that just ran (got ${json(afterCall?.toolCalls)})`
+            );
+            expect(json(afterCall?.toolUsage) === json([{ name: 'lookup_a', count: 1 }]), 'and its usage');
+            expectValues(handedOver, '1h');
+        },
+    },
+    {
         name: 'without a checkpointSink the requests are the same bytes',
         body: async () => {
             const script = (): ScriptedReply[] => [
@@ -527,8 +599,8 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
             expect(collected.handedOver.length > 0 && plain.handedOver.length === 0, 'only the first one took checkpoints');
             expect(withSink.length === 3 && json(withSink) === json(withoutSink), 'every request is byte for byte the same');
             expect(
-                json(collected.chunks) === json(plain.chunks),
-                'and the chunks the consumer saw are the same'
+                json(withoutCallDurations(collected.chunks)) === json(withoutCallDurations(plain.chunks)),
+                'and the chunks the consumer saw are the same, but for the real-clock call durations'
             );
         },
     },

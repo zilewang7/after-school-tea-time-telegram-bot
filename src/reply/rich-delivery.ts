@@ -39,6 +39,8 @@ import { italicText } from '../telegram/formatters/entity-text.js';
 import { buildErrorLine } from '../telegram/formatters/error-display.js';
 import type { GoogleSearchDocument } from '../telegram/formatters/google-search-document.js';
 import { searchLinkStatsOf, toSearchLinkChunk } from '../telegram/formatters/google-search-link.js';
+import { buildToolLogDocument, toolLogHasContent } from '../telegram/formatters/tool-log-document.js';
+import { toToolLogLinkChunk } from '../telegram/formatters/tool-log-link.js';
 import { TELEGRAM_MAX_LENGTH } from '../telegram/formatters/message-budget.js';
 import { joinRichBlocks } from '../telegram/formatters/rich-blocks.js';
 import { estimateAnswerMarkdown, foldWouldTrigger, type RichBodyLength } from '../telegram/formatters/rich-body-length.js';
@@ -360,6 +362,10 @@ export const deliverRichFinal = async (
     const assemblyText = holder.inlineAssemblyText ?? cleanText;
     const thinking = session.thinkingBuffer !== '' ? session.thinkingBuffer : input.response.thinkingText;
     const searchFolded = session.searchLink !== undefined && searchFooterPresent(input.googleSearch);
+    // The Tools block folds the same way: a block too long for one message goes
+    // to the public log page and the body leaves it out (design 2026-1119-1835).
+    const toolLog = buildToolLogDocument(input.response.agentStats, input.response.groundingData ?? []);
+    const toolsFolded = session.toolLogLink !== undefined && toolLogHasContent(toolLog);
     const inlineImages = holder.inlineImages ?? [];
     const groundingData = input.response.groundingData;
 
@@ -411,6 +417,7 @@ export const deliverRichFinal = async (
             ...(input.response.agentStats === undefined ? {} : { agentStats: input.response.agentStats }),
             wasStoppedByUser: input.wasStoppedByUser,
             searchFolded,
+            toolsFolded,
             ...(input.resolveContextLink === undefined ? {} : { resolveContextLink: input.resolveContextLink }),
         });
         if (parts === null) return null;
@@ -533,6 +540,10 @@ export const deliverRichFinal = async (
         searchFolded && session.searchLink !== undefined
             ? [toSearchLinkChunk(session.searchLink, searchLinkStatsOf(input.googleSearch))]
             : [];
+    const toolLogChunk: readonly LayoutChunk[] =
+        toolsFolded && session.toolLogLink !== undefined
+            ? [toToolLogLinkChunk(session.toolLogLink, toolLog)]
+            : [];
     const linkChunks = (): readonly LayoutChunk[] =>
         link === undefined || linkEmitted
             ? []
@@ -558,7 +569,7 @@ export const deliverRichFinal = async (
             userMessageId: holder.userMessageId,
             firstMessageId: session.firstMessageId,
             messageIds: layoutMessageIds(),
-            chunks: [...linkChunks(), bodyChunk, ...searchChunk],
+            chunks: [...linkChunks(), bodyChunk, ...toolLogChunk, ...searchChunk],
             onRichRejected: (error) => {
                 refusal ??= error.description;
             },

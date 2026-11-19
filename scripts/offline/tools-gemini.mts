@@ -115,6 +115,13 @@ const withoutRoundsLeft = (text: string): string => text.replace(/\n\n\[工具�
 const json = (value: unknown): string =>
     JSON.stringify(value, (_key, item: unknown) => (typeof item === 'string' ? withoutRoundsLeft(item) : item));
 
+/** The per-call log a done chunk carries, without its real-clock duration */
+const callLogOf = (chunks: readonly StreamChunk[]): Array<{ name: unknown; argument: unknown; result: unknown; failed: unknown }> => {
+    const done = chunks.find((chunk) => chunk.type === 'done');
+    const records = done?.type === 'done' ? done.agentStats?.toolCalls : undefined;
+    return (records ?? []).map(({ name, argument, result, failed }) => ({ name, argument, result, failed }));
+};
+
 /** JSON with object keys sorted, so key order (SDK conversions) never matters */
 const canonical = (value: unknown): string =>
     JSON.stringify(value, (_key, nested: unknown) => {
@@ -835,6 +842,10 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
                 json(done[0]?.agentStats?.toolUsage) === '[{"name":"lookup_a","count":1},{"name":"lookup_b","count":1}]',
                 `tool usage from the tally (got ${json(done[0]?.agentStats?.toolUsage)})`
             );
+            expect(
+                json(callLogOf(chunks).map((record) => record.name)) === json(['lookup_a', 'lookup_b']),
+                `the per-call log follows the rounds' call order (got ${json(callLogOf(chunks))})`
+            );
             expect(canonical(donePartsOf(chunks)) === canonical([signedEmptyText('r3')]), 'rawResponse is the last chunk of the last round');
 
             const usage = usageLines(lines);
@@ -880,6 +891,14 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
                 json(doneChunksOf(chunks)[0]?.agentStats?.toolUsage) ===
                     '[{"name":"lookup_a","count":1},{"name":"broken_tool","count":1,"failed":1}]',
                 'both counted, the failed one marked'
+            );
+            expect(
+                json(callLogOf(chunks)) ===
+                    json([
+                        { name: 'lookup_a', argument: '「owl」', result: '20 字' },
+                        { name: 'broken_tool', result: 'service unavailable', failed: true },
+                    ]),
+                `one line per call, in order, the failure marked (got ${json(callLogOf(chunks))})`
             );
         },
     },
@@ -1050,6 +1069,10 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
                 expect(
                     done.length === 1 && json(done[0]?.agentStats?.toolUsage) === json([{ name: 'lookup_a', count: 1 }]),
                     'one done, and the call that never ran is not counted'
+                );
+                expect(
+                    json(callLogOf(chunks)) === json([{ name: 'lookup_a', argument: '「falcon」', result: '23 字' }]),
+                    `the call that never ran leaves no record (got ${json(callLogOf(chunks))})`
                 );
                 expect(canonical(donePartsOf(chunks)) === canonical([signedEmptyText('l6-end')]), 'rawResponse is the last chunk of the retry');
             });
@@ -1314,6 +1337,10 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
             const doneParts = donePartsOf(chunks);
             expect(!hasFunctionCall(doneParts) && doneParts.length === 1, `the stored parts drop the functionCall (got ${json(doneParts)})`);
             expect(json(done[0]?.agentStats?.toolUsage) === '[{"name":"stop_now","count":1}]', 'the call is counted');
+            expect(
+                json(callLogOf(chunks)) === json([{ name: 'stop_now', result: '7 字' }]),
+                `the call that ran before the stop has its record (got ${json(callLogOf(chunks))})`
+            );
         },
     },
     {
@@ -1678,6 +1705,11 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
                 `the single-request stream shape is unchanged (got ${json(plain.chunks.map((chunk) => chunk.type))})`
             );
             expect(canonical(donePartsOf(plain.chunks)) === canonical([signedEmptyText('plain')]), 'rawResponse is the last chunk');
+            const plainDone = plain.chunks.at(-1);
+            expect(
+                plainDone?.type === 'done' && plainDone.agentStats === undefined,
+                `a reply without tools keeps its done shape: no agentStats (got ${json(plainDone)})`
+            );
             expect(
                 usageLines(plain.lines).length === 1 && !(usageLines(plain.lines)[0] ?? '').includes('round='),
                 'one usage line, without round labels'

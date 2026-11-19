@@ -41,7 +41,7 @@ import {
 import { replaceMediaSentinels, type RichInlineMedia } from './rich-inline-media/media-blocks.js';
 import { stripInlineMarkersForDisplay } from './rich-inline-media/scan.js';
 import { formatThinkingForStreaming } from './thinking-display.js';
-import { buildToolRecordSections } from './tool-records-formatter.js';
+import { buildToolRecordParts } from './tool-records-formatter.js';
 
 /** The collapsed thinking quote of a final or error display, before HTML serialization */
 const thinkingQuoteMessage = (
@@ -172,6 +172,8 @@ export interface RichReplyBodyInput {
     readonly wasStoppedByUser: boolean;
     /** The footer went to the search link message: the body leaves it out */
     readonly searchFolded: boolean;
+    /** The Tools block went to the tool-log link message: the body leaves it out */
+    readonly toolsFolded?: boolean;
     readonly resolveContextLink?: ContextLinkResolver;
     /** The pictures the body embeds (empty for a reply without inline pictures) */
     readonly inlineMedia?: readonly RichInlineMedia[];
@@ -182,8 +184,9 @@ export const searchFooterPresent = (document: GoogleSearchDocument): boolean =>
     renderGoogleSearchFooter(document).text.trim() !== '';
 
 /**
- * The blocks around the answer: [stopped], the tool records, the inline search
- * footer. Live and replay build them the same way, from the same inputs.
+ * The blocks around the answer: [stopped], the Tools/Sources blocks, the inline
+ * search footer. Live and replay build them the same way, from the same inputs.
+ * A folded Tools block is left out (its link message carries it).
  */
 const bodyBlockMessages = (
     input: RichReplyBodyFromAnswerInput,
@@ -192,9 +195,13 @@ const bodyBlockMessages = (
     const groundingData = input.groundingData ?? [];
     const footer = renderGoogleSearchFooter(input.googleSearch);
     const inlineFooter = !input.searchFolded && footer.text.trim() !== '';
+    const recordParts = buildToolRecordParts(input.agentStats, groundingData);
+    const toolSections = [input.toolsFolded === true ? null : recordParts.tools, recordParts.sources].filter(
+        (section): section is RenderedMessage => section !== null
+    );
     return [
         ...(input.wasStoppedByUser ? [plainText('[stopped]')] : []),
-        ...buildToolRecordSections(input.agentStats, groundingData).map((section) => linkify(section)),
+        ...toolSections.map((section) => linkify(section)),
         ...(inlineFooter ? [linkify(footer)] : []),
     ];
 };
@@ -215,6 +222,8 @@ export interface RichReplyBodyFromAnswerInput {
     readonly wasStoppedByUser: boolean;
     /** The footer went to the search link message: the body leaves it out */
     readonly searchFolded: boolean;
+    /** The Tools block went to the tool-log link message: the body leaves it out */
+    readonly toolsFolded?: boolean;
     readonly resolveContextLink?: ContextLinkResolver;
 }
 
@@ -303,6 +312,7 @@ export const buildRichReplyBody = (input: RichReplyBodyInput): string | null => 
         ...(input.agentStats === undefined ? {} : { agentStats: input.agentStats }),
         wasStoppedByUser: input.wasStoppedByUser,
         searchFolded: input.searchFolded,
+        toolsFolded: input.toolsFolded,
         ...(input.resolveContextLink === undefined ? {} : { resolveContextLink: input.resolveContextLink }),
     });
 };

@@ -137,10 +137,21 @@ const hasFreeToolsOf = (tools: TurnTools): boolean =>
 
 const doneChunk = (rawResponse: unknown, tally: ToolUsageTally): StreamChunk => {
     const toolUsage = tally.snapshot();
+    const toolCalls = tally.calls();
+    const toolCallsTruncated = tally.truncatedCount();
+    const hasAgentStats = toolUsage.length > 0 || toolCalls.length > 0 || toolCallsTruncated > 0;
     return {
         type: 'done',
         ...(rawResponse === undefined ? {} : { rawResponse }),
-        ...(toolUsage.length > 0 ? { agentStats: { toolUsage } } : {}),
+        ...(hasAgentStats
+            ? {
+                  agentStats: {
+                      ...(toolUsage.length > 0 ? { toolUsage } : {}),
+                      ...(toolCalls.length > 0 ? { toolCalls } : {}),
+                      ...(toolCallsTruncated > 0 ? { toolCallsTruncated } : {}),
+                  },
+              }
+            : {}),
     };
 };
 

@@ -302,6 +302,15 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
                     ]),
                 `the done chunk's tool usage is cumulative (got ${json(doneOf(resumed.chunks)?.agentStats)})`
             );
+            expect(
+                json(checkpoint.toolCalls?.map((record) => record.name)) === json(['lookup_a', 'lookup_b']),
+                `the checkpoint keeps both rounds' calls (got ${json(checkpoint.toolCalls)})`
+            );
+            const resumedDone = doneOf(resumed.chunks);
+            expect(
+                resumedDone?.type === 'done' && json(resumedDone.agentStats?.toolCalls) === json(checkpoint.toolCalls),
+                'the resumed done carries the kept per-call log once: the journal replay adds nothing'
+            );
             const totals = usageSink.totals();
             expect(totals.rounds === 1 && totals.promptTokens === 100, `the sink counts the new round only (got ${json(totals)})`);
             expect(
@@ -362,6 +371,12 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
                 json(executions) === '["lookup_b"]',
                 `the resumed round's call runs once; the kept round's call does not run again (got ${json(executions)})`
             );
+            const resumedDone = doneOf(resumed.chunks);
+            expect(
+                resumedDone?.type === 'done' &&
+                    json(resumedDone.agentStats?.toolCalls?.map((record) => record.name)) === json(['lookup_a', 'lookup_b']),
+                `the done log is the kept call then the new one (got ${json(resumedDone?.type === 'done' ? resumedDone.agentStats : undefined)})`
+            );
             expect(textOf(fresh(resumed.chunks)) === 'Resumed answer.', 'then the new round streams');
             const usage = usageLines(resumed.lines);
             expect(
@@ -394,6 +409,14 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
                     ]),
                 `the usage of the two calls that ran (got ${json(checkpoint.toolUsage)})`
             );
+            expect(
+                json(checkpoint.toolCalls?.map((record) => ({ name: record.name, failed: record.failed }))) ===
+                    json([
+                        { name: 'send_sms' },
+                        { name: 'slow_search', failed: true },
+                    ]),
+                `the stop's checkpoint holds the two calls that ran; lookup_c left no record (got ${json(checkpoint.toolCalls)})`
+            );
             const round1 = interrupted.requests[0];
 
             reset([answer('Stopped, then resumed.')]);
@@ -415,6 +438,11 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
             expect(
                 resumed.requests[0]?.rawBody.startsWith(contentsPrefixOf(round1)) === true,
                 'the resumed body starts with what round 1 sent, byte for byte'
+            );
+            const resumedDone = doneOf(resumed.chunks);
+            expect(
+                resumedDone?.type === 'done' && json(resumedDone.agentStats?.toolCalls) === json(checkpoint.toolCalls),
+                `the resumed done carries the kept per-call log once (got ${json(resumedDone?.type === 'done' ? resumedDone.agentStats : undefined)})`
             );
             expect(resumed.requests[0]?.rawBody.includes(signature('r1-0')) === true, "round 1's signature rides along");
         },
