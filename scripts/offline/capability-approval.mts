@@ -202,7 +202,7 @@ cases.push(
                 ...withEfforts(current, ['low', 'medium', 'high']),
                 contextTokens: 2_000_000,
             })),
-            draftOf('gemini-4-argon', (current) => ({ ...current, outputTokens: 32_768, tools: false })),
+            draftOf('gemini-4-neon', (current) => ({ ...current, outputTokens: 32_768, tools: false })),
         ]);
         expect(pending.length === 2, `two proposals are pending (got ${pending.length})`);
 
@@ -223,7 +223,7 @@ cases.push(
         expect(text.includes('gemini-4-hydrogen'), 'the first model is titled');
         expect(text.includes('上下文上限：1048576 → 2000000'), `the token limit change is shown (got ${JSON.stringify(text)})`);
         expect(text.includes('思考档位：low/medium/high/xhigh → low/medium/high'), 'the effort list change is shown');
-        expect(text.includes('gemini-4-argon'), 'the second model is titled');
+        expect(text.includes('gemini-4-neon'), 'the second model is titled');
         expect(text.includes('输出上限：65536 → 32768'), 'the second change is shown');
         expect(text.includes('工具调用：是 → 否'), 'a boolean capability is readable');
         expect(
@@ -300,7 +300,7 @@ cases.push(
     await runCase('more than four proposals are split, numbered and all still get their message id', async () => {
         await resetCapabilityDb();
         const telegram = createFakeTelegram();
-        const models = ['gemini-4-hydrogen', 'gemini-4-argon', 'gemini-4-carbon', 'gpt-6-luna', 'claude-sonnet-5-5'];
+        const models = ['gemini-4-hydrogen', 'gemini-4-neon', 'gemini-4-carbon', 'gpt-6-luna', 'claude-sonnet-5-5'];
         const drafts = models.map((model, index) =>
             draftOf(model, (current) => ({ ...current, contextTokens: 1_000_000 + index }))
         );
@@ -410,7 +410,7 @@ cases.push(
         const telegram = createFakeTelegram();
         const pending = await seedProposals([
             draftOf('gemini-4-hydrogen', (current) => ({ ...current, outputTokens: 32_000 })),
-            draftOf('gemini-4-argon', (current) => ({ ...current, contextTokens: 900_000 })),
+            draftOf('gemini-4-neon', (current) => ({ ...current, contextTokens: 900_000 })),
         ]);
         const messageId = (await sendApprovalMessage(telegram, pending))[0];
         if (messageId === undefined) throw new Error('the approval message was not sent');
@@ -426,7 +426,7 @@ cases.push(
         const audit = await listSettingsAudit({ scope: 'model-catalog', limit: 10 });
         expect(audit.length === 2, `both writes are audited (got ${audit.length})`);
         expect((await rowCapabilitiesOf('gemini-4-hydrogen')).outputTokens === 32_000, 'the first row changed');
-        expect((await rowCapabilitiesOf('gemini-4-argon')).contextTokens === 900_000, 'the second row changed');
+        expect((await rowCapabilitiesOf('gemini-4-neon')).contextTokens === 900_000, 'the second row changed');
     })
 );
 
@@ -436,7 +436,7 @@ cases.push(
         const telegram = createFakeTelegram();
         const pending = await seedProposals([
             draftOf('gemini-4-hydrogen', (current) => ({ ...current, contextTokens: 2_000_000 })),
-            draftOf('gemini-4-argon', (current) => ({ ...current, tools: false })),
+            draftOf('gemini-4-neon', (current) => ({ ...current, tools: false })),
         ]);
         const messageId = (await sendApprovalMessage(telegram, pending))[0];
         if (messageId === undefined) throw new Error('the approval message was not sent');
@@ -676,15 +676,15 @@ cases.push(
         const telegram = createFakeTelegram();
         const pending = await seedProposals([
             draftOf('gemini-4-hydrogen', (current) => ({ ...current, outputTokens: 32_000 })),
-            draftOf('gemini-4-argon', (current) => ({ ...current, contextTokens: 900_000 })),
+            draftOf('gemini-4-neon', (current) => ({ ...current, contextTokens: 900_000 })),
         ]);
         const oldCallback = allApplyCallbackOf(pending);
         const messageId = (await sendApprovalMessage(telegram, pending))[0];
         if (messageId === undefined) throw new Error('the approval message was not sent');
         await new Promise((resolve) => setTimeout(resolve, 5));
-        const baseline = currentOf('gemini-4-argon');
+        const baseline = currentOf('gemini-4-neon');
         await service.upsertCapabilityProposal({
-            model: 'gemini-4-argon',
+            model: 'gemini-4-neon',
             payload: { ...baseline, contextTokens: 800_000 },
             baseline,
             note: 'refresh',
@@ -699,12 +699,12 @@ cases.push(
             `the stale bulk press is refused (got ${JSON.stringify(lastToastText(menuTelegram))})`
         );
         expect((await rowCapabilitiesOf('gemini-4-hydrogen')).outputTokens === 65_536, 'the first row is untouched');
-        expect((await rowCapabilitiesOf('gemini-4-argon')).contextTokens === 1_048_576, 'the refreshed row is untouched');
+        expect((await rowCapabilitiesOf('gemini-4-neon')).contextTokens === 1_048_576, 'the refreshed row is untouched');
         expect((await service.countPendingCapabilityProposals()) === 2, 'both proposals are still pending');
 
         await press(bot, messageId, OWNER_ID, allApplyCallbackOf(refreshed));
         expect(lastToastText(menuTelegram) === '已应用 2 条', 'the fresh bulk fingerprint applies both');
-        expect((await rowCapabilitiesOf('gemini-4-argon')).contextTokens === 800_000, 'the refreshed value is written');
+        expect((await rowCapabilitiesOf('gemini-4-neon')).contextTokens === 800_000, 'the refreshed value is written');
     })
 );
 

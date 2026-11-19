@@ -330,9 +330,9 @@ results.push(
 // ---------------------------------------------------------------------------
 
 results.push(
-    await runCase('the seed covers the 16 snapshot ids and normalizes without warnings', async () => {
+    await runCase('the seed covers the 17 snapshot ids and normalizes without warnings', async () => {
         const ids = capabilitySeedIds();
-        expect(ids.length === 16, `16 seeded ids (got ${ids.length})`);
+        expect(ids.length === 17, `17 seeded ids (got ${ids.length})`);
         const menuIds = seedModelCatalogEntries().map((entry) => entry.id);
         expect(menuIds.every((id) => ids.includes(id)), 'every menu id is seeded');
         expect(
@@ -587,7 +587,7 @@ results.push(
 results.push(
     await runCase('a model without base_model has no lab document and no warning', async () => {
         const fetched = await fetchPriceCatalogs(stubFetcher());
-        expect(fetched.documents.tomlByModel.size === 16, 'the 16 provider TOMLs are still fetched');
+        expect(fetched.documents.tomlByModel.size === 17, 'the 17 provider TOMLs are still fetched');
         expect(fetched.documents.labTomlByModel.size === 0, 'no lab document is requested without base_model');
         expect(fetched.warnings.length === 0, `no warnings (got ${fetched.warnings.join(' / ')})`);
     })

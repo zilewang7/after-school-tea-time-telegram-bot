@@ -45,6 +45,7 @@ const TODAY: Readonly<Record<string, readonly [boolean, boolean, boolean]>> = {
     'claude-sonnet-5-5': [false, false, true],
     'claude-opus-5-5': [false, false, true],
     'gemini-4-hydrogen': [false, true, true],
+    'gemini-4-neon': [false, true, true],
     'gemini-4-argon': [false, false, true],
     'gemini-4-carbon': [false, false, true],
     'gemini-3.8-flash': [false, false, true],
@@ -93,7 +94,7 @@ const dropCreatedRows = async (): Promise<void> => {
 results.push(
     await runCase('the menu models still answer exactly like the code heuristics', async () => {
         await catalogService.loadModelCatalog();
-        expect(capabilitySeedIds().length === 16, 'the seed covers the 16 snapshot ids');
+        expect(capabilitySeedIds().length === 17, 'the seed covers the 17 snapshot ids');
         for (const id of capabilitySeedIds()) {
             const expected = TODAY[id];
             if (expected === undefined) throw new Error(`no golden row for ${id}`);
@@ -154,6 +155,7 @@ results.push(
         expect(resolveModelTraits('no-such-model').capabilities === null, 'an unknown id has no capabilities');
         // The data side of the shadow for the seed snapshot
         expect(dataTraitValuesOf('gemini-4-hydrogen').xhighThinking === true, 'hydrogen data has xhigh');
+        expect(dataTraitValuesOf('gemini-4-neon').xhighThinking === true, 'neon data has xhigh');
         expect(dataTraitValuesOf('gemini-4-argon').xhighThinking === false, 'argon data has no xhigh');
         expect(dataTraitValuesOf('gemini-nano-banana-2.1').imageOutput === true, 'nano-banana data emits images');
         expect(dataTraitValuesOf('gemini-nano-banana-2.1').geminiFunctionTools === null, 'no toolsMixing data = unknown');
@@ -196,7 +198,9 @@ results.push(
             if (entry.id === 'gemini-4-hydrogen') {
                 return { ...entry, capabilities: { ...entry.capabilities, imageOutput: true } };
             }
-            if (entry.id === 'gemini-4-argon') {
+            // Carbon stands in for the removed argon menu row: still seeded without
+            // xhigh in code, so the extra data level is a diff
+            if (entry.id === 'gemini-4-carbon') {
                 const reasoning = entry.capabilities.reasoning;
                 const efforts: readonly ModelEffort[] = [...(reasoning?.efforts ?? []), 'xhigh'];
                 return {
@@ -214,7 +218,7 @@ results.push(
         resetTraitsShadow();
         try {
             expect(isImageOutputModel('gemini-4-hydrogen') === false, 'runtime still returns the code result');
-            expect(supportsXhighThinkingLevel('gemini-4-argon') === false, 'runtime still returns the code result');
+            expect(supportsXhighThinkingLevel('gemini-4-carbon') === false, 'runtime still returns the code result');
             const diffs = traitsShadowDiffs();
             expect(diffs.length === 2, `two diff lines (got ${diffs.length})`);
             const imageDiff = diffs.find((diff) => diff.field === 'imageOutput');
@@ -224,12 +228,12 @@ results.push(
                 `imageOutput data=true code=false (got ${JSON.stringify(imageDiff)})`
             );
             expect(
-                xhighDiff?.model === 'gemini-4-argon' && xhighDiff.data === true && xhighDiff.code === false,
+                xhighDiff?.model === 'gemini-4-carbon' && xhighDiff.data === true && xhighDiff.code === false,
                 `xhighThinking data=true code=false (got ${JSON.stringify(xhighDiff)})`
             );
             // The same model|field is recorded (and printed) once
             isImageOutputModel('gemini-4-hydrogen');
-            supportsXhighThinkingLevel('gemini-4-argon');
+            supportsXhighThinkingLevel('gemini-4-carbon');
             expect(traitsShadowDiffs().length === 2, 'a repeated comparison is deduped');
         } finally {
             delete process.env.MODEL_TRAITS_SHADOW;
@@ -248,7 +252,7 @@ results.push(
         delete process.env.MODEL_TRAITS_SHADOW;
         resetTraitsShadow();
         isImageOutputModel('gemini-4-hydrogen');
-        supportsXhighThinkingLevel('gemini-4-argon');
+        supportsXhighThinkingLevel('gemini-4-carbon');
         expect(traitsShadowDiffs().length === 0, 'no diffs without the env switch');
         expect(
             dataTraitValuesOf('gemini-4-hydrogen').imageOutput === seedModelCatalogEntries().find(

@@ -77,7 +77,7 @@ const PROBE_PRICES: Readonly<Record<string, ModelPrice>> = {
     'claude-sonnet-5-5': price(2, 10),
     'claude-opus-5-5': price(4, 20),
     'gemini-4-hydrogen': price(1.5, 7.5),
-    'gemini-4-argon': price(4, 20),
+    'gemini-4-neon': price(3, 15),
     'gemini-4-carbon': price(4, 20),
     'deepseek-flash': price(0.3, 1.2),
     'grok-4.7': price(2, 6),
@@ -107,7 +107,7 @@ export const PROBE_MODEL_SNAPSHOT: readonly ProbeModelSpec[] = MENU_MATRIX.map(p
 /** W2 representatives: cheap and expensive families, one or two per platform */
 export const W2_REPRESENTATIVE_MODELS: readonly string[] = [
     'gemini-4-hydrogen',
-    'gemini-4-argon',
+    'gemini-4-neon',
     'gpt-6-luna',
     'claude-sonnet-5-5',
     'grok-4.7',
@@ -124,7 +124,9 @@ interface FidelityVariant {
 
 const FIDELITY_VARIANTS: readonly FidelityVariant[] = [
     { model: 'gemini-4-hydrogen', variant: 'level', effort: 'xhigh' },
-    { model: 'gemini-4-argon', variant: 'level', effort: 'high' },
+    // Neon's vendor default HIGH, on the native enum path: hydrogen above already
+    // covers the XHIGH extraBody shape.
+    { model: 'gemini-4-neon', variant: 'level', effort: 'high' },
     { model: 'gpt-6-luna', variant: 'level', effort: 'high' },
     { model: 'gpt-6-sol', variant: 'baseline', effort: null },
     { model: 'claude-sonnet-5-5', variant: 'level', effort: 'high' },

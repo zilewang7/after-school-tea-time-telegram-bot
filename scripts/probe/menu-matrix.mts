@@ -77,10 +77,10 @@ export const MENU_MATRIX: readonly MenuMatrixEntry[] = [
         vendorDefaultEnabled: null,
     },
     {
-        model: 'gemini-4-argon',
+        model: 'gemini-4-neon',
         platform: 'gemini',
-        vendorEfforts: ['low', 'medium', 'high'],
-        vendorDefaultEffort: 'medium',
+        vendorEfforts: ['low', 'medium', 'high', 'xhigh'],
+        vendorDefaultEffort: 'high',
         vendorToggle: false,
         vendorDefaultEnabled: null,
     },

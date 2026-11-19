@@ -106,13 +106,17 @@ const codeSupportsGeminiImageSearchGrounding = (model: string): boolean =>
     GEMINI_IMAGE_SEARCH_GROUNDING_MODELS.has(model.toLowerCase());
 
 /**
- * Gemini 4 Hydrogen accepts the XHIGH thinking level on Vertex, one level above
- * HIGH — the documented top for Argon and Carbon, which answer 400 "Thinking
- * level is unsupported: THINKING_LEVEL_XHIGH". Other models keep HIGH; a model
- * that loses XHIGH later falls back to HIGH at request time (see GeminiPlatform).
+ * Gemini 4 Hydrogen and Neon accept the XHIGH thinking level on Vertex, one
+ * level above HIGH — the documented top for Argon and Carbon, which answer 400
+ * "Thinking level is unsupported: THINKING_LEVEL_XHIGH". Neon reached GA on
+ * 2026-11-18 with the same four levels as Hydrogen (low/high/medium/xhigh,
+ * default HIGH). Other models keep HIGH; a model that loses XHIGH later falls
+ * back to HIGH at request time (see GeminiPlatform).
  */
-const codeSupportsXhighThinkingLevel = (model: string): boolean =>
-    model.toLowerCase().startsWith('gemini-4-hydrogen');
+const codeSupportsXhighThinkingLevel = (model: string): boolean => {
+    const id = model.toLowerCase();
+    return id.startsWith('gemini-4-hydrogen') || id.startsWith('gemini-4-neon');
+};
 
 /** The three predicates PR2 compares, computed from the code heuristics (today's behavior) */
 export interface ModelTraitValues {

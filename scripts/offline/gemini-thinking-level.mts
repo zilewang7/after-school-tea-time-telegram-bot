@@ -228,11 +228,14 @@ const answerRound = (text: string): unknown[] => roundEvents([[{ text }]]);
 
 const cases: Array<{ name: string; body: () => Promise<void> }> = [
     {
-        name: 'only hydrogen takes XHIGH',
+        name: 'only hydrogen and neon take XHIGH',
         body: async () => {
             expect(supportsXhighThinkingLevel('gemini-4-hydrogen'), 'hydrogen takes XHIGH');
             expect(supportsXhighThinkingLevel('gemini-4-hydrogen-001'), 'a hydrogen version suffix takes XHIGH');
             expect(supportsXhighThinkingLevel('GEMINI-4-HYDROGEN'), 'the id is case-insensitive');
+            expect(supportsXhighThinkingLevel('gemini-4-neon'), 'neon takes XHIGH (GA 2026-11-18)');
+            expect(supportsXhighThinkingLevel('gemini-4-neon-001'), 'a neon version suffix takes XHIGH');
+            expect(supportsXhighThinkingLevel('GEMINI-4-NEON'), 'the neon id is case-insensitive too');
             expect(!supportsXhighThinkingLevel('gemini-4-argon'), 'argon keeps HIGH');
             expect(!supportsXhighThinkingLevel('gemini-4-carbon'), 'carbon keeps HIGH');
             expect(!supportsXhighThinkingLevel('gemini-3.8-flash'), 'a non-Gemini-4 model keeps its budget');

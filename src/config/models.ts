@@ -29,7 +29,7 @@ export const modelConfigs: ModelConfig[] = [
     { id: "claude-sonnet-5-5", name: "Claude Sonnet 5.5" },
     { id: "claude-opus-5-5", name: "Claude Opus 5.5" },
     { id: "gemini-4-hydrogen", name: "Gemini 4 Hydrogen" },
-    { id: "gemini-4-argon", name: "Gemini 4 Argon" },
+    { id: "gemini-4-neon", name: "Gemini 4 Neon" },
     { id: "gemini-4-carbon", name: "Gemini 4 Carbon" },
     { id: "deepseek-flash", name: "DeepSeek V4.1 Flash" },
     { id: "grok-4.7", name: "Grok 4.7" },

@@ -113,7 +113,7 @@ results.push(
             { where: { id: 'grok-4.20-multi-agent-0309' } }
         );
         // A label the owner edited is not one of the old defaults
-        await ModelCatalogEntryRow.update({ label: '我的自定义名字' }, { where: { id: 'gemini-4-argon' } });
+        await ModelCatalogEntryRow.update({ label: '我的自定义名字' }, { where: { id: 'gemini-4-carbon' } });
         const nameOf = (id: string): string => modelConfigs.find((model) => model.id === id)?.name ?? id;
         await sequelize.query("DELETE FROM schema_migrations WHERE name = '20261113_catalog_labels'");
         await backfillCatalogLabels();
@@ -125,7 +125,7 @@ results.push(
             renamedOldName?.label === 'Grok 4.20 Multi-Agent',
             `the old non-id label is renamed too (got ${renamedOldName?.label})`
         );
-        const edited = await ModelCatalogEntryRow.findByPk('gemini-4-argon');
+        const edited = await ModelCatalogEntryRow.findByPk('gemini-4-carbon');
         expect(edited?.label === '我的自定义名字', 'an edited label is never overwritten');
         // Runs once: a second pass leaves a new old-style label alone
         await ModelCatalogEntryRow.update({ label: 'gpt-6-sol' }, { where: { id: 'gpt-6-sol' } });
@@ -503,9 +503,9 @@ results.push(
         expect(modelCatalogVersion() !== versionBefore, 'the catalog version moves with the capabilities content');
 
         // Recorded once: a legacy row written afterwards stays legacy
-        await ModelCatalogEntryRow.update({ capabilities: '{}' }, { where: { id: 'gemini-4-argon' } });
+        await ModelCatalogEntryRow.update({ capabilities: '{}' }, { where: { id: 'gemini-4-carbon' } });
         await backfillCatalogCapabilities();
-        expect((await capabilitiesOfRow('gemini-4-argon')).schema === undefined, 'the backfill runs exactly once');
+        expect((await capabilitiesOfRow('gemini-4-carbon')).schema === undefined, 'the backfill runs exactly once');
 
         await ModelCatalogEntryRow.destroy({ where: { id: 'gpt-6.2-sol' } });
         await ModelCatalogEntryRow.destroy({ where: { id: 'manual-placeholder' } });

@@ -65,22 +65,28 @@ const fallbackCapabilitiesOf = (modelId: string): ModelCatalogCapabilities => {
     };
 };
 
+/** The day the menu snapshot was taken; a seed carrying its own date wins */
+const SEED_CHECKED_ON = '2026-11-13';
+
 /**
  * Seed rows: the menu as it ships in code. Capabilities come from the code seed
- * (the 2026-11-13 snapshot); a menu id the seed does not know keeps the old
- * image-id heuristic on the empty schema-1 shape.
+ * (the 2026-11-13 snapshot, gemini-4-neon 2026-11-19); a menu id the seed does
+ * not know keeps the old image-id heuristic on the empty schema-1 shape.
  */
 export const seedModelCatalogEntries = (): readonly ModelCatalogEntry[] =>
-    modelConfigs.map((model) => ({
-        id: model.id,
-        label: model.name,
-        platform: platformOfModelId(model.id),
-        enabled: true,
-        capabilities: capabilitySeedOf(model.id) ?? fallbackCapabilitiesOf(model.id),
-        source: 'manual',
-        checkedOn: '2026-11-13',
-        confidence: 'high',
-    }));
+    modelConfigs.map((model) => {
+        const capabilities = capabilitySeedOf(model.id) ?? fallbackCapabilitiesOf(model.id);
+        return {
+            id: model.id,
+            label: model.name,
+            platform: platformOfModelId(model.id),
+            enabled: true,
+            capabilities,
+            source: 'manual',
+            checkedOn: capabilities.checkedOn ?? SEED_CHECKED_ON,
+            confidence: 'high',
+        };
+    });
 
 let catalog = new Map<string, ModelCatalogEntry>(seedModelCatalogEntries().map((entry) => [entry.id, entry]));
 let catalogVersion = 'seed';

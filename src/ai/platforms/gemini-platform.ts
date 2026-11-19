@@ -105,8 +105,8 @@ const PRIORITY_REQUEST_VALUE = 'priority';
 
 /**
  * The SDK level for a lower-case effort value, or undefined when it has none.
- * XHIGH is the level above HIGH that Hydrogen serves; a model that does not
- * take it answers 400 "Thinking level is unsupported" and the request is
+ * XHIGH is the level above HIGH that Hydrogen and Neon serve; a model that does
+ * not take it answers 400 "Thinking level is unsupported" and the request is
  * retried at HIGH (see fallbackThinking in prepareRequest).
  */
 const THINKING_LEVEL_BY_EFFORT: ReadonlyMap<string, ThinkingLevel> = new Map([
@@ -534,8 +534,8 @@ export class GeminiPlatform extends BasePlatform {
         }
 
         // Thinking effort (design 2026-1113-1742 §3.3). Without the field the
-        // legacy hard-coded policy stands: Hydrogen at XHIGH, the other Gemini 4
-        // models at HIGH, older models on the automatic budget. With it,
+        // legacy hard-coded policy stands: Hydrogen and Neon at XHIGH, the other
+        // Gemini 4 models at HIGH, older models on the automatic budget. With it,
         // 'default' sends no level at all (the vendor default), 'explicit' sends
         // the requested level, and 'off' cannot disable thinking on Gemini, so it
         // behaves like 'default'.

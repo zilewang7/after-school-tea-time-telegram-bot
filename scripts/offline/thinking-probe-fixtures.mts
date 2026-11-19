@@ -319,7 +319,7 @@ const runMatrixCases = async (): Promise<void> => {
         const planned = all.models.map((model) => model.model);
         expect(JSON.stringify(planned) === JSON.stringify(snapshot), `the matrix is the snapshot in order (got ${planned.join(',')})`);
         expect(planned.includes('gpt-6-sol'), 'gpt-6-sol is a menu model and is probed');
-        for (const nonMenu of ['gpt-6.1-sol', 'gpt-6.1-terra', 'claude-fable-5-2', 'gemini-3.8-flash']) {
+        for (const nonMenu of ['gpt-6.1-sol', 'gpt-6.1-terra', 'claude-fable-5-2', 'gemini-3.8-flash', 'gemini-4-argon']) {
             expect(!planned.includes(nonMenu), `${nonMenu} is not in the menu and is not probed`);
         }
         const w1 = buildProbePlan({ wave: 'w1', budget: defaultBudget('w1') });
@@ -372,7 +372,11 @@ const runMatrixCases = async (): Promise<void> => {
         // cannot infer one, so these rows decide catalog data through the
         // proposal flow. They are read from the same code seed the catalog uses.
         expect(defaultOf('gemini-4-hydrogen') === 'high', 'hydrogen default high');
-        expect(defaultOf('gemini-4-argon') === 'medium', 'argon default medium');
+        expect(defaultOf('gemini-4-neon') === 'high', 'neon default high');
+        expect(
+            JSON.stringify(effortsOf('gemini-4-neon')) === JSON.stringify(['low', 'medium', 'high', 'xhigh']),
+            'neon keeps the Gemini 4 graded ladder'
+        );
         expect(defaultOf('gemini-4-carbon') === 'medium', 'carbon default medium');
         expect(defaultOf('gpt-6-astra') === 'medium', 'astra default medium');
         expect(defaultOf('gpt-6-luna') === 'medium', 'luna default medium');
@@ -402,7 +406,7 @@ const runMatrixCases = async (): Promise<void> => {
         const base = buildProbePlan({ wave: 'w2', budget: defaultBudget('w2') });
         const explicitDefault = buildProbePlan({ wave: 'w2', budget: { ...defaultBudget('w2'), w2OutputTokenCap: W2_OUTPUT_TOKEN_CAP } });
         expect(base.requests === 49 && explicitDefault.requests === 49, `49 W2 requests (got ${base.requests}/${explicitDefault.requests})`);
-        expect(base.estimatedUsd === 1.325087, `the default W2 estimate is unchanged (${base.estimatedUsd})`);
+        expect(base.estimatedUsd === 1.179627, `the default W2 estimate is unchanged (${base.estimatedUsd})`);
         expect(explicitDefault.estimatedUsd === base.estimatedUsd, 'an explicit 4096 is the same plan');
         for (const valid of [1_024, W2_OUTPUT_TOKEN_CAP, 6_144, 8_192, MAX_W2_OUTPUT_TOKEN_CAP]) {
             expect(isValidW2OutputTokenCap(valid), `${valid} is a valid cap`);
@@ -423,15 +427,15 @@ const runMatrixCases = async (): Promise<void> => {
         const lower = planAt(1_024);
         const mid = planAt(6_144);
         const high = planAt(8_192);
-        expect(lower.estimatedUsd === 0.347085, `1024 lowers the estimate (${lower.estimatedUsd})`);
-        expect(base.estimatedUsd === 1.325087, `4096 baseline (${base.estimatedUsd})`);
-        expect(mid.estimatedUsd === 1.977088, `6144 estimate (${mid.estimatedUsd})`);
-        expect(high.estimatedUsd === 2.629089, `8192 estimate (${high.estimatedUsd})`);
+        expect(lower.estimatedUsd === 0.309145, `1024 lowers the estimate (${lower.estimatedUsd})`);
+        expect(base.estimatedUsd === 1.179627, `4096 baseline (${base.estimatedUsd})`);
+        expect(mid.estimatedUsd === 1.759948, `6144 estimate (${mid.estimatedUsd})`);
+        expect(high.estimatedUsd === 2.340269, `8192 estimate (${high.estimatedUsd})`);
         expect(lower.estimatedUsd < base.estimatedUsd && base.estimatedUsd < mid.estimatedUsd && mid.estimatedUsd < high.estimatedUsd, 'the estimate grows with the cap');
         for (const plan of [lower, base, mid, high]) expect(plan.requests === 49, 'the cap changes cost, never the request count');
         const allBase = buildProbePlan({ wave: 'all', budget: defaultBudget('all') });
         const allRaised = buildProbePlan({ wave: 'all', budget: { ...defaultBudget('all'), w2OutputTokenCap: 8_192 } });
-        expect(allBase.estimatedUsd === 1.742597 && allBase.requests === 149, `default all-wave ${allBase.estimatedUsd}/${allBase.requests}`);
+        expect(allBase.estimatedUsd === 1.582917 && allBase.requests === 149, `default all-wave ${allBase.estimatedUsd}/${allBase.requests}`);
         expect(allRaised.estimatedUsd > allBase.estimatedUsd, 'the raised cap raises the all-wave worst case');
         // The per-request formula follows the cap: hydrogen output is $7.5/M tokens.
         const hydrogen = PROBE_MODEL_SNAPSHOT.find((model) => model.model === 'gemini-4-hydrogen');
@@ -448,15 +452,19 @@ const runMatrixCases = async (): Promise<void> => {
 
     results.push(await runCase('w2 output cap: the --max-usd cut follows the raised estimate', () => {
         const fitting = buildProbePlan({ wave: 'w2', budget: { ...defaultBudget('w2'), maxUsd: 2 } });
-        expect(fitting.cut.droppedRequests === 0 && fitting.estimatedUsd === 1.325087, 'the default cap fits $2 untouched');
+        expect(fitting.cut.droppedRequests === 0 && fitting.estimatedUsd === 1.179627, 'the default cap fits $2 untouched');
         const raised = buildProbePlan({ wave: 'w2', budget: { ...defaultBudget('w2'), maxUsd: 2, w2OutputTokenCap: 16_384 } });
         expect(raised.cut.droppedRequests > 0, `the raised cap hits the dollar limit (dropped ${raised.cut.droppedRequests})`);
         expect(raised.cut.reasons.includes('--max-usd 2.00'), `the cut reason names the limit (${raised.cut.reasons.join(',')})`);
         expect(raised.estimatedUsd <= 2, 'the kept plan stays inside the budget');
-        const allRaised = buildProbePlan({ wave: 'all', budget: { ...defaultBudget('all'), w2OutputTokenCap: 8_192 } });
-        expect(allRaised.cut.droppedRequests === 1, `the all-wave default budget cuts one sample (got ${allRaised.cut.droppedRequests})`);
+        // Neon's lower price keeps the 8192 tail inside the $3 default; the max
+        // cap is what pushes the all-wave worst case past it.
+        const allAt8192 = buildProbePlan({ wave: 'all', budget: { ...defaultBudget('all'), w2OutputTokenCap: 8_192 } });
+        expect(allAt8192.cut.droppedRequests === 0, 'the 8192 tail still fits the $3 default');
+        const allRaised = buildProbePlan({ wave: 'all', budget: { ...defaultBudget('all'), w2OutputTokenCap: 16_384 } });
+        expect(allRaised.cut.droppedRequests === 10, `the all-wave default budget cuts the raised-cap tail (got ${allRaised.cut.droppedRequests})`);
         expect(allRaised.cut.reasons.includes('--max-usd 3.00'), 'the all-wave cut names $3.00');
-        expect(allRaised.requests === 148 && allRaised.estimatedUsd === 2.881559, `kept plan ${allRaised.requests}/${allRaised.estimatedUsd}`);
+        expect(allRaised.requests === 139 && allRaised.estimatedUsd === 2.844904, `kept plan ${allRaised.requests}/${allRaised.estimatedUsd}`);
     }));
 
     results.push(await runCase('w2 output cap: the CLI parses the switch, refuses bad values and names it in --help', () => {
@@ -895,7 +903,9 @@ const runLaneCases = async (): Promise<void> => {
     }));
 
     results.push(await runCase('Gemini lane: 400 unsupported level becomes rejected_effort, not an error', async () => {
-        const candidate = candidateOf('gemini', 'gemini-4-argon', 'level', 'xhigh');
+        // Carbon still caps at HIGH, so a rejected XHIGH is the realistic shape;
+        // neon (argon's menu replacement) accepts XHIGH.
+        const candidate = candidateOf('gemini', 'gemini-4-carbon', 'level', 'xhigh');
         const observation = await drainLane('gemini', candidate, jsonReply(400, { error: { code: 400, message: 'Thinking level is unsupported: THINKING_LEVEL_XHIGH' } }));
         expect(observation.outcome === 'rejected', `rejected (got ${observation.outcome})`);
         expect(observation.errorClass === 'rejected_effort', `rejected_effort (got ${observation.errorClass})`);
@@ -1222,25 +1232,26 @@ const runResultCases = async (): Promise<void> => {
     }));
 
     results.push(await runCase('summary: rejected sentinels fill errorSummary but do not break completeness', () => {
-        const spec = PROBE_MODEL_SNAPSHOT.find((model) => model.model === 'gemini-4-argon');
-        expect(spec !== undefined, 'argon in snapshot');
+        const spec = PROBE_MODEL_SNAPSHOT.find((model) => model.model === 'gemini-4-neon');
+        expect(spec !== undefined, 'neon in snapshot');
         if (spec === undefined) return;
         const rejected = (effort: EffortValue): ProbeObservation =>
-            observationFixture(candidateOf('gemini', 'gemini-4-argon', 'level', effort), {
+            observationFixture(candidateOf('gemini', 'gemini-4-neon', 'level', effort), {
                 outcome: 'rejected',
                 errorClass: 'rejected_effort',
                 errorSummary: `400 Thinking level is unsupported: THINKING_LEVEL_${effort.toUpperCase()}`,
             });
         const observations: ProbeObservation[] = [
-            observationFixture(candidateOf('gemini', 'gemini-4-argon', 'baseline', null)),
-            observationFixture(candidateOf('gemini', 'gemini-4-argon', 'level', 'low')),
-            observationFixture(candidateOf('gemini', 'gemini-4-argon', 'level', 'medium')),
-            observationFixture(candidateOf('gemini', 'gemini-4-argon', 'level', 'high')),
-            rejected('xhigh'),
+            observationFixture(candidateOf('gemini', 'gemini-4-neon', 'baseline', null)),
+            observationFixture(candidateOf('gemini', 'gemini-4-neon', 'level', 'low')),
+            observationFixture(candidateOf('gemini', 'gemini-4-neon', 'level', 'medium')),
+            observationFixture(candidateOf('gemini', 'gemini-4-neon', 'level', 'high')),
+            observationFixture(candidateOf('gemini', 'gemini-4-neon', 'level', 'xhigh')),
+            rejected('max'),
             rejected('minimal'),
         ];
         const summary = buildRunSummary({ probedAt: '2026-11-13T10:00:00.000Z', laneSignature: 'lane', specs: [spec], observations });
-        expect(summary.document.results.length === 1, 'argon still importable');
+        expect(summary.document.results.length === 1, 'neon still importable');
         const entry = summary.document.results[0];
         expect(entry !== undefined && Object.keys(entry.errorSummary).length === 2, 'both sentinels have an error summary');
         expect(entry?.errorSummary['minimal'] !== undefined, 'the minimal fingerprint is kept');
@@ -1303,18 +1314,19 @@ const runResultCases = async (): Promise<void> => {
     }));
 
     results.push(await runCase('summary: an explicitly expected sentinel rejection does not make the model incomplete', () => {
-        const spec = PROBE_MODEL_SNAPSHOT.find((model) => model.model === 'gemini-4-argon');
-        expect(spec !== undefined, 'argon in snapshot');
+        const spec = PROBE_MODEL_SNAPSHOT.find((model) => model.model === 'gemini-4-neon');
+        expect(spec !== undefined, 'neon in snapshot');
         if (spec === undefined) return;
         const sentinel: ProbeCandidate = {
-            ...candidateOf('gemini', 'gemini-4-argon', 'level', 'minimal'),
+            ...candidateOf('gemini', 'gemini-4-neon', 'level', 'minimal'),
             expectedRejection: 'not in the official effort table',
         };
         const observations: ProbeObservation[] = [
-            observationFixture(candidateOf('gemini', 'gemini-4-argon', 'baseline', null)),
-            observationFixture(candidateOf('gemini', 'gemini-4-argon', 'level', 'low')),
-            observationFixture(candidateOf('gemini', 'gemini-4-argon', 'level', 'medium')),
-            observationFixture(candidateOf('gemini', 'gemini-4-argon', 'level', 'high')),
+            observationFixture(candidateOf('gemini', 'gemini-4-neon', 'baseline', null)),
+            observationFixture(candidateOf('gemini', 'gemini-4-neon', 'level', 'low')),
+            observationFixture(candidateOf('gemini', 'gemini-4-neon', 'level', 'medium')),
+            observationFixture(candidateOf('gemini', 'gemini-4-neon', 'level', 'high')),
+            observationFixture(candidateOf('gemini', 'gemini-4-neon', 'level', 'xhigh')),
             observationFixture(sentinel, {
                 outcome: 'rejected',
                 errorClass: 'rejected_other',
@@ -1323,7 +1335,7 @@ const runResultCases = async (): Promise<void> => {
         ];
         const summary = buildRunSummary({ probedAt: '2026-11-13T10:00:00.000Z', laneSignature: 'lane', specs: [spec], observations });
         expect(summary.incomplete.length === 0, 'the sentinel rejection is not a required shape');
-        expect(summary.document.results.length === 1, 'argon stays importable');
+        expect(summary.document.results.length === 1, 'neon stays importable');
     }));
 
     results.push(await runCase('inference: baseline closest to the vendor default level', () => {
@@ -1568,7 +1580,8 @@ const runRunnerCases = async (): Promise<void> => {
         expect(run.mode === 'stub' && run.requests === 149, 'run.json records the stub mode and request count');
         const byModel = new Map(outcome.document?.results.map((entry) => [entry.model, entry]) ?? []);
         expect(JSON.stringify(byModel.get('gemini-4-hydrogen')?.acceptedEfforts) === JSON.stringify(['low', 'medium', 'high', 'xhigh']), 'hydrogen accepted set');
-        expect(byModel.get('gemini-4-argon')?.defaultEffort === 'medium', 'argon default inferred as medium');
+        expect(JSON.stringify(byModel.get('gemini-4-neon')?.acceptedEfforts) === JSON.stringify(['low', 'medium', 'high', 'xhigh']), 'neon accepted set');
+        expect(byModel.get('gemini-4-neon')?.defaultEffort === 'high', 'neon default inferred as high');
         expect(byModel.get('gpt-6-luna')?.defaultEffort === 'medium', 'luna default inferred as medium');
         expect(byModel.get('deepseek-flash')?.toggle === true, 'deepseek toggle detected');
         expect(byModel.get('mimo-v2.6-flash')?.toggle === true && byModel.get('mimo-v2.6-flash')?.acceptedEfforts.length === 0, 'mimo is toggle-only');

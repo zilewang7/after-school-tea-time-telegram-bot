@@ -53,7 +53,7 @@ const requestJson = (model: string, requested: string | null): string => {
 };
 
 const results: CaseResult[] = [];
-const SOURCES = ['gemini-4-hydrogen', 'gemini-4-argon', 'deepseek-flash', 'mimo-v2.6-flash', 'gpt-6-luna'] as const;
+const SOURCES = ['gemini-4-hydrogen', 'gemini-4-neon', 'gemini-4-argon', 'deepseek-flash', 'mimo-v2.6-flash', 'gpt-6-luna'] as const;
 
 results.push(
     await runCase('the menu models resolve from their data, not from code', async () => {
@@ -79,13 +79,17 @@ results.push(
         expectResolution('gemini-4-hydrogen', null, { mode: 'default', value: null, clamped: false, source: 'model-default' });
         expectResolution('gemini-4-hydrogen', 'low', { mode: 'explicit', value: 'low', clamped: false, source: 'chat' });
         expectResolution('gemini-4-hydrogen', 'xhigh', { mode: 'explicit', value: 'xhigh', clamped: false, source: 'chat' });
+        // Neon shares Hydrogen's four-level ladder and HIGH default
+        expectResolution('gemini-4-neon', 'xhigh', { mode: 'explicit', value: 'xhigh', clamped: false, source: 'chat' });
         expectResolution('gpt-6-luna', 'none', { mode: 'explicit', value: 'none', clamped: false, source: 'chat' });
         expectResolution('gpt-6-luna', 'medium', { mode: 'explicit', value: 'medium', clamped: false, source: 'chat' });
         // A value above the model's ceiling clamps down to its top level
         expectResolution('gemini-4-argon', 'xhigh', { mode: 'explicit', value: 'high', clamped: true, source: 'chat' });
         expectResolution('gemini-4-hydrogen', 'max', { mode: 'explicit', value: 'xhigh', clamped: true, source: 'chat' });
+        expectResolution('gemini-4-neon', 'max', { mode: 'explicit', value: 'xhigh', clamped: true, source: 'chat' });
         // A value below the model's floor clamps up to its lowest level
         expectResolution('gemini-4-hydrogen', 'minimal', { mode: 'explicit', value: 'low', clamped: true, source: 'chat' });
+        expectResolution('gemini-4-neon', 'minimal', { mode: 'explicit', value: 'low', clamped: true, source: 'chat' });
         expectResolution('gemini-4-argon', 'none', { mode: 'explicit', value: 'low', clamped: true, source: 'chat' });
         // A gap in the ladder clamps to the highest supported level below it
         expectResolution('deepseek-flash', 'medium', { mode: 'explicit', value: 'low', clamped: true, source: 'chat' });
@@ -98,6 +102,12 @@ results.push(
         expectResolution('deepseek-flash', 'off', { mode: 'off', value: null, clamped: false, source: 'chat' });
         expectResolution('mimo-v2.6-flash', 'off', { mode: 'off', value: null, clamped: false, source: 'chat' });
         expectResolution('gemini-4-hydrogen', 'off', {
+            mode: 'default',
+            value: null,
+            clamped: false,
+            source: 'model-default',
+        });
+        expectResolution('gemini-4-neon', 'off', {
             mode: 'default',
             value: null,
             clamped: false,
@@ -177,6 +187,14 @@ results.push(
                     facts: { requested: 'xhigh', sent: 'xhigh', fallback: null },
                 }),
             `explicit (got ${requestJson('gemini-4-hydrogen', 'xhigh')})`
+        );
+        expect(
+            requestJson('gemini-4-neon', 'xhigh') ===
+                JSON.stringify({
+                    platform: { thinkingEffort: { mode: 'explicit', value: 'xhigh' } },
+                    facts: { requested: 'xhigh', sent: 'xhigh', fallback: null },
+                }),
+            `neon sends XHIGH as asked (got ${requestJson('gemini-4-neon', 'xhigh')})`
         );
         expect(
             requestJson('gemini-4-argon', 'xhigh') ===

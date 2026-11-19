@@ -279,13 +279,13 @@ const runVisibilityCases = async (): Promise<void> => {
         const first = await jsonOf(await catalogOf());
         const health = await jsonOf(await call('/api/health', null));
         expect(health['catalogVersion'] === first['catalogVersion'], `health and catalog agree (${String(health['catalogVersion'])} vs ${String(first['catalogVersion'])})`);
-        const current = await capabilitiesOfModel('gemini-4-argon');
+        const current = await capabilitiesOfModel('gemini-4-carbon');
         const reasoning = current['reasoning'];
         const nextReasoning =
             typeof reasoning === 'object' && reasoning !== null
                 ? { ...Object.fromEntries(Object.entries(reasoning)), defaultEffort: 'high' }
                 : { supported: true, efforts: ['low', 'medium', 'high'], defaultEffort: 'high' };
-        await writeCapabilities('gemini-4-argon', { ...current, reasoning: nextReasoning });
+        await writeCapabilities('gemini-4-carbon', { ...current, reasoning: nextReasoning });
         const second = await jsonOf(await catalogOf());
         expect(second['catalogVersion'] !== first['catalogVersion'], 'the version moved with the content');
         const healthAfter = await jsonOf(await call('/api/health', null));
@@ -300,9 +300,9 @@ const runVisibilityCases = async (): Promise<void> => {
 const runPendingCases = async (): Promise<void> => {
     results.push(await runCase('pendingProposals: reflects the approval queue', async () => {
         await reseed();
-        const current = await capabilitiesConfig.normalizeModelCapabilities(await capabilitiesOfModel('gemini-4-argon')).capabilities;
+        const current = await capabilitiesConfig.normalizeModelCapabilities(await capabilitiesOfModel('gemini-4-carbon')).capabilities;
         const firstId = await capabilityService.upsertCapabilityProposal({
-            model: 'gemini-4-argon',
+            model: 'gemini-4-carbon',
             payload: { ...current, schema: 1 },
             baseline: current,
             note: 'offline test proposal',

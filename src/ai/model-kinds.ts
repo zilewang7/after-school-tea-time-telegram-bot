@@ -29,6 +29,6 @@ export const supportsGeminiFunctionTools = (model: string): boolean =>
 export const supportsGeminiImageSearchGrounding = (model: string): boolean =>
     supportsGeminiImageSearchGroundingTrait(model);
 
-/** Gemini 4 Hydrogen accepts the XHIGH thinking level on Vertex */
+/** Gemini 4 Hydrogen and Neon accept the XHIGH thinking level on Vertex */
 export const supportsXhighThinkingLevel = (model: string): boolean =>
     runtimeSupportsXhighThinkingLevel(model);

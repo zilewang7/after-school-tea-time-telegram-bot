@@ -57,6 +57,7 @@ export const CATALOG_MODEL_REFS: readonly CatalogModelRef[] = [
     { model: 'claude-sonnet-5-5', provider: 'anthropic', modelFile: 'claude-sonnet-5-5' },
     { model: 'claude-opus-5-5', provider: 'anthropic', modelFile: 'claude-opus-5-5' },
     { model: 'gemini-4-hydrogen', provider: 'google-vertex', modelFile: 'gemini-4-hydrogen' },
+    { model: 'gemini-4-neon', provider: 'google-vertex', modelFile: 'gemini-4-neon' },
     { model: 'gemini-3.8-flash', provider: 'google-vertex', modelFile: 'gemini-3.8-flash' },
     { model: 'gemini-4-argon', provider: 'google-vertex', modelFile: 'gemini-4-argon' },
     { model: 'gemini-4-carbon', provider: 'google-vertex', modelFile: 'gemini-4-carbon' },

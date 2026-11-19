@@ -249,6 +249,19 @@ export const SEED_SPECS: readonly SeedSpec[] = [
         sourceUrl: GEMINI_PRICING,
         checkedOn: CHECKED_2026_11_13,
     },
+    // Neon reached GA on 2026-11-18 and replaced Argon in the menu: flat price
+    // (no promotion) 3 / 0.15 / 15 on the global endpoint, Priority PayGo
+    // 5.40 / 0.27 / 27 (1.8x). Cache writes ($3.75) are not billed before
+    // 2027-01-12, so they are not modelled, like Hydrogen's.
+    {
+        model: 'gemini-4-neon',
+        inputPerM: 3,
+        cachedInputPerM: 0.15,
+        outputPerM: 15,
+        priority: { inputPerM: 5.4, cachedInputPerM: 0.27, outputPerM: 27 },
+        sourceUrl: GEMINI_PRICING,
+        checkedOn: '2026-11-19',
+    },
     // No longer offered; replies made before the switch still estimate at this
     // price. Introductory through 2026-12-31, then 1.50 / 0.15 / 7.50.
     {

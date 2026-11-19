@@ -141,7 +141,7 @@ export const codePolicyDefaultEffortOf = (model: string): ModelEffort | null => 
     const id = model.toLowerCase();
     // Chat variants are handled as non-reasoning by the OpenAI platform
     if (id.includes('chat')) return null;
-    if (id.startsWith('gemini-4-hydrogen')) return 'xhigh';
+    if (id.startsWith('gemini-4-hydrogen') || id.startsWith('gemini-4-neon')) return 'xhigh';
     if (id.startsWith('gemini-4')) return 'high';
     if (openaiReasoningPrefixes.some((prefix) => id.startsWith(prefix))) return 'xhigh';
     if (id.includes('multi-agent')) return 'high';

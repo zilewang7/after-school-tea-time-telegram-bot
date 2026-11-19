@@ -468,6 +468,7 @@ interface OfficialModelRef {
 
 const OFFICIAL_MODEL_REFS: readonly OfficialModelRef[] = [
     { model: 'gemini-4-hydrogen', label: 'gemini 4 hydrogen', exclude: null },
+    { model: 'gemini-4-neon', label: 'gemini 4 neon', exclude: null },
     { model: 'gemini-4-argon', label: 'gemini 4 argon', exclude: null },
     { model: 'gemini-4-carbon', label: 'gemini 4 carbon', exclude: null },
     { model: 'gemini-3.8-flash', label: 'gemini 3.8 flash', exclude: /gemini 3\.8 flash cyber/ },
@@ -833,6 +834,7 @@ const LITELLM_KEYS: Readonly<Record<string, string>> = {
     'claude-sonnet-5-5': 'claude-sonnet-5-5',
     'claude-opus-5-5': 'claude-opus-5-5',
     'gemini-4-hydrogen': 'vertex_ai/gemini-4-hydrogen',
+    'gemini-4-neon': 'vertex_ai/gemini-4-neon',
     'gemini-3.8-flash': 'vertex_ai/gemini-3.8-flash',
     'gemini-4-argon': 'vertex_ai/gemini-4-argon',
     'gemini-4-carbon': 'vertex_ai/gemini-4-carbon',

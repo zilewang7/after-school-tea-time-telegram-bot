@@ -55,7 +55,7 @@ export const isImageModel = (model: string): boolean => isImageOutputModel(model
  */
 export const getDefaultModel = (platformType: string): string => {
     return match(platformType)
-        .with('gemini', () => 'gemini-4-argon')
+        .with('gemini', () => 'gemini-4-neon')
         .with('openai', () => 'gpt-5.4')
         .with('deepseek', () => 'deepseek-reasoning')
         .with('grok', () => 'grok-4.20-0309-reasoning')

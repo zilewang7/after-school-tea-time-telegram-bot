@@ -62,12 +62,14 @@ const RESULT_HYDROGEN: FixtureResult = {
     checkedOn: '2026-11-13',
 };
 
-const RESULT_ARGON: FixtureResult = {
-    model: 'gemini-4-argon',
-    acceptedEfforts: ['low', 'high'],
+const RESULT_NEON: FixtureResult = {
+    model: 'gemini-4-neon',
+    // A measured ladder that is narrower than the shipped seed (no XHIGH), so the
+    // import cases see a real 思考档位 change to propose.
+    acceptedEfforts: ['low', 'medium', 'high'],
     defaultEffort: 'high',
     toggle: false,
-    errorSummary: { medium: '400 Thinking level is unsupported' },
+    errorSummary: { xhigh: '400 Thinking level is unsupported' },
     checkedOn: '2026-11-13',
 };
 
@@ -102,7 +104,7 @@ const documentTextOf = (entries: readonly unknown[]): string =>
         results: entries,
     });
 
-const VALID_DOCUMENT = documentTextOf([RESULT_HYDROGEN, RESULT_ARGON, RESULT_DEEPSEEK, RESULT_UNKNOWN]);
+const VALID_DOCUMENT = documentTextOf([RESULT_HYDROGEN, RESULT_NEON, RESULT_DEEPSEEK, RESULT_UNKNOWN]);
 
 // ---------------------------------------------------------------------------
 // Telegram helpers
@@ -292,9 +294,9 @@ const runParserCases = async (): Promise<void> => {
         expect(parsed.document.schema === 1, 'schema 1');
         expect(parsed.document.laneSignature === LANE_SIGNATURE, 'lane signature kept');
         expect(parsed.document.results.length === 4, `four results (got ${parsed.document.results.length})`);
-        const argon = parsed.document.results.find((entry) => entry.model === 'gemini-4-argon');
-        expect(argon !== undefined && JSON.stringify(argon.acceptedEfforts) === JSON.stringify(['low', 'high']), 'accepted efforts are sorted');
-        expect(argon?.errorSummary['medium'] !== undefined, 'error summary evidence kept');
+        const neon = parsed.document.results.find((entry) => entry.model === 'gemini-4-neon');
+        expect(neon !== undefined && JSON.stringify(neon.acceptedEfforts) === JSON.stringify(['low', 'medium', 'high']), 'accepted efforts are sorted');
+        expect(neon?.errorSummary['xhigh'] !== undefined, 'error summary evidence kept');
     }));
 
     results.push(await runCase('parser: the whole file is rejected on a bad shape or a bad effort value', () => {
@@ -345,19 +347,19 @@ const runPlanCases = async (): Promise<void> => {
         expect(parsed.ok, 'document parses');
         if (!parsed.ok) return;
         const plan = probeService.planProbeImport(parsed.document, await catalogService.listCatalogRows().then((rows) => rows.map((row) => ({ model: row.id, enabled: row.enabled, capabilities: row.capabilities }))));
-        const argon = plan.proposals.find((proposal) => proposal.model === 'gemini-4-argon');
-        expect(argon !== undefined, 'argon generates a proposal');
-        if (argon === undefined) return;
-        expect(argon.payload.schema === 1, 'schema 1');
-        expect(JSON.stringify(argon.payload.reasoning?.efforts) === JSON.stringify(['low', 'high']), 'accepted efforts written');
-        expect(argon.payload.reasoning?.defaultEffort === 'high', 'default effort kept (it is accepted)');
-        expect(argon.payload.reasoning?.source === 'probe', 'reasoning source is probe');
-        expect(argon.payload.reasoning?.checkedOn === '2026-11-13', 'checkedOn from the result');
-        expect(argon.payload.reasoning?.confidence === 'high', 'probe confidence is high');
-        expect(JSON.stringify(argon.payload.reasoningEffort) === JSON.stringify(['low', 'high']), 'legacy mirror follows');
-        expect(argon.payload.contextTokens === 1_048_576, 'context limit untouched');
-        expect(argon.changes.includes('思考档位'), `changes name 思考档位 (got ${argon.changes.join(',')})`);
-        expect(argon.note.includes('probe 导入') && argon.note.includes(LANE_SIGNATURE), 'note records the lane signature');
+        const neon = plan.proposals.find((proposal) => proposal.model === 'gemini-4-neon');
+        expect(neon !== undefined, 'neon generates a proposal');
+        if (neon === undefined) return;
+        expect(neon.payload.schema === 1, 'schema 1');
+        expect(JSON.stringify(neon.payload.reasoning?.efforts) === JSON.stringify(['low', 'medium', 'high']), 'accepted efforts written');
+        expect(neon.payload.reasoning?.defaultEffort === 'high', 'default effort kept (it is accepted)');
+        expect(neon.payload.reasoning?.source === 'probe', 'reasoning source is probe');
+        expect(neon.payload.reasoning?.checkedOn === '2026-11-13', 'checkedOn from the result');
+        expect(neon.payload.reasoning?.confidence === 'high', 'probe confidence is high');
+        expect(JSON.stringify(neon.payload.reasoningEffort) === JSON.stringify(['low', 'medium', 'high']), 'legacy mirror follows');
+        expect(neon.payload.contextTokens === 1_048_576, 'context limit untouched');
+        expect(neon.changes.includes('思考档位'), `changes name 思考档位 (got ${neon.changes.join(',')})`);
+        expect(neon.note.includes('probe 导入') && neon.note.includes(LANE_SIGNATURE), 'note records the lane signature');
     }));
 
     results.push(await runCase('plan: identical values with new provenance still get a sync proposal', async () => {
@@ -380,15 +382,15 @@ const runPlanCases = async (): Promise<void> => {
 
     results.push(await runCase('plan: a default effort outside the accepted set becomes null', async () => {
         const parsed = probeService.parseProbeImportDocument(
-            Buffer.from(documentTextOf([variantOf(RESULT_ARGON, { acceptedEfforts: ['low'], defaultEffort: 'high' })]))
+            Buffer.from(documentTextOf([variantOf(RESULT_NEON, { acceptedEfforts: ['low'], defaultEffort: 'high' })]))
         );
         expect(parsed.ok, 'document parses');
         if (!parsed.ok) return;
         const catalog = await catalogService.listCatalogRows().then((rows) => rows.map((row) => ({ model: row.id, enabled: row.enabled, capabilities: row.capabilities })));
         const plan = probeService.planProbeImport(parsed.document, catalog);
-        const argon = plan.proposals.find((proposal) => proposal.model === 'gemini-4-argon');
-        expect(argon?.payload.reasoning?.defaultEffort === null, 'a default the menu cannot offer is dropped');
-        expect(argon?.changes.includes('默认档位') === true, 'the drop is visible as a change');
+        const neon = plan.proposals.find((proposal) => proposal.model === 'gemini-4-neon');
+        expect(neon?.payload.reasoning?.defaultEffort === null, 'a default the menu cannot offer is dropped');
+        expect(neon?.changes.includes('默认档位') === true, 'the drop is visible as a change');
     }));
 
     results.push(await runCase('plan: unknown models and manually maintained reasoning are skipped', async () => {
@@ -533,15 +535,15 @@ const runImportCases = async (): Promise<void> => {
         expect(notifyCalls === 1, 'notify was called once');
         const rows = await pendingRows();
         expect(rows.length === 3, `three pending proposals (got ${rows.length})`);
-        expect(rows.map((row) => row.model).sort().join(',') === 'deepseek-flash,gemini-4-argon,gemini-4-hydrogen', 'the expected models');
-        const argon = rows.find((row) => row.model === 'gemini-4-argon');
-        expect(argon !== undefined, 'argon proposal exists');
-        if (argon === undefined) return;
-        expect(reasoningOfRow(argon)['source'] === 'probe', 'payload reasoning source is probe');
-        expect(reasoningOfRow(argon)['checkedOn'] === '2026-11-13', 'checkedOn carried over');
-        expect(reasoningOfRow(argon)['confidence'] === 'high', 'confidence is high');
-        expect(argon.note?.includes('probe 导入') === true && argon.note?.includes(LANE_SIGNATURE) === true, 'note names the import and lane');
-        expect(argon.baseline !== null && recordOf(JSON.parse(argon.baseline)) !== null, 'baseline snapshot stored');
+        expect(rows.map((row) => row.model).sort().join(',') === 'deepseek-flash,gemini-4-hydrogen,gemini-4-neon', 'the expected models');
+        const neon = rows.find((row) => row.model === 'gemini-4-neon');
+        expect(neon !== undefined, 'neon proposal exists');
+        if (neon === undefined) return;
+        expect(reasoningOfRow(neon)['source'] === 'probe', 'payload reasoning source is probe');
+        expect(reasoningOfRow(neon)['checkedOn'] === '2026-11-13', 'checkedOn carried over');
+        expect(reasoningOfRow(neon)['confidence'] === 'high', 'confidence is high');
+        expect(neon.note?.includes('probe 导入') === true && neon.note?.includes(LANE_SIGNATURE) === true, 'note names the import and lane');
+        expect(neon.baseline !== null && recordOf(JSON.parse(neon.baseline)) !== null, 'baseline snapshot stored');
     }));
 
     results.push(await runCase('import: re-importing the same document refreshes the same pending rows', async () => {
@@ -566,12 +568,12 @@ const runImportCases = async (): Promise<void> => {
             OWNER_ID
         );
         expect(applied.applied === 3 && applied.skipped === 0, `three applied (got ${applied.applied}/${applied.skipped})`);
-        const argon = await catalogCapabilitiesOf('gemini-4-argon');
-        const reasoning = recordOf(argon['reasoning']);
+        const neon = await catalogCapabilitiesOf('gemini-4-neon');
+        const reasoning = recordOf(neon['reasoning']);
         expect(reasoning?.['source'] === 'probe', 'catalog reasoning source is probe');
-        expect(JSON.stringify(reasoning?.['efforts']) === JSON.stringify(['low', 'high']), 'applied efforts');
+        expect(JSON.stringify(reasoning?.['efforts']) === JSON.stringify(['low', 'medium', 'high']), 'applied efforts');
         expect(reasoning?.['defaultEffort'] === 'high', 'applied default effort');
-        expect(JSON.stringify(argon['reasoningEffort']) === JSON.stringify(['low', 'high']), 'legacy mirror applied');
+        expect(JSON.stringify(neon['reasoningEffort']) === JSON.stringify(['low', 'medium', 'high']), 'legacy mirror applied');
         const hydrogen = await catalogCapabilitiesOf('gemini-4-hydrogen');
         expect(recordOf(hydrogen['reasoning'])?.['source'] === 'probe', 'the value-identical model is now probe-sourced');
         const pendingAfter = await pendingRows();

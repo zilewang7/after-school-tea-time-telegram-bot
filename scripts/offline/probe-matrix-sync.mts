@@ -98,7 +98,8 @@ results.push(
         const ids = MENU_MATRIX.map((entry) => entry.model);
         expect(ids.length === 13, `13 menu models in the snapshot (got ${ids.length})`);
         expect(ids.includes('gpt-6-sol'), 'gpt-6-sol is in the menu and in the snapshot');
-        for (const nonMenu of ['gpt-6.1-sol', 'gpt-6.1-terra', 'claude-fable-5-2', 'gemini-3.8-flash']) {
+        // argon left the menu when neon replaced it (2026-11-19); its seed stays for history.
+        for (const nonMenu of ['gpt-6.1-sol', 'gpt-6.1-terra', 'claude-fable-5-2', 'gemini-3.8-flash', 'gemini-4-argon']) {
             expect(!ids.includes(nonMenu), `${nonMenu} is not a menu model and must stay out`);
         }
         for (const imageModel of ['gemini-nano-banana-2.1', 'gpt-image-2.5-dev']) {

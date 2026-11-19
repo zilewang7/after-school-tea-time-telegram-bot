@@ -280,6 +280,43 @@ const cases: { name: string; body: () => Promise<void> }[] = [
         },
     },
     {
+        name: 'the seeded menu offers Gemini 4 Neon instead of Gemini 4 Argon, and its thinking keyboard has xhigh',
+        body: async () => {
+            setModelCatalog([]);
+            const chatId = -7015;
+            await sendText(chatId, MEMBER.id, '/model');
+            await press(chatId, MEMBER.id, 'mdl:expand');
+            const buttons = lastKeyboardRows().flat();
+            expect(
+                buttons.some((button) => button.data === 'mdl:gemini-4-neon' && button.text === 'Gemini 4 Neon'),
+                `the menu offers Neon with its display name (got ${json(buttons)})`
+            );
+            expect(
+                !buttons.some((button) => button.data === 'mdl:gemini-4-argon'),
+                'Argon no longer has a menu button'
+            );
+            expect(
+                !buttons.some((button) => button.text === 'Gemini 4 Argon'),
+                'no leftover Argon label in the keyboard'
+            );
+
+            await setModelFor(chatId, 'gemini-4-neon');
+            await sendText(chatId, MEMBER.id, '/model');
+            expect(sentText().includes('思考等级：模型默认（高）'), `Neon's vendor default is HIGH (got ${json(sentText())})`);
+            await press(chatId, MEMBER.id, 'thk:expand');
+            const thinking = lastKeyboardRows().flat();
+            expect(
+                json(thinking.map((button) => button.data)) ===
+                    json(['thk:low', 'thk:medium', 'thk:high', 'thk:xhigh', 'thk:default', 'thk:back']),
+                `the four efforts in catalog order (got ${json(thinking.map((button) => button.data))})`
+            );
+            expect(
+                thinking.find((button) => button.data === 'thk:xhigh')?.text === '极高',
+                `xhigh is offered as 极高 (got ${json(thinking)})`
+            );
+        },
+    },
+    {
         name: 'the default keyboard offers model and thinking in one row, and 收起 returns to it',
         body: async () => {
             const chatId = -7003;

@@ -655,6 +655,83 @@ export const backfillGptImagePrice = async (): Promise<void> => {
   });
 };
 
+/**
+ * The menu's Gemini 4 swap (2026-11-19): gemini-4-neon replaced gemini-4-argon
+ * the day after Neon's GA. An existing database still has the argon menu row
+ * and no neon row (a fresh one gets both from the code seeds), so this inserts
+ * neon with the shipped capabilities, drops the argon menu row and adds neon's
+ * two price rows. History stays: argon's price rows and capability seed are
+ * kept for replies made before the switch, only the menu changes.
+ *
+ * Recorded in schema_migrations so it runs once; runs after sequelize.sync().
+ */
+export const backfillNeonMenuSwap = async (): Promise<void> => {
+  const name = '20261119_neon_menu_swap';
+  const applied = await sequelize.query<{ name: string }>(
+    'SELECT name FROM schema_migrations WHERE name = :name',
+    { type: QueryTypes.SELECT, replacements: { name } }
+  );
+  if (applied.length > 0) return;
+  const counts = await sequelize.query<{ count: number }>(
+    'SELECT COUNT(*) AS count FROM model_catalog',
+    { type: QueryTypes.SELECT }
+  );
+  // A fresh database has no rows yet: loadModelCatalog() seeds it with neon
+  if ((counts[0]?.count ?? 0) === 0) return;
+  const { capabilitySeedOf } = await import('../config/model-capability-seed.js');
+  const capabilities = capabilitySeedOf('gemini-4-neon');
+  if (capabilities === null) {
+    throw new Error('backfillNeonMenuSwap: the code seed has no gemini-4-neon');
+  }
+  const now = new Date().toISOString();
+  const priceRows = [
+    { tier: 'standard', inputPerM: 3, cachedInputPerM: 0.15, outputPerM: 15 },
+    { tier: 'priority', inputPerM: 5.4, cachedInputPerM: 0.27, outputPerM: 27 },
+  ] as const;
+  await sequelize.transaction(async (transaction) => {
+    await sequelize.query(
+      `INSERT INTO model_catalog
+         (id, label, enabled, capabilities, platform, catalogKey, source, sourceUrl,
+          checkedOn, confidence, note, createdAt, updatedAt)
+       VALUES ('gemini-4-neon', 'Gemini 4 Neon', 1, :capabilities, 'gemini', NULL, 'manual', NULL,
+               '2026-11-19', 'high', NULL, :now, :now)
+       ON CONFLICT(id) DO UPDATE SET
+         label = excluded.label,
+         enabled = 1,
+         capabilities = excluded.capabilities,
+         platform = excluded.platform,
+         source = excluded.source,
+         sourceUrl = excluded.sourceUrl,
+         checkedOn = excluded.checkedOn,
+         confidence = excluded.confidence,
+         updatedAt = excluded.updatedAt`,
+      { replacements: { capabilities: JSON.stringify(capabilities), now }, transaction }
+    );
+    await sequelize.query("DELETE FROM model_catalog WHERE id = 'gemini-4-argon'", { transaction });
+    for (const row of priceRows) {
+      await sequelize.query(
+        `INSERT INTO model_price_entries
+           (model, tier, inputPerM, cachedInputPerM, cacheWritePerM, outputPerM,
+            imageOutputPerM, perImageUsd, effectiveFrom, effectiveTo, source,
+            sourceUrl, checkedOn, confidence, note, createdAt, updatedAt)
+         SELECT 'gemini-4-neon', :tier, :inputPerM, :cachedInputPerM, NULL, :outputPerM,
+                NULL, NULL, '1970-01-01T00:00:00.000Z', NULL, 'manual',
+                'https://cloud.google.com/vertex-ai/generative-ai/pricing', '2026-11-19', 'high',
+                NULL, :now, :now
+         WHERE NOT EXISTS (
+           SELECT 1 FROM model_price_entries WHERE model = 'gemini-4-neon' AND tier = :tier
+         )`,
+        { replacements: { ...row, now }, transaction }
+      );
+    }
+    await sequelize.query(
+      `INSERT OR IGNORE INTO schema_migrations (name, appliedAt)
+       VALUES (:name, :appliedAt)`,
+      { replacements: { name, appliedAt: now }, transaction }
+    );
+  });
+};
+
 /** The capability source a legacy catalog row's source maps to */
 const capabilitySourceOfRowSource = (source: string): string | undefined => {
   if (source === 'manual') return 'manual';

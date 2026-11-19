@@ -1,7 +1,8 @@
 /**
  * Code seed of the model capability metadata (thinking-effort design
- * 2026-1113-1742 §1.5, appendix A): the 16 in-use/reference ids as checked on
- * 2026-11-13 against models.dev and the official docs.
+ * 2026-1113-1742 §1.5, appendix A): the 17 in-use/reference ids as checked on
+ * 2026-11-13 against models.dev and the official docs (gemini-4-neon was added
+ * on 2026-11-19 when it replaced gemini-4-argon in the menu).
  *
  * The 13 menu ids seed `model_catalog` rows on a fresh database; the two image
  * ids and `gemini-3.8-flash` have no row yet, but the traits resolver answers
@@ -73,8 +74,9 @@ interface ReasoningSeed {
     readonly defaultEnabled?: boolean | null;
 }
 
-const reasoningOf = (seed: ReasoningSeed): ModelCatalogReasoning => ({
+const reasoningOf = (seed: ReasoningSeed, checkedOn?: string): ModelCatalogReasoning => ({
     ...PROVENANCE,
+    ...(checkedOn === undefined ? {} : { checkedOn }),
     supported: true,
     toggle: seed.toggle ?? false,
     efforts: seed.efforts,
@@ -111,10 +113,13 @@ interface CapabilitySeed {
     readonly apis?: ModelCatalogApis;
     readonly toolsMixing?: ModelToolsMixing;
     readonly nativeTools?: ModelCatalogNativeTools;
+    /** The day this id was checked; defaults to the 2026-11-13 snapshot */
+    readonly checkedOn?: string;
 }
 
 const capabilityOf = (seed: CapabilitySeed): ModelCatalogCapabilities => ({
     ...PROVENANCE,
+    ...(seed.checkedOn === undefined ? {} : { checkedOn: seed.checkedOn }),
     schema: 1,
     kind: seed.kind,
     vision: seed.vision,
@@ -124,7 +129,7 @@ const capabilityOf = (seed: CapabilitySeed): ModelCatalogCapabilities => ({
     contextTokens: seed.contextTokens,
     outputTokens: seed.outputTokens,
     ...(seed.modalities === undefined ? {} : { modalities: seed.modalities }),
-    ...(seed.reasoningSeed === undefined ? {} : { reasoning: reasoningOf(seed.reasoningSeed) }),
+    ...(seed.reasoningSeed === undefined ? {} : { reasoning: reasoningOf(seed.reasoningSeed, seed.checkedOn) }),
     ...(seed.apis === undefined ? {} : { apis: seed.apis }),
     ...(seed.toolsMixing === undefined ? {} : { toolsMixing: seed.toolsMixing }),
     ...(seed.nativeTools === undefined ? {} : { nativeTools: seed.nativeTools }),
@@ -191,6 +196,18 @@ const MODEL_CAPABILITY_SEEDS: Readonly<Record<string, ModelCatalogCapabilities>>
         reasoningSeed: { efforts: EFFORTS_GEMINI4, defaultEffort: 'high' },
         apis: apisOf(GEMINI_APIS),
         toolsMixing: 'allowed',
+    }),
+    'gemini-4-neon': capabilityOf({
+        kind: 'chat',
+        vision: true,
+        tools: true,
+        contextTokens: 1_048_576,
+        outputTokens: 65_536,
+        modalities: GEMINI_MODALITIES,
+        reasoningSeed: { efforts: EFFORTS_GEMINI4, defaultEffort: 'high' },
+        apis: apisOf(GEMINI_APIS),
+        toolsMixing: 'allowed',
+        checkedOn: '2026-11-19',
     }),
     'gemini-4-argon': capabilityOf({
         kind: 'chat',

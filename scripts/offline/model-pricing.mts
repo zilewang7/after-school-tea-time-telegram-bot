@@ -21,7 +21,7 @@ const {
     normalizeImagesUsage,
     normalizeResponsesUsage,
 } = await import('../../src/ai/usage/index.js');
-const { MODEL_PRICES, findModelPrice, SUBSCRIPTION_ROUTES } = await import('../../src/config/model-pricing.js');
+const { MODEL_PRICES, findModelPrice, findPriceAt, SUBSCRIPTION_ROUTES } = await import('../../src/config/model-pricing.js');
 const { estimateCostUsd, priceUsageGroup, rollupCostByModel, totalCost } = await import(
     '../../src/services/usage-cost.js'
 );
@@ -394,8 +394,8 @@ const cases: { name: string; body: () => Promise<void> }[] = [
         body: async () => {
             const entries = Object.entries(MODEL_PRICES);
             expect(
-                entries.length === 17,
-                `the appendix models, gemini-4-carbon, both Anthropic ids and the image id (got ${entries.length})`
+                entries.length === 18,
+                `the 13 menu ids, three history-only ids and two image ids (got ${entries.length})`
             );
             for (const [model, price] of entries) {
                 if (CALL_BILLED_IMAGE_MODELS.has(model)) continue;
@@ -555,6 +555,7 @@ cases.push(
                         'gemini-4-argon',
                         'gemini-4-carbon',
                         'gemini-4-hydrogen',
+                        'gemini-4-neon',
                         'gemini-nano-banana-2.1',
                     ]),
                 `the Gemini models and the image model have one (got ${json(withPriority)})`
@@ -582,6 +583,41 @@ cases.push(
             const { checkedOn: _carbonChecked, ...carbon } = priceOf('gemini-4-carbon');
             const { checkedOn: _argonChecked, ...argon } = priceOf('gemini-4-argon');
             expect(json(carbon) === json(argon), `carbon is priced like argon, no longer "unpriced" (got ${json(carbon)})`);
+        },
+    },
+    {
+        name: 'neon: one flat price at every date, its priority tier, and the hand arithmetic',
+        body: async () => {
+            const neon = priceOf('gemini-4-neon');
+            expect(
+                json({ inputPerM: neon.inputPerM, cachedInputPerM: neon.cachedInputPerM, outputPerM: neon.outputPerM }) ===
+                    json({ inputPerM: 3, cachedInputPerM: 0.15, outputPerM: 15 }),
+                `standard 3 / 0.15 / 15 (got ${json(neon)})`
+            );
+            expect(
+                json(neon.priority) === json({ inputPerM: 5.4, cachedInputPerM: 0.27, outputPerM: 27 }),
+                `priority 5.4 / 0.27 / 27 (got ${json(neon.priority)})`
+            );
+            // Flat: no promotional boundary at 2026-12-01, unlike argon/carbon
+            for (const iso of ['2026-11-19T00:00:00Z', '2026-12-01T00:00:00Z', '2027-06-01T00:00:00Z']) {
+                const priceAtDate = findPriceAt('gemini-4-neon', new Date(iso));
+                expect(json(priceAtDate) === json(neon), `${iso}: the same standard and priority price (got ${json(priceAtDate)})`);
+            }
+            const cost = estimateCostUsd(neon, {
+                ...ZERO_USAGE,
+                promptTokens: 1000,
+                cachedTokens: 400,
+                outputTokens: 100,
+            });
+            expect(near(cost, (600 * 3 + 400 * 0.15 + 100 * 15) / 1e6), `uncached input + cache hits + output (got ${cost})`);
+            const priorityCost = estimateCostUsd(neon, {
+                ...ZERO_USAGE,
+                promptTokens: 300,
+                outputTokens: 100,
+                priorityPromptTokens: 300,
+                priorityOutputTokens: 100,
+            });
+            expect(near(priorityCost, (300 * 5.4 + 100 * 27) / 1e6), `the priority part at the priority price (got ${priorityCost})`);
         },
     },
     {

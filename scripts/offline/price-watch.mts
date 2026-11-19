@@ -148,7 +148,7 @@ const results: CaseResult[] = [];
 results.push(
     await runCase('every catalog is fetched in one go and none fails', async () => {
         const pipeline = await runPipeline();
-        expect(pipeline.fetched.documents.tomlByModel.size === 16, `16 TOMLs (got ${pipeline.fetched.documents.tomlByModel.size})`);
+        expect(pipeline.fetched.documents.tomlByModel.size === 17, `17 TOMLs (got ${pipeline.fetched.documents.tomlByModel.size})`);
         expect(pipeline.fetched.documents.vertexPricingHtml !== null, 'the Vertex page body is stored');
         expect(pipeline.fetched.documents.ephonePricingJson !== null, 'the ephone JSON is stored');
         expect(pipeline.fetched.documents.litellmJson !== null, 'the LiteLLM JSON is stored');
@@ -163,7 +163,7 @@ results.push(
             failing: new Set([urlOfModel('gpt-6-luna')]),
             throwing: new Set([urlOfModel('gpt-6-sol')]),
         });
-        expect(pipeline.fetched.documents.tomlByModel.size === 14, 'the other 14 TOMLs are there');
+        expect(pipeline.fetched.documents.tomlByModel.size === 15, 'the other 15 TOMLs are there');
         const fetchWarnings = pipeline.fetched.warnings.join(' | ');
         expect(fetchWarnings.includes('gpt-6-luna') && fetchWarnings.includes('gpt-6-sol'), `both failures warned (got ${fetchWarnings})`);
         expect(pipeline.fetched.errors.length === 0, 'a TOML failure is not a whole-source error');

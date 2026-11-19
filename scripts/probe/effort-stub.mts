@@ -85,10 +85,12 @@ const GEMINI_BEHAVIOR: Readonly<Record<string, StubModelBehavior>> = {
         acceptedLevels: ['LOW', 'MEDIUM', 'HIGH', 'XHIGH'],
         toggle: false,
     },
-    'gemini-4-argon': {
-        baselineReasoningTokens: 800,
-        reasoningByEffort: { LOW: 400, MEDIUM: 800, HIGH: 1280, XHIGH: 1280, MAX: 800 },
-        acceptedLevels: ['LOW', 'MEDIUM', 'HIGH'],
+    // Neon replaced argon in the menu and ships hydrogen's graded ladder (vendor
+    // default HIGH); the old medium-default argon entry was removed with it.
+    'gemini-4-neon': {
+        baselineReasoningTokens: 1200,
+        reasoningByEffort: { LOW: 420, MEDIUM: 840, HIGH: 1200, XHIGH: 2400, MAX: 1200 },
+        acceptedLevels: ['LOW', 'MEDIUM', 'HIGH', 'XHIGH'],
         toggle: false,
     },
     'gemini-4-carbon': {
