@@ -22,20 +22,26 @@ import {
     type ChatSettings,
 } from './chat-settings-cache.js';
 import {
+    CHAT_PROMPT_ADDENDUM_MAX_CODE_POINTS,
     resolveChatSettingsPatch,
     type ChatSettingChange,
     type ChatSettingKey,
+    type ChatSettingValues,
     type ChatSettingsPatch,
 } from './chat-settings-rules.js';
+import { getPromptTemplate, ensurePromptTemplatesCacheLoaded } from './prompt-templates-cache.js';
+import { canonicalTemplateIdListJson } from './prompt-template-ids.js';
 import { ChatSettingsError, type SettingsActor } from './settings-errors.js';
 import { ensureCacheLoaded, runSerialized } from './settings-write-queue.js';
 import type { ThinkingEffortValue } from './thinking-effort-values.js';
 import { canonicalToolOverridesJson, type ToolOverrides } from './tool-overrides.js';
+import { countCodePoints } from '../shared/code-points.js';
 
 export {
     loadChatSettingsCache,
     isChatSettingsCacheLoaded,
     getChatSettings,
+    listChatSettings,
     isChatPaused,
     isChatSettingsLocked,
     getGlobalDefaultModel,
@@ -50,6 +56,7 @@ export {
     GEMINI_PRIORITY_NOT_ALLOWED_MESSAGE,
     IMAGE_MODEL_NOT_CHAT_MESSAGE,
     MODEL_ID_MAX_LENGTH,
+    CHAT_PROMPT_ADDENDUM_MAX_CODE_POINTS,
     PROMPT_ADDENDUM_MAX_CODE_POINTS,
     countCodePoints,
     normalizeNullableFlag,
@@ -58,6 +65,7 @@ export {
     type ChatSettingsErrorCode,
     type ChatSettingsPatch,
 } from './chat-settings-rules.js';
+export { MAX_TEMPLATE_SELECTIONS } from './prompt-template-ids.js';
 export { ChatSettingsError, type SettingsActor } from './settings-errors.js';
 export {
     GLOBAL_SETTING_KEYS,
@@ -96,6 +104,10 @@ export {
 export interface ReplySettingsSnapshot {
     model: string;
     promptAddendum: string | null;
+    /** The manual template selection at the same moment; null = none */
+    promptTemplateIds: number[] | null;
+    /** The auto-load switch at the same moment; off unless the chat turned it on */
+    promptTemplatesAuto: boolean;
     /** The per-chat tool switches at the same moment; null = follow the env */
     toolOverrides: ToolOverrides | null;
     /** The effective Priority PayGo switch (chat value, global switch and whitelist resolved) */
@@ -120,6 +132,8 @@ export interface ChatSettingsUpdateResult {
 export const snapshotReplySettings = (chatId: number): ReplySettingsSnapshot => ({
     model: resolveChatModel(chatId),
     promptAddendum: getChatSettings(chatId)?.promptAddendum ?? null,
+    promptTemplateIds: getChatSettings(chatId)?.promptTemplateIds ?? null,
+    promptTemplatesAuto: getChatSettings(chatId)?.promptTemplatesAuto === true,
     toolOverrides: getChatSettings(chatId)?.toolOverrides ?? null,
     geminiPriority: resolveGeminiPriority(chatId),
     thinkingEffort: getChatSettings(chatId)?.thinkingEffort ?? null,
@@ -131,6 +145,8 @@ export const defaultChatSettings = (chatId: number): ChatSettings => ({
     chatId,
     model: null,
     promptAddendum: null,
+    promptTemplateIds: null,
+    promptTemplatesAuto: false,
     paused: false,
     settingsLocked: false,
     toolOverrides: null,
@@ -147,6 +163,43 @@ const isStaleEdit = (current: ChatSettings, expectedUpdatedAt: Date | null | und
     expectedUpdatedAt !== null &&
     current.updatedAt.getTime() !== expectedUpdatedAt.getTime();
 
+/** The keys whose change re-checks the composed addendum's length */
+const COMPOSED_ADDENDUM_KEYS: ReadonlySet<ChatSettingKey> = new Set([
+    'promptAddendum',
+    'promptTemplateIds',
+    'promptTemplatesAuto',
+]);
+
+/**
+ * The code points a reply would load from the chat's own selection: the content
+ * of its manually enabled templates plus its own text. Unknown ids (a deleted
+ * template) and disabled templates load nothing and count nothing.
+ */
+const composedAddendumCodePoints = (values: ChatSettingValues): number => {
+    let total = 0;
+    for (const id of values.promptTemplateIds ?? []) {
+        const template = getPromptTemplate(id);
+        if (template === undefined || !template.enabled) continue;
+        total += countCodePoints(template.content);
+    }
+    if (values.promptAddendum !== null) total += countCodePoints(values.promptAddendum);
+    return total;
+};
+
+/** The save-time guard of design D3: manual templates + own text fit one budget */
+const assertComposedAddendumFits = (
+    values: ChatSettingValues,
+    changes: readonly ChatSettingChange[]
+): void => {
+    if (!changes.some((change) => COMPOSED_ADDENDUM_KEYS.has(change.key))) return;
+    const composed = composedAddendumCodePoints(values);
+    if (composed <= CHAT_PROMPT_ADDENDUM_MAX_CODE_POINTS) return;
+    throw new ChatSettingsError(
+        'invalid',
+        `启用的模板与自定义附加提示词合计 ${composed} 字，超过上限 ${CHAT_PROMPT_ADDENDUM_MAX_CODE_POINTS} 字`
+    );
+};
+
 const persistChatSettings = async (
     settings: ChatSettings,
     changes: readonly ChatSettingChange[],
@@ -158,6 +211,8 @@ const persistChatSettings = async (
                 chatId: settings.chatId,
                 model: settings.model,
                 promptAddendum: settings.promptAddendum,
+                promptTemplateIds: canonicalTemplateIdListJson(settings.promptTemplateIds),
+                promptTemplatesAuto: settings.promptTemplatesAuto,
                 paused: settings.paused,
                 settingsLocked: settings.settingsLocked,
                 toolOverrides: canonicalToolOverridesJson(settings.toolOverrides),
@@ -206,6 +261,9 @@ export const updateChatSettings = (input: {
 }): Promise<ChatSettingsUpdateResult> =>
     runSerialized(chatAuditScope(input.chatId), async () => {
         await ensureCacheLoaded();
+        // The composed-addendum length guard reads template contents, so the
+        // template cache must be loaded before the patch is judged
+        await ensurePromptTemplatesCacheLoaded();
         const current = getChatSettings(input.chatId) ?? defaultChatSettings(input.chatId);
         // The actor's tier needs a membership lookup; resolved here because the
         // chat being edited is the trigger chat for both /model and the panel
@@ -225,6 +283,7 @@ export const updateChatSettings = (input: {
         if (resolution.changes.length === 0) {
             return { settings: current, changedKeys: [] };
         }
+        assertComposedAddendumFits(resolution.next, resolution.changes);
 
         const settings: ChatSettings = {
             chatId: input.chatId,

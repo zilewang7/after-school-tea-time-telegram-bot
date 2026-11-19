@@ -163,6 +163,8 @@ const refusalNoticeOf = (code: ChatSettingsErrorCode): string =>
         // /model never sends an expected version, kept for exhaustiveness
         .with('conflict', () => '设置刚被他人修改，请重试')
         .with('trial', () => '体验用户不能修改模型；申请准入后可以修改')
+        // /model never targets a template; kept for exhaustiveness
+        .with('not_found', () => '目标不存在，请刷新后重试')
         .exhaustive();
 
 const thinkingRefusalNoticeOf = (code: ChatSettingsErrorCode): string =>
@@ -172,6 +174,7 @@ const thinkingRefusalNoticeOf = (code: ChatSettingsErrorCode): string =>
         .with('forbidden', () => '没有权限修改本聊天的设置')
         .with('conflict', () => '设置刚被他人修改，请重试')
         .with('trial', () => '体验用户不能修改思考等级；申请准入后可以修改')
+        .with('not_found', () => '目标不存在，请刷新后重试')
         .exhaustive();
 
 type ModelChangeOutcome =

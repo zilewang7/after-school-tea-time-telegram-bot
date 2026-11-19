@@ -1,22 +1,33 @@
 import { match } from 'ts-pattern';
-import type { PreviewState } from './use-addendum-preview';
+import type { AddendumPreviewDraft, PreviewState } from './use-addendum-preview';
+import { sameAddendumPreviewDraft } from './use-addendum-preview';
 
 interface AddendumPreviewViewProps {
     state: PreviewState;
-    // Normalized addendum currently in the editor, to flag a preview that no longer matches it
-    currentValue: string;
+    // The form's current draft, to flag a preview that no longer matches it
+    currentDraft: AddendumPreviewDraft;
 }
 
-export const AddendumPreviewView = ({ state, currentValue }: AddendumPreviewViewProps) =>
+const appliedTemplatesLabel = (names: readonly string[]): string => (names.length === 0 ? '无' : names.join('、'));
+
+export const AddendumPreviewView = ({ state, currentDraft }: AddendumPreviewViewProps) =>
     match(state)
         .with({ kind: 'idle' }, () => null)
         .with({ kind: 'loading' }, () => <p className="hint">正在生成预览…</p>)
         .with({ kind: 'failed' }, ({ message }) => <p className="error-text">{message}</p>)
-        .with({ kind: 'ready' }, ({ previewedValue, result }) => (
+        .with({ kind: 'ready' }, ({ previewedDraft, result }) => (
             <div className="preview">
-                {previewedValue !== currentValue && <p className="hint">内容已修改，预览可能已过期</p>}
+                {!sameAddendumPreviewDraft(previewedDraft, currentDraft) && (
+                    <p className="hint">内容已修改，预览可能已过期</p>
+                )}
+                <p className="hint">
+                    已加载模板：{appliedTemplatesLabel(result.appliedTemplates.map((template) => template.name))}
+                </p>
+                {!result.injected && <p className="hint">没有可注入的内容</p>}
                 <pre className="code-block">{result.runtimeBlock}</pre>
-                <p className="hint">约 {result.estimatedTokens} token · 名册在实际回复时按上下文生成</p>
+                <p className="hint">
+                    合计 {result.composedCodePoints} 字 · 约 {result.estimatedTokens} token · 名册在实际回复时按上下文生成
+                </p>
             </div>
         ))
         .exhaustive();

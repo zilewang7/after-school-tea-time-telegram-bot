@@ -57,6 +57,7 @@ const MIGRATION_NAMES = [
     '20261112_reply_metrics_resume_priority',
     '20261114_chat_settings_rich_replies',
     '20261116_trial_quota_metrics',
+    '20261119_prompt_templates',
 ];
 
 // reply_metrics and chat_settings as they were before this change
@@ -424,8 +425,8 @@ const cases: { name: string; body: () => Promise<void> }[] = [
             await startUp();
             const after = await columnsOf('chat_settings');
             expect(
-                after.includes('richReplies') && after.length === before.length + 1,
-                `the migration adds it and nothing else (got ${json(after)})`
+                after.includes('richReplies') && after.length === before.length + 3,
+                `this migration and the prompt-template columns are added, nothing else (got ${json(after)})`
             );
             expect(json(await storedSwitch()) === json([{ richReplies: null }]), 'the old row is not backfilled: NULL');
             await service.loadChatSettingsCache();

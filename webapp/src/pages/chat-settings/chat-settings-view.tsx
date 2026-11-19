@@ -1,12 +1,15 @@
-import { useMemo } from 'react';
+import { useCallback, useMemo } from 'react';
 import type { ChatDetailResponse, ChatSettings } from '../../api';
 import type { ChatGeminiPriorityState } from '../../gemini-priority';
 import { ChatSettingsForm } from './chat-settings-form';
 import { RecentAudit } from './recent-audit';
 import { ToolSummaryRow } from './tool-summary-row';
+import { useChatPromptTemplates } from './use-chat-prompt-templates';
 
 interface ChatSettingsViewProps {
     detail: ChatDetailResponse;
+    // The viewer's Telegram user id, to name the creator of someone else's template
+    viewerId: number;
     isOwner: boolean;
     // Trial users see the fixed trial model and cannot change it
     isTrial: boolean;
@@ -19,6 +22,7 @@ interface ChatSettingsViewProps {
 
 export const ChatSettingsView = ({
     detail,
+    viewerId,
     isOwner,
     isTrial,
     trialModel,
@@ -38,6 +42,16 @@ export const ChatSettingsView = ({
         }),
         [effectiveGeminiPriority, globalGeminiPriority, geminiPriorityCanEnable]
     );
+    const chatTemplates = useChatPromptTemplates(chat.chatId);
+    const { refresh: refreshChatTemplates } = chatTemplates;
+    const handleSaved = useCallback(
+        (savedSettings: ChatSettings) => {
+            onSaved(savedSettings);
+            // The rows' enabledInChat state follows the selection that was just saved
+            refreshChatTemplates();
+        },
+        [onSaved, refreshChatTemplates]
+    );
 
     return (
         <>
@@ -51,12 +65,14 @@ export const ChatSettingsView = ({
                 geminiPriority={geminiPriority}
                 thinkingEffortView={detail.thinkingEffortView}
                 models={models}
+                chatTemplates={chatTemplates}
+                viewerId={viewerId}
                 isOwner={isOwner}
                 isTrial={isTrial}
                 trialModel={trialModel}
                 writable={writable}
                 justSaved={justSaved}
-                onSaved={onSaved}
+                onSaved={handleSaved}
                 onReload={onReload}
             />
             {/* The 7-day summary lives in the 统计 tab, not here */}

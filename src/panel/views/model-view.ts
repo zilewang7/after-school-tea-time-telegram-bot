@@ -21,6 +21,7 @@ import { createReplyTools } from '../../reply/tools/create-reply-tools.js';
 import { appendWorkspaceTailForReply } from '../../reply/workspace/workspace-tail.js';
 import type { ReplyToolContext } from '../../reply/tools/reply-tool-context.js';
 import { snapshotReplySettings } from '../../services/chat-settings-service.js';
+import { resolveReplyAddendum } from '../../services/prompt-templates-service.js';
 import { runtimeChatTitleOf } from './chat-view.js';
 import { toModelViewTurn, type ModelViewTurn } from './model-view-parts.js';
 import { resolveModelViewTarget } from './model-view-target.js';
@@ -42,6 +43,10 @@ export interface ModelView {
     turns: ModelViewTurn[];
     /** `#N` → message id, as this context numbers them */
     numbers: Array<{ number: number; messageId: number }>;
+    /** Prompt templates this request would load (auto ones follow the model) */
+    addendumTemplates: Array<{ id: number; name: string }>;
+    /** The chat's own addendum text is part of the runtime block too */
+    addendumCustom: boolean;
 }
 
 export interface ModelViewRequest {
@@ -73,12 +78,23 @@ export const buildModelView = async (request: ModelViewRequest): Promise<ModelVi
     const settings = snapshotReplySettings(chat.chatId);
     const model = request.asModel ?? settings.model;
     const capabilities = getModelCapabilities(model);
+    // The same combination the reply would send: a different model can load
+    // other auto templates, which is the point of looking at `asModel`.
+    const addendum = await resolveReplyAddendum(
+        chat.chatId,
+        {
+            custom: settings.promptAddendum,
+            templateIds: settings.promptTemplateIds,
+            auto: settings.promptTemplatesAuto,
+        },
+        model
+    );
 
     const built = await buildContext(target.userMessage, {
         capabilities,
         model,
         chatTitle: runtimeChatTitleOf(chat),
-        chatAddendum: settings.promptAddendum,
+        chatAddendum: addendum.text,
         excludeMessageIds: target.excludedReplyId === null ? [] : [target.excludedReplyId],
         dryRun: true,
     });
@@ -112,5 +128,7 @@ export const buildModelView = async (request: ModelViewRequest): Promise<ModelVi
         tools: tools.definitions.map((definition) => definition.name),
         turns: built.messages.map(toModelViewTurn),
         numbers: [...built.contextIndex.values()].map((entry) => ({ number: entry.number, messageId: entry.messageId })),
+        addendumTemplates: addendum.applied.map((template) => ({ id: template.id, name: template.name })),
+        addendumCustom: addendum.customIncluded,
     };
 };

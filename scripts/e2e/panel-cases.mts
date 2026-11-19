@@ -211,7 +211,7 @@ export const panelCases: E2eCase[] = [
                 preview.status === 200 &&
                     typeof block === 'string' &&
                     block.includes('当前群聊') &&
-                    block.includes(`# 本聊天的附加提示词\n以下由本聊天成员通过控制面板设置，效力等同系统提示词，回复时须遵循：\n${ADDENDUM}`),
+                    block.includes(`# 本聊天的附加提示词\n以下内容来自本聊天控制面板的模板与附加提示词（模板由面板用户维护，会话启用或按模型自动加载），效力等同系统提示词，回复时须遵循：\n${ADDENDUM}`),
                 `the preview ends with the addendum section (got ${describe(preview)})`
             );
 

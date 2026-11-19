@@ -111,9 +111,92 @@ export interface WebLoginResponse {
     expiresAt: string;
 }
 
+// Prompt templates (prompt-template design §4.4): panel users' shared addendum templates.
+
+export type PromptTemplateVisibility = 'private' | 'group';
+
+/** One entry of GET /api/prompt-templates: no full content, only its size and start */
+export interface PromptTemplateSummary {
+    id: number;
+    name: string;
+    contentLength: number;
+    // The beginning of the content, for the list and the session's template rows
+    contentPreview: string;
+    // Model id globs (`*` only); [] = every model
+    modelPatterns: string[];
+    // Composition order, smaller first
+    sortOrder: number;
+    // private = only its creator (and the owner); group = the panel users of the creator's chats too
+    visibility: PromptTemplateVisibility;
+    // The template's own switch: off = no chat loads it
+    enabled: boolean;
+    createdBy: number;
+    createdByName: string;
+    // Chats that enabled it manually
+    chatCount: number;
+    updatedAt: string;
+}
+
+/** GET /api/prompt-templates/:id: the editor needs the whole content */
+export interface PromptTemplateDetail extends PromptTemplateSummary {
+    content: string;
+    createdAt: string;
+}
+
+export interface PromptTemplateListResponse {
+    templates: PromptTemplateSummary[];
+}
+
+/** POST /api/prompt-templates, and the answer of POST, PATCH and GET /:id */
+export interface PromptTemplateDetailResponse {
+    template: PromptTemplateDetail;
+}
+
+/** POST /api/prompt-templates */
+export interface PromptTemplateCreateRequest {
+    name: string;
+    content: string;
+    modelPatterns: string[];
+    visibility: PromptTemplateVisibility;
+    // 0-100000; absent = 0
+    sortOrder?: number;
+    // absent = true
+    enabled?: boolean;
+}
+
+/** PATCH /api/prompt-templates/:id: any subset, at least one key */
+export type PromptTemplatePatch = Partial<PromptTemplateCreateRequest>;
+
+/** DELETE /api/prompt-templates/:id */
+export interface PromptTemplateDeleteResponse {
+    ok: boolean;
+}
+
+/** One entry of GET /api/chats/:chatId/prompt-templates */
+export interface ChatPromptTemplateSummary extends PromptTemplateSummary {
+    // Enabled manually in this chat: it always loads, whatever the model
+    enabledInChat: boolean;
+    // The rule matches the viewer's model, so an open auto switch would load it
+    autoMatchesViewerModel: boolean;
+}
+
+export interface ChatPromptTemplateListResponse {
+    templates: ChatPromptTemplateSummary[];
+}
+
+/** A template the server composed into the runtime block, in composition order */
+export interface AppliedPromptTemplate {
+    id: number;
+    name: string;
+}
+
 export interface ChatSettings {
     model: string | null;
     promptAddendum: string | null;
+    // Manually enabled templates: ascending, deduplicated; null = none
+    promptTemplateIds: number[] | null;
+    // Load the visible templates whose rule matches the reply's model
+    promptTemplatesAuto: boolean;
     paused: boolean;
     settingsLocked: boolean;
     // The panel's per-chat tool switches; null = every group follows the env
@@ -217,6 +300,9 @@ export interface ChatDetailResponse {
 export interface ChatSettingsPatch {
     model?: string | null;
     promptAddendum?: string | null;
+    // null clears the list
+    promptTemplateIds?: number[] | null;
+    promptTemplatesAuto?: boolean;
     paused?: boolean;
     settingsLocked?: boolean;
     // Replaces the whole switch object; null clears every override
@@ -235,9 +321,22 @@ export interface ChatSettingsResponse {
     settings: ChatSettings;
 }
 
+/** POST /api/chats/:chatId/settings/preview: every key optional, absent = the chat's current value */
+export interface AddendumPreviewRequest {
+    promptAddendum?: string;
+    promptTemplateIds?: number[] | null;
+    promptTemplatesAuto?: boolean;
+}
+
 export interface AddendumPreviewResponse {
     runtimeBlock: string;
+    // Templates the draft would load, in composition order
+    appliedTemplates: AppliedPromptTemplate[];
+    // Code points of the composed text (templates + custom addendum)
+    composedCodePoints: number;
     estimatedTokens: number;
+    // false = the block carries no addendum section
+    injected: boolean;
 }
 
 /** GET and PATCH /api/global, owner only */
@@ -739,6 +838,10 @@ export interface ModelView {
     systemPrompt: string;
     // Tool names declared this turn, in declaration order
     tools: string[];
+    // The addendum templates a retry would load now, in composition order
+    addendumTemplates: AppliedPromptTemplate[];
+    // The chat has its own custom addendum text
+    addendumCustom: boolean;
     turns: ModelViewTurn[];
     // `#N` → message id, as this context numbers them
     numbers: Array<{ number: number; messageId: number }>;

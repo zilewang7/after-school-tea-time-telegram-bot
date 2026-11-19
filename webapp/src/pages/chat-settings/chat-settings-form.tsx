@@ -1,17 +1,21 @@
-import { useCallback } from 'react';
-import type { ChatSettings, ThinkingEffortView } from '../../api';
+import { useCallback, useMemo } from 'react';
+import type { ChatPromptTemplateListResponse, ChatSettings, ThinkingEffortView } from '../../api';
 import { ModelPicker } from '../../components/model-picker';
 import { SaveBar } from '../../components/save-bar';
 import { ThinkingEffortField } from '../../components/thinking-effort-field';
 import { ToggleRow } from '../../components/toggle-row';
 import type { ChatGeminiPriorityState } from '../../gemini-priority';
+import type { ApiQuery } from '../../hooks/use-api-query';
 import { useConfirm } from '../../hooks/use-telegram-feedback';
 import { AddendumEditor } from './addendum-editor';
 import { GeminiPriorityField } from './gemini-priority-field';
+import { PromptTemplatesField } from './prompt-templates-field';
 import { useChatSettingsForm } from './use-chat-settings-form';
 
 const LOCK_CONFIRM_MESSAGE = '锁定后，只有机主能修改本聊天的设置。确定锁定？';
 const UNLOCK_CONFIRM_MESSAGE = '解除锁定后，本聊天的成员都能修改设置。确定解除？';
+// Stable empty list: the query's data is missing until it loads
+const NO_TEMPLATES: ChatPromptTemplateListResponse['templates'] = [];
 
 interface ChatSettingsFormProps {
     chatId: number;
@@ -22,6 +26,10 @@ interface ChatSettingsFormProps {
     // The chat's thinking level and the effective model's graded efforts
     thinkingEffortView: ThinkingEffortView;
     models: readonly string[];
+    // The visible templates: the field lists them, the form sums their lengths for the 8000 limit
+    chatTemplates: ApiQuery<ChatPromptTemplateListResponse>;
+    // The viewer's Telegram user id, to name the creator of someone else's template
+    viewerId: number;
     isOwner: boolean;
     // Trial users keep the fixed trial model: the picker and the thinking level are disabled
     isTrial: boolean;
@@ -32,7 +40,7 @@ interface ChatSettingsFormProps {
     onReload: () => void;
 }
 
-/** Model, thinking level, addendum, pause, rich replies, Priority PayGo and (owner) lock, saved together as one PATCH of the changed keys */
+/** Model, thinking level, addendum, prompt templates, pause, rich replies, Priority PayGo and (owner) lock, saved together as one PATCH of the changed keys */
 export const ChatSettingsForm = ({
     chatId,
     settings,
@@ -41,6 +49,8 @@ export const ChatSettingsForm = ({
     geminiPriority,
     thinkingEffortView,
     models,
+    chatTemplates,
+    viewerId,
     isOwner,
     isTrial,
     trialModel,
@@ -49,7 +59,11 @@ export const ChatSettingsForm = ({
     onSaved,
     onReload,
 }: ChatSettingsFormProps) => {
-    const form = useChatSettingsForm({ chatId, settings, models, writable, onSaved });
+    const templateList = useMemo(
+        () => (chatTemplates.state.status === 'success' ? chatTemplates.state.data.templates : NO_TEMPLATES),
+        [chatTemplates.state]
+    );
+    const form = useChatSettingsForm({ chatId, settings, models, templates: templateList, writable, onSaved });
     // Frozen while saving: a successful save rebuilds the form from the server, which would drop later typing
     const disabled = !writable || form.saving;
     const confirm = useConfirm();
@@ -108,8 +122,23 @@ export const ChatSettingsForm = ({
                 normalizedValue={form.addendumValue ?? ''}
                 length={form.addendumLength}
                 restoredFromDraft={form.restoredFromDraft}
+                templateIds={form.templateIds}
+                promptTemplatesAuto={form.promptTemplatesAuto}
                 disabled={disabled}
                 onChange={form.setAddendumText}
+            />
+
+            <PromptTemplatesField
+                templates={chatTemplates}
+                selectedIds={form.templateIds}
+                auto={form.promptTemplatesAuto}
+                templateContentLength={form.templateContentLength}
+                addendumLength={form.addendumLength}
+                effectiveModel={effectiveModel}
+                viewerId={viewerId}
+                disabled={disabled}
+                onAutoChange={form.setPromptTemplatesAuto}
+                onToggleTemplate={form.toggleTemplateId}
             />
 
             <ToggleRow

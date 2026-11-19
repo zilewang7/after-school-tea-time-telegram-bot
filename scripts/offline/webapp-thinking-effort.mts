@@ -49,6 +49,8 @@ const optionsOf = (...values: string[]): { value: string; label: string }[] =>
 const settingsWith = (thinkingEffort: string | null): ChatSettings => ({
     model: null,
     promptAddendum: null,
+    promptTemplateIds: null,
+    promptTemplatesAuto: false,
     paused: false,
     settingsLocked: false,
     toolOverrides: null,
@@ -63,6 +65,8 @@ const settingsWith = (thinkingEffort: string | null): ChatSettings => ({
 const draftWith = (thinkingEffort: string | null) => ({
     model: { ok: true as const, value: null },
     addendumValue: null,
+    templateIds: null,
+    templatesAuto: false,
     paused: false,
     settingsLocked: false,
     geminiPriority: null,

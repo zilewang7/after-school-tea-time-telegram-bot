@@ -319,6 +319,18 @@ const migrateRichRepliesColumn = async (transaction: Transaction): Promise<void>
 };
 
 /**
+ * The prompt-template columns of chat_settings (design 2026-1119-1146 §D14):
+ * the manually enabled template ids (canonical JSON, NULL = none) and the
+ * per-chat auto-load switch (a boolean that defaults to off, so existing rows
+ * load nothing new). A fresh database gets both from the DTO at sync time.
+ */
+const migrateChatSettingsPromptTemplates = async (transaction: Transaction): Promise<void> => {
+  if (!(await tableExists('chat_settings', transaction))) return;
+  await ensureColumn('chat_settings', 'promptTemplateIds', 'TEXT', transaction);
+  await ensureColumn('chat_settings', 'promptTemplatesAuto', 'BOOLEAN NOT NULL DEFAULT 0', transaction);
+};
+
+/**
  * The trial quota's columns of reply_metrics (design 2026-1116-1500): the
  * trigger user's tier and the attempt's image-generation usage. All nullable
  * (NULL/empty = nothing recorded), so old rows need no backfill and the quota
@@ -915,6 +927,7 @@ export const runSchemaMigrations = async (): Promise<void> => {
     await migrateChatSettingsGeminiPriority(transaction);
     await migrateThinkingEffortColumns(transaction);
     await migrateRichRepliesColumn(transaction);
+    await migrateChatSettingsPromptTemplates(transaction);
     await migrateReplyMetricsTrialQuotaColumns(transaction);
     await migrateMessageDeletedAt(transaction);
     await sequelize.query(
@@ -1056,6 +1069,12 @@ export const runSchemaMigrations = async (): Promise<void> => {
     await sequelize.query(
       `INSERT OR IGNORE INTO schema_migrations (name, appliedAt)
        VALUES ('20261116_trial_quota_metrics', :appliedAt)`,
+      { replacements: { appliedAt: new Date().toISOString() }, transaction }
+    );
+    // chat_settings gained the prompt-template columns (migrateChatSettingsPromptTemplates)
+    await sequelize.query(
+      `INSERT OR IGNORE INTO schema_migrations (name, appliedAt)
+       VALUES ('20261119_prompt_templates', :appliedAt)`,
       { replacements: { appliedAt: new Date().toISOString() }, transaction }
     );
   });

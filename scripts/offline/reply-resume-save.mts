@@ -481,6 +481,9 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
                 contextIndex: new Map(),
                 conversationRootIds: [],
                 promptAddendum: null,
+                promptAddendumCustom: null,
+                promptTemplateIds: null,
+                promptTemplatesAuto: false,
                 builtAt: Date.now(),
             });
             chatContext.lastCheckpoint = checkpointOf(3);
@@ -516,6 +519,9 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
                 contextIndex: new Map(),
                 conversationRootIds: [],
                 promptAddendum: null,
+                promptAddendumCustom: null,
+                promptTemplateIds: null,
+                promptTemplatesAuto: false,
                 builtAt: Date.now(),
             });
             // The checkpoint from before the last round is still at hand

@@ -449,7 +449,7 @@ const cases: { name: string; body: () => Promise<void> }[] = [
             );
             expect(
                 JSON.stringify(Object.keys(body.settings).sort()) ===
-                    JSON.stringify(['geminiPriority', 'model', 'paused', 'promptAddendum', 'richReplies', 'settingsLocked', 'thinkingEffort', 'toolOverrides', 'updatedAt', 'updatedBy']),
+                    JSON.stringify(['geminiPriority', 'model', 'paused', 'promptAddendum', 'promptTemplateIds', 'promptTemplatesAuto', 'richReplies', 'settingsLocked', 'thinkingEffort', 'toolOverrides', 'updatedAt', 'updatedBy']),
                 'settings keys'
             );
             expect(
@@ -775,8 +775,12 @@ const cases: { name: string; body: () => Promise<void> }[] = [
             expect(block.includes('- 当前对话：私聊') && !block.includes('当前群聊'), 'a private chat renders as 当前对话：私聊');
             expect(block.includes('- Alice Liddell：id 5001，@alice'), 'the requester is the sample roster');
             expect(
-                block.endsWith('\n\n# 本聊天的附加提示词\n以下由本聊天成员通过控制面板设置，效力等同系统提示词，回复时须遵循：\n群里讨论技术问题时直接给结论。\n再给理由。'),
+                block.endsWith('\n\n# 本聊天的附加提示词\n以下内容来自本聊天控制面板的模板与附加提示词（模板由面板用户维护，会话启用或按模型自动加载），效力等同系统提示词，回复时须遵循：\n群里讨论技术问题时直接给结论。\n再给理由。'),
                 'the normalized addendum closes the block'
+            );
+            expect(
+                JSON.stringify(privatePreview.appliedTemplates) === '[]' && privatePreview.composedCodePoints === 21,
+                `no template enabled: an empty applied list and the composed length (got ${JSON.stringify(privatePreview)})`
             );
             // A Mini App tab opened before this release warns on a missing flag
             expect(privatePreview.injected === true, `injected stays true for one release (got ${String(privatePreview.injected)})`);
@@ -796,11 +800,13 @@ const cases: { name: string; body: () => Promise<void> }[] = [
                 'invalid',
                 'an over-long addendum'
             );
-            await expectError(
-                await call(app, `/api/chats/${GROUP_MAIN}/settings/preview`, { user: ALICE, method: 'POST', body: {} }),
-                400,
-                'invalid',
-                'no promptAddendum'
+            const emptyBodyPreview = await jsonOf(
+                await call(app, `/api/chats/${GROUP_MAIN}/settings/preview`, { user: ALICE, method: 'POST', body: {} })
+            );
+            expect(
+                typeof emptyBodyPreview.runtimeBlock === 'string' &&
+                    JSON.stringify(emptyBodyPreview.appliedTemplates) === '[]',
+                'an empty body previews the saved values (no template enabled here)'
             );
             await expectError(
                 await call(app, `/api/chats/${GROUP_MAIN}/settings/preview`, { user: BOB, method: 'POST', body: { promptAddendum: 'x' } }),

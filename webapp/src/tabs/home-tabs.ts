@@ -5,6 +5,10 @@ import { lazyPage } from './lazy-page';
 import type { TabDefinition } from './tab-types';
 
 const HomeSettingsTab = lazyPage(() => import('../pages/home-settings/home-settings-tab'), 'HomeSettingsTab');
+const PromptTemplatesTab = lazyPage(
+    () => import('../pages/prompt-templates/prompt-templates-tab'),
+    'PromptTemplatesTab'
+);
 
 const chatListTab: TabDefinition = {
     id: 'chats',
@@ -78,5 +82,15 @@ export const HOME_TABS: readonly TabDefinition[] = [
         page: lazyPage(() => import('../pages/tools/tools-tab'), 'ToolsTab'),
     },
     // [F5 slot end]
+    // [F6 slot] 模板 (id 'templates', path 'templates'): the panel's prompt templates
+    {
+        id: 'templates',
+        label: '模板',
+        path: 'templates',
+        // Everyone: any panel user may create and manage their own templates
+        isVisible: () => true,
+        page: PromptTemplatesTab,
+    },
+    // [F6 slot end]
     homeSettingsTab,
 ];

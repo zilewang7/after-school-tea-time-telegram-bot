@@ -11,13 +11,39 @@ import {
 } from './tool-overrides.js';
 import { normalizeThinkingEffort, type ThinkingEffortValue } from './thinking-effort-values.js';
 import { isImageOutputModel } from '../ai/model-kinds.js';
+import { countCodePoints } from '../shared/code-points.js';
+import {
+    canonicalTemplateIdListJson,
+    normalizeTemplateIdList,
+    templateIdListEqual,
+} from './prompt-template-ids.js';
+
+export { countCodePoints };
 
 export const MODEL_ID_MAX_LENGTH = 64;
+/** A chat's own addendum text, stored in `promptAddendum` */
 export const PROMPT_ADDENDUM_MAX_CODE_POINTS = 2000;
+/**
+ * What a chat may store as "what this reply loads": its manually enabled
+ * templates' content plus its own addendum text (design D3). Auto-loaded
+ * templates are the template author's limit, not the chat's.
+ */
+export const CHAT_PROMPT_ADDENDUM_MAX_CODE_POINTS = 8000;
 
 export interface ChatSettingsPatch {
     /** null = follow the global default */
     model?: string | null;
+    /**
+     * Manually enabled prompt templates: ascending unique ids, at most
+     * `MAX_TEMPLATE_SELECTIONS`; null = none. Manually enabled templates always
+     * load, whatever the reply model matches.
+     */
+    promptTemplateIds?: number[] | null;
+    /**
+     * Per-chat auto-load switch: on top of the manual list, load every visible
+     * group template whose loading rule matches the reply model (design D3).
+     */
+    promptTemplatesAuto?: boolean;
     /** null or blank = none */
     promptAddendum?: string | null;
     paused?: boolean;
@@ -49,6 +75,8 @@ export type ChatSettingKey = keyof ChatSettingsPatch;
 const CHAT_SETTING_KEYS: readonly ChatSettingKey[] = [
     'model',
     'promptAddendum',
+    'promptTemplateIds',
+    'promptTemplatesAuto',
     'paused',
     'settingsLocked',
     'toolOverrides',
@@ -58,12 +86,15 @@ const CHAT_SETTING_KEYS: readonly ChatSettingKey[] = [
 ];
 
 /** `conflict`: the caller edited a version that someone else has since replaced */
-export type ChatSettingsErrorCode = 'invalid' | 'forbidden' | 'locked' | 'conflict' | 'trial';
+export type ChatSettingsErrorCode = 'invalid' | 'forbidden' | 'locked' | 'conflict' | 'trial' | 'not_found';
 
 /** The values a patch can change */
 export interface ChatSettingValues {
     model: string | null;
     promptAddendum: string | null;
+    /** Normalized: ascending unique ids, or null for none */
+    promptTemplateIds: number[] | null;
+    promptTemplatesAuto: boolean;
     paused: boolean;
     settingsLocked: boolean;
     toolOverrides: ToolOverrides | null;
@@ -96,8 +127,6 @@ export type PatchResolution =
     | { kind: 'resolved'; next: ChatSettingValues; changes: readonly ChatSettingChange[] };
 
 type Normalized<T> = { ok: true; value: T } | { ok: false; message: string };
-
-export const countCodePoints = (text: string): number => Array.from(text).length;
 
 /** Never echoes the id: the `/model` refusal reuses it as a callback toast */
 export const IMAGE_MODEL_NOT_CHAT_MESSAGE = '生图模型不能设为对话模型。要画图直接让 bot 画，或用 /picbanana、/picgpt。';
@@ -157,6 +186,8 @@ const unchanged = <T>(value: T): Normalized<T> => ({ ok: true, value });
 const auditValuesOf = (values: ChatSettingValues): Record<ChatSettingKey, string | null> => ({
     model: values.model,
     promptAddendum: values.promptAddendum,
+    promptTemplateIds: canonicalTemplateIdListJson(values.promptTemplateIds),
+    promptTemplatesAuto: String(values.promptTemplatesAuto),
     paused: String(values.paused),
     settingsLocked: String(values.settingsLocked),
     toolOverrides: canonicalToolOverridesJson(values.toolOverrides),
@@ -169,6 +200,8 @@ const auditValuesOf = (values: ChatSettingValues): Record<ChatSettingKey, string
 const CHANGED: Record<ChatSettingKey, (current: ChatSettingValues, next: ChatSettingValues) => boolean> = {
     model: (current, next) => current.model !== next.model,
     promptAddendum: (current, next) => current.promptAddendum !== next.promptAddendum,
+    promptTemplateIds: (current, next) => !templateIdListEqual(current.promptTemplateIds, next.promptTemplateIds),
+    promptTemplatesAuto: (current, next) => current.promptTemplatesAuto !== next.promptTemplatesAuto,
     paused: (current, next) => current.paused !== next.paused,
     settingsLocked: (current, next) => current.settingsLocked !== next.settingsLocked,
     toolOverrides: (current, next) => !toolOverridesEqual(current.toolOverrides, next.toolOverrides),
@@ -185,6 +218,14 @@ const applyPatchValues = (current: ChatSettingValues, patch: ChatSettingsPatch):
         ? unchanged(current.promptAddendum)
         : normalizePromptAddendum(patch.promptAddendum);
     if (!promptAddendum.ok) return promptAddendum;
+    const promptTemplateIds = patch.promptTemplateIds === undefined
+        ? unchanged(current.promptTemplateIds)
+        : normalizeTemplateIdList(patch.promptTemplateIds);
+    if (!promptTemplateIds.ok) return promptTemplateIds;
+    const promptTemplatesAuto = patch.promptTemplatesAuto === undefined
+        ? unchanged(current.promptTemplatesAuto)
+        : normalizeFlag(patch.promptTemplatesAuto, 'promptTemplatesAuto');
+    if (!promptTemplatesAuto.ok) return promptTemplatesAuto;
     const paused = patch.paused === undefined ? unchanged(current.paused) : normalizeFlag(patch.paused, 'paused');
     if (!paused.ok) return paused;
     const settingsLocked = patch.settingsLocked === undefined
@@ -212,6 +253,8 @@ const applyPatchValues = (current: ChatSettingValues, patch: ChatSettingsPatch):
         value: {
             model: model.value,
             promptAddendum: promptAddendum.value,
+            promptTemplateIds: promptTemplateIds.value,
+            promptTemplatesAuto: promptTemplatesAuto.value,
             paused: paused.value,
             settingsLocked: settingsLocked.value,
             toolOverrides: toolOverrides.value,

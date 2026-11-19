@@ -21,6 +21,10 @@ import type { VisibleAccess } from '../types.js';
 export interface ChatSettingsView {
     model: string | null;
     promptAddendum: string | null;
+    /** Templates the chat manually enabled; null = none */
+    promptTemplateIds: number[] | null;
+    /** The session's "load matching templates automatically" switch, off by default */
+    promptTemplatesAuto: boolean;
     paused: boolean;
     settingsLocked: boolean;
     /** The panel's per-chat tool switches; null = every group follows the env */
@@ -62,6 +66,8 @@ export const currentChatSettings = (chatId: number): ChatSettings =>
 export const toSettingsView = (settings: ChatSettings): ChatSettingsView => ({
     model: settings.model,
     promptAddendum: settings.promptAddendum,
+    promptTemplateIds: settings.promptTemplateIds,
+    promptTemplatesAuto: settings.promptTemplatesAuto,
     paused: settings.paused,
     settingsLocked: settings.settingsLocked,
     toolOverrides: settings.toolOverrides,

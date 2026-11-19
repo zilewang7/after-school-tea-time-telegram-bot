@@ -24,6 +24,8 @@ const CHAT_ID = -3201;
 const settingsWith = (richReplies: boolean): ChatSettings => ({
     model: null,
     promptAddendum: null,
+    promptTemplateIds: null,
+    promptTemplatesAuto: false,
     paused: false,
     settingsLocked: false,
     toolOverrides: null,
@@ -38,6 +40,8 @@ const settingsWith = (richReplies: boolean): ChatSettings => ({
 const draftWith = (richReplies: boolean) => ({
     model: { ok: true as const, value: null },
     addendumValue: null,
+    templateIds: null,
+    templatesAuto: false,
     paused: false,
     settingsLocked: false,
     geminiPriority: null,

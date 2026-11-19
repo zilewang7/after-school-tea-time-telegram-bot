@@ -19,6 +19,8 @@ const ACCESS_LABELS: Record<ChatAccess, string> = {
 const AUDIT_KEY_LABELS: Partial<Record<string, string>> = {
     model: '模型',
     promptAddendum: '附加提示词',
+    promptTemplateIds: '模板启用',
+    promptTemplatesAuto: '自动加载模板',
     paused: '暂停',
     settingsLocked: '锁定设置',
     defaultModel: '全局默认模型',
@@ -36,7 +38,27 @@ const AUDIT_KEY_LABELS: Partial<Record<string, string>> = {
 };
 
 // Boolean settings, audited as 'true' / 'false'
-const ON_OFF_AUDIT_KEYS = ['paused', 'settingsLocked', 'richReplies', 'geminiPriority', 'defaultGeminiPriority'] as const;
+const ON_OFF_AUDIT_KEYS = [
+    'paused',
+    'settingsLocked',
+    'richReplies',
+    'geminiPriority',
+    'defaultGeminiPriority',
+    'promptTemplatesAuto',
+] as const;
+
+/** The audit stores the enabled template ids as canonical JSON; show them as `#2、#5` */
+const formatPromptTemplateIdsValue = (json: string): string => {
+    let parsed: unknown;
+    try {
+        parsed = JSON.parse(json);
+    } catch {
+        return json;
+    }
+    if (!Array.isArray(parsed)) return json;
+    const ids = parsed.filter((item: unknown): item is number => typeof item === 'number');
+    return ids.length === 0 ? '无' : ids.map((id) => `#${id}`).join('、');
+};
 
 export const chatTypeLabel = (type: ChatType): string => CHAT_TYPE_LABELS[type];
 
@@ -109,6 +131,11 @@ export const formatAuditValue = (key: string, value: string | null): string =>
         .with({ key: 'defaultGeminiPriority', value: P.nullish }, () => '关（未设置）')
         // Tool switches: null (and unreadable JSON) means every group follows the env
         .with({ key: 'toolOverrides' }, ({ value: overridesText }) => formatToolOverridesValue(overridesText))
+        // Enabled prompt templates: null = none
+        .with({ key: 'promptTemplateIds', value: P.nullish }, () => '无')
+        .with({ key: 'promptTemplateIds' }, ({ value: idsText }) =>
+            idsText === null ? '无' : formatPromptTemplateIdsValue(idsText)
+        )
         // Thinking level: null = the model default, 'off' = thinking off, else the graded label
         .with({ key: 'thinkingEffort' }, ({ value: effort }) => thinkingEffortAuditValue(effort))
         .with({ value: P.nullish }, () => '（空）')

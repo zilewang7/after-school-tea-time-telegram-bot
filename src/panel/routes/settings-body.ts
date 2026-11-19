@@ -12,12 +12,15 @@ import {
     type ChatSettingsPatch,
 } from '../../services/chat-settings-service.js';
 import { normalizeToolOverrides } from '../../services/tool-overrides.js';
+import { normalizeTemplateIdList } from '../../services/prompt-template-ids.js';
 import type { JsonRecord } from '../json.js';
 import { checkBodyKeys, invalid } from '../request.js';
 
 const SETTING_KEYS: readonly ChatSettingKey[] = [
     'model',
     'promptAddendum',
+    'promptTemplateIds',
+    'promptTemplatesAuto',
     'paused',
     'settingsLocked',
     'toolOverrides',
@@ -72,6 +75,14 @@ export const toChatSettingsPatch = (body: JsonRecord, shape: SettingsPatchShape)
             })
             .with('promptAddendum', () => {
                 patch.promptAddendum = stringOrNull(value, key);
+            })
+            .with('promptTemplateIds', () => {
+                const normalized = normalizeTemplateIdList(value);
+                if (!normalized.ok) throw invalid(normalized.message);
+                patch.promptTemplateIds = normalized.value;
+            })
+            .with('promptTemplatesAuto', () => {
+                patch.promptTemplatesAuto = booleanValue(value, key);
             })
             .with('paused', () => {
                 patch.paused = booleanValue(value, key);

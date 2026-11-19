@@ -18,6 +18,7 @@ import { ChatSettingsRecord } from '../db/chatSettingsDTO.js';
 import { GlobalSetting } from '../db/globalSettingDTO.js';
 import { parseStoredToolOverrides, type ToolOverrides } from './tool-overrides.js';
 import { storedThinkingEffortOf, type ThinkingEffortValue } from './thinking-effort-values.js';
+import { parseStoredTemplateIdList } from './prompt-template-ids.js';
 
 export interface ChatSettings {
     chatId: number;
@@ -25,6 +26,10 @@ export interface ChatSettings {
     model: string | null;
     /** null = none */
     promptAddendum: string | null;
+    /** Manually enabled prompt templates: ascending unique ids; null = none */
+    promptTemplateIds: number[] | null;
+    /** Auto-load templates whose loading rule matches the reply model; off by default */
+    promptTemplatesAuto: boolean;
     paused: boolean;
     settingsLocked: boolean;
     /** The panel's per-chat tool switches; null = every group follows the env */
@@ -62,6 +67,9 @@ const toChatSettings = (record: ChatSettingsRecord): ChatSettings => ({
     chatId: record.chatId,
     model: record.model ?? null,
     promptAddendum: record.promptAddendum ?? null,
+    promptTemplateIds: parseStoredTemplateIdList(record.promptTemplateIds ?? null),
+    // A row from before the column reads as off, like every new chat
+    promptTemplatesAuto: record.promptTemplatesAuto === true,
     paused: record.paused === true,
     settingsLocked: record.settingsLocked === true,
     toolOverrides: parseStoredToolOverrides(record.toolOverrides ?? null),
@@ -104,6 +112,9 @@ export const isChatSettingsCacheLoaded = (): boolean => cacheLoaded;
 
 /** undefined = the chat has no settings row, every default applies */
 export const getChatSettings = (chatId: number): ChatSettings | undefined => chatSettingsByChat.get(chatId);
+
+/** Every row the cache holds; read by callers that scan all chats (e.g. a template's usage count) */
+export const listChatSettings = (): readonly ChatSettings[] => [...chatSettingsByChat.values()];
 
 export const isChatPaused = (chatId: number): boolean => getChatSettings(chatId)?.paused === true;
 

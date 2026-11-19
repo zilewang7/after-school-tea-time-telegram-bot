@@ -5,9 +5,11 @@ import type {
     AccessApplicationPatch,
     AccessApplicationResponse,
     AccessApplicationsResponse,
+    AddendumPreviewRequest,
     AddendumPreviewResponse,
     AuditResponse,
     ChatDetailResponse,
+    ChatPromptTemplateListResponse,
     ChatSettingsPatch,
     ChatSettingsResponse,
     ConversationListResponse,
@@ -28,6 +30,11 @@ import type {
     MeResponse,
     ModelCatalogResponse,
     ModelView,
+    PromptTemplateCreateRequest,
+    PromptTemplateDeleteResponse,
+    PromptTemplateDetailResponse,
+    PromptTemplateListResponse,
+    PromptTemplatePatch,
     PublicShareResponse,
     PublicThinkingResponse,
     ReplyDetail,
@@ -109,6 +116,11 @@ const issueListPath = ({ status, kind, source, chatId, offset }: IssueListQuery)
 };
 
 const chatPath = (chatId: number): string => `/api/chats/${chatId}`;
+
+/** The templates one chat may enable (its visibility rules are the server's) */
+const chatPromptTemplatesPath = (chatId: number): string => `${chatPath(chatId)}/prompt-templates`;
+
+const promptTemplatePath = (templateId: number): string => `/api/prompt-templates/${templateId}`;
 
 const issueApiPath = (issueId: number): string => `/api/issues/${issueId}`;
 
@@ -201,14 +213,37 @@ export const createApi = (initData: string) => {
         getMe: (signal?: AbortSignal) => request<MeResponse>({ method: 'GET', path: '/api/me', signal }),
         getChat: (chatId: number, signal?: AbortSignal) =>
             request<ChatDetailResponse>({ method: 'GET', path: chatPath(chatId), signal }),
+        // Prompt templates (prompt-template design P4): panel users' shared addendum templates
+        // The management list: the owner sees every template, everyone else their own
+        getPromptTemplates: (signal?: AbortSignal) =>
+            request<PromptTemplateListResponse>({ method: 'GET', path: '/api/prompt-templates', signal }),
+        getPromptTemplate: (templateId: number, signal?: AbortSignal) =>
+            request<PromptTemplateDetailResponse>({ method: 'GET', path: promptTemplatePath(templateId), signal }),
+        // 201 on success; 400 on a validation error, 409 on a duplicate name
+        createPromptTemplate: (input: PromptTemplateCreateRequest) =>
+            request<PromptTemplateDetailResponse>({ method: 'POST', path: '/api/prompt-templates', body: input }),
+        // Creator or owner only; any subset of the input, at least one key
+        patchPromptTemplate: (templateId: number, patch: PromptTemplatePatch) =>
+            request<PromptTemplateDetailResponse>({
+                method: 'PATCH',
+                path: promptTemplatePath(templateId),
+                body: patch,
+            }),
+        // Creator or owner only
+        deletePromptTemplate: (templateId: number) =>
+            request<PromptTemplateDeleteResponse>({ method: 'DELETE', path: promptTemplatePath(templateId) }),
         patchChatSettings: (chatId: number, patch: ChatSettingsPatch) =>
             request<ChatSettingsResponse>({ method: 'PATCH', path: `${chatPath(chatId)}/settings`, body: patch }),
-        previewAddendum: (chatId: number, promptAddendum: string) =>
+        // Every key optional: an absent one previews the chat's current value
+        previewAddendum: (chatId: number, draft: AddendumPreviewRequest) =>
             request<AddendumPreviewResponse>({
                 method: 'POST',
                 path: `${chatPath(chatId)}/settings/preview`,
-                body: { promptAddendum },
+                body: draft,
             }),
+        // The templates this chat can enable; enabledInChat and autoMatchesViewerModel are the server's
+        getChatPromptTemplates: (chatId: number, signal?: AbortSignal) =>
+            request<ChatPromptTemplateListResponse>({ method: 'GET', path: chatPromptTemplatesPath(chatId), signal }),
         getGlobal: (signal?: AbortSignal) =>
             request<GlobalSettingsResponse>({ method: 'GET', path: '/api/global', signal }),
         // Only the keys that changed; the server writes all of them or none

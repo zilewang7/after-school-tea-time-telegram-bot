@@ -525,6 +525,8 @@ const cases: { name: string; body: () => Promise<void> }[] = [
             const current = {
                 model: 'gemini-4-argon',
                 promptAddendum: null,
+                promptTemplateIds: null,
+                promptTemplatesAuto: false,
                 paused: false,
                 settingsLocked: false,
                 toolOverrides: null,

@@ -16,6 +16,8 @@ import { sequelize } from './config.js';
  * Value formats (both columns are text):
  * - model / defaultModel: the model id; NULL = follow global / back to env
  * - promptAddendum / note: the full text or NULL
+ * - promptTemplateIds: canonical JSON id array; NULL = no manually enabled template
+ * - promptTemplatesAuto: 'true' / 'false'
  * - paused / settingsLocked / richReplies: 'true' / 'false'
  * - geminiPriority / defaultGeminiPriority: 'true' / 'false'; NULL = not set
  * - exclude / include: newValue = canonical messageId
@@ -31,9 +33,9 @@ export class SettingsAudit extends Model<
   declare actorId: number;
   // chat:<chatId> | global | issue:<issueId>
   declare scope: string;
-  // model | promptAddendum | paused | settingsLocked | toolOverrides | geminiPriority
-  // | richReplies | exclude | include | link | defaultModel | defaultGeminiPriority
-  // | create | status | note
+  // model | promptAddendum | promptTemplateIds | promptTemplatesAuto | paused
+  // | settingsLocked | toolOverrides | geminiPriority | richReplies | exclude
+  // | include | link | defaultModel | defaultGeminiPriority | create | status | note
   declare key: string;
   declare oldValue: CreationOptional<string | null>;
   declare newValue: CreationOptional<string | null>;

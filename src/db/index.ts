@@ -20,6 +20,7 @@ import { UserAccess } from './userAccessDTO.js';
 import './chatDTO.js';
 import './chatMemberSeenDTO.js';
 import './chatSettingsDTO.js';
+import './promptTemplateDTO.js';
 import './globalSettingDTO.js';
 import './settingsAuditDTO.js';
 import './contextExclusionDTO.js';

@@ -34,6 +34,7 @@ import { registerGlobalRoutes } from './routes/global.js';
 import { registerHealthRoute } from './routes/health.js';
 import { registerIssueRoutes } from './routes/issues.js';
 import { registerMeRoute } from './routes/me.js';
+import { registerPromptTemplateRoutes } from './routes/prompt-templates.js';
 import { registerSettingsPreviewRoute } from './routes/settings-preview.js';
 import type { ConversationRouteDeps } from './routes/conversation-deps.js';
 import { registerConversationExportRoute } from './routes/conversation-export.js';
@@ -174,6 +175,7 @@ export const createPanelApp = (options: PanelAppOptions): Hono<PanelEnv> => {
     registerChatRoutes(app);
     registerChatSettingsRoute(app);
     registerSettingsPreviewRoute(app);
+    registerPromptTemplateRoutes(app);
     registerGlobalRoutes(app);
     registerAuditRoute(app);
     registerIssueRoutes(app, {

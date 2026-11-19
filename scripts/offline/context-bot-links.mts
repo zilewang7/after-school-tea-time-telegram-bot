@@ -320,6 +320,9 @@ results.push(
             contextIndex,
             conversationRootIds: [triggerMessageId],
             promptAddendum: null,
+            promptAddendumCustom: null,
+            promptTemplateIds: null,
+            promptTemplatesAuto: false,
             builtAt: 0,
         };
 

@@ -1930,3 +1930,11 @@ a.button {
     align-self: center;
     text-decoration: none;
 }
+
+/* Prompt template rows (prompt-template design P4): the management list and the chat field */
+.template-row {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    padding: 10px 0;
+}

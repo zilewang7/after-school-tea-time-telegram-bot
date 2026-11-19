@@ -4,6 +4,12 @@ import { readStorage, removeStorage, writeStorage } from './storage';
 
 export const ADDENDUM_MAX_CODE_POINTS = 2000;
 
+/**
+ * The save limit of the composed addendum: the contents of the manually enabled
+ * templates plus the custom text (prompt-template design D8). The server checks it too.
+ */
+export const CHAT_ADDENDUM_MAX_CODE_POINTS = 8000;
+
 // Upper-bound estimate used by the server as well: 1.3 tokens per character
 const TOKENS_PER_CODE_POINT = 1.3;
 

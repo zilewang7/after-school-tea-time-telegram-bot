@@ -17,6 +17,7 @@ import { startCustomEmojiRecovery } from './services/custom-emoji-service.js';
 import { logWidgetReadiness, logWidgetRendererReadiness } from './telegram/widget-readiness.js';
 import { reconcileInterruptedResponses } from './services/bot-message-service.js';
 import { getGlobalDefaultModel, loadChatSettingsCache } from './services/chat-settings-service.js';
+import { loadPromptTemplatesCache } from './services/prompt-templates-cache.js';
 import { loadUserAccessCache } from './services/user-access-cache.js';
 import { configureAccessMembership } from './services/access-membership.js';
 import { startPanel, stopPanel } from './panel/index.js';
@@ -169,6 +170,9 @@ async function main() {
     // Per-chat and global settings are read synchronously from memory by the
     // reply path, so they must be loaded before the first update
     await loadChatSettingsCache();
+    // The prompt templates chat settings may name load right after them: both
+    // caches are read synchronously by the reply path
+    await loadPromptTemplatesCache();
     console.log(`Initial model: ${getGlobalDefaultModel()}`);
     // Who may use the full tier is read synchronously by the reply path too
     await loadUserAccessCache();

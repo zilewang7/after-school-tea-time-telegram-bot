@@ -45,15 +45,15 @@ const rosterLine = (user: ContextUser): string => {
 };
 
 /**
- * The chat's own prompt addendum, set by its members from the control panel.
- * A `#` heading keeps it apart from the roster lines, which start with `- `;
- * the static head's notes section announces that it carries system-prompt
- * weight.
+ * The chat's own prompt addendum: its members' templates plus its custom text,
+ * composed by the server from the control panel's settings. A `#` heading keeps
+ * it apart from the roster lines, which start with `- `; the static head's notes
+ * section announces that it carries system-prompt weight.
  */
 const addendumSection = (addendum: string): string[] => [
     '',
     '# 本聊天的附加提示词',
-    '以下由本聊天成员通过控制面板设置，效力等同系统提示词，回复时须遵循：',
+    '以下内容来自本聊天控制面板的模板与附加提示词（模板由面板用户维护，会话启用或按模型自动加载），效力等同系统提示词，回复时须遵循：',
     addendum,
 ];
 

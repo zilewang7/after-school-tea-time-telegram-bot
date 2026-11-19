@@ -34,6 +34,9 @@ import {
 const bench = await createResumeBench();
 const { telegram, vertex, registry } = bench;
 const { updateChatSettings } = await import('../../src/services/chat-settings-service.js');
+const { createPromptTemplate, updatePromptTemplate, deletePromptTemplate } = await import(
+    '../../src/services/prompt-templates-service.js'
+);
 const { excludeMessage, includeMessage } = await import('../../src/db/queries/context-exclusions.js');
 const { PAUSED_CALLBACK_NOTICE } = await import('../../src/reply/chat-pause.js');
 const checks = await import('../../src/reply/resume/continue-checks.js');
@@ -156,6 +159,9 @@ const saveFiller = (index: number): void => {
         contextIndex: new Map(),
         conversationRootIds: [],
         promptAddendum: null,
+        promptAddendumCustom: null,
+        promptTemplateIds: null,
+        promptTemplatesAuto: false,
         builtAt: Date.now(),
     });
     const prepared = registry.prepare({
@@ -305,6 +311,33 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
                 await condition.restore(reply);
                 await expectContinues(reply, condition.label);
             }
+        }),
+    },
+    {
+        name: 'case 10 (10): a template changed after the interrupt refuses the continue; restoring it resumes',
+        body: quietCase(async () => {
+            const chatId = takeChatId();
+            const template = await createPromptTemplate(
+                {
+                    name: `恢复测试模板-${String(chatId)}`,
+                    content: '模板内容甲',
+                    modelPatterns: [],
+                    sortOrder: 0,
+                    visibility: 'group',
+                    enabled: true,
+                },
+                OWNER
+            );
+            // The chat enabled it manually before the reply started
+            await updateChatSettings({ chatId, patch: { promptTemplateIds: [template.id] }, actor: OWNER });
+            const reply = await failedReply(chatId);
+            // The template changes, the session inputs do not: the clicker cannot fix this
+            await updatePromptTemplate(template.id, { content: '模板内容乙' }, OWNER);
+            await expectNoticeOnly(reply, checks.TEMPLATE_CHANGED_NOTICE, 'template');
+            await updatePromptTemplate(template.id, { content: '模板内容甲' }, OWNER);
+            await expectContinues(reply, 'template restored');
+            await updateChatSettings({ chatId, patch: { promptTemplateIds: null }, actor: OWNER });
+            await deletePromptTemplate(template.id, OWNER);
         }),
     },
     {

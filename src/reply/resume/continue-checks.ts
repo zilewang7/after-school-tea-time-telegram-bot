@@ -17,6 +17,7 @@ import type { BotResponse } from '../../db/index.js';
 import { loadContextExclusions } from '../../db/queries/context-queries.js';
 import { effectiveReplyModel, resolveAccessTier, type AccessTier } from '../../services/access-tier.js';
 import { snapshotReplySettings, type ReplySettingsSnapshot } from '../../services/chat-settings-service.js';
+import { resolveReplyAddendum } from '../../services/prompt-templates-service.js';
 import { checkTrialQuota } from '../../services/trial-quota.js';
 import { resumableMarkOf } from '../../state.js';
 import { isCallbackChatPaused, PAUSED_CALLBACK_NOTICE } from '../chat-pause.js';
@@ -38,6 +39,7 @@ export const SWITCH_TO_LATEST_NOTICE = '请先切回最新版本再继续';
 export const MODEL_CHANGED_NOTICE = '当前模型与中断时不同，切回后可继续，或点重试';
 export const TOOLS_CHANGED_NOTICE = '工具或提示词设置与中断时不同，恢复后可继续，或点重试';
 export const ADDENDUM_CHANGED_NOTICE = '会话提示词已修改，改回后可继续，或点重试';
+export const TEMPLATE_CHANGED_NOTICE = '提示词模板已被修改、停用或删除，点重试重新生成';
 export const CONTEXT_EXCLUDED_NOTICE = '上下文里有消息已被移出，移回后可继续，或点重试';
 
 /** What the click resumes with, decided once by the checks */
@@ -101,6 +103,41 @@ const anyContextMessageExcluded = async (entry: ReplyCheckpoint): Promise<boolea
     return entry.context.contextMessageIds.some((messageId) => exclusions.has(messageId));
 };
 
+/** Two stored id lists: null and an empty list are the same "no manual template" state */
+const sameTemplateIds = (left: readonly number[] | null, right: readonly number[] | null): boolean => {
+    if (left === null || right === null) return left === null && right === null;
+    return left.length === right.length && left.every((id, index) => id === right[index]);
+};
+
+/**
+ * The refusal a changed addendum earns. The clicker can fix the session's own
+ * inputs, but not a template its creator changed — the notice tells them which
+ * of the two it was. Templates render differently per model, so the combination
+ * is recomputed with the model the continue would actually use.
+ */
+const addendumRefusalOf = async (
+    chatId: number,
+    settings: ReplySettingsSnapshot,
+    model: string,
+    entry: ReplyCheckpoint
+): Promise<string | null> => {
+    const composed = await resolveReplyAddendum(
+        chatId,
+        {
+            custom: settings.promptAddendum,
+            templateIds: settings.promptTemplateIds,
+            auto: settings.promptTemplatesAuto,
+        },
+        model
+    );
+    if (composed.text === entry.context.promptAddendum) return null;
+    const sessionInputsUnchanged =
+        settings.promptAddendum === entry.context.promptAddendumCustom &&
+        sameTemplateIds(settings.promptTemplateIds, entry.context.promptTemplateIds) &&
+        settings.promptTemplatesAuto === entry.context.promptTemplatesAuto;
+    return sessionInputsUnchanged ? TEMPLATE_CHANGED_NOTICE : ADDENDUM_CHANGED_NOTICE;
+};
+
 export const checkContinue = async (
     ctx: Context,
     response: BotResponse,
@@ -133,7 +170,8 @@ export const checkContinue = async (
     if (thinkingRefusal !== null) return keep(thinkingRefusal);
     const chat = ctx.chat;
     if (chat === undefined || !sameToolsAndPrompt(chat, ctx.api, entry, plan)) return keep(TOOLS_CHANGED_NOTICE);
-    if (settings.promptAddendum !== entry.context.promptAddendum) return keep(ADDENDUM_CHANGED_NOTICE);
+    const addendumRefusal = await addendumRefusalOf(response.chatId, settings, plan.model, entry);
+    if (addendumRefusal !== null) return keep(addendumRefusal);
     if (await anyContextMessageExcluded(entry)) return keep(CONTEXT_EXCLUDED_NOTICE);
     // Rich replies are not compared: presentation only, the request stays the same
 

@@ -108,6 +108,9 @@ const entryOf = (
         contextIndex: new Map(),
         conversationRootIds: [],
         promptAddendum: null,
+        promptAddendumCustom: null,
+        promptTemplateIds: null,
+        promptTemplatesAuto: false,
         builtAt: savedAt,
     });
     return {

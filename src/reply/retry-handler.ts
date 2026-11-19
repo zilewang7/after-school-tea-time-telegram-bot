@@ -23,6 +23,7 @@ import { chatTitleOf } from '../telegram/chat-title.js';
 import { resolveContextRoot } from './context-root.js';
 import { buildReplyToolContext, createReplyTools } from './tools/index.js';
 import { snapshotReplySettings } from '../services/chat-settings-service.js';
+import { resolveReplyAddendum } from '../services/prompt-templates-service.js';
 import {
     effectiveReplyModel,
     resolveAccessTier,
@@ -302,6 +303,21 @@ const handleChatRetry = async (
     // cheap model whatever the chat says (design D2).
     const settings = snapshotReplySettings(chatId);
     const model = effectiveReplyModel(access, settings.model);
+    // The presser's tier can swap the model, and the combination follows the model
+    const addendum = await resolveReplyAddendum(
+        chatId,
+        {
+            custom: settings.promptAddendum,
+            templateIds: settings.promptTemplateIds,
+            auto: settings.promptTemplatesAuto,
+        },
+        model
+    );
+    if (addendum.applied.length > 0) {
+        console.log(
+            `[retry-handler] addendum templates: ${addendum.applied.map((template) => template.name).join(', ')} (chat ${chatId}, model ${model})`
+        );
+    }
     // Before the retry session: the reply and its buttons stay as they are
     if (await refuseImageChatModel(ctx, model)) return;
     // The presser's tier was decided above; reuse it so the two cannot disagree
@@ -336,7 +352,7 @@ const handleChatRetry = async (
         capabilities,
         model,
         chatTitle: chatTitleOf(ctx.chat),
-        chatAddendum: settings.promptAddendum,
+        chatAddendum: addendum.text,
         excludeMessageIds: [botResponse.messageId], // Exclude the bot response we're retrying
         triggerAccess: triggerAccessNoteOf(triggerAccess, trialSpend),
     }));
@@ -405,7 +421,10 @@ const handleChatRetry = async (
         // A continued reply renders its `#N` links with the same numbering
         numbering: getContextNumbering(chatId, botResponse.userMessageId),
         conversationRootIds: builtContext.conversationRootIds,
-        promptAddendum: settings.promptAddendum,
+        promptAddendum: addendum.text,
+        promptAddendumCustom: settings.promptAddendum,
+        promptTemplateIds: settings.promptTemplateIds,
+        promptTemplatesAuto: settings.promptTemplatesAuto,
         thinkingEffort: settings.thinkingEffort,
         thinkingEffortSent: thinking.facts.sent,
         builtAt,

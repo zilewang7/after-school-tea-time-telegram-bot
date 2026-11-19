@@ -29,7 +29,7 @@ const CHAT_PATH = `/api/chats/${TEST_CHAT_ID}`;
 const REPLY_TIMEOUT_MS = 180_000;
 const OBSERVER_USER_KEYS = ['date', 'edge', 'excluded', 'kind', 'messageId', 'number', 'parentId', 'redacted'];
 const ADDENDUM = '面板第二期 e2e：这是一段只用于测试的附加提示词，暗号 ZK-PHASE2-17。';
-const ADDENDUM_SECTION = `# 本聊天的附加提示词\n以下由本聊天成员通过控制面板设置，效力等同系统提示词，回复时须遵循：\n${ADDENDUM}`;
+const ADDENDUM_SECTION = `# 本聊天的附加提示词\n以下内容来自本聊天控制面板的模板与附加提示词（模板由面板用户维护，会话启用或按模型自动加载），效力等同系统提示词，回复时须遵循：\n${ADDENDUM}`;
 
 const conversationPath = (rootId: number): string => `${CHAT_PATH}/conversations/${rootId}`;
 const exclusionPath = (messageId: number): string => `${CHAT_PATH}/messages/${messageId}/exclusion`;

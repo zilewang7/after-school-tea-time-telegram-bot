@@ -27,7 +27,12 @@ export interface ResumeFactsInput {
      */
     readonly numbering?: ReadonlyMap<number, number>;
     readonly conversationRootIds: readonly number[];
+    /** The combined addendum (templates + custom) the context was built with */
     readonly promptAddendum: string | null;
+    /** Session-side inputs of that combination: the custom text, the manually enabled ids and the auto switch */
+    readonly promptAddendumCustom: string | null;
+    readonly promptTemplateIds: readonly number[] | null;
+    readonly promptTemplatesAuto: boolean;
     /** The chat's thinking level setting the request used; null = the model default */
     readonly thinkingEffort?: ThinkingEffortValue | null;
     /** What that setting resolved to for this request's model; null = nothing explicit */
@@ -79,6 +84,9 @@ export const captureResumeFacts = (input: ResumeFactsInput): ReplyResumeFacts =>
         contextIndex: input.contextIndex,
         conversationRootIds: [...input.conversationRootIds],
         promptAddendum: input.promptAddendum,
+        promptAddendumCustom: input.promptAddendumCustom,
+        promptTemplateIds: input.promptTemplateIds,
+        promptTemplatesAuto: input.promptTemplatesAuto,
         builtAt: input.builtAt,
         contextMessageIds: [...input.contextIndex.values()].map((entry) => entry.messageId),
     },

@@ -21,6 +21,12 @@ const roleLabel = (role: ModelViewTurn['role']): string =>
         .with('system', () => '系统')
         .exhaustive();
 
+/** The addendum section's summary: how many templates load, and whether custom text follows */
+const addendumSummaryOf = (data: ModelView): string => {
+    const templates = data.addendumTemplates.length === 0 ? '无模板' : `${data.addendumTemplates.length} 个模板`;
+    return data.addendumCustom ? `${templates} · 自定义` : templates;
+};
+
 /** The runtime block and the addendum ride the last user turn; they are highlighted */
 const splitRuntime = (text: string): { body: string; runtime: string | null } => {
     const index = text.indexOf(RUNTIME_MARKER);
@@ -209,6 +215,21 @@ const ModelViewResult = ({ data, lastUserTurnIndex }: ModelViewResultProps) => (
                 ) : (
                     <p className="tool-names">{data.tools.join(' · ')}</p>
                 )}
+            </CollapsibleSection>
+
+            <CollapsibleSection title="附加提示词" summary={addendumSummaryOf(data)}>
+                {data.addendumTemplates.length === 0 ? (
+                    <p className="hint">本次不加载提示词模板</p>
+                ) : (
+                    <ul className="list compact">
+                        {data.addendumTemplates.map((template) => (
+                            <li key={template.id} className="hint">
+                                {template.name}（#{template.id}）
+                            </li>
+                        ))}
+                    </ul>
+                )}
+                <p className="hint">{data.addendumCustom ? '另有本会话的自定义附加提示词' : '没有自定义附加提示词'}</p>
             </CollapsibleSection>
 
             <CollapsibleSection title="编号对照" summary={`${data.numbers.length} 条`}>

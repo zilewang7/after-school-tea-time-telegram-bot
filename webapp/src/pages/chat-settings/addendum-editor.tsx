@@ -1,8 +1,9 @@
-import { useCallback, useState } from 'react';
+import { useCallback, useMemo, useState } from 'react';
 import type { ChangeEvent } from 'react';
 import { ADDENDUM_MAX_CODE_POINTS, estimateAddendumTokens } from '../../addendum';
 import { useVerticalSwipeLock } from '../../hooks/use-telegram-guards';
 import { AddendumPreviewView } from './addendum-preview-view';
+import type { AddendumPreviewDraft } from './use-addendum-preview';
 import { useAddendumPreview } from './use-addendum-preview';
 
 interface AddendumEditorProps {
@@ -12,6 +13,9 @@ interface AddendumEditorProps {
     normalizedValue: string;
     length: number;
     restoredFromDraft: boolean;
+    // The template draft the preview composes with the custom text
+    templateIds: readonly number[];
+    promptTemplatesAuto: boolean;
     disabled: boolean;
     onChange: (text: string) => void;
 }
@@ -22,6 +26,8 @@ export const AddendumEditor = ({
     normalizedValue,
     length,
     restoredFromDraft,
+    templateIds,
+    promptTemplatesAuto,
     disabled,
     onChange,
 }: AddendumEditorProps) => {
@@ -31,19 +37,24 @@ export const AddendumEditor = ({
     // Scrolling inside the text must not swipe the panel closed
     useVerticalSwipeLock(editing);
 
+    const previewDraft = useMemo<AddendumPreviewDraft>(
+        () => ({ addendumValue: normalizedValue, templateIds, templatesAuto: promptTemplatesAuto }),
+        [normalizedValue, templateIds, promptTemplatesAuto]
+    );
+
     const handleInput = useCallback(
         (event: ChangeEvent<HTMLTextAreaElement>) => onChange(event.target.value),
         [onChange]
     );
     const handleFocus = useCallback(() => setEditing(true), []);
     const handleBlur = useCallback(() => setEditing(false), []);
-    const handlePreview = useCallback(() => requestPreview(normalizedValue), [requestPreview, normalizedValue]);
+    const handlePreview = useCallback(() => requestPreview(previewDraft), [requestPreview, previewDraft]);
 
     return (
         <div className="field-group">
             <div className="field-label-row">
                 <label htmlFor="chat-addendum" className="field-label">
-                    本聊天的附加提示词
+                    附加提示词（自定义）
                 </label>
                 <span className={tooLong ? 'error-text' : 'hint'}>
                     {length}/{ADDENDUM_MAX_CODE_POINTS} · 约 {estimateAddendumTokens(length)} token
@@ -70,7 +81,7 @@ export const AddendumEditor = ({
             >
                 预览运行时块
             </button>
-            <AddendumPreviewView state={previewState} currentValue={normalizedValue} />
+            <AddendumPreviewView state={previewState} currentDraft={previewDraft} />
         </div>
     );
 };

@@ -25,6 +25,10 @@ export class ChatSettingsRecord extends Model<
   declare model: CreationOptional<string | null>;
   // <= 2000 code points, rendered into the runtime block; NULL = none
   declare promptAddendum: CreationOptional<string | null>;
+  // Manually enabled prompt templates: canonical JSON array of ids; NULL = none
+  declare promptTemplateIds: CreationOptional<string | null>;
+  // Auto-load templates whose model rule matches: on only when the chat turned it on
+  declare promptTemplatesAuto: CreationOptional<boolean>;
   declare paused: CreationOptional<boolean>;
   // Owner-only switch: members become read-only
   declare settingsLocked: CreationOptional<boolean>;
@@ -55,6 +59,17 @@ ChatSettingsRecord.init({
     type: DataTypes.TEXT,
     allowNull: true,
     defaultValue: null,
+  },
+  // Added after the table shipped: schema-migrations.ts adds them to an existing table
+  promptTemplateIds: {
+    type: DataTypes.TEXT,
+    allowNull: true,
+    defaultValue: null,
+  },
+  promptTemplatesAuto: {
+    type: DataTypes.BOOLEAN,
+    allowNull: false,
+    defaultValue: false,
   },
   paused: {
     type: DataTypes.BOOLEAN,

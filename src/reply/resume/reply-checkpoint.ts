@@ -21,8 +21,15 @@ export interface ResumeContextFacts {
     readonly contextIndex: ContextIndex;
     /** Reply-tree roots of the context, the trigger's own conversation first */
     readonly conversationRootIds: readonly number[];
-    /** The chat's prompt addendum the context was built with */
+    /** The combined prompt addendum (templates + custom) the context was built with */
     readonly promptAddendum: string | null;
+    /**
+     * The session-side inputs the combination came from: they tell a template
+     * change (not the clicker's to fix) from a session setting change.
+     */
+    readonly promptAddendumCustom: string | null;
+    readonly promptTemplateIds: readonly number[] | null;
+    readonly promptTemplatesAuto: boolean;
     /** Epoch ms of the build */
     readonly builtAt: number;
     /** Every message of the context, for the context-exclusion check */

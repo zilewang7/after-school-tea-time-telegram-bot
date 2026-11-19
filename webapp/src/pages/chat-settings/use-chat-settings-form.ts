@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
     ADDENDUM_MAX_CODE_POINTS,
+    CHAT_ADDENDUM_MAX_CODE_POINTS,
     addendumValueOf,
     clearAddendumDraft,
     countCodePoints,
@@ -9,12 +10,13 @@ import {
 } from '../../addendum';
 import type { AddendumStart } from '../../addendum';
 import { describeWriteFailure } from '../../api';
-import type { ChatSettings, ChatSettingsPatch } from '../../api';
+import type { ChatPromptTemplateSummary, ChatSettings, ChatSettingsPatch } from '../../api';
 import type { SaveStatus } from '../../components/save-bar';
 import { useApi } from '../../context/panel-context';
 import { modelDraftOf, resolveModelDraft } from '../../model-draft';
 import type { ModelDraft } from '../../model-draft';
-import { changedSettingsOf } from './chat-settings-patch';
+import { enabledTemplateContentLengthOf } from '../../prompt-templates';
+import { changedSettingsOf, templateIdsValueOf } from './chat-settings-patch';
 
 const DRAFT_DEBOUNCE_MS = 500;
 
@@ -23,11 +25,20 @@ interface ChatSettingsFormOptions {
     // Server state this form instance started from; the form is re-created when it changes
     settings: ChatSettings;
     models: readonly string[];
+    // The templates this chat may enable: their content lengths feed the combined limit
+    templates: readonly ChatPromptTemplateSummary[];
     writable: boolean;
     onSaved: (settings: ChatSettings) => void;
 }
 
-export const useChatSettingsForm = ({ chatId, settings, models, writable, onSaved }: ChatSettingsFormOptions) => {
+export const useChatSettingsForm = ({
+    chatId,
+    settings,
+    models,
+    templates,
+    writable,
+    onSaved,
+}: ChatSettingsFormOptions) => {
     const api = useApi();
 
     // Read-only users see the saved value; their stored draft (if any) is left for later
@@ -43,7 +54,15 @@ export const useChatSettingsForm = ({ chatId, settings, models, writable, onSave
     const [geminiPriority, setGeminiPriority] = useState<boolean | null>(settings.geminiPriority);
     const [thinkingEffort, setThinkingEffort] = useState<string | null>(settings.thinkingEffort);
     const [richReplies, setRichReplies] = useState(settings.richReplies);
+    const [templateIds, setTemplateIds] = useState<readonly number[]>(() => settings.promptTemplateIds ?? []);
+    const [promptTemplatesAuto, setPromptTemplatesAuto] = useState(settings.promptTemplatesAuto);
     const [saveStatus, setSaveStatus] = useState<SaveStatus>({ kind: 'idle' });
+
+    const toggleTemplateId = useCallback((templateId: number) => {
+        setTemplateIds((current) =>
+            current.includes(templateId) ? current.filter((id) => id !== templateId) : [...current, templateId]
+        );
+    }, []);
 
     // Debounced local draft of the addendum, so closing the panel does not lose typing
     useEffect(() => {
@@ -58,23 +77,48 @@ export const useChatSettingsForm = ({ chatId, settings, models, writable, onSave
     const resolvedModel = useMemo(() => resolveModelDraft(modelDraft), [modelDraft]);
     const addendumValue = useMemo(() => addendumValueOf(addendumText), [addendumText]);
     const addendumLength = useMemo(() => countCodePoints(addendumValue ?? ''), [addendumValue]);
+    // The PATCH shape: canonical ids, null when nothing is enabled
+    const templateIdsValue = useMemo(() => templateIdsValueOf(templateIds), [templateIds]);
 
     const changes = useMemo(
         () =>
             changedSettingsOf(settings, {
                 model: resolvedModel,
                 addendumValue,
+                templateIds: templateIdsValue,
+                templatesAuto: promptTemplatesAuto,
                 paused,
                 settingsLocked,
                 geminiPriority,
                 thinkingEffort,
                 richReplies,
             }),
-        [settings, resolvedModel, addendumValue, paused, settingsLocked, geminiPriority, thinkingEffort, richReplies]
+        [
+            settings,
+            resolvedModel,
+            addendumValue,
+            templateIdsValue,
+            promptTemplatesAuto,
+            paused,
+            settingsLocked,
+            geminiPriority,
+            thinkingEffort,
+            richReplies,
+        ]
     );
 
+    // The list sends only contentLength per template, so the limit line is an approximation
+    // of the manual templates + custom text; the server does the final check.
+    const templateContentLength = useMemo(
+        () => enabledTemplateContentLengthOf(templates, templateIds),
+        [templates, templateIds]
+    );
+    const composedAddendumLength = addendumLength + templateContentLength;
     const dirty = !resolvedModel.ok || Object.keys(changes).length > 0;
-    const valid = resolvedModel.ok && addendumLength <= ADDENDUM_MAX_CODE_POINTS;
+    const valid =
+        resolvedModel.ok &&
+        addendumLength <= ADDENDUM_MAX_CODE_POINTS &&
+        composedAddendumLength <= CHAT_ADDENDUM_MAX_CODE_POINTS;
     const saving = saveStatus.kind === 'saving';
 
     const save = useCallback(() => {
@@ -114,6 +158,12 @@ export const useChatSettingsForm = ({ chatId, settings, models, writable, onSave
         setThinkingEffort,
         richReplies,
         setRichReplies,
+        templateIds,
+        toggleTemplateId,
+        promptTemplatesAuto,
+        setPromptTemplatesAuto,
+        templateContentLength,
+        composedAddendumLength,
         dirty,
         valid,
         saving,

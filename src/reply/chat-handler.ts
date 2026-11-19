@@ -49,6 +49,7 @@ import { dealChatCommand } from './commands/chat-command.js';
 import { isChatCommandText } from './commands/chat-command-parser.js';
 import { chatTitleOf } from '../telegram/chat-title.js';
 import { snapshotReplySettings } from '../services/chat-settings-service.js';
+import { resolveReplyAddendum } from '../services/prompt-templates-service.js';
 import { effectiveReplyModel, resolveAccessTier, resolveTriggerAccess } from '../services/access-tier.js';
 import { checkTrialQuota } from '../services/trial-quota.js';
 import { formatUserDisplayName } from '../shared/user-display-name.js';
@@ -296,6 +297,23 @@ export const handleReply = async (
     );
     const access = triggerAccess.tier;
     const model = effectiveReplyModel(access, settings.model);
+    // The addendum is frozen here with the other settings: templates can change
+    // mid-reply (and the session auto switch can pull more of them in), but this
+    // attempt keeps the combination it started with.
+    const addendum = await resolveReplyAddendum(
+        chatId,
+        {
+            custom: settings.promptAddendum,
+            templateIds: settings.promptTemplateIds,
+            auto: settings.promptTemplatesAuto,
+        },
+        model
+    );
+    if (addendum.applied.length > 0) {
+        console.log(
+            `[chat-handler] addendum templates: ${addendum.applied.map((template) => template.name).join(', ')} (chat ${chatId}, model ${model})`
+        );
+    }
     // The trial spend cap, decided before the media wait, the typing indicator
     // and the placeholder: a used-up quota costs the user one notice and
     // nothing else (design 2026-1116-1500 §D7 #1). The same value fills the
@@ -347,7 +365,7 @@ export const handleReply = async (
         capabilities,
         model,
         chatTitle: chatTitleOf(ctx.chat),
-        chatAddendum: settings.promptAddendum,
+        chatAddendum: addendum.text,
         triggerAccess: triggerAccessNoteOf(triggerAccess, trialSpend),
     }));
     if (isErr(ctxResult)) {
@@ -416,7 +434,10 @@ export const handleReply = async (
         // A continued reply renders its `#N` links with the same numbering
         numbering: getContextNumbering(chatId, userMessageId),
         conversationRootIds: built.conversationRootIds,
-        promptAddendum: settings.promptAddendum,
+        promptAddendum: addendum.text,
+        promptAddendumCustom: settings.promptAddendum,
+        promptTemplateIds: settings.promptTemplateIds,
+        promptTemplatesAuto: settings.promptTemplatesAuto,
         thinkingEffort: settings.thinkingEffort,
         thinkingEffortSent: thinking.facts.sent,
         builtAt,

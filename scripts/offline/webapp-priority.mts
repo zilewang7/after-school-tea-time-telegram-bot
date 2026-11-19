@@ -163,6 +163,8 @@ results.push(
         const settings: ChatSettings = {
             model: null,
             promptAddendum: null,
+            promptTemplateIds: null,
+            promptTemplatesAuto: false,
             paused: false,
             settingsLocked: false,
             toolOverrides: null,
@@ -175,6 +177,8 @@ results.push(
         const patch = changedSettingsOf(settings, {
             model: { ok: true, value: null },
             addendumValue: null,
+            templateIds: null,
+            templatesAuto: false,
             paused: true,
             settingsLocked: false,
             geminiPriority: saved,
@@ -199,6 +203,8 @@ results.push(
         const settings: ChatSettings = {
             model: null,
             promptAddendum: null,
+            promptTemplateIds: null,
+            promptTemplatesAuto: false,
             paused: false,
             settingsLocked: false,
             toolOverrides: null,
@@ -211,6 +217,8 @@ results.push(
         const draftWith = (geminiPriority: boolean | null) => ({
             model: { ok: true as const, value: null },
             addendumValue: null,
+            templateIds: null,
+            templatesAuto: false,
             paused: false,
             settingsLocked: false,
             geminiPriority,

@@ -55,6 +55,7 @@ export const ChatSettingsTab = () => {
         .with({ status: 'success' }, ({ data }) => (
             <ChatSettingsView
                 detail={data}
+                viewerId={me.user.id}
                 isOwner={me.isOwner}
                 isTrial={me.accessTier === 'trial'}
                 trialModel={me.trialModel}

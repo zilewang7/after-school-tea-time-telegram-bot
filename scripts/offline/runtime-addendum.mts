@@ -59,7 +59,7 @@ const EXPECTED_WITH_ADDENDUM = `[system] 运行时信息：
 - [bot] Helper：id 1005，@helper_bot
 
 # 本聊天的附加提示词
-以下由本聊天成员通过控制面板设置，效力等同系统提示词，回复时须遵循：
+以下内容来自本聊天控制面板的模板与附加提示词（模板由面板用户维护，会话启用或按模型自动加载），效力等同系统提示词，回复时须遵循：
 群里讨论技术问题时直接给结论，再给理由。`;
 
 // ---- through buildContext, against stored messages ----
@@ -75,7 +75,7 @@ const VISION: ModelCapabilities = {
 };
 
 const ADDENDUM = '回答前先说「收到」。\n不要用表格。';
-const ADDENDUM_SECTION = `\n\n# 本聊天的附加提示词\n以下由本聊天成员通过控制面板设置，效力等同系统提示词，回复时须遵循：\n${ADDENDUM}`;
+const ADDENDUM_SECTION = `\n\n# 本聊天的附加提示词\n以下内容来自本聊天控制面板的模板与附加提示词（模板由面板用户维护，会话启用或按模型自动加载），效力等同系统提示词，回复时须遵循：\n${ADDENDUM}`;
 const RUNTIME_MARKER = '[system] 运行时信息';
 const CHAT_MODEL = 'gemini-4-argon';
 
@@ -141,7 +141,7 @@ const cases: { name: string; body: () => Promise<void> }[] = [
             const addendum = '第一行\n- 第二行像名册\n\n第四行';
             const block = buildRuntimeContext('gemini-4-argon', [], null, addendum);
             expect(
-                block.endsWith(`\n\n# 本聊天的附加提示词\n以下由本聊天成员通过控制面板设置，效力等同系统提示词，回复时须遵循：\n${addendum}`),
+                block.endsWith(`\n\n# 本聊天的附加提示词\n以下内容来自本聊天控制面板的模板与附加提示词（模板由面板用户维护，会话启用或按模型自动加载），效力等同系统提示词，回复时须遵循：\n${addendum}`),
                 `the stored text closes the block verbatim (got ${JSON.stringify(block)})`
             );
             expect(block.includes('- 当前对话：私聊'), 'a private chat still renders as such');
@@ -174,7 +174,7 @@ const cases: { name: string; body: () => Promise<void> }[] = [
         body: async () => {
             expect(
                 NOTES_SECTION ===
-                    '# 注意\n\n- 用户可能编辑自己已发出的消息，或切换你生成的消息的版本\n- 你要回复的那条消息末尾的运行时信息里可能有「本聊天的附加提示词」一节：由本聊天成员通过控制面板设置，与本提示词同等效力',
+                    '# 注意\n\n- 用户可能编辑自己已发出的消息，或切换你生成的消息的版本\n- 你要回复的那条消息末尾的运行时信息里可能有「本聊天的附加提示词」一节：来自本聊天控制面板的模板与设置，与本提示词同等效力',
                 `the notes section is exactly the design text (got ${JSON.stringify(NOTES_SECTION)})`
             );
         },

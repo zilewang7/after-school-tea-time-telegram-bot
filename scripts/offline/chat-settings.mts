@@ -4,7 +4,9 @@
  * audit trail and its retention; the Priority PayGo switch (the effective
  * value of design §8.2, the TOOL_CHAT_IDS rule, owner only, audit, reload);
  * the rich replies switch (off by default, any member and trial users too,
- * the lock, audit, reload, the reply snapshot); then the bot side: `/model` and the `mdl:` buttons, the refusal of an image
+ * the lock, audit, reload, the reply snapshot); the prompt-template settings
+ * (the manual enable list, the auto switch and the composed-length guard); then
+ * the bot side: `/model` and the `mdl:` buttons, the refusal of an image
  * model (as a setting, and before a reply or retry when one is stored), the
  * reply and retry settings snapshots, and what a paused chat still answers.
  *
@@ -42,6 +44,8 @@ process.env.BOT_USER_NAME = 'AfterSchoolTeatimeBot';
 
 await setupOfflineDb();
 const service = await import('../../src/services/chat-settings-service.js');
+const promptTemplates = await import('../../src/services/prompt-templates-service.js');
+const { normalizeTemplateIdList } = await import('../../src/services/prompt-template-ids.js');
 const { resolveChatModel } = await import('../../src/config/chat-model.js');
 const { isOwnerUser } = await import('../../src/config/owner.js');
 const { listSettingsAudit } = await import('../../src/db/queries/settings-audit.js');
@@ -554,18 +558,22 @@ const cases: { name: string; body: () => Promise<void> }[] = [
                     JSON.stringify({
                         model: 'concurrent-model',
                         promptAddendum: '并发',
+                        promptTemplateIds: null,
+                        promptTemplatesAuto: false,
                         toolOverrides: null,
                         geminiPriority: false,
                         thinkingEffort: null,
                         richReplies: false,
                     }),
-                'the snapshot is model + addendum + tool switches + the effective Priority PayGo switch + the thinking level + rich replies'
+                'the snapshot is model + addendum + templates + tool switches + the effective Priority PayGo switch + the thinking level + rich replies'
             );
             expect(
                 JSON.stringify(service.snapshotReplySettings(-2999)) ===
                     JSON.stringify({
                         model: 'reloaded-default',
                         promptAddendum: null,
+                        promptTemplateIds: null,
+                        promptTemplatesAuto: false,
                         toolOverrides: null,
                         geminiPriority: false,
                         thinkingEffort: null,
@@ -836,6 +844,8 @@ const cases: { name: string; body: () => Promise<void> }[] = [
             const current = {
                 model: 'gemini-4-hydrogen',
                 promptAddendum: null,
+                promptTemplateIds: null,
+                promptTemplatesAuto: false,
                 paused: false,
                 settingsLocked: false,
                 toolOverrides: null,
@@ -955,6 +965,8 @@ const cases: { name: string; body: () => Promise<void> }[] = [
             const current = {
                 model: 'gemini-4-hydrogen',
                 promptAddendum: null,
+                promptTemplateIds: null,
+                promptTemplatesAuto: false,
                 paused: false,
                 settingsLocked: false,
                 toolOverrides: null,
@@ -1502,6 +1514,154 @@ const cases: { name: string; body: () => Promise<void> }[] = [
             await updateChatSettings({ chatId, patch: { paused: false }, actor: MEMBER });
             await press(chatId, MEMBER.userId, 'gen:reroll:job-1');
             expect(lastToastOf(telegram) !== PAUSED_NOTICE, 'unpaused, the button is handled again');
+        },
+    },
+    {
+        name: 'prompt templates: the manual list normalizes, audits and survives a reload; the auto switch is off by default',
+        body: async () => {
+            const chatId = -2311;
+            expect(
+                JSON.stringify(service.defaultChatSettings(chatId).promptTemplateIds) === 'null' &&
+                    !service.defaultChatSettings(chatId).promptTemplatesAuto,
+                'a chat without a row enables no template and loads none automatically'
+            );
+            expect(
+                service.snapshotReplySettings(chatId).promptTemplateIds === null &&
+                    !service.snapshotReplySettings(chatId).promptTemplatesAuto,
+                'and its reply snapshot says so'
+            );
+            expect(
+                service.CHAT_PROMPT_ADDENDUM_MAX_CODE_POINTS === 8000 && service.MAX_TEMPLATE_SELECTIONS === 10,
+                'the two exported limits are 8000 and 10'
+            );
+
+            const set = await updateChatSettings({
+                chatId,
+                patch: { promptTemplateIds: [5, 2, 2], promptTemplatesAuto: true },
+                actor: MEMBER,
+            });
+            expect(
+                JSON.stringify(set.settings.promptTemplateIds) === JSON.stringify([2, 5]),
+                `ids come back deduplicated and ascending (got ${JSON.stringify(set.settings.promptTemplateIds)})`
+            );
+            expect(
+                JSON.stringify(set.changedKeys) === JSON.stringify(['promptTemplateIds', 'promptTemplatesAuto']),
+                `both keys changed in the fixed order (got ${JSON.stringify(set.changedKeys)})`
+            );
+            const audits = await auditOf(chatId);
+            const auditValueOf = (key: string): string | null | undefined =>
+                audits.find((entry) => entry.key === key)?.newValue;
+            expect(
+                auditValueOf('promptTemplateIds') === '[2,5]' && auditValueOf('promptTemplatesAuto') === 'true',
+                `the audit values are canonical JSON and 'true' (got ${JSON.stringify(audits.map((entry) => [entry.key, entry.newValue]))})`
+            );
+
+            await service.loadChatSettingsCache();
+            const reloaded = service.getChatSettings(chatId);
+            expect(
+                JSON.stringify(reloaded?.promptTemplateIds) === JSON.stringify([2, 5]) &&
+                    reloaded?.promptTemplatesAuto === true,
+                'both survive a reload'
+            );
+
+            const cleared = await updateChatSettings({
+                chatId,
+                patch: { promptTemplateIds: [], promptTemplatesAuto: false },
+                actor: MEMBER,
+            });
+            expect(
+                cleared.settings.promptTemplateIds === null && !cleared.settings.promptTemplatesAuto,
+                'an empty list is stored as none'
+            );
+
+            const invalidLists = [
+                { value: 5, description: 'a bare number' },
+                { value: [0], description: 'the id 0' },
+                { value: [-1], description: 'a negative id' },
+                { value: [1.5], description: 'a fractional id' },
+                { value: Array.from({ length: 11 }, (_, index) => index + 1), description: 'eleven ids' },
+            ];
+            for (const { value, description } of invalidLists) {
+                expect(normalizeTemplateIdList(value).ok === false, `${description} is refused as invalid`);
+            }
+            expect(service.getChatSettings(chatId)?.promptTemplateIds === null, 'the refused patches changed nothing');
+        },
+    },
+    {
+        name: 'prompt templates: a save is refused when manually enabled templates plus own text pass 8000 code points',
+        body: async () => {
+            const chatId = -2312;
+            const creator = { userId: MEMBER.userId, isOwner: false };
+            const created: Awaited<ReturnType<typeof promptTemplates.createPromptTemplate>>[] = [];
+            for (let index = 0; index < 3; index += 1) {
+                created.push(
+                    await promptTemplates.createPromptTemplate(
+                        {
+                            name: `长模板 ${index}`,
+                            content: '字'.repeat(3000),
+                            modelPatterns: ['deepseek*'],
+                            sortOrder: index,
+                            visibility: 'private',
+                            enabled: true,
+                        },
+                        creator
+                    )
+                );
+            }
+            const ids = created.map((template) => template.id);
+            const [firstId, secondId, thirdId] = ids;
+            if (firstId === undefined || secondId === undefined || thirdId === undefined) {
+                throw new Error('the three templates were not created');
+            }
+            const tooLong = await refusalOf(() =>
+                updateChatSettings({ chatId, patch: { promptTemplateIds: ids }, actor: MEMBER })
+            );
+            expect(
+                tooLong ===
+                    'invalid: 启用的模板与自定义附加提示词合计 9000 字，超过上限 8000 字',
+                `three 3000-code-point templates are refused with the actual count (got ${tooLong})`
+            );
+            expect(service.getChatSettings(chatId) === undefined, 'the refused save wrote no row');
+
+            const one = await updateChatSettings({
+                chatId,
+                patch: { promptTemplateIds: [firstId] },
+                actor: MEMBER,
+            });
+            expect(
+                JSON.stringify(one.settings.promptTemplateIds) === JSON.stringify([firstId]),
+                'one 3000-code-point template fits'
+            );
+            const withText = await updateChatSettings({
+                chatId,
+                patch: { promptAddendum: '字'.repeat(2000) },
+                actor: MEMBER,
+            });
+            expect(withText.settings.promptAddendum?.length === 2000, '3000 template code points plus 2000 own characters fit');
+
+            // An id the cache does not know (deleted template) loads nothing and counts nothing
+            const unknownId = 999999;
+            const withUnknown = await updateChatSettings({
+                chatId,
+                patch: { promptTemplateIds: [firstId, unknownId] },
+                actor: MEMBER,
+            });
+            expect(
+                JSON.stringify(withUnknown.settings.promptTemplateIds) === JSON.stringify([firstId, unknownId]),
+                'an unknown id is kept in the list'
+            );
+
+            // A disabled template does not count: 6000 + 2000 is exactly the limit
+            await promptTemplates.updatePromptTemplate(firstId, { enabled: false }, creator);
+            const atLimit = await updateChatSettings({
+                chatId,
+                patch: { promptTemplateIds: [firstId, secondId, thirdId] },
+                actor: MEMBER,
+            });
+            expect(
+                JSON.stringify(atLimit.settings.promptTemplateIds) === JSON.stringify([firstId, secondId, thirdId]),
+                'a disabled template loads nothing, so the sum lands exactly on the limit and is accepted'
+            );
         },
     },
 ];
