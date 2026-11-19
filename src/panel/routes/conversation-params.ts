@@ -27,17 +27,29 @@ export const requireMember = (granted: GrantedChat): void => {
 };
 
 /**
+ * The stored conversation root, or null when `rootId` has no row or is not the
+ * top of its own reply chain (a continuation id of a bot reply does not count).
+ */
+const findConversationRootOrNull = async (chatId: number, rootId: number): Promise<ContextMessage | null> => {
+    const root = await getContextMessage(chatId, rootId);
+    if (root === null || root.messageId !== rootId) return null;
+    const chainRoot = await findRootMessage(chatId, rootId, { recover: false });
+    return chainRoot?.messageId === rootId ? root : null;
+};
+
+/**
+ * Whether `rootId` names a stored conversation root. The read-only form of the
+ * 404 check, for callers that fall back instead of failing (a stale deep link).
+ */
+export const isConversationRoot = async (chatId: number, rootId: number): Promise<boolean> =>
+    (await findConversationRootOrNull(chatId, rootId)) !== null;
+
+/**
  * The conversation's root row. 404 unless `rootId` is stored (a continuation
  * id of a bot reply does not count) and is the root of its own reply chain.
  */
 export const requireConversationRoot = async (chatId: number, rootId: number): Promise<ContextMessage> => {
-    const root = await getContextMessage(chatId, rootId);
-    if (root === null || root.messageId !== rootId) {
-        throw new PanelError('not_found', CONVERSATION_MESSAGES.conversationNotFound);
-    }
-    const chainRoot = await findRootMessage(chatId, rootId, { recover: false });
-    if (chainRoot?.messageId !== rootId) {
-        throw new PanelError('not_found', CONVERSATION_MESSAGES.conversationNotFound);
-    }
+    const root = await findConversationRootOrNull(chatId, rootId);
+    if (root === null) throw new PanelError('not_found', CONVERSATION_MESSAGES.conversationNotFound);
     return root;
 };

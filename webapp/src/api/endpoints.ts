@@ -15,6 +15,8 @@ import type {
     ConversationListResponse,
     ConversationTreeResponse,
     ExcludedMessageResponse,
+    ExclusionBatchAction,
+    ExclusionBatchResponse,
     GlobalSettingsPatch,
     GlobalSettingsResponse,
     HealthResponse,
@@ -159,6 +161,9 @@ const replyPath = (chatId: number, firstMessageId: number): string =>
 
 const exclusionPath = (chatId: number, messageId: number): string =>
     `${chatPath(chatId)}/messages/${messageId}/exclusion`;
+
+/** The batch endpoint: one write for a whole selection */
+const exclusionsPath = (chatId: number): string => `${chatPath(chatId)}/exclusions`;
 
 const exportPath = (chatId: number, rootId: number, format: ExportFormat): string =>
     `${conversationPath(chatId, rootId)}/export?format=${format}`;
@@ -340,6 +345,13 @@ export const createApi = (initData: string) => {
                       method: 'DELETE',
                       path: exclusionPath(chatId, messageId),
                   }),
+        // Members only; 1–100 ids in one transaction, the answer says what each id became
+        batchExclusion: (chatId: number, action: ExclusionBatchAction, messageIds: readonly number[]) =>
+            request<ExclusionBatchResponse>({
+                method: 'POST',
+                path: exclusionsPath(chatId),
+                body: { action, messageIds },
+            }),
         // Members only; 1–20 links, a rootId that is not a root is 404
         spliceConversation: (chatId: number, rootId: number, links: readonly string[]) =>
             request<LinkSpliceResponse>({

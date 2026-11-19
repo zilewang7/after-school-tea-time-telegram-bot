@@ -2,8 +2,11 @@
  * Offline cases for the `r<chatId>_<firstMessageId>` start_param (design
  * §5.10): its parsing, the chat hint it resolves to, and the reply start
  * target GET /api/me returns — member, none, unavailable, and the fall back to
- * the chat page when the reply is gone. Also the `t<token>` thinking prefix
- * (design §6.2): token-as-permission, no chat hint and no membership lookup.
+ * the chat page when the reply is gone. Also the `c<chatId>_<rootId>`
+ * conversation start_param (panel conversation deep links): parsing, the chat
+ * hint, and the same /api/me matrix with a chat fallback when the root is not a
+ * root any more. Also the `t<token>` thinking prefix (design §6.2): token as
+ * permission, no chat hint and no membership lookup.
  *
  * Run: npx tsx scripts/offline/start-param.mts
  */
@@ -100,6 +103,37 @@ await storeReply(GROUP, REPLY_ID);
 // The throttled chat also has a stored reply, so only the lookup can fail the target
 await storeReply(GROUP_THROTTLED, THROTTLED_REPLY_ID);
 
+/** A stored conversation: the root and a follow-up that replies to it */
+const ROOT_ID = 4101;
+const CHILD_ID = 4102;
+await db.saveMessage({
+    chatId: GROUP,
+    messageId: ROOT_ID,
+    userId: ALICE.id,
+    date: new Date(),
+    userName: 'Alice',
+    message: '会话的根消息',
+});
+await db.saveMessage({
+    chatId: GROUP,
+    messageId: CHILD_ID,
+    userId: ALICE.id,
+    date: new Date(),
+    userName: 'Alice',
+    message: '同一会话的追问',
+    replyToId: ROOT_ID,
+});
+// The throttled chat also has a stored conversation root, so only the lookup can fail
+const THROTTLED_ROOT_ID = 4103;
+await db.saveMessage({
+    chatId: GROUP_THROTTLED,
+    messageId: THROTTLED_ROOT_ID,
+    userId: ALICE.id,
+    date: new Date(),
+    userName: 'Alice',
+    message: '被限流聊天的会话根',
+});
+
 const app = makeApp();
 
 const cases: { name: string; body: () => Promise<void> }[] = [
@@ -138,6 +172,107 @@ const cases: { name: string; body: () => Promise<void> }[] = [
                 async () => null
             );
             expect(hint === GROUP, 'the reply chat');
+        },
+    },
+    {
+        name: 'the conversation start_param parses a chat and a root id',
+        body: async () => {
+            expect(
+                JSON.stringify(startParam.parseStartParam(`c${GROUP}_${ROOT_ID}`)) ===
+                    JSON.stringify({ kind: 'conversation', chatId: GROUP, rootId: ROOT_ID }),
+                'a group conversation link'
+            );
+            expect(
+                JSON.stringify(startParam.parseStartParam('c5001_9')) ===
+                    JSON.stringify({ kind: 'conversation', chatId: 5001, rootId: 9 }),
+                'a private chat conversation link'
+            );
+            expect(
+                JSON.stringify(startParam.parseStartParam(`c${GROUP}`)) ===
+                    JSON.stringify({ kind: 'chat', chatId: GROUP }),
+                'the old chat link still parses as a chat'
+            );
+        },
+    },
+    {
+        name: 'malformed conversation start_params are ignored',
+        body: async () => {
+            for (const raw of [
+                'c1_',
+                'c1_0',
+                'c1_x',
+                'c0_5',
+                'c_5',
+                'c1_5_5',
+                'c1_-5',
+                'C1_5',
+                'c1_9999999999999',
+                `c${'9'.repeat(20)}_5`,
+            ]) {
+                expect(startParam.parseStartParam(raw) === null, `"${raw}" is ignored`);
+            }
+        },
+    },
+    {
+        name: 'the hint chat of a conversation target is its chat',
+        body: async () => {
+            const hint = await startParam.resolveHintChatId(
+                { kind: 'conversation', chatId: GROUP, rootId: ROOT_ID },
+                async () => null
+            );
+            expect(hint === GROUP, 'the conversation chat');
+        },
+    },
+    {
+        name: '/api/me lands a member on the conversation',
+        body: async () => {
+            const body = await jsonOf(await call(app, '/api/me', ALICE, `c${GROUP}_${ROOT_ID}`));
+            expect(
+                JSON.stringify(body.startTarget) ===
+                    JSON.stringify({ kind: 'conversation', chatId: GROUP, rootId: ROOT_ID, access: 'member' }),
+                `conversation target (got ${JSON.stringify(body.startTarget)})`
+            );
+        },
+    },
+    {
+        name: '/api/me returns a conversation target with access none for a non-member',
+        body: async () => {
+            const body = await jsonOf(await call(app, '/api/me', BOB, `c${GROUP}_${ROOT_ID}`));
+            expect(
+                JSON.stringify(body.startTarget) ===
+                    JSON.stringify({ kind: 'conversation', chatId: GROUP, rootId: ROOT_ID, access: 'none' }),
+                `none is returned, not hidden (got ${JSON.stringify(body.startTarget)})`
+            );
+            expect(!body.chats.some((chat: any) => chat.chatId === GROUP), 'the chat is not listed');
+        },
+    },
+    {
+        name: '/api/me falls back to the chat when the conversation link is not a root',
+        body: async () => {
+            for (const rootId of [CHILD_ID, 999999]) {
+                const body = await jsonOf(await call(app, '/api/me', ALICE, `c${GROUP}_${rootId}`));
+                expect(
+                    JSON.stringify(body.startTarget) ===
+                        JSON.stringify({ kind: 'chat', chatId: GROUP, access: 'member' }),
+                    `chat fallback for root ${rootId} (got ${JSON.stringify(body.startTarget)})`
+                );
+            }
+        },
+    },
+    {
+        name: '/api/me reports a rate-limited membership lookup on a conversation as unavailable',
+        body: async () => {
+            const body = await jsonOf(await call(app, '/api/me', ALICE, `c${GROUP_THROTTLED}_${THROTTLED_ROOT_ID}`));
+            expect(
+                JSON.stringify(body.startTarget) ===
+                    JSON.stringify({
+                        kind: 'conversation',
+                        chatId: GROUP_THROTTLED,
+                        rootId: THROTTLED_ROOT_ID,
+                        access: 'unavailable',
+                    }),
+                `unavailable (got ${JSON.stringify(body.startTarget)})`
+            );
         },
     },
     {

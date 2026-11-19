@@ -198,13 +198,14 @@ export const createPanelApp = (options: PanelAppOptions): Hono<PanelEnv> => {
         chatLookup: options.chatLookup ?? null,
         now,
         mediaSigner,
+        botApi: options.botApi ?? null,
     };
     registerConversationRoutes(app, conversationDeps);
     registerModelViewRoute(app, conversationDeps);
     registerConversationExportRoute(app, conversationDeps);
     registerConversationLinksRoute(app, conversationDeps);
     registerReplyRoute(app, { signer: widgetSigner, mediaSigner });
-    registerExclusionRoutes(app);
+    registerExclusionRoutes(app, { botApi: options.botApi ?? null });
     registerStatsRoute(app);
     registerStatusRoute(app, { startedAt: options.startedAt, version: options.version });
     // Owner-only, read-only: the model catalog and its normalized capabilities

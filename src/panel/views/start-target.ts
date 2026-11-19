@@ -1,16 +1,16 @@
 /**
- * Where the panel should land, from the signed start_param: a chat, an issue,
- * one bot reply, a public share, or a public long-CoT view, with the
- * requester's access to the chat behind it. Only a hint: the target's own
- * endpoint checks access again.
+ * Where the panel should land, from the signed start_param: a chat, a
+ * conversation of it, an issue, one bot reply, a public share, or a public
+ * long-CoT view, with the requester's access to the chat behind it. Only a
+ * hint: the target's own endpoint checks access again.
  *
  * It never tells a requester more than their own link says: an issue whose
  * chat they cannot open reads exactly like a missing one (no chatId, `none`),
  * so `i<N>` links cannot map issues to chats.
  *
- * A reply target is returned even with `access: 'none'` — the webapp shows a
- * no-permission page rather than guessing; a reply that does not exist falls
- * back to its chat page.
+ * A reply or conversation target is returned even with `access: 'none'` — the
+ * webapp shows a no-permission page rather than guessing; one that does not
+ * exist falls back to its chat page.
  *
  * A share or thinking target carries no access at all: the webapp reads it
  * through its public API, whose token is the only permission.
@@ -28,6 +28,7 @@ export type StartTargetAccess = ChatAccess | 'unavailable';
 
 export type StartTargetView =
     | { kind: 'chat'; chatId: number; access: StartTargetAccess }
+    | { kind: 'conversation'; chatId: number; rootId: number; access: StartTargetAccess }
     | { kind: 'issue'; chatId: number | null; issueId: number; access: StartTargetAccess }
     | { kind: 'reply'; chatId: number; firstMessageId: number; access: StartTargetAccess }
     | { kind: 'share'; token: string }
@@ -35,6 +36,9 @@ export type StartTargetView =
 
 /** Whether a reply of that chat is stored; lets a stale deep link land on the chat instead */
 export type ReplyExistsLookup = (chatId: number, firstMessageId: number) => Promise<boolean>;
+
+/** Whether a conversation root of that chat is stored; lets a stale deep link land on the chat instead */
+export type ConversationExistsLookup = (chatId: number, rootId: number) => Promise<boolean>;
 
 const accessOf = async (resolver: ChatAccessResolver, chatId: number): Promise<StartTargetAccess> => {
     try {
@@ -77,17 +81,42 @@ const replyTargetOf = async (
     return { kind: 'reply', chatId: replyTarget.chatId, firstMessageId: replyTarget.firstMessageId, access };
 };
 
+/** A conversation deep link: its own landing when the root is stored, else the chat page */
+const conversationTargetOf = async (
+    conversationTarget: { chatId: number; rootId: number },
+    resolver: ChatAccessResolver,
+    conversationExists: ConversationExistsLookup | undefined
+): Promise<StartTargetView> => {
+    const access = await accessOf(resolver, conversationTarget.chatId);
+    if (
+        conversationExists !== undefined &&
+        !(await conversationExists(conversationTarget.chatId, conversationTarget.rootId))
+    ) {
+        return { kind: 'chat', chatId: conversationTarget.chatId, access };
+    }
+    return {
+        kind: 'conversation',
+        chatId: conversationTarget.chatId,
+        rootId: conversationTarget.rootId,
+        access,
+    };
+};
+
 /** `hintChatId` is the chat the target points into (resolveHintChatId): the chat itself, or the issue's chat */
 export const buildStartTarget = (
     target: StartParamTarget | null,
     hintChatId: number | null,
     resolver: ChatAccessResolver,
-    replyExists?: ReplyExistsLookup
+    replyExists?: ReplyExistsLookup,
+    conversationExists?: ConversationExistsLookup
 ): Promise<StartTargetView | null> => {
     if (target === null) return Promise.resolve(null);
     return match(target)
         .returnType<Promise<StartTargetView>>()
         .with({ kind: 'chat' }, (chatTarget) => chatTargetOf(chatTarget.chatId, resolver))
+        .with({ kind: 'conversation' }, (conversationTarget) =>
+            conversationTargetOf(conversationTarget, resolver, conversationExists)
+        )
         .with({ kind: 'issue' }, (issueTarget) => issueTargetOf(issueTarget.issueId, hintChatId, resolver))
         .with({ kind: 'reply' }, (replyTarget) => replyTargetOf(replyTarget, resolver, replyExists))
         .with(

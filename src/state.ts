@@ -40,6 +40,10 @@ interface AppStateType {
     replyRerunClaims: Map<string, number>;
     // replies "继续" can pick up: "chatId:firstMessageId" -> version and expiry
     resumableMarks: Map<string, ResumableMark>;
+    // the /panel message that carries a conversation's deep link, by
+    // "chatId:rootId": the newest message of each conversation, and the only
+    // one the panel's operation receipts are edited into
+    conversationKeyboardMessages: Map<string, ConversationKeyboardMessage>;
 }
 
 /** Which version of a reply can be continued from its checkpoint, and until when */
@@ -48,6 +52,19 @@ export interface ResumableMark {
     readonly versionId: number;
     /** Epoch ms; the mark no longer counts from this moment on */
     readonly expiresAt: number;
+}
+
+/** The /panel message of one conversation, and the operations reported on it */
+export interface ConversationKeyboardMessage {
+    readonly chatId: number;
+    readonly rootId: number;
+    readonly messageId: number;
+    /** The message text the operation lines are appended to */
+    readonly baseText: string;
+    /** Operation lines, oldest first; at most MAX_CONVERSATION_KEYBOARD_OPERATIONS */
+    ops: string[];
+    /** Epoch ms of the last registration or append */
+    updatedAt: number;
 }
 
 const createInitialState = (): AppStateType => ({
@@ -67,6 +84,7 @@ const createInitialState = (): AppStateType => ({
     botRepliesInFlight: new Map(),
     replyRerunClaims: new Map(),
     resumableMarks: new Map(),
+    conversationKeyboardMessages: new Map(),
 });
 
 // singleton instance
@@ -519,4 +537,85 @@ export const showsResumableVersion = (
     const mark = resumableMarkOf(chatId, firstMessageId);
     if (mark === undefined || shownIndex !== versions.length - 1) return false;
     return versions[shownIndex]?.versionId === mark.versionId;
+};
+
+// Conversation keyboard messages
+// The /panel message that opened one conversation: the panel appends what it did
+// (exclude / restore / splice) to that message's text, so the chat keeps a
+// readable receipt of the operations. Only the newest message of a conversation
+// is updated, and only in the process that sent it.
+
+const conversationKeyboardKey = (chatId: number, rootId: number): string => `${chatId}:${rootId}`;
+
+/** Above this many tracked conversations the least recently updated one is dropped */
+const MAX_CONVERSATION_KEYBOARD_MESSAGES = 200;
+
+/** How many operation lines one receipt keeps (the oldest dropped) */
+export const MAX_CONVERSATION_KEYBOARD_OPERATIONS = 5;
+
+export interface ConversationKeyboardInput {
+    chatId: number;
+    rootId: number;
+    messageId: number;
+    /** The message text the operation lines are appended to */
+    baseText: string;
+    /** Epoch ms; defaults to Date.now() */
+    now?: number;
+}
+
+/** Remember the newest /panel message of a conversation, replacing an older one */
+export const registerConversationKeyboardMessage = (input: ConversationKeyboardInput): void => {
+    const messages = getAppState().conversationKeyboardMessages;
+    const key = conversationKeyboardKey(input.chatId, input.rootId);
+    messages.delete(key);
+    if (messages.size >= MAX_CONVERSATION_KEYBOARD_MESSAGES) {
+        let oldestKey: string | undefined;
+        let oldestAt = Number.POSITIVE_INFINITY;
+        for (const [candidateKey, entry] of messages) {
+            if (entry.updatedAt < oldestAt) {
+                oldestAt = entry.updatedAt;
+                oldestKey = candidateKey;
+            }
+        }
+        if (oldestKey !== undefined) messages.delete(oldestKey);
+    }
+    messages.set(key, { ...input, ops: [], updatedAt: input.now ?? Date.now() });
+};
+
+/** The receipt message of one conversation, when one was registered */
+export const latestConversationKeyboardMessage = (
+    chatId: number,
+    rootId: number
+): ConversationKeyboardMessage | undefined =>
+    getAppState().conversationKeyboardMessages.get(conversationKeyboardKey(chatId, rootId));
+
+/** Whether this chat has any receipt message; a cheap guard before the panel's writes */
+export const hasConversationKeyboardMessages = (chatId: number): boolean => {
+    const prefix = `${chatId}:`;
+    for (const key of getAppState().conversationKeyboardMessages.keys()) {
+        if (key.startsWith(prefix)) return true;
+    }
+    return false;
+};
+
+/** Append one operation line to a receipt; undefined when the conversation has none */
+export const appendConversationKeyboardOperation = (
+    chatId: number,
+    rootId: number,
+    line: string,
+    now: number = Date.now()
+): ConversationKeyboardMessage | undefined => {
+    const entry = latestConversationKeyboardMessage(chatId, rootId);
+    if (entry === undefined) return undefined;
+    entry.ops.push(line);
+    if (entry.ops.length > MAX_CONVERSATION_KEYBOARD_OPERATIONS) {
+        entry.ops.splice(0, entry.ops.length - MAX_CONVERSATION_KEYBOARD_OPERATIONS);
+    }
+    entry.updatedAt = now;
+    return entry;
+};
+
+/** Forget a receipt (its message was deleted, or can never be edited) */
+export const dropConversationKeyboardMessage = (chatId: number, rootId: number): void => {
+    getAppState().conversationKeyboardMessages.delete(conversationKeyboardKey(chatId, rootId));
 };

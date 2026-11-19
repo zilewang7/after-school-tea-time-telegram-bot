@@ -1,11 +1,14 @@
 import { useCallback, useMemo, useState } from 'react';
 import type { ConversationTreeResponse } from '../../../api';
+import { BatchResultNotice } from './batch-result-notice';
 import { ConversationStatsPanel } from './conversation-stats-panel';
 import { FlatView } from './flat-view';
 import { ExportMenu } from './export-menu';
 import { LinksForm } from './links-form';
 import { ModelViewPanel } from './model-view-panel';
+import { SelectionView } from './selection-view';
 import { TreeView } from './tree-view';
+import { useBatchExclusion } from './use-batch-exclusion';
 
 /** 树 / 模型视角 / 统计: a local segment, not a route (tab switches own the URL) */
 export type ConversationSegment = 'tree' | 'flat' | 'model' | 'stats';
@@ -36,6 +39,9 @@ export const ConversationDetailView = ({
 }: ConversationDetailViewProps) => {
     const member = tree.access === 'member';
     const [panel, setPanel] = useState<OpenPanel>('none');
+    // Multi-select replaces the tree view; only members can exclude at all
+    const [selecting, setSelecting] = useState(false);
+    const batch = useBatchExclusion(chatId, onChanged);
 
     const toggleLinks = useCallback(
         () => setPanel((current) => (current === 'links' ? 'none' : 'links')),
@@ -46,6 +52,13 @@ export const ConversationDetailView = ({
         []
     );
     const closePanel = useCallback(() => setPanel('none'), []);
+    const resetBatch = batch.reset;
+    const enterSelection = useCallback(() => {
+        resetBatch();
+        setPanel('none');
+        setSelecting(true);
+    }, [resetBatch]);
+    const exitSelection = useCallback(() => setSelecting(false), []);
 
     const segments = useMemo(
         () => (
@@ -136,7 +149,7 @@ export const ConversationDetailView = ({
     return (
         <>
             {segments}
-            {member && (
+            {member && !selecting && (
                 <div className="filter-row">
                     <button type="button" className="button secondary" onClick={toggleLinks}>
                         拼接对话
@@ -144,12 +157,16 @@ export const ConversationDetailView = ({
                     <button type="button" className="button secondary" onClick={toggleExport}>
                         导出
                     </button>
+                    <button type="button" className="button secondary" onClick={enterSelection}>
+                        多选
+                    </button>
                 </div>
             )}
             {panel === 'links' && (
                 <LinksForm chatId={chatId} rootId={tree.rootId} onAttached={onChanged} onClose={closePanel} />
             )}
             {panel === 'export' && <ExportMenu chatId={chatId} rootId={tree.rootId} />}
+            {!selecting && <BatchResultNotice result={batch.result} />}
 
             <section className="section">
                 {tree.generating && (
@@ -157,7 +174,11 @@ export const ConversationDetailView = ({
                         <span className="generating-dot" aria-hidden="true" /> 有回复正在生成，每 5 秒自动刷新
                     </p>
                 )}
-                <TreeView chatId={chatId} tree={tree} member={member} onChanged={onChanged} />
+                {member && selecting ? (
+                    <SelectionView tree={tree} batch={batch} onExit={exitSelection} />
+                ) : (
+                    <TreeView chatId={chatId} tree={tree} member={member} onChanged={onChanged} />
+                )}
             </section>
         </>
     );

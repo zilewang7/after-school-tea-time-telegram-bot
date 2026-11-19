@@ -452,6 +452,36 @@ export const findRootMessage = async (
     return findRoot(messageId);
 };
 
+/**
+ * The conversation root behind a message a member replied to: what `/panel`
+ * deep-links to. A bot reply (any version, continuation ids included) is
+ * normalised to the user message it answered; otherwise the message itself is
+ * the anchor. A message that is not stored, a bot notice (a row without a
+ * BotResponse is not a conversation message) and a root that is a command
+ * message have no conversation.
+ */
+export const findConversationRootId = async (chatId: number, messageId: number): Promise<number | null> => {
+    const botReply = await findBotResponseByMessageId(chatId, messageId);
+    const anchors: number[] = [];
+    if (botReply !== null) {
+        anchors.push(botReply.userMessageId, botReply.messageId);
+    } else {
+        const replied = await getContextMessage(chatId, messageId);
+        if (replied === null || replied.fromBotSelf) return null;
+        anchors.push(messageId);
+    }
+
+    for (const anchor of anchors) {
+        if (!Number.isSafeInteger(anchor) || anchor < 1) continue;
+        const root = await findRootMessage(chatId, anchor, { recover: false });
+        if (root === null) continue;
+        // A command message (a lone /panel, /help row) is not a conversation
+        const isCommand = root.chatCommand !== null || (root.text ?? '').startsWith('/');
+        return isCommand ? null : root.messageId;
+    }
+    return null;
+};
+
 /** Ids one root-walk query may carry; keeps the IN list well under SQLite's cap */
 const ROOT_WALK_BATCH = 200;
 

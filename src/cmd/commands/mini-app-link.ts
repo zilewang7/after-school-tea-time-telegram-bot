@@ -44,3 +44,22 @@ export const miniAppKeyboardForChat = (
             return link === null ? null : new InlineKeyboard().url(label, link);
         })
         .otherwise(() => null);
+
+/**
+ * A keyboard that deep-links to one conversation. Both private and group chats
+ * get a URL button: only a Direct Link carries the signed start_param, while a
+ * web_app button's URL is fixed. Without BOT_USER_NAME the chat-level keyboard
+ * is returned instead.
+ */
+export const miniAppConversationKeyboardForChat = (
+    chat: Chat,
+    label: string,
+    startParam: string
+): InlineKeyboard | null =>
+    match(chat.type)
+        .returnType<InlineKeyboard | null>()
+        .with('private', 'group', 'supergroup', () => {
+            const link = miniAppDirectLink(startParam);
+            return link === null ? miniAppKeyboardForChat(chat, label) : new InlineKeyboard().url(label, link);
+        })
+        .otherwise(() => null);

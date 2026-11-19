@@ -3,11 +3,16 @@
  * App (non-empty initData) opens on the route the reader last visited; a
  * browser tab (web login or a public page, both with an empty initData) always
  * starts where it was asked to and never takes over the remembered route.
+ * Also the conversation deep link's landing (panel conversation deep links):
+ * member / observer / unavailable open the conversation tree, `none` the
+ * no-access page.
  *
  * Run: npx tsx scripts/offline/webapp-launch.mts
  */
 import { expect, reportResults, runCase, type CaseResult } from './harness.mts';
 import type { TelegramWebApp } from '../../webapp/src/telegram.js';
+import type { StartTarget, StartTargetAccess } from '../../webapp/src/api/index.js';
+import { conversationPath, NO_ACCESS_PATH } from '../../webapp/src/routing/paths.js';
 
 const store = new Map<string, string>();
 
@@ -32,6 +37,17 @@ Object.defineProperty(globalThis, 'window', {
 const { captureLaunchState, launchRouteOf } = await import('../../webapp/src/launch.js');
 
 type FakeWebApp = Pick<TelegramWebApp, 'initData' | 'initDataUnsafe'>;
+
+const CONVERSATION_CHAT_ID = -1001234567890;
+const CONVERSATION_ROOT_ID = 4101;
+
+/** A `c<chatId>_<rootId>` deep link's target, as /api/me would answer it */
+const conversationTarget = (access: StartTargetAccess): StartTarget => ({
+    kind: 'conversation',
+    chatId: CONVERSATION_CHAT_ID,
+    rootId: CONVERSATION_ROOT_ID,
+    access,
+});
 
 const doNothing = (): void => {};
 
@@ -121,6 +137,55 @@ results.push(
         expect(
             launchRouteOf(launch, { kind: 'share', token: 'lytoken' }) === '/share/lytoken',
             'a start_param target replaces it'
+        );
+    })
+);
+
+results.push(
+    await runCase('a conversation start_target lands on its conversation tree', async () => {
+        store.clear();
+        const launch = captureLaunchState(
+            fakeWebApp({
+                initData: 'query_id=AA&auth_date=1&hash=deadbeef',
+                initDataUnsafe: { start_param: `c${CONVERSATION_CHAT_ID}_${CONVERSATION_ROOT_ID}` },
+            })
+        );
+        const expected = conversationPath(CONVERSATION_CHAT_ID, CONVERSATION_ROOT_ID);
+        expect(expected === `/c/${CONVERSATION_CHAT_ID}/conv/${CONVERSATION_ROOT_ID}`, `the path (got ${expected})`);
+        const accesses: StartTargetAccess[] = ['member', 'observer', 'unavailable'];
+        for (const access of accesses) {
+            const route = launchRouteOf(launch, conversationTarget(access));
+            expect(route === expected, `access ${access} opens the conversation (got ${route})`);
+        }
+    })
+);
+
+results.push(
+    await runCase('a conversation start_target the requester cannot open lands on the no-access page', async () => {
+        store.clear();
+        const launch = captureLaunchState(
+            fakeWebApp({
+                initData: 'query_id=AA&auth_date=1&hash=deadbeef',
+                initDataUnsafe: { start_param: `c${CONVERSATION_CHAT_ID}_${CONVERSATION_ROOT_ID}` },
+            })
+        );
+        expect(NO_ACCESS_PATH === '/no-access', `the no-access path (got ${NO_ACCESS_PATH})`);
+        expect(
+            launchRouteOf(launch, conversationTarget('none')) === NO_ACCESS_PATH,
+            'access none shows the no-permission page instead of opening a page that answers 403'
+        );
+    })
+);
+
+results.push(
+    await runCase('a browser tab never applies a conversation target', async () => {
+        store.clear();
+        store.set('lastRoute', '/c/123/conv');
+        const launch = captureLaunchState(fakeWebApp({ initData: '', initDataUnsafe: {} }));
+        expect(launch.insideTelegram === false, 'an empty initData means the browser');
+        expect(
+            launchRouteOf(launch, conversationTarget('member')) === null,
+            'without a start_param the browser stays where it was asked to'
         );
     })
 );

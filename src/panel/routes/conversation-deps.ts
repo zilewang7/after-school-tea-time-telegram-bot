@@ -19,6 +19,8 @@ export interface ConversationRouteDeps {
     now: () => number;
     /** Signs the `/m/…` URLs of the media a panel page shows */
     mediaSigner: SignedMediaSigner;
+    /** The bot's own Api for in-chat operation receipts (design §4.7); null disables them */
+    botApi: Api | null;
 }
 
 /**

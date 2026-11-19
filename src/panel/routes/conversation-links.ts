@@ -17,6 +17,7 @@ import { chatAuditScope, writeSettingsAudit } from '../../db/queries/settings-au
 import type { ChatRow } from '../../db/queries/panel-registry.js';
 import { attachLinkedConversations, describeLinkProblems } from '../../reply/commands/chat-command-link.js';
 import { parseTelegramMessageLink, type TelegramMessageLink } from '../../reply/commands/telegram-message-link.js';
+import { reportSpliceReceipt } from '../../services/conversation-keyboard-service.js';
 import { requireChatAccess } from '../access/require-access.js';
 import type { ChatNameInfo, ChatNameLookup } from '../chat-names.js';
 import { requireAuth, type PanelEnv } from '../context.js';
@@ -141,6 +142,8 @@ export const registerConversationLinksRoute = (app: Hono<PanelEnv>, deps: Conver
                 }),
             });
         }
+        // The splice already happened: the in-chat receipt is best effort and never blocks the answer
+        void reportSpliceReceipt({ chatId, rootId, attachedRoots: result.attachedRoots, botApi: deps.botApi });
 
         const notices = [describeLinkProblems(result), invalidNotice(parsed.invalid.length)].filter(
             (line): line is string => line !== null

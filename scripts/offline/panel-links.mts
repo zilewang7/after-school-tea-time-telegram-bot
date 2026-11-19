@@ -12,6 +12,7 @@
  */
 import { GrammyError } from 'grammy';
 import { expect, reportResults, runCase, setupOfflineDb, type CaseResult } from './harness.mts';
+import { createFakeTelegram, waitUntil } from './fake-telegram.mts';
 import { signInitData, type InitDataUserInput } from '../lib/init-data.mts';
 
 const BOT_TOKEN = '123456789:AAFakeOfflineTokenForPanelTests_0123';
@@ -40,6 +41,7 @@ const { loadChatSettingsCache } = await import('../../src/services/chat-settings
 const { attachLinkedConversations } = await import('../../src/reply/commands/chat-command-link.js');
 const { parseTelegramMessageLink } = await import('../../src/reply/commands/telegram-message-link.js');
 const { createPanelApp } = await import('../../src/panel/app.js');
+const { registerConversationKeyboardMessage } = await import('../../src/state.js');
 
 type MembershipLookup = import('../../src/panel/access/membership.js').MembershipLookup;
 type ChatNameLookup = import('../../src/panel/chat-names.js').ChatNameLookup;
@@ -72,7 +74,22 @@ const app = createPanelApp({
     chatLookup: fakeChatLookup,
 });
 
-const postLinks = async (
+/** A second app: the splice comes from it, its Bot API records the in-chat receipt edit */
+const receiptTelegram = createFakeTelegram();
+const receiptApp = createPanelApp({
+    botToken: BOT_TOKEN,
+    membershipLookup: fakeLookup,
+    staticRoot: '/nonexistent-panel-static-root',
+    startedAt: new Date('2026-11-07T00:00:00.000Z'),
+    version: 'test',
+    chatLookup: fakeChatLookup,
+    botApi: receiptTelegram.api,
+});
+
+type PanelApp = ReturnType<typeof createPanelApp>;
+
+const postLinksTo = async (
+    targetApp: PanelApp,
     chatId: number,
     rootId: number,
     body: unknown,
@@ -82,13 +99,20 @@ const postLinks = async (
         'X-Init-Data': signInitData({ botToken: BOT_TOKEN, user, authDate: Math.floor(Date.now() / 1000) }),
         'Content-Type': 'application/json',
     });
-    const response = await app.request(`/api/chats/${chatId}/conversations/${rootId}/links`, {
+    const response = await targetApp.request(`/api/chats/${chatId}/conversations/${rootId}/links`, {
         method: 'POST',
         headers,
         body: JSON.stringify(body),
     });
     return { status: response.status, body: JSON.parse(await response.text()) };
 };
+
+const postLinks = (
+    chatId: number,
+    rootId: number,
+    body: unknown,
+    user: InitDataUserInput = ALICE
+): Promise<{ status: number; body: any }> => postLinksTo(app, chatId, rootId, body, user);
 
 const linkAuditCount = (chatId: number): Promise<number> =>
     SettingsAudit.count({ where: { scope: `chat:${chatId}`, key: 'link' } });
@@ -297,6 +321,29 @@ const cases: { name: string; body: () => Promise<void> }[] = [
         body: async () => {
             const observed = await postLinks(GROUP, target.root, { links: [internalLink(sourceB.reply)] }, OWNER);
             expect(observed.status === 403 && observed.body.error?.code === 'forbidden', `403 (got ${observed.status})`);
+        },
+    },
+    {
+        name: "a splice is reported on the conversation's /panel receipt",
+        body: async () => {
+            const local = await seedConversation(GROUP, 'Receipt');
+            const attached = await seedConversation(GROUP, 'ReceiptAttached');
+            registerConversationKeyboardMessage({
+                chatId: GROUP,
+                rootId: local.root,
+                messageId: 606060,
+                baseText: '这条会话的控制面板：',
+            });
+            const { status, body } = await postLinksTo(receiptApp, GROUP, local.root, { links: [internalLink(attached.reply)] });
+            expect(status === 200 && body.attachedRoots === 1, `one conversation attached (got ${status} ${JSON.stringify(body)})`);
+            await waitUntil('the splice receipt', () => receiptTelegram.callsOf('editMessageText').length > 0);
+            const payload = receiptTelegram.callsOf('editMessageText').at(-1)?.payload ?? {};
+            const text = typeof payload.text === 'string' ? payload.text : '';
+            expect(payload.chat_id === GROUP && payload.message_id === 606060, `edited the receipt (got ${JSON.stringify(payload)})`);
+            expect(
+                text.startsWith('这条会话的控制面板：\n· 已拼接 1 段对话（') && !('reply_markup' in payload),
+                `the splice line above the buttons (got ${JSON.stringify(text)})`
+            );
         },
     },
 ];

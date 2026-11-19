@@ -1,10 +1,11 @@
 /**
  * The signed `start_param` of initData (`?startapp=` of a Direct Link):
- * `c<chatId>` opens a chat, `i<issueId>` an issue, `r<chatId>_<firstMessageId>`
- * one bot reply (the group widget fallback's deep link, design §5.10),
- * `s<token>` a public share (the share page's Mini App button), and
- * `t<token>` a public long-CoT view (the thinking link's deep link, design
- * §6.2). Anything else, empty included, is ignored.
+ * `c<chatId>` opens a chat, `c<chatId>_<rootId>` one conversation of it
+ * (`/panel`'s "打开这条会话" button), `i<issueId>` an issue,
+ * `r<chatId>_<firstMessageId>` one bot reply (the group widget fallback's deep
+ * link, design §5.10), `s<token>` a public share (the share page's Mini App
+ * button), and `t<token>` a public long-CoT view (the thinking link's deep
+ * link, design §6.2). Anything else, empty included, is ignored.
  *
  * It is only a hint for where to land, never a permission: a share or thinking
  * token is read through its public API, and whatever a chat target names still
@@ -14,12 +15,15 @@ import { match } from 'ts-pattern';
 
 export type StartParamTarget =
     | { kind: 'chat'; chatId: number }
+    | { kind: 'conversation'; chatId: number; rootId: number }
     | { kind: 'issue'; issueId: number }
     | { kind: 'reply'; chatId: number; firstMessageId: number }
     | { kind: 'share'; token: string }
     | { kind: 'thinking'; token: string };
 
 const CHAT_PATTERN = /^c(-?\d{1,20})$/;
+/** Tried before the chat form: a two-part id is never a chat id */
+const CONVERSATION_PATTERN = /^c(-?\d{1,20})_(\d{1,12})$/;
 const ISSUE_PATTERN = /^i(\d{1,10})$/;
 /** Group ids are negative and `-` is allowed in a start_param; reply ids are positive */
 const REPLY_PATTERN = /^r(-?\d{1,20})_(\d{1,12})$/;
@@ -35,6 +39,14 @@ const safeIntegerOf = (digits: string): number | null => {
 
 export const parseStartParam = (raw: string | null | undefined): StartParamTarget | null => {
     if (raw === null || raw === undefined) return null;
+    const conversationMatch = CONVERSATION_PATTERN.exec(raw);
+    if (conversationMatch?.[1] !== undefined && conversationMatch[2] !== undefined) {
+        const chatId = safeIntegerOf(conversationMatch[1]);
+        const rootId = safeIntegerOf(conversationMatch[2]);
+        if (chatId === null || chatId === 0) return null;
+        if (rootId === null || rootId < 1) return null;
+        return { kind: 'conversation', chatId, rootId };
+    }
     const chatMatch = CHAT_PATTERN.exec(raw);
     if (chatMatch?.[1] !== undefined) {
         const chatId = safeIntegerOf(chatMatch[1]);
@@ -71,6 +83,7 @@ export const resolveHintChatId = async (
     if (target === null) return null;
     return match(target)
         .with({ kind: 'chat' }, (chatTarget) => Promise.resolve(chatTarget.chatId))
+        .with({ kind: 'conversation' }, (conversationTarget) => Promise.resolve(conversationTarget.chatId))
         .with({ kind: 'issue' }, (issueTarget) => lookupIssueChatId(issueTarget.issueId))
         .with({ kind: 'reply' }, (replyTarget) => Promise.resolve(replyTarget.chatId))
         // A public share or thinking link carries no chat hint: its token is the permission

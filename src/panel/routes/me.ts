@@ -18,6 +18,7 @@ import { requireAuth, type PanelEnv } from '../context.js';
 import { countOpenIssuesByChat, findIssueChatId } from '../queries/harness-issues.js';
 import { toChatListItem } from '../views/chat-list.js';
 import { buildStartTarget } from '../views/start-target.js';
+import { isConversationRoot } from './conversation-params.js';
 
 /** A reply deep link only lands on the reply while it is stored */
 const replyExists = async (chatId: number, firstMessageId: number): Promise<boolean> =>
@@ -57,7 +58,14 @@ export const registerMeRoute = (app: Hono<PanelEnv>): void => {
                 // Who is in the roster is the owner's business; everyone else gets null
                 auth.user.isOwner ? accessGroupsOf() : Promise.resolve(null),
             ]);
-        const startTarget = await buildStartTarget(target, hintChatId, auth.access, replyExists);
+        // A stale conversation deep link lands on the chat page, like a stale reply link
+        const startTarget = await buildStartTarget(
+            target,
+            hintChatId,
+            auth.access,
+            replyExists,
+            isConversationRoot
+        );
         // The trial spend cap's amounts: only a trial requester has one, and the
         // figure comes from the same estimate the reply gate uses (design D1)
         const trialSpend = accessTier === 'trial' ? await estimateTrialSpend(auth.user.id) : null;

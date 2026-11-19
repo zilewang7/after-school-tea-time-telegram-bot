@@ -62,6 +62,8 @@ export type StartTarget =
     | { kind: 'issue'; issueId: number; chatId: number | null; access: StartTargetAccess }
     // A `startapp=r<chatId>_<firstMessageId>` link; `none` means the reply stays hidden
     | { kind: 'reply'; chatId: number; firstMessageId: number; access: StartTargetAccess }
+    // A `startapp=c<chatId>_<rootId>` link: one conversation of the chat
+    | { kind: 'conversation'; chatId: number; rootId: number; access: StartTargetAccess }
     // A `startapp=s<token>` link: the public page; access is decided by the page itself
     | { kind: 'share'; token: string }
     // A `startapp=t<token>` link: the public long-CoT page; the token is the permission
@@ -892,6 +894,22 @@ export interface ExcludedMessageResponse {
 export interface IncludedMessageResponse {
     messageId: number;
     excluded: false;
+}
+
+/** The two directions of a batch exclusion write */
+export type ExclusionBatchAction = 'exclude' | 'restore';
+
+/**
+ * POST /api/chats/:chatId/exclusions (1–100 message ids): what happened to each
+ * id — changed state (canonical ids), was already in the target state, has no
+ * row any more, or is an album sub-image that cannot leave the context alone.
+ */
+export interface ExclusionBatchResponse {
+    action: ExclusionBatchAction;
+    changed: number[];
+    unchanged: number[];
+    missing: number[];
+    albumItems: number[];
 }
 
 // Statistics and live status (phase 3)

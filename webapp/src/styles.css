@@ -1295,6 +1295,98 @@ details.flat-fold[open] > .flat-bubble-head::after {
     color: var(--color-button-text);
 }
 
+/* Multi-select of messages: compact rows plus a sticky action bar */
+.selection-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.selection-row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px 8px;
+    width: 100%;
+    padding: 8px 10px;
+    border: 1px solid transparent;
+    border-radius: 8px;
+    background: var(--color-page-bg);
+    color: var(--color-text);
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+}
+
+.selection-row[aria-checked='true'] {
+    border-color: var(--color-button);
+}
+
+.selection-check {
+    flex: none;
+    width: 18px;
+    height: 18px;
+    border: 1px solid var(--color-separator);
+    border-radius: 4px;
+    color: var(--color-button-text);
+    font-size: 13px;
+    line-height: 18px;
+    text-align: center;
+}
+
+.selection-row[aria-checked='true'] .selection-check {
+    border-color: var(--color-button);
+    background: var(--color-button);
+}
+
+.selection-summary {
+    flex-basis: 100%;
+    font-size: 14px;
+    color: var(--color-hint);
+    overflow-wrap: anywhere;
+}
+
+.selection-bar {
+    position: sticky;
+    bottom: 0;
+    z-index: 5;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    margin-top: 12px;
+    /* The bottom inset keeps the buttons above the home indicator */
+    padding: 10px 10px calc(10px + var(--safe-bottom));
+    border-top: 1px solid var(--color-separator);
+    border-radius: var(--radius);
+    background: var(--color-section-bg);
+}
+
+.selection-bar-status {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 8px;
+    font-size: 14px;
+}
+
+.selection-limit {
+    color: var(--color-warning);
+    font-size: 13px;
+}
+
+.selection-bar-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+}
+
+.selection-bar-actions .button {
+    flex: 1 1 auto;
+}
+
 /* Folded blocks: thinking, tool records, the static head */
 .collapsible {
     display: flex;
