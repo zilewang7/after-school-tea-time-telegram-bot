@@ -61,6 +61,8 @@ const BASE_DESCRIPTION =
     '返回按时间从新到旧的命中列表，每条带 hN、时间、发送者、#N 或 t.me 链接、消息首行与命中处片段；不含正文全文，需要时用 read_history 读。' +
     '索引里的图片 OCR 文字会被标注（如「（图片 OCR 文字）」），它不是消息正文，别当成发送者说的话。' +
     '已被 Telegram 删除的消息会标注（已删除）：内容仍在索引与原文里，可以照常引用，只是它已不在聊天里。' +
+    '你自己的回复也会命中，发送者会标「（你自己）」：那是你自己写的内容，不是群友说的话；' +
+    '折叠块里的思考与工具记录尤其不要当成聊天证据，引用前先用 read_history 看原文。' +
     `事实：默认返回最新 ${HISTORY_DEFAULT_LIMIT} 条命中，limit 最多 ${HISTORY_MAX_LIMIT} 条（不是相关性排序）；` +
     'query 规则：空格 = AND、OR = 或、- = 排除、括号分组；中文按字索引，连续中文片段可搜；' +
     '英文/驼峰词（如 FixupX）按整词索引、大小写不敏感，docker 不含 dockerfile：要词首前缀就写 docker*，' +
@@ -415,6 +417,7 @@ export const createSearchHistoryTool = (options: HistoryToolOptions): ToolHandle
                     fromName: hit.fromName,
                     fromIsBot:
                         message?.senderIsBot ?? (hit.fromId !== null && hit.fromId === options.botUserId),
+                    fromSelf: hit.fromId !== null && hit.fromId === options.botUserId,
                     indexedHtml: hit.html,
                     deletedAt: hit.deletedAt,
                     ...(groupName ? { groupName } : {}),

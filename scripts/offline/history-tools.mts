@@ -821,6 +821,39 @@ cases.push(
 );
 
 cases.push(
+    await runCase('own replies and other bots are marked in the list', async () => {
+        const rowOf = (overrides: Record<string, unknown>) => ({
+            entry: {
+                h: 1,
+                channelId: CHANNEL_ID,
+                messageId: 3001,
+                timestamp: 1_760_000_000,
+                fromId: 42,
+                fromName: '群友',
+                fromIsBot: false,
+                indexedHtml: '正文',
+                ...overrides,
+            },
+            anchor: '#12',
+            firstLine: '正文',
+        });
+        const rows = [
+            rowOf({ h: 1 }),
+            rowOf({ h: 2, fromId: BOT_ID, fromName: 'K-ON', fromIsBot: true, fromSelf: true }),
+            rowOf({ h: 3, fromId: 987598712, fromName: '丁二自动机', fromIsBot: true }),
+        ];
+        const rendered = textKit.renderSearchList(
+            { query: '正文', scopeLabel: '本群', shown: 3, matched: '3', hasMore: false, showGroup: false },
+            rows,
+            TZ
+        );
+        expect(rendered.includes('群友 · #12'), 'a member is shown by name only');
+        expect(rendered.includes('K-ON（你自己）'), 'an own reply is marked as the bot itself');
+        expect(rendered.includes('丁二自动机（机器人）'), 'another bot is marked as a bot');
+    })
+);
+
+cases.push(
     await runCase('the owner private chat is offered the history tools, other private chats are not', async () => {
         const config = readToolConfig({
             HISTORY_CHAT_IDS: '-1001415974153',

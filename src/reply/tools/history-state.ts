@@ -21,6 +21,8 @@ export interface HistoryMessageInput {
     readonly fromId: number | null;
     readonly fromName: string;
     readonly fromIsBot: boolean;
+    /** This is one of the bot's own replies (not merely some bot) */
+    readonly fromSelf?: boolean;
     /** The indexed text: HTML-escaped, possibly keyword-highlighted */
     readonly indexedHtml: string;
     /** Group title, for cross-group results */
@@ -66,6 +68,7 @@ const merge = (existing: HistoryEntry, input: HistoryMessageInput): HistoryEntry
     fromId: input.fromId ?? existing.fromId,
     fromName: input.fromName || existing.fromName,
     fromIsBot: input.fromIsBot || existing.fromIsBot,
+    fromSelf: input.fromSelf === true || existing.fromSelf === true,
     indexedHtml: input.indexedHtml || existing.indexedHtml,
     groupName: input.groupName ?? existing.groupName,
     rawText: input.rawText ?? existing.rawText,

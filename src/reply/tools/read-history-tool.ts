@@ -113,6 +113,7 @@ const ensureEntry = async (
                 fromId: hit.fromId,
                 fromName: hit.fromName,
                 fromIsBot: hit.fromId !== null && hit.fromId === options.botUserId,
+                fromSelf: hit.fromId !== null && hit.fromId === options.botUserId,
                 indexedHtml: hit.html,
                 deletedAt: hit.deletedAt,
                 ...(groupName ? { groupName } : {}),
@@ -180,6 +181,9 @@ const loadRaw = async (
                     fromId: current.fromId,
                     fromName: current.fromName,
                     fromIsBot: raw.senderIsBot || current.fromIsBot,
+                    fromSelf:
+                        current.fromSelf === true ||
+                        (raw.senderId !== null && raw.senderId === options.botUserId),
                     indexedHtml: current.indexedHtml,
                     ...(current.groupName ? { groupName: current.groupName } : {}),
                     rawText: raw.text,
@@ -304,6 +308,7 @@ const readWindow = async (
                 fromId: hit.fromId,
                 fromName: hit.fromName,
                 fromIsBot: hit.fromId !== null && hit.fromId === options.botUserId,
+                fromSelf: hit.fromId !== null && hit.fromId === options.botUserId,
                 indexedHtml: hit.html,
                 ...(earlier.groups.get(center.channelId)
                     ? { groupName: earlier.groups.get(center.channelId) }
@@ -322,6 +327,7 @@ const readWindow = async (
                 fromId: hit.fromId,
                 fromName: hit.fromName,
                 fromIsBot: hit.fromId !== null && hit.fromId === options.botUserId,
+                fromSelf: hit.fromId !== null && hit.fromId === options.botUserId,
                 indexedHtml: hit.html,
                 ...(later.groups.get(center.channelId)
                     ? { groupName: later.groups.get(center.channelId) }

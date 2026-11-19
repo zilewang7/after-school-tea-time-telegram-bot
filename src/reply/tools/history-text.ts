@@ -28,6 +28,17 @@ const KEYWORD_CLOSE = '</span>';
 /** A message body line never starts like this */
 const URL_LINE = /^https?:\/\//i;
 
+/**
+ * The sender as the result formats show it. Our own replies are marked so the
+ * model cannot read its own output (or its old folded thinking/tool records)
+ * as something a group member said; other bots are marked apart.
+ */
+const senderLabelOf = (entry: HistoryEntry): string => {
+    if (entry.fromSelf === true) return `${entry.fromName}（你自己）`;
+    if (entry.fromIsBot) return `${entry.fromName}（机器人）`;
+    return entry.fromName;
+};
+
 const NAMED_ENTITIES: Readonly<Record<string, string>> = {
     amp: '&',
     lt: '<',
@@ -595,7 +606,9 @@ const formatRow = (row: SearchListRow, timeZone: string, showGroup: boolean): st
     const time = formatHistoryTime(row.entry.timestamp, timeZone);
     const group = showGroup && row.groupName ? `[${row.groupName}] ` : '';
     const reply = row.replyTo ? ` · 回复 ${row.replyTo}` : '';
-    const lines = [`h${row.entry.h} · ${group}${time} · ${row.entry.fromName} · ${row.anchor}${reply}`];
+    const lines = [
+        `h${row.entry.h} · ${group}${time} · ${senderLabelOf(row.entry)} · ${row.anchor}${reply}`,
+    ];
     const annotation = annotationsOf(row.entry);
     const firstLine = row.firstLineOcr
         ? `（${ocrLabelOf(row.firstLineOcr)}）${row.firstLine}`
@@ -678,7 +691,7 @@ export const renderFullMessage = (
     const time = formatHistoryTime(entry.timestamp, options.timeZone);
     const group = options.showGroup && entry.groupName ? `[${entry.groupName}] ` : '';
     const anchor = options.anchor ? ` · ${options.anchor}` : '';
-    const header = `h${entry.h} · ${group}${time} · ${entry.fromName}${anchor}`;
+    const header = `h${entry.h} · ${group}${time} · ${senderLabelOf(entry)}${anchor}`;
 
     const annotation = annotationsOf(entry);
     const body = indexedBodyOf(entry);
@@ -751,7 +764,7 @@ export const renderWindow = (
         // Same caveat as the full read: an unreadable message's text is index
         // text of unknown origin, not the message as it was.
         const unreadable = row.entry.rawText === undefined ? '（未能读取原文，文本来自索引）' : '';
-        const line = `h${row.entry.h} · ${time} · ${row.entry.fromName}${prefix}: ${neutralizeWireFormat(body.text)}` +
+        const line = `h${row.entry.h} · ${time} · ${senderLabelOf(row.entry)}${prefix}: ${neutralizeWireFormat(body.text)}` +
             unreadable +
             (row.attachments ? `（附：${row.attachments}）` : '') +
             (row.center ? '   ← 中心' : '');
