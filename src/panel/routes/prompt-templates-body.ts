@@ -11,6 +11,7 @@ import {
     normalizeTemplateContent,
     normalizeTemplateName,
     normalizeTemplateVisibility,
+    type PromptTemplateVisibility,
 } from '../../services/prompt-template-rules.js';
 import type { PromptTemplateInput } from '../../services/prompt-templates-service.js';
 import type { JsonRecord } from '../json.js';
@@ -44,7 +45,7 @@ const sortOrderValue = (value: unknown): number => {
     return normalized.value;
 };
 
-const visibilityValue = (value: unknown): 'private' | 'group' => {
+const visibilityValue = (value: unknown): PromptTemplateVisibility => {
     const normalized = normalizeTemplateVisibility(value);
     if (!normalized.ok) throw invalid(normalized.message);
     return normalized.value;
@@ -63,7 +64,7 @@ export const parsePromptTemplateCreateBody = (body: JsonRecord): PromptTemplateI
         content: contentValue(body.content),
         modelPatterns: body.modelPatterns === undefined ? [] : patternsValue(body.modelPatterns),
         sortOrder: body.sortOrder === undefined ? 0 : sortOrderValue(body.sortOrder),
-        visibility: body.visibility === undefined ? 'private' : visibilityValue(body.visibility),
+        visibility: body.visibility === undefined ? 'global' : visibilityValue(body.visibility),
         enabled: body.enabled === undefined ? true : enabledValue(body.enabled),
     };
 };

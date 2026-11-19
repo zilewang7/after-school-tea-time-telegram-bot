@@ -1,10 +1,11 @@
 /**
- * Offline cases for prompt templates (design 2026-1119-1146 v5, D1-D14): the
- * field rules and the model glob, visibility and auto-candidate rules, the
- * composition (manual list ∪ auto candidates), the service's CRUD and cache,
- * `resolveReplyAddendum`, the panel's template routes and the chat's two new
- * settings keys, the settings preview, the reply path the model request goes
- * through, and the chat_settings migration.
+ * Offline cases for prompt templates (design 2026-1119-1146 v5 and
+ * 2026-1119-1740 v6): the field rules and the model glob, the three-level
+ * visibility and auto-candidate rules, composition (manual list ∪ auto
+ * candidates, private templates only inside private chats, no rule = no auto
+ * load), the service's CRUD and cache, `resolveReplyAddendum`, the panel's
+ * template routes and the chat's two settings keys, the settings preview, the
+ * reply path the model request goes through, and the chat_settings migration.
  *
  * Run: npx tsx scripts/offline/prompt-templates.mts
  */
@@ -80,6 +81,8 @@ const { QueryTypes } = await import('@sequelize/core');
 type PromptTemplate = import('../../src/services/prompt-templates-cache.js').PromptTemplate;
 type PromptTemplateVisibility = import('../../src/services/prompt-template-rules.js').PromptTemplateVisibility;
 type AutoCandidatesContext = import('../../src/services/prompt-template-rules.js').AutoCandidatesContext;
+type AddendumChatContext = import('../../src/services/prompt-template-rules.js').AddendumChatContext;
+type AutoCandidateContext = import('../../src/services/prompt-template-rules.js').AutoCandidateContext;
 type SettingsActor = import('../../src/services/settings-errors.js').SettingsActor;
 type MembershipLookup = import('../../src/panel/access/membership.js').MembershipLookup;
 type PanelApp = ReturnType<typeof createPanelApp>;
@@ -288,6 +291,15 @@ const syntheticTemplate = (input: SyntheticTemplateInput): PromptTemplate => ({
     updatedAt: new Date(0),
 });
 
+/** The chat context of a reply in a group chat */
+const GROUP_CHAT: AddendumChatContext = { privateChatUserId: null, ownerId: OWNER_ID };
+/** The chat context of a reply in Alice's private chat */
+const ALICE_PRIVATE_CHAT: AddendumChatContext = { privateChatUserId: ALICE.id, ownerId: OWNER_ID };
+/** The chat context of a reply in Bob's private chat */
+const BOB_PRIVATE_CHAT: AddendumChatContext = { privateChatUserId: BOB.id, ownerId: OWNER_ID };
+/** The chat context of a reply in the owner's private chat */
+const OWNER_PRIVATE_CHAT: AddendumChatContext = { privateChatUserId: OWNER_ID, ownerId: OWNER_ID };
+
 // ---- service-side fixtures --------------------------------------------------
 
 const ownerActor: SettingsActor = { userId: OWNER_ID, isOwner: true };
@@ -320,6 +332,17 @@ const ownerGroupTemplate = await templatesService.createPromptTemplate(
         modelPatterns: ['viewer-model*'],
         sortOrder: 10,
         visibility: 'group',
+        enabled: true,
+    },
+    ownerActor
+);
+const ownerPrivateTemplate = await templatesService.createPromptTemplate(
+    {
+        name: '机主私有模板',
+        content: '机主私有内容',
+        modelPatterns: ['viewer-model*'],
+        sortOrder: 55,
+        visibility: 'private',
         enabled: true,
     },
     ownerActor
@@ -375,6 +398,39 @@ const bobGroupTemplate = await templatesService.createPromptTemplate(
         modelPatterns: ['viewer-model*'],
         sortOrder: 60,
         visibility: 'group',
+        enabled: true,
+    },
+    bobActor
+);
+const aliceGlobalTemplate = await templatesService.createPromptTemplate(
+    {
+        name: 'Alice 全局模板',
+        content: 'Alice 全局内容',
+        modelPatterns: ['viewer-model*'],
+        sortOrder: 70,
+        visibility: 'global',
+        enabled: true,
+    },
+    aliceActor
+);
+const aliceNoRuleTemplate = await templatesService.createPromptTemplate(
+    {
+        name: 'Alice 空规则模板',
+        content: 'Alice 空规则内容',
+        modelPatterns: [],
+        sortOrder: 80,
+        visibility: 'global',
+        enabled: true,
+    },
+    aliceActor
+);
+const bobGlobalTemplate = await templatesService.createPromptTemplate(
+    {
+        name: 'Bob 全局模板',
+        content: 'Bob 全局内容',
+        modelPatterns: ['viewer-model*'],
+        sortOrder: 90,
+        visibility: 'global',
         enabled: true,
     },
     bobActor
@@ -580,7 +636,7 @@ const cases: { name: string; body: () => Promise<void> }[] = [
                     jsonOfText(['deepseek*', 'gemini-4-*']),
                 'rules are trimmed, lowercased, de-duplicated and blank entries dropped'
             );
-            expect(jsonOfText(normalizedValueOf(patterns([]))) === '[]', 'an empty list means every model');
+            expect(jsonOfText(normalizedValueOf(patterns([]))) === '[]', 'an empty list is a valid "no loading rule"');
             expect(
                 normalizedValueOf(patterns(Array.from({ length: 20 }, (_, index) => `m${index}*`)))?.length === 20,
                 '20 rules fit'
@@ -609,8 +665,9 @@ const cases: { name: string; body: () => Promise<void> }[] = [
         },
     },
     {
-        name: 'visibility and sort order: only the two values, an integer 0–100000, absent means 0',
+        name: 'visibility and sort order: the three visibility values, an integer 0–100000, absent means 0',
         body: async () => {
+            expect(normalizedValueOf(rules.normalizeTemplateVisibility('global')) === 'global', 'global is accepted');
             expect(normalizedValueOf(rules.normalizeTemplateVisibility('private')) === 'private', 'private is accepted');
             expect(normalizedValueOf(rules.normalizeTemplateVisibility('group')) === 'group', 'group is accepted');
             expect(isRefused(rules.normalizeTemplateVisibility('public')), 'public is refused');
@@ -618,8 +675,8 @@ const cases: { name: string; body: () => Promise<void> }[] = [
             expect(isRefused(rules.normalizeTemplateVisibility(42)), 'a number is refused');
             const visibilityMessage = normalizedMessageOf(rules.normalizeTemplateVisibility('public'));
             expect(
-                visibilityMessage.includes('可见性'),
-                `the visibility message names the field (got ${visibilityMessage})`
+                visibilityMessage.includes('全局可见') && visibilityMessage.includes('完全隐藏'),
+                `the message names the three choices (got ${visibilityMessage})`
             );
 
             const sortOrder = rules.normalizeSortOrder;
@@ -658,7 +715,8 @@ const cases: { name: string; body: () => Promise<void> }[] = [
             expect(matches('(a|b)', '(a|b)'), 'parentheses are literal and do not throw');
             expect(!matches('(a|b)', 'a'), 'and do not group alternatives');
 
-            expect(rules.templateMatchesModel({ modelPatterns: [] }, 'whatever'), 'no rule loads for every model');
+            expect(!rules.templateMatchesModel({ modelPatterns: [] }, 'whatever'), 'no rule matches no model: null rule means manual-only');
+            expect(rules.templateMatchesModel({ modelPatterns: ['*'] }, 'whatever'), 'an explicit * matches every model');
             expect(rules.templateMatchesModel({ modelPatterns: ['m1*'] }, 'm1-x'), 'a rule that matches loads');
             expect(
                 rules.templateMatchesModel({ modelPatterns: ['zzz*', 'm1*'] }, 'm1-x'),
@@ -706,58 +764,98 @@ const cases: { name: string; body: () => Promise<void> }[] = [
         },
     },
     {
-        name: "visibility: the owner's group templates are visible everywhere, private ones only to their creator (and the owner)",
+        name: 'visibility: global is visible to everyone, group follows the creator, private only inside a private chat',
         body: async () => {
-            const ownerGroup = syntheticTemplate({
+            const globalTemplate = syntheticTemplate({
                 id: 1,
+                name: 'global',
+                content: 'x',
+                createdBy: CAROL.id,
+                visibility: 'global',
+            });
+            const ownerGroup = syntheticTemplate({
+                id: 2,
                 name: 'owner-group',
                 content: 'x',
                 createdBy: OWNER_ID,
                 visibility: 'group',
             });
-            const ownerPrivate = syntheticTemplate({
-                id: 2,
-                name: 'owner-private',
+            const aliceGroup = syntheticTemplate({
+                id: 3,
+                name: 'alice-group',
                 content: 'x',
-                createdBy: OWNER_ID,
-                visibility: 'private',
+                createdBy: ALICE.id,
+                visibility: 'group',
             });
             const alicePrivate = syntheticTemplate({
-                id: 3,
+                id: 4,
                 name: 'alice-private',
                 content: 'x',
                 createdBy: ALICE.id,
                 visibility: 'private',
             });
-            const visibleIn = (viewerId: number, isOwner: boolean, knownMemberIds: number[]) => ({
+            const visibleIn = (viewerId: number, isOwner: boolean, knownMemberIds: number[], isPrivateChat: boolean) => ({
                 viewerId,
                 isOwner,
                 knownMemberIds: new Set(knownMemberIds),
+                isPrivateChat,
             });
 
+            // global: listed everywhere, whoever its creator is
+            expect(visibility.isTemplateVisible(globalTemplate, visibleIn(BOB.id, false, [], false)), 'global in a group: visible');
+            expect(visibility.isTemplateVisible(globalTemplate, visibleIn(BOB.id, false, [], true)), 'global in a private chat: visible');
+            expect(visibility.isTemplateVisible(globalTemplate, visibleIn(OWNER_ID, true, [], false)), 'global to the owner: visible');
+
+            // group: the owner's is a public library; another creator's needs them to be a known member
             expect(
-                visibility.isTemplateVisible(ownerGroup, visibleIn(ALICE.id, false, [])),
-                "the owner's group template is visible to anyone in any chat"
+                visibility.isTemplateVisible(ownerGroup, visibleIn(ALICE.id, false, [], false)),
+                "the owner's group template in a group: visible"
             );
             expect(
-                !visibility.isTemplateVisible(ownerPrivate, visibleIn(ALICE.id, false, [])),
-                "the owner's private template is hidden from other users"
+                visibility.isTemplateVisible(ownerGroup, visibleIn(ALICE.id, false, [], true)),
+                "the owner's group template is the public library: visible in another user's private chat too"
             );
             expect(
-                visibility.isTemplateVisible(ownerPrivate, visibleIn(OWNER_ID, true, [])),
-                'the owner sees their own private template'
+                visibility.isTemplateVisible(ownerGroup, visibleIn(OWNER_ID, true, [], true)),
+                'its creator (the owner) sees it in a private chat'
             );
             expect(
-                visibility.isTemplateVisible(alicePrivate, visibleIn(ALICE.id, false, [])),
-                'a creator sees their own private template'
+                visibility.isTemplateVisible(aliceGroup, visibleIn(BOB.id, false, [ALICE.id], false)),
+                "a member's group template where its creator is known: visible"
             );
             expect(
-                !visibility.isTemplateVisible(alicePrivate, visibleIn(BOB.id, false, [ALICE.id])),
-                'another user does not see it, even where its creator is a known member of the chat'
+                !visibility.isTemplateVisible(aliceGroup, visibleIn(BOB.id, false, [], false)),
+                'where its creator was never seen: hidden'
             );
             expect(
-                visibility.isTemplateVisible(alicePrivate, visibleIn(OWNER_ID, true, [])),
-                'the owner sees every private template'
+                visibility.isTemplateVisible(aliceGroup, visibleIn(ALICE.id, false, [], true)),
+                'in a private chat its creator sees it'
+            );
+            expect(
+                !visibility.isTemplateVisible(aliceGroup, visibleIn(BOB.id, false, [BOB.id], true)),
+                'in a private chat nobody else does (its known-member set is the chat user alone)'
+            );
+
+            // private: only inside a private chat, and there only its creator and the owner
+            expect(
+                !visibility.isTemplateVisible(alicePrivate, visibleIn(ALICE.id, false, [], false)),
+                'a private template is hidden from its creator inside a group'
+            );
+            expect(
+                !visibility.isTemplateVisible(alicePrivate, visibleIn(OWNER_ID, true, [], false)),
+                'the owner does not see a private template in a group either'
+            );
+            expect(
+                visibility.isTemplateVisible(alicePrivate, visibleIn(ALICE.id, false, [], true)),
+                'in a private chat its creator sees it'
+            );
+            expect(
+                visibility.isTemplateVisible(alicePrivate, visibleIn(OWNER_ID, true, [], true)),
+                'and so does the owner'
+            );
+            expect(
+                !visibility.isTemplateVisible(alicePrivate, visibleIn(BOB.id, false, [ALICE.id], true)),
+                'nobody else sees it, even in a private chat where its creator is a known member'
             );
         },
     },
@@ -771,21 +869,22 @@ const cases: { name: string; body: () => Promise<void> }[] = [
                 createdBy: ALICE.id,
                 visibility: 'group',
             });
-            const visibleIn = (viewerId: number, knownMemberIds: number[]) => ({
+            const visibleIn = (viewerId: number, knownMemberIds: number[], isPrivateChat: boolean) => ({
                 viewerId,
                 isOwner: false,
                 knownMemberIds: new Set(knownMemberIds),
+                isPrivateChat,
             });
             expect(
-                visibility.isTemplateVisible(aliceGroup, visibleIn(BOB.id, [ALICE.id])),
+                visibility.isTemplateVisible(aliceGroup, visibleIn(BOB.id, [ALICE.id], false)),
                 'visible where the creator is a known member of the chat'
             );
             expect(
-                !visibility.isTemplateVisible(aliceGroup, visibleIn(BOB.id, [])),
+                !visibility.isTemplateVisible(aliceGroup, visibleIn(BOB.id, [], false)),
                 'hidden in a chat where the bot has never seen the creator'
             );
             expect(
-                visibility.isTemplateVisible(aliceGroup, visibleIn(CAROL.id, [ALICE.id])),
+                visibility.isTemplateVisible(aliceGroup, visibleIn(CAROL.id, [ALICE.id], false)),
                 'any panel user of that chat sees a group template whose creator is a known member'
             );
         },
@@ -808,15 +907,14 @@ const cases: { name: string; body: () => Promise<void> }[] = [
         },
     },
     {
-        name: 'auto candidates: enabled group templates by the owner or a known member, nothing else',
+        name: 'auto candidates: enabled templates by the owner or a known member; a private one only in its creator’s or the owner’s private chat',
         body: async () => {
-            const autoContext: AutoCandidatesContext = { ownerId: OWNER_ID, knownMemberIds: new Set([ALICE.id]) };
-            const ownerGroup = syntheticTemplate({
+            const ownerGlobal = syntheticTemplate({
                 id: 1,
-                name: 'owner-group',
+                name: 'owner-global',
                 content: 'x',
                 createdBy: OWNER_ID,
-                visibility: 'group',
+                visibility: 'global',
             });
             const memberGroup = syntheticTemplate({
                 id: 2,
@@ -825,29 +923,176 @@ const cases: { name: string; body: () => Promise<void> }[] = [
                 createdBy: ALICE.id,
                 visibility: 'group',
             });
-            const memberPrivate = syntheticTemplate({
+            const strangerGlobal = syntheticTemplate({
                 id: 3,
+                name: 'stranger-global',
+                content: 'x',
+                createdBy: CAROL.id,
+                visibility: 'global',
+            });
+            const memberPrivate = syntheticTemplate({
+                id: 4,
                 name: 'member-private',
                 content: 'x',
                 createdBy: ALICE.id,
                 visibility: 'private',
             });
-            const disabledGroup = syntheticTemplate({
-                id: 4,
-                name: 'disabled-group',
+            const ownerPrivate = syntheticTemplate({
+                id: 5,
+                name: 'owner-private',
+                content: 'x',
+                createdBy: OWNER_ID,
+                visibility: 'private',
+            });
+            const disabledGlobal = syntheticTemplate({
+                id: 6,
+                name: 'disabled-global',
                 content: 'x',
                 createdBy: ALICE.id,
-                visibility: 'group',
+                visibility: 'global',
                 enabled: false,
             });
-            expect(visibility.isAutoCandidate(ownerGroup, autoContext), "the owner's enabled group template is a candidate");
-            expect(visibility.isAutoCandidate(memberGroup, autoContext), "a known member's enabled group template is a candidate");
+            const inGroup: AutoCandidateContext = {
+                ownerId: OWNER_ID,
+                knownMemberIds: new Set([ALICE.id]),
+                privateChatUserId: null,
+            };
+            const inAliceChat: AutoCandidateContext = {
+                ownerId: OWNER_ID,
+                knownMemberIds: new Set([ALICE.id]),
+                privateChatUserId: ALICE.id,
+            };
+            const inBobChat: AutoCandidateContext = {
+                ownerId: OWNER_ID,
+                knownMemberIds: new Set([ALICE.id]),
+                privateChatUserId: BOB.id,
+            };
+            const inOwnerChat: AutoCandidateContext = {
+                ownerId: OWNER_ID,
+                knownMemberIds: new Set([OWNER_ID]),
+                privateChatUserId: OWNER_ID,
+            };
+            expect(visibility.isAutoCandidate(ownerGlobal, inGroup), "the owner's enabled template is a candidate");
+            expect(visibility.isAutoCandidate(memberGroup, inGroup), "a known member's enabled template is a candidate");
             expect(
-                !visibility.isAutoCandidate(memberGroup, { ownerId: OWNER_ID, knownMemberIds: new Set() }),
-                'the same template is not a candidate where its creator is unknown'
+                !visibility.isAutoCandidate(strangerGlobal, inGroup),
+                "a stranger's global template is not: the owner or a known member decides"
             );
-            expect(!visibility.isAutoCandidate(memberPrivate, autoContext), 'a private template is never a candidate');
-            expect(!visibility.isAutoCandidate(disabledGroup, autoContext), 'a disabled template is never a candidate');
+            expect(!visibility.isAutoCandidate(strangerGlobal, inAliceChat), 'nor in a private chat');
+            expect(!visibility.isAutoCandidate(memberPrivate, inGroup), 'a private template is not a candidate in a group');
+            expect(visibility.isAutoCandidate(memberPrivate, inAliceChat), "but it is one in its creator's private chat");
+            expect(
+                !visibility.isAutoCandidate(memberPrivate, inBobChat),
+                "one user's private template is not a candidate in another user's private chat"
+            );
+            expect(
+                !visibility.isAutoCandidate(ownerPrivate, inAliceChat),
+                "the owner's private template is not a candidate in another user's private chat"
+            );
+            expect(visibility.isAutoCandidate(ownerPrivate, inOwnerChat), "in the owner's own private chat it is a candidate");
+            expect(
+                !visibility.isAutoCandidate(disabledGlobal, inGroup) && !visibility.isAutoCandidate(disabledGlobal, inOwnerChat),
+                'a disabled template is never a candidate'
+            );
+            expect(
+                !visibility.isAutoCandidate(memberGroup, {
+                    ownerId: OWNER_ID,
+                    knownMemberIds: new Set<number>(),
+                    privateChatUserId: null,
+                }),
+                'the known-member rule still applies'
+            );
+        },
+    },
+    {
+        name: 'private: a private template loads only in its creator’s or the owner’s private chat, never in a group or another user’s chat',
+        body: async () => {
+            const ownerPrivate = syntheticTemplate({
+                id: 1,
+                name: 'owner-private',
+                content: '机主私有内容',
+                modelPatterns: ['*'],
+                createdBy: OWNER_ID,
+                visibility: 'private',
+                sortOrder: 10,
+            });
+            const alicePrivate = syntheticTemplate({
+                id: 2,
+                name: 'alice-private',
+                content: 'Alice 私有内容',
+                modelPatterns: ['*'],
+                createdBy: ALICE.id,
+                visibility: 'private',
+                sortOrder: 20,
+            });
+            const ownerGroup = syntheticTemplate({
+                id: 3,
+                name: 'owner-group',
+                content: '机主公用内容',
+                modelPatterns: ['*'],
+                createdBy: OWNER_ID,
+                visibility: 'group',
+                sortOrder: 30,
+            });
+            const templates = [ownerPrivate, alicePrivate, ownerGroup];
+            const manualSelection = { custom: null, templateIds: [1, 2, 3], auto: false };
+            const autoSelection = { custom: null, templateIds: null, auto: true };
+            const aliceAutoContext: AutoCandidatesContext = { ownerId: OWNER_ID, knownMemberIds: new Set([ALICE.id]) };
+            const ownerAutoContext: AutoCandidatesContext = { ownerId: OWNER_ID, knownMemberIds: new Set([OWNER_ID]) };
+
+            // The loadability rule itself
+            expect(rules.privateTemplateLoadable(alicePrivate, ALICE_PRIVATE_CHAT), "its creator's private chat may load it");
+            expect(!rules.privateTemplateLoadable(alicePrivate, BOB_PRIVATE_CHAT), "another user's private chat may not");
+            expect(!rules.privateTemplateLoadable(alicePrivate, GROUP_CHAT), 'a group may not');
+            expect(rules.privateTemplateLoadable(ownerPrivate, OWNER_PRIVATE_CHAT), "the owner's own private chat may load any private template");
+            expect(
+                !rules.privateTemplateLoadable(ownerPrivate, ALICE_PRIVATE_CHAT),
+                "a user's private chat may not load the owner's private template"
+            );
+
+            // Manual channel
+            const manualInGroup = rules.composeChatAddendum(manualSelection, templates, 'm', null, GROUP_CHAT);
+            expect(
+                jsonOfText(namesOf(manualInGroup.applied)) === jsonOfText(['owner-group']),
+                `group: every private template is skipped, the owner's public library still loads (got ${jsonOfText(namesOf(manualInGroup.applied))})`
+            );
+            const manualInAliceChat = rules.composeChatAddendum(manualSelection, templates, 'm', null, ALICE_PRIVATE_CHAT);
+            expect(
+                jsonOfText(namesOf(manualInAliceChat.applied)) === jsonOfText(['alice-private', 'owner-group']),
+                `Alice's private chat loads her own private template, not the owner's (got ${jsonOfText(namesOf(manualInAliceChat.applied))})`
+            );
+            const manualInBobChat = rules.composeChatAddendum(manualSelection, templates, 'm', null, BOB_PRIVATE_CHAT);
+            expect(
+                jsonOfText(namesOf(manualInBobChat.applied)) === jsonOfText(['owner-group']),
+                `Bob's private chat loads none of the private ids (got ${jsonOfText(namesOf(manualInBobChat.applied))})`
+            );
+            const manualInOwnerChat = rules.composeChatAddendum(manualSelection, templates, 'm', null, OWNER_PRIVATE_CHAT);
+            expect(
+                jsonOfText(namesOf(manualInOwnerChat.applied)) === jsonOfText(['owner-private', 'alice-private', 'owner-group']),
+                `the owner's own private chat loads every private id (got ${jsonOfText(namesOf(manualInOwnerChat.applied))})`
+            );
+
+            // Automatic channel
+            const autoInGroup = rules.composeChatAddendum(autoSelection, templates, 'm', aliceAutoContext, GROUP_CHAT);
+            expect(
+                jsonOfText(namesOf(autoInGroup.applied)) === jsonOfText(['owner-group']),
+                `group auto: private templates stay out (got ${jsonOfText(namesOf(autoInGroup.applied))})`
+            );
+            const autoInAliceChat = rules.composeChatAddendum(autoSelection, templates, 'm', aliceAutoContext, ALICE_PRIVATE_CHAT);
+            expect(
+                jsonOfText(namesOf(autoInAliceChat.applied)) === jsonOfText(['alice-private', 'owner-group']),
+                `Alice's private chat auto-loads her own private template (got ${jsonOfText(namesOf(autoInAliceChat.applied))})`
+            );
+            const autoInBobChat = rules.composeChatAddendum(autoSelection, templates, 'm', aliceAutoContext, BOB_PRIVATE_CHAT);
+            expect(
+                jsonOfText(namesOf(autoInBobChat.applied)) === jsonOfText(['owner-group']),
+                `Bob's private chat auto-loads none of Alice's private templates (got ${jsonOfText(namesOf(autoInBobChat.applied))})`
+            );
+            const autoInOwnerChat = rules.composeChatAddendum(autoSelection, templates, 'm', ownerAutoContext, OWNER_PRIVATE_CHAT);
+            expect(
+                jsonOfText(namesOf(autoInOwnerChat.applied)) === jsonOfText(['owner-private', 'owner-group']),
+                `the owner's private chat auto-loads the owner's private template, not another user's (got ${jsonOfText(namesOf(autoInOwnerChat.applied))})`
+            );
         },
     },
     {
@@ -858,14 +1103,15 @@ const cases: { name: string; body: () => Promise<void> }[] = [
                 name: 'matching',
                 content: '匹配内容',
                 createdBy: OWNER_ID,
-                visibility: 'group',
-                modelPatterns: [],
+                visibility: 'global',
+                modelPatterns: ['*'],
             });
             const composed = rules.composeChatAddendum(
                 { custom: null, templateIds: null, auto: false },
                 [matching],
                 'any-model',
-                null
+                null,
+                GROUP_CHAT
             );
             expect(
                 composed.text === null && composed.applied.length === 0 && !composed.customIncluded,
@@ -874,7 +1120,7 @@ const cases: { name: string; body: () => Promise<void> }[] = [
         },
     },
     {
-        name: 'compose: a manually enabled template loads whatever its model rule, visibility or creator',
+        name: 'compose: a manually enabled template loads whatever its model rule and creator; a private one only in its creator’s or the owner’s private chat',
         body: async () => {
             const templates = [
                 syntheticTemplate({
@@ -882,25 +1128,56 @@ const cases: { name: string; body: () => Promise<void> }[] = [
                     name: 'manual-other-model',
                     content: '手动一',
                     modelPatterns: ['zzz*'],
-                    visibility: 'private',
+                    visibility: 'group',
                     createdBy: CAROL.id,
                     sortOrder: 20,
                 }),
-                syntheticTemplate({ id: 2, name: 'manual-enabled', content: '手动二', sortOrder: 10 }),
-                syntheticTemplate({ id: 3, name: 'manual-disabled', content: '手动三', enabled: false }),
+                syntheticTemplate({ id: 2, name: 'manual-enabled', content: '手动二', visibility: 'group', sortOrder: 10 }),
+                syntheticTemplate({
+                    id: 3,
+                    name: 'manual-private-alice',
+                    content: '手动三',
+                    visibility: 'private',
+                    createdBy: ALICE.id,
+                    sortOrder: 30,
+                }),
+                syntheticTemplate({
+                    id: 4,
+                    name: 'manual-private-carol',
+                    content: '手动四',
+                    visibility: 'private',
+                    createdBy: CAROL.id,
+                    sortOrder: 40,
+                }),
+                syntheticTemplate({ id: 5, name: 'manual-disabled', content: '手动五', enabled: false }),
             ];
-            const composed = rules.composeChatAddendum(
-                { custom: null, templateIds: [1, 3, 2, 999], auto: false },
-                templates,
-                'any-model',
-                null
+            const selection = { custom: null, templateIds: [1, 3, 4, 5, 2, 999], auto: false };
+            const inGroup = rules.composeChatAddendum(selection, templates, 'any-model', null, GROUP_CHAT);
+            expect(
+                jsonOfText(namesOf(inGroup.applied)) === jsonOfText(['manual-enabled', 'manual-other-model']),
+                `manual templates load regardless of rule and creator, ordered by (sortOrder, id); every private one is skipped in a group (got ${jsonOfText(namesOf(inGroup.applied))})`
             );
             expect(
-                jsonOfText(composed.applied.map((template) => template.name)) ===
-                    jsonOfText(['manual-enabled', 'manual-other-model']),
-                `manual templates load, ordered by (sortOrder, id), not by list order (got ${jsonOfText(namesOf(composed.applied))})`
+                inGroup.text === '手动二\n\n手动一',
+                `their contents are joined by a blank line (got ${jsonOfText(inGroup.text)})`
             );
-            expect(composed.text === '手动二\n\n手动一', `their contents are joined by a blank line (got ${jsonOfText(composed.text)})`);
+            const inAliceChat = rules.composeChatAddendum(selection, templates, 'any-model', null, ALICE_PRIVATE_CHAT);
+            expect(
+                jsonOfText(namesOf(inAliceChat.applied)) ===
+                    jsonOfText(['manual-enabled', 'manual-other-model', 'manual-private-alice']),
+                `Alice's private chat loads her own private template (got ${jsonOfText(namesOf(inAliceChat.applied))})`
+            );
+            const inBobChat = rules.composeChatAddendum(selection, templates, 'any-model', null, BOB_PRIVATE_CHAT);
+            expect(
+                jsonOfText(namesOf(inBobChat.applied)) === jsonOfText(['manual-enabled', 'manual-other-model']),
+                `Bob's private chat loads neither user's private template (got ${jsonOfText(namesOf(inBobChat.applied))})`
+            );
+            const inOwnerChat = rules.composeChatAddendum(selection, templates, 'any-model', null, OWNER_PRIVATE_CHAT);
+            expect(
+                jsonOfText(namesOf(inOwnerChat.applied)) ===
+                    jsonOfText(['manual-enabled', 'manual-other-model', 'manual-private-alice', 'manual-private-carol']),
+                `the owner's own private chat loads every private id (got ${jsonOfText(namesOf(inOwnerChat.applied))})`
+            );
         },
     },
     {
@@ -914,13 +1191,14 @@ const cases: { name: string; body: () => Promise<void> }[] = [
                 { custom: null, templateIds: [1, 999], auto: false },
                 templates,
                 'any-model',
-                null
+                null,
+                GROUP_CHAT
             );
             expect(composed.applied.length === 0 && composed.text === null, `both are skipped (got ${jsonOfText(composed)})`);
         },
     },
     {
-        name: 'compose: auto loads only enabled group templates of the owner or a known member whose rule matches',
+        name: 'compose: auto loads only enabled templates of the owner or a known member whose rule matches; private only where it may load',
         body: async () => {
             const templates = [
                 syntheticTemplate({
@@ -929,7 +1207,7 @@ const cases: { name: string; body: () => Promise<void> }[] = [
                     content: 'A',
                     modelPatterns: ['m1*'],
                     createdBy: OWNER_ID,
-                    visibility: 'group',
+                    visibility: 'global',
                     sortOrder: 30,
                 }),
                 syntheticTemplate({
@@ -947,7 +1225,7 @@ const cases: { name: string; body: () => Promise<void> }[] = [
                     content: 'C',
                     modelPatterns: ['m1*'],
                     createdBy: CAROL.id,
-                    visibility: 'group',
+                    visibility: 'global',
                     sortOrder: 20,
                 }),
                 syntheticTemplate({
@@ -957,12 +1235,20 @@ const cases: { name: string; body: () => Promise<void> }[] = [
                     modelPatterns: ['m1*'],
                     createdBy: ALICE.id,
                     visibility: 'private',
-                    sortOrder: 0,
+                    sortOrder: 5,
                 }),
                 syntheticTemplate({
                     id: 5,
-                    name: 'disabled-match',
+                    name: 'empty-rule',
                     content: 'E',
+                    createdBy: OWNER_ID,
+                    visibility: 'global',
+                    sortOrder: 1,
+                }),
+                syntheticTemplate({
+                    id: 6,
+                    name: 'disabled-match',
+                    content: 'F',
                     modelPatterns: ['m1*'],
                     createdBy: ALICE.id,
                     visibility: 'group',
@@ -970,31 +1256,68 @@ const cases: { name: string; body: () => Promise<void> }[] = [
                     sortOrder: 0,
                 }),
                 syntheticTemplate({
-                    id: 6,
+                    id: 7,
                     name: 'other-model',
-                    content: 'F',
+                    content: 'G',
                     modelPatterns: ['m2*'],
                     createdBy: OWNER_ID,
-                    visibility: 'group',
+                    visibility: 'global',
                     sortOrder: 0,
+                }),
+                syntheticTemplate({
+                    id: 8,
+                    name: 'owner-private-match',
+                    content: 'H',
+                    modelPatterns: ['m1*'],
+                    createdBy: OWNER_ID,
+                    visibility: 'private',
+                    sortOrder: 6,
                 }),
             ];
             const autoContext: AutoCandidatesContext = { ownerId: OWNER_ID, knownMemberIds: new Set([ALICE.id]) };
-            const composed = rules.composeChatAddendum(
+            const inGroup = rules.composeChatAddendum(
                 { custom: null, templateIds: null, auto: true },
                 templates,
                 'm1-model',
-                autoContext
+                autoContext,
+                GROUP_CHAT
             );
             expect(
-                jsonOfText(namesOf(composed.applied)) === jsonOfText(['member-match', 'owner-match']),
-                `only the owner's and the known member's matching group templates load (got ${jsonOfText(namesOf(composed.applied))})`
+                jsonOfText(namesOf(inGroup.applied)) === jsonOfText(['member-match', 'owner-match']),
+                `only the owner's and the known member's matching templates load in a group (got ${jsonOfText(namesOf(inGroup.applied))})`
             );
+
+            const inAliceChat = rules.composeChatAddendum(
+                { custom: null, templateIds: null, auto: true },
+                templates,
+                'm1-model',
+                autoContext,
+                ALICE_PRIVATE_CHAT
+            );
+            expect(
+                jsonOfText(namesOf(inAliceChat.applied)) ===
+                    jsonOfText(['private-match', 'member-match', 'owner-match']),
+                `Alice's private chat adds her own private template, not the owner's (got ${jsonOfText(namesOf(inAliceChat.applied))})`
+            );
+
+            const inBobChat = rules.composeChatAddendum(
+                { custom: null, templateIds: null, auto: true },
+                templates,
+                'm1-model',
+                autoContext,
+                BOB_PRIVATE_CHAT
+            );
+            expect(
+                jsonOfText(namesOf(inBobChat.applied)) === jsonOfText(['member-match', 'owner-match']),
+                `Bob's private chat does not add Alice's private template (got ${jsonOfText(namesOf(inBobChat.applied))})`
+            );
+
             const withoutMembers = rules.composeChatAddendum(
                 { custom: null, templateIds: null, auto: true },
                 templates,
                 'm1-model',
-                { ownerId: OWNER_ID, knownMemberIds: new Set() }
+                { ownerId: OWNER_ID, knownMemberIds: new Set() },
+                GROUP_CHAT
             );
             expect(
                 jsonOfText(namesOf(withoutMembers.applied)) === jsonOfText(['owner-match']),
@@ -1004,9 +1327,55 @@ const cases: { name: string; body: () => Promise<void> }[] = [
                 { custom: null, templateIds: null, auto: true },
                 templates,
                 'm1-model',
-                null
+                null,
+                GROUP_CHAT
             );
             expect(withoutContext.applied.length === 0, 'no member context means no auto candidate');
+        },
+    },
+    {
+        name: 'compose: an empty loading rule is never auto-loaded, while an explicit * is',
+        body: async () => {
+            const emptyRule = syntheticTemplate({
+                id: 1,
+                name: 'empty-rule',
+                content: '空规则内容',
+                createdBy: OWNER_ID,
+                visibility: 'global',
+                sortOrder: 20,
+            });
+            const starRule = syntheticTemplate({
+                id: 2,
+                name: 'star-rule',
+                content: '星号规则内容',
+                modelPatterns: ['*'],
+                createdBy: OWNER_ID,
+                visibility: 'global',
+                sortOrder: 10,
+            });
+            const autoContext: AutoCandidatesContext = { ownerId: OWNER_ID, knownMemberIds: new Set() };
+            const composed = rules.composeChatAddendum(
+                { custom: null, templateIds: null, auto: true },
+                [emptyRule, starRule],
+                'any-model',
+                autoContext,
+                GROUP_CHAT
+            );
+            expect(
+                jsonOfText(namesOf(composed.applied)) === jsonOfText(['star-rule']),
+                `only the explicit * auto-loads (got ${jsonOfText(namesOf(composed.applied))})`
+            );
+            const manual = rules.composeChatAddendum(
+                { custom: null, templateIds: [emptyRule.id], auto: false },
+                [emptyRule, starRule],
+                'any-model',
+                null,
+                GROUP_CHAT
+            );
+            expect(
+                jsonOfText(namesOf(manual.applied)) === jsonOfText(['empty-rule']),
+                'the empty-rule template still loads when enabled by hand'
+            );
         },
     },
     {
@@ -1017,6 +1386,7 @@ const cases: { name: string; body: () => Promise<void> }[] = [
                     id: 1,
                     name: 't-late',
                     content: '内容一',
+                    modelPatterns: ['*'],
                     sortOrder: 20,
                     createdBy: OWNER_ID,
                     visibility: 'group',
@@ -1025,6 +1395,7 @@ const cases: { name: string; body: () => Promise<void> }[] = [
                     id: 2,
                     name: 't-early',
                     content: '内容二',
+                    modelPatterns: ['*'],
                     sortOrder: 10,
                     createdBy: OWNER_ID,
                     visibility: 'group',
@@ -1033,6 +1404,7 @@ const cases: { name: string; body: () => Promise<void> }[] = [
                     id: 3,
                     name: 't-same-order',
                     content: '内容三',
+                    modelPatterns: ['*'],
                     sortOrder: 10,
                     createdBy: OWNER_ID,
                     visibility: 'group',
@@ -1042,7 +1414,8 @@ const cases: { name: string; body: () => Promise<void> }[] = [
                 { custom: null, templateIds: [1, 2], auto: true },
                 templates,
                 'any-model',
-                { ownerId: OWNER_ID, knownMemberIds: new Set() }
+                { ownerId: OWNER_ID, knownMemberIds: new Set() },
+                GROUP_CHAT
             );
             expect(
                 jsonOfText(namesOf(composed.applied)) === jsonOfText(['t-early', 't-same-order', 't-late']),
@@ -1068,15 +1441,16 @@ const cases: { name: string; body: () => Promise<void> }[] = [
                 { custom: '自定义', templateIds: [1], auto: false },
                 templates,
                 'any-model',
-                null
+                null,
+                GROUP_CHAT
             );
             expect(customLast.text === '甲\n\n自定义', `the own text is appended last (got ${jsonOfText(customLast.text)})`);
             expect(customLast.customIncluded, 'customIncluded says so');
 
-            const blank = rules.composeChatAddendum({ custom: '   ', templateIds: null, auto: false }, [], 'any-model', null);
+            const blank = rules.composeChatAddendum({ custom: '   ', templateIds: null, auto: false }, [], 'any-model', null, GROUP_CHAT);
             expect(blank.text === null && !blank.customIncluded, 'whitespace-only text is dropped');
 
-            const customOnly = rules.composeChatAddendum({ custom: '只有自己', templateIds: null, auto: false }, [], 'any-model', null);
+            const customOnly = rules.composeChatAddendum({ custom: '只有自己', templateIds: null, auto: false }, [], 'any-model', null, GROUP_CHAT);
             expect(
                 customOnly.text === '只有自己' && customOnly.applied.length === 0 && customOnly.customIncluded,
                 `with no template the own text stands alone (got ${jsonOfText(customOnly)})`
@@ -1098,13 +1472,15 @@ const cases: { name: string; body: () => Promise<void> }[] = [
                 { custom: null, templateIds: null, auto: true },
                 [hydrogenGuide],
                 'gemini-4-hydrogen',
-                { ownerId: OWNER_ID, knownMemberIds: new Set() }
+                { ownerId: OWNER_ID, knownMemberIds: new Set() },
+                GROUP_CHAT
             );
             const asFull = rules.composeChatAddendum(
                 { custom: null, templateIds: null, auto: true },
                 [hydrogenGuide],
                 'gemini-4-neon',
-                { ownerId: OWNER_ID, knownMemberIds: new Set() }
+                { ownerId: OWNER_ID, knownMemberIds: new Set() },
+                GROUP_CHAT
             );
             expect(
                 jsonOfText(namesOf(asTrial.applied)) === jsonOfText(['hydrogen 引导']),
@@ -1114,7 +1490,7 @@ const cases: { name: string; body: () => Promise<void> }[] = [
         },
     },
     {
-        name: 'create: any user may create; defaults are private, enabled, order 0; names are unique per creator',
+        name: 'create: any user may create; defaults are global, enabled, order 0; names are unique per creator',
         body: async () => {
             const creatorId = 7001;
             const created = await templatesService.createPromptTemplate(
@@ -1123,17 +1499,17 @@ const cases: { name: string; body: () => Promise<void> }[] = [
             );
             expect(created.name === '默认模板' && created.content === '内容', 'name and content are trimmed');
             expect(
-                created.visibility === 'private' &&
+                created.visibility === 'global' &&
                     created.enabled &&
                     created.sortOrder === 0 &&
                     jsonOfText(created.modelPatterns) === '[]',
-                `defaults are private, enabled, order 0 and every model (got ${jsonOfText(created)})`
+                `defaults are global, enabled, order 0 and no loading rule (got ${jsonOfText(created)})`
             );
             expect(created.createdBy === creatorId, 'the creator is the actor');
             const stored = await PromptTemplateRecord.findByPk(created.id);
             expect(
                 stored?.modelPatterns === '[]' &&
-                    stored.visibility === 'private' &&
+                    stored.visibility === 'global' &&
                     stored.enabled === true &&
                     stored.sortOrder === 0 &&
                     stored.createdBy === creatorId,
@@ -1403,20 +1779,29 @@ const cases: { name: string; body: () => Promise<void> }[] = [
         },
     },
     {
-        name: 'resolveReplyAddendum: a manual list loads a private template of a non-owner whatever the model',
+        name: 'resolveReplyAddendum: a private template loads from a manual list only inside a private chat',
         body: async () => {
-            const composed = await templatesService.resolveReplyAddendum(
+            const inGroup = await templatesService.resolveReplyAddendum(
                 -6102,
                 { custom: null, templateIds: [alicePrivateTemplate.id], auto: false },
                 'completely-unrelated-model'
             );
             expect(
-                jsonOfText(composed.applied.map((template) => template.name)) === jsonOfText(['Alice 私有模板']) &&
-                    composed.text === 'Alice 私有内容',
-                `the manual list ignores the model rule and the visibility (got ${jsonOfText(composed)})`
+                inGroup.applied.length === 0 && inGroup.text === null,
+                `a private template is skipped in a group chat (got ${jsonOfText(inGroup)})`
+            );
+            const inPrivateChat = await templatesService.resolveReplyAddendum(
+                ALICE.id,
+                { custom: null, templateIds: [alicePrivateTemplate.id], auto: false },
+                'completely-unrelated-model'
+            );
+            expect(
+                jsonOfText(namesOf(inPrivateChat.applied)) === jsonOfText(['Alice 私有模板']) &&
+                    inPrivateChat.text === 'Alice 私有内容',
+                `the same manual id loads in a private chat, whatever the model (got ${jsonOfText(inPrivateChat)})`
             );
             const withCustom = await templatesService.resolveReplyAddendum(
-                -6103,
+                ALICE.id,
                 { custom: '自定义尾注', templateIds: [alicePrivateTemplate.id], auto: false },
                 'completely-unrelated-model'
             );
@@ -1427,7 +1812,63 @@ const cases: { name: string; body: () => Promise<void> }[] = [
         },
     },
     {
-        name: "resolveReplyAddendum: auto loads the owner's group templates everywhere and a member's only where they are known",
+        name: 'resolveReplyAddendum: a private template loads only in its creator’s or the owner’s private chat',
+        body: async () => {
+            const bobWithOthers = await templatesService.resolveReplyAddendum(
+                BOB.id,
+                { custom: null, templateIds: [ownerPrivateTemplate.id, alicePrivateTemplate.id], auto: false },
+                'viewer-model-a'
+            );
+            expect(
+                bobWithOthers.text === null && bobWithOthers.applied.length === 0,
+                `Bob's private chat loads neither the owner's nor Alice's private template (got ${jsonOfText(bobWithOthers)})`
+            );
+            const bobAuto = await templatesService.resolveReplyAddendum(
+                BOB.id,
+                { custom: null, templateIds: null, auto: true },
+                'viewer-model-a'
+            );
+            expect(
+                !namesOf(bobAuto.applied).includes('机主私有模板') && !namesOf(bobAuto.applied).includes('Alice 私有模板'),
+                `the auto channel does not pull them in either (got ${jsonOfText(namesOf(bobAuto.applied))})`
+            );
+
+            const aliceWithOwner = await templatesService.resolveReplyAddendum(
+                ALICE.id,
+                { custom: null, templateIds: [ownerPrivateTemplate.id, alicePrivateTemplate.id], auto: false },
+                'viewer-model-a'
+            );
+            expect(
+                jsonOfText(namesOf(aliceWithOwner.applied)) === jsonOfText(['Alice 私有模板']),
+                `Alice's private chat loads only her own private template (got ${jsonOfText(namesOf(aliceWithOwner.applied))})`
+            );
+
+            const ownerManual = await templatesService.resolveReplyAddendum(
+                OWNER_ID,
+                { custom: null, templateIds: [ownerPrivateTemplate.id], auto: false },
+                'viewer-model-a'
+            );
+            expect(
+                jsonOfText(namesOf(ownerManual.applied)) === jsonOfText(['机主私有模板']),
+                `the owner's own private chat loads it (got ${jsonOfText(namesOf(ownerManual.applied))})`
+            );
+            const ownerAuto = await templatesService.resolveReplyAddendum(
+                OWNER_ID,
+                { custom: null, templateIds: null, auto: true },
+                'viewer-model-a'
+            );
+            expect(
+                jsonOfText(namesOf(ownerAuto.applied)) === jsonOfText(['机主公用模板', '机主私有模板']),
+                `and auto-loads it when its rule matches (got ${jsonOfText(namesOf(ownerAuto.applied))})`
+            );
+            expect(
+                !namesOf(ownerAuto.applied).includes('Alice 私有模板'),
+                "another user's private template does not auto-load in the owner's chat"
+            );
+        },
+    },
+    {
+        name: "resolveReplyAddendum: auto loads the owner's and a known member's matching templates, never a private one in a group",
         body: async () => {
             const chatKnown = -6201;
             const chatUnknown = -6202;
@@ -1446,8 +1887,12 @@ const cases: { name: string; body: () => Promise<void> }[] = [
             );
             expect(
                 jsonOfText(known.applied.map((template) => template.name)) ===
-                    jsonOfText(['机主公用模板', 'Alice 群可见模板']),
-                `the owner's and the known member's matching group templates load (got ${jsonOfText(namesOf(known.applied))})`
+                    jsonOfText(['机主公用模板', 'Alice 群可见模板', 'Alice 全局模板']),
+                `the owner's, the known member's and her global templates load (got ${jsonOfText(namesOf(known.applied))})`
+            );
+            expect(
+                !namesOf(known.applied).includes('Alice 私有模板') && !namesOf(known.applied).includes('Alice 空规则模板'),
+                'a private template and a template without a rule stay out of the auto channel'
             );
 
             const unknown = await templatesService.resolveReplyAddendum(
@@ -1474,13 +1919,13 @@ const cases: { name: string; body: () => Promise<void> }[] = [
             );
             expect(
                 jsonOfText(afterSpeaking.applied.map((template) => template.name)) ===
-                    jsonOfText(['机主公用模板', 'Alice 群可见模板']),
-                'once the creator is a known member, their template auto-loads there too'
+                    jsonOfText(['机主公用模板', 'Alice 群可见模板', 'Alice 全局模板']),
+                'once the creator is a known member, her templates auto-load there too'
             );
         },
     },
     {
-        name: "resolveReplyAddendum: in a private chat auto loads only the owner's and the user's own group templates",
+        name: "resolveReplyAddendum: in a private chat auto loads the owner's, the user's own and their private templates",
         body: async () => {
             const alicePrivateChat = await templatesService.resolveReplyAddendum(
                 ALICE.id,
@@ -1489,8 +1934,8 @@ const cases: { name: string; body: () => Promise<void> }[] = [
             );
             expect(
                 jsonOfText(alicePrivateChat.applied.map((template) => template.name)) ===
-                    jsonOfText(['机主公用模板', 'Alice 群可见模板']),
-                `the owner's and Alice's own group templates load (got ${jsonOfText(namesOf(alicePrivateChat.applied))})`
+                    jsonOfText(['机主公用模板', 'Alice 群可见模板', 'Alice 私有模板', 'Alice 全局模板']),
+                `Alice's private chat loads her private template too (got ${jsonOfText(namesOf(alicePrivateChat.applied))})`
             );
             const bobPrivateChat = await templatesService.resolveReplyAddendum(
                 BOB.id,
@@ -1499,9 +1944,51 @@ const cases: { name: string; body: () => Promise<void> }[] = [
             );
             expect(
                 jsonOfText(bobPrivateChat.applied.map((template) => template.name)) ===
-                    jsonOfText(['机主公用模板', 'Bob 群可见模板']),
-                `Bob's private chat does not pull in Alice's group templates (got ${jsonOfText(namesOf(bobPrivateChat.applied))})`
+                    jsonOfText(['机主公用模板', 'Bob 群可见模板', 'Bob 全局模板']),
+                `Bob's private chat does not pull in Alice's templates (got ${jsonOfText(namesOf(bobPrivateChat.applied))})`
             );
+        },
+    },
+    {
+        name: 'resolveReplyAddendum: a private template left in a group settings row loads nothing there',
+        body: async () => {
+            const created = await templatesService.createPromptTemplate(
+                {
+                    name: '残留私有模板',
+                    content: '残留私有内容',
+                    modelPatterns: ['*'],
+                    visibility: 'private',
+                },
+                aliceActor
+            );
+            const inGroup = await templatesService.resolveReplyAddendum(
+                -6401,
+                { custom: null, templateIds: [created.id], auto: false },
+                'any-model'
+            );
+            expect(
+                inGroup.applied.length === 0 && inGroup.text === null,
+                `the group settings row keeps the id, composition skips it (got ${jsonOfText(inGroup)})`
+            );
+            const autoKnownGroup = await templatesService.resolveReplyAddendum(
+                -6201,
+                { custom: null, templateIds: null, auto: true },
+                'viewer-model-a'
+            );
+            expect(
+                !namesOf(autoKnownGroup.applied).includes('残留私有模板'),
+                'the auto channel never picks a private template in a group'
+            );
+            const inPrivateChat = await templatesService.resolveReplyAddendum(
+                ALICE.id,
+                { custom: null, templateIds: [created.id], auto: false },
+                'any-model'
+            );
+            expect(
+                jsonOfText(namesOf(inPrivateChat.applied)) === jsonOfText(['残留私有模板']),
+                `the same id loads in a private chat (got ${jsonOfText(namesOf(inPrivateChat.applied))})`
+            );
+            await templatesService.deletePromptTemplate(created.id, aliceActor);
         },
     },
     {
@@ -1566,7 +2053,6 @@ const cases: { name: string; body: () => Promise<void> }[] = [
                     content: ' 第一行\r\n第二行 ',
                     modelPatterns: [' DeepSeek* ', ''],
                     sortOrder: 5,
-                    visibility: 'group',
                     enabled: true,
                 },
             });
@@ -1576,10 +2062,10 @@ const cases: { name: string; body: () => Promise<void> }[] = [
             expect(
                 jsonOfText(created.modelPatterns) === jsonOfText(['deepseek*']) &&
                     created.sortOrder === 5 &&
-                    created.visibility === 'group' &&
                     created.enabled,
                 `the normalized fields come back (got ${jsonOfText(created)})`
             );
+            expect(created.visibility === 'global', `a create without visibility defaults to global (got ${created.visibility})`);
             expect(
                 created.createdBy === ALICE.id && created.contentLength === 7 && created.contentPreview === '第一行\n第二行',
                 `the creator and the content view (got ${jsonOfText(created)})`
@@ -1609,6 +2095,18 @@ const cases: { name: string; body: () => Promise<void> }[] = [
                     `create with ${label}`
                 );
             }
+            const badVisibility = await call('/api/prompt-templates', {
+                method: 'POST',
+                user: ALICE,
+                body: { name: 'n', content: 'c', visibility: 'public' },
+            });
+            const badVisibilityError = errorOf(await jsonOf(badVisibility));
+            expect(
+                badVisibility.status === 400 &&
+                    badVisibilityError.code === 'invalid' &&
+                    badVisibilityError.message.includes('全局可见'),
+                `an unknown visibility is refused with the three choices (got ${badVisibility.status} ${badVisibilityError.message})`
+            );
             await expectError(
                 await call('/api/prompt-templates', { method: 'POST', user: ALICE, rawBody: '[]' }),
                 400,
@@ -1711,6 +2209,7 @@ const cases: { name: string; body: () => Promise<void> }[] = [
                 'a normal user lists only their own templates'
             );
             expect(namesByItem(aliceList).includes('Alice 群可见模板'), 'their own templates are in it');
+            expect(aliceList.some((item) => item.id === alicePrivateTemplate.id), 'the management list keeps their own private template');
             const bobList = templateListOf(await getJson('/api/prompt-templates', { user: BOB }));
             expect(bobList.every((item) => item.createdBy === BOB.id), 'Bob lists only his own');
             const ownerList = templateListOf(await getJson('/api/prompt-templates', { user: OWNER }));
@@ -1718,10 +2217,14 @@ const cases: { name: string; body: () => Promise<void> }[] = [
                 ownerList.length === cache.listPromptTemplates().length,
                 `the owner lists every template (${ownerList.length} vs ${cache.listPromptTemplates().length})`
             );
+            expect(
+                ownerList.some((item) => item.id === alicePrivateTemplate.id),
+                "the owner management list still contains other users' private templates"
+            );
         },
     },
     {
-        name: 'panel chat templates: the list filters by visibility and reports enabledInChat and autoMatchesViewerModel',
+        name: 'panel chat templates: a group list drops private templates and reports enabledInChat and autoMatchesViewerModel',
         body: async () => {
             const setModel = await call(`/api/chats/${GROUP_MAIN}/settings`, {
                 method: 'PATCH',
@@ -1738,19 +2241,37 @@ const cases: { name: string; body: () => Promise<void> }[] = [
                 'nothing is manually enabled in the chat yet'
             );
             expect(
-                aliceView.some((item) => item.id === alicePrivateTemplate.id) &&
-                    aliceView.some((item) => item.id === aliceOtherModelTemplate.id) &&
-                    aliceView.some((item) => item.id === aliceDisabledTemplate.id),
-                'her own templates are all in the list'
+                aliceView.every((item) => item.visibility !== 'private'),
+                'a group chat lists no private template, not even for its creator'
+            );
+            expect(
+                aliceView.some((item) => item.id === aliceOtherModelTemplate.id) &&
+                    aliceView.some((item) => item.id === aliceDisabledTemplate.id) &&
+                    aliceView.some((item) => item.id === aliceGlobalTemplate.id) &&
+                    aliceView.some((item) => item.id === aliceNoRuleTemplate.id),
+                'her own non-private templates are in the list, the global ones included'
+            );
+            expect(
+                !aliceView.some((item) => item.id === alicePrivateTemplate.id),
+                'her own private template is not listed in a group'
             );
             expect(itemNamed(aliceView, '机主公用模板').autoMatchesViewerModel, "the owner's matching group template would auto-load");
             expect(itemNamed(aliceView, 'Alice 群可见模板').autoMatchesViewerModel, 'so would her own matching group template');
-            expect(!itemNamed(aliceView, 'Alice 私有模板').autoMatchesViewerModel, 'a private template never auto-loads');
+            expect(itemNamed(aliceView, 'Alice 全局模板').autoMatchesViewerModel, 'a global template by a known member auto-loads too');
+            expect(!itemNamed(aliceView, 'Alice 空规则模板').autoMatchesViewerModel, 'a template without a loading rule never auto-loads');
             expect(!itemNamed(aliceView, 'Alice 其他模型模板').autoMatchesViewerModel, 'a mismatching rule does not auto-load');
             expect(!itemNamed(aliceView, 'Alice 停用模板').autoMatchesViewerModel, 'a disabled template does not auto-load');
             expect(
                 !aliceView.some((item) => item.name === 'Bob 群可见模板'),
                 "Bob's group template is hidden: he is not a known member of this chat"
+            );
+            expect(
+                aliceView.some((item) => item.id === bobGlobalTemplate.id),
+                "a global template is visible even though its creator is unknown here"
+            );
+            expect(
+                !itemNamed(aliceView, 'Bob 全局模板').autoMatchesViewerModel,
+                "but a stranger's global template never auto-loads"
             );
 
             const enabled = await call(`/api/chats/${GROUP_MAIN}/settings`, {
@@ -1770,22 +2291,32 @@ const cases: { name: string; body: () => Promise<void> }[] = [
                 await getJson(`/api/chats/${GROUP_MAIN}/prompt-templates`, { user: BOB })
             );
             expect(
-                !bobView.some((item) => item.name === 'Alice 私有模板'),
+                !bobView.some((item) => item.id === alicePrivateTemplate.id),
                 "Alice's private template stays hidden from Bob"
             );
             expect(itemNamed(bobView, 'Alice 群可见模板').autoMatchesViewerModel, 'Alice is a known member here, so her group template is visible');
+            expect(itemNamed(bobView, 'Alice 全局模板').autoMatchesViewerModel, 'so is her global template');
             expect(bobView.some((item) => item.id === bobGroupTemplate.id), 'Bob sees his own group template');
             expect(
                 !itemNamed(bobView, 'Bob 群可见模板').autoMatchesViewerModel,
                 'Bob is not a known member himself, so his group template does not auto-load'
+            );
+            expect(
+                !itemNamed(bobView, 'Bob 全局模板').autoMatchesViewerModel,
+                'nor does his global template auto-load for him'
             );
 
             const ownerView = chatTemplateListOf(
                 await getJson(`/api/chats/${GROUP_MAIN}/prompt-templates`, { user: OWNER })
             );
             expect(
-                ownerView.length === cache.listPromptTemplates().length,
-                'the owner sees every template in the chat list too'
+                ownerView.every((item) => item.visibility !== 'private'),
+                'the owner does not see a private template in a group list either'
+            );
+            const nonPrivateCount = cache.listPromptTemplates().filter((template) => template.visibility !== 'private').length;
+            expect(
+                ownerView.length === nonPrivateCount,
+                `the owner sees every non-private template in the chat list (${ownerView.length} vs ${nonPrivateCount})`
             );
 
             const otherView = chatTemplateListOf(
@@ -1799,6 +2330,14 @@ const cases: { name: string; body: () => Promise<void> }[] = [
             expect(
                 !otherView.some((item) => item.name === 'Alice 群可见模板'),
                 "Alice's group template is hidden in a chat where she was never seen"
+            );
+            expect(
+                otherView.some((item) => item.id === aliceGlobalTemplate.id),
+                "Alice's global template is visible even where she was never seen"
+            );
+            expect(
+                !itemNamed(otherView, 'Alice 全局模板').autoMatchesViewerModel,
+                'but it does not auto-load there: the creator is not a known member'
             );
 
             await expectError(
@@ -1822,7 +2361,7 @@ const cases: { name: string; body: () => Promise<void> }[] = [
         },
     },
     {
-        name: 'panel chat templates: a private chat lists its user’s templates and refuses everyone else',
+        name: 'panel chat templates: a private chat lists private templates and refuses everyone else',
         body: async () => {
             const setModel = await call(`/api/chats/${ALICE.id}/settings`, {
                 method: 'PATCH',
@@ -1831,10 +2370,22 @@ const cases: { name: string; body: () => Promise<void> }[] = [
             });
             expect(setModel.status === 200, 'the private chat model is set');
             const view = chatTemplateListOf(await getJson(`/api/chats/${ALICE.id}/prompt-templates`, { user: ALICE }));
-            expect(itemNamed(view, 'Alice 私有模板').name === 'Alice 私有模板', 'her own private template is listed');
-            expect(!itemNamed(view, 'Alice 私有模板').autoMatchesViewerModel, 'a private template never auto-loads');
-            expect(itemNamed(view, 'Alice 群可见模板').autoMatchesViewerModel, "her own group template auto-loads in her private chat");
-            expect(itemNamed(view, '机主公用模板').autoMatchesViewerModel, "the owner's group template auto-loads there too");
+            expect(itemNamed(view, 'Alice 私有模板').name === 'Alice 私有模板', 'her own private template is listed in her private chat');
+            expect(
+                itemNamed(view, 'Alice 私有模板').autoMatchesViewerModel,
+                'a private template with a matching rule auto-loads inside a private chat'
+            );
+            expect(itemNamed(view, 'Alice 群可见模板').autoMatchesViewerModel, 'her own group template auto-loads there too');
+            expect(itemNamed(view, 'Alice 全局模板').autoMatchesViewerModel, 'and so does her global template');
+            expect(!itemNamed(view, 'Alice 空规则模板').autoMatchesViewerModel, 'the one without a rule does not');
+            expect(
+                view.some((item) => item.id === ownerGroupTemplate.id),
+                "the owner's group template is the public library: listed in her private chat too"
+            );
+            expect(
+                itemNamed(view, '机主公用模板').autoMatchesViewerModel,
+                "and it auto-loads there: the owner's template matches the model"
+            );
             expect(!view.some((item) => item.name === 'Bob 群可见模板'), "Bob's group template is not visible in her private chat");
 
             const enabled = await call(`/api/chats/${ALICE.id}/settings`, {
@@ -1847,6 +2398,37 @@ const cases: { name: string; body: () => Promise<void> }[] = [
                 await getJson(`/api/chats/${ALICE.id}/prompt-templates`, { user: ALICE })
             );
             expect(itemNamed(afterEnabling, 'Alice 私有模板').enabledInChat, 'enabledInChat reports it');
+
+            // The preview composes with the private chat's user, so another
+            // user's private template must never reach it
+            const ownAuto = previewOf(
+                await getJson(`/api/chats/${ALICE.id}/settings/preview`, {
+                    method: 'POST',
+                    user: ALICE,
+                    body: { promptTemplateIds: [], promptTemplatesAuto: true },
+                })
+            );
+            expect(
+                namesOf(ownAuto.appliedTemplates).includes('Alice 私有模板'),
+                `her own private template is in the auto draft (got ${jsonOfText(namesOf(ownAuto.appliedTemplates))})`
+            );
+            expect(
+                !namesOf(ownAuto.appliedTemplates).includes('机主私有模板') &&
+                    !ownAuto.runtimeBlock.includes('机主私有内容'),
+                'the owner private template never reaches her private chat preview'
+            );
+            const guessedPrivateId = previewOf(
+                await getJson(`/api/chats/${ALICE.id}/settings/preview`, {
+                    method: 'POST',
+                    user: ALICE,
+                    body: { promptTemplateIds: [ownerPrivateTemplate.id] },
+                })
+            );
+            expect(
+                guessedPrivateId.appliedTemplates.length === 0 &&
+                    !guessedPrivateId.runtimeBlock.includes('机主私有内容'),
+                `a guessed id of another user's private template loads nothing (got ${jsonOfText(guessedPrivateId)})`
+            );
 
             await expectError(
                 await call(`/api/chats/${ALICE.id}/prompt-templates`, { user: BOB }),
@@ -1972,11 +2554,11 @@ const cases: { name: string; body: () => Promise<void> }[] = [
         name: 'panel chat settings: more than 8000 composed code points are refused with the actual count',
         body: async () => {
             const longA = await templatesService.createPromptTemplate(
-                { name: '预算模板甲', content: '字'.repeat(4000) },
+                { name: '预算模板甲', content: '字'.repeat(4000), visibility: 'group' },
                 aliceActor
             );
             const longB = await templatesService.createPromptTemplate(
-                { name: '预算模板乙', content: '字'.repeat(4000) },
+                { name: '预算模板乙', content: '字'.repeat(4000), visibility: 'group' },
                 aliceActor
             );
             const atLimit = await call(`/api/chats/${GROUP_BUDGET}/settings`, {
@@ -2070,10 +2652,11 @@ const cases: { name: string; body: () => Promise<void> }[] = [
                 })
             );
             expect(
-                jsonOfText(namesOf(autoDraft.appliedTemplates)) === jsonOfText(['机主公用模板', 'Alice 群可见模板']),
-                `the draft auto switch previews the auto candidates (got ${jsonOfText(namesOf(autoDraft.appliedTemplates))})`
+                jsonOfText(namesOf(autoDraft.appliedTemplates)) ===
+                    jsonOfText(['机主公用模板', 'Alice 群可见模板', 'Alice 全局模板']),
+                `the draft auto switch previews the auto candidates, private and rule-less templates excluded (got ${jsonOfText(namesOf(autoDraft.appliedTemplates))})`
             );
-            const expectedAuto = `${ownerGroupTemplate.content}\n\n${aliceGroupTemplate.content}\n\n自定义尾注`;
+            const expectedAuto = `${ownerGroupTemplate.content}\n\n${aliceGroupTemplate.content}\n\n${aliceGlobalTemplate.content}\n\n自定义尾注`;
             expect(
                 autoDraft.composedCodePoints === codePoints(expectedAuto),
                 `the composed length includes the saved own text (${autoDraft.composedCodePoints} vs ${codePoints(expectedAuto)})`

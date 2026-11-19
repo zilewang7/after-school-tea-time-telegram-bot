@@ -45,7 +45,7 @@ export const PromptTemplatesField = ({
             <span className="field-label">提示词模板</span>
             <ToggleRow
                 label="按模型匹配自动加载"
-                description={`打开后，本会话自动加载当前模型（${effectiveModel}）匹配的可见模板；手动启用的模板不受影响`}
+                description={`打开后，本会话自动加载当前模型（${effectiveModel}）匹配的可见模板；没有设置加载规则的模板不会被自动加载，手动启用的模板不受影响`}
                 checked={auto}
                 disabled={disabled}
                 onChange={onAutoChange}

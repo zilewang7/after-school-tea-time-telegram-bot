@@ -5,8 +5,9 @@
  * - Management list: the owner sees every template; everyone else sees the ones
  *   they created (they are the only ones who may edit them).
  * - `GET /api/chats/:chatId/prompt-templates`: templates visible in that chat
- *   (see design D2), each with whether the chat manually enables it and whether
- *   the session's auto switch would load it for the viewer's model.
+ *   (design 2026-1119-1740 §变更1: a private template is listed in private chats
+ *   only), each with whether the chat manually enables it and whether the
+ *   session's auto switch would load it for the viewer's model.
  * - Create: any authenticated panel user. Update/delete: the creator or the bot
  *   owner. The service re-checks ownership under its write queue.
  */
@@ -21,7 +22,7 @@ import {
     listPromptTemplates,
     type PromptTemplate,
 } from '../../services/prompt-templates-cache.js';
-import { templateMatchesModel } from '../../services/prompt-template-rules.js';
+import { templateMatchesModel, type PromptTemplateVisibility } from '../../services/prompt-template-rules.js';
 import {
     isAutoCandidate,
     isTemplateVisible,
@@ -54,7 +55,7 @@ export interface PromptTemplateItemView {
     contentPreview: string;
     modelPatterns: readonly string[];
     sortOrder: number;
-    visibility: 'private' | 'group';
+    visibility: PromptTemplateVisibility;
     enabled: boolean;
     createdBy: number;
     createdByName: string;
@@ -191,15 +192,20 @@ export const registerPromptTemplateRoutes = (app: Hono<PanelEnv>): void => {
         const knownMemberIds = await loadKnownChatMemberIds(chatId);
         const tier = await resolvePanelAccessTier(auth);
         const viewerModel = effectiveReplyModel(tier, resolveChatModel(chatId));
+        const isPrivateChat = chatId > 0;
+        // A private template may load only in its creator's or the owner's private chat
+        const privateChatUserId = isPrivateChat ? chatId : null;
 
-        const visible = listPromptTemplates().filter(
-            (template) =>
-                auth.user.isOwner ||
-                isTemplateVisible(template, {
-                    viewerId: auth.user.id,
-                    isOwner: auth.user.isOwner,
-                    knownMemberIds,
-                })
+        // isTemplateVisible itself hides private templates from group chats,
+        // the owner included, so no outer owner shortcut may re-add them
+        const visibilityContext = {
+            viewerId: auth.user.id,
+            isOwner: auth.user.isOwner,
+            knownMemberIds,
+            isPrivateChat,
+        };
+        const visible = listPromptTemplates().filter((template) =>
+            isTemplateVisible(template, visibilityContext)
         );
         const names = await lookupDisplayNames(visible.map((template) => template.createdBy));
         const enabledIds = new Set(settings.promptTemplateIds ?? []);
@@ -207,8 +213,11 @@ export const registerPromptTemplateRoutes = (app: Hono<PanelEnv>): void => {
             ...itemViewOf(template, names),
             enabledInChat: enabledIds.has(template.id),
             autoMatchesViewerModel:
-                isAutoCandidate(template, { ownerId: ownerUserId ?? 0, knownMemberIds }) &&
-                templateMatchesModel(template, viewerModel),
+                isAutoCandidate(template, {
+                    ownerId: ownerUserId ?? 0,
+                    knownMemberIds,
+                    privateChatUserId,
+                }) && templateMatchesModel(template, viewerModel),
         }));
         return context.json({ templates });
     });

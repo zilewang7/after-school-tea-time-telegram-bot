@@ -36,12 +36,14 @@ export interface ChatSettingsPatch {
     /**
      * Manually enabled prompt templates: ascending unique ids, at most
      * `MAX_TEMPLATE_SELECTIONS`; null = none. Manually enabled templates always
-     * load, whatever the reply model matches.
+     * load, whatever the reply model matches (a private one only in a private
+     * chat).
      */
     promptTemplateIds?: number[] | null;
     /**
-     * Per-chat auto-load switch: on top of the manual list, load every visible
-     * group template whose loading rule matches the reply model (design D3).
+     * Per-chat auto-load switch: on top of the manual list, load the visible
+     * templates whose loading rule matches the reply model (design 2026-1119-1740
+     * §变更1/2: a template with no rule never loads automatically).
      */
     promptTemplatesAuto?: boolean;
     /** null or blank = none */

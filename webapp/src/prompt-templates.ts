@@ -13,17 +13,18 @@ export const PROMPT_TEMPLATE_SORT_ORDER_MAX = 100000;
 export const PROMPT_TEMPLATE_SELECTION_MAX = 10;
 
 const VISIBILITY_LABELS: Record<PromptTemplateVisibility, string> = {
-    private: '完全隐藏',
+    global: '全局可见',
     group: '同群可见',
+    private: '完全隐藏',
 };
 
 /** The list's short label; the page's chips spell the group case out */
 export const promptTemplateVisibilityLabel = (visibility: PromptTemplateVisibility): string =>
     VISIBILITY_LABELS[visibility];
 
-/** The rule as one line; an empty rule loads on every model */
+/** The rule as one line; a template without one is never auto-loaded (manual enable still works) */
 export const promptTemplatePatternsLabel = (patterns: readonly string[]): string =>
-    patterns.length === 0 ? '所有模型' : patterns.join('、');
+    patterns.length === 0 ? '未设置规则（不自动加载）' : patterns.join('、');
 
 /** The creator's name when somebody else made the template, null for the viewer's own */
 export const promptTemplateCreatorNameOf = (

@@ -130,7 +130,7 @@ export const validatePromptTemplateDraft = (draft: PromptTemplateDraft): PromptT
 /** The initial form values: a new template, or the one being edited */
 export const promptTemplateDraftOf = (template: PromptTemplateDetail | null): PromptTemplateDraft =>
     template === null
-        ? { name: '', content: '', patternsText: '', visibility: 'private', enabled: true, sortOrderText: '0' }
+        ? { name: '', content: '', patternsText: '', visibility: 'global', enabled: true, sortOrderText: '0' }
         : {
               name: template.name,
               content: template.content,

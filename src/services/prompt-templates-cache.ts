@@ -5,8 +5,8 @@
  *
  * `modelPatterns` is stored as JSON and held parsed here, so no reader parses
  * JSON on the reply path. A row whose stored rules cannot be parsed is skipped
- * with a warning: reading a broken rule as "every model" could load a template
- * the author never meant to share that widely.
+ * with a warning: guessing which models the author meant could auto-load the
+ * template where they never intended it.
  */
 import { PromptTemplateRecord } from '../db/promptTemplateDTO.js';
 import { listChatSettings } from './chat-settings-cache.js';
@@ -16,7 +16,7 @@ export interface PromptTemplate {
     readonly id: number;
     readonly name: string;
     readonly content: string;
-    /** Parsed loading rules; empty = every model */
+    /** Parsed loading rules; empty = no rule, so the template only loads when a chat enables it by hand */
     readonly modelPatterns: readonly string[];
     readonly sortOrder: number;
     readonly visibility: PromptTemplateVisibility;
@@ -30,8 +30,9 @@ const templatesById = new Map<number, PromptTemplate>();
 let cacheLoaded = false;
 let inflightLoad: Promise<void> | null = null;
 
-/** The stored visibility column: only the two values exist, anything else reads as private */
-const storedVisibility = (value: string): PromptTemplateVisibility => (value === 'group' ? 'group' : 'private');
+/** The stored visibility column: anything unrecognized reads as private, the most restrictive */
+const storedVisibility = (value: string): PromptTemplateVisibility =>
+    value === 'global' || value === 'group' ? value : 'private';
 
 const toPromptTemplate = (record: PromptTemplateRecord): PromptTemplate | null => {
     const modelPatterns = parseStoredModelPatterns(record.modelPatterns);

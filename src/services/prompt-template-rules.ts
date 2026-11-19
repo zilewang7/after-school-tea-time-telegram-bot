@@ -17,8 +17,8 @@ export const MODEL_PATTERN_MAX_LENGTH = 64;
 /** Composition order range; smaller loads first */
 export const TEMPLATE_SORT_ORDER_MAX = 100000;
 
-/** Who may see and enable a template (design D2) */
-export type PromptTemplateVisibility = 'private' | 'group';
+/** Who may see and enable a template: everyone, the creator's groups, or the creator alone */
+export type PromptTemplateVisibility = 'global' | 'group' | 'private';
 
 export type TemplateFieldNormalization<T> =
     | { readonly ok: true; readonly value: T }
@@ -93,13 +93,12 @@ export const normalizeModelPatterns = (raw: unknown): TemplateFieldNormalization
     return { ok: true, value: [...patterns] };
 };
 
-/** The stored form: canonical JSON, `[]` meaning every model */
+/** The stored form: canonical JSON; `[]` means the author set no loading rule */
 export const canonicalModelPatternsJson = (patterns: readonly string[]): string => JSON.stringify(patterns);
 
 /**
  * A stored rule list read back. `null` means the stored value is unusable: the
- * cache skips such a row rather than treating a broken rule as "every model",
- * which would load an unintended template.
+ * cache skips such a row instead of guessing which models the author meant.
  */
 export const parseStoredModelPatterns = (text: string): readonly string[] | null => {
     let parsed: unknown;
@@ -118,8 +117,8 @@ export const parseStoredModelPatterns = (text: string): readonly string[] | null
 };
 
 export const normalizeTemplateVisibility = (raw: unknown): TemplateFieldNormalization<PromptTemplateVisibility> => {
-    if (raw === 'private' || raw === 'group') return { ok: true, value: raw };
-    return { ok: false, message: '可见性只能是完全隐藏或同群群聊用户可见' };
+    if (raw === 'global' || raw === 'group' || raw === 'private') return { ok: true, value: raw };
+    return { ok: false, message: '可见性只能是全局可见、同群群聊用户可见或完全隐藏' };
 };
 
 /** Integer 0-100000, absent means 0 */
@@ -152,9 +151,11 @@ export const modelMatchesPattern = (pattern: string, model: string): boolean => 
     return new RegExp(`^${source}$`, 'i').test(model);
 };
 
-/** No rule means every model; otherwise any rule may match */
+/**
+ * No rule means no automatic load (the template can still be enabled by hand);
+ * an explicit `*` matches every model. Otherwise any rule may match.
+ */
 export const templateMatchesModel = (template: Pick<PromptTemplate, 'modelPatterns'>, model: string): boolean =>
-    template.modelPatterns.length === 0 ||
     template.modelPatterns.some((pattern) => modelMatchesPattern(pattern, model));
 
 /** What one reply loads, as the chat settings and the preview request carry it */
@@ -164,10 +165,22 @@ export interface AddendumSelection {
     readonly auto: boolean;
 }
 
-/** Who created templates this chat may auto-load: the owner, or a known member */
+/** Where the reply happens: a private chat names its user, a group names none */
+export interface AddendumChatContext {
+    /** The private chat's user id, or null when the reply is in a group */
+    readonly privateChatUserId: number | null;
+    readonly ownerId: number;
+}
+
+/** The member facts the automatic channel compares templates against */
 export interface AutoCandidatesContext {
     readonly ownerId: number;
     readonly knownMemberIds: ReadonlySet<number>;
+}
+
+/** Everything the automatic channel needs; the private chat's user decides where a private template may load */
+export interface AutoCandidateContext extends AutoCandidatesContext {
+    readonly privateChatUserId: number | null;
 }
 
 export interface AppliedTemplate {
@@ -182,17 +195,47 @@ export interface ComposedAddendum {
 }
 
 /**
- * The addendum one reply loads (design §4.3): the manually enabled templates
- * (always, whatever the model matches and whether the chat can still see them),
- * then the auto-loaded ones (enabled, group-visible, created by the owner or a
- * known member, rule matches the model), deduplicated by id, ordered by
- * (sortOrder, id), joined by a blank line, and the chat's own text last.
+ * Where a private template may load: only in the creator's own private chat or
+ * in the owner's private chat. A group and anyone else's private chat never load
+ * it, so one user's private prompt cannot reach another user's reply context.
+ */
+export const privateTemplateLoadable = (template: PromptTemplate, context: AddendumChatContext): boolean =>
+    context.privateChatUserId !== null &&
+    (template.createdBy === context.privateChatUserId || context.privateChatUserId === context.ownerId);
+
+/**
+ * Whether one template may be auto-loaded (design 2026-1119-1740 §变更1):
+ * enabled, created by the owner or by a known member of this chat, and — for a
+ * private template — in a chat that may load it (privateTemplateLoadable). The
+ * loading rule is checked separately by templateMatchesModel; the manual list
+ * never consults this rule.
+ */
+export const isAutoCandidate = (template: PromptTemplate, context: AutoCandidateContext): boolean => {
+    if (!template.enabled) return false;
+    if (template.createdBy !== context.ownerId && !context.knownMemberIds.has(template.createdBy)) return false;
+    return (
+        template.visibility !== 'private' ||
+        privateTemplateLoadable(template, {
+            privateChatUserId: context.privateChatUserId,
+            ownerId: context.ownerId,
+        })
+    );
+};
+
+/**
+ * The addendum one reply loads (design 2026-1119-1146 §4.3, 2026-1119-1740):
+ * the manually enabled templates (whatever the model matches; a private one only
+ * where privateTemplateLoadable allows it), then the auto-loaded ones
+ * (isAutoCandidate and a loading rule that matches the model), deduplicated by
+ * id, ordered by (sortOrder, id), joined by a blank line, and the chat's own
+ * text last.
  */
 export const composeChatAddendum = (
     selection: AddendumSelection,
     templates: readonly PromptTemplate[],
     model: string,
-    autoContext: AutoCandidatesContext | null
+    autoContext: AutoCandidatesContext | null,
+    chat: AddendumChatContext
 ): ComposedAddendum => {
     const byId = new Map(templates.map((template) => [template.id, template] as const));
     const applied: PromptTemplate[] = [];
@@ -206,15 +249,18 @@ export const composeChatAddendum = (
     for (const id of selection.templateIds ?? []) {
         const template = byId.get(id);
         if (template === undefined || !template.enabled) continue;
+        // A private template loads only in the creator's or the owner's private chat
+        if (template.visibility === 'private' && !privateTemplateLoadable(template, chat)) continue;
         apply(template);
     }
     if (selection.auto && autoContext !== null) {
+        const candidateContext: AutoCandidateContext = {
+            ...autoContext,
+            privateChatUserId: chat.privateChatUserId,
+        };
         for (const template of templates) {
-            if (!template.enabled || template.visibility !== 'group') continue;
-            const createdByKnownUser =
-                template.createdBy === autoContext.ownerId ||
-                autoContext.knownMemberIds.has(template.createdBy);
-            if (!createdByKnownUser || !templateMatchesModel(template, model)) continue;
+            if (!isAutoCandidate(template, candidateContext)) continue;
+            if (!templateMatchesModel(template, model)) continue;
             apply(template);
         }
     }

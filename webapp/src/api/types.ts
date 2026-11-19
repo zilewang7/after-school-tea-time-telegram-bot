@@ -113,7 +113,7 @@ export interface WebLoginResponse {
 
 // Prompt templates (prompt-template design §4.4): panel users' shared addendum templates.
 
-export type PromptTemplateVisibility = 'private' | 'group';
+export type PromptTemplateVisibility = 'global' | 'group' | 'private';
 
 /** One entry of GET /api/prompt-templates: no full content, only its size and start */
 export interface PromptTemplateSummary {
@@ -126,7 +126,8 @@ export interface PromptTemplateSummary {
     modelPatterns: string[];
     // Composition order, smaller first
     sortOrder: number;
-    // private = only its creator (and the owner); group = the panel users of the creator's chats too
+    // global = every panel user; group = the panel users of the creator's chats too;
+    // private = only its creator (and the owner), and it can only be enabled in a private chat
     visibility: PromptTemplateVisibility;
     // The template's own switch: off = no chat loads it
     enabled: boolean;

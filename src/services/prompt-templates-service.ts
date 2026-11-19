@@ -35,6 +35,7 @@ import {
     normalizeTemplateEnabled,
     normalizeTemplateName,
     normalizeTemplateVisibility,
+    type AddendumChatContext,
     type AddendumSelection,
     type AutoCandidatesContext,
     type ComposedAddendum,
@@ -103,7 +104,7 @@ const normalizeCreateInput = (input: unknown): PromptTemplateInput => {
         sortOrder: invalidField(normalizeSortOrder(input.sortOrder)),
         visibility:
             input.visibility === undefined
-                ? 'private'
+                ? 'global'
                 : invalidField(normalizeTemplateVisibility(input.visibility)),
         enabled: input.enabled === undefined ? true : invalidField(normalizeTemplateEnabled(input.enabled)),
     };
@@ -154,7 +155,7 @@ const editableTemplateOf = (id: number, actor: SettingsActor): PromptTemplate =>
     return template;
 };
 
-/** Any logged-in panel user may create a template; it starts private and enabled */
+/** Any logged-in panel user may create a template; it starts globally visible and enabled */
 export const createPromptTemplate = (input: unknown, actor: SettingsActor): Promise<PromptTemplate> =>
     runSerialized(TEMPLATE_WRITE_SCOPE, async () => {
         await ensurePromptTemplatesCacheLoaded();
@@ -238,10 +239,10 @@ export const deletePromptTemplate = (id: number, actor: SettingsActor): Promise<
     });
 
 /**
- * The addendum one reply loads (design D3/D4): the chat's manually enabled
- * templates always, plus the auto candidates while the chat's switch is on.
- * Asynchronous only because the auto candidates need the chat's known members;
- * with the switch off it reads the cache alone.
+ * The addendum one reply loads (design 2026-1119-1146 D3/D4, 2026-1119-1740
+ * §变更1/2): the chat's manually enabled templates, plus the auto candidates
+ * while the chat's switch is on. Asynchronous only because the auto candidates
+ * need the chat's known members; with the switch off it reads the cache alone.
  */
 export const resolveReplyAddendum = async (
     chatId: number,
@@ -249,15 +250,18 @@ export const resolveReplyAddendum = async (
     model: string
 ): Promise<ComposedAddendum> => {
     await ensurePromptTemplatesCacheLoaded();
+    // Without a configured owner no id can be the owner's; 0 is not a user id
+    const ownerId = getOwnerUserId() ?? 0;
+    // A private template loads only in its creator's or the owner's private chat
+    const chat: AddendumChatContext = {
+        privateChatUserId: chatId > 0 ? chatId : null,
+        ownerId,
+    };
     let autoContext: AutoCandidatesContext | null = null;
     if (selection.auto) {
-        // Without a configured owner no id can be the owner's; 0 is not a user id
-        autoContext = {
-            ownerId: getOwnerUserId() ?? 0,
-            knownMemberIds: await loadKnownChatMemberIds(chatId),
-        };
+        autoContext = { ownerId, knownMemberIds: await loadKnownChatMemberIds(chatId) };
     }
-    const composed = composeChatAddendum(selection, listPromptTemplates(), model, autoContext);
+    const composed = composeChatAddendum(selection, listPromptTemplates(), model, autoContext, chat);
     if (composed.text !== null) {
         const composedCodePoints = countCodePoints(composed.text);
         if (composedCodePoints > CHAT_PROMPT_ADDENDUM_MAX_CODE_POINTS) {

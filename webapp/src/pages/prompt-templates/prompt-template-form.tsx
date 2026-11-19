@@ -16,8 +16,9 @@ import {
 import { usePromptTemplateForm } from './use-prompt-template-form';
 
 const VISIBILITY_OPTIONS: readonly ChoiceOption<PromptTemplateVisibility>[] = [
-    { value: 'private', label: '完全隐藏' },
+    { value: 'global', label: '全局可见' },
     { value: 'group', label: '同群群聊用户可见' },
+    { value: 'private', label: '完全隐藏' },
 ];
 
 const SORT_ORDER_HINT = `组合顺序：数值小的先加载（0–${PROMPT_TEMPLATE_SORT_ORDER_MAX}）`;
@@ -118,7 +119,7 @@ export const PromptTemplateForm = ({ template, onSaved, onCancel }: PromptTempla
                     onFocus={handleFocus}
                     onBlur={handleBlur}
                 />
-                <p className="hint">一行一个模型匹配式，只支持 * 通配；留空 = 所有模型。</p>
+                <p className="hint">一行一个模型匹配式，只支持 * 通配；留空 = 不参与自动加载（仍可手动启用）。</p>
                 {validation.patternsError !== null && <p className="error-text">{validation.patternsError}</p>}
             </div>
 
@@ -132,7 +133,7 @@ export const PromptTemplateForm = ({ template, onSaved, onCancel }: PromptTempla
                     onSelect={form.setVisibility}
                 />
                 <p className="hint">
-                    「完全隐藏」只有自己可用；「同群群聊用户可见」对与创建者同群的面板用户可见。
+                    默认「全局可见」，所有面板用户都能看到并启用；「同群群聊用户可见」只对与创建者同群的面板用户可见；「完全隐藏」只有自己可见，且只能在私聊里启用。
                 </p>
             </div>
 

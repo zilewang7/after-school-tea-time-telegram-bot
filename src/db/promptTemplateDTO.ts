@@ -17,10 +17,12 @@ import { sequelize } from './config.js';
  * chat manually enabled, so nothing here is per-chat.
  *
  * `modelPatterns` is canonical JSON (a string array of glob rules: only `*` is
- * a wildcard, matching an id in full, case-insensitively; empty = every model).
- * The array lives in one column because it is small and every reader takes the
- * whole list anyway. `enabled` is the author's master switch: a disabled
- * template loads in no chat, while the chats' enable lists keep the id.
+ * a wildcard, matching an id in full, case-insensitively). An empty array means
+ * the author set no loading rule: the template never auto-loads and only a chat
+ * that enables it by hand loads it. The array lives in one column because it is
+ * small and every reader takes the whole list anyway. `enabled` is the author's
+ * master switch: a disabled template loads in no chat, while the chats' enable
+ * lists keep the id.
  *
  * `id` explicitly autoincrements so a deleted id is never handed to a new
  * template: a stale id in a chat's enable list must stay stale.
@@ -34,11 +36,11 @@ export class PromptTemplateRecord extends Model<
   declare name: string;
   // 1-4000 code points
   declare content: string;
-  // Canonical JSON string[] of glob rules; '[]' = every model
+  // Canonical JSON string[] of glob rules; '[]' = no rule (manual enable only)
   declare modelPatterns: CreationOptional<string>;
   // Composition order, ascending; 0-100000
   declare sortOrder: CreationOptional<number>;
-  // 'private' = only the creator (and the owner); 'group' = their groups' users too
+  // 'global' = every panel user; 'group' = the creator's groups; 'private' = private chats only
   declare visibility: CreationOptional<string>;
   // The author's master switch; 0 = load in no chat
   declare enabled: CreationOptional<boolean>;
@@ -75,7 +77,7 @@ PromptTemplateRecord.init({
   visibility: {
     type: DataTypes.TEXT,
     allowNull: false,
-    defaultValue: 'private',
+    defaultValue: 'global',
   },
   enabled: {
     type: DataTypes.BOOLEAN,
