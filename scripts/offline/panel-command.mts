@@ -50,6 +50,18 @@ const WEBAPP_URL = 'https://miniapp.test';
 const CHAT_PANEL_TEXT = '本聊天的控制面板：';
 const PRIVATE_PANEL_TEXT = '控制面板：';
 const CONVERSATION_PANEL_TEXT = '这条会话的控制面板：';
+
+/**
+ * The second line the command appends: the browser entry of the panel (the
+ * /web login) as a labelled link, never a raw URL. It targets the same place
+ * the Mini App button opens.
+ */
+const browserJumpLine = (url: string): string => `网页版：<a href="${url}">在浏览器打开</a>`;
+const textWithBrowserJump = (headline: string, url: string): string => `${headline}\n${browserJumpLine(url)}`;
+const chatPanelText = (chatId: number): string => textWithBrowserJump(CHAT_PANEL_TEXT, `${WEBAPP_URL}/c/${chatId}`);
+const conversationPanelText = (chatId: number, rootId: number): string =>
+    textWithBrowserJump(CONVERSATION_PANEL_TEXT, `${WEBAPP_URL}/c/${chatId}/conv/${rootId}`);
+const privatePanelText = (): string => textWithBrowserJump(PRIVATE_PANEL_TEXT, WEBAPP_URL);
 const OPEN_PANEL_LABEL = '打开面板';
 const OPEN_CONVERSATION_LABEL = '打开这条会话';
 const DISABLED_TEXT = '面板未启用';
@@ -299,10 +311,14 @@ const cases: { name: string; body: () => Promise<void> }[] = [
 
             expect(telegram.callsOf('sendMessage').length === 1, 'the command answers exactly once');
             expect(
-                lastReplyText(telegram) === CHAT_PANEL_TEXT,
-                `the chat-level text (got ${JSON.stringify(lastReplyText(telegram))})`
+                lastReplyText(telegram) === chatPanelText(chatId),
+                `the chat-level text and its browser link (got ${JSON.stringify(lastReplyText(telegram))})`
             );
             expectUrlButton(telegram, { label: OPEN_PANEL_LABEL, url: directLink(`c${chatId}`) });
+            expect(
+                lastSentPayload(telegram).parse_mode === 'HTML',
+                `the browser link is sent as HTML (got ${JSON.stringify(lastSentPayload(telegram).parse_mode)})`
+            );
             expect((await findChat(chatId)) !== null, 'the chat is still registered in the panel');
         },
     },
@@ -325,8 +341,8 @@ const cases: { name: string; body: () => Promise<void> }[] = [
             );
 
             expect(
-                lastReplyText(telegram) === CONVERSATION_PANEL_TEXT,
-                `the conversation text (got ${JSON.stringify(lastReplyText(telegram))})`
+                lastReplyText(telegram) === conversationPanelText(chatId, fixture.rootId),
+                `the conversation text and its browser link (got ${JSON.stringify(lastReplyText(telegram))})`
             );
             expectUrlButton(telegram, {
                 label: OPEN_CONVERSATION_LABEL,
@@ -405,8 +421,8 @@ const cases: { name: string; body: () => Promise<void> }[] = [
                     })
                 );
                 expect(
-                    lastReplyText(telegram) === CONVERSATION_PANEL_TEXT,
-                    `replied id ${repliedId}: the conversation text (got ${JSON.stringify(lastReplyText(telegram))})`
+                    lastReplyText(telegram) === conversationPanelText(chatId, fixture.rootId),
+                    `replied id ${repliedId}: the conversation text and its browser link (got ${JSON.stringify(lastReplyText(telegram))})`
                 );
                 expectUrlButton(telegram, {
                     label: OPEN_CONVERSATION_LABEL,
@@ -435,8 +451,8 @@ const cases: { name: string; body: () => Promise<void> }[] = [
             );
 
             expect(
-                lastReplyText(telegram) === CHAT_PANEL_TEXT,
-                `the chat-level text (got ${JSON.stringify(lastReplyText(telegram))})`
+                lastReplyText(telegram) === chatPanelText(chatId),
+                `the chat-level text and its browser link (got ${JSON.stringify(lastReplyText(telegram))})`
             );
             expectUrlButton(telegram, { label: OPEN_PANEL_LABEL, url: directLink(`c${chatId}`) });
         },
@@ -462,7 +478,7 @@ const cases: { name: string; body: () => Promise<void> }[] = [
             );
 
             expect(
-                lastReplyText(telegram) === CHAT_PANEL_TEXT,
+                lastReplyText(telegram) === chatPanelText(chatId),
                 `a notice is not a conversation message (got ${JSON.stringify(lastReplyText(telegram))})`
             );
             expectUrlButton(telegram, { label: OPEN_PANEL_LABEL, url: directLink(`c${chatId}`) });
@@ -501,7 +517,7 @@ const cases: { name: string; body: () => Promise<void> }[] = [
                     })
                 );
                 expect(
-                    lastReplyText(telegram) === CHAT_PANEL_TEXT,
+                    lastReplyText(telegram) === chatPanelText(chatId),
                     `replied id ${repliedId}: a command root is not a conversation (got ${JSON.stringify(lastReplyText(telegram))})`
                 );
                 expectUrlButton(telegram, { label: OPEN_PANEL_LABEL, url: directLink(`c${chatId}`) });
@@ -552,8 +568,8 @@ const cases: { name: string; body: () => Promise<void> }[] = [
             );
 
             expect(
-                lastReplyText(telegram) === PRIVATE_PANEL_TEXT,
-                `the private-chat text (got ${JSON.stringify(lastReplyText(telegram))})`
+                lastReplyText(telegram) === privatePanelText(),
+                `the private-chat text and its browser link (got ${JSON.stringify(lastReplyText(telegram))})`
             );
             expectWebAppButton(telegram, { label: OPEN_PANEL_LABEL, url: WEBAPP_URL });
             expect((await findChat(userId)) !== null, 'the private chat is registered in the panel');
@@ -578,8 +594,8 @@ const cases: { name: string; body: () => Promise<void> }[] = [
             );
 
             expect(
-                lastReplyText(telegram) === CONVERSATION_PANEL_TEXT,
-                `the conversation text (got ${JSON.stringify(lastReplyText(telegram))})`
+                lastReplyText(telegram) === conversationPanelText(userId, fixture.rootId),
+                `the conversation text and its browser link (got ${JSON.stringify(lastReplyText(telegram))})`
             );
             expectUrlButton(telegram, {
                 label: OPEN_CONVERSATION_LABEL,
@@ -605,10 +621,56 @@ const cases: { name: string; body: () => Promise<void> }[] = [
             );
 
             expect(
-                lastReplyText(telegram) === PRIVATE_PANEL_TEXT,
-                `the chat-level text (got ${JSON.stringify(lastReplyText(telegram))})`
+                lastReplyText(telegram) === privatePanelText(),
+                `the chat-level text and its browser link (got ${JSON.stringify(lastReplyText(telegram))})`
             );
             expectWebAppButton(telegram, { label: OPEN_PANEL_LABEL, url: WEBAPP_URL });
+        },
+    },
+    {
+        name: 'without WEBAPP_PUBLIC_URL the reply is plain text and keeps its button',
+        body: async () => {
+            const { bot, telegram } = commandBot();
+            const chatId = takeChatId();
+            try {
+                delete process.env.WEBAPP_PUBLIC_URL;
+
+                await drive(
+                    bot,
+                    textUpdate({ chat: groupChat(chatId), messageId: takeMessageId(), userId: 5001, text: '/panel' })
+                );
+
+                expect(
+                    lastReplyText(telegram) === CHAT_PANEL_TEXT,
+                    `no origin, no browser entry (got ${JSON.stringify(lastReplyText(telegram))})`
+                );
+                expectUrlButton(telegram, { label: OPEN_PANEL_LABEL, url: directLink(`c${chatId}`) });
+            } finally {
+                process.env.WEBAPP_PUBLIC_URL = WEBAPP_URL;
+            }
+        },
+    },
+    {
+        name: 'with WEB_LOGIN=0 the browser entry is left out (nobody could sign in)',
+        body: async () => {
+            const { bot, telegram } = commandBot();
+            const chatId = takeChatId();
+            try {
+                process.env.WEB_LOGIN = '0';
+
+                await drive(
+                    bot,
+                    textUpdate({ chat: groupChat(chatId), messageId: takeMessageId(), userId: 5001, text: '/panel' })
+                );
+
+                expect(
+                    lastReplyText(telegram) === CHAT_PANEL_TEXT,
+                    `browser login off, no browser entry (got ${JSON.stringify(lastReplyText(telegram))})`
+                );
+                expectUrlButton(telegram, { label: OPEN_PANEL_LABEL, url: directLink(`c${chatId}`) });
+            } finally {
+                delete process.env.WEB_LOGIN;
+            }
         },
     },
     {
@@ -652,8 +714,8 @@ const cases: { name: string; body: () => Promise<void> }[] = [
                     })
                 );
                 expect(
-                    lastReplyText(telegram) === PRIVATE_PANEL_TEXT,
-                    `the private chat keeps today's text (got ${JSON.stringify(lastReplyText(telegram))})`
+                    lastReplyText(telegram) === privatePanelText(),
+                    `the private chat keeps today's text plus the browser link (got ${JSON.stringify(lastReplyText(telegram))})`
                 );
                 expectWebAppButton(telegram, { label: OPEN_PANEL_LABEL, url: WEBAPP_URL });
             } finally {

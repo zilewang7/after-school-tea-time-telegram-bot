@@ -1,14 +1,17 @@
 import type { Bot, InlineKeyboard } from "grammy";
 import type { Chat } from "grammy/types";
 import { match } from "ts-pattern";
+import { webLoginEnabled } from "../../config/web-login.js";
 import { findConversationRootId } from "../../db/queries/context-queries.js";
 import { upsertChatNow } from "../../db/queries/panel-registry.js";
 import { isPanelRunning } from "../../panel/panel-state.js";
+import { webappPublicUrl } from "../../shared/public-url.js";
 import { registerConversationKeyboardMessage } from "../../state.js";
 import { miniAppConversationKeyboardForChat, miniAppDirectLink, miniAppKeyboardForChat } from "./mini-app-link.js";
 
 const OPEN_PANEL_LABEL = "打开面板";
 const OPEN_CONVERSATION_LABEL = "打开这条会话";
+const BROWSER_OPEN_LABEL = "在浏览器打开";
 
 type PanelReply =
     | { kind: 'text'; text: string }
@@ -17,6 +20,37 @@ type PanelReply =
 const disabledReply: PanelReply = { kind: 'text', text: "面板未启用" };
 
 const unsupportedReply: PanelReply = { kind: 'text', text: "这里不支持控制面板" };
+
+/** `&`, `<`, `>` escaped for the HTML parse mode */
+const escapeHtmlText = (text: string): string =>
+    text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+
+/** plus `"` for an attribute value */
+const escapeHtmlAttribute = (text: string): string => escapeHtmlText(text).replace(/"/g, '&quot;');
+
+/**
+ * The browser entry of the panel (the /web login), at the same target the Mini
+ * App button opens: the chat page for a group, the conversation page when the
+ * command replies to one message, the home page in a private chat. Null when
+ * the panel has no public origin or the browser login is switched off — a link
+ * nobody could sign in to would only lead to a dead login page.
+ */
+const browserPanelUrlOf = (chat: Chat, rootId: number | null): string | null => {
+    const origin = webLoginEnabled() ? webappPublicUrl() : '';
+    if (origin === '') return null;
+    if (rootId !== null) return `${origin}/c/${chat.id}/conv/${rootId}`;
+    return chat.type === 'private' ? origin : `${origin}/c/${chat.id}`;
+};
+
+/**
+ * The reply text: today's headline, then the browser entry as a labelled link.
+ * A raw URL is deliberately not shown: the link label is what the chat needs,
+ * and the Mini App button above stays the in-Telegram entry.
+ */
+const panelTextOf = (headline: string, url: string | null): string =>
+    url === null
+        ? headline
+        : `${escapeHtmlText(headline)}\n网页版：<a href="${escapeHtmlAttribute(url)}">${BROWSER_OPEN_LABEL}</a>`;
 
 /**
  * Private chats open the Mini App in place; groups cannot carry web_app buttons,
@@ -32,7 +66,10 @@ const chatPanelReplyFor = (chat: Chat): PanelReply => {
     if (keyboard === null) return disabledReply;
     return {
         kind: 'button',
-        text: chat.type === 'private' ? "控制面板：" : "本聊天的控制面板：",
+        text: panelTextOf(
+            chat.type === 'private' ? "控制面板：" : "本聊天的控制面板：",
+            browserPanelUrlOf(chat, null)
+        ),
         keyboard,
     };
 };
@@ -52,7 +89,12 @@ const conversationPanelReplyFor = async (chat: Chat, repliedMessageId: number): 
     const keyboard = miniAppConversationKeyboardForChat(chat, OPEN_CONVERSATION_LABEL, startParam);
     if (keyboard === null) return null;
     // The panel appends its operations to this message (design §4.7): remember it
-    return { kind: 'button', text: "这条会话的控制面板：", keyboard, receiptRootId: rootId };
+    return {
+        kind: 'button',
+        text: panelTextOf("这条会话的控制面板：", browserPanelUrlOf(chat, rootId)),
+        keyboard,
+        receiptRootId: rootId,
+    };
 };
 
 /** A reply to one message deep-links into its conversation; anything else stays chat-level */
@@ -83,7 +125,11 @@ export const registerPanelCommand = (bot: Bot) => {
         await match(reply)
             .with({ kind: 'text' }, (textReply) => ctx.reply(textReply.text))
             .with({ kind: 'button' }, async (buttonReply) => {
-                const sent = await ctx.reply(buttonReply.text, { reply_markup: buttonReply.keyboard });
+                // HTML for the browser link; the receipt edits keep the same parse mode
+                const sent = await ctx.reply(buttonReply.text, {
+                    reply_markup: buttonReply.keyboard,
+                    parse_mode: 'HTML',
+                });
                 // The panel appends what it did to this message: the chat keeps a
                 // readable receipt of the operations (design 2026-1119-2016 §4.7)
                 if (buttonReply.receiptRootId !== undefined) {

@@ -44,8 +44,11 @@ const editReceipt = async (botApi: Api, chatId: number, rootId: number, line: st
     try {
         // Telegram replaces the message: a keyboard the edit does not repeat is
         // dropped, so the buttons are sent again with every line
+        // The base text is HTML (the /panel browser link): the same parse mode
+        // the command sent it with must be repeated here, or the tags show raw
         await botApi.editMessageText(entry.chatId, entry.messageId, textWith(entry.baseText, entry.ops), {
             reply_markup: entry.replyMarkup,
+            parse_mode: 'HTML',
         });
     } catch (error) {
         const message = describeError(error);

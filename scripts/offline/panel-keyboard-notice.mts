@@ -22,6 +22,12 @@ const BOT_USER_ID = 7777;
 const ALICE: InitDataUserInput = { id: 5001, first_name: 'Alice' };
 const BASE_TEXT = '这条会话的控制面板：';
 
+/** The browser entry the command appends; the receipt edits keep it (HTML parse mode) */
+const browserJumpLine = (chatId: number, rootId: number): string =>
+    `网页版：<a href="https://miniapp.test/c/${chatId}/conv/${rootId}">在浏览器打开</a>`;
+const baseTextOf = (chatId: number, rootId: number): string =>
+    `${BASE_TEXT}\n${browserJumpLine(chatId, rootId)}`;
+
 process.env.OWNER_USER_ID = String(OWNER_ID);
 process.env.BOT_USER_ID = String(BOT_USER_ID);
 process.env.WEBAPP_PUBLIC_URL = 'https://miniapp.test';
@@ -203,14 +209,20 @@ results.push(
         const chatId = takeChatId();
         const conversation = await seedConversation(chatId);
         const drive = await drivePanel(chatId, conversation.childId);
-        expect(drive.text === BASE_TEXT, `the reply says what it is (got ${JSON.stringify(drive.text)})`);
+        expect(
+            drive.text === baseTextOf(chatId, conversation.rootId),
+            `the reply says what it is and links the browser entry (got ${JSON.stringify(drive.text)})`
+        );
         expect(
             drive.url !== null && drive.url.includes(`startapp=c${chatId}_${conversation.rootId}`),
             `the button deep-links to the conversation (got ${JSON.stringify(drive.url)})`
         );
         const entry = state.latestConversationKeyboardMessage(chatId, conversation.rootId);
         expect(entry !== undefined, 'the sent message was registered for its conversation');
-        expect(entry?.baseText === BASE_TEXT && entry?.ops.length === 0, 'registered with the base text and no lines');
+        expect(
+            entry?.baseText === baseTextOf(chatId, conversation.rootId) && entry?.ops.length === 0,
+            'registered with the base text (browser link included) and no lines'
+        );
         // A later operation edits the very message the handler sent
         const telegram = createFakeTelegram();
         const app = makeApp(telegram);
@@ -219,6 +231,10 @@ results.push(
         expect(response.status === 200, `the exclusion goes through (got ${response.status})`);
         await waitUntil('the receipt edit', () => editCalls(telegram).length > 0);
         expect(editCalls(telegram).at(-1)?.payload.message_id === entry?.messageId, 'the /panel message is the one edited');
+        expect(
+            editCalls(telegram).at(-1)?.payload.parse_mode === 'HTML',
+            'the edit repeats the HTML parse mode the link needs'
+        );
         expect(
             drive.url !== null && urlOf(editCalls(telegram).at(-1)?.payload.reply_markup) === drive.url,
             'the edit repeats the button the /panel message was sent with'
