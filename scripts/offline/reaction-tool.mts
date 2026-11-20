@@ -14,6 +14,7 @@ import { expect, reportResults, runCase, setupOfflineDb, takeMessageId, type Cas
 import { createFakeTelegram, groupChat, type FakeTelegram, type TelegramCall } from './fake-telegram.mts';
 import type { ResponseVersion } from '../../src/db/botResponseDTO.js';
 import type { ContextIndex } from '../../src/reply/context-index.js';
+import type { ReactToMessageDependencies } from '../../src/reply/tools/react-to-message-tool.js';
 import type { ToolOverrides } from '../../src/services/tool-overrides.js';
 
 // Read when the queries run; set before the db layer is imported
@@ -37,8 +38,12 @@ const { buildStaticSystemPrompt } = await import('../../src/ai/system-prompt/ind
 const { buildToolMatrix } = await import('../../src/panel/views/tool-matrix.js');
 const { normalizeToolOverrides } = await import('../../src/services/tool-overrides.js');
 const { REACTION_EMOJIS } = await import('../../src/shared/reaction-emoji.js');
+const { REACTION_BATCH_MAX } = await import('../../src/reply/tools/reaction-batch.js');
 
 const CHAT = -1009123000201;
+/** A chat of its own for a case that leaves a 429 penalty on the coordinator */
+const FLOOD_CHAT = -1009123000202;
+const FLOOD_RETRY_CHAT = -1009123000203;
 const USER = 42;
 const signal = new AbortController().signal;
 
@@ -74,7 +79,12 @@ interface IndexEntry {
 }
 
 /** The turn's `#N` → message map plus the context the tool factory needs */
-const contextOf = (chatId: number, entries: readonly IndexEntry[], telegram: FakeTelegram) => {
+const contextOf = (
+    chatId: number,
+    entries: readonly IndexEntry[],
+    telegram: FakeTelegram,
+    contextSignal: AbortSignal = signal
+) => {
     const contextIndex: ContextIndex = new Map(
         entries.map((entry) => [
             entry.number,
@@ -96,13 +106,18 @@ const contextOf = (chatId: number, entries: readonly IndexEntry[], telegram: Fak
             text: 'hi',
         },
         contextIndex,
-        signal,
+        signal: contextSignal,
         api: telegram.api,
     });
 };
 
-const toolOn = (chatId: number, entries: readonly IndexEntry[], telegram: FakeTelegram) =>
-    createReactToMessageTool(contextOf(chatId, entries, telegram));
+const toolOn = (
+    chatId: number,
+    entries: readonly IndexEntry[],
+    telegram: FakeTelegram,
+    dependencies: ReactToMessageDependencies = {},
+    contextSignal: AbortSignal = signal
+) => createReactToMessageTool(contextOf(chatId, entries, telegram, contextSignal), dependencies);
 
 /** Swallow console.warn for one body and keep the lines, like a reply's log */
 const captureWarnings = async <T,>(body: () => Promise<T>): Promise<{ value: T; warnings: string[] }> => {
@@ -182,7 +197,7 @@ results.push(
             json(asArray(asRecord(properties.emoji).enum)) === json([...REACTION_EMOJIS]),
             'the emoji enum is the shared standard set, in its order'
         );
-        expect(json(schema.required) === json(['message']), 'only the message number is required');
+        expect(schema.required === undefined, 'no field is globally required: the three forms are exclusive');
         expect(
             asRecord(properties.message).type === 'integer',
             'the message number is an integer, not a string'
@@ -563,6 +578,772 @@ results.push(
         expect(
             !toolRoundNotice(3, false).includes('react_to_message'),
             'a normal round does not list tools at all'
+        );
+    })
+);
+
+// ---------------------------------------------------------------------------
+// Batch forms: messages / reactions (design 2026-1120-1638 §4 and §9.1)
+// ---------------------------------------------------------------------------
+
+/** One freshly seeded user message and the `#N` entry that names it */
+const seededEntry = async (chatId: number, number: number, text = 'hello'): Promise<IndexEntry> => ({
+    number,
+    messageId: await seedUserMessage(chatId, USER, text),
+    fromBot: false,
+});
+
+/** The stored bot rows of the given messages, in insertion order */
+const botRowsOf = async (chatId: number, messageIds: readonly number[]) => {
+    const rows = await MessageReaction.findAll({
+        where: { chatId, fromBotSelf: true },
+        order: [['id', 'ASC']],
+    });
+    return rows.filter((row) => messageIds.includes(row.messageId));
+};
+
+/** Every reaction list the fake Telegram received, as JSON */
+const reactionPayloadsOf = (telegram: FakeTelegram): string[] =>
+    reactionCalls(telegram).map((call) => json(call.payload.reaction));
+
+/**
+ * Count the raw SQL statements whose text matches while the body runs. The
+ * bot-reply body read is the one call that goes through sequelize.query, so
+ * this pins that a batch of replies still resolves them with one query. The
+ * replaced method goes back even when the body throws.
+ */
+const countRawQueries = async <T,>(
+    pattern: RegExp,
+    body: () => Promise<T>
+): Promise<{ readonly value: T; readonly count: number }> => {
+    const { sequelize } = await import('../../src/db/config.js');
+    const originalQuery = sequelize.query;
+    let count = 0;
+    Reflect.set(sequelize, 'query', (...args: unknown[]) => {
+        const first = args[0];
+        if (typeof first === 'string' && pattern.test(first)) count += 1;
+        return Reflect.apply(originalQuery, sequelize, args);
+    });
+    try {
+        const value = await body();
+        return { value, count };
+    } finally {
+        Reflect.deleteProperty(sequelize, 'query');
+    }
+};
+
+/**
+ * Make the nth setMessageReaction answer a 429 carrying retry_after, the shape
+ * Telegram uses; createFakeTelegram's refusals carry no parameters.
+ */
+const refuseNthReactionWithRetryAfter = (
+    telegram: FakeTelegram,
+    nth: number,
+    retryAfter: number
+): void => {
+    let seen = 0;
+    telegram.api.config.use((previous, method, payload, callSignal) => {
+        if (method === 'setMessageReaction') {
+            seen += 1;
+            if (seen === nth) {
+                return Promise.resolve({
+                    ok: false,
+                    error_code: 429,
+                    description: `Too Many Requests: retry after ${retryAfter}`,
+                    parameters: { retry_after: retryAfter },
+                });
+            }
+        }
+        return previous(method, payload, callSignal);
+    });
+};
+
+results.push(
+    await runCase('R1: messages sets one emoji on several messages, in request order', async () => {
+        const entries = [
+            await seededEntry(CHAT, 3),
+            await seededEntry(CHAT, 4),
+            await seededEntry(CHAT, 5),
+        ];
+        const telegram = createFakeTelegram();
+        const tool = toolOn(CHAT, entries, telegram);
+
+        const result = await tool.execute({ messages: [3, 4, 5], emoji: '👍' }, signal);
+        expect(!result.isError, `the batch succeeds (got ${result.content})`);
+        expect(
+            result.content === '已设置 3 条 reaction（#3、#4、#5）：\n- #3 👍\n- #4 👍\n- #5 👍',
+            `the result lists every message (got ${result.content})`
+        );
+        expect(
+            json(result.trace) === json({ argument: '#3 👍、#4 👍、#5 👍', result: '3 条设置' }),
+            `the trace (got ${json(result.trace)})`
+        );
+        expect(result.images.length === 0 && result.record === null, 'a reaction is not a message');
+
+        const calls = reactionCalls(telegram);
+        expect(calls.length === 3, `one call per message (got ${calls.length})`);
+        expect(
+            json(apiTargetsOf(telegram)) === json(entries.map((entry) => entry.messageId)),
+            `the calls follow request order (got ${json(apiTargetsOf(telegram))})`
+        );
+        expect(
+            reactionPayloadsOf(telegram).every(
+                (payload) => payload === json([{ type: 'emoji', emoji: '👍' }])
+            ),
+            'every call carries the shared emoji'
+        );
+        const rows = await botRowsOf(CHAT, entries.map((entry) => entry.messageId));
+        expect(
+            rows.length === 3 && rows.every((row) => row.emoji === '👍' && row.userId === 7777),
+            `three bot rows are stored (got ${json(rows.map((row) => row.emoji))})`
+        );
+    })
+);
+
+results.push(
+    await runCase('R2: messages without an emoji cancels every one of them', async () => {
+        const entries = [
+            await seededEntry(CHAT, 3),
+            await seededEntry(CHAT, 4),
+            await seededEntry(CHAT, 5),
+        ];
+        for (const entry of entries) await replaceBotReaction(CHAT, entry.messageId, '👍');
+        const telegram = createFakeTelegram();
+        const tool = toolOn(CHAT, entries, telegram);
+
+        const result = await tool.execute({ messages: [3, 4, 5] }, signal);
+        expect(!result.isError, `the batch succeeds (got ${result.content})`);
+        expect(
+            result.content ===
+                '已取消 3 条 reaction（#3、#4、#5）：\n' +
+                    '- #3 取消（原来 👍）\n- #4 取消（原来 👍）\n- #5 取消（原来 👍）',
+            `every cancel names what was there (got ${result.content})`
+        );
+        expect(
+            json(result.trace) === json({ argument: '#3 取消、#4 取消、#5 取消', result: '3 条取消' }),
+            `the trace (got ${json(result.trace)})`
+        );
+        expect(
+            reactionPayloadsOf(telegram).every((payload) => payload === '[]'),
+            'every call clears the reaction'
+        );
+        expect(
+            (await botRowsOf(CHAT, entries.map((entry) => entry.messageId))).length === 0,
+            'no bot row is left'
+        );
+    })
+);
+
+results.push(
+    await runCase('R3: reactions gives every message its own emoji, an omitted one cancels', async () => {
+        const entries = [
+            await seededEntry(CHAT, 3),
+            await seededEntry(CHAT, 4),
+            await seededEntry(CHAT, 5),
+        ];
+        const telegram = createFakeTelegram();
+        const tool = toolOn(CHAT, entries, telegram);
+
+        const mixed = await tool.execute(
+            { reactions: [{ message: 3, emoji: '👍' }, { message: 4, emoji: '🤣' }, { message: 5 }] },
+            signal
+        );
+        expect(!mixed.isError, `the mixed batch succeeds (got ${mixed.content})`);
+        expect(
+            mixed.content ===
+                '已设置 3 条 reaction（#3、#4、#5）：\n- #3 👍\n- #4 🤣\n- #5 取消（原本没有）',
+            `every item keeps its own emoji (got ${mixed.content})`
+        );
+        expect(
+            json(mixed.trace) === json({ argument: '#3 👍、#4 🤣、#5 取消', result: '2 条设置 · 1 条取消' }),
+            `the trace counts sets and cancels (got ${json(mixed.trace)})`
+        );
+        expect(
+            json(reactionPayloadsOf(telegram)) ===
+                json(['[{"type":"emoji","emoji":"👍"}]', '[{"type":"emoji","emoji":"🤣"}]', '[]']),
+            `the payloads follow the items (got ${json(reactionPayloadsOf(telegram))})`
+        );
+
+        const blanks = await tool.execute({ reactions: [{ message: 3, emoji: '' }, { message: 4, emoji: null }] }, signal);
+        expect(!blanks.isError, `a blank and a null emoji both cancel (got ${blanks.content})`);
+        expect(
+            blanks.content === '已取消 2 条 reaction（#3、#4）：\n- #3 取消（原来 👍）\n- #4 取消（原来 🤣）',
+            `the cancel names the previous emoji (got ${blanks.content})`
+        );
+        expect(
+            json(reactionPayloadsOf(telegram).slice(3)) === json(['[]', '[]']),
+            'both cancels reached Telegram as empty lists'
+        );
+    })
+);
+
+results.push(
+    await runCase('R4: a repeated message is called once and says which one won', async () => {
+        const entries = [await seededEntry(CHAT, 3), await seededEntry(CHAT, 4)];
+        const telegram = createFakeTelegram();
+        const tool = toolOn(CHAT, entries, telegram);
+        const repeated = await tool.execute({ messages: [3, 4, 3], emoji: '👍' }, signal);
+        expect(!repeated.isError, `the batch succeeds (got ${repeated.content})`);
+        expect(
+            repeated.content ===
+                '已设置 2 条 reaction（#3、#4）：\n- #3 👍\n- #4 👍\n#3 在一批里出现了 2 次，按最后一条设置。',
+            `the repeated number is explained (got ${repeated.content})`
+        );
+        expect(reactionCalls(telegram).length === 2, 'the repeated message reached Telegram once');
+
+        // Two numbers naming one API target: the later item wins, the earlier is named
+        const shared = await seedUserMessage(CHAT, USER, 'shared');
+        const other = await seedUserMessage(CHAT, USER, 'other');
+        const sharedEntries: IndexEntry[] = [
+            { number: 3, messageId: shared, fromBot: false },
+            { number: 4, messageId: shared, fromBot: false },
+            { number: 5, messageId: other, fromBot: false },
+        ];
+        const sharedTelegram = createFakeTelegram();
+        const sharedTool = toolOn(CHAT, sharedEntries, sharedTelegram);
+        const sameTarget = await sharedTool.execute({ messages: [3, 4], emoji: '❤' }, signal);
+        expect(!sameTarget.isError, `the batch succeeds (got ${sameTarget.content})`);
+        expect(
+            sameTarget.content ===
+                '已设置 1 条 reaction（#4）：\n- #4 ❤\n#3 和 #4 是同一条消息，按 #4 设置。',
+            `the dropped number is named (got ${sameTarget.content})`
+        );
+        expect(
+            json(apiTargetsOf(sharedTelegram)) === json([shared]),
+            'one API target is called once'
+        );
+
+        // The last emoji wins when one number appears twice with different emojis
+        const lastWinsEntry = await seededEntry(CHAT, 3);
+        const lastWinsTelegram = createFakeTelegram();
+        const lastWinsTool = toolOn(CHAT, [lastWinsEntry], lastWinsTelegram);
+        const lastWins = await lastWinsTool.execute(
+            { reactions: [{ message: 3, emoji: '👍' }, { message: 3, emoji: '🔥' }] },
+            signal
+        );
+        expect(!lastWins.isError, `the batch succeeds (got ${lastWins.content})`);
+        expect(
+            lastWins.content ===
+                '已设置 1 条 reaction（#3）：\n- #3 🔥\n#3 在一批里出现了 2 次，按最后一条设置。',
+            `the last emoji is the one reported (got ${lastWins.content})`
+        );
+        expect(
+            json(reactionPayloadsOf(lastWinsTelegram)) === json(['[{"type":"emoji","emoji":"🔥"}]']),
+            'the last emoji is the one sent'
+        );
+    })
+);
+
+results.push(
+    await runCase('R5: a batch crossing a user message and bot replies targets the reply bodies', async () => {
+        const userMessageId = await seedUserMessage(CHAT, USER, 'the question');
+        const firstMessageId = takeMessageId();
+        const bodyMessageId = takeMessageId();
+        await seedBotReply({
+            chatId: CHAT,
+            userMessageId,
+            messageIds: [firstMessageId, bodyMessageId],
+            thinkingLinkToken: 'cot-token',
+        });
+        const secondFirstMessageId = takeMessageId();
+        const secondBodyMessageId = takeMessageId();
+        await seedBotReply({
+            chatId: CHAT,
+            userMessageId,
+            messageIds: [secondFirstMessageId, secondBodyMessageId],
+            thinkingLinkToken: 'cot-token',
+        });
+        const entries: IndexEntry[] = [
+            { number: 3, messageId: userMessageId, fromBot: false },
+            { number: 4, messageId: firstMessageId, fromBot: true },
+            { number: 5, messageId: secondFirstMessageId, fromBot: true },
+        ];
+        const telegram = createFakeTelegram();
+        const tool = toolOn(CHAT, entries, telegram);
+
+        // findBotReplyBodyMessageIds reads the layout; one query serves both replies
+        const measured = await countRawQueries(/json_extract/i, () =>
+            tool.execute({ messages: [3, 4, 5], emoji: '🎉' }, signal)
+        );
+        const { value: result } = measured;
+        expect(!result.isError, `the batch succeeds (got ${result.content})`);
+        expect(
+            result.content === '已设置 3 条 reaction（#3、#4、#5）：\n- #3 🎉\n- #4 🎉\n- #5 🎉',
+            `the result lists every message (got ${result.content})`
+        );
+        expect(measured.count === 1, `both reply bodies are resolved with one query (got ${measured.count})`);
+        expect(
+            json(apiTargetsOf(telegram)) === json([userMessageId, bodyMessageId, secondBodyMessageId]),
+            `the bot replies target their current version bodies (got ${json(apiTargetsOf(telegram))})`
+        );
+        const userRows = await rowsOf(CHAT, userMessageId);
+        expect(userRows.length === 1 && userRows[0]?.emoji === '🎉', 'the user message row is on its own id');
+        const firstRows = await rowsOf(CHAT, firstMessageId);
+        expect(firstRows.length === 1 && firstRows[0]?.emoji === '🎉', 'the first reply row is on the canonical id');
+        const secondRows = await rowsOf(CHAT, secondFirstMessageId);
+        expect(secondRows.length === 1 && secondRows[0]?.emoji === '🎉', 'the second reply row is on its canonical id');
+        expect((await rowsOf(CHAT, bodyMessageId)).length === 0, 'never on the body id');
+        expect((await rowsOf(CHAT, secondBodyMessageId)).length === 0, 'never on the second body id');
+    })
+);
+
+results.push(
+    await runCase('R6: a number the context does not have fails alone', async () => {
+        const entry = await seededEntry(CHAT, 3);
+        const telegram = createFakeTelegram();
+        const tool = toolOn(CHAT, [entry], telegram);
+
+        const result = await tool.execute({ messages: [3, 9], emoji: '👍' }, signal);
+        expect(!result.isError, `a partly failed batch is not an error result (got ${result.content})`);
+        expect(
+            result.content ===
+                '已设置 1 条 reaction（#3）：\n- #3 👍\n有 1 条没设置成：\n- #9：本次上下文没有 #9 这条消息。',
+            `the missing number is the only failure (got ${result.content})`
+        );
+        expect(
+            json(result.trace) === json({ argument: '#3 👍、#9 👍', result: '1 条设置 · 1 条失败' }),
+            `the trace counts the failure (got ${json(result.trace)})`
+        );
+        expect(reactionCalls(telegram).length === 1, 'only the known message reaches Telegram');
+    })
+);
+
+results.push(
+    await runCase('R7: a batch where no number is in the context is an error result', async () => {
+        const telegram = createFakeTelegram();
+        const tool = toolOn(CHAT, [await seededEntry(CHAT, 3)], telegram);
+
+        const result = await tool.execute({ messages: [8, 9] }, signal);
+        expect(result.isError, 'no success means an error result');
+        expect(
+            result.content ===
+                '这 2 条都没设置成：\n- #8：本次上下文没有 #8 这条消息。\n- #9：本次上下文没有 #9 这条消息。',
+            `every failure is listed (got ${result.content})`
+        );
+        expect(
+            typeof result.trace?.result === 'string' && result.trace.result.startsWith('全部失败'),
+            `the trace says all failed (got ${json(result.trace)})`
+        );
+        expect(reactionCalls(telegram).length === 0, 'nothing reaches Telegram');
+    })
+);
+
+results.push(
+    await runCase('R8: more than six items is refused before any call', async () => {
+        const telegram = createFakeTelegram();
+        const tool = toolOn(CHAT, [await seededEntry(CHAT, 3)], telegram);
+
+        const tooManyMessages = await tool.execute(
+            { messages: [1, 2, 3, 4, 5, 6, 7], emoji: '👍' },
+            signal
+        );
+        expect(
+            tooManyMessages.isError && tooManyMessages.content.includes('一次最多 6 条'),
+            `messages is capped (got ${tooManyMessages.content})`
+        );
+        const tooManyReactions = await tool.execute(
+            { reactions: [1, 2, 3, 4, 5, 6, 7].map((message) => ({ message, emoji: '👍' })) },
+            signal
+        );
+        expect(
+            tooManyReactions.isError && tooManyReactions.content.includes('一次最多 6 条'),
+            `reactions is capped (got ${tooManyReactions.content})`
+        );
+        expect(REACTION_BATCH_MAX === 6, 'the cap is the designed six');
+        expect(reactionCalls(telegram).length === 0, 'nothing reaches Telegram');
+    })
+);
+
+results.push(
+    await runCase('R9: empty arrays and non-integer numbers are argument errors', async () => {
+        const telegram = createFakeTelegram();
+        const tool = toolOn(CHAT, [await seededEntry(CHAT, 3)], telegram);
+        const invalidCalls: ReadonlyArray<{ readonly args: Readonly<Record<string, unknown>>; readonly text: string }> = [
+            { args: { messages: [] }, text: 'messages 不能为空' },
+            { args: { reactions: [] }, text: 'reactions 不能为空' },
+            { args: { messages: [3, '4'] }, text: '每一项都要是整数编号' },
+            { args: { messages: 3 }, text: 'messages 要是消息编号数组' },
+            { args: { reactions: [3] }, text: '第 1 项要是 {message, emoji?} 对象' },
+            { args: { reactions: [{ emoji: '👍' }] }, text: '第 1 项的 message 要传整数' },
+        ];
+        for (const invalidCall of invalidCalls) {
+            const result = await tool.execute(invalidCall.args, signal);
+            expect(
+                result.isError && result.content.includes(invalidCall.text),
+                `${invalidCall.text} (got ${result.content})`
+            );
+        }
+        expect(reactionCalls(telegram).length === 0, 'nothing reaches Telegram');
+    })
+);
+
+results.push(
+    await runCase('R10: the three forms are exclusive', async () => {
+        const telegram = createFakeTelegram();
+        const tool = toolOn(CHAT, [await seededEntry(CHAT, 3)], telegram);
+        const mixtures: ReadonlyArray<Readonly<Record<string, unknown>>> = [
+            { message: 3, messages: [3] },
+            { messages: [3], reactions: [{ message: 3 }] },
+            { message: 3, messages: [3], reactions: [{ message: 3 }] },
+        ];
+        for (const args of mixtures) {
+            const result = await tool.execute(args, signal);
+            expect(
+                result.isError && result.content.includes('只能传一个'),
+                `two forms together are refused (got ${result.content})`
+            );
+        }
+        const topEmoji = await tool.execute({ reactions: [{ message: 3, emoji: '👍' }], emoji: '👍' }, signal);
+        expect(
+            topEmoji.isError && topEmoji.content.includes('不要再传顶层 emoji'),
+            `a top-level emoji next to reactions is refused (got ${topEmoji.content})`
+        );
+        expect(reactionCalls(telegram).length === 0, 'nothing reaches Telegram');
+    })
+);
+
+results.push(
+    await runCase('R11: a non-standard emoji is refused in both batch forms', async () => {
+        const telegram = createFakeTelegram();
+        const tool = toolOn(CHAT, [await seededEntry(CHAT, 3)], telegram);
+
+        const shared = await tool.execute({ messages: [3], emoji: '🐱' }, signal);
+        expect(
+            shared.isError && shared.content.includes('只支持 Telegram 标准 reaction 表情'),
+            `messages uses the shared emoji check (got ${shared.content})`
+        );
+        const perItem = await tool.execute({ reactions: [{ message: 3, emoji: '🐱' }] }, signal);
+        expect(
+            perItem.isError &&
+                perItem.content.includes('第 1 项') &&
+                perItem.content.includes('只支持 Telegram 标准 reaction 表情'),
+            `reactions names the bad item (got ${perItem.content})`
+        );
+        expect(reactionCalls(telegram).length === 0, 'nothing reaches Telegram');
+    })
+);
+
+results.push(
+    await runCase('R12: a deleted target fails alone and the rest of the batch goes on', async () => {
+        const firstId = await seedUserMessage(CHAT, USER, 'first');
+        const deletedId = await seedUserMessage(CHAT, USER, 'deleted');
+        const lastId = await seedUserMessage(CHAT, USER, 'last');
+        const entries: IndexEntry[] = [
+            { number: 3, messageId: firstId, fromBot: false },
+            { number: 4, messageId: deletedId, fromBot: false },
+            { number: 5, messageId: lastId, fromBot: false },
+        ];
+        const telegram = createFakeTelegram({
+            refuse: (call) =>
+                call.method === 'setMessageReaction' && call.payload.message_id === deletedId
+                    ? { error_code: 400, description: 'Bad Request: message to react not found' }
+                    : null,
+        });
+        const tool = toolOn(CHAT, entries, telegram);
+
+        const result = await tool.execute({ messages: [3, 4, 5], emoji: '👍' }, signal);
+        expect(!result.isError, `the other two still succeed (got ${result.content})`);
+        expect(
+            result.content ===
+                '已设置 2 条 reaction（#3、#5）：\n- #3 👍\n- #5 👍\n' +
+                    '有 1 条没设置成：\n- #4：那条消息已被删除，无法点 reaction。',
+            `the deleted item is the only failure (got ${result.content})`
+        );
+        expect(reactionCalls(telegram).length === 3, 'the rest of the batch still reached Telegram');
+        const rows = await botRowsOf(CHAT, entries.map((entry) => entry.messageId));
+        expect(
+            rows.length === 2 && rows.every((row) => row.messageId !== deletedId),
+            'only the reachable messages got a row'
+        );
+    })
+);
+
+results.push(
+    await runCase('R13: a failing batch write only warns; the reactions are live', async () => {
+        const entries = [await seededEntry(CHAT, 3), await seededEntry(CHAT, 4)];
+        const telegram = createFakeTelegram();
+        const { value, warnings } = await captureWarnings(async () => {
+            const tool = toolOn(CHAT, entries, telegram, {
+                writeReactions: async () => {
+                    throw new Error('database is locked');
+                },
+            });
+            return tool.execute({ messages: [3, 4], emoji: '👍' }, signal);
+        });
+
+        expect(!value.isError, `the batch still reports success (got ${value.content})`);
+        expect(
+            value.content === '已设置 2 条 reaction（#3、#4）：\n- #3 👍\n- #4 👍',
+            `without a previous state the lines stay plain (got ${value.content})`
+        );
+        expect(reactionCalls(telegram).length === 2, 'both Telegram calls happened');
+        expect(
+            warnings.filter((line) => line.includes('failed to store 2 bot reactions')).length === 1,
+            `one warning for the whole write (got ${json(warnings)})`
+        );
+        expect(
+            (await botRowsOf(CHAT, entries.map((entry) => entry.messageId))).length === 0,
+            'no row was written'
+        );
+    })
+);
+
+results.push(
+    await runCase('R14: a stopped reply leaves the remaining items unprocessed', async () => {
+        const controller = new AbortController();
+        const entries = [
+            await seededEntry(CHAT, 3),
+            await seededEntry(CHAT, 4),
+            await seededEntry(CHAT, 5),
+            await seededEntry(CHAT, 6),
+        ];
+        const telegram = createFakeTelegram({
+            refuse: (call) => {
+                if (call.method === 'setMessageReaction') controller.abort();
+                return null;
+            },
+        });
+        const tool = toolOn(CHAT, entries, telegram, {}, controller.signal);
+
+        const result = await tool.execute({ messages: [3, 4, 5, 6], emoji: '👍' }, controller.signal);
+        expect(!result.isError, `a stop after one success is not an error result (got ${result.content})`);
+        expect(
+            result.content ===
+                '已设置 1 条 reaction（#3）：\n- #3 👍\n有 3 条没设置成：\n' +
+                    '- #4：回复已停止，未处理。\n- #5：回复已停止，未处理。\n- #6：回复已停止，未处理。',
+            `the untouched items say so (got ${result.content})`
+        );
+        expect(reactionCalls(telegram).length === 1, 'only the first item reached Telegram');
+        const rows = await botRowsOf(CHAT, entries.map((entry) => entry.messageId));
+        expect(rows.length === 1 && rows[0]?.emoji === '👍', 'the applied reaction stays');
+    })
+);
+
+results.push(
+    await runCase('R15: a flood wait escaping auto-retry stops the rest of the batch', async () => {
+        const entries = [
+            await seededEntry(FLOOD_CHAT, 3),
+            await seededEntry(FLOOD_CHAT, 4),
+            await seededEntry(FLOOD_CHAT, 5),
+            await seededEntry(FLOOD_CHAT, 6),
+        ];
+        let attempts = 0;
+        const telegram = createFakeTelegram({
+            refuse: (call) => {
+                if (call.method !== 'setMessageReaction') return null;
+                attempts += 1;
+                return attempts === 2
+                    ? { error_code: 429, description: 'Too Many Requests: retry later' }
+                    : null;
+            },
+        });
+        const tool = toolOn(FLOOD_CHAT, entries, telegram);
+
+        const result = await tool.execute({ messages: [3, 4, 5, 6], emoji: '👍' }, signal);
+        expect(!result.isError, `the first item still succeeded (got ${result.content})`);
+        expect(
+            result.content ===
+                '已设置 1 条 reaction（#3）：\n- #3 👍\n' +
+                    '有 1 条没设置成：\n- #4：被 Telegram 限流，剩余未设置。',
+            `the flood wait names the remaining items (got ${result.content})`
+        );
+        expect(
+            json(result.trace) === json({ argument: '#3 等 4 条', result: '1 条设置 · 1 条失败' }),
+            `the trace (got ${json(result.trace)})`
+        );
+        expect(reactionCalls(telegram).length === 2, 'the remaining two were not called');
+        expect(
+            (await botRowsOf(FLOOD_CHAT, entries.map((entry) => entry.messageId))).length === 1,
+            'the successful reaction is stored'
+        );
+    })
+);
+
+results.push(
+    await runCase('R16: schema and prompt describe both batch forms', async () => {
+        const tool = toolOn(CHAT, [await seededEntry(CHAT, 3)], createFakeTelegram());
+        const schema = asRecord(tool.definition.inputSchema);
+        const properties = asRecord(schema.properties);
+
+        const messages = asRecord(properties.messages);
+        expect(
+            messages.type === 'array' && messages.minItems === 1 && messages.maxItems === 6,
+            `messages is a bounded array (got ${json(messages)})`
+        );
+        expect(asRecord(messages.items).type === 'integer', 'messages carries numbers');
+        const reactions = asRecord(properties.reactions);
+        expect(
+            reactions.type === 'array' && reactions.minItems === 1 && reactions.maxItems === 6,
+            `reactions is a bounded array (got ${json(reactions)})`
+        );
+        const reactionItem = asRecord(reactions.items);
+        expect(reactionItem.type === 'object', 'reactions carries objects');
+        const reactionProperties = asRecord(reactionItem.properties);
+        expect(
+            asRecord(reactionProperties.message).type === 'integer',
+            'each reaction names its message by number'
+        );
+        expect(
+            json(asArray(asRecord(reactionProperties.emoji).enum)) === json([...REACTION_EMOJIS]),
+            'each reaction takes a standard emoji'
+        );
+        expect(json(reactionItem.required) === json(['message']), 'each reaction needs its message');
+        expect(
+            schema.required === undefined,
+            'the top level requires nothing: a batch call has no message'
+        );
+
+        const description = tool.definition.description;
+        expect(
+            description.includes('messages=[3,4,5]') && description.includes("reactions=[{message:3,emoji:'👍'}"),
+            `the description shows both batch examples (got ${description})`
+        );
+
+        const prompt = buildStaticSystemPrompt('gemini-4-argon', { reaction: true });
+        const reactionLine = prompt
+            .split('\n')
+            .find((line) => line.startsWith('- 可以用 `react_to_message`'));
+        expect(
+            reactionLine !== undefined &&
+                reactionLine.includes('messages') &&
+                reactionLine.includes('reactions'),
+            `the static prompt names both forms (got ${json(reactionLine)})`
+        );
+    })
+);
+
+results.push(
+    await runCase('R17: "message is not modified" counts as success', async () => {
+        const entries = [await seededEntry(CHAT, 3), await seededEntry(CHAT, 4)];
+        const telegram = createFakeTelegram({
+            refuse: (call) =>
+                call.method === 'setMessageReaction'
+                    ? {
+                          error_code: 400,
+                          description:
+                              'Bad Request: message is not modified: specified new message content and reply markup are exactly the same',
+                      }
+                    : null,
+        });
+        const tool = toolOn(CHAT, entries, telegram);
+
+        const result = await tool.execute({ messages: [3, 4] }, signal);
+        expect(!result.isError, `an unchanged target is not a failure (got ${result.content})`);
+        expect(
+            result.content ===
+                '已取消 2 条 reaction（#3、#4）：\n- #3 取消（原本没有）\n- #4 取消（原本没有）',
+            `the cancels read as successes (got ${result.content})`
+        );
+        expect(
+            json(result.trace) === json({ argument: '#3 取消、#4 取消', result: '2 条取消' }),
+            `the trace (got ${json(result.trace)})`
+        );
+        expect(reactionCalls(telegram).length === 2, 'both cancels were attempted');
+        expect(
+            (await botRowsOf(CHAT, entries.map((entry) => entry.messageId))).length === 0,
+            'no row was written'
+        );
+    })
+);
+
+results.push(
+    await runCase('R18: a chat-level refusal stops the rest of the batch', async () => {
+        const firstId = await seedUserMessage(CHAT, USER, 'first');
+        const refusedId = await seedUserMessage(CHAT, USER, 'refused');
+        const lastId = await seedUserMessage(CHAT, USER, 'last');
+        const entries: IndexEntry[] = [
+            { number: 3, messageId: firstId, fromBot: false },
+            { number: 4, messageId: refusedId, fromBot: false },
+            { number: 5, messageId: lastId, fromBot: false },
+        ];
+        const telegram = createFakeTelegram({
+            refuse: (call) =>
+                call.method === 'setMessageReaction' && call.payload.message_id === refusedId
+                    ? { error_code: 403, description: 'Forbidden: CHAT_WRITE_FORBIDDEN' }
+                    : null,
+        });
+        const tool = toolOn(CHAT, entries, telegram);
+
+        const result = await tool.execute({ messages: [3, 4, 5], emoji: '👍' }, signal);
+        expect(!result.isError, `the first item still succeeded (got ${result.content})`);
+        expect(
+            result.content ===
+                '已设置 1 条 reaction（#3）：\n- #3 👍\n' +
+                    '有 1 条没设置成：\n- #4：聊天权限不足，剩余未设置。',
+            `the permission refusal is named once (got ${result.content})`
+        );
+        expect(reactionCalls(telegram).length === 2, 'the last item was not called');
+    })
+);
+
+results.push(
+    await runCase('R19: a flood wait with retry_after says how long to wait', async () => {
+        const entries = [
+            await seededEntry(FLOOD_RETRY_CHAT, 3),
+            await seededEntry(FLOOD_RETRY_CHAT, 4),
+            await seededEntry(FLOOD_RETRY_CHAT, 5),
+        ];
+        const telegram = createFakeTelegram();
+        refuseNthReactionWithRetryAfter(telegram, 2, 17);
+        const tool = toolOn(FLOOD_RETRY_CHAT, entries, telegram);
+
+        const result = await tool.execute({ messages: [3, 4, 5], emoji: '👍' }, signal);
+        expect(!result.isError, `the first item still succeeded (got ${result.content})`);
+        expect(result.content.includes('约 17 秒'), `the retry_after reaches the model (got ${result.content})`);
+        expect(
+            result.content.includes('剩余未设置'),
+            `the remaining items are named as unset (got ${result.content})`
+        );
+        expect(reactionCalls(telegram).length === 1, 'the stop kept the rest from being called');
+    })
+);
+
+results.push(
+    await runCase('R20: null and empty-array fillers do not count as a second form', async () => {
+        const canonicalThree = await seedUserMessage(CHAT, USER);
+        const canonicalFour = await seedUserMessage(CHAT, USER);
+        const telegram = createFakeTelegram();
+        const tool = toolOn(
+            CHAT,
+            [
+                { number: 3, messageId: canonicalThree, fromBot: false },
+                { number: 4, messageId: canonicalFour, fromBot: false },
+            ],
+            telegram
+        );
+
+        // A single-form call that also carries the batch fields as fillers
+        const single = await tool.execute(
+            { message: 3, emoji: '👍', messages: [], reactions: [] },
+            signal
+        );
+        expect(
+            !single.isError && single.content === '已给 #3 设置 👍。',
+            `empty arrays are fillers for the single form (got ${single.content})`
+        );
+
+        // A batch call that also carries the single field as null
+        const batch = await tool.execute({ messages: [4, 3], emoji: '🔥', message: null }, signal);
+        expect(
+            !batch.isError && batch.content.includes('已设置 2 条 reaction'),
+            `a null message is a filler for the batch form (got ${batch.content})`
+        );
+
+        // A zero message is a filler too (a form value is always >= 1)
+        const zeroFiller = await tool.execute({ messages: [3], emoji: '👌', message: 0 }, signal);
+        expect(
+            !zeroFiller.isError && zeroFiller.content.includes('#3 👌'),
+            `a zero message is a filler (got ${zeroFiller.content})`
+        );
+
+        // A blank top-level emoji next to reactions is a filler, not a mixture
+        const reactions = await tool.execute(
+            { reactions: [{ message: 3, emoji: '🎉' }], emoji: '' },
+            signal
+        );
+        expect(
+            !reactions.isError && reactions.content.includes('#3 🎉'),
+            `a blank top-level emoji is a filler (got ${reactions.content})`
         );
     })
 );

@@ -89,30 +89,131 @@ export const resolveReactionTargetId = async (
     return response === null ? null : response.messageId;
 };
 
+/** Which of the ids a table holds, both tables in one query each */
+const existingCanonicalIds = async (
+    chatId: number,
+    messageIds: readonly number[],
+    transaction: Transaction
+): Promise<ReadonlySet<number>> => {
+    const existing = new Set<number>();
+    const messages = await Message.findAll({
+        where: { chatId, messageId: { [Op.in]: [...messageIds] } },
+        attributes: ['messageId'],
+        transaction,
+    });
+    for (const message of messages) existing.add(message.messageId);
+    const responses = await BotResponse.findAll({
+        where: { chatId, messageId: { [Op.in]: [...messageIds] } },
+        attributes: ['messageId'],
+        transaction,
+    });
+    for (const response of responses) existing.add(response.messageId);
+    return existing;
+};
+
 /** Whether the canonical id still has a row a context could read */
 const canonicalMessageExists = async (
     chatId: number,
     messageId: number,
     transaction: Transaction
-): Promise<boolean> => {
-    const message = await Message.findOne({
-        where: { chatId, messageId },
-        attributes: ['messageId'],
-        transaction,
-    });
-    if (message !== null) return true;
-    const response = await BotResponse.findOne({
-        where: { chatId, messageId },
-        attributes: ['messageId'],
-        transaction,
-    });
-    return response !== null;
-};
+): Promise<boolean> =>
+    (await existingCanonicalIds(chatId, [messageId], transaction)).has(messageId);
 
 /** The bot's Telegram user id; rows are keyed by it so a display can mark them */
 const botUserId = (): number | null => {
     const parsed = Number.parseInt(process.env.BOT_USER_ID ?? '', 10);
     return Number.isFinite(parsed) ? parsed : null;
+};
+
+/** One bot reaction the batch leaves on a canonical message; null emoji removes it */
+export interface BotReactionReplacement {
+    readonly canonicalMessageId: number;
+    readonly emoji: string | null;
+}
+
+/**
+ * Collapse repeated canonical ids: the last replacement wins but keeps the
+ * first position, so the caller's own order still reads the way it was asked
+ * for.
+ */
+const lastReplacementPerMessage = (
+    items: readonly BotReactionReplacement[]
+): readonly BotReactionReplacement[] => {
+    const positionOf = new Map<number, number>();
+    const replacements: BotReactionReplacement[] = [];
+    for (const item of items) {
+        const position = positionOf.get(item.canonicalMessageId);
+        if (position === undefined) {
+            positionOf.set(item.canonicalMessageId, replacements.length);
+            replacements.push(item);
+        } else {
+            replacements[position] = item;
+        }
+    }
+    return replacements;
+};
+
+/**
+ * Replace the bot's own reactions on several canonical messages in one
+ * transaction. Returns the emoji that stood on each before (null = there was
+ * none, and also the answer for a message no table holds: such an item is not
+ * written).
+ *
+ * The batch is one transaction on purpose: the existence check, the delete and
+ * the insert may not be split by a cleanup, or a row would outlive the message
+ * it hangs on. Callers cap the list at a handful of messages (react_to_message
+ * allows six), so no chunking is needed.
+ */
+export const replaceBotReactions = async (
+    chatId: number,
+    items: readonly BotReactionReplacement[]
+): Promise<Map<number, string | null>> => {
+    const replacements = lastReplacementPerMessage(items);
+    const previous = new Map<number, string | null>();
+    for (const replacement of replacements) previous.set(replacement.canonicalMessageId, null);
+    if (replacements.length === 0) return previous;
+
+    const messageIds = replacements.map((replacement) => replacement.canonicalMessageId);
+    const userId = botUserId();
+    const userName = process.env.BOT_NAME || 'Bot';
+    return withBusyRetry(
+        () => sequelize.transaction(async (transaction) => {
+            const existing = await existingCanonicalIds(chatId, messageIds, transaction);
+            const storedIds = [...existing];
+            if (storedIds.length > 0) {
+                const previousRows = await MessageReaction.findAll({
+                    where: { chatId, messageId: { [Op.in]: storedIds }, fromBotSelf: true },
+                    attributes: ['messageId', 'emoji'],
+                    transaction,
+                });
+                for (const row of previousRows) {
+                    if (row.emoji !== null && previous.get(row.messageId) === null) {
+                        previous.set(row.messageId, row.emoji);
+                    }
+                }
+                await MessageReaction.destroy({
+                    where: { chatId, messageId: { [Op.in]: storedIds }, fromBotSelf: true },
+                    transaction,
+                });
+            }
+            const newRows = replacements
+                .filter((replacement) => replacement.emoji !== null && existing.has(replacement.canonicalMessageId))
+                .map((replacement) => ({
+                    chatId,
+                    messageId: replacement.canonicalMessageId,
+                    userId,
+                    actorChatId: null,
+                    userName,
+                    fromBotSelf: true,
+                    kind: 'emoji',
+                    emoji: replacement.emoji,
+                    customEmojiId: null,
+                }));
+            if (newRows.length > 0) await MessageReaction.bulkCreate(newRows, { transaction });
+            return previous;
+        }),
+        `replace bot reactions ${chatId} (${replacements.length})`
+    );
 };
 
 /**
@@ -121,47 +222,16 @@ const botUserId = (): number | null => {
  *
  * No-ops when no row holds the message (the caller may still have applied the
  * reaction through the Bot API — the DB is the model-facing copy, not the
- * source of truth). Runs the existence check inside the write transaction: a
- * cleanup that commits between a check outside and the insert would leave a row
- * the hourly cleanup can never find.
+ * source of truth).
  */
 export const replaceBotReaction = async (
     chatId: number,
     canonicalMessageId: number,
     emoji: string | null
-): Promise<{ previousEmoji: string | null }> =>
-    withBusyRetry(
-        () => sequelize.transaction(async (transaction) => {
-            if (!(await canonicalMessageExists(chatId, canonicalMessageId, transaction))) {
-                return { previousEmoji: null };
-            }
-            const previousRows = await MessageReaction.findAll({
-                where: { chatId, messageId: canonicalMessageId, fromBotSelf: true },
-                attributes: ['emoji'],
-                transaction,
-            });
-            const previousEmoji = previousRows.find((row) => row.emoji !== null)?.emoji ?? null;
-            await MessageReaction.destroy({
-                where: { chatId, messageId: canonicalMessageId, fromBotSelf: true },
-                transaction,
-            });
-            if (emoji !== null) {
-                await MessageReaction.create({
-                    chatId,
-                    messageId: canonicalMessageId,
-                    userId: botUserId(),
-                    actorChatId: null,
-                    userName: process.env.BOT_NAME || 'Bot',
-                    fromBotSelf: true,
-                    kind: 'emoji',
-                    emoji,
-                    customEmojiId: null,
-                }, { transaction });
-            }
-            return { previousEmoji };
-        }),
-        `replace bot reaction ${chatId}/${canonicalMessageId}`
-    );
+): Promise<{ previousEmoji: string | null }> => {
+    const previous = await replaceBotReactions(chatId, [{ canonicalMessageId, emoji }]);
+    return { previousEmoji: previous.get(canonicalMessageId) ?? null };
+};
 
 /**
  * Apply one `message_reaction` update: the actor's whole new set replaces its
