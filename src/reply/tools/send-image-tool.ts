@@ -9,6 +9,12 @@
  * `ReplyMediaState`, so the model reads "the k-th of ten" instead of a
  * one-attachment rule.
  *
+ * One call may also carry several pictures of the same source lane
+ * (`search_ids`, `image_ids`, `urls`, `messages`): the batch form resolves them
+ * in request order, each joins the reply and the reply's limits are checked per
+ * picture, so one bad or over-quota picture does not drop the others. The
+ * single form keeps its text, replay and trace unchanged.
+ *
  * A GIF goes out as an animation (`sendAnimation`, see the delivery layer); the
  * model is shown its still frame, because a model reads a GIF as one frame
  * anyway and the still is all it needs to caption it.
@@ -21,21 +27,34 @@
  * already in the conversation — attaching it again would only double its
  * tokens.
  */
-import type { ToolHandler } from '../../ai/tools/tool-types.js';
+import type { GroundingCitation, GroundingData } from '../../ai/types.js';
+import type { ToolHandler, ToolImage, ToolModelImage, ToolResult } from '../../ai/tools/tool-types.js';
 import {
     MAX_REPLY_IMAGE_BYTES,
     MAX_REPLY_IMAGES,
     MAX_REPLY_IMAGE_TOTAL_BYTES,
 } from '../../shared/reply-media.js';
 import { imageToolError } from './image-tool-result.js';
-import { formatSendResult, mediaToolErrors } from './image-tool-text.js';
-import { parseSendImageArgs } from './media-tool-args.js';
+import {
+    formatSendBatchResult,
+    formatSendResult,
+    mediaToolErrors,
+    type SendBatchLine,
+} from './image-tool-text.js';
+import {
+    parseSendImageArgs,
+    SEND_IMAGE_BATCH_MAX,
+    type SendImageArgs,
+    type SendImageBatchArgs,
+    type SendImageSource,
+} from './media-tool-args.js';
 import {
     parseMediaRef,
     PRODUCTION_MEDIA_REF_DEPENDENCIES,
     resolveMediaRef,
     type MediaRef,
     type MediaRefDependencies,
+    type ResolvedMediaBytes,
 } from './media-ref-resolver.js';
 import type { ReplyToolContext } from './reply-tool-context.js';
 import { ONE_ATTACHMENT_PER_REPLY, type ReplyMediaState } from './reply-media-state.js';
@@ -46,16 +65,31 @@ const DESCRIPTION =
     '将一张已有图片发送到聊天（附在当前回复末尾，可与其它图片一起发出）。' +
     `支持传入 image_id（generate_image 本次生成的 g1、fetch_image 已读的 img1）、` +
     'search_id（搜索候选编号）、message（上下文消息编号 #N）或 url（http(s) 图片直链）。' +
+    `一次发多张时把同类来源写成数组（search_ids=['s1','s2']、image_ids=['img1','g1']、` +
+    `urls=[…]、messages=[3,5]），一次最多 ${SEND_IMAGE_BATCH_MAX} 张、只能一种来源；` +
     `每条回复最多 ${MAX_REPLY_IMAGES} 张，多张会作为一条相册发出；GIF 候选将作为动图单独发送。`;
+
+const pluralSchema = (label: string, description: string) => ({
+    type: 'array',
+    items: { type: 'string' },
+    minItems: 1,
+    maxItems: SEND_IMAGE_BATCH_MAX,
+    description: `一次发多张：${label}数组，最多 ${SEND_IMAGE_BATCH_MAX} 个；${description}与单数参数二选一。`,
+});
 
 const INPUT_SCHEMA = {
     type: 'object',
     properties: {
         search_id: { type: 'string', description: "搜索结果里的候选编号，形如 's3'" },
+        search_ids: pluralSchema('搜索结果里的候选编号', "如 ['s1','s2','s3']。"),
         image_id: {
             type: 'string',
             description: "图片编号：generate_image 本次生成的 g1，或 fetch_image 读过的 img1",
         },
+        image_ids: pluralSchema(
+            '图片编号',
+            "generate_image 本次生成的 g1 或 fetch_image 读过的 img1，如 ['img1','g2']。"
+        ),
         message: {
             type: 'integer',
             minimum: 1,
@@ -66,10 +100,20 @@ const INPUT_SCHEMA = {
             minimum: 1,
             description: '这条消息里的第几张图，从 1 开始（附件在前，链接预览里的图在后）；省略=第一张',
         },
+        messages: {
+            type: 'array',
+            items: { type: 'integer', minimum: 1 },
+            minItems: 1,
+            maxItems: SEND_IMAGE_BATCH_MAX,
+            description:
+                `一次发多张消息里的图：上下文编号数组，最多 ${SEND_IMAGE_BATCH_MAX} 个，每条取第 1 张；` +
+                '与单数参数二选一。',
+        },
         url: { type: 'string', description: 'http(s) 图片直链，可以是任意公开地址' },
+        urls: pluralSchema('http(s) 图片直链', '可以是任意公开地址。'),
         caption: {
             type: 'string',
-            description: '随这张图发出的配文；不需要就省略。',
+            description: '随这张图发出的配文；不需要就省略。一次发多张时只配在这一批的第一张上。',
         },
     },
 };
@@ -83,14 +127,8 @@ export interface SendImageToolOptions {
     readonly dependencies?: SendImageToolDependencies;
 }
 
-/** The reference the parsed arguments name; the parser guarantees exactly one */
-const mediaRefOfArgs = (args: {
-    readonly searchId: string | undefined;
-    readonly imageId: string | undefined;
-    readonly message: number | undefined;
-    readonly image: number | undefined;
-    readonly url: string | undefined;
-}): MediaRef | null => {
+/** The reference the parsed single-form arguments name; the parser guarantees exactly one */
+const mediaRefOfArgs = (args: SendImageArgs): MediaRef | null => {
     if (args.imageId !== undefined) return parseMediaRef(args.imageId);
     if (args.message !== undefined) {
         return { kind: 'message', number: args.message, image: args.image ?? 1 };
@@ -98,6 +136,268 @@ const mediaRefOfArgs = (args: {
     if (args.searchId !== undefined) return parseMediaRef(args.searchId);
     if (args.url !== undefined) return { kind: 'url', url: args.url };
     return null;
+};
+
+/** The reference one plural source names; the lane is the argument's, not the id's */
+const mediaRefOfSource = (source: SendImageSource): MediaRef => {
+    switch (source.kind) {
+        case 'candidate':
+            return { kind: 'candidate', id: source.id };
+        case 'image':
+            return { kind: 'id', id: source.id };
+        case 'url':
+            return { kind: 'url', url: source.url };
+        case 'message':
+            return { kind: 'message', number: source.number, image: 1 };
+    }
+};
+
+/** A source as the failure lines and the log name it; a url only by host + path */
+const sourceNameOf = (source: SendImageSource): string => {
+    switch (source.kind) {
+        case 'candidate':
+        case 'image':
+            return source.id;
+        case 'url':
+            return traceUrl(source.url);
+        case 'message':
+            return `#${source.number}`;
+    }
+};
+
+/** A picture's model-facing label: its id, or `#N` for a context message */
+const sourceLabelOf = (resolved: ResolvedMediaBytes): string =>
+    resolved.candidateId ??
+    resolved.imageId ??
+    resolved.generatedId ??
+    (resolved.contextNumber === undefined ? 'url' : `#${resolved.contextNumber}`);
+
+/** One line: untrusted titles must not forge another list item */
+const oneLine = (text: string): string => text.replace(/\s+/g, ' ').trim();
+
+/** Cut by code points, so an emoji is never split in half */
+const clip = (text: string, maxChars: number): string => {
+    const characters = Array.from(text);
+    return characters.length <= maxChars ? text : `${characters.slice(0, maxChars - 1).join('')}…`;
+};
+
+/** The model has to see the picture it just sent, or it captions a guess */
+const modelImageCaptionOf = (resolved: ResolvedMediaBytes, animated: boolean): string =>
+    `你刚发出的图片 ${sourceLabelOf(resolved)}${
+        resolved.title === undefined ? '' : ` · ${resolved.title}`
+    }${animated ? '（动图，这里是它的第一帧）' : ''}`;
+
+/** One added picture as the batch result lists it */
+const batchLineOf = (source: SendImageSource, resolved: ResolvedMediaBytes): SendBatchLine => {
+    const animated = resolved.mimeType === 'image/gif';
+    switch (source.kind) {
+        case 'candidate': {
+            const title = resolved.title === undefined ? '' : oneLine(resolved.title);
+            return {
+                label: title === '' ? `候选 ${source.id}` : `候选 ${source.id}「${clip(title, 40)}」`,
+                animated,
+            };
+        }
+        case 'image':
+            return {
+                label: resolved.generatedId === undefined ? `已读图 ${source.id}` : `本次生成的图 ${source.id}`,
+                animated,
+            };
+        case 'url':
+            return { label: traceUrl(source.url), animated };
+        case 'message':
+            return { label: `#${source.number} 的图`, animated };
+    }
+};
+
+/** A value listed twice as the batch result names it: a url by host + path only */
+const duplicateNameOf = (kind: SendImageSource['kind'], value: string): string => {
+    switch (kind) {
+        case 'url':
+            return traceUrl(value);
+        case 'message':
+            return `#${value}`;
+        case 'candidate':
+        case 'image':
+            return value;
+    }
+};
+
+interface SendBatchTally {
+    readonly lines: SendBatchLine[];
+    readonly failures: string[];
+    readonly images: ToolImage[];
+    readonly modelImages: ToolModelImage[];
+    readonly citations: GroundingCitation[];
+    readonly searchQueries: string[];
+    /** 1-based reply position of the first picture added here; 0 = none */
+    firstIndex: number;
+    /** The source that added that first picture */
+    firstAddedName: string;
+}
+
+const emptySendBatchTally = (): SendBatchTally => ({
+    lines: [],
+    failures: [],
+    images: [],
+    modelImages: [],
+    citations: [],
+    searchQueries: [],
+    firstIndex: 0,
+    firstAddedName: '',
+});
+
+/** One resolved picture into the reply and the answer */
+const absorbBatchPicture = (
+    tally: SendBatchTally,
+    state: ReplyMediaState,
+    source: SendImageSource,
+    resolved: ResolvedMediaBytes,
+    caption: string
+): void => {
+    const position = state.imageCount + 1;
+    state.imageCount = position;
+    state.imageBytes += resolved.data.length;
+    state.hasReplyImage = true;
+    if (tally.firstIndex === 0) {
+        tally.firstIndex = position;
+        tally.firstAddedName = sourceNameOf(source);
+    }
+
+    const animated = resolved.mimeType === 'image/gif';
+    // One album carries one caption, on its first picture
+    const pictureCaption = tally.lines.length === 0 ? caption : '';
+    tally.images.push({
+        data: resolved.data,
+        mimeType: resolved.mimeType,
+        ...(pictureCaption === '' ? {} : { caption: pictureCaption }),
+    });
+    if (
+        resolved.imageId === undefined &&
+        resolved.generatedId === undefined &&
+        resolved.contextNumber === undefined
+    ) {
+        tally.modelImages.push({
+            data: resolved.still.data,
+            mimeType: resolved.still.mimeType,
+            caption: modelImageCaptionOf(resolved, animated),
+        });
+    }
+    tally.lines.push(batchLineOf(source, resolved));
+    if (resolved.sourcePage !== '') {
+        tally.citations.push({
+            uri: resolved.sourcePage,
+            ...(resolved.title === undefined ? {} : { title: resolved.title }),
+        });
+        tally.searchQueries.push(`${SEND_IMAGE_TOOL_NAME}: ${sourceLabelOf(resolved)}`);
+    }
+};
+
+const uniqueCitations = (citations: readonly GroundingCitation[]): GroundingCitation[] => {
+    const seen = new Set<string>();
+    return citations.filter((citation) => {
+        if (seen.has(citation.uri)) return false;
+        seen.add(citation.uri);
+        return true;
+    });
+};
+
+/** The argument summary of a batch: the source list, short enough for a log line */
+const batchTraceArgument = (sources: readonly SendImageSource[]): string => {
+    const names = sources.map((source) => clip(sourceNameOf(source), 20));
+    const first = names[0] ?? '';
+    return names.length > 3 ? `${first} 等 ${names.length} 张` : names.join(',');
+};
+
+/**
+ * Several pictures of one lane in one call: resolve them in request order and
+ * add each one the reply still has room for. A picture that fails or does not
+ * fit is named on its own line; the rest of the call goes on.
+ */
+const runSendImageBatch = async (
+    batch: SendImageBatchArgs,
+    options: SendImageToolOptions,
+    dependencies: MediaRefDependencies
+): Promise<ToolResult> => {
+    const { state, context } = options;
+    const tally = emptySendBatchTally();
+    let stopped = false;
+
+    for (const source of batch.sources) {
+        const name = sourceNameOf(source);
+        if (stopped || context.signal.aborted) {
+            stopped = true;
+            tally.failures.push(`${name}：回复已停止，没有加入。`);
+            continue;
+        }
+        const remaining = MAX_REPLY_IMAGES - state.imageCount;
+        if (remaining <= 0) {
+            tally.failures.push(`${name}：${mediaToolErrors.imageQuotaLeft(remaining, MAX_REPLY_IMAGES)}`);
+            continue;
+        }
+        const resolved = await resolveMediaRef(mediaRefOfSource(source), {
+            state,
+            chatId: context.chatId,
+            contextIndex: context.contextIndex,
+            signal: context.signal,
+            dependencies,
+        });
+        if (!resolved.ok) {
+            tally.failures.push(`${name}：${resolved.error}`);
+            continue;
+        }
+        if (resolved.data.length > MAX_REPLY_IMAGE_BYTES) {
+            tally.failures.push(
+                `${name}：${mediaToolErrors.tooLarge(MAX_REPLY_IMAGE_BYTES / 1024 / 1024)}`
+            );
+            continue;
+        }
+        if (state.imageBytes + resolved.data.length > MAX_REPLY_IMAGE_TOTAL_BYTES) {
+            tally.failures.push(
+                `${name}：${mediaToolErrors.imageTotalTooLarge(MAX_REPLY_IMAGE_TOTAL_BYTES / 1024 / 1024)}`
+            );
+            continue;
+        }
+        absorbBatchPicture(tally, state, source, resolved, batch.caption);
+    }
+
+    const content = formatSendBatchResult({
+        firstIndex: tally.firstIndex,
+        lastIndex: tally.firstIndex === 0 ? 0 : tally.firstIndex + tally.lines.length - 1,
+        limit: MAX_REPLY_IMAGES,
+        lines: tally.lines,
+        failures: tally.failures,
+        skippedDuplicates: batch.skippedDuplicates.map((value) => duplicateNameOf(batch.kind, value)),
+    });
+    const citations = uniqueCitations(tally.citations);
+    const searchQueries = [...new Set(tally.searchQueries)];
+    const record: GroundingData | null =
+        citations.length === 0 && searchQueries.length === 0
+            ? null
+            : {
+                  provider: 'mcp',
+                  searchQueries,
+                  ...(citations.length === 0 ? {} : { citations }),
+              };
+    const firstFailure = tally.failures[0] ?? '';
+    const traceResult =
+        tally.firstIndex === 0
+            ? traceParts(`这 ${batch.sources.length} 张都没加入`, clip(oneLine(firstFailure), 28))
+            : traceParts(
+                  tally.lines.length === 1
+                      ? tally.firstAddedName
+                      : `${tally.firstAddedName} 等 ${tally.lines.length} 张`,
+                  tally.failures.length > 0 ? `${tally.failures.length} 项失败` : null
+              );
+
+    return {
+        content,
+        isError: tally.lines.length === 0,
+        images: tally.images,
+        ...(tally.modelImages.length === 0 ? {} : { modelImages: tally.modelImages }),
+        record,
+        trace: { argument: batchTraceArgument(batch.sources), result: traceResult },
+    };
 };
 
 export const createSendImageTool = (options: SendImageToolOptions): ToolHandler => {
@@ -122,6 +422,10 @@ export const createSendImageTool = (options: SendImageToolOptions): ToolHandler 
             const parsed = parseSendImageArgs(rawArgs);
             if (!parsed.ok) return imageToolError(parsed.error);
             const args = parsed.args;
+            // The batch form resolves each picture on its own: one failure does
+            // not drop the rest of the call
+            if (args.batch !== undefined) return runSendImageBatch(args.batch, options, dependencies);
+
             const ref = mediaRefOfArgs(args);
             if (ref === null) return imageToolError(mediaToolErrors.noImageSource);
 
@@ -156,11 +460,7 @@ export const createSendImageTool = (options: SendImageToolOptions): ToolHandler 
 
             const animated = resolved.mimeType === 'image/gif';
             const note = resolved.note;
-            const label =
-                resolved.candidateId ??
-                resolved.imageId ??
-                resolved.generatedId ??
-                (resolved.contextNumber === undefined ? 'url' : `#${resolved.contextNumber}`);
+            const label = sourceLabelOf(resolved);
             // The log names a url by its host only: a query string can carry a secret
             const traceArgument = args.url === undefined ? label : traceUrl(args.url);
             const captionChars = Array.from(args.caption.trim()).length;
@@ -200,9 +500,7 @@ export const createSendImageTool = (options: SendImageToolOptions): ToolHandler 
                               {
                                   data: resolved.still.data,
                                   mimeType: resolved.still.mimeType,
-                                  caption: `你刚发出的图片 ${label}${
-                                      resolved.title === undefined ? '' : ` · ${resolved.title}`
-                                  }${animated ? '（动图，这里是它的第一帧）' : ''}`,
+                                  caption: modelImageCaptionOf(resolved, animated),
                               },
                           ],
                       }

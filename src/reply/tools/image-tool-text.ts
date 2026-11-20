@@ -249,6 +249,55 @@ export const formatSendResult = (input: {
     ].join('\n');
 };
 
+/** One picture that joined the reply in a batch, as the result names it */
+export interface SendBatchLine {
+    /** `候选 s1「…」`, `已读图 img2`, `#3 的图`, `cdn.example.com/a.jpg` */
+    readonly label: string;
+    /** The chat receives an animation, not a still */
+    readonly animated: boolean;
+}
+
+/** What send_image says after several pictures in one call */
+export const formatSendBatchResult = (input: {
+    /** 1-based position of the first picture this call added; 0 when none did */
+    readonly firstIndex: number;
+    /** Last position this call added */
+    readonly lastIndex: number;
+    /** How many pictures one reply may carry */
+    readonly limit: number;
+    readonly lines: readonly SendBatchLine[];
+    readonly failures: readonly string[];
+    readonly skippedDuplicates: readonly string[];
+}): string => {
+    const output: string[] = [];
+    if (input.lines.length === 0) {
+        output.push(`这 ${input.failures.length} 张图都没加入：`);
+    } else {
+        const range =
+            input.firstIndex === input.lastIndex
+                ? `${input.firstIndex}`
+                : `${input.firstIndex}–${input.lastIndex}`;
+        output.push(
+            `已加入 ${input.lines.length} 张图（本次回复第 ${range} 张，最多 ${input.limit} 张）：`
+        );
+        output.push(
+            ...input.lines.map((line) => `- ${oneLine(line.label)}${line.animated ? '（动图）' : ''}`)
+        );
+        if (input.failures.length > 0) output.push(`有 ${input.failures.length} 张没加入：`);
+    }
+    if (input.failures.length > 0) {
+        output.push(...input.failures.map((failure) => `- ${oneLine(failure)}`));
+    }
+    if (input.skippedDuplicates.length > 0) {
+        output.push(
+            `重复的 ${input.skippedDuplicates.length} 项已跳过：${input.skippedDuplicates
+                .map(oneLine)
+                .join('、')}。`
+        );
+    }
+    return output.join('\n');
+};
+
 /** Error answers; every one names the next thing to try */
 export const mediaToolErrors = {
     noMoreThumbnails: (setId: string) =>
@@ -267,6 +316,8 @@ export const mediaToolErrors = {
     tooLarge: (megabytes: number) => `图片超过 ${megabytes}MB，发不了。换一张候选试试。`,
     imageLimitReached: (limit: number) =>
         `这条回复已经有 ${limit} 张图片了（每条回复最多 ${limit} 张），这张发不了；可以用 send_image 之外的其它回答继续。`,
+    imageQuotaLeft: (remaining: number, limit: number) =>
+        `这条回复的图片额度只剩 ${remaining} 张（每条回复最多 ${limit} 张），这张没加入。`,
     imageTotalTooLarge: (megabytes: number) =>
         `这条回复的图片总大小超过 ${megabytes}MB 了，这张发不了；可以先少发几张。`,
 };

@@ -207,13 +207,12 @@ const parseFetchView = (value: unknown): Field<'original' | 'thumbnail'> => {
 
 const parseUrl = (value: unknown): Field<string> => {
     if (isAbsent(value)) return valid('');
-    if (typeof value !== 'string' || !isHttpUrl(value.trim())) {
-        return invalid('url 必须是 http(s) 图片直链');
-    }
-    return valid(value.trim());
+    if (typeof value !== 'string') return invalid('url 必须是 http(s) 图片直链');
+    const text = value.trim();
+    // A blank url is a filler models write for the unused field, not a source
+    if (text === '') return valid('');
+    return isHttpUrl(text) ? valid(text) : invalid('url 必须是 http(s) 图片直链');
 };
-
-const countGiven = (values: readonly string[]): number => values.filter((value) => value !== '').length;
 
 /** Values of a field that parsed cleanly; only called after every problem was answered */
 const valueOfField = <T>(field: Field<T>, fallback: T): T => (field.ok ? field.value : fallback);
@@ -388,6 +387,27 @@ export const parseFetchImageArgs = (
     };
 };
 
+/** Longest batch one send_image call adds to the reply */
+export const SEND_IMAGE_BATCH_MAX = 6;
+
+/** One picture source of the plural send_image form, whichever argument carried it */
+export type SendImageSource =
+    | { readonly kind: 'candidate'; readonly id: string }
+    | { readonly kind: 'image'; readonly id: string }
+    | { readonly kind: 'url'; readonly url: string }
+    | { readonly kind: 'message'; readonly number: number };
+
+export interface SendImageBatchArgs {
+    /** The lane the batch came from: one kind of source per call */
+    readonly kind: SendImageSource['kind'];
+    /** Pictures in request order; values listed twice are dropped */
+    readonly sources: readonly SendImageSource[];
+    /** Values the batch listed twice: sent once, said in the result */
+    readonly skippedDuplicates: readonly string[];
+    /** The caption goes on the first picture that joins the reply */
+    readonly caption: string;
+}
+
 export interface SendImageArgs {
     readonly searchId: string | undefined;
     readonly imageId: string | undefined;
@@ -395,6 +415,8 @@ export interface SendImageArgs {
     readonly image: number | undefined;
     readonly url: string | undefined;
     readonly caption: string;
+    /** Present only when a plural argument carried the pictures */
+    readonly batch: SendImageBatchArgs | undefined;
 }
 
 export type ParsedSendArgs =
@@ -413,42 +435,266 @@ const parseImageIndex = (value: unknown): Field<number> => {
     return valid(value);
 };
 
+/** A plural source array; an empty one is "not set", as in fetch_image */
+const parseSendTextArray = (value: unknown, label: string, maxChars: number): Field<readonly string[]> => {
+    if (isAbsent(value)) return valid([]);
+    if (!Array.isArray(value)) return invalid(`${label} 必须是字符串数组`);
+    if (value.length === 0) return valid([]);
+    if (value.length > SEND_IMAGE_BATCH_MAX) {
+        return invalid(`${label} 最多 ${SEND_IMAGE_BATCH_MAX} 项（现在 ${value.length} 项）`);
+    }
+    const items: string[] = [];
+    for (let index = 0; index < value.length; index += 1) {
+        const item: unknown = value[index];
+        if (typeof item !== 'string') return invalid(`${label} 第 ${index + 1} 项必须是字符串`);
+        const text = item.trim();
+        if (text === '') return invalid(`${label} 第 ${index + 1} 项是空的`);
+        if (Array.from(text).length > maxChars) {
+            return invalid(`${label} 第 ${index + 1} 项太长（最多 ${maxChars} 字）`);
+        }
+        items.push(text);
+    }
+    return valid(items);
+};
+
+const parseSendNumberArray = (value: unknown, label: string): Field<readonly number[]> => {
+    if (isAbsent(value)) return valid([]);
+    if (!Array.isArray(value)) return invalid(`${label} 必须是整数数组`);
+    if (value.length === 0) return valid([]);
+    if (value.length > SEND_IMAGE_BATCH_MAX) {
+        return invalid(`${label} 最多 ${SEND_IMAGE_BATCH_MAX} 项（现在 ${value.length} 项）`);
+    }
+    const items: number[] = [];
+    for (let index = 0; index < value.length; index += 1) {
+        const item: unknown = value[index];
+        if (!isPositiveInteger(item)) {
+            return invalid(`${label} 第 ${index + 1} 项必须是从 1 开始的整数（#N 里的数字）`);
+        }
+        items.push(item);
+    }
+    return valid(items);
+};
+
+const SEND_SOURCE_NAMES = 'search_id、image_id、message、url';
+const SEND_PLURAL_NAMES = ['search_ids', 'image_ids', 'urls', 'messages'] as const;
+
+/** The singular and plural argument of one source lane */
+const SEND_LANE_FORMS = [
+    { singular: 'search_id', plural: 'search_ids' },
+    { singular: 'image_id', plural: 'image_ids' },
+    { singular: 'url', plural: 'urls' },
+    { singular: 'message', plural: 'messages' },
+] as const;
+
+/** One source parameter as the model wrote it: one value or a 1–6 item batch */
+type SendSourceParam =
+    | {
+          readonly name: 'search_id' | 'search_ids';
+          readonly kind: 'candidate';
+          readonly plural: boolean;
+          readonly values: readonly string[];
+      }
+    | {
+          readonly name: 'image_id' | 'image_ids';
+          readonly kind: 'image';
+          readonly plural: boolean;
+          readonly values: readonly string[];
+      }
+    | {
+          readonly name: 'url' | 'urls';
+          readonly kind: 'url';
+          readonly plural: boolean;
+          readonly values: readonly string[];
+      }
+    | {
+          readonly name: 'message' | 'messages';
+          readonly kind: 'message';
+          readonly plural: boolean;
+          readonly values: readonly number[];
+      };
+
+/** Why one item is not a source of this lane, or null when it is */
+const sendItemProblem = (param: SendSourceParam, value: string): string | null => {
+    switch (param.kind) {
+        case 'candidate':
+        case 'image':
+            return idPattern.test(value) ? null : '不是编号（要形如 s1 或 img1）';
+        case 'url':
+            return isHttpUrl(value) ? null : '不是 http(s) 图片直链';
+        case 'message':
+            return null;
+    }
+};
+
+const sendSourceOf = (kind: SendImageSource['kind'], value: string | number): SendImageSource => {
+    switch (kind) {
+        case 'candidate':
+        case 'image':
+            return { kind, id: String(value) };
+        case 'url':
+            return { kind, url: String(value) };
+        case 'message':
+            // The number was checked as a positive integer while parsing
+            return { kind, number: Number(value) };
+    }
+};
+
+/** A zero is the filler models write for the numeric fields of an unused form */
+const fillerAware = <T>(raw: unknown, parsed: Field<T>, filler: T, batchGiven: boolean): Field<T> =>
+    batchGiven && raw === 0 ? valid(filler) : parsed;
+
 export const parseSendImageArgs = (
     args: Readonly<Record<string, unknown>>
 ): ParsedSendArgs => {
+    // The plural arguments decide whether a zero next to them is a filler
+    const batchGiven = SEND_PLURAL_NAMES.some((name) => {
+        const value = args[name];
+        return Array.isArray(value) && value.length > 0;
+    });
     const search = parseOptionalText(args.search_id, 'search_id', 16);
     const imageId = parseOptionalText(args.image_id, 'image_id', 16);
     const url = parseUrl(args.url);
-    const message = parseMessage(args.message);
-    const image = parseImageIndex(args.image);
+    const message = fillerAware(args.message, parseMessage(args.message), 0, batchGiven);
+    const image = fillerAware(args.image, parseImageIndex(args.image), 1, batchGiven);
     const caption = parseOptionalText(args.caption, 'caption', 1000);
+    const searches = parseSendTextArray(args.search_ids, 'search_ids', 16);
+    const imageIds = parseSendTextArray(args.image_ids, 'image_ids', 16);
+    const urls = parseSendTextArray(args.urls, 'urls', 2048);
+    const messages = parseSendNumberArray(args.messages, 'messages');
 
-    const problems = problemsOf([search, imageId, url, message, image, caption]);
+    const problems = problemsOf([
+        search,
+        imageId,
+        url,
+        message,
+        image,
+        caption,
+        searches,
+        imageIds,
+        urls,
+        messages,
+    ]);
     if (problems.length > 0) return { ok: false, error: `参数有误：\n${problems.map((p) => `- ${p}`).join('\n')}` };
 
     const searchId = search.ok ? search.value : '';
     const fetchedId = imageId.ok ? imageId.value : '';
     const urlText = url.ok ? url.value : '';
     const messageNumber = message.ok ? message.value : 0;
-    if (countGiven([searchId, fetchedId, urlText, messageNumber > 0 ? String(messageNumber) : '']) !== 1) {
+    const captionText = caption.ok ? caption.value : '';
+
+    const params: SendSourceParam[] = [];
+    if (searchId !== '') params.push({ name: 'search_id', kind: 'candidate', plural: false, values: [searchId] });
+    if (fetchedId !== '') params.push({ name: 'image_id', kind: 'image', plural: false, values: [fetchedId] });
+    if (urlText !== '') params.push({ name: 'url', kind: 'url', plural: false, values: [urlText] });
+    if (messageNumber > 0) params.push({ name: 'message', kind: 'message', plural: false, values: [messageNumber] });
+    const searchIds = searches.ok ? searches.value : [];
+    const fetchedIds = imageIds.ok ? imageIds.value : [];
+    const urlList = urls.ok ? urls.value : [];
+    const messageNumbers = messages.ok ? messages.value : [];
+    if (searchIds.length > 0) params.push({ name: 'search_ids', kind: 'candidate', plural: true, values: searchIds });
+    if (fetchedIds.length > 0) params.push({ name: 'image_ids', kind: 'image', plural: true, values: fetchedIds });
+    if (urlList.length > 0) params.push({ name: 'urls', kind: 'url', plural: true, values: urlList });
+    if (messageNumbers.length > 0) {
+        params.push({ name: 'messages', kind: 'message', plural: true, values: messageNumbers });
+    }
+
+    if (params.length === 0) {
+        const emptyPlural = SEND_PLURAL_NAMES.find((name) => {
+            const value = args[name];
+            return Array.isArray(value) && value.length === 0;
+        });
+        if (emptyPlural !== undefined) {
+            return {
+                ok: false,
+                error:
+                    `参数有误：\n- ${emptyPlural} 是空的：至少给 1 项（最多 ${SEND_IMAGE_BATCH_MAX} 项），` +
+                    '只发一张就用单数参数',
+            };
+        }
+        return { ok: false, error: `参数有误：\n- ${SEND_SOURCE_NAMES} 必须传且只传一个` };
+    }
+    const chosen = params[0];
+    if (params.length > 1) {
+        // The same lane in both forms is its own mistake, not a batch one
+        const sameLane = SEND_LANE_FORMS.find(
+            (lane) =>
+                params.some((param) => param.name === lane.singular) &&
+                params.some((param) => param.name === lane.plural)
+        );
+        if (sameLane !== undefined) {
+            return { ok: false, error: `参数有误：\n- ${sameLane.singular} 和 ${sameLane.plural} 只能传一个` };
+        }
+        const base = `参数有误：\n- ${SEND_SOURCE_NAMES} 必须传且只传一个`;
+        const pluralGiven = params.some((param) => param.plural);
         return {
             ok: false,
-            error: '参数有误：\n- search_id、image_id、message、url 必须传且只传一个',
+            error: pluralGiven
+                ? `${base}\n- 一次只能一种来源：批量发多张用同类复数参数（${SEND_PLURAL_NAMES.join('、')}），不同类分两次调用`
+                : base,
         };
     }
-    if ((searchId !== '' && !idPattern.test(searchId)) || (fetchedId !== '' && !idPattern.test(fetchedId))) {
-        return { ok: false, error: '参数有误：\n- 编号要形如 s1 或 img1' };
+    if (chosen === undefined) return { ok: false, error: `参数有误：\n- ${SEND_SOURCE_NAMES} 必须传且只传一个` };
+
+    if (!chosen.plural) {
+        if ((searchId !== '' && !idPattern.test(searchId)) || (fetchedId !== '' && !idPattern.test(fetchedId))) {
+            return { ok: false, error: '参数有误：\n- 编号要形如 s1 或 img1' };
+        }
+        return {
+            ok: true,
+            args: {
+                searchId: searchId === '' ? undefined : searchId,
+                imageId: fetchedId === '' ? undefined : fetchedId,
+                message: messageNumber > 0 ? messageNumber : undefined,
+                image: image.ok ? image.value : 1,
+                url: urlText === '' ? undefined : urlText,
+                caption: captionText,
+                batch: undefined,
+            },
+        };
+    }
+
+    // A zero `image` next to a plural form is the same filler as a zero `message`
+    const imageGiven = !isAbsent(args.image) && !(batchGiven && args.image === 0);
+    if (imageGiven) {
+        return {
+            ok: false,
+            error:
+                chosen.kind === 'message'
+                    ? '参数有误：\n- image 只能和单数 message 一起用；messages 每条取第 1 张图'
+                    : '参数有误：\n- image 只能和单数 message 一起用',
+        };
+    }
+    for (const [index, value] of chosen.values.entries()) {
+        const problem = sendItemProblem(chosen, String(value));
+        if (problem !== null) {
+            return { ok: false, error: `参数有误：\n- ${chosen.name} 第 ${index + 1} 项${problem}` };
+        }
+    }
+
+    // A value listed twice is one picture: first occurrence wins
+    const seen = new Set<string>();
+    const sources: SendImageSource[] = [];
+    const skippedDuplicates: string[] = [];
+    for (const value of chosen.values) {
+        const text = String(value);
+        if (seen.has(text)) {
+            skippedDuplicates.push(text);
+            continue;
+        }
+        seen.add(text);
+        sources.push(sendSourceOf(chosen.kind, value));
     }
 
     return {
         ok: true,
         args: {
-            searchId: searchId === '' ? undefined : searchId,
-            imageId: fetchedId === '' ? undefined : fetchedId,
-            message: messageNumber > 0 ? messageNumber : undefined,
-            image: image.ok ? image.value : 1,
-            url: urlText === '' ? undefined : urlText,
-            caption: caption.ok ? caption.value : '',
+            searchId: undefined,
+            imageId: undefined,
+            message: undefined,
+            image: undefined,
+            url: undefined,
+            caption: captionText,
+            batch: { kind: chosen.kind, sources, skippedDuplicates, caption: captionText },
         },
     };
 };
