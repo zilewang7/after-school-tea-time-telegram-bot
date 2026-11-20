@@ -9,9 +9,10 @@
  * from the content. Nothing in this module throws: a malformed argument JSON
  * must never end the tool round, so even that falls back to the raw text.
  */
-import type { AgentToolCallRecord } from '../types.js';
+import type { AgentToolCallRecord, ToolCallLink } from '../types.js';
 import {
     TOOL_LOG_ARGUMENT_MAX_CHARS,
+    TOOL_LOG_MAX_LINKS_PER_CALL,
     TOOL_LOG_RESULT_MAX_CHARS,
     truncateCodePoints,
 } from '../../shared/tool-log.js';
@@ -19,6 +20,15 @@ import type { ToolCall, ToolResult } from './tool-types.js';
 
 /** Longest failure reason the log shows (the renderer adds 「失败：」 in front) */
 const FAILURE_REASON_MAX_CHARS = 36;
+
+/** Longest display text of one link span; a ref like `h45` is far below it */
+const LINK_TEXT_MAX_CHARS = 64;
+
+/** Longest URL a link span may carry */
+const LINK_URL_MAX_CHARS = 512;
+
+/** Telegram only opens http(s) in a text link; anything else is dropped */
+const HTTP_URL_PATTERN = /^https?:\/\//i;
 
 /** Longest value shown next to its key, or as one item of an array */
 const SCALAR_MAX_CHARS = 20;
@@ -305,6 +315,36 @@ const resultOf = (result: ToolResult): string => {
 };
 
 /**
+ * The handler's clickable spans (design 2026-1120-1617), normalized for
+ * storage: one line, http(s) only, deduplicated, capped, and only the spans
+ * still present in the final display line (a truncation may have cut one away).
+ */
+const linksOf = (
+    trace: ToolResult['trace'],
+    argument: string,
+    outcome: string
+): ToolCallLink[] => {
+    const requested = trace?.links ?? [];
+    if (requested.length === 0) return [];
+    const line = `${argument}\n${outcome}`;
+    const links: ToolCallLink[] = [];
+    const seen = new Set<string>();
+    for (const link of requested) {
+        if (links.length >= TOOL_LOG_MAX_LINKS_PER_CALL) break;
+        const text = oneLine(link.text);
+        const url = link.url.trim();
+        if (text === '' || codePointLength(text) > LINK_TEXT_MAX_CHARS) continue;
+        if (!HTTP_URL_PATTERN.test(url) || url.length > LINK_URL_MAX_CHARS) continue;
+        if (!line.includes(text)) continue;
+        const key = JSON.stringify([text, url]);
+        if (seen.has(key)) continue;
+        seen.add(key);
+        links.push({ text, url });
+    }
+    return links;
+};
+
+/**
  * The per-call record of one executed call: the handler's trace when it wrote
  * one, the generic summary otherwise. Built by `runToolRound` for every call
  * the round offered, in call order.
@@ -316,11 +356,13 @@ export const buildToolCallRecord = (
 ): AgentToolCallRecord => {
     const argument = argumentOf(call, result.trace);
     const outcome = resultOf(result);
+    const links = linksOf(result.trace, argument, outcome);
     return {
         name: call.name,
         ...(argument === '' ? {} : { argument }),
         ...(outcome === '' ? {} : { result: outcome }),
         ...(result.isError ? { failed: true } : {}),
         ms: Math.max(0, Math.round(durationMs)),
+        ...(links.length > 0 ? { links } : {}),
     };
 };

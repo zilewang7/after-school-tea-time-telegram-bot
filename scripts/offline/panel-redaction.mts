@@ -161,8 +161,24 @@ const seedBotReply = async (chatId: number, userMessageId: number, text: string)
                 // The per-call log; the nameless record is a guard case, not a real write
                 toolCalls: [
                     { name: 'search_history', argument: '「吃什么」', result: '2 条命中' },
-                    { name: 'fetch_image', argument: 'h101', result: '图片超过 8MB', failed: true, ms: 3400 },
-                    { name: 'read_history' },
+                    {
+                        name: 'fetch_image',
+                        argument: 'h101',
+                        result: '图片超过 8MB',
+                        failed: true,
+                        ms: 3400,
+                        // The second span's scheme is not openable: the guard drops it
+                        links: [
+                            { text: 'h101', url: 'https://t.me/c/1415974153/1123456' },
+                            { text: 'h101', url: 'javascript:alert(1)' },
+                        ],
+                    },
+                    {
+                        name: 'read_history',
+                        argument: 'h103',
+                        result: '1 条全文',
+                        links: [{ text: 'h103', url: 'https://t.me/c/1415974153/1123458' }],
+                    },
                     { argument: 'no tool name' },
                 ],
                 toolCallsTruncated: 3,
@@ -393,9 +409,23 @@ const cases: { name: string; body: () => Promise<void> }[] = [
             expect(
                 JSON.stringify(second.tools.callLog) ===
                     JSON.stringify([
-                        { name: 'search_history', argument: '「吃什么」', result: '2 条命中', failed: false, ms: null },
-                        { name: 'fetch_image', argument: 'h101', result: '图片超过 8MB', failed: true, ms: 3400 },
-                        { name: 'read_history', argument: null, result: null, failed: false, ms: null },
+                        { name: 'search_history', argument: '「吃什么」', result: '2 条命中', failed: false, ms: null, links: [] },
+                        {
+                            name: 'fetch_image',
+                            argument: 'h101',
+                            result: '图片超过 8MB',
+                            failed: true,
+                            ms: 3400,
+                            links: [{ text: 'h101', url: 'https://t.me/c/1415974153/1123456' }],
+                        },
+                        {
+                            name: 'read_history',
+                            argument: 'h103',
+                            result: '1 条全文',
+                            failed: false,
+                            ms: null,
+                            links: [{ text: 'h103', url: 'https://t.me/c/1415974153/1123458' }],
+                        },
                     ]) && second.tools.toolCallsTruncated === 3,
                 `the per-call log keeps order, guards, failures and durations (got ${JSON.stringify(second.tools.callLog)}, truncated ${second.tools.toolCallsTruncated})`
             );
@@ -536,10 +566,14 @@ const cases: { name: string; body: () => Promise<void> }[] = [
             expect(markdown.includes('等同于现在点重试，重算于'), 'the md states that the model view is recomputed');
             expect(
                 markdown.includes('- 1. search_history: 「吃什么」 → 2 条命中') &&
-                    markdown.includes('- 2. fetch_image: h101 → 失败：图片超过 8MB · 3.4s') &&
+                    markdown.includes(
+                        '- 2. fetch_image: [h101](https://t.me/c/1415974153/1123456) → 失败：图片超过 8MB · 3.4s'
+                    ) &&
+                    markdown.includes('- 3. read_history: [h103](https://t.me/c/1415974153/1123458) → 1 条全文') &&
                     markdown.includes('- …另有 3 次调用未记录') &&
-                    !markdown.includes('- 调用：search_history: 吃什么'),
-                'the md export lists the per-call log instead of the merged lines'
+                    !markdown.includes('- 调用：search_history: 吃什么') &&
+                    !markdown.includes('javascript:'),
+                'the md export lists the per-call log with the clickable refs and without the unsafe span'
             );
             expect((await call(`${TREE_PATH}/export?format=pdf`, ALICE)).status === 400, 'an unknown format is a 400');
         },

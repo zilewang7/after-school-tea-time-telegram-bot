@@ -7,7 +7,7 @@ import { match } from 'ts-pattern';
 import type { ConversationExport } from './conversation-export.js';
 import type { ModelView } from './model-view.js';
 import type { ReplyDetailView, ReplyVersionView } from './reply-view.js';
-import type { ToolCallView, ToolRecordsView } from './tool-records-view.js';
+import type { ToolCallLinkView, ToolCallView, ToolRecordsView } from './tool-records-view.js';
 import type { BotNode, MemberUserNode, TreeNode } from './tree-nodes.js';
 
 const longestBacktickRun = (text: string): number => {
@@ -81,6 +81,10 @@ const callLineOf = (call: ToolCallView, index: number): string => {
     return line;
 };
 
+/** The clickable spans of a line as Markdown links (the same `h45` refs the chat links) */
+const withCallLinks = (line: string, links: readonly ToolCallLinkView[]): string =>
+    links.reduce((text, link) => text.split(link.text).join(`[${link.text}](${link.url})`), line);
+
 const toolLines = (tools: ToolRecordsView): string[] => {
     const lines: string[] = [];
     if (tools.mode !== null) lines.push(`- 模式：${tools.mode}`);
@@ -89,7 +93,7 @@ const toolLines = (tools: ToolRecordsView): string[] => {
     }
     if (tools.callLog.length > 0) {
         // The per-call log replaces the merged grounding lines of the same calls
-        tools.callLog.forEach((call, index) => lines.push(`- ${callLineOf(call, index)}`));
+        tools.callLog.forEach((call, index) => lines.push(`- ${withCallLinks(callLineOf(call, index), call.links)}`));
         if (tools.toolCallsTruncated > 0) lines.push(`- …另有 ${tools.toolCallsTruncated} 次调用未记录`);
     } else {
         for (const call of tools.calls) lines.push(`- 调用：${call}`);

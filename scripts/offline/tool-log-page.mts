@@ -219,6 +219,24 @@ const TRUNCATED_STATS: AgentStats = {
 };
 const TRUNCATED_DOCUMENT = documents.buildToolLogDocument(TRUNCATED_STATS, []);
 
+/** An hN ref: the page renders it as an anchor, the card keeps its plain text */
+const LINKED_STATS: AgentStats = {
+    toolUsage: [{ name: 'read_history', count: 1 }],
+    toolCalls: [
+        {
+            name: 'read_history',
+            argument: 'around h45 · 10 分钟',
+            result: '39 条消息',
+            links: [
+                { text: 'h45', url: 'https://t.me/c/1415974153/1123456' },
+                // Never rendered as an anchor, whatever a stored version holds
+                { text: 'h46', url: 'javascript:alert(1)' },
+            ],
+        },
+    ],
+};
+const LINKED_DOCUMENT = documents.buildToolLogDocument(LINKED_STATS, []);
+
 /** A version stored before per-call records existed: legacy grounding-derived lines */
 const LEGACY_GROUNDING: GroundingData[] = [
     {
@@ -435,6 +453,21 @@ const cases: { name: string; body: () => Promise<void> }[] = [
             expect(description !== null, 'the card has a description');
             const expected = escapeForHtml([DOCUMENT.usageLine, ...DOCUMENT.callLines].join('\n'));
             expect(description === expected, 'og:description is the usage line followed by every call line');
+        },
+    },
+    {
+        name: 'an hN ref is an anchor on the page, plain text in the card',
+        body: async () => {
+            const link = await beginPage(takeMessageId(), LINKED_DOCUMENT);
+            const html = await (await app.request(pathOf(link))).text();
+            expect(
+                html.includes('<a href="https://t.me/c/1415974153/1123456">h45</a>'),
+                'the hN ref opens its archived message'
+            );
+            expect(!html.includes('javascript:'), 'a non-http span never becomes an anchor');
+            const description = metaContentOf(html, 'og:description');
+            expect(description !== null && description.includes('around h45'), 'the card keeps the plain ref');
+            expect(!(description ?? '').includes('<a '), 'the card is text, not HTML');
         },
     },
     {

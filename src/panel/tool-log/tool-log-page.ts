@@ -7,14 +7,22 @@
  * head: the fixed title and, as its description, the usage line plus the first
  * ten call lines (the body keeps the whole log untruncated).
  *
- * The body carries exactly the lines `toolLogBodyLines` gives the chat block,
- * so the link message, the folded block and this page can never disagree. The
- * usage line is emphasized and every failed call line is marked.
+ * The body carries exactly the lines `toolLogBodyLineEntries` gives the chat
+ * block, so the link message, the folded block and this page can never
+ * disagree. The usage line is emphasized, every failed call line is marked,
+ * and an `hN` ref opens its archived message, exactly as in the chat block
+ * (design 2026-1120-1617).
  *
- * Every model-derived string is escaped; the lines are plain text, never HTML.
+ * Every model-derived string is escaped; the only HTML is the anchor of a
+ * clickable ref.
  */
-import { toolLogBodyLines, toolLogStatsOf } from '../../telegram/formatters/tool-log-document.js';
-import type { ToolLogDocument } from '../../telegram/formatters/tool-log-document.js';
+import {
+    toolLogBodyLineEntries,
+    toolLogStatsOf,
+    type ToolLogDocument,
+    type ToolLogLine,
+} from '../../telegram/formatters/tool-log-document.js';
+import { lineLinkSpansOf } from '../../telegram/formatters/tool-log-links.js';
 import { escapeHtml } from '../../telegram/formatters/markdown-html.js';
 import { truncateCodePoints } from '../../shared/tool-log.js';
 import type { ToolLogPageRenderInput } from './tool-log-types.js';
@@ -90,6 +98,7 @@ body {
 .line.usage { font-weight: 600; }
 .line.failed { color: var(--danger); }
 .line.note { color: var(--muted); }
+.line a { color: var(--accent); text-decoration: underline; text-underline-offset: 2px; }
 .footer {
   margin-top: 24px; padding-top: 16px; border-top: 1px solid var(--line);
   color: var(--muted); font-size: 13px;
@@ -195,13 +204,29 @@ const lineClassOf = (
     return 'line';
 };
 
+/** One line's HTML: escaped text, with every clickable ref as an anchor */
+const lineHtmlOf = (line: ToolLogLine): string => {
+    const spans = lineLinkSpansOf(line);
+    if (spans.length === 0) return escapeHtml(line.text);
+    const parts: string[] = [];
+    let at = 0;
+    for (const span of spans) {
+        parts.push(escapeHtml(line.text.slice(at, span.offset)));
+        const label = escapeHtml(line.text.slice(span.offset, span.offset + span.length));
+        parts.push(`<a href="${escapeHtml(span.url)}">${label}</a>`);
+        at = span.offset + span.length;
+    }
+    parts.push(escapeHtml(line.text.slice(at)));
+    return parts.join('');
+};
+
 /** The whole log, one line per `<div>`; the page shows every call, never an excerpt */
 const logHtmlOf = (page: ToolLogPageRenderInput): string => {
-    const lines = toolLogBodyLines(page.document);
+    const lines = toolLogBodyLineEntries(page.document);
     if (lines.length === 0) return '';
     const failedIndexes = callIndexesFailedOf(page.document);
     const rows = lines.map(
-        (line) => `<div class="${lineClassOf(page, line, failedIndexes)}">${escapeHtml(line)}</div>`
+        (line) => `<div class="${lineClassOf(page, line.text, failedIndexes)}">${lineHtmlOf(line)}</div>`
     );
     return `<section class="log">${rows.join('')}</section>`;
 };

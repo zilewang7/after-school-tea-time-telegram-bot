@@ -623,6 +623,12 @@ export interface SourceView {
     title: string | null;
 }
 
+/** One clickable span of a call's display line, e.g. `h45` → its archived message */
+export interface ToolCallLinkView {
+    text: string;
+    url: string;
+}
+
 /** One executed tool call of a version's per-call log (design 2026-1119-1835) */
 export interface ToolCallView {
     name: string;
@@ -634,6 +640,8 @@ export interface ToolCallView {
     failed: boolean;
     // Wall time of the handler; null when not reported
     ms: number | null;
+    // Clickable spans of the line (design 2026-1120-1617); empty on older versions
+    links: ToolCallLinkView[];
 }
 
 /** One search-grounding step (Gemini's built-in search) */

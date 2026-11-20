@@ -33,9 +33,11 @@ import { isSearchGroundingStep } from './google-search-formatter.js';
 import { TELEGRAM_MAX_ENTITIES, TELEGRAM_MAX_LENGTH } from './message-budget.js';
 import {
     buildToolLogDocument,
-    toolLogBodyLines,
+    toolLogBodyLineEntries,
     type ToolLogDocument,
+    type ToolLogLine,
 } from './tool-log-document.js';
+import { lineLinkEntities } from './tool-log-links.js';
 
 /** Code-interpreter summaries are capped like before: one line, never a dump */
 const SUMMARY_MAX_LENGTH = 120;
@@ -136,9 +138,13 @@ const collectLegacyToolLines = (
 const hasPerCallRecords = (agentStats: AgentStats | undefined): boolean =>
     (agentStats?.toolCalls?.length ?? 0) > 0;
 
+/** A body line, with its clickable refs (e.g. `h45`) as text_link entities */
+const lineMessage = (line: ToolLogLine): RenderedMessage =>
+    line.links.length === 0 ? plainText(line.text) : { text: line.text, entities: lineLinkEntities(line) };
+
 /** The Tools block of one document (per-call log shape) */
 const renderToolLogSection = (document: ToolLogDocument): RenderedMessage | null => {
-    const lines = toolLogBodyLines(document).map((line) => plainText(line));
+    const lines = toolLogBodyLineEntries(document).map((line) => lineMessage(line));
     return lines.length ? buildSection('Tools', joinLines(lines)) : null;
 };
 

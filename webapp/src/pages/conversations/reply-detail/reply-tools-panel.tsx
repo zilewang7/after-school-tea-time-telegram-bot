@@ -1,5 +1,5 @@
 import { useMemo } from 'react';
-import type { ToolCallView, ToolRecords } from '../../../api';
+import type { ToolCallLinkView, ToolCallView, ToolRecords } from '../../../api';
 
 interface ReplyToolsPanelProps {
     tools: ToolRecords;
@@ -24,14 +24,50 @@ const callLineOf = (call: ToolCallView, index: number): string => {
     return line;
 };
 
+/** A piece of a log line: linked (`url` set) or plain */
+interface LineSegment {
+    text: string;
+    url: string | null;
+}
+
+/**
+ * Cut the line at its clickable spans: the same `h45` refs the Telegram block
+ * links, so the panel and the chat open the same message.
+ */
+const segmentsOf = (line: string, links: readonly ToolCallLinkView[]): LineSegment[] => {
+    const spans: { offset: number; length: number; url: string }[] = [];
+    for (const link of links) {
+        if (link.text === '') continue;
+        for (let at = line.indexOf(link.text); at >= 0; at = line.indexOf(link.text, at + link.text.length)) {
+            if (spans.some((span) => at < span.offset + span.length && span.offset < at + link.text.length)) continue;
+            spans.push({ offset: at, length: link.text.length, url: link.url });
+        }
+    }
+    if (spans.length === 0) return [{ text: line, url: null }];
+    spans.sort((left, right) => left.offset - right.offset);
+    const segments: LineSegment[] = [];
+    let cursor = 0;
+    for (const span of spans) {
+        if (span.offset > cursor) segments.push({ text: line.slice(cursor, span.offset), url: null });
+        segments.push({ text: line.slice(span.offset, span.offset + span.length), url: span.url });
+        cursor = span.offset + span.length;
+    }
+    if (cursor < line.length) segments.push({ text: line.slice(cursor), url: null });
+    return segments;
+};
+
 interface CallRow {
     key: string;
-    line: string;
+    segments: LineSegment[];
     failed: boolean;
 }
 
 const callRowsOf = (calls: readonly ToolCallView[]): CallRow[] =>
-    calls.map((call, index) => ({ key: `${index}-${call.name}`, line: callLineOf(call, index), failed: call.failed }));
+    calls.map((call, index) => ({
+        key: `${index}-${call.name}`,
+        segments: segmentsOf(callLineOf(call, index), call.links),
+        failed: call.failed,
+    }));
 
 const hasRecords = (tools: ToolRecords): boolean =>
     tools.toolUsage.length > 0 ||
@@ -64,7 +100,15 @@ export const ReplyToolsPanel = ({ tools }: ReplyToolsPanelProps) => {
                 <ol className="list compact">
                     {callRows.map((row) => (
                         <li key={row.key} className={row.failed ? 'tool-call tool-call-failed' : 'tool-call'}>
-                            {row.line}
+                            {row.segments.map((segment, index) =>
+                                segment.url === null ? (
+                                    <span key={`${row.key}-${index}`}>{segment.text}</span>
+                                ) : (
+                                    <a key={`${row.key}-${index}`} href={segment.url} target="_blank" rel="noreferrer">
+                                        {segment.text}
+                                    </a>
+                                )
+                            )}
                         </li>
                     ))}
                 </ol>

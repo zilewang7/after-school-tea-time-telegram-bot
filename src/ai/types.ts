@@ -103,6 +103,19 @@ export interface AgentToolUsage {
 }
 
 /**
+ * One clickable span of a tool call's display line: the exact text the line
+ * shows, and where it opens (design 2026-1120-1617). Persisted with the version
+ * so a replayed or restarted reply keeps its links, unlike the in-memory `hN`
+ * numbering it comes from.
+ */
+export interface ToolCallLink {
+    /** Exact substring of the call's display line, e.g. `h45` */
+    text: string;
+    /** Absolute http(s) URL the text opens */
+    url: string;
+}
+
+/**
  * One executed tool call, as the Tools block's log shows it (design
  * 2026-1119-1835). Collected in `runToolRound` for every offered call the reply
  * executed, in call order; versions stored before it existed have none and keep
@@ -119,6 +132,8 @@ export interface AgentToolCallRecord {
     failed?: boolean;
     /** Wall time of the handler; shown only when the call was slow */
     ms?: number;
+    /** Clickable spans of this call's line (design 2026-1120-1617); absent when none */
+    links?: ToolCallLink[];
 }
 
 /**

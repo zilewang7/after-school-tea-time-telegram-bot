@@ -36,6 +36,12 @@ export interface SearchGroundingView {
     sources: SourceView[];
 }
 
+/** One clickable span of a call's display line, e.g. `h45` → its archived message */
+export interface ToolCallLinkView {
+    text: string;
+    url: string;
+}
+
 /** One executed tool call of a version's per-call log */
 export interface ToolCallView {
     name: string;
@@ -47,6 +53,8 @@ export interface ToolCallView {
     failed: boolean;
     /** Wall time of the handler; null when not reported */
     ms: number | null;
+    /** Clickable spans of the line; empty on versions stored before they existed */
+    links: ToolCallLinkView[];
 }
 
 export interface ToolRecordsView {
@@ -131,6 +139,15 @@ const toToolUsage = (record: JsonRecord): AgentToolUsage | null => {
     return typeof failed === 'number' ? { name, count, failed } : { name, count };
 };
 
+/** One stored clickable span; only http(s) targets survive the guard */
+const toToolCallLink = (record: JsonRecord): ToolCallLinkView | null => {
+    const text = optionalStringOf(record, 'text');
+    const url = optionalStringOf(record, 'url');
+    if (text === undefined || text === '' || url === undefined) return null;
+    if (!/^https?:\/\//i.test(url)) return null;
+    return { text, url };
+};
+
 /** One stored per-call record; a record without a tool name is skipped */
 const toToolCall = (record: JsonRecord): AgentToolCallRecord | null => {
     const name = optionalStringOf(record, 'name');
@@ -138,6 +155,9 @@ const toToolCall = (record: JsonRecord): AgentToolCallRecord | null => {
     const argument = optionalStringOf(record, 'argument');
     const result = optionalStringOf(record, 'result');
     const ms = record.ms;
+    const links = recordsIn(record.links)
+        .map(toToolCallLink)
+        .filter((link): link is ToolCallLinkView => link !== null);
     return {
         name,
         ...(argument !== undefined ? { argument } : {}),
@@ -145,6 +165,7 @@ const toToolCall = (record: JsonRecord): AgentToolCallRecord | null => {
         // A failed record says so; absent and false both mean the call succeeded
         ...(record.failed === true ? { failed: true } : {}),
         ...(typeof ms === 'number' && Number.isFinite(ms) && ms >= 0 ? { ms } : {}),
+        ...(links.length > 0 ? { links } : {}),
     };
 };
 
@@ -190,6 +211,7 @@ const toToolCallViews = (stats: AgentStats | null): ToolCallView[] =>
         result: call.result ?? null,
         failed: call.failed === true,
         ms: call.ms ?? null,
+        links: (call.links ?? []).map((link) => ({ text: link.text, url: link.url })),
     }));
 
 const distinct = (lines: readonly string[]): string[] => {

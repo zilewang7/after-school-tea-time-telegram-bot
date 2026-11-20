@@ -3,7 +3,7 @@
  */
 import type { AgentToolCallRecord, AgentToolUsage, StreamChunk } from '../types.js';
 import { isTimeFreeToolName } from '../../reply/tools/tool-names.js';
-import { TOOL_LOG_MAX_RECORDS } from '../../shared/tool-log.js';
+import { TOOL_LOG_MAX_LINKS, TOOL_LOG_MAX_RECORDS } from '../../shared/tool-log.js';
 import { buildToolCallRecord } from './tool-call-record.js';
 import type { ToolCall, ToolResult, TurnTools } from './tool-types.js';
 
@@ -134,6 +134,19 @@ export interface ToolUsageTally {
 }
 
 /**
+ * The call's record with its clickable spans cut to the reply's remaining link
+ * budget (design 2026-1120-1617 §4.1). The line itself is untouched: beyond the
+ * budget the refs simply stay plain text.
+ */
+const trimLinksToBudget = (record: AgentToolCallRecord, remaining: number): AgentToolCallRecord => {
+    const links = record.links ?? [];
+    if (links.length <= remaining) return { ...record };
+    const { links: _dropped, ...rest } = record;
+    const kept = links.slice(0, Math.max(0, remaining));
+    return kept.length === 0 ? rest : { ...rest, links: kept };
+};
+
+/**
  * `initialUsage` / `initialCalls`: what a resumed reply already counted and
  * logged, in their order. Call order is preserved across the resume.
  */
@@ -149,6 +162,8 @@ export const createToolUsageTally = (
     }
     const records: AgentToolCallRecord[] = initialCalls.slice(0, TOOL_LOG_MAX_RECORDS).map((record) => ({ ...record }));
     let droppedCount = Math.max(0, initialCalls.length - TOOL_LOG_MAX_RECORDS);
+    // The link budget counts what a resumed reply already recorded (design 2026-1120-1617)
+    let linkCount = records.reduce((total, record) => total + (record.links?.length ?? 0), 0);
     return {
         count: (name) => {
             countsByName.set(name, (countsByName.get(name) ?? 0) + 1);
@@ -161,7 +176,8 @@ export const createToolUsageTally = (
                 droppedCount += 1;
                 return;
             }
-            records.push({ ...record });
+            records.push(trimLinksToBudget(record, Math.max(0, TOOL_LOG_MAX_LINKS - linkCount)));
+            linkCount += records[records.length - 1]?.links?.length ?? 0;
         },
         calls: () => records.map((record) => ({ ...record })),
         truncatedCount: () => droppedCount,

@@ -18,6 +18,20 @@ export const TOOL_LOG_RESULT_MAX_CHARS = 40;
 export const TOOL_LOG_SLOW_CALL_MS = 3_000;
 
 /**
+ * Clickable spans one call line keeps (design 2026-1120-1617): `read_history`
+ * shows at most three refs or one `around`, `fetch_image` at most three; heads
+ * room for one more without letting a single line grow unbounded.
+ */
+export const TOOL_LOG_MAX_LINKS_PER_CALL = 4;
+
+/**
+ * Clickable spans one reply keeps in total. Each is ~50–70 bytes of JSON, so
+ * this bounds the extra `versions` storage at roughly 13KB even for a reply
+ * with hundreds of calls; normal replies are far below it.
+ */
+export const TOOL_LOG_MAX_LINKS = 200;
+
+/**
  * Safety cap of records kept for one reply. Production's observed maximum is
  * 329 calls; a reply beyond this keeps counting (the usage line stays complete)
  * and the log says how many records were dropped.

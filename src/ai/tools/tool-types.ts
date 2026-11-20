@@ -9,6 +9,7 @@ import type {
     FileDelivery,
     GroundingData,
     StickerDelivery,
+    ToolCallLink,
     ToolChatAction,
     ToolStatus,
     WidgetDelivery,
@@ -65,6 +66,12 @@ export interface ToolCallTrace {
     readonly argument?: string;
     /** Display form of the outcome; absent = derive one from the result content */
     readonly result?: string;
+    /**
+     * Clickable spans of this call's display line, e.g. `h45` → its archived
+     * message (design 2026-1120-1617). Persisted with the record: a replay or a
+     * restart keeps the links, unlike the reply-scoped `hN` numbering.
+     */
+    readonly links?: readonly ToolCallLink[];
 }
 
 export interface ToolResult {

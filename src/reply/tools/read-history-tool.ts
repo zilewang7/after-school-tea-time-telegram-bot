@@ -11,7 +11,7 @@
  * chars), which is enough to tell what the reasoning was about without putting
  * the whole chain back into context; `folded=true` returns it raw.
  */
-import type { ToolHandler, ToolResult } from '../../ai/tools/tool-types.js';
+import type { ToolCallTrace, ToolHandler, ToolResult } from '../../ai/tools/tool-types.js';
 import { HISTORY_MESSAGES_TIMEOUT_MS } from '../../services/luoxu-history-service.js';
 import {
     parseHistoryReadArgs,
@@ -29,11 +29,12 @@ import {
     type WindowRow,
 } from './history-text.js';
 import { historyToolError, historyToolSuccess } from './history-tool-result.js';
-import type { HistoryEntry } from './history-state.js';
+import type { HistoryEntry, HistoryState } from './history-state.js';
 import {
     anchorFor,
     contextNumbersOf,
     describeFailure,
+    historyRefLinks,
     historyTimeZoneOf,
     isOwner,
     messageKey,
@@ -204,7 +205,7 @@ const readFull = async (
     refs: readonly string[],
     folded: boolean,
     signal: AbortSignal,
-    traceArgument: string
+    trace: ToolCallTrace
 ): Promise<ToolResult> => {
     const entries: HistoryEntry[] = [];
     const seen = new Set<string>();
@@ -248,7 +249,7 @@ const readFull = async (
         .slice(0, rendered)
         .reduce((total, block) => total + Array.from(block).length, 0);
     return historyToolSuccess([withNotice('历史阅读：'), ...blocks].join('\n\n'), {
-        argument: traceArgument,
+        ...trace,
         result: traceParts(
             `${rendered} 条全文`,
             renderedChars > 0 ? traceChars(renderedChars) : null,
@@ -262,7 +263,7 @@ const readWindow = async (
     around: string,
     minutes: number,
     signal: AbortSignal,
-    traceArgument: string
+    trace: ToolCallTrace
 ): Promise<ToolResult> => {
     const resolved = await resolveReference(options, around, signal);
     if ('error' in resolved) return historyToolError(resolved.error);
@@ -378,20 +379,28 @@ const readWindow = async (
         WINDOW_CHARS_TOTAL
     );
     return historyToolSuccess(text, {
-        argument: traceArgument,
+        ...trace,
         result: `${rows.length} 条消息`,
     });
 };
 
-/** `h101、h102、h103 → …` or `around h101 · 10 分钟`: what the call asked to read */
-const describeReadArgsTrace = (args: HistoryReadArgs): string => {
+/** `h101、h102、h103 → …` or `around h101 · 10 分钟`: what the call asked to read, and where each hN opens */
+const describeReadArgsTrace = (args: HistoryReadArgs, state: HistoryState): ToolCallTrace => {
     if (args.around !== null) {
-        return traceParts(`around ${traceRef(args.around)}`, `${args.minutes} 分钟`);
+        const links = historyRefLinks(state, [args.around]);
+        return {
+            argument: traceParts(`around ${traceRef(args.around)}`, `${args.minutes} 分钟`),
+            ...(links.length > 0 ? { links } : {}),
+        };
     }
-    const shown = args.refs.slice(0, 3).map((ref) => traceRef(ref));
+    const shown = args.refs.slice(0, 3);
     const rest = args.refs.length - shown.length;
-    const refs = `${shown.join('、')}${rest > 0 ? `+${rest}` : ''}`;
-    return traceParts(`${refs}${args.folded ? '（含折叠）' : ''}`);
+    const refs = `${shown.map((ref) => traceRef(ref)).join('、')}${rest > 0 ? `+${rest}` : ''}`;
+    const links = historyRefLinks(state, shown);
+    return {
+        argument: traceParts(`${refs}${args.folded ? '（含折叠）' : ''}`),
+        ...(links.length > 0 ? { links } : {}),
+    };
 };
 
 const summarizeReadArgs = (args: Readonly<Record<string, unknown>>): string =>
@@ -414,11 +423,11 @@ const handlerOf = (options: HistoryToolOptions): ToolHandler => ({
         const parsed = parseHistoryReadArgs(args);
         if (!parsed.ok) return historyToolError(parsed.error);
         const readArgs = parsed.value;
-        const traceArgument = describeReadArgsTrace(readArgs);
+        const trace = describeReadArgsTrace(readArgs, options.state);
         if (readArgs.around) {
-            return readWindow(options, readArgs.around, readArgs.minutes, signal, traceArgument);
+            return readWindow(options, readArgs.around, readArgs.minutes, signal, trace);
         }
-        return readFull(options, readArgs.refs, readArgs.folded, signal, traceArgument);
+        return readFull(options, readArgs.refs, readArgs.folded, signal, trace);
     },
 });
 

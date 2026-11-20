@@ -18,9 +18,12 @@
  * Reading the same image twice returns the first read: the bytes are already in
  * the conversation, and only the id is needed for send_image / generate_image.
  */
+import type { ToolCallLink } from '../../ai/types.js';
 import type { ToolCallTrace, ToolHandler, ToolResult } from '../../ai/tools/tool-types.js';
 import { fetchImageBytes } from '../../services/image-fetch-service.js';
 import type { HistoryImageOptions } from './history-image.js';
+import type { HistoryState } from './history-state.js';
+import { historyRefLinks } from './history-tool-shared.js';
 import type { AvatarLaneOptions } from './avatar-lane.js';
 import type { StickerSetApi } from '../../services/sticker-set-service.js';
 import { transcodeVideoToMp4 } from '../../services/tgs-client.js';
@@ -234,6 +237,22 @@ export const describeFetchImageArgument = (args: Readonly<Record<string, unknown
     return null;
 };
 
+/**
+ * The clickable spans of a fetch_image call's `hN` refs (design 2026-1120-1617):
+ * each opens the archived message it names. Refs of another kind (t.me links)
+ * and turns without an archive lane produce nothing.
+ */
+export const describeFetchImageLinks = (
+    args: Readonly<Record<string, unknown>>,
+    state: HistoryState | undefined
+): readonly ToolCallLink[] => {
+    if (state === undefined) return [];
+    const refs = [...(textListArgOf(args, 'histories') ?? [])];
+    const history = textArgOf(args, 'history');
+    if (history !== undefined) refs.push(history);
+    return historyRefLinks(state, refs);
+};
+
 export const describeFetchImageRequest = (args: Readonly<Record<string, unknown>>): string => {
     const textOf = (key: string): string | undefined => textArgOf(args, key);
     const listOf = (key: string): readonly string[] | undefined => textListArgOf(args, key);
@@ -305,8 +324,12 @@ export const createFetchImageTool = (options: FetchImageToolOptions): ToolHandle
         execute: async (rawArgs, signal) => {
             const request = describeFetchImageRequest(rawArgs);
             const traceArgument = describeFetchImageArgument(rawArgs);
-            const traceOf = (result: string): ToolCallTrace =>
-                traceArgument === null ? { result } : { argument: traceArgument, result };
+            const traceLinks = describeFetchImageLinks(rawArgs, options.history?.state);
+            const traceOf = (result: string): ToolCallTrace => ({
+                ...(traceArgument === null ? {} : { argument: traceArgument }),
+                ...(traceLinks.length === 0 ? {} : { links: traceLinks }),
+                result,
+            });
             const parsed = parseFetchImageArgs(rawArgs);
             if (!parsed.ok) return reject(request, parsed.error, traceArgument);
             const args = parsed.args;

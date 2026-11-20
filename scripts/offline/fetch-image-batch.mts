@@ -549,6 +549,16 @@ cases.push(
         expect(harness.manifests.length === 2, 'both messages were asked for');
         expect(harness.state.fetched.size === 2, 'both pictures are registered');
         expect(result.record?.citations?.length === 2, 'both messages are cited');
+        // The log line labels each ref so a reader can open the message it names
+        expect(result.trace?.argument === 'h1,h2', `the trace keeps the refs (got ${JSON.stringify(result.trace?.argument)})`);
+        expect(
+            JSON.stringify(result.trace?.links) ===
+                JSON.stringify([
+                    { text: 'h1', url: `https://t.me/c/${CHANNEL_ID}/${MESSAGE_ID_BASE}` },
+                    { text: 'h2', url: `https://t.me/c/${CHANNEL_ID}/${MESSAGE_ID_BASE + 1}` },
+                ]),
+            `both refs open their archived message (got ${JSON.stringify(result.trace?.links)})`
+        );
 
         const bad = await run(harness.tool, { histories: ['h9', 'h10'] });
         expect(bad.isError, 'two unknown references read nothing');

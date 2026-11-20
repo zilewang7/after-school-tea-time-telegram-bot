@@ -1,9 +1,10 @@
 /**
  * What both history tools need: options, failure wording, ids and anchors.
  */
+import type { ToolCallLink } from '../../ai/types.js';
 import type { ToolHandler, ToolResult } from '../../ai/tools/tool-types.js';
+import { HISTORY_DEFAULT_TIME_ZONE, parseHistoryReference } from './history-args.js';
 import { HistoryRequestError, type HistoryService } from '../../services/luoxu-history-service.js';
-import { HISTORY_DEFAULT_TIME_ZONE } from './history-args.js';
 import type { HistoryState } from './history-state.js';
 import type { ReplyToolContext } from './reply-tool-context.js';
 
@@ -68,6 +69,30 @@ export const anchorFor = (
 
 export const messageLink = (channelId: number, messageId: number): string =>
     `https://t.me/c/${channelId}/${messageId}`;
+
+/**
+ * The clickable spans of the `hN` refs a call line shows (design 2026-1120-1617):
+ * each one opens its archived message. `#N` and t.me refs are skipped — the
+ * former is linked by the render-time context pass, the latter already reads as
+ * a link-ish path; only the reply-scoped `hN` has no other way to be opened.
+ */
+export const historyRefLinks = (
+    state: HistoryState,
+    refs: readonly string[]
+): readonly ToolCallLink[] => {
+    const links: ToolCallLink[] = [];
+    for (const ref of refs) {
+        const reference = parseHistoryReference(ref);
+        if (reference === null || reference.kind !== 'number') continue;
+        const entry = state.entryOf(reference.h);
+        if (entry === undefined) continue;
+        const text = `h${reference.h}`;
+        const url = messageLink(entry.channelId, entry.messageId);
+        if (links.some((link) => link.text === text && link.url === url)) continue;
+        links.push({ text, url });
+    }
+    return links;
+};
 
 const LOG_ARG_CHARS = 160;
 

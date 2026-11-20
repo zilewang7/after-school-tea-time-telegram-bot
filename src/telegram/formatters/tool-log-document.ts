@@ -7,7 +7,13 @@
  * The chat block, the fold plan, the link message's stats and the public log
  * page all read this one document, so the four can never disagree.
  */
-import type { AgentStats, AgentToolCallRecord, AgentToolUsage, GroundingData } from '../../ai/types.js';
+import type {
+    AgentStats,
+    AgentToolCallRecord,
+    AgentToolUsage,
+    GroundingData,
+    ToolCallLink,
+} from '../../ai/types.js';
 import {
     TOOL_LOG_ARGUMENT_MAX_CHARS,
     TOOL_LOG_RESULT_MAX_CHARS,
@@ -38,6 +44,8 @@ export interface ToolLogDocument {
     readonly legacyLines: readonly string[];
     /** `1. name: args → outcome` lines, in call order */
     readonly callLines: readonly string[];
+    /** Clickable spans of each call line, in the same order; empty when a line has none */
+    readonly callLinks: readonly (readonly ToolCallLink[])[];
     /** Calls the record safety cap dropped; 0 normally */
     readonly truncatedCount: number;
     /** Failed calls over all tools (the usage line's own note) */
@@ -55,8 +63,8 @@ const usageLineOf = (usage: readonly AgentToolUsage[]): string =>
         ? ''
         : `tool usage: ${usage.map((tool) => `${tool.name} x${tool.count}${failedNote(tool.failed)}`).join(' | ')}`;
 
-/** One call line: `3. fetch_image: h101 → img3 640×480 · 3.4s` */
-const callLineOf = (record: AgentToolCallRecord, index: number): string => {
+/** One call line: `3. fetch_image: h101 → img3 640×480 · 3.4s`, with its hN links */
+const callLineOf = (record: AgentToolCallRecord, index: number): ToolLogLine => {
     const argument = record.argument === undefined ? '' : truncateCodePoints(record.argument, TOOL_LOG_ARGUMENT_MAX_CHARS);
     const result = record.result === undefined ? '' : truncateCodePoints(record.result, TOOL_LOG_RESULT_MAX_CHARS);
     let line = `${index + 1}. ${record.name}`;
@@ -69,7 +77,9 @@ const callLineOf = (record: AgentToolCallRecord, index: number): string => {
     if (record.ms !== undefined && record.ms >= TOOL_LOG_SLOW_CALL_MS) {
         line += ` · ${formatCallSeconds(record.ms)}`;
     }
-    return line;
+    // A truncation may have cut a ref: a span that is no longer in the line is dropped
+    const links = (record.links ?? []).filter((link) => link.text !== '' && line.includes(link.text));
+    return { text: line, links };
 };
 
 /** Legacy call lines: the distinct grounding searchQueries of the tool steps */
@@ -95,6 +105,12 @@ const codeInterpreterLinesOf = (agentStats: AgentStats | undefined): string[] =>
         return [`${label}: ${truncate(summary.trim())}`];
     });
 
+/** One line of the block body: the text, plus the spans that open a URL */
+export interface ToolLogLine {
+    readonly text: string;
+    readonly links: readonly ToolCallLink[];
+}
+
 export const buildToolLogDocument = (
     agentStats: AgentStats | undefined,
     groundingData: readonly GroundingData[]
@@ -103,6 +119,7 @@ export const buildToolLogDocument = (
     const calls = agentStats?.toolCalls ?? [];
     const failedCount = usage.reduce((total, tool) => total + (tool.failed ?? 0), 0);
     const totalCalls = usage.reduce((total, tool) => total + tool.count, 0);
+    const callLines = calls.map(callLineOf);
     return {
         mode: agentStats?.mode ?? null,
         usage,
@@ -110,7 +127,8 @@ export const buildToolLogDocument = (
         codeInterpreter: codeInterpreterLinesOf(agentStats),
         calls,
         legacyLines: calls.length > 0 ? [] : legacyLinesOf(groundingData),
-        callLines: calls.map(callLineOf),
+        callLines: callLines.map((line) => line.text),
+        callLinks: callLines.map((line) => line.links),
         truncatedCount: agentStats?.toolCallsTruncated ?? 0,
         failedCount,
         totalCalls,
@@ -126,30 +144,38 @@ export const toolLogHasContent = (document: ToolLogDocument): boolean =>
     document.legacyLines.length > 0;
 
 /**
- * The block body in display order. A version with per-call records leads with
- * the usage line (the owner's front-row display) and puts `mode:` after it; a
- * version without them keeps today's order byte for byte.
+ * The block body in display order, each line with its clickable spans. A
+ * version with per-call records leads with the usage line (the owner's
+ * front-row display) and puts `mode:` after it; a version without them keeps
+ * today's order byte for byte, and only call lines carry links.
  */
-export const toolLogBodyLines = (document: ToolLogDocument): string[] => {
-    const lines: string[] = [];
+export const toolLogBodyLineEntries = (document: ToolLogDocument): ToolLogLine[] => {
+    const lines: ToolLogLine[] = [];
+    const push = (text: string, links: readonly ToolCallLink[] = []): void => {
+        lines.push({ text, links });
+    };
     const modeLine = document.mode === null ? null : `mode: ${document.mode}`;
     const hasRecords = document.calls.length > 0;
     if (hasRecords) {
-        if (document.usageLine !== '') lines.push(document.usageLine);
-        if (modeLine !== null) lines.push(modeLine);
-        lines.push(...document.codeInterpreter);
-        lines.push(...document.callLines);
+        if (document.usageLine !== '') push(document.usageLine);
+        if (modeLine !== null) push(modeLine);
+        for (const line of document.codeInterpreter) push(line);
+        document.callLines.forEach((text, index) => push(text, document.callLinks[index] ?? []));
         if (document.truncatedCount > 0) {
-            lines.push(`…另有 ${document.truncatedCount} 次调用未记录`);
+            push(`…另有 ${document.truncatedCount} 次调用未记录`);
         }
         return lines;
     }
-    if (modeLine !== null) lines.push(modeLine);
-    if (document.usageLine !== '') lines.push(document.usageLine);
-    lines.push(...document.codeInterpreter);
-    lines.push(...document.legacyLines);
+    if (modeLine !== null) push(modeLine);
+    if (document.usageLine !== '') push(document.usageLine);
+    for (const line of document.codeInterpreter) push(line);
+    for (const line of document.legacyLines) push(line);
     return lines;
 };
+
+/** The block body in display order, as plain strings (the page's text uses, the OG description) */
+export const toolLogBodyLines = (document: ToolLogDocument): string[] =>
+    toolLogBodyLineEntries(document).map((line) => line.text);
 
 /** Stats of the block a folded link message replaced */
 export interface ToolLogStats {

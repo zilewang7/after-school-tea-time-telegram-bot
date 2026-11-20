@@ -298,6 +298,90 @@ results.push(await runCase('rich: a folded block leaves the body and returns as 
     );
 }));
 
+results.push(await runCase('classic: an hN ref becomes a text_link to its archived message', async () => {
+    const refUrl = 'https://t.me/c/1415974153/1123456';
+    const agentStats = {
+        toolUsage: [{ name: 'read_history', count: 2 }],
+        toolCalls: [
+            {
+                name: 'read_history',
+                argument: 'around h45 · 10 分钟',
+                result: '39 条消息',
+                links: [{ text: 'h45', url: refUrl }],
+            },
+            {
+                name: 'read_history',
+                argument: 'h45、h46',
+                result: '2 条全文',
+                links: [
+                    { text: 'h45', url: refUrl },
+                    { text: 'h46', url: 'https://t.me/c/1415974153/1123457' },
+                    // Not in the line any more: the document drops it, so it never renders
+                    { text: 'h47', url: 'https://t.me/c/1415974153/1123458' },
+                ],
+            },
+        ],
+    };
+    const parts = buildToolRecordParts(agentStats, []);
+    const tools = parts.tools;
+    expect(tools !== null, 'the Tools block exists');
+    const text = tools?.text ?? '';
+    const links = (tools?.entities ?? []).filter((entity) => entity.type === 'text_link');
+    expect(
+        links.length === 3 && links.every((entity) => text.slice(entity.offset, entity.offset + entity.length) === 'h45' || text.slice(entity.offset, entity.offset + entity.length) === 'h46'),
+        `every hN is a link entity (got ${JSON.stringify(links.map((entity) => text.slice(entity.offset, entity.offset + entity.length)))})`
+    );
+    expect(
+        links[0]?.url === refUrl && links[1]?.url === refUrl,
+        `the same ref keeps its URL (got ${JSON.stringify(links.map((entity) => entity.url))})`
+    );
+    expect(
+        parts.document.callLinks[1]?.length === 2,
+        `a span cut from the line is dropped (got ${JSON.stringify(parts.document.callLinks[1])})`
+    );
+    // The measurement is the same section the chat sends: adding entities cannot change the plan
+    expect(toolLogPlan(agentStats, []) === 'fits', 'a normal block still fits one message with its links');
+
+    // ... and the entity survives into the final chunk the chat sends
+    const chunks = buildFinalMessages({ text: '正文', agentStats });
+    const sentChunk = chunks.at(-1);
+    const sent = sentChunk?.entities.filter((entity) => entity.type === 'text_link') ?? [];
+    expect(sent.length === 3, `the sent message carries the links (got ${sent.length})`);
+    expect(sent[0]?.url === refUrl, 'the sent link opens the archived message');
+    const firstSent = sent[0];
+    expect(
+        sentChunk !== undefined &&
+            firstSent !== undefined &&
+            sentChunk.text.slice(firstSent.offset, firstSent.offset + firstSent.length) === 'h45',
+        `the entity covers the ref inside the blockquote (got ${JSON.stringify(
+            sentChunk === undefined || firstSent === undefined
+                ? null
+                : sentChunk.text.slice(firstSent.offset, firstSent.offset + firstSent.length)
+        )})`
+    );
+}));
+
+results.push(await runCase('rich: an hN ref becomes an anchor in the rich body', async () => {
+    const body = buildRichReplyBodyFromAnswer({
+        answerMarkdown: '正文',
+        googleSearch: buildGoogleSearchDocument([]),
+        agentStats: {
+            toolUsage: [{ name: 'fetch_image', count: 1 }],
+            toolCalls: [
+                {
+                    name: 'fetch_image',
+                    argument: 'h101',
+                    result: 'img3 640×480',
+                    links: [{ text: 'h101', url: 'https://t.me/c/1415974153/1123456' }],
+                },
+            ],
+        },
+        wasStoppedByUser: false,
+        searchFolded: false,
+    });
+    expect(body !== null && body.includes('<a href="https://t.me/c/1415974153/1123456">h101</a>'), 'the ref is an anchor');
+}));
+
 results.push(await runCase('rich: the body keeps the Sources block when Tools folds', async () => {
     const body = buildRichReplyBodyFromAnswer({
         answerMarkdown: '正文',

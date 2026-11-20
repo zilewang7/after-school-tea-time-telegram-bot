@@ -1253,4 +1253,49 @@ cases.push(
     })
 );
 
+cases.push(
+    await runCase('read_history links the hN refs it displays', async () => {
+        const fake = fakeService({
+            search: async (request) =>
+                outcomeOf([
+                    hitWith(request.ids?.[0] ?? 2800, request.ids === undefined ? '被读的消息' : '被读的消息'),
+                ]),
+            raw: [rawMessage({ messageId: 2800, text: '被读的消息' })],
+        });
+        const state = createHistoryState();
+        const search = createSearchHistoryTool(buildOptions(fake, { state }));
+        await execute(search, { query: '被读的消息' });
+        const read = createReadHistoryTool(buildOptions(fake, { state }));
+
+        const full = await execute(read, { ids: ['h1'] });
+        expect(!full.isError, `the full read succeeds (got ${full.content})`);
+        expect(full.trace?.argument === 'h1', `the trace names the ref (got ${JSON.stringify(full.trace?.argument)})`);
+        expect(
+            JSON.stringify(full.trace?.links) ===
+                JSON.stringify([{ text: 'h1', url: `https://t.me/c/${CHANNEL_ID}/2800` }]),
+            `the ref opens its archived message (got ${JSON.stringify(full.trace?.links)})`
+        );
+
+        // A failed read has no link to offer; a #N ref is linked by the render pass instead
+        const missing = await execute(read, { ids: ['h12'] });
+        expect(missing.isError && missing.trace === undefined, 'an unknown hN carries no link');
+        const contextRef = await execute(read, { ids: ['#12'] });
+        expect(!contextRef.isError, 'the #12 ref reads through the context index');
+        expect(contextRef.trace?.links === undefined, 'a #N ref adds no stored link');
+
+        // The around form links its anchor the same way
+        const window = await execute(read, { around: 'h1', minutes: 10 });
+        expect(!window.isError, `the window read succeeds (got ${window.content})`);
+        expect(
+            window.trace?.argument === 'around h1 · 10 分钟',
+            `the around trace (got ${JSON.stringify(window.trace?.argument)})`
+        );
+        expect(
+            JSON.stringify(window.trace?.links) ===
+                JSON.stringify([{ text: 'h1', url: `https://t.me/c/${CHANNEL_ID}/2800` }]),
+            `the anchor opens its message (got ${JSON.stringify(window.trace?.links)})`
+        );
+    })
+);
+
 reportResults(cases);
