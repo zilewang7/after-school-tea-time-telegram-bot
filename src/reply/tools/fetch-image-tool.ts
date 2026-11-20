@@ -1,7 +1,13 @@
 /**
- * fetch_image: pull one specific picture into the model's context without
- * sending it anywhere. The companion to search_images for "let me look at that
- * one properly" — full size, OCR, or as a reference for generate_image.
+ * fetch_image: pull pictures into the model's context without sending them
+ * anywhere. The companion to search_images for "let me look at that one
+ * properly" — full size, OCR, or as a reference for generate_image.
+ *
+ * One source per call reads exactly one picture; the plural arguments
+ * (`search_ids`, `urls`, `histories`, `avatars`, `stickers`) read up to
+ * FETCH_BATCH_MAX of the same lane in one call, with their downloads running
+ * side by side (see fetch-image-batch.ts). A single read keeps the text it has
+ * always had.
  *
  * A GIF is different from a still picture here: handed over as `image/gif` a
  * model reads only its first frame (verified 2026-10-23 — `videoMetadata.fps`
@@ -12,39 +18,22 @@
  * Reading the same image twice returns the first read: the bytes are already in
  * the conversation, and only the id is needed for send_image / generate_image.
  */
-import type { ToolCallTrace, ToolHandler, ToolModelImage, ToolResult } from '../../ai/tools/tool-types.js';
+import type { ToolCallTrace, ToolHandler, ToolResult } from '../../ai/tools/tool-types.js';
 import { fetchImageBytes } from '../../services/image-fetch-service.js';
-import {
-    downloadStickerPreview,
-    StickerSetError,
-    type StickerPreview,
-    type StickerSetApi,
-} from '../../services/sticker-set-service.js';
+import type { HistoryImageOptions } from './history-image.js';
+import type { AvatarLaneOptions } from './avatar-lane.js';
+import type { StickerSetApi } from '../../services/sticker-set-service.js';
 import { transcodeVideoToMp4 } from '../../services/tgs-client.js';
-import {
-    formatHistoryImageResult,
-    loadHistoryImage,
-    type HistoryImageOptions,
-} from './history-image.js';
+import { excerptOf, type FetchImageDependencies } from './fetch-image-lane-types.js';
+import { readFetchSource, type FetchReadContext } from './fetch-image-lanes.js';
+import { runFetchImageBatch } from './fetch-image-batch.js';
 import { imageToolError } from './image-tool-result.js';
-import { formatFetchResult, mediaToolErrors } from './image-tool-text.js';
-import { readAvatar, type AvatarLaneOptions } from './avatar-lane.js';
-import {
-    candidateCaption,
-    downloadCandidateMedia,
-    MAX_ORIGINAL_IMAGE_BYTES,
-    type ImageDownloadDependencies,
-} from './image-source-download.js';
-import { parseFetchImageArgs } from './media-tool-args.js';
-import {
-    nextFetchedImageId,
-    nextFetchedStickerId,
-    type ReplyMediaState,
-    type SearchCandidate,
-} from './reply-media-state.js';
-import { padPackIndex, resolveStickerQuery } from './sticker-query.js';
+import { FETCH_BATCH_MAX, parseFetchImageArgs } from './media-tool-args.js';
+import { nextFetchedImageId, nextFetchedStickerId, type ReplyMediaState } from './reply-media-state.js';
 import { FETCH_IMAGE_TOOL_NAME } from './tool-names.js';
-import { traceParts, traceRef, traceText, traceUrl } from './tool-trace.js';
+import { traceRef, traceText, traceUrl } from './tool-trace.js';
+
+export type { FetchImageDependencies } from './fetch-image-lane-types.js';
 
 const DESCRIPTION =
     '将一张图片加载到当前上下文中（仅模型可见，不发送给用户），用于查看细节、识别文字或作为生图参考。' +
@@ -52,18 +41,42 @@ const DESCRIPTION =
     "默认读取原图；传 view='thumbnail' 则读取缩略图。GIF 动图会转换为视频以展示完整动作。" +
     '读取后返回编号 imgN，可用于 send_image 或 generate_image 的 web_references。';
 
+/** The batch sentence only names the plural arguments this turn actually offers */
+const batchDescriptionOf = (hasSticker: boolean, hasHistory: boolean, hasAvatar: boolean): string => {
+    const names = [
+        'search_ids',
+        'urls',
+        ...(hasHistory ? ['histories'] : []),
+        ...(hasSticker ? ['stickers'] : []),
+        ...(hasAvatar ? ['avatars'] : []),
+    ];
+    return (
+        `一次读多张时把同类来源写成数组（${names.join('、')}），一次最多 ${FETCH_BATCH_MAX} 张；` +
+        '不同类的来源分两次调用。'
+    );
+};
+
 const HISTORY_DESCRIPTION =
     '也可传入 history（历史检索结果里的编号，如 h3，或 t.me 消息链接）读取归档消息里的图：' +
     '消息自己的照片与贴纸、网页预览图、Instant View 配图都算，动图与视频给的是首帧；' +
-    '用 image 选这条消息的第几张（从 1 开始，省略=第一张）。';
+    '用 image 选这条消息的第几张（从 1 开始，省略=第一张）；多条消息用 histories。';
 
 const STICKER_DESCRIPTION =
     '也可传入 sticker（贴纸包内序号 01–72、画面名称，或 send_sticker 目录里的整行如 \'30刘海遮眼低落\'）预览贴纸；' +
-    '返回编号 stN，之后可用 send_sticker(sticker=…) 发出，或作为 generate_image 的 web_references。';
+    '返回编号 stN，之后可用 send_sticker(sticker=…) 发出，或作为 generate_image 的 web_references；' +
+    '一次预览多张用 stickers。';
 
 const AVATAR_DESCRIPTION =
     "也可传入 avatar 读取头像：'me'（我自己）、'chat'（当前聊天）、'#N'（上下文 #N 的作者，含其它 bot）、" +
-    "'@username'、数字 id（正数=用户，负数=群/频道）或 t.me 链接；view='thumbnail' 取小尺寸。";
+    "'@username'、数字 id（正数=用户，负数=群/频道）或 t.me 链接；view='thumbnail' 取小尺寸；一次读多个用 avatars。";
+
+const pluralSchema = (label: string, description: string) => ({
+    type: 'array',
+    items: { type: 'string' },
+    minItems: 1,
+    maxItems: FETCH_BATCH_MAX,
+    description: `一次读多张：${label}数组，最多 ${FETCH_BATCH_MAX} 个；${description}与单数参数二选一。`,
+});
 
 const inputSchemaOf = (hasSticker: boolean, hasHistory: boolean, hasAvatar: boolean) => ({
     type: 'object',
@@ -79,13 +92,16 @@ const inputSchemaOf = (hasSticker: boolean, hasHistory: boolean, hasAvatar: bool
                       type: 'integer',
                       minimum: 1,
                       description:
-                          '这条消息的第几张图，从 1 开始（消息附件在前，网页预览图与 Instant View 配图在后）；省略=第一张',
+                          '这条消息的第几张图，从 1 开始（消息附件在前，网页预览图与 Instant View 配图在后）；省略=第一张，只能和 history 一起用',
                   },
+                  histories: pluralSchema('归档消息引用', 'hN 或 t.me 消息链接；每条读第 1 张，要读某条的其它图用 history + image。'),
               }
             : {}),
         search_id: { type: 'string', description: "搜索结果里的候选编号，形如 's3'" },
+        search_ids: pluralSchema('图搜候选编号', "如 ['s1','s2','s3']。"),
         image_id: { type: 'string', description: "已经读取过的图编号，形如 'img1'" },
         url: { type: 'string', description: 'http(s) 图片直链，可以是任意公开地址' },
+        urls: pluralSchema('http(s) 图片直链', '任意公开地址。'),
         ...(hasSticker
             ? {
                   sticker: {
@@ -93,6 +109,7 @@ const inputSchemaOf = (hasSticker: boolean, hasHistory: boolean, hasAvatar: bool
                       description:
                           "贴纸包内序号（01–72）、画面名称，或 send_sticker 目录里的整行，如 '07'、'吃冰棒'、'30刘海遮眼低落'",
                   },
+                  stickers: pluralSchema('贴纸', '包内序号或画面名称。'),
               }
             : {}),
         ...(hasAvatar
@@ -103,12 +120,13 @@ const inputSchemaOf = (hasSticker: boolean, hasHistory: boolean, hasAvatar: bool
                           "头像目标：'me'（我自己）、'chat'（当前聊天）、'#3'（上下文编号）、'@username'、" +
                           '数字 id（正数=用户，负数=群/频道）或 t.me 链接',
                   },
+                  avatars: pluralSchema('头像目标', "'me'、'chat'、'#N'、'@username'、数字 id 或 t.me 链接。"),
               }
             : {}),
         view: {
             type: 'string',
             enum: ['original', 'thumbnail'],
-            description: "original（默认）= 原图；thumbnail = 缩略图，快且省 token。",
+            description: 'original（默认）= 原图；thumbnail = 缩略图，快且省 token。',
         },
     },
 });
@@ -118,11 +136,6 @@ const transcodeGifToMp4 = async (gif: Buffer): Promise<Buffer | null> => {
     const result = await transcodeVideoToMp4(gif, 'image/gif');
     return result?.data ?? null;
 };
-
-export interface FetchImageDependencies extends ImageDownloadDependencies {
-    /** Null/absent: no converter, the model gets the still frame */
-    readonly transcodeAnimation?: (gif: Buffer) => Promise<Buffer | null>;
-}
 
 export interface FetchImageToolOptions {
     readonly state: ReplyMediaState;
@@ -142,24 +155,6 @@ export const PRODUCTION_FETCH_DEPENDENCIES: FetchImageDependencies = {
     fetchImage: fetchImageBytes,
     transcodeAnimation: transcodeGifToMp4,
 };
-
-/** A url the model supplied, dressed as a candidate so one downloader serves both */
-const candidateOfUrl = (url: string): SearchCandidate => ({
-    id: 'url',
-    searchId: 'url',
-    title: url,
-    sourcePage: url,
-    domain: (() => {
-        try {
-            return new URL(url).hostname.replace(/^www\./, '');
-        } catch {
-            return url;
-        }
-    })(),
-    imageUrl: url,
-    thumbnailUrl: url,
-    sendKind: 'static',
-});
 
 /**
  * A rejected call leaves no other trace (the tool log keeps counts and errors
@@ -182,6 +177,26 @@ const textArgOf = (args: Readonly<Record<string, unknown>>, key: string): string
     return typeof value === 'string' && value.trim() !== '' ? value.trim() : undefined;
 };
 
+const textListArgOf = (args: Readonly<Record<string, unknown>>, key: string): readonly string[] | undefined => {
+    const value = args[key];
+    if (!Array.isArray(value)) return undefined;
+    const items = value.filter((item): item is string => typeof item === 'string').map((item) => item.trim());
+    return items.length === 0 ? undefined : items;
+};
+
+/** Every url in a log line by host + path: a query string can carry a secret */
+const URL_IN_TEXT = /https?:\/\/[^\s，。；、）】」』]+/g;
+const logSafeText = (text: string): string => text.replace(URL_IN_TEXT, (url) => traceUrl(url));
+
+/** `6 项：s1,s2,s3…`: the count first, so the log keeps it after truncation */
+const shortList = (values: readonly string[], render: (value: string) => string): string => {
+    const shown = values
+        .slice(0, 3)
+        .map((value) => excerptOf(render(value), 16))
+        .join(',');
+    return values.length > 3 ? `${values.length} 项：${shown}…` : shown;
+};
+
 /** `· 第2张` when the call picked one picture of an archived message */
 const imageIndexSuffixOf = (args: Readonly<Record<string, unknown>>): string => {
     const image = args['image'];
@@ -194,16 +209,26 @@ const imageIndexSuffixOf = (args: Readonly<Record<string, unknown>>): string => 
  * can carry a secret).
  */
 export const describeFetchImageArgument = (args: Readonly<Record<string, unknown>>): string | null => {
+    const stickers = textListArgOf(args, 'stickers');
+    if (stickers !== undefined) return shortList(stickers, traceText);
     const sticker = textArgOf(args, 'sticker');
     if (sticker !== undefined) return traceText(sticker);
+    const histories = textListArgOf(args, 'histories');
+    if (histories !== undefined) return shortList(histories, traceRef);
     const history = textArgOf(args, 'history');
     if (history !== undefined) return `${traceRef(history)}${imageIndexSuffixOf(args)}`;
+    const avatars = textListArgOf(args, 'avatars');
+    if (avatars !== undefined) return `${shortList(avatars, traceText)} 头像`;
     const avatar = textArgOf(args, 'avatar');
     if (avatar !== undefined) return `${traceText(avatar)} 头像`;
+    const searchIds = textListArgOf(args, 'search_ids');
+    if (searchIds !== undefined) return shortList(searchIds, traceText);
     const searchId = textArgOf(args, 'search_id');
     if (searchId !== undefined) return traceText(searchId);
     const imageId = textArgOf(args, 'image_id');
     if (imageId !== undefined) return traceText(imageId);
+    const urls = textListArgOf(args, 'urls');
+    if (urls !== undefined) return shortList(urls, traceUrl);
     const url = textArgOf(args, 'url');
     if (url !== undefined) return traceUrl(url);
     return null;
@@ -211,16 +236,27 @@ export const describeFetchImageArgument = (args: Readonly<Record<string, unknown
 
 export const describeFetchImageRequest = (args: Readonly<Record<string, unknown>>): string => {
     const textOf = (key: string): string | undefined => textArgOf(args, key);
+    const listOf = (key: string): readonly string[] | undefined => textListArgOf(args, key);
+    const stickers = listOf('stickers');
+    if (stickers !== undefined) return `stickers=${stickers.join(',')}`;
     const sticker = textOf('sticker');
     if (sticker !== undefined) return `sticker=${sticker}`;
+    const histories = listOf('histories');
+    if (histories !== undefined) return `histories=${histories.map(traceRef).join(',')}`;
     const history = textOf('history');
     if (history !== undefined) return `history=${history}`;
+    const avatars = listOf('avatars');
+    if (avatars !== undefined) return `avatars=${avatars.map(traceRef).join(',')}`;
     const avatar = textOf('avatar');
     if (avatar !== undefined) return `avatar=${avatar}`;
+    const searchIds = listOf('search_ids');
+    if (searchIds !== undefined) return `search_ids=${searchIds.join(',')}`;
     const searchId = textOf('search_id');
     if (searchId !== undefined) return `search_id=${searchId}`;
     const imageId = textOf('image_id');
     if (imageId !== undefined) return `image_id=${imageId}`;
+    const urls = listOf('urls');
+    if (urls !== undefined) return `urls=${urls.map(hostOfUrl).join(',')}`;
     const url = textOf('url');
     if (url !== undefined) return `url=${hostOfUrl(url)}`;
     return '没有取图来源';
@@ -233,7 +269,7 @@ export const fetchImageRejectionLine = (request: string, message: string): strin
         .join('');
 
 const reject = (request: string, message: string, traceArgument: string | null): ToolResult => {
-    console.warn(`[fetch_image] rejected: ${fetchImageRejectionLine(request, message)}`);
+    console.warn(`[fetch_image] rejected: ${fetchImageRejectionLine(logSafeText(request), logSafeText(message))}`);
     return imageToolError(
         message,
         traceArgument === null ? undefined : { argument: traceArgument }
@@ -244,7 +280,10 @@ export const createFetchImageTool = (options: FetchImageToolOptions): ToolHandle
     const { state, dependencies } = options;
     const canSeeAnimated = options.canSeeAnimated === true;
     const descriptionOf = (): string => {
-        const parts = [DESCRIPTION];
+        const parts = [
+            DESCRIPTION,
+            batchDescriptionOf(options.sticker !== undefined, options.history !== undefined, options.avatar !== undefined),
+        ];
         if (options.history !== undefined) parts.push(HISTORY_DESCRIPTION);
         if (options.sticker !== undefined) parts.push(STICKER_DESCRIPTION);
         if (options.avatar !== undefined) parts.push(AVATAR_DESCRIPTION);
@@ -271,218 +310,70 @@ export const createFetchImageTool = (options: FetchImageToolOptions): ToolHandle
             const parsed = parseFetchImageArgs(rawArgs);
             if (!parsed.ok) return reject(request, parsed.error, traceArgument);
             const args = parsed.args;
+            const context: FetchReadContext = {
+                state,
+                dependencies,
+                canSeeAnimated,
+                view: args.view,
+                imageIndex: args.image,
+                signal,
+                ...(options.sticker === undefined ? {} : { sticker: options.sticker }),
+                ...(options.history === undefined ? {} : { history: options.history }),
+                ...(options.avatar === undefined ? {} : { avatar: options.avatar }),
+            };
 
-            // Re-reading is free: the bytes already ride the conversation
-            if (args.imageId !== undefined) {
-                const existing = state.fetched.get(args.imageId);
-                if (!existing) return reject(request, mediaToolErrors.unknownFetched(args.imageId), traceArgument);
-                return {
-                    content:
-                        `已经读过 ${existing.id}（${existing.mimeType}，${Math.round(existing.data.length / 1024)}KB），` +
-                        '图片就在上面的对话里，不用重复读取。\n' +
-                        `可以直接 send_image(image_id='${existing.id}') 发出，或作为 generate_image 的参考图。`,
-                    isError: false,
-                    images: [],
-                    record: null,
-                    trace: traceOf('已读过'),
-                };
-            }
-
-            if (args.history !== undefined) {
-                if (!options.history) return reject(request, '这一轮没有历史归档工具，读不了归档里的图。', traceArgument);
-                const resolved = await loadHistoryImage(
-                    options.history,
-                    args.history,
-                    args.image,
-                    args.view,
-                    signal
-                );
-                if (!resolved.ok) return reject(request, resolved.error, traceArgument);
-                const { image } = resolved;
-
-                const id = nextFetchedImageId(state);
-                state.fetched.set(id, {
-                    id,
-                    data: image.data,
-                    mimeType: image.mimeType,
-                    still: { data: image.data, mimeType: image.mimeType },
-                    sourcePage: image.sourcePage,
-                    title: `${image.reference} ${image.label}`,
-                    imageUrl: image.sourcePage,
-                });
-
-                return {
-                    content: formatHistoryImageResult(id, image),
-                    isError: false,
-                    images: [],
-                    modelImages: [
-                        {
-                            data: image.data,
-                            mimeType: image.mimeType,
-                            caption: `${image.reference} 第 ${image.index}/${image.total} 张（${image.label}）`,
-                        },
-                    ],
-                    record: {
-                        provider: 'mcp',
-                        searchQueries: [`${FETCH_IMAGE_TOOL_NAME}: ${image.reference}`],
-                        citations: [{ uri: image.sourcePage, title: `${image.reference} ${image.label}` }],
-                    },
-                    trace: traceOf(
-                        traceParts(
-                            `${id} ${image.label}`,
-                            image.total > 1 ? `${image.index}/${image.total}` : null,
-                            image.width !== null && image.height !== null
-                                ? `${image.width}×${image.height}`
-                                : null
-                        )
-                    ),
-                };
-            }
-
-            if (args.sticker !== undefined) {
-                const resolvedQuery = resolveStickerQuery(args.sticker, state);
-                if (!resolvedQuery.ok) return reject(request, resolvedQuery.error, traceArgument);
-                const entry = resolvedQuery.entry;
-                const existing = [...state.fetchedStickers.entries()].find(
-                    ([, packIndex]) => packIndex === entry.packIndex
-                );
-                if (existing) {
-                    return {
-                        content:
-                            `已经预览过 ${existing[0]}（${padPackIndex(entry.packIndex)} ${entry.label}），` +
-                            '贴纸就在上面的对话里，不用重复读取。\n' +
-                            `可以直接 send_sticker(sticker='${existing[0]}') 发出。`,
-                        isError: false,
-                        images: [],
-                        record: null,
-                        trace: traceOf(`已预览过 ${existing[0]}`),
-                    };
-                }
-                if (!options.sticker) return reject(request, '这个模型/这一轮没有配置贴纸预览。', traceArgument);
-
-                let preview: StickerPreview;
-                try {
-                    preview = await downloadStickerPreview(
-                        options.sticker.api,
-                        options.sticker.setName,
-                        entry,
-                        'thumbnail',
-                        dependencies.signal
+            if (args.sources.length > 1 || args.skippedDuplicates.length > 0) {
+                const batch = await runFetchImageBatch(args.sources, args.skippedDuplicates, context);
+                if (batch.failures.length > 0 && signal.aborted !== true) {
+                    // A batch that partly failed has no rejected call to log; the
+                    // first unread item is what an operator needs to see. A stop
+                    // is not a failure worth a warning.
+                    console.warn(
+                        `[fetch_image] ${batch.failures.length} 项没读出来：` +
+                            fetchImageRejectionLine(logSafeText(request), logSafeText(batch.failures[0] ?? ''))
                     );
-                } catch (error) {
-                    const message =
-                        error instanceof StickerSetError
-                            ? error.message
-                            : `贴纸读不出来：${error instanceof Error ? error.message : String(error)}`;
-                    return reject(request, message, traceArgument);
                 }
-
-                const id = nextFetchedStickerId(state);
-                state.fetchedStickers.set(id, entry.packIndex);
-                const caption = `贴纸 ${id}：${padPackIndex(entry.packIndex)} ${entry.label}`;
                 return {
-                    content:
-                        `已读取${caption}（320 缩略图，${Math.round(preview.data.length / 1024)}KB）。\n` +
-                        `想发就 send_sticker(sticker='${id}')。`,
-                    isError: false,
+                    content: batch.content,
+                    isError: batch.isError,
                     images: [],
-                    modelImages: [{ data: preview.data, mimeType: preview.mimeType, caption }],
-                    record: null,
-                    trace: traceOf(`${id} 预览 320`),
+                    ...(batch.modelImages.length === 0 ? {} : { modelImages: batch.modelImages }),
+                    record: batch.record,
+                    trace: traceOf(batch.traceResult),
                 };
             }
 
-            if (args.avatar !== undefined) {
-                if (options.avatar === undefined) return reject(request, '这一轮没有配置头像读取。', traceArgument);
-                const lane = await readAvatar(args.avatar, args.view, state, options.avatar, signal);
-                if (!lane.ok) return reject(request, lane.error, traceArgument);
-                return lane.result;
+            const source = args.sources[0];
+            if (source === undefined) return reject(request, '没有取图来源', traceArgument);
+            const outcome = await readFetchSource(source, context);
+            if (!outcome.ok) return reject(request, outcome.error, traceArgument);
+            if (outcome.status === 'reuse') {
+                return {
+                    content: outcome.content,
+                    isError: false,
+                    images: [],
+                    record: null,
+                    trace: traceOf(outcome.traceResult),
+                };
             }
-
-            const candidate =
-                args.searchId !== undefined
-                    ? state.candidates.get(args.searchId)
-                    : candidateOfUrl(args.url ?? '');
-            if (!candidate) {
-                return reject(request, mediaToolErrors.unknownCandidate(args.searchId ?? ''), traceArgument);
-            }
-
-            const downloaded = await downloadCandidateMedia(candidate, dependencies, {
-                preferThumbnail: args.view === 'thumbnail',
-            });
-            if (!downloaded.ok) {
-                return reject(request, mediaToolErrors.downloadFailed(downloaded.error), traceArgument);
-            }
-
-            const { media } = downloaded;
-            if (media.deliverable.data.length > MAX_ORIGINAL_IMAGE_BYTES) {
-                return reject(
-                    request,
-                    mediaToolErrors.tooLarge(MAX_ORIGINAL_IMAGE_BYTES / 1024 / 1024),
-                    traceArgument
-                );
-            }
-
-            const id = nextFetchedImageId(state);
-            state.fetched.set(id, {
-                id,
-                data: media.deliverable.data,
-                mimeType: media.deliverable.mimeType,
-                still: media.still,
-                sourcePage: candidate.sourcePage,
-                ...(candidate.title === candidate.sourcePage ? {} : { title: candidate.title }),
-                imageUrl: candidate.imageUrl,
-                ...(args.searchId === undefined ? {} : { candidateId: args.searchId }),
-            });
-
-            const caption =
-                args.searchId === undefined ? `[${id}] ${candidate.domain}` : candidateCaption(candidate);
-            const animated = media.deliverable.mimeType === 'image/gif';
-            const mp4 =
-                animated && canSeeAnimated && dependencies.transcodeAnimation !== undefined
-                    ? await dependencies.transcodeAnimation(media.deliverable.data)
-                    : null;
-            const note = animated
-                ? mp4 === null
-                    ? '动图，给你看的是第一帧'
-                    : '动图，已转成 mp4 给你看动作'
-                : media.deliverable.note;
-            const modelImage: ToolModelImage =
-                mp4 === null
-                    ? { data: media.still.data, mimeType: media.still.mimeType, caption }
-                    : { data: mp4, mimeType: 'video/mp4', caption: `${caption}（动图，转成视频看动作）` };
-
-            const content = formatFetchResult({
-                image: {
-                    id,
-                    mimeType: media.deliverable.mimeType,
-                    dataLength: media.deliverable.data.length,
-                    sourcePage: candidate.sourcePage,
-                    ...(candidate.width === undefined ? {} : { width: candidate.width }),
-                    ...(candidate.height === undefined ? {} : { height: candidate.height }),
-                },
-                ...(args.searchId === undefined ? {} : { fromCandidateId: args.searchId }),
-                note,
-            });
-
+            const { read } = outcome;
+            const id = read.kind === 'sticker' ? nextFetchedStickerId(state) : nextFetchedImageId(state);
+            read.register(id);
+            const materialized = read.materialize(id);
             return {
-                content,
+                content: materialized.content,
                 isError: false,
                 images: [],
-                modelImages: [modelImage],
-                record: {
-                    provider: 'mcp',
-                    searchQueries: [`${FETCH_IMAGE_TOOL_NAME}: ${args.searchId ?? candidate.domain}`],
-                    citations: [{ uri: candidate.sourcePage, title: candidate.title }],
-                },
-                trace: traceOf(
-                    traceParts(
-                        id,
-                        candidate.width !== undefined && candidate.height !== undefined
-                            ? `${candidate.width}×${candidate.height}`
-                            : null
-                    )
-                ),
+                modelImages: [{ data: read.data, mimeType: read.mimeType, caption: materialized.caption }],
+                record:
+                    read.citation === undefined
+                        ? null
+                        : {
+                              provider: 'mcp',
+                              searchQueries: read.searchQuery === undefined ? [] : [read.searchQuery],
+                              citations: [read.citation],
+                          },
+                trace: traceOf(materialized.traceResult),
             };
         },
     };

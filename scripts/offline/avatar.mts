@@ -181,7 +181,8 @@ results.push(
 results.push(
     await runCase('fetch_image takes avatar as exactly one source', async () => {
         const alone = parseFetchImageArgs({ avatar: 'me' });
-        expect(alone.ok && alone.args.avatar === 'me', 'avatar alone is accepted');
+        const source = alone.ok ? alone.args.sources[0] : undefined;
+        expect(alone.ok && source?.kind === 'avatar' && source.target === 'me', 'avatar alone is accepted');
         expect(!parseFetchImageArgs({ avatar: 'me', url: 'https://example.com/a.png' }).ok, 'two sources are refused');
         expect(!parseFetchImageArgs({ avatar: '' }).ok, 'an empty avatar is refused');
         expect(!parseFetchImageArgs({ avatar: 42 }).ok, 'a non-string avatar is refused');

@@ -76,7 +76,10 @@ const nextStepLines = (input: SearchTextInput, unseen: readonly SearchCandidate[
             lines.push(`- 只要文字清单：search_images(search='${set.id}', view='details')`);
         }
         if (unseen.length > 0) {
-            lines.push(`- 单张看大图：fetch_image(search_id='${unseen[0]?.id ?? 's1'}')`);
+            const firstId = unseen[0]?.id ?? 's1';
+            const taken = unseen.slice(0, 3).map((candidate) => `'${candidate.id}'`);
+            const batch = taken.length > 1 ? `，多张用 fetch_image(search_ids=[${taken.join(',')}])` : '';
+            lines.push(`- 单张看大图：fetch_image(search_id='${firstId}')${batch}`);
         }
     }
     lines.push(
@@ -160,6 +163,54 @@ export const formatAvatarResult = (input: {
 export const formatAvatarReuse = (id: string, label: string): string =>
     `已经读过 ${id}（${label}），就在上面的对话里，不用重复读取。\n` +
     `可以直接 send_image(image_id='${id}') 发出，或作为 generate_image 的参考图。`;
+
+/** One line: untrusted titles and errors must not forge another list item */
+const oneLine = (text: string): string => text.replace(/\s+/g, ' ').trim();
+
+/** What fetch_image says after reading several pictures in one call */
+export const formatFetchBatchResult = (input: {
+    readonly kind: 'image' | 'sticker';
+    readonly lines: readonly { readonly id: string; readonly summary: string }[];
+    /** How many of those lines carried new bytes; 0 = everything was already here */
+    readonly freshCount: number;
+    readonly failures: readonly string[];
+    readonly skippedDuplicates: readonly string[];
+    readonly sourcePages: readonly { readonly id: string; readonly page: string }[];
+}): string => {
+    const noun = input.kind === 'sticker' ? '张贴纸' : '张图';
+    const output: string[] = [];
+    if (input.lines.length === 0) {
+        output.push(`这 ${input.failures.length} ${noun}都没读出来：`);
+    } else {
+        const ids = input.lines.map((line) => line.id).join('、');
+        const header = input.freshCount === 0 ? '已在上下文里' : '已读取';
+        output.push(`${header} ${input.lines.length} ${noun}（${ids}）：`);
+        output.push(...input.lines.map((line) => `- ${line.id}：${oneLine(line.summary)}`));
+        if (input.failures.length > 0) {
+            output.push(`有 ${input.failures.length} ${noun}没读出来：`);
+        }
+    }
+    if (input.failures.length > 0) {
+        output.push(...input.failures.map((failure) => `- ${oneLine(failure)}`));
+    }
+    if (input.skippedDuplicates.length > 0) {
+        const names = input.skippedDuplicates.map(oneLine).join('、');
+        output.push(`重复的 ${input.skippedDuplicates.length} 项已跳过：${names}。`);
+    }
+    if (input.sourcePages.length > 0) {
+        output.push('来源页：');
+        output.push(...input.sourcePages.map((entry) => `- ${entry.id}：${oneLine(entry.page)}`));
+    }
+    const firstId = input.lines[0]?.id;
+    if (firstId !== undefined) {
+        output.push(
+            input.kind === 'sticker'
+                ? `想发就 send_sticker(sticker='${firstId}')。`
+                : `可以直接作为 generate_image 的参考图（web_references），或 send_image(image_id='${firstId}') 发出（可多次 send_image 一起发）。`
+        );
+    }
+    return output.join('\n');
+};
 
 /** What send_image says once the picture is on its way */
 export const formatSendResult = (input: {

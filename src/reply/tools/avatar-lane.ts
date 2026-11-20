@@ -6,7 +6,6 @@
  * A target read twice in the same reply is answered from the conversation: the
  * bytes are already there, only the id matters for the next call.
  */
-import type { ToolResult } from '../../ai/tools/tool-types.js';
 import {
     avatarTargetKey,
     resolveAvatar,
@@ -16,8 +15,8 @@ import {
 import type { ContextIndex } from '../context-index.js';
 import { parseAvatarTarget } from './avatar-args.js';
 import { formatAvatarResult, formatAvatarReuse } from './image-tool-text.js';
-import { nextFetchedImageId, type ReplyMediaState } from './reply-media-state.js';
-import { traceText } from './tool-trace.js';
+import { laneSummaryOf, type LaneOutcome } from './fetch-image-lane-types.js';
+import type { ReplyMediaState } from './reply-media-state.js';
 
 export interface AvatarLaneOptions {
     /** The chat this reply happens in: `avatar='chat'` */
@@ -28,17 +27,14 @@ export interface AvatarLaneOptions {
     readonly dependencies: AvatarDependencies;
 }
 
-export type AvatarLaneResult =
-    | { readonly ok: true; readonly result: ToolResult }
-    | { readonly ok: false; readonly error: string };
-
-export const readAvatar = async (
+/** One avatar target → the picture, or the reason it cannot be read */
+export const readAvatarSource = async (
     text: string,
     view: AvatarView,
     state: ReplyMediaState,
     options: AvatarLaneOptions,
     signal: AbortSignal
-): Promise<AvatarLaneResult> => {
+): Promise<LaneOutcome> => {
     const parsed = parseAvatarTarget(text, {
         chatId: options.chatId,
         botUserId: options.botUserId,
@@ -46,20 +42,16 @@ export const readAvatar = async (
     });
     if (!parsed.ok) return { ok: false, error: parsed.error };
 
-    const traceArgument = `${traceText(text)} 头像`;
     const key = `${avatarTargetKey(parsed.target)}:${view}`;
     const existingId = state.readAvatars.get(key);
     if (existingId !== undefined) {
         const label = state.fetched.get(existingId)?.title ?? '头像';
         return {
             ok: true,
-            result: {
-                content: formatAvatarReuse(existingId, label),
-                isError: false,
-                images: [],
-                record: null,
-                trace: { argument: traceArgument, result: '已读过' },
-            },
+            status: 'reuse',
+            id: existingId,
+            content: formatAvatarReuse(existingId, label),
+            traceResult: '已读过',
         };
     }
 
@@ -70,39 +62,44 @@ export const readAvatar = async (
     );
     if (!resolved.ok) return { ok: false, error: resolved.error };
     const { avatar } = resolved;
-
-    const id = nextFetchedImageId(state);
-    state.fetched.set(id, {
-        id,
-        data: avatar.data,
-        mimeType: avatar.mimeType,
-        still: { data: avatar.data, mimeType: avatar.mimeType },
-        sourcePage: '',
-        title: avatar.label,
-        imageUrl: '',
-    });
-    state.readAvatars.set(key, id);
+    const tier = view === 'thumbnail' ? '160 档缩略图' : '640 档';
 
     return {
         ok: true,
-        result: {
-            content: formatAvatarResult({
-                id,
-                label: avatar.label,
+        status: 'read',
+        read: {
+            kind: 'image',
+            data: avatar.data,
+            mimeType: avatar.mimeType,
+            register: (id) => {
+                state.fetched.set(id, {
+                    id,
+                    data: avatar.data,
+                    mimeType: avatar.mimeType,
+                    still: { data: avatar.data, mimeType: avatar.mimeType },
+                    sourcePage: '',
+                    title: avatar.label,
+                    imageUrl: '',
+                });
+                state.readAvatars.set(key, id);
+            },
+            materialize: (id) => ({
+                content: formatAvatarResult({
+                    id,
+                    label: avatar.label,
+                    mimeType: avatar.mimeType,
+                    dataLength: avatar.data.length,
+                    view,
+                }),
+                caption: `头像 ${id}：${avatar.label}`,
+                traceResult: `${id} 头像 ${view === 'thumbnail' ? '160 档' : '640 档'}`,
+            }),
+            summary: laneSummaryOf({
+                label: `${avatar.label}（${tier}）`,
                 mimeType: avatar.mimeType,
                 dataLength: avatar.data.length,
-                view,
             }),
-            isError: false,
-            images: [],
-            modelImages: [
-                { data: avatar.data, mimeType: avatar.mimeType, caption: `头像 ${id}：${avatar.label}` },
-            ],
-            record: null,
-            trace: {
-                argument: traceArgument,
-                result: `${id} 头像 ${view === 'thumbnail' ? '160 档' : '640 档'}`,
-            },
+            sourcePage: null,
         },
     };
 };
