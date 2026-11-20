@@ -13,15 +13,18 @@ import { sequelize } from './config.js';
  * Link-preview cache, content-addressed by URL.
  * One row per unique link: the preview text fetched live from Telegram via
  * luoxu (MTProto), plus references to preview media stored in MediaCache.
- * The same URL re-sent by anyone hits this row and never re-fetches.
+ * A ready row is final and serves every later message with the same URL; a
+ * 'none'/'error' outcome is only a snapshot and is retried after its cooldown.
  */
 export class LinkPreviewCache extends Model<
   InferAttributes<LinkPreviewCache>,
   InferCreationAttributes<LinkPreviewCache>
 > {
   declare url: string;
-  // 'ready': preview stored; 'none': Telegram has no preview for this URL
-  // (cached too, so we don't retry on every message).
+  // 'ready': preview stored and usable; 'none': Telegram confirmed that this
+  // URL has no preview; 'error': the last attempt failed temporarily (retried
+  // after a short cooldown). Only rows written before this column's cooldown
+  // existed can be missing lastAttemptAt.
   declare status: string;
   declare siteName: CreationOptional<string | null>;
   declare title: CreationOptional<string | null>;
@@ -39,6 +42,11 @@ export class LinkPreviewCache extends Model<
   declare ocrText: CreationOptional<string | null>;
   declare ocrSourceTimestamp: CreationOptional<number | null>;
   declare ocrSourceUpdateId: CreationOptional<number | null>;
+  // When the last acquisition attempt ended: 'none'/'error' rows are retried
+  // after a cooldown measured from it. NULL = row predates the column.
+  declare lastAttemptAt: CreationOptional<Date | null>;
+  // 'message' | 'url': which luoxu data source produced this row (diagnostic).
+  declare source: CreationOptional<string | null>;
   declare createdAt: CreationOptional<Date>;
   declare lastUsedAt: Date;
 }
@@ -105,6 +113,16 @@ LinkPreviewCache.init({
   },
   ocrSourceUpdateId: {
     type: DataTypes.INTEGER,
+    allowNull: true,
+    defaultValue: null,
+  },
+  lastAttemptAt: {
+    type: DataTypes.DATE,
+    allowNull: true,
+    defaultValue: null,
+  },
+  source: {
+    type: DataTypes.STRING,
     allowNull: true,
     defaultValue: null,
   },

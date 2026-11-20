@@ -206,6 +206,18 @@ const migratePreviewOcrRevision = async (transaction: Transaction): Promise<void
 };
 
 /**
+ * 'none' is no longer a final answer and temporary failures need a retry
+ * marker: lastAttemptAt drives the retry cooldown, source records which luoxu
+ * data source (message / URL) produced the row. Both nullable, so old rows and
+ * old code are unaffected; NULL lastAttemptAt means "attempt is long past".
+ */
+const migrateLinkPreviewUrlFallback = async (transaction: Transaction): Promise<void> => {
+  if (!(await tableExists('link_preview_cache', transaction))) return;
+  await ensureColumn('link_preview_cache', 'lastAttemptAt', 'DATETIME', transaction);
+  await ensureColumn('link_preview_cache', 'source', 'VARCHAR(255)', transaction);
+};
+
+/**
  * Video duration (seconds) for cached media, used to pick the model's frame
  * sampling rate. Nullable and left NULL for non-videos and for every row cached
  * before this column existed — the readers treat NULL as "length unknown".
@@ -1026,6 +1038,7 @@ export const runSchemaMigrations = async (): Promise<void> => {
     await migrateCustomEmojiSchema(transaction);
     await migrateMessageMedia(transaction);
     await migratePreviewOcrRevision(transaction);
+    await migrateLinkPreviewUrlFallback(transaction);
     await migrateMediaCacheDurationSeconds(transaction);
     await migrateHarnessIssuePanelColumns(transaction);
     await migrateChatSettingsToolOverrides(transaction);
@@ -1215,6 +1228,12 @@ export const runSchemaMigrations = async (): Promise<void> => {
     await sequelize.query(
       `INSERT OR IGNORE INTO schema_migrations (name, appliedAt)
        VALUES ('20261120_message_reactions', :appliedAt)`,
+      { replacements: { appliedAt: new Date().toISOString() }, transaction }
+    );
+    // link_preview_cache gained lastAttemptAt and source (migrateLinkPreviewUrlFallback)
+    await sequelize.query(
+      `INSERT OR IGNORE INTO schema_migrations (name, appliedAt)
+       VALUES ('20261120_link_preview_url_fallback', :appliedAt)`,
       { replacements: { appliedAt: new Date().toISOString() }, transaction }
     );
   });

@@ -53,6 +53,7 @@ export const buildFormatSection = (options: { includeOcrNote: boolean }): string
 - \`[system] your reply #5 ended without producing any text …\`（同上位置）表示那条回复在写出正文前就结束了（流中断、被停止或空回复），没有正文可读，用户可以重试
 - \`[system] 链接预览：…\` 为系统自动抓取的消息内链接预览（站点、标题、描述及可能的正文与图片）；
   预览图片与消息自带附件均归属该消息，工具按出现顺序索引（消息附件在前，链接预览图片在后）
+  没有拿到预览时会改给一行 \`[system] 链接预览：…\` 状态说明，表示「Telegram 没有为该链接生成网页预览」或「抓取失败（可重试或换用网页读取工具）」
 - \`[system] 消息链接预览：…\` 为系统抓取的 \`t.me/…\` 消息链接目标及其被回复消息；其中的作者、时间与编号均属于原消息而非当前上下文，其附带图片同样排在发链接消息自身的附件之后
 - \`[system] the same media as #3 — not attached again\` 表示这条消息的图片/视频/文件与 #3 是同一个文件，系统没有重复附上，看 #3 的即可
 ${options.includeOcrNote ? OCR_FALLBACK_NOTE : ''}- 你自己的历史回复开头的 \`[#5]\` 为系统附加的上下文编号

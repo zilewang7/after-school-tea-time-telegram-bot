@@ -18,7 +18,10 @@ import { listMessageMediaForMessages } from '../db/queries/message-media-queries
 import { listReactionsForMessages } from '../db/queries/reaction-queries.js';
 import type { StoredMessageMedia } from '../db/messageMediaDTO.js';
 import { assembleContextMessages, isSubImage, type ContextNumbering } from './context-assembly.js';
-import { getLinkPreviewWithIdentity } from '../services/luoxu-preview-service.js';
+import {
+    getLinkPreviewOutcome,
+    type LinkPreviewUnavailableReason,
+} from '../services/luoxu-preview-service.js';
 import {
     getTgMessageLinkPreviewParts,
     planTgMessageLinkPreviews,
@@ -707,6 +710,19 @@ interface TurnInputs {
 }
 
 /**
+ * One-line [system] note for a link whose preview is unavailable. Only the two
+ * definite outcomes get one: 'none' (Telegram has no preview) and 'error' (the
+ * fetch failed); 'unknown' (not triggered, t.me link) and 'disabled' would
+ * only be noise.
+ */
+const linkPreviewStatusNoticeOf = (reason: LinkPreviewUnavailableReason): string | null =>
+    match(reason)
+        .with('none', () => '[system] 链接预览：Telegram 没有为该链接生成网页预览。')
+        .with('error', () => '[system] 链接预览抓取失败（可重试或换用网页读取工具）。')
+        .with('unknown', 'disabled', () => null)
+        .exhaustive();
+
+/**
  * Build the user turn: the message's media inside its block (header → media →
  * terminator), then its link previews, capability-aware media nudges and the
  * remaining system annotations.
@@ -775,10 +791,11 @@ const buildUserMessage = async (
     // pointer line, and their preview media never reaches the context a second
     // time.
     let previewParts: UnifiedContentPart[] = [];
-    const linkPreview = await getLinkPreviewWithIdentity(msg.text, {
+    const previewOutcome = await getLinkPreviewOutcome(msg.text, {
         includeOcrFallback: !capabilities.supportsImageInput,
     });
-    if (linkPreview !== null) {
+    if (previewOutcome.kind === 'ready') {
+        const linkPreview = previewOutcome.content;
         const keptAt = seenLinkPreviews.get(linkPreview.identity);
         if (keptAt !== undefined) {
             parts.push({
@@ -792,6 +809,13 @@ const buildUserMessage = async (
             }
             previewParts = linkPreview.parts;
             parts.push(...previewParts);
+        }
+    } else {
+        // The model must know whether Telegram has no preview or the fetch
+        // failed, instead of guessing from the bare URL (harness issue #12).
+        const notice = linkPreviewStatusNoticeOf(previewOutcome.reason);
+        if (notice !== null) {
+            parts.push({ type: 'text', text: notice });
         }
     }
 
