@@ -6,6 +6,7 @@ import { MessageAttachment } from './messageAttachmentDTO.js';
 import { CustomEmojiAsset } from './customEmojiAssetDTO.js';
 import { MessageRevision } from './messageRevisionDTO.js';
 import { deleteMessageMediaForKeys } from './queries/message-media-queries.js';
+import { deleteOrphanReactions, deleteReactionsForMessageKeys } from './queries/reaction-queries.js';
 import { sequelize } from './config.js';
 import { parseChatCommand, serializeChatCommand } from "../reply/commands/chat-command-parser.js";
 import { withBusyRetry } from "./busy-retry.js";
@@ -1491,6 +1492,7 @@ const mutateInChunks = async <T>(
 interface StaleMessageDeleteCounts {
     attachments: number;
     revisions: number;
+    reactions: number;
     media: number;
     messages: number;
 }
@@ -1499,7 +1501,7 @@ const deleteStaleMessagesInChunks = async (
     candidateKeys: MessageKey[],
     cutoff: Date
 ): Promise<StaleMessageDeleteCounts> => {
-    const counts: StaleMessageDeleteCounts = { attachments: 0, revisions: 0, media: 0, messages: 0 };
+    const counts: StaleMessageDeleteCounts = { attachments: 0, revisions: 0, reactions: 0, media: 0, messages: 0 };
     for (let start = 0; start < candidateKeys.length; start += CLEANUP_BATCH_SIZE) {
         const candidates = candidateKeys.slice(start, start + CLEANUP_BATCH_SIZE);
         const deleted = await sequelize.transaction(async (transaction) => {
@@ -1515,7 +1517,7 @@ const deleteStaleMessagesInChunks = async (
             });
             const keys = stillStale.map(messageKeyOf);
             if (keys.length === 0) {
-                return { attachments: 0, revisions: 0, media: 0, messages: 0 };
+                return { attachments: 0, revisions: 0, reactions: 0, media: 0, messages: 0 };
             }
             const attachments = await MessageAttachment.destroy({
                 where: { [Op.or]: keys },
@@ -1525,6 +1527,8 @@ const deleteStaleMessagesInChunks = async (
                 where: { [Op.or]: keys },
                 transaction,
             });
+            // Reactions live exactly as long as their message does
+            const reactions = await deleteReactionsForMessageKeys(keys, transaction);
             // The pictures of the reply (media_cache bytes are LRU-cleaned)
             const media = await deleteMessageMediaForKeys(keys, transaction);
             const messages = await Message.destroy({
@@ -1536,10 +1540,11 @@ const deleteStaleMessagesInChunks = async (
                 },
                 transaction,
             });
-            return { attachments, revisions, media, messages };
+            return { attachments, revisions, reactions, media, messages };
         });
         counts.attachments += deleted.attachments;
         counts.revisions += deleted.revisions;
+        counts.reactions += deleted.reactions;
         counts.media += deleted.media;
         counts.messages += deleted.messages;
         await new Promise((resolve) => setImmediate(resolve));
@@ -1571,6 +1576,7 @@ export const clearExpiredData = async (): Promise<void> => {
         );
         const attachmentResult = staleMessageDeleteCounts.attachments;
         const revisionResult = staleMessageDeleteCounts.revisions;
+        const reactionResult = staleMessageDeleteCounts.reactions;
         const mediaResult = staleMessageDeleteCounts.media;
         const messageResult = staleMessageDeleteCounts.messages;
 
@@ -1593,6 +1599,12 @@ export const clearExpiredData = async (): Promise<void> => {
             staleResponses.map((row) => row.messageId),
             (chunk) => BotResponse.destroy({ where: { messageId: { [Op.in]: chunk } } })
         );
+
+        // Reaction rows the message-key cascade could not see: a bot response
+        // cleaned up before a message row was ever written, or the tiny window a
+        // cleanup committed in. Run after bot_responses, or those rows look
+        // orphaned. The cascade above already deleted the common case.
+        const orphanReactionResult = await deleteOrphanReactions(oneWeekAgo);
 
         // 面板排除记录随所属消息失效：超过 7 天且消息行与回复行都已删除才清理
         // （bot 行的 date 每次收尾 / 切换版本都会重置，单独按 7 天过期会让被排除的回复溜回上下文）
@@ -1693,7 +1705,7 @@ export const clearExpiredData = async (): Promise<void> => {
         );
 
         const elapsedMs = Date.now() - startedAt;
-        const summary = `Cleared ${messageResult} messages, ${attachmentResult} attachments, ${revisionResult} revisions, ${mediaResult} reply media rows, ${messageLinkResult} message links, ${botResponseResult} bot responses before ${oneWeekAgo.toISOString()}; dropped ${exclusionResult} orphaned context exclusions; cleared media bytes of ${mediaClearedCount} messages before ${oneWeekAgo.toISOString()}; deleted ${staleGcsRows.length} GCS refs; evicted ${mediaCacheResult} media cache entries, ${emojiAssetResult} emoji assets, ${linkPreviewResult} link previews, ${tgLinkResult} tg message link snapshots, ${workspaceResult} workspace files; cleared ${settingsAuditResult} settings audit rows before ${oneYearAgo.toISOString()} (${elapsedMs}ms)`;
+        const summary = `Cleared ${messageResult} messages, ${attachmentResult} attachments, ${revisionResult} revisions, ${reactionResult} message reactions, ${orphanReactionResult} orphaned message reactions, ${mediaResult} reply media rows, ${messageLinkResult} message links, ${botResponseResult} bot responses before ${oneWeekAgo.toISOString()}; dropped ${exclusionResult} orphaned context exclusions; cleared media bytes of ${mediaClearedCount} messages before ${oneWeekAgo.toISOString()}; deleted ${staleGcsRows.length} GCS refs; evicted ${mediaCacheResult} media cache entries, ${emojiAssetResult} emoji assets, ${linkPreviewResult} link previews, ${tgLinkResult} tg message link snapshots, ${workspaceResult} workspace files; cleared ${settingsAuditResult} settings audit rows before ${oneYearAgo.toISOString()} (${elapsedMs}ms)`;
         recordCleanupRun(summary, elapsedMs);
         if (elapsedMs > CLEANUP_SLOW_MS) {
             console.warn(`[autoClear] slow cleanup — ${summary}`);

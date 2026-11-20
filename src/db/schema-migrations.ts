@@ -1209,6 +1209,14 @@ export const runSchemaMigrations = async (): Promise<void> => {
        VALUES ('20261120_reply_metrics_capability_columns', :appliedAt)`,
       { replacements: { appliedAt: new Date().toISOString() }, transaction }
     );
+    // message_reactions is a brand-new table: its DTO creates it at sync time,
+    // this row only records the feature (the hourly cleanup deletes rows with
+    // their message, see deleteStaleMessagesInChunks).
+    await sequelize.query(
+      `INSERT OR IGNORE INTO schema_migrations (name, appliedAt)
+       VALUES ('20261120_message_reactions', :appliedAt)`,
+      { replacements: { appliedAt: new Date().toISOString() }, transaction }
+    );
   });
 };
 

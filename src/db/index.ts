@@ -12,6 +12,7 @@ import { MessageAttachment } from "./messageAttachmentDTO.js";
 import { MessageMedia, type StoredMessageMedia } from "./messageMediaDTO.js";
 import { CustomEmojiAsset } from "./customEmojiAssetDTO.js";
 import { MessageRevision } from './messageRevisionDTO.js';
+import { MessageReaction } from './messageReactionDTO.js';
 import { HarnessIssue } from './harnessIssueDTO.js';
 import { WorkspaceFile } from './workspaceFileDTO.js';
 import { AccessApplication } from './accessApplicationDTO.js';
@@ -335,6 +336,7 @@ export {
     deleteMessageMediaForKeys,
     CustomEmojiAsset,
     MessageRevision,
+    MessageReaction,
     HarnessIssue,
     WorkspaceFile,
     AccessApplication,

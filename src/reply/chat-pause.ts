@@ -4,6 +4,7 @@
  * stored and `/model` still works; only generation stops.
  */
 import type { Context } from 'grammy';
+import { recordBotReaction } from '../db/queries/reaction-queries.js';
 import { isChatPaused } from '../services/chat-settings-service.js';
 
 /** Toast for a regenerate button (reply retry, 🎲 / 🔄 / ✍️) in a paused chat */
@@ -24,6 +25,9 @@ export const stopIfChatPaused = async (ctx: Context): Promise<boolean> => {
     if (!ctx.chat || !ctx.message || !isChatPaused(ctx.chat.id)) return false;
     try {
         await ctx.api.setMessageReaction(ctx.chat.id, ctx.message.message_id, [{ type: 'emoji', emoji: '😴' }]);
+        // Recorded locally: the Bot API never reports the bot's own reaction.
+        // A failed write only warns; the pause holds either way.
+        await recordBotReaction(ctx.chat.id, ctx.message.message_id, '😴');
     } catch (error) {
         console.warn('[chat-pause] paused reaction failed:', error instanceof Error ? error.message : error);
     }

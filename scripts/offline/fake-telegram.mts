@@ -9,7 +9,7 @@
  * setupOfflineDb.
  */
 import { Api, Bot, Context, type Transformer } from 'grammy';
-import type { Chat, MessageEntity, RichBlock, RichMessage, Update, User, UserFromGetMe } from 'grammy/types';
+import type { Chat, MessageEntity, ReactionType, RichBlock, RichMessage, Update, User, UserFromGetMe } from 'grammy/types';
 import type { StubServer } from './support/stub-server.mts';
 
 export interface TelegramCall {
@@ -224,6 +224,33 @@ export const callbackUpdate = (input: { chatId: number; messageId: number; userI
             from: BOT_ME,
             text: 'bot message',
         },
+    },
+});
+
+/**
+ * A reaction change on a message. Pass `actorChatId` instead of `userId` for an
+ * anonymous administrator/channel reaction (the update then carries
+ * `actor_chat` and no user).
+ */
+export const messageReactionUpdate = (input: {
+    chatId: number;
+    messageId: number;
+    userId?: number;
+    actorChatId?: number;
+    oldReaction?: ReactionType[];
+    newReaction: ReactionType[];
+}): Update => ({
+    update_id: (nextUpdateId += 1),
+    message_reaction: {
+        chat: groupChat(input.chatId),
+        message_id: input.messageId,
+        date: Math.floor(Date.now() / 1000),
+        ...(input.userId === undefined ? {} : { user: userOf(input.userId) }),
+        ...(input.actorChatId === undefined
+            ? {}
+            : { actor_chat: { id: input.actorChatId, type: 'channel', title: '匿名管理员' } }),
+        old_reaction: input.oldReaction ?? [],
+        new_reaction: input.newReaction,
     },
 });
 

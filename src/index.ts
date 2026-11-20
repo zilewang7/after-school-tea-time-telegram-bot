@@ -6,12 +6,14 @@ import { SocksProxyAgent } from "socks-proxy-agent";
 import { cmdLoad } from './cmd/index.js';
 import { replyLoad } from './reply/index.js';
 import { autoClear, autoSave, autoUpdate } from './db/autoSave.js';
+import { autoReaction } from './db/message-reaction-save.js';
 import { dbReady } from './db/index.js';
 import { closeDatabase } from './db/config.js';
 import { settledWithin } from './shared/settled-within.js';
 import { menuLoad } from './cmd/menu.js';
 import { initMcpClients } from './ai/mcp/index.js';
 import { isTestInstance, getAllowedChatIds, isChatAllowed } from './config/instance.js';
+import { POLLING_ALLOWED_UPDATES } from './config/polling-updates.js';
 import { registerSenderGate } from './config/sender-gate.js';
 import { startCustomEmojiRecovery } from './services/custom-emoji-service.js';
 import { logWidgetReadiness, logWidgetRendererReadiness } from './telegram/widget-readiness.js';
@@ -76,6 +78,8 @@ bot.use(async (ctx, next) => {
 autoSave(bot);
 // 更新编辑的消息
 autoUpdate(bot);
+// 记录用户的消息 reaction（Telegram 只对管理员 bot 推送；不过回复路径）
+autoReaction(bot);
 // 自动清除一周前的消息
 autoClear();
 // 监测用户编辑消息，为 bot 消息添加重试按钮
@@ -200,7 +204,10 @@ async function main() {
     // returns only settles when the bot STOPS, so the old `.then()` here logged
     // "Bot started" on shutdown — and anything waiting for that line (the e2e
     // wrapper) waited forever.
+    // The reaction updates are only delivered when listed explicitly (see
+    // config/polling-updates.ts); the bot must also be a chat administrator.
     bot.start({
+        allowed_updates: POLLING_ALLOWED_UPDATES,
         drop_pending_updates: isTestInstance(),
         onStart: (me) => console.log(`Bot started as @${me.username}`),
     }).catch(console.error);
