@@ -114,7 +114,8 @@ export interface CapabilityOptions {
 
 const searchImageLines = (canDraw: boolean): string[] => [
     '- `search_images` 可检索网络图片（首次返回 3 张缩略图，可通过 `search=\'q1\'` 翻页或更换 `query`）；' +
-        '`send_image` 可把候选图发到聊天，也能多次调用：一条回复最多 10 张图片，多张会作为一条相册发出' +
+        '`send_image` 可把候选图发到聊天，也能多次调用，或一次传多个同类来源（如 `send_image(search_ids=[\'s1\',\'s2\'])`，一次最多 6 张）：' +
+        '一条回复最多 10 张图片，多张会作为一条相册发出' +
         (canDraw ? '；`generate_image` 用于生成新图或编辑现有图片，生成结果用 `send_image` 发出。' : '。'),
 ];
 
@@ -138,11 +139,12 @@ const fileLine = (workspace: boolean): string =>
 
 const workspaceLine = (handoff: boolean): string =>
     '- 可以用 `workspace_write` / `workspace_read` / `workspace_list` / `workspace_find` / `workspace_edit` / `workspace_copy` / `workspace_delete` 在按会话保留的「工作区」里写、读、搜、改、复制、删草稿文件（7 天未使用自动清理）' +
+    '；这些工具都能一次处理多个文件（`workspace_write(files=[…])`、`workspace_read(paths=[…])`、`workspace_edit(edits=[…])`）' +
     (handoff ? '；工作没做完需要交给下一轮回复时，可以用 `leave_handoff` 写下交接' : '') +
     '。';
 
 const WORKSPACE_PREVIEW_LINE =
-    '- `workspace_preview` 可以把工作区的 HTML/A2UI 草稿渲染成图查看。';
+    '- `workspace_preview` 可以把工作区的 HTML/A2UI 草稿渲染成图查看；一次看多个用 `paths=[…]`（最多 3 个）。';
 
 const historyLine = (canFetchImages: boolean): string =>
     '- 可以用 `search_history` 检索历史归档（本聊天；机主私聊时为全部归档群）中的消息（关键词 / 时间 / 发言人；含链接预览、Instant View 与图片 OCR 文本；图片 OCR 文字会被标注，不是消息正文），用 `read_history` 读整条原文或某条消息前后的对话' +
@@ -158,8 +160,9 @@ const HARNESS_ISSUE_LINE =
 
 const REACTION_LINE =
     '- 可以用 `react_to_message` 给本段对话中的消息加一个 emoji reaction：`message` 写该消息的 `#N`，' +
-    '`emoji` 用 Telegram 标准 reaction 表情（如 👍 ❤ 😂 🤔 🎉）；省略 `emoji` 即取消你自己加的 reaction。' +
-    '一条消息同时只有一个 reaction（再设会替换）。reaction 是轻量回应（收到、赞同、😂），不要用它代替正文回答。';
+    '`emoji` 用 Telegram 标准 reaction 表情（如 👍 ❤ 🤣 🤔 🎉）；省略 `emoji` 即取消你自己加的 reaction。' +
+    '一次点多条时用 `messages=[3,4,5]`（同一个 `emoji`），每条不同 emoji 用 `reactions=[{message:3,emoji:"👍"},{message:5,emoji:"🤣"}]`，一次最多 6 条。' +
+    '一条消息同时只有一个 reaction（再设会替换）。reaction 是轻量回应（收到、赞同、🤣），不要用它代替正文回答。';
 
 export const buildCapabilitiesSection = (options: CapabilityOptions): string => {
     const lines: string[] = [CAPABILITIES_SECTION];
