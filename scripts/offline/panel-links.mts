@@ -10,7 +10,7 @@
  *
  * Run: npx tsx scripts/offline/panel-links.mts
  */
-import { GrammyError } from 'grammy';
+import { GrammyError, InlineKeyboard } from 'grammy';
 import { expect, reportResults, runCase, setupOfflineDb, type CaseResult } from './harness.mts';
 import { createFakeTelegram, waitUntil } from './fake-telegram.mts';
 import { signInitData, type InitDataUserInput } from '../lib/init-data.mts';
@@ -328,11 +328,16 @@ const cases: { name: string; body: () => Promise<void> }[] = [
         body: async () => {
             const local = await seedConversation(GROUP, 'Receipt');
             const attached = await seedConversation(GROUP, 'ReceiptAttached');
+            const receiptKeyboard = new InlineKeyboard().url(
+                '打开这条会话',
+                `https://t.me/k_on_test_bot/panel?startapp=c${GROUP}_${local.root}`
+            );
             registerConversationKeyboardMessage({
                 chatId: GROUP,
                 rootId: local.root,
                 messageId: 606060,
                 baseText: '这条会话的控制面板：',
+                replyMarkup: receiptKeyboard,
             });
             const { status, body } = await postLinksTo(receiptApp, GROUP, local.root, { links: [internalLink(attached.reply)] });
             expect(status === 200 && body.attachedRoots === 1, `one conversation attached (got ${status} ${JSON.stringify(body)})`);
@@ -341,8 +346,9 @@ const cases: { name: string; body: () => Promise<void> }[] = [
             const text = typeof payload.text === 'string' ? payload.text : '';
             expect(payload.chat_id === GROUP && payload.message_id === 606060, `edited the receipt (got ${JSON.stringify(payload)})`);
             expect(
-                text.startsWith('这条会话的控制面板：\n· 已拼接 1 段对话（') && !('reply_markup' in payload),
-                `the splice line above the buttons (got ${JSON.stringify(text)})`
+                text.startsWith('这条会话的控制面板：\n· 已拼接 1 段对话（') &&
+                    JSON.stringify(payload.reply_markup) === JSON.stringify(receiptKeyboard),
+                `the splice line above the repeated buttons (got ${JSON.stringify(text)})`
             );
         },
     },

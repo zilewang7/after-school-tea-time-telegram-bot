@@ -92,6 +92,7 @@ export const registerPanelCommand = (bot: Bot) => {
                         rootId: buttonReply.receiptRootId,
                         messageId: sent.message_id,
                         baseText: buttonReply.text,
+                        replyMarkup: buttonReply.keyboard,
                     });
                 }
             })

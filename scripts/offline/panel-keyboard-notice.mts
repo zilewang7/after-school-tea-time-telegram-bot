@@ -11,6 +11,7 @@
  *
  * Run: npx tsx scripts/offline/panel-keyboard-notice.mts
  */
+import { InlineKeyboard } from 'grammy';
 import { expect, reportResults, runCase, setupOfflineDb, type CaseResult } from './harness.mts';
 import { createFakeBot, createFakeTelegram, groupChat, messageUpdate, quietly, userOf, waitUntil, type FakeTelegram } from './fake-telegram.mts';
 import { signInitData, type InitDataUserInput } from '../lib/init-data.mts';
@@ -152,9 +153,15 @@ const drivePanel = async (chatId: number, replyToMessageId: number): Promise<{ t
     return { text, url: urlOf(call?.payload.reply_markup) };
 };
 
+/** The keyboard a receipt message carries; the edit must repeat it or Telegram drops it */
+const receiptKeyboardOf = (chatId: number, rootId: number): InlineKeyboard =>
+    new InlineKeyboard().url('打开这条会话', `https://t.me/k_on_test_bot/panel?startapp=c${chatId}_${rootId}`);
+
 /** A receipt registered directly (cases that do not need the /panel round trip) */
-const registerReceipt = (chatId: number, rootId: number, messageId: number): void => {
-    state.registerConversationKeyboardMessage({ chatId, rootId, messageId, baseText: BASE_TEXT });
+const registerReceipt = (chatId: number, rootId: number, messageId: number): InlineKeyboard => {
+    const replyMarkup = receiptKeyboardOf(chatId, rootId);
+    state.registerConversationKeyboardMessage({ chatId, rootId, messageId, baseText: BASE_TEXT, replyMarkup });
+    return replyMarkup;
 };
 
 const editCalls = (telegram: FakeTelegram) => telegram.callsOf('editMessageText');
@@ -173,6 +180,7 @@ interface ReceiptFixture {
     chatId: number;
     rootId: number;
     messageId: number;
+    keyboard: InlineKeyboard;
     telegram: FakeTelegram;
 }
 
@@ -182,8 +190,8 @@ const receiptFixture = async (): Promise<ReceiptFixture> => {
     await registerChat(chatId);
     const conversation = await seedConversation(chatId);
     const messageId = 900_000 + Math.abs(chatId % 100_000);
-    registerReceipt(chatId, conversation.rootId, messageId);
-    return { chatId, rootId: conversation.rootId, messageId, telegram: createFakeTelegram() };
+    const keyboard = registerReceipt(chatId, conversation.rootId, messageId);
+    return { chatId, rootId: conversation.rootId, messageId, keyboard, telegram: createFakeTelegram() };
 };
 
 // ---- cases ----------------------------------------------------------------
@@ -211,6 +219,32 @@ results.push(
         expect(response.status === 200, `the exclusion goes through (got ${response.status})`);
         await waitUntil('the receipt edit', () => editCalls(telegram).length > 0);
         expect(editCalls(telegram).at(-1)?.payload.message_id === entry?.messageId, 'the /panel message is the one edited');
+        expect(
+            drive.url !== null && urlOf(editCalls(telegram).at(-1)?.payload.reply_markup) === drive.url,
+            'the edit repeats the button the /panel message was sent with'
+        );
+    })
+);
+
+results.push(
+    await runCase('every receipt edit carries the registered keyboard', async () => {
+        const chatId = takeChatId();
+        const conversation = await seedConversation(chatId);
+        const drive = await drivePanel(chatId, conversation.childId);
+        expect(drive.url !== null, 'the /panel reply came with a button');
+        const telegram = createFakeTelegram();
+        const app = makeApp(telegram);
+        for (let index = 0; index < 2; index += 1) {
+            const messageId = await seedMessage(chatId, ALICE.id, `第 ${index} 条`, conversation.rootId);
+            await request(app, 'PUT', `/api/chats/${chatId}/messages/${messageId}/exclusion`);
+            await waitUntil(`edit ${index + 1}`, () => editCalls(telegram).length >= index + 1);
+        }
+        const edits = editCalls(telegram);
+        expect(edits.length === 2, `two edits (got ${edits.length})`);
+        expect(
+            edits.every((call) => urlOf(call.payload.reply_markup) === drive.url),
+            `every edit repeats the /panel button (got ${JSON.stringify(edits.map((call) => call.payload.reply_markup))})`
+        );
     })
 );
 
@@ -233,7 +267,10 @@ results.push(
             lines[1]?.startsWith('· 已排除 1 条消息') === true && TIME_SUFFIX.test(lines[1] ?? ''),
             `the operation line (got ${JSON.stringify(lines[1])})`
         );
-        expect(!('reply_markup' in payload), 'no reply_markup: the buttons stay');
+        expect(
+            urlOf(payload.reply_markup) === urlOf(fixture.keyboard),
+            `the edit repeats the button (got ${JSON.stringify(payload.reply_markup)})`
+        );
     })
 );
 

@@ -42,8 +42,11 @@ const editReceipt = async (botApi: Api, chatId: number, rootId: number, line: st
     const entry = appendConversationKeyboardOperation(chatId, rootId, line, now);
     if (entry === undefined) return;
     try {
-        // No reply_markup: Telegram keeps the message's buttons
-        await botApi.editMessageText(entry.chatId, entry.messageId, textWith(entry.baseText, entry.ops));
+        // Telegram replaces the message: a keyboard the edit does not repeat is
+        // dropped, so the buttons are sent again with every line
+        await botApi.editMessageText(entry.chatId, entry.messageId, textWith(entry.baseText, entry.ops), {
+            reply_markup: entry.replyMarkup,
+        });
     } catch (error) {
         const message = describeError(error);
         if (message.includes(MESSAGE_NOT_FOUND)) {

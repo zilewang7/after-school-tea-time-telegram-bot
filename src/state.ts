@@ -2,6 +2,7 @@
  * Application state singleton module
  * Replaces global variables with a typed state object
  */
+import type { InlineKeyboard } from 'grammy';
 
 interface MediaGroupIdTemp {
     chatId: number;
@@ -61,6 +62,11 @@ export interface ConversationKeyboardMessage {
     readonly messageId: number;
     /** The message text the operation lines are appended to */
     readonly baseText: string;
+    /**
+     * The message's inline keyboard, sent again with every edit: Telegram
+     * replaces the message, so a keyboard the edit leaves out is dropped.
+     */
+    readonly replyMarkup: InlineKeyboard;
     /** Operation lines, oldest first; at most MAX_CONVERSATION_KEYBOARD_OPERATIONS */
     ops: string[];
     /** Epoch ms of the last registration or append */
@@ -543,7 +549,8 @@ export const showsResumableVersion = (
 // The /panel message that opened one conversation: the panel appends what it did
 // (exclude / restore / splice) to that message's text, so the chat keeps a
 // readable receipt of the operations. Only the newest message of a conversation
-// is updated, and only in the process that sent it.
+// is updated, and only in the process that sent it. Each edit repeats the
+// keyboard, which Telegram otherwise drops.
 
 const conversationKeyboardKey = (chatId: number, rootId: number): string => `${chatId}:${rootId}`;
 
@@ -559,6 +566,8 @@ export interface ConversationKeyboardInput {
     messageId: number;
     /** The message text the operation lines are appended to */
     baseText: string;
+    /** The inline keyboard the message was sent with, repeated on every edit */
+    replyMarkup: InlineKeyboard;
     /** Epoch ms; defaults to Date.now() */
     now?: number;
 }
