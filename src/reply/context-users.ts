@@ -25,14 +25,33 @@ const HANDLE_PATTERN = /(?<![\w@])@([A-Za-z0-9_]{4,32})\b/g;
 const forwardedName = (forwardOrigin: string | null): string =>
     forwardOrigin?.replace(/^user /, '') ?? '';
 
+/**
+ * A person who reacted to a message of this context but wrote nothing in it.
+ * Anonymous admins/channels and the bot itself are not roster material and are
+ * left out by the caller (design 2026-1120-1312 §4.3).
+ */
+export interface ReactionParticipant {
+    readonly userId: number;
+    /** Display-name snapshot of the reaction row */
+    readonly name: string;
+}
+
 export const collectContextUsers = async (
-    contextMessages: ContextMessage[]
+    contextMessages: ContextMessage[],
+    reactionParticipants: readonly ReactionParticipant[] = []
 ): Promise<ContextUser[]> => {
     // Authors: last write wins so the freshest first name sticks
     const authorNameById = new Map<number, string>();
     // Mentioned users found as tg://user links (id + display name in the text)
     const mentionNameById = new Map<number, string>();
     const mentionedHandles = new Set<string>();
+    // Reactors: first snapshot wins, the same person can react several times
+    const reactorNameById = new Map<number, string>();
+    for (const participant of reactionParticipants) {
+        if (!reactorNameById.has(participant.userId)) {
+            reactorNameById.set(participant.userId, participant.name);
+        }
+    }
 
     for (const msg of contextMessages) {
         if (!msg.fromBotSelf && msg.userId !== null) {
@@ -52,7 +71,9 @@ export const collectContextUsers = async (
         }
     }
 
-    const idsToLookUp = [...new Set([...authorNameById.keys(), ...mentionNameById.keys()])];
+    const idsToLookUp = [
+        ...new Set([...authorNameById.keys(), ...mentionNameById.keys(), ...reactorNameById.keys()]),
+    ];
     const [byIdRows, byHandleRows] = await Promise.all([
         findTelegramUsersByIds(idsToLookUp),
         findTelegramUsersByUsernames([...mentionedHandles]),
@@ -66,7 +87,8 @@ export const collectContextUsers = async (
     const pushEntry = (
         userId: number,
         fallbackName: string,
-        mentionedOnly: boolean
+        mentionedOnly: boolean,
+        reactionOnly = false
     ): void => {
         if (seenIds.has(userId)) return;
         seenIds.add(userId);
@@ -79,6 +101,7 @@ export const collectContextUsers = async (
             lastName: roster?.lastName ?? undefined,
             isBot: roster?.isBot ?? undefined,
             mentionedOnly,
+            ...(reactionOnly ? { reactionOnly: true } : {}),
         });
     };
 
@@ -103,6 +126,13 @@ export const collectContextUsers = async (
             isBot: row.isBot ?? undefined,
             mentionedOnly: true,
         });
+    }
+
+    // Last: people who only reacted. An automated account is no one to @, and
+    // a reactor the roster knows to be a bot is skipped entirely.
+    for (const [userId, name] of reactorNameById) {
+        if (rosterById.get(userId)?.isBot === true) continue;
+        pushEntry(userId, name, false, true);
     }
 
     return users;

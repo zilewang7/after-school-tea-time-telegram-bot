@@ -15,6 +15,7 @@ import {
 } from '../db/queries/context-queries.js';
 import { findBotReplyBodyMessageIds } from '../db/queries/bot-reply-body-queries.js';
 import { listMessageMediaForMessages } from '../db/queries/message-media-queries.js';
+import { listReactionsForMessages } from '../db/queries/reaction-queries.js';
 import type { StoredMessageMedia } from '../db/messageMediaDTO.js';
 import { assembleContextMessages, isSubImage, type ContextNumbering } from './context-assembly.js';
 import { getLinkPreviewWithIdentity } from '../services/luoxu-preview-service.js';
@@ -33,6 +34,7 @@ import { getGlobalDefaultModel } from '../services/chat-settings-service.js';
 import { stripPerQueryResultCitations } from '../shared/citation-markers.js';
 import { buildInFlightOwnReplyNote, buildInFlightReplyNote, buildInterruptedOwnReplyNote } from './inflight-reply-note.js';
 import { collectContextUsers, type ContextUser } from './context-users.js';
+import { buildRuntimeReactionView, reactionParticipantsOf } from './reaction-context-view.js';
 import { getModelCapabilities } from '../ai/platform-factory.js';
 import { buildCustomEmojiContextPlan } from '../services/custom-emoji-context-service.js';
 import { contextImagesOf, type ContextImage } from './context-images.js';
@@ -1032,13 +1034,15 @@ export const buildContext = async (
     if (!dryRun) await publishContextNumbering(chatId, messageId, index);
     const repliesInFlightElsewhere = findRepliesInFlightElsewhere(chatId, messageId, index);
 
-    const [contextUsers, customEmojiPlan, widgetSurfaces, storedMediaByMessageId] = await Promise.all([
-        collectContextUsers(contextMessages),
-        buildCustomEmojiContextPlan(
-            chatId,
-            contextMessages.map((contextMessage) => contextMessage.messageId),
-            modelCapabilities.supportsImageInput
-        ),
+    // One read per source for the whole context. The reaction rows also decide
+    // who joins the roster, so the users are collected after this batch (one
+    // short serial query, see collectContextUsers).
+    const contextMessageIds = contextMessages.map((contextMessage) => contextMessage.messageId);
+    const [storedReactions, customEmojiPlan, widgetSurfaces, storedMediaByMessageId] = await Promise.all([
+        // Reactions of the messages this context really renders; excluded
+        // messages are not in contextMessages and their reactions stay hidden.
+        listReactionsForMessages(chatId, contextMessageIds),
+        buildCustomEmojiContextPlan(chatId, contextMessageIds, modelCapabilities.supportsImageInput),
         // Only the cards in this context are read; their rendered PNG needs no
         // query (it is the bot row's file), the A2UI source does
         loadWidgetSurfaces(
@@ -1055,11 +1059,12 @@ export const buildContext = async (
         // asking per message would scale with the context length. The map is
         // authoritative for every message it does not name (no rows), which
         // also saves the per-message read of these rows.
-        listMessageMediaForMessages(
-            chatId,
-            contextMessages.map((contextMessage) => contextMessage.messageId)
-        ),
+        listMessageMediaForMessages(chatId, contextMessageIds),
     ]);
+    const contextUsers = await collectContextUsers(contextMessages, reactionParticipantsOf(storedReactions));
+    // Grouped and ordered in the reply layer: the ai layer renders the view and
+    // never reads the database (design 2026-1120-1312 §4.3).
+    const runtimeReactions = buildRuntimeReactionView(storedReactions, index);
 
     const turns: MediaDedupeInput[] = [];
     // One preview block per distinct preview content in this build (see
@@ -1131,7 +1136,8 @@ export const buildContext = async (
             contextUsers,
             opts.chatTitle ?? null,
             chatAddendum,
-            opts.triggerAccess ?? null
+            opts.triggerAccess ?? null,
+            runtimeReactions
         ),
     };
     const newestIndex = Math.max(0, turnMessageIds.indexOf(messageId));

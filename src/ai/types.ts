@@ -136,6 +136,12 @@ export interface ContextUser {
     isBot?: boolean;
     /** true = only pointed at in a message, never spoke in this context */
     mentionedOnly: boolean;
+    /**
+     * true = only reacted to a message of this context, never spoke in it. A
+     * separate marker from `mentionedOnly`: the two say different things, and
+     * the roster line wording differs (design 2026-1120-1312 §4.3).
+     */
+    reactionOnly?: boolean;
 }
 
 export interface AgentStats {

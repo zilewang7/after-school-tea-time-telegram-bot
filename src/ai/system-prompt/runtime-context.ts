@@ -8,6 +8,7 @@
  * docs/2026-1010-1905-设计-Gemini上下文缓存与提示词分层.md). Keep everything that
  * changes between requests in here, never in builder.ts.
  */
+import { countCodePoints } from '../../shared/code-points.js';
 import { formatUserDisplayName } from '../../shared/user-display-name.js';
 import type { ContextUser } from '../types.js';
 
@@ -34,14 +35,89 @@ const formatCurrentTime = (): string => {
 /**
  * One roster entry, marked `[bot]` when the account is an automated one — the
  * static head explains the marker, so it stays short here.
+ *
+ * A person can be on the list without having spoken: pointed at by a message
+ * (`mentionedOnly`) or only reacting to one (`reactionOnly`). The two tags say
+ * different things, so they are never shared (design 2026-1120-1312 §4.3).
  */
+const rosterTagOf = (user: ContextUser): string => {
+    if (user.reactionOnly === true) return '（只点了 reaction，未在上下文中发言）';
+    return user.mentionedOnly ? '（仅被提及，未在上下文中发言）' : '';
+};
+
 const rosterLine = (user: ContextUser): string => {
     const name = formatUserDisplayName(user);
     const id = user.userId === undefined ? 'id 未知' : `id ${user.userId}`;
     const handle = user.username ? `@${user.username}` : '无 username';
     const marker = user.isBot === true ? '[bot] ' : '';
-    const tag = user.mentionedOnly ? '（仅被提及，未在上下文中发言）' : '';
-    return `- ${marker}${name}：${id}，${handle}${tag}`;
+    return `- ${marker}${name}：${id}，${handle}${rosterTagOf(user)}`;
+};
+
+/**
+ * One message's reactions the way the runtime block reads them (design
+ * 2026-1120-1312 §4.3). Built in the reply layer from the database rows, so the
+ * ai layer keeps its zero `db` dependency; the entries and actors are already
+ * grouped and ordered by that mapper, and the renderer only formats.
+ */
+export interface RuntimeReactionEntry {
+    /** What the reaction reads as: the emoji, `[自定义表情]` or `⭐` */
+    readonly emoji: string;
+    /** Names to list, at most four (the mapper applies the cap) */
+    readonly actors: readonly string[];
+    /** How many more actors the same emoji has, beyond the listed names */
+    readonly moreActors: number;
+}
+
+/** One message's line: `#N` plus its reactions */
+export interface RuntimeReactionGroup {
+    readonly number: number;
+    readonly entries: readonly RuntimeReactionEntry[];
+}
+
+/** Newer message lines win; older ones are dropped whole (and counted) */
+const REACTION_MAX_MESSAGE_LINES = 12;
+/** Cap of the whole section in code points, heading included */
+const REACTION_SECTION_MAX_CHARS = 600;
+const REACTION_SECTION_TITLE = '# 消息 reaction';
+
+const reactionEntryText = (entry: RuntimeReactionEntry): string => {
+    if (entry.actors.length === 0) return entry.emoji;
+    const more = entry.moreActors > 0 ? `…等 ${entry.moreActors} 人` : '';
+    return `${entry.emoji}（${entry.actors.join('、')}${more}）`;
+};
+
+const reactionMessageLine = (group: RuntimeReactionGroup): string =>
+    `- #${group.number}：${group.entries.map(reactionEntryText).join('；')}`;
+
+/** The section as it reads with `lines` kept and `dropped` older messages left out */
+const reactionSectionOf = (lines: readonly string[], dropped: number): string[] => [
+    REACTION_SECTION_TITLE,
+    ...lines,
+    ...(dropped > 0 ? [`- 还有 ${dropped} 条消息的 reaction 未显示`] : []),
+];
+
+/**
+ * Render the reaction section, newest messages first in the selection but
+ * ascending in the output. Whole message lines are dropped — the oldest first —
+ * when the section would pass its size cap, and the entry count keeps the model
+ * aware of what it cannot read. Empty when there is nothing to show, so a
+ * context without reactions renders byte-identically to before the section.
+ */
+const reactionSection = (reactions: readonly RuntimeReactionGroup[]): string[] => {
+    const groups = reactions.filter((group) => group.entries.length > 0);
+    if (groups.length === 0) return [];
+
+    const kept = groups.slice(Math.max(0, groups.length - REACTION_MAX_MESSAGE_LINES));
+    const messageLines = kept.map(reactionMessageLine);
+    let dropped = groups.length - kept.length;
+    while (
+        messageLines.length > 0 &&
+        countCodePoints(reactionSectionOf(messageLines, dropped).join('\n')) > REACTION_SECTION_MAX_CHARS
+    ) {
+        messageLines.shift();
+        dropped += 1;
+    }
+    return reactionSectionOf(messageLines, dropped);
 };
 
 /**
@@ -112,14 +188,17 @@ const triggerAccessLine = (trigger: TriggerAccessNote): string => {
  * `chatTitle` names the group/channel this reply happens in; private chats have
  * none and are reported as such. `chatAddendum` is appended verbatim as its
  * own section; empty or blank leaves the block exactly as without it.
- * `triggerAccess` is present on trial turns only.
+ * `triggerAccess` is present on trial turns only. `reactions` adds the message
+ * reaction section before the addendum; it is a trailing optional argument, and
+ * absent/empty leaves the block byte-identical to what it was before reactions.
  */
 export const buildRuntimeContext = (
     model: string,
     contextUsers: ContextUser[],
     chatTitle?: string | null,
     chatAddendum?: string | null,
-    triggerAccess?: TriggerAccessNote | null
+    triggerAccess?: TriggerAccessNote | null,
+    reactions?: readonly RuntimeReactionGroup[] | null
 ): string => {
     const lines = [
         '[system] 运行时信息：',
@@ -136,6 +215,12 @@ export const buildRuntimeContext = (
 
     if (triggerAccess !== null && triggerAccess !== undefined) {
         lines.push(triggerAccessLine(triggerAccess));
+    }
+
+    // The addendum keeps its place at the very end of the block
+    const reactionLines = reactionSection(reactions ?? []);
+    if (reactionLines.length > 0) {
+        lines.push('', ...reactionLines);
     }
 
     if (chatAddendum && chatAddendum.trim().length > 0) {
