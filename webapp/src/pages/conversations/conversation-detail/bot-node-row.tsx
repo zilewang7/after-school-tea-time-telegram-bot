@@ -9,6 +9,7 @@ import { parseRichAnswer } from '../../../rich/rich-answer';
 import { RichAnswerView } from '../../../rich/rich-answer-view';
 import { replyPath } from '../../../routing/paths';
 import { NodeMenu } from './node-menu';
+import { treeEdgeLabelOf } from './tree-edge-label';
 import type { TreeRow } from './tree-layout';
 
 const INDENT_PX = 16;
@@ -52,6 +53,7 @@ export const BotNodeRow = ({ row, node, chatId, member, pending, onExclude, onRe
     const style = useMemo<{ marginLeft: string }>(() => ({ marginLeft: `${row.depth * INDENT_PX}px` }), [row.depth]);
     const reply = node.reply;
     const versionLabel = versionLabelOf(node);
+    const edgeLabel = treeEdgeLabelOf(node.edge, row.parentNumber);
     const toolLine = useMemo(() => toolLineOf(reply.toolSummary), [reply.toolSummary]);
     const thinkingText = reply.thinkingText;
     const thinkingLength = useMemo(
@@ -125,7 +127,8 @@ export const BotNodeRow = ({ row, node, chatId, member, pending, onExclude, onRe
                 <span className={node.excluded ? 'tree-number excluded' : 'tree-number'}>
                     {node.number === null ? '┄' : `#${node.number}`}
                 </span>
-                {row.parentNumber !== null && <span className="hint">↳ 回复 #{row.parentNumber}</span>}
+                {edgeLabel.hint !== null && <span className="hint">{edgeLabel.hint}</span>}
+                {edgeLabel.badge !== null && <span className="badge">{edgeLabel.badge}</span>}
                 <span className="tree-author">bot</span>
                 {versionLabel !== null && <span className="badge">{versionLabel}</span>}
                 {reply.versionCount === 0 && <span className="badge">提示</span>}
