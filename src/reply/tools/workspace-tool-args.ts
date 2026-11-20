@@ -34,6 +34,95 @@ const pathArg = (raw: unknown, field = 'path'): Parsed<string> => {
     return normalized.ok ? { ok: true, value: normalized.path } : { ok: false, error: normalized.error };
 };
 
+/**
+ * Limits of one multi-file call (design 2026-1120-1638 §6). read shares one
+ * call's character budget, so its cap is a file count only.
+ */
+export const WRITE_BATCH_MAX = 10;
+export const WRITE_BATCH_CONTENT_CHARS_MAX = 32_000;
+export const READ_BATCH_MAX = 10;
+export const EDIT_BATCH_MAX = 5;
+export const PREVIEW_BATCH_MAX = 3;
+
+/** Every problem of one call at once, in the media tools' wording */
+const argumentError = (problems: readonly string[]): { readonly ok: false; readonly error: string } => ({
+    ok: false,
+    error: `参数有误：\n${problems.map((problem) => `- ${problem}`).join('\n')}`,
+});
+
+const isRecord = (value: unknown): value is Readonly<Record<string, unknown>> =>
+    typeof value === 'object' && value !== null && !Array.isArray(value);
+
+/** A single-form field with real text; blank strings are fillers next to a batch field */
+const hasText = (value: unknown): boolean => typeof value === 'string' && value.trim() !== '';
+
+/** How a batch names an item whose path the model did not write: its position */
+const itemLabel = (raw: unknown, index: number): string =>
+    typeof raw === 'string' && raw.trim() !== '' ? raw.trim() : `第 ${index + 1} 项`;
+
+/** A batch item that could not even be parsed; the tool reports it beside the executed ones */
+export interface BatchItemFailure {
+    readonly ok: false;
+    /** The path the model wrote, or `第 N 项` */
+    readonly label: string;
+    readonly error: string;
+}
+
+/** The shared offset/limit of a read batch; the single-file rules, without the reject wording */
+const readPagingOf = (raw: Readonly<Record<string, unknown>>): {
+    readonly offset: number;
+    readonly limit: number;
+    readonly problems: readonly string[];
+} => {
+    const problems: string[] = [];
+    let offset = 1;
+    let limit = READ_LIMIT_DEFAULT;
+    const rawOffset = raw.offset;
+    if (rawOffset !== undefined && rawOffset !== null) {
+        if (typeof rawOffset !== 'number' || !Number.isInteger(rawOffset)) problems.push('offset 要传整数');
+        else if (rawOffset < 1) problems.push('offset 从 1 开始');
+        else offset = rawOffset;
+    }
+    const rawLimit = raw.limit;
+    if (rawLimit !== undefined && rawLimit !== null) {
+        if (typeof rawLimit !== 'number' || !Number.isInteger(rawLimit)) problems.push('limit 要传整数');
+        else if (rawLimit < 1) problems.push('limit 要大于 0');
+        else limit = Math.min(rawLimit, READ_LIMIT_MAX);
+    }
+    return { offset, limit, problems };
+};
+
+/** A batch of workspace paths (read, preview): shape problems fail the call, a bad path fails its item */
+export type WorkspacePathBatchItem =
+    | { readonly ok: true; readonly path: string }
+    | BatchItemFailure;
+
+const parsePathBatchItems = (
+    values: readonly unknown[],
+    maxItems: number,
+    field: string
+): Parsed<readonly WorkspacePathBatchItem[]> => {
+    const problems: string[] = [];
+    if (values.length === 0) problems.push(`${field} 是空的：至少给 1 个路径`);
+    if (values.length > maxItems) problems.push(`${field} 最多 ${maxItems} 项（现在 ${values.length} 项）`);
+    for (const [index, value] of values.entries()) {
+        if (typeof value !== 'string') problems.push(`${field} 第 ${index + 1} 项要传字符串`);
+        else if (value.trim() === '') problems.push(`${field} 第 ${index + 1} 项是空的`);
+    }
+    if (problems.length > 0) return argumentError(problems);
+    const items: WorkspacePathBatchItem[] = [];
+    for (const [index, value] of values.entries()) {
+        if (typeof value !== 'string') continue;
+        const normalized = normalizeWorkspacePath(value);
+        items.push(
+            normalized.ok
+                ? { ok: true, path: normalized.path }
+                : { ok: false, label: itemLabel(value, index), error: normalized.error }
+        );
+    }
+    return { ok: true, value: items };
+};
+
 export interface WorkspaceWriteArgs {
     readonly path: string;
     readonly content: string;
@@ -57,6 +146,80 @@ export const parseWorkspaceWriteArgs = (raw: Readonly<Record<string, unknown>>):
         ok: true,
         value: { path: path.value, content: content.value, append: append.value, overwrite: overwrite.value },
     };
+};
+
+export type WorkspaceWriteBatchItem =
+    | {
+          readonly ok: true;
+          /** The item's own `workspace` selector, resolved by the tool */
+          readonly workspace: unknown;
+          readonly args: WorkspaceWriteArgs;
+      }
+    | BatchItemFailure;
+
+const parseWriteBatchItem = (raw: Readonly<Record<string, unknown>>, index: number): WorkspaceWriteBatchItem => {
+    const label = itemLabel(raw.path, index);
+    const path = pathArg(raw.path);
+    if (!path.ok) return { ok: false, label, error: path.error };
+    const content = textArg(raw.content, 'content');
+    if (!content.ok) return { ok: false, label, error: content.error };
+    const append = boolArg(raw.append, 'append');
+    if (!append.ok) return { ok: false, label, error: append.error };
+    const overwrite = boolArg(raw.overwrite, 'overwrite');
+    if (!overwrite.ok) return { ok: false, label, error: overwrite.error };
+    if (append.value && overwrite.value) {
+        return { ok: false, label, error: 'append 和 overwrite 不能同时为 true；追加或整体替换只能选一个。' };
+    }
+    return {
+        ok: true,
+        workspace: raw.workspace,
+        args: { path: path.value, content: content.value, append: append.value, overwrite: overwrite.value },
+    };
+};
+
+/**
+ * The `files` form of workspace_write: one self-contained write per item.
+ *
+ * Shape problems (an empty array, too many items, the whole text over the
+ * per-call budget, a mix with the single-file fields) fail the call before any
+ * write; a bad path or content only fails that item.
+ */
+export const parseWorkspaceWriteBatchArgs = (
+    raw: Readonly<Record<string, unknown>>
+): Parsed<readonly WorkspaceWriteBatchItem[]> => {
+    const files = raw.files;
+    if (!Array.isArray(files)) {
+        return argumentError(['files 要传数组，每项是 { path, content, append?, overwrite?, workspace? }']);
+    }
+    const problems: string[] = [];
+    if (hasText(raw.path)) problems.push('files 和 path 只能给一个');
+    if (hasText(raw.content)) problems.push('files 和 content 只能给一个');
+    if (raw.append === true || raw.overwrite === true) {
+        problems.push('files 形态下 append/overwrite 写在每一项里（顶层的只用于单文件形态）');
+    }
+    if (typeof raw.workspace === 'string' && raw.workspace.trim() !== '') {
+        problems.push('files 形态下 workspace 写在每一项里（顶层的只用于单文件形态）');
+    }
+    if (files.length === 0) problems.push('files 是空的：至少写 1 个文件');
+    if (files.length > WRITE_BATCH_MAX) problems.push(`files 最多 ${WRITE_BATCH_MAX} 项（现在 ${files.length} 项）`);
+    const totalChars = files.reduce((total, item) => {
+        const content = isRecord(item) ? item.content : undefined;
+        return typeof content === 'string' ? total + Array.from(content).length : total;
+    }, 0);
+    if (totalChars > WRITE_BATCH_CONTENT_CHARS_MAX) {
+        problems.push(
+            `一次写入的内容合计最多 ${WRITE_BATCH_CONTENT_CHARS_MAX} 字符（现在 ${totalChars} 字符），请分两次调用`
+        );
+    }
+    const nonObject = files.findIndex((item) => !isRecord(item));
+    if (nonObject >= 0) problems.push(`第 ${nonObject + 1} 项不是对象，每项要写成 { path, content }`);
+    if (problems.length > 0) return argumentError(problems);
+    const items: WorkspaceWriteBatchItem[] = [];
+    for (const [index, item] of files.entries()) {
+        if (!isRecord(item)) continue;
+        items.push(parseWriteBatchItem(item, index));
+    }
+    return { ok: true, value: items };
 };
 
 export interface WorkspaceReadArgs {
@@ -85,6 +248,35 @@ export const parseWorkspaceReadArgs = (raw: Readonly<Record<string, unknown>>): 
             offset: offset.value,
             limit: Math.min(limit.value, READ_LIMIT_MAX),
         },
+    };
+};
+
+export interface WorkspaceReadBatchArgs {
+    readonly items: readonly WorkspacePathBatchItem[];
+    /** Shared by every file of the batch */
+    readonly offset: number;
+    readonly limit: number;
+    /** The workspace selector shared by the whole batch */
+    readonly workspace: unknown;
+}
+
+export const parseWorkspaceReadBatchArgs = (
+    raw: Readonly<Record<string, unknown>>
+): Parsed<WorkspaceReadBatchArgs> => {
+    const paths = raw.paths;
+    if (!Array.isArray(paths)) {
+        return argumentError(['paths 要传字符串数组，如 ["notes/plan.md","src/main.ts"]']);
+    }
+    const problems: string[] = [];
+    if (hasText(raw.path)) problems.push('paths 和 path 只能给一个');
+    const paging = readPagingOf(raw);
+    problems.push(...paging.problems);
+    const items = parsePathBatchItems(paths, READ_BATCH_MAX, 'paths');
+    if (!items.ok) return items;
+    if (problems.length > 0) return argumentError(problems);
+    return {
+        ok: true,
+        value: { items: items.value, offset: paging.offset, limit: paging.limit, workspace: raw.workspace },
     };
 };
 
@@ -129,6 +321,71 @@ export const parseWorkspaceEditArgs = (raw: Readonly<Record<string, unknown>>): 
     };
 };
 
+export type WorkspaceEditBatchItem =
+    | {
+          readonly ok: true;
+          /** The item's own `workspace` selector, resolved by the tool */
+          readonly workspace: unknown;
+          readonly args: WorkspaceEditArgs;
+      }
+    | BatchItemFailure;
+
+const parseEditBatchItem = (raw: Readonly<Record<string, unknown>>, index: number): WorkspaceEditBatchItem => {
+    const label = itemLabel(raw.path, index);
+    const path = pathArg(raw.path);
+    if (!path.ok) return { ok: false, label, error: path.error };
+    const oldString = textArg(raw.old_string, 'old_string');
+    if (!oldString.ok) return { ok: false, label, error: oldString.error };
+    const newString = textArg(raw.new_string, 'new_string');
+    if (!newString.ok) return { ok: false, label, error: newString.error };
+    const replaceAll = boolArg(raw.replace_all, 'replace_all');
+    if (!replaceAll.ok) return { ok: false, label, error: replaceAll.error };
+    return {
+        ok: true,
+        workspace: raw.workspace,
+        args: {
+            path: path.value,
+            oldString: oldString.value,
+            newString: newString.value,
+            replaceAll: replaceAll.value,
+        },
+    };
+};
+
+/**
+ * The `edits` form of workspace_edit: every item runs on the file state the
+ * previous one left, in list order, so two edits of one file compose.
+ */
+export const parseWorkspaceEditBatchArgs = (
+    raw: Readonly<Record<string, unknown>>
+): Parsed<readonly WorkspaceEditBatchItem[]> => {
+    const edits = raw.edits;
+    if (!Array.isArray(edits)) {
+        return argumentError(['edits 要传数组，每项是 { path, old_string, new_string, replace_all?, workspace? }']);
+    }
+    const problems: string[] = [];
+    if (hasText(raw.path)) problems.push('edits 和 path 只能给一个');
+    if (hasText(raw.old_string)) problems.push('edits 和 old_string 只能给一个');
+    if (hasText(raw.new_string)) problems.push('edits 和 new_string 只能给一个');
+    if (raw.replace_all === true) {
+        problems.push('edits 形态下 replace_all 写在每一项里（顶层的只用于单文件形态）');
+    }
+    if (typeof raw.workspace === 'string' && raw.workspace.trim() !== '') {
+        problems.push('edits 形态下 workspace 写在每一项里（顶层的只用于单文件形态）');
+    }
+    if (edits.length === 0) problems.push('edits 是空的：至少改 1 处');
+    if (edits.length > EDIT_BATCH_MAX) problems.push(`edits 最多 ${EDIT_BATCH_MAX} 项（现在 ${edits.length} 项）`);
+    const nonObject = edits.findIndex((item) => !isRecord(item));
+    if (nonObject >= 0) problems.push(`第 ${nonObject + 1} 项不是对象，每项要写成 { path, old_string, new_string }`);
+    if (problems.length > 0) return argumentError(problems);
+    const items: WorkspaceEditBatchItem[] = [];
+    for (const [index, item] of edits.entries()) {
+        if (!isRecord(item)) continue;
+        items.push(parseEditBatchItem(item, index));
+    }
+    return { ok: true, value: items };
+};
+
 export interface WorkspaceDeleteArgs {
     readonly path: string;
 }
@@ -153,6 +410,36 @@ export const parseWorkspacePreviewArgs = (raw: Readonly<Record<string, unknown>>
         return { ok: false, error: 'theme 只能是 "light" 或 "dark"。' };
     }
     return { ok: true, value: { path: path.value, theme: theme === 'dark' ? 'dark' : 'light' } };
+};
+
+export interface WorkspacePreviewBatchArgs {
+    readonly items: readonly WorkspacePathBatchItem[];
+    /** Shared by every draft of the batch */
+    readonly theme: PreviewTheme;
+    /** The workspace selector shared by the whole batch */
+    readonly workspace: unknown;
+}
+
+export const parseWorkspacePreviewBatchArgs = (
+    raw: Readonly<Record<string, unknown>>
+): Parsed<WorkspacePreviewBatchArgs> => {
+    const paths = raw.paths;
+    if (!Array.isArray(paths)) {
+        return argumentError(['paths 要传字符串数组，如 ["widgets/card.html","widgets/card-a2ui.json"]']);
+    }
+    const problems: string[] = [];
+    if (hasText(raw.path)) problems.push('paths 和 path 只能给一个');
+    const theme = raw.theme;
+    if (theme !== undefined && theme !== null && theme !== 'light' && theme !== 'dark') {
+        problems.push('theme 只能是 "light" 或 "dark"');
+    }
+    const items = parsePathBatchItems(paths, PREVIEW_BATCH_MAX, 'paths');
+    if (!items.ok) return items;
+    if (problems.length > 0) return argumentError(problems);
+    return {
+        ok: true,
+        value: { items: items.value, theme: theme === 'dark' ? 'dark' : 'light', workspace: raw.workspace },
+    };
 };
 
 /** Longest literal a find may search for; keeps the scan and the result message bounded */

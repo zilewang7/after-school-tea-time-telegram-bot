@@ -86,4 +86,47 @@ results.push(
     })
 );
 
+results.push(
+    await runCase('every html draft of a write or edit batch reports its widget size', async () => {
+        const turn = createReplyTools('gemini-4-argon', contextOf(), null, 'full');
+        const first = '<div class="a">一</div>';
+        const second = '<div class="b">二</div>';
+        const written = await callTool(turn.tools, 'workspace_write', {
+            files: [
+                { path: 'widgets/batch-a.html', content: first },
+                { path: 'widgets/batch-b.html', content: second },
+                { path: 'notes/batch.md', content: '# 不是草稿' },
+            ],
+        });
+        expect(!written.isError, `the batch write succeeds (${written.content})`);
+        const writeSizeLines = written.content.split('\n').filter((line) => line.includes('widget 体积'));
+        expect(
+            writeSizeLines.length === 2,
+            `both drafts get a widget size line and the markdown does not (got ${JSON.stringify(writeSizeLines)})`
+        );
+        expect(
+            written.content.includes(`zlib9 ${measureWidgetHtml(first).zlibBytes} B`),
+            'the first draft line carries its compressed size'
+        );
+        expect(
+            written.content.includes(`zlib9 ${measureWidgetHtml(second).zlibBytes} B`),
+            'the second draft line carries its compressed size'
+        );
+
+        const edited = await callTool(turn.tools, 'workspace_edit', {
+            edits: [
+                { path: 'widgets/batch-a.html', old_string: '一', new_string: '三' },
+                { path: 'widgets/batch-b.html', old_string: '二', new_string: '四' },
+            ],
+        });
+        expect(!edited.isError, `the batch edit succeeds (${edited.content})`);
+        const editSizeLines = edited.content.split('\n').filter((line) => line.includes('widget 体积'));
+        expect(editSizeLines.length === 2, `both edited drafts report a new size (got ${JSON.stringify(editSizeLines)})`);
+        expect(
+            edited.content.includes(`zlib9 ${measureWidgetHtml('<div class="a">三</div>').zlibBytes} B`),
+            'the edit line reports the size after the change, not the one before it'
+        );
+    })
+);
+
 reportResults(results);

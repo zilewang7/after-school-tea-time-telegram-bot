@@ -7,12 +7,16 @@
  * Covers the path rules, read/write/find/copy/edit/delete and their quotas, the
  * manifest builder and its workspace tokens, the tool handlers, `send_file` /
  * `send_widget` reading from the workspace, the preview tool with an injected
- * renderer, and the 7-day LRU cleanup.
+ * renderer, the multi-file calls (files/paths/edits), and the 7-day LRU cleanup.
  */
 import { expect, reportResults, runCase, setupOfflineDb, type CaseResult } from './harness.mts';
 import type { ToolHandler } from '../../src/ai/tools/tool-types.js';
 
 await setupOfflineDb();
+const { formatBytes } = await import('../../src/shared/file-name.js');
+const { EDIT_BATCH_MAX, PREVIEW_BATCH_MAX, READ_BATCH_MAX, WRITE_BATCH_MAX } = await import(
+    '../../src/reply/tools/workspace-tool-args.js'
+);
 const { WorkspaceFile } = await import('../../src/db/workspaceFileDTO.js');
 const {
     copyWorkspaceFile,
@@ -96,6 +100,17 @@ const captureConsole = async <T,>(body: () => Promise<T>): Promise<{ result: T; 
         console.error = original.error;
     }
 };
+
+/** `inputSchema.properties` is unknown by contract; the schema cases read it field by field */
+const recordOf = (value: unknown): Readonly<Record<string, unknown>> => {
+    if (typeof value !== 'object' || value === null || Array.isArray(value)) return {};
+    const record: Record<string, unknown> = {};
+    for (const [key, item] of Object.entries(value)) record[key] = item;
+    return record;
+};
+
+const propertiesOf = (tool: ToolHandler): Readonly<Record<string, unknown>> =>
+    recordOf(recordOf(tool.definition.inputSchema)['properties']);
 
 const clearWorkspace = async (): Promise<void> => {
     await WorkspaceFile.destroy({ where: {} });
@@ -1011,7 +1026,550 @@ const cases: { name: string; body: () => Promise<void> }[] = [
             expect(snapshot.size === 1, 'a snapshot is returned for the requested root');
         },
     },
+    {
+        name: 'a write batch creates several files, reports each and gives one usage line per workspace',
+        body: async () => {
+            await clearWorkspace();
+            const state = createWorkspaceState({ chatId: CHAT, conversationRootIds: [ROOT, OTHER_ROOT], quota: QUOTA });
+            ensureWorkspaceToken(state, OTHER_ROOT, '拼接的会话');
+            const tool = createWorkspaceWriteTool({ state });
+
+            const result = await call(tool, {
+                files: [
+                    { path: 'notes/plan.md', content: '# 计划' },
+                    { path: 'src/main.ts', content: 'export const a = 1;' },
+                    { path: 'notes/other.md', content: '# 别的', workspace: 'w2' },
+                ],
+            });
+            expect(!result.isError, `the batch succeeds (${result.content})`);
+            expect(result.content.includes('已写入 3 个文件：'), `the header counts the files (${result.content})`);
+            expect(result.content.includes('- 《notes/plan.md》（'), 'each file gets its own line');
+            expect(result.content.includes('- 《src/main.ts》（'), 'the second file is listed too');
+            expect(result.content.includes('w2 notes/other.md'), 'a spliced workspace keeps its token in the line');
+            expect(
+                (await readWorkspaceFile(CHAT, ROOT, 'notes/plan.md'))?.content === '# 计划' &&
+                    (await readWorkspaceFile(CHAT, ROOT, 'src/main.ts'))?.content === 'export const a = 1;' &&
+                    (await readWorkspaceFile(CHAT, OTHER_ROOT, 'notes/other.md'))?.content === '# 别的',
+                'every file landed in the workspace its item named'
+            );
+            expect(
+                result.content.includes('工作区（本会话 w1）：') && result.content.includes('工作区（拼接的会话 w2）：'),
+                `usage is reported once per workspace (${result.content})`
+            );
+            expect(result.content.includes('2 个文件，已用'), 'the usage of the current workspace counts both files');
+            expect(result.content.includes(`（${formatBytes(Buffer.byteLength('# 计划'))}，新建）`), 'the line carries size and outcome');
+            expect(result.trace?.argument?.includes('3 个文件'), `the trace counts the request (${result.trace?.argument})`);
+        },
+    },
+    {
+        name: 'a write batch keeps what succeeded and names every file that failed',
+        body: async () => {
+            await clearWorkspace();
+            const state = createWorkspaceState({ chatId: CHAT, conversationRootIds: [ROOT], quota: QUOTA });
+            const tool = createWorkspaceWriteTool({ state });
+            await write('notes/taken.md', 'old');
+
+            const result = await call(tool, {
+                files: [
+                    { path: 'notes/ok.md', content: 'fine' },
+                    { path: '../escape.md', content: 'nope' },
+                    { path: 'notes/taken.md', content: 'blind' },
+                    { path: 'notes/over.md', content: 'x'.repeat(QUOTA.maxFileBytes + 1) },
+                ],
+            });
+            expect(!result.isError, `a partly failed batch is not a call error (${result.content})`);
+            expect(result.content.includes('已写入 1 个文件：'), 'the successful file is counted');
+            expect(result.content.includes('有 3 个没写成：'), 'the failures are counted');
+            expect(result.content.includes('../escape.md'), 'an illegal path is named');
+            expect(
+                result.content.includes('notes/taken.md') && result.content.includes('overwrite=true'),
+                'an existing file explains the flag'
+            );
+            expect(
+                result.content.includes('notes/over.md') && result.content.includes('单个文件上限'),
+                'an oversize file names the cap'
+            );
+            expect((await readWorkspaceFile(CHAT, ROOT, 'notes/ok.md'))?.content === 'fine', 'the good file is really stored');
+            expect((await readWorkspaceFile(CHAT, ROOT, 'notes/taken.md'))?.content === 'old', 'the refused file is untouched');
+        },
+    },
+    {
+        name: 'a write batch applies its items in order, so the last write of a file wins',
+        body: async () => {
+            await clearWorkspace();
+            const tool = createWorkspaceWriteTool({
+                state: createWorkspaceState({ chatId: CHAT, conversationRootIds: [ROOT], quota: QUOTA }),
+            });
+            const result = await call(tool, {
+                files: [
+                    { path: 'notes/draft.md', content: '第一版' },
+                    { path: 'notes/draft.md', content: '第二版', overwrite: true },
+                    { path: 'logs/a.txt', content: 'one' },
+                    { path: 'logs/a.txt', content: ' two', append: true },
+                ],
+            });
+            expect(!result.isError, `the batch succeeds (${result.content})`);
+            expect(result.content.includes('已写入 4 个文件：'), 'all four items succeeded');
+            expect(
+                result.content.includes(`（${formatBytes(Buffer.byteLength('第二版'))}，覆盖）`),
+                `the overwrite is named as such (${result.content})`
+            );
+            expect(result.content.includes(`（${formatBytes(7)}，追加）`), 'the append reports the whole file size');
+            expect((await readWorkspaceFile(CHAT, ROOT, 'notes/draft.md'))?.content === '第二版', 'the last item is the final state');
+            expect((await readWorkspaceFile(CHAT, ROOT, 'logs/a.txt'))?.content === 'one two', 'append composes with the create');
+        },
+    },
+    {
+        name: 'a write batch rejects a mixed form, an empty list, too many files and too much text',
+        body: async () => {
+            await clearWorkspace();
+            const tool = createWorkspaceWriteTool({ state: stateOf() });
+            const mixed = await call(tool, { path: 'a.md', content: 'x', files: [{ path: 'b.md', content: 'y' }] });
+            expect(
+                mixed.isError && mixed.content.includes('参数有误') && mixed.content.includes('files 和 path 只能给一个'),
+                `the two forms are exclusive (${mixed.content})`
+            );
+            const empty = await call(tool, { files: [] });
+            expect(empty.isError && empty.content.includes('files 是空的'), 'an empty files array is an argument error');
+            const tooMany = await call(tool, {
+                files: Array.from({ length: WRITE_BATCH_MAX + 1 }, (_, index) => ({ path: `f${index}.md`, content: 'x' })),
+            });
+            expect(tooMany.isError && tooMany.content.includes(`最多 ${WRITE_BATCH_MAX} 项`), 'the item cap is enforced');
+            const tooLong = await call(tool, { files: [{ path: 'big.md', content: 'x'.repeat(32_001) }] });
+            expect(tooLong.isError && tooLong.content.includes('合计最多 32000 字符'), 'the whole text budget is enforced');
+            const topLevelFlag = await call(tool, { files: [{ path: 'a.md', content: 'x' }], append: true });
+            expect(
+                topLevelFlag.isError && topLevelFlag.content.includes('写在每一项里'),
+                'a batch field at the top level is refused, not silently ignored'
+            );
+            expect((await readWorkspaceFile(CHAT, ROOT, 'a.md')) === null, 'a parameter error wrote nothing');
+        },
+    },
+    {
+        name: 'a read batch returns its files in order with one shared offset, limit and workspace',
+        body: async () => {
+            await clearWorkspace();
+            await write('notes/a.md', 'a1\na2\na3');
+            await write('notes/b.md', 'b1\nb2');
+            const state = createWorkspaceState({ chatId: CHAT, conversationRootIds: [ROOT, OTHER_ROOT], quota: QUOTA });
+            ensureWorkspaceToken(state, OTHER_ROOT, '拼接的会话');
+            await writeWorkspaceFile({
+                chatId: CHAT,
+                conversationRootId: OTHER_ROOT,
+                path: 'other.md',
+                content: 'o1\no2',
+                append: false,
+                overwrite: false,
+                quota: QUOTA,
+            });
+            const tool = createWorkspaceReadTool({ state });
+
+            const result = await call(tool, { paths: ['notes/a.md', 'notes/b.md'], offset: 2, limit: 1 });
+            expect(!result.isError, `the batch reads (${result.content})`);
+            expect(result.content.includes('已读取 2 个文件：'), 'the header counts the files');
+            expect(
+                result.content.indexOf('notes/a.md') < result.content.indexOf('notes/b.md'),
+                'the paragraphs keep the request order'
+            );
+            expect(
+                result.content.includes('2| a2') && result.content.includes('显示第 2–2 行'),
+                'the shared offset and limit apply to every file'
+            );
+            expect(!result.content.includes('1| a1') && !result.content.includes('1| b1'), 'lines before the offset are not shown');
+            expect(result.content.includes('2| b2'), 'the second file is read at the same offset');
+
+            const spliced = await call(tool, { paths: ['other.md'], workspace: 'w2' });
+            expect(
+                !spliced.isError && spliced.content.includes('拼接的会话 w2'),
+                `the shared workspace token is used (${spliced.content})`
+            );
+            expect(spliced.content.includes('1| o1'), 'the spliced workspace file is read');
+        },
+    },
+    {
+        name: 'a read batch shares one character budget and marks the files it did not reach',
+        body: async () => {
+            await clearWorkspace();
+            const bigQuota = { ...QUOTA, maxFileBytes: 200_000, maxConversationBytes: 400_000 };
+            const writeBig = (path: string, content: string) =>
+                writeWorkspaceFile({
+                    chatId: CHAT,
+                    conversationRootId: ROOT,
+                    path,
+                    content,
+                    append: false,
+                    overwrite: true,
+                    quota: bigQuota,
+                });
+            // The first file alone almost fills the 24000-character budget
+            const first = Array.from({ length: 30 }, (_, index) => `${'x'.repeat(999)}${index}`).join('\n');
+            const second = Array.from({ length: 5 }, () => `MARKER${'y'.repeat(993)}`).join('\n');
+            expect((await writeBig('notes/long1.md', first)).ok, 'the first big file fits');
+            expect((await writeBig('notes/long2.md', second)).ok, 'the second big file fits');
+
+            const tool = createWorkspaceReadTool({ state: stateOf() });
+            const result = await call(tool, { paths: ['notes/long1.md', 'notes/long2.md'] });
+            expect(!result.isError, `the batch still succeeds (${result.content.slice(0, 200)})`);
+            expect(result.content.includes('已读取 1 个文件：'), 'only the first file fits the budget');
+            expect(result.content.includes('还有 '), 'the first file is cut and states the rest');
+            expect(
+                result.content.includes('未读：本次读取的 24000 字符预算已用完（可用 offset 继续）'),
+                'the second file is marked unread'
+            );
+            expect(!result.content.includes('MARKER'), 'the unread file body is absent');
+            expect(result.content.length < 25_000, `the whole call stays near the budget (${result.content.length})`);
+        },
+    },
+    {
+        name: 'a read batch reports missing files and keeps reading the rest',
+        body: async () => {
+            await clearWorkspace();
+            await write('notes/a.md', 'one\ntwo');
+            const tool = createWorkspaceReadTool({ state: stateOf() });
+
+            const result = await call(tool, { paths: ['notes/a.md', 'notes/nope.md', 'one/two/three/four.md'] });
+            expect(!result.isError, `one readable file keeps the call a success (${result.content})`);
+            expect(result.content.includes('已读取 1 个文件：'), 'the readable file is read');
+            expect(result.content.includes('有 2 个没读成：'), 'both misses are counted');
+            expect(
+                result.content.includes('notes/nope.md') && result.content.includes('工作区里没有'),
+                'the missing file is named'
+            );
+            expect(
+                result.content.includes('one/two/three/four.md') && result.content.includes('目录最多 3 层'),
+                'the illegal path is named'
+            );
+
+            const none = await call(tool, { paths: ['notes/missing1.md', 'notes/missing2.md'] });
+            expect(none.isError && none.content.includes('这 2 个文件都没读成：'), 'a fully failed batch is an error');
+
+            const badOffset = await call(tool, { paths: ['notes/a.md'], offset: 9 });
+            expect(
+                badOffset.isError && badOffset.content.includes('offset=9 超过文件行数'),
+                'an out-of-range offset is a per-item failure'
+            );
+        },
+    },
+    {
+        name: 'a read batch rejects a mixed form, an empty list, too many paths and a bad item',
+        body: async () => {
+            const tool = createWorkspaceReadTool({ state: stateOf() });
+            const mixed = await call(tool, { path: 'a.md', paths: ['b.md'] });
+            expect(mixed.isError && mixed.content.includes('paths 和 path 只能给一个'), 'the two forms are exclusive');
+            const empty = await call(tool, { paths: [] });
+            expect(empty.isError && empty.content.includes('paths 是空的'), 'an empty paths array is an argument error');
+            const tooMany = await call(tool, {
+                paths: Array.from({ length: READ_BATCH_MAX + 1 }, (_, index) => `f${index}.md`),
+            });
+            expect(tooMany.isError && tooMany.content.includes(`最多 ${READ_BATCH_MAX} 项`), 'the path cap is enforced');
+            const notString = await call(tool, { paths: ['a.md', 42] });
+            expect(
+                notString.isError && notString.content.includes('第 2 项要传字符串'),
+                'a non-string path is an argument error'
+            );
+            const badOffset = await call(tool, { paths: ['a.md'], offset: 0 });
+            expect(badOffset.isError && badOffset.content.includes('offset 从 1 开始'), 'the shared offset is validated');
+        },
+    },
+    {
+        name: 'an edit batch composes in list order and reports the item that no longer matches',
+        body: async () => {
+            await clearWorkspace();
+            await write('notes/plan.md', 'one\ntwo\n');
+            const tool = createWorkspaceEditTool({ state: stateOf() });
+            const result = await call(tool, {
+                edits: [
+                    { path: 'notes/plan.md', old_string: 'one', new_string: 'ONE' },
+                    // Only exists after the first edit: proves the items run in order
+                    { path: 'notes/plan.md', old_string: 'ONE', new_string: 'uno' },
+                    { path: 'notes/plan.md', old_string: 'two', new_string: 'dos' },
+                    { path: 'notes/plan.md', old_string: 'nope', new_string: 'x' },
+                    { path: 'notes/plan.md', old_string: 'uno', new_string: 'one!' },
+                ],
+            });
+            expect(!result.isError, `a partly failed edit batch is not a call error (${result.content})`);
+            expect(result.content.includes('已修改 4 处：'), 'the successful edits are counted');
+            expect(result.content.includes('- 《notes/plan.md》：替换 1 处'), 'each edit gets its own line');
+            expect(result.content.includes('有 1 处没改成：'), 'the failed edit is counted');
+            expect(result.content.includes('找不到这段 old_string'), 'the reason is the single-file wording');
+            expect(result.content.includes('工作区（本会话 w1）：'), 'usage comes once at the end');
+            expect(
+                (await readWorkspaceFile(CHAT, ROOT, 'notes/plan.md'))?.content === 'one!\ndos\n',
+                'the edits ran in order on the state the previous one left'
+            );
+        },
+    },
+    {
+        name: 'an edit batch rejects a mixed form, an empty list and too many items',
+        body: async () => {
+            await clearWorkspace();
+            const tool = createWorkspaceEditTool({ state: stateOf() });
+            const mixed = await call(tool, {
+                path: 'a.md',
+                old_string: 'x',
+                new_string: 'y',
+                edits: [{ path: 'b.md', old_string: 'x', new_string: 'y' }],
+            });
+            expect(
+                mixed.isError && mixed.content.includes('edits 和 path 只能给一个'),
+                'the single form and edits are exclusive'
+            );
+            const empty = await call(tool, { edits: [] });
+            expect(empty.isError && empty.content.includes('edits 是空的'), 'an empty edits array is an argument error');
+            const tooMany = await call(tool, {
+                edits: Array.from({ length: EDIT_BATCH_MAX + 1 }, (_, index) => ({
+                    path: `f${index}.md`,
+                    old_string: 'x',
+                    new_string: 'y',
+                })),
+            });
+            expect(tooMany.isError && tooMany.content.includes(`最多 ${EDIT_BATCH_MAX} 项`), 'the item cap is enforced');
+            const topLevelFlag = await call(tool, {
+                edits: [{ path: 'a.md', old_string: 'x', new_string: 'y' }],
+                replace_all: true,
+            });
+            expect(
+                topLevelFlag.isError && topLevelFlag.content.includes('写在每一项里'),
+                'a batch field at the top level is refused, not silently ignored'
+            );
+        },
+    },
+    {
+        name: 'a preview batch renders its drafts in order and reports the ones that failed',
+        body: async () => {
+            await clearWorkspace();
+            await write('widgets/one.html', '<div class="a">one</div>');
+            await write('widgets/two.html', '<div class="b">two</div>');
+            await write('widgets/bad.json', '{ not json');
+            const documents: string[] = [];
+            const tool = createWorkspacePreviewTool({
+                state: stateOf(),
+                limits: { allowHtml: true, maxHtmlBytes: 32768, maxGzipBytes: 4096 },
+                dependencies: {
+                    renderPng: async (document) => {
+                        documents.push(document);
+                        // The second draft renders, then the sidecar fails on the third
+                        return documents.length === 2 ? null : { png: PNG, width: 600, height: 300 };
+                    },
+                },
+            });
+
+            const result = await call(tool, {
+                paths: ['widgets/one.html', 'widgets/two.html', 'widgets/bad.json'],
+            });
+            expect(!result.isError, `a partly failed batch is not a call error (${result.content})`);
+            expect(result.modelImages?.length === 1, `only the rendered draft brings a picture (${result.modelImages?.length})`);
+            expect(result.content.includes('已渲染 1 张预览：'), 'the rendered draft is counted');
+            expect(result.content.includes('600×300'), 'its size is reported');
+            expect(result.content.includes('有 2 个没渲染成：'), 'the failed drafts are counted');
+            expect(result.content.includes('渲染不可用'), 'the failed render is named');
+            expect(result.content.includes('不是合法的 JSON'), 'the broken json is named');
+            expect(documents.length === 2, 'the broken json fails before reaching the renderer');
+            expect(
+                result.trace?.argument?.includes('3 个草稿'),
+                `the trace counts the requested drafts (${result.trace?.argument})`
+            );
+        },
+    },
+    {
+        name: 'a preview batch rejects a mixed form, an empty list and too many paths',
+        body: async () => {
+            const tool = createWorkspacePreviewTool({
+                state: stateOf(),
+                limits: { allowHtml: true, maxHtmlBytes: 32768, maxGzipBytes: 4096 },
+                dependencies: { renderPng: async () => ({ png: PNG, width: 600, height: 300 }) },
+            });
+            const mixed = await call(tool, { path: 'a.html', paths: ['b.html'] });
+            expect(mixed.isError && mixed.content.includes('paths 和 path 只能给一个'), 'the two forms are exclusive');
+            const empty = await call(tool, { paths: [] });
+            expect(empty.isError && empty.content.includes('paths 是空的'), 'an empty paths array is an argument error');
+            const tooMany = await call(tool, {
+                paths: Array.from({ length: PREVIEW_BATCH_MAX + 1 }, (_, index) => `f${index}.html`),
+            });
+            expect(tooMany.isError && tooMany.content.includes(`最多 ${PREVIEW_BATCH_MAX} 项`), 'the path cap is enforced');
+            const badTheme = await call(tool, { paths: ['a.html'], theme: 'dim' });
+            expect(badTheme.isError && badTheme.content.includes('theme 只能是'), 'the shared theme is validated');
+        },
+    },
+    {
+        name: 'the single-file wording of the four tools is unchanged',
+        body: async () => {
+            await clearWorkspace();
+            const state = createWorkspaceState({ chatId: CHAT, conversationRootIds: [ROOT], quota: QUOTA });
+            const written = await call(createWorkspaceWriteTool({ state }), { path: 'exact/a.md', content: 'abc' });
+            expect(
+                written.content ===
+                    `已写入《exact/a.md》（本会话 w1）：${formatBytes(3)}（工作区 1 个文件，已用 ` +
+                        `${formatBytes(3)} / ${formatBytes(QUOTA.maxConversationBytes)}）。`,
+                `the single write keeps its wording (got ${written.content})`
+            );
+            expect(written.trace?.argument === 'exact/a.md', 'the single write trace keeps its argument');
+            expect(written.trace?.result === '3B（新建）', 'the single write trace keeps its result');
+
+            const read = await call(createWorkspaceReadTool({ state }), { path: 'exact/a.md' });
+            expect(
+                read.content === `《exact/a.md》（本会话 w1）：共 1 行 / ${formatBytes(3)}；显示第 1–1 行。\n1| abc`,
+                `the single read keeps its wording (got ${read.content})`
+            );
+
+            const edited = await call(createWorkspaceEditTool({ state }), {
+                path: 'exact/a.md',
+                old_string: 'abc',
+                new_string: 'abcd',
+            });
+            expect(
+                edited.content === `已修改《exact/a.md》（本会话 w1）：替换 1 处，现在 ${formatBytes(4)}。`,
+                `the single edit keeps its wording (got ${edited.content})`
+            );
+
+            await write('widgets/exact.html', '<div>x</div>');
+            const limits = { allowHtml: true, maxHtmlBytes: 32768, maxGzipBytes: 4096 };
+            const previewed = await call(
+                createWorkspacePreviewTool({
+                    state,
+                    limits,
+                    dependencies: { renderPng: async () => ({ png: PNG, width: 600, height: 320 }) },
+                }),
+                { path: 'widgets/exact.html' }
+            );
+            const size = measureWidgetHtml('<div>x</div>');
+            expect(
+                previewed.content ===
+                    `已渲染《widgets/exact.html》（本会话 w1）预览：600×320 PNG，已附上（静态首帧）。` +
+                        `体积：原文 ${formatBytes(size.rawBytes)} / ${formatBytes(limits.maxHtmlBytes)}，` +
+                        `zlib9 ${formatBytes(size.zlibBytes)} / ${formatBytes(limits.maxGzipBytes)}；` +
+                        'widget 预检：通过。',
+                `the single preview keeps its wording (got ${previewed.content})`
+            );
+        },
+    },
+    {
+        name: 'a batch whose items all failed is an error result',
+        body: async () => {
+            await clearWorkspace();
+            const state = createWorkspaceState({ chatId: CHAT, conversationRootIds: [ROOT], quota: QUOTA });
+            const written = await call(createWorkspaceWriteTool({ state }), {
+                files: [
+                    { path: '../a.md', content: 'x' },
+                    { path: '/abs.md', content: 'y' },
+                ],
+            });
+            expect(written.isError, 'a write batch with no success is an error');
+            expect(written.content.includes('这 2 个文件都没写成：'), `the header says so (${written.content})`);
+
+            const edited = await call(createWorkspaceEditTool({ state }), {
+                edits: [
+                    { path: 'notes/missing.md', old_string: 'x', new_string: 'y' },
+                    { path: 'notes/missing.md', old_string: 'z', new_string: 'w' },
+                ],
+            });
+            expect(edited.isError, 'an edit batch with no success is an error');
+            expect(edited.content.includes('这 2 处都没改成：'), `the header says so (${edited.content})`);
+
+            const previewed = await call(
+                createWorkspacePreviewTool({
+                    state,
+                    limits: { allowHtml: true, maxHtmlBytes: 32768, maxGzipBytes: 4096 },
+                    dependencies: { renderPng: async () => ({ png: PNG, width: 600, height: 300 }) },
+                }),
+                { paths: ['widgets/nope.html', 'widgets/bad.json'] }
+            );
+            expect(previewed.isError, 'a preview batch with no rendered draft is an error');
+            expect(previewed.content.includes('这 2 个草稿都没渲染成：'), `the header says so (${previewed.content})`);
+            expect(previewed.modelImages === undefined, 'no picture rides the result');
+        },
+    },
+    {
+        name: 'the batch schemas declare their arrays, caps and the single-file fields',
+        body: async () => {
+            const writeTool = createWorkspaceWriteTool({ state: stateOf() });
+            expect(writeTool.definition.description.includes('files'), 'the write description explains the batch');
+            const writeProperties = propertiesOf(writeTool);
+            const files = recordOf(writeProperties['files']);
+            expect(files.minItems === 1 && files.maxItems === WRITE_BATCH_MAX, 'files is a 1–10 array');
+            expect(Array.isArray(recordOf(files['items'])['required']), 'a file item declares its own required fields');
+            expect(
+                recordOf(writeProperties['path']).type === 'string' && recordOf(writeProperties['content']).type === 'string',
+                'the single-file fields are still declared'
+            );
+
+            const readTool = createWorkspaceReadTool({ state: stateOf() });
+            expect(readTool.definition.description.includes('paths'), 'the read description explains the batch');
+            const readProperties = propertiesOf(readTool);
+            const readPaths = recordOf(readProperties['paths']);
+            expect(readPaths.minItems === 1 && readPaths.maxItems === READ_BATCH_MAX, 'paths is a 1–10 array for read');
+
+            const editTool = createWorkspaceEditTool({ state: stateOf() });
+            expect(editTool.definition.description.includes('edits'), 'the edit description explains the batch');
+            const editProperties = propertiesOf(editTool);
+            const edits = recordOf(editProperties['edits']);
+            expect(edits.minItems === 1 && edits.maxItems === EDIT_BATCH_MAX, 'edits is a 1–5 array');
+
+            const previewTool = createWorkspacePreviewTool({
+                state: stateOf(),
+                limits: { allowHtml: true, maxHtmlBytes: 32768, maxGzipBytes: 4096 },
+            });
+            expect(previewTool.definition.description.includes('paths'), 'the preview description explains the batch');
+            const previewProperties = propertiesOf(previewTool);
+            const previewPaths = recordOf(previewProperties['paths']);
+            expect(previewPaths.minItems === 1 && previewPaths.maxItems === PREVIEW_BATCH_MAX, 'paths is a 1–3 array for preview');
+        },
+    },
+    {
+        name: 'blank single-file fields are fillers next to a batch call',
+        body: async () => {
+            const state = stateOf([ROOT]);
+
+            const writeTool = createWorkspaceWriteTool({ state });
+            const written = await call(writeTool, {
+                files: [{ path: 'notes/a.md', content: 'A' }],
+                path: '',
+                content: '',
+            });
+            expect(!written.isError, `blank fillers do not fail the write batch (${written.content})`);
+
+            const readTool = createWorkspaceReadTool({ state });
+            const read = await call(readTool, { paths: ['notes/a.md'], path: '' });
+            expect(
+                !read.isError && read.content.includes('notes/a.md'),
+                `a blank path filler does not fail the read batch (${read.content})`
+            );
+
+            const editTool = createWorkspaceEditTool({ state });
+            const edited = await call(editTool, {
+                edits: [{ path: 'notes/a.md', old_string: 'A', new_string: 'B' }],
+                path: '',
+                old_string: '',
+                new_string: '',
+            });
+            expect(!edited.isError, `blank fillers do not fail the edit batch (${edited.content})`);
+
+            const previewTool = createWorkspacePreviewTool({
+                state,
+                limits: { allowHtml: true, maxHtmlBytes: 32768, maxGzipBytes: 4096 },
+            });
+            const previewed = await call(previewTool, { paths: ['notes/a.md'], path: '' });
+            expect(
+                !previewed.content.includes('只能给一个'),
+                `a blank path filler does not look like a second form (${previewed.content})`
+            );
+
+            // An empty batch array next to a valid single form is a filler too
+            const singleWrite = await call(writeTool, {
+                path: 'notes/b.md',
+                content: 'B',
+                files: [],
+            });
+            expect(!singleWrite.isError, `an empty files array does not hijack the single write (${singleWrite.content})`);
+            const singleRead = await call(readTool, { path: 'notes/b.md', paths: [] });
+            expect(
+                !singleRead.isError && singleRead.content.includes('notes/b.md'),
+                `an empty paths array does not hijack the single read (${singleRead.content})`
+            );
+        },
+    },
 ];
+
 
 const results: CaseResult[] = [];
 for (const { name, body } of cases) {
