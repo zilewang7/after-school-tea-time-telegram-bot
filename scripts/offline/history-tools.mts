@@ -1298,4 +1298,97 @@ cases.push(
     })
 );
 
+/**
+ * Attachment counts (#13-2).
+ *
+ * A message's index text can predate its link preview (it is just the URL),
+ * while /messages is the only report of how many pictures fetch_image can
+ * actually serve. read_history must show the same `附：` line as
+ * search_history, in both the full read and the time window.
+ */
+cases.push(
+    await runCase('read_history shows the picture count /messages reports', async () => {
+        // Production #1124588: the index holds only the URL, /messages says 5 pictures
+        const url = 'https://fixupx.com/example/status/42';
+        const center = { ...fixtureHit(), messageId: 3200, html: url };
+        const earlierHit = { ...fixtureHit(), messageId: 3190, timestamp: center.timestamp - 300, html: '前一条' };
+        const laterHit = { ...fixtureHit(), messageId: 3210, timestamp: center.timestamp + 300, html: '后一条' };
+        const fake = fakeService({
+            search: async (request) => {
+                if (request.ids) return outcomeOf([center]);
+                if (request.end === center.timestamp) return outcomeOf([earlierHit]);
+                return outcomeOf([laterHit]);
+            },
+            raw: [rawMessage({ messageId: 3200, text: url, imageCount: 5 })],
+        });
+        const read = createReadHistoryTool(buildOptions(fake));
+
+        const full = await execute(read, { ids: ['https://t.me/c/2311128579/3200'] });
+        expect(!full.isError, `the full read succeeds (got ${full.content})`);
+        expect(
+            full.content.includes('附：图×5'),
+            `the full read names the 5 readable pictures (got ${full.content})`
+        );
+        expect(!full.content.includes('网页预览'), 'the URL-only index carries no preview labels');
+
+        const window = await execute(read, { around: 'h1', minutes: 10 });
+        expect(!window.isError, `the around read succeeds (got ${window.content})`);
+        expect(
+            window.content.includes('（附：图×5）'),
+            `the window row names them too (got ${window.content})`
+        );
+    })
+);
+
+cases.push(
+    await runCase('read_history falls back to the index markers without a manifest count', async () => {
+        // /messages did not report the manifest; the fixture index marks two images
+        const center = { ...fixtureHit(), messageId: 3300 };
+        const earlierHit = { ...fixtureHit(), messageId: 3290, timestamp: center.timestamp - 300, html: '前一条' };
+        const laterHit = { ...fixtureHit(), messageId: 3310, timestamp: center.timestamp + 300, html: '后一条' };
+        const fake = fakeService({
+            search: async (request) => {
+                if (request.ids) return outcomeOf([center]);
+                if (request.end === center.timestamp) return outcomeOf([earlierHit]);
+                return outcomeOf([laterHit]);
+            },
+            raw: [rawMessage({ messageId: 3300, imageCount: null })],
+        });
+        const read = createReadHistoryTool(buildOptions(fake));
+
+        const full = await execute(read, { ids: ['https://t.me/c/2311128579/3300'] });
+        expect(!full.isError, `the full read succeeds (got ${full.content})`);
+        expect(
+            full.content.includes('附：图×2、网页预览、IV 正文'),
+            `the index marker count is the fallback (got ${full.content})`
+        );
+
+        const window = await execute(read, { around: 'h1', minutes: 10 });
+        expect(!window.isError, `the around read succeeds (got ${window.content})`);
+        expect(
+            window.content.includes('（附：图×2、网页预览、IV 正文）'),
+            `the window row falls back the same way (got ${window.content})`
+        );
+    })
+);
+
+cases.push(
+    await runCase('read_history prints no attachment line when nothing is attached', async () => {
+        const plain = { ...fixtureHit(), messageId: 3400, html: '一点普通的消息' };
+        const fake = fakeService({
+            search: async () => outcomeOf([plain]),
+            raw: [rawMessage({ messageId: 3400, text: '一点普通的消息', imageCount: null })],
+        });
+        const read = createReadHistoryTool(buildOptions(fake));
+
+        const full = await execute(read, { ids: ['https://t.me/c/2311128579/3400'] });
+        expect(!full.isError, `the full read succeeds (got ${full.content})`);
+        expect(!full.content.includes('附：'), `no picture count means no 附 line (got ${full.content})`);
+
+        const window = await execute(read, { around: 'h1', minutes: 10 });
+        expect(!window.isError, `the around read succeeds (got ${window.content})`);
+        expect(!window.content.includes('附：'), `the window row adds none either (got ${window.content})`);
+    })
+);
+
 reportResults(cases);

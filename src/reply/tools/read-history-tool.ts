@@ -21,7 +21,7 @@ import {
     type HistoryReadArgs,
 } from './history-args.js';
 import {
-    attachmentSummary,
+    attachmentLine,
     formatHistoryTime,
     renderFullMessage,
     renderWindow,
@@ -192,6 +192,8 @@ const loadRaw = async (
                     replyToId: raw.replyToId,
                     media: raw.media,
                     forward: raw.forward,
+                    // The manifest size lives only in /messages: keep it for the render
+                    imageCount: raw.imageCount,
                 });
             }
         } catch (error) {
@@ -351,7 +353,7 @@ const readWindow = async (
         .map((item) => {
             const entry =
                 options.state.findByMessage(item.entry.channelId, item.entry.messageId) ?? item.entry;
-            const attachments = attachmentSummary(entry.indexedHtml);
+            const attachments = attachmentLine(entry.indexedHtml, entry.imageCount ?? null);
             return { entry, center: item.center, ...(attachments ? { attachments } : {}) };
         })
         .sort((a, b) => a.entry.timestamp - b.entry.timestamp);

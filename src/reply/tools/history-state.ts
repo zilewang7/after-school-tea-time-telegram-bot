@@ -35,6 +35,8 @@ export interface HistoryMessageInput {
     readonly media?: HistoryMedia | null;
     /** Where it was forwarded from */
     readonly forward?: HistoryForward | null;
+    /** Pictures/videos luoxu can serve for this message; null/absent when it did not say */
+    readonly imageCount?: number | null;
     /**
      * Unix seconds of the deletion luoxu recorded for this message, or null
      * when it is not known deleted. Only a marker in the rendered result —
@@ -76,6 +78,8 @@ const merge = (existing: HistoryEntry, input: HistoryMessageInput): HistoryEntry
     replyToId: input.replyToId ?? existing.replyToId,
     media: input.media ?? existing.media,
     forward: input.forward ?? existing.forward,
+    // The raw count is only known after /messages, so it grows like the rest
+    imageCount: input.imageCount ?? existing.imageCount,
     // Deletion is monotonic: once known it stays known
     deletedAt: input.deletedAt ?? existing.deletedAt,
 });

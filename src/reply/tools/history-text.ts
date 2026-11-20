@@ -161,7 +161,7 @@ const OTHER_MARKERS: ReadonlyArray<readonly [string, string]> = [
  *
  * The picture count is not part of this: the index counts markers, while
  * fetch_image can only serve what luoxu's manifest lists (one entry per
- * distinct file). `attachmentLine` is what a row shows.
+ * distinct file). `attachmentLine` is what every history surface shows.
  */
 export const attachmentSummary = (indexedHtml: string): string | null => {
     const labels: string[] = [];
@@ -694,6 +694,9 @@ export const renderFullMessage = (
     const header = `h${entry.h} · ${group}${time} · ${senderLabelOf(entry)}${anchor}`;
 
     const annotation = annotationsOf(entry);
+    // Same `附：` wording as search_history: the count is what fetch_image can
+    // serve, not the index marker count, so the two surfaces cannot disagree.
+    const attachments = attachmentLine(entry.indexedHtml, entry.imageCount ?? null);
     const body = indexedBodyOf(entry);
     let stripped: { readonly text: string; readonly removed: number } = { text: body, removed: 0 };
     if (!options.folded && entry.rawText && entry.entities) {
@@ -722,7 +725,10 @@ export const renderFullMessage = (
         entry.rawText === undefined
             ? '\n（未能读取原消息：以下为归档索引文本，可能含图片 OCR 或预览内容，不能当作原文引用）'
             : '';
-    const head = annotation ? `${header}\n${annotation}` : header;
+    const headLines = [header];
+    if (annotation) headLines.push(annotation);
+    if (attachments) headLines.push(`附：${attachments}`);
+    const head = headLines.join('\n');
     return `${head}${unreadable}\n${neutralizeWireFormat(cut.text)}${note}`;
 };
 
