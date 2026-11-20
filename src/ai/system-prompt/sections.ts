@@ -108,6 +108,8 @@ export interface CapabilityOptions {
     readonly harnessIssues: boolean;
     /** send_widget / get_ui_guide are offered */
     readonly widget: boolean;
+    /** react_to_message is offered (a free per-chat tool, on by default) */
+    readonly reactionTools?: boolean;
 }
 
 const searchImageLines = (canDraw: boolean): string[] => [
@@ -154,6 +156,11 @@ const widgetLine = (workspace: boolean): string =>
 const HARNESS_ISSUE_LINE =
     '- 当你准备结束思考时才调用 issue 工具：如果本轮使用 harness 时遇到工具不好用、描述不清、缺能力或格式别扭，先 `list_harness_issues` 查重，再用 `create_harness_issue` 记录；没有就跳过。记录本身不要出现在回复正文里。';
 
+const REACTION_LINE =
+    '- 可以用 `react_to_message` 给本段对话中的消息加一个 emoji reaction：`message` 写该消息的 `#N`，' +
+    '`emoji` 用 Telegram 标准 reaction 表情（如 👍 ❤ 😂 🤔 🎉）；省略 `emoji` 即取消你自己加的 reaction。' +
+    '一条消息同时只有一个 reaction（再设会替换）。reaction 是轻量回应（收到、赞同、😂），不要用它代替正文回答。';
+
 export const buildCapabilitiesSection = (options: CapabilityOptions): string => {
     const lines: string[] = [CAPABILITIES_SECTION];
     const owner = options.smsOwner;
@@ -172,6 +179,7 @@ export const buildCapabilitiesSection = (options: CapabilityOptions): string => 
     if (options.historyTools) lines.push(historyLine(options.imageFetch));
     if (options.harnessIssues) lines.push(HARNESS_ISSUE_LINE);
     if (options.widget) lines.push(widgetLine(options.workspace === true));
+    if (options.reactionTools === true) lines.push(REACTION_LINE);
     return lines.join('\n');
 };
 
@@ -187,7 +195,7 @@ export const TRIAL_SECTION = `# 体验用户
 - 模型固定为 ${TRIAL_MODEL}，不能切换；不要建议用 /model 切换模型
 - 生图只能用 banana：/picbanana 可用；/picgpt、/picgrok、/pic、/vid 等不可用；generate_image 只能用 banana（工具被本聊天开启时）
 - 不能用 send_sms_to_owner、MCP 外部工具，以及其它高开销/付费功能
-- 本聊天已开启的免费工具（搜图、读图、发图、贴纸、发文件、工作区、历史检索等）照常可用
+- 本聊天已开启的免费工具（搜图、读图、发图、贴纸、发文件、工作区、历史检索、reaction 等）照常可用
 
 完整功能仅限机主、机主指定群聊的成员和已通过准入的用户。如果你本来就在机主的群里，
 权限会自动恢复，不需要申请；不在群里的人要使用完整功能，必须自己提交准入申请：
@@ -200,4 +208,5 @@ export const TRIAL_SECTION = `# 体验用户
 export const NOTES_SECTION = `# 注意
 
 - 用户可能编辑自己已发出的消息，或切换你生成的消息的版本
-- 你要回复的那条消息末尾的运行时信息里可能有「本聊天的附加提示词」一节：来自本聊天控制面板的模板与设置，与本提示词同等效力`;
+- 你要回复的那条消息末尾的运行时信息里可能有「本聊天的附加提示词」一节：来自本聊天控制面板的模板与设置，与本提示词同等效力
+- 最后一条消息末尾的运行时信息里可能有「消息 reaction」一节：列出本段上下文中各消息上的 reaction 与反应者（「模型」指你自己加的）`;

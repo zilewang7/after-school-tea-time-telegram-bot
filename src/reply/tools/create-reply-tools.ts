@@ -25,6 +25,7 @@ import { createFetchImageTool, PRODUCTION_FETCH_DEPENDENCIES } from './fetch-ima
 import { createGenerateImageTool } from './generate-image-tool.js';
 import type { HistoryState } from './history-state.js';
 import { createCreateHarnessIssueTool, createListHarnessIssuesTool } from './harness-issue-tool.js';
+import { createReactToMessageTool } from './react-to-message-tool.js';
 import { createReadHistoryTool } from './read-history-tool.js';
 import { createReplyToolState, type ReplyToolState } from './reply-tool-state.js';
 import { createSearchByImageTool } from './search-by-image-tool.js';
@@ -267,6 +268,9 @@ export const createReplyTools = (
                   createCreateHarnessIssueTool({ state: harnessIssueState, chatId: context.chatId }),
               ]
             : []),
+        // Appended last on purpose: the built-in declaration prefix stays put,
+        // so only the tail of the snapshot grows.
+        ...(availability.reaction ? [createReactToMessageTool(context)] : []),
     ];
 
     return { tools: createTurnTools(handlers), availability, workspaceState, toolState };

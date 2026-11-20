@@ -502,7 +502,7 @@ const cases: { name: string; body: () => Promise<void> }[] = [
             );
             expect(body.globalDefaultModel === 'env-default-model', 'global default from the env');
             expect(body.summary === null, 'summary is null until reply_metrics exists');
-            expect(Array.isArray(body.tools) && body.tools.length === 11, `11 tool groups (got ${body.tools?.length})`);
+            expect(Array.isArray(body.tools) && body.tools.length === 12, `12 tool groups (got ${body.tools?.length})`);
             expect(
                 body.tools.every(
                     (tool: any) =>
@@ -519,7 +519,7 @@ const cases: { name: string; body: () => Promise<void> }[] = [
             );
             expect(
                 JSON.stringify(body.tools.map((tool: any) => tool.key)) ===
-                    JSON.stringify(['sms', 'image', 'imageSearch', 'imageFetch', 'imageReverseSearch', 'sticker', 'file', 'history', 'harnessIssues', 'widget', 'workspace']),
+                    JSON.stringify(['sms', 'image', 'imageSearch', 'imageFetch', 'imageReverseSearch', 'sticker', 'file', 'history', 'harnessIssues', 'widget', 'workspace', 'reaction']),
                 'groups come in the fixed order'
             );
             expect(

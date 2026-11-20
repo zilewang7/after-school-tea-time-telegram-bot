@@ -25,6 +25,7 @@ export const WORKSPACE_COPY_TOOL_NAME = 'workspace_copy';
 export const WORKSPACE_DELETE_TOOL_NAME = 'workspace_delete';
 export const WORKSPACE_PREVIEW_TOOL_NAME = 'workspace_preview';
 export const LEAVE_HANDOFF_TOOL_NAME = 'leave_handoff';
+export const REACT_TO_MESSAGE_TOOL_NAME = 'react_to_message';
 
 /**
  * The "product" tools: they produce or deliver what the reply exists to hand
@@ -68,6 +69,12 @@ export const WORKSPACE_FILE_TOOL_NAMES: readonly string[] = [
  * so the reply is never unable to deliver or to report a problem because its
  * clock ran out. The same set is what a post-budget round still offers; the
  * round count there (FREE_TOOL_ROUNDS_MAX) is the bound.
+ *
+ * `react_to_message` joins for the same reason: it is one tiny Bot API call
+ * with no cost, so a reply may still answer "got it" after its clock is gone.
+ * It is offered in every chat with client tools, which means `hasFreeTools` is
+ * now true there: a reply past its budget gets the free rounds instead of
+ * being forced to answer at once (accepted, design 2026-1120).
  */
 export const TIME_FREE_TOOL_NAMES: ReadonlySet<string> = new Set([
     ...PRODUCT_TOOL_NAMES,
@@ -81,6 +88,7 @@ export const TIME_FREE_TOOL_NAMES: ReadonlySet<string> = new Set([
     LIST_HARNESS_ISSUES_TOOL_NAME,
     CREATE_HARNESS_ISSUE_TOOL_NAME,
     GET_UI_GUIDE_TOOL_NAME,
+    REACT_TO_MESSAGE_TOOL_NAME,
 ]);
 
 export const isTimeFreeToolName = (name: string): boolean => TIME_FREE_TOOL_NAMES.has(name);
@@ -110,4 +118,5 @@ export const RESERVED_TOOL_NAMES: readonly string[] = [
     WORKSPACE_DELETE_TOOL_NAME,
     WORKSPACE_PREVIEW_TOOL_NAME,
     LEAVE_HANDOFF_TOOL_NAME,
+    REACT_TO_MESSAGE_TOOL_NAME,
 ];

@@ -22,8 +22,11 @@ export const TOOL_GROUP_KEYS = [
     'harnessIssues',
     // Phase 0 gray: the whole widget pair is one switch
     'widget',
-    // Appended last on purpose: this order is the canonical JSON/audit order
+    // New groups are appended, never inserted: this order is the canonical
+    // JSON/audit order, and stored overrides of older key sets stay valid
     'workspace',
+    // Free per-chat reaction tool: on everywhere unless the panel turns it off
+    'reaction',
 ] as const;
 
 export type ToolGroupKey = (typeof TOOL_GROUP_KEYS)[number];

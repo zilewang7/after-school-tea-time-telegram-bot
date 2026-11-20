@@ -38,7 +38,7 @@ export const toolRoundNotice = (
             `[工具轮次] 本次回复已调用工具 ${toolCalls} 次；时间已用完，只能再调用不产生开销的工具` +
             '（产物工具 generate_image / send_image / send_sticker / send_file / send_widget，' +
             '工作区工具 workspace_write / workspace_read / workspace_list / workspace_find / workspace_edit / workspace_copy / workspace_delete / workspace_preview、' +
-            'leave_handoff，以及 get_ui_guide / list_harness_issues / create_harness_issue），之后必须文字收尾。'
+            'leave_handoff，以及 get_ui_guide / list_harness_issues / create_harness_issue / react_to_message），之后必须文字收尾。'
         );
     }
     return finalRound
@@ -108,9 +108,10 @@ export const withToolBudget = (
  * except the free ones. No-cost tools are free on purpose: the product tools
  * hand over what the reply made, the workspace tools finish the draft it is
  * handing over, the harness issue tools report a tool that wasted the model's
- * time, and get_ui_guide reads a static guide — a reply must never be unable
- * to deliver or report because it spent its budget looking. All of them are
- * bounded by their own per-reply limits.
+ * time, get_ui_guide reads a static guide, and react_to_message is one tiny
+ * Bot API call — a reply must never be unable to deliver, report or react
+ * because it spent its budget looking. All of them are bounded by their own
+ * per-reply limits.
  */
 export const toolTimeSpentMs = (executedCalls: readonly ExecutedToolCall[]): number =>
     executedCalls.reduce(

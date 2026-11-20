@@ -39,6 +39,7 @@ import {
     WORKSPACE_DELETE_TOOL_NAME,
     WORKSPACE_PREVIEW_TOOL_NAME,
     LEAVE_HANDOFF_TOOL_NAME,
+    REACT_TO_MESSAGE_TOOL_NAME,
 } from '../../reply/tools/tool-names.js';
 
 export interface ToolGroupEntry {
@@ -79,6 +80,7 @@ const GROUP_TOOLS: Record<ToolGroupKey, readonly string[]> = {
         WORKSPACE_PREVIEW_TOOL_NAME,
         LEAVE_HANDOFF_TOOL_NAME,
     ],
+    reaction: [REACT_TO_MESSAGE_TOOL_NAME],
 };
 
 const ENABLED_OF: Record<ToolGroupKey, (availability: ToolAvailability) => boolean> = {
@@ -93,6 +95,7 @@ const ENABLED_OF: Record<ToolGroupKey, (availability: ToolAvailability) => boole
     harnessIssues: (availability) => availability.harnessIssues,
     widget: (availability) => availability.widget,
     workspace: (availability) => availability.workspace,
+    reaction: (availability) => availability.reaction,
 };
 
 /** Facts every reason check reads */
@@ -185,6 +188,9 @@ const HARD_REASONS: Record<ToolGroupKey, readonly ReasonCheck[]> = {
         disabledByName(WORKSPACE_COPY_TOOL_NAME),
         disabledByName(WORKSPACE_DELETE_TOOL_NAME),
     ],
+    // No chat whitelist: free, one-emoji and visible only in this chat, so it
+    // is on by default; the panel's own switch is the only chat-level control.
+    reaction: [disabledByName(REACT_TO_MESSAGE_TOOL_NAME)],
 };
 
 /** Why the env whitelist keeps a group off; the panel switch may turn it on */

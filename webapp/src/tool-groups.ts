@@ -17,6 +17,7 @@ export const TOOL_GROUP_ORDER: readonly ToolGroupKey[] = [
     'harnessIssues',
     'widget',
     'workspace',
+    'reaction',
 ];
 
 const TOOL_GROUP_LABELS: Record<ToolGroupKey, string> = {
@@ -31,6 +32,7 @@ const TOOL_GROUP_LABELS: Record<ToolGroupKey, string> = {
     harnessIssues: 'Issue 工具',
     widget: '聊天卡片',
     workspace: '工作区',
+    reaction: '消息 reaction',
 };
 
 export const toolGroupLabelOf = (key: ToolGroupKey): string => TOOL_GROUP_LABELS[key];
@@ -47,6 +49,7 @@ const TOOL_GROUP_HINTS: Partial<Record<ToolGroupKey, string>> = {
     harnessIssues: '开启后模型可以把使用中遇到的问题记成 issue',
     widget: '开启后模型可在回复里附一张 A2UI/HTML 卡片（群聊会发一条带预览的 Mini App 链接）',
     workspace: '开启后模型可以在本会话的草稿区里写、读、改、删文件，7 天未使用自动清理',
+    reaction: '开启后模型可以给本聊天里的消息点一个 emoji reaction',
 };
 
 export const toolGroupHintOf = (key: ToolGroupKey): string | null => TOOL_GROUP_HINTS[key] ?? null;

@@ -85,7 +85,6 @@
     "src/services/luoxu-history-service.ts": 1,
     "src/services/telegram-file-service.ts": 2,
     "src/shared/http-dispatcher.ts": 1,
-    "src/shared/result.ts": 5,
-    "src/util.ts": 1
+    "src/shared/result.ts": 5
   }
 }

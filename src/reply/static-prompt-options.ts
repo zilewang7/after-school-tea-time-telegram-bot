@@ -21,4 +21,5 @@ export const buildStaticPromptOptions = (availability: ToolAvailability): Static
     handoff: availability.handoff,
     harnessIssues: availability.harnessIssues,
     widget: availability.widget,
+    reaction: availability.reaction,
 });

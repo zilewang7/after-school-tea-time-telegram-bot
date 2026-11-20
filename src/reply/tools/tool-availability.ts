@@ -36,6 +36,7 @@ import {
     WORKSPACE_FILE_TOOL_NAMES,
     WORKSPACE_PREVIEW_TOOL_NAME,
     LEAVE_HANDOFF_TOOL_NAME,
+    REACT_TO_MESSAGE_TOOL_NAME,
 } from './tool-names.js';
 
 export interface ToolAvailability {
@@ -75,6 +76,8 @@ export interface ToolAvailability {
     readonly workspacePreview: boolean;
     /** leave_handoff is offered (the workspace is on and the tool is not disabled) */
     readonly handoff: boolean;
+    /** react_to_message is offered (free, one emoji, visible only in this chat) */
+    readonly reaction: boolean;
 }
 
 const NO_TOOLS: ToolAvailability = {
@@ -96,6 +99,7 @@ const NO_TOOLS: ToolAvailability = {
     workspace: false,
     workspacePreview: false,
     handoff: false,
+    reaction: false,
 };
 
 /** No client tools this turn; `trial` still rides along so the prompt stays honest */
@@ -242,5 +246,12 @@ export const resolveToolAvailability = (
         workspace,
         workspacePreview,
         handoff,
+        // Deliberate exception to the "side-effecting tools follow TOOL_CHAT_IDS"
+        // rule: a reaction spends no external service, fails harmlessly and is
+        // visible only in this chat, so it is on everywhere by default and the
+        // panel may switch it off. DISABLED_TOOLS still kills it.
+        reaction:
+            isEnabled(REACT_TO_MESSAGE_TOOL_NAME) &&
+            toolOverrideOf(overrides, 'reaction') !== false,
     };
 };

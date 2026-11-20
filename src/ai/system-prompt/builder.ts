@@ -56,6 +56,8 @@ export interface StaticPromptOptions {
     readonly harnessIssues?: boolean;
     /** send_widget / get_ui_guide are offered this turn */
     readonly widget?: boolean;
+    /** react_to_message is offered this turn */
+    readonly reaction?: boolean;
 }
 
 export const buildStaticSystemPrompt = (
@@ -84,6 +86,7 @@ export const buildStaticSystemPrompt = (
             historyTools: options.historyTools === true,
             harnessIssues: options.harnessIssues === true,
             widget: options.widget === true,
+            reactionTools: options.reaction === true,
         }),
         NOTES_SECTION,
     ]

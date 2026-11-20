@@ -3,6 +3,7 @@
  */
 import type { Context } from 'grammy';
 import type { ReactionTypeEmoji } from 'grammy/types';
+import { isReactionEmoji, REACTION_EMOJIS } from './shared/reaction-emoji.js';
 
 /**
  * Fetch a URL and return as Blob
@@ -13,6 +14,18 @@ export const getBlob = async (url: string): Promise<Blob> => {
 };
 
 /**
+ * The standard emoji as one alternation, longest first: a composite reaction
+ * (❤‍🔥, 🤷‍♀) must win over its prefix (❤, 🤷) when both start at the same
+ * position. Characters are escaped so the list can never be read as a pattern.
+ */
+const REACTION_EMOJI_PATTERN = new RegExp(
+    [...REACTION_EMOJIS]
+        .sort((left, right) => Array.from(right).length - Array.from(left).length)
+        .map((emoji) => emoji.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
+        .join('|')
+);
+
+/**
  * Match first emoji in message text
  */
 export const matchFirstEmoji = (
@@ -20,11 +33,8 @@ export const matchFirstEmoji = (
 ): ReactionTypeEmoji['emoji'] | null => {
     if (!message) return null;
 
-    const regex =
-        /👍|👎|❤|🔥|🥰|👏|😁|🤔|🤯|😱|🤬|😢|🎉|🤩|🤮|💩|🙏|👌|🕊|🤡|🥱|🥴|😍|🐳|❤‍🔥|🌚|🌭|💯|🤣|⚡|🍌|🏆|💔|🤨|😐|🍓|🍾|💋|🖕|😈|😴|😭|🤓|👻|👨‍💻|👀|🎃|🙈|😇|😨|🤝|✍|🤗|🫡|🎅|🎄|☃|💅|🤪|🗿|🆒|💘|🙉|🦄|😘|💊|🙊|😎|👾|🤷‍♂|🤷|🤷‍♀|😡/;
-    const match = message.match(regex);
-
-    return match ? (match[0] as ReactionTypeEmoji['emoji']) : null;
+    const matched = message.match(REACTION_EMOJI_PATTERN)?.[0];
+    return matched !== undefined && isReactionEmoji(matched) ? matched : null;
 };
 
 /**
