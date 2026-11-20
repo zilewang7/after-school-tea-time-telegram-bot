@@ -1,10 +1,11 @@
 /**
- * From raw observations to the one artifact the owner imports.
+ * From raw observations to the v2 artifact the owner imports (§3.6).
  *
- * `results.json` follows design §7 exactly, so `/probe import` can whitelist it
- * without a version dance. The reasoning behind each row (which values were
- * rejected and why, what the effect samples looked like, which model had an
- * incomplete matrix) goes to `observations.json` and `summary.md` instead.
+ * `results.json` (schema 2) records only measured facts: accepted efforts,
+ * mapped efforts (accepted outside the vendor list), measured toggle support
+ * (only when toggle candidates actually ran), client-tool fidelity checks,
+ * per-platform lane fingerprints, and error summaries. It never copies
+ * `vendorDefaultEffort` into `results.json`.
  *
  * An incomplete model row is left out on purpose: a model that only answered
  * half its candidates would otherwise publish a truncated `acceptedEfforts`
@@ -13,24 +14,28 @@
 import {
     EFFORT_LABELS,
     ERROR_SUMMARY_LIMIT,
-    effortRank,
+    PLATFORM_ORDER_LIST,
     isEffortValue,
+    isProbePlatform,
     sortEfforts,
     type EffortValue,
     type ProbeCandidate,
+    type ProbeLaneFingerprints,
     type ProbeModelSpec,
     type ProbeObservation,
+    type ProbePlatform,
     type ProbeResultDocument,
-    type ProbeResultEntry,
-    type ProbeWave,
+    type ProbeResultDocumentV1,
+    type ProbeResultDocumentV2,
+    type ProbeResultEntryV1,
+    type ProbeResultEntryV2,
+    type ProbeToolsCheck,
+    type ProbeVariant,
     type ProbeWireOutcome,
     type ValidationResult,
 } from './effort-types.mts';
 import { errorClassLabel, isRejectionClass } from './effort-errors.mts';
-import { isTokenCapFinishReason } from './effort-wire.mts';
-
-/** DeepSeek and MiMo expose on/off instead of graded efforts */
-const TOGGLE_PLATFORMS = new Set(['deepseek', 'mimo']);
+import { PROBE_VARIANTS } from './effort-types.mts';
 
 /** Worst case the runner reserves before a request; actual usage replaces it */
 export const billedCostUsd = (spec: ProbeModelSpec, observation: ProbeObservation): number => {
@@ -42,7 +47,7 @@ export const billedCostUsd = (spec: ProbeModelSpec, observation: ProbeObservatio
     return Math.round(usd * 1_000_000) / 1_000_000;
 };
 
-/** The label of one candidate in the error summary (design §7 example: "minimal") */
+/** The label of one candidate in the error summary */
 export const candidateLabelOf = (candidate: ProbeCandidate): string => {
     switch (candidate.variant) {
         case 'level':
@@ -74,18 +79,6 @@ export const candidateOfObservation = (observation: ProbeObservation): ProbeCand
     estimatedCostUsd: observation.estimatedCostUsd,
 });
 
-/**
- * True when the probe's own output cap ended the sample, so its token count is
- * a floor and must not compete with the other W2 samples. The lane records the
- * flag in observations.json; the wire finish reason is authoritative here, so a
- * hand-built fixture or an older evidence file classifies the same way.
- */
-export const truncatedOf = (observation: ProbeObservation): boolean => isTokenCapFinishReason(observation.finishReason);
-
-/** The effect samples that a probe cap did not cut */
-const untruncatedOf = (observations: readonly ProbeObservation[]): ProbeObservation[] =>
-    observations.filter((observation) => !truncatedOf(observation));
-
 /** Candidates whose final attempt proves the model matrix is not trustworthy */
 const UNRELIABLE_CLASSES: ReadonlySet<string> = new Set([
     'auth_error',
@@ -96,174 +89,50 @@ const UNRELIABLE_CLASSES: ReadonlySet<string> = new Set([
     'network_error',
 ]);
 
-export type DefaultEffortSource = 'probe-effect' | 'vendor' | 'unknown';
-
-export interface EffectSample {
-    readonly label: string;
-    readonly wave: ProbeWave;
-    readonly reasoningTokens: number | null;
-    readonly ttfbMs: number | null;
-    readonly totalMs: number | null;
-}
-
-export interface DefaultEffortInference {
-    readonly defaultEffort: EffortValue | null;
-    readonly source: DefaultEffortSource;
-    readonly confidence: 'high' | 'medium' | 'low';
-    readonly detail: string;
-    readonly baselineReasoningTokens: number | null;
-    /** W2 samples the probe's own token cap cut; they are excluded from the match */
-    readonly truncatedSamples: number;
-}
-
-const medianOf = (values: readonly number[]): number | null => {
-    const sorted = [...values].sort((left, right) => left - right);
-    if (sorted.length === 0) return null;
-    const middle = Math.floor(sorted.length / 2);
-    const value = sorted[middle];
-    if (value === undefined) return null;
-    if (sorted.length % 2 === 1) return value;
-    const lower = sorted[middle - 1];
-    return lower === undefined ? value : (lower + value) / 2;
-};
-
-const reasoningTokensOf = (observations: readonly ProbeObservation[]): number[] =>
-    observations
-        .filter((observation) => observation.outcome === 'accepted')
-        .map((observation) => observation.reasoningTokens ?? 0);
-
-const ratioOf = (value: number, reference: number): number => Math.log((value + 1) / (reference + 1));
-
-/**
- * Infer the vendor default effort from W2: the baseline (no explicit effort)
- * should sit closest to the level the vendor really uses. No separation means
- * no answer — the product must show "vendor default" rather than a guess.
- */
-export const inferDefaultEffort = (w2Observations: readonly ProbeObservation[]): DefaultEffortInference => {
-    // A capped sample says nothing about the effort (its thought count is a
-    // floor), so it neither sets the baseline nor competes as a level.
-    const truncatedSamples = w2Observations.filter(truncatedOf).length;
-    const ignored = truncatedSamples === 0 ? '' : `; ignored ${truncatedSamples} truncated sample(s)`;
-    const usable = untruncatedOf(w2Observations);
-    const baselineSamples = usable.filter((observation) => observation.wave === 'w2' && observation.variant === 'baseline');
-    const baseline = medianOf(reasoningTokensOf(baselineSamples));
-    if (baseline === null) {
-        return {
-            defaultEffort: null,
-            source: 'unknown',
-            confidence: 'low',
-            detail: `no usable W2 baseline samples${ignored}`,
-            baselineReasoningTokens: null,
-            truncatedSamples,
-        };
-    }
-    const groups = new Map<EffortValue, ProbeObservation[]>();
-    for (const observation of usable) {
-        if (observation.wave !== 'w2' || observation.variant !== 'level' || observation.effort === null) continue;
-        const list = groups.get(observation.effort) ?? [];
-        list.push(observation);
-        groups.set(observation.effort, list);
-    }
-    const distances: Array<{ effort: EffortValue; median: number; distance: number }> = [];
-    for (const [effort, observations] of groups) {
-        if (!isEffortValue(effort)) continue;
-        const median = medianOf(reasoningTokensOf(observations));
-        if (median === null) continue;
-        distances.push({ effort, median, distance: Math.abs(ratioOf(median, baseline)) });
-    }
-    distances.sort((left, right) => left.distance - right.distance);
-    const nearest = distances[0];
-    const second = distances[1];
-    if (nearest === undefined) {
-        return {
-            defaultEffort: null,
-            source: 'unknown',
-            confidence: 'low',
-            detail: `no W2 effort samples with token usage${ignored}`,
-            baselineReasoningTokens: baseline,
-            truncatedSamples,
-        };
-    }
-    const separation = second === undefined ? Number.POSITIVE_INFINITY : second.distance - nearest.distance;
-    const sampleCount = (groups.get(nearest.effort) ?? []).length;
-    const enoughSamples = sampleCount >= 2;
-    const closeEnough = nearest.distance <= Math.log(1.25);
-    const separated = separation >= Math.log(1.1);
-    if (enoughSamples && closeEnough && separated) {
-        return {
-            defaultEffort: nearest.effort,
-            source: 'probe-effect',
-            confidence: 'high',
-            detail: `baseline leads to ${nearest.effort} (Δ=${nearest.distance.toFixed(2)}, gap=${separation.toFixed(2)})${ignored}`,
-            baselineReasoningTokens: baseline,
-            truncatedSamples,
-        };
-    }
-    return {
-        defaultEffort: null,
-        source: 'unknown',
-        confidence: 'low',
-        detail:
-            nearest === undefined
-                ? `no usable samples${ignored}`
-                : `no clear match (nearest ${nearest.effort}, Δ=${nearest.distance.toFixed(2)}, gap=${separation === Number.POSITIVE_INFINITY ? 'n/a' : separation.toFixed(2)}, samples=${sampleCount})${ignored}`,
-        baselineReasoningTokens: baseline,
-        truncatedSamples,
-    };
-};
-
-/**
- * Accepted efforts W2 shows to be without effect. A sample of the vendor
- * default looks "equal to the baseline" by construction, so it is not inert;
- * only another effort that thinks no more than the baseline counts.
- */
-export const inertEffortsOf = (
-    spec: ProbeModelSpec,
-    w2Observations: readonly ProbeObservation[]
-): EffortValue[] => {
-    // Same rule as the default inference: a capped sample is a floor, not a
-    // measurement, so it can neither establish nor prove "no effect".
-    const usable = untruncatedOf(w2Observations);
-    const baseline = medianOf(reasoningTokensOf(usable.filter((observation) => observation.variant === 'baseline')));
-    if (baseline === null || baseline === 0) return [];
-    const inert: EffortValue[] = [];
-    const groups = new Map<EffortValue, number[]>();
-    for (const observation of usable) {
-        if (observation.variant !== 'level' || observation.effort === null) continue;
-        const values = groups.get(observation.effort) ?? [];
-        values.push(observation.reasoningTokens ?? 0);
-        groups.set(observation.effort, values);
-    }
-    for (const [effort, values] of groups) {
-        if (effort === spec.vendorDefaultEffort) continue;
-        const median = medianOf(values);
-        if (median === null) continue;
-        if (median / baseline < 1.15) inert.push(effort);
-    }
-    return sortEfforts(inert);
-};
-
 export interface ModelInference {
     readonly spec: ProbeModelSpec;
+    readonly lane: string;
     readonly w1Observations: readonly ProbeObservation[];
-    readonly w2Observations: readonly ProbeObservation[];
     readonly acceptedEfforts: readonly EffortValue[];
     /** Accepted values outside the vendor list: the lane maps them to another level */
     readonly mappedEfforts: readonly EffortValue[];
-    readonly inertEfforts: readonly EffortValue[];
-    /** W2 samples the probe's own token cap cut (excluded from effect evidence) */
-    readonly truncatedSamples: number;
-    readonly defaultInference: DefaultEffortInference;
-    readonly toggle: boolean;
+    /** Measured toggle capability; null when no toggle candidate ran */
+    readonly toggle: boolean | null;
+    /** Client-tool fidelity variant result; null when none ran or unreliable */
+    readonly tools: ProbeToolsCheck | null;
     readonly errorSummary: Readonly<Record<string, string>>;
     readonly incomplete: boolean;
     readonly incompleteReasons: readonly string[];
     readonly rejected: readonly ProbeObservation[];
 }
 
-const summarizeModelInner = (spec: ProbeModelSpec, observations: readonly ProbeObservation[]): ModelInference => {
+const summarizeToolsObservations = (observations: readonly ProbeObservation[]): ProbeToolsCheck | null => {
+    if (observations.length === 0) return null;
+    for (const observation of observations) {
+        if (observation.outcome === 'rejected' || (observation.errorClass !== null && isRejectionClass(observation.errorClass))) {
+            return {
+                supported: false,
+                variant: observation.variant,
+                effort: observation.effort,
+                ...(observation.errorSummary === null ? {} : { error: observation.errorSummary }),
+            };
+        }
+    }
+    const accepted = observations.find((observation) => observation.outcome === 'accepted');
+    if (accepted === undefined) return null;
+    return {
+        supported: true,
+        variant: accepted.variant,
+        effort: accepted.effort,
+    };
+};
+
+const summarizeModelInner = (
+    spec: ProbeModelSpec,
+    observations: readonly ProbeObservation[],
+    fallbackLane: string
+): ModelInference => {
     const w1 = observations.filter((observation) => observation.wave === 'w1' && observation.model === spec.model);
-    const w2 = observations.filter((observation) => observation.wave === 'w2' && observation.model === spec.model);
     const finalW1 = new Map<string, ProbeObservation>();
     for (const observation of w1) {
         const previous = finalW1.get(observation.candidateId);
@@ -273,29 +142,33 @@ const summarizeModelInner = (spec: ProbeModelSpec, observations: readonly ProbeO
     const incompleteReasons: string[] = [];
     const rejected: ProbeObservation[] = [];
     const acceptedLevels: EffortValue[] = [];
+    const toolsObservations: ProbeObservation[] = [];
     const vendorSet = new Set(spec.vendorEfforts);
     let baselineAccepted = false;
-    let toggleOffAccepted: boolean | null = null;
+    let toggleMeasured: boolean | null = null;
 
     for (const observation of finalW1.values()) {
         const candidate = candidateOfObservation(observation);
         const label = candidateLabelOf(candidate);
+        if (candidate.withClientTools) {
+            toolsObservations.push(observation);
+            continue;
+        }
         if (observation.outcome === 'accepted') {
             if (observation.variant === 'baseline') baselineAccepted = true;
             else if (observation.variant === 'level' && observation.effort !== null) acceptedLevels.push(observation.effort);
-            else if (observation.variant === 'toggle-off') toggleOffAccepted = true;
+            else if (observation.variant === 'toggle-off') toggleMeasured = true;
             continue;
         }
-        // A rejected client-tool fidelity variant is diagnostic only: the
-        // product's chat rounds may combine tools and levels, but a rejection
-        // there must not hide the plain acceptance matrix.
-        if (candidate.withClientTools) continue;
         const errorClass = observation.errorClass ?? 'unclassified';
         if (UNRELIABLE_CLASSES.has(errorClass)) {
             incompleteReasons.push(`${label}: ${errorClass}`);
             continue;
         }
         rejected.push(observation);
+        if (observation.variant === 'toggle-off' && isRejectionClass(errorClass) && toggleMeasured === null) {
+            toggleMeasured = false;
+        }
         // A level the vendor list does not even name is a diagnostic probe, not
         // a required shape: its rejection must not hide the vendor levels that
         // did answer (e.g. OpenAI's `none` on a model whose vendor list starts
@@ -320,8 +193,8 @@ const summarizeModelInner = (spec: ProbeModelSpec, observations: readonly ProbeO
 
     const acceptedEfforts = sortEfforts(acceptedLevels.filter((effort) => vendorSet.has(effort)));
     const mappedEfforts = sortEfforts(acceptedLevels.filter((effort) => !vendorSet.has(effort) && spec.vendorEfforts.length > 0));
-    const defaultInference = inferDefaultEffort(w2);
-    const toggle = TOGGLE_PLATFORMS.has(spec.platform) && toggleOffAccepted !== null ? toggleOffAccepted : spec.vendorToggle;
+    const tools = summarizeToolsObservations(toolsObservations);
+    const lane = w1[w1.length - 1]?.laneId ?? fallbackLane;
 
     const errorSummary: Record<string, string> = {};
     for (const observation of rejected) {
@@ -332,14 +205,12 @@ const summarizeModelInner = (spec: ProbeModelSpec, observations: readonly ProbeO
 
     return {
         spec,
+        lane,
         w1Observations: w1,
-        w2Observations: w2,
         acceptedEfforts,
         mappedEfforts,
-        inertEfforts: inertEffortsOf(spec, w2),
-        truncatedSamples: w2.filter(truncatedOf).length,
-        defaultInference,
-        toggle,
+        toggle: toggleMeasured,
+        tools,
         errorSummary,
         incomplete: incompleteReasons.length > 0,
         incompleteReasons,
@@ -348,14 +219,17 @@ const summarizeModelInner = (spec: ProbeModelSpec, observations: readonly ProbeO
 };
 
 /** One model's row plus the reasoning behind it */
-export const summarizeModel = (spec: ProbeModelSpec, observations: readonly ProbeObservation[]): ModelInference =>
-    summarizeModelInner(spec, observations);
+export const summarizeModel = (
+    spec: ProbeModelSpec,
+    observations: readonly ProbeObservation[],
+    fallbackLane = 'unknown'
+): ModelInference => summarizeModelInner(spec, observations, fallbackLane);
 
 export interface ProbeRunSummary {
     readonly probedAt: string;
-    readonly laneSignature: string;
+    readonly lanes: ProbeLaneFingerprints;
     readonly checkedOn: string;
-    readonly document: ProbeResultDocument;
+    readonly document: ProbeResultDocumentV2;
     readonly inferences: readonly ModelInference[];
     /** Models left out of the document and why */
     readonly incomplete: readonly ModelInference[];
@@ -364,71 +238,55 @@ export interface ProbeRunSummary {
 export const checkedOnOf = (probedAt: string): string => probedAt.slice(0, 10);
 
 /**
- * Build the §7 document. Only complete W1 matrices enter it; W2 is optional
- * (a W1-only run still yields accepted efforts and the vendor default).
+ * Build the v2 result document (§3.6). Only complete W1 matrices enter it;
+ * only measured facts are written (no `vendorDefaultEffort` fallback).
  */
 export const buildRunSummary = (input: {
     readonly probedAt: string;
-    readonly laneSignature: string;
+    readonly lanes: ProbeLaneFingerprints;
     readonly specs: readonly ProbeModelSpec[];
     readonly observations: readonly ProbeObservation[];
-    /** A W2-only run refines defaults for the accepted set of an earlier run */
-    readonly acceptedEffortsByModel?: Readonly<Record<string, readonly EffortValue[]>>;
 }): ProbeRunSummary => {
-    const w1Models = new Set(
-        input.observations.filter((observation) => observation.wave === 'w1').map((observation) => observation.model)
-    );
     const inferences: ModelInference[] = [];
     for (const spec of input.specs) {
         if (!input.observations.some((observation) => observation.model === spec.model)) continue;
-        if (w1Models.has(spec.model)) {
-            inferences.push(summarizeModel(spec, input.observations));
-            continue;
-        }
-        const accepted = input.acceptedEffortsByModel?.[spec.model];
-        if (accepted === undefined) continue;
-        const w2 = input.observations.filter((observation) => observation.model === spec.model && observation.wave === 'w2');
-        inferences.push({
-            spec,
-            w1Observations: [],
-            w2Observations: w2,
-            acceptedEfforts: sortEfforts(accepted),
-            mappedEfforts: [],
-            inertEfforts: inertEffortsOf(spec, w2),
-            truncatedSamples: w2.filter(truncatedOf).length,
-            defaultInference: inferDefaultEffort(w2),
-            toggle: spec.vendorToggle,
-            errorSummary: {},
-            incomplete: false,
-            incompleteReasons: [],
-            rejected: [],
-        });
+        const fallbackLane = input.lanes[spec.platform] ?? 'unknown';
+        inferences.push(summarizeModel(spec, input.observations, fallbackLane));
     }
     const complete = inferences.filter((inference) => !inference.incomplete);
     const checkedOn = checkedOnOf(input.probedAt);
-    const results: ProbeResultEntry[] = complete.map((inference) => ({
+    const results: ProbeResultEntryV2[] = complete.map((inference) => ({
         model: inference.spec.model,
+        platform: inference.spec.platform,
+        lane: inference.lane,
         acceptedEfforts: inference.acceptedEfforts,
-        defaultEffort:
-            inference.defaultInference.source === 'probe-effect'
-                ? inference.defaultInference.defaultEffort
-                : inference.spec.vendorDefaultEffort,
+        mappedEfforts: inference.mappedEfforts,
         toggle: inference.toggle,
+        tools: inference.tools,
         errorSummary: inference.errorSummary,
         checkedOn,
     }));
+    const usedLanes: Partial<Record<ProbePlatform, string>> = {};
+    for (const entry of results) {
+        usedLanes[entry.platform] = entry.lane;
+    }
+    if (results.length === 0) {
+        for (const inference of inferences) {
+            usedLanes[inference.spec.platform] = inference.lane;
+        }
+    }
     return {
         probedAt: input.probedAt,
-        laneSignature: input.laneSignature,
+        lanes: usedLanes,
         checkedOn,
-        document: { schema: 1, probedAt: input.probedAt, laneSignature: input.laneSignature, results },
+        document: { schema: 2, probedAt: input.probedAt, lanes: usedLanes, results },
         inferences,
         incomplete: inferences.filter((inference) => inference.incomplete),
     };
 };
 
 // ---------------------------------------------------------------------------
-// Schema validation (what `/probe import` needs from us)
+// Schema validation (v2 + legacy v1 compatibility)
 // ---------------------------------------------------------------------------
 
 const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
@@ -436,109 +294,340 @@ const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 const isRecord = (value: unknown): value is Record<string, unknown> =>
     typeof value === 'object' && value !== null && !Array.isArray(value);
 
+const isProbeVariant = (value: unknown): value is ProbeVariant =>
+    typeof value === 'string' && PROBE_VARIANTS.some((variant) => variant === value);
+
 const pushProblem = (problems: string[], message: string): void => {
     problems.push(message);
 };
 
-const validateEntry = (value: unknown, index: number, problems: string[]): void => {
+const validateEffortsArray = (value: unknown, fieldPath: string, problems: string[]): EffortValue[] => {
+    if (!Array.isArray(value)) {
+        pushProblem(problems, `${fieldPath} is not an array`);
+        return [];
+    }
+    const efforts: EffortValue[] = [];
+    const seen = new Set<string>();
+    value.forEach((effort, position) => {
+        if (typeof effort !== 'string' || !isEffortValue(effort)) {
+            pushProblem(problems, `${fieldPath}[${position}] is not a closed-set effort`);
+            return;
+        }
+        if (seen.has(effort)) pushProblem(problems, `${fieldPath}[${position}] is duplicated`);
+        seen.add(effort);
+        efforts.push(effort);
+    });
+    return sortEfforts(efforts);
+};
+
+const validateErrorSummary = (value: unknown, fieldPath: string, problems: string[]): Record<string, string> => {
+    if (!isRecord(value)) {
+        pushProblem(problems, `${fieldPath} is not an object`);
+        return {};
+    }
+    const result: Record<string, string> = {};
+    for (const [label, message] of Object.entries(value)) {
+        if (typeof message !== 'string') pushProblem(problems, `${fieldPath}.${label} is not a string`);
+        else if (message.length > ERROR_SUMMARY_LIMIT) {
+            pushProblem(problems, `${fieldPath}.${label} is longer than ${ERROR_SUMMARY_LIMIT} characters`);
+        } else {
+            result[label] = message;
+        }
+    }
+    return result;
+};
+
+const validateCheckedOn = (value: unknown, fieldPath: string, problems: string[]): string => {
+    if (typeof value !== 'string' || !DATE_PATTERN.test(value) || Number.isNaN(Date.parse(value))) {
+        pushProblem(problems, `${fieldPath} is not a YYYY-MM-DD date`);
+        return '';
+    }
+    return value;
+};
+
+const validateToolsCheck = (value: unknown, fieldPath: string, problems: string[]): ProbeToolsCheck | null => {
+    if (value === null) return null;
+    if (!isRecord(value)) {
+        pushProblem(problems, `${fieldPath} must be an object or null`);
+        return null;
+    }
+    if (typeof value['supported'] !== 'boolean') {
+        pushProblem(problems, `${fieldPath}.supported must be a boolean`);
+    }
+    const variant = value['variant'];
+    if (!isProbeVariant(variant)) {
+        pushProblem(problems, `${fieldPath}.variant is not a valid probe variant`);
+    }
+    const effort = value['effort'];
+    if (effort !== null && (typeof effort !== 'string' || !isEffortValue(effort))) {
+        pushProblem(problems, `${fieldPath}.effort is neither null nor a closed-set effort`);
+    }
+    const error = value['error'];
+    if (error !== undefined && typeof error !== 'string') {
+        pushProblem(problems, `${fieldPath}.error must be a string`);
+    }
+    if (typeof value['supported'] !== 'boolean' || !isProbeVariant(variant)) return null;
+    return {
+        supported: value['supported'],
+        variant,
+        effort: typeof effort === 'string' && isEffortValue(effort) ? effort : null,
+        ...(typeof error === 'string' ? { error } : {}),
+    };
+};
+
+const validateEntryV1 = (value: unknown, index: number, problems: string[]): ProbeResultEntryV1 | null => {
     if (!isRecord(value)) {
         pushProblem(problems, `results[${index}] is not an object`);
-        return;
+        return null;
     }
-    if (typeof value['model'] !== 'string' || value['model'] === '') pushProblem(problems, `results[${index}].model is not a non-empty string`);
-    const accepted = value['acceptedEfforts'];
-    if (!Array.isArray(accepted)) {
-        pushProblem(problems, `results[${index}].acceptedEfforts is not an array`);
-    } else {
-        const seen = new Set<string>();
-        accepted.forEach((effort, position) => {
-            if (typeof effort !== 'string' || !isEffortValue(effort)) {
-                pushProblem(problems, `results[${index}].acceptedEfforts[${position}] is not a closed-set effort`);
-                return;
-            }
-            if (seen.has(effort)) pushProblem(problems, `results[${index}].acceptedEfforts[${position}] is duplicated`);
-            seen.add(effort);
-        });
+    if (typeof value['model'] !== 'string' || value['model'] === '') {
+        pushProblem(problems, `results[${index}].model is not a non-empty string`);
     }
+    const acceptedEfforts = validateEffortsArray(value['acceptedEfforts'], `results[${index}].acceptedEfforts`, problems);
     const defaultEffort = value['defaultEffort'];
     if (defaultEffort !== null && (typeof defaultEffort !== 'string' || !isEffortValue(defaultEffort))) {
         pushProblem(problems, `results[${index}].defaultEffort is neither null nor a closed-set effort`);
     }
     if (typeof value['toggle'] !== 'boolean') pushProblem(problems, `results[${index}].toggle is not a boolean`);
-    const errorSummary = value['errorSummary'];
-    if (!isRecord(errorSummary)) {
-        pushProblem(problems, `results[${index}].errorSummary is not an object`);
-    } else {
-        for (const [label, message] of Object.entries(errorSummary)) {
-            if (typeof message !== 'string') pushProblem(problems, `results[${index}].errorSummary.${label} is not a string`);
-            else if (message.length > ERROR_SUMMARY_LIMIT) {
-                pushProblem(problems, `results[${index}].errorSummary.${label} is longer than ${ERROR_SUMMARY_LIMIT} characters`);
-            }
+    const errorSummary = validateErrorSummary(value['errorSummary'], `results[${index}].errorSummary`, problems);
+    const checkedOn = validateCheckedOn(value['checkedOn'], `results[${index}].checkedOn`, problems);
+    if (typeof value['model'] !== 'string' || value['model'] === '') return null;
+    return {
+        model: value['model'],
+        acceptedEfforts,
+        defaultEffort: typeof defaultEffort === 'string' && isEffortValue(defaultEffort) ? defaultEffort : null,
+        toggle: value['toggle'] === true,
+        errorSummary,
+        checkedOn,
+    };
+};
+
+const validateEntryV2 = (value: unknown, index: number, problems: string[]): ProbeResultEntryV2 | null => {
+    if (!isRecord(value)) {
+        pushProblem(problems, `results[${index}] is not an object`);
+        return null;
+    }
+    const model = value['model'];
+    if (typeof model !== 'string' || model === '') {
+        pushProblem(problems, `results[${index}].model is not a non-empty string`);
+    }
+    const platform = value['platform'];
+    if (typeof platform !== 'string' || !isProbePlatform(platform)) {
+        pushProblem(problems, `results[${index}].platform is not a known probe platform`);
+    }
+    const lane = value['lane'];
+    if (typeof lane !== 'string' || lane === '') {
+        pushProblem(problems, `results[${index}].lane is not a non-empty string`);
+    }
+    const acceptedEfforts = validateEffortsArray(value['acceptedEfforts'], `results[${index}].acceptedEfforts`, problems);
+    const mappedEfforts =
+        value['mappedEfforts'] === undefined
+            ? []
+            : validateEffortsArray(value['mappedEfforts'], `results[${index}].mappedEfforts`, problems);
+    const toggle = value['toggle'];
+    if (toggle !== null && typeof toggle !== 'boolean') {
+        pushProblem(problems, `results[${index}].toggle must be a boolean or null`);
+    }
+    const tools = value['tools'] === undefined ? null : validateToolsCheck(value['tools'], `results[${index}].tools`, problems);
+    const errorSummary = validateErrorSummary(value['errorSummary'], `results[${index}].errorSummary`, problems);
+    const checkedOn = validateCheckedOn(value['checkedOn'], `results[${index}].checkedOn`, problems);
+    if (typeof model !== 'string' || model === '' || typeof platform !== 'string' || !isProbePlatform(platform) || typeof lane !== 'string' || lane === '') {
+        return null;
+    }
+    return {
+        model,
+        platform,
+        lane,
+        acceptedEfforts,
+        mappedEfforts,
+        toggle: typeof toggle === 'boolean' ? toggle : null,
+        tools,
+        errorSummary,
+        checkedOn,
+    };
+};
+
+const validateLanesMap = (value: unknown, problems: string[]): ProbeLaneFingerprints => {
+    if (!isRecord(value)) {
+        pushProblem(problems, 'lanes is not an object');
+        return {};
+    }
+    const lanes: Partial<Record<ProbePlatform, string>> = {};
+    for (const [platform, fingerprint] of Object.entries(value)) {
+        if (!isProbePlatform(platform)) {
+            pushProblem(problems, `lanes.${platform} is not a known probe platform`);
+            continue;
         }
+        if (typeof fingerprint !== 'string' || fingerprint === '') {
+            pushProblem(problems, `lanes.${platform} is not a non-empty string`);
+            continue;
+        }
+        lanes[platform] = fingerprint;
     }
-    const checkedOn = value['checkedOn'];
-    if (typeof checkedOn !== 'string' || !DATE_PATTERN.test(checkedOn) || Number.isNaN(Date.parse(checkedOn))) {
-        pushProblem(problems, `results[${index}].checkedOn is not a YYYY-MM-DD date`);
-    }
+    return lanes;
 };
 
 /**
- * Validate an import document. Unknown keys are ignored (design §7: the owner
- * may annotate a file), known keys are checked strictly. Never throws.
+ * Validate a v2 (or legacy v1) import document. Unknown keys are ignored;
+ * known keys are checked strictly. Never throws.
  */
 export const validateProbeDocument = (value: unknown): ValidationResult => {
     const problems: string[] = [];
     if (!isRecord(value)) {
         return { valid: false, errors: ['the document is not a JSON object'], document: null };
     }
-    if (value['schema'] !== 1) pushProblem(problems, 'schema must be 1');
+    const schema = value['schema'];
+    if (schema !== 1 && schema !== 2) {
+        pushProblem(problems, 'schema must be 1 or 2');
+        return { valid: false, errors: problems, document: null };
+    }
     const probedAt = value['probedAt'];
     if (typeof probedAt !== 'string' || probedAt === '' || Number.isNaN(Date.parse(probedAt))) {
         pushProblem(problems, 'probedAt is not an ISO timestamp');
     }
-    const laneSignature = value['laneSignature'];
-    if (typeof laneSignature !== 'string' || laneSignature === '') pushProblem(problems, 'laneSignature is not a non-empty string');
-    const results = value['results'];
-    if (!Array.isArray(results)) {
+    const resultsRaw = value['results'];
+    if (!Array.isArray(resultsRaw)) {
         pushProblem(problems, 'results is not an array');
-    } else {
-        results.forEach((entry, index) => validateEntry(entry, index, problems));
+    }
+
+    if (schema === 1) {
+        const laneSignature = value['laneSignature'];
+        if (typeof laneSignature !== 'string' || laneSignature === '') {
+            pushProblem(problems, 'laneSignature is not a non-empty string');
+        }
+        const parsedEntries: ProbeResultEntryV1[] = [];
+        if (Array.isArray(resultsRaw)) {
+            resultsRaw.forEach((entry, index) => {
+                const parsed = validateEntryV1(entry, index, problems);
+                if (parsed !== null) parsedEntries.push(parsed);
+            });
+        }
+        if (problems.length > 0) return { valid: false, errors: problems, document: null };
+        const document: ProbeResultDocumentV1 = {
+            schema: 1,
+            probedAt: String(probedAt),
+            laneSignature: String(laneSignature),
+            results: parsedEntries,
+        };
+        return { valid: true, errors: [], document };
+    }
+
+    const lanes = validateLanesMap(value['lanes'], problems);
+    const parsedEntries: ProbeResultEntryV2[] = [];
+    if (Array.isArray(resultsRaw)) {
+        resultsRaw.forEach((entry, index) => {
+            const parsed = validateEntryV2(entry, index, problems);
+            if (parsed !== null) parsedEntries.push(parsed);
+        });
     }
     if (problems.length > 0) return { valid: false, errors: problems, document: null };
-    // The shapes were checked field by field above; rebuild the typed document
-    const entries: unknown[] = Array.isArray(results) ? results : [];
-    const document: ProbeResultDocument = {
-        schema: 1,
+    const document: ProbeResultDocumentV2 = {
+        schema: 2,
         probedAt: String(probedAt),
-        laneSignature: String(laneSignature),
-        results: entries.map((entry): ProbeResultEntry => {
-            const record = isRecord(entry) ? entry : {};
-            const accepted = Array.isArray(record['acceptedEfforts']) ? record['acceptedEfforts'] : [];
-            const defaultEffort = record['defaultEffort'];
-            const errorSummary = isRecord(record['errorSummary']) ? record['errorSummary'] : {};
-            return {
-                model: String(record['model']),
-                acceptedEfforts: accepted.filter((effort): effort is EffortValue => typeof effort === 'string' && isEffortValue(effort)),
-                defaultEffort:
-                    typeof defaultEffort === 'string' && isEffortValue(defaultEffort) ? defaultEffort : null,
-                toggle: record['toggle'] === true,
-                errorSummary: Object.fromEntries(
-                    Object.entries(errorSummary).filter((entryPair): entryPair is [string, string] => typeof entryPair[1] === 'string')
-                ),
-                checkedOn: String(record['checkedOn']),
-            };
-        }),
+        lanes,
+        results: parsedEntries,
     };
     return { valid: true, errors: [], document };
 };
 
-/** Parse for W2's `--from-results`; returns the accepted efforts per model */
-export const acceptedEffortsFromDocument = (
-    document: ProbeResultDocument
-): Record<string, readonly EffortValue[]> => {
-    const result: Record<string, readonly EffortValue[]> = {};
-    for (const entry of document.results) result[entry.model] = sortEfforts(entry.acceptedEfforts);
-    return result;
+// ---------------------------------------------------------------------------
+// Merging multiple runs into one v2 document (§3.6)
+// ---------------------------------------------------------------------------
+
+/** Prefix routing mirror of `src/config/platform-routing.ts` (never imports src/) */
+const platformOfLegacyModel = (model: string): ProbePlatform => {
+    const id = model.toLowerCase();
+    if (id.startsWith('gemini')) return 'gemini';
+    if (id.startsWith('deepseek')) return 'deepseek';
+    if (id.startsWith('grok-')) return 'grok';
+    if (id.startsWith('mimo')) return 'mimo';
+    if (id.startsWith('claude')) return 'anthropic';
+    return 'openai';
+};
+
+const legacyLanesFromSignature = (laneSignature: string): ProbeLaneFingerprints => {
+    const parts = laneSignature.split('|');
+    if (parts.length !== PLATFORM_ORDER_LIST.length) return {};
+    const lanes: Partial<Record<ProbePlatform, string>> = {};
+    PLATFORM_ORDER_LIST.forEach((platform, index) => {
+        const part = parts[index];
+        if (part !== undefined && part !== '') lanes[platform] = part;
+    });
+    return lanes;
+};
+
+const toV2Entries = (document: ProbeResultDocument): readonly ProbeResultEntryV2[] => {
+    if (document.schema === 2) return document.results;
+    const legacyLanes = legacyLanesFromSignature(document.laneSignature);
+    return document.results.map((entry): ProbeResultEntryV2 => {
+        const platform = platformOfLegacyModel(entry.model);
+        return {
+            model: entry.model,
+            platform,
+            lane: legacyLanes[platform] ?? document.laneSignature,
+            acceptedEfforts: entry.acceptedEfforts,
+            mappedEfforts: [],
+            toggle: entry.toggle,
+            tools: null,
+            errorSummary: entry.errorSummary,
+            checkedOn: entry.checkedOn,
+        };
+    });
+};
+
+const lanesOfDocument = (document: ProbeResultDocument): ProbeLaneFingerprints =>
+    document.schema === 2 ? document.lanes : legacyLanesFromSignature(document.laneSignature);
+
+export interface ProbeMergeResult {
+    readonly document: ProbeResultDocumentV2;
+    readonly sourceCount: number;
+    readonly replacedModels: readonly string[];
+}
+
+/**
+ * Merge multiple v1/v2 `results.json` documents into one v2 document (§3.6).
+ * When the same model appears in multiple documents, the newer `probedAt`
+ * wins (ties break in favor of the later document in `documents`).
+ */
+export const mergeProbeDocuments = (documents: readonly ProbeResultDocument[]): ProbeMergeResult => {
+    if (documents.length === 0) {
+        throw new Error('at least one probe result document is required to merge');
+    }
+    const ordered = documents
+        .map((document, index) => ({ document, index, timestamp: Date.parse(document.probedAt) }))
+        .sort((left, right) => {
+            if (left.timestamp !== right.timestamp) return left.timestamp - right.timestamp;
+            return left.index - right.index;
+        });
+
+    const entriesByModel = new Map<string, ProbeResultEntryV2>();
+    const replacedSet = new Set<string>();
+    const mergedLanes: Partial<Record<ProbePlatform, string>> = {};
+
+    for (const { document } of ordered) {
+        for (const [platform, lane] of Object.entries(lanesOfDocument(document))) {
+            if (isProbePlatform(platform) && typeof lane === 'string' && lane !== '') {
+                mergedLanes[platform] = lane;
+            }
+        }
+        for (const entry of toV2Entries(document)) {
+            if (entriesByModel.has(entry.model)) replacedSet.add(entry.model);
+            entriesByModel.set(entry.model, entry);
+            mergedLanes[entry.platform] = entry.lane;
+        }
+    }
+
+    const latestProbedAt = ordered[ordered.length - 1]!.document.probedAt;
+    return {
+        document: {
+            schema: 2,
+            probedAt: latestProbedAt,
+            lanes: mergedLanes,
+            results: [...entriesByModel.values()],
+        },
+        sourceCount: documents.length,
+        replacedModels: [...replacedSet],
+    };
 };
 
 // ---------------------------------------------------------------------------
@@ -556,65 +645,32 @@ export const formatPlanTable = (input: {
     readonly estimatedUsd: number;
 }): string => {
     const lines: string[] = [];
-    const byPlatform = new Map<string, { requests: number; usd: number; w1: number; w2: number }>();
+    const byPlatform = new Map<string, { requests: number; usd: number }>();
     for (const candidate of input.candidates) {
-        const entry = byPlatform.get(candidate.platform) ?? { requests: 0, usd: 0, w1: 0, w2: 0 };
+        const entry = byPlatform.get(candidate.platform) ?? { requests: 0, usd: 0 };
         entry.requests += 1;
         entry.usd += candidate.estimatedCostUsd;
-        entry[candidate.wave] += 1;
         byPlatform.set(candidate.platform, entry);
     }
-    lines.push('platform   records  W1  W2   worst-case USD');
+    lines.push('platform   records  worst-case USD');
     for (const [platform, entry] of [...byPlatform.entries()].sort((left, right) => left[0].localeCompare(right[0]))) {
         lines.push(
-            `${platform.padEnd(10)} ${String(entry.requests).padStart(7)}  ${String(entry.w1).padStart(2)}  ${String(entry.w2).padStart(2)}   $${entry.usd.toFixed(4)}`
+            `${platform.padEnd(10)} ${String(entry.requests).padStart(7)}  $${entry.usd.toFixed(4)}`
         );
     }
-    lines.push(`total      ${String(input.candidates.length).padStart(7)}       worst-case $${input.estimatedUsd.toFixed(4)}`);
+    lines.push(`total      ${String(input.candidates.length).padStart(7)}  worst-case $${input.estimatedUsd.toFixed(4)}`);
     return lines.join('\n');
 };
 
-const effectLines = (inference: ModelInference): string[] => {
-    if (inference.w2Observations.length === 0) return [];
-    // Capped samples are floors, so they do not enter the medians; the line
-    // still says how many were dropped.
-    const usable = untruncatedOf(inference.w2Observations);
-    const baseline = usable.filter((observation) => observation.variant === 'baseline');
-    const baselineMedian = medianOf(reasoningTokensOf(baseline));
-    const samples: EffectSample[] = [];
-    const byEffort = new Map<string, ProbeObservation[]>();
-    for (const observation of usable) {
-        const label = candidateLabelOf(candidateOfObservation(observation));
-        const list = byEffort.get(label) ?? [];
-        list.push(observation);
-        byEffort.set(label, list);
-    }
-    for (const [label, observations] of byEffort) {
-        samples.push({
-            label,
-            wave: 'w2',
-            reasoningTokens: medianOf(reasoningTokensOf(observations)),
-            ttfbMs: medianOf(observations.map((observation) => observation.ttfbMs ?? 0)),
-            totalMs: medianOf(observations.map((observation) => observation.totalMs)),
-        });
-    }
-    const lines = [`  W2 baseline thoughts ${baselineMedian === null ? 'n/a' : Math.round(baselineMedian)}`];
-    for (const sample of samples.sort((left, right) => effortRank(left.label) - effortRank(right.label))) {
-        const ratio = baselineMedian === null || baselineMedian === 0 || sample.reasoningTokens === null ? null : sample.reasoningTokens / baselineMedian;
-        lines.push(
-            `  ${sample.label.padEnd(10)} thoughts=${sample.reasoningTokens === null ? 'n/a' : Math.round(sample.reasoningTokens)} ratio=${ratio === null ? 'n/a' : ratio.toFixed(2)} ttfb=${sample.ttfbMs ?? 'n/a'}ms total=${sample.totalMs ?? 'n/a'}ms`
-        );
-    }
-    if (inference.truncatedSamples > 0) {
-        lines.push(`  truncated samples ignored: ${inference.truncatedSamples} (probe token cap)`);
-    }
-    return lines;
+const formatToolsColumn = (tools: ProbeToolsCheck | null): string => {
+    if (tools === null) return '—';
+    return tools.supported ? 'ok' : 'FAIL';
 };
 
 /** summary.md: the owner reads this before importing */
 export const formatSummaryMarkdown = (input: {
     readonly probedAt: string;
-    readonly laneSignature: string;
+    readonly lanes: ProbeLaneFingerprints;
     readonly budgetUsd: number;
     readonly spentUsd: number;
     readonly summary: ProbeRunSummary;
@@ -625,35 +681,28 @@ export const formatSummaryMarkdown = (input: {
     readonly skipped?: readonly { readonly candidateId: string; readonly reason: string }[];
 }): string => {
     const lines: string[] = [];
-    lines.push('# Thinking-effort probe');
+    lines.push('# Thinking-effort probe (v2)');
     lines.push('');
     lines.push(`- started: ${input.startedAt}`);
     lines.push(`- finished: ${input.finishedAt}`);
-    lines.push(`- lane: \`${input.laneSignature}\``);
+    lines.push(`- lanes: ${Object.entries(input.lanes).map(([platform, lane]) => `${platform}=\`${lane}\``).join(', ') || '—'}`);
     lines.push(`- cost: $${input.spentUsd.toFixed(4)} of $${input.budgetUsd.toFixed(2)} budget`);
     lines.push(`- importable models: ${input.summary.document.results.length}`);
-    const truncatedSamples = input.summary.inferences.reduce((sum, inference) => sum + inference.truncatedSamples, 0);
-    if (truncatedSamples > 0) {
-        lines.push(`- truncated W2 samples: ${truncatedSamples} (excluded from the default-effort and inert inference)`);
-    }
     lines.push('');
     lines.push('## Models');
     lines.push('');
-    lines.push('| model | accepted (probe) | vendor efforts | default | toggle | mapped | notes |');
+    lines.push('| model | accepted (probe) | vendor efforts | toggle | mapped | tools | notes |');
     lines.push('|---|---|---|---|---|---|---|');
     for (const inference of input.summary.inferences) {
         const notes: string[] = [];
         if (inference.incomplete) notes.push(`INCOMPLETE: ${inference.incompleteReasons.join('; ')}`);
-        if (inference.inertEfforts.length > 0) notes.push(`inert: ${sortedEffortsText(inference.inertEfforts)}`);
-        if (inference.truncatedSamples > 0) notes.push(`truncated: ${inference.truncatedSamples}`);
-        const defaultText =
-            inference.defaultInference.source === 'probe-effect'
-                ? `${inference.defaultInference.defaultEffort} (probe)`
-                : `${inference.spec.vendorDefaultEffort ?? 'unknown'} (vendor)`;
+        if (inference.tools !== null && !inference.tools.supported && inference.tools.error !== undefined) {
+            notes.push(`tools rejected: ${inference.tools.error}`);
+        }
+        const toggleText = inference.toggle === null ? '—' : inference.toggle ? 'yes' : 'no';
         lines.push(
-            `| ${inference.spec.model} | ${sortedEffortsText(inference.acceptedEfforts) || '—'} | ${sortedEffortsText(inference.spec.vendorEfforts) || '—'} | ${defaultText} | ${inference.toggle ? 'yes' : 'no'} | ${sortedEffortsText(inference.mappedEfforts) || '—'} | ${notes.join(' / ') || ''} |`
+            `| ${inference.spec.model} | ${sortedEffortsText(inference.acceptedEfforts) || '—'} | ${sortedEffortsText(inference.spec.vendorEfforts) || '—'} | ${toggleText} | ${sortedEffortsText(inference.mappedEfforts) || '—'} | ${formatToolsColumn(inference.tools)} | ${notes.join(' / ') || ''} |`
         );
-        for (const line of effectLines(inference)) lines.push(line);
     }
     if (input.summary.incomplete.length > 0) {
         lines.push('');

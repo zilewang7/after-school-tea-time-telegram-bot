@@ -1,30 +1,47 @@
 /**
  * Model traits: the single data → code entry point for "what can this model do"
- * (thinking-effort design 2026-1113-1742 §3.1).
+ * (design 2026-1114-0510 §5).
  *
  * Resolution order: a `model_catalog` row with schema-1 capabilities, then the
- * code seed (`model-capability-seed.ts`), then the code heuristics that ship in
- * this module. A trait with no data falls back to the heuristic; `capabilities`
- * is null only when neither the catalog nor the seed knows the model.
+ * code seed (`model-capability-seed.ts`), then per-platform pure code defaults
+ * (`platforms/<p>/<p>-code-traits.ts`).
  *
- * PR2 keeps the runtime predicates on the code result: when
- * `MODEL_TRAITS_SHADOW=1` the data result is compared and each differing
- * `model|field` is logged once, so the switch to data can wait for a quiet week.
- * Flipping `runtimeTraitValuesOf` to the data result is the later PR.
- *
- * Lives in `src/ai`, not `src/config`: config may not import ai (check-deps),
- * and `model-kinds.ts` must not be imported here (that would close a cycle).
+ * S3–S6 cutover: all model capability traits prefer catalog/seed data with
+ * per-platform pure code fallbacks. S5/S6 (`imageOutput`, `imageInput` /
+ * `vision`, `mediaInput` / `modalities.input`, and `clientTools` / `tools`)
+ * require verified field-level provenance (`fieldProvenanceOf` present and
+ * `confidence !== 'low'`) before cutting over from `*-code-traits.ts`.
  */
-import { match, P } from 'ts-pattern';
-import { capabilitySeedOf } from '../config/model-capability-seed.js';
-import { findModelCatalogEntry } from '../config/model-catalog.js';
-import type { ModelCatalogCapabilities } from '../config/model-capabilities.js';
-import { GEMINI_IMAGE_MODEL, OPENAI_IMAGE_MODEL } from '../config/models.js';
+import { match } from 'ts-pattern';
+import {
+    fieldProvenanceOf,
+    type ModelCatalogCapabilities,
+} from '../config/model-capabilities.js';
+import { capabilitySeedIds, capabilitySeedOf } from '../config/model-capability-seed.js';
+import {
+    findModelCatalogEntry,
+    listAllModelCatalog,
+    modelCatalogVersion,
+    type ModelCatalogEntry,
+} from '../config/model-catalog.js';
+import { getToolConfig } from '../config/tool-config.js';
 import { platformTypeOf } from './platform-routing.js';
-import type { PlatformType } from './types.js';
+import { anthropicCodeTraitsOf } from './platforms/anthropic/anthropic-code-traits.js';
+import { deepseekCodeTraitsOf } from './platforms/deepseek/deepseek-code-traits.js';
+import { geminiCodeTraitsOf } from './platforms/gemini/gemini-code-traits.js';
+import { grokCodeTraitsOf } from './platforms/grok/grok-code-traits.js';
+import { mimoCodeTraitsOf } from './platforms/mimo/mimo-code-traits.js';
+import { openaiCodeTraitsOf } from './platforms/openai/openai-code-traits.js';
+import type {
+    ModelCapabilities,
+    ModelTraitsOrigin,
+    PlatformType,
+    RuntimeTraits,
+    Trait,
+    TraitOrigin,
+} from './types.js';
 
-/** Where the resolved capabilities came from: a catalog row, the code seed, or none */
-export type ModelTraitsOrigin = 'catalog' | 'seed' | 'code';
+export type { ModelTraitsOrigin, RuntimeTraits, Trait, TraitOrigin };
 
 export interface ModelTraits {
     readonly model: string;
@@ -35,7 +52,237 @@ export interface ModelTraits {
     readonly capabilities: ModelCatalogCapabilities | null;
 }
 
-/** Resolve one model's traits from the in-memory catalog, the seed, or code */
+interface PlatformCodeDefaults {
+    readonly imageOutput: boolean;
+    readonly imageInput: boolean;
+    readonly mediaInput: boolean;
+    readonly clientTools: boolean;
+    readonly geminiToolsMixing: boolean;
+    readonly imageSearchGrounding: boolean;
+    readonly xhighThinking: boolean;
+    readonly requiresMessageMerge: boolean;
+    readonly supportsThinking: boolean | undefined;
+    readonly supportsVideoToolResult: boolean;
+}
+
+const codeDefaultsOf = (id: string, platform: PlatformType): PlatformCodeDefaults =>
+    match(platform)
+        .returnType<PlatformCodeDefaults>()
+        .with('gemini', () => {
+            const traits = geminiCodeTraitsOf(id);
+            return {
+                imageOutput: traits.imageOutput,
+                imageInput: traits.imageInput,
+                mediaInput: traits.mediaInput,
+                clientTools: traits.clientTools,
+                geminiToolsMixing: traits.geminiToolsMixing,
+                imageSearchGrounding: traits.imageSearchGrounding,
+                xhighThinking: traits.xhighThinking,
+                requiresMessageMerge: traits.requiresMessageMerge,
+                supportsThinking: traits.supportsThinking,
+                supportsVideoToolResult: traits.supportsVideoToolResult,
+            };
+        })
+        .with('openai', () => {
+            const traits = openaiCodeTraitsOf(id);
+            return {
+                imageOutput: traits.imageOutput,
+                imageInput: traits.imageInput,
+                mediaInput: traits.mediaInput,
+                clientTools: traits.clientTools,
+                geminiToolsMixing: traits.clientTools,
+                imageSearchGrounding: false,
+                xhighThinking: false,
+                requiresMessageMerge: traits.requiresMessageMerge,
+                supportsThinking: traits.supportsThinking,
+                supportsVideoToolResult: false,
+            };
+        })
+        .with('anthropic', () => {
+            const traits = anthropicCodeTraitsOf(id);
+            return {
+                imageOutput: traits.imageOutput,
+                imageInput: traits.imageInput,
+                mediaInput: traits.mediaInput,
+                clientTools: traits.clientTools,
+                geminiToolsMixing: !traits.imageOutput,
+                imageSearchGrounding: false,
+                xhighThinking: false,
+                requiresMessageMerge: traits.requiresMessageMerge,
+                supportsThinking: traits.supportsThinking,
+                supportsVideoToolResult: false,
+            };
+        })
+        .with('deepseek', () => {
+            const traits = deepseekCodeTraitsOf(id);
+            return {
+                imageOutput: traits.imageOutput,
+                imageInput: traits.imageInput,
+                mediaInput: traits.mediaInput,
+                clientTools: traits.clientTools,
+                geminiToolsMixing: !traits.imageOutput,
+                imageSearchGrounding: false,
+                xhighThinking: false,
+                requiresMessageMerge: traits.requiresMessageMerge,
+                supportsThinking: undefined,
+                supportsVideoToolResult: false,
+            };
+        })
+        .with('grok', () => {
+            const traits = grokCodeTraitsOf(id);
+            return {
+                imageOutput: traits.imageOutput,
+                imageInput: traits.imageInput,
+                mediaInput: traits.mediaInput,
+                clientTools: traits.clientTools,
+                geminiToolsMixing: !traits.imageOutput,
+                imageSearchGrounding: false,
+                xhighThinking: false,
+                requiresMessageMerge: traits.requiresMessageMerge,
+                supportsThinking: undefined,
+                supportsVideoToolResult: false,
+            };
+        })
+        .with('mimo', () => {
+            const traits = mimoCodeTraitsOf(id);
+            return {
+                imageOutput: traits.imageOutput,
+                imageInput: traits.imageInput,
+                mediaInput: traits.mediaInput,
+                clientTools: traits.clientTools,
+                geminiToolsMixing: !traits.imageOutput,
+                imageSearchGrounding: false,
+                xhighThinking: false,
+                requiresMessageMerge: traits.requiresMessageMerge,
+                supportsThinking: traits.supportsThinking,
+                supportsVideoToolResult: false,
+            };
+        })
+        .exhaustive();
+
+/** Only Gemini and MiMo encode inline audio/video in their request protocols */
+const protocolSupportsMedia = (platform: PlatformType): boolean =>
+    platform === 'gemini' || platform === 'mimo';
+
+/** Build a trait whose active runtime value still follows code (S6) */
+const codeBackedTrait = <T>(codeValue: T, dataValue: T | null): Trait<T> => ({
+    value: codeValue,
+    origin: 'code',
+    codeValue,
+    dataValue,
+    differs: dataValue !== null && dataValue !== codeValue,
+});
+
+/** Build a trait whose active runtime value prefers catalog/seed data with code fallback */
+const dataBackedTrait = <T>(codeValue: T, dataValue: T | null): Trait<T> => ({
+    value: dataValue ?? codeValue,
+    origin: dataValue !== null ? 'data' : 'code',
+    codeValue,
+    dataValue,
+    differs: dataValue !== null && dataValue !== codeValue,
+});
+
+/** S6 gate: cut over only when field provenance is present and not low-confidence */
+const hasVerifiedFieldProvenance = (
+    capabilities: ModelCatalogCapabilities | null,
+    field: string
+): boolean => {
+    if (capabilities === null) return false;
+    const provenance = fieldProvenanceOf(capabilities, field);
+    if (provenance === undefined) return false;
+    return provenance.confidence !== 'low';
+};
+
+const provenanceGatedTrait = <T>(
+    codeValue: T,
+    dataValue: T | null,
+    verified: boolean
+): Trait<T> => (verified ? dataBackedTrait(codeValue, dataValue) : codeBackedTrait(codeValue, dataValue));
+
+const dataImageOutputOf = (capabilities: ModelCatalogCapabilities | null): boolean | null => {
+    if (capabilities === null) return null;
+    return capabilities.imageOutput || (capabilities.modalities?.output?.includes('image') ?? false);
+};
+
+const dataMediaInputOf = (
+    capabilities: ModelCatalogCapabilities | null,
+    platform: PlatformType
+): boolean | null => {
+    const input = capabilities?.modalities?.input;
+    if (input === undefined) return null;
+    if (!protocolSupportsMedia(platform)) return false;
+    return input.includes('audio') || input.includes('video');
+};
+
+const dataGeminiToolsMixingOf = (
+    capabilities: ModelCatalogCapabilities | null,
+    platform: PlatformType
+): boolean | null => {
+    if (platform !== 'gemini' || capabilities === null) return null;
+    const mixing = capabilities.toolsMixing;
+    if (mixing === undefined || mixing === 'unknown') return null;
+    return mixing === 'allowed';
+};
+
+const dataImageSearchGroundingOf = (
+    capabilities: ModelCatalogCapabilities | null,
+    platform: PlatformType
+): boolean | null => {
+    if (platform !== 'gemini' || capabilities === null) return null;
+    const flag = capabilities.nativeTools?.imageSearchGrounding;
+    return flag === undefined ? null : flag;
+};
+
+const dataXhighThinkingOf = (capabilities: ModelCatalogCapabilities | null): boolean | null => {
+    const reasoning = capabilities?.reasoning;
+    if (reasoning === undefined) return null;
+    return (reasoning.efforts ?? []).includes('xhigh');
+};
+
+const resolveGeminiToolsMixingTrait = (
+    codeValue: boolean,
+    capabilities: ModelCatalogCapabilities | null,
+    platform: PlatformType,
+    imageOutputValue: boolean
+): Trait<boolean> => {
+    const dataValue = dataGeminiToolsMixingOf(capabilities, platform);
+    // Keep the image-model-gets-no-tools safety guard even if a catalog row asserts toolsMixing
+    if (imageOutputValue) {
+        return {
+            value: false,
+            origin: dataValue !== null ? 'data' : 'code',
+            codeValue,
+            dataValue,
+            differs: dataValue !== null && dataValue !== codeValue,
+        };
+    }
+    return dataBackedTrait(codeValue, dataValue);
+};
+
+const resolveClientToolsTrait = (
+    platform: PlatformType,
+    codeValue: boolean,
+    capabilities: ModelCatalogCapabilities | null,
+    imageOutputValue: boolean,
+    geminiToolsMixingValue: boolean,
+    toolsVerified: boolean
+): Trait<boolean> => {
+    if (imageOutputValue) {
+        // Never offer client tools to an image-output model regardless of catalog/provenance
+        const dataValue = capabilities === null ? null : false;
+        return dataBackedTrait(codeValue, dataValue);
+    }
+    if (platform === 'gemini') {
+        const fallbackCode = codeValue && geminiToolsMixingValue;
+        const dataValue =
+            capabilities === null ? null : capabilities.tools && geminiToolsMixingValue;
+        return provenanceGatedTrait(fallbackCode, dataValue, toolsVerified);
+    }
+    const dataValue = capabilities === null ? null : capabilities.tools;
+    return provenanceGatedTrait(codeValue, dataValue, toolsVerified);
+};
+
+/** Resolve catalog/seed metadata for one model id */
 export const resolveModelTraits = (model: string): ModelTraits => {
     const id = model.toLowerCase();
     const platform = platformTypeOf(id);
@@ -48,161 +295,245 @@ export const resolveModelTraits = (model: string): ModelTraits => {
     return { model: id, origin: 'code', platform, capabilities: null };
 };
 
-/**
- * Models whose output is an image. Matched by explicit id first, because the
- * substring rule alone missed `gemini-nano-banana-2.1` — the Nano Banana ids
- * carry no `image` in them, and a missed image model is sent the chat persona,
- * urlContext and function tools, all of which it rejects with 400. OpenAI's
- * `dall-e-*` ids carry none either.
- */
-const KNOWN_IMAGE_MODELS: ReadonlySet<string> = new Set([
-    GEMINI_IMAGE_MODEL.toLowerCase(),
-    OPENAI_IMAGE_MODEL.toLowerCase(),
-    'gemini-3-pro-image',
-]);
-
-const codeIsImageOutputModel = (model: string): boolean =>
-    match(model.toLowerCase())
-        .when((id) => KNOWN_IMAGE_MODELS.has(id), () => true)
-        .with(P.string.includes('image'), () => true)
-        .with(P.string.includes('nano-banana'), () => true)
-        .with(P.string.startsWith('dall-e'), () => true)
-        .otherwise(() => false);
-
-/**
- * Gemini chat models that only accept the built-in search tools: every 2.x
- * answers "Multiple tools are supported only when they are all search tools"
- * with 400. Newer ids (3.1-pro-preview, 3.8-flash, 4-argon, 4-carbon — all
- * verified on our own Vertex project) accept function declarations alongside
- * googleSearch, so the default is to offer client tools and only the known
- * refusals are denied by name; a model released tomorrow works without a code
- * change. An id that turns out to refuse mixed tools is caught at round 1 and
- * the platform retries the same request without the declarations.
- */
-const GEMINI_SEARCH_ONLY_MODELS: ReadonlySet<string> = new Set([
-    'gemini-2.5-flash',
-    'gemini-2.5-pro',
-    'gemini-2.5-flash-lite',
-]);
-
-const codeSupportsGeminiFunctionTools = (model: string): boolean => {
+/** Resolve the full runtime traits snapshot for one model (once per reply attempt) */
+export const resolveRuntimeTraits = (model: string): RuntimeTraits => {
     const id = model.toLowerCase();
-    return codeIsImageOutputModel(id) === false && GEMINI_SEARCH_ONLY_MODELS.has(id) === false;
-};
-
-/**
- * Image models that can ground a generation in real web images
- * (searchTypes.imageSearch). Verified 2026-10-23 on the image search endpoint:
- * nano-banana-2.1 returns imageSearchQueries + groundingChunks[].image only when
- * imageSearch and webSearch are both declared; gemini-3-pro-image rejects
- * imageSearch with 400 "image_search is not supported for this model".
- */
-const GEMINI_IMAGE_SEARCH_GROUNDING_MODELS: ReadonlySet<string> = new Set([
-    'gemini-nano-banana-2.1',
-    'gemini-3.1-flash-image',
-]);
-
-const codeSupportsGeminiImageSearchGrounding = (model: string): boolean =>
-    GEMINI_IMAGE_SEARCH_GROUNDING_MODELS.has(model.toLowerCase());
-
-/**
- * Gemini 4 Hydrogen and Neon accept the XHIGH thinking level on Vertex, one
- * level above HIGH — the documented top for Argon and Carbon, which answer 400
- * "Thinking level is unsupported: THINKING_LEVEL_XHIGH". Neon reached GA on
- * 2026-11-18 with the same four levels as Hydrogen (low/high/medium/xhigh,
- * default HIGH). Other models keep HIGH; a model that loses XHIGH later falls
- * back to HIGH at request time (see GeminiPlatform).
- */
-const codeSupportsXhighThinkingLevel = (model: string): boolean => {
-    const id = model.toLowerCase();
-    return id.startsWith('gemini-4-hydrogen') || id.startsWith('gemini-4-neon');
-};
-
-/** The three predicates PR2 compares, computed from the code heuristics (today's behavior) */
-export interface ModelTraitValues {
-    readonly imageOutput: boolean;
-    readonly xhighThinking: boolean;
-    readonly geminiFunctionTools: boolean;
-}
-
-/** The code heuristics, exactly as they behave today */
-export const codeTraitValuesOf = (model: string): ModelTraitValues => ({
-    imageOutput: codeIsImageOutputModel(model),
-    xhighThinking: codeSupportsXhighThinkingLevel(model),
-    geminiFunctionTools: codeSupportsGeminiFunctionTools(model),
-});
-
-/** The same three predicates as the resolved data asserts them; null = not asserted */
-export type TraitDataValues = {
-    readonly [Key in keyof ModelTraitValues]: ModelTraitValues[Key] | null;
-};
-
-/** The data side of the shadow comparison */
-export const dataTraitValuesOf = (model: string): TraitDataValues => {
-    const { capabilities } = resolveModelTraits(model);
-    if (capabilities === null) {
-        return { imageOutput: null, xhighThinking: null, geminiFunctionTools: null };
+    const platform = platformTypeOf(id);
+    const entry = findModelCatalogEntry(id);
+    const inCatalog = entry !== null;
+    let origin: ModelTraitsOrigin = 'code';
+    let capabilities: ModelCatalogCapabilities | null = null;
+    if (entry !== null && entry.capabilities.schema === 1) {
+        origin = 'catalog';
+        capabilities = entry.capabilities;
+    } else {
+        const seed = capabilitySeedOf(id);
+        if (seed !== null) {
+            origin = 'seed';
+            capabilities = seed;
+        }
     }
-    const reasoning = capabilities.reasoning;
-    const toolsMixing = capabilities.toolsMixing;
+    const code = codeDefaultsOf(id, platform);
+    const reasoningData = capabilities?.reasoning ?? null;
+    const outputTokensData = capabilities?.outputTokens ?? null;
+    const imageOutput = provenanceGatedTrait(
+        code.imageOutput,
+        dataImageOutputOf(capabilities),
+        hasVerifiedFieldProvenance(capabilities, 'imageOutput') ||
+            hasVerifiedFieldProvenance(capabilities, 'modalities.output')
+    );
+    const geminiToolsMixing = resolveGeminiToolsMixingTrait(
+        code.geminiToolsMixing,
+        capabilities,
+        platform,
+        imageOutput.value
+    );
+    const clientTools = resolveClientToolsTrait(
+        platform,
+        code.clientTools,
+        capabilities,
+        imageOutput.value,
+        geminiToolsMixing.value,
+        hasVerifiedFieldProvenance(capabilities, 'tools')
+    );
+    const supportsThinking =
+        platform === 'openai' && reasoningData !== null
+            ? reasoningData.supported
+            : code.supportsThinking;
+
     return {
-        imageOutput: capabilities.imageOutput,
-        // No reasoning data = not known, not "no levels"
-        xhighThinking: reasoning === undefined ? null : (reasoning.efforts ?? []).includes('xhigh'),
-        geminiFunctionTools:
-            toolsMixing === undefined || toolsMixing === 'unknown' ? null : toolsMixing === 'allowed',
+        model: id,
+        platform,
+        origin,
+        inCatalog,
+        catalogVersion: modelCatalogVersion(),
+        capabilities,
+        imageOutput,
+        imageInput: provenanceGatedTrait(
+            code.imageInput,
+            capabilities?.vision ?? null,
+            hasVerifiedFieldProvenance(capabilities, 'vision')
+        ),
+        mediaInput: provenanceGatedTrait(
+            code.mediaInput,
+            dataMediaInputOf(capabilities, platform),
+            hasVerifiedFieldProvenance(capabilities, 'modalities.input')
+        ),
+        clientTools,
+        geminiToolsMixing,
+        imageSearchGrounding: dataBackedTrait(
+            code.imageSearchGrounding,
+            dataImageSearchGroundingOf(capabilities, platform)
+        ),
+        xhighThinking: dataBackedTrait(code.xhighThinking, dataXhighThinkingOf(capabilities)),
+        requiresMessageMerge: code.requiresMessageMerge,
+        supportsThinking,
+        supportsVideoToolResult: code.supportsVideoToolResult,
+        reasoning: {
+            value: reasoningData,
+            origin: reasoningData !== null ? 'data' : 'code',
+            codeValue: null,
+            dataValue: reasoningData,
+            differs: false,
+        },
+        outputTokens: {
+            value: outputTokensData,
+            origin: outputTokensData !== null ? 'data' : 'code',
+            codeValue: null,
+            dataValue: outputTokensData,
+            differs: false,
+        },
     };
 };
 
-export type TraitField = keyof ModelTraitValues;
+/** Build legacy ModelCapabilities from resolved RuntimeTraits (applies env switches) */
+export const capabilitiesOf = (traits: RuntimeTraits): ModelCapabilities => ({
+    supportsImageInput: traits.imageInput.value,
+    supportsImageOutput: traits.imageOutput.value,
+    supportsSystemPrompt: true,
+    requiresMessageMerge: traits.requiresMessageMerge,
+    ...(traits.supportsThinking === undefined ? {} : { supportsThinking: traits.supportsThinking }),
+    supportsMediaInput: traits.mediaInput.value,
+    ...(traits.supportsVideoToolResult ? { supportsVideoToolResult: true } : {}),
+    supportsClientTools:
+        traits.platform === 'gemini'
+            ? traits.clientTools.value && getToolConfig().geminiClientTools
+            : traits.clientTools.value,
+});
 
-export interface TraitsShadowDiff {
-    readonly model: string;
-    readonly field: TraitField;
-    readonly data: boolean;
-    readonly code: boolean;
-    /** When the diff was first seen; the shadow needs a quiet week to switch */
-    readonly seenAt: Date;
+/** Image-output predicate backed by provenance-gated `traits.imageOutput` */
+export const isImageOutputModelFromTraits = (traits: RuntimeTraits): boolean => traits.imageOutput.value;
+
+/** Structured one-line log per reply attempt showing code fallbacks and diffs */
+export const logReplyTraits = (traits: RuntimeTraits): void => {
+    const traitEntries: ReadonlyArray<readonly [string, Trait<unknown>]> = [
+        ['imageOutput', traits.imageOutput],
+        ['imageInput', traits.imageInput],
+        ['mediaInput', traits.mediaInput],
+        ['clientTools', traits.clientTools],
+        ...(traits.platform === 'gemini'
+            ? ([
+                  ['geminiToolsMixing', traits.geminiToolsMixing],
+                  ['imageSearchGrounding', traits.imageSearchGrounding],
+              ] as const)
+            : []),
+        ['reasoning', traits.reasoning],
+        ...(traits.platform === 'anthropic' ? ([['outputTokens', traits.outputTokens]] as const) : []),
+    ];
+    const codeFallbacks = traitEntries
+        .filter(([, trait]) => trait.origin === 'code')
+        .map(([name]) => name);
+    const diffs = traitEntries
+        .filter(([, trait]) => trait.differs)
+        .map(([name, trait]) => `${name}:${String(trait.dataValue)}!=${String(trait.codeValue)}`);
+    const fallbackText = codeFallbacks.length > 0 ? codeFallbacks.join(',') : 'none';
+    const diffText = diffs.length > 0 ? ` diffs=[${diffs.join(',')}]` : '';
+    console.log(
+        `[traits] model=${traits.model} platform=${traits.platform} origin=${traits.origin} ` +
+            `catalog=${traits.catalogVersion} codeFallback=[${fallbackText}]${diffText}`
+    );
+};
+
+export type ReconciledTraitField =
+    | 'imageOutput'
+    | 'imageInput'
+    | 'mediaInput'
+    | 'clientTools'
+    | 'geminiToolsMixing'
+    | 'imageSearchGrounding'
+    | 'xhighThinking'
+    | 'outputTokens';
+
+export interface ReconciledTraitEntry<T = boolean | number | null> {
+    readonly field: ReconciledTraitField;
+    readonly data: T | null;
+    readonly code: T | null;
+    readonly runtime: T;
+    readonly origin: TraitOrigin;
+    readonly differs: boolean;
 }
 
-const shadowDiffs = new Map<string, TraitsShadowDiff>();
+export interface ModelTraitReconciliationRow {
+    readonly model: string;
+    readonly platform: PlatformType;
+    readonly origin: ModelTraitsOrigin;
+    readonly inCatalog: boolean;
+    readonly enabled: boolean;
+    readonly entries: readonly ReconciledTraitEntry[];
+    readonly diffCount: number;
+}
 
-/** `MODEL_TRAITS_SHADOW=1` compares data with code; read per call, default off */
-export const traitsShadowEnabled = (): boolean => process.env.MODEL_TRAITS_SHADOW === '1';
+export interface CatalogTraitsReconciliation {
+    readonly catalogVersion: string;
+    readonly rows: readonly ModelTraitReconciliationRow[];
+    readonly totalDiffs: number;
+}
 
-/** The differences seen so far (tests and diagnostics) */
-export const traitsShadowDiffs = (): readonly TraitsShadowDiff[] => [...shadowDiffs.values()];
+const booleanEntry = (
+    field: ReconciledTraitField,
+    trait: Trait<boolean>,
+    applicable = true
+): ReconciledTraitEntry<boolean> => ({
+    field,
+    data: trait.dataValue,
+    code: applicable ? trait.codeValue : null,
+    runtime: trait.value,
+    origin: trait.origin,
+    differs: applicable && trait.differs,
+});
 
-/** Forget what the process has seen (tests and a manual reset) */
-export const resetTraitsShadow = (): void => {
-    shadowDiffs.clear();
+const reconcileOneModel = (model: string, enabled: boolean): ModelTraitReconciliationRow => {
+    const traits = resolveRuntimeTraits(model);
+    const isGemini = traits.platform === 'gemini';
+    const entries: readonly ReconciledTraitEntry[] = [
+        booleanEntry('imageOutput', traits.imageOutput),
+        booleanEntry('imageInput', traits.imageInput),
+        booleanEntry('mediaInput', traits.mediaInput),
+        booleanEntry('clientTools', traits.clientTools),
+        booleanEntry('geminiToolsMixing', traits.geminiToolsMixing, isGemini),
+        booleanEntry('imageSearchGrounding', traits.imageSearchGrounding, isGemini),
+        booleanEntry('xhighThinking', traits.xhighThinking),
+        {
+            field: 'outputTokens',
+            data: traits.outputTokens.dataValue,
+            code: null,
+            runtime: traits.outputTokens.value,
+            origin: traits.outputTokens.origin,
+            differs: false,
+        },
+    ];
+    return {
+        model: traits.model,
+        platform: traits.platform,
+        origin: traits.origin,
+        inCatalog: traits.inCatalog,
+        enabled,
+        entries,
+        diffCount: entries.filter((entry) => entry.differs).length,
+    };
 };
 
-/** Record one diff once per model|field and print it once */
-const recordShadowDiff = (model: string, field: TraitField, data: boolean | null, code: boolean): void => {
-    if (data === null || data === code) return;
-    const id = model.toLowerCase();
-    const key = `${id}|${field}`;
-    if (shadowDiffs.has(key)) return;
-    shadowDiffs.set(key, { model: id, field, data, code, seenAt: new Date() });
-    console.log(`[traits-shadow] ${id} ${field}: data=${String(data)} code=${String(code)}`);
+/**
+ * Compute the deterministic code-vs-data reconciliation table ("对账表") across
+ * all catalog entries and any remaining seed-only models (design §5.6).
+ */
+export const reconcileCatalogTraits = (
+    catalogEntries: readonly ModelCatalogEntry[] = listAllModelCatalog()
+): CatalogTraitsReconciliation => {
+    const seen = new Set<string>();
+    const rows: ModelTraitReconciliationRow[] = [];
+    for (const entry of catalogEntries) {
+        const id = entry.id.toLowerCase();
+        if (seen.has(id)) continue;
+        seen.add(id);
+        rows.push(reconcileOneModel(id, entry.enabled));
+    }
+    for (const seedId of capabilitySeedIds()) {
+        const id = seedId.toLowerCase();
+        if (seen.has(id)) continue;
+        seen.add(id);
+        rows.push(reconcileOneModel(id, false));
+    }
+    const totalDiffs = rows.reduce((sum, row) => sum + row.diffCount, 0);
+    return { catalogVersion: modelCatalogVersion(), rows, totalDiffs };
 };
-
-/** PR2 runtime: return the code result; compare with the data result when shadowed */
-const runtimeWithShadow = (model: string, field: TraitField, code: boolean): boolean => {
-    if (traitsShadowEnabled()) recordShadowDiff(model, field, dataTraitValuesOf(model)[field], code);
-    return code;
-};
-
-export const runtimeIsImageOutputModel = (model: string): boolean =>
-    runtimeWithShadow(model, 'imageOutput', codeIsImageOutputModel(model));
-
-export const runtimeSupportsXhighThinkingLevel = (model: string): boolean =>
-    runtimeWithShadow(model, 'xhighThinking', codeSupportsXhighThinkingLevel(model));
-
-export const runtimeSupportsGeminiFunctionTools = (model: string): boolean =>
-    runtimeWithShadow(model, 'geminiFunctionTools', codeSupportsGeminiFunctionTools(model));
-
-/** Not switched in this PR: the image-search grounding list stays code */
-export const supportsGeminiImageSearchGrounding = (model: string): boolean =>
-    codeSupportsGeminiImageSearchGrounding(model);

@@ -35,6 +35,10 @@ export class PriceWatchRun extends Model<
   declare outcome: string;
   // Pending proposals created or refreshed by this run
   declare proposals: CreationOptional<number>;
+  // Pending capability proposals after this run
+  declare capabilityProposals: CreationOptional<number>;
+  // JSON string[] of run warnings; NULL when none
+  declare warnings: CreationOptional<string | null>;
   declare notifiedMessageId: CreationOptional<number | null>;
   declare error: CreationOptional<string | null>;
   declare createdAt: CreationOptional<Date>;
@@ -64,6 +68,16 @@ PriceWatchRun.init({
     type: DataTypes.INTEGER,
     allowNull: false,
     defaultValue: 0,
+  },
+  capabilityProposals: {
+    type: DataTypes.INTEGER,
+    allowNull: false,
+    defaultValue: 0,
+  },
+  warnings: {
+    type: DataTypes.TEXT,
+    allowNull: true,
+    defaultValue: null,
   },
   notifiedMessageId: {
     type: DataTypes.INTEGER,

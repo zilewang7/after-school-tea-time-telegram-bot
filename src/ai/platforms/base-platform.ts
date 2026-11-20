@@ -35,8 +35,6 @@ export abstract class BasePlatform implements IAIPlatform {
         config: PlatformConfig
     ): Promise<AsyncIterable<StreamChunk>>;
 
-    abstract supportsModel(model: string): boolean;
-
     abstract getModelCapabilities(model: string): ModelCapabilities;
 
     /**
@@ -183,7 +181,6 @@ export abstract class BasePlatform implements IAIPlatform {
             supportsSystemPrompt: true,
             requiresMessageMerge: false,
             supportsThinking: false,
-            supportsGrounding: false,
             supportsMediaInput: false,
         };
     }

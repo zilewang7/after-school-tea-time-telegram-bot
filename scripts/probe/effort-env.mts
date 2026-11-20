@@ -13,7 +13,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parse as parseDotenv } from 'dotenv';
 import { createRedactor } from './effort-errors.mts';
-import { PROBE_PLATFORMS, type ProbePlatform } from './effort-types.mts';
+import { type ProbePlatform } from './effort-types.mts';
 
 const REPOSITORY_ROOT = fileURLToPath(new URL('../../', import.meta.url));
 
@@ -356,11 +356,19 @@ export const laneConfigurationsOf = (
 };
 
 /**
- * One string that changes when the traffic path changes (probe plan §2.1):
- * the catalog stores it, and a mismatch makes old probe data stale.
+ * Per-platform lane fingerprints (§3.2 / §3.6): changing one platform's key or
+ * base URL only invalidates probe entries for that platform.
  */
-export const laneSignatureOf = (lanes: Readonly<Record<ProbePlatform, ProbeLaneConfiguration>>): string =>
-    PROBE_PLATFORMS.map((platform) => lanes[platform].laneId).join('|');
+export const laneFingerprintsOf = (
+    lanes: Readonly<Record<ProbePlatform, ProbeLaneConfiguration>>
+): Readonly<Record<ProbePlatform, string>> => ({
+    gemini: lanes.gemini.laneId,
+    openai: lanes.openai.laneId,
+    anthropic: lanes.anthropic.laneId,
+    grok: lanes.grok.laneId,
+    deepseek: lanes.deepseek.laneId,
+    mimo: lanes.mimo.laneId,
+});
 
 export interface ProbeGate {
     readonly name: string;

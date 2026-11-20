@@ -71,6 +71,8 @@ export interface CapabilityCompileOptions {
     readonly refs?: readonly CatalogModelRef[];
     /** The models.dev aggregate body (the discovery flow already downloaded it) */
     readonly apiJson?: string | null;
+    /** Pre-parsed models.dev aggregate object so a watch run parses api.json once */
+    readonly apiJsonRoot?: Readonly<Record<string, unknown>> | null;
 }
 
 export interface CapabilityCompileResult {

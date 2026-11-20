@@ -13,9 +13,11 @@ import type {
 } from 'openai/resources/responses/responses';
 import { BasePlatform } from './base-platform.js';
 import { attemptRequestOptions } from './attempt-request-options.js';
+import type { ModelEffort } from '../../config/model-capabilities.js';
 import { toVisionImageMimeType } from '../supported-mime.js';
 import { imageModelChatError, isChatShapedRequest } from '../image-model-guard.js';
-import { isImageOutputModel } from '../model-kinds.js';
+import { capabilitiesOf, resolveRuntimeTraits } from '../model-traits.js';
+import { codePolicyDefaultEffortOf } from '../thinking-effort.js';
 import { runToolLoop, toResponsesFunctionTools, type TurnTools } from '../tools/index.js';
 import {
     buildToolRoundMessages,
@@ -31,6 +33,7 @@ import {
     isParamRejection,
     logEffortFallback,
     nextLowerEffort,
+    nextLowerEffortWithin,
     openAIReasoningEffortOf,
     type EffortWire,
 } from './thinking-effort-wire.js';
@@ -82,33 +85,8 @@ export class OpenAIPlatform extends BasePlatform {
         });
     }
 
-    supportsModel(model: string): boolean {
-        const lowerModel = model.toLowerCase();
-        // OpenAI handles models that don't match other platforms
-        return (
-            !lowerModel.startsWith('gemini') &&
-            !lowerModel.startsWith('deepseek') &&
-            !lowerModel.startsWith('grok-') &&
-            !lowerModel.startsWith('mimo') &&
-            !lowerModel.startsWith('claude')
-        );
-    }
-
     getModelCapabilities(model: string): ModelCapabilities {
-        const supportsThinking = this.isReasoningModel(model);
-        const isImageModel = this.isImageGenerationModel(model);
-
-        return {
-            supportsImageInput: true,
-            supportsImageOutput: isImageModel,
-            supportsSystemPrompt: true,
-            requiresMessageMerge: false,
-            supportsThinking,
-            supportsGrounding: false,
-            supportsMediaInput: false,
-            // Image models answer through their own image paths, never the tool loop
-            supportsClientTools: !isImageOutputModel(model),
-        };
+        return capabilitiesOf(resolveRuntimeTraits(model));
     }
 
     async sendMessage(
@@ -116,7 +94,9 @@ export class OpenAIPlatform extends BasePlatform {
         config: PlatformConfig
     ): Promise<AsyncIterable<StreamChunk>> {
         const { model, systemPrompt, timeout = 85000, maxRetries = 3, signal, tools } = config;
-        const capabilities = this.getModelCapabilities(model);
+        const traits = config.traits ?? resolveRuntimeTraits(model);
+        const capabilities = capabilitiesOf(traits);
+        const supportedEfforts: readonly string[] = traits.reasoning.value?.efforts ?? [];
 
         if (capabilities.supportsImageOutput) {
             // The factory refuses this first; a caller that reaches the platform directly is refused here
@@ -129,7 +109,13 @@ export class OpenAIPlatform extends BasePlatform {
 
         // Client tool loop
         if (tools && tools.definitions.length > 0) {
-            return this.sendMessageWithTools(messages, config, tools);
+            return this.sendMessageWithTools(
+                messages,
+                config,
+                tools,
+                capabilities.supportsThinking === true,
+                supportedEfforts
+            );
         }
 
         this.logMessageContents(messages);
@@ -141,9 +127,9 @@ export class OpenAIPlatform extends BasePlatform {
         // 'explicit' sends the requested effort and 'off' sends no reasoning.
         const wire = effortWireOf(config);
         const reasoning = wire === null
-            ? this.legacyReasoningOf(capabilities.supportsThinking ? 'xhigh' : null)
-            : capabilities.supportsThinking
-              ? this.reasoningFor(wire)
+            ? this.legacyReasoningOf(codePolicyDefaultEffortOf(model))
+            : capabilities.supportsThinking === true
+              ? this.reasoningFor(wire, supportedEfforts)
               : undefined;
 
         const request: ResponseCreateParamsStreaming = {
@@ -159,25 +145,42 @@ export class OpenAIPlatform extends BasePlatform {
                 (attemptSignal) => this.createResponseStream(request, attemptSignal),
                 { timeout, maxRetries, signal }
             )
-            : await this.openReasonedStream(request, signal, wire, timeout, maxRetries);
+            : await this.openReasonedStream(
+                request,
+                signal,
+                wire,
+                timeout,
+                maxRetries,
+                supportedEfforts,
+                config.usageSink
+            );
 
         return this.processStream(stream, config.usageSink);
     }
 
     /** The reasoning params the legacy path sends; undefined omits the field */
-    private legacyReasoningOf(effort: 'xhigh' | 'high' | null): ReasoningParams | undefined {
-        return effort === null ? undefined : { effort, summary: 'detailed' };
+    private legacyReasoningOf(effort: ModelEffort | null): ReasoningParams | undefined {
+        const mapped = effort === null ? null : openAIReasoningEffortOf(effort);
+        return mapped === null ? undefined : { effort: mapped, summary: 'detailed' };
     }
 
     /**
      * The reasoning params a request carrying a thinkingEffort sends. A
      * degraded wire (upstream already rejected the level once) sends the next
-     * lower effort, or the summary alone when the ladder is exhausted.
+     * lower effort in the model's own ladder (or global ladder when uncatalogued),
+     * or the summary alone when the ladder is exhausted.
      */
-    private reasoningFor(wire: EffortWire): ReasoningParams | undefined {
+    private reasoningFor(
+        wire: EffortWire,
+        supportedEfforts: readonly string[]
+    ): ReasoningParams | undefined {
         if (wire.mode === 'off') return undefined;
         if (wire.mode === 'default' || wire.value === null) return { summary: 'detailed' };
-        const effort = wire.degraded ? nextLowerEffort(wire.value) : wire.value;
+        const effort = wire.degraded
+            ? supportedEfforts.length > 0
+                ? nextLowerEffortWithin(wire.value, supportedEfforts)
+                : nextLowerEffort(wire.value)
+            : wire.value;
         const mapped = effort === null ? null : openAIReasoningEffortOf(effort);
         return mapped === null ? { summary: 'detailed' } : { effort: mapped, summary: 'detailed' };
     }
@@ -192,7 +195,9 @@ export class OpenAIPlatform extends BasePlatform {
         signal: AbortSignal | undefined,
         wire: EffortWire,
         timeout: number,
-        maxRetries: number
+        maxRetries: number,
+        supportedEfforts: readonly string[],
+        usageSink: UsageSink | undefined
     ): Promise<Stream<ResponseStreamEvent>> {
         try {
             return await this.sendWithRetry(
@@ -205,7 +210,7 @@ export class OpenAIPlatform extends BasePlatform {
                 throw error;
             }
             wire.degraded = true;
-            const fallbackReasoning = this.reasoningFor(wire);
+            const fallbackReasoning = this.reasoningFor(wire, supportedEfforts);
             logEffortFallback(
                 'openai',
                 request.model ?? 'unknown',
@@ -213,40 +218,16 @@ export class OpenAIPlatform extends BasePlatform {
                 fallbackReasoning?.effort ?? 'the vendor default',
                 error
             );
+            usageSink?.noteCapabilityEvent({
+                kind: 'effort_rejected',
+                effort,
+                fallback: fallbackReasoning?.effort ?? null,
+            });
             return await this.sendWithRetry(
                 (attemptSignal) => this.createResponseStream(withReasoning(request, fallbackReasoning), attemptSignal, false),
                 { timeout, maxRetries, signal }
             );
         }
-    }
-
-    private isReasoningModel(model: string): boolean {
-        const lowerModel = model.toLowerCase();
-
-        // Chat variants are handled as non-reasoning in this app.
-        if (lowerModel.includes('chat')) {
-            return false;
-        }
-
-        // OpenAI reasoning model IDs are the gpt-5*/gpt-6* and o-series families.
-        // The GPT-5.6 code names were renamed to gpt-6-*, so both prefixes stay
-        // here to keep the reasoning effort identical across the rename.
-        return (
-            lowerModel.startsWith('gpt-5') ||
-            lowerModel.startsWith('gpt-6') ||
-            lowerModel.startsWith('o1') ||
-            lowerModel.startsWith('o3') ||
-            lowerModel.startsWith('o4')
-        );
-    }
-
-    /**
-     * The ids that take the image path. Not isImageOutputModel, which also
-     * counts nano-banana ids: one routed here keeps the Responses path.
-     */
-    private isImageGenerationModel(model: string): boolean {
-        const lowerModel = model.toLowerCase();
-        return lowerModel.includes('image') || lowerModel.startsWith('dall-e');
     }
 
     private transformToResponsesInput(messages: UnifiedMessage[]): EasyInputMessage[] {
@@ -322,7 +303,9 @@ export class OpenAIPlatform extends BasePlatform {
     private async *sendMessageWithTools(
         messages: UnifiedMessage[],
         config: PlatformConfig,
-        tools: TurnTools
+        tools: TurnTools,
+        supportsThinking: boolean,
+        supportedEfforts: readonly string[]
     ): AsyncGenerator<StreamChunk, void, undefined> {
         const { model, systemPrompt, timeout = 85000, maxRetries = 3, signal, usageSink } = config;
 
@@ -334,7 +317,6 @@ export class OpenAIPlatform extends BasePlatform {
         let currentInput: EasyInputMessage[] = this.transformToResponsesInput(messages);
         // One downgrade state for the whole reply: every later round reads it
         const wire = effortWireOf(config);
-        const supportsThinking = this.getModelCapabilities(model).supportsThinking;
 
         yield* runToolLoop<ResponsesRound>({
             tools,
@@ -344,7 +326,8 @@ export class OpenAIPlatform extends BasePlatform {
                 // Without the field tool rounds keep the legacy shape (no
                 // reasoning); with it every round carries the summary at least,
                 // and an earlier round's downgrade shows in the reasoning below.
-                const reasoning = wire === null || !supportsThinking ? undefined : this.reasoningFor(wire);
+                const reasoning =
+                    wire === null || !supportsThinking ? undefined : this.reasoningFor(wire, supportedEfforts);
                 const request: ResponseCreateParamsStreaming = {
                     model,
                     input: final ? [...currentInput, FINAL_ROUND_NOTE] : currentInput,
@@ -358,9 +341,23 @@ export class OpenAIPlatform extends BasePlatform {
                         (attemptSignal) => this.createResponseStream(request, attemptSignal),
                         { timeout, maxRetries, signal }
                     )
-                    : await this.openReasonedStream(request, signal, wire, timeout, maxRetries);
+                    : await this.openReasonedStream(
+                        request,
+                        signal,
+                        wire,
+                        timeout,
+                        maxRetries,
+                        supportedEfforts,
+                        usageSink
+                    );
                 const round = await collectResponsesRound(stream, roundIndex);
                 usageSink?.addRound(normalizeResponsesUsage(round.completedResponse?.usage));
+                if (
+                    round.completedResponse?.status === 'incomplete' &&
+                    round.completedResponse.incomplete_details?.reason === 'max_output_tokens'
+                ) {
+                    usageSink?.noteCapabilityEvent({ kind: 'output_truncated', reason: 'max_output_tokens' });
+                }
                 return round;
             },
             appendRound: (round, executedCalls) => {
@@ -467,6 +464,12 @@ export class OpenAIPlatform extends BasePlatform {
             }
         }
         usageSink?.addRound(normalizeResponsesUsage(completedResponse?.usage));
+        if (
+            completedResponse?.status === 'incomplete' &&
+            completedResponse.incomplete_details?.reason === 'max_output_tokens'
+        ) {
+            usageSink?.noteCapabilityEvent({ kind: 'output_truncated', reason: 'max_output_tokens' });
+        }
 
         // Extract images from completed response output items
         if (completedResponse?.output) {

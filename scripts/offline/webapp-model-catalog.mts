@@ -15,12 +15,16 @@ import {
     defaultTextOf,
     effortLabelOf,
     effortsTextOf,
+    fieldProvenanceFactsOf,
+    laneFingerprintsTextOf,
     modalityListTextOf,
     modelCatalogBadgesOf,
     modelCatalogMetaTextOf,
     modelConfidenceLabelOf,
+    modelReconciliationFactsOf,
     modelSourceLabelOf,
     modelTraitsOriginLabelOf,
+    reconciliationSummaryTextOf,
     toggleTextOf,
 } from '../../webapp/src/pages/model-catalog/model-catalog-format.ts';
 
@@ -108,11 +112,43 @@ results.push(
         expect(byLabel.get('输入模态') === '文本、图片', 'input modalities');
         expect(byLabel.get('输出模态') === '文本', 'output modalities');
         expect(byLabel.get('可用 API') === 'generate-content', 'api list');
-        expect(byLabel.get('来源') === '人工（思考 probe）', 'row source plus the different reasoning source');
-        expect(byLabel.get('核对日期') === '2026-11-13', 'equal dates are printed once');
-        expect(byLabel.get('置信') === '高', 'equal confidence is printed once');
         expect(byLabel.get('运行时来源') === '目录数据', 'traits origin label');
         expect(byLabel.get('图片输入') === '支持', 'vision');
+        expect(!byLabel.has('来源'), 'row-level source column replaced by field-level provenance');
+
+        const legacyProv = fieldProvenanceFactsOf(entryFixture());
+        expect(
+            legacyProv.some((fact) => fact.field === 'reasoning' && fact.summary.includes('probe')),
+            'legacy fallback shows reasoning provenance'
+        );
+
+        const fieldEntry = entryFixture({
+            capabilities: {
+                ...entryFixture().capabilities,
+                laneFingerprints: { gemini: 'vertex-adc@global' },
+                provenance: {
+                    'reasoning.efforts': { source: 'probe', checkedOn: '2026-11-13', lane: 'vertex-adc@global' },
+                    'reasoning.defaultEffort': { source: 'official', checkedOn: '2026-11-14' },
+                    toolsMixing: { source: 'traffic', checkedOn: '2026-11-20', lane: 'vertex-adc@global' },
+                },
+            },
+        });
+        const fieldFacts = capabilityFactsOf(fieldEntry);
+        const fieldMap = new Map(fieldFacts.map((fact) => [fact.label, fact.value]));
+        expect(
+            (fieldMap.get('通道指纹') ?? '').includes('vertex-adc@global'),
+            `lane fingerprints rendered (got ${String(fieldMap.get('通道指纹'))})`
+        );
+        const provFacts = fieldProvenanceFactsOf(fieldEntry);
+        expect(
+            provFacts.some((fact) => fact.label === '思考档位' && fact.summary.includes('probe · 2026-11-13 · 通道 vertex-adc@global')),
+            'field-level provenance renders source, date and lane'
+        );
+        expect(
+            provFacts.some((fact) => fact.label === '工具混用' && fact.summary.includes('线上流量')),
+            'traffic source renders in field provenance'
+        );
+        expect(laneFingerprintsTextOf(undefined) === null, 'missing lane fingerprints returns null');
     })
 );
 
@@ -131,20 +167,76 @@ results.push(
         expect(meta.includes('目录 mabc123-13'), `meta names the version (got ${meta})`);
         expect(meta.includes('待确认能力提案 2 条'), 'meta names the pending count');
         expect(meta.includes('3 个模型'), 'meta names the row count');
+        const metaWithRefs = modelCatalogMetaTextOf({
+            catalogVersion: 'mabc123-13',
+            pendingProposals: 1,
+            models: [entryFixture(), entryFixture({ id: 'gemini-3.8-flash', enabled: false })],
+        });
+        expect(metaWithRefs.includes('菜单 1 + 参考行 1 个模型'), `meta distinguishes menu vs reference rows (got ${metaWithRefs})`);
     })
 );
 
 results.push(
-    await runCase('badges flag retired rows, image output and probe data', () => {
+    await runCase('badges and reconciliation formatters handle reference rows, traffic and diffs', () => {
         expect(modelCatalogBadgesOf(entryFixture()).includes('probe 实测'), 'probe reasoning is flagged');
-        expect(modelCatalogBadgesOf(entryFixture({ enabled: false })).includes('未启用'), 'disabled row is flagged');
+        expect(modelCatalogBadgesOf(entryFixture({ enabled: false })).includes('参考行'), 'disabled/reference row is flagged');
+        const trafficEntry = entryFixture({
+            capabilities: {
+                ...entryFixture().capabilities,
+                provenance: { 'reasoning.efforts': { source: 'traffic', checkedOn: '2026-11-20' } },
+            },
+        });
+        expect(modelCatalogBadgesOf(trafficEntry).includes('线上流量修正'), 'traffic provenance badge shown');
         const image = entryFixture({
             capabilities: { ...entryFixture().capabilities, kind: 'image', imageOutput: true },
         });
         expect(modelCatalogBadgesOf(image).includes('可出图'), 'image output is flagged');
         expect(modelTraitsOriginLabelOf('code') === '代码兜底', 'traits origin label');
         expect(modelSourceLabelOf('models-dev') === 'models.dev', 'source label');
+        expect(modelSourceLabelOf('traffic') === '线上流量', 'traffic source label');
         expect(modelConfidenceLabelOf('low') === '低', 'confidence label');
+
+        const cleanRec = reconciliationSummaryTextOf({ catalogVersion: 'm1', rows: [], totalDiffs: 0 });
+        expect(cleanRec.includes('0 项差异'), 'clean reconciliation summary');
+        const diffRecText = reconciliationSummaryTextOf({
+            catalogVersion: 'm2',
+            totalDiffs: 1,
+            rows: [
+                {
+                    model: 'gemini-4-hydrogen',
+                    platform: 'gemini',
+                    origin: 'catalog',
+                    inCatalog: true,
+                    enabled: true,
+                    diffCount: 1,
+                    entries: [
+                        {
+                            field: 'imageOutput',
+                            data: true,
+                            code: false,
+                            runtime: true,
+                            origin: 'data',
+                            differs: true,
+                        },
+                    ],
+                },
+            ],
+        });
+        expect(diffRecText.includes('1 项差异'), `diff reconciliation summary (got ${diffRecText})`);
+        const rowDiffs = modelReconciliationFactsOf({
+            model: 'gemini-4-hydrogen',
+            platform: 'gemini',
+            origin: 'catalog',
+            inCatalog: true,
+            enabled: true,
+            diffCount: 1,
+            entries: [
+                { field: 'imageOutput', data: true, code: false, runtime: true, origin: 'data', differs: true },
+                { field: 'imageInput', data: true, code: true, runtime: true, origin: 'data', differs: false },
+            ],
+        });
+        expect(rowDiffs.length === 1 && rowDiffs[0]?.label === '图片输出', 'only differing fields returned');
+        expect(rowDiffs[0]?.detail.includes('目录 是 · 代码 否 → 目录生效'), `reconciliation diff text (got ${String(rowDiffs[0]?.detail)})`);
     })
 );
 

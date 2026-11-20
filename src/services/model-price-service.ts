@@ -32,6 +32,9 @@ import {
 } from '../config/model-pricing.js';
 import type { ProposalDraft } from './price-catalog-types.js';
 
+/** Pending proposals are re-reminded after this interval without an owner decision */
+const REMINDER_INTERVAL_MS = 3 * 24 * 3600 * 1000;
+
 /** A proposal as the approval UI sees it (payload already parsed) */
 export interface PriceProposalView {
     readonly id: number;
@@ -46,6 +49,7 @@ export interface PriceProposalView {
     readonly status: string;
     readonly runId: number | null;
     readonly messageId: number | null;
+    readonly lastNotifiedAt: Date | null;
     readonly note: string | null;
 }
 
@@ -84,6 +88,8 @@ export interface PriceWatchStatus {
     readonly lastOutcome: string | null;
     readonly lastError: string | null;
     readonly pendingProposals: number;
+    readonly lastCapabilityProposals: number;
+    readonly lastWarnings: readonly string[];
 }
 
 export interface ApplyProposalsResult {
@@ -223,6 +229,7 @@ const proposalViewOf = (row: PriceChangeProposal): PriceProposalView => ({
     status: row.status,
     runId: row.runId,
     messageId: row.messageId,
+    lastNotifiedAt: row.lastNotifiedAt,
     note: row.note,
 });
 
@@ -358,6 +365,17 @@ export const loadPriceTableMeta = async (now: Date): Promise<PriceTableMeta> => 
     };
 };
 
+const parseStoredWarnings = (raw: string | null): readonly string[] => {
+    if (raw === null || raw.trim() === '') return [];
+    try {
+        const parsed: unknown = JSON.parse(raw);
+        if (!Array.isArray(parsed)) return [];
+        return parsed.filter((item): item is string => typeof item === 'string');
+    } catch {
+        return [];
+    }
+};
+
 /** The owner-facing status line (`/pricing status`, /api/status) */
 export const priceWatchStatus = async (): Promise<PriceWatchStatus> => {
     const [lastRun, pendingProposals] = await Promise.all([
@@ -370,19 +388,84 @@ export const priceWatchStatus = async (): Promise<PriceWatchStatus> => {
         lastOutcome: lastRun === null ? null : lastRun.outcome,
         lastError: lastRun?.error ?? null,
         pendingProposals,
+        lastCapabilityProposals: lastRun?.capabilityProposals ?? 0,
+        lastWarnings: parseStoredWarnings(lastRun?.warnings ?? null),
     };
 };
 
-/** Insert or refresh the proposals one watch run produced; returns the pending count */
+export interface RefreshPriceProposalsOptions {
+    /** Models whose sources compiled on this run; pending rows not re-drafted are withdrawn */
+    readonly evaluatedModels?: ReadonlySet<string>;
+    readonly now?: Date;
+}
+
+const sameOptionalDate = (first: Date | undefined, second: Date | undefined): boolean =>
+    (first?.getTime() ?? null) === (second?.getTime() ?? null);
+
+const sameSemanticPriceEntry = (first: PriceEntry, second: PriceEntry): boolean =>
+    first.model === second.model &&
+    first.tier === second.tier &&
+    first.inputPerM === second.inputPerM &&
+    first.cachedInputPerM === second.cachedInputPerM &&
+    first.cacheWritePerM === second.cacheWritePerM &&
+    first.outputPerM === second.outputPerM &&
+    first.imageOutputPerM === second.imageOutputPerM &&
+    first.perImageUsd === second.perImageUsd &&
+    sameOptionalDate(first.effectiveTo, second.effectiveTo) &&
+    first.source === second.source &&
+    first.sourceUrl === second.sourceUrl &&
+    first.confidence === second.confidence;
+
+const priceProposalUnchanged = (
+    existing: PriceChangeProposal,
+    payload: string,
+    baseline: string | null,
+    draft: ProposalDraft,
+    isCurrentWindow: boolean
+): boolean => {
+    if (existing.payload === payload && existing.baseline === baseline && existing.note === draft.note) {
+        return true;
+    }
+    if (!isCurrentWindow || existing.note !== draft.note) return false;
+    try {
+        const storedPayload = deserializeEntry(existing.payload);
+        if (!sameSemanticPriceEntry(storedPayload, draft.entry)) return false;
+        if (existing.baseline === null && draft.baseline === null) return true;
+        if (existing.baseline === null || draft.baseline === null) return false;
+        const storedBaseline = deserializeEntry(existing.baseline);
+        return (
+            sameSemanticPriceEntry(storedBaseline, draft.baseline) &&
+            storedBaseline.effectiveFrom.getTime() === draft.baseline.effectiveFrom.getTime()
+        );
+    } catch {
+        return false;
+    }
+};
+
+/** Whether a pending price proposal has never been sent or is due for a 3-day reminder */
+export const isPriceProposalDueForNotification = (
+    proposal: Pick<PriceProposalView, 'lastNotifiedAt'>,
+    now: Date = new Date()
+): boolean =>
+    proposal.lastNotifiedAt === null || now.getTime() - proposal.lastNotifiedAt.getTime() >= REMINDER_INTERVAL_MS;
+
+/**
+ * Insert or refresh the proposals one watch run produced; returns the pending count.
+ * Preserves `detectedAt` and `lastNotifiedAt` when the proposal content is unchanged,
+ * and marks pending rows for evaluated models as `withdrawn` when no longer drafted.
+ */
 export const createOrRefreshProposals = async (
     drafts: readonly ProposalDraft[],
-    runId: number | null
+    runId: number | null,
+    options: RefreshPriceProposalsOptions = {}
 ): Promise<number> => {
-    const detectedAt = new Date();
+    const now = options.now ?? new Date();
+    const matchedIds = new Set<number>();
     for (const draft of drafts) {
         const payload = serializeEntry(draft.entry);
         const baseline = draft.baseline === null ? null : serializeEntry(draft.baseline);
-        const existing = await PriceChangeProposal.findOne({
+        const isCurrentWindow = draft.entry.effectiveFrom.getTime() <= now.getTime();
+        let existing = await PriceChangeProposal.findOne({
             where: {
                 kind: draft.kind,
                 model: draft.model,
@@ -391,8 +474,20 @@ export const createOrRefreshProposals = async (
                 status: 'pending',
             },
         });
+        if (existing === null && isCurrentWindow) {
+            existing = await PriceChangeProposal.findOne({
+                where: {
+                    kind: draft.kind,
+                    model: draft.model,
+                    tier: draft.tier,
+                    effectiveFrom: { [Op.lte]: now },
+                    status: 'pending',
+                },
+                order: [['detectedAt', 'DESC']],
+            });
+        }
         if (existing === null) {
-            await PriceChangeProposal.create({
+            const created = await PriceChangeProposal.create({
                 kind: draft.kind,
                 model: draft.model,
                 tier: draft.tier,
@@ -400,13 +495,39 @@ export const createOrRefreshProposals = async (
                 effectiveTo: draft.entry.effectiveTo ?? null,
                 payload,
                 baseline,
-                detectedAt,
+                detectedAt: now,
                 status: 'pending',
                 runId,
+                lastNotifiedAt: null,
                 note: draft.note,
             });
+            matchedIds.add(created.id);
         } else {
-            await existing.update({ payload, baseline, detectedAt, runId, note: draft.note });
+            matchedIds.add(existing.id);
+            if (!priceProposalUnchanged(existing, payload, baseline, draft, isCurrentWindow)) {
+                await existing.update({
+                    effectiveFrom: draft.entry.effectiveFrom,
+                    effectiveTo: draft.entry.effectiveTo ?? null,
+                    payload,
+                    baseline,
+                    detectedAt: now,
+                    lastNotifiedAt: null,
+                    runId,
+                    note: draft.note,
+                });
+            }
+        }
+    }
+    if (options.evaluatedModels !== undefined && options.evaluatedModels.size > 0) {
+        const pendingForEvaluated = await PriceChangeProposal.findAll({
+            where: {
+                status: 'pending',
+                model: { [Op.in]: [...options.evaluatedModels] },
+            },
+        });
+        for (const row of pendingForEvaluated) {
+            if (matchedIds.has(row.id)) continue;
+            await row.update({ status: 'withdrawn', decidedAt: now });
         }
     }
     return countPendingProposals();
@@ -424,16 +545,32 @@ export const listPendingProposals = async (): Promise<readonly PriceProposalView
     return rows.map(proposalViewOf);
 };
 
+/** Pending proposals carried by one approval message, so bulk buttons only decide that message */
+export const listPendingProposalsByMessageId = async (messageId: number): Promise<readonly PriceProposalView[]> => {
+    const rows = await PriceChangeProposal.findAll({
+        where: { status: 'pending', messageId },
+        order: [
+            ['detectedAt', 'DESC'],
+            ['id', 'ASC'],
+        ],
+    });
+    return rows.map(proposalViewOf);
+};
+
 export const findProposal = async (id: number): Promise<PriceProposalView | null> => {
     const row = await PriceChangeProposal.findByPk(id);
     return row === null ? null : proposalViewOf(row);
 };
 
-/** Remember which private message carries each proposal (edit/resend) */
-export const attachProposalMessageIds = async (ids: readonly number[], messageId: number): Promise<void> => {
+/** Remember which private message carries each proposal and when it was sent */
+export const attachProposalMessageIds = async (
+    ids: readonly number[],
+    messageId: number,
+    notifiedAt: Date = new Date()
+): Promise<void> => {
     if (ids.length === 0) return;
     await PriceChangeProposal.update(
-        { messageId },
+        { messageId, lastNotifiedAt: notifiedAt },
         { where: { id: { [Op.in]: [...ids] }, status: 'pending' } }
     );
 };
@@ -569,7 +706,12 @@ export const rejectProposals = async (ids: readonly number[], actorId: number): 
 
 /** Record the start of a watch run; failures are the caller's to log */
 export const startWatchRun = async (): Promise<number> => {
-    const run = await PriceWatchRun.create({ startedAt: new Date(), outcome: 'skipped', proposals: 0 });
+    const run = await PriceWatchRun.create({
+        startedAt: new Date(),
+        outcome: 'skipped',
+        proposals: 0,
+        capabilityProposals: 0,
+    });
     return run.id;
 };
 
@@ -578,15 +720,20 @@ export const finishWatchRun = async (
     input: {
         readonly outcome: 'ok' | 'failed' | 'skipped';
         readonly proposals?: number;
+        readonly capabilityProposals?: number;
+        readonly warnings?: readonly string[];
         readonly notifiedMessageId?: number | null;
         readonly error?: string | null;
     }
 ): Promise<void> => {
+    const warnings = input.warnings !== undefined && input.warnings.length > 0 ? JSON.stringify(input.warnings) : null;
     await PriceWatchRun.update(
         {
             finishedAt: new Date(),
             outcome: input.outcome,
             proposals: input.proposals ?? 0,
+            capabilityProposals: input.capabilityProposals ?? 0,
+            warnings,
             notifiedMessageId: input.notifiedMessageId ?? null,
             error: input.error ?? null,
         },

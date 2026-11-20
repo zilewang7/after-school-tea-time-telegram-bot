@@ -12,6 +12,7 @@ import type {
 import { BasePlatform } from './base-platform.js';
 import { attemptRequestOptions } from './attempt-request-options.js';
 import { toVisionImageMimeType } from '../supported-mime.js';
+import { capabilitiesOf, resolveRuntimeTraits } from '../model-traits.js';
 import { NO_TURN_TOOLS, type TurnTools } from '../tools/index.js';
 import {
     buildCandidateRequests,
@@ -19,7 +20,6 @@ import {
     describeTools,
     functionToolNames,
     grokReasoningFor,
-    isGrokMultiAgentModel,
     isUnsupportedFeatureError,
     toGrokFunctionTools,
     type GrokResponseRequest,
@@ -40,6 +40,7 @@ import type {
     StreamChunk,
     ModelCapabilities,
 } from '../types.js';
+import type { UsageSink } from '../usage/usage-types.js';
 
 /** Round 1's stream and the candidate xAI accepted for it */
 interface FirstRound {
@@ -47,8 +48,8 @@ interface FirstRound {
     readonly request: GrokResponseRequest;
 }
 
-/** The efforts xAI's reasoning models take, ascending; the downgrade walks down these */
-const GROK_EFFORTS: readonly string[] = ['low', 'medium', 'high', 'xhigh'];
+/** Default efforts when catalog/seed omits an efforts ladder */
+const GROK_FALLBACK_EFFORTS: readonly string[] = ['low', 'medium', 'high', 'xhigh'];
 
 /** A 400 that blames the requested effort; every other status keeps its classification */
 const EFFORT_REJECTION = /reasoning|effort/i;
@@ -56,18 +57,24 @@ const EFFORT_REJECTION = /reasoning|effort/i;
 /**
  * The reasoning params of a request carrying a thinkingEffort. 'default' keeps
  * what the model sends today (multi-agent high, 4.7 nothing), 'explicit' sends
- * the requested effort and a degraded wire walks one step down.
+ * the requested effort and a degraded wire walks one step down in the model's
+ * own effort list (falling back to GROK_FALLBACK_EFFORTS when uncatalogued).
  */
-const grokReasoningForWire = (model: string, wire: EffortWire): GrokResponseRequest['reasoning'] => {
+const grokReasoningForWire = (
+    model: string,
+    wire: EffortWire,
+    supportedEfforts: readonly string[]
+): GrokResponseRequest['reasoning'] => {
     if (wire.mode === 'off') return undefined;
+    const ladder = supportedEfforts.length > 0 ? supportedEfforts : GROK_FALLBACK_EFFORTS;
     if (wire.mode === 'default') {
         const legacy = grokReasoningFor(model);
         if (legacy === undefined || !wire.degraded) return legacy;
-        const lower = nextLowerEffortWithin(legacy.effort, GROK_EFFORTS);
+        const lower = nextLowerEffortWithin(legacy.effort, ladder);
         return lower === null ? undefined : { effort: lower };
     }
     if (wire.value === null) return undefined;
-    const effort = wire.degraded ? nextLowerEffortWithin(wire.value, GROK_EFFORTS) : wire.value;
+    const effort = wire.degraded ? nextLowerEffortWithin(wire.value, ladder) : wire.value;
     return effort === null ? undefined : { effort };
 };
 
@@ -79,12 +86,15 @@ const grokReasoningForWire = (model: string, wire: EffortWire): GrokResponseRequ
  */
 const downgradedCandidates = (
     candidates: readonly GrokResponseRequest[],
-    thinking: EffortWire
+    thinking: EffortWire,
+    supportedEfforts: readonly string[]
 ): GrokResponseRequest[] =>
     candidates.map((entry) => ({
         ...entry,
         reasoning:
-            entry.reasoning === undefined ? undefined : grokReasoningForWire(entry.model ?? 'unknown', thinking),
+            entry.reasoning === undefined
+                ? undefined
+                : grokReasoningForWire(entry.model ?? 'unknown', thinking, supportedEfforts),
     }));
 
 const errorMessageOf = (error: unknown): string =>
@@ -102,29 +112,8 @@ export class GrokPlatform extends BasePlatform {
         });
     }
 
-    supportsModel(model: string): boolean {
-        return model.toLowerCase().startsWith('grok-');
-    }
-
     getModelCapabilities(model: string): ModelCapabilities {
-        const lowerModel = model.toLowerCase();
-        // grok-3 and grok-code don't support images
-        const noImageSupport =
-            lowerModel.startsWith('grok-3') || lowerModel.startsWith('grok-code');
-        const supportsThinking =
-            lowerModel.includes('reasoning') || lowerModel.includes('multi-agent');
-
-        return {
-            supportsImageInput: !noImageSupport,
-            supportsImageOutput: false,
-            supportsSystemPrompt: true,
-            requiresMessageMerge: false,
-            supportsThinking,
-            supportsGrounding: true,
-            supportsMediaInput: false,
-            // Multi-agent models reject client-side tools (400 without beta access)
-            supportsClientTools: !isGrokMultiAgentModel(model),
-        };
+        return capabilitiesOf(resolveRuntimeTraits(model));
     }
 
     /**
@@ -137,7 +126,10 @@ export class GrokPlatform extends BasePlatform {
         config: PlatformConfig
     ): Promise<AsyncIterable<StreamChunk>> {
         const { model, systemPrompt, timeout = 85000, maxRetries = 3, signal } = config;
-        const clientTools = this.clientToolsOf(config);
+        const traits = config.traits ?? resolveRuntimeTraits(model);
+        const capabilities = capabilitiesOf(traits);
+        const supportedEfforts: readonly string[] = traits.reasoning.value?.efforts ?? [];
+        const clientTools = this.clientToolsOf(config, capabilities);
         const functionTools = clientTools ? toGrokFunctionTools(clientTools.definitions) : [];
         const tools = buildSearchTools();
 
@@ -153,7 +145,10 @@ export class GrokPlatform extends BasePlatform {
             input: this.transformToResponsesInput(messages, systemPrompt),
             stream: true,
             tools,
-            reasoning: thinkingEffort === null ? grokReasoningFor(model) : grokReasoningForWire(model, thinkingEffort),
+            reasoning:
+                thinkingEffort === null
+                    ? grokReasoningFor(model)
+                    : grokReasoningForWire(model, thinkingEffort, supportedEfforts),
             max_turns: 10,
             parallel_tool_calls: true,
         };
@@ -162,7 +157,15 @@ export class GrokPlatform extends BasePlatform {
 
         const startedAt = Date.now();
         const firstRound = await this.sendWithRetry(
-            (attemptSignal) => this.openFirstRound(candidates, functionTools.length > 0, attemptSignal, thinkingEffort),
+            (attemptSignal) =>
+                this.openFirstRound(
+                    candidates,
+                    functionTools.length > 0,
+                    attemptSignal,
+                    thinkingEffort,
+                    supportedEfforts,
+                    config.usageSink
+                ),
             retryOptions
         );
 
@@ -173,7 +176,7 @@ export class GrokPlatform extends BasePlatform {
             tools: clientTools ?? NO_TURN_TOOLS,
             startedAt,
             signal,
-            supportsImageInput: this.getModelCapabilities(model).supportsImageInput,
+            supportsImageInput: capabilities.supportsImageInput,
             usageSink: config.usageSink,
             openContinuation: (continuation) =>
                 this.sendWithRetry(
@@ -183,9 +186,9 @@ export class GrokPlatform extends BasePlatform {
         });
     }
 
-    /** The turn's client tools; null without definitions or on a multi-agent model */
-    private clientToolsOf({ model, tools }: PlatformConfig): TurnTools | null {
-        if (!tools || tools.definitions.length === 0 || isGrokMultiAgentModel(model)) {
+    /** The turn's client tools; null without definitions or when traits forbid client tools */
+    private clientToolsOf({ tools }: PlatformConfig, capabilities: ModelCapabilities): TurnTools | null {
+        if (!tools || tools.definitions.length === 0 || capabilities.supportsClientTools !== true) {
             return null;
         }
         return tools;
@@ -300,11 +303,15 @@ export class GrokPlatform extends BasePlatform {
         candidates: readonly GrokResponseRequest[],
         wantsFunctionTools: boolean,
         attemptSignal: AbortSignal,
-        thinking: EffortWire | null
+        thinking: EffortWire | null,
+        supportedEfforts: readonly string[],
+        usageSink: UsageSink | undefined
     ): Promise<FirstRound> {
         let lastError: unknown;
         let attempts: readonly GrokResponseRequest[] =
-            thinking !== null && thinking.degraded ? downgradedCandidates(candidates, thinking) : candidates;
+            thinking !== null && thinking.degraded
+                ? downgradedCandidates(candidates, thinking, supportedEfforts)
+                : candidates;
 
         for (let index = 0; index < attempts.length; index += 1) {
             const candidate = attempts[index];
@@ -315,6 +322,7 @@ export class GrokPlatform extends BasePlatform {
                     console.error('[grok] Every candidate with client tools was rejected, answering without them:', {
                         message: errorMessageOf(lastError),
                     });
+                    usageSink?.noteCapabilityEvent({ kind: 'tools_rejected' });
                 }
                 return { stream, request: candidate };
             } catch (error) {
@@ -327,7 +335,7 @@ export class GrokPlatform extends BasePlatform {
                 ) {
                     thinking.degraded = true;
                     const model = candidate.model ?? 'unknown';
-                    const fallbackReasoning = grokReasoningForWire(model, thinking);
+                    const fallbackReasoning = grokReasoningForWire(model, thinking, supportedEfforts);
                     logEffortFallback(
                         'grok',
                         model,
@@ -335,7 +343,12 @@ export class GrokPlatform extends BasePlatform {
                         fallbackReasoning?.effort ?? 'the vendor default',
                         error
                     );
-                    attempts = downgradedCandidates(candidates, thinking);
+                    usageSink?.noteCapabilityEvent({
+                        kind: 'effort_rejected',
+                        effort: candidate.reasoning.effort,
+                        fallback: fallbackReasoning?.effort ?? null,
+                    });
+                    attempts = downgradedCandidates(candidates, thinking, supportedEfforts);
                     index -= 1;
                     continue;
                 }

@@ -17,10 +17,15 @@ import { parse as parseToml } from 'smol-toml';
 import { isJsonObject } from '../shared/json-object.js';
 import {
     coarseModalitiesOf,
+    deriveFieldProvenance,
+    fieldProvenanceOf,
     isModelEffort,
     MODEL_APIS,
+    MODEL_MODALITIES,
     normalizeEffortList,
     tokenLimitOf,
+    type CapabilityFieldProvenance,
+    type CapabilityProvenanceMap,
     type ModelApiName,
     type ModelCatalogApiCapabilities,
     type ModelCatalogApis,
@@ -28,10 +33,13 @@ import {
     type ModelCatalogKind,
     type ModelCatalogModalities,
     type ModelCatalogReasoning,
+    type ModelCapabilitySource,
     type ModelEffort,
+    type ModelModality,
+    type PlatformLaneFingerprints,
 } from '../config/model-capabilities.js';
-import type { ModelCatalogEntry } from '../config/model-catalog.js';
-import type { ModelCapabilitySource } from '../config/model-capabilities.js';
+import { platformOfModelId, type ModelCatalogEntry } from '../config/model-catalog.js';
+import type { ReplyMetricCapabilityEventRow } from '../db/queries/reply-metrics.js';
 import { catalogModelRefs } from './price-catalog-fetch.js';
 import type { CatalogDocuments, CatalogModelRef } from './price-catalog-types.js';
 import {
@@ -427,18 +435,11 @@ const clampReasoningPatch = (
     return reasoning;
 };
 
-const completeApis = (
-    apiNames: readonly ModelApiName[],
-    flags: { readonly reasoning?: boolean; readonly tools?: boolean; readonly structuredOutput?: boolean }
-): ModelCatalogApis | undefined => {
+const completeApis = (apiNames: readonly ModelApiName[]): ModelCatalogApis | undefined => {
     if (apiNames.length === 0) return undefined;
     const apis: MutableApis = {};
     for (const name of apiNames) {
-        apis[name] = {
-            ...(flags.reasoning === undefined ? {} : { reasoning: flags.reasoning }),
-            ...(flags.tools === undefined ? {} : { tools: flags.tools }),
-            ...(flags.structuredOutput === undefined ? {} : { structuredOutput: flags.structuredOutput }),
-        };
+        apis[name] = {};
     }
     return apis;
 };
@@ -459,11 +460,7 @@ const completePatch = (evidence: CapabilityEvidence, modelId: string, warnings: 
     }
     const kind = modalityKind;
     const reasoning = clampReasoningPatch(patch.reasoning, modelId, warnings);
-    const apis = completeApis(evidence.apiNames, {
-        ...(reasoning?.supported === undefined ? {} : { reasoning: reasoning.supported }),
-        ...(patch.tools === undefined ? {} : { tools: patch.tools }),
-        ...(evidence.structuredOutput === undefined ? {} : { structuredOutput: evidence.structuredOutput }),
-    });
+    const apis = completeApis(evidence.apiNames);
     return {
         ...patch,
         ...(kind === undefined ? {} : { kind }),
@@ -509,7 +506,7 @@ export const compileCapabilityObservations = (
 ): CapabilityCompileResult => {
     const warnings: string[] = [];
     const refs = options.refs ?? catalogModelRefs();
-    const apiRoot = apiJsonRootOf(options.apiJson ?? null, warnings);
+    const apiRoot = options.apiJsonRoot !== undefined ? options.apiJsonRoot : apiJsonRootOf(options.apiJson ?? null, warnings);
     const checkedOn = isoDay(options.now);
     const candidates: CapabilityCandidate[] = [];
     for (const ref of refs) {
@@ -573,25 +570,25 @@ const hasNonReasoningAssertion = (patch: CapabilityPatch): boolean =>
     patch.modalities !== undefined ||
     patch.apis !== undefined;
 
-const splitPatch = (
-    patch: CapabilityPatch
-): { readonly reasoning: CapabilityReasoningPatch | undefined; readonly rest: CapabilityPatch } => {
-    const { reasoning, ...rest } = patch;
-    return { reasoning, rest };
-};
-
 const overlayReasoning = (
     patch: CapabilityReasoningPatch | undefined,
     current: ModelCatalogReasoning | undefined,
-    checkedOn: string
+    checkedOn: string,
+    blockedReasoningFields?: ReadonlySet<string>
 ): ModelCatalogReasoning | undefined => {
     if (patch === undefined) return current;
-    const supported = patch.supported ?? current?.supported ?? true;
-    const toggle = prefer(patch.toggle, current?.toggle);
-    const assertedEfforts = prefer(patch.efforts, current?.efforts);
+    const supported = blockedReasoningFields?.has('reasoning.supported')
+        ? (current?.supported ?? true)
+        : (patch.supported ?? current?.supported ?? true);
+    const toggle = blockedReasoningFields?.has('reasoning.toggle')
+        ? current?.toggle
+        : prefer(patch.toggle, current?.toggle);
+    const assertedEfforts = blockedReasoningFields?.has('reasoning.efforts')
+        ? current?.efforts
+        : prefer(patch.efforts, current?.efforts);
     const efforts = supported ? assertedEfforts : [];
     const keptDefaultEffort = supported
-        ? patch.defaultEffort !== undefined
+        ? !blockedReasoningFields?.has('reasoning.defaultEffort') && patch.defaultEffort !== undefined
             ? patch.defaultEffort
             : (current?.defaultEffort ?? null)
         : null;
@@ -601,19 +598,25 @@ const overlayReasoning = (
             ? null
             : keptDefaultEffort;
     const defaultEnabled = supported
-        ? patch.defaultEnabled !== undefined
+        ? !blockedReasoningFields?.has('reasoning.defaultEnabled') && patch.defaultEnabled !== undefined
             ? patch.defaultEnabled
             : (current?.defaultEnabled ?? null)
         : null;
+    const allReasoningProtected = blockedReasoningFields !== undefined && blockedReasoningFields.size > 0;
+    const reasoningSource: ModelCapabilitySource =
+        allReasoningProtected && current?.source !== undefined ? current.source : CAPABILITY_UPSTREAM_SOURCE;
     return {
         supported,
         ...(toggle === undefined ? {} : { toggle }),
         ...(efforts === undefined ? {} : { efforts }),
         defaultEffort,
         defaultEnabled,
-        source: CAPABILITY_UPSTREAM_SOURCE,
-        checkedOn,
-        confidence: CAPABILITY_PROPOSAL_CONFIDENCE,
+        source: reasoningSource,
+        checkedOn: reasoningSource === CAPABILITY_UPSTREAM_SOURCE ? checkedOn : (current?.checkedOn ?? checkedOn),
+        confidence:
+            reasoningSource === CAPABILITY_UPSTREAM_SOURCE
+                ? CAPABILITY_PROPOSAL_CONFIDENCE
+                : (current?.confidence ?? CAPABILITY_PROPOSAL_CONFIDENCE),
     };
 };
 
@@ -639,17 +642,43 @@ const overlayApis = (patch: ModelCatalogApis | undefined, current: ModelCatalogA
     return Object.keys(apis).length === 0 ? undefined : apis;
 };
 
+const upstreamProvenanceEntry = (checkedOn: string): CapabilityFieldProvenance => ({
+    source: CAPABILITY_UPSTREAM_SOURCE,
+    checkedOn,
+    confidence: CAPABILITY_PROPOSAL_CONFIDENCE,
+});
+
+const assertedPatchFieldsOf = (patch: CapabilityPatch): readonly string[] => {
+    const fields: string[] = [];
+    if (patch.kind !== undefined) fields.push('kind');
+    if (patch.vision !== undefined) fields.push('vision');
+    if (patch.imageOutput !== undefined) fields.push('imageOutput');
+    if (patch.tools !== undefined) fields.push('tools');
+    if (patch.contextTokens !== undefined) fields.push('contextTokens');
+    if (patch.outputTokens !== undefined) fields.push('outputTokens');
+    if (patch.modalities?.input !== undefined) fields.push('modalities.input');
+    if (patch.modalities?.output !== undefined) fields.push('modalities.output');
+    if (patch.apis !== undefined) fields.push('apis');
+    if (patch.reasoning?.supported !== undefined) fields.push('reasoning.supported');
+    if (patch.reasoning?.toggle !== undefined) fields.push('reasoning.toggle');
+    if (patch.reasoning?.efforts !== undefined) fields.push('reasoning.efforts');
+    if (patch.reasoning?.defaultEffort !== undefined) fields.push('reasoning.defaultEffort');
+    if (patch.reasoning?.defaultEnabled !== undefined) fields.push('reasoning.defaultEnabled');
+    return fields;
+};
+
 const overlayCapabilities = (
     patch: CapabilityPatch,
     current: ModelCatalogCapabilities,
-    checkedOn: string
+    checkedOn: string,
+    blockedReasoningFields?: ReadonlySet<string>
 ): ModelCatalogCapabilities => {
-    const reasoning = overlayReasoning(patch.reasoning, current.reasoning, checkedOn);
+    const reasoning = overlayReasoning(patch.reasoning, current.reasoning, checkedOn, blockedReasoningFields);
     const modalities = overlayModalities(patch.modalities, current.modalities);
     const apis = overlayApis(patch.apis, current.apis);
     const efforts = reasoning?.efforts ?? current.reasoningEffort;
     const upstream = hasNonReasoningAssertion(patch);
-    const provenance: Pick<ModelCatalogCapabilities, 'source' | 'checkedOn' | 'confidence'> = upstream
+    const provenanceMeta: Pick<ModelCatalogCapabilities, 'source' | 'checkedOn' | 'confidence'> = upstream
         ? {
               source: CAPABILITY_UPSTREAM_SOURCE,
               checkedOn,
@@ -660,6 +689,14 @@ const overlayCapabilities = (
               ...(current.checkedOn === undefined ? {} : { checkedOn: current.checkedOn }),
               ...(current.confidence === undefined ? {} : { confidence: current.confidence }),
           };
+    const nextFieldProvenance: Record<string, CapabilityFieldProvenance | undefined> = {
+        ...(current.provenance ?? deriveFieldProvenance(current)),
+    };
+    const upstreamEntry = upstreamProvenanceEntry(checkedOn);
+    for (const field of assertedPatchFieldsOf(patch)) {
+        if (blockedReasoningFields?.has(field)) continue;
+        nextFieldProvenance[field] = upstreamEntry;
+    }
     return {
         schema: 1,
         kind: patch.kind ?? current.kind,
@@ -674,7 +711,9 @@ const overlayCapabilities = (
         ...(apis === undefined ? {} : { apis }),
         ...(current.toolsMixing === undefined ? {} : { toolsMixing: current.toolsMixing }),
         ...(current.nativeTools === undefined ? {} : { nativeTools: current.nativeTools }),
-        ...provenance,
+        ...provenanceMeta,
+        provenance: nextFieldProvenance,
+        ...(current.laneFingerprints === undefined ? {} : { laneFingerprints: current.laneFingerprints }),
     };
 };
 
@@ -711,6 +750,11 @@ const changesOf = (
         enabledText(next.reasoning?.defaultEnabled)
     );
     for (const name of MODEL_APIS) {
+        compare(
+            `apis.${name}`,
+            booleanText(current.apis === undefined ? undefined : current.apis[name] !== undefined),
+            booleanText(next.apis === undefined ? undefined : next.apis[name] !== undefined)
+        );
         for (const flag of API_FLAGS) {
             compare(
                 `apis.${name}.${flag}`,
@@ -719,6 +763,7 @@ const changesOf = (
             );
         }
     }
+    compare('toolsMixing', current.toolsMixing ?? '未知', next.toolsMixing ?? '未知');
     return changes;
 };
 
@@ -732,52 +777,150 @@ const noteOf = (changes: readonly CapabilityFieldChange[], checkedOn: string): s
 };
 
 /**
- * Locally maintained capabilities are never proposed over (design §2.1): the
- * owner's manual edits, probe measurements, and the official-doc facts stored in
- * the seed. The watcher only proposes fields whose current source is
- * models-dev/code.
+ * Locally maintained capabilities are never proposed over (design §2.1 / §3.2):
+ * manual edits, official docs, and active-lane probe/traffic measurements.
+ * A probe/traffic entry whose lane fingerprint no longer matches the live
+ * channel is unfrozen so upstream/re-probe resumes.
  */
-const isLocalOverride = (source: ModelCapabilitySource | undefined): boolean =>
-    source === 'manual' || source === 'probe' || source === 'official';
+const isLocalOverrideSource = (source: ModelCapabilitySource | undefined): boolean =>
+    source === 'manual' || source === 'probe' || source === 'official' || source === 'traffic';
+
+const isFieldBlockedFromUpstream = (
+    current: ModelCatalogCapabilities,
+    field: string,
+    liveLane: string | undefined,
+    staleWarnings: Set<string>,
+    modelId: string
+): { readonly blocked: boolean; readonly source?: ModelCapabilitySource } => {
+    const prov = fieldProvenanceOf(current, field);
+    if (prov === undefined || !isLocalOverrideSource(prov.source)) return { blocked: false };
+    if (
+        (prov.source === 'probe' || prov.source === 'traffic') &&
+        liveLane !== undefined &&
+        prov.lane !== undefined &&
+        prov.lane !== liveLane
+    ) {
+        staleWarnings.add(
+            `${modelId}：${field} 的 ${prov.source} 通道指纹已变更（${prov.lane} → ${liveLane}），已解除冻结并建议重新 probe`
+        );
+        return { blocked: false };
+    }
+    return { blocked: true, source: prov.source };
+};
 
 /** How a warning names the source that owns a locally maintained field */
 const localSourceLabelOf = (source: ModelCapabilitySource | undefined): string => {
     if (source === 'official') return '官方文档';
     if (source === 'manual') return '机主手改';
     if (source === 'probe') return 'probe';
+    if (source === 'traffic') return '线上流量';
     return '本地覆盖';
 };
+
+const filterReasoningPatchByField = (
+    reasoning: CapabilityReasoningPatch | undefined,
+    blockedFields: ReadonlySet<string>
+): CapabilityReasoningPatch | undefined => {
+    if (reasoning === undefined) return undefined;
+    const filtered: CapabilityReasoningPatch = {
+        ...(reasoning.supported === undefined || blockedFields.has('reasoning.supported')
+            ? {}
+            : { supported: reasoning.supported }),
+        ...(reasoning.toggle === undefined || blockedFields.has('reasoning.toggle')
+            ? {}
+            : { toggle: reasoning.toggle }),
+        ...(reasoning.efforts === undefined || blockedFields.has('reasoning.efforts')
+            ? {}
+            : { efforts: reasoning.efforts }),
+        ...(reasoning.defaultEffort === undefined || blockedFields.has('reasoning.defaultEffort')
+            ? {}
+            : { defaultEffort: reasoning.defaultEffort }),
+        ...(reasoning.defaultEnabled === undefined || blockedFields.has('reasoning.defaultEnabled')
+            ? {}
+            : { defaultEnabled: reasoning.defaultEnabled }),
+    };
+    return Object.keys(filtered).length === 0 ? undefined : filtered;
+};
+
+const filterPatchByProvenance = (
+    patch: CapabilityPatch,
+    blockedFields: ReadonlySet<string>
+): { readonly filled: CapabilityPatch; readonly blockedReasoningFields: ReadonlySet<string> } => {
+    const blockedReasoningFields = new Set(
+        [...blockedFields].filter((field) => field.startsWith('reasoning.'))
+    );
+    const reasoning = filterReasoningPatchByField(patch.reasoning, blockedReasoningFields);
+    const input =
+        patch.modalities?.input !== undefined && !blockedFields.has('modalities.input')
+            ? patch.modalities.input
+            : undefined;
+    const output =
+        patch.modalities?.output !== undefined && !blockedFields.has('modalities.output')
+            ? patch.modalities.output
+            : undefined;
+    const modalities =
+        input === undefined && output === undefined
+            ? undefined
+            : { ...(input === undefined ? {} : { input }), ...(output === undefined ? {} : { output }) };
+    const filled: CapabilityPatch = {
+        ...(patch.kind === undefined || blockedFields.has('kind') ? {} : { kind: patch.kind }),
+        ...(patch.vision === undefined || blockedFields.has('vision') ? {} : { vision: patch.vision }),
+        ...(patch.imageOutput === undefined || blockedFields.has('imageOutput')
+            ? {}
+            : { imageOutput: patch.imageOutput }),
+        ...(patch.tools === undefined || blockedFields.has('tools') ? {} : { tools: patch.tools }),
+        ...(patch.contextTokens === undefined || blockedFields.has('contextTokens')
+            ? {}
+            : { contextTokens: patch.contextTokens }),
+        ...(patch.outputTokens === undefined || blockedFields.has('outputTokens')
+            ? {}
+            : { outputTokens: patch.outputTokens }),
+        ...(modalities === undefined ? {} : { modalities }),
+        ...(patch.apis === undefined || blockedFields.has('apis') ? {} : { apis: patch.apis }),
+        ...(reasoning === undefined ? {} : { reasoning }),
+    };
+    return { filled, blockedReasoningFields };
+};
+
+const fieldNameForChange = (field: string): string =>
+    field.startsWith('apis.') ? 'apis' : field;
 
 const draftOf = (
     candidate: CapabilityCandidate,
     entry: ModelCatalogEntry,
     checkedOn: string,
-    warnings: string[]
+    warnings: string[],
+    liveLane: string | undefined
 ): CapabilityProposalDraft | null => {
     const current = entry.capabilities;
-    const { reasoning, rest } = splitPatch(candidate.patch);
-    const rowBlocked = isLocalOverride(current.source);
-    const reasoningBlocked = isLocalOverride(current.reasoning?.source);
     const unfilteredChanges = changesOf(overlayCapabilities(candidate.patch, current, checkedOn), current);
-    const blockedChanges = unfilteredChanges.filter((change) =>
-        change.field.startsWith('reasoning.') ? reasoningBlocked : rowBlocked
-    );
-    if (blockedChanges.some((change) => change.field.startsWith('reasoning.'))) {
+    const blockedFields = new Set<string>();
+    const staleWarnings = new Set<string>();
+    const blockedReasoningSources = new Set<ModelCapabilitySource>();
+    const blockedOtherSources = new Set<ModelCapabilitySource>();
+    for (const change of unfilteredChanges) {
+        const lookupField = fieldNameForChange(change.field);
+        const check = isFieldBlockedFromUpstream(current, lookupField, liveLane, staleWarnings, entry.id);
+        if (!check.blocked) continue;
+        blockedFields.add(lookupField);
+        if (check.source === undefined) continue;
+        if (lookupField.startsWith('reasoning.')) blockedReasoningSources.add(check.source);
+        else blockedOtherSources.add(check.source);
+    }
+    for (const staleWarning of staleWarnings) warnings.push(staleWarning);
+    for (const source of blockedReasoningSources) {
         warnings.push(
-            `${entry.id}：思考档位由 ${localSourceLabelOf(current.reasoning?.source)} 维护，不提案（上游与本地覆盖不一致）`
+            `${entry.id}：思考档位由 ${localSourceLabelOf(source)} 维护，不提案（上游与本地覆盖不一致）`
         );
     }
-    if (blockedChanges.some((change) => !change.field.startsWith('reasoning.'))) {
+    for (const source of blockedOtherSources) {
         warnings.push(
-            `${entry.id}：能力字段由 ${localSourceLabelOf(current.source)} 维护，不提案（上游与本地覆盖不一致）`
+            `${entry.id}：能力字段由 ${localSourceLabelOf(source)} 维护，不提案（上游与本地覆盖不一致）`
         );
     }
-    const filled: CapabilityPatch = {
-        ...(rowBlocked ? {} : rest),
-        ...(reasoningBlocked || reasoning === undefined ? {} : { reasoning }),
-    };
+    const { filled, blockedReasoningFields } = filterPatchByProvenance(candidate.patch, blockedFields);
     if (isEmptyPatch(filled)) return null;
-    const payload = overlayCapabilities(filled, current, checkedOn);
+    const payload = overlayCapabilities(filled, current, checkedOn, blockedReasoningFields);
     const changes = changesOf(payload, current);
     if (changes.length === 0) return null;
     return {
@@ -798,7 +941,7 @@ const draftOf = (
 export const diffCapabilityCandidates = (
     candidates: readonly CapabilityCandidate[],
     currentEntries: readonly ModelCatalogEntry[],
-    options: CapabilityDiffOptions
+    options: CapabilityDiffOptions & { readonly currentLaneFingerprints?: PlatformLaneFingerprints }
 ): CapabilityDiffResult => {
     const warnings: string[] = [];
     const maxProposals = options.maxProposals ?? MAX_CAPABILITY_PROPOSALS_PER_RUN;
@@ -814,7 +957,8 @@ export const diffCapabilityCandidates = (
         if (!entry.enabled) continue;
         // Auto-added rows wait one run so the owner sees their real data first
         if (justAdded.has(candidate.model)) continue;
-        const draft = draftOf(candidate, entry, checkedOn, warnings);
+        const liveLane = options.currentLaneFingerprints?.[platformOfModelId(entry.id)];
+        const draft = draftOf(candidate, entry, checkedOn, warnings, liveLane);
         if (draft !== null) drafts.push(draft);
     }
     if (drafts.length > maxProposals) {
@@ -822,4 +966,297 @@ export const diffCapabilityCandidates = (
         return { drafts: drafts.slice(0, maxProposals), warnings };
     }
     return { drafts, warnings };
+};
+
+// ---------------------------------------------------------------------------
+// Live-traffic contradiction scanner (design 2026-1114-0510 §3.3)
+// ---------------------------------------------------------------------------
+
+export interface TrafficContradictionOptions {
+    readonly now: Date;
+    readonly currentLaneFingerprints?: PlatformLaneFingerprints;
+}
+
+export interface TrafficContradictionResult {
+    readonly drafts: readonly CapabilityProposalDraft[];
+    readonly warnings: readonly string[];
+}
+
+const MODALITIES_SET: ReadonlySet<string> = new Set(MODEL_MODALITIES);
+const isKnownModality = (value: string): value is ModelModality => MODALITIES_SET.has(value);
+
+/**
+ * Scan recent `reply_metrics.capabilityEvents` against the catalog and emit
+ * `'traffic'` capability drafts when runtime rejections contradict catalog claims.
+ */
+export const compileTrafficContradictions = (
+    eventRows: readonly ReplyMetricCapabilityEventRow[],
+    currentEntries: readonly ModelCatalogEntry[],
+    options: TrafficContradictionOptions
+): TrafficContradictionResult => {
+    const warnings: string[] = [];
+    const drafts: CapabilityProposalDraft[] = [];
+    const checkedOn = isoDay(options.now);
+    const entries = new Map(currentEntries.map((entry) => [entry.id, entry]));
+    const byModel = new Map<string, ReplyMetricCapabilityEventRow[]>();
+    for (const row of eventRows) {
+        const list = byModel.get(row.model);
+        if (list === undefined) byModel.set(row.model, [row]);
+        else list.push(row);
+    }
+
+    for (const [model, rows] of byModel) {
+        const entry = entries.get(model);
+        if (entry === undefined) continue;
+        const current = entry.capabilities;
+        const platform = platformOfModelId(model);
+        const liveLane = options.currentLaneFingerprints?.[platform];
+
+        const effortRejections = new Map<ModelEffort, number>();
+        let budgetFallbackCount = 0;
+        let toolsRejectedCount = 0;
+        const mediaRejections = new Map<string, number>();
+        const downgradedMaxTokens: number[] = [];
+        let outputTruncatedCount = 0;
+
+        for (const row of rows) {
+            for (const event of row.capabilityEvents) {
+                if (event.kind === 'effort_rejected') {
+                    if (isModelEffort(event.effort)) {
+                        effortRejections.set(event.effort, (effortRejections.get(event.effort) ?? 0) + 1);
+                    }
+                } else if (event.kind === 'thinking_budget_fallback') {
+                    if (event.from !== undefined && event.from !== null && isModelEffort(event.from)) {
+                        effortRejections.set(event.from, (effortRejections.get(event.from) ?? 0) + 1);
+                    } else {
+                        budgetFallbackCount += 1;
+                    }
+                } else if (event.kind === 'tools_rejected') {
+                    toolsRejectedCount += 1;
+                } else if (event.kind === 'media_rejected') {
+                    const key = event.modality ?? 'non-image';
+                    mediaRejections.set(key, (mediaRejections.get(key) ?? 0) + 1);
+                } else if (event.kind === 'max_tokens_downgraded') {
+                    downgradedMaxTokens.push(event.to);
+                } else if (event.kind === 'output_truncated') {
+                    outputTruncatedCount += 1;
+                }
+            }
+        }
+
+        const trafficEntry: CapabilityFieldProvenance = {
+            source: 'traffic',
+            checkedOn,
+            confidence: 'high',
+            ...(liveLane === undefined ? {} : { lane: liveLane }),
+        };
+        const nextProvenance: Record<string, CapabilityFieldProvenance | undefined> = {
+            ...(current.provenance ?? deriveFieldProvenance(current)),
+        };
+        let next: ModelCatalogCapabilities = { ...current };
+        const summaryParts: string[] = [];
+
+        // 1. Effort rejections contradicting reasoning.efforts
+        const currentEfforts = current.reasoning?.efforts ?? [];
+        const contradictedEfforts = [...effortRejections.keys()].filter((effort) => currentEfforts.includes(effort));
+        if (contradictedEfforts.length > 0) {
+            const totalCount = contradictedEfforts.reduce(
+                (sum, effort) => sum + (effortRejections.get(effort) ?? 0),
+                0
+            );
+            warnings.push(
+                `${model}：线上流量 ${totalCount} 次拒绝档位 ${contradictedEfforts.join('、')}，与目录冲突`
+            );
+            if (fieldProvenanceOf(current, 'reasoning.efforts')?.source !== 'manual') {
+                const nextEfforts = currentEfforts.filter((effort) => !contradictedEfforts.includes(effort));
+                const keptDefault = current.reasoning?.defaultEffort ?? null;
+                const nextDefault =
+                    keptDefault !== null && !nextEfforts.includes(keptDefault) ? null : keptDefault;
+                const nextReasoning: ModelCatalogReasoning = {
+                    ...(current.reasoning ?? { supported: true }),
+                    efforts: nextEfforts,
+                    defaultEffort: nextDefault,
+                    source: 'traffic',
+                    checkedOn,
+                    confidence: 'high',
+                };
+                nextProvenance['reasoning.efforts'] = trafficEntry;
+                next = {
+                    ...next,
+                    schema: 1,
+                    reasoningEffort: nextEfforts,
+                    reasoning: nextReasoning,
+                };
+                summaryParts.push(`${totalCount} 次拒绝档位 ${contradictedEfforts.join('/')}`);
+            }
+        }
+
+        if (budgetFallbackCount > 0 && current.reasoning?.supported !== false) {
+            warnings.push(
+                `${model}：线上流量 ${budgetFallbackCount} 次触发 thinkingBudget 降级，请核对思考支持能力`
+            );
+        }
+
+        // 2. Tools rejected (Gemini toolsMixing vs tools)
+        if (toolsRejectedCount > 0) {
+            if (platform === 'gemini' && current.toolsMixing !== 'denied' && current.tools !== false) {
+                warnings.push(`${model}：线上流量 ${toolsRejectedCount} 次拒绝函数声明，与目录冲突（toolsMixing）`);
+                if (fieldProvenanceOf(current, 'toolsMixing')?.source !== 'manual') {
+                    nextProvenance['toolsMixing'] = trafficEntry;
+                    next = { ...next, schema: 1, toolsMixing: 'denied' };
+                    summaryParts.push(`${toolsRejectedCount} 次拒绝混合工具`);
+                }
+            } else if (current.tools) {
+                warnings.push(`${model}：线上流量 ${toolsRejectedCount} 次拒绝工具调用，与目录冲突（tools）`);
+                if (fieldProvenanceOf(current, 'tools')?.source !== 'manual') {
+                    nextProvenance['tools'] = trafficEntry;
+                    next = { ...next, schema: 1, tools: false };
+                    summaryParts.push(`${toolsRejectedCount} 次拒绝工具调用`);
+                }
+            }
+        }
+
+        // 3. Media rejected (modalities.input)
+        if (mediaRejections.size > 0) {
+            const totalMediaCount = [...mediaRejections.values()].reduce((sum, count) => sum + count, 0);
+            const currentInput = current.modalities?.input ?? [];
+            const nonImageModalities = currentInput.filter((item) => item !== 'text' && item !== 'image');
+            const toRemove = new Set<ModelModality>();
+            for (const key of mediaRejections.keys()) {
+                if (isKnownModality(key) && currentInput.includes(key)) {
+                    toRemove.add(key);
+                } else if (key === 'non-image' && nonImageModalities.length === 1 && nonImageModalities[0] !== undefined) {
+                    toRemove.add(nonImageModalities[0]);
+                }
+            }
+            warnings.push(
+                `${model}：线上流量 ${totalMediaCount} 次拒绝媒体输入（${[...mediaRejections.keys()].join('、')}）`
+            );
+            if (toRemove.size > 0 && fieldProvenanceOf(current, 'modalities.input')?.source !== 'manual') {
+                const nextInput = currentInput.filter((item) => !toRemove.has(item));
+                const nextModalities: ModelCatalogModalities = {
+                    ...current.modalities,
+                    input: nextInput,
+                };
+                nextProvenance['modalities.input'] = trafficEntry;
+                if (toRemove.has('image') && current.vision) {
+                    nextProvenance['vision'] = trafficEntry;
+                    next = { ...next, vision: false };
+                }
+                next = { ...next, schema: 1, modalities: nextModalities };
+                summaryParts.push(`${totalMediaCount} 次拒绝媒体 ${[...toRemove].join('/')}`);
+            }
+        }
+
+        // 4. max_tokens downgraded (outputTokens ceiling)
+        if (downgradedMaxTokens.length > 0) {
+            const minTo = Math.min(...downgradedMaxTokens);
+            if (current.outputTokens === null || current.outputTokens > minTo) {
+                warnings.push(
+                    `${model}：线上流量 ${downgradedMaxTokens.length} 次触发 max_tokens 降级至 ${minTo}，与目录上限冲突`
+                );
+                if (fieldProvenanceOf(current, 'outputTokens')?.source !== 'manual') {
+                    nextProvenance['outputTokens'] = trafficEntry;
+                    next = { ...next, schema: 1, outputTokens: minTo };
+                    summaryParts.push(`${downgradedMaxTokens.length} 次 max_tokens 降级至 ${minTo}`);
+                }
+            }
+        }
+
+        if (outputTruncatedCount > 0) {
+            warnings.push(`${model}：线上流量 ${outputTruncatedCount} 次因输出达上限被截断`);
+        }
+
+        if (summaryParts.length === 0) continue;
+        const payload: ModelCatalogCapabilities = {
+            ...next,
+            provenance: nextProvenance,
+            ...(liveLane === undefined
+                ? {}
+                : { laneFingerprints: { ...current.laneFingerprints, [platform]: liveLane } }),
+        };
+        const changes = changesOf(payload, current);
+        if (changes.length === 0) continue;
+        drafts.push({
+            model,
+            payload,
+            baseline: current,
+            changes,
+            note: `线上流量告警：${summaryParts.join('；')}（traffic，${checkedOn}）`,
+            checkedOn,
+        });
+    }
+
+    return { drafts, warnings };
+};
+
+/** Merge upstream and live-traffic capability drafts for the same model; traffic takes precedence on conflicts */
+export const mergeCapabilityDrafts = (
+    upstreamDrafts: readonly CapabilityProposalDraft[],
+    trafficDrafts: readonly CapabilityProposalDraft[]
+): readonly CapabilityProposalDraft[] => {
+    if (trafficDrafts.length === 0) return upstreamDrafts;
+    if (upstreamDrafts.length === 0) return trafficDrafts;
+    const byModel = new Map<string, CapabilityProposalDraft>();
+    for (const draft of upstreamDrafts) byModel.set(draft.model, draft);
+    for (const traffic of trafficDrafts) {
+        const upstream = byModel.get(traffic.model);
+        if (upstream === undefined) {
+            byModel.set(traffic.model, traffic);
+            continue;
+        }
+        const mergedProvenance: CapabilityProvenanceMap = {
+            ...upstream.payload.provenance,
+            ...traffic.payload.provenance,
+        };
+        const mergedReasoning =
+            traffic.payload.reasoning?.source === 'traffic'
+                ? traffic.payload.reasoning
+                : upstream.payload.reasoning;
+        const mergedModalities =
+            traffic.payload.provenance?.['modalities.input']?.source === 'traffic'
+                ? {
+                      ...upstream.payload.modalities,
+                      ...(traffic.payload.modalities?.input === undefined
+                          ? {}
+                          : { input: traffic.payload.modalities.input }),
+                  }
+                : upstream.payload.modalities;
+        const payload: ModelCatalogCapabilities = {
+            ...upstream.payload,
+            ...(traffic.payload.provenance?.['tools']?.source === 'traffic' ? { tools: traffic.payload.tools } : {}),
+            ...(traffic.payload.provenance?.['toolsMixing']?.source === 'traffic'
+                ? { toolsMixing: traffic.payload.toolsMixing }
+                : {}),
+            ...(traffic.payload.provenance?.['vision']?.source === 'traffic' ? { vision: traffic.payload.vision } : {}),
+            ...(traffic.payload.provenance?.['outputTokens']?.source === 'traffic'
+                ? { outputTokens: traffic.payload.outputTokens }
+                : {}),
+            ...(mergedModalities === undefined ? {} : { modalities: mergedModalities }),
+            ...(mergedReasoning === undefined ? {} : { reasoning: mergedReasoning }),
+            reasoningEffort: mergedReasoning?.efforts ?? upstream.payload.reasoningEffort,
+            provenance: mergedProvenance,
+            ...(traffic.payload.laneFingerprints === undefined
+                ? upstream.payload.laneFingerprints === undefined
+                    ? {}
+                    : { laneFingerprints: upstream.payload.laneFingerprints }
+                : {
+                      laneFingerprints: {
+                          ...upstream.payload.laneFingerprints,
+                          ...traffic.payload.laneFingerprints,
+                      },
+                  }),
+        };
+        const baseline = upstream.baseline ?? traffic.baseline;
+        const changes = baseline === null ? [...upstream.changes, ...traffic.changes] : changesOf(payload, baseline);
+        byModel.set(traffic.model, {
+            model: traffic.model,
+            payload,
+            baseline,
+            changes,
+            note: `${traffic.note}；${upstream.note}`,
+            checkedOn: traffic.checkedOn,
+        });
+    }
+    return [...byModel.values()];
 };

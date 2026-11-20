@@ -77,6 +77,7 @@ const { MimoPlatform } = await import('../../src/ai/platforms/mimo-platform.js')
 const { GrokPlatform } = await import('../../src/ai/platforms/grok-platform.js');
 const { setModelCatalog } = await import('../../src/config/model-catalog.js');
 const { emptyModelCapabilities } = await import('../../src/config/model-capabilities.js');
+const { createUsageSink } = await import('../../src/ai/usage/index.js');
 
 const json = (value: unknown): string => JSON.stringify(value);
 
@@ -359,6 +360,96 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
             expect(
                 lines.some((line) => line.includes('rejected thinking effort xhigh; retrying with high')),
                 `the downgrade is logged (got ${json(lines)})`
+            );
+        },
+    },
+    {
+        name: 'openai reasoning support and effort downgrade walk come from catalog traits',
+        body: async () => {
+            const platform = new OpenAIPlatform();
+            setModelCatalog([
+                {
+                    id: 'gpt-7-new',
+                    label: 'GPT 7 New',
+                    platform: 'openai',
+                    enabled: true,
+                    capabilities: {
+                        ...emptyModelCapabilities(),
+                        schema: 1,
+                        kind: 'chat',
+                        reasoning: { supported: true, efforts: ['low', 'medium', 'high'], defaultEffort: 'medium' },
+                    },
+                    source: 'official',
+                    checkedOn: '2026-11-20',
+                    confidence: 'high',
+                },
+                {
+                    id: 'gpt-6-luna',
+                    label: 'GPT 6 Luna',
+                    platform: 'openai',
+                    enabled: true,
+                    capabilities: {
+                        ...emptyModelCapabilities(),
+                        schema: 1,
+                        kind: 'chat',
+                        reasoning: { supported: false, efforts: [], defaultEffort: null },
+                    },
+                    source: 'official',
+                    checkedOn: '2026-11-20',
+                    confidence: 'high',
+                },
+            ]);
+            try {
+                // Unknown prefix gpt-7-new sends reasoning from catalog reasoning.supported
+                reset(reply('/openai/v1/responses', 200, responsesAnswer('gpt7 answer')));
+                await drainQuietly(() =>
+                    platform.sendMessage(userTurn('hi'), {
+                        model: 'gpt-7-new',
+                        timeout: 20000,
+                        thinkingEffort: { mode: 'explicit', value: 'high' },
+                    })
+                );
+                expect(
+                    effortOf(0) === 'high',
+                    `gpt-7-new sends reasoning from catalog even without prefix (got ${json(bodyOf(0).reasoning)})`
+                );
+
+                // Catalog supported=false overrides prefix heuristic on gpt-6-luna
+                reset(reply('/openai/v1/responses', 200, responsesAnswer('no reasoning')));
+                await drainQuietly(() =>
+                    platform.sendMessage(userTurn('hi'), {
+                        model: 'gpt-6-luna',
+                        timeout: 20000,
+                        thinkingEffort: { mode: 'explicit', value: 'high' },
+                    })
+                );
+                expect(
+                    !('reasoning' in bodyOf(0)),
+                    `gpt-6-luna with reasoning.supported=false omits reasoning (got ${json(bodyOf(0))})`
+                );
+            } finally {
+                setModelCatalog([]);
+            }
+
+            // gpt-6-astra's own seed ladder is [low, medium, high, xhigh, max]: rejecting low drops to vendor default (not minimal)
+            reset(
+                reply('/openai/v1/responses', 400, errorBody('Unsupported value: reasoning.effort low')),
+                reply('/openai/v1/responses', 200, responsesAnswer('astra default'))
+            );
+            const { result } = await captureConsole(async () =>
+                drain(() =>
+                    platform.sendMessage(userTurn('hi'), {
+                        model: 'gpt-6-astra',
+                        timeout: 20000,
+                        thinkingEffort: { mode: 'explicit', value: 'low' },
+                    })
+                )
+            );
+            expect(result.text === 'astra default', `astra fallback answers (got ${json(result)})`);
+            expect(recorded.length === 2, `astra tries low then vendor default (got ${recorded.length})`);
+            expect(
+                effortOf(0) === 'low' && asRecord(bodyOf(1).reasoning).effort === undefined && asRecord(bodyOf(1).reasoning).summary === 'detailed',
+                `astra does not step down to minimal (got ${json(bodyOf(1).reasoning)})`
             );
         },
     },
@@ -1073,6 +1164,96 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
         },
     },
     {
+        name: 'openai reasoning support and effort downgrade walk come from catalog traits',
+        body: async () => {
+            const platform = new OpenAIPlatform();
+            setModelCatalog([
+                {
+                    id: 'gpt-7-new',
+                    label: 'GPT 7 New',
+                    platform: 'openai',
+                    enabled: true,
+                    capabilities: {
+                        ...emptyModelCapabilities(),
+                        schema: 1,
+                        kind: 'chat',
+                        reasoning: { supported: true, efforts: ['low', 'medium', 'high'], defaultEffort: 'medium' },
+                    },
+                    source: 'official',
+                    checkedOn: '2026-11-20',
+                    confidence: 'high',
+                },
+                {
+                    id: 'gpt-6-luna',
+                    label: 'GPT 6 Luna',
+                    platform: 'openai',
+                    enabled: true,
+                    capabilities: {
+                        ...emptyModelCapabilities(),
+                        schema: 1,
+                        kind: 'chat',
+                        reasoning: { supported: false, efforts: [], defaultEffort: null },
+                    },
+                    source: 'official',
+                    checkedOn: '2026-11-20',
+                    confidence: 'high',
+                },
+            ]);
+            try {
+                // Unknown prefix gpt-7-new sends reasoning from catalog reasoning.supported
+                reset(reply('/openai/v1/responses', 200, responsesAnswer('gpt7 answer')));
+                await drainQuietly(() =>
+                    platform.sendMessage(userTurn('hi'), {
+                        model: 'gpt-7-new',
+                        timeout: 20000,
+                        thinkingEffort: { mode: 'explicit', value: 'high' },
+                    })
+                );
+                expect(
+                    effortOf(0) === 'high',
+                    `gpt-7-new sends reasoning from catalog even without prefix (got ${json(bodyOf(0).reasoning)})`
+                );
+
+                // Catalog supported=false overrides prefix heuristic on gpt-6-luna
+                reset(reply('/openai/v1/responses', 200, responsesAnswer('no reasoning')));
+                await drainQuietly(() =>
+                    platform.sendMessage(userTurn('hi'), {
+                        model: 'gpt-6-luna',
+                        timeout: 20000,
+                        thinkingEffort: { mode: 'explicit', value: 'high' },
+                    })
+                );
+                expect(
+                    !('reasoning' in bodyOf(0)),
+                    `gpt-6-luna with reasoning.supported=false omits reasoning (got ${json(bodyOf(0))})`
+                );
+            } finally {
+                setModelCatalog([]);
+            }
+
+            // gpt-6-astra's own seed ladder is [low, medium, high, xhigh, max]: rejecting low drops to vendor default (not minimal)
+            reset(
+                reply('/openai/v1/responses', 400, errorBody('Unsupported value: reasoning.effort low')),
+                reply('/openai/v1/responses', 200, responsesAnswer('astra default'))
+            );
+            const { result } = await captureConsole(async () =>
+                drain(() =>
+                    platform.sendMessage(userTurn('hi'), {
+                        model: 'gpt-6-astra',
+                        timeout: 20000,
+                        thinkingEffort: { mode: 'explicit', value: 'low' },
+                    })
+                )
+            );
+            expect(result.text === 'astra default', `astra fallback answers (got ${json(result)})`);
+            expect(recorded.length === 2, `astra tries low then vendor default (got ${recorded.length})`);
+            expect(
+                effortOf(0) === 'low' && asRecord(bodyOf(1).reasoning).effort === undefined && asRecord(bodyOf(1).reasoning).summary === 'detailed',
+                `astra does not step down to minimal (got ${json(bodyOf(1).reasoning)})`
+            );
+        },
+    },
+    {
         name: 'grok keeps the downgraded effort and every tool when a transient error follows the downgrade',
         body: async () => {
             reset(
@@ -1156,6 +1337,52 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
         },
     },
     {
+        name: 'grok effort downgrade walks the model catalog efforts ladder',
+        body: async () => {
+            const platform = new GrokPlatform();
+            setModelCatalog([
+                {
+                    id: 'grok-5-custom',
+                    label: 'Grok 5 Custom',
+                    platform: 'grok',
+                    enabled: true,
+                    capabilities: {
+                        ...emptyModelCapabilities(),
+                        schema: 1,
+                        kind: 'chat',
+                        tools: true,
+                        reasoning: { supported: true, efforts: ['low', 'high'], defaultEffort: null },
+                    },
+                    source: 'official',
+                    checkedOn: '2026-11-20',
+                    confidence: 'high',
+                },
+            ]);
+            try {
+                reset(
+                    reply('/grok/v1/responses', 400, errorBody('Unsupported reasoning effort: high')),
+                    reply('/grok/v1/responses', 200, responsesAnswer('custom ladder answer'))
+                );
+                const { result } = await captureConsole(async () =>
+                    drain(() =>
+                        platform.sendMessage(userTurn('hi'), {
+                            model: 'grok-5-custom',
+                            timeout: 20000,
+                            thinkingEffort: { mode: 'explicit', value: 'high' },
+                        })
+                    )
+                );
+                expect(result.text === 'custom ladder answer', `custom ladder retry answers (got ${json(result)})`);
+                expect(
+                    effortOf(0) === 'high' && effortOf(1) === 'low',
+                    `downgrade skips missing medium and steps from high to low (got ${json([effortOf(0), effortOf(1)])})`
+                );
+            } finally {
+                setModelCatalog([]);
+            }
+        },
+    },
+    {
         name: 'grok does not downgrade on 401, 404 or 429',
         body: async () => {
             const platform = new GrokPlatform();
@@ -1231,6 +1458,131 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
                     `${attempt.path} ${attempt.status}: no downgrade was logged (got ${json(lines)})`
                 );
             }
+        },
+    },
+    {
+        name: 'platforms emit capability events to usageSink on effort downgrade, max_tokens downgrade, and truncation',
+        body: async () => {
+            const openai = new OpenAIPlatform();
+            const openaiSink = createUsageSink();
+            const openaiTruncated =
+                'data: {"type":"response.output_text.delta","delta":"partial"}\n\n' +
+                `data: ${json({
+                    type: 'response.completed',
+                    response: {
+                        id: 'resp_inc',
+                        status: 'incomplete',
+                        incomplete_details: { reason: 'max_output_tokens' },
+                        usage: { input_tokens: 1, output_tokens: 2 },
+                    },
+                })}\n\n`;
+            reset(
+                reply('/openai/v1/responses', 400, errorBody('Unsupported value: reasoning.effort xhigh')),
+                reply('/openai/v1/responses', 200, openaiTruncated)
+            );
+            await captureConsole(async () =>
+                drain(() =>
+                    openai.sendMessage(userTurn('hi'), {
+                        model: 'gpt-6-luna',
+                        timeout: 20000,
+                        thinkingEffort: { mode: 'explicit', value: 'xhigh' },
+                        usageSink: openaiSink,
+                    })
+                )
+            );
+            expect(
+                json(openaiSink.totals().capabilityEvents ?? []) ===
+                    json([
+                        { kind: 'effort_rejected', effort: 'xhigh', fallback: 'high' },
+                        { kind: 'output_truncated', reason: 'max_output_tokens' },
+                    ]),
+                `openai emits effort_rejected and output_truncated (got ${json(openaiSink.totals().capabilityEvents)})`
+            );
+
+            const anthropic = new AnthropicPlatform();
+            const anthropicSink = createUsageSink();
+            const anthropicCut =
+                'event: message_start\ndata: {"type":"message_start","message":{"usage":{"input_tokens":1}}}\n\n' +
+                'event: content_block_start\ndata: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}\n\n' +
+                'event: content_block_delta\ndata: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"cut"}}\n\n' +
+                'event: content_block_stop\ndata: {"type":"content_block_stop","index":0}\n\n' +
+                'event: message_delta\ndata: {"type":"message_delta","delta":{"stop_reason":"max_tokens"},"usage":{"output_tokens":16000}}\n\n' +
+                'event: message_stop\ndata: {"type":"message_stop"}\n\n';
+            reset(
+                reply('/anthropic/v1/messages', 400, errorBody('max_tokens: 128000 > 64000')),
+                reply('/anthropic/v1/messages', 400, errorBody('Unsupported output_config.effort xhigh')),
+                reply('/anthropic/v1/messages', 200, anthropicCut)
+            );
+            await captureConsole(async () =>
+                drain(() =>
+                    anthropic.sendMessage(userTurn('hi'), {
+                        model: 'claude-sonnet-5-5',
+                        timeout: 20000,
+                        thinkingEffort: { mode: 'explicit', value: 'xhigh' },
+                        usageSink: anthropicSink,
+                    })
+                )
+            );
+            expect(
+                json(anthropicSink.totals().capabilityEvents ?? []) ===
+                    json([
+                        { kind: 'max_tokens_downgraded', from: 128_000, to: 16_000 },
+                        { kind: 'effort_rejected', effort: 'xhigh', fallback: null },
+                        { kind: 'output_truncated', reason: 'max_tokens', limit: 16_000 },
+                    ]),
+                `anthropic emits max_tokens_downgraded, effort_rejected, output_truncated (got ${json(anthropicSink.totals().capabilityEvents)})`
+            );
+
+            const grok = new GrokPlatform();
+            const grokSink = createUsageSink();
+            reset(
+                reply('/grok/v1/responses', 400, errorBody('Unsupported reasoning effort: xhigh')),
+                reply('/grok/v1/responses', 200, responsesAnswer('grok ok'))
+            );
+            await captureConsole(async () =>
+                drain(() =>
+                    grok.sendMessage(userTurn('hi'), {
+                        model: 'grok-4.7',
+                        timeout: 20000,
+                        thinkingEffort: { mode: 'explicit', value: 'xhigh' },
+                        usageSink: grokSink,
+                    })
+                )
+            );
+            expect(
+                json(grokSink.totals().capabilityEvents ?? []) ===
+                    json([{ kind: 'effort_rejected', effort: 'xhigh', fallback: 'high' }]),
+                `grok emits effort_rejected (got ${json(grokSink.totals().capabilityEvents)})`
+            );
+
+            const deepseek = new DeepSeekPlatform();
+            const deepseekSink = createUsageSink();
+            const deepseekCut =
+                'data: {"id":"1","choices":[{"index":0,"delta":{"content":"cut"}}]}\n\n' +
+                'data: {"id":"1","choices":[{"index":0,"delta":{},"finish_reason":"length"}],"usage":{"prompt_tokens":1,"completion_tokens":2}}\n\n' +
+                'data: [DONE]\n\n';
+            reset(
+                reply('/deepseek/v1/chat/completions', 400, errorBody('Unsupported reasoning_effort: high')),
+                reply('/deepseek/v1/chat/completions', 200, deepseekCut)
+            );
+            await captureConsole(async () =>
+                drain(() =>
+                    deepseek.sendMessage(userTurn('hi'), {
+                        model: 'deepseek-flash',
+                        timeout: 20000,
+                        thinkingEffort: { mode: 'explicit', value: 'high' },
+                        usageSink: deepseekSink,
+                    })
+                )
+            );
+            expect(
+                json(deepseekSink.totals().capabilityEvents ?? []) ===
+                    json([
+                        { kind: 'effort_rejected', effort: 'high', fallback: null },
+                        { kind: 'output_truncated', reason: 'length' },
+                    ]),
+                `deepseek emits effort_rejected and output_truncated (got ${json(deepseekSink.totals().capabilityEvents)})`
+            );
         },
     },
 ];

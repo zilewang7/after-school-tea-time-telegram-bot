@@ -24,12 +24,18 @@ type CapabilityCompileResult = import('../../src/services/capability-catalog-typ
 type ModelCatalogCapabilities = import('../../src/config/model-capabilities.js').ModelCatalogCapabilities;
 type ModelCatalogEntry = import('../../src/config/model-catalog.js').ModelCatalogEntry;
 
-const { normalizeModelCapabilities } = await import('../../src/config/model-capabilities.js');
+const {
+    deriveFieldProvenance,
+    fieldProvenanceOf,
+    normalizeModelCapabilities,
+} = await import('../../src/config/model-capabilities.js');
 const { capabilitySeedIds, capabilitySeedOf } = await import('../../src/config/model-capability-seed.js');
 const { seedModelCatalogEntries } = await import('../../src/config/model-catalog.js');
-const { compileCapabilityObservations, diffCapabilityCandidates } = await import(
-    '../../src/services/capability-catalog-compile.js'
-);
+const {
+    compileCapabilityObservations,
+    compileTrafficContradictions,
+    diffCapabilityCandidates,
+} = await import('../../src/services/capability-catalog-compile.js');
 const {
     CATALOG_MODEL_REFS,
     EPHONE_PRICING_URL,
@@ -378,9 +384,8 @@ results.push(
         expect(candidate.patch.kind === 'chat' && candidate.patch.vision === true, 'kind/vision derive from modalities');
         expect(candidate.origins.includes('provider-toml') && candidate.origins.includes('lab-toml'), 'both documents contributed');
         expect(
-            JSON.stringify(candidate.patch.apis?.['generate-content']) ===
-                '{"reasoning":true,"tools":true,"structuredOutput":true}',
-            'the per-API subset follows the model flags'
+            JSON.stringify(candidate.patch.apis?.['generate-content']) === '{}',
+            `the per-API slot keeps API kind presence without copied booleans (got ${JSON.stringify(candidate.patch.apis)})`
         );
     })
 );
@@ -400,7 +405,11 @@ results.push(
             'image thinking levels are read'
         );
         expect(candidate.patch.reasoning?.defaultEffort === 'medium', 'the image vendor default is medium');
-        expect(candidate.patch.apis?.['generate-content']?.structuredOutput === false, 'per-API structured output is false');
+        expect(
+            Object.hasOwn(candidate.patch.apis ?? {}, 'generate-content') &&
+                Object.keys(candidate.patch.apis?.['generate-content'] ?? {}).length === 0,
+            'per-API kind is recorded without copied booleans'
+        );
         expect(
             Object.hasOwn(candidate.patch, 'toolsMixing') === false && Object.hasOwn(candidate.patch, 'nativeTools') === false,
             'local-only fields are never observed'
@@ -555,7 +564,7 @@ results.push(
     await runCase('the lab URL is derived from the provider TOML base_model', async () => {
         expect(
             modelsDevLabTomlUrl('google/gemini-4-hydrogen') ===
-                'https://raw.githubusercontent.com/sst/models.dev/dev/models/google/gemini-4-hydrogen.toml',
+                'https://raw.githubusercontent.com/anomalyco/models.dev/dev/models/google/gemini-4-hydrogen.toml',
             `the canonical lab URL (got ${modelsDevLabTomlUrl('google/gemini-4-hydrogen')})`
         );
         expect(
@@ -831,6 +840,155 @@ results.push(
             ),
             `the official inconsistency is logged with its source (got ${JSON.stringify(officialDiff.warnings)})`
         );
+    })
+);
+
+results.push(
+    await runCase('fetchPriceCatalogs fetches api.json concurrently when requested and compile accepts pre-parsed root', async () => {
+        const bodies = new Map(catalogBodies());
+        const apiUrl = 'https://models.dev/api.json';
+        bodies.set(apiUrl, fixture('api.json'));
+        const fetched = await fetchPriceCatalogs(stubFetcher({ bodies }), undefined, { includeApiJson: true });
+        expect(typeof fetched.documents.apiJson === 'string' && fetched.documents.apiJson.length > 0, 'api.json is fetched concurrently');
+        const parsedRoot: unknown = JSON.parse(fetched.documents.apiJson ?? '{}');
+        const rootObj =
+            typeof parsedRoot === 'object' && parsedRoot !== null && !Array.isArray(parsedRoot)
+                ? Object.fromEntries(Object.entries(parsedRoot))
+                : null;
+        const compiled = compileCapabilityObservations(fetched.documents, { now: NOW, apiJsonRoot: rootObj });
+        expect(compiled.candidates.length > 0, 'pre-parsed apiJsonRoot compiles candidates without re-parsing');
+    })
+);
+
+results.push(
+    await runCase('nano-banana seed resolves video conflict and field-level provenance unfreezes on lane drift', async () => {
+        const banana = requireSeedCapabilities('gemini-nano-banana-2.1');
+        expect(
+            JSON.stringify(banana.modalities?.input) === '["text","image","pdf"]',
+            `nano-banana video modality conflict resolved (got ${JSON.stringify(banana.modalities?.input)})`
+        );
+
+        const normalized = normalizeModelCapabilities({
+            schema: 1,
+            kind: 'chat',
+            vision: true,
+            tools: true,
+            contextTokens: 1_048_576,
+            outputTokens: 65_536,
+            reasoning: {
+                supported: true,
+                efforts: ['low', 'medium', 'high', 'xhigh'],
+                defaultEffort: 'high',
+                source: 'probe',
+                checkedOn: '2026-11-13',
+            },
+            provenance: {
+                'reasoning.efforts': { source: 'probe', checkedOn: '2026-11-13', lane: 'vertex@old' },
+                'reasoning.defaultEffort': { source: 'code', checkedOn: '2026-11-13' },
+            },
+            laneFingerprints: { gemini: 'vertex@old', unknownPlatform: 'ignored' },
+        });
+        expect(normalized.capabilities.provenance?.['reasoning.efforts']?.lane === 'vertex@old', 'lane stored in field provenance');
+        expect(normalized.capabilities.laneFingerprints?.gemini === 'vertex@old', 'valid platform fingerprint preserved');
+        expect(normalized.warnings.some((warning) => warning.includes('unknownPlatform')), 'invalid platform warns');
+
+        // Legacy probe row migration: reasoning.defaultEffort becomes `code`
+        const legacyProbe = {
+            ...requireSeedCapabilities('gemini-4-hydrogen'),
+            reasoning: { ...requireSeedCapabilities('gemini-4-hydrogen').reasoning!, source: 'probe' as const },
+        };
+        const derived = deriveFieldProvenance(legacyProbe);
+        expect(derived['reasoning.efforts']?.source === 'probe', 'probe efforts inherit probe');
+        expect(derived['reasoning.defaultEffort']?.source === 'code', 'probe defaultEffort migrates as code');
+
+        // With field-level provenance: matching lane blocks reasoning.efforts while unblocked defaultEffort updates;
+        // mismatched live lane unfreezes reasoning.efforts with a warning!
+        const entry = entryOf('gemini-4-hydrogen', { capabilities: normalized.capabilities });
+        expect(fieldProvenanceOf(normalized.capabilities, 'reasoning.defaultEffort')?.source === 'code', 'field lookup checks provenance map');
+        const sameLaneDiff = diffCapabilityCandidates(
+            [patchOf('gemini-4-hydrogen', { reasoning: { efforts: ['low'], defaultEffort: 'medium' } })],
+            [entry],
+            { now: NOW, currentLaneFingerprints: { gemini: 'vertex@old' } }
+        );
+        expect(sameLaneDiff.drafts.length === 1, 'unblocked field still drafts');
+        expect(
+            JSON.stringify(sameLaneDiff.drafts[0]?.payload.reasoning?.efforts) === '["low","medium","high","xhigh"]',
+            'matching-lane probe efforts stay protected'
+        );
+        expect(sameLaneDiff.drafts[0]?.payload.reasoning?.defaultEffort === 'medium', 'code-sourced defaultEffort updates');
+
+        const changedLaneDiff = diffCapabilityCandidates(
+            [patchOf('gemini-4-hydrogen', { reasoning: { efforts: ['low', 'medium'] } })],
+            [entry],
+            { now: NOW, currentLaneFingerprints: { gemini: 'vertex@new' } }
+        );
+        expect(
+            JSON.stringify(changedLaneDiff.drafts[0]?.payload.reasoning?.efforts) === '["low","medium"]',
+            'lane change unfreezes probe efforts'
+        );
+        expect(
+            changedLaneDiff.warnings.some((warning) => warning.includes('通道指纹已变更')),
+            `lane drift emits warning (got ${JSON.stringify(changedLaneDiff.warnings)})`
+        );
+    })
+);
+
+results.push(
+    await runCase('compileTrafficContradictions emits traffic drafts and protects manual fields', async () => {
+        const hydrogen = entryOf('gemini-4-hydrogen');
+        const claude = entryOf('claude-sonnet-5-5', {
+            capabilities: {
+                ...requireSeedCapabilities('claude-sonnet-5-5'),
+                provenance: { outputTokens: { source: 'manual', checkedOn: '2026-11-13' } },
+            },
+        });
+        const contradiction = compileTrafficContradictions(
+            [
+                {
+                    id: 1,
+                    model: 'gemini-4-hydrogen',
+                    platform: 'gemini',
+                    route: null,
+                    catalogVersion: 'v1',
+                    startedAt: NOW,
+                    thinkingEffortSent: 'xhigh',
+                    capabilityEvents: [
+                        { kind: 'effort_rejected', effort: 'xhigh', fallback: 'high' },
+                        { kind: 'tools_rejected' },
+                        { kind: 'media_rejected', modality: 'video' },
+                        { kind: 'output_truncated', limit: 65_536 },
+                    ],
+                },
+                {
+                    id: 2,
+                    model: 'claude-sonnet-5-5',
+                    platform: 'anthropic',
+                    route: null,
+                    catalogVersion: 'v1',
+                    startedAt: NOW,
+                    thinkingEffortSent: null,
+                    capabilityEvents: [{ kind: 'max_tokens_downgraded', from: 128_000, to: 16_000 }],
+                },
+            ],
+            [hydrogen, claude],
+            { now: NOW, currentLaneFingerprints: { gemini: 'vertex@live' } }
+        );
+        expect(contradiction.drafts.length === 1, `only non-manual contradiction drafts (got ${contradiction.drafts.length})`);
+        const draft = contradiction.drafts[0];
+        expect(draft?.model === 'gemini-4-hydrogen', 'gemini draft built');
+        expect(
+            JSON.stringify(draft?.payload.reasoning?.efforts) === '["low","medium","high"]',
+            `rejected effort removed (got ${JSON.stringify(draft?.payload.reasoning?.efforts)})`
+        );
+        expect(draft?.payload.toolsMixing === 'denied', 'gemini tools rejection proposes toolsMixing=denied');
+        expect(
+            draft?.payload.modalities?.input?.includes('video') === false,
+            'rejected media modality removed from input'
+        );
+        expect(draft?.payload.provenance?.['reasoning.efforts']?.source === 'traffic', 'traffic provenance recorded');
+        expect(draft?.payload.laneFingerprints?.gemini === 'vertex@live', 'live lane captured');
+        expect(contradiction.warnings.some((warning) => warning.includes('被截断')), 'truncation produces a warning');
+        expect(contradiction.warnings.some((warning) => warning.includes('max_tokens 降级')), 'manual outputTokens still warns');
     })
 );
 

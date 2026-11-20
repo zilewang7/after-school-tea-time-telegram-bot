@@ -12,6 +12,7 @@ import Anthropic from '@anthropic-ai/sdk';
 import { BasePlatform } from './base-platform.js';
 import { attemptRequestOptions } from './attempt-request-options.js';
 import { transformToAnthropic } from '../message-transformer.js';
+import { capabilitiesOf, resolveRuntimeTraits } from '../model-traits.js';
 import { runToolLoop, toAnthropicTools, type TurnTools } from '../tools/index.js';
 import {
     collectAnthropicRound,
@@ -43,7 +44,12 @@ const EFFORT_REJECTION = /effort|output[_\s]?config/i;
  * sent an explicit effort that was not dropped yet; true when the round should
  * be sent again (the adaptive thinking stays).
  */
-const dropEffortAfter = (thinking: EffortWire | null, model: string, error: unknown): boolean => {
+const dropEffortAfter = (
+    thinking: EffortWire | null,
+    model: string,
+    error: unknown,
+    usageSink?: UsageSink
+): boolean => {
     if (
         thinking === null ||
         thinking.degraded ||
@@ -54,6 +60,11 @@ const dropEffortAfter = (thinking: EffortWire | null, model: string, error: unkn
     }
     thinking.degraded = true;
     logEffortFallback('anthropic', model, thinking.value ?? 'explicit', 'adaptive thinking', error);
+    usageSink?.noteCapabilityEvent({
+        kind: 'effort_rejected',
+        effort: thinking.value ?? 'explicit',
+        fallback: null,
+    });
     return true;
 };
 
@@ -90,21 +101,8 @@ export class AnthropicPlatform extends BasePlatform {
         console.log(`[anthropic] Using Anthropic API at ${baseURL ?? 'default'}`);
     }
 
-    supportsModel(model: string): boolean {
-        return model.toLowerCase().startsWith('claude');
-    }
-
-    getModelCapabilities(_model: string): ModelCapabilities {
-        return {
-            supportsImageInput: true,
-            supportsImageOutput: false,
-            supportsSystemPrompt: true,
-            requiresMessageMerge: false,
-            supportsThinking: true,
-            supportsGrounding: true,
-            supportsMediaInput: false,
-            supportsClientTools: true,
-        };
+    getModelCapabilities(model: string): ModelCapabilities {
+        return capabilitiesOf(resolveRuntimeTraits(model));
     }
 
     async sendMessage(
@@ -112,6 +110,7 @@ export class AnthropicPlatform extends BasePlatform {
         config: PlatformConfig
     ): Promise<AsyncIterable<StreamChunk>> {
         const { model, systemPrompt, timeout = 85000, maxRetries = 3, signal, tools, usageSink } = config;
+        const traits = config.traits ?? resolveRuntimeTraits(model);
 
         this.logMessageContents(messages);
         console.log(`[anthropic] Using model: ${model}`);
@@ -125,7 +124,7 @@ export class AnthropicPlatform extends BasePlatform {
             signal,
             usageSink,
             thinking: effortWireOf(config),
-            output: maxTokensWireOf(model),
+            output: maxTokensWireOf(model, traits),
         };
 
         if (tools && tools.definitions.length > 0) {
@@ -185,6 +184,13 @@ export class AnthropicPlatform extends BasePlatform {
         const round = await collectAnthropicRound(stream);
         // Both paths (with and without tools) collect every round here
         options.usageSink?.addRound(round.usage);
+        if (round.stopReason === 'max_tokens') {
+            options.usageSink?.noteCapabilityEvent({
+                kind: 'output_truncated',
+                reason: 'max_tokens',
+                limit: options.output.maxTokens,
+            });
+        }
         return round;
     }
 
@@ -222,8 +228,8 @@ export class AnthropicPlatform extends BasePlatform {
             // ones. Every accepted downgrade flips a one-shot flag, so this
             // recursion sends a round at most three times.
             const lowered =
-                lowerMaxTokensAfter(options.output, options.model, error) ||
-                dropEffortAfter(options.thinking, options.model, error);
+                lowerMaxTokensAfter(options.output, options.model, error, options.usageSink) ||
+                dropEffortAfter(options.thinking, options.model, error, options.usageSink);
             if (!lowered) throw error;
             return await this.openRoundStream(messages, tools, options, roundOptions);
         }

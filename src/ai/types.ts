@@ -1,12 +1,52 @@
 /**
  * AI Platform unified types
  */
+import type {
+    ModelCatalogCapabilities,
+    ModelCatalogReasoning,
+} from '../config/model-capabilities.js';
+import type { PlatformType } from '../config/platform-routing.js';
 import type { ToolLoopCheckpoint, ToolLoopCheckpointSink } from './tools/tool-loop-checkpoint.js';
 import type { TurnTools } from './tools/tool-types.js';
 import type { UsageSink } from './usage/usage-types.js';
 
 // Platform type identifier
-export type PlatformType = 'openai' | 'gemini' | 'deepseek' | 'grok' | 'mimo' | 'anthropic';
+export type { PlatformType };
+
+/** Where resolved catalog/seed metadata came from */
+export type ModelTraitsOrigin = 'catalog' | 'seed' | 'code';
+
+/** Whether a single trait's active runtime value came from catalog/seed data or code defaults */
+export type TraitOrigin = 'data' | 'code';
+
+export interface Trait<T> {
+    readonly value: T;
+    readonly origin: TraitOrigin;
+    readonly codeValue: T;
+    readonly dataValue: T | null;
+    readonly differs: boolean;
+}
+
+export interface RuntimeTraits {
+    readonly model: string;
+    readonly platform: PlatformType;
+    readonly origin: ModelTraitsOrigin;
+    readonly inCatalog: boolean;
+    readonly catalogVersion: string;
+    readonly capabilities: ModelCatalogCapabilities | null;
+    readonly imageOutput: Trait<boolean>;
+    readonly imageInput: Trait<boolean>;
+    readonly mediaInput: Trait<boolean>;
+    readonly clientTools: Trait<boolean>;
+    readonly geminiToolsMixing: Trait<boolean>;
+    readonly imageSearchGrounding: Trait<boolean>;
+    readonly xhighThinking: Trait<boolean>;
+    readonly requiresMessageMerge: boolean;
+    readonly supportsThinking: boolean | undefined;
+    readonly supportsVideoToolResult: boolean;
+    readonly reasoning: Trait<ModelCatalogReasoning | null>;
+    readonly outputTokens: Trait<number | null>;
+}
 
 // Unified content part (compatible with existing ChatContentPart)
 export interface UnifiedContentPart {
@@ -334,6 +374,11 @@ export interface PlatformConfig {
      */
     checkpointSink?: ToolLoopCheckpointSink;
     /**
+     * Pre-resolved model traits for this reply attempt so every consumer and
+     * platform sees one consistent snapshot even if the catalog reloads mid-reply.
+     */
+    traits?: RuntimeTraits;
+    /**
      * Continue an interrupted tool loop: `messages` is ignored, the
      * checkpoint's journal is replayed first (chunks marked `replay`), then
      * the loop opens the round the checkpoint had ready.
@@ -347,8 +392,7 @@ export interface ModelCapabilities {
     supportsImageOutput: boolean;
     supportsSystemPrompt: boolean;
     requiresMessageMerge: boolean;
-    supportsThinking: boolean;
-    supportsGrounding: boolean;
+    supportsThinking?: boolean;
     /** Audio/video/other non-image inline input (full-modal models) */
     supportsMediaInput: boolean;
     /**
@@ -372,11 +416,6 @@ export interface IAIPlatform {
         messages: UnifiedMessage[],
         config: PlatformConfig
     ): Promise<AsyncIterable<StreamChunk>>;
-
-    /**
-     * Check if platform supports given model
-     */
-    supportsModel(model: string): boolean;
 
     /**
      * Get model capabilities

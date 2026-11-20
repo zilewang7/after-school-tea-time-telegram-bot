@@ -12,7 +12,8 @@
  */
 import type { Api, Context } from 'grammy';
 import type { Chat } from 'grammy/types';
-import { buildStaticSystemPrompt } from '../../ai/index.js';
+import { buildStaticSystemPrompt, capabilitiesOf, resolveRuntimeTraits } from '../../ai/index.js';
+import type { ModelCapabilities, RuntimeTraits } from '../../ai/types.js';
 import type { BotResponse } from '../../db/index.js';
 import { loadContextExclusions } from '../../db/queries/context-queries.js';
 import { effectiveReplyModel, resolveAccessTier, type AccessTier } from '../../services/access-tier.js';
@@ -28,11 +29,17 @@ import { toolDefinitionsJsonOf } from './canonical-json.js';
 import type { CheckpointRegistry } from './checkpoint-registry.js';
 import type { ReplyCheckpoint } from './reply-checkpoint.js';
 import {
+    modelCapabilitiesChangedNoticeOf,
+    MODEL_CAPABILITIES_CHANGED_NOTICE,
     thinkingEffortRefusalNoticeOf,
     THINKING_EFFORT_CHANGED_NOTICE,
     THINKING_EFFORT_DATA_CHANGED_NOTICE,
 } from './resume-facts.js';
-export { THINKING_EFFORT_CHANGED_NOTICE, THINKING_EFFORT_DATA_CHANGED_NOTICE };
+export {
+    MODEL_CAPABILITIES_CHANGED_NOTICE,
+    THINKING_EFFORT_CHANGED_NOTICE,
+    THINKING_EFFORT_DATA_CHANGED_NOTICE,
+};
 
 export const CHECKPOINT_GONE_NOTICE = '检查点已失效，请点重试';
 export const SWITCH_TO_LATEST_NOTICE = '请先切回最新版本再继续';
@@ -76,7 +83,13 @@ const markedEntryOf = (registry: CheckpointRegistry, response: BotResponse): Rep
  * tools are thrown away: their signal never fires and they never run. The
  * definitions do not depend on who wrote the trigger, so it is not read here.
  */
-const sameToolsAndPrompt = (chat: Chat, api: Api, entry: ReplyCheckpoint, plan: ResumePlan): boolean => {
+const sameToolsAndPrompt = (
+    chat: Chat,
+    api: Api,
+    entry: ReplyCheckpoint,
+    plan: ResumePlan,
+    capabilities: ModelCapabilities
+): boolean => {
     const { tools, availability } = createReplyTools(
         plan.model,
         buildReplyToolContext({
@@ -88,9 +101,15 @@ const sameToolsAndPrompt = (chat: Chat, api: Api, entry: ReplyCheckpoint, plan: 
             api,
         }),
         plan.settings.toolOverrides,
-        plan.access
+        plan.access,
+        undefined,
+        capabilities
     );
-    const systemPrompt = buildStaticSystemPrompt(plan.model, buildStaticPromptOptions(availability));
+    const systemPrompt = buildStaticSystemPrompt(
+        plan.model,
+        buildStaticPromptOptions(availability),
+        capabilities
+    );
     return (
         toolDefinitionsJsonOf(tools.definitions) === entry.request.toolDefinitionsJson &&
         systemPrompt === entry.request.systemPrompt
@@ -164,12 +183,17 @@ export const checkContinue = async (
     if (trialSpend !== null && trialSpend.exceeded) return keep(TRIAL_QUOTA_CONTINUE_NOTICE);
     // Thought signatures belong to the model that wrote them
     if (plan.model !== entry.request.model) return keep(MODEL_CHANGED_NOTICE);
+    const traits: RuntimeTraits = resolveRuntimeTraits(plan.model);
     // The thinking level is part of the request shape the checkpoint expects;
     // the notice names whether the chat's setting or the model data changed
-    const thinkingRefusal = thinkingEffortRefusalNoticeOf(settings, entry.request);
+    const thinkingRefusal = thinkingEffortRefusalNoticeOf(settings, entry.request, traits);
     if (thinkingRefusal !== null) return keep(thinkingRefusal);
+    const capabilitiesRefusal = modelCapabilitiesChangedNoticeOf(traits, entry.request);
+    if (capabilitiesRefusal !== null) return keep(capabilitiesRefusal);
     const chat = ctx.chat;
-    if (chat === undefined || !sameToolsAndPrompt(chat, ctx.api, entry, plan)) return keep(TOOLS_CHANGED_NOTICE);
+    if (chat === undefined || !sameToolsAndPrompt(chat, ctx.api, entry, plan, capabilitiesOf(traits))) {
+        return keep(TOOLS_CHANGED_NOTICE);
+    }
     const addendumRefusal = await addendumRefusalOf(response.chatId, settings, plan.model, entry);
     if (addendumRefusal !== null) return keep(addendumRefusal);
     if (await anyContextMessageExcluded(entry)) return keep(CONTEXT_EXCLUDED_NOTICE);

@@ -8,6 +8,7 @@ import type { ChatCompletionChunk } from 'openai/resources';
 import { BasePlatform } from './base-platform.js';
 import { attemptRequestOptions } from './attempt-request-options.js';
 import { transformToMimo, type MimoMessageParam } from '../message-transformer.js';
+import { capabilitiesOf, resolveRuntimeTraits } from '../model-traits.js';
 import { prepareMimoMedia } from './mimo-media.js';
 import {
     buildMimoContentFilterError,
@@ -91,28 +92,8 @@ export class MimoPlatform extends BasePlatform {
         console.log(`[mimo] Using MIMO API at ${baseURL}`);
     }
 
-    supportsModel(model: string): boolean {
-        return model.toLowerCase().startsWith('mimo');
-    }
-
     getModelCapabilities(model: string): ModelCapabilities {
-        const lowerModel = model.toLowerCase();
-        // mimo-v2.5-pro is text-only (image input answers 404 "No endpoints found
-        // that support image input"). It is no longer in the menu but stays
-        // routable: it is the text-only model the OCR-fallback e2e run needs.
-        const isTextOnlyLegacy = lowerModel === 'mimo-v2.5-pro';
-
-        return {
-            supportsImageInput: !isTextOnlyLegacy,
-            supportsImageOutput: false,
-            supportsSystemPrompt: true,
-            requiresMessageMerge: false,
-            supportsThinking: true,
-            supportsGrounding: false,
-            // v2.6 flash / pro read audio and video natively (full-modal)
-            supportsMediaInput: lowerModel.startsWith('mimo-v2.6'),
-            supportsClientTools: true,
-        };
+        return capabilitiesOf(resolveRuntimeTraits(model));
     }
 
     async sendMessage(
@@ -120,6 +101,7 @@ export class MimoPlatform extends BasePlatform {
         config: PlatformConfig
     ): Promise<AsyncIterable<StreamChunk>> {
         const { model, systemPrompt, timeout = 85000, maxRetries = 3, signal, tools, usageSink } = config;
+        const capabilities = capabilitiesOf(config.traits ?? resolveRuntimeTraits(model));
 
         this.logMessageContents(messages);
         console.log(`[mimo] Using model: ${model}`);
@@ -138,6 +120,7 @@ export class MimoPlatform extends BasePlatform {
             return this.sendMessageWithTools(
                 openaiMessages,
                 model,
+                capabilities.supportsImageInput,
                 tools,
                 timeout,
                 maxRetries,
@@ -192,7 +175,8 @@ export class MimoPlatform extends BasePlatform {
     private async openChatWithEffortFallback<T>(
         open: () => Promise<T>,
         thinkingWire: EffortWire | null,
-        model: string
+        model: string,
+        usageSink: UsageSink | undefined
     ): Promise<T> {
         try {
             return await open();
@@ -207,6 +191,11 @@ export class MimoPlatform extends BasePlatform {
             }
             thinkingWire.degraded = true;
             logEffortFallback('mimo', model, thinkingWire.value ?? thinkingWire.mode, 'thinking enabled', error);
+            usageSink?.noteCapabilityEvent({
+                kind: 'effort_rejected',
+                effort: thinkingWire.value ?? thinkingWire.mode,
+                fallback: null,
+            });
             return await open();
         }
     }
@@ -233,7 +222,8 @@ export class MimoPlatform extends BasePlatform {
                     { timeout, maxRetries, signal }
                 ),
             thinkingWire,
-            model
+            model,
+            usageSink
         );
 
         yield* this.processStream(stream as Stream<ChatCompletionChunk>, usageSink);
@@ -247,6 +237,7 @@ export class MimoPlatform extends BasePlatform {
     private async *sendMessageWithTools(
         initialMessages: OpenAI.Chat.ChatCompletionMessageParam[],
         model: string,
+        supportsImageInput: boolean,
         tools: TurnTools,
         timeout: number,
         maxRetries: number,
@@ -280,10 +271,11 @@ export class MimoPlatform extends BasePlatform {
                             { timeout, maxRetries, signal }
                         ),
                     thinkingWire,
-                    model
+                    model,
+                    usageSink
                 );
 
-                const collected = await this.collectStreamWithTools(stream, roundIndex);
+                const collected = await this.collectStreamWithTools(stream, roundIndex, usageSink);
                 console.log(`[mimo] Tool ${roundLabel}: ${collected.chunks.length} chunks, ${collected.toolCalls.length} tools, text: ${collected.text.length}, thinking: ${collected.reasoning.length}`);
 
                 // The provider refused this round: fail the turn instead of showing
@@ -298,7 +290,7 @@ export class MimoPlatform extends BasePlatform {
             appendRound: (round, executedCalls) => {
                 currentMessages.push(
                     ...buildChatToolTurn(round, executedCalls, {
-                        supportsImageInput: this.getModelCapabilities(model).supportsImageInput,
+                        supportsImageInput,
                     })
                 );
             },
@@ -314,19 +306,22 @@ export class MimoPlatform extends BasePlatform {
      */
     private async collectStreamWithTools(
         stream: AsyncIterable<ChatCompletionChunk>,
-        round: number
+        round: number,
+        usageSink: UsageSink | undefined
     ): Promise<MimoToolRound> {
         const toolCallCollector = createChatToolCallCollector();
         let text = '';
         let reasoning = '';
         let heldNotice = '';
         let blocked = false;
+        let finishReason: string | null = null;
         let usage: unknown;
         const chunks: StreamChunk[] = [];
 
         for await (const chunk of stream) {
             usage = usageOfChunk(chunk) ?? usage;
             const choice = chunk.choices[0];
+            finishReason = choice?.finish_reason ?? finishReason;
             const delta: ReasoningChunkDelta | undefined = choice?.delta;
 
             // Handle reasoning/thinking content (MIMO thinking mode)
@@ -361,6 +356,9 @@ export class MimoPlatform extends BasePlatform {
             text += heldNotice;
             chunks.push({ type: 'text', content: heldNotice });
         }
+        if (finishReason === 'length') {
+            usageSink?.noteCapabilityEvent({ kind: 'output_truncated', reason: 'length' });
+        }
 
         return {
             toolCalls: toolCallCollector.toolCalls(round),
@@ -381,10 +379,12 @@ export class MimoPlatform extends BasePlatform {
     ): AsyncIterable<StreamChunk> {
         let heldNotice = '';
         let usage: unknown;
+        let finishReason: string | null = null;
 
         for await (const chunk of stream) {
             usage = usageOfChunk(chunk) ?? usage;
             const choice = chunk.choices[0];
+            finishReason = choice?.finish_reason ?? finishReason;
             const delta: ReasoningChunkDelta | undefined = choice?.delta;
 
             // Handle reasoning/thinking content
@@ -414,6 +414,9 @@ export class MimoPlatform extends BasePlatform {
             yield { type: 'text', content: heldNotice };
         }
         usageSink?.addRound(normalizeChatCompletionsUsage(usage));
+        if (finishReason === 'length') {
+            usageSink?.noteCapabilityEvent({ kind: 'output_truncated', reason: 'length' });
+        }
 
         yield { type: 'done' };
     }

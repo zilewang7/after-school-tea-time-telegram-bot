@@ -14,8 +14,11 @@
  * or an unreachable Telegram never touches the reply path — errors are logged
  * and recorded on the run row, and the previous price table keeps working.
  */
+import { createHash } from 'node:crypto';
+import { existsSync } from 'node:fs';
 import type { Api } from 'grammy';
 import { isTestInstance } from '../config/instance.js';
+import type { PlatformLaneFingerprints } from '../config/model-capabilities.js';
 import { isJsonObject } from '../shared/json-object.js';
 import { familyLineOf, productLineOf, versionOf } from '../shared/model-line.js';
 import { getOwnerUserId } from '../config/owner.js';
@@ -36,6 +39,7 @@ import {
     createOrRefreshProposals,
     expireStaleProposals,
     finishWatchRun,
+    isPriceProposalDueForNotification,
     loadPriceTableMeta,
     listPendingProposals,
     loadModelPrices,
@@ -46,14 +50,27 @@ import {
     countPendingCapabilityProposals,
     createOrRefreshCapabilityProposals,
     expireStaleCapabilityProposals,
+    isCapabilityProposalDueForNotification,
     listPendingCapabilityProposals,
 } from './model-capability-service.js';
-import { addCatalogModels } from './model-catalog-service.js';
+import {
+    listActiveModelIdsFromMetrics,
+    listRecentCapabilityEventMetrics,
+} from '../db/queries/reply-metrics.js';
+import {
+    addCatalogModels,
+    ensureReferenceCatalogRows,
+} from './model-catalog-service.js';
 import {
     diffPriceCandidates,
     compilePriceCandidates,
 } from './price-catalog-compile.js';
-import { compileCapabilityObservations, diffCapabilityCandidates } from './capability-catalog-compile.js';
+import {
+    compileCapabilityObservations,
+    compileTrafficContradictions,
+    diffCapabilityCandidates,
+    mergeCapabilityDrafts,
+} from './capability-catalog-compile.js';
 import { catalogModelRefs, fetchPriceCatalogs } from './price-catalog-fetch.js';
 import type { CatalogFetcher, ProposalDraft } from './price-catalog-types.js';
 import {
@@ -87,9 +104,6 @@ const DISABLED: WatchRunResult = {
     warnings: [],
     errors: [],
 };
-
-/** The models.dev aggregate, only for new-model discovery */
-const MODELS_DEV_API = 'https://models.dev/api.json';
 
 /** Providers whose models we can serve: canonical vendors of our routes */
 const DISCOVERY_PROVIDERS: ReadonlySet<string> = new Set([
@@ -211,6 +225,7 @@ const watchEnabled = (): boolean =>
     process.env.PRICE_WATCH !== '0' && !isTestInstance() && getOwnerUserId() !== null;
 
 let running = false;
+let schedulerActive = false;
 let timer: ReturnType<typeof setTimeout> | null = null;
 let fetcherOverride: CatalogFetcher | null = null;
 
@@ -224,7 +239,156 @@ const networkFetcher = (timeoutMs: number): CatalogFetcher => async (url) => {
     return { status: response.status, body: await response.text() };
 };
 
-const today = (): string => new Date().toISOString().slice(0, 10);
+const isoDay = (date: Date): string => date.toISOString().slice(0, 10);
+
+const hostOfUrl = (baseUrl: string): string | null => {
+    if (baseUrl === '') return null;
+    try {
+        return new URL(baseUrl).host;
+    } catch {
+        return baseUrl;
+    }
+};
+
+const laneIdForHost = (
+    host: string | null,
+    kind: 'openai' | 'anthropic' | 'grok' | 'deepseek' | 'mimo'
+): string => {
+    if (kind === 'openai') {
+        if (host === null) return 'official-openai';
+        if (host.endsWith('ephone.ai')) return 'ephone';
+        if (host.endsWith('openai.com')) return 'official-openai';
+        return `openai-relay:${host}`;
+    }
+    if (kind === 'anthropic') {
+        if (host === null) return 'official-anthropic';
+        if (host.endsWith('ephone.ai')) return 'ephone';
+        if (host.endsWith('anthropic.com')) return 'official-anthropic';
+        return `anthropic-relay:${host}`;
+    }
+    if (kind === 'grok') {
+        if (host === null || host.endsWith('x.ai')) return 'official-xai';
+        return `grok-relay:${host}`;
+    }
+    if (kind === 'deepseek') {
+        if (host === null || host.endsWith('deepseek.com')) return 'official-deepseek';
+        return `deepseek-relay:${host}`;
+    }
+    if (host === null || host.endsWith('xiaomimimo.com')) return 'official-mimo';
+    return `mimo-relay:${host}`;
+};
+
+const shortHash = (value: string): string =>
+    createHash('sha256').update(value).digest('hex').slice(0, 8);
+
+const withLaneFingerprint = (laneId: string, kind: 'key' | 'project', value: string | null): string => {
+    if (value === null || value === '') return laneId;
+    return `${laneId}#${kind === 'key' ? 'k' : 'p'}${shortHash(value)}`;
+};
+
+/**
+ * Compute per-platform live lane fingerprints matching `scripts/probe/effort-env.mts`
+ * (`host + key/project sha256 prefix`). Platforms without configured credentials
+ * are omitted so unconfigured test environments never unfreeze valid probe entries.
+ */
+export const liveLaneFingerprints = (
+    env: Readonly<Record<string, string | undefined>> = process.env,
+    credentialsFileExists: (path: string) => boolean = existsSync
+): PlatformLaneFingerprints => {
+    const read = (key: string): string => (env[key] ?? '').trim();
+    const fingerprints: {
+        openai?: string;
+        anthropic?: string;
+        gemini?: string;
+        grok?: string;
+        deepseek?: string;
+        mimo?: string;
+    } = {};
+
+    const openAiCompatible = (options: {
+        readonly urlKey: string;
+        readonly keyKey: string;
+        readonly kind: 'openai' | 'grok' | 'mimo';
+        readonly defaultBaseUrl: string;
+    }): string | undefined => {
+        const apiKey = read(options.keyKey);
+        if (apiKey === '') return undefined;
+        const explicitUrl = read(options.urlKey);
+        const baseUrl = explicitUrl !== '' ? explicitUrl : options.defaultBaseUrl;
+        return withLaneFingerprint(laneIdForHost(hostOfUrl(baseUrl), options.kind), 'key', apiKey);
+    };
+
+    const openaiLane = openAiCompatible({
+        urlKey: 'OPENAI_API_URL',
+        keyKey: 'OPENAI_API_KEY',
+        kind: 'openai',
+        defaultBaseUrl: 'https://api.openai.com/v1',
+    });
+    if (openaiLane !== undefined) fingerprints.openai = openaiLane;
+
+    const grokLane = openAiCompatible({
+        urlKey: 'GROK_API_URL',
+        keyKey: 'GROK_API_KEY',
+        kind: 'grok',
+        defaultBaseUrl: 'https://api.openai.com/v1',
+    });
+    if (grokLane !== undefined) fingerprints.grok = grokLane;
+
+    const mimoLane = openAiCompatible({
+        urlKey: 'MIMO_API_URL',
+        keyKey: 'MIMO_API_KEY',
+        kind: 'mimo',
+        defaultBaseUrl: 'https://api.xiaomimimo.com/v1',
+    });
+    if (mimoLane !== undefined) fingerprints.mimo = mimoLane;
+
+    const anthropicUrl = read('ANTHROPIC_API_URL');
+    const openAiUrl = read('OPENAI_API_URL');
+    const anthropicBase = anthropicUrl !== '' ? anthropicUrl : openAiUrl.replace(/\/v1\/?$/, '');
+    const anthropicKey = read('ANTHROPIC_API_KEY') !== '' ? read('ANTHROPIC_API_KEY') : read('OPENAI_API_KEY');
+    if (anthropicKey !== '') {
+        fingerprints.anthropic = withLaneFingerprint(
+            laneIdForHost(hostOfUrl(anthropicBase), 'anthropic'),
+            'key',
+            anthropicKey
+        );
+    }
+
+    const deepseekKey = read('DEEPSEEK_API_KEY');
+    if (deepseekKey !== '') {
+        const baseUrl = read('DEEPSEEK_API_URL') || 'https://api.deepseek.com/v1';
+        fingerprints.deepseek = withLaneFingerprint(laneIdForHost(hostOfUrl(baseUrl), 'deepseek'), 'key', deepseekKey);
+    } else {
+        const openAiKey = read('OPENAI_API_KEY');
+        if (openAiKey !== '') {
+            const baseUrl = openAiUrl !== '' ? openAiUrl : 'https://api.openai.com/v1';
+            fingerprints.deepseek = withLaneFingerprint(
+                `${laneIdForHost(hostOfUrl(baseUrl), 'openai')}:openai-fallback`,
+                'key',
+                openAiKey
+            );
+        }
+    }
+
+    const geminiUrl = read('GEMINI_API_URL');
+    const geminiKey = read('GEMINI_API_KEY');
+    const project = read('GOOGLE_CLOUD_PROJECT');
+    const location = read('GOOGLE_CLOUD_LOCATION') || 'global';
+    const credentialsPath = read('GOOGLE_APPLICATION_CREDENTIALS');
+    if (geminiUrl !== '') {
+        fingerprints.gemini = withLaneFingerprint(
+            `gemini-relay:${hostOfUrl(geminiUrl) ?? geminiUrl}`,
+            'key',
+            geminiKey
+        );
+    } else if (project !== '' && credentialsPath !== '' && credentialsFileExists(credentialsPath)) {
+        fingerprints.gemini = withLaneFingerprint(`vertex-adc@${location}`, 'project', project);
+    } else if (geminiKey !== '') {
+        fingerprints.gemini = withLaneFingerprint('vertex-express', 'key', geminiKey);
+    }
+
+    return fingerprints;
+};
 
 /** A model the aggregate catalog offers but our menu does not know yet */
 interface DiscoveredModel {
@@ -283,7 +447,7 @@ const capabilitiesOf = (model: ModelsDevModel, checkedOn: string): ModelCatalogC
     confidence: 'medium',
 });
 
-const discoveredPriceOf = (model: ModelsDevModel, sourceUrl: string): PriceEntry | null => {
+const discoveredPriceOf = (model: ModelsDevModel, sourceUrl: string, checkedOn: string): PriceEntry | null => {
     const cost = model.cost;
     if (cost?.input === undefined || cost.output === undefined) return null;
     return {
@@ -296,7 +460,7 @@ const discoveredPriceOf = (model: ModelsDevModel, sourceUrl: string): PriceEntry
         effectiveFrom: new Date(),
         source: 'models-dev',
         sourceUrl,
-        checkedOn: today(),
+        checkedOn,
         confidence: 'medium',
         note: 'auto-discovered by the price watcher',
     };
@@ -306,16 +470,26 @@ const discoveredPriceOf = (model: ModelsDevModel, sourceUrl: string): PriceEntry
 const isModelsDevCatalog = (value: unknown): value is Record<string, ModelsDevProvider> =>
     isJsonObject(value) && Object.values(value).every((provider) => isJsonObject(provider));
 
-/** Parse the models.dev aggregate and keep chat models of our families */
-export const discoveredModelsOf = (body: string, now: Date = new Date()): readonly DiscoveredModel[] => {
+/** Parse models.dev `api.json` once; returns null on missing/malformed input */
+export const parseModelsDevApiJson = (body: string | null): Record<string, ModelsDevProvider> | null => {
+    if (body === null) return null;
     let parsed: unknown;
     try {
         parsed = JSON.parse(body);
     } catch {
-        return [];
+        return null;
     }
-    if (!isModelsDevCatalog(parsed)) return [];
-    const providers = parsed;
+    return isModelsDevCatalog(parsed) ? parsed : null;
+};
+
+/** Parse (or reuse) the models.dev aggregate and keep chat models of our families */
+export const discoveredModelsOf = (
+    bodyOrParsed: string | Record<string, ModelsDevProvider>,
+    now: Date = new Date()
+): readonly DiscoveredModel[] => {
+    const providers = typeof bodyOrParsed === 'string' ? parseModelsDevApiJson(bodyOrParsed) : bodyOrParsed;
+    if (providers === null) return [];
+    const checkedOn = isoDay(now);
     const menuIds = listAllModelCatalog()
         .filter((entry) => entry.enabled)
         .map((entry) => entry.id);
@@ -332,12 +506,11 @@ export const discoveredModelsOf = (body: string, now: Date = new Date()): readon
             if (!CHAT_FAMILY_PREFIXES.some((prefix) => id.toLowerCase().startsWith(prefix))) continue;
             if (!qualifiesForAutoAdd(id, model.release_date, menu, now)) continue;
             if (findModelCatalogEntry(id) !== null) continue;
-            const checkedOn = today();
             const capabilities = capabilitiesOf(model, checkedOn);
             if (capabilities.imageOutput) continue;
             const label = model.name ?? id;
             const sourceUrl = `https://models.dev/?model=${encodeURIComponent(`${providerId}/${modelId}`)}`;
-            const price = discoveredPriceOf(model, sourceUrl);
+            const price = discoveredPriceOf(model, sourceUrl, checkedOn);
             discovered.push({
                 entry: {
                     id,
@@ -400,6 +573,7 @@ export const runPriceWatchNow = async (
     const now = new Date();
     const timeoutMs = envInt('PRICE_WATCH_TIMEOUT_MS', 8000);
     const fetcher = fetcherOverride ?? networkFetcher(timeoutMs);
+    const statusBefore = await priceWatchStatus();
     const runId = await startWatchRun();
     const warnings: string[] = [];
     const errors: string[] = [];
@@ -408,11 +582,11 @@ export const runPriceWatchNow = async (
     let proposals = 0;
     let capabilityProposals = 0;
     try {
-        const statusBefore = await priceWatchStatus();
+        const currentLaneFingerprints = liveLaneFingerprints();
         // One refs list for the download and the compile: the models the menu
         // gained since the last release are tracked like the shipped ones
         const refs = catalogModelRefs();
-        const catalogs = await fetchPriceCatalogs(fetcher, refs);
+        const catalogs = await fetchPriceCatalogs(fetcher, refs, { includeApiJson: true });
         warnings.push(...catalogs.warnings);
         errors.push(...catalogs.errors);
         const compiled = compilePriceCandidates(catalogs, { now, refs });
@@ -422,17 +596,14 @@ export const runPriceWatchNow = async (
         warnings.push(...diff.warnings);
         const drafts: ProposalDraft[] = [...diff.drafts];
 
-        // New models of a known family enter the menu automatically; their
-        // price still needs the owner's approval.
-        const aggregateUrl = MODELS_DEV_API;
-        const aggregate = await fetcher(aggregateUrl).catch((error: unknown) => {
-            warnings.push(`模型发现失败：${error instanceof Error ? error.message : String(error)}`);
-            return null;
-        });
-        let apiJsonBody: string | null = null;
-        if (aggregate !== null && aggregate.status === 200) {
-            apiJsonBody = aggregate.body;
-            const discovered = discoveredModelsOf(aggregate.body, now);
+        // Parse api.json once and feed both discovery and capability compilation
+        const apiJsonBody = catalogs.documents.apiJson ?? null;
+        const parsedApiRoot = parseModelsDevApiJson(apiJsonBody);
+        if (apiJsonBody !== null && parsedApiRoot === null) {
+            warnings.push('models.dev api.json 解析失败或格式无效，已忽略');
+        }
+        if (parsedApiRoot !== null) {
+            const discovered = discoveredModelsOf(parsedApiRoot, now);
             const ownerId = getOwnerUserId();
             addedModels = await addCatalogModels(
                 discovered.map((item) => item.entry),
@@ -442,41 +613,87 @@ export const runPriceWatchNow = async (
             drafts.push(...draftsOfDiscovered(discovered.filter((item) => added.has(item.entry.id))));
         }
 
+        // Reference rows (enabled=0) keep non-menu runtime/seed/active models in the catalog (§3.4)
+        const activeModels = await listActiveModelIdsFromMetrics(new Date(now.getTime() - 30 * DAY_MS));
+        await ensureReferenceCatalogRows({
+            activeModels,
+            apiJsonRoot: parsedApiRoot,
+            now,
+        });
+
         // Capability half: the provider/lab TOMLs and the aggregate body above
         // are exactly what the compiler needs, so the run fetches nothing extra.
         const capabilityCompiled = compileCapabilityObservations(catalogs.documents, {
             now,
             refs,
-            apiJson: apiJsonBody,
+            apiJsonRoot: parsedApiRoot,
         });
         warnings.push(...capabilityCompiled.warnings);
         const capabilityDiff = diffCapabilityCandidates(capabilityCompiled.candidates, listAllModelCatalog(), {
             now,
             justAddedModels: addedModels,
+            currentLaneFingerprints,
         });
         warnings.push(...capabilityDiff.warnings);
+
+        // Scan recent live-traffic capability events for contradictions (§3.3)
+        const lastRunMs = statusBefore.lastRunAt === null ? null : Date.parse(statusBefore.lastRunAt);
+        const trafficSinceMs =
+            lastRunMs !== null && Number.isFinite(lastRunMs)
+                ? Math.min(lastRunMs, now.getTime() - DAY_MS)
+                : now.getTime() - 7 * DAY_MS;
+        const recentEventRows = await listRecentCapabilityEventMetrics(new Date(trafficSinceMs));
+        const trafficDiff = compileTrafficContradictions(recentEventRows, listAllModelCatalog(), {
+            now,
+            currentLaneFingerprints,
+        });
+        warnings.push(...trafficDiff.warnings);
+        const combinedCapabilityDrafts = mergeCapabilityDrafts(capabilityDiff.drafts, trafficDiff.drafts);
 
         await expireStaleProposals(now);
         await expireStaleCapabilityProposals(now);
         await loadModelPrices();
-        proposals = await createOrRefreshProposals(drafts, runId);
-        const capabilityRefresh = await createOrRefreshCapabilityProposals(capabilityDiff.drafts, runId);
+        const evaluatedPriceModels = new Set(compiled.candidates.map((candidate) => candidate.entry.model));
+        proposals = await createOrRefreshProposals(drafts, runId, {
+            evaluatedModels: evaluatedPriceModels,
+            now,
+        });
+        const addedSet = new Set(addedModels);
+        const evaluatedCapabilityModels = new Set(
+            capabilityCompiled.candidates
+                .map((candidate) => candidate.model)
+                .filter((model) => !addedSet.has(model))
+        );
+        const capabilityRefresh = await createOrRefreshCapabilityProposals(combinedCapabilityDrafts, runId, {
+            evaluatedModels: evaluatedCapabilityModels,
+            now,
+        });
         capabilityProposals = capabilityRefresh.pending;
         warnings.push(...capabilityRefresh.skipped.map((skip) => skip.reason));
+        const uniqueWarnings = [...new Set(warnings)];
+        for (const warning of uniqueWarnings) {
+            console.warn(`[pricing] warning: ${warning}`);
+        }
         console.log(
-            `[catalog] capabilities: ${capabilityCompiled.candidates.length} models, ${capabilityProposals} proposals, ${capabilityCompiled.warnings.length + capabilityDiff.warnings.length + capabilityRefresh.skipped.length} warnings`
+            `[catalog] capabilities: ${capabilityCompiled.candidates.length} models, ${capabilityProposals} proposals, ${uniqueWarnings.length} warnings`
         );
 
         if (proposals > 0) {
-            const pending = await listPendingProposals();
-            messageIds = await sendProposalMessage(api, { id: runId }, pending);
+            const duePrice = (await listPendingProposals()).filter((proposal) =>
+                isPriceProposalDueForNotification(proposal, now)
+            );
+            messageIds = duePrice.length > 0 ? await sendProposalMessage(api, { id: runId }, duePrice) : [];
         } else {
             messageIds = [];
         }
         if (capabilityProposals > 0) {
-            const pendingCapabilities = await listPendingCapabilityProposals();
-            const capabilityMessageIds = await sendCapabilityProposalMessage(api, pendingCapabilities);
-            messageIds = [...messageIds, ...capabilityMessageIds];
+            const dueCapabilities = (await listPendingCapabilityProposals()).filter((proposal) =>
+                isCapabilityProposalDueForNotification(proposal, now)
+            );
+            if (dueCapabilities.length > 0) {
+                const capabilityMessageIds = await sendCapabilityProposalMessage(api, dueCapabilities);
+                messageIds = [...messageIds, ...capabilityMessageIds];
+            }
         }
         if (addedModels.length > 0) {
             await sendModelCatalogNotice(api, addedModels);
@@ -497,12 +714,14 @@ export const runPriceWatchNow = async (
             capabilityProposals,
             messageIds,
             addedModels,
-            warnings,
+            warnings: uniqueWarnings,
             errors,
         };
         await finishWatchRun(runId, {
             outcome: 'ok',
             proposals,
+            capabilityProposals,
+            warnings: uniqueWarnings,
             notifiedMessageId: messageIds.at(-1) ?? null,
             error: errors.length > 0 ? errors.join('; ').slice(0, 1000) : null,
         });
@@ -511,9 +730,16 @@ export const runPriceWatchNow = async (
     } catch (error: unknown) {
         const message = error instanceof Error ? error.message : String(error);
         errors.push(message);
-        await finishWatchRun(runId, { outcome: 'failed', proposals: 0, error: message.slice(0, 1000) });
+        const uniqueWarnings = [...new Set(warnings)];
+        await finishWatchRun(runId, {
+            outcome: 'failed',
+            proposals: 0,
+            capabilityProposals,
+            warnings: uniqueWarnings,
+            error: message.slice(0, 1000),
+        });
         console.error(`[pricing] watch run ${runId} failed:`, error);
-        return { outcome: 'failed', proposals, capabilityProposals, messageIds, addedModels, warnings, errors };
+        return { outcome: 'failed', proposals, capabilityProposals, messageIds, addedModels, warnings: uniqueWarnings, errors };
     } finally {
         running = false;
     }
@@ -522,7 +748,9 @@ export const runPriceWatchNow = async (
 /** One-line result for the owner's manual `/pricing` reply */
 export const watchRunSummary = (result: WatchRunResult): string => summaryOf(result);
 
-/** The `/pricing status` text: table version, freshness and pending work */
+const MAX_STATUS_WARNINGS = 10;
+
+/** The `/pricing status` text: table version, freshness, pending work and last warnings */
 export const formatPriceStatusText = async (now: Date = new Date()): Promise<string> => {
     const [status, meta, pendingCapabilityProposals] = await Promise.all([
         priceWatchStatus(),
@@ -544,38 +772,80 @@ export const formatPriceStatusText = async (now: Date = new Date()): Promise<str
                   .join('；')}`,
         meta.unpricedModels.length === 0 ? '没有未定价模型' : `未定价模型：${meta.unpricedModels.join('、')}`,
     ];
+    if (status.lastWarnings.length > 0) {
+        const shown = status.lastWarnings.slice(0, MAX_STATUS_WARNINGS);
+        const more = status.lastWarnings.length > shown.length ? `\n…还有 ${status.lastWarnings.length - shown.length} 条` : '';
+        lines.push(`上次巡检警告（${status.lastWarnings.length} 条）：\n${shown.map((warning) => `· ${warning}`).join('\n')}${more}`);
+    } else if (status.lastRunAt !== null) {
+        lines.push('上次巡检警告：无');
+    }
     return lines.join('\n');
 };
 
-const startScheduler = (api: Api): void => {
+/**
+ * Initial scheduler delay from the last run stored in SQLite (`lastRunAt + interval - now`),
+ * clamped to `[minDelayMs, intervalMs]`. A process restart never triggers an immediate rerun.
+ */
+export const initialWatchDelayMs = (
+    lastRunAt: Date | null,
+    now: Date,
+    minDelayMs: number,
+    intervalMs: number
+): number => {
+    const floor = Math.max(0, minDelayMs);
+    const ceiling = Math.max(floor, intervalMs);
+    if (lastRunAt === null || Number.isNaN(lastRunAt.getTime())) return floor;
+    const remaining = lastRunAt.getTime() + ceiling - now.getTime();
+    return Math.min(ceiling, Math.max(floor, remaining));
+};
+
+const startScheduler = async (api: Api): Promise<void> => {
     if (!watchEnabled()) {
         console.log('[pricing] watcher disabled');
+        schedulerActive = false;
         return;
     }
     const initialMinutes = envInt('PRICE_WATCH_INITIAL_DELAY_MIN', 10);
     const intervalHours = envInt('PRICE_WATCH_INTERVAL_HOURS', 24);
     const hourMs = 3600 * 1000;
+    const minDelayMs = Math.max(1, initialMinutes) * 60 * 1000;
+    const intervalMs = Math.max(1, intervalHours) * hourMs;
+    let lastRunAt: Date | null = null;
+    try {
+        const status = await priceWatchStatus();
+        lastRunAt = status.lastRunAt === null ? null : new Date(status.lastRunAt);
+    } catch (error: unknown) {
+        console.warn('[pricing] reading last watch run failed, using fallback initial delay:', error);
+    }
+    if (!schedulerActive) return;
+
     const scheduleNext = (delayMs: number): void => {
+        if (!schedulerActive) return;
         timer = setTimeout(() => {
             void runPriceWatchNow(api, { trigger: 'scheduled' }).finally(() => {
-                scheduleNext(Math.max(1, intervalHours) * hourMs);
+                scheduleNext(intervalMs);
             });
         }, delayMs);
         // Do not keep a test process alive for the timer; the bot polls anyway
         timer.unref?.();
     };
-    scheduleNext(Math.max(1, initialMinutes) * 60 * 1000);
-    console.log(`[pricing] watcher scheduled: first run in ${initialMinutes} min, every ${intervalHours}h`);
+    const initialDelayMs = initialWatchDelayMs(lastRunAt, new Date(), minDelayMs, intervalMs);
+    scheduleNext(initialDelayMs);
+    console.log(
+        `[pricing] watcher scheduled: first run in ${Math.round(initialDelayMs / 60_000)} min, every ${intervalHours}h`
+    );
 };
 
 /** Start the daily watcher; call once from main() after the panel is up */
 export const startPriceWatch = (api: Api): void => {
-    if (timer !== null) return;
-    startScheduler(api);
+    if (timer !== null || schedulerActive) return;
+    schedulerActive = true;
+    void startScheduler(api);
 };
 
 /** Tests and shutdown: forget the timer so no handle keeps the process alive */
 export const stopPriceWatch = (): void => {
+    schedulerActive = false;
     if (timer !== null) clearTimeout(timer);
     timer = null;
 };

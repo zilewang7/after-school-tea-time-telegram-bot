@@ -910,7 +910,6 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
         supportsSystemPrompt: true,
         requiresMessageMerge: false,
         supportsThinking: false,
-        supportsGrounding: false,
         supportsMediaInput: false,
       });
       const imageParts = built.messages.flatMap((message) => message.content).filter((part) => part.type === 'image');

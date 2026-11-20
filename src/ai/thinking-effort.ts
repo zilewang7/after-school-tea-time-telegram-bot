@@ -24,8 +24,33 @@ import { match } from 'ts-pattern';
 import type { ModelCatalogReasoning, ModelEffort } from '../config/model-capabilities.js';
 import { isModelEffort, MODEL_EFFORTS } from '../config/model-capabilities.js';
 import { THINKING_EFFORT_OFF } from '../services/thinking-effort-values.js';
-import type { ThinkingEffortRequest } from './types.js';
-import { resolveModelTraits } from './model-traits.js';
+import type { RuntimeTraits, ThinkingEffortRequest } from './types.js';
+import { resolveRuntimeTraits } from './model-traits.js';
+import { platformTypeOf } from './platform-routing.js';
+
+const OPENAI_REASONING_PREFIXES: readonly string[] = ['gpt-5', 'gpt-6', 'o1', 'o3', 'o4'];
+
+/**
+ * Default thinking effort hardcoded per platform for models without catalog
+ * reasoning data (used by `/model` display and the no-data request fallback).
+ */
+export const codePolicyDefaultEffortOf = (model: string): ModelEffort | null => {
+    const id = model.toLowerCase();
+    return match(platformTypeOf(id))
+        .returnType<ModelEffort | null>()
+        .with('gemini', () => {
+            if (id.startsWith('gemini-4-hydrogen') || id.startsWith('gemini-4-neon')) return 'xhigh';
+            if (id.startsWith('gemini-4')) return 'high';
+            return null;
+        })
+        .with('openai', () => {
+            // Chat variants are handled as non-reasoning by the OpenAI platform
+            if (id.includes('chat')) return null;
+            return OPENAI_REASONING_PREFIXES.some((prefix) => id.startsWith(prefix)) ? 'xhigh' : null;
+        })
+        .with('grok', () => (id.includes('multi-agent') ? 'high' : null))
+        .otherwise(() => null);
+};
 
 /** Where the resolved level came from: the chat setting, the model default, or code */
 export type ThinkingEffortSource = 'chat' | 'model-default' | 'code';
@@ -84,12 +109,16 @@ const gradedResultOf = (
 };
 
 /** Resolve one chat setting against one model; the reply, retry and continue share it */
-export const resolveThinkingEffort = (model: string, requested: string | null): ResolvedThinkingEffort => {
-    const traits = resolveModelTraits(model);
-    const reasoning = traits.capabilities?.reasoning;
+export const resolveThinkingEffort = (
+    model: string,
+    requested: string | null,
+    traits?: RuntimeTraits
+): ResolvedThinkingEffort => {
+    const resolvedTraits = traits ?? resolveRuntimeTraits(model);
+    const reasoning = resolvedTraits.reasoning.value;
     // No capabilities, or capabilities whose reasoning section is unknown: the
     // code fallback keeps today's request byte-identical.
-    if (traits.capabilities === null || reasoning === undefined) return codeDefault();
+    if (resolvedTraits.capabilities === null || reasoning === null) return codeDefault();
     return match(requested)
         .returnType<ResolvedThinkingEffort>()
         .with(null, () => modelDefault())

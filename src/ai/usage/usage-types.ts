@@ -4,6 +4,8 @@
  * said zero.
  */
 
+import type { CapabilityEvent } from '../../shared/capability-event.js';
+
 /** One finished model round */
 export interface RoundUsage {
     /** All input, cache hits and cache writes included */
@@ -53,6 +55,8 @@ export interface ReplyUsageTotals extends RoundUsage {
     readonly tierRequested: 'priority' | null;
     /** What the rounds served at the priority tier add up to; null when none was */
     readonly priority: PriorityUsageTotals | null;
+    /** Capability fallback/rejection events collected via noteCapabilityEvent */
+    readonly capabilityEvents?: readonly CapabilityEvent[];
 }
 
 /**
@@ -69,5 +73,7 @@ export interface UsageSink {
     addRecovery(): void;
     /** The platform attached the Priority PayGo request header */
     setTierRequested(tier: 'priority'): void;
+    /** Record a runtime capability contradiction, fallback, or output truncation event */
+    noteCapabilityEvent(event: CapabilityEvent): void;
     totals(): ReplyUsageTotals;
 }

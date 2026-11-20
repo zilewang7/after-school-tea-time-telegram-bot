@@ -2,12 +2,20 @@
  * The per-reply usage collector. A field stays null until some round reports
  * it, then it is the sum of what the rounds reported.
  */
+import {
+    MAX_CAPABILITY_EVENTS_PER_ATTEMPT,
+    type CapabilityEvent,
+} from '../../shared/capability-event.js';
 import type {
     PriorityUsageTotals,
     ReplyUsageTotals,
     RoundUsage,
     UsageSink,
 } from './usage-types.js';
+
+export interface UsageSinkOptions {
+    readonly onCapabilityEvent?: (event: CapabilityEvent) => void;
+}
 
 type UsageField = keyof RoundUsage;
 
@@ -25,7 +33,7 @@ const addCount = (total: number | null, count: number | null): number | null => 
     return (total ?? 0) + count;
 };
 
-export const createUsageSink = (): UsageSink => {
+export const createUsageSink = (options?: UsageSinkOptions): UsageSink => {
     const sums: Record<UsageField, number | null> = {
         promptTokens: null,
         cachedTokens: null,
@@ -39,6 +47,7 @@ export const createUsageSink = (): UsageSink => {
     let roundRetries = 0;
     let tierRequested: 'priority' | null = null;
     let priority: PriorityUsageTotals | null = null;
+    const capabilityEvents: CapabilityEvent[] = [];
 
     return {
         addRound: (usage, meta) => {
@@ -66,6 +75,20 @@ export const createUsageSink = (): UsageSink => {
         setTierRequested: (tier) => {
             tierRequested = tier;
         },
-        totals: (): ReplyUsageTotals => ({ ...sums, rounds, route, roundRetries, tierRequested, priority }),
+        noteCapabilityEvent: (event) => {
+            if (capabilityEvents.length < MAX_CAPABILITY_EVENTS_PER_ATTEMPT) {
+                capabilityEvents.push(event);
+            }
+            options?.onCapabilityEvent?.(event);
+        },
+        totals: (): ReplyUsageTotals => ({
+            ...sums,
+            rounds,
+            route,
+            roundRetries,
+            tierRequested,
+            priority,
+            capabilityEvents,
+        }),
     };
 };

@@ -575,7 +575,6 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
                 supportsSystemPrompt: true,
                 requiresMessageMerge: false,
                 supportsThinking: false,
-                supportsGrounding: false,
                 supportsMediaInput: true,
             };
 
@@ -1942,7 +1941,6 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
                 supportsSystemPrompt: true,
                 requiresMessageMerge: false,
                 supportsThinking: false,
-                supportsGrounding: false,
                 supportsMediaInput: false,
             });
             const texts = context.flatMap((message) =>
@@ -2004,7 +2002,6 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
                 supportsSystemPrompt: true,
                 requiresMessageMerge: false,
                 supportsThinking: false,
-                supportsGrounding: false,
                 supportsMediaInput: false,
             });
 
@@ -2108,7 +2105,6 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
                     supportsSystemPrompt: true,
                     requiresMessageMerge: false,
                     supportsThinking: false,
-                    supportsGrounding: false,
                     supportsMediaInput: false,
                 },
             });
@@ -2161,7 +2157,6 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
                     supportsSystemPrompt: true,
                     requiresMessageMerge: false,
                     supportsThinking: false,
-                    supportsGrounding: false,
                     supportsMediaInput: false,
                 },
             });
@@ -2214,7 +2209,6 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
                 supportsSystemPrompt: true,
                 requiresMessageMerge: false,
                 supportsThinking: false,
-                supportsGrounding: false,
                 supportsMediaInput: false,
             };
 
@@ -5027,7 +5021,6 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
                 supportsSystemPrompt: true,
                 requiresMessageMerge: false,
                 supportsThinking: false,
-                supportsGrounding: false,
                 supportsMediaInput: false,
             });
             const texts = messages.flatMap((message) =>
@@ -5174,7 +5167,6 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
                 supportsSystemPrompt: true,
                 requiresMessageMerge: false,
                 supportsThinking: false,
-                supportsGrounding: false,
                 supportsMediaInput: false,
             });
             const texts = messages.flatMap((message) =>

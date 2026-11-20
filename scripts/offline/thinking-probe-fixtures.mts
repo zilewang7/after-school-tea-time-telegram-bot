@@ -1,23 +1,21 @@
 /**
- * Offline cases for the thinking-effort probe (no network, no DB, no secrets).
+ * Offline cases for the thinking-effort probe (v2, no network, no DB, no secrets).
  *
  * What is covered:
- * - the menu-matrix snapshot (W1 acceptance + fidelity variants, W2 effect
- *   sampling) and the budget cut, including the hard ceilings;
- * - the W2 output-cap switch: default 4096, bounds / help / parse errors, the
- *   cost and `--max-usd` cut following a raised cap, and the cap on the wire;
+ * - the menu-matrix snapshot (W1 acceptance + fidelity variants) and the
+ *   budget cut, including the hard ceilings and unpriced `--models-json` fallback;
  * - the request bodies each lane would send: no paid built-in tool may appear,
  *   and each platform gets its own effort parameter;
  * - error classification, which must never turn a 401/404/429 into "the effort
  *   is unsupported";
- * - the design §7 result document and its validation, and the inference of the
- *   vendor default from W2 samples (a sample the probe's own token cap cut is
- *   recorded, counted and excluded from the effect inference);
+ * - the v2 result document (no vendorDefaultEffort, per-platform lane
+ *   fingerprints, mappedEfforts, client-tool fidelity checks), v1/v2 validation,
+ *   and multi-run merge;
  * - dry-run sending nothing, and the live loop's retry / circuit breaker /
  *   auth behaviour through injected lanes;
- * - `.env.test`-only credential loading and the test-instance gates, the
- *   lane-id fingerprints that make a changed key/project invalidate old data,
- *   and the DeepSeek/Grok lane fallbacks mirroring the production constructors.
+ * - `.env.test`-only credential loading and the test-instance gates, per-platform
+ *   lane fingerprints that isolate key/project changes per platform, and the
+ *   DeepSeek/Grok lane fallbacks mirroring the production constructors.
  *
  * Run: `pnpm test:offline thinking-probe-fixtures`
  */
@@ -29,7 +27,7 @@ import { join } from 'node:path';
 import { expect, reportResults, runCase, type CaseResult } from './harness.mts';
 import { MENU_MATRIX } from '../probe/menu-matrix.mts';
 import type { ProbeLaneConfiguration, ProbeEnvironment } from '../probe/effort-env.mts';
-import { evaluateRunGates, laneConfigurationsOf, laneSignatureOf, loadProbeEnvironment, redactorOf } from '../probe/effort-env.mts';
+import { evaluateRunGates, laneConfigurationsOf, laneFingerprintsOf, loadProbeEnvironment, redactorOf } from '../probe/effort-env.mts';
 import { classifyProbeError, createRedactor, fingerprintOf, redactSecrets } from '../probe/effort-errors.mts';
 import { createProbeLanes, type ProbeFetch } from '../probe/effort-lanes.mts';
 import {
@@ -37,14 +35,14 @@ import {
     clampBudget,
     defaultBudget,
     estimateRequestCostUsd,
+    FALLBACK_PRICE,
     parseModelsJson,
     PROBE_MODEL_SNAPSHOT,
-    W2_REPRESENTATIVE_MODELS,
 } from '../probe/effort-plan.mts';
 import { createStubFetch, stubLaneConfigurations } from '../probe/effort-stub.mts';
 import { runProbe } from '../probe/effort-run.mts';
 import { HELP as PROBE_HELP, parseArguments as parseProbeCliArguments } from '../probe/thinking-effort.mts';
-import { buildRunSummary, formatSummaryMarkdown, inferDefaultEffort, inertEffortsOf, validateProbeDocument } from '../probe/effort-results.mts';
+import { buildRunSummary, formatSummaryMarkdown, mergeProbeDocuments, validateProbeDocument } from '../probe/effort-results.mts';
 import {
     accumulateGemini,
     accumulateResponses,
@@ -61,15 +59,12 @@ import {
     EFFORT_ORDER,
     HARD_MAX_REQUESTS,
     HARD_MAX_USD,
-    MAX_W2_OUTPUT_TOKEN_CAP,
-    MIN_W2_OUTPUT_TOKEN_CAP,
     W1_OUTPUT_TOKEN_CAP,
-    W2_OUTPUT_TOKEN_CAP,
     isEffortValue,
-    isValidW2OutputTokenCap,
     sortEfforts,
     type EffortValue,
     type ProbeCandidate,
+    type ProbeLaneFingerprints,
     type ProbeObservation,
     type ProbePlatform,
     type ProbeVariant,
@@ -152,12 +147,12 @@ const candidateOf = (
     model: string,
     variant: ProbeVariant,
     effort: EffortValue | null,
-    options: { readonly withClientTools?: boolean; readonly wave?: 'w1' | 'w2'; readonly repeat?: number } = {}
+    options: { readonly withClientTools?: boolean } = {}
 ): ProbeCandidate => ({
-    id: `${model}:${options.wave ?? 'w1'}:${variant}:${effort ?? 'auto'}${options.withClientTools === true ? ':tools' : ''}#${options.repeat ?? 1}`,
+    id: `${model}:w1:${variant}:${effort ?? 'auto'}${options.withClientTools === true ? ':tools' : ''}`,
     model,
     platform,
-    wave: options.wave ?? 'w1',
+    wave: 'w1',
     variant,
     effort,
     withClientTools: options.withClientTools ?? false,
@@ -275,7 +270,7 @@ const drainLane = async (platform: ProbePlatform, candidate: ProbeCandidate, rep
 
 const runMatrixCases = async (): Promise<void> => {
     results.push(await runCase('W1 matrix: 13 menu models, 92 acceptance records plus 8 fidelity variants', () => {
-        const plan = buildProbePlan({ wave: 'w1', budget: defaultBudget('w1') });
+        const plan = buildProbePlan({ budget: defaultBudget() });
         const acceptance = plan.candidates.filter((candidate) => !candidate.withClientTools);
         const fidelity = plan.candidates.filter((candidate) => candidate.withClientTools);
         expect(acceptance.length === 92, `92 acceptance records (got ${acceptance.length})`);
@@ -286,7 +281,7 @@ const runMatrixCases = async (): Promise<void> => {
     }));
 
     results.push(await runCase('W1 matrix: per-platform candidate counts match the probe plan', () => {
-        const plan = buildProbePlan({ wave: 'w1', budget: defaultBudget('w1') });
+        const plan = buildProbePlan({ budget: defaultBudget() });
         const counts = new Map<ProbePlatform, number>();
         for (const candidate of plan.candidates) counts.set(candidate.platform, (counts.get(candidate.platform) ?? 0) + 1);
         expect(counts.get('gemini') === 26, `gemini 24+2 fidelity (got ${counts.get('gemini')})`);
@@ -297,50 +292,38 @@ const runMatrixCases = async (): Promise<void> => {
         expect(counts.get('mimo') === 9, `mimo 8+1 fidelity (got ${counts.get('mimo')})`);
     }));
 
-    results.push(await runCase('W2 matrix: 7 representative models, 49 effect samples', () => {
-        const plan = buildProbePlan({ wave: 'w2', budget: defaultBudget('w2') });
-        expect(plan.candidates.length === 49, `49 W2 requests (got ${plan.candidates.length})`);
-        expect(plan.models.every((model) => W2_REPRESENTATIVE_MODELS.includes(model.model)), 'only representative models');
-        const perModel = new Map<string, number>();
-        for (const candidate of plan.candidates) perModel.set(candidate.model, (perModel.get(candidate.model) ?? 0) + 1);
-        expect([...perModel.values()].every((count) => count === 7), 'each model gets baseline x3 + two levels x2');
-    }));
-
     results.push(await runCase('matrix generation is deterministic', () => {
-        const first = buildProbePlan({ wave: 'all', budget: defaultBudget('all') });
-        const second = buildProbePlan({ wave: 'all', budget: defaultBudget('all') });
+        const first = buildProbePlan({ budget: defaultBudget() });
+        const second = buildProbePlan({ budget: defaultBudget() });
         expect(JSON.stringify(first) === JSON.stringify(second), 'the same options produce the same plan bytes');
     }));
 
-    results.push(await runCase('matrix: the menu-matrix snapshot, every model covered by both waves', () => {
+    results.push(await runCase('matrix: the menu-matrix snapshot covers all 13 chat menu models', () => {
         const snapshot = MENU_MATRIX.map((entry) => entry.model);
         expect(snapshot.length === 13, `13 snapshot models (got ${snapshot.length})`);
-        const all = buildProbePlan({ wave: 'all', budget: defaultBudget('all') });
-        const planned = all.models.map((model) => model.model);
+        const plan = buildProbePlan({ budget: defaultBudget() });
+        const planned = plan.models.map((model) => model.model);
         expect(JSON.stringify(planned) === JSON.stringify(snapshot), `the matrix is the snapshot in order (got ${planned.join(',')})`);
         expect(planned.includes('gpt-6-sol'), 'gpt-6-sol is a menu model and is probed');
         for (const nonMenu of ['gpt-6.1-sol', 'gpt-6.1-terra', 'claude-fable-5-2', 'gemini-3.8-flash', 'gemini-4-argon']) {
             expect(!planned.includes(nonMenu), `${nonMenu} is not in the menu and is not probed`);
         }
-        const w1 = buildProbePlan({ wave: 'w1', budget: defaultBudget('w1') });
-        expect(snapshot.every((id) => w1.models.some((model) => model.model === id)), 'every snapshot model has W1 coverage');
-        expect(W2_REPRESENTATIVE_MODELS.every((id) => snapshot.includes(id)), 'every W2 representative is a snapshot model');
     }));
 
     results.push(await runCase('budget cut: max-requests drops the tail, cheap first', () => {
-        const plan = buildProbePlan({ wave: 'all', budget: { maxRequests: 40, maxUsd: 3, timeoutMs: 90_000, maxRetries: 1 } });
+        const plan = buildProbePlan({ budget: { maxRequests: 40, maxUsd: 3, timeoutMs: 90_000, maxRetries: 1 } });
         expect(plan.candidates.length === 40, `stops at max-requests (got ${plan.candidates.length})`);
-        expect(plan.cut.droppedRequests === 109, `drops the rest (got ${plan.cut.droppedRequests})`);
+        expect(plan.cut.droppedRequests === 60, `drops the rest (got ${plan.cut.droppedRequests})`);
         expect(plan.cut.reasons.includes('--max-requests 40'), 'reason names the limit');
         const costs = plan.candidates.map((candidate) => candidate.estimatedCostUsd);
         expect(costs.every((cost, index) => index === 0 || (costs[index - 1] ?? 0) <= cost), 'kept candidates are cost-ordered');
     }));
 
     results.push(await runCase('budget cut: max-usd keeps the cheapest subset', () => {
-        const plan = buildProbePlan({ wave: 'all', budget: { maxRequests: 250, maxUsd: 0.2, timeoutMs: 90_000, maxRetries: 1 } });
-        expect(plan.estimatedUsd <= 0.2, `estimated ${plan.estimatedUsd} within $0.2`);
+        const plan = buildProbePlan({ budget: { maxRequests: 250, maxUsd: 0.05, timeoutMs: 90_000, maxRetries: 1 } });
+        expect(plan.estimatedUsd <= 0.05, `estimated ${plan.estimatedUsd} within $0.05`);
         expect(plan.cut.droppedRequests > 0, 'something was dropped');
-        expect(plan.cut.reasons.includes('--max-usd 0.20'), 'reason names the limit');
+        expect(plan.cut.reasons.includes('--max-usd 0.05'), 'reason names the limit');
     }));
 
     results.push(await runCase('hard ceilings clamp: 250 requests and $5', () => {
@@ -349,28 +332,16 @@ const runMatrixCases = async (): Promise<void> => {
         expect(budget.maxUsd === HARD_MAX_USD, `usd clamped to ${HARD_MAX_USD}`);
         expect(budget.timeoutMs === 5_000, 'timeout floor is 5s');
         expect(budget.maxRetries === 3, 'retry cap is 3');
-        const defaults = defaultBudget('all');
-        expect(defaults.maxUsd === 3, 'all-wave default budget is $3 (design §7)');
-        expect(defaults.maxRequests === HARD_MAX_REQUESTS, 'all-wave default request cap');
-    }));
-
-    results.push(await runCase('w2 sampling picks the vendor default plus the far end', () => {
-        const plan = buildProbePlan({ wave: 'w2', budget: defaultBudget('w2') });
-        const hydrogen = plan.candidates.filter((candidate) => candidate.model === 'gemini-4-hydrogen' && candidate.variant === 'level');
-        const sampled = [...new Set(hydrogen.map((candidate) => candidate.effort))];
-        expect(sampled.includes('high'), `hydrogen default high is sampled (got ${sampled.join(',')})`);
-        expect(sampled.includes('xhigh'), 'the highest accepted effort is sampled too');
-        const deepseek = plan.candidates.filter((candidate) => candidate.model === 'deepseek-flash' && candidate.variant === 'level');
-        expect(deepseek.some((candidate) => candidate.effort === 'high'), 'deepseek default high sampled');
+        const defaults = defaultBudget();
+        expect(defaults.maxUsd === 3, 'default budget is $3 (design §7)');
+        expect(defaults.maxRequests === HARD_MAX_REQUESTS, 'default request cap is 250');
+        expect(W1_OUTPUT_TOKEN_CAP === 256, 'W1 cap is 256');
     }));
 
     results.push(await runCase('vendor defaults and efforts come from the capability seed', () => {
         const specOf = (model: string) => PROBE_MODEL_SNAPSHOT.find((spec) => spec.model === model);
         const defaultOf = (model: string): EffortValue | null => specOf(model)?.vendorDefaultEffort ?? null;
         const effortsOf = (model: string): readonly string[] => specOf(model)?.vendorEfforts ?? [];
-        // The default is the W2 primary sample and the fallback written when W2
-        // cannot infer one, so these rows decide catalog data through the
-        // proposal flow. They are read from the same code seed the catalog uses.
         expect(defaultOf('gemini-4-hydrogen') === 'high', 'hydrogen default high');
         expect(defaultOf('gemini-4-neon') === 'high', 'neon default high');
         expect(
@@ -382,120 +353,40 @@ const runMatrixCases = async (): Promise<void> => {
         expect(defaultOf('gpt-6-luna') === 'medium', 'luna default medium');
         expect(defaultOf('gpt-6-sol') === 'medium', 'sol default medium');
         expect(defaultOf('claude-sonnet-5-5') === 'high', 'sonnet default high');
-        expect(defaultOf('claude-opus-5-5') === 'high', 'Opus 5.5 default comes from the seed (high)');
+        expect(defaultOf('claude-opus-5-5') === 'medium', 'Opus 5.5 default comes from the seed (medium)');
         expect(defaultOf('grok-4.7') === 'high', 'grok-4.7 default high');
         expect(defaultOf('deepseek-flash') === 'high', 'deepseek default high');
         expect(JSON.stringify(effortsOf('gpt-6-sol')) === JSON.stringify(['none', 'low', 'medium', 'high', 'xhigh', 'max']), 'sol keeps its seeded graded efforts');
         expect(effortsOf('mimo-v2.6-flash').length === 0 && specOf('mimo-v2.6-flash')?.vendorToggle === true, 'mimo stays toggle-only');
     }));
 
-    results.push(await runCase('cost estimate uses the wave token cap and the model price', () => {
+    results.push(await runCase('cost estimate uses the W1 token cap and the model price', () => {
         const hydrogen = PROBE_MODEL_SNAPSHOT.find((model) => model.model === 'gemini-4-hydrogen');
         expect(hydrogen !== undefined, 'snapshot has hydrogen');
         if (hydrogen === undefined) return;
-        const w1 = estimateRequestCostUsd(hydrogen, 'w1');
-        const w2 = estimateRequestCostUsd(hydrogen, 'w2');
-        expect(w2 > w1, 'the effect wave reserves more output tokens');
+        const w1 = estimateRequestCostUsd(hydrogen);
         expect(w1 > 0 && w1 < 0.01, `W1 request estimate ${w1} stays tiny`);
     }));
 
-    results.push(await runCase('w2 output cap: default stays 4096 and the bounds are enforced', () => {
-        expect(W2_OUTPUT_TOKEN_CAP === 4_096, 'the default W2 cap is 4096');
-        expect(MIN_W2_OUTPUT_TOKEN_CAP === 1_024 && MAX_W2_OUTPUT_TOKEN_CAP === 16_384, 'the documented bounds');
-        expect(defaultBudget('w2').w2OutputTokenCap === undefined, 'the default budget carries no override');
-        const base = buildProbePlan({ wave: 'w2', budget: defaultBudget('w2') });
-        const explicitDefault = buildProbePlan({ wave: 'w2', budget: { ...defaultBudget('w2'), w2OutputTokenCap: W2_OUTPUT_TOKEN_CAP } });
-        expect(base.requests === 49 && explicitDefault.requests === 49, `49 W2 requests (got ${base.requests}/${explicitDefault.requests})`);
-        expect(base.estimatedUsd === 1.179627, `the default W2 estimate is unchanged (${base.estimatedUsd})`);
-        expect(explicitDefault.estimatedUsd === base.estimatedUsd, 'an explicit 4096 is the same plan');
-        for (const valid of [1_024, W2_OUTPUT_TOKEN_CAP, 6_144, 8_192, MAX_W2_OUTPUT_TOKEN_CAP]) {
-            expect(isValidW2OutputTokenCap(valid), `${valid} is a valid cap`);
-        }
-        for (const invalid of [1_023, MAX_W2_OUTPUT_TOKEN_CAP + 1, 4_096.5, 0, -1_024, Number.NaN]) {
-            expect(!isValidW2OutputTokenCap(invalid), `${String(invalid)} is refused`);
-        }
-        expect(W1_OUTPUT_TOKEN_CAP === 256, 'the W1 cap stays untouched');
-    }));
-
-    results.push(await runCase('w2 output cap: raising it raises the estimate and the all-wave worst case', () => {
-        const planAt = (cap: number | undefined) =>
-            buildProbePlan({
-                wave: 'w2',
-                budget: { ...defaultBudget('w2'), ...(cap === undefined ? {} : { w2OutputTokenCap: cap }) },
-            });
-        const base = planAt(undefined);
-        const lower = planAt(1_024);
-        const mid = planAt(6_144);
-        const high = planAt(8_192);
-        expect(lower.estimatedUsd === 0.309145, `1024 lowers the estimate (${lower.estimatedUsd})`);
-        expect(base.estimatedUsd === 1.179627, `4096 baseline (${base.estimatedUsd})`);
-        expect(mid.estimatedUsd === 1.759948, `6144 estimate (${mid.estimatedUsd})`);
-        expect(high.estimatedUsd === 2.340269, `8192 estimate (${high.estimatedUsd})`);
-        expect(lower.estimatedUsd < base.estimatedUsd && base.estimatedUsd < mid.estimatedUsd && mid.estimatedUsd < high.estimatedUsd, 'the estimate grows with the cap');
-        for (const plan of [lower, base, mid, high]) expect(plan.requests === 49, 'the cap changes cost, never the request count');
-        const allBase = buildProbePlan({ wave: 'all', budget: defaultBudget('all') });
-        const allRaised = buildProbePlan({ wave: 'all', budget: { ...defaultBudget('all'), w2OutputTokenCap: 8_192 } });
-        expect(allBase.estimatedUsd === 1.582917 && allBase.requests === 149, `default all-wave ${allBase.estimatedUsd}/${allBase.requests}`);
-        expect(allRaised.estimatedUsd > allBase.estimatedUsd, 'the raised cap raises the all-wave worst case');
-        // The per-request formula follows the cap: hydrogen output is $7.5/M tokens.
-        const hydrogen = PROBE_MODEL_SNAPSHOT.find((model) => model.model === 'gemini-4-hydrogen');
-        expect(hydrogen !== undefined, 'hydrogen in snapshot');
-        if (hydrogen !== undefined) {
-            const delta = estimateRequestCostUsd(hydrogen, 'w2', 6_144) - estimateRequestCostUsd(hydrogen, 'w2');
-            expect(Math.abs(delta - (2_048 * 7.5) / 1_000_000) < 1e-12, `6144 reserves 2048 more output tokens (Δ=${delta})`);
-            expect(
-                estimateRequestCostUsd(hydrogen, 'w1', 6_144) === estimateRequestCostUsd(hydrogen, 'w1'),
-                'the W2 cap never touches a W1 estimate'
-            );
-        }
-    }));
-
-    results.push(await runCase('w2 output cap: the --max-usd cut follows the raised estimate', () => {
-        const fitting = buildProbePlan({ wave: 'w2', budget: { ...defaultBudget('w2'), maxUsd: 2 } });
-        expect(fitting.cut.droppedRequests === 0 && fitting.estimatedUsd === 1.179627, 'the default cap fits $2 untouched');
-        const raised = buildProbePlan({ wave: 'w2', budget: { ...defaultBudget('w2'), maxUsd: 2, w2OutputTokenCap: 16_384 } });
-        expect(raised.cut.droppedRequests > 0, `the raised cap hits the dollar limit (dropped ${raised.cut.droppedRequests})`);
-        expect(raised.cut.reasons.includes('--max-usd 2.00'), `the cut reason names the limit (${raised.cut.reasons.join(',')})`);
-        expect(raised.estimatedUsd <= 2, 'the kept plan stays inside the budget');
-        // Neon's lower price keeps the 8192 tail inside the $3 default; the max
-        // cap is what pushes the all-wave worst case past it.
-        const allAt8192 = buildProbePlan({ wave: 'all', budget: { ...defaultBudget('all'), w2OutputTokenCap: 8_192 } });
-        expect(allAt8192.cut.droppedRequests === 0, 'the 8192 tail still fits the $3 default');
-        const allRaised = buildProbePlan({ wave: 'all', budget: { ...defaultBudget('all'), w2OutputTokenCap: 16_384 } });
-        expect(allRaised.cut.droppedRequests === 10, `the all-wave default budget cuts the raised-cap tail (got ${allRaised.cut.droppedRequests})`);
-        expect(allRaised.cut.reasons.includes('--max-usd 3.00'), 'the all-wave cut names $3.00');
-        expect(allRaised.requests === 139 && allRaised.estimatedUsd === 2.844904, `kept plan ${allRaised.requests}/${allRaised.estimatedUsd}`);
-    }));
-
-    results.push(await runCase('w2 output cap: the CLI parses the switch, refuses bad values and names it in --help', () => {
-        const parsed = parseProbeCliArguments(['--wave', 'w2', '--w2-cap', '6144', '--dry-run']);
-        expect(parsed.w2Cap === 6_144 && parsed.wave === 'w2' && parsed.yes === false, 'the switch parses');
-        const inline = parseProbeCliArguments(['--w2-cap=8192']);
-        expect(inline.w2Cap === 8_192, 'an inline value parses too');
-        expect(parseProbeCliArguments([]).w2Cap === undefined, 'omitted keeps the default');
-        expect(parseProbeCliArguments(['--w2-cap', '1024']).w2Cap === 1_024, 'the lower bound parses');
-        expect(parseProbeCliArguments(['--w2-cap', '16384']).w2Cap === 16_384, 'the upper bound parses');
-        const messageOf = (raw: string): string => {
+    results.push(await runCase('CLI v2: --wave w2 is refused, --merge and --help parse cleanly', () => {
+        const w2Error = ((): string => {
             try {
-                parseProbeCliArguments(['--w2-cap', raw]);
+                parseProbeCliArguments(['--wave', 'w2']);
                 return '';
             } catch (error) {
                 return error instanceof Error ? error.message : String(error);
             }
-        };
-        for (const bad of ['999', '16385', '4096.5', '-1024', 'abc']) {
-            const message = messageOf(bad);
-            expect(message.includes('1024..16384'), `--w2-cap ${bad} is refused (${message})`);
-        }
-        expect(PROBE_HELP.includes('--w2-cap'), '--help lists the switch');
-        expect(PROBE_HELP.includes('1024..16384'), '--help names the range');
-        expect(PROBE_HELP.includes('4096'), '--help names the default');
-        expect(PROBE_HELP.includes('生产不设该上限'), '--help says production sends no such cap');
-        expect(PROBE_HELP.includes('更少截断但成本增加'), '--help states the tradeoff');
+        })();
+        expect(w2Error.includes('v2') && w2Error.includes('移除'), `w2 is refused (${w2Error})`);
+        const merged = parseProbeCliArguments(['--merge', 'a.json,b.json', '--merge', 'c.json']);
+        expect(JSON.stringify(merged.merge) === JSON.stringify(['a.json', 'b.json', 'c.json']), 'merge accepts comma-separated and repeated flags');
+        expect(PROBE_HELP.includes('--merge'), '--help lists --merge');
+        expect(PROBE_HELP.includes('/probe export'), '--help names /probe export');
+        expect(PROBE_HELP.includes('--models-json'), '--help lists --models-json');
     }));
 
-    results.push(await runCase('--models and --models-json restrict the matrix', () => {
-        const narrowed = buildProbePlan({ wave: 'w1', budget: defaultBudget('w1'), models: ['deepseek-flash'] });
+    results.push(await runCase('--models and --models-json: unpriced models fall back to FALLBACK_PRICE with warning', () => {
+        const narrowed = buildProbePlan({ budget: defaultBudget(), models: ['deepseek-flash'] });
         expect(narrowed.candidates.length === 9, `deepseek only (got ${narrowed.candidates.length})`);
         const parsed = parseModelsJson([
             {
@@ -507,10 +398,22 @@ const runMatrixCases = async (): Promise<void> => {
             },
         ]);
         expect(parsed.problems.length === 0, 'valid external snapshot parses');
-        const external = buildProbePlan({ wave: 'w1', budget: defaultBudget('w1'), modelSpecs: parsed.models });
+        const external = buildProbePlan({ budget: defaultBudget(), modelSpecs: parsed.models });
         expect(external.models.length === 1 && external.models[0]?.model === 'gemini-4-hydrogen', 'external snapshot replaces the list');
-        const broken = parseModelsJson([{ model: 'x', platform: 'nope' }, { model: 'y', platform: 'openai' }]);
-        expect(broken.problems.length === 2, 'two broken entries are reported');
+        const unpriced = parseModelsJson([
+            { model: 'x', platform: 'nope' },
+            { model: 'gpt-auto-unpriced', platform: 'openai', vendorEfforts: ['low', 'medium'] },
+        ]);
+        expect(unpriced.problems.length === 2, 'invalid platform and missing price both report problems');
+        expect(unpriced.problems[1]?.message.includes('falling back') === true, 'missing price emits a clear fallback warning');
+        expect(unpriced.models.length === 1 && unpriced.models[0]?.model === 'gpt-auto-unpriced', 'unpriced model is still kept for probing');
+        expect(
+            unpriced.models[0]?.price.inputPerMillionUsd === FALLBACK_PRICE.inputPerMillionUsd &&
+                unpriced.models[0]?.price.outputPerMillionUsd === FALLBACK_PRICE.outputPerMillionUsd,
+            'unpriced model gets FALLBACK_PRICE'
+        );
+        const unpricedPlan = buildProbePlan({ budget: defaultBudget(), modelSpecs: unpriced.models });
+        expect(unpricedPlan.models.length === 1 && unpricedPlan.requests > 0, 'unpriced model is planned');
     }));
 };
 
@@ -1170,31 +1073,57 @@ const runClassificationCases = async (): Promise<void> => {
 // 5. Result document, inference and schema validation
 // ---------------------------------------------------------------------------
 
+const FIXTURE_LANES: ProbeLaneFingerprints = {
+    gemini: 'vertex-adc@global#p11111111',
+    openai: 'ephone#k22222222',
+    anthropic: 'ephone#k33333333',
+    grok: 'official-xai#k44444444',
+    deepseek: 'official-deepseek#k55555555',
+    mimo: 'official-mimo#k66666666',
+};
+
 const runResultCases = async (): Promise<void> => {
-    results.push(await runCase('summary: accepted efforts exclude mapped and sentinel values', () => {
+    results.push(await runCase('summary v2: accepted and mapped efforts, measured toggle, no vendorDefaultEffort', () => {
         const spec = PROBE_MODEL_SNAPSHOT.find((model) => model.model === 'deepseek-flash');
         expect(spec !== undefined, 'deepseek in snapshot');
         if (spec === undefined) return;
         const observations: ProbeObservation[] = [
-            observationFixture(candidateOf('deepseek', 'deepseek-flash', 'baseline', null)),
-            observationFixture(candidateOf('deepseek', 'deepseek-flash', 'level', 'low')),
-            observationFixture(candidateOf('deepseek', 'deepseek-flash', 'level', 'high')),
-            observationFixture(candidateOf('deepseek', 'deepseek-flash', 'level', 'max')),
-            observationFixture(candidateOf('deepseek', 'deepseek-flash', 'level', 'minimal')),
-            observationFixture(candidateOf('deepseek', 'deepseek-flash', 'level', 'xhigh')),
-            observationFixture(candidateOf('deepseek', 'deepseek-flash', 'toggle-off', null)),
+            observationFixture(candidateOf('deepseek', 'deepseek-flash', 'baseline', null), { laneId: 'official-deepseek#k55555555' }),
+            observationFixture(candidateOf('deepseek', 'deepseek-flash', 'level', 'low'), { laneId: 'official-deepseek#k55555555' }),
+            observationFixture(candidateOf('deepseek', 'deepseek-flash', 'level', 'high'), { laneId: 'official-deepseek#k55555555' }),
+            observationFixture(candidateOf('deepseek', 'deepseek-flash', 'level', 'max'), { laneId: 'official-deepseek#k55555555' }),
+            observationFixture(candidateOf('deepseek', 'deepseek-flash', 'level', 'minimal'), { laneId: 'official-deepseek#k55555555' }),
+            observationFixture(candidateOf('deepseek', 'deepseek-flash', 'level', 'xhigh'), { laneId: 'official-deepseek#k55555555' }),
+            observationFixture(candidateOf('deepseek', 'deepseek-flash', 'toggle-off', null), { laneId: 'official-deepseek#k55555555' }),
         ];
-        const summary = buildRunSummary({ probedAt: '2026-11-13T10:00:00.000Z', laneSignature: 'lane', specs: [spec], observations });
+        const summary = buildRunSummary({ probedAt: '2026-11-13T10:00:00.000Z', lanes: FIXTURE_LANES, specs: [spec], observations });
+        expect(summary.document.schema === 2, 'v2 schema');
         expect(summary.document.results.length === 1, 'one importable model');
         const entry = summary.document.results[0];
         expect(entry !== undefined, 'entry exists');
         if (entry === undefined) return;
         expect(JSON.stringify(entry.acceptedEfforts) === JSON.stringify(['low', 'high', 'max']), `vendor-only accepted set (got ${entry.acceptedEfforts.join(',')})`);
+        expect(JSON.stringify(entry.mappedEfforts) === JSON.stringify(['minimal', 'xhigh']), 'mapped efforts written into results.json');
         expect(entry.toggle === true, 'DeepSeek toggle detected from the accepted toggle-off');
-        expect(entry.defaultEffort === spec.vendorDefaultEffort, 'W1-only run reports the vendor default');
+        expect(entry.lane === 'official-deepseek#k55555555', 'per-entry lane fingerprint recorded');
+        expect(!('defaultEffort' in entry) && !('vendorDefaultEffort' in entry), 'vendorDefaultEffort is not written into results.json');
         expect(Object.keys(entry.errorSummary).length === 0, 'mapped values are not errors');
-        const inference = summary.inferences[0];
-        expect(JSON.stringify(inference?.mappedEfforts) === JSON.stringify(['minimal', 'xhigh']), 'mapped efforts are recorded separately');
+    }));
+
+    results.push(await runCase('summary v2: non-toggle platform leaves toggle null (not guessed)', () => {
+        const spec = PROBE_MODEL_SNAPSHOT.find((model) => model.model === 'claude-opus-5-5');
+        expect(spec !== undefined, 'opus in snapshot');
+        if (spec === undefined) return;
+        const observations: ProbeObservation[] = [
+            observationFixture(candidateOf('anthropic', 'claude-opus-5-5', 'baseline', null), { laneId: 'ephone#k33333333' }),
+            observationFixture(candidateOf('anthropic', 'claude-opus-5-5', 'level', 'low'), { laneId: 'ephone#k33333333' }),
+            observationFixture(candidateOf('anthropic', 'claude-opus-5-5', 'level', 'medium'), { laneId: 'ephone#k33333333' }),
+            observationFixture(candidateOf('anthropic', 'claude-opus-5-5', 'level', 'high'), { laneId: 'ephone#k33333333' }),
+        ];
+        const summary = buildRunSummary({ probedAt: '2026-11-13T10:00:00.000Z', lanes: FIXTURE_LANES, specs: [spec], observations });
+        const entry = summary.document.results[0];
+        expect(entry?.toggle === null, 'untested toggle is null');
+        expect(entry?.tools === null, 'untested tools is null');
     }));
 
     results.push(await runCase('summary: incomplete models are left out of results.json', () => {
@@ -1205,13 +1134,13 @@ const runResultCases = async (): Promise<void> => {
             observationFixture(candidateOf('gemini', 'gemini-4-hydrogen', 'baseline', null), { outcome: 'error', errorClass: 'rate_limited' }),
             observationFixture(candidateOf('gemini', 'gemini-4-hydrogen', 'level', 'low')),
         ];
-        const summary = buildRunSummary({ probedAt: '2026-11-13T10:00:00.000Z', laneSignature: 'lane', specs: [spec], observations });
+        const summary = buildRunSummary({ probedAt: '2026-11-13T10:00:00.000Z', lanes: FIXTURE_LANES, specs: [spec], observations });
         expect(summary.document.results.length === 0, 'nothing importable');
         expect(summary.incomplete.length === 1, 'the model is reported as incomplete');
         expect(summary.incomplete[0]?.incompleteReasons.some((reason) => reason.includes('rate_limited')), 'the unreliable candidate is named');
     }));
 
-    results.push(await runCase('summary: a rejected client-tool fidelity variant does not hide the plain matrix', () => {
+    results.push(await runCase('summary: client-tool fidelity variant is recorded in tools and does not hide plain matrix', () => {
         const spec = PROBE_MODEL_SNAPSHOT.find((model) => model.model === 'gemini-4-hydrogen');
         expect(spec !== undefined, 'hydrogen in snapshot');
         if (spec === undefined) return;
@@ -1226,9 +1155,22 @@ const runResultCases = async (): Promise<void> => {
                 errorSummary: '400 tools: function declarations unsupported',
             }),
         ];
-        const summary = buildRunSummary({ probedAt: '2026-11-13T10:00:00.000Z', laneSignature: 'lane', specs: [spec], observations });
+        const summary = buildRunSummary({ probedAt: '2026-11-13T10:00:00.000Z', lanes: FIXTURE_LANES, specs: [spec], observations });
         expect(summary.document.results.length === 1, `hydrogen stays importable (incomplete: ${summary.incomplete.length})`);
-        expect(JSON.stringify(summary.document.results[0]?.acceptedEfforts) === JSON.stringify(['low', 'high', 'xhigh']), 'the plain acceptance set is unaffected');
+        const entry = summary.document.results[0];
+        expect(JSON.stringify(entry?.acceptedEfforts) === JSON.stringify(['low', 'high', 'xhigh']), 'the plain acceptance set is unaffected');
+        expect(entry?.tools?.supported === false && entry.tools.error?.includes('function declarations') === true, 'tools rejection is recorded in results.json');
+        const markdown = formatSummaryMarkdown({
+            probedAt: '2026-11-13T10:00:00.000Z',
+            lanes: summary.lanes,
+            budgetUsd: 3,
+            spentUsd: 0.1,
+            summary,
+            errors: [],
+            startedAt: '2026-11-13T10:00:00.000Z',
+            finishedAt: '2026-11-13T10:01:00.000Z',
+        });
+        expect(markdown.includes('FAIL') && markdown.includes('tools rejected'), 'summary.md displays the tools rejection');
     }));
 
     results.push(await runCase('summary: rejected sentinels fill errorSummary but do not break completeness', () => {
@@ -1250,7 +1192,7 @@ const runResultCases = async (): Promise<void> => {
             rejected('max'),
             rejected('minimal'),
         ];
-        const summary = buildRunSummary({ probedAt: '2026-11-13T10:00:00.000Z', laneSignature: 'lane', specs: [spec], observations });
+        const summary = buildRunSummary({ probedAt: '2026-11-13T10:00:00.000Z', lanes: FIXTURE_LANES, specs: [spec], observations });
         expect(summary.document.results.length === 1, 'neon still importable');
         const entry = summary.document.results[0];
         expect(entry !== undefined && Object.keys(entry.errorSummary).length === 2, 'both sentinels have an error summary');
@@ -1275,7 +1217,7 @@ const runResultCases = async (): Promise<void> => {
                 errorSummary: '400 Unsupported reasoning effort: none',
             }),
         ];
-        const summary = buildRunSummary({ probedAt: '2026-11-13T10:00:00.000Z', laneSignature: 'lane', specs: [spec], observations });
+        const summary = buildRunSummary({ probedAt: '2026-11-13T10:00:00.000Z', lanes: FIXTURE_LANES, specs: [spec], observations });
         expect(
             summary.incomplete.length === 0,
             `astra stays complete (reasons: ${summary.incomplete[0]?.incompleteReasons.join('; ') ?? 'none'})`
@@ -1304,7 +1246,7 @@ const runResultCases = async (): Promise<void> => {
                 errorSummary: '400 Thinking level is unsupported: HIGH',
             }),
         ];
-        const summary = buildRunSummary({ probedAt: '2026-11-13T10:00:00.000Z', laneSignature: 'lane', specs: [spec], observations });
+        const summary = buildRunSummary({ probedAt: '2026-11-13T10:00:00.000Z', lanes: FIXTURE_LANES, specs: [spec], observations });
         expect(summary.document.results.length === 0, 'hydrogen is withheld from results.json');
         expect(summary.incomplete.length === 1, 'the model is incomplete');
         expect(
@@ -1333,127 +1275,41 @@ const runResultCases = async (): Promise<void> => {
                 errorSummary: '400 Thinking level is unsupported: MINIMAL',
             }),
         ];
-        const summary = buildRunSummary({ probedAt: '2026-11-13T10:00:00.000Z', laneSignature: 'lane', specs: [spec], observations });
+        const summary = buildRunSummary({ probedAt: '2026-11-13T10:00:00.000Z', lanes: FIXTURE_LANES, specs: [spec], observations });
         expect(summary.incomplete.length === 0, 'the sentinel rejection is not a required shape');
         expect(summary.document.results.length === 1, 'neon stays importable');
     }));
 
-    results.push(await runCase('inference: baseline closest to the vendor default level', () => {
-        const spec = PROBE_MODEL_SNAPSHOT.find((model) => model.model === 'gemini-4-hydrogen');
-        expect(spec !== undefined, 'hydrogen in snapshot');
-        if (spec === undefined) return;
-        const observations: ProbeObservation[] = [
-            observationFixture(candidateOf('gemini', 'gemini-4-hydrogen', 'baseline', null, { wave: 'w2', repeat: 1 }), { reasoningTokens: 1200 }),
-            observationFixture(candidateOf('gemini', 'gemini-4-hydrogen', 'baseline', null, { wave: 'w2', repeat: 2 }), { reasoningTokens: 1150 }),
-            observationFixture(candidateOf('gemini', 'gemini-4-hydrogen', 'baseline', null, { wave: 'w2', repeat: 3 }), { reasoningTokens: 1250 }),
-            observationFixture(candidateOf('gemini', 'gemini-4-hydrogen', 'level', 'high', { wave: 'w2', repeat: 1 }), { reasoningTokens: 1180 }),
-            observationFixture(candidateOf('gemini', 'gemini-4-hydrogen', 'level', 'high', { wave: 'w2', repeat: 2 }), { reasoningTokens: 1220 }),
-            observationFixture(candidateOf('gemini', 'gemini-4-hydrogen', 'level', 'xhigh', { wave: 'w2', repeat: 1 }), { reasoningTokens: 2600 }),
-            observationFixture(candidateOf('gemini', 'gemini-4-hydrogen', 'level', 'xhigh', { wave: 'w2', repeat: 2 }), { reasoningTokens: 2500 }),
-        ];
-        const inference = inferDefaultEffort(observations);
-        expect(inference.defaultEffort === 'high', `infers high (got ${inference.defaultEffort ?? 'null'})`);
-        expect(inference.confidence === 'high', `high confidence (got ${inference.confidence})`);
-    }));
+    results.push(await runCase('schema: v2 and legacy v1 documents both pass validation; keys match §3.6', () => {
+        const v2Document = {
+            schema: 2,
+            probedAt: '2026-11-20T10:00:00.000Z',
+            lanes: { gemini: 'vertex-adc@global#p11111111' },
+            results: [
+                {
+                    model: 'gemini-4-hydrogen',
+                    platform: 'gemini',
+                    lane: 'vertex-adc@global#p11111111',
+                    acceptedEfforts: ['low', 'medium', 'high', 'xhigh'],
+                    mappedEfforts: ['max'],
+                    toggle: null,
+                    tools: { supported: true, variant: 'level', effort: 'xhigh' },
+                    errorSummary: { minimal: '400 Thinking level is unsupported' },
+                    checkedOn: '2026-11-20',
+                },
+            ],
+        };
+        const v2Validation = validatedDocumentCheck(v2Document);
+        expect(v2Validation.valid && v2Validation.document?.schema === 2, `v2 valid (errors: ${v2Validation.errors.join('; ')})`);
+        const v2Entry = v2Validation.document?.schema === 2 ? v2Validation.document.results[0] : undefined;
+        expect(
+            v2Entry !== undefined &&
+                JSON.stringify(Object.keys(v2Entry).sort()) ===
+                    JSON.stringify(['acceptedEfforts', 'checkedOn', 'errorSummary', 'lane', 'mappedEfforts', 'model', 'platform', 'toggle', 'tools']),
+            'v2 result keys match §3.6 (no defaultEffort)'
+        );
 
-    results.push(await runCase('inference: no separation means null, never a guess', () => {
-        const observations: ProbeObservation[] = [
-            observationFixture(candidateOf('openai', 'gpt-6-luna', 'baseline', null, { wave: 'w2', repeat: 1 }), { reasoningTokens: 500 }),
-            observationFixture(candidateOf('openai', 'gpt-6-luna', 'baseline', null, { wave: 'w2', repeat: 2 }), { reasoningTokens: 510 }),
-            observationFixture(candidateOf('openai', 'gpt-6-luna', 'level', 'low', { wave: 'w2', repeat: 1 }), { reasoningTokens: 495 }),
-            observationFixture(candidateOf('openai', 'gpt-6-luna', 'level', 'low', { wave: 'w2', repeat: 2 }), { reasoningTokens: 520 }),
-            observationFixture(candidateOf('openai', 'gpt-6-luna', 'level', 'max', { wave: 'w2', repeat: 1 }), { reasoningTokens: 505 }),
-            observationFixture(candidateOf('openai', 'gpt-6-luna', 'level', 'max', { wave: 'w2', repeat: 2 }), { reasoningTokens: 515 }),
-        ];
-        const inference = inferDefaultEffort(observations);
-        expect(inference.defaultEffort === null, `no default when levels look identical (got ${inference.defaultEffort ?? 'null'})`);
-        expect(inference.source === 'unknown', 'source is unknown');
-    }));
-
-    results.push(await runCase('inference: a truncated W2 sample never sets the default', () => {
-        const observations: ProbeObservation[] = [
-            observationFixture(candidateOf('gemini', 'gemini-4-hydrogen', 'baseline', null, { wave: 'w2', repeat: 1 }), { reasoningTokens: 1180 }),
-            observationFixture(candidateOf('gemini', 'gemini-4-hydrogen', 'baseline', null, { wave: 'w2', repeat: 2 }), { reasoningTokens: 1220 }),
-            observationFixture(candidateOf('gemini', 'gemini-4-hydrogen', 'level', 'high', { wave: 'w2', repeat: 1 }), { reasoningTokens: 1200 }),
-            observationFixture(candidateOf('gemini', 'gemini-4-hydrogen', 'level', 'high', { wave: 'w2', repeat: 2 }), { reasoningTokens: 1210 }),
-            // These look exactly like the baseline, but the probe cap cut them:
-            // without exclusion the nearest level would be xhigh and no match.
-            observationFixture(candidateOf('gemini', 'gemini-4-hydrogen', 'level', 'xhigh', { wave: 'w2', repeat: 1 }), {
-                reasoningTokens: 1200,
-                finishReason: 'max_tokens',
-            }),
-            observationFixture(candidateOf('gemini', 'gemini-4-hydrogen', 'level', 'xhigh', { wave: 'w2', repeat: 2 }), {
-                reasoningTokens: 1210,
-                finishReason: 'MAX_TOKENS',
-            }),
-        ];
-        const inference = inferDefaultEffort(observations);
-        expect(inference.truncatedSamples === 2, `two truncated samples counted (got ${inference.truncatedSamples})`);
-        expect(inference.defaultEffort === 'high', `truncated samples do not win the match (got ${inference.defaultEffort ?? 'null'})`);
-        expect(inference.confidence === 'high', `high confidence after exclusion (got ${inference.confidence})`);
-        expect(inference.detail.includes('2 truncated'), `the detail names them (got ${inference.detail})`);
-    }));
-
-    results.push(await runCase('inert: a truncated level sample cannot prove "no effect"', () => {
-        const spec = PROBE_MODEL_SNAPSHOT.find((model) => model.model === 'gpt-6-luna');
-        expect(spec !== undefined, 'luna in snapshot');
-        if (spec === undefined) return;
-        const baseline = (repeat: number, thinking: number): ProbeObservation =>
-            observationFixture(candidateOf('openai', 'gpt-6-luna', 'baseline', null, { wave: 'w2', repeat }), { reasoningTokens: thinking });
-        const low = (repeat: number, thinking: number, finishReason: string): ProbeObservation =>
-            observationFixture(candidateOf('openai', 'gpt-6-luna', 'level', 'low', { wave: 'w2', repeat }), {
-                reasoningTokens: thinking,
-                finishReason,
-            });
-        const observations: ProbeObservation[] = [baseline(1, 500), baseline(2, 510), low(1, 480, 'max_tokens'), low(2, 490, 'max_tokens')];
-        expect(inertEffortsOf(spec, observations).length === 0, 'the capped level is not called inert');
-        const closed: ProbeObservation[] = [baseline(1, 500), baseline(2, 510), low(1, 480, 'stop'), low(2, 490, 'stop')];
-        expect(JSON.stringify(inertEffortsOf(spec, closed)) === JSON.stringify(['low']), 'the same numbers without a cap would be inert');
-    }));
-
-    results.push(await runCase('summary: truncated samples are counted in the notes and absent from results.json', () => {
-        const spec = PROBE_MODEL_SNAPSHOT.find((model) => model.model === 'gemini-4-hydrogen');
-        expect(spec !== undefined, 'hydrogen in snapshot');
-        if (spec === undefined) return;
-        const observations: ProbeObservation[] = [
-            observationFixture(candidateOf('gemini', 'gemini-4-hydrogen', 'baseline', null)),
-            observationFixture(candidateOf('gemini', 'gemini-4-hydrogen', 'level', 'high')),
-            observationFixture(candidateOf('gemini', 'gemini-4-hydrogen', 'level', 'xhigh')),
-            observationFixture(candidateOf('gemini', 'gemini-4-hydrogen', 'baseline', null, { wave: 'w2', repeat: 1 }), { reasoningTokens: 1200 }),
-            observationFixture(candidateOf('gemini', 'gemini-4-hydrogen', 'baseline', null, { wave: 'w2', repeat: 2 }), { reasoningTokens: 1210 }),
-            observationFixture(candidateOf('gemini', 'gemini-4-hydrogen', 'level', 'high', { wave: 'w2', repeat: 1 }), { reasoningTokens: 1190 }),
-            observationFixture(candidateOf('gemini', 'gemini-4-hydrogen', 'level', 'high', { wave: 'w2', repeat: 2 }), { reasoningTokens: 1200 }),
-            observationFixture(candidateOf('gemini', 'gemini-4-hydrogen', 'level', 'xhigh', { wave: 'w2', repeat: 1 }), {
-                reasoningTokens: 4096,
-                finishReason: 'max_tokens',
-            }),
-            observationFixture(candidateOf('gemini', 'gemini-4-hydrogen', 'level', 'xhigh', { wave: 'w2', repeat: 2 }), {
-                reasoningTokens: 4096,
-                finishReason: 'max_tokens',
-            }),
-        ];
-        const summary = buildRunSummary({ probedAt: '2026-11-13T10:00:00.000Z', laneSignature: 'lane', specs: [spec], observations });
-        expect(summary.inferences[0]?.truncatedSamples === 2, 'the model row counts two truncated samples');
-        expect(summary.inferences[0]?.defaultInference.defaultEffort === 'high', 'the default still comes from the uncapped levels');
-        const markdown = formatSummaryMarkdown({
-            probedAt: '2026-11-13T10:00:00.000Z',
-            laneSignature: 'lane',
-            budgetUsd: 3,
-            spentUsd: 1,
-            summary,
-            errors: [],
-            startedAt: '2026-11-13T10:00:00.000Z',
-            finishedAt: '2026-11-13T10:05:00.000Z',
-        });
-        expect(markdown.includes('truncated W2 samples: 2'), 'the summary header counts them');
-        expect(markdown.includes('truncated samples ignored: 2'), 'the effect block names them');
-        expect(markdown.includes('truncated: 2'), 'the model row names them');
-        const entry = summary.document.results[0];
-        expect(entry !== undefined && !Object.keys(entry).includes('truncated'), 'the §7 result entry keeps its exact keys');
-    }));
-
-    results.push(await runCase('schema: a built document passes validation; keys are exactly design §7', () => {
-        const document = {
+        const v1Document = {
             schema: 1,
             probedAt: '2026-11-13T10:00:00.000Z',
             laneSignature: 'vertex-adc@global|ephone|ephone|official-xai|official-deepseek|official-mimo',
@@ -1468,21 +1324,23 @@ const runResultCases = async (): Promise<void> => {
                 },
             ],
         };
-        const validation = validatedDocumentCheck(document);
-        expect(validation.valid, `valid (errors: ${validation.errors.join('; ')})`);
-        const entry = validation.document?.results[0];
-        expect(entry !== undefined, 'entry parsed');
-        if (entry === undefined) return;
-        expect(JSON.stringify(Object.keys(entry).sort()) === JSON.stringify(['acceptedEfforts', 'checkedOn', 'defaultEffort', 'errorSummary', 'model', 'toggle']), 'result keys are exactly the design fields');
-        expect(document.schema === 1 && document.results.length === 1, 'document shape');
+        const v1Validation = validatedDocumentCheck(v1Document);
+        expect(v1Validation.valid && v1Validation.document?.schema === 1, `legacy v1 valid (errors: ${v1Validation.errors.join('; ')})`);
     }));
 
-    results.push(await runCase('schema: bad documents are rejected with readable errors', () => {
+    results.push(await runCase('schema: bad v1/v2 documents are rejected with readable errors', () => {
         const cases: unknown[] = [
-            { schema: 2, probedAt: 'x', laneSignature: '', results: [] },
-            { schema: 1, probedAt: 'not-a-date', laneSignature: 'lane', results: [] },
+            { schema: 3, probedAt: '2026-11-20T10:00:00.000Z', lanes: {}, results: [] },
+            { schema: 2, probedAt: 'not-a-date', lanes: {}, results: [] },
+            { schema: 2, probedAt: '2026-11-20T10:00:00.000Z', lanes: { unknown: 'x' }, results: [] },
+            {
+                schema: 2,
+                probedAt: '2026-11-20T10:00:00.000Z',
+                lanes: { gemini: 'g' },
+                results: [{ model: 'm', platform: 'nope', lane: '', acceptedEfforts: [], mappedEfforts: [], toggle: null, tools: null, errorSummary: {}, checkedOn: '2026-11-20' }],
+            },
+            { schema: 1, probedAt: '2026-11-13T10:00:00.000Z', laneSignature: '', results: [] },
             { schema: 1, probedAt: '2026-11-13T10:00:00.000Z', laneSignature: 'lane', results: [{ model: 'm', acceptedEfforts: ['bogus'], defaultEffort: null, toggle: false, errorSummary: {}, checkedOn: '2026-11-13' }] },
-            { schema: 1, probedAt: '2026-11-13T10:00:00.000Z', laneSignature: 'lane', results: [{ model: 'm', acceptedEfforts: [], defaultEffort: 'nope', toggle: 'yes', errorSummary: {}, checkedOn: '13-11-2026' }] },
             'not-an-object',
         ];
         for (const value of cases) {
@@ -1491,15 +1349,80 @@ const runResultCases = async (): Promise<void> => {
             expect(validation.errors.length > 0, 'at least one error message');
         }
         const unknownKeys = validatedDocumentCheck({
-            schema: 1,
-            probedAt: '2026-11-13T10:00:00.000Z',
-            laneSignature: 'lane',
+            schema: 2,
+            probedAt: '2026-11-20T10:00:00.000Z',
+            lanes: { gemini: 'g' },
             comment: 'owner annotation',
-            results: [{ model: 'm', acceptedEfforts: ['low'], defaultEffort: null, toggle: false, errorSummary: {}, checkedOn: '2026-11-13', note: 'x' }],
+            results: [{ model: 'm', platform: 'gemini', lane: 'g', acceptedEfforts: ['low'], mappedEfforts: [], toggle: null, tools: null, errorSummary: {}, checkedOn: '2026-11-20', note: 'x' }],
         });
         expect(unknownKeys.valid, 'unknown keys are ignored, not rejected');
         expect(checkOnDate('2026-11-13'), 'checkedOn helper accepts a date');
         expect(!checkOnDate('2026-13-40'), 'checkedOn helper rejects an impossible date');
+    }));
+
+    results.push(await runCase('merge: combines partial v2 and legacy v1 runs, newest probedAt wins per model', () => {
+        const olderV1 = validateProbeDocument({
+            schema: 1,
+            probedAt: '2026-11-13T10:00:00.000Z',
+            laneSignature: 'v1-gem|v1-oai|v1-ant|v1-grok|v1-ds|v1-mimo',
+            results: [
+                {
+                    model: 'gemini-4-hydrogen',
+                    acceptedEfforts: ['low', 'medium', 'high'],
+                    defaultEffort: 'high',
+                    toggle: false,
+                    errorSummary: {},
+                    checkedOn: '2026-11-13',
+                },
+                {
+                    model: 'deepseek-flash',
+                    acceptedEfforts: ['low', 'high'],
+                    defaultEffort: 'high',
+                    toggle: true,
+                    errorSummary: {},
+                    checkedOn: '2026-11-13',
+                },
+            ],
+        }).document!;
+        const newerV2 = validateProbeDocument({
+            schema: 2,
+            probedAt: '2026-11-20T12:00:00.000Z',
+            lanes: { gemini: 'vertex-adc@global#p99999999', openai: 'ephone#k22222222' },
+            results: [
+                {
+                    model: 'gemini-4-hydrogen',
+                    platform: 'gemini',
+                    lane: 'vertex-adc@global#p99999999',
+                    acceptedEfforts: ['low', 'medium', 'high', 'xhigh'],
+                    mappedEfforts: ['max'],
+                    toggle: null,
+                    tools: { supported: true, variant: 'level', effort: 'xhigh' },
+                    errorSummary: {},
+                    checkedOn: '2026-11-20',
+                },
+                {
+                    model: 'gpt-6-luna',
+                    platform: 'openai',
+                    lane: 'ephone#k22222222',
+                    acceptedEfforts: ['none', 'low', 'medium', 'high', 'xhigh', 'max'],
+                    mappedEfforts: [],
+                    toggle: null,
+                    tools: { supported: true, variant: 'level', effort: 'high' },
+                    errorSummary: {},
+                    checkedOn: '2026-11-20',
+                },
+            ],
+        }).document!;
+
+        const merged = mergeProbeDocuments([newerV2, olderV1]);
+        expect(merged.document.schema === 2, 'merged output is schema 2');
+        expect(merged.document.probedAt === '2026-11-20T12:00:00.000Z', 'latest probedAt preserved');
+        expect(merged.document.results.length === 3, `3 unique models (got ${merged.document.results.length})`);
+        expect(JSON.stringify(merged.replacedModels) === JSON.stringify(['gemini-4-hydrogen']), 'older duplicate reported as replaced');
+        const hydrogen = merged.document.results.find((entry) => entry.model === 'gemini-4-hydrogen');
+        expect(hydrogen?.checkedOn === '2026-11-20' && hydrogen.acceptedEfforts.includes('xhigh'), 'newer v2 entry won regardless of argument order');
+        expect(merged.document.lanes.deepseek === 'v1-ds', 'legacy v1 platform lane preserved for un-reprobed platform');
+        expect(merged.document.lanes.gemini === 'vertex-adc@global#p99999999', 'newer platform lane won');
     }));
 
     results.push(await runCase('results document has a date-only checkedOn and sorted accepted efforts', () => {
@@ -1512,7 +1435,7 @@ const runResultCases = async (): Promise<void> => {
             observationFixture(candidateOf('grok', 'grok-4.7', 'level', 'low')),
             observationFixture(candidateOf('grok', 'grok-4.7', 'level', 'high')),
         ];
-        const summary = buildRunSummary({ probedAt: '2026-11-13T23:59:59.000Z', laneSignature: 'lane', specs: [spec], observations });
+        const summary = buildRunSummary({ probedAt: '2026-11-13T23:59:59.000Z', lanes: FIXTURE_LANES, specs: [spec], observations });
         const entry = summary.document.results[0];
         expect(entry?.checkedOn === '2026-11-13', 'checkedOn is the probe date');
         expect(JSON.stringify(entry?.acceptedEfforts) === JSON.stringify(['low', 'high', 'xhigh']), 'ascending effort order');
@@ -1534,8 +1457,7 @@ const runRunnerCases = async (): Promise<void> => {
         };
         const outDir = join(scratchDirectory(), 'run');
         const outcome = await runProbe({
-            wave: 'all',
-            budget: defaultBudget('all'),
+            budget: defaultBudget(),
             dryRun: true,
             stub: false,
             lanes: guarded,
@@ -1550,17 +1472,16 @@ const runRunnerCases = async (): Promise<void> => {
         expect(existsSync(join(outDir, 'plan.json')), 'plan.json written');
         expect(existsSync(join(outDir, 'run.json')), 'run.json written');
         expect(!existsSync(join(outDir, 'results.json')), 'dry-run writes no importable result');
-        const plan: { mode: string; requests: number } = JSON.parse(readFileSync(join(outDir, 'plan.json'), 'utf8'));
-        expect(plan.mode === 'dry-run' && plan.requests === 149, `plan says dry-run with 149 requests (got ${plan.mode}/${plan.requests})`);
+        const plan: { mode: string; requests: number; schema: number } = JSON.parse(readFileSync(join(outDir, 'plan.json'), 'utf8'));
+        expect(plan.schema === 2 && plan.mode === 'dry-run' && plan.requests === 100, `plan says v2 dry-run with 100 requests (got v${plan.schema}/${plan.mode}/${plan.requests})`);
     }));
 
-    results.push(await runCase('stub pipeline: 149 requests, valid results.json for 13 models', async () => {
+    results.push(await runCase('stub pipeline: 100 W1 requests, valid v2 results.json for 13 models', async () => {
         const outDir = join(scratchDirectory(), 'stub');
         const environment = testEnvironment();
         const lanes = createProbeLanes(environment, { fetch: createStubFetch(), lanes: stubLaneConfigurations() });
         const outcome = await runProbe({
-            wave: 'all',
-            budget: defaultBudget('all'),
+            budget: defaultBudget(),
             dryRun: false,
             stub: true,
             lanes,
@@ -1570,20 +1491,21 @@ const runRunnerCases = async (): Promise<void> => {
             pacingMs: null,
             log: () => {},
         });
-        expect(outcome.requestCount === 149, `149 requests (got ${outcome.requestCount})`);
+        expect(outcome.requestCount === 100, `100 W1 requests (got ${outcome.requestCount})`);
         expect(outcome.spentUsd <= outcome.plan.estimatedUsd, 'actual spend stays under the worst-case estimate');
         expect(outcome.document !== null && outcome.document.results.length === 13, `13 importable models (got ${outcome.document?.results.length ?? 0})`);
         const validation = validatedDocumentCheck(JSON.parse(readFileSync(join(outDir, 'results.json'), 'utf8')));
-        expect(validation.valid, `written results.json validates (errors: ${validation.errors.join('; ')})`);
+        expect(validation.valid && validation.document?.schema === 2, `written v2 results.json validates (errors: ${validation.errors.join('; ')})`);
         expect(existsSync(join(outDir, 'observations.json')) && existsSync(join(outDir, 'summary.md')) && existsSync(join(outDir, 'run.json')), 'all artifacts written');
-        const run: { mode: string; requests: number } = JSON.parse(readFileSync(join(outDir, 'run.json'), 'utf8'));
-        expect(run.mode === 'stub' && run.requests === 149, 'run.json records the stub mode and request count');
+        const run: { mode: string; requests: number; schema: number } = JSON.parse(readFileSync(join(outDir, 'run.json'), 'utf8'));
+        expect(run.schema === 2 && run.mode === 'stub' && run.requests === 100, 'run.json records v2 stub mode and 100 requests');
         const byModel = new Map(outcome.document?.results.map((entry) => [entry.model, entry]) ?? []);
         expect(JSON.stringify(byModel.get('gemini-4-hydrogen')?.acceptedEfforts) === JSON.stringify(['low', 'medium', 'high', 'xhigh']), 'hydrogen accepted set');
+        expect(byModel.get('gemini-4-hydrogen')?.tools?.supported === true, 'hydrogen fidelity tools passed');
         expect(JSON.stringify(byModel.get('gemini-4-neon')?.acceptedEfforts) === JSON.stringify(['low', 'medium', 'high', 'xhigh']), 'neon accepted set');
-        expect(byModel.get('gemini-4-neon')?.defaultEffort === 'high', 'neon default inferred as high');
-        expect(byModel.get('gpt-6-luna')?.defaultEffort === 'medium', 'luna default inferred as medium');
+        expect(byModel.get('claude-opus-5-5')?.toggle === null, 'non-toggle model leaves toggle null');
         expect(byModel.get('deepseek-flash')?.toggle === true, 'deepseek toggle detected');
+        expect(JSON.stringify(byModel.get('deepseek-flash')?.mappedEfforts) === JSON.stringify(['none', 'minimal', 'xhigh']), `deepseek mapped efforts kept (got ${JSON.stringify(byModel.get('deepseek-flash')?.mappedEfforts)})`);
         expect(byModel.get('mimo-v2.6-flash')?.toggle === true && byModel.get('mimo-v2.6-flash')?.acceptedEfforts.length === 0, 'mimo is toggle-only');
         expect(outcome.summary !== null && outcome.summary.incomplete.length === 0, 'no incomplete model in the stub run');
     }));
@@ -1593,8 +1515,7 @@ const runRunnerCases = async (): Promise<void> => {
         const environment = testEnvironment();
         const lanes = createProbeLanes(environment, { fetch: createStubFetch(), lanes: fixtureLaneConfigurations() });
         await runProbe({
-            wave: 'w1',
-            budget: defaultBudget('w1'),
+            budget: defaultBudget(),
             dryRun: false,
             stub: true,
             lanes,
@@ -1610,75 +1531,6 @@ const runRunnerCases = async (): Promise<void> => {
             const text = readFileSync(join(outDir, name), 'utf8');
             for (const secret of secrets) expect(!text.includes(secret), `${name} must not contain a credential`);
         }
-    }));
-
-    results.push(await runCase('w2-only run composes the existing accepted set with new default inference', async () => {
-        const outDir = join(scratchDirectory(), 'w2-only');
-        const environment = testEnvironment();
-        const lanes = createProbeLanes(environment, { fetch: createStubFetch(), lanes: stubLaneConfigurations() });
-        const outcome = await runProbe({
-            wave: 'w2',
-            budget: defaultBudget('w2'),
-            models: ['gemini-4-hydrogen'],
-            acceptedEffortsByModel: { 'gemini-4-hydrogen': ['low', 'medium', 'high', 'xhigh'] },
-            dryRun: false,
-            stub: true,
-            lanes,
-            environment,
-            outDir,
-            gates: [],
-            pacingMs: null,
-            log: () => {},
-        });
-        expect(outcome.requestCount === 7, `7 W2 requests (got ${outcome.requestCount})`);
-        expect(outcome.document?.results.length === 1, 'one composed model row');
-        const entry = outcome.document?.results[0];
-        expect(JSON.stringify(entry?.acceptedEfforts) === JSON.stringify(['low', 'medium', 'high', 'xhigh']), 'accepted set comes from the previous results');
-        expect(entry?.defaultEffort === 'high', `default inferred from the new samples (got ${entry?.defaultEffort ?? 'null'})`);
-    }));
-
-    results.push(await runCase('runner: the budget W2 cap reaches the wire and run.json', async () => {
-        const environment = testEnvironment();
-        const baseLanes = createProbeLanes(environment, { fetch: createStubFetch(), lanes: stubLaneConfigurations() });
-        const sentCaps: number[] = [];
-        const capturing: typeof baseLanes = {
-            ...baseLanes,
-            deepseek: {
-                ...baseLanes.deepseek,
-                send: async (candidate, sendOptions) => {
-                    sentCaps.push(sendOptions.maxOutputTokens);
-                    return createObservationFixture(candidate, { reasoningTokens: 100, outcome: 'accepted' });
-                },
-            },
-        };
-        const runWith = async (budget: { readonly w2OutputTokenCap?: number }, name: string) => {
-            const outDir = join(scratchDirectory(), name);
-            const outcome = await runProbe({
-                wave: 'w2',
-                budget: { ...defaultBudget('w2'), ...(budget.w2OutputTokenCap === undefined ? {} : { w2OutputTokenCap: budget.w2OutputTokenCap }) },
-                models: ['deepseek-flash'],
-                acceptedEffortsByModel: { 'deepseek-flash': ['low', 'high', 'max'] },
-                dryRun: false,
-                stub: true,
-                lanes: capturing,
-                environment,
-                outDir,
-                gates: [],
-                pacingMs: null,
-                retryDelayMs: 0,
-                log: () => {},
-            });
-            return { outDir, outcome };
-        };
-        const raised = await runWith({ w2OutputTokenCap: 8_192 }, 'w2-cap-raised');
-        expect(sentCaps.length === 7, `7 W2 requests (got ${sentCaps.length})`);
-        expect(sentCaps.every((cap) => cap === 8_192), `the raised cap is sent (got ${sentCaps.join(',')})`);
-        expect(raised.outcome.plan.perWave.w2.estimatedUsd === 0.069443, `the plan prices the raised cap (${raised.outcome.plan.perWave.w2.estimatedUsd})`);
-        const raisedRun: { budget: { w2OutputTokenCap?: number } } = JSON.parse(readFileSync(join(raised.outDir, 'run.json'), 'utf8'));
-        expect(raisedRun.budget.w2OutputTokenCap === 8_192, 'run.json records the effective cap');
-        sentCaps.length = 0;
-        const plain = await runWith({}, 'w2-cap-default');
-        expect(plain.outcome.requestCount === 7 && sentCaps.every((cap) => cap === 4_096), `the default cap is 4096 (got ${sentCaps.join(',')})`);
     }));
 
     results.push(await runCase('runner retries a 429 once, then keeps the success', async () => {
@@ -1702,7 +1554,6 @@ const runRunnerCases = async (): Promise<void> => {
             },
         };
         const outcome = await runProbe({
-            wave: 'w1',
             budget: { maxRequests: 2, maxUsd: 3, timeoutMs: 5_000, maxRetries: 1 },
             models: ['deepseek-flash'],
             dryRun: false,
@@ -1737,8 +1588,7 @@ const runRunnerCases = async (): Promise<void> => {
             },
         };
         const outcome = await runProbe({
-            wave: 'w1',
-            budget: defaultBudget('w1'),
+            budget: defaultBudget(),
             models: ['deepseek-flash'],
             dryRun: false,
             stub: true,
@@ -1767,8 +1617,7 @@ const runRunnerCases = async (): Promise<void> => {
             },
         };
         const outcome = await runProbe({
-            wave: 'w1',
-            budget: defaultBudget('w1'),
+            budget: defaultBudget(),
             models: ['deepseek-flash'],
             dryRun: false,
             stub: true,
@@ -1794,8 +1643,7 @@ const runRunnerCases = async (): Promise<void> => {
             grok: { ...stubLanes.grok, ready: false, configuration: { ...stubLanes.grok.configuration, problems: ['GROK_API_KEY is not set'] } },
         };
         const outcome = await runProbe({
-            wave: 'w1',
-            budget: defaultBudget('w1'),
+            budget: defaultBudget(),
             models: ['grok-4.7'],
             dryRun: false,
             stub: true,
@@ -1849,23 +1697,24 @@ const runEnvironmentCases = async (): Promise<void> => {
         expect(!absent.ok, 'an unset DB_PATH is refused');
     }));
 
-    results.push(await runCase('lane signature: changes when the traffic path changes', () => {
-        const first = laneSignatureOf(laneConfigurationsOf(testEnvironment(), { credentialsFileExists: () => true }));
-        expect(first.includes('ephone'), `the ephone lane is named (got ${first})`);
-        expect(first.includes('official-xai') && first.includes('official-deepseek') && first.includes('official-mimo'), 'official lanes are named');
-        const changed = laneSignatureOf(
+    results.push(await runCase('lane fingerprints: per-platform changes isolate to that platform only', () => {
+        const first = laneFingerprintsOf(laneConfigurationsOf(testEnvironment(), { credentialsFileExists: () => true }));
+        expect(first.openai.includes('ephone'), `the ephone lane is named (got ${first.openai})`);
+        expect(first.grok.includes('official-xai') && first.deepseek.includes('official-deepseek') && first.mimo.includes('official-mimo'), 'official lanes are named');
+        const changed = laneFingerprintsOf(
             laneConfigurationsOf(testEnvironment({ OPENAI_API_URL: 'https://api.openai.com/v1' }), { credentialsFileExists: () => true })
         );
-        expect(changed !== first, 'changing the base URL changes the signature');
-        const relay = laneSignatureOf(laneConfigurationsOf(testEnvironment({ GEMINI_API_URL: 'https://relay.example/v1' }), { credentialsFileExists: () => true }));
-        expect(relay.includes('gemini-relay:relay.example'), `a Gemini relay is named with its host (got ${relay})`);
-        const adc = laneSignatureOf(laneConfigurationsOf(testEnvironment({ GOOGLE_CLOUD_PROJECT: 'proj', GOOGLE_APPLICATION_CREDENTIALS: '/tmp/sa.json' }), { credentialsFileExists: (path) => path === '/tmp/sa.json' }));
-        expect(adc.startsWith('vertex-adc@global'), `ADC is detected when the credentials file exists (got ${adc})`);
+        expect(changed.openai !== first.openai, 'changing OpenAI base URL changes OpenAI lane fingerprint');
+        expect(changed.gemini === first.gemini && changed.grok === first.grok, 'other platforms are unaffected');
+        const relay = laneFingerprintsOf(laneConfigurationsOf(testEnvironment({ GEMINI_API_URL: 'https://relay.example/v1' }), { credentialsFileExists: () => true }));
+        expect(relay.gemini.includes('gemini-relay:relay.example'), `a Gemini relay is named with its host (got ${relay.gemini})`);
+        const adc = laneFingerprintsOf(laneConfigurationsOf(testEnvironment({ GOOGLE_CLOUD_PROJECT: 'proj', GOOGLE_APPLICATION_CREDENTIALS: '/tmp/sa.json' }), { credentialsFileExists: (path) => path === '/tmp/sa.json' }));
+        expect(adc.gemini.startsWith('vertex-adc@global'), `ADC is detected when the credentials file exists (got ${adc.gemini})`);
         const deepseekFallback = laneConfigurationsOf(testEnvironment({ DEEPSEEK_API_KEY: '' }), { credentialsFileExists: () => true });
         expect(deepseekFallback.deepseek.laneId.includes('openai-fallback'), 'a missing DeepSeek key falls back to the OpenAI lane like production');
     }));
 
-    results.push(await runCase('lane fingerprint: a changed key or project invalidates data without printing it', () => {
+    results.push(await runCase('lane fingerprint: a changed key or project invalidates only that platform without printing it', () => {
         const fingerprintOfLane = (laneId: string): string | null => {
             const match = /#([kp])([0-9a-f]{8})$/.exec(laneId);
             return match === null ? null : `${match[1] ?? ''}${match[2] ?? ''}`;
@@ -1880,24 +1729,26 @@ const runEnvironmentCases = async (): Promise<void> => {
         }).gemini;
         expect(/#p[0-9a-f]{8}$/.test(adc.laneId), `the ADC lane carries the project hash (got ${adc.laneId})`);
         expect(!adc.laneId.includes(project), 'the project name itself never reaches the lane id');
-        const sameSignature = laneSignatureOf(
+        const sameLanes = laneFingerprintsOf(
             laneConfigurationsOf(testEnvironment({ GOOGLE_CLOUD_PROJECT: project, GOOGLE_APPLICATION_CREDENTIALS: '/tmp/sa.json' }), {
                 credentialsFileExists: () => true,
             })
         );
-        const otherProject = laneSignatureOf(
+        const otherProject = laneFingerprintsOf(
             laneConfigurationsOf(testEnvironment({ GOOGLE_CLOUD_PROJECT: 'probe-test-project-9999', GOOGLE_APPLICATION_CREDENTIALS: '/tmp/sa.json' }), {
                 credentialsFileExists: () => true,
             })
         );
-        expect(otherProject !== sameSignature, 'another project changes the signature');
-        const sameKey = laneSignatureOf(laneConfigurationsOf(testEnvironment(), { credentialsFileExists: () => true }));
-        const otherKey = laneSignatureOf(
+        expect(otherProject.gemini !== sameLanes.gemini, 'another project changes gemini fingerprint');
+        expect(otherProject.openai === sameLanes.openai, 'another project leaves openai untouched');
+        const sameKey = laneFingerprintsOf(laneConfigurationsOf(testEnvironment(), { credentialsFileExists: () => true }));
+        const otherKey = laneFingerprintsOf(
             laneConfigurationsOf(testEnvironment({ OPENAI_API_KEY: 'another-offline-openai-key', ANTHROPIC_API_KEY: 'another-offline-anthropic-key' }), {
                 credentialsFileExists: () => true,
             })
         );
-        expect(otherKey !== sameKey, 'another key changes the signature');
+        expect(otherKey.openai !== sameKey.openai && otherKey.anthropic !== sameKey.anthropic, 'another key changes openai & anthropic fingerprints');
+        expect(otherKey.gemini === sameKey.gemini && otherKey.grok === sameKey.grok, 'other platforms keep their fingerprints');
         const express = laneConfigurationsOf(testEnvironment({ GEMINI_API_URL: '' }), { credentialsFileExists: () => false }).gemini;
         expect(/#k[0-9a-f]{8}$/.test(express.laneId), `the Vertex express lane carries the key hash (got ${express.laneId})`);
         expect(!express.laneId.includes('offline-gemini-key'), 'the express key is hashed, not printed');

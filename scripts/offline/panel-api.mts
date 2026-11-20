@@ -1265,6 +1265,31 @@ cases.push(
     }
 );
 
+cases.push({
+    name: 'GET /api/status includes pricing capabilityProposals and warnings for the owner',
+    body: async () => {
+        const { startWatchRun, finishWatchRun } = await import('../../src/services/model-price-service.js');
+        const runId = await startWatchRun();
+        await finishWatchRun(runId, {
+            outcome: 'ok',
+            proposals: 0,
+            capabilityProposals: 2,
+            warnings: ['test watch warning'],
+        });
+        const response = await call(app, '/api/status', { user: OWNER });
+        expect(response.status === 200, 'status returns 200');
+        const body = await jsonOf(response);
+        const process = body.process;
+        expect(
+            process?.pricing?.capabilityProposals === 2 &&
+                JSON.stringify(process?.pricing?.warnings) === JSON.stringify(['test watch warning']),
+            `pricing diagnostics exposed on /api/status (got ${JSON.stringify(process?.pricing)})`
+        );
+        const observerResponse = await call(app, '/api/status', { user: ALICE });
+        expect((await jsonOf(observerResponse)).process === null, 'non-owner never sees process pricing diagnostics');
+    },
+});
+
 const results: CaseResult[] = [];
 for (const testCase of cases) {
     results.push(await runCase(testCase.name, testCase.body));

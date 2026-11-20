@@ -14,10 +14,15 @@ type ResumeRequestFacts = import('../../src/reply/resume/reply-checkpoint.js').R
 type ThinkingEffortValue = import('../../src/services/thinking-effort-values.js').ThinkingEffortValue;
 
 const { capabilitySeedOf } = await import('../../src/config/model-capability-seed.js');
+const { MODEL_EFFORTS } = await import('../../src/config/model-capabilities.js');
 const { seedModelCatalogEntries, setModelCatalog } = await import('../../src/config/model-catalog.js');
-const { resolveThinkingEffort } = await import('../../src/ai/thinking-effort.js');
+const { codePolicyDefaultEffortOf, resolveThinkingEffort } = await import('../../src/ai/thinking-effort.js');
+const { nextLowerEffort } = await import('../../src/ai/platforms/thinking-effort-wire.js');
 const { thinkingRequestOf } = await import('../../src/reply/thinking-request.js');
+const { resolveRuntimeTraits } = await import('../../src/ai/model-traits.js');
 const {
+    modelCapabilitiesChangedNoticeOf,
+    MODEL_CAPABILITIES_CHANGED_NOTICE,
     thinkingEffortChangeOf,
     thinkingEffortRefusalNoticeOf,
     THINKING_EFFORT_CHANGED_NOTICE,
@@ -297,6 +302,65 @@ results.push(
             THINKING_EFFORT_DATA_CHANGED_NOTICE.includes('模型的思考档位数据已变化') &&
                 THINKING_EFFORT_DATA_CHANGED_NOTICE.includes('点重试可继续'),
             `the data notice only offers a retry (got ${THINKING_EFFORT_DATA_CHANGED_NOTICE})`
+        );
+    })
+);
+
+results.push(
+    await runCase('codePolicyDefaultEffortOf and nextLowerEffort match platform rules and MODEL_EFFORTS', async () => {
+        const expected: Readonly<Record<string, string | null>> = {
+            'gemini-4-hydrogen': 'xhigh',
+            'gemini-4-neon': 'xhigh',
+            'gemini-4-carbon': 'high',
+            'gemini-3.8-flash': null,
+            'gpt-6-luna': 'xhigh',
+            'gpt-6-chat': null,
+            'o3-mini': 'xhigh',
+            'gpt-4.1': null,
+            'grok-4.20-multi-agent-0309': 'high',
+            'grok-4.7': null,
+            'claude-sonnet-5-5': null,
+            'deepseek-flash': null,
+        };
+        for (const [model, want] of Object.entries(expected)) {
+            const got = codePolicyDefaultEffortOf(model);
+            expect(got === want, `${model}: codePolicyDefaultEffortOf=${String(got)} == ${String(want)}`);
+        }
+
+        for (let index = 0; index < MODEL_EFFORTS.length; index += 1) {
+            const current = MODEL_EFFORTS[index];
+            const lower = index === 0 ? null : (MODEL_EFFORTS[index - 1] ?? null);
+            if (current !== undefined) {
+                expect(nextLowerEffort(current) === lower, `nextLowerEffort(${current}) == ${String(lower)}`);
+            }
+        }
+        expect(nextLowerEffort('unknown') === null, 'unknown effort has no lower step');
+
+        // Capability-staleness check on resume detects outputTokens drift (even when systemPrompt/tools match)
+        const baseTraits = resolveRuntimeTraits('claude-sonnet-5-5');
+        const baseRequest: ResumeRequestFacts = {
+            model: 'claude-sonnet-5-5',
+            systemPrompt: 'prompt',
+            toolDefinitionsJson: '[]',
+            thinkingEffort: null,
+            thinkingEffortSent: null,
+            imageInput: baseTraits.imageInput.value,
+            mediaInput: baseTraits.mediaInput.value,
+            outputTokens: baseTraits.outputTokens.value,
+        };
+        expect(
+            modelCapabilitiesChangedNoticeOf(baseTraits, baseRequest) === null,
+            'matching capabilities allow resume'
+        );
+        expect(
+            modelCapabilitiesChangedNoticeOf(baseTraits, { ...baseRequest, outputTokens: 64_000 }) ===
+                MODEL_CAPABILITIES_CHANGED_NOTICE,
+            'changed outputTokens refuses resume with capabilities notice'
+        );
+        expect(
+            modelCapabilitiesChangedNoticeOf(baseTraits, { ...baseRequest, mediaInput: true }) ===
+                MODEL_CAPABILITIES_CHANGED_NOTICE,
+            'changed mediaInput refuses resume with capabilities notice'
         );
     })
 );

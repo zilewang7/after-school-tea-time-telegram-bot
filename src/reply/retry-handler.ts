@@ -6,6 +6,7 @@
 import type { Context } from 'grammy';
 import { match } from 'ts-pattern';
 import { GEMINI_IMAGE_MODEL, OPENAI_IMAGE_MODEL } from '../config/models.js';
+import { modelCatalogVersion } from '../config/model-catalog.js';
 import { getMessage, getBotResponse } from '../db/index.js';
 import type { CommandType } from '../db/index.js';
 import { collectReferenceImages } from './commands/reference-images.js';
@@ -13,7 +14,9 @@ import { startRetry } from '../services/index.js';
 import {
     sendMessage,
     buildStaticSystemPrompt,
-    getModelCapabilities,
+    capabilitiesOf,
+    logReplyTraits,
+    resolveRuntimeTraits,
     isOpenCodeGoModel,
     openCodeGoSessionId,
 } from '../ai/index.js';
@@ -43,6 +46,7 @@ import {
     recordImageGeneration,
     recordReferenceImages,
     recordThinkingEffort,
+    setCatalogVersion,
 } from '../services/reply-metrics-draft.js';
 import { checkTrialQuota, type TrialSpend } from '../services/trial-quota.js';
 import {
@@ -162,6 +166,7 @@ const handlePicbananaRetry = async (
     // Build context from parts
     const messages = buildContextFromParts(contentParts);
     recordReferenceImages(session.metrics, referenceImages.length);
+    setCatalogVersion(session.metrics, modelCatalogVersion());
 
     // Send to Gemini image model; like the live command, ride out 429s until an image comes back
     markRequestStarted(session.metrics);
@@ -253,6 +258,7 @@ const handlePicgptRetry = async (
     // Build context from parts
     const messages = buildContextFromParts(contentParts);
     recordReferenceImages(session.metrics, referenceImages.length);
+    setCatalogVersion(session.metrics, modelCatalogVersion());
 
     // Send to OpenAI image model; no usageSink: call-billed model (design D5),
     // its row is priced per image, token usage would only mislead the panel
@@ -318,8 +324,11 @@ const handleChatRetry = async (
             `[retry-handler] addendum templates: ${addendum.applied.map((template) => template.name).join(', ')} (chat ${chatId}, model ${model})`
         );
     }
+    const traits = resolveRuntimeTraits(model);
     // Before the retry session: the reply and its buttons stay as they are
-    if (await refuseImageChatModel(ctx, model)) return;
+    if (await refuseImageChatModel(ctx, model, traits)) return;
+    logReplyTraits(traits);
+    const capabilities = capabilitiesOf(traits);
     // The presser's tier was decided above; reuse it so the two cannot disagree
     const triggerAccess = await resolveTriggerAccess(
         ctx.from?.id ?? null,
@@ -347,7 +356,6 @@ const handleChatRetry = async (
     }
 
     // Build AI context (exclude current bot response since we're retrying it)
-    const capabilities = getModelCapabilities(model);
     const [ctxErr, builtContext] = await to(buildContext(userMessage, {
         capabilities,
         model,
@@ -388,7 +396,9 @@ const handleChatRetry = async (
                 recordImageGeneration(session.metrics, imageModel, usage),
         }),
         settings.toolOverrides,
-        access
+        access,
+        undefined,
+        capabilities
     );
     // Picture references and context numbers resolve as in the first answer
     chatContext.mediaState = toolState.media;
@@ -408,9 +418,9 @@ const handleChatRetry = async (
         richInlineImages: settings.richReplies === true && availability.sendImage,
     });
 
-    const systemPrompt = buildStaticSystemPrompt(model, buildStaticPromptOptions(availability));
+    const systemPrompt = buildStaticSystemPrompt(model, buildStaticPromptOptions(availability), capabilities);
     // The retry sends the chat's current thinking level against the model it reuses
-    const thinking = thinkingRequestOf(model, settings.thinkingEffort);
+    const thinking = thinkingRequestOf(model, settings.thinkingEffort, traits);
     // A retry starts from nothing, so it keeps its own checkpoints like a first answer
     chatContext.resumeFacts = captureResumeFacts({
         model,
@@ -427,10 +437,12 @@ const handleChatRetry = async (
         promptTemplatesAuto: settings.promptTemplatesAuto,
         thinkingEffort: settings.thinkingEffort,
         thinkingEffortSent: thinking.facts.sent,
+        traits,
         builtAt,
     });
 
     recordThinkingEffort(session.metrics, thinking.facts);
+    setCatalogVersion(session.metrics, traits.catalogVersion);
 
     // Send to AI
     markRequestStarted(session.metrics);
@@ -443,6 +455,7 @@ const handleChatRetry = async (
             tools,
             usageSink: session.metrics.usage,
             checkpointSink: checkpointSinkFor(chatContext),
+            traits,
             ...priorityRequestOf(access, settings.geminiPriority),
             ...thinking.platform,
         })

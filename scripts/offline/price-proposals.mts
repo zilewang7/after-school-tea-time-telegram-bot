@@ -599,4 +599,105 @@ cases.push(
     })
 );
 
+// ---- Round 1 lifecycle & batch scoping ----
+
+cases.push(
+    await runCase('identical or same-price current-window refresh preserves detectedAt and lastNotifiedAt', async () => {
+        await resetPricingDb();
+        const t1 = new Date('2026-11-13T04:00:00Z');
+        const t2 = new Date('2026-11-14T04:05:00Z');
+        const draft1 = await updateDraftFor(
+            'gemini-4-hydrogen',
+            'standard',
+            { inputPerM: 3, cachedInputPerM: 0.15, outputPerM: 15 },
+            t1
+        );
+        await service.createOrRefreshProposals([draft1], 1, { now: t1 });
+        const first = (await service.listPendingProposals())[0];
+        if (first === undefined) throw new Error('missing first proposal');
+        await service.attachProposalMessageIds([first.id], 501, t1);
+
+        // Next day with a new current-window effectiveFrom but identical prices
+        const draft2 = await updateDraftFor(
+            'gemini-4-hydrogen',
+            'standard',
+            { inputPerM: 3, cachedInputPerM: 0.15, outputPerM: 15 },
+            t2
+        );
+        await service.createOrRefreshProposals([draft2], 2, { now: t2 });
+        const pendingAfterSame = await service.listPendingProposals();
+        expect(pendingAfterSame.length === 1, `no duplicate row created (got ${pendingAfterSame.length})`);
+        expect(
+            pendingAfterSame[0]?.detectedAt.getTime() === t1.getTime(),
+            'detectedAt is preserved so 14-day TTL still works'
+        );
+        expect(
+            pendingAfterSame[0]?.lastNotifiedAt?.getTime() === t1.getTime(),
+            'lastNotifiedAt is preserved so unchanged rows do not re-spam'
+        );
+
+        // Changed price resets detectedAt and clears lastNotifiedAt
+        const draft3 = await updateDraftFor(
+            'gemini-4-hydrogen',
+            'standard',
+            { inputPerM: 3.5, cachedInputPerM: 0.15, outputPerM: 15 },
+            t2
+        );
+        await service.createOrRefreshProposals([draft3], 3, { now: t2 });
+        const pendingAfterChange = await service.listPendingProposals();
+        expect(pendingAfterChange[0]?.detectedAt.getTime() === t2.getTime(), 'changed price moves detectedAt');
+        expect(pendingAfterChange[0]?.lastNotifiedAt === null, 'changed price clears lastNotifiedAt for re-notify');
+    })
+);
+
+cases.push(
+    await runCase('evaluated price proposals no longer drafted are marked withdrawn; unevaluated models stay pending', async () => {
+        await resetPricingDb();
+        const now = new Date('2026-11-13T04:00:00Z');
+        await service.createOrRefreshProposals(
+            [
+                await updateDraftFor(
+                    'gemini-4-hydrogen',
+                    'standard',
+                    { inputPerM: 3, cachedInputPerM: 0.15, outputPerM: 15 },
+                    now
+                ),
+                newModelDraftOf('offline-unevaluated', 2),
+            ],
+            1,
+            { now }
+        );
+        expect((await service.countPendingProposals()) === 2, 'two proposals start pending');
+
+        await service.createOrRefreshProposals([], 2, {
+            evaluatedModels: new Set(['gemini-4-hydrogen']),
+            now: new Date('2026-11-14T04:00:00Z'),
+        });
+        const hydrogen = await proposalsOfModel('gemini-4-hydrogen');
+        const unevaluated = await proposalsOfModel('offline-unevaluated');
+        expect(hydrogen[0]?.status === 'withdrawn', `evaluated missing draft is withdrawn (got ${hydrogen[0]?.status})`);
+        expect(unevaluated[0]?.status === 'pending', 'unevaluated model stays pending');
+    })
+);
+
+cases.push(
+    await runCase('bulk apply/reject on one message only decides that message batch', async () => {
+        await resetPricingDb();
+        const telegram = createFakeTelegram();
+        const drafts = Array.from({ length: 10 }, (_unused, index) => newModelDraftOf(`offline-batch-${index}`, 1 + index));
+        const pending = await seedProposals(drafts);
+        const messageIds = await sendApprovalMessage(telegram, pending);
+        const firstMsgId = messageIds[0];
+        const secondMsgId = messageIds[1];
+        if (firstMsgId === undefined || secondMsgId === undefined) throw new Error('expected two messages');
+
+        const { bot, telegram: menuTelegram } = menuBotOf();
+        await press(bot, firstMsgId, OWNER_ID, 'pricing:all:apply');
+        expect(lastToastText(menuTelegram) === '已应用 8 条', `only first batch (8) applied (got ${lastToastText(menuTelegram)})`);
+        const remaining = await service.listPendingProposals();
+        expect(remaining.length === 2, `second batch (2) remains pending (got ${remaining.length})`);
+        expect(remaining.every((proposal) => proposal.messageId === secondMsgId), 'remaining belong to second message');
+    })
+);
+
 reportResults(cases);

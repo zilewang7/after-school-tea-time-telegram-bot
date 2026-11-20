@@ -14,7 +14,7 @@ import { updateBotNotice } from '../../services/bot-notice-service.js';
 import {
     applyProposals,
     findProposal,
-    listPendingProposals,
+    listPendingProposalsByMessageId,
     rejectProposals,
     type PriceProposalView,
 } from '../../services/model-price-service.js';
@@ -58,13 +58,17 @@ const answer = async (ctx: Context, text: string): Promise<void> => {
     if (error) console.warn('[price-menu] the callback answer failed:', error.message);
 };
 
-/** The proposals a press would decide; an already-decided id yields none */
-const targetsOf = async (action: PriceApprovalAction): Promise<readonly PriceProposalView[]> => {
+/** The proposals a press would decide; bulk buttons only act on their own message's batch */
+const targetsOf = async (
+    action: PriceApprovalAction,
+    messageId: number | undefined
+): Promise<readonly PriceProposalView[]> => {
     if (action.kind === 'apply') {
         const proposal = await findProposal(action.id);
         return proposal === null || proposal.status !== 'pending' ? [] : [proposal];
     }
-    return listPendingProposals();
+    if (messageId === undefined) return [];
+    return listPendingProposalsByMessageId(messageId);
 };
 
 const decide = async (
@@ -113,7 +117,8 @@ const handleApproval = async (ctx: Context, action: PriceApprovalAction): Promis
         return;
     }
 
-    const [lookupError, targets] = await to(targetsOf(action));
+    const messageId = ctx.callbackQuery?.message?.message_id;
+    const [lookupError, targets] = await to(targetsOf(action, messageId));
     if (lookupError) {
         console.error('[price-menu] reading the pending proposals failed:', lookupError);
         await answer(ctx, WRITE_FAILED_NOTICE);

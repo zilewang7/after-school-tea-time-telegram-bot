@@ -10,19 +10,11 @@
  * thinking level of a reply that only hit an auth or quota problem.
  */
 import { match } from 'ts-pattern';
+import { MODEL_EFFORTS } from '../../config/model-capabilities.js';
 import type { PlatformConfig } from '../types.js';
 
 /** Ascending effort ladder; a rejected level walks down one step */
-const EFFORT_ORDER: readonly string[] = [
-    'none',
-    'minimal',
-    'low',
-    'medium',
-    'high',
-    'xhigh',
-    'max',
-    'ultra',
-];
+const EFFORT_ORDER: readonly string[] = MODEL_EFFORTS;
 
 /** One reply's effort request plus its one-shot downgrade state */
 export interface EffortWire {

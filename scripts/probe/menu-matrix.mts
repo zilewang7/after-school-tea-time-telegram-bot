@@ -64,7 +64,7 @@ export const MENU_MATRIX: readonly MenuMatrixEntry[] = [
         model: 'claude-opus-5-5',
         platform: 'anthropic',
         vendorEfforts: ['low', 'medium', 'high', 'xhigh', 'max'],
-        vendorDefaultEffort: 'high',
+        vendorDefaultEffort: 'medium',
         vendorToggle: false,
         vendorDefaultEnabled: null,
     },

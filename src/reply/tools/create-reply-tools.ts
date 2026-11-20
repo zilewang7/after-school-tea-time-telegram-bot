@@ -9,6 +9,7 @@
  * one-attachment-per-reply flag lives there too.
  */
 import { getModelCapabilities, getPlatform } from '../../ai/platform-factory.js';
+import type { ModelCapabilities } from '../../ai/types.js';
 import { buildMcpToolHandlers } from '../../ai/tools/mcp-tool-handlers.js';
 import { createTurnTools } from '../../ai/tools/turn-tools.js';
 import type { ToolHandler, TurnTools } from '../../ai/tools/tool-types.js';
@@ -73,11 +74,20 @@ export const createReplyTools = (
     /** The trigger user's tier: a trial turn loses the paid tools (design D3) */
     access: AccessTier = 'full',
     /** The state of the version a continue picks up; absent = a fresh one */
-    carriedToolState?: ReplyToolState
+    carriedToolState?: ReplyToolState,
+    /** Pre-resolved capabilities so every caller in the reply sees one snapshot */
+    resolvedCapabilities?: ModelCapabilities
 ): ReplyTools => {
     const config = getToolConfig();
-    const availability = resolveToolAvailability(model, context.chatId, config, toolOverrides, access);
-    const capabilities = getModelCapabilities(model);
+    const capabilities = resolvedCapabilities ?? getModelCapabilities(model);
+    const availability = resolveToolAvailability(
+        model,
+        context.chatId,
+        config,
+        toolOverrides,
+        access,
+        capabilities
+    );
     const toolState =
         carriedToolState ??
         createReplyToolState(

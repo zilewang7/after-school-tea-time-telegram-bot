@@ -5,6 +5,7 @@
  * failed version.
  */
 import type { TurnTools } from '../../ai/tools/tool-types.js';
+import type { RuntimeTraits } from '../../ai/types.js';
 import type { ThinkingEffortValue } from '../../services/thinking-effort-values.js';
 import type { ContextIndex } from '../context-index.js';
 import type { ReplyToolState } from '../tools/reply-tool-state.js';
@@ -37,6 +38,8 @@ export interface ResumeFactsInput {
     readonly thinkingEffort?: ThinkingEffortValue | null;
     /** What that setting resolved to for this request's model; null = nothing explicit */
     readonly thinkingEffortSent?: string | null;
+    /** Pre-resolved traits for the attempt so continue can detect data changes */
+    readonly traits?: RuntimeTraits;
     /** Epoch ms the context was built */
     readonly builtAt: number;
 }
@@ -47,6 +50,7 @@ const numberingOf = (contextIndex: ContextIndex): Map<number, number> =>
 
 export const THINKING_EFFORT_CHANGED_NOTICE = '思考档位已修改，改回后可继续，或点重试';
 export const THINKING_EFFORT_DATA_CHANGED_NOTICE = '模型的思考档位数据已变化，点重试可继续';
+export const MODEL_CAPABILITIES_CHANGED_NOTICE = '模型的能力数据已变化，点重试可继续';
 
 /**
  * What would differ between the interrupted version and a continue click, or
@@ -58,22 +62,41 @@ export type ThinkingEffortChange = 'setting-changed' | 'model-data-changed';
 
 export const thinkingEffortChangeOf = (
     settings: { readonly thinkingEffort: ThinkingEffortValue | null },
-    request: ResumeRequestFacts
+    request: ResumeRequestFacts,
+    traits?: RuntimeTraits
 ): ThinkingEffortChange | null => {
     if (settings.thinkingEffort !== request.thinkingEffort) return 'setting-changed';
     // The level that would go out is part of the request shape too.
-    const resolved = sentEffortOf(resolveThinkingEffort(request.model, settings.thinkingEffort));
+    const resolved = sentEffortOf(resolveThinkingEffort(request.model, settings.thinkingEffort, traits));
     return resolved === request.thinkingEffortSent ? null : 'model-data-changed';
 };
 
 /** The refusal notice a continue click would carry, or null when the request shape matches */
 export const thinkingEffortRefusalNoticeOf = (
     settings: { readonly thinkingEffort: ThinkingEffortValue | null },
-    request: ResumeRequestFacts
+    request: ResumeRequestFacts,
+    traits?: RuntimeTraits
 ): string | null => {
-    const change = thinkingEffortChangeOf(settings, request);
+    const change = thinkingEffortChangeOf(settings, request, traits);
     if (change === 'setting-changed') return THINKING_EFFORT_CHANGED_NOTICE;
     if (change === 'model-data-changed') return THINKING_EFFORT_DATA_CHANGED_NOTICE;
+    return null;
+};
+
+/** Detect whether media/vision/output-token traits changed since the checkpoint was captured */
+export const modelCapabilitiesChangedNoticeOf = (
+    traits: RuntimeTraits,
+    request: ResumeRequestFacts
+): string | null => {
+    if (request.imageInput !== undefined && traits.imageInput.value !== request.imageInput) {
+        return MODEL_CAPABILITIES_CHANGED_NOTICE;
+    }
+    if (request.mediaInput !== undefined && traits.mediaInput.value !== request.mediaInput) {
+        return MODEL_CAPABILITIES_CHANGED_NOTICE;
+    }
+    if (request.outputTokens !== undefined && traits.outputTokens.value !== request.outputTokens) {
+        return MODEL_CAPABILITIES_CHANGED_NOTICE;
+    }
     return null;
 };
 
@@ -96,5 +119,12 @@ export const captureResumeFacts = (input: ResumeFactsInput): ReplyResumeFacts =>
         toolDefinitionsJson: toolDefinitionsJsonOf(input.tools.definitions),
         thinkingEffort: input.thinkingEffort ?? null,
         thinkingEffortSent: input.thinkingEffortSent ?? null,
+        ...(input.traits === undefined
+            ? {}
+            : {
+                  imageInput: input.traits.imageInput.value,
+                  mediaInput: input.traits.mediaInput.value,
+                  outputTokens: input.traits.outputTokens.value,
+              }),
     },
 });

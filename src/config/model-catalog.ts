@@ -16,6 +16,7 @@ import {
 } from './model-capabilities.js';
 import { capabilitySeedOf } from './model-capability-seed.js';
 import { GEMINI_IMAGE_MODEL, OPENAI_IMAGE_MODEL, modelConfigs } from './models.js';
+import { platformTypeOf, type PlatformType } from './platform-routing.js';
 
 export type { ModelCatalogCapabilities, ModelCatalogConfidence, ModelCatalogKind };
 
@@ -39,25 +40,21 @@ export interface ModelCatalogEntry {
     readonly note?: string;
 }
 
-/** The platform `src/ai/platform-routing.ts` picks for an id, mirrored as data */
-export const platformOfModelId = (modelId: string): string => {
-    const id = modelId.toLowerCase();
-    if (id.startsWith('gemini')) return 'gemini';
-    if (id.startsWith('deepseek')) return 'deepseek';
-    if (id.startsWith('grok-')) return 'grok';
-    if (id.startsWith('mimo')) return 'mimo';
-    if (id.startsWith('claude')) return 'anthropic';
-    return 'openai';
-};
+/** The platform `platformTypeOf` picks for an id, mirrored as data */
+export const platformOfModelId = (modelId: string): PlatformType => platformTypeOf(modelId);
 
 /**
  * The pre-seed fallback for a menu id the capability seed does not know: the
  * old code's image-id heuristic, nothing else.
  */
-const fallbackCapabilitiesOf = (modelId: string): ModelCatalogCapabilities => {
+export const fallbackCapabilitiesOf = (modelId: string): ModelCatalogCapabilities => {
     const id = modelId.toLowerCase();
     const imageIds = new Set([GEMINI_IMAGE_MODEL.toLowerCase(), OPENAI_IMAGE_MODEL.toLowerCase()]);
-    const isImage = imageIds.has(id) || id.includes('image') || id.includes('nano-banana');
+    const isImage =
+        imageIds.has(id) ||
+        id.includes('image') ||
+        id.includes('nano-banana') ||
+        id.startsWith('dall-e');
     return {
         ...emptyModelCapabilities(),
         schema: 1,

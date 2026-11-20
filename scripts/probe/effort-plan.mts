@@ -1,25 +1,23 @@
 /**
- * The probe matrix: which requests W1/W2 would send, and what they may cost.
+ * The probe matrix: which W1 requests are sent, and what they may cost.
  *
- * The model list is the `MENU_MATRIX` snapshot (scripts/probe/menu-matrix.mts),
- * generated from the runtime chat menu and the capability seed by
- * `scripts/probe/refresh-menu-matrix.mts`. The probe CLI must not import `src/`
- * (AGENTS: a script importing src imports the offline harness first, and the
- * harness rewrites DB_PATH, which would break the test-instance gate), so the
- * snapshot is the only source here; `scripts/offline/probe-matrix-sync.mts`
- * fails when it drifts from the runtime menu. Refresh it after a menu change:
+ * The model list comes from `--models-json` (exported from the active DB
+ * catalog via `/probe export`) or falls back to the built-in `MENU_MATRIX`
+ * snapshot (scripts/probe/menu-matrix.mts). The probe CLI must not import
+ * `src/` (AGENTS: a script importing src imports the offline harness first,
+ * and the harness rewrites DB_PATH, which would break the test-instance gate);
+ * `scripts/offline/probe-matrix-sync.mts` fails when `MENU_MATRIX` drifts
+ * from the runtime menu. Refresh it after a menu change:
  *
  *     npx tsx scripts/probe/refresh-menu-matrix.mts
  *
- * PROBE_PRICES keeps the probe plan §2.5 price rows used by the budget guard;
- * the image catalog rows (not chat menu entries) stay out of the matrix.
+ * PROBE_PRICES keeps the fallback price rows used by the budget guard;
+ * unpriced models in `--models-json` fall back to FALLBACK_PRICE with a
+ * warning so auto-added models are still probed.
  *
  * W1 asks every chat model whether each candidate effort value is accepted at
  * all (one request per value, plus a baseline = the production default shape,
- * plus the deliberately rejected sentinels). W2 repeats a representative subset
- * enough times to compare reasoning-token counts and infer the vendor default.
- * Counts follow from the menu: W1 total = acceptance records + 8 client-tool
- * fidelity variants, W2 = 7 representative models × 7 samples.
+ * plus the deliberately rejected sentinels and client-tool fidelity variants).
  *
  * Everything here is pure and deterministic: no clock, no network, no DB. The
  * runner decides the lane and the budget; `buildProbePlan` just produces the
@@ -27,15 +25,13 @@
  */
 import { MENU_MATRIX, type MenuMatrixEntry } from './menu-matrix.mts';
 import {
+    DEFAULT_MAX_REQUESTS,
     DEFAULT_MAX_RETRIES,
     DEFAULT_MAX_USD,
     DEFAULT_TIMEOUT_MS,
     HARD_MAX_REQUESTS,
     HARD_MAX_USD,
-    MAX_W2_OUTPUT_TOKEN_CAP,
-    MIN_W2_OUTPUT_TOKEN_CAP,
     W1_OUTPUT_TOKEN_CAP,
-    W2_OUTPUT_TOKEN_CAP,
     effortRank,
     isEffortValue,
     isProbePlatform,
@@ -49,8 +45,6 @@ import {
     type ProbePlan,
     type ProbePlatform,
     type ProbeVariant,
-    type ProbeWave,
-    type WaveTotals,
 } from './effort-types.mts';
 
 /**
@@ -87,7 +81,7 @@ const PROBE_PRICES: Readonly<Record<string, ModelPrice>> = {
 };
 
 /** A menu model without a probe price row gets a high guess: the guard must not undershoot */
-const FALLBACK_PRICE = price(10, 50);
+export const FALLBACK_PRICE = price(10, 50);
 
 /** One snapshot row as a probe model; the matrix carries no price, the guard map does */
 const probeSpecOf = (entry: MenuMatrixEntry): ProbeModelSpec => ({
@@ -97,23 +91,10 @@ const probeSpecOf = (entry: MenuMatrixEntry): ProbeModelSpec => ({
 });
 
 /**
- * The probe matrix, in chat-menu order. The W2 representatives and the
- * client-tool fidelity variants below name menu ids too, so every one of them
- * is always part of this list. `--models-json` can still replace it with an
- * exported catalog snapshot when the catalog moved on between releases.
+ * Built-in probe matrix fallback, in chat-menu order. `--models-json` (exported
+ * from the active DB catalog via `/probe export`) replaces it when provided.
  */
 export const PROBE_MODEL_SNAPSHOT: readonly ProbeModelSpec[] = MENU_MATRIX.map(probeSpecOf);
-
-/** W2 representatives: cheap and expensive families, one or two per platform */
-export const W2_REPRESENTATIVE_MODELS: readonly string[] = [
-    'gemini-4-hydrogen',
-    'gemini-4-neon',
-    'gpt-6-luna',
-    'claude-sonnet-5-5',
-    'grok-4.7',
-    'deepseek-flash',
-    'mimo-v2.6-flash',
-];
 
 /** Client-tool fidelity variants: the request shape every chat round really uses */
 interface FidelityVariant {
@@ -218,56 +199,44 @@ const acceptanceSeeds = (model: ProbeModelSpec): CandidateSeed[] => {
     }
 };
 
-/** Output cap of one wave; the budget (CLI --w2-cap) may raise or lower W2 */
-const tokenCapOf = (wave: ProbeWave, w2OutputTokenCap: number | undefined): number =>
-    wave === 'w2' ? (w2OutputTokenCap ?? W2_OUTPUT_TOKEN_CAP) : W1_OUTPUT_TOKEN_CAP;
-
 /**
  * Assumed output cap of one request. A wire that cannot take a token cap (the
  * xAI multi-agent model rejects max_tokens) gets a larger assumed cap: it may
  * generate more than the request asks for, and the guard must not underestimate.
  */
-const assumedTokenCapOf = (model: ProbeModelSpec, wave: ProbeWave, w2OutputTokenCap: number | undefined): number => {
+const assumedTokenCapOf = (model: ProbeModelSpec): number => {
     const multiAgent = model.platform === 'grok' && model.model.toLowerCase().includes('multi-agent');
-    return multiAgent ? Math.max(tokenCapOf(wave, w2OutputTokenCap), 2_048) : tokenCapOf(wave, w2OutputTokenCap);
+    return multiAgent ? Math.max(W1_OUTPUT_TOKEN_CAP, 2_048) : W1_OUTPUT_TOKEN_CAP;
 };
 
-/** Worst-case cost of one request: the prompt plus a full output cap */
-export const estimateRequestCostUsd = (
-    model: ProbeModelSpec,
-    wave: ProbeWave,
-    w2OutputTokenCap?: number
-): number => {
-    const cap = assumedTokenCapOf(model, wave, w2OutputTokenCap);
+/** Worst-case cost of one request: the prompt plus a full W1 output cap */
+export const estimateRequestCostUsd = (model: ProbeModelSpec): number => {
+    const cap = assumedTokenCapOf(model);
     return (INPUT_TOKEN_ESTIMATE * model.price.inputPerMillionUsd + cap * model.price.outputPerMillionUsd) / 1_000_000;
 };
 
 const candidateId = (
     model: string,
-    wave: ProbeWave,
     variant: ProbeVariant,
     effort: EffortValue | null,
     suffix: string
-): string => `${model}:${wave}:${variant}:${effort ?? 'auto'}${suffix}`;
+): string => `${model}:w1:${variant}:${effort ?? 'auto'}${suffix}`;
 
 const makeCandidate = (
     model: ProbeModelSpec,
-    wave: ProbeWave,
     seed: CandidateSeed,
-    suffix: string,
-    repeats: number,
-    w2OutputTokenCap?: number
+    suffix: string
 ): ProbeCandidate => ({
-    id: candidateId(model.model, wave, seed.variant, seed.effort, suffix),
+    id: candidateId(model.model, seed.variant, seed.effort, suffix),
     model: model.model,
     platform: model.platform,
-    wave,
+    wave: 'w1',
     variant: seed.variant,
     effort: seed.effort,
     withClientTools: seed.withClientTools,
     ...(seed.expectedRejection === undefined ? {} : { expectedRejection: seed.expectedRejection }),
-    repeats,
-    estimatedCostUsd: estimateRequestCostUsd(model, wave, w2OutputTokenCap) * repeats,
+    repeats: 1,
+    estimatedCostUsd: estimateRequestCostUsd(model),
 });
 
 /** W1: acceptance matrix plus the client-tool fidelity variants */
@@ -275,7 +244,7 @@ const buildW1Candidates = (models: readonly ProbeModelSpec[]): ProbeCandidate[] 
     const candidates: ProbeCandidate[] = [];
     for (const model of models) {
         for (const seed of acceptanceSeeds(model)) {
-            candidates.push(makeCandidate(model, 'w1', seed, '', 1));
+            candidates.push(makeCandidate(model, seed, ''));
         }
     }
     const byName = new Map(models.map((model) => [model.model, model]));
@@ -285,83 +254,20 @@ const buildW1Candidates = (models: readonly ProbeModelSpec[]): ProbeCandidate[] 
         candidates.push(
             makeCandidate(
                 model,
-                'w1',
                 { variant: fidelity.variant, effort: fidelity.effort, withClientTools: true },
-                ':tools',
-                1
+                ':tools'
             )
         );
     }
     return candidates;
 };
 
-/**
- * The two effort values W2 samples per model: the vendor default (so the
- * inference can compare the baseline against a real candidate) and the far end
- * of the accepted range (so "higher effort really thinks more" is verifiable).
- */
-const w2EffortsOf = (
-    model: ProbeModelSpec,
-    acceptedEfforts: readonly EffortValue[] | undefined
-): readonly CandidateSeed[] => {
-    const efforts = sortEfforts(acceptedEfforts ?? model.vendorEfforts).filter(
-        (effort) => effort !== 'none' || model.platform !== 'gemini'
-    );
-    if (efforts.length >= 2) {
-        const first = efforts[0];
-        const last = efforts[efforts.length - 1];
-        if (first === undefined || last === undefined) return [];
-        const primary =
-            model.vendorDefaultEffort !== null && efforts.some((effort) => effort === model.vendorDefaultEffort)
-                ? model.vendorDefaultEffort
-                : first;
-        const contrast = primary === last ? first : last;
-        return [
-            { variant: 'level', effort: primary, withClientTools: false },
-            { variant: 'level', effort: contrast, withClientTools: false },
-        ];
-    }
-    if (model.vendorToggle) {
-        // Toggle-only models: the contrast that matters is enabled vs disabled
-        return [
-            { variant: 'toggle-on', effort: null, withClientTools: false },
-            { variant: 'toggle-off', effort: null, withClientTools: false },
-        ];
-    }
-    return efforts.map((effort) => ({ variant: 'level', effort, withClientTools: false }));
-};
-
-/** W2: baseline ×3 and the two sampled efforts ×2 for each representative model */
-const buildW2Candidates = (
-    models: readonly ProbeModelSpec[],
-    acceptedEffortsByModel: Readonly<Record<string, readonly EffortValue[]>>,
-    w2OutputTokenCap: number | undefined
-): ProbeCandidate[] => {
-    const candidates: ProbeCandidate[] = [];
-    for (const model of models) {
-        for (let repeat = 1; repeat <= 3; repeat += 1) {
-            candidates.push(
-                makeCandidate(model, 'w2', { variant: 'baseline', effort: null, withClientTools: false }, `#${repeat}`, 1, w2OutputTokenCap)
-            );
-        }
-        for (const seed of w2EffortsOf(model, acceptedEffortsByModel[model.model])) {
-            for (let repeat = 1; repeat <= 2; repeat += 1) {
-                candidates.push(makeCandidate(model, 'w2', seed, `#${repeat}`, 1, w2OutputTokenCap));
-            }
-        }
-    }
-    return candidates;
-};
-
 export interface ProbePlanOptions {
-    readonly wave: ProbeWave | 'all';
     readonly budget: ProbeBudget;
     /** External snapshot (--models-json); the built-in one when omitted */
     readonly modelSpecs?: readonly ProbeModelSpec[];
     /** Restrict the matrix to these model ids (default: every enabled snapshot row) */
     readonly models?: readonly string[];
-    /** W1 results a W2-only run depends on (`efforts` per model) */
-    readonly acceptedEffortsByModel?: Readonly<Record<string, readonly EffortValue[]>>;
 }
 
 /** Stable order of the platform column in tables and in lane signatures */
@@ -387,12 +293,11 @@ const variantRank = (variant: ProbeVariant): number => {
 /**
  * Cheapest first (probe plan §2.5: a 429 or a budget stop then leaves the
  * already-finished cheap models as valid data). Within a price tier the order
- * is stable: W1 before W2, then platform, model, variant, effort.
+ * is stable: platform, model, variant, effort.
  */
 const orderCandidates = (candidates: readonly ProbeCandidate[]): ProbeCandidate[] =>
     [...candidates].sort((left, right) => {
         if (left.estimatedCostUsd !== right.estimatedCostUsd) return left.estimatedCostUsd - right.estimatedCostUsd;
-        if (left.wave !== right.wave) return left.wave === 'w1' ? -1 : 1;
         const platformDelta = PLATFORM_ORDER.indexOf(left.platform) - PLATFORM_ORDER.indexOf(right.platform);
         if (platformDelta !== 0) return platformDelta;
         if (left.model !== right.model) return left.model.localeCompare(right.model);
@@ -401,10 +306,8 @@ const orderCandidates = (candidates: readonly ProbeCandidate[]): ProbeCandidate[
         return effortRank(left.effort ?? 'none') - effortRank(right.effort ?? 'none');
     });
 
-const totalsOf = (candidates: readonly ProbeCandidate[]): WaveTotals => ({
-    requests: candidates.length,
-    estimatedUsd: Math.round(candidates.reduce((sum, candidate) => sum + candidate.estimatedCostUsd, 0) * 1_000_000) / 1_000_000,
-});
+const totalUsdOf = (candidates: readonly ProbeCandidate[]): number =>
+    Math.round(candidates.reduce((sum, candidate) => sum + candidate.estimatedCostUsd, 0) * 1_000_000) / 1_000_000;
 
 /** Clamp the requested budget to the hard ceilings design §7 fixes */
 export const clampBudget = (budget: ProbeBudget): ProbeBudget => ({
@@ -412,17 +315,13 @@ export const clampBudget = (budget: ProbeBudget): ProbeBudget => ({
     maxUsd: Math.max(0.01, Math.min(budget.maxUsd, HARD_MAX_USD)),
     timeoutMs: Math.max(5_000, Math.trunc(budget.timeoutMs)),
     maxRetries: Math.max(0, Math.min(Math.trunc(budget.maxRetries), 3)),
-    ...(budget.w2OutputTokenCap === undefined
-        ? {}
-        : { w2OutputTokenCap: Math.max(MIN_W2_OUTPUT_TOKEN_CAP, Math.min(Math.trunc(budget.w2OutputTokenCap), MAX_W2_OUTPUT_TOKEN_CAP)) }),
 });
 
-export const defaultBudget = (wave: ProbeWave | 'all'): ProbeBudget =>
+export const defaultBudget = (): ProbeBudget =>
     clampBudget({
-        maxRequests: wave === 'all' ? HARD_MAX_REQUESTS : wave === 'w2' ? 60 : 120,
+        maxRequests: DEFAULT_MAX_REQUESTS,
         maxUsd: DEFAULT_MAX_USD,
-        // The effect wave can think for a minute; using its timeout everywhere is safe
-        timeoutMs: wave === 'all' || wave === 'w2' ? 150_000 : DEFAULT_TIMEOUT_MS,
+        timeoutMs: DEFAULT_TIMEOUT_MS,
         maxRetries: DEFAULT_MAX_RETRIES,
     });
 
@@ -470,33 +369,20 @@ const cutToBudget = (
 };
 
 /**
- * Build the plan for one wave (or every wave). The result is deterministic for
- * the same options, which the dry-run table and the tests rely on.
+ * Build the W1 probe plan. The result is deterministic for the same options,
+ * which the dry-run table and the tests rely on.
  */
 export const buildProbePlan = (options: ProbePlanOptions): ProbePlan => {
     const models = selectedModels(options);
     const budget = clampBudget(options.budget);
-    const w1 = options.wave === 'w2' ? [] : buildW1Candidates(models);
-    const w2Models =
-        options.wave === 'w1'
-            ? []
-            : models.filter((model) => W2_REPRESENTATIVE_MODELS.some((name) => name === model.model));
-    const w2 =
-        options.wave === 'w1' ? [] : buildW2Candidates(w2Models, options.acceptedEffortsByModel ?? {}, budget.w2OutputTokenCap);
-    const ordered = orderCandidates([...w1, ...w2]);
+    const ordered = orderCandidates(buildW1Candidates(models));
     const { kept, cut } = cutToBudget(ordered, budget);
-    const plannedModels = options.wave === 'w2' ? w2Models : models;
-    const perWave: Record<ProbeWave, WaveTotals> = {
-        w1: totalsOf(kept.filter((candidate) => candidate.wave === 'w1')),
-        w2: totalsOf(kept.filter((candidate) => candidate.wave === 'w2')),
-    };
     return {
-        wave: options.wave,
-        models: plannedModels,
+        wave: 'w1',
+        models,
         candidates: kept,
         requests: kept.length,
-        estimatedUsd: perWave.w1.estimatedUsd + perWave.w2.estimatedUsd,
-        perWave,
+        estimatedUsd: totalUsdOf(kept),
         cut,
     };
 };
@@ -556,10 +442,22 @@ export const parseModelsJson = (value: unknown): ModelsJsonResult => {
             : null;
         const inputPrice = priceRecord === null ? null : Number(priceRecord['inputPerMillionUsd']);
         const outputPrice = priceRecord === null ? null : Number(priceRecord['outputPerMillionUsd']);
-        if (inputPrice === null || outputPrice === null || !Number.isFinite(inputPrice) || !Number.isFinite(outputPrice)) {
-            problems.push({ index, message: `${model}: missing price` });
-            return;
+        const hasValidPrice =
+            inputPrice !== null &&
+            outputPrice !== null &&
+            Number.isFinite(inputPrice) &&
+            Number.isFinite(outputPrice) &&
+            inputPrice >= 0 &&
+            outputPrice >= 0;
+        if (!hasValidPrice) {
+            problems.push({
+                index,
+                message: `${model}: missing or invalid price, falling back to $${FALLBACK_PRICE.inputPerMillionUsd}/$${FALLBACK_PRICE.outputPerMillionUsd} per 1M`,
+            });
         }
+        const resolvedPrice = hasValidPrice
+            ? { inputPerMillionUsd: inputPrice, outputPerMillionUsd: outputPrice }
+            : FALLBACK_PRICE;
         const defaultEffort = record['vendorDefaultEffort'];
         const defaultEnabled = record['vendorDefaultEnabled'];
         models.push({
@@ -571,7 +469,7 @@ export const parseModelsJson = (value: unknown): ModelsJsonResult => {
                 typeof defaultEffort === 'string' && isEffortValue(defaultEffort) ? defaultEffort : null,
             vendorToggle: record['vendorToggle'] === true,
             vendorDefaultEnabled: typeof defaultEnabled === 'boolean' ? defaultEnabled : null,
-            price: { inputPerMillionUsd: inputPrice, outputPerMillionUsd: outputPrice },
+            price: resolvedPrice,
             ...(typeof record['note'] === 'string' ? { note: record['note'] } : {}),
         });
     });

@@ -18,7 +18,7 @@ import { listModelCatalog } from '../config/model-catalog.js';
 import { resolveChatModel } from '../config/chat-model.js';
 import { isOwnerUser } from '../config/owner.js';
 import { resolveAccessTier } from '../services/access-tier.js';
-import { resolveModelTraits } from '../ai/model-traits.js';
+import { resolveRuntimeTraits } from '../ai/model-traits.js';
 import { isImageOutputModel } from '../ai/model-kinds.js';
 import { TRIAL_CALLBACK_REFUSAL_TEXT, TRIAL_MODEL_REFUSAL_TEXT } from '../reply/commands/trial-refusal.js';
 import {
@@ -98,7 +98,7 @@ const chatModelViewOf = (chatId: number): ChatModelView => {
  */
 const chatThinkingViewOf = (chatId: number): ChatThinkingView => {
     const model = resolveChatModel(chatId);
-    const reasoning = resolveModelTraits(model).capabilities?.reasoning;
+    const reasoning = resolveRuntimeTraits(model).reasoning.value;
     const efforts = reasoning?.efforts ?? [];
     return {
         value: getChatSettings(chatId)?.thinkingEffort ?? null,

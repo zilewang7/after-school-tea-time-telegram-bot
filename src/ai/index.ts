@@ -11,14 +11,23 @@ export * from './message-transformer.js';
 // MCP module
 export * from './mcp/index.js';
 
-// Platform factory
+// Platform factory & runtime traits
 export {
     getPlatform,
     getModelCapabilities,
     isImageModel,
-    getDefaultModel,
     sendMessage,
 } from './platform-factory.js';
+export {
+    capabilitiesOf,
+    logReplyTraits,
+    reconcileCatalogTraits,
+    resolveRuntimeTraits,
+    type CatalogTraitsReconciliation,
+    type ModelTraitReconciliationRow,
+    type ReconciledTraitEntry,
+    type ReconciledTraitField,
+} from './model-traits.js';
 
 // System prompt (static head + per-request runtime block)
 export {

@@ -2,7 +2,7 @@
  * How a chat and its settings appear in API responses.
  */
 import type { ChatRow, ChatType } from '../../db/queries/panel-registry.js';
-import { resolveModelTraits } from '../../ai/model-traits.js';
+import { resolveRuntimeTraits } from '../../ai/model-traits.js';
 import {
     canEnableGeminiPriority,
     defaultChatSettings,
@@ -110,7 +110,7 @@ export const thinkingEffortViewOf = (chatId: number, effectiveModel: string): Th
     // The same source the menu and the request path resolve from (catalog row →
     // code seed → code), so a seed-only id without a catalog row still shows
     // its efforts instead of looking unsupported in the panel.
-    const reasoning = resolveModelTraits(effectiveModel).capabilities?.reasoning ?? null;
+    const reasoning = resolveRuntimeTraits(effectiveModel).reasoning.value;
     return {
         value,
         source: value === null ? 'model-default' : 'chat',

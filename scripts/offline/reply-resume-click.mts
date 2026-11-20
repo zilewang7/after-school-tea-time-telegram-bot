@@ -412,6 +412,23 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
         }),
     },
     {
+        name: 'case 10 (capabilities): changed outputTokens between failure and continue refuses with retry notice',
+        body: quietCase(async () => {
+            const chatId = takeChatId();
+            const reply = await failedReply(chatId);
+            setModelCatalog(
+                seedModelCatalogEntries().map((entry) =>
+                    entry.id === 'gemini-4-carbon'
+                        ? { ...entry, capabilities: { ...entry.capabilities, outputTokens: 32_768 } }
+                        : entry
+                )
+            );
+            await expectNoticeOnly(reply, checks.MODEL_CAPABILITIES_CHANGED_NOTICE, 'capabilities changed');
+            setModelCatalog(seedModelCatalogEntries());
+            await expectContinues(reply, 'capabilities restored');
+        }),
+    },
+    {
         name: 'case 10 (rich replies): a switch since the interrupt blocks nothing: presentation, not the request',
         body: quietCase(async () => {
             /** Whether the calls since the last reset showed the reply as a rich message */

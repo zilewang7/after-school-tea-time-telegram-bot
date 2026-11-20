@@ -514,4 +514,66 @@ results.push(
     })
 );
 
+results.push(
+    await runCase('migrateOpusDefaultEffort updates high -> medium once and preserves manual overrides', async () => {
+        const { migrateOpusDefaultEffort } = await import('../../src/db/schema-migrations.js');
+        await catalogService.loadModelCatalog();
+
+        // Seed starts at medium; verify seed and simulate pre-fix high row
+        expect(
+            nodeOf((await capabilitiesOfRow('claude-opus-5-5')).reasoning).defaultEffort === 'medium',
+            'fresh seed has claude-opus-5-5 defaultEffort=medium'
+        );
+
+        const preFix = await capabilitiesOfRow('claude-opus-5-5');
+        await ModelCatalogEntryRow.update(
+            {
+                capabilities: JSON.stringify({
+                    ...preFix,
+                    reasoning: { ...nodeOf(preFix.reasoning), defaultEffort: 'high', source: 'probe' },
+                }),
+            },
+            { where: { id: 'claude-opus-5-5' } }
+        );
+        await sequelize.query("DELETE FROM schema_migrations WHERE name = '20261120_opus_default_effort'");
+        await sequelize.transaction((tx) => migrateOpusDefaultEffort(tx));
+        const migrated = await capabilitiesOfRow('claude-opus-5-5');
+        expect(nodeOf(migrated.reasoning).defaultEffort === 'medium', 'existing probe/code high is corrected to medium');
+
+        // Manual override is not overwritten even if migration re-runs
+        await ModelCatalogEntryRow.update(
+            {
+                capabilities: JSON.stringify({
+                    ...migrated,
+                    reasoning: { ...nodeOf(migrated.reasoning), defaultEffort: 'high', source: 'manual' },
+                }),
+            },
+            { where: { id: 'claude-opus-5-5' } }
+        );
+        await sequelize.query("DELETE FROM schema_migrations WHERE name = '20261120_opus_default_effort'");
+        await sequelize.transaction((tx) => migrateOpusDefaultEffort(tx));
+        expect(
+            nodeOf((await capabilitiesOfRow('claude-opus-5-5')).reasoning).defaultEffort === 'high',
+            'manual override stays untouched'
+        );
+
+        await ModelCatalogEntryRow.destroy({ where: { id: 'claude-opus-5-5' } });
+        await ModelCatalogEntryRow.destroy({ where: {} });
+        await catalogService.loadModelCatalog();
+    })
+);
+
+results.push(
+    await runCase('modelCatalogVersion moves when row.enabled toggles', async () => {
+        await catalogService.loadModelCatalog();
+        const before = modelCatalogVersion();
+        await ModelCatalogEntryRow.update({ enabled: 0 }, { where: { id: 'gpt-6-sol' } });
+        await catalogService.loadModelCatalog();
+        const after = modelCatalogVersion();
+        expect(after !== before, `version changed on enabled toggle (${before} -> ${after})`);
+        await ModelCatalogEntryRow.update({ enabled: 1 }, { where: { id: 'gpt-6-sol' } });
+        await catalogService.loadModelCatalog();
+    })
+);
+
 reportResults(results);

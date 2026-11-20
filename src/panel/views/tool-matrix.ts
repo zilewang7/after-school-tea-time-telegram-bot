@@ -9,7 +9,7 @@
  * same config; when they disagree the flag wins and the reason falls back to a
  * generic one.
  */
-import { getModelCapabilities } from '../../ai/platform-factory.js';
+import { capabilitiesOf, resolveRuntimeTraits } from '../../ai/model-traits.js';
 import { isTestInstance } from '../../config/instance.js';
 import { getToolConfig, type ToolConfig } from '../../config/tool-config.js';
 import { resolveToolAvailability, type ToolAvailability } from '../../reply/tools/tool-availability.js';
@@ -220,11 +220,11 @@ export const buildToolMatrix = (
     access: AccessTier = 'full'
 ): ToolGroupEntry[] => {
     const config = getToolConfig();
-    const capabilities = getModelCapabilities(model);
+    const capabilities = capabilitiesOf(resolveRuntimeTraits(model));
     // The tier rides along into both variants: a trial user has no SMS/MCP even
     // when every switch follows the env again
-    const availability = resolveToolAvailability(model, chatId, config, overrides, access);
-    const envAvailability = resolveToolAvailability(model, chatId, config, null, access);
+    const availability = resolveToolAvailability(model, chatId, config, overrides, access, capabilities);
+    const envAvailability = resolveToolAvailability(model, chatId, config, null, access, capabilities);
     const context: ReasonContext = {
         config,
         chatId,

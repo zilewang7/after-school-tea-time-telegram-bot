@@ -6,6 +6,7 @@ import type { ChatCompletionChunk } from 'openai/resources';
 import { BasePlatform } from './base-platform.js';
 import { attemptRequestOptions } from './attempt-request-options.js';
 import { transformToOpenAI, mergeConsecutiveMessages } from '../message-transformer.js';
+import { capabilitiesOf, resolveRuntimeTraits } from '../model-traits.js';
 import {
     runToolLoop,
     toChatCompletionTools,
@@ -83,30 +84,8 @@ export class DeepSeekPlatform extends BasePlatform {
         }
     }
 
-    supportsModel(model: string): boolean {
-        return model.toLowerCase().startsWith('deepseek');
-    }
-
     getModelCapabilities(model: string): ModelCapabilities {
-        const lowerModel = model.toLowerCase();
-        const isReasoner = lowerModel.includes('reasoner');
-        // deepseek-flash (V4.1-Flash) reads pictures despite carrying no
-        // "vision"/"image" marker in its id
-        const supportsImageInput =
-            lowerModel.includes('vision') ||
-            lowerModel.includes('image') ||
-            lowerModel === 'deepseek-flash';
-
-        return {
-            supportsImageInput,
-            supportsImageOutput: false,
-            supportsSystemPrompt: true,
-            requiresMessageMerge: isReasoner,
-            supportsThinking: isReasoner,
-            supportsGrounding: false,
-            supportsMediaInput: false,
-            supportsClientTools: true,
-        };
+        return capabilitiesOf(resolveRuntimeTraits(model));
     }
 
     async sendMessage(
@@ -114,7 +93,7 @@ export class DeepSeekPlatform extends BasePlatform {
         config: PlatformConfig
     ): Promise<AsyncIterable<StreamChunk>> {
         const { model, systemPrompt, timeout = 85000, maxRetries = 3, signal, tools, usageSink } = config;
-        const capabilities = this.getModelCapabilities(model);
+        const capabilities = capabilitiesOf(config.traits ?? resolveRuntimeTraits(model));
 
         this.logMessageContents(messages);
         console.log(`[deepseek] Using model: ${model}, requiresMessageMerge: ${capabilities.requiresMessageMerge}`);
@@ -137,6 +116,7 @@ export class DeepSeekPlatform extends BasePlatform {
             return this.sendMessageWithTools(
                 openaiMessages,
                 model,
+                capabilities.supportsImageInput,
                 tools,
                 timeout,
                 maxRetries,
@@ -160,7 +140,8 @@ export class DeepSeekPlatform extends BasePlatform {
                     { timeout, maxRetries, signal }
                 ),
             thinkingWire,
-            model
+            model,
+            usageSink
         );
 
         return this.processStream(stream, usageSink);
@@ -191,7 +172,8 @@ export class DeepSeekPlatform extends BasePlatform {
     private async openChatWithEffortFallback<T>(
         open: () => Promise<T>,
         wire: EffortWire | null,
-        model: string
+        model: string,
+        usageSink: UsageSink | undefined
     ): Promise<T> {
         try {
             return await open();
@@ -206,6 +188,11 @@ export class DeepSeekPlatform extends BasePlatform {
             }
             wire.degraded = true;
             logEffortFallback('deepseek', model, wire.value ?? wire.mode, 'the provider default', error);
+            usageSink?.noteCapabilityEvent({
+                kind: 'effort_rejected',
+                effort: wire.value ?? wire.mode,
+                fallback: null,
+            });
             return await open();
         }
     }
@@ -219,6 +206,7 @@ export class DeepSeekPlatform extends BasePlatform {
     private async *sendMessageWithTools(
         initialMessages: OpenAI.Chat.ChatCompletionMessageParam[],
         model: string,
+        supportsImageInput: boolean,
         tools: TurnTools,
         timeout: number,
         maxRetries: number,
@@ -250,16 +238,17 @@ export class DeepSeekPlatform extends BasePlatform {
                             { timeout, maxRetries, signal }
                         ),
                     thinkingWire,
-                    model
+                    model,
+                    usageSink
                 );
-                const round = await this.collectToolRound(stream, roundIndex);
+                const round = await this.collectToolRound(stream, roundIndex, usageSink);
                 usageSink?.addRound(round.usage);
                 return round;
             },
             appendRound: (round, executedCalls) => {
                 currentMessages.push(
                     ...buildChatToolTurn(round, executedCalls, {
-                        supportsImageInput: this.getModelCapabilities(model).supportsImageInput,
+                        supportsImageInput,
                     })
                 );
             },
@@ -269,17 +258,21 @@ export class DeepSeekPlatform extends BasePlatform {
     /** Consume one tool-loop stream: chunks, text, reasoning and tool calls */
     private async collectToolRound(
         stream: AsyncIterable<ChatCompletionChunk>,
-        round: number
+        round: number,
+        usageSink: UsageSink | undefined
     ): Promise<DeepSeekToolRound> {
         const toolCallCollector = createChatToolCallCollector();
         const chunks: StreamChunk[] = [];
         let text = '';
         let reasoning = '';
         let usage: unknown;
+        let finishReason: string | null = null;
 
         for await (const chunk of stream) {
             usage = usageOfChunk(chunk) ?? usage;
-            const delta: ReasoningChunkDelta | undefined = chunk.choices[0]?.delta;
+            const choice = chunk.choices[0];
+            finishReason = choice?.finish_reason ?? finishReason;
+            const delta: ReasoningChunkDelta | undefined = choice?.delta;
 
             // Handle reasoning content (thinking)
             if (delta?.reasoning_content) {
@@ -294,6 +287,9 @@ export class DeepSeekPlatform extends BasePlatform {
             }
 
             toolCallCollector.add(delta?.tool_calls);
+        }
+        if (finishReason === 'length') {
+            usageSink?.noteCapabilityEvent({ kind: 'output_truncated', reason: 'length' });
         }
 
         return {
@@ -310,9 +306,12 @@ export class DeepSeekPlatform extends BasePlatform {
         usageSink: UsageSink | undefined
     ): AsyncIterable<StreamChunk> {
         let usage: unknown;
+        let finishReason: string | null = null;
         for await (const chunk of stream) {
             usage = usageOfChunk(chunk) ?? usage;
-            const delta: ReasoningChunkDelta | undefined = chunk.choices[0]?.delta;
+            const choice = chunk.choices[0];
+            finishReason = choice?.finish_reason ?? finishReason;
+            const delta: ReasoningChunkDelta | undefined = choice?.delta;
 
             // Handle reasoning content (thinking)
             if (delta?.reasoning_content) {
@@ -331,6 +330,9 @@ export class DeepSeekPlatform extends BasePlatform {
             }
         }
         usageSink?.addRound(normalizeChatCompletionsUsage(usage));
+        if (finishReason === 'length') {
+            usageSink?.noteCapabilityEvent({ kind: 'output_truncated', reason: 'length' });
+        }
 
         yield {
             type: 'done',

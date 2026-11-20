@@ -324,6 +324,31 @@ const runPendingCases = async (): Promise<void> => {
         const withNone = await jsonOf(await catalogOf());
         expect(withNone['pendingProposals'] === 0, 'zero after the second rejection');
     }));
+
+    results.push(await runCase('reconciliation table and field-level provenance are returned in /api/model-catalog', async () => {
+        await reseed();
+        const current = await capabilitiesOfModel('gemini-4-hydrogen');
+        await writeCapabilities('gemini-4-hydrogen', {
+            ...current,
+            provenance: { 'reasoning.efforts': { source: 'probe', checkedOn: '2026-11-13', lane: 'vertex@live' } },
+            laneFingerprints: { gemini: 'vertex@live' },
+        });
+        const body = await jsonOf(await catalogOf());
+        const reconciliation = body['reconciliation'];
+        expect(typeof reconciliation === 'object' && reconciliation !== null, 'reconciliation object present');
+        if (typeof reconciliation === 'object' && reconciliation !== null) {
+            const recRecord = Object.fromEntries(Object.entries(reconciliation));
+            expect(recRecord['catalogVersion'] === body['catalogVersion'], 'reconciliation carries matching catalogVersion');
+            expect(Array.isArray(recRecord['rows']) && recRecord['rows'].length >= 13, 'reconciliation covers catalog + seed models');
+            expect(typeof recRecord['totalDiffs'] === 'number', 'totalDiffs is a number');
+        }
+        const hydrogen = modelById(body, 'gemini-4-hydrogen');
+        const capabilities = hydrogen?.['capabilities'];
+        if (typeof capabilities !== 'object' || capabilities === null) throw new Error('missing capabilities');
+        const capRecord = Object.fromEntries(Object.entries(capabilities));
+        expect(typeof capRecord['provenance'] === 'object' && capRecord['provenance'] !== null, 'field provenance exposed');
+        expect(typeof capRecord['laneFingerprints'] === 'object' && capRecord['laneFingerprints'] !== null, 'laneFingerprints exposed');
+    }));
 };
 
 // ---------------------------------------------------------------------------

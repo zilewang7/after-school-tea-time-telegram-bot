@@ -20,13 +20,16 @@ import { listAllModelCatalog } from '../config/model-catalog.js';
 import type { CatalogFetchResult, CatalogFetcher, CatalogModelRef } from './price-catalog-types.js';
 
 /** models.dev keeps one TOML per provider model (schema 2, MIT) */
-const MODELS_DEV_PROVIDER_DIRECTORY = 'https://raw.githubusercontent.com/sst/models.dev/dev/providers';
+const MODELS_DEV_PROVIDER_DIRECTORY = 'https://raw.githubusercontent.com/anomalyco/models.dev/dev/providers';
 
 /**
  * models.dev keeps the canonical lab document of a model under
  * `models/<vendor>/<id>.toml`; the provider TOML names it in `base_model`.
  */
-export const MODELS_DEV_LAB_DIRECTORY = 'https://raw.githubusercontent.com/sst/models.dev/dev/models';
+export const MODELS_DEV_LAB_DIRECTORY = 'https://raw.githubusercontent.com/anomalyco/models.dev/dev/models';
+
+/** models.dev aggregate catalog, used for new-model discovery and api.json capability fallback */
+export const MODELS_DEV_API_URL = 'https://models.dev/api.json';
 
 /** Vertex's own pricing page: Priority PayGo rows, promo windows and dates */
 export const VERTEX_PRICING_URL = 'https://cloud.google.com/vertex-ai/generative-ai/pricing';
@@ -143,9 +146,15 @@ const fetchText = async (fetcher: CatalogFetcher, url: string): Promise<FetchOut
  * one (`claude-sonnet-5`, `grok-4.20-multi-agent-0309`) has no lab document:
  * its limits stay absent and `api.json` fills them at compile time.
  */
+export interface FetchPriceCatalogsOptions {
+    /** Also fetch models.dev `api.json` concurrently in the first batch */
+    readonly includeApiJson?: boolean;
+}
+
 export const fetchPriceCatalogs = async (
     fetcher: CatalogFetcher,
-    refs: readonly CatalogModelRef[] = catalogModelRefs()
+    refs: readonly CatalogModelRef[] = catalogModelRefs(),
+    options: FetchPriceCatalogsOptions = {}
 ): Promise<CatalogFetchResult> => {
     const tomlRefs = refs.filter((ref) => ref.modelFile !== '');
     // One promise per model, in ref order: the result order stays deterministic
@@ -153,15 +162,22 @@ export const fetchPriceCatalogs = async (
         model: ref.model,
         outcome: await fetchText(fetcher, modelsDevTomlUrl(ref)),
     }));
-    const [tomlResults, vertex, ephone, litellm] = await Promise.all([
+    const apiJsonPromise: Promise<FetchOutcome | null> = options.includeApiJson
+        ? fetchText(fetcher, MODELS_DEV_API_URL)
+        : Promise.resolve(null);
+    const [tomlResults, vertex, ephone, litellm, apiJsonOutcome] = await Promise.all([
         Promise.all(tomlRequests),
         fetchText(fetcher, VERTEX_PRICING_URL),
         fetchText(fetcher, EPHONE_PRICING_URL),
         fetchText(fetcher, LITELLM_PRICING_URL),
+        apiJsonPromise,
     ]);
 
     const warnings: string[] = [];
     const errors: string[] = [];
+    if (apiJsonOutcome !== null && apiJsonOutcome.body === null) {
+        warnings.push(`模型发现失败：${apiJsonOutcome.error ?? '未知原因'}`);
+    }
     const tomlByModel = new Map<string, string>();
     const labTargets: { readonly model: string; readonly url: string }[] = [];
     for (const result of tomlResults) {
@@ -205,6 +221,7 @@ export const fetchPriceCatalogs = async (
             vertexPricingHtml: sourceBody('官方 Vertex 定价页', VERTEX_PRICING_URL, vertex, errors),
             ephonePricingJson: sourceBody('ephone 定价接口', EPHONE_PRICING_URL, ephone, warnings),
             litellmJson: sourceBody('LiteLLM 价目表', LITELLM_PRICING_URL, litellm, warnings),
+            ...(options.includeApiJson ? { apiJson: apiJsonOutcome?.body ?? null } : {}),
         },
         warnings,
         errors,

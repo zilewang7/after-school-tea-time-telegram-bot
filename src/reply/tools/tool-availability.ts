@@ -12,6 +12,7 @@
  * free tools keep following the chat switches.
  */
 import { getModelCapabilities, getPlatform } from '../../ai/platform-factory.js';
+import type { ModelCapabilities } from '../../ai/types.js';
 import { listMcpServers } from '../../ai/mcp/index.js';
 import { isTestInstance } from '../../config/instance.js';
 import { getToolConfig, type ToolConfig } from '../../config/tool-config.js';
@@ -105,10 +106,11 @@ export const resolveToolAvailability = (
     chatId: number,
     config: ToolConfig = getToolConfig(),
     overrides: ToolOverrides | null = null,
-    access: AccessTier = 'full'
+    access: AccessTier = 'full',
+    resolvedCapabilities?: ModelCapabilities
 ): ToolAvailability => {
     const trial = access === 'trial';
-    const capabilities = getModelCapabilities(model);
+    const capabilities = resolvedCapabilities ?? getModelCapabilities(model);
     if (capabilities.supportsClientTools !== true) return noToolsFor(trial);
 
     const isEnabled = (name: string): boolean => !config.disabledTools.has(name);

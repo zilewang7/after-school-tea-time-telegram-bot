@@ -12,6 +12,7 @@ import { AnthropicPlatform } from './platforms/anthropic-platform.js';
 import { applyModelCapabilities } from './message-transformer.js';
 import { imageModelChatError, isChatShapedRequest } from './image-model-guard.js';
 import { isImageOutputModel } from './model-kinds.js';
+import { capabilitiesOf, resolveRuntimeTraits } from './model-traits.js';
 import { platformTypeOf } from './platform-routing.js';
 
 // Singleton platform instances - initialized once at module load
@@ -40,29 +41,13 @@ export const getPlatform = (model: string): IAIPlatform => {
 /**
  * Get model capabilities for a given model
  */
-export const getModelCapabilities = (model: string): ModelCapabilities => {
-    const platform = getPlatform(model);
-    return platform.getModelCapabilities(model);
-};
+export const getModelCapabilities = (model: string): ModelCapabilities =>
+    capabilitiesOf(resolveRuntimeTraits(model));
 
 /**
  * Check if model is an image generation model
  */
 export const isImageModel = (model: string): boolean => isImageOutputModel(model);
-
-/**
- * Get default model name for a platform type
- */
-export const getDefaultModel = (platformType: string): string => {
-    return match(platformType)
-        .with('gemini', () => 'gemini-4-neon')
-        .with('openai', () => 'gpt-5.4')
-        .with('deepseek', () => 'deepseek-reasoning')
-        .with('grok', () => 'grok-4.20-0309-reasoning')
-        .with('mimo', () => 'mimo-v2.6-pro')
-        .with('anthropic', () => 'claude-sonnet-5-5')
-        .otherwise(() => process.env.DEFAULT_MODEL || 'gpt-5.4');
-};
 
 /**
  * Send message using the appropriate platform
@@ -72,6 +57,7 @@ export const sendMessage = async (
     messages: UnifiedMessage[],
     config: PlatformConfig
 ): Promise<AsyncIterable<StreamChunk>> => {
+    const traits = config.traits ?? resolveRuntimeTraits(config.model);
     const platform = getPlatform(config.model);
     // Only the platform that made a checkpoint can go on from it; any other
     // would ignore it and send `messages` (empty on a resume) as a new turn
@@ -79,19 +65,20 @@ export const sendMessage = async (
     if (resumeFrom !== undefined && resumeFrom.platform !== platform.type) {
         throw new Error(`Cannot resume a ${resumeFrom.platform} checkpoint on the ${platform.type} platform (${config.model})`);
     }
-    const imageModel = isImageModel(config.model);
+    const imageModel = isImageOutputModel(config.model, traits);
     // A resume is left to the platform: it refuses a checkpoint it cannot go on from
     if (imageModel && resumeFrom === undefined && isChatShapedRequest(config)) {
         throw imageModelChatError(config.model);
     }
-    const capabilities = platform.getModelCapabilities(config.model);
+    const capabilities = capabilitiesOf(traits);
 
     // Apply model capabilities (filter images, merge messages, etc.)
     const processedMessages = applyModelCapabilities(messages, capabilities);
 
-    // Add isImageModel to config
+    // Add isImageModel and pre-resolved traits to config
     const fullConfig: PlatformConfig = {
         ...config,
+        traits,
         isImageModel: imageModel,
     };
 

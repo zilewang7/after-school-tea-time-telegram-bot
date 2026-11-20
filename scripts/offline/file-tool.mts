@@ -291,7 +291,6 @@ const VISION = {
     supportsSystemPrompt: true,
     requiresMessageMerge: false,
     supportsThinking: true,
-    supportsGrounding: true,
     supportsMediaInput: false,
 };
 

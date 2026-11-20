@@ -9,6 +9,7 @@
  * cached prefix for every reply.
  */
 import { getModelCapabilities } from '../platform-factory.js';
+import type { ModelCapabilities } from '../types.js';
 import { getToolConfig } from '../../config/tool-config.js';
 import { getPreferencePrompt } from './preference.js';
 import {
@@ -57,8 +58,12 @@ export interface StaticPromptOptions {
     readonly widget?: boolean;
 }
 
-export const buildStaticSystemPrompt = (model: string, options: StaticPromptOptions = {}): string => {
-    const capabilities = getModelCapabilities(model);
+export const buildStaticSystemPrompt = (
+    model: string,
+    options: StaticPromptOptions = {},
+    resolvedCapabilities?: ModelCapabilities
+): string => {
+    const capabilities = resolvedCapabilities ?? getModelCapabilities(model);
 
     return [
         getPreferencePrompt(),

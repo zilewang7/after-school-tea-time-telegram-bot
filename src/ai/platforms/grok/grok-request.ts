@@ -9,6 +9,7 @@ import type {
     ResponseInputItem,
 } from 'openai/resources/responses/responses';
 import { isJsonObject } from '../../../shared/json-object.js';
+import { codePolicyDefaultEffortOf } from '../../thinking-effort.js';
 import {
     imageDataUrl,
     modelImagesIntro,
@@ -58,8 +59,10 @@ export type GrokResponseRequest = Omit<ResponseCreateParamsStreaming, 'tools' | 
 export const isGrokMultiAgentModel = (model: string): boolean =>
     model.toLowerCase().includes('multi-agent');
 
-export const grokReasoningFor = (model: string): GrokResponseRequest['reasoning'] =>
-    isGrokMultiAgentModel(model) ? { effort: 'high' } : undefined;
+export const grokReasoningFor = (model: string): GrokResponseRequest['reasoning'] => {
+    const effort = codePolicyDefaultEffortOf(model);
+    return effort === null ? undefined : { effort };
+};
 
 export const buildSearchTools = (): GrokResponseTool[] => [
     {

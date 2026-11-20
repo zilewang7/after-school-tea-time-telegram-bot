@@ -1,16 +1,27 @@
 import { Fragment, useMemo } from 'react';
-import type { ModelCatalogEntryView } from '../../api';
+import type { ModelCatalogEntryView, ModelTraitReconciliationRow } from '../../api';
 import { platformLabel } from '../../format-metrics';
-import { capabilityFactsOf, modelCatalogBadgesOf } from './model-catalog-format';
+import {
+    capabilityFactsOf,
+    fieldProvenanceFactsOf,
+    modelCatalogBadgesOf,
+    modelReconciliationFactsOf,
+} from './model-catalog-format';
 
 interface ModelCapabilityCardProps {
     entry: ModelCatalogEntryView;
+    reconciliationRow?: ModelTraitReconciliationRow;
 }
 
-/** One catalog row: header, badges and the labeled capability facts (read only) */
-export const ModelCapabilityCard = ({ entry }: ModelCapabilityCardProps) => {
+/** One catalog row: header, badges, capability facts, per-field provenance, and reconciliation diffs */
+export const ModelCapabilityCard = ({ entry, reconciliationRow }: ModelCapabilityCardProps) => {
     const facts = useMemo(() => capabilityFactsOf(entry), [entry]);
     const badges = useMemo(() => modelCatalogBadgesOf(entry), [entry]);
+    const provenanceFacts = useMemo(() => fieldProvenanceFactsOf(entry), [entry]);
+    const reconciliationDiffs = useMemo(
+        () => (reconciliationRow === undefined ? [] : modelReconciliationFactsOf(reconciliationRow)),
+        [reconciliationRow]
+    );
     const subtitle = useMemo(
         () => (entry.platform === null ? entry.id : `${entry.id} · ${platformLabel(entry.platform)}`),
         [entry.id, entry.platform]
@@ -29,6 +40,9 @@ export const ModelCapabilityCard = ({ entry }: ModelCapabilityCardProps) => {
                         {badge}
                     </span>
                 ))}
+                {reconciliationDiffs.length > 0 && (
+                    <span className="badge warning">{reconciliationDiffs.length} 项代码差异</span>
+                )}
             </p>
             <dl className="facts">
                 {facts.map((fact) => (
@@ -38,6 +52,28 @@ export const ModelCapabilityCard = ({ entry }: ModelCapabilityCardProps) => {
                     </Fragment>
                 ))}
             </dl>
+            <p className="hint">字段来源</p>
+            <dl className="facts">
+                {provenanceFacts.map((fact) => (
+                    <Fragment key={fact.field}>
+                        <dt>{fact.label}</dt>
+                        <dd>{fact.summary}</dd>
+                    </Fragment>
+                ))}
+            </dl>
+            {reconciliationDiffs.length > 0 && (
+                <>
+                    <p className="hint">对账差异</p>
+                    <dl className="facts">
+                        {reconciliationDiffs.map((diff) => (
+                            <Fragment key={diff.field}>
+                                <dt>{diff.label}</dt>
+                                <dd>{diff.detail}</dd>
+                            </Fragment>
+                        ))}
+                    </dl>
+                </>
+            )}
         </li>
     );
 };

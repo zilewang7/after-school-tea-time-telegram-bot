@@ -1,12 +1,11 @@
 /**
  * Text rules of the owner's read-only model catalog page: effort labels, source
- * and confidence names, modality/API lists and the provenance of one row. Pure
- * functions, so the offline cases can check the wording without a browser.
- *
- * The labels mirror the server's closed sets (thinking-effort design §1.1/§4.3);
- * an unknown value falls back to the raw string instead of disappearing.
+ * and confidence names, modality/API lists, field-level provenance, per-platform
+ * lane fingerprints, and the code-vs-data reconciliation summary. Pure functions,
+ * so the offline cases can check the wording without a browser.
  */
 import type {
+    CatalogTraitsReconciliation,
     ModelCapabilitiesView,
     ModelCapabilityModalities,
     ModelCapabilityReasoning,
@@ -14,18 +13,23 @@ import type {
     ModelCatalogKind,
     ModelCatalogResponse,
     ModelModalityName,
+    ModelTraitReconciliationRow,
     ModelTraitsOrigin,
+    PlatformLaneFingerprints,
+    ReconciledTraitEntry,
+    ReconciledTraitField,
 } from '../../api';
-import { formatCount, formatTokens } from '../../format-metrics';
+import { formatCount, formatTokens, platformLabel } from '../../format-metrics';
 import { THINKING_EFFORT_LABELS } from '../../thinking-effort';
 
-/** Where a catalog row's values came from */
+/** Where a capability value came from */
 export const MODEL_CATALOG_SOURCE_LABELS: Readonly<Record<string, string>> = {
     code: '代码 seed',
     'models-dev': 'models.dev',
     manual: '人工',
     official: '官方文档',
     probe: 'probe',
+    traffic: '线上流量',
 };
 
 export const MODEL_CATALOG_CONFIDENCE_LABELS: Readonly<Record<string, string>> = {
@@ -54,6 +58,36 @@ export const MODEL_MODALITY_LABELS: Readonly<Record<ModelModalityName, string>> 
     pdf: 'PDF',
 };
 
+export const PROVENANCE_FIELD_LABELS: Readonly<Record<string, string>> = {
+    kind: '类型',
+    vision: '图片输入',
+    imageOutput: '图片输出',
+    tools: '工具调用',
+    contextTokens: '上下文上限',
+    outputTokens: '输出上限',
+    'modalities.input': '输入模态',
+    'modalities.output': '输出模态',
+    'reasoning.supported': '思考能力',
+    'reasoning.toggle': '思考开关',
+    'reasoning.efforts': '思考档位',
+    'reasoning.defaultEffort': '默认档位',
+    'reasoning.defaultEnabled': '默认思考',
+    apis: '可用 API',
+    toolsMixing: '工具混用',
+    'nativeTools.imageSearchGrounding': '图像搜索',
+};
+
+export const RECONCILED_FIELD_LABELS: Readonly<Record<ReconciledTraitField, string>> = {
+    imageOutput: '图片输出',
+    imageInput: '图片输入',
+    mediaInput: '音视频输入',
+    clientTools: '客户端工具',
+    geminiToolsMixing: 'Gemini 工具混用',
+    imageSearchGrounding: '图像搜索 Grounding',
+    xhighThinking: '支持 xhigh 思考',
+    outputTokens: '输出上限',
+};
+
 export const modelSourceLabelOf = (source: string): string => MODEL_CATALOG_SOURCE_LABELS[source] ?? source;
 
 export const modelConfidenceLabelOf = (confidence: string): string =>
@@ -62,6 +96,8 @@ export const modelConfidenceLabelOf = (confidence: string): string =>
 export const modelTraitsOriginLabelOf = (origin: ModelTraitsOrigin): string => MODEL_TRAITS_ORIGIN_LABELS[origin];
 
 export const modelKindLabelOf = (kind: ModelCatalogKind): string => MODEL_KIND_LABELS[kind];
+
+export const reconciledFieldLabelOf = (field: ReconciledTraitField): string => RECONCILED_FIELD_LABELS[field] ?? field;
 
 /** One effort value in Chinese; an unknown word is shown as-is */
 export const effortLabelOf = (effort: string): string => THINKING_EFFORT_LABELS[effort] ?? effort;
@@ -115,26 +151,67 @@ export const apisTextOf = (apis: ModelCapabilitiesView['apis']): string => {
     return names.length === 0 ? '无' : names.join('、');
 };
 
-/** The row's own provenance plus the reasoning section's, when they differ */
-const combinedProvenanceOf = (
-    entry: ModelCatalogEntryView,
-    part: 'source' | 'checkedOn' | 'confidence'
+/** Per-platform lane fingerprints in one line, or null when none exist */
+export const laneFingerprintsTextOf = (fingerprints: PlatformLaneFingerprints | undefined): string | null => {
+    if (fingerprints === undefined) return null;
+    const entries = Object.entries(fingerprints).filter(
+        (pair): pair is [string, string] => typeof pair[1] === 'string' && pair[1] !== ''
+    );
+    if (entries.length === 0) return null;
+    return entries.map(([platform, lane]) => `${platformLabel(platform)} ${lane}`).join(' · ');
+};
+
+export interface FieldProvenanceFact {
+    readonly field: string;
+    readonly label: string;
+    readonly summary: string;
+}
+
+const formatProvenanceEntry = (
+    source: string,
+    checkedOn?: string,
+    lane?: string
 ): string => {
-    const rowValue =
-        part === 'source'
-            ? modelSourceLabelOf(entry.source)
-            : part === 'checkedOn'
-              ? entry.checkedOn
-              : modelConfidenceLabelOf(entry.confidence);
-    const reasoningValue =
-        part === 'source'
-            ? entry.capabilities.reasoning?.source
-            : part === 'checkedOn'
-              ? entry.capabilities.reasoning?.checkedOn
-              : entry.capabilities.reasoning?.confidence;
-    if (reasoningValue === undefined) return rowValue;
-    const reasoningText = part === 'confidence' ? modelConfidenceLabelOf(reasoningValue) : reasoningValue;
-    return reasoningText === rowValue ? rowValue : `${rowValue}（思考 ${reasoningText}）`;
+    const parts = [modelSourceLabelOf(source)];
+    if (checkedOn !== undefined && checkedOn !== '') parts.push(checkedOn);
+    if (lane !== undefined && lane !== '') parts.push(`通道 ${lane}`);
+    return parts.join(' · ');
+};
+
+/** Field-level provenance list; falls back to legacy row/reasoning provenance when absent */
+export const fieldProvenanceFactsOf = (entry: ModelCatalogEntryView): readonly FieldProvenanceFact[] => {
+    const { capabilities } = entry;
+    const map = capabilities.provenance;
+    if (map !== undefined) {
+        const facts: FieldProvenanceFact[] = [];
+        for (const [field, prov] of Object.entries(map)) {
+            if (prov === undefined) continue;
+            facts.push({
+                field,
+                label: PROVENANCE_FIELD_LABELS[field] ?? field,
+                summary: formatProvenanceEntry(prov.source, prov.checkedOn, prov.lane),
+            });
+        }
+        if (facts.length > 0) return facts;
+    }
+    const facts: FieldProvenanceFact[] = [
+        {
+            field: 'row',
+            label: '基础能力',
+            summary: formatProvenanceEntry(capabilities.source ?? entry.source, capabilities.checkedOn ?? entry.checkedOn),
+        },
+    ];
+    if (capabilities.reasoning?.source !== undefined) {
+        facts.push({
+            field: 'reasoning',
+            label: '思考能力',
+            summary: formatProvenanceEntry(
+                capabilities.reasoning.source,
+                capabilities.reasoning.checkedOn
+            ),
+        });
+    }
+    return facts;
 };
 
 export interface CapabilityFact {
@@ -145,6 +222,7 @@ export interface CapabilityFact {
 /** The labeled rows one model card shows; order is the reading order */
 export const capabilityFactsOf = (entry: ModelCatalogEntryView): readonly CapabilityFact[] => {
     const { capabilities } = entry;
+    const lanes = laneFingerprintsTextOf(capabilities.laneFingerprints);
     return [
         { label: '类型', value: modelKindLabelOf(capabilities.kind) },
         { label: '思考档位', value: effortsTextOf(capabilities.reasoning?.efforts) },
@@ -156,26 +234,74 @@ export const capabilityFactsOf = (entry: ModelCatalogEntryView): readonly Capabi
         { label: '输入模态', value: modalityListTextOf(capabilities.modalities, 'input') },
         { label: '输出模态', value: modalityListTextOf(capabilities.modalities, 'output') },
         { label: '可用 API', value: apisTextOf(capabilities.apis) },
-        { label: '来源', value: combinedProvenanceOf(entry, 'source') },
-        { label: '核对日期', value: combinedProvenanceOf(entry, 'checkedOn') },
-        { label: '置信', value: combinedProvenanceOf(entry, 'confidence') },
+        ...(lanes === null ? [] : [{ label: '通道指纹', value: lanes }]),
         { label: '运行时来源', value: modelTraitsOriginLabelOf(entry.traitsOrigin) },
     ];
 };
 
-/** The page header's one line: catalog content version, pending proposals, row count */
+/** The page header's one line: catalog content version, pending proposals, menu vs reference counts */
 export const modelCatalogMetaTextOf = (
     response: Pick<ModelCatalogResponse, 'catalogVersion' | 'pendingProposals' | 'models'>
-): string =>
-    `目录 ${response.catalogVersion} · 待确认能力提案 ${formatCount(response.pendingProposals)} 条 · ${formatCount(
-        response.models.length
-    )} 个模型`;
+): string => {
+    const menuCount = response.models.filter((entry) => entry.enabled).length;
+    const referenceCount = response.models.length - menuCount;
+    const countText =
+        referenceCount > 0
+            ? `菜单 ${formatCount(menuCount)} + 参考行 ${formatCount(referenceCount)} 个模型`
+            : `${formatCount(response.models.length)} 个模型`;
+    return `目录 ${response.catalogVersion} · 待确认能力提案 ${formatCount(response.pendingProposals)} 条 · ${countText}`;
+};
 
-/** The two provenance words the card header shows as badges */
+const hasProbeOrTraffic = (capabilities: ModelCapabilitiesView, source: 'probe' | 'traffic'): boolean => {
+    if (capabilities.reasoning?.source === source || capabilities.source === source) return true;
+    if (capabilities.provenance === undefined) return false;
+    return Object.values(capabilities.provenance).some((entry) => entry?.source === source);
+};
+
+/** Badges distinguishing menu rows vs reference rows, kind, image output, and probe/traffic sources */
 export const modelCatalogBadgesOf = (entry: ModelCatalogEntryView): readonly string[] => {
     const badges: string[] = [modelKindLabelOf(entry.capabilities.kind)];
-    if (!entry.enabled) badges.push('未启用');
+    if (!entry.enabled) badges.push('参考行');
     if (entry.capabilities.imageOutput) badges.push('可出图');
-    if (entry.capabilities.reasoning?.source === 'probe') badges.push('probe 实测');
+    if (hasProbeOrTraffic(entry.capabilities, 'probe')) badges.push('probe 实测');
+    if (hasProbeOrTraffic(entry.capabilities, 'traffic')) badges.push('线上流量修正');
     return badges;
 };
+
+const traitValueTextOf = (value: boolean | number | null): string => {
+    if (value === null) return '未断言';
+    if (typeof value === 'boolean') return value ? '是' : '否';
+    return formatTokens(value);
+};
+
+/** Summary text for the code-vs-data reconciliation table */
+export const reconciliationSummaryTextOf = (reconciliation: CatalogTraitsReconciliation): string => {
+    if (reconciliation.totalDiffs === 0) {
+        return `对账表（${reconciliation.catalogVersion}）：${formatCount(reconciliation.rows.length)} 个模型目录与代码完全一致（0 项差异）`;
+    }
+    const diffModels = reconciliation.rows.filter((row) => row.diffCount > 0).length;
+    return `对账表（${reconciliation.catalogVersion}）：${formatCount(diffModels)} / ${formatCount(
+        reconciliation.rows.length
+    )} 个模型共 ${formatCount(reconciliation.totalDiffs)} 项差异`;
+};
+
+export interface ReconciliationDiffFact {
+    readonly field: ReconciledTraitField;
+    readonly label: string;
+    readonly detail: string;
+}
+
+const formatTraitOrigin = (origin: ReconciledTraitEntry['origin']): string =>
+    origin === 'data' ? '目录生效' : '代码生效';
+
+/** Format one model's differing reconciliation entries (`目录 X / 代码 Y → 运行时 Z`) */
+export const modelReconciliationFactsOf = (row: ModelTraitReconciliationRow): readonly ReconciliationDiffFact[] =>
+    row.entries
+        .filter((entry) => entry.differs)
+        .map((entry) => ({
+            field: entry.field,
+            label: reconciledFieldLabelOf(entry.field),
+            detail: `目录 ${traitValueTextOf(entry.data)} · 代码 ${traitValueTextOf(entry.code)} → ${formatTraitOrigin(
+                entry.origin
+            )}（${traitValueTextOf(entry.runtime)}）`,
+        }));

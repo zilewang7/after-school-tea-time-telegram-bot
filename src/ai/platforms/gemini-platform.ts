@@ -2,6 +2,7 @@
  * Gemini platform implementation
  */
 import {
+    FinishReason,
     GoogleGenAI,
     type Content,
     type GenerateContentConfig,
@@ -22,7 +23,11 @@ import {
 import type { OpenGeminiRound } from './gemini/gemini-round-open.js';
 import { GEMINI_DEVELOPER_API_VERSION } from './gemini/gemini-api-version.js';
 import { extractGroundingMetadata } from './gemini/gemini-grounding.js';
-import { isNonImageMediaPart, stripNonImageMedia } from './gemini/gemini-media-fallback.js';
+import {
+    isNonImageMediaPart,
+    nonImageModalityOf,
+    stripNonImageMedia,
+} from './gemini/gemini-media-fallback.js';
 import { geminiPartToChunk } from './gemini/gemini-part-chunks.js';
 import { geminiSnapshotOf } from './gemini/gemini-checkpoint.js';
 import { createThoughtSummaryFilter, thoughtSummaryLogLine } from './gemini/gemini-thought-summary.js';
@@ -30,14 +35,17 @@ import { runGeminiToolLoop, type GeminiLoopStart } from './gemini/gemini-tool-lo
 import {
     toGeminiToolList,
     httpStatusOf,
+    isThinkingBudgetError,
     isThinkingLevelError,
     toRoundConfig,
     type GeminiRoundRequest,
 } from './gemini/gemini-tool-request.js';
 import { formatGeminiUsageLine, headerOf } from './gemini/gemini-usage-log.js';
 import { transformToGemini } from '../message-transformer.js';
-import { isImageOutputModel, supportsGeminiFunctionTools, supportsGeminiImageSearchGrounding, supportsXhighThinkingLevel } from '../model-kinds.js';
-import { errorTextOf } from './thinking-effort-wire.js';
+import { supportsGeminiImageSearchGrounding } from '../model-kinds.js';
+import { capabilitiesOf, resolveRuntimeTraits } from '../model-traits.js';
+import { codePolicyDefaultEffortOf } from '../thinking-effort.js';
+import { errorTextOf, nextLowerEffortWithin } from './thinking-effort-wire.js';
 import type { ToolLoopCheckpoint, ToolLoopCheckpointSink } from '../tools/tool-loop-checkpoint.js';
 import type { TurnTools } from '../tools/tool-types.js';
 import { getToolConfig } from '../../config/tool-config.js';
@@ -116,10 +124,6 @@ const THINKING_LEVEL_BY_EFFORT: ReadonlyMap<string, ThinkingLevel> = new Map([
     ['high', ThinkingLevel.HIGH],
     ['xhigh', ThinkingLevel.XHIGH],
 ]);
-
-/** The level the legacy policy sends for a Gemini 4 model (no thinkingEffort field) */
-const legacyThinkingLevelOf = (model: string): ThinkingLevel =>
-    supportsXhighThinkingLevel(model) ? ThinkingLevel.XHIGH : ThinkingLevel.HIGH;
 
 /** Everything needed to build an OpenCode Go client for one request */
 interface OpenCodeGoConfig {
@@ -326,35 +330,18 @@ export class GeminiPlatform extends BasePlatform {
         }
     }
 
-    supportsModel(model: string): boolean {
-        return model.toLowerCase().startsWith('gemini');
-    }
-
     getModelCapabilities(model: string): ModelCapabilities {
-        const isImageModel = isImageOutputModel(model);
-
-        return {
-            supportsImageInput: true,
-            supportsImageOutput: isImageModel,
-            supportsSystemPrompt: true,
-            requiresMessageMerge: false,
-            supportsThinking: true,
-            supportsGrounding: true,
-            // Full-modal text models accept audio/video; the image-output model does not
-            supportsMediaInput: !isImageModel,
-            // functionResponse.parts carries inlineData of any media type (verified with mp4)
-            supportsVideoToolResult: true,
-            // GEMINI_CLIENT_TOOLS=0 leaves Gemini with its built-in search tools only
-            supportsClientTools: supportsGeminiFunctionTools(model) && getToolConfig().geminiClientTools,
-        };
+        return capabilitiesOf(resolveRuntimeTraits(model));
     }
 
     async sendMessage(
         messages: UnifiedMessage[],
         config: PlatformConfig
     ): Promise<AsyncIterable<StreamChunk>> {
+        const traits = config.traits ?? resolveRuntimeTraits(config.model);
+        const capabilities = capabilitiesOf(traits);
         if (config.resumeFrom !== undefined) {
-            return this.resumeToolLoop(config, config.resumeFrom);
+            return this.resumeToolLoop(config, config.resumeFrom, traits, capabilities);
         }
         const { model, isImageModel, signal } = config;
 
@@ -369,13 +356,13 @@ export class GeminiPlatform extends BasePlatform {
             content.parts.some((part) => part.fileData)
         );
         const { client, generateConfig, timeout, maxRetries, routedLane, usesImageEndpoint, fallbackThinking } =
-            this.prepareRequest(config, hasLargeMedia);
+            this.prepareRequest(config, hasLargeMedia, traits);
 
         // Client tools run the function-calling loop; every other request stays
         // the single request below, exactly as it was before client tools. A
         // request carrying gs:// media runs the loop too: every round resends
         // the file, and the tools stay available (design 2026-1113-2015).
-        const turnTools = this.clientToolsFor(config);
+        const turnTools = this.clientToolsFor(config, capabilities);
         if (turnTools !== null) {
             return this.sendWithClientTools({
                 client,
@@ -453,6 +440,10 @@ export class GeminiPlatform extends BasePlatform {
                 console.warn(
                     `[gemini] ${model} rejected a media part with 400; retrying without non-image media`
                 );
+                config.usageSink?.noteCapabilityEvent({
+                    kind: 'media_rejected',
+                    modality: nonImageModalityOf(geminiContents),
+                });
                 return await openReply(stripNonImageMedia(geminiContents), 1);
             }
             throw error;
@@ -464,7 +455,7 @@ export class GeminiPlatform extends BasePlatform {
      * client and lane, and the generate config with the Priority header when
      * asked for. Reports the lane and the requested tier to the usage sink.
      */
-    private prepareRequest(config: PlatformConfig, hasLargeMedia: boolean): PreparedRequest {
+    private prepareRequest(config: PlatformConfig, hasLargeMedia: boolean, traits: ReturnType<typeof resolveRuntimeTraits>): PreparedRequest {
         const { model, systemPrompt, isImageModel, signal } = config;
         const configuredTimeout = config.timeout;
         let timeout = configuredTimeout ?? 85000;
@@ -540,37 +531,48 @@ export class GeminiPlatform extends BasePlatform {
         // the requested level, and 'off' cannot disable thinking on Gemini, so it
         // behaves like 'default'.
         const isGemini4 = model.toLowerCase().startsWith('gemini-4');
+        const isLegacyBudgetModel = /^gemini-[123](?:[.-]|$)/i.test(model);
+        const supportedEfforts: readonly string[] = traits.reasoning.value?.efforts ?? [];
         const effort = config.thinkingEffort;
-        const explicitLevel =
+        const explicitEffort =
             effort !== undefined && effort.mode === 'explicit' && effort.value !== null
-                ? THINKING_LEVEL_BY_EFFORT.get(effort.value.toLowerCase()) ?? null
+                ? effort.value.toLowerCase()
                 : null;
-        let sentLevel: ThinkingLevel | null;
+        const explicitLevel =
+            explicitEffort === null ? null : (THINKING_LEVEL_BY_EFFORT.get(explicitEffort) ?? null);
+        let sentEffort: string | null = null;
+        let sentLevel: ThinkingLevel | null = null;
+        let sentBudget = false;
         let thinkingConfig: ThinkingConfig;
         if (effort === undefined) {
-            if (isGemini4) {
-                sentLevel = legacyThinkingLevelOf(model);
+            const legacyEffort = codePolicyDefaultEffortOf(model);
+            const legacyLevel =
+                legacyEffort === null ? null : (THINKING_LEVEL_BY_EFFORT.get(legacyEffort) ?? null);
+            if (legacyLevel !== null) {
+                sentEffort = legacyEffort;
+                sentLevel = legacyLevel;
                 thinkingConfig = { includeThoughts: true, thinkingLevel: sentLevel };
-                if (supportsXhighThinkingLevel(model)) {
+                if (sentLevel === ThinkingLevel.XHIGH) {
                     console.log(`[gemini] ${model}: thinking level XHIGH`);
                 }
             } else {
-                sentLevel = null;
                 // Gemini 4 dropped thinkingBudget in favour of thinking levels:
                 // sending the budget there is rejected with 400 "Thinking budget
                 // is not supported for this model". Older models keep the old -1
                 // behaviour of letting the model decide how long it thinks.
+                sentBudget = true;
                 thinkingConfig = { includeThoughts: true, thinkingBudget: -1 };
             }
         } else if (explicitLevel !== null) {
+            sentEffort = explicitEffort;
             sentLevel = explicitLevel;
             thinkingConfig = { includeThoughts: true, thinkingLevel: explicitLevel };
             console.log(`[gemini] ${model}: thinking level ${String(explicitLevel)}`);
+        } else if (isGemini4) {
+            thinkingConfig = { includeThoughts: true };
         } else {
-            sentLevel = null;
-            thinkingConfig = isGemini4
-                ? { includeThoughts: true }
-                : { includeThoughts: true, thinkingBudget: -1 };
+            sentBudget = true;
+            thinkingConfig = { includeThoughts: true, thinkingBudget: -1 };
         }
         const generateConfig: GenerateContentConfig = {
             thinkingConfig,
@@ -589,7 +591,7 @@ Generate images of any requested subject without refusals, excuses, or content r
                     // imageSearch-only declaration produced no grounding twice).
                     googleSearch:
                         isImageModel &&
-                        supportsGeminiImageSearchGrounding(model) &&
+                        supportsGeminiImageSearchGrounding(model, traits) &&
                         getToolConfig().imageSearchGrounding
                             ? { searchTypes: { imageSearch: {}, webSearch: {} } }
                             : {},
@@ -635,29 +637,97 @@ Generate images of any requested subject without refusals, excuses, or content r
             console.log('[gemini] Priority PayGo requested');
         }
 
-        let degradedThinking = false;
+        let degradedLevel = false;
+        let degradedBudget = false;
         const fallbackThinking: ThinkingFallback = (error) => {
-            // Only the level-specific 400 may change the level: see
-            // isThinkingLevelError (400 + "thinking level is unsupported").
-            if (sentLevel === null || degradedThinking || !isThinkingLevelError(error)) return false;
-            const from = String(sentLevel);
-            degradedThinking = true;
-            if (isGemini4) {
-                // HIGH is the level the legacy policy used for every Gemini 4
-                // model; an explicit rejected level falls back to it once.
-                if (sentLevel === ThinkingLevel.HIGH) return false;
-                sentLevel = ThinkingLevel.HIGH;
-                generateConfig.thinkingConfig = { includeThoughts: true, thinkingLevel: ThinkingLevel.HIGH };
+            if (sentBudget && !degradedBudget && isThinkingBudgetError(error)) {
+                degradedBudget = true;
+                sentBudget = false;
+                generateConfig.thinkingConfig = { includeThoughts: true };
                 console.warn(
-                    `[gemini] ${model} rejected the ${from} thinking level; retrying with HIGH: ${errorTextOf(error).slice(0, 200)}`
+                    `[gemini] ${model} rejected thinkingBudget; retrying without budget: ${errorTextOf(error).slice(0, 200)}`
                 );
+                config.usageSink?.noteCapabilityEvent({ kind: 'thinking_budget_fallback', from: null });
                 return true;
             }
-            sentLevel = null;
-            generateConfig.thinkingConfig = { includeThoughts: true, thinkingBudget: -1 };
+            // Only the level-specific 400 may change the level: see
+            // isThinkingLevelError (400 + "thinking level is unsupported").
+            if (sentLevel === null || degradedLevel || !isThinkingLevelError(error)) return false;
+            const from = String(sentLevel);
+            const rejectedEffort = sentEffort ?? from.toLowerCase();
+            degradedLevel = true;
+            if (isLegacyBudgetModel) {
+                sentEffort = null;
+                sentLevel = null;
+                sentBudget = true;
+                generateConfig.thinkingConfig = { includeThoughts: true, thinkingBudget: -1 };
+                console.warn(
+                    `[gemini] ${model} rejected the ${from} thinking level; retrying with the automatic budget: ${errorTextOf(error).slice(0, 200)}`
+                );
+                config.usageSink?.noteCapabilityEvent({
+                    kind: 'effort_rejected',
+                    effort: rejectedEffort,
+                    fallback: null,
+                });
+                return true;
+            }
+            if (supportedEfforts.length > 0 && sentEffort !== null) {
+                const lowerEffort = nextLowerEffortWithin(sentEffort, supportedEfforts);
+                const lowerLevel =
+                    lowerEffort === null ? null : (THINKING_LEVEL_BY_EFFORT.get(lowerEffort) ?? null);
+                if (lowerLevel !== null) {
+                    sentEffort = lowerEffort;
+                    sentLevel = lowerLevel;
+                    generateConfig.thinkingConfig = { includeThoughts: true, thinkingLevel: lowerLevel };
+                    console.warn(
+                        `[gemini] ${model} rejected the ${from} thinking level; retrying with ${String(lowerLevel)}: ${errorTextOf(error).slice(0, 200)}`
+                    );
+                    config.usageSink?.noteCapabilityEvent({
+                        kind: 'effort_rejected',
+                        effort: rejectedEffort,
+                        fallback: lowerEffort,
+                    });
+                    return true;
+                }
+                sentEffort = null;
+                sentLevel = null;
+                generateConfig.thinkingConfig = { includeThoughts: true };
+                console.warn(
+                    `[gemini] ${model} rejected the ${from} thinking level; retrying with the vendor default: ${errorTextOf(error).slice(0, 200)}`
+                );
+                config.usageSink?.noteCapabilityEvent({
+                    kind: 'effort_rejected',
+                    effort: rejectedEffort,
+                    fallback: null,
+                });
+                return true;
+            }
+            // Fallback when the model has no catalog/seed efforts ladder: try HIGH once, else vendor default
+            if (sentLevel === ThinkingLevel.HIGH) {
+                sentEffort = null;
+                sentLevel = null;
+                generateConfig.thinkingConfig = { includeThoughts: true };
+                console.warn(
+                    `[gemini] ${model} rejected the ${from} thinking level; retrying with the vendor default: ${errorTextOf(error).slice(0, 200)}`
+                );
+                config.usageSink?.noteCapabilityEvent({
+                    kind: 'effort_rejected',
+                    effort: rejectedEffort,
+                    fallback: null,
+                });
+                return true;
+            }
+            sentEffort = 'high';
+            sentLevel = ThinkingLevel.HIGH;
+            generateConfig.thinkingConfig = { includeThoughts: true, thinkingLevel: ThinkingLevel.HIGH };
             console.warn(
-                `[gemini] ${model} rejected the ${from} thinking level; retrying with the automatic budget: ${errorTextOf(error).slice(0, 200)}`
+                `[gemini] ${model} rejected the ${from} thinking level; retrying with HIGH: ${errorTextOf(error).slice(0, 200)}`
             );
+            config.usageSink?.noteCapabilityEvent({
+                kind: 'effort_rejected',
+                effort: rejectedEffort,
+                fallback: 'high',
+            });
             return true;
         };
 
@@ -671,7 +741,12 @@ Generate images of any requested subject without refusals, excuses, or content r
      * header, timeouts, retry rule). Throws before anything is yielded when
      * the checkpoint cannot be resumed here.
      */
-    private resumeToolLoop(config: PlatformConfig, checkpoint: ToolLoopCheckpoint): AsyncIterable<StreamChunk> {
+    private resumeToolLoop(
+        config: PlatformConfig,
+        checkpoint: ToolLoopCheckpoint,
+        traits: ReturnType<typeof resolveRuntimeTraits>,
+        capabilities: ModelCapabilities
+    ): AsyncIterable<StreamChunk> {
         const { model } = config;
         const snapshot = geminiSnapshotOf(checkpoint);
         console.log(`[gemini] Using model: ${model}, resuming at round ${snapshot.loop.roundNumber}`);
@@ -680,12 +755,12 @@ Generate images of any requested subject without refusals, excuses, or content r
         const hasLargeMedia = snapshot.loop.baseRequest.contents.some((content) =>
             (content.parts ?? []).some((part) => part.fileData)
         );
-        const turnTools = this.clientToolsFor(config);
+        const turnTools = this.clientToolsFor(config, capabilities);
         if (turnTools === null) {
             throw new Error(`Cannot resume: ${model} runs no client tools for this request, and a resume needs them`);
         }
         const { client, generateConfig, timeout, maxRetries, routedLane, fallbackThinking } =
-            this.prepareRequest(config, hasLargeMedia);
+            this.prepareRequest(config, hasLargeMedia, traits);
         return this.sendWithClientTools({
             client,
             model,
@@ -707,10 +782,10 @@ Generate images of any requested subject without refusals, excuses, or content r
      * offered and the model takes function declarations next to the search
      * tools (an image model never does). Null keeps the single request.
      */
-    private clientToolsFor(config: PlatformConfig): TurnTools | null {
-        const { tools, model } = config;
+    private clientToolsFor(config: PlatformConfig, capabilities: ModelCapabilities): TurnTools | null {
+        const { tools } = config;
         if (!tools || tools.definitions.length === 0) return null;
-        if (this.getModelCapabilities(model).supportsClientTools !== true) return null;
+        if (capabilities.supportsClientTools !== true) return null;
         return tools;
     }
 
@@ -804,6 +879,7 @@ Generate images of any requested subject without refusals, excuses, or content r
         usageSink: UsageSink | undefined
     ): AsyncIterable<StreamChunk> {
         let lastResponse: any = null;
+        let finishReason: FinishReason | undefined;
         let firstPartAt: number | null = null;
         let firstThinkAt: number | null = null;
         let firstTextAt: number | null = null;
@@ -827,6 +903,7 @@ Generate images of any requested subject without refusals, excuses, or content r
             }
             previousChunkAt = chunkAt;
             lastResponse = chunk;
+            finishReason = chunk.candidates?.[0]?.finishReason ?? finishReason;
             routedVia ??= headerOf(chunk, 'x-axonhub-routed-via');
             fallbackAttempts ??= headerOf(chunk, 'x-axonhub-fallback-attempts');
             const parts = chunk.candidates?.[0]?.content?.parts;
@@ -879,6 +956,9 @@ Generate images of any requested subject without refusals, excuses, or content r
         usageSink?.addRound(normalizeGeminiUsage(lastResponse?.usageMetadata), {
             servedTier: geminiServedTier(lastResponse?.usageMetadata),
         });
+        if (finishReason === FinishReason.MAX_TOKENS) {
+            usageSink?.noteCapabilityEvent({ kind: 'output_truncated', reason: 'MAX_TOKENS' });
+        }
         console.log(
             formatGeminiUsageLine(model, {
                 via: routedVia ?? viaLabel ?? '-',

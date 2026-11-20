@@ -28,6 +28,9 @@ export interface ProcessPricingView {
     /** 'ok' | 'failed' | 'skipped'; null when none ran */
     readonly lastOutcome: string | null;
     readonly pendingProposals: number;
+    /** Pending capability proposals / last run diagnostics (design 2026-1114-0510 §3.1) */
+    readonly capabilityProposals?: number;
+    readonly warnings?: readonly string[];
 }
 
 export interface ProcessStatusView {

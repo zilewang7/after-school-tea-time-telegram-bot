@@ -21,7 +21,7 @@ import {
     applyCapabilityProposals,
     capabilityFieldChangesOf,
     findCapabilityProposal,
-    listPendingCapabilityProposals,
+    listPendingCapabilityProposalsByMessageId,
     rejectCapabilityProposals,
     type CapabilityApplyDecision,
     type CapabilityApplyResult,
@@ -94,14 +94,18 @@ const latestDetectedAtMsOf = (proposals: readonly CapabilityProposalView[]): num
  * The proposals a press would decide. A payload refreshed after its message was
  * rendered answers `stale`: the message showed values the press would not write.
  */
-const pendingTargetsOf = async (action: CapabilityApprovalAction): Promise<PendingTargets> => {
+const pendingTargetsOf = async (
+    action: CapabilityApprovalAction,
+    messageId: number | undefined
+): Promise<PendingTargets> => {
     if (action.kind === 'apply') {
         const proposal = await findCapabilityProposal(action.id);
         if (proposal === null || proposal.status !== 'pending') return { kind: 'done' };
         if (proposal.detectedAt.getTime() !== action.detectedAtMs) return { kind: 'stale' };
         return { kind: 'pending', proposals: [proposal] };
     }
-    const pending = await listPendingCapabilityProposals();
+    if (messageId === undefined) return { kind: 'done' };
+    const pending = await listPendingCapabilityProposalsByMessageId(messageId);
     if (pending.length === 0) return { kind: 'done' };
     if (latestDetectedAtMsOf(pending) > action.latestDetectedAtMs) return { kind: 'stale' };
     return { kind: 'pending', proposals: pending };
@@ -185,7 +189,8 @@ const handleApproval = async (ctx: Context, action: CapabilityApprovalAction): P
         return;
     }
 
-    const [lookupError, targets] = await to(pendingTargetsOf(action));
+    const messageId = ctx.callbackQuery?.message?.message_id;
+    const [lookupError, targets] = await to(pendingTargetsOf(action, messageId));
     if (lookupError) {
         console.error('[capability-menu] reading the pending proposals failed:', lookupError);
         await answer(ctx, WRITE_FAILED_NOTICE);

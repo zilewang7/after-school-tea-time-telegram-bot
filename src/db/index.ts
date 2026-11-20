@@ -39,7 +39,7 @@ import {
     listMessageMediaForMessages,
     replaceMessageMedia,
 } from './queries/message-media-queries.js';
-import { backfillAnimationMediaKind, backfillCatalogCapabilities, backfillCatalogLabels, backfillCatalogSeedsOnly, backfillCatalogSuperseded, backfillGptImagePrice, backfillNeonMenuSwap, backfillPanelRegistry, ensureCapabilityProposalIndexes, ensureModelPriceIndexes, ensureReplyMetricUserIndex, runSchemaMigrations } from './schema-migrations.js';
+import { backfillAnimationMediaKind, backfillCatalogCapabilities, backfillCatalogLabels, backfillCatalogProvenance, backfillCatalogSeedsOnly, backfillCatalogSuperseded, backfillGptImagePrice, backfillNeonMenuSwap, backfillPanelRegistry, ensureCapabilityProposalIndexes, ensureModelPriceIndexes, ensureReplyMetricUserIndex, runSchemaMigrations } from './schema-migrations.js';
 
 // sync database (the imports above ensure every table is registered before sync)
 // Exported so callers can await schema readiness instead of racing the migration;
@@ -68,6 +68,8 @@ export const dbReady = enableWriteAheadLog()
     .then(() => backfillCatalogCapabilities())
     // One-off: gemini-4-neon replaces gemini-4-argon in the menu (2026-11-19)
     .then(() => backfillNeonMenuSwap())
+    // One-off: upgrade existing schema-1 rows with field-level provenance (§3.2)
+    .then(() => backfillCatalogProvenance())
     // Data fixes need the tables, so they run after sync (a fresh database has
     // no rows for them, an existing one is scanned once)
     .then(() => backfillAnimationMediaKind())

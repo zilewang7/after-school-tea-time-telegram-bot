@@ -119,13 +119,17 @@ export async function* runGrokToolLoop(
             }
         }
         if (round.response === null || round.incomplete) {
+            const reason = round.response?.incomplete_details?.reason ?? null;
             const ending = round.response === null
                 ? 'without a closing response'
-                : `incomplete (${round.response.incomplete_details?.reason ?? 'unknown'})`;
+                : `incomplete (${reason ?? 'unknown'})`;
             const skipped = round.functionCalls.length > 0
                 ? `, skipping its ${round.functionCalls.length} function call(s)`
                 : '';
             console.warn(`[grok] Round ${roundCount} ended ${ending}${skipped}`);
+            if (round.incomplete && reason === 'max_output_tokens') {
+                options.usageSink?.noteCapabilityEvent({ kind: 'output_truncated', reason });
+            }
         }
 
         // The answer: no function calls, the final round, or a round that cannot be continued

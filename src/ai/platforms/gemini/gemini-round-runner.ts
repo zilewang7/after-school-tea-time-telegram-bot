@@ -233,7 +233,7 @@ export async function* runRecoverableRound(
         }
 
         if (failure.phase === 'open' && fallbackAvailable) {
-            const fallbackRequest = firstRoundFallbackFor(request, failure.error, model);
+            const fallbackRequest = firstRoundFallbackFor(request, failure.error, model, usageSink);
             if (fallbackRequest !== null) {
                 fallbackAvailable = false;
                 request = fallbackRequest;

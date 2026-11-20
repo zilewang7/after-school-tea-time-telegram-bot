@@ -15,14 +15,33 @@
  * `warnings`. It never throws.
  */
 import { isJsonObject } from '../shared/json-object.js';
+import type { PlatformType } from './platform-routing.js';
 
 export type ModelCatalogKind = 'chat' | 'image';
 
 export type ModelCatalogConfidence = 'high' | 'medium' | 'low';
 
-/** Where a capability value came from: code seed, models.dev, owner edit, official docs or probe */
-export const CAPABILITY_SOURCES = ['code', 'models-dev', 'manual', 'official', 'probe'] as const;
+/** Where a capability value came from: code seed, models.dev, owner edit, official docs, probe or live traffic */
+export const CAPABILITY_SOURCES = ['code', 'models-dev', 'manual', 'official', 'probe', 'traffic'] as const;
 export type ModelCapabilitySource = (typeof CAPABILITY_SOURCES)[number];
+
+/** Field-level source assertion for one capability key (design 2026-1114-0510 §3.2) */
+export interface CapabilityFieldProvenance {
+    readonly source: ModelCapabilitySource;
+    /** YYYY-MM-DD the field was verified */
+    readonly checkedOn?: string;
+    readonly confidence?: ModelCatalogConfidence;
+    /** Channel/lane fingerprint when source is `probe` or `traffic` */
+    readonly lane?: string;
+    /** Official documentation or upstream reference URL */
+    readonly ref?: string;
+}
+
+/** Field-level provenance keyed by capability field path (e.g. `reasoning.efforts`, `outputTokens`) */
+export type CapabilityProvenanceMap = Partial<Record<string, CapabilityFieldProvenance>>;
+
+/** Per-platform lane fingerprints measured by probes or traffic */
+export type PlatformLaneFingerprints = Partial<Record<PlatformType, string>>;
 
 /** The effort ladder, ascending: a user selection may be clamped down within it */
 export const MODEL_EFFORTS = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'] as const;
@@ -102,6 +121,10 @@ export interface ModelCatalogCapabilities {
     readonly source?: ModelCapabilitySource;
     readonly checkedOn?: string;
     readonly confidence?: ModelCatalogConfidence;
+    /** Field-level provenance (absent on legacy rows before §3.2 migration) */
+    readonly provenance?: CapabilityProvenanceMap;
+    /** Per-platform channel fingerprints (replaces concatenated laneSignature) */
+    readonly laneFingerprints?: PlatformLaneFingerprints;
 }
 
 export interface ModelCapabilitiesNormalization {
@@ -375,7 +398,6 @@ const normalizeApiFlags = (
     const reasoning = booleanOf(value.reasoning, `${label}.reasoning`, warnings);
     const tools = booleanOf(value.tools, `${label}.tools`, warnings);
     const structuredOutput = booleanOf(value.structuredOutput, `${label}.structuredOutput`, warnings);
-    if (reasoning === undefined && tools === undefined && structuredOutput === undefined) return undefined;
     return {
         ...(reasoning === undefined ? {} : { reasoning }),
         ...(tools === undefined ? {} : { tools }),
@@ -416,6 +438,209 @@ const normalizeToolsMixing = (value: unknown, warnings: string[]): ModelToolsMix
     if (isToolsMixing(value)) return value;
     warnings.push(`toolsMixing（${String(value)}）未知，已丢弃`);
     return undefined;
+};
+
+const KNOWN_PLATFORMS: ReadonlySet<string> = new Set<PlatformType>([
+    'openai',
+    'gemini',
+    'deepseek',
+    'grok',
+    'mimo',
+    'anthropic',
+]);
+
+const isPlatformType = (value: string): value is PlatformType => KNOWN_PLATFORMS.has(value);
+
+const trimmedTextOf = (value: unknown, label: string, maxLength: number, warnings: string[]): string | undefined => {
+    if (value === undefined) return undefined;
+    if (typeof value !== 'string' || value.trim() === '') {
+        warnings.push(`${label} 不是非空字符串，已丢弃`);
+        return undefined;
+    }
+    return value.trim().slice(0, maxLength);
+};
+
+const normalizeFieldProvenance = (
+    value: unknown,
+    label: string,
+    warnings: string[]
+): CapabilityFieldProvenance | undefined => {
+    if (!isJsonObject(value)) {
+        warnings.push(`${label} 不是对象，已忽略`);
+        return undefined;
+    }
+    const source = capabilitySourceOf(value.source, `${label}.source`, warnings);
+    if (source === undefined) {
+        if (value.source === undefined) warnings.push(`${label} 缺少 source，已忽略`);
+        return undefined;
+    }
+    const checkedOn = checkedOnOf(value.checkedOn, `${label}.checkedOn`, warnings);
+    const confidence = confidenceOf(value.confidence, `${label}.confidence`, warnings);
+    const lane = trimmedTextOf(value.lane, `${label}.lane`, 128, warnings);
+    const ref = trimmedTextOf(value.ref, `${label}.ref`, 512, warnings);
+    return {
+        source,
+        ...(checkedOn === undefined ? {} : { checkedOn }),
+        ...(confidence === undefined ? {} : { confidence }),
+        ...(lane === undefined ? {} : { lane }),
+        ...(ref === undefined ? {} : { ref }),
+    };
+};
+
+const normalizeProvenanceMap = (value: unknown, warnings: string[]): CapabilityProvenanceMap | undefined => {
+    if (value === undefined) return undefined;
+    if (!isJsonObject(value)) {
+        warnings.push('provenance 不是对象，已忽略');
+        return undefined;
+    }
+    const map: Record<string, CapabilityFieldProvenance> = {};
+    for (const [field, entry] of Object.entries(value)) {
+        if (field.trim() === '') continue;
+        const normalized = normalizeFieldProvenance(entry, `provenance.${field}`, warnings);
+        if (normalized !== undefined) map[field] = normalized;
+    }
+    return Object.keys(map).length === 0 ? undefined : map;
+};
+
+type MutableLaneFingerprints = { -readonly [Key in PlatformType]?: string };
+
+const normalizeLaneFingerprints = (value: unknown, warnings: string[]): PlatformLaneFingerprints | undefined => {
+    if (value === undefined) return undefined;
+    if (!isJsonObject(value)) {
+        warnings.push('laneFingerprints 不是对象，已忽略');
+        return undefined;
+    }
+    const map: MutableLaneFingerprints = {};
+    for (const [platform, fingerprint] of Object.entries(value)) {
+        if (!isPlatformType(platform)) {
+            warnings.push(`laneFingerprints.${platform} 不是已知平台，已忽略`);
+            continue;
+        }
+        const trimmed = trimmedTextOf(fingerprint, `laneFingerprints.${platform}`, 128, warnings);
+        if (trimmed !== undefined) map[platform] = trimmed;
+    }
+    return Object.keys(map).length === 0 ? undefined : map;
+};
+
+/**
+ * Effective provenance of one capability field. Rows carrying an explicit
+ * `provenance` map answer strictly from that map (an absent entry means
+ * "unasserted"); legacy schema-1 rows fall back to reasoning/row-level fields.
+ */
+export const fieldProvenanceOf = (
+    capabilities: ModelCatalogCapabilities,
+    field: string
+): CapabilityFieldProvenance | undefined => {
+    if (capabilities.provenance !== undefined) {
+        return capabilities.provenance[field];
+    }
+    if (field.startsWith('reasoning.')) {
+        const reasoning = capabilities.reasoning;
+        if (reasoning?.source === undefined) return undefined;
+        return {
+            source: reasoning.source,
+            ...(reasoning.checkedOn === undefined ? {} : { checkedOn: reasoning.checkedOn }),
+            ...(reasoning.confidence === undefined ? {} : { confidence: reasoning.confidence }),
+        };
+    }
+    if (capabilities.source === undefined) return undefined;
+    return {
+        source: capabilities.source,
+        ...(capabilities.checkedOn === undefined ? {} : { checkedOn: capabilities.checkedOn }),
+        ...(capabilities.confidence === undefined ? {} : { confidence: capabilities.confidence }),
+    };
+};
+
+/** Whether any provenance slot (field-level or legacy) carries `source` */
+export const hasProvenanceSource = (
+    capabilities: ModelCatalogCapabilities,
+    source: ModelCapabilitySource
+): boolean => {
+    if (capabilities.reasoning?.source === source || capabilities.source === source) return true;
+    if (capabilities.provenance === undefined) return false;
+    return Object.values(capabilities.provenance).some((entry) => entry?.source === source);
+};
+
+/**
+ * Priority rank for field sources (design §3.2):
+ * manual (5) > active-lane probe/traffic (4) > official (3) > models-dev (2) > code (1).
+ * A probe/traffic entry whose recorded `lane` disagrees with `liveLane` drops to stale (0).
+ */
+export const sourcePriorityOf = (
+    entry: CapabilityFieldProvenance | undefined,
+    liveLane?: string | null
+): number => {
+    if (entry === undefined) return 0;
+    if (entry.source === 'manual') return 5;
+    if (entry.source === 'probe' || entry.source === 'traffic') {
+        if (liveLane !== undefined && liveLane !== null && entry.lane !== undefined && entry.lane !== liveLane) {
+            return 0;
+        }
+        return 4;
+    }
+    if (entry.source === 'official') return 3;
+    if (entry.source === 'models-dev') return 2;
+    return 1;
+};
+
+/**
+ * Derive field-level provenance for a legacy schema-1 object (design §3.2):
+ * reasoning fields inherit `reasoning.source`, except `reasoning.defaultEffort`
+ * on non-manual/non-official rows is recorded as `code` (seed origin); other
+ * asserted fields inherit row-level provenance.
+ */
+export const deriveFieldProvenance = (capabilities: ModelCatalogCapabilities): CapabilityProvenanceMap => {
+    if (capabilities.provenance !== undefined) return capabilities.provenance;
+    const map: Record<string, CapabilityFieldProvenance> = {};
+    const rowEntry: CapabilityFieldProvenance = {
+        source: capabilities.source ?? 'code',
+        ...(capabilities.checkedOn === undefined ? {} : { checkedOn: capabilities.checkedOn }),
+        ...(capabilities.confidence === undefined ? {} : { confidence: capabilities.confidence }),
+    };
+    for (const field of ['kind', 'vision', 'imageOutput', 'tools']) {
+        map[field] = rowEntry;
+    }
+    if (capabilities.contextTokens !== null) map['contextTokens'] = rowEntry;
+    if (capabilities.outputTokens !== null) map['outputTokens'] = rowEntry;
+    if (capabilities.modalities?.input !== undefined) map['modalities.input'] = rowEntry;
+    if (capabilities.modalities?.output !== undefined) map['modalities.output'] = rowEntry;
+    if (capabilities.apis !== undefined) map['apis'] = rowEntry;
+    if (capabilities.toolsMixing !== undefined) {
+        map['toolsMixing'] = rowEntry.source === 'manual' || rowEntry.source === 'official'
+            ? rowEntry
+            : { ...rowEntry, source: 'code' };
+    }
+    if (capabilities.nativeTools?.imageSearchGrounding !== undefined) {
+        map['nativeTools.imageSearchGrounding'] = rowEntry.source === 'manual' || rowEntry.source === 'official'
+            ? rowEntry
+            : { ...rowEntry, source: 'code' };
+    }
+    const reasoning = capabilities.reasoning;
+    if (reasoning !== undefined) {
+        const reasoningSource = reasoning.source ?? capabilities.source ?? 'code';
+        const reasoningEntry: CapabilityFieldProvenance = {
+            source: reasoningSource,
+            ...(reasoning.checkedOn === undefined ? {} : { checkedOn: reasoning.checkedOn }),
+            ...(reasoning.confidence === undefined ? {} : { confidence: reasoning.confidence }),
+        };
+        map['reasoning.supported'] = reasoningEntry;
+        if (reasoning.toggle !== undefined) map['reasoning.toggle'] = reasoningEntry;
+        if (reasoning.efforts !== undefined) map['reasoning.efforts'] = reasoningEntry;
+        if (reasoning.defaultEnabled !== undefined && reasoning.defaultEnabled !== null) {
+            map['reasoning.defaultEnabled'] = reasoningEntry;
+        }
+        if (reasoning.defaultEffort !== undefined && reasoning.defaultEffort !== null) {
+            const defaultSource: ModelCapabilitySource =
+                reasoningSource === 'manual' || reasoningSource === 'official' || reasoningSource === 'models-dev'
+                    ? reasoningSource
+                    : 'code';
+            map['reasoning.defaultEffort'] = {
+                ...reasoningEntry,
+                source: defaultSource,
+            };
+        }
+    }
+    return map;
 };
 
 /** The old seven-field reader: rows without `schema: 1` keep exactly their old defaults */
@@ -478,6 +703,8 @@ export const normalizeModelCapabilities = (raw: unknown): ModelCapabilitiesNorma
     const toolsMixing = normalizeToolsMixing(raw.toolsMixing, warnings);
     const nativeTools = normalizeNativeTools(raw.nativeTools, warnings);
     const provenance = provenanceOf(raw, 'capabilities', warnings);
+    const fieldProvenance = normalizeProvenanceMap(raw.provenance, warnings);
+    const laneFingerprints = normalizeLaneFingerprints(raw.laneFingerprints, warnings);
     return {
         capabilities: {
             schema: 1,
@@ -494,6 +721,8 @@ export const normalizeModelCapabilities = (raw: unknown): ModelCapabilitiesNorma
             ...(toolsMixing === undefined ? {} : { toolsMixing }),
             ...(nativeTools === undefined ? {} : { nativeTools }),
             ...provenance,
+            ...(fieldProvenance === undefined ? {} : { provenance: fieldProvenance }),
+            ...(laneFingerprints === undefined ? {} : { laneFingerprints }),
         },
         warnings,
     };

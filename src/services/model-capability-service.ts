@@ -19,12 +19,18 @@ import { ModelCapabilityProposal } from '../db/modelCapabilityProposalDTO.js';
 import { ModelCatalogEntryRow } from '../db/modelCatalogDTO.js';
 import { writeSettingsAudit } from '../db/queries/settings-audit.js';
 import {
+    deriveFieldProvenance,
     emptyModelCapabilities,
+    fieldProvenanceOf,
+    hasProvenanceSource,
     MODEL_APIS,
     normalizeModelCapabilities,
+    type CapabilityFieldProvenance,
+    type CapabilityProvenanceMap,
     type ModelCatalogCapabilities,
     type ModelCatalogModalities,
     type ModelCapabilitySource,
+    type PlatformLaneFingerprints,
 } from '../config/model-capabilities.js';
 import { isJsonObject } from '../shared/json-object.js';
 import { loadModelCatalog } from './model-catalog-service.js';
@@ -32,6 +38,8 @@ import type { CapabilityProposalDraft } from './capability-catalog-types.js';
 
 /** Pending proposals older than this stop being actionable */
 const PROPOSAL_TTL_MS = 14 * 24 * 3600 * 1000;
+/** Unchanged pending proposals are reminded at most once per this interval */
+const REMINDER_INTERVAL_MS = 3 * 24 * 3600 * 1000;
 
 /** A proposal as the approval UI sees it (payload/baseline already parsed) */
 export interface CapabilityProposalView {
@@ -43,6 +51,7 @@ export interface CapabilityProposalView {
     readonly status: string;
     readonly runId: number | null;
     readonly messageId: number | null;
+    readonly lastNotifiedAt: Date | null;
     readonly note: string | null;
 }
 
@@ -137,6 +146,7 @@ const proposalViewOf = (row: ModelCapabilityProposal): CapabilityProposalView =>
     status: row.status,
     runId: row.runId,
     messageId: row.messageId,
+    lastNotifiedAt: row.lastNotifiedAt,
     note: row.note,
 });
 
@@ -199,37 +209,94 @@ const reasoningProvenanceOf = (reasoning: ModelCatalogCapabilities['reasoning'])
           };
 
 /**
- * Whether an approval would change anything: a value change, or a reasoning
- * provenance refresh (a probe re-check of identical values is still written).
- * Row-level provenance alone is not a change — the payload of a partly local
- * row names its upstream, which must not overwrite the row's own source.
+ * Whether an approval would change anything: a value change, a reasoning
+ * provenance refresh, or field-level provenance / lane fingerprint updates
+ * (a probe v2 re-check of identical values still persists its lane and date).
  */
 const isNoOpApproval = (merged: ModelCatalogCapabilities, current: ModelCatalogCapabilities): boolean =>
     deepEqual(semanticCapabilitiesOf(merged), semanticCapabilitiesOf(current)) &&
-    deepEqual(reasoningProvenanceOf(merged.reasoning), reasoningProvenanceOf(current.reasoning));
+    deepEqual(reasoningProvenanceOf(merged.reasoning), reasoningProvenanceOf(current.reasoning)) &&
+    deepEqual(merged.provenance ?? null, current.provenance ?? null) &&
+    deepEqual(merged.laneFingerprints ?? null, current.laneFingerprints ?? null);
 
 /** The note a blank caller leaves: still says where and when the values came from */
 const noteOfInput = (input: CapabilityProposalInput): string =>
     input.note.trim() === '' ? `能力变化（${input.checkedOn}）` : input.note;
 
+const noteWithoutCheckDate = (note: string): string =>
+    note.replace(/（(models\.dev|traffic)，\d{4}-\d{2}-\d{2}）$/, '（$1）');
+
+const provenanceSourcesOf = (capabilities: ModelCatalogCapabilities): Readonly<Record<string, string>> => {
+    if (capabilities.provenance !== undefined) {
+        const result: Record<string, string> = {};
+        for (const [key, entry] of Object.entries(capabilities.provenance)) {
+            if (entry !== undefined) result[key] = entry.source;
+        }
+        return result;
+    }
+    return {
+        row: capabilities.source ?? '',
+        reasoning: capabilities.reasoning?.source ?? '',
+    };
+};
+
+/**
+ * Whether an existing pending proposal already carries the same proposed change.
+ * For watch runs (`runId !== null`), advancing `checkedOn` alone keeps the
+ * existing row untouched so `detectedAt` (14-day TTL) and `lastNotifiedAt`
+ * (3-day reminder) stay accurate.
+ */
+const isCapabilityProposalUnchanged = (
+    existing: ModelCapabilityProposal,
+    payloadJson: string,
+    baselineJson: string | null,
+    note: string,
+    input: CapabilityProposalInput,
+    runId: number | null
+): boolean => {
+    if (existing.payload === payloadJson && existing.baseline === baselineJson && existing.note === note) {
+        return true;
+    }
+    if (runId === null) return false;
+    if (noteWithoutCheckDate(existing.note ?? '') !== noteWithoutCheckDate(note)) return false;
+    const existingPayload = schemaOneCapabilitiesOf(existing.payload, `proposal ${existing.id} (${existing.model})`);
+    if (existingPayload === null) return false;
+    if (!deepEqual(semanticCapabilitiesOf(input.payload), semanticCapabilitiesOf(existingPayload))) return false;
+    if (
+        input.payload.source !== existingPayload.source ||
+        input.payload.reasoning?.source !== existingPayload.reasoning?.source ||
+        !deepEqual(provenanceSourcesOf(input.payload), provenanceSourcesOf(existingPayload))
+    ) {
+        return false;
+    }
+    if (existing.baseline === null && input.baseline === null) return true;
+    if (existing.baseline === null || input.baseline === null) return false;
+    const existingBaseline = anyCapabilitiesOf(existing.baseline, `proposal ${existing.id} (${existing.model}) baseline`);
+    return deepEqual(semanticCapabilitiesOf(input.baseline), semanticCapabilitiesOf(existingBaseline));
+};
+
 /**
  * Insert a pending proposal, or refresh the pending row of the same model. The
  * pending unique index `(model) WHERE status='pending'` is why one model never
  * has two open proposals: a newer run replaces the payload, the owner keeps one
- * message per model. A create that loses that index race (the daily run and a
- * `/probe import` in the same process) refreshes the row the other call made.
- * Returns the proposal id.
+ * message per model. Preserves `detectedAt` and `lastNotifiedAt` when unchanged.
  */
-const upsertProposalRow = async (input: CapabilityProposalInput, runId: number | null): Promise<number> => {
+const upsertProposalRow = async (
+    input: CapabilityProposalInput,
+    runId: number | null,
+    now: Date = new Date()
+): Promise<number> => {
     const payload = JSON.stringify(input.payload);
     const baseline = input.baseline === null ? null : JSON.stringify(input.baseline);
     const note = noteOfInput(input);
-    const detectedAt = new Date();
     const existing = await ModelCapabilityProposal.findOne({
         where: { model: input.model, status: 'pending' },
     });
     if (existing !== null) {
-        await existing.update({ payload, baseline, detectedAt, runId, note });
+        if (isCapabilityProposalUnchanged(existing, payload, baseline, note, input, runId)) {
+            return existing.id;
+        }
+        await existing.update({ payload, baseline, detectedAt: now, lastNotifiedAt: null, runId, note });
         return existing.id;
     }
     try {
@@ -237,9 +304,10 @@ const upsertProposalRow = async (input: CapabilityProposalInput, runId: number |
             model: input.model,
             payload,
             baseline,
-            detectedAt,
+            detectedAt: now,
             status: 'pending',
             runId,
+            lastNotifiedAt: null,
             note,
         });
         return created.id;
@@ -249,7 +317,9 @@ const upsertProposalRow = async (input: CapabilityProposalInput, runId: number |
             where: { model: input.model, status: 'pending' },
         });
         if (raced === null) throw error;
-        await raced.update({ payload, baseline, detectedAt, runId, note });
+        if (!isCapabilityProposalUnchanged(raced, payload, baseline, note, input, runId)) {
+            await raced.update({ payload, baseline, detectedAt: now, lastNotifiedAt: null, runId, note });
+        }
         console.warn(`[catalog] proposal insert for ${input.model} raced, refreshed the pending row`);
         return raced.id;
     }
@@ -259,26 +329,46 @@ const upsertProposalRow = async (input: CapabilityProposalInput, runId: number |
 export const upsertCapabilityProposal = async (input: CapabilityProposalInput): Promise<number> =>
     upsertProposalRow(input, null);
 
+export interface RefreshCapabilityProposalsOptions {
+    /** Models whose upstream documents compiled cleanly; pending watch rows not re-drafted are withdrawn */
+    readonly evaluatedModels?: ReadonlySet<string>;
+    readonly now?: Date;
+}
+
+/** Whether a pending capability proposal has never been sent or is due for a 3-day reminder */
+export const isCapabilityProposalDueForNotification = (
+    proposal: Pick<CapabilityProposalView, 'lastNotifiedAt'>,
+    now: Date = new Date()
+): boolean =>
+    proposal.lastNotifiedAt === null || now.getTime() - proposal.lastNotifiedAt.getTime() >= REMINDER_INTERVAL_MS;
+
 /**
  * Insert or refresh the proposals one watch run produced; the pending count
  * includes proposals an earlier run left open. A model whose pending proposal
  * came from `/probe import` keeps it: probe measurements outrank the models.dev
- * upstream (design §2.1), so the upstream draft waits for the owner's decision.
+ * upstream (design §2.1), so the upstream draft waits for the owner's decision
+ * and is never withdrawn by the upstream watcher.
  */
 export const createOrRefreshCapabilityProposals = async (
     drafts: readonly CapabilityProposalDraft[],
-    runId: number | null
+    runId: number | null,
+    options: RefreshCapabilityProposalsOptions = {}
 ): Promise<CapabilityProposalRefreshResult> => {
+    const now = options.now ?? new Date();
     const skipped: CapabilityProposalRefreshSkip[] = [];
+    const handledModels = new Set<string>();
     for (const draft of drafts) {
+        handledModels.add(draft.model);
         const pending = await ModelCapabilityProposal.findOne({
             where: { model: draft.model, status: 'pending' },
         });
-        const pendingReasoningSource =
+        const pendingCapabilities =
             pending === null
-                ? undefined
-                : anyCapabilitiesOf(pending.payload, `proposal ${pending.id} (${pending.model}) payload`).reasoning?.source;
-        if (pendingReasoningSource === 'probe') {
+                ? null
+                : anyCapabilitiesOf(pending.payload, `proposal ${pending.id} (${pending.model}) payload`);
+        const pendingHasProbe = pendingCapabilities !== null && hasProvenanceSource(pendingCapabilities, 'probe');
+        const draftHasTraffic = hasProvenanceSource(draft.payload, 'traffic');
+        if (pendingHasProbe && !draftHasTraffic) {
             skipped.push({
                 model: draft.model,
                 reason: `${draft.model}：probe 提案待审批，跳过本次上游草案（probe 优先于 models.dev）`,
@@ -293,8 +383,30 @@ export const createOrRefreshCapabilityProposals = async (
                 note: draft.note,
                 checkedOn: draft.checkedOn,
             },
-            runId
+            runId,
+            now
         );
+    }
+    if (options.evaluatedModels !== undefined && options.evaluatedModels.size > 0) {
+        const pendingForEvaluated = await ModelCapabilityProposal.findAll({
+            where: {
+                status: 'pending',
+                model: { [Op.in]: [...options.evaluatedModels] },
+            },
+        });
+        for (const row of pendingForEvaluated) {
+            if (handledModels.has(row.model)) continue;
+            const pendingPayload = anyCapabilitiesOf(
+                row.payload,
+                `proposal ${row.id} (${row.model}) payload`
+            );
+            // Probe and live-traffic proposals are never invalidated just because
+            // upstream models.dev produced no diff for the model.
+            if (hasProvenanceSource(pendingPayload, 'probe') || hasProvenanceSource(pendingPayload, 'traffic')) {
+                continue;
+            }
+            await row.update({ status: 'withdrawn', decidedAt: now });
+        }
     }
     return { pending: await countPendingCapabilityProposals(), skipped };
 };
@@ -314,19 +426,34 @@ export const listPendingCapabilityProposals = async (): Promise<readonly Capabil
     return rows.map(proposalViewOf);
 };
 
+/** Pending capability proposals carried by one approval message */
+export const listPendingCapabilityProposalsByMessageId = async (
+    messageId: number
+): Promise<readonly CapabilityProposalView[]> => {
+    const rows = await ModelCapabilityProposal.findAll({
+        where: { status: 'pending', messageId },
+        order: [
+            ['detectedAt', 'DESC'],
+            ['id', 'ASC'],
+        ],
+    });
+    return rows.map(proposalViewOf);
+};
+
 export const findCapabilityProposal = async (id: number): Promise<CapabilityProposalView | null> => {
     const row = await ModelCapabilityProposal.findByPk(id);
     return row === null ? null : proposalViewOf(row);
 };
 
-/** Remember which private message carries each proposal (edit/resend) */
+/** Remember which private message carries each proposal and when it was sent */
 export const attachCapabilityProposalMessageIds = async (
     ids: readonly number[],
-    messageId: number
+    messageId: number,
+    notifiedAt: Date = new Date()
 ): Promise<void> => {
     if (ids.length === 0) return;
     await ModelCapabilityProposal.update(
-        { messageId },
+        { messageId, lastNotifiedAt: notifiedAt },
         { where: { id: { [Op.in]: [...ids] }, status: 'pending' } }
     );
 };
@@ -354,33 +481,77 @@ const mergedLocalFacts = (
     };
 };
 
+const mergedFieldProvenance = (
+    proposed: ModelCatalogCapabilities,
+    current: ModelCatalogCapabilities
+): CapabilityProvenanceMap | undefined => {
+    if (proposed.provenance === undefined && current.provenance === undefined) return undefined;
+    const base = current.provenance ?? deriveFieldProvenance(current);
+    const incoming = proposed.provenance ?? {};
+    const merged: Record<string, CapabilityFieldProvenance | undefined> = { ...base };
+    for (const [field, entry] of Object.entries(incoming)) {
+        if (entry === undefined) continue;
+        const currentEntry = base[field];
+        if (isLocalCapabilitySource(currentEntry?.source) && !isLocalCapabilitySource(entry.source)) {
+            continue;
+        }
+        merged[field] = entry;
+    }
+    return merged;
+};
+
+const mergedLaneFingerprints = (
+    proposed: ModelCatalogCapabilities,
+    current: ModelCatalogCapabilities
+): PlatformLaneFingerprints | undefined => {
+    if (proposed.laneFingerprints === undefined && current.laneFingerprints === undefined) return undefined;
+    return {
+        ...current.laneFingerprints,
+        ...proposed.laneFingerprints,
+    };
+};
+
 /**
  * Apply one approved payload without losing locally maintained facts (design
- * §2.4): an owner-edited or official-doc row keeps its values and only accepts
- * the approved reasoning section when that section is not local either;
- * `toolsMixing`/`nativeTools` stay as they are.
+ * §2.4 / §3.2): manual/official rows and fields stay protected unless the
+ * proposal itself targets non-local fields or uses field-level provenance;
+ * `toolsMixing`/`nativeTools` stay intact unless explicitly updated (e.g. traffic).
  */
 const mergeApprovedCapabilities = (
     proposed: ModelCatalogCapabilities,
     current: ModelCatalogCapabilities
 ): ModelCatalogCapabilities => {
-    const reasoning = isLocalCapabilitySource(current.reasoning?.source)
-        ? current.reasoning
-        : proposed.reasoning ?? current.reasoning;
-    if (isLocalCapabilitySource(current.source)) {
+    const provenance = mergedFieldProvenance(proposed, current);
+    const laneFingerprints = mergedLaneFingerprints(proposed, current);
+    const isReasoningProtected =
+        current.provenance === undefined
+            ? isLocalCapabilitySource(current.reasoning?.source)
+            : isLocalCapabilitySource(fieldProvenanceOf(current, 'reasoning.efforts')?.source) &&
+              !hasProvenanceSource(proposed, 'traffic');
+    const reasoning = isReasoningProtected ? current.reasoning : (proposed.reasoning ?? current.reasoning);
+    if (isLocalCapabilitySource(current.source) && current.provenance === undefined) {
         const keptEfforts = reasoning?.efforts ?? current.reasoningEffort;
         return {
             ...current,
             schema: 1,
             reasoningEffort: keptEfforts,
             ...(reasoning === undefined ? {} : { reasoning }),
+            ...(provenance === undefined ? {} : { provenance }),
+            ...(laneFingerprints === undefined ? {} : { laneFingerprints }),
         };
     }
     const merged = mergedLocalFacts(proposed, current);
+    const toolsMixing =
+        proposed.provenance?.['toolsMixing']?.source === 'traffic'
+            ? (proposed.toolsMixing ?? current.toolsMixing)
+            : (current.toolsMixing ?? proposed.toolsMixing);
     return {
         ...merged,
+        ...(toolsMixing === undefined ? {} : { toolsMixing }),
         ...(reasoning === undefined ? {} : { reasoning }),
         reasoningEffort: reasoning?.efforts ?? merged.reasoningEffort,
+        ...(provenance === undefined ? {} : { provenance }),
+        ...(laneFingerprints === undefined ? {} : { laneFingerprints }),
     };
 };
 
@@ -584,6 +755,12 @@ export const capabilityFieldChangesOf = (
         structuredOutput: '结构化输出',
     };
     for (const apiName of MODEL_APIS) {
+        compare(
+            `apis.${apiName}`,
+            `API ${apiName}`,
+            booleanTextOf(baseline?.apis === undefined ? undefined : baseline.apis[apiName] !== undefined),
+            booleanTextOf(payload.apis === undefined ? undefined : payload.apis[apiName] !== undefined)
+        );
         for (const flag of apiFlags) {
             compare(
                 `apis.${apiName}.${flag}`,
@@ -593,6 +770,12 @@ export const capabilityFieldChangesOf = (
             );
         }
     }
+    compare(
+        'toolsMixing',
+        '工具混用',
+        baseline?.toolsMixing ?? '未知',
+        payload.toolsMixing ?? '未知'
+    );
     return changes;
 };
 
@@ -602,5 +785,6 @@ export const capabilitySourceLabelOf = (source: ModelCapabilitySource | undefine
     if (source === 'probe') return 'probe';
     if (source === 'manual') return '人工';
     if (source === 'official') return '官方文档';
+    if (source === 'traffic') return '线上流量';
     return 'models.dev';
 };

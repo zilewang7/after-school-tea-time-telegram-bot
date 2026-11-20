@@ -13,7 +13,9 @@ import {
 import {
     sendMessage,
     buildStaticSystemPrompt,
-    getModelCapabilities,
+    capabilitiesOf,
+    logReplyTraits,
+    resolveRuntimeTraits,
     isOpenCodeGoModel,
     openCodeGoSessionId,
 } from '../ai/index.js';
@@ -63,6 +65,7 @@ import {
     recordContextSize,
     recordImageGeneration,
     recordThinkingEffort,
+    setCatalogVersion,
 } from '../services/reply-metrics-draft.js';
 import { checkpointSinkFor } from './resume/keep-checkpoint.js';
 import { captureResumeFacts } from './resume/resume-facts.js';
@@ -320,9 +323,11 @@ export const handleReply = async (
     // runtime tail of a reply that is allowed to start.
     const trialSpend = await checkTrialQuota(access, ctx.from?.id ?? null);
     if (await refuseTrialQuota(ctx, trialSpend)) return;
+    const traits = resolveRuntimeTraits(model);
     // Before the media wait and the placeholder: nothing about this reply starts
-    if (await refuseImageChatModel(ctx, model)) return;
-    const capabilities = getModelCapabilities(model);
+    if (await refuseImageChatModel(ctx, model, traits)) return;
+    logReplyTraits(traits);
+    const capabilities = capabilitiesOf(traits);
 
     // Resolve the context tree (reply chain + any messages /chat pulled in)
     // to learn which media this reply depends on, then wait for any
@@ -398,7 +403,9 @@ export const handleReply = async (
                 recordImageGeneration(chatContext.session.metrics, imageModel, usage),
         }),
         settings.toolOverrides,
-        access
+        access,
+        undefined,
+        capabilities
     );
     // The reply's picture references resolve through its tool state (gN/imgN/sN)
     // and the context numbering the request just used (#N)
@@ -420,10 +427,10 @@ export const handleReply = async (
         richInlineImages: settings.richReplies === true && availability.sendImage,
     });
 
-    const systemPrompt = buildStaticSystemPrompt(model, buildStaticPromptOptions(availability));
+    const systemPrompt = buildStaticSystemPrompt(model, buildStaticPromptOptions(availability), capabilities);
     // The chat's thinking level against this attempt's model: an empty fragment
     // for a model without data (the platform keeps its current request shape)
-    const thinking = thinkingRequestOf(model, settings.thinkingEffort);
+    const thinking = thinkingRequestOf(model, settings.thinkingEffort, traits);
     // Taken now, so a failure only adds the last checkpoint to keep it
     chatContext.resumeFacts = captureResumeFacts({
         model,
@@ -440,10 +447,12 @@ export const handleReply = async (
         promptTemplatesAuto: settings.promptTemplatesAuto,
         thinkingEffort: settings.thinkingEffort,
         thinkingEffortSent: thinking.facts.sent,
+        traits,
         builtAt,
     });
 
     recordThinkingEffort(chatContext.session.metrics, thinking.facts);
+    setCatalogVersion(chatContext.session.metrics, traits.catalogVersion);
 
     // Send to AI and get stream
     markRequestStarted(chatContext.session.metrics);
@@ -456,6 +465,7 @@ export const handleReply = async (
             tools,
             usageSink: chatContext.session.metrics.usage,
             checkpointSink: checkpointSinkFor(chatContext),
+            traits,
             ...priorityRequestOf(access, settings.geminiPriority),
             ...thinking.platform,
         })

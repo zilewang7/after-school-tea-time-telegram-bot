@@ -12,8 +12,11 @@
 import { match } from 'ts-pattern';
 import { concatMessages, type RenderedMessage } from 'telegram-md-entities';
 import type { ModelEffort } from '../config/model-capabilities.js';
+import { codePolicyDefaultEffortOf } from '../ai/thinking-effort.js';
 import { THINKING_EFFORT_LABELS, type ThinkingEffortValue } from '../services/thinking-effort-values.js';
 import { codeText, plainText } from '../telegram/formatters/entity-text.js';
+
+export { codePolicyDefaultEffortOf };
 
 /** Where a chat's model comes from */
 export type ModelSource = 'global' | 'chat';
@@ -128,24 +131,6 @@ const thinkingChoiceLabelOf = (thinking: ChatThinkingView): string => {
     if (thinking.value === null) return `模型默认（${defaultThinkingTextOf(thinking)}）`;
     if (thinking.value === 'off') return '关闭思考';
     return THINKING_EFFORT_LABELS[thinking.value];
-};
-
-const openaiReasoningPrefixes: readonly string[] = ['gpt-5', 'gpt-6', 'o1', 'o3', 'o4'];
-
-/**
- * The default level today's code hardcodes for a model the catalog does not
- * describe. Display only: the request path keeps the platform's own policy
- * until the data switch, and a catalog/seed `defaultEffort` always wins.
- */
-export const codePolicyDefaultEffortOf = (model: string): ModelEffort | null => {
-    const id = model.toLowerCase();
-    // Chat variants are handled as non-reasoning by the OpenAI platform
-    if (id.includes('chat')) return null;
-    if (id.startsWith('gemini-4-hydrogen') || id.startsWith('gemini-4-neon')) return 'xhigh';
-    if (id.startsWith('gemini-4')) return 'high';
-    if (openaiReasoningPrefixes.some((prefix) => id.startsWith(prefix))) return 'xhigh';
-    if (id.includes('multi-agent')) return 'high';
-    return null;
 };
 
 /** `/model` without an argument: the chat's model, thinking level and sources */

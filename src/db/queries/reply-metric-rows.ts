@@ -5,7 +5,14 @@
  * does not fit is skipped rather than guessed at.
  */
 import { ERROR_KINDS, type ErrorKind } from '../../shared/error-kind.js';
+import {
+    parseCapabilityEvents,
+    serializeCapabilityEvents,
+    type CapabilityEvent,
+} from '../../shared/capability-event.js';
 import { isJsonObject } from '../../shared/json-object.js';
+
+export type { CapabilityEvent };
 
 export type ReplyOutcome = 'ok' | 'error' | 'stopped' | 'empty';
 
@@ -111,6 +118,8 @@ export interface ReplyMetricInput {
      */
     readonly accessTier?: ReplyAccessTier | null;
     readonly imageGenerationUsage?: readonly ImageGenerationUsage[];
+    readonly catalogVersion?: string | null;
+    readonly capabilityEvents?: readonly CapabilityEvent[];
 }
 
 export interface ReplyMetricRecord extends ReplyMetricInput {
@@ -120,6 +129,8 @@ export interface ReplyMetricRecord extends ReplyMetricInput {
     readonly thinkingEffortFallback: string | null;
     readonly accessTier: ReplyAccessTier | null;
     readonly imageGenerationUsage: readonly ImageGenerationUsage[];
+    readonly catalogVersion: string | null;
+    readonly capabilityEvents: readonly CapabilityEvent[];
 }
 
 const integerOrNull = (value: unknown): number | null =>
@@ -171,7 +182,7 @@ export const serializeImageGenerationUsage = (
     entries: readonly ImageGenerationUsage[]
 ): string | null => (entries.length === 0 ? null : JSON.stringify(entries));
 
-const parseImageGenerationUsage = (value: unknown): ImageGenerationUsage[] => {
+export const parseImageGenerationUsage = (value: unknown): ImageGenerationUsage[] => {
     if (typeof value !== 'string' || value === '') return [];
     try {
         const parsed: unknown = JSON.parse(value);
@@ -184,6 +195,8 @@ const parseImageGenerationUsage = (value: unknown): ImageGenerationUsage[] => {
         return [];
     }
 };
+
+export { serializeCapabilityEvents };
 
 const toolUsageEntryOf = (value: unknown): ToolUsageEntry | null => {
     if (!isJsonObject(value) || typeof value.name !== 'string') return null;
@@ -287,5 +300,7 @@ export const parseReplyMetricRow = (row: unknown): ReplyMetricRecord | null => {
         thinkingEffortFallback: stringOrNull(row.thinkingEffortFallback),
         accessTier: accessTierOf(row.accessTier),
         imageGenerationUsage: parseImageGenerationUsage(row.imageGenerationUsage),
+        catalogVersion: stringOrNull(row.catalogVersion),
+        capabilityEvents: parseCapabilityEvents(row.capabilityEvents),
     };
 };

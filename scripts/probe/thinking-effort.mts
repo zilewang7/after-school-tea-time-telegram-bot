@@ -1,5 +1,5 @@
 /**
- * `probe:thinking` CLI: the one-off thinking-effort probe.
+ * `probe:thinking` CLI: the thinking-effort probe (v2, §3.6).
  *
  * Safe by default: prints the matrix and writes the plan under
  * tmp/thinking-probe/<date>/ and sends nothing. A real run needs `--yes`, the
@@ -9,78 +9,70 @@
  * It never starts the bot, never touches Telegram and never opens the database.
  * Credentials come from the process env or `.env.test` only — never `.env`.
  */
-import { existsSync, readFileSync, statSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { evaluateRunGates, loadProbeEnvironment, type ProbeEnvironment } from './effort-env.mts';
 import { createProbeLanes, type ProbeLane } from './effort-lanes.mts';
 import { buildProbePlan, clampBudget, defaultBudget, parseModelsJson, resolveModelSpecs } from './effort-plan.mts';
-import { acceptedEffortsFromDocument, validateProbeDocument } from './effort-results.mts';
+import { mergeProbeDocuments, validateProbeDocument } from './effort-results.mts';
 import { runProbe } from './effort-run.mts';
 import { createStubFetch, stubLaneConfigurations } from './effort-stub.mts';
 import {
     HARD_MAX_REQUESTS,
     HARD_MAX_USD,
-    MAX_W2_OUTPUT_TOKEN_CAP,
-    MIN_W2_OUTPUT_TOKEN_CAP,
-    W2_OUTPUT_TOKEN_CAP,
-    isValidW2OutputTokenCap,
-    type EffortValue,
     type ProbeBudget,
     type ProbeModelSpec,
     type ProbePlatform,
-    type ProbeWave,
+    type ProbeResultDocument,
 } from './effort-types.mts';
 
 const REPOSITORY_ROOT = fileURLToPath(new URL('../../', import.meta.url));
 const OUTPUT_ROOT = join(REPOSITORY_ROOT, 'tmp', 'thinking-probe');
 const MAX_IMPORT_BYTES = 1_048_576;
 
-export const HELP = `思考档位 probe（一次性；默认 dry-run，不发请求）
+export const HELP = `思考档位 probe（v2；默认 dry-run，不发请求）
 
   npx tsx scripts/probe/thinking-effort.mts                    # dry-run 计划
-  npx tsx scripts/probe/thinking-effort.mts --wave w1 --yes    # 真实发送（需门禁）
+  npx tsx scripts/probe/thinking-effort.mts --yes              # 真实发送（需门禁）
+  npx tsx scripts/probe/thinking-effort.mts --merge a.json,b.json  # 合并多份 results.json
 
 选项：
   --dry-run            只生成计划（默认）
   --yes                真实发送请求（需 --yes；--stub 时不需要）
   --stub               零网络排练：进程内 stub 跑完整流程（W0，0 元）
-  --wave <w1|w2|all>   W1=接受性矩阵（默认全跑），W2=效果抽样
+  --wave <w1>          仅保留 W1 接受性矩阵（v2 已移除 W2）
   --models <a,b>       只跑这些模型
-  --models-json <f>    用导出的 catalog 快照替换内置模型清单
-  --from-results <f>   W2 单独运行：从已有 results.json 读 acceptedEfforts
-  --max-requests <n>   请求数上限（硬上限 ${HARD_MAX_REQUESTS}，默认 w1=120/w2=60/all=${HARD_MAX_REQUESTS}）
+  --models-json <f>    用 /probe export 导出的 catalog 快照替换内置模型清单
+  --max-requests <n>   请求数上限（硬上限 ${HARD_MAX_REQUESTS}，默认 ${HARD_MAX_REQUESTS}）
   --max-usd <n>        金额上限（硬上限 $${HARD_MAX_USD}，默认 $3）
-  --w2-cap <tokens>    W2 输出上限（默认 ${W2_OUTPUT_TOKEN_CAP}，范围 ${MIN_W2_OUTPUT_TOKEN_CAP}..${MAX_W2_OUTPUT_TOKEN_CAP}）
-                       这是 probe 自己的预算护栏，生产不设该上限；
-                       4096 覆盖常见样本，6144/8192 更少截断但成本增加
-  --timeout-ms <n>     单请求超时（默认 W1 90000；W2/all 150000）
+  --timeout-ms <n>     单请求超时（默认 90000）
   --max-retries <n>    传输类错误重试次数（默认 1）
   --concurrency 1      只支持串行（并发 1）
   --out <dir>          输出目录（只允许 tmp/thinking-probe/ 之下）
-  --check <f>          校验一份 results.json（/probe import 之前）
+  --check <f>          校验一份 results.json（支持 v1/v2，/probe import 之前）
+  --merge <f1,f2,...>  合并多份 results.json 为一份 v2（可逗号分隔或重复传入）
   --help
 
 真实运行（在 k-on-bot-test 容器内，owner 授权后）：
   docker compose --profile test run --rm --no-deps k-on-bot-test \\
-    sh -lc 'npx tsx scripts/probe/thinking-effort.mts --wave all --yes'
+    sh -lc 'npx tsx scripts/probe/thinking-effort.mts --yes'
 `;
 
 export interface CliOptions {
-    wave: ProbeWave | 'all';
+    wave: 'w1';
     yes: boolean;
     stub: boolean;
     models: readonly string[] | undefined;
     modelsJson: string | undefined;
-    fromResults: string | undefined;
     maxRequests: number | undefined;
     maxUsd: number | undefined;
-    w2Cap: number | undefined;
     timeoutMs: number | undefined;
     maxRetries: number | undefined;
     concurrency: number;
     out: string | undefined;
     check: string | undefined;
+    merge: readonly string[] | undefined;
     help: boolean;
 }
 
@@ -92,36 +84,34 @@ const parseNumber = (name: string, raw: string): number => {
     return value;
 };
 
-const parseWave = (raw: string): ProbeWave | 'all' => {
-    if (raw === 'w1' || raw === 'w2' || raw === 'all') return raw;
-    throw new CliError(`--wave 只接受 w1|w2|all，收到 ${raw}`);
+const parseWave = (raw: string): 'w1' => {
+    if (raw === 'w1') return 'w1';
+    throw new CliError(`--wave w2/all 已在 v2 移除（仅运行 W1 接受性矩阵），收到 ${raw}`);
 };
 
 export const parseArguments = (argv: readonly string[]): CliOptions => {
     const options: CliOptions = {
-        wave: 'all',
+        wave: 'w1',
         yes: false,
         stub: false,
         models: undefined,
         modelsJson: undefined,
-        fromResults: undefined,
         maxRequests: undefined,
         maxUsd: undefined,
-        w2Cap: undefined,
         timeoutMs: undefined,
         maxRetries: undefined,
         concurrency: 1,
         out: undefined,
         check: undefined,
+        merge: undefined,
         help: false,
     };
-    let wave: ProbeWave | 'all' = 'all';
     let maxRequests: number | undefined;
     let maxUsd: number | undefined;
-    let w2Cap: number | undefined;
     let timeoutMs: number | undefined;
     let maxRetries: number | undefined;
     let models: readonly string[] | undefined;
+    const mergeFiles: string[] = [];
     for (let index = 0; index < argv.length; index += 1) {
         const argument = argv[index];
         if (argument === undefined) continue;
@@ -148,7 +138,7 @@ export const parseArguments = (argv: readonly string[]): CliOptions => {
                 options.stub = true;
                 break;
             case '--wave':
-                wave = parseWave(valueOf('--wave'));
+                options.wave = parseWave(valueOf('--wave'));
                 break;
             case '--models': {
                 const list = valueOf('--models')
@@ -162,26 +152,12 @@ export const parseArguments = (argv: readonly string[]): CliOptions => {
             case '--models-json':
                 options.modelsJson = valueOf('--models-json');
                 break;
-            case '--from-results':
-                options.fromResults = valueOf('--from-results');
-                break;
             case '--max-requests':
                 maxRequests = parseNumber('--max-requests', valueOf('--max-requests'));
                 break;
             case '--max-usd':
                 maxUsd = parseNumber('--max-usd', valueOf('--max-usd'));
                 break;
-            case '--w2-cap': {
-                const raw = valueOf('--w2-cap');
-                const value = Number(raw);
-                if (!isValidW2OutputTokenCap(value)) {
-                    throw new CliError(
-                        `--w2-cap 需要 ${MIN_W2_OUTPUT_TOKEN_CAP}..${MAX_W2_OUTPUT_TOKEN_CAP} 之间的整数 token 数，收到 ${raw}`
-                    );
-                }
-                w2Cap = value;
-                break;
-            }
             case '--timeout-ms':
                 timeoutMs = parseNumber('--timeout-ms', valueOf('--timeout-ms'));
                 break;
@@ -197,23 +173,28 @@ export const parseArguments = (argv: readonly string[]): CliOptions => {
             case '--check':
                 options.check = valueOf('--check');
                 break;
+            case '--merge': {
+                const parts = valueOf('--merge')
+                    .split(',')
+                    .map((item) => item.trim())
+                    .filter((item) => item !== '');
+                if (parts.length === 0) throw new CliError('--merge 需要至少一个文件路径');
+                mergeFiles.push(...parts);
+                break;
+            }
             default:
                 throw new CliError(`未知参数 ${argument}；用 --help 查看用法`);
         }
     }
     if (options.concurrency !== 1) throw new CliError(`只支持 --concurrency 1（收到 ${options.concurrency}）`);
-    if (options.fromResults !== undefined && wave !== 'w2') {
-        throw new CliError('--from-results 只能配合 --wave w2 使用（W1 才能产生 acceptedEfforts）');
-    }
     return {
         ...options,
-        wave,
         ...(models === undefined ? {} : { models }),
         ...(maxRequests === undefined ? {} : { maxRequests }),
         ...(maxUsd === undefined ? {} : { maxUsd }),
-        ...(w2Cap === undefined ? {} : { w2Cap }),
         ...(timeoutMs === undefined ? {} : { timeoutMs }),
         ...(maxRetries === undefined ? {} : { maxRetries }),
+        ...(mergeFiles.length === 0 ? {} : { merge: mergeFiles }),
     };
 };
 
@@ -264,13 +245,12 @@ const printGates = (environment: ProbeEnvironment): void => {
 };
 
 const budgetOf = (options: CliOptions): ProbeBudget => {
-    const base = defaultBudget(options.wave);
+    const base = defaultBudget();
     return clampBudget({
         maxRequests: options.maxRequests ?? base.maxRequests,
         maxUsd: options.maxUsd ?? base.maxUsd,
         timeoutMs: options.timeoutMs ?? base.timeoutMs,
         maxRetries: options.maxRetries ?? base.maxRetries,
-        ...(options.w2Cap === undefined ? {} : { w2OutputTokenCap: options.w2Cap }),
     });
 };
 
@@ -284,16 +264,6 @@ const loadModelSpecs = (options: CliOptions): { readonly specs: readonly ProbeMo
         specs: selected,
         problems: parsed.problems.map((problem) => (problem.index < 0 ? problem.message : `#${problem.index}: ${problem.message}`)),
     };
-};
-
-const loadAcceptedEfforts = (options: CliOptions): Record<string, readonly EffortValue[]> => {
-    if (options.fromResults === undefined) return {};
-    const parsed = readJsonFile(options.fromResults);
-    const validation = validateProbeDocument(parsed);
-    if (!validation.valid || validation.document === null) {
-        throw new CliError(`--from-results 文件不符合 §7 schema：${validation.errors.slice(0, 5).join('; ')}`);
-    }
-    return acceptedEffortsFromDocument(validation.document);
 };
 
 const checkResultsFile = (path: string): number => {
@@ -315,15 +285,64 @@ const checkResultsFile = (path: string): number => {
     }
     const validation = validateProbeDocument(parsed);
     if (!validation.valid || validation.document === null) {
-        console.error(`✗ 不符合 §7 schema（${validation.errors.length} 处）：`);
+        console.error(`✗ 不符合 probe schema（${validation.errors.length} 处）：`);
         for (const problem of validation.errors.slice(0, 20)) console.error(`  - ${problem}`);
         return 1;
     }
-    console.log(`✓ 符合 §7 schema：${validation.document.results.length} 个模型`);
-    for (const entry of validation.document.results) {
-        console.log(
-            `  ${entry.model}: accepted=[${entry.acceptedEfforts.join(',')}] default=${entry.defaultEffort ?? 'null'} toggle=${entry.toggle ? 'yes' : 'no'} errors=${Object.keys(entry.errorSummary).length}`
-        );
+    const doc = validation.document;
+    console.log(`✓ 符合 probe schema v${doc.schema}：${doc.results.length} 个模型`);
+    if (doc.schema === 2) {
+        for (const entry of doc.results) {
+            const toggleText = entry.toggle === null ? 'n/a' : entry.toggle ? 'yes' : 'no';
+            const toolsText = entry.tools === null ? 'n/a' : entry.tools.supported ? 'ok' : 'fail';
+            console.log(
+                `  ${entry.model} (${entry.platform}/${entry.lane}): accepted=[${entry.acceptedEfforts.join(',')}] mapped=[${entry.mappedEfforts.join(',')}] toggle=${toggleText} tools=${toolsText} errors=${Object.keys(entry.errorSummary).length}`
+            );
+        }
+    } else {
+        for (const entry of doc.results) {
+            console.log(
+                `  ${entry.model}: accepted=[${entry.acceptedEfforts.join(',')}] default=${entry.defaultEffort ?? 'null'} toggle=${entry.toggle ? 'yes' : 'no'} errors=${Object.keys(entry.errorSummary).length}`
+            );
+        }
+    }
+    return 0;
+};
+
+const mergeResultsFiles = (paths: readonly string[], requestedOut: string | undefined): number => {
+    const documents: ProbeResultDocument[] = [];
+    for (const path of paths) {
+        if (!existsSync(path)) {
+            console.error(`文件不存在：${path}`);
+            return 1;
+        }
+        let parsed: unknown;
+        try {
+            parsed = JSON.parse(readFileSync(path, 'utf8'));
+        } catch (error) {
+            console.error(`不是合法 JSON（${path}）：${error instanceof Error ? error.message : String(error)}`);
+            return 1;
+        }
+        const validation = validateProbeDocument(parsed);
+        if (!validation.valid || validation.document === null) {
+            console.error(`✗ ${path} 不符合 probe schema（${validation.errors.length} 处）：`);
+            for (const problem of validation.errors.slice(0, 10)) console.error(`  - ${problem}`);
+            return 1;
+        }
+        documents.push(validation.document);
+    }
+    const merged = mergeProbeDocuments(documents);
+    const outDir = resolveOutputDirectory(requestedOut, new Date());
+    mkdirSync(outDir, { recursive: true });
+    const outPath = join(outDir, 'results.json');
+    const json = JSON.stringify(merged.document, null, 2);
+    writeFileSync(outPath, json);
+    console.log(
+        `[merge] 合并 ${merged.sourceCount} 份结果 → ${merged.document.results.length} 个模型（覆盖更新：${merged.replacedModels.join(', ') || '无'}）`
+    );
+    console.log(`[merge] out: ${outPath}`);
+    if (Buffer.byteLength(json, 'utf8') > MAX_IMPORT_BYTES) {
+        console.warn(`[merge] 警告：输出超过 1 MB 上限，可能无法直接通过 /probe import`);
     }
     return 0;
 };
@@ -344,17 +363,23 @@ const main = async (): Promise<number> => {
     if (options.check !== undefined) {
         return checkResultsFile(options.check);
     }
+    if (options.merge !== undefined) {
+        try {
+            return mergeResultsFiles(options.merge, options.out);
+        } catch (error) {
+            console.error(error instanceof Error ? error.message : String(error));
+            return 2;
+        }
+    }
 
     const environment = loadProbeEnvironment();
     const lanes = lanesOf(environment, options.stub);
     const gates = evaluateRunGates(environment).gates;
     let specs: readonly ProbeModelSpec[] | undefined;
-    let acceptedEffortsByModel: Record<string, readonly EffortValue[]> = {};
     try {
         const loaded = loadModelSpecs(options);
         specs = loaded.specs;
         for (const problem of loaded.problems) console.warn(`[models-json] ${problem}`);
-        acceptedEffortsByModel = loadAcceptedEfforts(options);
     } catch (error) {
         console.error(error instanceof Error ? error.message : String(error));
         return 2;
@@ -363,20 +388,16 @@ const main = async (): Promise<number> => {
     const budget = budgetOf(options);
     const dryRun = options.stub ? false : !options.yes;
     console.log(`[probe] mode: ${options.stub ? 'stub (W0, zero network)' : dryRun ? 'dry-run (no request)' : 'LIVE'}`);
-    if (options.wave !== 'w1') {
-        console.log(
-            `[budget] W2 输出上限 ${budget.w2OutputTokenCap ?? W2_OUTPUT_TOKEN_CAP} tokens（probe 预算护栏，生产不设该上限；默认 ${W2_OUTPUT_TOKEN_CAP}）`
-        );
+    if (options.modelsJson === undefined) {
+        console.log('[probe] matrix: built-in snapshot (use --models-json from /probe export to probe the active DB menu)');
     }
     console.log(`[probe] 该脚本不启动 bot、不碰 Telegram、不读写数据库；只写 tmp/thinking-probe/`);
     printGates(environment);
 
     const plan = buildProbePlan({
-        wave: options.wave,
         budget,
         ...(options.models === undefined ? {} : { models: options.models }),
         ...(specs === undefined ? {} : { modelSpecs: specs }),
-        ...(Object.keys(acceptedEffortsByModel).length === 0 ? {} : { acceptedEffortsByModel }),
     });
     const usedPlatforms = lanesUsedBy(plan);
     for (const platform of usedPlatforms) {
@@ -421,11 +442,9 @@ const main = async (): Promise<number> => {
 
     try {
         const outcome = await runProbe({
-            wave: options.wave,
             budget,
             ...(options.models === undefined ? {} : { models: options.models }),
             ...(specs === undefined ? {} : { modelSpecs: specs }),
-            ...(Object.keys(acceptedEffortsByModel).length === 0 ? {} : { acceptedEffortsByModel }),
             dryRun,
             stub: options.stub,
             lanes,

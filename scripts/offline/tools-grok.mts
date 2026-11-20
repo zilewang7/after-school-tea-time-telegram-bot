@@ -69,6 +69,8 @@ const { runGrokToolLoop } = await import('../../src/ai/platforms/grok/grok-tool-
 const { buildCandidateRequests, buildSearchTools, toGrokFunctionTools } = await import(
     '../../src/ai/platforms/grok/grok-request.js'
 );
+const { setModelCatalog } = await import('../../src/config/model-catalog.js');
+const { emptyModelCapabilities } = await import('../../src/config/model-capabilities.js');
 const { createTurnTools, NO_TURN_TOOLS, TOOL_LOOP_DEADLINE_MS } = await import('../../src/ai/tools/index.js');
 
 const MODEL = 'grok-4.7';
@@ -496,6 +498,72 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
                     new GrokPlatform().getModelCapabilities(MODEL).supportsClientTools === true,
                 'and the capabilities say so'
             );
+        },
+    },
+    {
+        name: 'grok client tool gating follows catalog tools flag regardless of model id',
+        body: async () => {
+            try {
+                setModelCatalog(
+                    [
+                        {
+                            id: 'grok-5-server-only',
+                            label: 'Grok 5 Server Only',
+                            enabled: true,
+                            platform: 'grok',
+                            capabilities: {
+                                ...emptyModelCapabilities(),
+                                schema: 1,
+                                kind: 'chat',
+                                tools: false,
+                                provenance: {
+                                    tools: { source: 'official', checkedOn: '2026-11-20', confidence: 'high' },
+                                },
+                            },
+                            source: 'official',
+                            checkedOn: '2026-11-20',
+                            confidence: 'high',
+                            note: 'test',
+                        },
+                        {
+                            id: 'grok-4.20-multi-agent-custom',
+                            label: 'Grok Multi Agent With Tools',
+                            enabled: true,
+                            platform: 'grok',
+                            capabilities: {
+                                ...emptyModelCapabilities(),
+                                schema: 1,
+                                kind: 'chat',
+                                tools: true,
+                                provenance: {
+                                    tools: { source: 'official', checkedOn: '2026-11-20', confidence: 'high' },
+                                },
+                            },
+                            source: 'official',
+                            checkedOn: '2026-11-20',
+                            confidence: 'high',
+                            note: 'test',
+                        },
+                    ],
+                    'grok-tools-test'
+                );
+
+                reset(scripted(answerRound('resp_srv', 'Server only.')));
+                await captureConsole(async () => drain(await sendGrok('grok-5-server-only', turnTools)));
+                expect(
+                    recordedRequests.length === 1 && !hasFunctionTools(recordedRequests[0]!),
+                    'tools=false suppresses client declarations even without multi-agent in id'
+                );
+
+                reset(scripted(answerRound('resp_ma_tools', 'Tools sent.')));
+                await captureConsole(async () => drain(await sendGrok('grok-4.20-multi-agent-custom', turnTools)));
+                expect(
+                    recordedRequests.length === 1 && hasFunctionTools(recordedRequests[0]!),
+                    'catalog tools=true enables client declarations even with multi-agent in id'
+                );
+            } finally {
+                setModelCatalog([]);
+            }
         },
     },
     {

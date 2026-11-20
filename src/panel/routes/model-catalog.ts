@@ -16,7 +16,11 @@
  * normalized capabilities object.
  */
 import type { Hono } from 'hono';
-import { resolveModelTraits } from '../../ai/model-traits.js';
+import {
+    reconcileCatalogTraits,
+    resolveRuntimeTraits,
+    type CatalogTraitsReconciliation,
+} from '../../ai/model-traits.js';
 import { modelCatalogVersion, type ModelCatalogCapabilities } from '../../config/model-catalog.js';
 import { countPendingCapabilityProposals } from '../../services/model-capability-service.js';
 import { listCatalogRows } from '../../services/model-catalog-service.js';
@@ -46,10 +50,12 @@ export interface ModelCatalogResponse {
     readonly catalogVersion: string;
     /** Capability proposals waiting for the owner's approval */
     readonly pendingProposals: number;
+    /** Deterministic code-vs-data reconciliation table across catalog and seed models */
+    readonly reconciliation: CatalogTraitsReconciliation;
     readonly models: readonly ModelCatalogEntryView[];
 }
 
-/** `1`/`true` shows retired rows too; anything else keeps the default (enabled only) */
+/** `1`/`true` shows retired/reference rows too; anything else keeps the default (enabled only) */
 const includeDisabledOf = (raw: string | undefined): boolean => raw === '1' || raw === 'true';
 
 export const registerModelCatalogRoute = (app: Hono<PanelEnv>): void => {
@@ -73,12 +79,13 @@ export const registerModelCatalogRoute = (app: Hono<PanelEnv>): void => {
                 source: row.source,
                 checkedOn: row.checkedOn,
                 confidence: row.confidence,
-                traitsOrigin: resolveModelTraits(row.id).origin,
+                traitsOrigin: resolveRuntimeTraits(row.id).origin,
                 capabilities: row.capabilities,
             }));
         const response: ModelCatalogResponse = {
             catalogVersion: modelCatalogVersion(),
             pendingProposals,
+            reconciliation: reconcileCatalogTraits(),
             models,
         };
         return context.json(response);

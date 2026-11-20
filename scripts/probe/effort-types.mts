@@ -28,8 +28,11 @@ export const PROBE_PLATFORMS = ['gemini', 'openai', 'anthropic', 'grok', 'deepse
 
 export type ProbePlatform = (typeof PROBE_PLATFORMS)[number];
 
-/** Two waves: W1 acceptance, W2 effect sampling (design §7) */
-export const PROBE_WAVES = ['w1', 'w2'] as const;
+/** Canonical order for legacy v1 laneSignature parsing */
+export const PLATFORM_ORDER_LIST: readonly ProbePlatform[] = PROBE_PLATFORMS;
+
+/** Only W1 acceptance + client-tool fidelity remains in v2 (§3.6) */
+export const PROBE_WAVES = ['w1'] as const;
 
 export type ProbeWave = (typeof PROBE_WAVES)[number];
 
@@ -99,23 +102,15 @@ export interface ProbeBudget {
     readonly maxUsd: number;
     readonly timeoutMs: number;
     readonly maxRetries: number;
-    /** W2 output cap override (CLI --w2-cap); omitted = W2_OUTPUT_TOKEN_CAP */
-    readonly w2OutputTokenCap?: number;
 }
 
 export interface ProbePlan {
-    readonly wave: ProbeWave | 'all';
+    readonly wave: ProbeWave;
     readonly models: readonly ProbeModelSpec[];
     readonly candidates: readonly ProbeCandidate[];
     readonly requests: number;
     readonly estimatedUsd: number;
-    readonly perWave: Readonly<Record<ProbeWave, WaveTotals>>;
     readonly cut: PlanCut;
-}
-
-export interface WaveTotals {
-    readonly requests: number;
-    readonly estimatedUsd: number;
 }
 
 /** What the budget guard dropped, so `--dry-run` can say it out loud */
@@ -173,8 +168,32 @@ export interface ProbeObservation {
     readonly usageReported: boolean;
 }
 
-/** One importable row of the design §7 result document */
-export interface ProbeResultEntry {
+/** Client-tool fidelity check result recorded in v2 results.json */
+export interface ProbeToolsCheck {
+    readonly supported: boolean;
+    readonly variant: ProbeVariant;
+    readonly effort: EffortValue | null;
+    readonly error?: string;
+}
+
+/** Per-platform lane fingerprints (map from platform to laneId#hash) */
+export type ProbeLaneFingerprints = Readonly<Partial<Record<ProbePlatform, string>>>;
+
+/** One importable row of the v2 result document (§3.6): measured facts only */
+export interface ProbeResultEntryV2 {
+    readonly model: string;
+    readonly platform: ProbePlatform;
+    readonly lane: string;
+    readonly acceptedEfforts: readonly EffortValue[];
+    readonly mappedEfforts: readonly EffortValue[];
+    readonly toggle: boolean | null;
+    readonly tools: ProbeToolsCheck | null;
+    readonly errorSummary: Readonly<Record<string, string>>;
+    readonly checkedOn: string;
+}
+
+/** Legacy v1 row (design 2026-1113-1742 §7), still accepted by --check / --merge / /probe import */
+export interface ProbeResultEntryV1 {
     readonly model: string;
     readonly acceptedEfforts: readonly EffortValue[];
     readonly defaultEffort: EffortValue | null;
@@ -183,13 +202,25 @@ export interface ProbeResultEntry {
     readonly checkedOn: string;
 }
 
-/** The document `/probe import` parses (design §7) */
-export interface ProbeResultDocument {
+export type ProbeResultEntry = ProbeResultEntryV2 | ProbeResultEntryV1;
+
+/** The v2 document `scripts/probe/thinking-effort.mts` writes (§3.6) */
+export interface ProbeResultDocumentV2 {
+    readonly schema: 2;
+    readonly probedAt: string;
+    readonly lanes: ProbeLaneFingerprints;
+    readonly results: readonly ProbeResultEntryV2[];
+}
+
+/** Legacy v1 document still accepted on import / validation / merge */
+export interface ProbeResultDocumentV1 {
     readonly schema: 1;
     readonly probedAt: string;
     readonly laneSignature: string;
-    readonly results: readonly ProbeResultEntry[];
+    readonly results: readonly ProbeResultEntryV1[];
 }
+
+export type ProbeResultDocument = ProbeResultDocumentV2 | ProbeResultDocumentV1;
 
 export interface ValidationResult {
     readonly valid: boolean;
@@ -210,34 +241,16 @@ export const EVIDENCE_LIMIT = 2_000;
 export const HARD_MAX_REQUESTS = 250;
 export const HARD_MAX_USD = 5;
 
-/** Defaults: ~$2 worst case for all waves, $3 hard user-facing cap (design §7) */
+/** Defaults: $3 hard user-facing cap */
 export const DEFAULT_MAX_USD = 3;
 export const DEFAULT_TIMEOUT_MS = 90_000;
-export const DEFAULT_EFFECT_TIMEOUT_MS = 150_000;
 export const DEFAULT_MAX_RETRIES = 1;
 
-/** Requests allowed per wave when the caller does not say (probe plan §5) */
-export const WAVE_DEFAULT_MAX_REQUESTS: Readonly<Record<ProbeWave | 'all', number>> = {
-    w1: 120,
-    w2: 60,
-    all: HARD_MAX_REQUESTS,
-};
+/** Default request ceiling for a W1 run */
+export const DEFAULT_MAX_REQUESTS = HARD_MAX_REQUESTS;
 
-/** Output token caps: W1 only needs a valid stream, W2 must not truncate thoughts */
+/** Output token cap: W1 only needs a valid stream */
 export const W1_OUTPUT_TOKEN_CAP = 256;
-export const W2_OUTPUT_TOKEN_CAP = 4_096;
-
-/**
- * The W2 cap is the probe's own budget guard (production sends no such cap).
- * A run may lower it to save money or raise it so high efforts are not cut
- * off; outside this range the request spend is no longer predictable.
- */
-export const MIN_W2_OUTPUT_TOKEN_CAP = 1_024;
-export const MAX_W2_OUTPUT_TOKEN_CAP = 16_384;
-
-/** A W2 cap must be a whole number of tokens inside the allowed range */
-export const isValidW2OutputTokenCap = (value: number): boolean =>
-    Number.isInteger(value) && value >= MIN_W2_OUTPUT_TOKEN_CAP && value <= MAX_W2_OUTPUT_TOKEN_CAP;
 
 /** Jitter between requests, so one lane's rate limiter is not hammered */
 export const REQUEST_PACING_MIN_MS = 1_500;

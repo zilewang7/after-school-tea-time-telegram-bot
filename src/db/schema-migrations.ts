@@ -16,7 +16,11 @@ type MigratedTable =
   | 'harness_issues'
   | 'chat_settings'
   | 'reply_metrics'
-  | 'telegram_messages';
+  | 'telegram_messages'
+  | 'price_watch_runs'
+  | 'price_change_proposals'
+  | 'model_capability_proposals'
+  | 'model_catalog';
 
 /**
  * Whether the table exists yet. Migrations run before sync, so on a fresh
@@ -933,6 +937,83 @@ export const backfillCatalogCapabilities = async (): Promise<void> => {
   }
 };
 
+const migrateReplyMetricsCapabilityColumns = async (transaction: Transaction): Promise<void> => {
+  if (!(await tableExists('reply_metrics', transaction))) return;
+  await ensureColumn('reply_metrics', 'catalogVersion', 'TEXT DEFAULT NULL', transaction);
+  await ensureColumn('reply_metrics', 'capabilityEvents', 'TEXT DEFAULT NULL', transaction);
+};
+
+/**
+ * Watch run diagnostics and proposal reminder columns (design 2026-1114-0510 §3.1):
+ * `price_watch_runs` keeps per-run warnings and capability proposal counts;
+ * proposal tables track `lastNotifiedAt` so unchanged rows are not spammed daily.
+ */
+const migratePriceWatchRound1Columns = async (transaction: Transaction): Promise<void> => {
+  if (await tableExists('price_watch_runs', transaction)) {
+    await ensureColumn('price_watch_runs', 'capabilityProposals', 'INTEGER NOT NULL DEFAULT 0', transaction);
+    await ensureColumn('price_watch_runs', 'warnings', 'TEXT DEFAULT NULL', transaction);
+  }
+  if (await tableExists('price_change_proposals', transaction)) {
+    await ensureColumn('price_change_proposals', 'lastNotifiedAt', 'DATETIME DEFAULT NULL', transaction);
+  }
+  if (await tableExists('model_capability_proposals', transaction)) {
+    await ensureColumn('model_capability_proposals', 'lastNotifiedAt', 'DATETIME DEFAULT NULL', transaction);
+  }
+};
+
+/**
+ * Correct `claude-opus-5-5` default effort from `high` to `medium` (design
+ * 2026-1114-0510 §3.1 #6): probe imported the seed fallback `high` before the
+ * official doc value (`medium`) was checked. Owner manual edits stay untouched.
+ */
+export const migrateOpusDefaultEffort = async (transaction: Transaction): Promise<void> => {
+  if (!(await tableExists('model_catalog', transaction))) return;
+  const name = '20261120_opus_default_effort';
+  const applied = await sequelize.query<{ name: string }>(
+    'SELECT name FROM schema_migrations WHERE name = :name',
+    { type: QueryTypes.SELECT, replacements: { name }, transaction }
+  );
+  if (applied.length > 0) return;
+
+  const rows = await sequelize.query<{ id: string; capabilities: string }>(
+    "SELECT id, capabilities FROM model_catalog WHERE id = 'claude-opus-5-5'",
+    { type: QueryTypes.SELECT, transaction }
+  );
+  const now = new Date().toISOString();
+  const row = rows[0];
+  if (row !== undefined) {
+    try {
+      const parsed: unknown = JSON.parse(row.capabilities);
+      if (isJsonObject(parsed) && parsed.schema === 1 && isJsonObject(parsed.reasoning)) {
+        const reasoning = parsed.reasoning;
+        if (reasoning.defaultEffort === 'high' && reasoning.source !== 'manual') {
+          const next = {
+            ...parsed,
+            reasoning: {
+              ...reasoning,
+              defaultEffort: 'medium',
+            },
+          };
+          await sequelize.query(
+            'UPDATE model_catalog SET capabilities = :capabilities, updatedAt = :updatedAt WHERE id = :id',
+            {
+              replacements: { id: 'claude-opus-5-5', capabilities: JSON.stringify(next), updatedAt: now },
+              transaction,
+            }
+          );
+        }
+      }
+    } catch {
+      // Leave malformed JSON untouched
+    }
+  }
+  await sequelize.query(
+    `INSERT OR IGNORE INTO schema_migrations (name, appliedAt)
+     VALUES (:name, :appliedAt)`,
+    { replacements: { name, appliedAt: now }, transaction }
+  );
+};
+
 export const runSchemaMigrations = async (): Promise<void> => {
   await sequelize.query(`
     CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -959,7 +1040,10 @@ export const runSchemaMigrations = async (): Promise<void> => {
     await migrateRichRepliesColumn(transaction);
     await migrateChatSettingsPromptTemplates(transaction);
     await migrateReplyMetricsTrialQuotaColumns(transaction);
+    await migrateReplyMetricsCapabilityColumns(transaction);
     await migrateMessageDeletedAt(transaction);
+    await migratePriceWatchRound1Columns(transaction);
+    await migrateOpusDefaultEffort(transaction);
     await sequelize.query(
       `INSERT OR IGNORE INTO schema_migrations (name, appliedAt)
        VALUES ('20260908_custom_emoji_phase1', :appliedAt)`,
@@ -1112,6 +1196,64 @@ export const runSchemaMigrations = async (): Promise<void> => {
       `INSERT OR IGNORE INTO schema_migrations (name, appliedAt)
        VALUES ('20261119_prompt_templates', :appliedAt)`,
       { replacements: { appliedAt: new Date().toISOString() }, transaction }
+    );
+    // price_watch_runs warnings/capabilityProposals + proposal lastNotifiedAt
+    await sequelize.query(
+      `INSERT OR IGNORE INTO schema_migrations (name, appliedAt)
+       VALUES ('20261120_price_watch_round1', :appliedAt)`,
+      { replacements: { appliedAt: new Date().toISOString() }, transaction }
+    );
+    // reply_metrics gained catalogVersion and capabilityEvents
+    await sequelize.query(
+      `INSERT OR IGNORE INTO schema_migrations (name, appliedAt)
+       VALUES ('20261120_reply_metrics_capability_columns', :appliedAt)`,
+      { replacements: { appliedAt: new Date().toISOString() }, transaction }
+    );
+  });
+};
+
+/**
+ * Upgrade existing `model_catalog` schema-1 rows to carry explicit field-level
+ * `provenance` (design 2026-1114-0510 §3.2): reasoning fields inherit
+ * `reasoning.source` (with `defaultEffort` marked `code` when derived from the
+ * seed), and other asserted fields inherit the row-level `source`.
+ */
+export const backfillCatalogProvenance = async (): Promise<void> => {
+  const name = '20261120_catalog_provenance';
+  const applied = await sequelize.query<{ name: string }>(
+    'SELECT name FROM schema_migrations WHERE name = :name',
+    { type: QueryTypes.SELECT, replacements: { name } }
+  );
+  if (applied.length > 0) return;
+
+  const { deriveFieldProvenance, normalizeModelCapabilities } = await import('../config/model-capabilities.js');
+  const now = new Date().toISOString();
+  await sequelize.transaction(async (transaction) => {
+    if (!(await tableExists('model_catalog', transaction))) return;
+    const rows = await sequelize.query<{ id: string; capabilities: string }>(
+      'SELECT id, capabilities FROM model_catalog',
+      { type: QueryTypes.SELECT, transaction }
+    );
+    for (const row of rows) {
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(row.capabilities);
+      } catch {
+        continue;
+      }
+      if (!isJsonObject(parsed) || parsed.schema !== 1 || parsed.provenance !== undefined) continue;
+      const normalized = normalizeModelCapabilities(parsed).capabilities;
+      const provenance = deriveFieldProvenance(normalized);
+      const next = { ...normalized, provenance };
+      await sequelize.query(
+        'UPDATE model_catalog SET capabilities = :capabilities, updatedAt = :updatedAt WHERE id = :id',
+        { replacements: { id: row.id, capabilities: JSON.stringify(next), updatedAt: now }, transaction }
+      );
+    }
+    await sequelize.query(
+      `INSERT OR IGNORE INTO schema_migrations (name, appliedAt)
+       VALUES (:name, :appliedAt)`,
+      { replacements: { name, appliedAt: now }, transaction }
     );
   });
 };

@@ -6,7 +6,12 @@
  * that media. Whatever round 1 finally sent (contents and tools) is what
  * every later round builds on; later rounds never fall back.
  */
-import { hasNonImageMedia, stripNonImageMedia } from './gemini-media-fallback.js';
+import type { UsageSink } from '../../usage/usage-types.js';
+import {
+    hasNonImageMedia,
+    nonImageModalityOf,
+    stripNonImageMedia,
+} from './gemini-media-fallback.js';
 import {
     httpStatusOf,
     isFunctionDeclarationError,
@@ -21,18 +26,24 @@ const describeError = (error: unknown): string =>
 export const firstRoundFallbackFor = (
     request: GeminiRoundRequest,
     error: unknown,
-    model: string
+    model: string,
+    usageSink?: UsageSink
 ): GeminiRoundRequest | null => {
     if (isFunctionDeclarationError(error)) {
         console.error(
             `[gemini] ${model} rejected the function declarations with 400; retrying without client tools: ${describeError(error)}`
         );
+        usageSink?.noteCapabilityEvent({ kind: 'tools_rejected' });
         return { ...request, tools: withoutFunctionDeclarations(request.tools) };
     }
     if (httpStatusOf(error) === 400 && hasNonImageMedia(request.contents)) {
         console.warn(
             `[gemini] ${model} rejected a media part with 400; retrying without non-image media`
         );
+        usageSink?.noteCapabilityEvent({
+            kind: 'media_rejected',
+            modality: nonImageModalityOf(request.contents),
+        });
         return { ...request, contents: stripNonImageMedia(request.contents) };
     }
     return null;

@@ -44,7 +44,6 @@ const VISION: ModelCapabilities = {
     supportsSystemPrompt: true,
     requiresMessageMerge: false,
     supportsThinking: false,
-    supportsGrounding: false,
     supportsMediaInput: false,
 };
 

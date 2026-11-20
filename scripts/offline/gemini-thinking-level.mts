@@ -18,9 +18,16 @@ import type { ToolHandler, TurnTools } from '../../src/ai/tools/index.js';
 delete process.env.GEMINI_CLIENT_TOOLS;
 
 const { GeminiPlatform } = await import('../../src/ai/platforms/gemini-platform.js');
-const { supportsXhighThinkingLevel } = await import('../../src/ai/model-kinds.js');
-const { isThinkingLevelError } = await import('../../src/ai/platforms/gemini/gemini-tool-request.js');
+const { resolveRuntimeTraits } = await import('../../src/ai/model-traits.js');
+const { isThinkingBudgetError, isThinkingLevelError } = await import(
+    '../../src/ai/platforms/gemini/gemini-tool-request.js'
+);
 const { createTurnTools } = await import('../../src/ai/tools/index.js');
+const { setModelCatalog } = await import('../../src/config/model-catalog.js');
+const { emptyModelCapabilities } = await import('../../src/config/model-capabilities.js');
+const { createUsageSink } = await import('../../src/ai/usage/index.js');
+
+type UsageSink = import('../../src/ai/usage/index.js').UsageSink;
 
 // ---------------------------------------------------------------------------
 // Fake Vertex endpoint
@@ -166,6 +173,7 @@ interface TurnOptions {
     readonly thinkingEffort?: { readonly mode: 'default' | 'explicit' | 'off'; readonly value: string | null };
     /** Absent: a single attempt per request, so no automatic recovery in the tool loop */
     readonly maxRetries?: number;
+    readonly usageSink?: UsageSink;
 }
 
 const runTurn = async (options: TurnOptions = {}): Promise<{ chunks: StreamChunk[]; lines: string[] }> => {
@@ -176,6 +184,7 @@ const runTurn = async (options: TurnOptions = {}): Promise<{ chunks: StreamChunk
             maxRetries: options.maxRetries ?? 1,
             ...(options.tools ? { tools: options.tools } : {}),
             ...(options.thinkingEffort ? { thinkingEffort: options.thinkingEffort } : {}),
+            ...(options.usageSink ? { usageSink: options.usageSink } : {}),
         });
         const chunks: StreamChunk[] = [];
         for await (const chunk of stream) chunks.push(chunk);
@@ -228,17 +237,18 @@ const answerRound = (text: string): unknown[] => roundEvents([[{ text }]]);
 
 const cases: Array<{ name: string; body: () => Promise<void> }> = [
     {
-        name: 'only hydrogen and neon take XHIGH',
+        name: 'only hydrogen and neon take XHIGH (data-first via traits.xhighThinking with code fallback)',
         body: async () => {
-            expect(supportsXhighThinkingLevel('gemini-4-hydrogen'), 'hydrogen takes XHIGH');
-            expect(supportsXhighThinkingLevel('gemini-4-hydrogen-001'), 'a hydrogen version suffix takes XHIGH');
-            expect(supportsXhighThinkingLevel('GEMINI-4-HYDROGEN'), 'the id is case-insensitive');
-            expect(supportsXhighThinkingLevel('gemini-4-neon'), 'neon takes XHIGH (GA 2026-11-18)');
-            expect(supportsXhighThinkingLevel('gemini-4-neon-001'), 'a neon version suffix takes XHIGH');
-            expect(supportsXhighThinkingLevel('GEMINI-4-NEON'), 'the neon id is case-insensitive too');
-            expect(!supportsXhighThinkingLevel('gemini-4-argon'), 'argon keeps HIGH');
-            expect(!supportsXhighThinkingLevel('gemini-4-carbon'), 'carbon keeps HIGH');
-            expect(!supportsXhighThinkingLevel('gemini-3.8-flash'), 'a non-Gemini-4 model keeps its budget');
+            const hasXhigh = (model: string): boolean => resolveRuntimeTraits(model).xhighThinking.value;
+            expect(hasXhigh('gemini-4-hydrogen'), 'hydrogen takes XHIGH');
+            expect(hasXhigh('gemini-4-hydrogen-001'), 'a hydrogen version suffix takes XHIGH');
+            expect(hasXhigh('GEMINI-4-HYDROGEN'), 'the id is case-insensitive');
+            expect(hasXhigh('gemini-4-neon'), 'neon takes XHIGH (GA 2026-11-18)');
+            expect(hasXhigh('gemini-4-neon-001'), 'a neon version suffix takes XHIGH');
+            expect(hasXhigh('GEMINI-4-NEON'), 'the neon id is case-insensitive too');
+            expect(!hasXhigh('gemini-4-argon'), 'argon keeps HIGH');
+            expect(!hasXhigh('gemini-4-carbon'), 'carbon keeps HIGH');
+            expect(!hasXhigh('gemini-3.8-flash'), 'a non-Gemini-4 model has no xhigh effort');
         },
     },
     {
@@ -400,20 +410,143 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
         },
     },
     {
-        name: 'an explicit level the model rejects falls back to HIGH once',
+        name: 'an explicit level rejected by Gemini 4 walks down its own efforts ladder once',
         body: async () => {
-            reset([levelRejected('low'), sse(answerRound('fallback answer'))]);
-            const { chunks, lines } = await runTurn({
+            reset([levelRejected('high'), sse(answerRound('fallback answer'))]);
+            const highSink = createUsageSink();
+            const highRes = await runTurn({
+                model: 'gemini-4-argon',
+                thinkingEffort: { mode: 'explicit', value: 'high' },
+                usageSink: highSink,
+            });
+            expect(recordedRequests.length === 2, `high→medium fallback retry (got ${recordedRequests.length})`);
+            expect(
+                json(thinkingLevelsOf()) === json(['HIGH', 'MEDIUM']),
+                `HIGH walks down to MEDIUM in argon's efforts ladder (got ${json(thinkingLevelsOf())})`
+            );
+            expect(textOf(highRes.chunks) === 'fallback answer', 'the retry answers');
+            expect(
+                highRes.lines.some((line) => line.includes('rejected the HIGH thinking level; retrying with MEDIUM')),
+                `the downgrade is logged (got ${json(highRes.lines)})`
+            );
+            expect(
+                json(highSink.totals().capabilityEvents ?? []) ===
+                    json([{ kind: 'effort_rejected', effort: 'high', fallback: 'medium' }]),
+                `usageSink notes effort_rejected (got ${json(highSink.totals().capabilityEvents)})`
+            );
+
+            reset([levelRejected('low'), sse(answerRound('vendor default answer'))]);
+            const lowRes = await runTurn({
                 model: 'gemini-4-argon',
                 thinkingEffort: { mode: 'explicit', value: 'low' },
             });
-            expect(recordedRequests.length === 2, `one fallback retry (got ${recordedRequests.length})`);
-            expect(json(thinkingLevelsOf()) === json(['LOW', 'HIGH']), `LOW then HIGH (got ${json(thinkingLevelsOf())})`);
-            expect(textOf(chunks) === 'fallback answer', 'the retry answers');
+            expect(recordedRequests.length === 2, `low drops to vendor default once (got ${recordedRequests.length})`);
             expect(
-                lines.some((line) => line.includes('rejected the LOW thinking level; retrying with HIGH')),
-                `the downgrade is logged (got ${json(lines)})`
+                json(thinkingLevelsOf()) === json(['LOW', null]),
+                `low is at the bottom of argon's ladder so retry omits thinkingLevel (got ${json(thinkingLevelsOf())})`
             );
+            expect(textOf(lowRes.chunks) === 'vendor default answer', 'the vendor-default retry answers');
+        },
+    },
+    {
+        name: 'a 400 rejecting thinkingBudget (-1) retries once without the budget',
+        body: async () => {
+            const budgetError = {
+                status: 400,
+                contentType: 'application/json',
+                body: json({
+                    error: {
+                        code: 400,
+                        message: 'Thinking budget is not supported for this model.',
+                        status: 'INVALID_ARGUMENT',
+                    },
+                }),
+            };
+            expect(
+                isThinkingBudgetError(Object.assign(new Error('Thinking budget is not supported'), { status: 400 })),
+                '400 thinkingBudget rejection matches'
+            );
+            expect(
+                !isThinkingBudgetError(Object.assign(new Error('Thinking budget is not supported'), { status: 500 })),
+                '500 does not match budget fallback'
+            );
+
+            reset([budgetError, sse(answerRound('no-budget answer'))]);
+            const budgetSink = createUsageSink();
+            const { chunks, lines } = await runTurn({
+                model: 'gemini-3.8-flash',
+                thinkingEffort: { mode: 'default', value: null },
+                usageSink: budgetSink,
+            });
+            expect(recordedRequests.length === 2, `one retry without thinkingBudget (got ${recordedRequests.length})`);
+            expect(
+                thinkingConfigOf(recordedRequests[0]).thinkingBudget === -1,
+                `first attempt sends thinkingBudget -1 (got ${json(thinkingConfigOf(recordedRequests[0]))})`
+            );
+            const retried = thinkingConfigOf(recordedRequests[1]);
+            expect(
+                retried.includeThoughts === true &&
+                    retried.thinkingBudget === undefined &&
+                    retried.thinkingLevel === undefined,
+                `retry strips thinkingBudget while keeping includeThoughts (got ${json(retried)})`
+            );
+            expect(textOf(chunks) === 'no-budget answer', 'the no-budget retry answers');
+            expect(
+                lines.some((line) => line.includes('rejected thinkingBudget; retrying without budget')),
+                `budget fallback warns (got ${json(lines)})`
+            );
+            expect(
+                json(budgetSink.totals().capabilityEvents ?? []) ===
+                    json([{ kind: 'thinking_budget_fallback', from: null }]),
+                `usageSink notes thinking_budget_fallback (got ${json(budgetSink.totals().capabilityEvents)})`
+            );
+        },
+    },
+    {
+        name: 'a future Gemini 5+ model with catalog efforts walks its own ladder instead of falling back to thinkingBudget',
+        body: async () => {
+            setModelCatalog([
+                {
+                    id: 'gemini-5-pro',
+                    label: 'Gemini 5 Pro',
+                    platform: 'gemini',
+                    enabled: true,
+                    capabilities: {
+                        ...emptyModelCapabilities(),
+                        schema: 1,
+                        kind: 'chat',
+                        reasoning: { supported: true, efforts: ['low', 'medium', 'high'], defaultEffort: null },
+                    },
+                    source: 'official',
+                    checkedOn: '2026-11-20',
+                    confidence: 'high',
+                },
+            ]);
+            try {
+                reset([levelRejected('high'), sse(answerRound('gemini 5 downgraded'))]);
+                const sink = createUsageSink();
+                const { chunks } = await runTurn({
+                    model: 'gemini-5-pro',
+                    thinkingEffort: { mode: 'explicit', value: 'high' },
+                    usageSink: sink,
+                });
+                expect(
+                    json(thinkingLevelsOf()) === json(['HIGH', 'MEDIUM']),
+                    `gemini-5-pro steps down HIGH -> MEDIUM (got ${json(thinkingLevelsOf())})`
+                );
+                expect(
+                    thinkingConfigOf(recordedRequests[1]).thinkingBudget === undefined,
+                    'gemini-5-pro does not fall back to thinkingBudget -1'
+                );
+                expect(textOf(chunks) === 'gemini 5 downgraded', 'the retry answers');
+                expect(
+                    json(sink.totals().capabilityEvents ?? []) ===
+                        json([{ kind: 'effort_rejected', effort: 'high', fallback: 'medium' }]),
+                    `usageSink records effort_rejected (got ${json(sink.totals().capabilityEvents)})`
+                );
+            } finally {
+                setModelCatalog([]);
+            }
         },
     },
     {

@@ -13,7 +13,7 @@
  * The `facts` are the reply_metrics values of the attempt: the raw setting, what
  * actually went out, and the degradation chain.
  */
-import type { PlatformConfig } from '../ai/types.js';
+import type { PlatformConfig, RuntimeTraits } from '../ai/types.js';
 import { effortFallbackOf, resolveThinkingEffort, sentEffortOf } from '../ai/thinking-effort.js';
 
 /** What reply_metrics records about one request's thinking level */
@@ -33,8 +33,12 @@ export interface ThinkingRequest {
 }
 
 /** Resolve one chat setting for one effective model into the request fragment and its facts */
-export const thinkingRequestOf = (model: string, requested: string | null): ThinkingRequest => {
-    const resolved = resolveThinkingEffort(model, requested);
+export const thinkingRequestOf = (
+    model: string,
+    requested: string | null,
+    traits?: RuntimeTraits
+): ThinkingRequest => {
+    const resolved = resolveThinkingEffort(model, requested, traits);
     // Design §6: one line per resolution, so an owner can attribute what a reply
     // actually asked for without the metrics table.
     console.log(

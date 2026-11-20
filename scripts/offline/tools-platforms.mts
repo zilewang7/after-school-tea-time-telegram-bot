@@ -1512,9 +1512,6 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
                 sendMessage(): Promise<AsyncIterable<StreamChunk>> {
                     return Promise.reject(new Error('not used'));
                 }
-                supportsModel(): boolean {
-                    return true;
-                }
                 getModelCapabilities(): ModelCapabilities {
                     return {
                         supportsImageInput: false,
@@ -1522,7 +1519,6 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
                         supportsSystemPrompt: false,
                         requiresMessageMerge: false,
                         supportsThinking: false,
-                        supportsGrounding: false,
                         supportsMediaInput: false,
                     };
                 }

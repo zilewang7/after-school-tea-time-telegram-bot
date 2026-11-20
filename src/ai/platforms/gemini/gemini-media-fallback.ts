@@ -13,6 +13,27 @@ export const isNonImageMediaPart = (part: Part): boolean =>
         (part.fileData && !(part.fileData.mimeType ?? '').startsWith('image/'))
     );
 
+const nonImageModalityOfPart = (part: Part): string | null => {
+    const mime = part.inlineData?.mimeType ?? part.fileData?.mimeType;
+    if (!mime || mime.startsWith('image/')) return null;
+    if (mime.startsWith('audio/')) return 'audio';
+    if (mime.startsWith('video/')) return 'video';
+    if (mime === 'application/pdf') return 'pdf';
+    return 'non-image';
+};
+
+export const nonImageModalityOf = (contents: readonly Content[]): string | null => {
+    const modalities = new Set<string>();
+    for (const content of contents) {
+        for (const part of content.parts ?? []) {
+            const modality = nonImageModalityOfPart(part);
+            if (modality !== null) modalities.add(modality);
+        }
+    }
+    if (modalities.size === 1) return [...modalities][0] ?? null;
+    return modalities.size > 0 ? 'non-image' : null;
+};
+
 export const hasNonImageMedia = (contents: readonly Content[]): boolean =>
     contents.some((content) => (content.parts ?? []).some(isNonImageMediaPart));
 

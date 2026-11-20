@@ -41,7 +41,8 @@ const GEMINI_MODALITIES: ModelCatalogModalities = {
     output: ['text'],
 };
 const NANO_BANANA_MODALITIES: ModelCatalogModalities = {
-    input: ['text', 'image', 'video', 'pdf'],
+    // Video input removed per S6: the image-output route does not accept video input
+    input: ['text', 'image', 'pdf'],
     output: ['text', 'image'],
 };
 const DEEPSEEK_MODALITIES: ModelCatalogModalities = { input: ['text', 'image'], output: ['text'] };
@@ -183,7 +184,7 @@ const MODEL_CAPABILITY_SEEDS: Readonly<Record<string, ModelCatalogCapabilities>>
         contextTokens: 1_000_000,
         outputTokens: 128_000,
         modalities: TEXT_IMAGE_PDF,
-        reasoningSeed: { efforts: EFFORTS_LOW_TO_MAX, defaultEffort: 'high' },
+        reasoningSeed: { efforts: EFFORTS_LOW_TO_MAX, defaultEffort: 'medium' },
         apis: apisOf(ANTHROPIC_APIS),
     }),
     'gemini-4-hydrogen': capabilityOf({

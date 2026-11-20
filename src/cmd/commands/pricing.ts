@@ -9,6 +9,7 @@
  */
 import type { Bot, Context } from 'grammy';
 import { match } from 'ts-pattern';
+import { reconcileCatalogTraits, type CatalogTraitsReconciliation } from '../../ai/model-traits.js';
 import { isOwnerUser } from '../../config/owner.js';
 import { sendBotNotice } from '../../services/bot-notice-service.js';
 import {
@@ -60,9 +61,33 @@ const runNow = async (ctx: Context): Promise<void> => {
     }
 };
 
+const MAX_RECONCILIATION_LINES = 5;
+
+/** One concise summary of the code-vs-data reconciliation table for `/pricing status` */
+export const formatReconciliationSummary = (reconciliation: CatalogTraitsReconciliation): string => {
+    if (reconciliation.totalDiffs === 0) {
+        return `对账表（${reconciliation.catalogVersion}）：${reconciliation.rows.length} 个模型目录与代码完全一致（0 项差异）`;
+    }
+    const differing = reconciliation.rows.filter((row) => row.diffCount > 0);
+    const details = differing
+        .slice(0, MAX_RECONCILIATION_LINES)
+        .map((row) => {
+            const fields = row.entries.filter((entry) => entry.differs).map((entry) => entry.field);
+            return `· ${row.model}：${fields.join('、')}`;
+        });
+    const more =
+        differing.length > details.length ? `\n…还有 ${differing.length - details.length} 个模型存在差异` : '';
+    return (
+        `对账表（${reconciliation.catalogVersion}）：${differing.length} 个模型共 ${reconciliation.totalDiffs} 项差异：\n` +
+        `${details.join('\n')}${more}`
+    );
+};
+
 const showStatus = async (ctx: Context): Promise<void> => {
     try {
-        await reply(ctx, await formatPriceStatusText());
+        const baseStatus = await formatPriceStatusText();
+        const reconciliationText = formatReconciliationSummary(reconcileCatalogTraits());
+        await reply(ctx, `${baseStatus}\n${reconciliationText}`);
     } catch (error: unknown) {
         console.error('[pricing] reading the price status failed:', error);
         await reply(ctx, STATUS_FAILED_TEXT);

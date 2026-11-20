@@ -1,8 +1,8 @@
 /**
  * The probe orchestrator: budget, retries, circuit breakers, files.
  *
- * One request at a time (design §7: concurrency 1): sequential traffic keeps
- * spend predictable, avoids tripping lane rate limits and keeps the recorded
+ * One request at a time (concurrency 1): sequential traffic keeps spend
+ * predictable, avoids tripping lane rate limits and keeps the recorded
  * evidence readable. The cheap models run first, so a 429 storm or a budget
  * stop leaves the already-finished cheap models as valid data.
  *
@@ -12,7 +12,7 @@
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { errorClassLabel } from './effort-errors.mts';
-import { laneSignatureOf, type ProbeEnvironment, type ProbeLaneConfiguration } from './effort-env.mts';
+import { laneFingerprintsOf, type ProbeEnvironment, type ProbeLaneConfiguration } from './effort-env.mts';
 import type { ProbeLane } from './effort-lanes.mts';
 import { buildProbePlan, clampBudget, type ProbePlanOptions } from './effort-plan.mts';
 import {
@@ -20,7 +20,6 @@ import {
     buildRunSummary,
     formatPlanTable,
     formatSummaryMarkdown,
-    summarizeModel,
     type ModelInference,
     type ProbeRunSummary,
 } from './effort-results.mts';
@@ -31,21 +30,17 @@ import {
     REQUEST_PACING_MIN_MS,
     RETRY_DELAY_MS,
     W1_OUTPUT_TOKEN_CAP,
-    W2_OUTPUT_TOKEN_CAP,
-    type EffortValue,
-    type ProbeCandidate,
-    type ProbeModelSpec,
     type ProbeBudget,
+    type ProbeCandidate,
+    type ProbeLaneFingerprints,
+    type ProbeModelSpec,
     type ProbeObservation,
     type ProbePlan,
     type ProbePlatform,
-    type ProbeResultDocument,
-    type ProbeWave,
+    type ProbeResultDocumentV2,
 } from './effort-types.mts';
 
 const RETRYABLE_CLASSES: ReadonlySet<string> = new Set(['rate_limited', 'upstream_error', 'network_error']);
-
-const TOGGLE_PLATFORMS: ReadonlySet<ProbePlatform> = new Set<ProbePlatform>(['deepseek', 'mimo']);
 
 export interface SkippedCandidate {
     readonly candidateId: string;
@@ -55,11 +50,9 @@ export interface SkippedCandidate {
 }
 
 export interface ProbeRunOptions {
-    readonly wave: ProbeWave | 'all';
     readonly budget: ProbeBudget;
     readonly models?: readonly string[];
     readonly modelSpecs?: readonly ProbeModelSpec[];
-    readonly acceptedEffortsByModel?: Readonly<Record<string, readonly EffortValue[]>>;
     /** Default true: build the plan and write it, send nothing */
     readonly dryRun: boolean;
     /** W0: lanes already point at the in-process stub */
@@ -81,12 +74,12 @@ export interface ProbeRunOptions {
 export interface ProbeRunOutcome {
     readonly dryRun: boolean;
     readonly stub: boolean;
-    readonly laneSignature: string;
+    readonly lanes: ProbeLaneFingerprints;
     readonly plan: ProbePlan;
     readonly observations: readonly ProbeObservation[];
     readonly skipped: readonly SkippedCandidate[];
     readonly summary: ProbeRunSummary | null;
-    readonly document: ProbeResultDocument | null;
+    readonly document: ProbeResultDocumentV2 | null;
     readonly inferences: readonly ModelInference[];
     readonly requestCount: number;
     readonly retryCount: number;
@@ -103,10 +96,6 @@ const defaultSleep = (milliseconds: number): Promise<void> =>
     new Promise((resolve) => {
         setTimeout(resolve, milliseconds);
     });
-
-/** Output cap of one wave; the budget's --w2-cap overrides the W2 default */
-const tokenCapOf = (wave: ProbeWave, budget: ProbeBudget): number =>
-    wave === 'w2' ? (budget.w2OutputTokenCap ?? W2_OUTPUT_TOKEN_CAP) : W1_OUTPUT_TOKEN_CAP;
 
 const roundUsd = (value: number): number => Math.round(value * 1_000_000) / 1_000_000;
 
@@ -173,12 +162,10 @@ const laneConfigurationsOf = (
     mimo: lanes.mimo.configuration,
 });
 
-const planOptionsOf = (options: ProbeRunOptions, wave: ProbeWave | 'all', budget: ProbeBudget): ProbePlanOptions => ({
-    wave,
+const planOptionsOf = (options: ProbeRunOptions, budget: ProbeBudget): ProbePlanOptions => ({
     budget,
     ...(options.models === undefined ? {} : { models: options.models }),
     ...(options.modelSpecs === undefined ? {} : { modelSpecs: options.modelSpecs }),
-    ...(options.acceptedEffortsByModel === undefined ? {} : { acceptedEffortsByModel: options.acceptedEffortsByModel }),
 });
 
 /** Presence-only env report; values (and especially keys) never reach a file */
@@ -204,47 +191,6 @@ const writeText = (outDir: string, name: string, content: string): string => {
     const path = join(outDir, name);
     writeFileSync(path, content);
     return path;
-};
-
-const combinedPlanOf = (plans: readonly ProbePlan[], wave: ProbeWave | 'all'): ProbePlan => {
-    const candidates = plans.flatMap((plan) => plan.candidates);
-    const w1 = plans.filter((plan) => plan.wave === 'w1' || plan.wave === 'all').flatMap((plan) => plan.candidates.filter((candidate) => candidate.wave === 'w1'));
-    const w2 = plans.filter((plan) => plan.wave === 'w2' || plan.wave === 'all').flatMap((plan) => plan.candidates.filter((candidate) => candidate.wave === 'w2'));
-    const usdOf = (list: readonly ProbeCandidate[]): number => roundUsd(list.reduce((sum, candidate) => sum + candidate.estimatedCostUsd, 0));
-    return {
-        wave,
-        models: plans[0]?.models ?? [],
-        candidates,
-        requests: candidates.length,
-        estimatedUsd: usdOf(candidates),
-        perWave: {
-            w1: { requests: w1.length, estimatedUsd: usdOf(w1) },
-            w2: { requests: w2.length, estimatedUsd: usdOf(w2) },
-        },
-        cut: plans.reduce<ProbePlan['cut']>(
-            (merged, plan) => ({
-                droppedRequests: merged.droppedRequests + plan.cut.droppedRequests,
-                droppedUsd: roundUsd(merged.droppedUsd + plan.cut.droppedUsd),
-                reasons: [...new Set([...merged.reasons, ...plan.cut.reasons])],
-            }),
-            { droppedRequests: 0, droppedUsd: 0, reasons: [] }
-        ),
-    };
-};
-
-/** Final attempts per candidate id, so W2 samples what W1 really accepted */
-const acceptedEffortsFromObservations = (
-    specs: readonly ProbeModelSpec[],
-    observations: readonly ProbeObservation[]
-): Record<string, readonly EffortValue[]> => {
-    const result: Record<string, readonly EffortValue[]> = {};
-    for (const spec of specs) {
-        const summary = summarizeModel(spec, observations);
-        if (summary.acceptedEfforts.length > 0 || TOGGLE_PLATFORMS.has(spec.platform)) {
-            result[spec.model] = summary.acceptedEfforts;
-        }
-    }
-    return result;
 };
 
 const skip = (state: RunnerState, candidate: ProbeCandidate, reason: string): void => {
@@ -297,7 +243,7 @@ const sendCandidate = async (input: {
         let observation: ProbeObservation;
         try {
             observation = await withRequestTimeout(options.budget.timeoutMs, options.signal, (signal) =>
-                lane.send(candidate, { maxOutputTokens: tokenCapOf(candidate.wave, options.budget), timeoutMs: options.budget.timeoutMs, signal })
+                lane.send(candidate, { maxOutputTokens: W1_OUTPUT_TOKEN_CAP, timeoutMs: options.budget.timeoutMs, signal })
             );
         } catch (error) {
             const message = error instanceof Error ? error.message : String(error);
@@ -400,19 +346,24 @@ const processCandidates = async (input: {
     }
 };
 
-/** Build the run: dry-run prints and writes the plan; otherwise send the plan */
+const formatLanesLine = (lanes: ProbeLaneFingerprints): string =>
+    Object.entries(lanes)
+        .map(([platform, lane]) => `${platform}=${lane}`)
+        .join(', ');
+
+/** Build the run: dry-run prints and writes the plan; otherwise send the W1 matrix */
 export const runProbe = async (rawOptions: ProbeRunOptions): Promise<ProbeRunOutcome> => {
     const options: ProbeRunOptions = { ...rawOptions, budget: clampBudget(rawOptions.budget) };
     const log = options.log ?? ((line: string): void => console.log(line));
     const sleep = options.sleep ?? defaultSleep;
     const now = options.now ?? ((): Date => new Date());
     const startedAt = now().toISOString();
-    const laneSignature = laneSignatureOf(laneConfigurationsOf(options.lanes));
+    const laneMap = laneFingerprintsOf(laneConfigurationsOf(options.lanes));
 
     if (options.dryRun) {
-        const plan = buildProbePlan(planOptionsOf(options, options.wave, options.budget));
+        const plan = buildProbePlan(planOptionsOf(options, options.budget));
         log(`[probe] mode: dry-run (no request will be sent)`);
-        log(`[probe] lane: ${laneSignature}`);
+        log(`[probe] lanes: ${formatLanesLine(laneMap)}`);
         log(formatPlanTable({ candidates: plan.candidates, estimatedUsd: plan.estimatedUsd }));
         if (plan.cut.droppedRequests > 0) {
             log(`[budget] dropped ${plan.cut.droppedRequests} candidates ($${plan.cut.droppedUsd.toFixed(4)}) because of ${plan.cut.reasons.join(', ')}`);
@@ -426,15 +377,14 @@ export const runProbe = async (rawOptions: ProbeRunOptions): Promise<ProbeRunOut
                 'plan.json',
                 JSON.stringify(
                     {
-                        schema: 1,
+                        schema: 2,
                         mode: 'dry-run',
                         generatedAt: startedAt,
-                        laneSignature,
-                        wave: options.wave,
+                        lanes: laneMap,
+                        wave: 'w1',
                         budget: options.budget,
                         requests: plan.requests,
                         estimatedUsd: plan.estimatedUsd,
-                        perWave: plan.perWave,
                         cut: plan.cut,
                         candidates: plan.candidates,
                     },
@@ -447,12 +397,12 @@ export const runProbe = async (rawOptions: ProbeRunOptions): Promise<ProbeRunOut
                 'run.json',
                 JSON.stringify(
                     {
-                        schema: 1,
+                        schema: 2,
                         mode: 'dry-run',
                         startedAt,
                         finishedAt,
-                        laneSignature,
-                        wave: options.wave,
+                        lanes: laneMap,
+                        wave: 'w1',
                         budget: options.budget,
                         requests: 0,
                         spentUsd: 0,
@@ -467,7 +417,7 @@ export const runProbe = async (rawOptions: ProbeRunOptions): Promise<ProbeRunOut
         return {
             dryRun: true,
             stub: options.stub,
-            laneSignature,
+            lanes: laneMap,
             plan,
             observations: [],
             skipped: [],
@@ -485,80 +435,32 @@ export const runProbe = async (rawOptions: ProbeRunOptions): Promise<ProbeRunOut
     }
 
     const state = createRunnerState();
-    const plans: ProbePlan[] = [];
-    let summary: ProbeRunSummary | null = null;
-    let specsUsed: readonly ProbeModelSpec[] = [];
+    const w1Plan = buildProbePlan(planOptionsOf(options, options.budget));
+    const specsByModel = new Map(w1Plan.models.map((spec) => [spec.model, spec]));
+    log(`[probe] W1: ${w1Plan.requests} requests, worst case $${w1Plan.estimatedUsd.toFixed(4)}`);
+    await processCandidates({
+        options,
+        state,
+        candidates: w1Plan.candidates,
+        specsByModel,
+        sleep,
+        log,
+    });
 
-    if (options.wave === 'w1' || options.wave === 'all') {
-        const w1Plan = buildProbePlan(planOptionsOf(options, 'w1', options.budget));
-        plans.push(w1Plan);
-        specsUsed = w1Plan.models;
-        const specsByModel = new Map(w1Plan.models.map((spec) => [spec.model, spec]));
-        log(`[probe] W1: ${w1Plan.requests} requests, worst case $${w1Plan.estimatedUsd.toFixed(4)}`);
-        await processCandidates({
-            options,
-            state,
-            candidates: w1Plan.candidates,
-            specsByModel,
-            sleep,
-            log,
-        });
-        if (options.wave === 'all' && state.stoppedReason === null && options.signal?.aborted !== true) {
-            const acceptedEffortsByModel = acceptedEffortsFromObservations(w1Plan.models, state.observations);
-            const remainingBudget = clampBudget({
-                maxRequests: Math.max(1, options.budget.maxRequests - state.requestCount),
-                maxUsd: Math.max(0.01, roundUsd(options.budget.maxUsd - state.spentUsd)),
-                timeoutMs: options.budget.timeoutMs,
-                maxRetries: options.budget.maxRetries,
-            });
-            const w2Plan = buildProbePlan({
-                ...planOptionsOf(options, 'w2', remainingBudget),
-                acceptedEffortsByModel,
-            });
-            plans.push(w2Plan);
-            const w2SpecsByModel = new Map(w2Plan.models.map((spec) => [spec.model, spec]));
-            log(`[probe] W2: ${w2Plan.requests} requests, worst case $${w2Plan.estimatedUsd.toFixed(4)}`);
-            await processCandidates({
-                options,
-                state,
-                candidates: w2Plan.candidates,
-                specsByModel: w2SpecsByModel,
-                sleep,
-                log,
-            });
-        }
-    } else {
-        const w2Plan = buildProbePlan(planOptionsOf(options, 'w2', options.budget));
-        plans.push(w2Plan);
-        specsUsed = w2Plan.models;
-        log(`[probe] W2: ${w2Plan.requests} requests, worst case $${w2Plan.estimatedUsd.toFixed(4)}`);
-        await processCandidates({
-            options,
-            state,
-            candidates: w2Plan.candidates,
-            specsByModel: new Map(w2Plan.models.map((spec) => [spec.model, spec])),
-            sleep,
-            log,
-        });
-    }
-
-    const combinedPlan = combinedPlanOf(plans, options.wave);
     const finishedAt = now().toISOString();
-    const summarySpecs = options.modelSpecs === undefined ? specsUsed : options.modelSpecs;
-    const acceptedEffortsByModel = options.acceptedEffortsByModel ?? {};
-    summary = buildRunSummary({
+    const summarySpecs = options.modelSpecs === undefined ? w1Plan.models : options.modelSpecs;
+    const summary = buildRunSummary({
         probedAt: startedAt,
-        laneSignature,
+        lanes: laneMap,
         specs: summarySpecs,
         observations: state.observations,
-        acceptedEffortsByModel,
     });
     const files = writeRunFiles({
         options,
-        laneSignature,
+        lanes: summary.lanes,
         startedAt,
         finishedAt,
-        plan: combinedPlan,
+        plan: w1Plan,
         state,
         summary,
     });
@@ -574,8 +476,8 @@ export const runProbe = async (rawOptions: ProbeRunOptions): Promise<ProbeRunOut
     return {
         dryRun: false,
         stub: options.stub,
-        laneSignature,
-        plan: combinedPlan,
+        lanes: summary.lanes,
+        plan: w1Plan,
         observations: state.observations,
         skipped: state.skipped,
         summary,
@@ -593,7 +495,7 @@ export const runProbe = async (rawOptions: ProbeRunOptions): Promise<ProbeRunOut
 
 interface WriteRunFilesInput {
     readonly options: ProbeRunOptions;
-    readonly laneSignature: string;
+    readonly lanes: ProbeLaneFingerprints;
     readonly startedAt: string;
     readonly finishedAt: string;
     readonly plan: ProbePlan;
@@ -601,7 +503,7 @@ interface WriteRunFilesInput {
     readonly summary: ProbeRunSummary;
 }
 
-/** The run's artifacts: plan, raw evidence, importable document, readable summary */
+/** The run's artifacts: plan, raw evidence, importable v2 document, readable summary */
 const writeRunFiles = (input: WriteRunFilesInput): readonly string[] => {
     const { options, state, summary } = input;
     const files: string[] = [];
@@ -611,15 +513,14 @@ const writeRunFiles = (input: WriteRunFilesInput): readonly string[] => {
             'plan.json',
             JSON.stringify(
                 {
-                    schema: 1,
+                    schema: 2,
                     mode: options.stub ? 'stub' : 'live',
                     generatedAt: input.startedAt,
-                    laneSignature: input.laneSignature,
-                    wave: options.wave,
+                    lanes: input.lanes,
+                    wave: 'w1',
                     budget: options.budget,
                     requests: input.plan.requests,
                     estimatedUsd: input.plan.estimatedUsd,
-                    perWave: input.plan.perWave,
                     cut: input.plan.cut,
                     candidates: input.plan.candidates,
                 },
@@ -641,10 +542,10 @@ const writeRunFiles = (input: WriteRunFilesInput): readonly string[] => {
             'observations.json',
             JSON.stringify(
                 {
-                    schema: 1,
+                    schema: 2,
                     generatedAt: input.startedAt,
                     finishedAt: input.finishedAt,
-                    laneSignature: input.laneSignature,
+                    lanes: input.lanes,
                     requests: state.requestCount,
                     retries: state.retryCount,
                     spentUsd: roundUsd(state.spentUsd),
@@ -652,11 +553,12 @@ const writeRunFiles = (input: WriteRunFilesInput): readonly string[] => {
                     skipped: state.skipped,
                     inferences: summary.inferences.map((inference) => ({
                         model: inference.spec.model,
+                        platform: inference.spec.platform,
+                        lane: inference.lane,
                         acceptedEfforts: inference.acceptedEfforts,
                         mappedEfforts: inference.mappedEfforts,
-                        inertEfforts: inference.inertEfforts,
                         toggle: inference.toggle,
-                        defaultInference: inference.defaultInference,
+                        tools: inference.tools,
                         incomplete: inference.incomplete,
                         incompleteReasons: inference.incompleteReasons,
                         rejected: inference.rejected.map((observation) => ({
@@ -665,15 +567,6 @@ const writeRunFiles = (input: WriteRunFilesInput): readonly string[] => {
                             variant: observation.variant,
                             errorClass: observation.errorClass,
                             errorSummary: observation.errorSummary,
-                        })),
-                        samples: inference.w2Observations.map((observation) => ({
-                            candidateId: observation.candidateId,
-                            effort: observation.effort,
-                            variant: observation.variant,
-                            reasoningTokens: observation.reasoningTokens,
-                            ttfbMs: observation.ttfbMs,
-                            totalMs: observation.totalMs,
-                            finishReason: observation.finishReason,
                         })),
                     })),
                     observations: state.observations,
@@ -689,7 +582,7 @@ const writeRunFiles = (input: WriteRunFilesInput): readonly string[] => {
             'summary.md',
             formatSummaryMarkdown({
                 probedAt: summary.probedAt,
-                laneSignature: input.laneSignature,
+                lanes: input.lanes,
                 budgetUsd: options.budget.maxUsd,
                 spentUsd: state.spentUsd,
                 summary,
@@ -706,19 +599,19 @@ const writeRunFiles = (input: WriteRunFilesInput): readonly string[] => {
             'run.json',
             JSON.stringify(
                 {
-                    schema: 1,
+                    schema: 2,
                     mode: options.stub ? 'stub' : 'live',
                     startedAt: input.startedAt,
                     finishedAt: input.finishedAt,
-                    laneSignature: input.laneSignature,
-                    wave: options.wave,
+                    lanes: input.lanes,
+                    wave: 'w1',
                     budget: options.budget,
                     requests: state.requestCount,
                     retries: state.retryCount,
                     spentUsd: roundUsd(state.spentUsd),
                     stoppedReason: state.stoppedReason,
                     gates: options.gates,
-                    lanes: Object.values(options.lanes).map((lane) => ({
+                    laneDetails: Object.values(options.lanes).map((lane) => ({
                         platform: lane.platform,
                         laneId: lane.configuration.laneId,
                         ready: lane.ready,

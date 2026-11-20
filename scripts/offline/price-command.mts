@@ -39,6 +39,8 @@ const { PriceChangeProposal } = await import('../../src/db/priceChangeProposalDT
 const { PriceWatchRun } = await import('../../src/db/priceWatchRunDTO.js');
 const { ModelCapabilityProposal } = await import('../../src/db/modelCapabilityProposalDTO.js');
 const { ModelCatalogEntryRow } = await import('../../src/db/modelCatalogDTO.js');
+const { insertReplyMetric } = await import('../../src/db/queries/reply-metrics.js');
+const { ReplyMetric } = await import('../../src/db/replyMetricDTO.js');
 const catalogService = await import('../../src/services/model-catalog-service.js');
 const catalogConfig = await import('../../src/config/model-catalog.js');
 
@@ -242,6 +244,7 @@ cases.push(
         );
         expect(text.includes('未来 30 天'), 'the upcoming changes are shown');
         expect(text.includes('上次巡检：从未'), 'the watcher has not run yet');
+        expect(text.includes('对账表（'), `reconciliation summary is shown (got ${JSON.stringify(text)})`);
         expect(fetchedUrls.length === 0, 'status does not fetch');
         expect((await PriceWatchRun.count()) === 0, 'status does not record a run');
     })
@@ -390,6 +393,298 @@ cases.push(
         const replies = await runCommand('/pricing yesterday');
         expect(replies[0]?.includes('用法：/pricing'), `the usage comes back (got ${JSON.stringify(replies[0])})`);
         expect(fetchedUrls.length === 0, 'nothing was fetched');
+    })
+);
+
+// ---- Round 1: warnings persistence, scheduler delay, no re-spam ----
+
+cases.push(
+    await runCase('watch run persists warnings and capabilityProposals and /pricing status displays them', async () => {
+        await resetPricingDb();
+        watch.setPriceWatchFetcher(capabilityDriftCatalogs);
+        try {
+            await runCommand('/pricing');
+            const runs = await PriceWatchRun.findAll();
+            expect(runs.length === 1, 'one run row recorded');
+            expect(runs[0]?.capabilityProposals === 1, `capabilityProposals persisted (got ${runs[0]?.capabilityProposals})`);
+            expect(typeof runs[0]?.warnings === 'string' && runs[0].warnings.length > 0, 'warnings JSON persisted on run row');
+
+            const statusReplies = await runCommand('/pricing status');
+            const statusText = statusReplies[0] ?? '';
+            expect(statusText.includes('上次巡检警告'), `status lists warnings (got ${JSON.stringify(statusText)})`);
+
+            const status = await service.priceWatchStatus();
+            expect(status.lastCapabilityProposals === 1, 'status exposes lastCapabilityProposals');
+            expect(status.lastWarnings.length > 0, 'status exposes lastWarnings');
+        } finally {
+            watch.setPriceWatchFetcher(emptyCatalogs);
+        }
+    })
+);
+
+cases.push(
+    await runCase('already-notified pending proposals are not re-sent before 3 days, and are reminded after 3 days', async () => {
+        await resetPricingDb();
+        watch.setPriceWatchFetcher(capabilityDriftCatalogs);
+        try {
+            await runCommand('/pricing');
+            const firstApprovals = telegram
+                .callsOf('sendMessage')
+                .filter((call) => typeof call.payload.reply_markup === 'object' && call.payload.reply_markup !== null);
+            expect(firstApprovals.length === 1, 'first run notifies once');
+
+            // Second run immediately (via runPriceWatchNow directly to bypass 2m command debounce)
+            telegram.reset();
+            await watch.runPriceWatchNow(bot.api, { trigger: 'manual' });
+            const secondApprovals = telegram
+                .callsOf('sendMessage')
+                .filter((call) => typeof call.payload.reply_markup === 'object' && call.payload.reply_markup !== null);
+            expect(secondApprovals.length === 0, `no re-spam within 3 days (got ${secondApprovals.length})`);
+
+            // Age lastNotifiedAt by 4 days: next run sends a reminder
+            const fourDaysAgo = new Date(Date.now() - 4 * 24 * 3600 * 1000);
+            await ModelCapabilityProposal.update({ lastNotifiedAt: fourDaysAgo }, { where: { status: 'pending' } });
+            telegram.reset();
+            await watch.runPriceWatchNow(bot.api, { trigger: 'manual' });
+            const reminderApprovals = telegram
+                .callsOf('sendMessage')
+                .filter((call) => typeof call.payload.reply_markup === 'object' && call.payload.reply_markup !== null);
+            expect(reminderApprovals.length === 1, `reminder sent after 3 days (got ${reminderApprovals.length})`);
+        } finally {
+            watch.setPriceWatchFetcher(emptyCatalogs);
+        }
+    })
+);
+
+cases.push(
+    await runCase('initialWatchDelayMs respects DB lastRunAt and clamps to [10m, 24h]', () => {
+        const min = 10 * 60 * 1000;
+        const day = 24 * 3600 * 1000;
+        const now = new Date('2026-11-20T12:00:00Z');
+        expect(watch.initialWatchDelayMs(null, now, min, day) === min, 'never ran → min delay (10m)');
+        const oneHourAgo = new Date(now.getTime() - 3600 * 1000);
+        expect(watch.initialWatchDelayMs(oneHourAgo, now, min, day) === 23 * 3600 * 1000, 'ran 1h ago → 23h left');
+        const old = new Date(now.getTime() - 25 * 3600 * 1000);
+        expect(watch.initialWatchDelayMs(old, now, min, day) === min, 'ran 25h ago → clamped to 10m');
+        const futureSkew = new Date(now.getTime() + 3600 * 1000);
+        expect(watch.initialWatchDelayMs(futureSkew, now, min, day) === day, 'future skew → clamped to 24h');
+    })
+);
+
+cases.push(
+    await runCase('watch run creates enabled=0 reference rows from active metrics and proposes traffic contradictions', async () => {
+        await resetPricingDb();
+        await ReplyMetric.destroy({ where: {} });
+        const recent = new Date();
+        await insertReplyMetric({
+            chatId: GROUP_ID,
+            userMessageId: takeMessageId(),
+            firstMessageId: takeMessageId(),
+            versionId: 1,
+            triggerUserId: OWNER_ID,
+            model: 'gemini-4-hydrogen',
+            platform: 'gemini',
+            route: null,
+            commandType: 'chat',
+            isRetry: false,
+            startedAt: recent,
+            requestStartedAt: recent,
+            firstChunkAt: recent,
+            finishedAt: recent,
+            outcome: 'ok',
+            errorKind: null,
+            errorSummary: null,
+            rounds: 1,
+            toolCalls: 0,
+            toolFailures: 0,
+            toolUsage: [],
+            promptTokens: 100,
+            cachedTokens: 0,
+            cacheWriteTokens: null,
+            outputTokens: 20,
+            thoughtsTokens: null,
+            imageOutputTokens: null,
+            contextMessages: 1,
+            contextImages: 0,
+            textChars: 2,
+            thinkingChars: 0,
+            hasImage: false,
+            imageCount: 0,
+            hasSticker: false,
+            hasFile: false,
+            roundRetries: null,
+            tierRequested: null,
+            priorityRounds: null,
+            priorityPromptTokens: null,
+            priorityCachedTokens: null,
+            priorityOutputTokens: null,
+            resumedRounds: null,
+            checkpointRounds: null,
+            imageGenerationUsage: [
+                {
+                    model: 'active-img-ref',
+                    generations: 1,
+                    generationsWithUsage: 0,
+                    promptTokens: null,
+                    cachedTokens: null,
+                    cacheWriteTokens: null,
+                    outputTokens: null,
+                    thoughtsTokens: null,
+                    imageOutputTokens: null,
+                },
+            ],
+            catalogVersion: 'v-test',
+            capabilityEvents: [{ kind: 'effort_rejected', effort: 'xhigh', fallback: 'high' }],
+        });
+
+        const result = await watch.runPriceWatchNow(bot.api, { trigger: 'manual' });
+        expect(result.outcome === 'ok', 'watch run succeeds');
+        expect(
+            result.warnings.some((warning) => warning.includes('拒绝档位 xhigh')),
+            `traffic contradiction warning recorded (got ${JSON.stringify(result.warnings)})`
+        );
+        const proposals = await ModelCapabilityProposal.findAll({ where: { model: 'gemini-4-hydrogen', status: 'pending' } });
+        expect(proposals.length === 1, 'traffic proposal created');
+        expect((proposals[0]?.note ?? '').includes('traffic'), `traffic note recorded (got ${String(proposals[0]?.note)})`);
+        const imgRefRow = await ModelCatalogEntryRow.findByPk('active-img-ref');
+        expect(imgRefRow !== null && imgRefRow.enabled === 0, 'imageGenerationUsage model gets an enabled=0 reference row');
+        expect(
+            !catalogConfig.listModelCatalog().some((entry) => entry.id === 'active-img-ref'),
+            'reference row stays excluded from menu'
+        );
+        await ReplyMetric.destroy({ where: {} });
+    })
+);
+
+cases.push(
+    await runCase('runPriceWatchNow reads statusBefore prior to startWatchRun and unfreezes stale probe lanes on key change', async () => {
+        await resetPricingDb();
+        await ReplyMetric.destroy({ where: {} });
+
+        // Simulate a 4-day downtime before this watch run, plus a 3-day-old traffic rejection
+        const fourDaysAgo = new Date(Date.now() - 4 * 24 * 3600 * 1000);
+        const threeDaysAgo = new Date(Date.now() - 3 * 24 * 3600 * 1000);
+        await PriceWatchRun.create({
+            startedAt: fourDaysAgo,
+            finishedAt: fourDaysAgo,
+            outcome: 'ok',
+            proposals: 0,
+            capabilityProposals: 0,
+        });
+        await insertReplyMetric({
+            chatId: GROUP_ID,
+            userMessageId: takeMessageId(),
+            firstMessageId: takeMessageId(),
+            versionId: 1,
+            triggerUserId: OWNER_ID,
+            model: 'gemini-4-hydrogen',
+            platform: 'gemini',
+            route: null,
+            commandType: 'chat',
+            isRetry: false,
+            startedAt: threeDaysAgo,
+            requestStartedAt: threeDaysAgo,
+            firstChunkAt: threeDaysAgo,
+            finishedAt: threeDaysAgo,
+            outcome: 'ok',
+            errorKind: null,
+            errorSummary: null,
+            rounds: 1,
+            toolCalls: 0,
+            toolFailures: 0,
+            toolUsage: [],
+            promptTokens: 50,
+            cachedTokens: 0,
+            cacheWriteTokens: null,
+            outputTokens: 10,
+            thoughtsTokens: null,
+            imageOutputTokens: null,
+            contextMessages: 1,
+            contextImages: 0,
+            textChars: 2,
+            thinkingChars: 0,
+            hasImage: false,
+            imageCount: 0,
+            hasSticker: false,
+            hasFile: false,
+            roundRetries: null,
+            tierRequested: null,
+            priorityRounds: null,
+            priorityPromptTokens: null,
+            priorityCachedTokens: null,
+            priorityOutputTokens: null,
+            resumedRounds: null,
+            checkpointRounds: null,
+            catalogVersion: 'v-old',
+            capabilityEvents: [{ kind: 'effort_rejected', effort: 'xhigh', fallback: 'high' }],
+        });
+
+        // Also store a probe-locked reasoning.efforts entry with an old lane fingerprint,
+        // and configure a new Gemini key in env so runPriceWatchNow unfreezes it.
+        const hydrogenRow = await ModelCatalogEntryRow.findByPk('gemini-4-hydrogen');
+        if (hydrogenRow === null) throw new Error('missing gemini-4-hydrogen');
+        const parsedCap = JSON.parse(hydrogenRow.capabilities);
+        const staleProbeCap = {
+            ...parsedCap,
+            provenance: {
+                'reasoning.efforts': { source: 'probe', checkedOn: '2026-11-10', lane: 'vertex-express#koldkey00' },
+            },
+            laneFingerprints: { gemini: 'vertex-express#koldkey00' },
+        };
+        await ModelCatalogEntryRow.update(
+            { capabilities: JSON.stringify(staleProbeCap) },
+            { where: { id: 'gemini-4-hydrogen' } }
+        );
+        await quietly(() => catalogService.loadModelCatalog());
+
+        const prevGeminiKey = process.env.GEMINI_API_KEY;
+        const prevGeminiUrl = process.env.GEMINI_API_URL;
+        const prevGcpProject = process.env.GOOGLE_CLOUD_PROJECT;
+        process.env.GEMINI_API_KEY = 'rotated-gemini-key-2';
+        delete process.env.GEMINI_API_URL;
+        delete process.env.GOOGLE_CLOUD_PROJECT;
+        watch.setPriceWatchFetcher(capabilityDriftCatalogs);
+        try {
+            const liveLanes = watch.liveLaneFingerprints();
+            expect(
+                typeof liveLanes.gemini === 'string' &&
+                    liveLanes.gemini.startsWith('vertex-express#k') &&
+                    liveLanes.gemini !== 'vertex-express#koldkey00',
+                `liveLaneFingerprints computes vertex-express hash (got ${String(liveLanes.gemini)})`
+            );
+
+            const result = await watch.runPriceWatchNow(bot.api, { trigger: 'manual' });
+            expect(
+                result.warnings.some((warning) => warning.includes('通道指纹已变更')),
+                `stale probe lane unfrozen during watch run (got ${JSON.stringify(result.warnings)})`
+            );
+            expect(
+                result.warnings.some((warning) => warning.includes('拒绝档位 xhigh')),
+                `statusBefore lookback caught 3-day-old traffic event after 4-day downtime (got ${JSON.stringify(result.warnings)})`
+            );
+            expect(
+                telegram.callsOf('sendMessage').some((call) => String(call.payload.text ?? '').includes('停摆超过 36 小时')),
+                'statusBefore also drove the >36h downtime heartbeat notice'
+            );
+            const proposals = await ModelCapabilityProposal.findAll({
+                where: { model: 'gemini-4-hydrogen', status: 'pending' },
+            });
+            expect(proposals.length === 1, 'proposal emitted with traffic + unfrozen efforts');
+            const payload = JSON.parse(proposals[0]?.payload ?? '{}');
+            expect(
+                payload?.provenance?.['reasoning.efforts']?.lane === liveLanes.gemini,
+                `traffic proposal stamps live lane fingerprint (got ${String(payload?.provenance?.['reasoning.efforts']?.lane)})`
+            );
+        } finally {
+            if (prevGeminiKey === undefined) delete process.env.GEMINI_API_KEY;
+            else process.env.GEMINI_API_KEY = prevGeminiKey;
+            if (prevGeminiUrl === undefined) delete process.env.GEMINI_API_URL;
+            else process.env.GEMINI_API_URL = prevGeminiUrl;
+            if (prevGcpProject === undefined) delete process.env.GOOGLE_CLOUD_PROJECT;
+            else process.env.GOOGLE_CLOUD_PROJECT = prevGcpProject;
+            watch.setPriceWatchFetcher(emptyCatalogs);
+            await ReplyMetric.destroy({ where: {} });
+        }
     })
 );
 

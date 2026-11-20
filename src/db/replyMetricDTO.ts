@@ -97,6 +97,10 @@ export class ReplyMetric extends Model<
   // JSON [{ model, generations, generationsWithUsage, promptTokens, ... }] of
   // this attempt's successful generate_image calls; NULL when it drew nothing
   declare imageGenerationUsage: string | null;
+  // Catalog content version active when the attempt resolved its traits; NULL on older rows
+  declare catalogVersion: string | null;
+  // JSON CapabilityEvent[] recorded during the attempt; NULL when none occurred
+  declare capabilityEvents: string | null;
 }
 
 // Fresh option objects per column: Sequelize normalizes attribute definitions in place
@@ -164,6 +168,9 @@ ReplyMetric.init({
   // Added with the trial quota; NULL on rows from before it (they never charge the budget)
   accessTier: { type: DataTypes.STRING, allowNull: true, defaultValue: null },
   imageGenerationUsage: { type: DataTypes.TEXT, allowNull: true, defaultValue: null },
+  // Added with runtime capability tracking; NULL on older rows
+  catalogVersion: { type: DataTypes.STRING, allowNull: true, defaultValue: null },
+  capabilityEvents: { type: DataTypes.TEXT, allowNull: true, defaultValue: null },
 }, {
   sequelize,
   tableName: 'reply_metrics',

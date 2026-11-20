@@ -36,7 +36,6 @@ const VISION: ModelCapabilities = {
     supportsSystemPrompt: true,
     requiresMessageMerge: false,
     supportsThinking: false,
-    supportsGrounding: false,
     supportsMediaInput: true,
 };
 const TEXT_ONLY: ModelCapabilities = { ...VISION, supportsImageInput: false, supportsMediaInput: false };

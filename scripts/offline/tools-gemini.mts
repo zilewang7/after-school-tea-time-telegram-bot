@@ -68,6 +68,8 @@ const { isFunctionDeclarationError, toGeminiToolList, toRoundConfig, withoutFunc
     '../../src/ai/platforms/gemini/gemini-tool-request.js'
 );
 const { GEMINI_IMAGE_MODEL } = await import('../../src/config/models.js');
+const { setModelCatalog } = await import('../../src/config/model-catalog.js');
+const { emptyModelCapabilities } = await import('../../src/config/model-capabilities.js');
 const { createUsageSink } = await import('../../src/ai/usage/index.js');
 
 type UsageSink = import('../../src/ai/usage/index.js').UsageSink;
@@ -1764,6 +1766,76 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
             );
             const images = image.chunks.filter((chunk) => chunk.type === 'image');
             expect(images.length === 1 && images[0]?.imageData?.toString() === 'final', 'and still yields only the final image');
+
+            // Data-driven toolsMixing=denied stops declarations on a chat model, while
+            // an image model ignores toolsMixing=allowed (keeps the safety guard).
+            setModelCatalog(
+                [
+                    {
+                        id: 'gemini-4-hydrogen',
+                        label: 'Gemini 4 Hydrogen',
+                        enabled: true,
+                        platform: 'gemini',
+                        capabilities: {
+                            ...emptyModelCapabilities(),
+                            schema: 1,
+                            kind: 'chat',
+                            tools: true,
+                            toolsMixing: 'denied',
+                        },
+                        source: 'official',
+                        checkedOn: '2026-11-20',
+                        confidence: 'high',
+                        note: 'test',
+                    },
+                    {
+                        id: 'gemini-3-pro-image',
+                        label: 'Gemini 3 Pro Image',
+                        enabled: false,
+                        platform: 'gemini',
+                        capabilities: {
+                            ...emptyModelCapabilities(),
+                            schema: 1,
+                            kind: 'image',
+                            imageOutput: true,
+                            tools: true,
+                            toolsMixing: 'allowed',
+                            provenance: {
+                                imageOutput: { source: 'official', checkedOn: '2026-11-20', confidence: 'high' },
+                                tools: { source: 'official', checkedOn: '2026-11-20', confidence: 'high' },
+                            },
+                        },
+                        source: 'official',
+                        checkedOn: '2026-11-20',
+                        confidence: 'high',
+                        note: 'test',
+                    },
+                ],
+                'gemini-tools-mixing-test'
+            );
+            try {
+                reset([plainRound()]);
+                await runTurn({ model: 'gemini-4-hydrogen', tools: turnTools });
+                expect(
+                    !json(recordedRequests[0]?.body.tools).includes('functionDeclarations'),
+                    'catalog toolsMixing=denied suppresses Gemini functionDeclarations'
+                );
+
+                reset([
+                    sse([
+                        event([{ inlineData: { mimeType: 'image/png', data: Buffer.from('final').toString('base64') } }], {
+                            finishReason: 'STOP',
+                        }),
+                    ]),
+                ]);
+                await runTurn({ model: 'gemini-3-pro-image', systemPrompt: null, tools: turnTools, isImageModel: true });
+                expect(
+                    !json(recordedRequests[0]?.body.tools).includes('functionDeclarations'),
+                    'image model ignores catalog toolsMixing=allowed and sends no declarations'
+                );
+            } finally {
+                setModelCatalog([]);
+            }
         },
     },
         {
@@ -2162,6 +2234,63 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
                 `the dropped block is counted (got ${json(thoughtSummaryLineOf(lines))})`
             );
             expect(lines.some((line) => line.includes('a block yielded no summary')), 'and warned about');
+        },
+    },
+    {
+        name: 'usageSink notes tools_rejected, media_rejected, and MAX_TOKENS output_truncated events',
+        body: async () => {
+            const toolsSink = createUsageSink();
+            reset([
+                {
+                    status: 400,
+                    contentType: 'application/json',
+                    body: json({
+                        error: {
+                            code: 400,
+                            message: 'Tool use with function calling is unsupported',
+                            status: 'INVALID_ARGUMENT',
+                        },
+                    }),
+                },
+                sse(roundEvents([[textPart('tools fallback')]], { finishReason: FinishReason.MAX_TOKENS })),
+            ]);
+            await runTurn({ tools: turnTools, usageSink: toolsSink });
+            expect(
+                json(toolsSink.totals().capabilityEvents ?? []) ===
+                    json([
+                        { kind: 'tools_rejected' },
+                        { kind: 'output_truncated', reason: 'MAX_TOKENS' },
+                    ]),
+                `tool loop fallback and MAX_TOKENS recorded (got ${json(toolsSink.totals().capabilityEvents)})`
+            );
+
+            const mediaSink = createUsageSink();
+            const audioTurn: UnifiedMessage[] = [
+                {
+                    role: 'user',
+                    content: [
+                        { type: 'text', text: 'listen' },
+                        { type: 'media', mimeType: 'audio/mp3', mediaData: Buffer.from('fake').toString('base64') },
+                    ],
+                },
+            ];
+            reset([
+                {
+                    status: 400,
+                    contentType: 'application/json',
+                    body: json({ error: { code: 400, message: 'invalid audio', status: 'INVALID_ARGUMENT' } }),
+                },
+                sse(roundEvents([[textPart('media fallback')]], { finishReason: FinishReason.MAX_TOKENS })),
+            ]);
+            await runTurn({ messages: audioTurn, usageSink: mediaSink });
+            expect(
+                json(mediaSink.totals().capabilityEvents ?? []) ===
+                    json([
+                        { kind: 'media_rejected', modality: 'audio' },
+                        { kind: 'output_truncated', reason: 'MAX_TOKENS' },
+                    ]),
+                `non-tool media fallback and MAX_TOKENS recorded (got ${json(mediaSink.totals().capabilityEvents)})`
+            );
         },
     },
     {

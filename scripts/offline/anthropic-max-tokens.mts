@@ -22,6 +22,7 @@ const {
     maxTokensOf,
     maxTokensWireOf,
 } = await import('../../src/ai/platforms/anthropic/anthropic-max-tokens.js');
+const { createUsageSink } = await import('../../src/ai/usage/index.js');
 
 const json = (value: unknown): string => JSON.stringify(value);
 
@@ -98,11 +99,19 @@ results.push(
 );
 
 results.push(
-    await runCase('lowerMaxTokensAfter drops once on a 400 that names max_tokens and logs it', () => {
+    await runCase('lowerMaxTokensAfter drops once on a 400 that names max_tokens, logs and records event', () => {
         const wire = { maxTokens: 128_000, degraded: false };
-        const first = captureWarnings(() => lowerMaxTokensAfter(wire, 'claude-opus-5-5', apiError(400, OVER_LIMIT)));
+        const sink = createUsageSink();
+        const first = captureWarnings(() =>
+            lowerMaxTokensAfter(wire, 'claude-opus-5-5', apiError(400, OVER_LIMIT), sink)
+        );
         expect(first.result === true, 'the first rejection asks for a retry');
         expect(json(wire) === json({ maxTokens: 16_000, degraded: true }), `the wire holds 16000 (got ${json(wire)})`);
+        expect(
+            json(sink.totals().capabilityEvents ?? []) ===
+                json([{ kind: 'max_tokens_downgraded', from: 128_000, to: 16_000 }]),
+            `records max_tokens_downgraded capability event (got ${json(sink.totals().capabilityEvents)})`
+        );
         expect(
             first.lines.length === 1 &&
                 first.lines[0]?.includes('claude-opus-5-5 rejected max_tokens 128000; retrying with 16000') === true &&

@@ -701,6 +701,14 @@ export type PricingFlag = 'priced' | 'subscription' | 'unpriced' | 'no_usage';
 /** A model across its routes: `partial` when some routes have a cost and others none */
 export type ModelPricingFlag = PricingFlag | 'partial';
 
+export type CapabilityEvent =
+    | { kind: 'effort_rejected'; effort: string; fallback?: string | null }
+    | { kind: 'thinking_budget_fallback'; from?: string | null }
+    | { kind: 'tools_rejected' }
+    | { kind: 'media_rejected'; modality?: string | null }
+    | { kind: 'max_tokens_downgraded'; from: number; to: number }
+    | { kind: 'output_truncated'; reason?: string | null; limit?: number | null };
+
 /** One version's reply_metrics row, as the reply detail shows it */
 export interface ReplyMetric {
     id: number;
@@ -767,6 +775,8 @@ export interface ReplyMetric {
     pricing: PricingFlag;
     // Priority rounds priced at the standard price: the model has no priority price
     priorityAtStandardPrice: boolean;
+    catalogVersion?: string | null;
+    capabilityEvents?: CapabilityEvent[];
     // Members only
     triggerUserId?: number | null;
 }
@@ -1214,6 +1224,8 @@ export interface ProcessStatus {
         // 'ok' | 'failed' | 'skipped'; null when none ran
         lastOutcome: string | null;
         pendingProposals: number;
+        capabilityProposals?: number;
+        warnings?: readonly string[];
     } | null;
 }
 
@@ -1529,9 +1541,21 @@ export interface AccessApplicationResponse {
 export type ModelTraitsOrigin = 'catalog' | 'seed' | 'code';
 
 /** Where one capability value came from (mirrors the server's ModelCapabilitySource) */
-export type ModelCapabilitySource = 'code' | 'models-dev' | 'manual' | 'official' | 'probe';
+export type ModelCapabilitySource = 'code' | 'models-dev' | 'manual' | 'official' | 'probe' | 'traffic';
 
 export type ModelCapabilityConfidence = 'high' | 'medium' | 'low';
+
+export interface CapabilityFieldProvenance {
+    source: ModelCapabilitySource;
+    checkedOn?: string;
+    confidence?: ModelCapabilityConfidence;
+    lane?: string;
+    ref?: string;
+}
+
+export type CapabilityProvenanceMap = Partial<Record<string, CapabilityFieldProvenance>>;
+
+export type PlatformLaneFingerprints = Partial<Record<string, string>>;
 
 export type ModelCatalogKind = 'chat' | 'image';
 
@@ -1582,6 +1606,43 @@ export interface ModelCapabilitiesView {
     source?: ModelCapabilitySource;
     checkedOn?: string;
     confidence?: ModelCapabilityConfidence;
+    provenance?: CapabilityProvenanceMap;
+    laneFingerprints?: PlatformLaneFingerprints;
+}
+
+export type ReconciledTraitField =
+    | 'imageOutput'
+    | 'imageInput'
+    | 'mediaInput'
+    | 'clientTools'
+    | 'geminiToolsMixing'
+    | 'imageSearchGrounding'
+    | 'xhighThinking'
+    | 'outputTokens';
+
+export interface ReconciledTraitEntry {
+    field: ReconciledTraitField;
+    data: boolean | number | null;
+    code: boolean | number | null;
+    runtime: boolean | number | null;
+    origin: 'data' | 'code';
+    differs: boolean;
+}
+
+export interface ModelTraitReconciliationRow {
+    model: string;
+    platform: string;
+    origin: ModelTraitsOrigin;
+    inCatalog: boolean;
+    enabled: boolean;
+    entries: readonly ReconciledTraitEntry[];
+    diffCount: number;
+}
+
+export interface CatalogTraitsReconciliation {
+    catalogVersion: string;
+    rows: readonly ModelTraitReconciliationRow[];
+    totalDiffs: number;
 }
 
 /** One row of GET /api/model-catalog */
@@ -1598,9 +1659,10 @@ export interface ModelCatalogEntryView {
     capabilities: ModelCapabilitiesView;
 }
 
-/** GET /api/model-catalog (owner only): catalog version, pending proposals, rows */
+/** GET /api/model-catalog (owner only): catalog version, pending proposals, reconciliation, rows */
 export interface ModelCatalogResponse {
     catalogVersion: string;
     pendingProposals: number;
+    reconciliation?: CatalogTraitsReconciliation;
     models: readonly ModelCatalogEntryView[];
 }

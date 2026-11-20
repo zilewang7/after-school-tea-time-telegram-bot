@@ -52,7 +52,7 @@ export const DEFAULT_MODEL_SETTING_KEY = 'defaultModel';
 export const DEFAULT_GEMINI_PRIORITY_SETTING_KEY = 'defaultGeminiPriority';
 
 /** Last resort when DEFAULT_MODEL is unset or empty (`.env.example` leaves it empty) */
-const FALLBACK_DEFAULT_MODEL = 'gpt-5';
+const FALLBACK_DEFAULT_MODEL = 'gemini-4-neon';
 
 const chatSettingsByChat = new Map<number, ChatSettings>();
 const globalSettingsByKey = new Map<string, string>();
@@ -126,7 +126,7 @@ export const getStoredGlobalSetting = (key: string): string | null => globalSett
 
 /**
  * The panel-set default when there is one, otherwise DEFAULT_MODEL (`||`, so an
- * empty value counts as unset), otherwise gpt-5.
+ * empty value counts as unset), otherwise gemini-4-neon.
  */
 export const getGlobalDefaultModel = (): string =>
     getStoredGlobalSetting(DEFAULT_MODEL_SETTING_KEY) ?? (process.env.DEFAULT_MODEL || FALLBACK_DEFAULT_MODEL);

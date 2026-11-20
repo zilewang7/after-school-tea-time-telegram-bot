@@ -49,6 +49,9 @@ const REPLY_METRICS_COLUMNS = [
     // Added with the trial quota and image billing (2026-1116-1500)
     'accessTier',
     'imageGenerationUsage',
+    // Added with runtime capability tracking (2026-1120)
+    'catalogVersion',
+    'capabilityEvents',
 ];
 
 // In name order, as appliedMigrations reads them
@@ -58,6 +61,7 @@ const MIGRATION_NAMES = [
     '20261114_chat_settings_rich_replies',
     '20261116_trial_quota_metrics',
     '20261119_prompt_templates',
+    '20261120_reply_metrics_capability_columns',
 ];
 
 // reply_metrics and chat_settings as they were before this change
@@ -233,7 +237,9 @@ const cases: { name: string; body: () => Promise<void> }[] = [
                     old.tierRequested === null &&
                     old.priorityRounds === null &&
                     old.resumedRounds === null &&
-                    old.checkpointRounds === null,
+                    old.checkpointRounds === null &&
+                    old.catalogVersion === null &&
+                    old.capabilityEvents.length === 0,
                 `the old row reads back with every new column NULL (got ${json(old)})`
             );
 
@@ -249,6 +255,8 @@ const cases: { name: string; body: () => Promise<void> }[] = [
                     priorityOutputTokens: 60,
                     resumedRounds: 3,
                     checkpointRounds: 4,
+                    catalogVersion: 'm-migrated-v1',
+                    capabilityEvents: [{ kind: 'effort_rejected', effort: 'xhigh', fallback: 'high' }],
                 })
             );
             const [, written] = await findReplyMetricsByReply(-1007700000001, 11);
@@ -261,7 +269,10 @@ const cases: { name: string; body: () => Promise<void> }[] = [
                     written.priorityCachedTokens === 300 &&
                     written.priorityOutputTokens === 60 &&
                     written.resumedRounds === 3 &&
-                    written.checkpointRounds === 4,
+                    written.checkpointRounds === 4 &&
+                    written.catalogVersion === 'm-migrated-v1' &&
+                    written.capabilityEvents.length === 1 &&
+                    written.capabilityEvents[0]?.kind === 'effort_rejected',
                 `a metric row written after the migration keeps every value (got ${json(written)})`
             );
 

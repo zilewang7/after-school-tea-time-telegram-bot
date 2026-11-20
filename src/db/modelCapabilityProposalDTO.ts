@@ -9,8 +9,8 @@ import {
 } from '@sequelize/core';
 import { sequelize } from './config.js';
 
-/** pending → approved | rejected | superseded | expired; decided rows never change */
-export const CAPABILITY_PROPOSAL_STATUSES = ['pending', 'approved', 'rejected', 'superseded', 'expired'] as const;
+/** pending → approved | rejected | superseded | expired | withdrawn; decided rows never change */
+export const CAPABILITY_PROPOSAL_STATUSES = ['pending', 'approved', 'rejected', 'superseded', 'expired', 'withdrawn'] as const;
 export type CapabilityProposalStatus = (typeof CAPABILITY_PROPOSAL_STATUSES)[number];
 
 export const isCapabilityProposalStatus = (value: string): value is CapabilityProposalStatus =>
@@ -48,6 +48,8 @@ export class ModelCapabilityProposal extends Model<
   declare runId: CreationOptional<number | null>;
   // The private-chat approval message that carries it (for edit/resend)
   declare messageId: CreationOptional<number | null>;
+  // When the owner was last notified about this pending payload (for 3-day reminders)
+  declare lastNotifiedAt: CreationOptional<Date | null>;
   // One line shown to the owner (changed fields + source/date/confidence)
   declare note: CreationOptional<string | null>;
   declare createdAt: CreationOptional<Date>;
@@ -99,6 +101,11 @@ ModelCapabilityProposal.init({
   },
   messageId: {
     type: DataTypes.INTEGER,
+    allowNull: true,
+    defaultValue: null,
+  },
+  lastNotifiedAt: {
+    type: DataTypes.DATE,
     allowNull: true,
     defaultValue: null,
   },

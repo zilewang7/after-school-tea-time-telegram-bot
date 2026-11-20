@@ -12,8 +12,9 @@
  */
 import { expect, reportResults, runCase, setupOfflineDb, type CaseResult } from './harness.mts';
 import { createFakeBot, groupChat, quietly, userOf } from './fake-telegram.mts';
+import { FALLBACK_PRICE, parseModelsJson } from '../probe/effort-plan.mts';
+import { InputFile, type Bot } from 'grammy';
 import type { Chat, Document, Update } from 'grammy/types';
-import type { Bot } from 'grammy';
 
 // Identities must be known before anything under src/ is imported
 process.env.OWNER_USER_ID = '4242';
@@ -35,16 +36,30 @@ const { ModelCatalogEntryRow } = await import('../../src/db/modelCatalogDTO.js')
 const OWNER_ID = 4242;
 const OUTSIDER_ID = 6262;
 const GROUP_ID = -1009004242;
+const LANE_GEMINI = 'vertex-adc@global#p11111111';
+const LANE_DEEPSEEK = 'official-deepseek#k22222222';
 const LANE_SIGNATURE = 'vertex-adc@global|ephone|ephone|official-xai|official-deepseek|official-mimic';
 const PROBED_AT = '2026-11-13T10:00:00.000Z';
 
 const results: CaseResult[] = [];
 
 // ---------------------------------------------------------------------------
-// Fixtures
+// Fixtures (v2 primary + legacy v1 compatibility)
 // ---------------------------------------------------------------------------
 
-interface FixtureResult {
+interface FixtureResultV2 {
+    readonly model: string;
+    readonly platform: string;
+    readonly lane: string;
+    readonly acceptedEfforts: readonly string[];
+    readonly mappedEfforts: readonly string[];
+    readonly toggle: boolean | null;
+    readonly tools: { readonly supported: boolean; readonly variant: string; readonly effort: string | null; readonly error?: string } | null;
+    readonly errorSummary: Readonly<Record<string, string>>;
+    readonly checkedOn: string;
+}
+
+interface FixtureResultV1 {
     readonly model: string;
     readonly acceptedEfforts: readonly string[];
     readonly defaultEffort: string | null;
@@ -53,19 +68,58 @@ interface FixtureResult {
     readonly checkedOn: string;
 }
 
-const RESULT_HYDROGEN: FixtureResult = {
+const RESULT_HYDROGEN: FixtureResultV2 = {
     model: 'gemini-4-hydrogen',
+    platform: 'gemini',
+    lane: LANE_GEMINI,
     acceptedEfforts: ['low', 'medium', 'high', 'xhigh'],
-    defaultEffort: 'high',
-    toggle: false,
+    mappedEfforts: ['max'],
+    toggle: null,
+    tools: { supported: true, variant: 'level', effort: 'xhigh' },
     errorSummary: { minimal: '400 Thinking level is unsupported' },
     checkedOn: '2026-11-13',
 };
 
-const RESULT_NEON: FixtureResult = {
+const RESULT_NEON: FixtureResultV2 = {
     model: 'gemini-4-neon',
+    platform: 'gemini',
+    lane: LANE_GEMINI,
     // A measured ladder that is narrower than the shipped seed (no XHIGH), so the
     // import cases see a real 思考档位 change to propose.
+    acceptedEfforts: ['low', 'medium', 'high'],
+    mappedEfforts: [],
+    toggle: null,
+    tools: { supported: true, variant: 'level', effort: 'high' },
+    errorSummary: { xhigh: '400 Thinking level is unsupported' },
+    checkedOn: '2026-11-13',
+};
+
+const RESULT_DEEPSEEK: FixtureResultV2 = {
+    model: 'deepseek-flash',
+    platform: 'deepseek',
+    lane: LANE_DEEPSEEK,
+    acceptedEfforts: ['low', 'high', 'max'],
+    mappedEfforts: ['minimal', 'xhigh'],
+    toggle: true,
+    tools: { supported: true, variant: 'level', effort: 'high' },
+    errorSummary: {},
+    checkedOn: '2026-11-13',
+};
+
+const RESULT_UNKNOWN: FixtureResultV2 = {
+    model: 'model-not-in-catalog',
+    platform: 'openai',
+    lane: 'ephone#k33333333',
+    acceptedEfforts: ['low'],
+    mappedEfforts: [],
+    toggle: null,
+    tools: null,
+    errorSummary: {},
+    checkedOn: '2026-11-13',
+};
+
+const LEGACY_RESULT_NEON: FixtureResultV1 = {
+    model: 'gemini-4-neon',
     acceptedEfforts: ['low', 'medium', 'high'],
     defaultEffort: 'high',
     toggle: false,
@@ -73,33 +127,24 @@ const RESULT_NEON: FixtureResult = {
     checkedOn: '2026-11-13',
 };
 
-const RESULT_DEEPSEEK: FixtureResult = {
-    model: 'deepseek-flash',
-    acceptedEfforts: ['low', 'high', 'max'],
-    defaultEffort: 'high',
-    toggle: true,
-    errorSummary: {},
-    checkedOn: '2026-11-13',
-};
-
-const RESULT_UNKNOWN: FixtureResult = {
-    model: 'model-not-in-catalog',
-    acceptedEfforts: ['low'],
-    defaultEffort: 'low',
-    toggle: false,
-    errorSummary: {},
-    checkedOn: '2026-11-13',
-};
-
 /** A fixture result with arbitrary fields overridden (invalid shapes in the parser cases) */
-const variantOf = (base: FixtureResult, changes: Record<string, unknown>): unknown => ({ ...base, ...changes });
+const variantOf = (base: FixtureResultV2 | FixtureResultV1, changes: Record<string, unknown>): unknown => ({ ...base, ...changes });
 
 const documentTextOf = (entries: readonly unknown[]): string =>
+    JSON.stringify({
+        schema: 2,
+        probedAt: PROBED_AT,
+        lanes: { gemini: LANE_GEMINI, deepseek: LANE_DEEPSEEK },
+        // Unknown keys are ignored by design
+        ownerNote: 'anything',
+        results: entries,
+    });
+
+const legacyDocumentTextOf = (entries: readonly unknown[]): string =>
     JSON.stringify({
         schema: 1,
         probedAt: PROBED_AT,
         laneSignature: LANE_SIGNATURE,
-        // Unknown keys are ignored by design
         ownerNote: 'anything',
         results: entries,
     });
@@ -287,16 +332,27 @@ const resetReasoningSource = async (model: string): Promise<void> => {
 // ---------------------------------------------------------------------------
 
 const runParserCases = async (): Promise<void> => {
-    results.push(await runCase('parser: a valid document is accepted, unknown keys are ignored', () => {
+    results.push(await runCase('parser: a valid v2 document is accepted, unknown keys are ignored', () => {
         const parsed = probeService.parseProbeImportDocument(Buffer.from(VALID_DOCUMENT));
         expect(parsed.ok, `parsed: ${parsed.ok ? '' : parsed.errors.join('; ')}`);
-        if (!parsed.ok) return;
-        expect(parsed.document.schema === 1, 'schema 1');
-        expect(parsed.document.laneSignature === LANE_SIGNATURE, 'lane signature kept');
+        if (!parsed.ok || parsed.document.schema !== 2) return;
+        expect(parsed.document.schema === 2, 'schema 2');
+        expect(parsed.document.lanes.gemini === LANE_GEMINI, 'per-platform lane kept');
         expect(parsed.document.results.length === 4, `four results (got ${parsed.document.results.length})`);
         const neon = parsed.document.results.find((entry) => entry.model === 'gemini-4-neon');
         expect(neon !== undefined && JSON.stringify(neon.acceptedEfforts) === JSON.stringify(['low', 'medium', 'high']), 'accepted efforts are sorted');
         expect(neon?.errorSummary['xhigh'] !== undefined, 'error summary evidence kept');
+        const hydrogen = parsed.document.results.find((entry) => entry.model === 'gemini-4-hydrogen');
+        expect(JSON.stringify(hydrogen?.mappedEfforts) === JSON.stringify(['max']), 'mapped efforts kept');
+        expect(hydrogen?.tools?.supported === true, 'tools fidelity check kept');
+    }));
+
+    results.push(await runCase('parser: legacy v1 document remains backwards compatible', () => {
+        const parsed = probeService.parseProbeImportDocument(Buffer.from(legacyDocumentTextOf([LEGACY_RESULT_NEON])));
+        expect(parsed.ok && parsed.document.schema === 1, `legacy v1 accepted (${parsed.ok ? '' : parsed.errors.join('; ')})`);
+        if (!parsed.ok || parsed.document.schema !== 1) return;
+        expect(parsed.document.laneSignature === LANE_SIGNATURE, 'v1 laneSignature kept');
+        expect(parsed.document.results[0]?.defaultEffort === 'high', 'v1 defaultEffort kept');
     }));
 
     results.push(await runCase('parser: the whole file is rejected on a bad shape or a bad effort value', () => {
@@ -304,16 +360,17 @@ const runParserCases = async (): Promise<void> => {
             ['empty', Buffer.alloc(0)],
             ['not JSON', Buffer.from('{oops')],
             ['top-level array', Buffer.from('[]')],
-            ['schema 2', Buffer.from(JSON.stringify({ schema: 2, probedAt: PROBED_AT, laneSignature: 'x', results: [] }))],
-            ['probedAt missing', Buffer.from(JSON.stringify({ schema: 1, laneSignature: 'x', results: [] }))],
-            ['probedAt not ISO', Buffer.from(JSON.stringify({ schema: 1, probedAt: 'yesterday', laneSignature: 'x', results: [] }))],
-            ['lane signature empty', Buffer.from(JSON.stringify({ schema: 1, probedAt: PROBED_AT, laneSignature: '', results: [] }))],
-            ['results not array', Buffer.from(JSON.stringify({ schema: 1, probedAt: PROBED_AT, laneSignature: 'x', results: {} }))],
+            ['schema 3', Buffer.from(JSON.stringify({ schema: 3, probedAt: PROBED_AT, lanes: {}, results: [] }))],
+            ['probedAt missing', Buffer.from(JSON.stringify({ schema: 2, lanes: {}, results: [] }))],
+            ['probedAt not ISO', Buffer.from(JSON.stringify({ schema: 2, probedAt: 'yesterday', lanes: {}, results: [] }))],
+            ['v2 unknown platform in lanes', Buffer.from(JSON.stringify({ schema: 2, probedAt: PROBED_AT, lanes: { nope: 'x' }, results: [] }))],
+            ['v1 lane signature empty', Buffer.from(JSON.stringify({ schema: 1, probedAt: PROBED_AT, laneSignature: '', results: [] }))],
+            ['results not array', Buffer.from(JSON.stringify({ schema: 2, probedAt: PROBED_AT, lanes: {}, results: {} }))],
             ['unknown effort', Buffer.from(documentTextOf([variantOf(RESULT_HYDROGEN, { acceptedEfforts: ['low', 'extreme'] })]))],
             ['duplicate effort', Buffer.from(documentTextOf([variantOf(RESULT_HYDROGEN, { acceptedEfforts: ['low', 'low'] })]))],
             ['duplicate model', Buffer.from(documentTextOf([RESULT_HYDROGEN, RESULT_HYDROGEN]))],
-            ['bad default effort', Buffer.from(documentTextOf([variantOf(RESULT_HYDROGEN, { defaultEffort: 'huge' })]))],
-            ['toggle not boolean', Buffer.from(documentTextOf([variantOf(RESULT_HYDROGEN, { toggle: 'yes' })]))],
+            ['bad platform', Buffer.from(documentTextOf([variantOf(RESULT_HYDROGEN, { platform: 'bogus' })]))],
+            ['toggle not boolean/null', Buffer.from(documentTextOf([variantOf(RESULT_HYDROGEN, { toggle: 'yes' })]))],
             ['bad checkedOn', Buffer.from(documentTextOf([variantOf(RESULT_HYDROGEN, { checkedOn: '13-11-2026' })]))],
             ['impossible checkedOn', Buffer.from(documentTextOf([variantOf(RESULT_HYDROGEN, { checkedOn: '2026-02-30' })]))],
             ['errorSummary not object', Buffer.from(documentTextOf([variantOf(RESULT_HYDROGEN, { errorSummary: 'nope' })]))],
@@ -342,7 +399,7 @@ const runParserCases = async (): Promise<void> => {
 // ---------------------------------------------------------------------------
 
 const runPlanCases = async (): Promise<void> => {
-    results.push(await runCase('plan: reasoning values map to a probe-sourced payload, other fields kept', async () => {
+    results.push(await runCase('plan v2: field-level probe provenance and per-platform lane fingerprints written cleanly', async () => {
         const parsed = probeService.parseProbeImportDocument(Buffer.from(VALID_DOCUMENT));
         expect(parsed.ok, 'document parses');
         if (!parsed.ok) return;
@@ -352,17 +409,27 @@ const runPlanCases = async (): Promise<void> => {
         if (neon === undefined) return;
         expect(neon.payload.schema === 1, 'schema 1');
         expect(JSON.stringify(neon.payload.reasoning?.efforts) === JSON.stringify(['low', 'medium', 'high']), 'accepted efforts written');
-        expect(neon.payload.reasoning?.defaultEffort === 'high', 'default effort kept (it is accepted)');
-        expect(neon.payload.reasoning?.source === 'probe', 'reasoning source is probe');
-        expect(neon.payload.reasoning?.checkedOn === '2026-11-13', 'checkedOn from the result');
-        expect(neon.payload.reasoning?.confidence === 'high', 'probe confidence is high');
+        expect(neon.payload.reasoning?.defaultEffort === 'high', 'catalog defaultEffort preserved (not overwritten by probe v2)');
+        expect(neon.payload.reasoning?.toggle === false, 'unmeasured toggle preserves catalog value');
+        expect(neon.payload.provenance?.['reasoning.efforts']?.source === 'probe', 'efforts provenance is probe');
+        expect(neon.payload.provenance?.['reasoning.efforts']?.lane === LANE_GEMINI, 'efforts provenance records platform lane');
+        expect(neon.payload.provenance?.['reasoning.efforts']?.checkedOn === '2026-11-13', 'efforts provenance records checkedOn');
+        expect(neon.payload.provenance?.['reasoning.toggle']?.source !== 'probe', 'unmeasured toggle (null) does NOT claim probe provenance');
+        expect(neon.payload.provenance?.['reasoning.defaultEffort']?.source !== 'probe', 'defaultEffort does NOT claim probe provenance');
+        expect(neon.payload.laneFingerprints?.gemini === LANE_GEMINI, 'per-platform laneFingerprints.gemini stored');
         expect(JSON.stringify(neon.payload.reasoningEffort) === JSON.stringify(['low', 'medium', 'high']), 'legacy mirror follows');
         expect(neon.payload.contextTokens === 1_048_576, 'context limit untouched');
         expect(neon.changes.includes('思考档位'), `changes name 思考档位 (got ${neon.changes.join(',')})`);
-        expect(neon.note.includes('probe 导入') && neon.note.includes(LANE_SIGNATURE), 'note records the lane signature');
+        expect(neon.note.includes('probe 导入') && neon.note.includes(LANE_GEMINI), 'note records the platform lane');
+
+        const deepseek = plan.proposals.find((proposal) => proposal.model === 'deepseek-flash');
+        expect(deepseek?.payload.provenance?.['reasoning.toggle']?.source === 'probe', 'measured toggle (deepseek) DOES record probe provenance');
+        expect(deepseek?.payload.provenance?.['reasoning.toggle']?.lane === LANE_DEEPSEEK, 'toggle provenance records deepseek lane');
+        expect(deepseek?.payload.laneFingerprints?.deepseek === LANE_DEEPSEEK, 'laneFingerprints.deepseek stored');
+        expect(deepseek?.note.includes('mapped=minimal/xhigh') && deepseek?.note.includes('tools=ok'), 'note records mapped and tools evidence');
     }));
 
-    results.push(await runCase('plan: identical values with new provenance still get a sync proposal', async () => {
+    results.push(await runCase('plan: identical values with new provenance or lane still get a sync proposal', async () => {
         const synced = probeService.parseProbeImportDocument(Buffer.from(documentTextOf([RESULT_HYDROGEN])));
         expect(synced.ok, 'document parses');
         if (!synced.ok) return;
@@ -377,12 +444,20 @@ const runPlanCases = async (): Promise<void> => {
         if (payload === undefined) return;
         const appliedCatalog = [{ model: 'gemini-4-hydrogen', enabled: true, capabilities: payload }];
         const second = probeService.planProbeImport(synced.document, appliedCatalog);
-        expect(second.proposals.length === 0 && second.unchanged.length === 1, 're-import after the same data is applied has no proposal');
+        expect(second.proposals.length === 0 && second.unchanged.length === 1, 're-import after the same data and lane are applied has no proposal');
+        // Changing the platform lane triggers a sync proposal even with identical efforts
+        const rotatedLane = probeService.parseProbeImportDocument(
+            Buffer.from(documentTextOf([{ ...RESULT_HYDROGEN, lane: 'vertex-adc@global#p99999999' }]))
+        );
+        expect(rotatedLane.ok, 'rotated lane doc parses');
+        if (!rotatedLane.ok) return;
+        const third = probeService.planProbeImport(rotatedLane.document, appliedCatalog);
+        expect(third.proposals.length === 1, 'a changed platform lane generates a sync proposal');
     }));
 
-    results.push(await runCase('plan: a default effort outside the accepted set becomes null', async () => {
+    results.push(await runCase('plan: a catalog default effort outside the measured accepted set becomes null', async () => {
         const parsed = probeService.parseProbeImportDocument(
-            Buffer.from(documentTextOf([variantOf(RESULT_NEON, { acceptedEfforts: ['low'], defaultEffort: 'high' })]))
+            Buffer.from(documentTextOf([variantOf(RESULT_NEON, { acceptedEfforts: ['low'] })]))
         );
         expect(parsed.ok, 'document parses');
         if (!parsed.ok) return;
@@ -542,7 +617,7 @@ const runImportCases = async (): Promise<void> => {
         expect(reasoningOfRow(neon)['source'] === 'probe', 'payload reasoning source is probe');
         expect(reasoningOfRow(neon)['checkedOn'] === '2026-11-13', 'checkedOn carried over');
         expect(reasoningOfRow(neon)['confidence'] === 'high', 'confidence is high');
-        expect(neon.note?.includes('probe 导入') === true && neon.note?.includes(LANE_SIGNATURE) === true, 'note names the import and lane');
+        expect(neon.note?.includes('probe 导入') === true && neon.note?.includes(LANE_GEMINI) === true, 'note names the import and platform lane');
         expect(neon.baseline !== null && recordOf(JSON.parse(neon.baseline)) !== null, 'baseline snapshot stored');
     }));
 
@@ -559,7 +634,7 @@ const runImportCases = async (): Promise<void> => {
         expect(notifyCalls === 1, 'the approval message is sent again');
     }));
 
-    results.push(await runCase('import: applying the proposals writes reasoning.source=probe to the catalog', async () => {
+    results.push(await runCase('import: applying the proposals writes field provenance and per-platform lane fingerprints', async () => {
         await resetState();
         await runImport(probeUpdate({ document: jsonDocument() }));
         const rows = await pendingRows();
@@ -572,10 +647,17 @@ const runImportCases = async (): Promise<void> => {
         const reasoning = recordOf(neon['reasoning']);
         expect(reasoning?.['source'] === 'probe', 'catalog reasoning source is probe');
         expect(JSON.stringify(reasoning?.['efforts']) === JSON.stringify(['low', 'medium', 'high']), 'applied efforts');
-        expect(reasoning?.['defaultEffort'] === 'high', 'applied default effort');
+        expect(reasoning?.['defaultEffort'] === 'high', 'applied default effort preserved');
         expect(JSON.stringify(neon['reasoningEffort']) === JSON.stringify(['low', 'medium', 'high']), 'legacy mirror applied');
+        const neonProv = recordOf(neon['provenance']);
+        const neonEffortsProv = recordOf(neonProv?.['reasoning.efforts']);
+        expect(neonEffortsProv?.['source'] === 'probe' && neonEffortsProv?.['lane'] === LANE_GEMINI, 'neon provenance.reasoning.efforts has probe + lane');
+        expect(recordOf(neonProv?.['reasoning.defaultEffort'])?.['source'] !== 'probe', 'neon defaultEffort provenance is NOT probe');
+        const neonLanes = recordOf(neon['laneFingerprints']);
+        expect(neonLanes?.['gemini'] === LANE_GEMINI, 'neon laneFingerprints.gemini persisted');
         const hydrogen = await catalogCapabilitiesOf('gemini-4-hydrogen');
         expect(recordOf(hydrogen['reasoning'])?.['source'] === 'probe', 'the value-identical model is now probe-sourced');
+        expect(recordOf(hydrogen['laneFingerprints'])?.['gemini'] === LANE_GEMINI, 'hydrogen laneFingerprints.gemini persisted');
         const pendingAfter = await pendingRows();
         expect(pendingAfter.length === 0, 'no pending proposal remains after apply');
         notifyCalls = 0;
@@ -583,6 +665,110 @@ const runImportCases = async (): Promise<void> => {
         expect(texts[0]?.includes('生成 0 条能力提案') === true, `re-import after apply proposes nothing (got ${texts[0] ?? ''})`);
         expect(texts[0]?.includes('无变化 3 个') === true, 'the synced models are counted as unchanged');
         expect(notifyCalls === 0, 'no approval message when nothing is proposed');
+    }));
+
+    results.push(await runCase('import: legacy v1 document still imports and applies cleanly', async () => {
+        await resetState();
+        currentBytes = Buffer.from(legacyDocumentTextOf([LEGACY_RESULT_NEON]));
+        const texts = await runImport(probeUpdate({ document: jsonDocument() }));
+        expect(texts[0]?.includes('schema v1') === true && texts[0]?.includes('生成 1 条能力提案') === true, `v1 summary (${texts[0] ?? ''})`);
+        const rows = await pendingRows();
+        expect(rows.length === 1 && rows[0]?.model === 'gemini-4-neon', 'v1 proposal queued');
+        const applied = await capabilityService.applyCapabilityProposals(rows.map((r) => r.id), OWNER_ID);
+        expect(applied.applied === 1, 'v1 proposal applies');
+    }));
+
+    results.push(await runCase('export: /probe export enforces gates and round-trips active menu + unpriced models into parseModelsJson', async () => {
+        await resetState();
+        // Outsider / group get nothing
+        const outsiderTexts = await runImport(probeUpdate({ userId: OUTSIDER_ID, text: '/probe export' }));
+        expect(outsiderTexts.length === 0 && telegram.callsOf('sendDocument').length === 0, 'outsider cannot export');
+        const groupTexts = await runImport(probeUpdate({ chat: group, text: '/probe export' }));
+        expect(groupTexts.length === 0 && telegram.callsOf('sendDocument').length === 0, 'group cannot export');
+
+        // Seed an auto-added unpriced enabled chat model and a disabled model + image model
+        await ModelCatalogEntryRow.create({
+            id: 'gpt-99-unpriced',
+            label: 'GPT 99 Unpriced',
+            platform: 'openai',
+            catalogKey: null,
+            enabled: 1,
+            capabilities: JSON.stringify({
+                schema: 1,
+                kind: 'chat',
+                vision: true,
+                imageOutput: false,
+                tools: true,
+                reasoningEffort: ['low', 'medium'],
+                contextTokens: 128_000,
+                outputTokens: 32_000,
+                reasoning: { supported: true, toggle: false, efforts: ['low', 'medium'], defaultEffort: 'medium', defaultEnabled: null },
+            }),
+            source: 'models-dev',
+            sourceUrl: null,
+            checkedOn: '2026-11-20',
+            confidence: 'medium',
+            note: null,
+        });
+        await ModelCatalogEntryRow.update({ enabled: 0 }, { where: { id: 'gpt-6-sol' } });
+        await ModelCatalogEntryRow.create({
+            id: 'gpt-image-export-skip',
+            label: 'Image Skip',
+            platform: 'openai',
+            catalogKey: null,
+            enabled: 1,
+            capabilities: JSON.stringify({
+                schema: 1,
+                kind: 'image',
+                vision: false,
+                imageOutput: true,
+                tools: false,
+                reasoningEffort: [],
+                contextTokens: null,
+                outputTokens: null,
+            }),
+            source: 'manual',
+            sourceUrl: null,
+            checkedOn: '2026-11-20',
+            confidence: 'high',
+            note: null,
+        });
+
+        telegram.reset();
+        await runUpdate(probeUpdate({ text: '/probe export' }));
+        const docs = telegram.callsOf('sendDocument');
+        expect(docs.length === 1, `one exported document sent (got ${docs.length})`);
+        const docCall = docs[0];
+        const caption = typeof docCall?.payload['caption'] === 'string' ? docCall.payload['caption'] : '';
+        expect(caption.includes('暂无报价'), `caption warns about unpriced models (got ${caption})`);
+
+        const fileField = docCall?.payload['document'];
+        let exportedBytes: Buffer | null = null;
+        if (fileField instanceof InputFile) {
+            const raw = await fileField.toRaw();
+            if (raw instanceof Uint8Array) {
+                exportedBytes = Buffer.from(raw);
+            } else {
+                const chunks: Uint8Array[] = [];
+                for await (const chunk of raw) chunks.push(chunk);
+                exportedBytes = Buffer.concat(chunks);
+            }
+        }
+        expect(exportedBytes !== null, 'InputFile carries exported JSON buffer');
+        if (exportedBytes === null) return;
+        const exportedJson: unknown = JSON.parse(exportedBytes.toString('utf8'));
+        const parsed = parseModelsJson(exportedJson);
+        const exportedIds = parsed.models.map((entry) => entry.model);
+        expect(exportedIds.includes('gpt-99-unpriced'), 'auto-added unpriced model is included');
+        expect(!exportedIds.includes('gpt-6-sol'), 'disabled model is excluded');
+        expect(!exportedIds.includes('gpt-image-export-skip'), 'image model is excluded');
+        const unpricedSpec = parsed.models.find((entry) => entry.model === 'gpt-99-unpriced');
+        expect(
+            unpricedSpec?.price.inputPerMillionUsd === FALLBACK_PRICE.inputPerMillionUsd &&
+                unpricedSpec?.price.outputPerMillionUsd === FALLBACK_PRICE.outputPerMillionUsd,
+            'unpriced model falls back to FALLBACK_PRICE'
+        );
+        expect(parsed.problems.some((p) => p.message.includes('gpt-99-unpriced')), 'fallback price emits warning');
     }));
 
     results.push(await runCase('import: a manually maintained model is skipped, the rest still proposes', async () => {

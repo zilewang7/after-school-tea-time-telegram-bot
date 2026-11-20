@@ -46,6 +46,8 @@ const pricingStatusOrNull = async (): Promise<ProcessPricingView | null> => {
             lastRunAt: status.lastRunAt,
             lastOutcome: status.lastOutcome,
             pendingProposals: status.pendingProposals,
+            capabilityProposals: status.lastCapabilityProposals,
+            warnings: status.lastWarnings,
         };
     } catch (error: unknown) {
         console.warn('[panel] price watch status unavailable:', error);

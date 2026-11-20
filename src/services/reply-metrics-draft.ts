@@ -12,9 +12,13 @@ import type { RoundUsage, UsageSink } from '../ai/usage/usage-types.js';
 import type { CommandType } from '../db/botResponseDTO.js';
 import type { ImageGenerationUsage } from '../db/queries/reply-metric-rows.js';
 import type { ContextIndex } from '../reply/context-index.js';
+import {
+    MAX_CAPABILITY_EVENTS_PER_ATTEMPT,
+    type CapabilityEvent,
+} from '../shared/capability-event.js';
 import type { AccessTier } from './access-tier.js';
 
-export type { ImageGenerationUsage } from '../db/queries/reply-metric-rows.js';
+export type { CapabilityEvent, ImageGenerationUsage };
 
 export interface ReplyMetricsDraft {
     readonly platform: PlatformType;
@@ -55,6 +59,10 @@ export interface ReplyMetricsDraft {
      * by the generate_image tool while the reply runs; the quota prices them.
      */
     readonly imageGenerations: ImageGenerationUsage[];
+    /** Catalog content version active when traits resolved; null if unset */
+    catalogVersion: string | null;
+    /** Capability contradiction/fallback events observed during the attempt */
+    readonly capabilityEvents: CapabilityEvent[];
     /** Passed to the platform with the request */
     readonly usage: UsageSink;
 }
@@ -67,26 +75,34 @@ export interface ReplyMetricsDraftInput {
     readonly accessTier?: AccessTier | null;
 }
 
-export const createReplyMetricsDraft = (input: ReplyMetricsDraftInput): ReplyMetricsDraft => ({
-    platform: platformTypeOf(input.model),
-    commandType: input.commandType,
-    startedAt: new Date(),
-    triggerUserId: input.triggerUserId,
-    requestStartedAt: null,
-    firstChunkAt: null,
-    contextMessages: null,
-    contextImages: null,
-    thinkingChars: 0,
-    resumedRounds: null,
-    toolUsageBaseline: [],
-    checkpointRounds: null,
-    thinkingEffortRequested: null,
-    thinkingEffortSent: null,
-    thinkingEffortFallback: null,
-    accessTier: input.accessTier ?? null,
-    imageGenerations: [],
-    usage: createUsageSink(),
-});
+export const createReplyMetricsDraft = (input: ReplyMetricsDraftInput): ReplyMetricsDraft => {
+    let draft!: ReplyMetricsDraft;
+    draft = {
+        platform: platformTypeOf(input.model),
+        commandType: input.commandType,
+        startedAt: new Date(),
+        triggerUserId: input.triggerUserId,
+        requestStartedAt: null,
+        firstChunkAt: null,
+        contextMessages: null,
+        contextImages: null,
+        thinkingChars: 0,
+        resumedRounds: null,
+        toolUsageBaseline: [],
+        checkpointRounds: null,
+        thinkingEffortRequested: null,
+        thinkingEffortSent: null,
+        thinkingEffortFallback: null,
+        accessTier: input.accessTier ?? null,
+        imageGenerations: [],
+        catalogVersion: null,
+        capabilityEvents: [],
+        usage: createUsageSink({
+            onCapabilityEvent: (event) => addCapabilityEvent(draft, event),
+        }),
+    };
+    return draft;
+};
 
 /** Call right before sendMessage; a failure before this point is a pre-request one */
 export const markRequestStarted = (draft: ReplyMetricsDraft): void => {
@@ -172,6 +188,18 @@ export const recordThinkingEffort = (
     draft.thinkingEffortRequested = facts.requested;
     draft.thinkingEffortSent = facts.sent;
     draft.thinkingEffortFallback = facts.fallback ?? null;
+};
+
+/** Record which catalog content version drove this attempt's traits */
+export const setCatalogVersion = (draft: ReplyMetricsDraft, version: string | null): void => {
+    draft.catalogVersion = version;
+};
+
+/** Record one runtime capability contradiction/fallback event on this attempt */
+export const addCapabilityEvent = (draft: ReplyMetricsDraft, event: CapabilityEvent): void => {
+    if (draft.capabilityEvents.length < MAX_CAPABILITY_EVENTS_PER_ATTEMPT) {
+        draft.capabilityEvents.push(event);
+    }
 };
 
 /**

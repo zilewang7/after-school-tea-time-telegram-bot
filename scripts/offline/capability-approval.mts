@@ -940,5 +940,183 @@ cases.push(
     })
 );
 
+// ---- Round 1 lifecycle & batch scoping ----
+
+cases.push(
+    await runCase('unchanged watch capability proposal preserves detectedAt and lastNotifiedAt', async () => {
+        await resetCapabilityDb();
+        const t1 = new Date('2026-11-13T04:00:00Z');
+        const t2 = new Date('2026-11-14T04:00:00Z');
+        const baseline = currentOf('gemini-4-hydrogen');
+        const draftDay1: CapabilityProposalDraft = {
+            model: 'gemini-4-hydrogen',
+            payload: { ...baseline, contextTokens: 2_000_000, source: 'models-dev', checkedOn: '2026-11-13', confidence: 'medium' },
+            baseline,
+            changes: [],
+            note: '能力变化：contextTokens（models.dev，2026-11-13）',
+            checkedOn: '2026-11-13',
+        };
+        await service.createOrRefreshCapabilityProposals([draftDay1], 1, { now: t1 });
+        const first = (await service.listPendingCapabilityProposals())[0];
+        if (first === undefined) throw new Error('expected pending capability proposal');
+        await service.attachCapabilityProposalMessageIds([first.id], 601, t1);
+
+        // Next day watch run: identical semantic change, only checkedOn date advanced
+        const draftDay2: CapabilityProposalDraft = {
+            ...draftDay1,
+            payload: { ...draftDay1.payload, checkedOn: '2026-11-14' },
+            note: '能力变化：contextTokens（models.dev，2026-11-14）',
+            checkedOn: '2026-11-14',
+        };
+        await service.createOrRefreshCapabilityProposals([draftDay2], 2, { now: t2 });
+        const after = (await service.listPendingCapabilityProposals())[0];
+        expect(after?.detectedAt.getTime() === t1.getTime(), 'detectedAt is preserved for 14-day TTL');
+        expect(after?.lastNotifiedAt?.getTime() === t1.getTime(), 'lastNotifiedAt is preserved for 3-day reminder');
+    })
+);
+
+cases.push(
+    await runCase('watch run withdraws un-reproduced models-dev proposals but never withdraws pending probe proposals', async () => {
+        await resetCapabilityDb();
+        const t1 = new Date('2026-11-13T04:00:00Z');
+        const t2 = new Date('2026-11-14T04:00:00Z');
+        const hydrogenBaseline = currentOf('gemini-4-hydrogen');
+        const neonBaseline = currentOf('gemini-4-neon');
+        const watchId = (
+            await service.createOrRefreshCapabilityProposals(
+                [
+                    {
+                        model: 'gemini-4-hydrogen',
+                        payload: { ...hydrogenBaseline, contextTokens: 2_000_000, source: 'models-dev', checkedOn: '2026-11-13', confidence: 'medium' },
+                        baseline: hydrogenBaseline,
+                        changes: [],
+                        note: '能力变化：contextTokens（models.dev，2026-11-13）',
+                        checkedOn: '2026-11-13',
+                    },
+                ],
+                1,
+                { now: t1 }
+            ),
+            (await service.listPendingCapabilityProposals())[0]?.id
+        );
+        if (watchId === undefined) throw new Error('missing watch proposal');
+        const neonReasoning = neonBaseline.reasoning;
+        if (neonReasoning === undefined) throw new Error('missing neon reasoning');
+        const probeId = await service.upsertCapabilityProposal({
+            model: 'gemini-4-neon',
+            payload: {
+                ...neonBaseline,
+                reasoningEffort: ['low'],
+                reasoning: { ...neonReasoning, efforts: ['low'], source: 'probe', checkedOn: '2026-11-13', confidence: 'high' },
+            },
+            baseline: neonBaseline,
+            note: 'probe 实测',
+            checkedOn: '2026-11-13',
+        });
+
+        await service.createOrRefreshCapabilityProposals([], 2, {
+            evaluatedModels: new Set(['gemini-4-hydrogen', 'gemini-4-neon']),
+            now: t2,
+        });
+        expect((await statusOf(watchId)).status === 'withdrawn', 'un-reproduced models-dev proposal is withdrawn');
+        expect((await statusOf(probeId)).status === 'pending', 'pending probe proposal is NEVER withdrawn by watch run');
+    })
+);
+
+cases.push(
+    await runCase('bulk apply/reject on one capability message only decides that message batch', async () => {
+        await resetCapabilityDb();
+        const telegram = createFakeTelegram();
+        const models = ['gemini-4-hydrogen', 'gemini-4-neon', 'gemini-4-carbon', 'gpt-6-luna', 'claude-sonnet-5-5'];
+        const drafts = models.map((model, index) =>
+            draftOf(model, (current) => ({ ...current, contextTokens: 1_000_000 + index }))
+        );
+        const pending = await seedProposals(drafts);
+        const messageIds = await sendApprovalMessage(telegram, pending);
+        const firstMsgId = messageIds[0];
+        const secondMsgId = messageIds[1];
+        if (firstMsgId === undefined || secondMsgId === undefined) throw new Error('expected two messages');
+
+        const firstBatch = await service.listPendingCapabilityProposalsByMessageId(firstMsgId);
+        expect(firstBatch.length === 4, `first batch holds 4 proposals (got ${firstBatch.length})`);
+
+        const { bot, telegram: menuTelegram } = menuBotOf();
+        await press(bot, firstMsgId, OWNER_ID, allApplyCallbackOf(firstBatch));
+        expect(lastToastText(menuTelegram) === '已应用 4 条', `only first batch (4) applied (got ${lastToastText(menuTelegram)})`);
+        const remaining = await service.listPendingCapabilityProposals();
+        expect(remaining.length === 1 && remaining[0]?.messageId === secondMsgId, 'second batch remains pending');
+    })
+);
+
+cases.push(
+    await runCase('pending traffic and provenance-v2 probe proposals are not withdrawn by watch runs and merge provenance on apply', async () => {
+        await resetCapabilityDb();
+        const t1 = new Date('2026-11-13T04:00:00Z');
+        const t2 = new Date('2026-11-14T04:00:00Z');
+        const hydrogenBaseline = currentOf('gemini-4-hydrogen');
+        const neonBaseline = currentOf('gemini-4-neon');
+
+        // Traffic proposal on hydrogen + probe v2 proposal (provenance only on reasoning.efforts) on neon
+        await service.createOrRefreshCapabilityProposals(
+            [
+                {
+                    model: 'gemini-4-hydrogen',
+                    payload: {
+                        ...hydrogenBaseline,
+                        toolsMixing: 'denied',
+                        provenance: { 'toolsMixing': { source: 'traffic', checkedOn: '2026-11-13', confidence: 'high', lane: 'vertex@live' } },
+                        laneFingerprints: { gemini: 'vertex@live' },
+                    },
+                    baseline: hydrogenBaseline,
+                    changes: [],
+                    note: '线上流量告警：拒绝混合工具（traffic，2026-11-13）',
+                    checkedOn: '2026-11-13',
+                },
+                {
+                    model: 'gemini-4-neon',
+                    payload: {
+                        ...neonBaseline,
+                        reasoningEffort: ['low', 'medium', 'high'],
+                        reasoning: { ...(neonBaseline.reasoning!), efforts: ['low', 'medium', 'high'] },
+                        provenance: { 'reasoning.efforts': { source: 'probe', checkedOn: '2026-11-13', confidence: 'high', lane: 'vertex@live' } },
+                        laneFingerprints: { gemini: 'vertex@live' },
+                    },
+                    baseline: neonBaseline,
+                    changes: [],
+                    note: 'probe 导入：思考档位（2026-11-13）',
+                    checkedOn: '2026-11-13',
+                },
+            ],
+            1,
+            { now: t1 }
+        );
+        const created = await service.listPendingCapabilityProposals();
+        const trafficProposal = created.find((p) => p.model === 'gemini-4-hydrogen');
+        const probeV2Proposal = created.find((p) => p.model === 'gemini-4-neon');
+        if (!trafficProposal || !probeV2Proposal) throw new Error('expected both pending proposals');
+
+        // Upstream watch run finds no upstream diff for either model -> neither may be withdrawn
+        await service.createOrRefreshCapabilityProposals([], 2, {
+            evaluatedModels: new Set(['gemini-4-hydrogen', 'gemini-4-neon']),
+            now: t2,
+        });
+        expect((await statusOf(trafficProposal.id)).status === 'pending', 'pending traffic proposal is NOT withdrawn');
+        expect((await statusOf(probeV2Proposal.id)).status === 'pending', 'pending provenance-v2 probe proposal is NOT withdrawn');
+
+        const applied = await service.applyCapabilityProposals([trafficProposal.id, probeV2Proposal.id], OWNER_ID);
+        expect(applied.applied === 2, `both proposals applied (got ${JSON.stringify(applied)})`);
+        const hydrogenStored = await rowCapabilitiesOf('gemini-4-hydrogen');
+        const neonStored = await rowCapabilitiesOf('gemini-4-neon');
+        expect(hydrogenStored['toolsMixing'] === 'denied', 'traffic toolsMixing=denied persisted');
+        const hydrogenProvenance = isRecord(hydrogenStored['provenance']) ? hydrogenStored['provenance'] : null;
+        const toolsMixingProv = hydrogenProvenance !== null && isRecord(hydrogenProvenance['toolsMixing'])
+            ? hydrogenProvenance['toolsMixing']
+            : null;
+        expect(toolsMixingProv?.['source'] === 'traffic', 'traffic field provenance merged onto catalog row');
+        const neonLanes = isRecord(neonStored['laneFingerprints']) ? neonStored['laneFingerprints'] : null;
+        expect(neonLanes?.['gemini'] === 'vertex@live', 'laneFingerprints merged onto catalog row');
+    })
+);
+
 // The catalog is not a reply path here; nothing was started that needs stopping.
 reportResults(cases);

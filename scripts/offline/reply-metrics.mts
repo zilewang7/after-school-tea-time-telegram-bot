@@ -90,8 +90,18 @@ const dbIndex = await import('../../src/db/index.js');
 const { sequelize } = await import('../../src/db/config.js');
 const responseHandler = await import('../../src/reply/response-handler.js');
 const { getActiveSession, listActiveSessions, startRetry } = await import('../../src/services/bot-message-service.js');
-const { markRequestStarted, recordCheckpointRounds, recordContextSize, recordResumedRounds, recordThinkingEffort } =
-    await import('../../src/services/reply-metrics-draft.js');
+const {
+    addCapabilityEvent,
+    markRequestStarted,
+    recordCheckpointRounds,
+    recordContextSize,
+    recordResumedRounds,
+    recordThinkingEffort,
+    setCatalogVersion,
+} = await import('../../src/services/reply-metrics-draft.js');
+const { listActiveModelIdsFromMetrics, listRecentCapabilityEventMetrics } = await import(
+    '../../src/db/queries/reply-metrics.js'
+);
 const { listRecentReplyErrors } = await import('../../src/services/recent-reply-errors.js');
 const { getLastCleanupRun } = await import('../../src/services/cleanup-status.js');
 const { createUsageSink } = await import('../../src/ai/usage/index.js');
@@ -1229,6 +1239,107 @@ const cases: { name: string; body: () => Promise<void> }[] = [
 
             setModelCatalog([]);
             await updateChatSettings({ chatId, patch: { thinkingEffort: null }, actor });
+        },
+    },
+    {
+        name: 'catalogVersion, capabilityEvents and 30-day active model queries (including imageGenerationUsage)',
+        body: async () => {
+            const chatContext = await startReply(-1005100000023);
+            const { session } = chatContext;
+            setCatalogVersion(session.metrics, 'm-test-v42');
+            addCapabilityEvent(session.metrics, { kind: 'effort_rejected', effort: 'xhigh', fallback: 'high' });
+            addCapabilityEvent(session.metrics, { kind: 'tools_rejected' });
+            addCapabilityEvent(session.metrics, { kind: 'max_tokens_downgraded', from: 128_000, to: 16_000 });
+            async function* stream(): AsyncGenerator<StreamChunk> {
+                yield { type: 'text', content: 'ok' };
+                yield { type: 'done' };
+            }
+            await deliver(chatContext, stream());
+            const row = await onlyRow(chatContext);
+            expect(row.catalogVersion === 'm-test-v42', `catalogVersion persisted (got ${String(row.catalogVersion)})`);
+            expect(
+                row.capabilityEvents.length === 3 &&
+                    row.capabilityEvents[0]?.kind === 'effort_rejected' &&
+                    row.capabilityEvents[1]?.kind === 'tools_rejected' &&
+                    row.capabilityEvents[2]?.kind === 'max_tokens_downgraded',
+                `capabilityEvents persisted (got ${json(row.capabilityEvents)})`
+            );
+
+            // Insert a row with imageGenerationUsage + an expired >30d row to check window & nested model extraction
+            const recentId = takeMessageId();
+            const oldId = takeMessageId();
+            const now = new Date();
+            const withinWindow = new Date(now.getTime() - 2 * 24 * 3600 * 1000);
+            const outsideWindow = new Date(now.getTime() - 45 * 24 * 3600 * 1000);
+            await insertReplyMetric(
+                storedRow(-1005100000024, recentId, {
+                    model: 'custom-chat-active',
+                    startedAt: withinWindow,
+                    finishedAt: withinWindow,
+                    imageGenerationUsage: [
+                        {
+                            model: 'custom-img-nested',
+                            generations: 1,
+                            generationsWithUsage: 0,
+                            promptTokens: null,
+                            cachedTokens: null,
+                            cacheWriteTokens: null,
+                            outputTokens: null,
+                            thoughtsTokens: null,
+                            imageOutputTokens: null,
+                        },
+                    ],
+                })
+            );
+            await insertReplyMetric(
+                storedRow(-1005100000024, oldId, {
+                    model: 'stale-retired-model',
+                    startedAt: outsideWindow,
+                    finishedAt: outsideWindow,
+                })
+            );
+            const thirtyDaysAgo = new Date(now.getTime() - 30 * 24 * 3600 * 1000);
+            const active = await listActiveModelIdsFromMetrics(thirtyDaysAgo);
+            expect(active.includes('custom-chat-active'), 'top-level recent model included');
+            expect(active.includes('custom-img-nested'), 'nested imageGenerationUsage model included');
+            expect(!active.includes('stale-retired-model'), 'older >30d model excluded');
+
+            const eventRows = await listRecentCapabilityEventMetrics(thirtyDaysAgo);
+            expect(
+                eventRows.some((entry) => entry.id === row.id && entry.capabilityEvents.length === 3),
+                'listRecentCapabilityEventMetrics returns rows carrying capabilityEvents'
+            );
+        },
+    },
+    {
+        name: 'UsageSink.noteCapabilityEvent bridges into draft capabilityEvents while preserving pre-request effort columns',
+        body: async () => {
+            const chatContext = await startReply(-1005100000025);
+            const { session } = chatContext;
+            setCatalogVersion(session.metrics, 'm-bridge-v1');
+            recordThinkingEffort(session.metrics, { requested: 'xhigh', sent: 'xhigh', fallback: null });
+            session.metrics.usage.noteCapabilityEvent({ kind: 'effort_rejected', effort: 'xhigh', fallback: 'high' });
+            session.metrics.usage.noteCapabilityEvent({ kind: 'thinking_budget_fallback', from: null });
+            session.metrics.usage.noteCapabilityEvent({ kind: 'output_truncated', reason: 'MAX_TOKENS' });
+
+            async function* stream(): AsyncGenerator<StreamChunk> {
+                yield { type: 'text', content: 'ok' };
+                yield { type: 'done' };
+            }
+            await deliver(chatContext, stream());
+            const row = await onlyRow(chatContext);
+            expect(row.catalogVersion === 'm-bridge-v1', `catalogVersion stored (got ${String(row.catalogVersion)})`);
+            expect(
+                row.thinkingEffortSent === 'xhigh' && row.thinkingEffortFallback === null,
+                `pre-request thinking effort columns preserved (got ${row.thinkingEffortSent} / ${row.thinkingEffortFallback})`
+            );
+            expect(
+                row.capabilityEvents.length === 3 &&
+                    row.capabilityEvents[0]?.kind === 'effort_rejected' &&
+                    row.capabilityEvents[1]?.kind === 'thinking_budget_fallback' &&
+                    row.capabilityEvents[2]?.kind === 'output_truncated',
+                `UsageSink capability events persisted to reply_metrics (got ${json(row.capabilityEvents)})`
+            );
         },
     },
 ];

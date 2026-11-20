@@ -229,12 +229,12 @@ export const sendCapabilityProposalMessage = async (
     const ownerId = getOwnerUserId();
     if (ownerId === null) return [];
     const messageIds: number[] = [];
-    const latestFingerprint = latestFingerprintOf(proposals);
     let start = 0;
     for (const batch of batchesOf(proposals)) {
         try {
             const message = renderBatch(batch, { start, total: proposals.length });
-            const sent = await sendOwnerMessage(api, ownerId, message, keyboardOf(batch, latestFingerprint));
+            const batchFingerprint = latestFingerprintOf(batch);
+            const sent = await sendOwnerMessage(api, ownerId, message, keyboardOf(batch, batchFingerprint));
             if (sent === null) {
                 console.error(
                     `[capability-notify] no approval message for proposals ${batch.map((item) => item.id).join(',')}`

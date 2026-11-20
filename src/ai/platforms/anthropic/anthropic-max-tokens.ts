@@ -10,7 +10,9 @@
  * before, and keeps it for its remaining rounds.
  */
 import type { ModelCatalogCapabilities } from '../../../config/model-capabilities.js';
-import { resolveModelTraits } from '../../model-traits.js';
+import { resolveRuntimeTraits } from '../../model-traits.js';
+import type { RuntimeTraits } from '../../types.js';
+import type { UsageSink } from '../../usage/usage-types.js';
 import { errorTextOf, isParamRejection } from '../thinking-effort-wire.js';
 
 /** A Claude id the catalog has no output limit for */
@@ -39,8 +41,8 @@ export const maxTokensOf = (capabilities: ModelCatalogCapabilities | null): numb
 };
 
 /** The wire state a reply starts with, from the catalog data of its model */
-export const maxTokensWireOf = (model: string): MaxTokensWire => ({
-    maxTokens: maxTokensOf(resolveModelTraits(model).capabilities),
+export const maxTokensWireOf = (model: string, traits?: RuntimeTraits): MaxTokensWire => ({
+    maxTokens: maxTokensOf((traits ?? resolveRuntimeTraits(model)).capabilities),
     degraded: false,
 });
 
@@ -49,14 +51,21 @@ export const maxTokensWireOf = (model: string): MaxTokensWire => ({
  * the reply has not dropped yet; true when the round should be sent again.
  * A limit already at or below the fallback has nothing to drop to.
  */
-export const lowerMaxTokensAfter = (wire: MaxTokensWire, model: string, error: unknown): boolean => {
+export const lowerMaxTokensAfter = (
+    wire: MaxTokensWire,
+    model: string,
+    error: unknown,
+    usageSink?: UsageSink
+): boolean => {
     if (wire.degraded || wire.maxTokens <= FALLBACK_MAX_TOKENS || !isParamRejection(error, MAX_TOKENS_REJECTION)) {
         return false;
     }
+    const from = wire.maxTokens;
     console.warn(
-        `[anthropic] ${model} rejected max_tokens ${wire.maxTokens}; retrying with ${FALLBACK_MAX_TOKENS}: ${errorTextOf(error).slice(0, 200)}`
+        `[anthropic] ${model} rejected max_tokens ${from}; retrying with ${FALLBACK_MAX_TOKENS}: ${errorTextOf(error).slice(0, 200)}`
     );
     wire.maxTokens = FALLBACK_MAX_TOKENS;
     wire.degraded = true;
+    usageSink?.noteCapabilityEvent({ kind: 'max_tokens_downgraded', from, to: FALLBACK_MAX_TOKENS });
     return true;
 };

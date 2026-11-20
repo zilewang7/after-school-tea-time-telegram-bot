@@ -170,6 +170,8 @@ export const buildReplyMetricInput = (source: ReplyMetricSource, attempt: Finali
         thinkingEffortFallback: metrics.thinkingEffortFallback,
         accessTier: metrics.accessTier,
         imageGenerationUsage: metrics.imageGenerations,
+        catalogVersion: metrics.catalogVersion,
+        capabilityEvents: metrics.capabilityEvents,
     };
 };
 

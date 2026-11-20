@@ -12,7 +12,14 @@
  * save paths.
  */
 import type { Context } from 'grammy';
-import { isOpenCodeGoModel, openCodeGoSessionId, sendMessage } from '../../ai/index.js';
+import {
+    capabilitiesOf,
+    isOpenCodeGoModel,
+    logReplyTraits,
+    openCodeGoSessionId,
+    resolveRuntimeTraits,
+    sendMessage,
+} from '../../ai/index.js';
 import { getMessage } from '../../db/index.js';
 import type { BotMessageSession } from '../../services/bot-message-service.js';
 import { startRetry } from '../../services/index.js';
@@ -22,6 +29,7 @@ import {
     recordImageGeneration,
     recordResumedRounds,
     recordThinkingEffort,
+    setCatalogVersion,
 } from '../../services/reply-metrics-draft.js';
 import { to } from '../../shared/result.js';
 import { setContextNumbering } from '../../state.js';
@@ -86,6 +94,9 @@ const continueFromCheckpoint = async (
     recordContextSize(session.metrics, entry.context.contextIndex);
 
     const { model } = plan;
+    const traits = resolveRuntimeTraits(model);
+    logReplyTraits(traits);
+    const capabilities = capabilitiesOf(traits);
     const openCodeGoSession = isOpenCodeGoModel(model)
         ? openCodeGoSessionId(chatId, await resolveContextRoot(chatId, userMessageId))
         : null;
@@ -108,7 +119,8 @@ const continueFromCheckpoint = async (
         }),
         plan.settings.toolOverrides,
         plan.access,
-        entry.toolState
+        entry.toolState,
+        capabilities
     );
     // The resumed version keeps the checkpoint's picture ids (gN/imgN/sN) alive
     // and resolves #N against the context it was built on
@@ -117,8 +129,9 @@ const continueFromCheckpoint = async (
 
     // The continue validated the setting against the checkpoint, so this is the
     // same thinking level the interrupted version asked for
-    const thinking = thinkingRequestOf(model, plan.settings.thinkingEffort);
+    const thinking = thinkingRequestOf(model, plan.settings.thinkingEffort, traits);
     recordThinkingEffort(session.metrics, thinking.facts);
+    setCatalogVersion(session.metrics, traits.catalogVersion);
 
     markRequestStarted(session.metrics);
     const [streamErr, stream] = await to(
@@ -132,6 +145,7 @@ const continueFromCheckpoint = async (
             usageSink: session.metrics.usage,
             checkpointSink: checkpointSinkFor(chatContext),
             resumeFrom: entry.loop,
+            traits,
             ...priorityRequestOf(plan.access, plan.settings.geminiPriority),
             ...thinking.platform,
         })

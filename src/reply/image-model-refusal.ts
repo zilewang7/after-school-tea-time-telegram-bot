@@ -7,6 +7,7 @@
  */
 import type { Context } from 'grammy';
 import { isImageOutputModel } from '../ai/model-kinds.js';
+import type { RuntimeTraits } from '../ai/types.js';
 import { sendBotNotice } from '../services/bot-notice-service.js';
 
 /** The stored id is echoed: the /model overview shows it anyway */
@@ -15,8 +16,12 @@ export const imageChatModelRefusalText = (model: string): string =>
     '要画图直接让 bot 画，或用 /picbanana、/picgpt。';
 
 /** Sends the refusal when `model` is an image model; resolves true when it refused (the caller then stops) */
-export const refuseImageChatModel = async (ctx: Context, model: string): Promise<boolean> => {
-    if (!isImageOutputModel(model)) return false;
+export const refuseImageChatModel = async (
+    ctx: Context,
+    model: string,
+    traits?: RuntimeTraits
+): Promise<boolean> => {
+    if (!isImageOutputModel(model, traits)) return false;
     await sendBotNotice(ctx, imageChatModelRefusalText(model));
     return true;
 };

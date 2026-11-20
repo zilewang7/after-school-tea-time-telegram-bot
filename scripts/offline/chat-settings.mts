@@ -219,7 +219,7 @@ const cases: { name: string; body: () => Promise<void> }[] = [
             const savedEnv = process.env.DEFAULT_MODEL;
             process.env.DEFAULT_MODEL = '';
             try {
-                expect(service.getGlobalDefaultModel() === 'gpt-5', 'an empty DEFAULT_MODEL counts as unset');
+                expect(service.getGlobalDefaultModel() === 'gemini-4-neon', 'an empty DEFAULT_MODEL counts as unset');
             } finally {
                 process.env.DEFAULT_MODEL = savedEnv;
             }

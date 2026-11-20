@@ -11,7 +11,7 @@
  * both the declared tool names and the static head's capability lines.
  */
 import type { Api } from 'grammy';
-import { getModelCapabilities } from '../../ai/platform-factory.js';
+import { capabilitiesOf, resolveRuntimeTraits } from '../../ai/model-traits.js';
 import { buildStaticSystemPrompt } from '../../ai/system-prompt/index.js';
 import type { ChatRow } from '../../db/queries/panel-registry.js';
 import type { Message } from '../../db/messageDTO.js';
@@ -77,7 +77,7 @@ export const buildModelView = async (request: ModelViewRequest): Promise<ModelVi
     const target = await resolveModelViewTarget(chat.chatId, request.rootId, request.at);
     const settings = snapshotReplySettings(chat.chatId);
     const model = request.asModel ?? settings.model;
-    const capabilities = getModelCapabilities(model);
+    const capabilities = capabilitiesOf(resolveRuntimeTraits(model));
     // The same combination the reply would send: a different model can load
     // other auto templates, which is the point of looking at `asModel`.
     const addendum = await resolveReplyAddendum(
@@ -101,7 +101,10 @@ export const buildModelView = async (request: ModelViewRequest): Promise<ModelVi
     const { tools, availability, workspaceState } = createReplyTools(
         model,
         toolContextOf(chat, target.userMessage, built, request.toolApi),
-        settings.toolOverrides
+        settings.toolOverrides,
+        'full',
+        undefined,
+        capabilities
     );
     // Mirror the real request: the workspace manifest is part of the volatile
     // tail the model would see, so the panel must show it too.
@@ -124,7 +127,7 @@ export const buildModelView = async (request: ModelViewRequest): Promise<ModelVi
         model,
         asModel: request.asModel !== undefined,
         computedAt: request.now.toISOString(),
-        systemPrompt: buildStaticSystemPrompt(model, buildStaticPromptOptions(availability)),
+        systemPrompt: buildStaticSystemPrompt(model, buildStaticPromptOptions(availability), capabilities),
         tools: tools.definitions.map((definition) => definition.name),
         turns: built.messages.map(toModelViewTurn),
         numbers: [...built.contextIndex.values()].map((entry) => ({ number: entry.number, messageId: entry.messageId })),

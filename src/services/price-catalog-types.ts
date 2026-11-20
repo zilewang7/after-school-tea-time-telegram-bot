@@ -45,6 +45,8 @@ export interface CatalogDocuments {
     readonly ephonePricingJson: string | null;
     /** LiteLLM's JSON: cross-check only */
     readonly litellmJson: string | null;
+    /** models.dev aggregate `api.json` body, fetched concurrently when requested */
+    readonly apiJson?: string | null;
 }
 
 export interface CatalogFetchResult {

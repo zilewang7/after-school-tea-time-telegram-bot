@@ -1,17 +1,11 @@
 /**
- * Model kind predicates shared by the platform factory and the platforms.
+ * Model kind predicates shared by the platform factory, platforms and settings.
  *
- * The predicates are thin delegates of `model-traits.ts`: PR2 still returns the
- * code heuristics (with the data comparison only logged under
- * `MODEL_TRAITS_SHADOW=1`). Export names and semantics stay as they were, so the
- * ten-plus call sites do not change.
+ * Thin delegates of `model-traits.ts`: callers that already resolved
+ * `RuntimeTraits` for the reply pass it in so each model is resolved once.
  */
-import {
-    runtimeIsImageOutputModel,
-    runtimeSupportsGeminiFunctionTools,
-    runtimeSupportsXhighThinkingLevel,
-    supportsGeminiImageSearchGrounding as supportsGeminiImageSearchGroundingTrait,
-} from './model-traits.js';
+import { isImageOutputModelFromTraits, resolveRuntimeTraits } from './model-traits.js';
+import type { RuntimeTraits } from './types.js';
 
 /**
  * Models whose output is an image (the Nano Banana and dall-e ids carry no
@@ -19,16 +13,13 @@ import {
  * never as the chat model: a missed one would take a chat request as an image
  * prompt.
  */
-export const isImageOutputModel = (model: string): boolean => runtimeIsImageOutputModel(model);
+export const isImageOutputModel = (model: string, traits?: RuntimeTraits): boolean =>
+    isImageOutputModelFromTraits(traits ?? resolveRuntimeTraits(model));
 
 /** Gemini models that accept function declarations alongside the search tools */
-export const supportsGeminiFunctionTools = (model: string): boolean =>
-    runtimeSupportsGeminiFunctionTools(model);
+export const supportsGeminiFunctionTools = (model: string, traits?: RuntimeTraits): boolean =>
+    (traits ?? resolveRuntimeTraits(model)).geminiToolsMixing.value;
 
 /** Image models that can ground a generation in real web images (imageSearch) */
-export const supportsGeminiImageSearchGrounding = (model: string): boolean =>
-    supportsGeminiImageSearchGroundingTrait(model);
-
-/** Gemini 4 Hydrogen and Neon accept the XHIGH thinking level on Vertex */
-export const supportsXhighThinkingLevel = (model: string): boolean =>
-    runtimeSupportsXhighThinkingLevel(model);
+export const supportsGeminiImageSearchGrounding = (model: string, traits?: RuntimeTraits): boolean =>
+    (traits ?? resolveRuntimeTraits(model)).imageSearchGrounding.value;

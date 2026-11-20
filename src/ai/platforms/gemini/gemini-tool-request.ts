@@ -82,3 +82,9 @@ const THINKING_LEVEL_ERROR = /thinking level is unsupported/i;
 
 export const isThinkingLevelError = (error: unknown): boolean =>
     httpStatusOf(error) === 400 && THINKING_LEVEL_ERROR.test(errorText(error));
+
+/** A 400 that rejects thinkingBudget (e.g. -1 on newer models that drop budget) */
+const THINKING_BUDGET_ERROR = /thinking[_\s]?budget/i;
+
+export const isThinkingBudgetError = (error: unknown): boolean =>
+    httpStatusOf(error) === 400 && THINKING_BUDGET_ERROR.test(errorText(error));

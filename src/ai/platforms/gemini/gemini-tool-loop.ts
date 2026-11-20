@@ -375,6 +375,9 @@ async function* runRounds(
         usageSink?.addRound(normalizeGeminiUsage(round.usage.usage), {
             servedTier: geminiServedTier(round.usage.usage),
         });
+        if (round.finishReason === FinishReason.MAX_TOKENS) {
+            usageSink?.noteCapabilityEvent({ kind: 'output_truncated', reason: 'MAX_TOKENS' });
+        }
         console.log(
             formatGeminiUsageLine(model, round.usage, {
                 roundNumber: state.roundNumber,

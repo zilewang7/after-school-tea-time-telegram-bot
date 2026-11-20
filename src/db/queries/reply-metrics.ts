@@ -4,11 +4,14 @@
  * never updated and never cleaned.
  */
 import { QueryTypes } from '@sequelize/core';
+import type { CapabilityEvent } from '../../shared/capability-event.js';
 import { isJsonObject } from '../../shared/json-object.js';
 import { sequelize } from '../config.js';
 import { ReplyMetric } from '../replyMetricDTO.js';
 import {
+    parseImageGenerationUsage,
     parseReplyMetricRow,
+    serializeCapabilityEvents,
     serializeImageGenerationUsage,
     serializeToolUsage,
     storedDateOf,
@@ -20,6 +23,7 @@ export {
     REPLY_ACCESS_TIERS,
     REPLY_OUTCOMES,
     REQUESTED_TIERS,
+    type CapabilityEvent,
     type ImageGenerationUsage,
     type ReplyAccessTier,
     type ReplyMetricInput,
@@ -80,6 +84,8 @@ export const insertReplyMetric = async (input: ReplyMetricInput): Promise<void> 
         accessTier: input.accessTier ?? null,
         toolUsage: serializeToolUsage(input.toolUsage),
         imageGenerationUsage: serializeImageGenerationUsage(input.imageGenerationUsage ?? []),
+        catalogVersion: input.catalogVersion ?? null,
+        capabilityEvents: serializeCapabilityEvents(input.capabilityEvents ?? []),
     });
 };
 
@@ -222,4 +228,72 @@ export const findEarliestReplyMetricStart = async (
     );
     const first = rows[0];
     return isJsonObject(first) ? storedDateOf(first.earliest) : null;
+};
+
+/**
+ * Distinct model ids actively used since `since` (design 2026-1114-0510 §3.4):
+ * includes both top-level `reply_metrics.model` and nested `imageGenerationUsage` models.
+ */
+export const listActiveModelIdsFromMetrics = async (since: Date): Promise<string[]> => {
+    const [topRows, imageRows] = await Promise.all([
+        sequelize.query(
+            'SELECT DISTINCT model FROM reply_metrics WHERE startedAt >= :since',
+            { replacements: { since }, type: QueryTypes.SELECT }
+        ),
+        sequelize.query(
+            'SELECT DISTINCT imageGenerationUsage FROM reply_metrics WHERE startedAt >= :since AND imageGenerationUsage IS NOT NULL',
+            { replacements: { since }, type: QueryTypes.SELECT }
+        ),
+    ]);
+    const models = new Set<string>();
+    for (const row of topRows) {
+        if (isJsonObject(row) && typeof row.model === 'string' && row.model.trim() !== '') {
+            models.add(row.model.trim());
+        }
+    }
+    for (const row of imageRows) {
+        if (!isJsonObject(row)) continue;
+        for (const entry of parseImageGenerationUsage(row.imageGenerationUsage)) {
+            if (entry.model.trim() !== '') models.add(entry.model.trim());
+        }
+    }
+    return [...models].sort((first, second) => first.localeCompare(second));
+};
+
+/** One `reply_metrics` row that recorded runtime capability rejection/fallback events */
+export interface ReplyMetricCapabilityEventRow {
+    readonly id: number;
+    readonly model: string;
+    readonly platform: string;
+    readonly route: string | null;
+    readonly catalogVersion: string | null;
+    readonly startedAt: Date;
+    readonly thinkingEffortSent: string | null;
+    readonly capabilityEvents: readonly CapabilityEvent[];
+}
+
+/** Recent `reply_metrics` rows carrying `capabilityEvents` for watch-run contradiction scanning */
+export const listRecentCapabilityEventMetrics = async (since: Date): Promise<ReplyMetricCapabilityEventRow[]> => {
+    const rows: unknown[] = await sequelize.query(
+        `SELECT * FROM reply_metrics
+         WHERE startedAt >= :since AND capabilityEvents IS NOT NULL
+         ORDER BY startedAt ASC, id ASC`,
+        { replacements: { since }, type: QueryTypes.SELECT }
+    );
+    const matched: ReplyMetricCapabilityEventRow[] = [];
+    for (const row of rows) {
+        const record = parseReplyMetricRow(row);
+        if (record === null || record.capabilityEvents.length === 0) continue;
+        matched.push({
+            id: record.id,
+            model: record.model,
+            platform: record.platform,
+            route: record.route,
+            catalogVersion: record.catalogVersion,
+            startedAt: record.startedAt,
+            thinkingEffortSent: record.thinkingEffortSent,
+            capabilityEvents: record.capabilityEvents,
+        });
+    }
+    return matched;
 };

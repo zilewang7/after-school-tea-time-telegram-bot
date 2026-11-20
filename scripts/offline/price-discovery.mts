@@ -12,8 +12,12 @@ import { setupOfflineDb, expect, reportResults, runCase, type CaseResult } from 
 
 await setupOfflineDb();
 const { discoveredModelsOf } = await import('../../src/services/price-watch-service.js');
-const { seedModelCatalogEntries, setModelCatalog } = await import('../../src/config/model-catalog.js');
+const { ensureReferenceCatalogRows, loadModelCatalog } = await import('../../src/services/model-catalog-service.js');
+const { findModelCatalogEntry, listAllModelCatalog, listModelCatalog, seedModelCatalogEntries, setModelCatalog } = await import(
+    '../../src/config/model-catalog.js'
+);
 const { catalogModelRefs } = await import('../../src/services/price-catalog-fetch.js');
+const { ModelCatalogEntryRow } = await import('../../src/db/modelCatalogDTO.js');
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const recent = new Date(Date.now() - 2 * DAY_MS).toISOString().slice(0, 10);
@@ -175,6 +179,61 @@ results.push(
         );
         expect(!refs.some((ref) => ref.model === 'some-manual-model'), 'a row without a catalog key is not tracked');
         expect(refs.filter((ref) => ref.model === 'gpt-6-sol').length === 1, 'a shipped ref is not duplicated');
+        setModelCatalog([]);
+    })
+);
+
+results.push(
+    await runCase('discoveredModelsOf uses injected now instead of wall clock for checkedOn', async () => {
+        const fixedNow = new Date('2026-11-20T09:00:00Z');
+        const body = catalogOf([model('gpt-6.1-sol', { release_date: '2026-10-01' })]);
+        const discovered = discoveredModelsOf(body, fixedNow);
+        expect(discovered.length === 1, 'discovered one model');
+        expect(discovered[0]?.entry.checkedOn === '2026-11-20', `entry.checkedOn uses injected now (got ${discovered[0]?.entry.checkedOn})`);
+        expect(
+            discovered[0]?.entry.capabilities.checkedOn === '2026-11-20',
+            'capabilities.checkedOn uses injected now'
+        );
+        expect(discovered[0]?.price?.checkedOn === '2026-11-20', 'price.checkedOn uses injected now');
+    })
+);
+
+results.push(
+    await runCase('ensureReferenceCatalogRows creates enabled=0 reference rows excluded from menu', async () => {
+        await ModelCatalogEntryRow.destroy({ where: {} });
+        await loadModelCatalog();
+        const added = await ensureReferenceCatalogRows({
+            activeModels: ['custom-hand-typed-id', 'gemini-nano-banana-2.1'],
+            apiJsonRoot: {
+                openai: {
+                    models: {
+                        'custom-hand-typed-id': {
+                            id: 'custom-hand-typed-id',
+                            name: 'Custom Hand Typed',
+                            limit: { context: 64_000, output: 8_192 },
+                            modalities: { input: ['text'], output: ['text'] },
+                            tool_call: true,
+                        },
+                    },
+                },
+            },
+            now: new Date('2026-11-20T09:00:00Z'),
+        });
+        expect(added.includes('gemini-nano-banana-2.1'), 'seed image model gets a reference row');
+        expect(added.includes('gpt-image-2.5-dev'), 'gpt image model gets a reference row');
+        expect(added.includes('gemini-3.8-flash'), 'gemini-3.8-flash gets a reference row');
+        expect(added.includes('gemini-4-argon'), 'historical gemini-4-argon gets a reference row');
+        expect(added.includes('custom-hand-typed-id'), 'active non-menu model gets a reference row');
+
+        const menuIds = listModelCatalog().map((entry) => entry.id);
+        expect(!menuIds.includes('gemini-nano-banana-2.1') && !menuIds.includes('custom-hand-typed-id'), 'reference rows stay out of the menu');
+        const allIds = listAllModelCatalog().map((entry) => entry.id);
+        expect(allIds.includes('custom-hand-typed-id') && allIds.includes('gemini-4-argon'), 'reference rows live in listAllModelCatalog');
+        const customRow = findModelCatalogEntry('custom-hand-typed-id');
+        expect(customRow !== null && customRow.enabled === false && customRow.capabilities.contextTokens === 64_000, 'api.json enriches unknown active reference row');
+        // Second call is idempotent
+        expect((await ensureReferenceCatalogRows({ activeModels: ['custom-hand-typed-id'] })).length === 0, 'idempotent');
+        await ModelCatalogEntryRow.destroy({ where: {} });
         setModelCatalog([]);
     })
 );

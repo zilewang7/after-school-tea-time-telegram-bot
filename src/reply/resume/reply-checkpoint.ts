@@ -47,6 +47,10 @@ export interface ResumeRequestFacts {
     readonly thinkingEffort: ThinkingEffortValue | null;
     /** The level that actually went out after clamping; null = nothing explicit */
     readonly thinkingEffortSent: string | null;
+    /** Resolved model traits when the checkpoint was captured (for continue-time staleness checks) */
+    readonly imageInput?: boolean;
+    readonly mediaInput?: boolean;
+    readonly outputTokens?: number | null;
 }
 
 /**

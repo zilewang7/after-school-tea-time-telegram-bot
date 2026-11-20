@@ -8,6 +8,7 @@
  * Units: times ISO, durations milliseconds, cost USD at list price.
  */
 import type {
+    CapabilityEvent,
     ReplyMetricRecord,
     ReplyOutcome,
     RequestedTier,
@@ -89,6 +90,10 @@ export interface ReplyMetricView {
     readonly pricing: PricingFlag;
     /** Priority rounds priced at the standard price: the model has no priority price */
     readonly priorityAtStandardPrice: boolean;
+    /** Catalog content version active when this attempt resolved its traits */
+    readonly catalogVersion: string | null;
+    /** Capability rejection/fallback events observed during the attempt */
+    readonly capabilityEvents: readonly CapabilityEvent[];
 }
 
 /** Members also see who triggered the attempt */
@@ -157,6 +162,8 @@ export const toReplyMetricView = (row: ReplyMetricRecord): ReplyMetricView => {
         imageGenerations: images.generations,
         pricing: chat.pricing,
         priorityAtStandardPrice: chat.priorityAtStandardPrice,
+        catalogVersion: row.catalogVersion,
+        capabilityEvents: row.capabilityEvents,
     };
 };
 

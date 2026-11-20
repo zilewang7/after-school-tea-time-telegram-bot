@@ -16,8 +16,8 @@ export type ProposalKind = (typeof PROPOSAL_KINDS)[number];
 export const isProposalKind = (value: string): value is ProposalKind =>
   PROPOSAL_KINDS.some((kind) => kind === value);
 
-/** pending → approved | rejected | superseded | expired; decided rows never change */
-export const PROPOSAL_STATUSES = ['pending', 'approved', 'rejected', 'superseded', 'expired'] as const;
+/** pending → approved | rejected | superseded | expired | withdrawn; decided rows never change */
+export const PROPOSAL_STATUSES = ['pending', 'approved', 'rejected', 'superseded', 'expired', 'withdrawn'] as const;
 export type ProposalStatus = (typeof PROPOSAL_STATUSES)[number];
 
 /**
@@ -55,6 +55,8 @@ export class PriceChangeProposal extends Model<
   declare runId: CreationOptional<number | null>;
   // The private-chat approval message that carries it (for edit/resend)
   declare messageId: CreationOptional<number | null>;
+  // When the owner was last notified about this pending payload (for 3-day reminders)
+  declare lastNotifiedAt: CreationOptional<Date | null>;
   // One line shown to the owner (why the watcher suggested this change)
   declare note: CreationOptional<string | null>;
   declare createdAt: CreationOptional<Date>;
@@ -123,6 +125,11 @@ PriceChangeProposal.init({
   },
   messageId: {
     type: DataTypes.INTEGER,
+    allowNull: true,
+    defaultValue: null,
+  },
+  lastNotifiedAt: {
+    type: DataTypes.DATE,
     allowNull: true,
     defaultValue: null,
   },
