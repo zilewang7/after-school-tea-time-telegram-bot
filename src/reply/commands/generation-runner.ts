@@ -29,6 +29,7 @@ import {
 import { rememberJob, recallJob } from './generation-job-store.js';
 import { rememberAction, type GenerationActionFn } from './generation-actions.js';
 import { buildCancelButton, buildRerollButton, buildRetryButton } from './generation-buttons.js';
+import { sendGenerationOutcome, settleGenerationOutcome } from './generation-outcome-notice.js';
 
 /** Poll fast while the job is likely still queued, then back off */
 const DEFAULT_FAST_POLL_MS = 2000;
@@ -112,7 +113,10 @@ interface Placeholder {
 }
 
 /**
- * Replace the placeholder with a final message (usually a failure).
+ * Replace the placeholder with a final message (usually a failure), recording
+ * it as the bot's notice: this text stays in the chat, so it must be visible to
+ * later contexts and a reaction on it must resolve. Progress updates are never
+ * recorded — they are transient and the success path deletes the placeholder.
  *
  * `retry` is what 🔄 will do. Nearly every failure here is worth one tap —
  * dropped connections to that box are routine, and retyping a prompt with
@@ -124,22 +128,15 @@ const settlePlaceholder = async (
     text: string,
     retry?: GenerationActionFn
 ): Promise<void> => {
-    const markup = retry ? buildRetryButton(rememberAction(retry)) : undefined;
-
-    const [editError] = await to(
-        run.api.editMessageText(run.chatId, placeholder.messageId, text, {
-            reply_markup: markup,
-        })
-    );
-    if (!editError) return;
-
-    // The placeholder is gone (deleted by a user, or already replaced) — say it
-    // as a fresh reply rather than swallowing the outcome
-    await to(
-        run.api.sendMessage(run.chatId, text, {
-            reply_parameters: { message_id: run.userMessageId },
-            reply_markup: markup,
-        })
+    await settleGenerationOutcome(
+        {
+            api: run.api,
+            chatId: run.chatId,
+            userMessageId: run.userMessageId,
+            placeholderMessageId: placeholder.messageId,
+        },
+        text,
+        retry ? buildRetryButton(rememberAction(retry)) : undefined
     );
 };
 
@@ -380,11 +377,10 @@ export const runGeneration = async (run: GenerationRun): Promise<void> => {
     if (!health.ok) {
         // The most common single failure: the box was simply off. 🔄 turns
         // "go switch it on and retype your command" into "go switch it on".
-        await to(
-            run.api.sendMessage(run.chatId, health.reason ?? '生成服务未启动', {
-                reply_parameters: { message_id: run.userMessageId },
-                reply_markup: buildRetryButton(rememberAction(retryEverything)),
-            })
+        await sendGenerationOutcome(
+            { api: run.api, chatId: run.chatId, userMessageId: run.userMessageId },
+            health.reason ?? '生成服务未启动',
+            buildRetryButton(rememberAction(retryEverything))
         );
         return;
     }
@@ -393,6 +389,7 @@ export const runGeneration = async (run: GenerationRun): Promise<void> => {
     const queued = health.queue?.pending ?? 0;
     const opening = queued > 0 ? `${icon} 已提交 · 前面还有 ${queued} 个任务` : `${icon} 已提交 · 排队中`;
 
+    // Progress lives only in this message: never recorded, deleted on success
     const placeholderResult = await to(
         run.api.sendMessage(run.chatId, opening, {
             reply_parameters: { message_id: run.userMessageId },

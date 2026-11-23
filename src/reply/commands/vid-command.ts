@@ -30,6 +30,7 @@ import { buildVideoRequest, planVideoGeneration, type VideoPlan } from './vid-re
 import { runGeneration } from './generation-runner.js';
 import { rememberAction } from './generation-actions.js';
 import { buildRetryButton, buildRewriteButton } from './generation-buttons.js';
+import { sendBotNoticeVia, updateBotNoticeVia } from '../../services/bot-notice-service.js';
 
 /** Telegram caps a message at 4096; leave room for the header and the tags */
 const MAX_STORYBOARD_DISPLAY = 3500;
@@ -81,7 +82,24 @@ interface RunTarget {
     sourceMessageIds: Array<number | undefined>;
 }
 
-const replyWith = async (target: RunTarget, text: string): Promise<void> => {
+/**
+ * Send a recorded outcome: an error or failure the user will read as this
+ * command's answer. It stays in the chat, so a later context must be able to
+ * quote it and a reaction on it must resolve.
+ */
+const replyWithOutcome = async (target: RunTarget, text: string): Promise<void> => {
+    await sendBotNoticeVia(target.api, target.chatId, target.userMessageId, text, {
+        reply_parameters: { message_id: target.userMessageId },
+        parse_mode: 'Markdown',
+    });
+};
+
+/**
+ * Usage help and ignored-flag hints: visible, but normal-operation guidance,
+ * not an outcome — deliberately not recorded (design §6.3/§6.4 spirit: only
+ * text a user could take as the command's answer becomes context).
+ */
+const replyWithHint = async (target: RunTarget, text: string): Promise<void> => {
     await to(
         target.api.sendMessage(target.chatId, text, {
             reply_parameters: { message_id: target.userMessageId },
@@ -127,6 +145,7 @@ const writeStoryboard = async (
     plan: VideoPlan,
     replan: () => Promise<void>
 ): Promise<Storyboard> => {
+    // Progress only: the storyboard edit replaces it, so it is never recorded
     const noticeResult = await to(
         target.api.sendMessage(target.chatId, '🎬 正在写分镜…', {
             reply_parameters: { message_id: target.userMessageId },
@@ -150,24 +169,34 @@ const writeStoryboard = async (
     if (error) {
         const reason = error instanceof H3PromptError ? error.userReason : error.message;
         console.warn('[vid] storyboard failed, falling back to the raw brief:', error.message);
+        // A plain-text failure notice: it stays in the chat, so record it
         const text = `⚠️ ${reason}，直接用你的原话生成`;
         if (noticeId === undefined) {
-            await to(
-                target.api.sendMessage(target.chatId, text, {
-                    reply_parameters: { message_id: target.userMessageId },
-                    reply_markup: rewriteMarkup,
-                })
-            );
+            await sendBotNoticeVia(target.api, target.chatId, target.userMessageId, text, {
+                reply_parameters: { message_id: target.userMessageId },
+                reply_markup: rewriteMarkup,
+            });
         } else {
-            await to(
+            const [editError] = await to(
                 target.api.editMessageText(target.chatId, noticeId, text, {
                     reply_markup: rewriteMarkup,
                 })
             );
+            if (editError === null) {
+                await updateBotNoticeVia(
+                    target.api,
+                    target.chatId,
+                    noticeId,
+                    text,
+                    target.userMessageId
+                );
+            }
         }
         return { prompt: spec.brief, degradedReason: reason };
     }
 
+    // The HTML storyboard is deliberately NOT recorded: it is mid-flow rich
+    // content, and storing its markup would put HTML source into later contexts
     const text = storyboardMessage(storyboard);
     if (noticeId === undefined) {
         await to(
@@ -198,17 +227,17 @@ const startRun = async (target: RunTarget, spec: VidCommandSpec): Promise<void> 
         referenceImages,
     });
     if (!planned.ok) {
-        await replyWith(target, planned.reason);
+        await replyWithOutcome(target, planned.reason);
         return;
     }
     const { plan } = planned;
 
     if (spec.negativeIgnored) {
-        await replyWith(target, 'H3 不吃负面提示词，`-:` 后面的内容已经忽略');
+        await replyWithHint(target, 'H3 不吃负面提示词，`-:` 后面的内容已经忽略');
     }
     if (plan.extraReferenceImages > 0) {
         const total = plan.extraReferenceImages + plan.referenceImages.length;
-        await replyWith(
+        await replyWithHint(
             target,
             `这条消息里有 ${total} 张图，\`${plan.workflow.id}\` 只吃前 ${plan.referenceImages.length} 张`
         );
@@ -221,17 +250,21 @@ const startRun = async (target: RunTarget, spec: VidCommandSpec): Promise<void> 
     let storyboard: Storyboard = { prompt: spec.brief };
     if (!spec.raw) {
         if (!isH3EnhancerConfigured()) {
-            await replyWith(target, '没有配置 Grok，直接用你的原话生成（想自己写分镜可以加 `-raw=1`）');
+            await replyWithHint(target, '没有配置 Grok，直接用你的原话生成（想自己写分镜可以加 `-raw=1`）');
         } else {
             // Check the box is up BEFORE spending a minute on a storyboard for
             // a video that cannot be made
             const health = await checkHealth();
             if (!health.ok) {
-                await to(
-                    target.api.sendMessage(target.chatId, health.reason ?? '生成服务未启动', {
+                await sendBotNoticeVia(
+                    target.api,
+                    target.chatId,
+                    target.userMessageId,
+                    health.reason ?? '生成服务未启动',
+                    {
                         reply_parameters: { message_id: target.userMessageId },
                         reply_markup: buildRetryButton(rememberAction(replan)),
-                    })
+                    }
                 );
                 return;
             }
@@ -280,7 +313,7 @@ export const handleVidCommand = async (ctx: Context): Promise<void> => {
     };
 
     if (!isComfyConfigured()) {
-        await replyWith(target, '生成服务未配置');
+        await replyWithOutcome(target, '生成服务未配置');
         return;
     }
 
@@ -289,18 +322,19 @@ export const handleVidCommand = async (ctx: Context): Promise<void> => {
 
     // One wrong parameter used to bury the answer under the whole help text
     if (parsed.type === 'invalid') {
-        await replyWith(target, `${parsed.reason}\n\n完整用法：单独发一条 \`/vid\``);
+        await replyWithOutcome(target, `${parsed.reason}\n\n完整用法：单独发一条 \`/vid\``);
         return;
     }
 
     if (!parsed.spec.brief) {
-        await replyWith(target, await buildHelpText());
+        // The usage help answers "how do I use this", not what became of a run
+        await replyWithHint(target, await buildHelpText());
         return;
     }
 
     const [error] = await to(startRun(target, parsed.spec));
     if (error) {
         console.error('[vid] unhandled failure:', error);
-        await replyWith(target, `生成视频失败：${error.message}`);
+        await replyWithOutcome(target, `生成视频失败：${error.message}`);
     }
 };

@@ -27,8 +27,8 @@ process.env.BOT_USER_ID = '7777';
 
 const db = await setupOfflineDb();
 const { Message, queries } = db;
-const { sendBotNotice, sendBotNoticeVia, updateBotNotice } = await import('../../src/services/bot-notice-service.js');
-const { writeBotMessageRow } = await import('../../src/db/index.js');
+const { sendBotNotice, sendBotNoticeVia, updateBotNotice, updateBotNoticeVia } = await import('../../src/services/bot-notice-service.js');
+const { writeBotMessageRow, BotResponse, ButtonState } = await import('../../src/db/index.js');
 const { dealChatCommand } = await import('../../src/reply/commands/chat-command.js');
 const { serializeChatCommand } = await import('../../src/reply/commands/chat-command-parser.js');
 const { buildContext } = await import('../../src/reply/context-builder.js');
@@ -400,6 +400,53 @@ cases.push(
         expect(rows.length === 1, 'one message id keeps exactly one row');
         expect(rows[0]?.text === '生成图片失败：第二次', 'with the latest text');
         expect(rows[0]?.replyToId === triggerId, 'and the original reply target');
+    })
+);
+
+cases.push(
+    await runCase('an edit from an Api-only caller is recorded with the same guards', async () => {
+        const chatId = takeChatId();
+        const triggerId = takeMessageId();
+        const editedMessageId = takeMessageId();
+        const telegram = createFakeTelegram();
+
+        // A generation placeholder turned into a failure: no row exists yet
+        await updateBotNoticeVia(telegram.api, chatId, editedMessageId, '生成图片失败：测试', triggerId);
+        const first = await Message.findOne({ where: { chatId, messageId: editedMessageId } });
+        expect(first !== null, 'the edit is recorded');
+        expect(first?.fromBotSelf === true, "as the bot's own row");
+        expect(first?.text === '生成图片失败：测试', 'with the text it was edited to');
+        expect(first?.replyToId === triggerId, 'answering the triggering message');
+
+        // A later edit of the same message rewrites that row, not a second one
+        await updateBotNoticeVia(telegram.api, chatId, editedMessageId, '生成图片失败：第二次');
+        const rows = await Message.findAll({ where: { chatId, messageId: editedMessageId } });
+        expect(rows.length === 1, 'one message id keeps exactly one row');
+        expect(rows[0]?.text === '生成图片失败：第二次', 'with the latest text');
+        expect(rows[0]?.replyToId === triggerId, 'and the original reply target');
+
+        // A user's message is never overwritten...
+        const userMessageId = takeMessageId();
+        await seedUserMessage(chatId, userMessageId, { text: '一条用户消息' });
+        await updateBotNoticeVia(telegram.api, chatId, userMessageId, '不该出现');
+        const userRow = await Message.findOne({ where: { chatId, messageId: userMessageId } });
+        expect(userRow?.text === '一条用户消息', "a user's message keeps its text");
+        expect(userRow?.fromBotSelf === false, 'and is not turned into a bot row');
+
+        // ...and neither is the first message of an AI reply (finalize owns that row)
+        const replyId = takeMessageId();
+        await BotResponse.create({
+            chatId,
+            messageId: replyId,
+            userMessageId: triggerId,
+            currentVersionIndex: 0,
+            versions: '[]',
+            buttonState: ButtonState.NONE,
+            metadata: '{}',
+        });
+        await updateBotNoticeVia(telegram.api, chatId, replyId, '不该覆盖 AI 回复');
+        const aiRow = await Message.findOne({ where: { chatId, messageId: replyId } });
+        expect(aiRow === null, 'an AI reply is left to the finalize path');
     })
 );
 

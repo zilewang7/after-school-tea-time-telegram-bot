@@ -100,24 +100,22 @@ export const sendBotNoticeVia = async (
 };
 
 /**
- * A message the bot edits in place into a notice: the /model menu's buttons
- * (keep the stored text in step, or a context would quote a stale model state)
- * and the generation commands' "Processing..." placeholder turned into an
- * error (it was never recorded while it was transient).
+ * `updateBotNotice` for a caller that holds only an `Api` (the generation
+ * runners and `/vid`, which answer from a detached task). The edit itself has
+ * already happened; this is the database half, so `api` is here only to keep
+ * the shape parallel to `sendBotNoticeVia`.
  *
- * Upserts: a menu message sent before this feature existed has no row yet. An
- * AI reply is never touched — its row is owned by the finalize path.
- * `replyToMessageId` is the fallback for a row that does not exist yet.
+ * Upserts: a message that was never recorded becomes a row. Never overwrites a
+ * user's message or an AI reply — an AI reply's row is owned by the finalize
+ * path.
  */
-export const updateBotNotice = async (
-    ctx: Context,
+export const updateBotNoticeVia = async (
+    _api: Api,
+    chatId: number,
     messageId: number,
     text: string,
     replyToMessageId?: number
 ): Promise<void> => {
-    if (!ctx.chat) return;
-    const chatId = ctx.chat.id;
-
     const [readError, existing] = await to(getMessage(chatId, messageId));
     if (readError) {
         console.error('[bot-notice] failed to read notice before update:', readError.message);
@@ -139,4 +137,24 @@ export const updateBotNotice = async (
         text,
         existing?.date ?? new Date()
     );
+};
+
+/**
+ * A message the bot edits in place into a notice: the /model menu's buttons
+ * (keep the stored text in step, or a context would quote a stale model state)
+ * and the generation commands' "Processing..." placeholder turned into an
+ * error (it was never recorded while it was transient).
+ *
+ * Upserts: a menu message sent before this feature existed has no row yet. An
+ * AI reply is never touched — its row is owned by the finalize path.
+ * `replyToMessageId` is the fallback for a row that does not exist yet.
+ */
+export const updateBotNotice = async (
+    ctx: Context,
+    messageId: number,
+    text: string,
+    replyToMessageId?: number
+): Promise<void> => {
+    if (!ctx.chat) return;
+    await updateBotNoticeVia(ctx.api, ctx.chat.id, messageId, text, replyToMessageId);
 };
