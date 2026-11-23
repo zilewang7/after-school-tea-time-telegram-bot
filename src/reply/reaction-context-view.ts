@@ -1,24 +1,52 @@
 /**
- * The runtime block's reaction view (design 2026-1120-1312 §4.3): the
+ * The runtime block's reaction view (design 2026-1123-1610 §4): the
  * `message_reactions` rows of one assembled context, reduced to grouped and
  * ordered lines keyed by the context's own `#N`.
  *
- * Grouping and ordering happen here, on the reply layer, so the `ai` layer keeps
- * its zero `db` dependency: `buildRuntimeContext` receives the finished view and
- * only formats it. Nothing here touches the database or the clock — the same
- * rows always render the same text, whatever order the rows were written in.
+ * A reply reaches the chat as several messages (the body may be split, the CoT
+ * and the folded search/Tools footers are link messages of their own, the media
+ * are their own messages). Each reaction row snapshots the part it landed on, so
+ * the view first groups one `#N`'s rows by part and then reduces each part's rows
+ * to its entries. The result is one reaction line per part:
+ *
+ * - a product part (link message, picture, GIF, sticker, file, card) is labelled
+ *   whenever it was reacted to, even when it is the only part that was;
+ * - the body is unlabelled when the reply has exactly one reacted part (people
+ *   reacted to the reply's text as a whole); with two or more reacted parts each
+ *   body segment is labelled, so the model can tell them apart;
+ * - rows written before the parts model (part NULL) read as 整条 in a multi-part
+ *   reply and unlabelled otherwise; they disappear as those rows age out.
+ *
+ * Grouping, ordering and labelling happen here, on the reply layer, so the `ai`
+ * layer keeps its zero `db` dependency: `buildRuntimeContext` receives the
+ * finished view and only formats it. Nothing here touches the database or the
+ * clock — the same rows always render the same text, whatever order the rows
+ * were written in.
  *
  * Sorting rules (all deterministic):
- * - message lines by `#N` ascending;
- * - a message's entries: standard emoji first, then custom emoji by their id,
- *   then paid reactions last;
+ * - message groups by `#N` ascending;
+ * - a message's parts: body segments by index, then `REPLY_PART_ORDER` (CoT
+ *   link, search link, Tools link, pictures by index, GIF, sticker, file, card,
+ *   card link), legacy unknown rows last;
+ * - a part's entries: standard emoji first, then custom emoji by their id, then
+ *   paid reactions last;
  * - an entry's actors: users by id, anonymous admins/channels by chat id, the
  *   bot itself last.
  */
 import { match } from 'ts-pattern';
-import type { RuntimeReactionEntry, RuntimeReactionGroup } from '../ai/system-prompt/runtime-context.js';
+import type {
+    RuntimeReactionEntry,
+    RuntimeReactionGroup,
+    RuntimeReactionPart,
+} from '../ai/system-prompt/runtime-context.js';
 import type { StoredReaction } from '../db/queries/reaction-queries.js';
 import { REACTION_EMOJIS } from '../shared/reaction-emoji.js';
+import {
+    isBodyPart,
+    replyPartLabelOf,
+    replyPartRankOf,
+    type ReplyPartKind,
+} from '../shared/reply-part.js';
 import type { ContextNumbering } from './context-assembly.js';
 import type { ReactionParticipant } from './context-users.js';
 
@@ -29,6 +57,8 @@ const CUSTOM_EMOJI_LABEL = '[自定义表情]';
 const PAID_REACTION_LABEL = '⭐';
 const MODEL_ACTOR_NAME = '模型';
 const ANONYMOUS_ACTOR_NAME = '匿名';
+/** Rows written before the parts model: one reply-level line, not a position */
+const LEGACY_PART_LABEL = '整条';
 
 /** The shared list's index: standard reactions render in Telegram's own order */
 const EMOJI_ORDER = new Map<string, number>(REACTION_EMOJIS.map((emoji, index) => [emoji, index]));
@@ -103,7 +133,7 @@ const actorNameOf = (row: StoredReaction): string => {
     return name === '' ? `用户 ${row.userId}` : name;
 };
 
-/** One message's reactions as entries, in render order */
+/** One part's reactions as entries, in render order */
 const entriesOf = (rows: readonly StoredReaction[]): RuntimeReactionEntry[] => {
     const entries = new Map<string, EntryShape & { actors: Map<string, StoredReaction> }>();
 
@@ -132,6 +162,66 @@ const entriesOf = (rows: readonly StoredReaction[]): RuntimeReactionEntry[] => {
         });
 };
 
+/** One part of a reply under construction: its rows and where it sorts */
+interface PartRows {
+    /** The rows a reaction landed on for this part; `part` is null for legacy rows */
+    readonly part: ReplyPartKind | null;
+    readonly partIndex: number | null;
+    readonly rows: StoredReaction[];
+}
+
+/**
+ * Split one reply's rows by the part they landed on. The same kind and index is
+ * one part even when the layout re-delivered it under a new message id (a
+ * version switch): the model sees one reply, so it gets one line.
+ */
+const partsOf = (rows: readonly StoredReaction[]): PartRows[] => {
+    const parts = new Map<string, PartRows>();
+    for (const row of rows) {
+        const key = row.part === null ? 'legacy' : `${row.part}#${row.partIndex ?? ''}`;
+        const part = parts.get(key);
+        if (part === undefined) {
+            parts.set(key, { part: row.part, partIndex: row.partIndex, rows: [row] });
+        } else {
+            part.rows.push(row);
+        }
+    }
+    return [...parts.values()];
+};
+
+/** One non-empty part ready to be labelled and rendered */
+interface PartView {
+    readonly part: ReplyPartKind | null;
+    readonly partIndex: number | null;
+    readonly entries: RuntimeReactionEntry[];
+}
+
+/**
+ * Where a part sorts: body segments by index first, then the fixed kind order,
+ * then legacy rows (which cannot name a part) last.
+ */
+const compareParts = (left: PartView, right: PartView): number => {
+    if (left.part === null || right.part === null) {
+        if (left.part !== null) return -1;
+        return right.part !== null ? 1 : 0;
+    }
+    const byRank = replyPartRankOf(left.part) - replyPartRankOf(right.part);
+    if (byRank !== 0) return byRank;
+    return (left.partIndex ?? 1) - (right.partIndex ?? 1);
+};
+
+/**
+ * The label of one part, decided by the reply as a whole: a product part always
+ * names itself; the body only names its segment when the reply has more than one
+ * reacted part (a single reacted body part is "the reply's body", whatever
+ * segment it was); a legacy row reads as 整条 only in the multi-part case.
+ */
+const labelOf = (part: ReplyPartKind | null, partIndex: number | null, partCount: number): string | null => {
+    if (part === null) return partCount > 1 ? LEGACY_PART_LABEL : null;
+    if (isBodyPart(part) && partCount === 1) return null;
+    return replyPartLabelOf(part, partIndex);
+};
+
 /**
  * Reduce the reaction rows of one context to the runtime block's view. Rows of
  * messages the context does not number are dropped: only what the model can
@@ -156,8 +246,19 @@ export const buildRuntimeReactionView = (
     for (const [messageId, rows] of rowsByMessageId) {
         const number = numbering.numberOf.get(messageId);
         if (number === undefined) continue;
-        const entries = entriesOf(rows);
-        if (entries.length > 0) groups.push({ number, entries });
+        // Parts with no renderable entry (an unknown reaction kind) do not count
+        // as reacted parts when the body's labelling is decided.
+        const partViews: PartView[] = partsOf(rows).flatMap((part) => {
+            const entries = entriesOf(part.rows);
+            return entries.length === 0 ? [] : [{ part: part.part, partIndex: part.partIndex, entries }];
+        });
+        if (partViews.length === 0) continue;
+        partViews.sort(compareParts);
+        const parts: RuntimeReactionPart[] = partViews.map((part) => ({
+            label: labelOf(part.part, part.partIndex, partViews.length),
+            entries: part.entries,
+        }));
+        groups.push({ number, parts });
     }
 
     return groups.sort((left, right) => left.number - right.number);

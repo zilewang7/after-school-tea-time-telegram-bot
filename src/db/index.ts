@@ -13,6 +13,7 @@ import { MessageMedia, type StoredMessageMedia } from "./messageMediaDTO.js";
 import { CustomEmojiAsset } from "./customEmojiAssetDTO.js";
 import { MessageRevision } from './messageRevisionDTO.js';
 import { MessageReaction } from './messageReactionDTO.js';
+import { BotReplyMessage } from './botReplyMessageDTO.js';
 import { HarnessIssue } from './harnessIssueDTO.js';
 import { WorkspaceFile } from './workspaceFileDTO.js';
 import { AccessApplication } from './accessApplicationDTO.js';
@@ -268,11 +269,13 @@ const findBotResponseByMessageId = async (chatId: number, messageId: number): Pr
 
 /**
  * Create a new bot response record.
- * The same messageId can be inserted twice when one reply gets processed twice
- * (Telegram update re-delivery, or re-entry of the detached setTimeout handler).
- * Idempotency is enforced upstream by tryMarkUserMessageHandling; this upsert is
- * the last-resort guard so a duplicate can't crash the reply flow on the unique
- * constraint.
+ *
+ * The row is keyed by (chatId, messageId): Telegram message ids are unique only
+ * inside a chat, so a single-column key let two chats' replies overwrite each
+ * other. The same reply can be opened twice (Telegram update re-delivery, or
+ * re-entry of the detached setTimeout handler); idempotency is enforced upstream
+ * by tryMarkUserMessageHandling, and this find-then-create is the last-resort
+ * guard so a duplicate cannot crash the reply flow on the key constraint.
  */
 const createBotResponse = async (
     chatId: number,
@@ -280,18 +283,34 @@ const createBotResponse = async (
     userMessageId: number,
     metadata: ResponseMetadata
 ): Promise<BotResponse> => {
-    // Idempotent upsert (INSERT ... ON CONFLICT DO UPDATE): a duplicate trigger
-    // for the same messageId updates the row instead of throwing a unique violation.
-    const [response] = await BotResponse.upsert({
-        messageId,
-        chatId,
-        userMessageId,
-        currentVersionIndex: 0,
-        versions: '[]',
-        buttonState: ButtonState.PROCESSING,
-        metadata: JSON.stringify(metadata),
-    });
-    return response;
+    const existing = await BotResponse.findOne({ where: { chatId, messageId } });
+    if (existing) {
+        existing.userMessageId = userMessageId;
+        existing.currentVersionIndex = 0;
+        existing.versions = '[]';
+        existing.buttonState = ButtonState.PROCESSING;
+        existing.metadata = JSON.stringify(metadata);
+        existing.updatedAt = new Date();
+        await existing.save();
+        return existing;
+    }
+
+    try {
+        return await BotResponse.create({
+            chatId,
+            messageId,
+            userMessageId,
+            currentVersionIndex: 0,
+            versions: '[]',
+            buttonState: ButtonState.PROCESSING,
+            metadata: JSON.stringify(metadata),
+        });
+    } catch (error) {
+        // A concurrent first turn of the same reply won the insert; reuse it
+        const raced = await BotResponse.findOne({ where: { chatId, messageId } });
+        if (raced) return raced;
+        throw error;
+    }
 };
 
 /**
@@ -337,6 +356,7 @@ export {
     CustomEmojiAsset,
     MessageRevision,
     MessageReaction,
+    BotReplyMessage,
     HarnessIssue,
     WorkspaceFile,
     AccessApplication,

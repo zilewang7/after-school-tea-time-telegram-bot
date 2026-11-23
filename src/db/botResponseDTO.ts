@@ -161,7 +161,7 @@ export interface ResponseVersion {
 /**
  * Command type for bot responses
  */
-export type CommandType = 'chat' | 'picbanana' | 'picgpt';
+export type CommandType = 'chat' | 'picbanana' | 'picgpt' | 'picgrok';
 
 /**
  * Response metadata
@@ -192,10 +192,10 @@ export class BotResponse extends Model<
     InferAttributes<BotResponse>,
     InferCreationAttributes<BotResponse>
 > {
-    /** Primary key: first message ID */
+    /** Reply's first message id; half of the composite primary key */
     declare messageId: number;
 
-    /** Chat ID */
+    /** Chat the reply lives in; the other half of the composite primary key */
     declare chatId: number;
 
     /** User message ID that this response replies to */
@@ -298,6 +298,9 @@ export class BotResponse extends Model<
 
 BotResponse.init(
     {
+        // Composite key (chatId, messageId): a Telegram message id is unique
+        // only inside its chat, so a single-column key would let two chats'
+        // replies overwrite each other.
         messageId: {
             type: DataTypes.INTEGER,
             primaryKey: true,
@@ -305,6 +308,7 @@ BotResponse.init(
         },
         chatId: {
             type: DataTypes.INTEGER,
+            primaryKey: true,
             allowNull: false,
         },
         userMessageId: {
@@ -348,7 +352,7 @@ BotResponse.init(
         timestamps: true,
         indexes: [
             { fields: ['chatId', 'userMessageId'] },
-            { fields: ['chatId', 'messageId'] },
+            // (chatId, messageId) is the primary key; no separate index needed
             // Expiry sweep in the hourly cleanup
             { fields: ['createdAt'] },
         ],

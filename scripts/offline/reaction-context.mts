@@ -1,10 +1,14 @@
 /**
- * Offline cases for the runtime block's `# 消息 reaction` section and the
- * reaction roster entries (design 2026-1120-1312 §4.3 / §7.1 B).
+ * Offline cases for the runtime block's `# 消息 reaction` section: reactions are
+ * rendered per part of a multi-message bot reply (design 2026-1123-1610 §2.3/§4),
+ * the section keeps its 16-part-line / 800-character caps, and the reaction
+ * roster entries stay as they were (design 2026-1120-1312 §4.3 / §7.1 B).
  *
- * The rows are written through the committed reaction queries and the section is
- * read back out of what `buildContext` makes of a real reply tree — the same
- * path a reply and the panel's model view take.
+ * The rows are written the way the app writes them: user reactions through the
+ * committed inbound query (the ledger supplies the part snapshot), the model's
+ * own through the committed bot-reaction query. The section is read back out of
+ * what `buildContext` makes of a real reply tree — the same path a reply and the
+ * panel's model view take.
  *
  * Run: npx tsx scripts/offline/reaction-context.mts
  */
@@ -22,6 +26,7 @@ type BuiltContext = import('../../src/reply/context-builder.js').BuiltContext;
 type ModelCapabilities = import('../../src/ai/types.js').ModelCapabilities;
 type ReactionInput = import('../../src/db/queries/reaction-queries.js').ReactionInput;
 type ReactionActor = import('../../src/db/queries/reaction-queries.js').ReactionActor;
+type ReplyPartKind = import('../../src/shared/reply-part.js').ReplyPartKind;
 
 // Read at import/call time by the modules below; set before anything from src/
 process.env.BOT_USER_ID = '7777';
@@ -52,6 +57,7 @@ const db = await setupOfflineDb();
 const { buildContext } = await import('../../src/reply/context-builder.js');
 const { buildRuntimeContext } = await import('../../src/ai/system-prompt/runtime-context.js');
 const { replaceBotReaction, applyUserReactionUpdate } = await import('../../src/db/queries/reaction-queries.js');
+const { setReplyPart } = await import('../../src/db/queries/reply-part-queries.js');
 const { ContextExclusion } = await import('../../src/db/contextExclusionDTO.js');
 const { MessageReaction } = await import('../../src/db/messageReactionDTO.js');
 const { TelegramUser } = await import('../../src/db/telegramUserDTO.js');
@@ -86,6 +92,20 @@ const seedChain = async (count: number): Promise<number[]> => {
     return ids;
 };
 
+/**
+ * Record one delivered message as a part of `canonicalMessageId` the way the
+ * delivery ledger does, and return its (Telegram) message id.
+ */
+const addPart = async (
+    canonicalMessageId: number,
+    part: ReplyPartKind,
+    partIndex: number | null = null
+): Promise<number> => {
+    const messageId = takeMessageId();
+    await setReplyPart({ chatId: CHAT_ID, canonicalMessageId, messageId, part, partIndex });
+    return messageId;
+};
+
 interface Actor {
     readonly userId: number | null;
     readonly actorChatId?: number;
@@ -100,7 +120,7 @@ const actorOf = (actor: Actor): ReactionActor => ({
 
 const emojiInput = (text: string): ReactionInput => ({ kind: 'emoji', emoji: text, customEmojiId: null });
 
-/** Write one actor's current reaction set through the committed query */
+/** Write one actor's current reaction set through the committed inbound query */
 const react = async (messageId: number, actor: Actor, reactions: readonly ReactionInput[]): Promise<void> => {
     const result = await applyUserReactionUpdate({
         chatId: CHAT_ID,
@@ -113,6 +133,22 @@ const react = async (messageId: number, actor: Actor, reactions: readonly Reacti
 
 const reactWithEmoji = (messageId: number, actor: Actor, emoji: string): Promise<void> =>
     react(messageId, actor, [emojiInput(emoji)]);
+
+/** The model's own reaction, on a part when `part` is given */
+const reactAsModel = async (
+    canonicalMessageId: number,
+    emoji: string,
+    part?: { readonly messageId: number; readonly part: ReplyPartKind; readonly partIndex: number | null }
+): Promise<void> => {
+    await replaceBotReaction(
+        CHAT_ID,
+        canonicalMessageId,
+        emoji,
+        part === undefined
+            ? undefined
+            : { messageId: part.messageId, part: part.part, partIndex: part.partIndex }
+    );
+};
 
 const buildFor = async (
     messageId: number,
@@ -143,7 +179,7 @@ const reactionSectionOf = (runtime: string): string | null => {
     const start = runtime.indexOf(REACTION_HEADING);
     if (start < 0) return null;
     const end = runtime.indexOf(ADDENDUM_HEADING, start);
-    return end < 0 ? runtime.slice(start) : runtime.slice(start, end);
+    return (end < 0 ? runtime.slice(start) : runtime.slice(start, end)).trimEnd();
 };
 
 const sectionOfContext = async (
@@ -153,11 +189,15 @@ const sectionOfContext = async (
 
 const sectionLines = (section: string): string[] => section.split('\n');
 
-const messageLines = (section: string): string[] => sectionLines(section).filter((line) => line.startsWith('- #'));
+/** The section as the exact text the design asks for, heading included */
+const expectedSection = (lines: readonly string[]): string => `${REACTION_HEADING}\n${lines.join('\n')}`;
 
-/** `#N`s of the message lines, in the rendered order */
-const messageLineNumbers = (section: string): number[] =>
-    messageLines(section).map((line) => Number(/^- #(\d+)：/.exec(line)?.[1] ?? 'NaN'));
+/** Every part line of the section, in the rendered order */
+const partLines = (section: string): string[] => sectionLines(section).filter((line) => /^- #\d+/.test(line));
+
+/** The `#N` of each part line; a multi-part message repeats its number */
+const partLineNumbers = (section: string): number[] =>
+    partLines(section).map((line) => Number(/^- #(\d+)/.exec(line)?.[1] ?? 'NaN'));
 
 const omissionLineOf = (section: string): string | undefined =>
     sectionLines(section).find((line) => line.startsWith('- 还有 '));
@@ -168,36 +208,341 @@ const codePointCount = (text: string): number => Array.from(text).length;
 
 const cases: { name: string; body: () => Promise<void> }[] = [
     {
-        name: 'a message line names its #N, the reactees and the model',
+        name: 'one reacted body part is unlabelled, even when it is the second segment',
+        body: async () => {
+            const [reply] = await seedChain(1);
+            const secondSegment = await addPart(reply!, 'body', 2);
+            await reactWithEmoji(secondSegment, { userId: 2001, name: '张三' }, '👍');
+            await reactWithEmoji(secondSegment, { userId: 2002, name: '李四' }, '❤');
+            await reactAsModel(reply!, '🔥', { messageId: secondSegment, part: 'body', partIndex: 2 });
+
+            const section = (await sectionOfContext(reply!)) ?? '';
+            expect(
+                section === expectedSection(['- #1：👍（张三）；❤（李四）；🔥（模型）']),
+                `the second segment reads as the reply's body, without a position (got ${JSON.stringify(section)})`
+            );
+        },
+    },
+    {
+        name: 'two reacted body segments are each labelled by their index',
+        body: async () => {
+            const [reply] = await seedChain(1);
+            const firstSegment = await addPart(reply!, 'body', 1);
+            const secondSegment = await addPart(reply!, 'body', 2);
+            const thirdSegment = await addPart(reply!, 'body', 3);
+            await reactWithEmoji(firstSegment, { userId: 2101, name: '张三' }, '👍');
+            await reactWithEmoji(secondSegment, { userId: 2102, name: '李四' }, '🎉');
+            await reactWithEmoji(thirdSegment, { userId: 2103, name: '王五' }, '🤩');
+
+            const section = (await sectionOfContext(reply!)) ?? '';
+            expect(
+                section ===
+                    expectedSection([
+                        '- #1 正文：👍（张三）',
+                        '- #1 正文第 2 段：🎉（李四）',
+                        '- #1 正文第 3 段：🤩（王五）',
+                    ]),
+                `each body segment gets its own labelled line (got ${JSON.stringify(section)})`
+            );
+        },
+    },
+    {
+        name: 'a product reacted to alone is labelled, never merged into the body',
+        body: async () => {
+            const [reply] = await seedChain(1);
+            const sticker = await addPart(reply!, 'sticker');
+            const secondPicture = await addPart(reply!, 'picture', 2);
+            await reactWithEmoji(sticker, { userId: 2201, name: '赵六' }, '🤩');
+            await reactWithEmoji(secondPicture, { userId: 2202, name: '钱七' }, '🥰');
+
+            const section = (await sectionOfContext(reply!)) ?? '';
+            expect(
+                section ===
+                    expectedSection(['- #1 图片 2：🥰（钱七）', '- #1 贴纸：🤩（赵六）']),
+                `product parts keep their labels even alone, in kind order (got ${JSON.stringify(section)})`
+            );
+        },
+    },
+    {
+        name: 'mixed body and product parts: every part gets its own line',
+        body: async () => {
+            const [reply] = await seedChain(1);
+            const firstSegment = await addPart(reply!, 'body', 1);
+            const sticker = await addPart(reply!, 'sticker');
+            const cardLink = await addPart(reply!, 'widget-link');
+            // The same person may react to two parts of one reply: both stand
+            await reactWithEmoji(firstSegment, { userId: 2301, name: '张三' }, '👍');
+            await reactWithEmoji(sticker, { userId: 2301, name: '张三' }, '❤');
+            await reactAsModel(reply!, '🎉', { messageId: cardLink, part: 'widget-link', partIndex: null });
+
+            const section = (await sectionOfContext(reply!)) ?? '';
+            expect(
+                section ===
+                    expectedSection([
+                        '- #1 正文：👍（张三）',
+                        '- #1 贴纸：❤（张三）',
+                        '- #1 卡片链接：🎉（模型）',
+                    ]),
+                `body, then media, then card link (got ${JSON.stringify(section)})`
+            );
+        },
+    },
+    {
+        name: 'all part kinds render in the fixed order, legacy rows last as 整条',
+        body: async () => {
+            const [reply] = await seedChain(1);
+            const sources = {
+                bodySecond: await addPart(reply!, 'body', 2),
+                bodyFirst: await addPart(reply!, 'body', 1),
+                cotLink: await addPart(reply!, 'cot-link'),
+                searchLink: await addPart(reply!, 'search-link'),
+                toolsLink: await addPart(reply!, 'tools-link'),
+                pictureSecond: await addPart(reply!, 'picture', 2),
+                pictureFirst: await addPart(reply!, 'picture', 1),
+                gif: await addPart(reply!, 'gif'),
+                sticker: await addPart(reply!, 'sticker'),
+                file: await addPart(reply!, 'file'),
+                widget: await addPart(reply!, 'widget'),
+                widgetLink: await addPart(reply!, 'widget-link'),
+            };
+            await reactWithEmoji(sources.bodyFirst, { userId: 2401, name: '甲' }, '👍');
+            await reactWithEmoji(sources.bodySecond, { userId: 2402, name: '乙' }, '❤');
+            await reactWithEmoji(sources.cotLink, { userId: 2403, name: '丙' }, '🔥');
+            await reactWithEmoji(sources.searchLink, { userId: 2404, name: '丁' }, '🥰');
+            await reactWithEmoji(sources.toolsLink, { userId: 2405, name: '戊' }, '👏');
+            await reactWithEmoji(sources.pictureFirst, { userId: 2406, name: '己' }, '😁');
+            await reactWithEmoji(sources.pictureSecond, { userId: 2407, name: '庚' }, '🤔');
+            await reactWithEmoji(sources.gif, { userId: 2408, name: '辛' }, '🤯');
+            await reactWithEmoji(sources.sticker, { userId: 2409, name: '壬' }, '😱');
+            await reactWithEmoji(sources.file, { userId: 2410, name: '癸' }, '🤬');
+            await reactWithEmoji(sources.widget, { userId: 2411, name: '子' }, '😢');
+            await reactWithEmoji(sources.widgetLink, { userId: 2412, name: '丑' }, '🎉');
+            // No ledger row for the canonical id itself: a row from before the parts model
+            await reactWithEmoji(reply!, { userId: 2413, name: '寅' }, '🤩');
+
+            const section = (await sectionOfContext(reply!)) ?? '';
+            expect(
+                section ===
+                    expectedSection([
+                        '- #1 正文：👍（甲）',
+                        '- #1 正文第 2 段：❤（乙）',
+                        '- #1 CoT 链接条：🔥（丙）',
+                        '- #1 搜索来源链接条：🥰（丁）',
+                        '- #1 工具记录链接条：👏（戊）',
+                        '- #1 图片 1：😁（己）',
+                        '- #1 图片 2：🤔（庚）',
+                        '- #1 动图：🤯（辛）',
+                        '- #1 贴纸：😱（壬）',
+                        '- #1 文件：🤬（癸）',
+                        '- #1 卡片：😢（子）',
+                        '- #1 卡片链接：🎉（丑）',
+                        '- #1 整条：🤩（寅）',
+                    ]),
+                `every kind is labelled and ordered as the design says (got ${JSON.stringify(section)})`
+            );
+        },
+    },
+    {
+        name: 'the same part delivered under a new message id still reads as one line',
+        body: async () => {
+            const [reply] = await seedChain(1);
+            // A version switch re-delivers the body: both ids are the same part
+            const firstLayout = await addPart(reply!, 'body', 1);
+            const secondLayout = await addPart(reply!, 'body', 1);
+            await reactWithEmoji(firstLayout, { userId: 2501, name: '张三' }, '👍');
+            await reactWithEmoji(secondLayout, { userId: 2502, name: '李四' }, '❤');
+
+            const section = (await sectionOfContext(reply!)) ?? '';
+            expect(
+                section === expectedSection(['- #1：👍（张三）；❤（李四）']),
+                `one part is one line, whatever message id delivered it (got ${JSON.stringify(section)})`
+            );
+        },
+    },
+    {
+        name: 'within a part: standard emoji order, four names, custom, paid, anonymous and the model',
+        body: async () => {
+            const [reply] = await seedChain(1);
+            const body = await addPart(reply!, 'body', 1);
+            const names = ['张三', '李四', '王五', '赵六', '钱七', '孙八'];
+            for (let index = 0; index < names.length; index += 1) {
+                await reactWithEmoji(body, { userId: 2600 + index, name: names[index]! }, '👍');
+            }
+            await reactWithEmoji(body, { userId: 2610, name: '群友' }, '😁');
+            await reactWithEmoji(body, { userId: null, actorChatId: GROUP, name: '匿名频道' }, '🎉');
+            await react(body, { userId: 2611, name: 'Cara' }, [
+                { kind: 'custom_emoji', emoji: null, customEmojiId: '111' },
+            ]);
+            await react(body, { userId: 2612, name: 'Dan' }, [
+                { kind: 'custom_emoji', emoji: null, customEmojiId: '222' },
+            ]);
+            await react(body, { userId: 2613, name: 'Eve' }, [
+                { kind: 'paid', emoji: null, customEmojiId: null },
+            ]);
+            await reactAsModel(reply!, '🏆', { messageId: body, part: 'body', partIndex: 1 });
+
+            const section = (await sectionOfContext(reply!)) ?? '';
+            expect(
+                section ===
+                    expectedSection([
+                        '- #1：👍（张三、李四、王五、赵六…等 2 人）；😁（群友）；🎉（匿名）；🏆（模型）；[自定义表情]（Cara）；[自定义表情]（Dan）；⭐（Eve）',
+                    ]),
+                `entries keep today's order and merging rules (got ${JSON.stringify(section)})`
+            );
+        },
+    },
+    {
+        name: 'the newest sixteen part lines survive and whole older messages are counted',
+        body: async () => {
+            const chain = await seedChain(10);
+            for (const messageId of chain) {
+                const body = await addPart(messageId, 'body', 1);
+                const sticker = await addPart(messageId, 'sticker');
+                await reactWithEmoji(body, { userId: 2700, name: '甲' }, '👍');
+                await reactWithEmoji(sticker, { userId: 2701, name: '乙' }, '❤');
+            }
+
+            const section = (await sectionOfContext(chain[9]!)) ?? '';
+            expect(
+                partLineNumbers(section).join(',') ===
+                    '3,3,4,4,5,5,6,6,7,7,8,8,9,9,10,10',
+                `sixteen part lines are kept, oldest messages dropped whole (got ${partLineNumbers(section).join(',')})`
+            );
+            expect(
+                omissionLineOf(section) === '- 还有 2 条消息的 reaction 未显示',
+                `the dropped messages are announced (got ${JSON.stringify(omissionLineOf(section))})`
+            );
+            expect(
+                partLines(section).every((line) => line.endsWith('）')),
+                `no part line is cut mid-entry (got ${JSON.stringify(partLines(section))})`
+            );
+        },
+    },
+    {
+        name: 'whole message groups are dropped until the section fits 800 characters',
+        body: async () => {
+            const chain = await seedChain(5);
+            const emojis = ['👍', '👎', '❤', '🔥', '🥰', '👏', '😁', '🤔'];
+            const names = ['风花雪月', '山高水长', '云淡风轻', '海阔天空'];
+            for (const messageId of chain) {
+                const parts = [await addPart(messageId, 'body', 1), await addPart(messageId, 'sticker')];
+                for (const part of parts) {
+                    for (const [emojiIndex, emoji] of emojis.entries()) {
+                        for (const [nameIndex, name] of names.entries()) {
+                            await reactWithEmoji(
+                                part,
+                                { userId: 2800 + emojiIndex * 10 + nameIndex, name },
+                                emoji
+                            );
+                        }
+                    }
+                }
+            }
+
+            const section = (await sectionOfContext(chain[4]!)) ?? '';
+            expect(
+                codePointCount(section) <= 800,
+                `the section stays within 800 characters (got ${codePointCount(section)})`
+            );
+            const numbers = partLineNumbers(section);
+            const keptMessages = [...new Set(numbers)];
+            expect(
+                keptMessages.length > 0 && keptMessages.length < chain.length,
+                `whole messages are dropped (kept messages ${keptMessages.join(',')})`
+            );
+            expect(
+                keptMessages.join(',') ===
+                    chain
+                        .slice(chain.length - keptMessages.length)
+                        .map((_, index) => chain.length - keptMessages.length + index + 1)
+                        .join(','),
+                `the newest messages are the ones kept (got ${keptMessages.join(',')})`
+            );
+            expect(
+                omissionLineOf(section) === `- 还有 ${chain.length - keptMessages.length} 条消息的 reaction 未显示`,
+                `the dropped count is announced (got ${JSON.stringify(omissionLineOf(section))})`
+            );
+            expect(
+                partLines(section).every((line) => line.endsWith('）')),
+                `no part line is cut mid-entry (got ${JSON.stringify(partLines(section))})`
+            );
+        },
+    },
+    {
+        name: 'a lone legacy row reads as the body, without a position',
+        body: async () => {
+            const [reply] = await seedChain(1);
+            // No ledger row and a telegram row: an inbound path before the parts model
+            await reactWithEmoji(reply!, { userId: 2901, name: '张三' }, '👍');
+
+            const section = (await sectionOfContext(reply!)) ?? '';
+            expect(
+                section === expectedSection(['- #1：👍（张三）']),
+                `a legacy row alone carries no 整条 label (got ${JSON.stringify(section)})`
+            );
+        },
+    },
+    {
+        name: 'legacy rows read as 整条 next to a labelled part, still last',
+        body: async () => {
+            const [reply] = await seedChain(1);
+            const body = await addPart(reply!, 'body', 1);
+            const sticker = await addPart(reply!, 'sticker');
+            // A legacy row on the reply and a new body row on its first segment:
+            // the legacy row cannot name its part, so it stays a separate 整条 line
+            await reactWithEmoji(reply!, { userId: 2911, name: '张三' }, '👍');
+            await reactWithEmoji(body, { userId: 2912, name: '李四' }, '❤');
+            await reactWithEmoji(sticker, { userId: 2913, name: '王五' }, '🎉');
+
+            const section = (await sectionOfContext(reply!)) ?? '';
+            expect(
+                section ===
+                    expectedSection([
+                        '- #1 正文：❤（李四）',
+                        '- #1 贴纸：🎉（王五）',
+                        '- #1 整条：👍（张三）',
+                    ]),
+                `the legacy row is labelled 整条 in a multi-part reply (got ${JSON.stringify(section)})`
+            );
+        },
+    },
+    {
+        name: 'message groups stay in #N order and their part lines stay together',
         body: async () => {
             const chain = await seedChain(3);
-            const [first, second, trigger] = chain;
-            // A bot reaction is only recorded locally: the Bot API never reports it
-            await replaceBotReaction(CHAT_ID, first!, '❤');
-            await reactWithEmoji(second!, { userId: 2001, name: '张三' }, '👍');
-            await reactWithEmoji(second!, { userId: 2002, name: '李四' }, '👍');
+            await reactWithEmoji(chain[0]!, { userId: 2921, name: '张三' }, '👍');
+            const secondSegment = await addPart(chain[1]!, 'body', 2);
+            const secondSticker = await addPart(chain[1]!, 'sticker');
+            await reactWithEmoji(secondSegment, { userId: 2922, name: '李四' }, '❤');
+            await reactWithEmoji(secondSticker, { userId: 2923, name: '王五' }, '🎉');
+            const thirdSticker = await addPart(chain[2]!, 'sticker');
+            await reactWithEmoji(thirdSticker, { userId: 2924, name: '赵六' }, '🤩');
 
-            const runtime = runtimeTextOf(await buildFor(trigger!));
+            const section = (await sectionOfContext(chain[2]!)) ?? '';
             expect(
-                runtime.includes(`\n\n${REACTION_HEADING}\n`),
-                `the section is its own block after a blank line (got ${JSON.stringify(runtime)})`
+                partLineNumbers(section).join(',') === '1,2,2,3',
+                `#N ascending, a message's parts adjacent (got ${partLineNumbers(section).join(',')})`
             );
-            const section = reactionSectionOf(runtime) ?? '';
-            const lines = sectionLines(section);
-            expect(lines.includes('- #1：❤（模型）'), `the model's own reaction reads as 模型 (got ${JSON.stringify(lines)})`);
             expect(
-                lines.includes('- #2：👍（张三、李四）'),
-                `the reactees are listed by name (got ${JSON.stringify(lines)})`
+                section ===
+                    expectedSection([
+                        '- #1：👍（张三）',
+                        // Two reacted parts: the second segment is labelled on its own
+                        '- #2 正文第 2 段：❤（李四）',
+                        '- #2 贴纸：🎉（王五）',
+                        '- #3 贴纸：🤩（赵六）',
+                    ]),
+                `every message renders its own part lines (got ${JSON.stringify(section)})`
             );
-            expect(!section.includes('- #3'), 'a message without reactions gets no line');
         },
     },
     {
         name: 'the section sits after the trigger line and before the chat addendum',
         body: async () => {
-            const [trigger] = await seedChain(1);
-            await reactWithEmoji(trigger!, { userId: 2001, name: '张三' }, '👍');
-            const context = await buildFor(trigger!, {
+            const [reply] = await seedChain(1);
+            const body = await addPart(reply!, 'body', 1);
+            await reactWithEmoji(body, { userId: 2001, name: '张三' }, '👍');
+            const context = await buildFor(reply!, {
                 chatAddendum: '附加规则：保持简短。',
                 triggerAccess: {
                     userId: 2001,
@@ -221,8 +566,8 @@ const cases: { name: string; body: () => Promise<void> }[] = [
     {
         name: 'no reactions: no section, and the runtime block keeps its old bytes',
         body: async () => {
-            const [trigger] = await seedChain(1);
-            const runtime = runtimeTextOf(await buildFor(trigger!));
+            const [reply] = await seedChain(1);
+            const runtime = runtimeTextOf(await buildFor(reply!));
             expect(!runtime.includes(REACTION_HEADING), 'a context without reactions renders no section');
 
             // The new argument is trailing and optional: absent, null and empty
@@ -241,118 +586,14 @@ const cases: { name: string; body: () => Promise<void> }[] = [
         },
     },
     {
-        name: 'the newest twelve message lines survive and the older ones are counted',
-        body: async () => {
-            const chain = await seedChain(15);
-            for (let index = 0; index < chain.length; index += 1) {
-                await reactWithEmoji(chain[index]!, { userId: 2100 + index, name: `R${index + 1}` }, '👍');
-            }
-            const section = (await sectionOfContext(chain[14]!)) ?? '';
-            const numbers = messageLineNumbers(section);
-            expect(numbers.length === 12, `twelve message lines are kept (got ${numbers.length})`);
-            expect(
-                numbers.join(',') === '4,5,6,7,8,9,10,11,12,13,14,15',
-                `the newest twelve lines are kept, ascending (got ${numbers.join(',')})`
-            );
-            expect(
-                omissionLineOf(section) === '- 还有 3 条消息的 reaction 未显示',
-                `the dropped messages are announced (got ${JSON.stringify(omissionLineOf(section))})`
-            );
-        },
-    },
-    {
-        name: 'the same emoji lists four names and summarizes the rest',
-        body: async () => {
-            const [messageId] = await seedChain(1);
-            const names = ['张三', '李四', '王五', '赵六', '钱七', '孙八'];
-            for (let index = 0; index < names.length; index += 1) {
-                await reactWithEmoji(messageId!, { userId: 3000 + index, name: names[index]! }, '👍');
-            }
-            const section = (await sectionOfContext(messageId!)) ?? '';
-            expect(
-                sectionLines(section).includes('- #1：👍（张三、李四、王五、赵六…等 2 人）'),
-                `four names then the count of the others (got ${JSON.stringify(section)})`
-            );
-        },
-    },
-    {
-        name: 'custom, paid and anonymous reactions read as the design says',
-        body: async () => {
-            const [messageId] = await seedChain(1);
-            await reactWithEmoji(messageId!, { userId: 3101, name: 'Fay' }, '👍');
-            await reactWithEmoji(messageId!, { userId: null, actorChatId: GROUP, name: '匿名频道' }, '😂');
-            await react(messageId!, { userId: 3102, name: 'Cara' }, [
-                { kind: 'custom_emoji', emoji: null, customEmojiId: '111' },
-            ]);
-            await react(messageId!, { userId: 3103, name: 'Dan' }, [
-                { kind: 'custom_emoji', emoji: null, customEmojiId: '222' },
-            ]);
-            await react(messageId!, { userId: 3104, name: 'Eve' }, [
-                { kind: 'paid', emoji: null, customEmojiId: null },
-            ]);
-
-            const section = (await sectionOfContext(messageId!)) ?? '';
-            const line = messageLines(section)[0] ?? '';
-            expect(line.includes('👍（Fay）'), `the standard emoji is shown as is (got ${JSON.stringify(line)})`);
-            expect(line.includes('😂（匿名）'), `an anonymous actor reads as 匿名 (got ${JSON.stringify(line)})`);
-            expect(
-                line.includes('[自定义表情]（Cara）') && line.includes('[自定义表情]（Dan）'),
-                `custom reactions read as [自定义表情] (got ${JSON.stringify(line)})`
-            );
-            expect(line.includes('⭐（Eve）'), `a paid reaction reads as ⭐ (got ${JSON.stringify(line)})`);
-
-            const paidIndex = line.indexOf('⭐（Eve）');
-            const secondCustomIndex = line.indexOf('[自定义表情]（Dan）');
-            const firstCustomIndex = line.indexOf('[自定义表情]（Cara）');
-            const standardIndex = line.indexOf('👍（Fay）');
-            expect(
-                standardIndex < firstCustomIndex && firstCustomIndex < secondCustomIndex && secondCustomIndex < paidIndex,
-                `standard emoji, then custom (by id), then paid (got ${JSON.stringify(line)})`
-            );
-        },
-    },
-    {
-        name: 'whole message lines are dropped until the section fits 600 characters',
-        body: async () => {
-            const chain = await seedChain(5);
-            const emojis = ['😀', '😁', '😂', '🤣', '😃', '😄', '😅', '😆'];
-            const names = ['风花雪月', '山高水长', '云淡风轻', '海阔天空'];
-            for (const messageId of chain) {
-                for (const [emojiIndex, emoji] of emojis.entries()) {
-                    for (const [nameIndex, name] of names.entries()) {
-                        await reactWithEmoji(messageId, { userId: 4000 + emojiIndex * 10 + nameIndex, name }, emoji);
-                    }
-                }
-            }
-
-            const section = (await sectionOfContext(chain[4]!)) ?? '';
-            expect(
-                codePointCount(section) <= 600,
-                `the section stays within 600 characters (got ${codePointCount(section)})`
-            );
-            const numbers = messageLineNumbers(section);
-            expect(numbers.length > 0 && numbers.length < chain.length, `whole lines are dropped (kept ${numbers.length})`);
-            expect(
-                numbers.join(',') === [1, 2, 3, 4, 5].slice(chain.length - numbers.length).join(','),
-                `the oldest lines are the ones dropped (got ${numbers.join(',')})`
-            );
-            expect(
-                omissionLineOf(section) === `- 还有 ${chain.length - numbers.length} 条消息的 reaction 未显示`,
-                `the dropped count is announced (got ${JSON.stringify(omissionLineOf(section))})`
-            );
-            expect(
-                messageLines(section).every((line) => line.endsWith('）')),
-                `no line is cut mid-entry (got ${JSON.stringify(messageLines(section))})`
-            );
-        },
-    },
-    {
         name: 'a reaction-only person joins the roster, anonymous and bot actors do not',
         body: async () => {
-            const [messageId] = await seedChain(1);
-            await reactWithEmoji(messageId!, { userId: 2002, name: 'Bob' }, '👍');
-            await reactWithEmoji(messageId!, { userId: null, actorChatId: GROUP, name: '匿名频道' }, '😂');
-            await replaceBotReaction(CHAT_ID, messageId!, '❤');
+            const [reply] = await seedChain(1);
+            const body = await addPart(reply!, 'body', 1);
+            const sticker = await addPart(reply!, 'sticker');
+            await reactWithEmoji(body, { userId: 2002, name: 'Bob' }, '👍');
+            await reactWithEmoji(sticker, { userId: null, actorChatId: GROUP, name: '匿名频道' }, '🎉');
+            await reactAsModel(reply!, '❤', { messageId: sticker, part: 'sticker', partIndex: null });
             // A bot account the roster knows about reacts too: no @ target for a bot
             await TelegramUser.create({
                 userId: 5005,
@@ -362,9 +603,9 @@ const cases: { name: string; body: () => Promise<void> }[] = [
                 isBot: true,
                 updatedAt: new Date(),
             });
-            await reactWithEmoji(messageId!, { userId: 5005, name: 'Helper' }, '🔥');
+            await reactWithEmoji(body, { userId: 5005, name: 'Helper' }, '🔥');
 
-            const context = await buildFor(messageId!);
+            const context = await buildFor(reply!);
             const runtime = runtimeTextOf(context);
             const bob = context.contextUsers.find((user) => user.userId === 2002);
             expect(bob?.mentionedOnly === false, 'a reactor is not a mention');
@@ -395,41 +636,60 @@ const cases: { name: string; body: () => Promise<void> }[] = [
     {
         name: 'the panel model view reads the same section and writes nothing',
         body: async () => {
-            const [messageId] = await seedChain(1);
-            await reactWithEmoji(messageId!, { userId: 2001, name: '张三' }, '👍');
+            const [reply] = await seedChain(1);
+            const body = await addPart(reply!, 'body', 1);
+            await reactWithEmoji(body, { userId: 2001, name: '张三' }, '👍');
             const before = await MessageReaction.count({ where: { chatId: CHAT_ID } });
-            const drySection = (await sectionOfContext(messageId!, { dryRun: true })) ?? '';
+            const drySection = (await sectionOfContext(reply!, { dryRun: true })) ?? '';
             const after = await MessageReaction.count({ where: { chatId: CHAT_ID } });
-            expect(drySection.includes('- #1：👍（张三）'), `the dry run renders the section (got ${JSON.stringify(drySection)})`);
+            expect(
+                drySection === expectedSection(['- #1：👍（张三）']),
+                `the dry run renders the section (got ${JSON.stringify(drySection)})`
+            );
             expect(after === before, 'the dry run writes no reaction row');
         },
     },
     {
         name: 'the same state renders the same text whatever order it was written in',
         body: async () => {
-            const [messageId] = await seedChain(1);
-            await reactWithEmoji(messageId!, { userId: 5002, name: '乙' }, '❤');
-            await reactWithEmoji(messageId!, { userId: 5001, name: '甲' }, '👍');
-            const first = (await sectionOfContext(messageId!)) ?? '';
+            const [reply] = await seedChain(1);
+            const firstSegment = await addPart(reply!, 'body', 1);
+            const secondSegment = await addPart(reply!, 'body', 2);
+            const write = async (reverse: boolean): Promise<void> => {
+                const steps = [
+                    (): Promise<void> => reactWithEmoji(secondSegment, { userId: 5002, name: '乙' }, '❤'),
+                    (): Promise<void> => reactWithEmoji(firstSegment, { userId: 5001, name: '甲' }, '👍'),
+                    (): Promise<void> => reactWithEmoji(firstSegment, { userId: 5003, name: '丙' }, '🎉'),
+                ];
+                for (const step of reverse ? steps.slice().reverse() : steps) await step();
+            };
+            await write(false);
+            const first = (await sectionOfContext(reply!)) ?? '';
 
             // Same state, written in the other order: the rows' own order and
             // timestamps must not reach the rendered text.
-            await MessageReaction.destroy({ where: { chatId: CHAT_ID, messageId: messageId! } });
-            await reactWithEmoji(messageId!, { userId: 5002, name: '乙' }, '❤');
-            await reactWithEmoji(messageId!, { userId: 5001, name: '甲' }, '👍');
-            const second = (await sectionOfContext(messageId!)) ?? '';
+            await MessageReaction.destroy({ where: { chatId: CHAT_ID } });
+            await write(true);
+            const second = (await sectionOfContext(reply!)) ?? '';
 
-            expect(first.length > 0 && first === second, `the rendering is stable (got ${JSON.stringify(first)} vs ${JSON.stringify(second)})`);
+            expect(
+                first.length > 0 && first === second,
+                `the rendering is stable (got ${JSON.stringify(first)} vs ${JSON.stringify(second)})`
+            );
         },
     },
     {
-        name: "an excluded message takes its reactions out of the section",
+        name: 'an excluded message takes its reactions out of the section',
         body: async () => {
             const chain = await seedChain(3);
             const middle = chain[1]!;
-            await reactWithEmoji(middle, { userId: 6001, name: '张三' }, '👍');
+            const middleBody = await addPart(middle, 'body', 1);
+            await reactWithEmoji(middleBody, { userId: 6001, name: '张三' }, '👍');
             const before = (await sectionOfContext(chain[2]!)) ?? '';
-            expect(before.includes('- #2：👍（张三）'), `before: the reaction line is there (got ${JSON.stringify(before)})`);
+            expect(
+                before.includes('- #2：👍（张三）'),
+                `before: the reaction line is there (got ${JSON.stringify(before)})`
+            );
 
             await ContextExclusion.create({
                 chatId: CHAT_ID,

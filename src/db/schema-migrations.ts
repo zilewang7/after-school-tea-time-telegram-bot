@@ -20,7 +20,9 @@ type MigratedTable =
   | 'price_watch_runs'
   | 'price_change_proposals'
   | 'model_capability_proposals'
-  | 'model_catalog';
+  | 'model_catalog'
+  | 'message_reactions'
+  | 'bot_responses';
 
 /**
  * Whether the table exists yet. Migrations run before sync, so on a fresh
@@ -242,6 +244,164 @@ const migrateMediaCacheDurationSeconds = async (transaction: Transaction): Promi
 const migrateMessageDeletedAt = async (transaction: Transaction): Promise<void> => {
   if (!(await tableExists('telegram_messages', transaction))) return;
   await ensureColumn('telegram_messages', 'deletedAt', 'DATETIME', transaction);
+};
+
+/**
+ * message_reactions gained the source/part columns (design 2026-1123-1610): the
+ * actor's state is keyed by the message the user actually reacted to, and a row
+ * snapshots which part of a bot reply that message was. Existing rows backfill
+ * `sourceMessageId = messageId` and keep `part` NULL (their real source is not
+ * recoverable from the old table); readers treat a NULL part as "the canonical
+ * message / unknown" and the actor's next update supersedes it.
+ */
+export const migrateMessageReactionsParts = async (transaction: Transaction): Promise<void> => {
+  if (!(await tableExists('message_reactions', transaction))) return;
+  await ensureColumn('message_reactions', 'sourceMessageId', 'INTEGER', transaction);
+  await ensureColumn('message_reactions', 'part', 'VARCHAR(255)', transaction);
+  await ensureColumn('message_reactions', 'partIndex', 'INTEGER', transaction);
+  await sequelize.query(
+    'CREATE INDEX IF NOT EXISTS message_reactions_chat_id_source_message_id ON message_reactions (chatId, sourceMessageId)',
+    { transaction }
+  );
+  await sequelize.query(
+    'UPDATE message_reactions SET sourceMessageId = messageId WHERE sourceMessageId IS NULL',
+    { transaction }
+  );
+};
+
+/** The columns of bot_responses, in DTO order; shared by both rebuild directions */
+const BOT_RESPONSES_COLUMNS = [
+  'messageId',
+  'chatId',
+  'userMessageId',
+  'currentVersionIndex',
+  'versions',
+  'buttonState',
+  'metadata',
+  'createdAt',
+  'updatedAt',
+] as const;
+
+/** The table's primary key columns, in key order (SQLite's PRAGMA pk column) */
+const botResponsesPrimaryKey = async (transaction: Transaction): Promise<string[]> => {
+  const columns = await sequelize.query<{ name: string; pk: number }>(
+    'PRAGMA table_info(bot_responses)',
+    { type: QueryTypes.SELECT, transaction }
+  );
+  return columns
+    .filter((column) => column.pk > 0)
+    .sort((left, right) => left.pk - right.pk)
+    .map((column) => column.name);
+};
+
+/**
+ * bot_responses' primary key becomes (chatId, messageId) (design 2026-1123-1610
+ * §7): a Telegram message id is unique only inside its chat, so the old
+ * single-column key let two chats' replies overwrite each other on upsert. The
+ * table is small (7 days of replies), so a rebuild during startup is cheap.
+ *
+ * Runs before sync: on a fresh database the table does not exist yet (sync then
+ * creates it from the DTO with the composite key) and this is a no-op.
+ */
+/** Exported for the migration offline cases; production calls it from runSchemaMigrations */
+export const migrateBotResponsesCompositeKey = async (transaction: Transaction): Promise<void> => {
+  if (!(await tableExists('bot_responses', transaction))) return;
+  const primaryKey = await botResponsesPrimaryKey(transaction);
+  if (primaryKey.includes('chatId') && primaryKey.includes('messageId')) return;
+
+  const columns = BOT_RESPONSES_COLUMNS.join(', ');
+  await sequelize.query(`
+    CREATE TABLE bot_responses_new (
+      messageId INTEGER NOT NULL,
+      chatId INTEGER NOT NULL,
+      userMessageId INTEGER NOT NULL,
+      currentVersionIndex INTEGER NOT NULL DEFAULT 0,
+      versions TEXT NOT NULL DEFAULT '"[]"',
+      buttonState VARCHAR(255) NOT NULL DEFAULT 'none',
+      metadata TEXT NOT NULL DEFAULT '"{}"',
+      createdAt DATETIME NOT NULL,
+      updatedAt DATETIME NOT NULL,
+      PRIMARY KEY (chatId, messageId)
+    )
+  `, { transaction });
+  await sequelize.query(
+    `INSERT INTO bot_responses_new (${columns}) SELECT ${columns} FROM bot_responses`,
+    { transaction }
+  );
+  await sequelize.query('DROP TABLE bot_responses', { transaction });
+  await sequelize.query('ALTER TABLE bot_responses_new RENAME TO bot_responses', { transaction });
+  await sequelize.query(
+    'CREATE INDEX IF NOT EXISTS bot_responses_chat_id_user_message_id ON bot_responses (chatId, userMessageId)',
+    { transaction }
+  );
+  await sequelize.query(
+    'CREATE INDEX IF NOT EXISTS bot_responses_created_at ON bot_responses (createdAt)',
+    { transaction }
+  );
+  console.log('[schema] bot_responses rebuilt with the (chatId, messageId) primary key');
+};
+
+/**
+ * Reverse the composite-key migration, for a rollback of the build that shipped
+ * it (old code upserts with a messageId conflict target, which no longer exists
+ * on the new schema). Only rows that a single-column key cannot express are
+ * dropped: two chats' replies with the same first message id; the newest row
+ * wins. Run with the bot stopped (see scripts/deploy/rollback-bot-responses-pk.mts).
+ */
+export const rollbackBotResponsesCompositeKey = async (): Promise<{
+  alreadySingle: boolean;
+  rows: number;
+  dropped: number;
+}> => {
+  return sequelize.transaction(async (transaction) => {
+    const tables = await sequelize.query<{ name: string }>(
+      "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'bot_responses'",
+      { type: QueryTypes.SELECT, transaction }
+    );
+    if (tables.length === 0) return { alreadySingle: true, rows: 0, dropped: 0 };
+    const primaryKey = await botResponsesPrimaryKey(transaction);
+    if (!(primaryKey.includes('chatId') && primaryKey.includes('messageId'))) {
+      return { alreadySingle: true, rows: 0, dropped: 0 };
+    }
+    const counted = await sequelize.query<{ total: number; distinctIds: number }>(
+      'SELECT COUNT(*) AS total, COUNT(DISTINCT messageId) AS distinctIds FROM bot_responses',
+      { type: QueryTypes.SELECT, transaction }
+    );
+    const total = Number(counted[0]?.total ?? 0);
+    const distinctIds = Number(counted[0]?.distinctIds ?? 0);
+
+    const columns = BOT_RESPONSES_COLUMNS.join(', ');
+    await sequelize.query(`
+      CREATE TABLE bot_responses_single (
+        messageId INTEGER NOT NULL PRIMARY KEY,
+        chatId INTEGER NOT NULL,
+        userMessageId INTEGER NOT NULL,
+        currentVersionIndex INTEGER NOT NULL DEFAULT 0,
+        versions TEXT NOT NULL DEFAULT '"[]"',
+        buttonState VARCHAR(255) NOT NULL DEFAULT 'none',
+        metadata TEXT NOT NULL DEFAULT '"{}"',
+        createdAt DATETIME NOT NULL,
+        updatedAt DATETIME NOT NULL
+      )
+    `, { transaction });
+    // Oldest first: a NEWER row with the same messageId replaces the older one
+    await sequelize.query(
+      `INSERT OR REPLACE INTO bot_responses_single (${columns})
+       SELECT ${columns} FROM bot_responses ORDER BY createdAt ASC`,
+      { transaction }
+    );
+    await sequelize.query('DROP TABLE bot_responses', { transaction });
+    await sequelize.query('ALTER TABLE bot_responses_single RENAME TO bot_responses', { transaction });
+    await sequelize.query(
+      'CREATE INDEX IF NOT EXISTS bot_responses_chat_id_user_message_id ON bot_responses (chatId, userMessageId)',
+      { transaction }
+    );
+    await sequelize.query(
+      'CREATE INDEX IF NOT EXISTS bot_responses_created_at ON bot_responses (createdAt)',
+      { transaction }
+    );
+    return { alreadySingle: false, rows: total, dropped: total - distinctIds };
+  });
 };
 
 /**
@@ -1055,6 +1215,8 @@ export const runSchemaMigrations = async (): Promise<void> => {
     await migrateReplyMetricsTrialQuotaColumns(transaction);
     await migrateReplyMetricsCapabilityColumns(transaction);
     await migrateMessageDeletedAt(transaction);
+    await migrateMessageReactionsParts(transaction);
+    await migrateBotResponsesCompositeKey(transaction);
     await migratePriceWatchRound1Columns(transaction);
     await migrateOpusDefaultEffort(transaction);
     await sequelize.query(
@@ -1234,6 +1396,24 @@ export const runSchemaMigrations = async (): Promise<void> => {
     await sequelize.query(
       `INSERT OR IGNORE INTO schema_migrations (name, appliedAt)
        VALUES ('20261120_link_preview_url_fallback', :appliedAt)`,
+      { replacements: { appliedAt: new Date().toISOString() }, transaction }
+    );
+    // message_reactions gained source/part columns (migrateMessageReactionsParts)
+    await sequelize.query(
+      `INSERT OR IGNORE INTO schema_migrations (name, appliedAt)
+       VALUES ('20261123_reaction_parts', :appliedAt)`,
+      { replacements: { appliedAt: new Date().toISOString() }, transaction }
+    );
+    // bot_responses primary key became (chatId, messageId) (migrateBotResponsesCompositeKey)
+    await sequelize.query(
+      `INSERT OR IGNORE INTO schema_migrations (name, appliedAt)
+       VALUES ('20261123_bot_responses_composite_key', :appliedAt)`,
+      { replacements: { appliedAt: new Date().toISOString() }, transaction }
+    );
+    // bot_reply_messages is a brand-new table: its DTO creates it at sync time
+    await sequelize.query(
+      `INSERT OR IGNORE INTO schema_migrations (name, appliedAt)
+       VALUES ('20261123_bot_reply_messages', :appliedAt)`,
       { replacements: { appliedAt: new Date().toISOString() }, transaction }
     );
   });

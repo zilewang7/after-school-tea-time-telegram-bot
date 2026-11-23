@@ -17,6 +17,13 @@
  *   same version out under new ids), resolved by findBotReplyBodyMessageIds;
  * - the stored id: the DB keys rows by the reply's stored first id — the id
  *   context numbering uses — so the runtime block shows the reaction on `#N`.
+ * The row also snapshots which part of the reply the target message is (read
+ * from the delivery ledger), so a reaction on a sticker reply reads as the
+ * sticker, not as the body.
+ *
+ * The Bot API cannot tell "already in this state" from a refusal: Telegram
+ * answers a no-op reaction with 400 `message is not modified`, which both forms
+ * treat as success (the state the call asked for is the state in the chat).
  *
  * The Bot API reports no update for a bot's own reaction, so the rows are
  * written here (replaceBotReaction / replaceBotReactions). That write is the
@@ -25,7 +32,11 @@
  */
 import type { ToolCallTrace, ToolHandler, ToolResult } from '../../ai/tools/tool-types.js';
 import { findBotReplyBodyMessageIds } from '../../db/queries/bot-reply-body-queries.js';
-import { replaceBotReaction, replaceBotReactions } from '../../db/queries/reaction-queries.js';
+import {
+    replaceBotReaction,
+    replaceBotReactions,
+    type BotReactionSource,
+} from '../../db/queries/reaction-queries.js';
 import { toTelegramApiAbortSignal } from '../../services/telegram-file-service.js';
 import {
     isReactionEmoji,
@@ -37,8 +48,10 @@ import type { ContextIndex, ContextIndexEntry } from '../context-index.js';
 import {
     describeApiFailure,
     errorMessageOf,
+    isNotModifiedError,
     REACTION_BATCH_MAX,
     reactionOf,
+    resolveReactionSource,
     runReactionBatch,
     type ReactionBatchItem,
     type WriteBotReactions,
@@ -109,7 +122,8 @@ export interface BotReactionWriteResult {
 export type WriteBotReaction = (
     chatId: number,
     canonicalMessageId: number,
-    emoji: string | null
+    emoji: string | null,
+    source?: BotReactionSource
 ) => Promise<BotReactionWriteResult>;
 
 export interface ReactToMessageDependencies {
@@ -316,10 +330,11 @@ const writeReactionOrWarn = async (
     writeReaction: WriteBotReaction,
     context: ReplyToolContext,
     canonicalMessageId: number,
-    emoji: ReactionEmoji | null
+    emoji: ReactionEmoji | null,
+    source?: BotReactionSource
 ): Promise<string | null | undefined> => {
     try {
-        const written = await writeReaction(context.chatId, canonicalMessageId, emoji);
+        const written = await writeReaction(context.chatId, canonicalMessageId, emoji, source);
         return written.previousEmoji;
     } catch (error) {
         console.warn(
@@ -390,14 +405,21 @@ const executeSingle = async (
             )
         );
     } catch (error) {
-        return failed(describeApiFailure(error));
+        // Telegram refuses a reaction that is already in the asked-for state
+        // with "message is not modified"; that is the outcome the call wanted,
+        // so it is a success here too (the batch forms have always read it so).
+        if (!isNotModifiedError(error)) return failed(describeApiFailure(error));
     }
 
+    // Which part of the reply the API target is; a ledger row is written as each
+    // message goes out, so this is the same answer an inbound reaction gets.
+    const source = await resolveReactionSource(context.chatId, apiTargetMessageId);
     const previousEmoji = await writeReactionOrWarn(
         writeReaction,
         context,
         entry.messageId,
-        item.emoji
+        item.emoji,
+        source
     );
     return succeeded(
         successContent(item.messageNumber, item.emoji, previousEmoji),

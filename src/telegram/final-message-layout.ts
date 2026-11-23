@@ -9,9 +9,15 @@
  *
  * A chunk is either rendered text with entities or a rich message's markdown
  * (a reply delivered as a rich message); the two kinds mix in one layout.
+ *
+ * The layout is also where the reply's delivery ledger learns what each message
+ * it delivered is: after every edit, send and delete that went through, the
+ * optional callbacks run. The telegram layer does not write the ledger itself
+ * (it has no db dependency); the caller books the message under its reply.
  */
 import { GrammyError, type Api, type RawApi } from 'grammy';
 import type { InlineKeyboardMarkup, Message } from 'grammy/types';
+import type { ReplyPartKind } from '../shared/reply-part.js';
 import { to } from '../shared/result.js';
 import { registerContinuation, unregisterBotReplyInFlight, unregisterContinuation } from '../state.js';
 import { toApiEntities } from './api-entities.js';
@@ -35,11 +41,62 @@ export interface RichLayoutChunk {
      * one a body without pictures sends.
      */
     readonly richMedia?: readonly RichMediaPayload[];
+    /**
+     * Which part of the reply the message is. Absent means body text: a rich
+     * body is always the reply's text, so the layouts never set it today; the
+     * field keeps a rich layout chunk able to name another part in the future.
+     */
+    readonly part?: ReplyPartKind;
 }
 
 export type LayoutChunk = FinalMessageChunk | RichLayoutChunk;
 
 export const isRichLayoutChunk = (chunk: LayoutChunk): chunk is RichLayoutChunk => 'richMarkdown' in chunk;
+
+/** Which part of a reply a layout chunk delivers, with its segment number */
+export interface ReplyChunkPart {
+    readonly part: ReplyPartKind;
+    /** 1-based body segment number (pictures use their own counter); null otherwise */
+    readonly partIndex: number | null;
+}
+
+/** One delivered layout message: what it is, for the caller's delivery ledger */
+export interface DeliveredChunk extends ReplyChunkPart {
+    readonly messageId: number;
+    /** Index of the chunk in the layout */
+    readonly chunkIndex: number;
+}
+
+/**
+ * The part each chunk of a layout is, in layout order. A chunk built as a
+ * dedicated message names its kind (`toThinkingLinkChunk` and the two folded
+ * blocks); everything else is body text and is numbered here — consecutive body
+ * chunks are segments 1..N of the reply's text, exactly as the chat shows them.
+ *
+ * Callers delivering a layout by hand (a version switch, the merge fallback)
+ * use the same numbering, so the ledger reads the same whichever path wrote it.
+ */
+export const chunkPartsOf = (chunks: readonly LayoutChunk[]): ReplyChunkPart[] => {
+    let bodyIndex = 0;
+    return chunks.map((chunk): ReplyChunkPart => {
+        const part: ReplyPartKind = chunk.part ?? 'body';
+        if (part !== 'body') return { part, partIndex: null };
+        bodyIndex += 1;
+        return { part, partIndex: bodyIndex };
+    });
+};
+
+/** A bookkeeping callback never breaks the delivery it reports on */
+const runLedgerCallback = async (
+    description: string,
+    callback: () => void | Promise<void>
+): Promise<void> => {
+    try {
+        await callback();
+    } catch (error) {
+        console.warn(`[final-layout] ${description} failed:`, error);
+    }
+};
 
 export interface LayOutChunksInput {
     readonly api: Api<RawApi>;
@@ -62,6 +119,14 @@ export interface LayOutChunksInput {
      * loses a picture without an error).
      */
     readonly onRichDelivered?: (message: Message) => void;
+    /**
+     * An edit or a send went through: the message id and the part it now is.
+     * The caller books it in the reply's delivery ledger, best-effort; a throw
+     * from it is logged and never stops the layout.
+     */
+    readonly onChunkDelivered?: (delivery: DeliveredChunk) => void | Promise<void>;
+    /** A surplus message was actually deleted from the chat: forget it */
+    readonly onMessageDeleted?: (messageId: number) => void | Promise<void>;
 }
 
 export interface LayOutChunksResult {
@@ -88,6 +153,22 @@ export const layOutChunks = async (input: LayOutChunksInput): Promise<LayOutChun
     const { api, chatId, userMessageId, firstMessageId, chunks } = input;
     const messageIds = [...input.messageIds];
     const richChunkCount = chunks.filter(isRichLayoutChunk).length;
+    const chunkParts = chunkPartsOf(chunks);
+    // The ledger callbacks: each delivered/deleted message tells the caller what
+    // it is; booking a message is best-effort and never stops the layout
+    const notifyDelivered = async (messageId: number, chunkIndex: number): Promise<void> => {
+        const callback = input.onChunkDelivered;
+        const chunkPart = chunkParts[chunkIndex];
+        if (callback === undefined || chunkPart === undefined) return;
+        await runLedgerCallback('onChunkDelivered', () =>
+            callback({ messageId, chunkIndex, part: chunkPart.part, partIndex: chunkPart.partIndex })
+        );
+    };
+    const notifyDeleted = async (messageId: number): Promise<void> => {
+        const callback = input.onMessageDeleted;
+        if (callback === undefined) return;
+        await runLedgerCallback('onMessageDeleted', () => callback(messageId));
+    };
     // An empty layout would delete the whole reply; callers guarantee one chunk
     if (chunks.length === 0) {
         return {
@@ -123,7 +204,10 @@ export const layOutChunks = async (input: LayOutChunksInput): Promise<LayOutChun
                   isFinal: true,
               });
         if (!delivered) allDelivered = false;
-        else if (isRichLayoutChunk(chunk)) richChunksDelivered += 1;
+        else {
+            if (isRichLayoutChunk(chunk)) richChunksDelivered += 1;
+            await notifyDelivered(messageId, index);
+        }
     }
 
     // The layout needs more messages than the chat has (the stream ended before
@@ -171,6 +255,7 @@ export const layOutChunks = async (input: LayOutChunksInput): Promise<LayOutChun
         messageIds.push(sent.message_id);
         registerContinuation(chatId, sent.message_id, firstMessageId);
         if (isRichLayoutChunk(chunk)) richChunksDelivered += 1;
+        await notifyDelivered(sent.message_id, index);
     }
 
     // The layout needs fewer messages than the chat has: the reply must not keep
@@ -192,6 +277,7 @@ export const layOutChunks = async (input: LayOutChunksInput): Promise<LayOutChun
         // messages that are left: nothing of this one stays registered
         unregisterContinuation(chatId, messageId);
         unregisterBotReplyInFlight(chatId, messageId);
+        await notifyDeleted(messageId);
     }
 
     return {

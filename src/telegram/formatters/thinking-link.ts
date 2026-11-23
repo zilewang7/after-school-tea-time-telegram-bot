@@ -153,4 +153,5 @@ export const toThinkingLinkChunk = (
 ): FinalMessageChunk => ({
     ...renderThinkingLinkMessage(ref, summary),
     linkPreviewOptions: thinkingLinkPreviewOptions(ref),
+    part: 'cot-link',
 });

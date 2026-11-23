@@ -65,4 +65,5 @@ export const toToolLogLinkChunk = (
 ): FinalMessageChunk => ({
     ...renderToolLogLinkMessage(link, document),
     linkPreviewOptions: toolLogLinkPreviewOptions(link),
+    part: 'tools-link',
 });

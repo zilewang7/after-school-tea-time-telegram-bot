@@ -82,4 +82,5 @@ export const toSearchLinkChunk = (
 ): FinalMessageChunk => ({
     ...renderSearchLinkMessage(link, stats),
     linkPreviewOptions: searchLinkPreviewOptions(link),
+    part: 'search-link',
 });

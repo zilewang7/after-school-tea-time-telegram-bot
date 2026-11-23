@@ -36,6 +36,12 @@ import type { ShareLinkRecord } from '../panel/share/share-types.js';
 import { toApiEntities } from '../telegram/api-entities.js';
 import { buildMessageLinkResolver } from '../telegram/message-link.js';
 import type { AccessTier } from '../services/access-tier.js';
+import {
+    forgetReplyPart,
+    registerBodyReplyPart,
+    registerReplyPart,
+} from '../services/reply-part-registry.js';
+import type { ReplyPartKind } from '../shared/reply-part.js';
 import { createContextLabelStripper, stripContextLabel } from './context-label.js';
 import {
     linkifyContextNumbers,
@@ -80,7 +86,7 @@ import {
     STREAMING_MAX_LENGTH,
     TELEGRAM_MAX_LENGTH,
 } from '../telegram/formatters/message-budget.js';
-import { layOutChunks } from '../telegram/final-message-layout.js';
+import { layOutChunks, chunkPartsOf, type DeliveredChunk, type ReplyChunkPart } from '../telegram/final-message-layout.js';
 import { buildFinalChunks, renderedCoTLength, shouldLinkCoT } from './final-layout.js';
 import { toolLogPlanOfDocument } from '../telegram/formatters/tool-records-formatter.js';
 import { buildToolLogDocument, type ToolLogDocument } from '../telegram/formatters/tool-log-document.js';
@@ -144,6 +150,7 @@ import {
 import type { ContextIndex } from './context-index.js';
 import type { ReplyMediaState } from './tools/reply-media-state.js';
 import { noteStreamChunk } from '../services/reply-metrics-draft.js';
+import { sniffMediaMime } from '../ai/image-generation/image-mime.js';
 import { findStickerByPackIndex } from '../services/sticker-catalog.js';
 import { downloadStickerPreview } from '../services/sticker-set-service.js';
 
@@ -432,6 +439,48 @@ export const processChunk = (
 };
 
 /**
+ * The delivery ledger of the reply being sent (design 2026-1123-1610 §3): one
+ * row per message the bot actually put in the chat, saying which part of the
+ * reply it is. Written as soon as the message exists, so a reaction arriving
+ * before the version is stored still resolves; every write is best-effort
+ * (the service catches and warns), a lost row costs the next turn a part
+ * label, never the reply.
+ */
+const recordReplyPart = async (
+    chatContext: ChatContext,
+    messageId: number,
+    part: ReplyPartKind,
+    partIndex: number | null = null
+): Promise<void> => {
+    await registerReplyPart({
+        chatId: chatContext.chatId,
+        canonicalMessageId: chatContext.session.firstMessageId,
+        messageId,
+        part,
+        partIndex,
+    });
+};
+
+/** Book one hand-delivered chunk under the part the layout gave it */
+const recordChunkPart = async (
+    chatContext: ChatContext,
+    messageId: number,
+    chunkPart: ReplyChunkPart
+): Promise<void> => {
+    await recordReplyPart(chatContext, messageId, chunkPart.part, chunkPart.partIndex);
+};
+
+/** `layOutChunks`' ledger callbacks for this reply: each delivered/deleted message */
+const layoutLedgerCallbacksOf = (chatContext: ChatContext) => ({
+    onChunkDelivered: async (delivery: DeliveredChunk): Promise<void> => {
+        await recordChunkPart(chatContext, delivery.messageId, delivery);
+    },
+    onMessageDeleted: async (messageId: number): Promise<void> => {
+        await forgetReplyPart(chatContext.chatId, messageId);
+    },
+});
+
+/**
  * Resolver that makes the `#N` context references in this reply clickable.
  * Built per render, not cached on the chat context: the numbering is published
  * by buildContext, which runs after the chat context already exists.
@@ -592,6 +641,8 @@ const createContinuationMessage = async (
     // not to the message that just closed
     session.currentMessageId = newMessage.message_id;
     registerContinuation(chatId, newMessage.message_id, session.firstMessageId);
+    // A new body segment: the ledger numbers it after the body rows so far
+    await registerBodyReplyPart(chatId, session.firstMessageId, newMessage.message_id);
 
     // Create new StreamingEditor for the continuation message
     const newEditor = createStreamingEditor({
@@ -690,6 +741,9 @@ const emitThinkingLink = async (
     if (link === undefined) return false;
 
     const { editor } = chatContext;
+    // The message this edit turns into the link; the final layout keeps it
+    // untouched and treats everything after it as the body
+    const linkMessageId = editor.getIds().messageId;
     // Stop the spinner before the final edit and drop the queued streaming state
     editor.stop();
     const message = renderThinkingLinkMessage(link, thinkingLinkSummaryOf(thinking) ?? undefined);
@@ -701,6 +755,10 @@ const emitThinkingLink = async (
     if (!delivered) {
         console.warn('[thinking-link] the link message edit did not go through');
     }
+    // From here on the reply's first message is the CoT link: the ledger says
+    // what a reaction on it landed on, and the body restarting in the
+    // continuation begins at segment 1 (booked before it is appended).
+    await recordReplyPart(chatContext, linkMessageId, 'cot-link');
 
     const continuationId = await createContinuationMessage(chatContext);
     if (continuationId === null) {
@@ -1369,12 +1427,39 @@ const deliverReplyImages = async (
     // before the animations, and version media/message_media/#N follow it.
     session.images = [];
     session.imageCaptions = [];
+    const deliveredIndexes = deliveryOrderOf(plan.uploads).filter((index) => !dropped.has(index));
+    let pictureIndex = 0;
     for (const index of deliveryOrderOf(plan.uploads)) {
         if (dropped.has(index)) continue;
         const upload = plan.uploads[index];
         if (upload === undefined) continue;
         session.images.push(upload.data);
         session.imageCaptions.push(plan.captions[index]);
+    }
+
+    // Book the picture messages in the delivered order (the same zip the
+    // storage loop above walks): a still is a numbered picture, an animation
+    // is its own kind. A mismatch means the sender's report and this list
+    // disagree; booking nothing is better than booking the wrong part.
+    if (deliveredIndexes.length === messageIds.length) {
+        for (let position = 0; position < deliveredIndexes.length; position += 1) {
+            const index = deliveredIndexes[position];
+            const messageId = messageIds[position];
+            const upload = index === undefined ? undefined : plan.uploads[index];
+            if (messageId === undefined || upload === undefined) continue;
+            if (sniffMediaMime(upload.data) === 'image/gif') {
+                await recordReplyPart(chatContext, messageId, 'gif');
+            } else {
+                pictureIndex += 1;
+                await recordReplyPart(chatContext, messageId, 'picture', pictureIndex);
+            }
+        }
+    } else {
+        console.warn(
+            '[response-handler] picture messages and delivered pictures disagree; ledger not written:',
+            messageIds.length,
+            deliveredIndexes.length
+        );
     }
 
     if (plan.uploads.length === 1 || !hasTextMessage) {
@@ -1414,6 +1499,7 @@ const deliverReplyFile = async (
     session.messageIds.push(sent[1]);
     session.currentMessageId = sent[1];
     session.file = file;
+    await recordReplyPart(chatContext, sent[1], 'file');
     return true;
 };
 
@@ -1444,6 +1530,7 @@ const deliverReplySticker = async (
     session.messageIds.push(messageId);
     session.currentMessageId = messageId;
     session.sticker = sticker;
+    await recordReplyPart(chatContext, messageId, 'sticker');
 
     const entry = findStickerByPackIndex(sticker.packIndex);
     const setName = getToolConfig().stickerSetName;
@@ -1544,6 +1631,7 @@ const deliverReplyWidgetLink = async (
     session.widgetMessageId = sent[1];
     session.widgetDeliveredAs = 'link';
     if (share !== null) session.widgetShareUrl = share.url;
+    await recordReplyPart(chatContext, sent[1], 'widget-link');
     return true;
 };
 
@@ -1600,6 +1688,7 @@ const deliverReplyWidget = async (
             if (session.widget === undefined) session.widget = widget;
             session.widgetMessageId = sent[1];
             session.widgetDeliveredAs = 'widget';
+            await recordReplyPart(chatContext, sent[1], 'widget');
             return true;
         }
         if (!isWidgetNotAllowedError(sent[0])) return false;
@@ -2053,6 +2142,9 @@ export const sendFinalResponse = async (
         toolLogDocument
     );
     const finalChunks = layout.chunks;
+    // What each chunk is in the ledger; the hand-delivered branches below book
+    // with the same numbering the layout callback uses
+    const chunkParts = chunkPartsOf(finalChunks);
     let finalMessage: FinalMessageChunk = finalChunks[0] ?? { text: '', entities: [] };
 
     if (response.groundingData?.length) {
@@ -2078,6 +2170,7 @@ export const sendFinalResponse = async (
             firstMessageId: session.firstMessageId,
             messageIds: layoutMessageIds,
             chunks: finalChunks,
+            ...layoutLedgerCallbacksOf(chatContext),
         });
         session.messageIds =
             layout.skipFirstMessage === true
@@ -2097,13 +2190,21 @@ export const sendFinalResponse = async (
         console.log('[response-handler] Final message exceeds limit, splitting by sections...');
 
         // Send current part first (no buttons on split messages)
-        await editor.updateContent(finalMessage.text, {
+        const firstChunkPart = chunkParts[0];
+        const firstDelivered = await editor.updateContent(finalMessage.text, {
             entities: finalMessage.entities,
             linkPreviewOptions: finalMessage.linkPreviewOptions,
             isFinal: true,
         });
+        if (firstDelivered && firstChunkPart !== undefined) {
+            // The first chunk may be the CoT link when the stream never emitted
+            // it; the hand delivery books the same part the layout would have
+            await recordChunkPart(chatContext, editor.getIds().messageId, firstChunkPart);
+        }
 
-        for (const chunk of finalChunks.slice(1)) {
+        for (let index = 1; index < finalChunks.length; index += 1) {
+            const chunk = finalChunks[index];
+            if (chunk === undefined) continue;
             const continuationResult = await to(
                 runApiCall(chatId, () =>
                     ctx.api.sendMessage(chatId, chunk.text, {
@@ -2122,6 +2223,10 @@ export const sendFinalResponse = async (
             const contMsg = continuationResult[1];
             session.messageIds.push(contMsg.message_id);
             session.currentMessageId = contMsg.message_id;
+            const chunkPart = chunkParts[index];
+            if (chunkPart !== undefined) {
+                await recordChunkPart(chatContext, contMsg.message_id, chunkPart);
+            }
         }
 
         // Send the one attachment (file, sticker or image) after the text split
@@ -2169,7 +2274,8 @@ export const sendFinalResponse = async (
 
     // Check if this is an image generation context
     const isImageGenerationContext = chatContext.commandType === 'picbanana'
-        || chatContext.commandType === 'picgpt';
+        || chatContext.commandType === 'picgpt'
+        || chatContext.commandType === 'picgrok';
     const noImageInResponse = isImageGenerationContext && !hasImages && !wasStoppedByUser;
 
     // Add [no image in response] marker for image generation without images
@@ -2207,11 +2313,15 @@ export const sendFinalResponse = async (
     if (hasMedia) {
         // Update text message first (no buttons - intermediate message)
         if (hasText) {
-            await editor.updateContent(finalMessage.text, {
+            const textDelivered = await editor.updateContent(finalMessage.text, {
                 entities: finalMessage.entities,
                 linkPreviewOptions: finalMessage.linkPreviewOptions,
                 isFinal: true,
             });
+            const textChunkPart = chunkParts[0];
+            if (textDelivered && textChunkPart !== undefined) {
+                await recordChunkPart(chatContext, editor.getIds().messageId, textChunkPart);
+            }
         }
 
         // Send the attachment as last message (buttons will be added after finalize)
@@ -2221,7 +2331,9 @@ export const sendFinalResponse = async (
             if (mediaDelivered) {
                 // No text: the attachment takes the processing message's place
                 const processingMessageId = editor.getIds().messageId;
-                await editor.delete();
+                const deleted = await editor.delete();
+                // The placeholder is gone: nothing of it stays bookable
+                if (deleted) await forgetReplyPart(chatId, processingMessageId);
                 session.messageIds = session.messageIds.filter(id => id !== processingMessageId);
             } else {
                 // Nothing went out: the processing message stays and says so
@@ -2289,12 +2401,16 @@ export const sendFinalResponse = async (
             const displayMessage: RenderedMessage = finalMessage.text
                 ? finalMessage
                 : { text: '[stopped]', entities: [] };
-            await editor.updateContent(displayMessage.text, {
+            const displayed = await editor.updateContent(displayMessage.text, {
                 entities: displayMessage.entities,
                 linkPreviewOptions: finalMessage.linkPreviewOptions,
                 replyMarkup: finalButtons,
                 isFinal: true,
             });
+            const displayedChunkPart = chunkParts[0];
+            if (displayed && displayedChunkPart !== undefined) {
+                await recordChunkPart(chatContext, editor.getIds().messageId, displayedChunkPart);
+            }
         } else {
             // No content and not stopped - show error
             const fallbackMessage = '寄了';

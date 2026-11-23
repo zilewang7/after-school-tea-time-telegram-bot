@@ -22,6 +22,7 @@ import type { RenderedMessage } from 'telegram-md-entities';
 import type { AgentStats, GroundingData } from '../../ai/types.js';
 import { getRenderConfig } from '../../config/render-config.js';
 import { stripPerQueryResultCitations } from '../../shared/citation-markers.js';
+import type { ReplyPartKind } from '../../shared/reply-part.js';
 import type { SearchPageLink } from '../../shared/search-page.js';
 import type { ToolLogPageLink } from '../../shared/tool-log-page.js';
 import { buildToolRecordParts } from './tool-records-formatter.js';
@@ -118,6 +119,15 @@ export interface FinalMessageChunk extends RenderedMessage {
      * `{ is_disabled: true }` suppresses it; `{ url }` pins one link.
      */
     linkPreviewOptions?: LinkPreviewOptions;
+    /**
+     * Which part of the reply this message is, when it is not body text: the
+     * CoT link message, the folded GoogleSearch footer, the folded Tools block.
+     * A body chunk leaves it unset — the layout numbers body segments itself
+     * (`chunkPartsOf` in final-message-layout.ts). The delivery records the
+     * part in the reply ledger (bot_reply_messages), so a reaction on the
+     * message tells the model which part of the reply it landed on.
+     */
+    part?: ReplyPartKind;
 }
 
 /**

@@ -9,14 +9,20 @@
  * would repeat (a chat-level permission error, a flood wait) stops the rest and
  * says so, instead of asking Telegram N times for the answer it already gave.
  *
- * The rows are written afterwards, in one transaction. That write is the
- * model-facing copy, not the source of truth: when it fails the batch only warns
- * and still reports the reactions as set.
+ * The rows are written afterwards, in one transaction, each with the part of
+ * the reply its reaction landed on (read from the delivery ledger). That write
+ * is the model-facing copy, not the source of truth: when it fails the batch
+ * only warns and still reports the reactions as set.
  */
 import { GrammyError } from 'grammy';
 import type { ReactionType } from 'grammy/types';
 import { findBotReplyBodyMessageIds } from '../../db/queries/bot-reply-body-queries.js';
-import { replaceBotReactions } from '../../db/queries/reaction-queries.js';
+import {
+    replaceBotReactions,
+    type BotReactionSource,
+} from '../../db/queries/reaction-queries.js';
+import { findReplyPart } from '../../services/reply-part-registry.js';
+import type { ReplyPartKind } from '../../shared/reply-part.js';
 import { toTelegramApiAbortSignal } from '../../services/telegram-file-service.js';
 import type { ReactionEmoji } from '../../shared/reaction-emoji.js';
 import { runApiCall } from '../../telegram/edit-coordinator.js';
@@ -33,10 +39,22 @@ export interface ReactionBatchItem {
     readonly emoji: ReactionEmoji | null;
 }
 
+/** One row the batch writes: a canonical id keys it, the source names the part */
+export interface BotReactionWriteItem {
+    /** The reply's stored first message id (the id a context numbers by) */
+    readonly canonicalMessageId: number;
+    readonly emoji: ReactionEmoji | null;
+    /** The message the reaction lands on; omitted = the canonical id */
+    readonly sourceMessageId?: number;
+    /** The part that message is, snapshotted from the delivery ledger */
+    readonly part?: ReplyPartKind | null;
+    readonly partIndex?: number | null;
+}
+
 /** The row writer of a whole batch; a test injects a failing one */
 export type WriteBotReactions = (
     chatId: number,
-    items: readonly { readonly canonicalMessageId: number; readonly emoji: string | null }[]
+    items: readonly BotReactionWriteItem[]
 ) => Promise<Map<number, string | null>>;
 
 export interface ReactionBatchDependencies {
@@ -72,6 +90,28 @@ const oneLine = (text: string): string => text.replace(/\s+/g, ' ').trim();
 export const errorMessageOf = (error: unknown): string =>
     error instanceof Error ? error.message : String(error);
 
+/**
+ * The part snapshot of the message a reaction lands on. The delivery ledger
+ * records it as the messages go out; a missing row (a user message, a reply
+ * delivered before the ledger existed) just means the part is unknown — the
+ * reaction is still stored under its reply. A ledger read error is not allowed
+ * to fail a reaction that Telegram already accepted, so it only warns.
+ */
+export const resolveReactionSource = async (
+    chatId: number,
+    messageId: number
+): Promise<BotReactionSource> => {
+    try {
+        const part = await findReplyPart(chatId, messageId);
+        return { messageId, part: part?.part ?? null, partIndex: part?.partIndex ?? null };
+    } catch (error) {
+        console.warn(
+            `[reaction] could not read the reply part of ${chatId}/${messageId}: ${errorMessageOf(error)}`
+        );
+        return { messageId, part: null, partIndex: null };
+    }
+};
+
 /** Telegram's two ways of saying the target no longer exists */
 const isDeletedTargetError = (error: unknown): boolean =>
     error instanceof GrammyError &&
@@ -80,7 +120,7 @@ const isDeletedTargetError = (error: unknown): boolean =>
         error.description.includes('MESSAGE_ID_INVALID'));
 
 /** The target already has the state the call asked for: not a failure */
-const isNotModifiedError = (error: unknown): boolean =>
+export const isNotModifiedError = (error: unknown): boolean =>
     error instanceof GrammyError &&
     error.error_code === 400 &&
     (error.description.includes('message is not modified') ||
@@ -145,6 +185,15 @@ type ItemResult =
     | { readonly kind: 'success'; readonly previousEmoji: string | null | undefined }
     | { readonly kind: 'failure'; readonly reason: string }
     | { readonly kind: 'unprocessed' };
+
+/** One item Telegram accepted; its row is written afterwards, with its part */
+interface ReactionBatchSuccess {
+    readonly index: number;
+    readonly canonicalMessageId: number;
+    /** The Telegram message the reaction landed on */
+    readonly sourceMessageId: number;
+    readonly emoji: ReactionEmoji | null;
+}
 
 /** Collapse repeated numbers: the last item's emoji wins, at the first position */
 const dedupeByMessageNumber = (
@@ -228,23 +277,29 @@ const resolveBodyMessageIds = async (
 };
 
 /**
- * Write the successful items in one transaction. The write is the model-facing
- * copy only: a failure returns an empty map (previous state unknown) and the
- * batch still reports the reactions as set.
+ * Write the successful items in one transaction, each with the part its reaction
+ * landed on (read from the delivery ledger). The write is the model-facing copy
+ * only: a failure returns an empty map (previous state unknown) and the batch
+ * still reports the reactions as set.
  */
 const writeReactionsOrWarn = async (
     writeReactions: WriteBotReactions,
     context: ReplyToolContext,
-    successes: readonly { readonly canonicalMessageId: number; readonly emoji: ReactionEmoji | null }[]
+    successes: readonly ReactionBatchSuccess[]
 ): Promise<ReadonlyMap<number, string | null>> => {
     try {
-        return await writeReactions(
-            context.chatId,
-            successes.map((success) => ({
+        const items: BotReactionWriteItem[] = [];
+        for (const success of successes) {
+            const source = await resolveReactionSource(context.chatId, success.sourceMessageId);
+            items.push({
                 canonicalMessageId: success.canonicalMessageId,
                 emoji: success.emoji,
-            }))
-        );
+                sourceMessageId: source.messageId,
+                part: source.part,
+                partIndex: source.partIndex,
+            });
+        }
+        return await writeReactions(context.chatId, items);
     } catch (error) {
         console.warn(
             `[reaction] failed to store ${successes.length} bot reactions in ${context.chatId}: ` +
@@ -308,11 +363,7 @@ export const runReactionBatch = async (
         }
     }
 
-    const successes: Array<{
-        readonly index: number;
-        readonly canonicalMessageId: number;
-        readonly emoji: ReactionEmoji | null;
-    }> = [];
+    const successes: ReactionBatchSuccess[] = [];
     let stopped = false;
     let aborted = false;
 
@@ -340,6 +391,7 @@ export const runReactionBatch = async (
             successes.push({
                 index,
                 canonicalMessageId: item.entry.messageId,
+                sourceMessageId: target,
                 emoji: item.emoji,
             });
         } catch (error) {
@@ -354,6 +406,7 @@ export const runReactionBatch = async (
                 successes.push({
                     index,
                     canonicalMessageId: item.entry.messageId,
+                    sourceMessageId: target,
                     emoji: item.emoji,
                 });
                 continue;

@@ -55,9 +55,9 @@ const rosterLine = (user: ContextUser): string => {
 
 /**
  * One message's reactions the way the runtime block reads them (design
- * 2026-1120-1312 §4.3). Built in the reply layer from the database rows, so the
- * ai layer keeps its zero `db` dependency; the entries and actors are already
- * grouped and ordered by that mapper, and the renderer only formats.
+ * 2026-1123-1610 §4). Built in the reply layer from the database rows, so the ai
+ * layer keeps its zero `db` dependency; the parts, their labels and the entries
+ * are already grouped and ordered by that mapper, and the renderer only formats.
  */
 export interface RuntimeReactionEntry {
     /** What the reaction reads as: the emoji, `[自定义表情]` or `⭐` */
@@ -68,16 +68,23 @@ export interface RuntimeReactionEntry {
     readonly moreActors: number;
 }
 
-/** One message's line: `#N` plus its reactions */
-export interface RuntimeReactionGroup {
-    readonly number: number;
+/** One reacted part of a message: a body segment, or one of its product messages */
+export interface RuntimeReactionPart {
+    /** The part's name (正文/正文第 N 段/贴纸/图片 N/…); null = the body as a whole */
+    readonly label: string | null;
     readonly entries: readonly RuntimeReactionEntry[];
 }
 
-/** Newer message lines win; older ones are dropped whole (and counted) */
-const REACTION_MAX_MESSAGE_LINES = 12;
+/** One message's reaction lines: `#N` plus one line per reacted part */
+export interface RuntimeReactionGroup {
+    readonly number: number;
+    readonly parts: readonly RuntimeReactionPart[];
+}
+
+/** Newer messages win; older ones are dropped whole (and counted) */
+const REACTION_MAX_PART_LINES = 16;
 /** Cap of the whole section in code points, heading included */
-const REACTION_SECTION_MAX_CHARS = 600;
+const REACTION_SECTION_MAX_CHARS = 800;
 const REACTION_SECTION_TITLE = '# 消息 reaction';
 
 const reactionEntryText = (entry: RuntimeReactionEntry): string => {
@@ -86,8 +93,15 @@ const reactionEntryText = (entry: RuntimeReactionEntry): string => {
     return `${entry.emoji}（${entry.actors.join('、')}${more}）`;
 };
 
-const reactionMessageLine = (group: RuntimeReactionGroup): string =>
-    `- #${group.number}：${group.entries.map(reactionEntryText).join('；')}`;
+/** One part line: `- #N：…` for the body as a whole, `- #N 标签：…` for a named part */
+const reactionPartLine = (number: number, part: RuntimeReactionPart): string => {
+    const head = part.label === null ? `- #${number}：` : `- #${number} ${part.label}：`;
+    return `${head}${part.entries.map(reactionEntryText).join('；')}`;
+};
+
+/** All part lines of one message, in the mapper's order */
+const reactionGroupLines = (group: RuntimeReactionGroup): string[] =>
+    group.parts.filter((part) => part.entries.length > 0).map((part) => reactionPartLine(group.number, part));
 
 /** The section as it reads with `lines` kept and `dropped` older messages left out */
 const reactionSectionOf = (lines: readonly string[], dropped: number): string[] => [
@@ -97,27 +111,25 @@ const reactionSectionOf = (lines: readonly string[], dropped: number): string[] 
 ];
 
 /**
- * Render the reaction section, newest messages first in the selection but
- * ascending in the output. Whole message lines are dropped — the oldest first —
- * when the section would pass its size cap, and the entry count keeps the model
+ * Render the reaction section. Whole messages are dropped — the oldest first —
+ * until the kept part lines fit both caps, and the dropped count keeps the model
  * aware of what it cannot read. Empty when there is nothing to show, so a
  * context without reactions renders byte-identically to before the section.
  */
 const reactionSection = (reactions: readonly RuntimeReactionGroup[]): string[] => {
-    const groups = reactions.filter((group) => group.entries.length > 0);
+    const groups = reactions
+        .map((group) => ({ group, lines: reactionGroupLines(group) }))
+        .filter((rendered) => rendered.lines.length > 0);
     if (groups.length === 0) return [];
 
-    const kept = groups.slice(Math.max(0, groups.length - REACTION_MAX_MESSAGE_LINES));
-    const messageLines = kept.map(reactionMessageLine);
-    let dropped = groups.length - kept.length;
-    while (
-        messageLines.length > 0 &&
-        countCodePoints(reactionSectionOf(messageLines, dropped).join('\n')) > REACTION_SECTION_MAX_CHARS
-    ) {
-        messageLines.shift();
-        dropped += 1;
+    for (let start = 0; start < groups.length; start += 1) {
+        const partLines = groups.slice(start).flatMap((rendered) => rendered.lines);
+        if (partLines.length > REACTION_MAX_PART_LINES) continue;
+        const section = reactionSectionOf(partLines, start);
+        if (countCodePoints(section.join('\n')) <= REACTION_SECTION_MAX_CHARS) return section;
     }
-    return reactionSectionOf(messageLines, dropped);
+    // Even the newest message alone does not fit: announce it like the rest.
+    return reactionSectionOf([], groups.length);
 };
 
 /**

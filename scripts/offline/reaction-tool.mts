@@ -15,6 +15,7 @@ import { createFakeTelegram, groupChat, type FakeTelegram, type TelegramCall } f
 import type { ResponseVersion } from '../../src/db/botResponseDTO.js';
 import type { ContextIndex } from '../../src/reply/context-index.js';
 import type { ReactToMessageDependencies } from '../../src/reply/tools/react-to-message-tool.js';
+import type { ReplyPartKind } from '../../src/shared/reply-part.js';
 import type { ToolOverrides } from '../../src/services/tool-overrides.js';
 
 // Read when the queries run; set before the db layer is imported
@@ -25,6 +26,7 @@ const db = await setupOfflineDb();
 const { BotResponse, ButtonState } = await import('../../src/db/botResponseDTO.js');
 const { MessageReaction } = await import('../../src/db/messageReactionDTO.js');
 const { replaceBotReaction } = await import('../../src/db/queries/reaction-queries.js');
+const { setReplyPart } = await import('../../src/db/queries/reply-part-queries.js');
 const { createReactToMessageTool } = await import('../../src/reply/tools/react-to-message-tool.js');
 const { buildReplyToolContext } = await import('../../src/reply/tools/reply-tool-context.js');
 const { createReplyTools } = await import('../../src/reply/tools/create-reply-tools.js');
@@ -162,6 +164,14 @@ const seedBotReply = async (input: {
     });
     return firstMessageId;
 };
+
+/** One delivery-ledger row, as the delivery writes it right after a message goes out */
+const registerPart = (
+    canonicalMessageId: number,
+    messageId: number,
+    part: ReplyPartKind,
+    partIndex: number | null = null
+): Promise<void> => setReplyPart({ chatId: CHAT, canonicalMessageId, messageId, part, partIndex });
 
 /** Lay the same reply out again under new message ids, the way a version switch does */
 const addVersion = async (input: {
@@ -354,6 +364,10 @@ results.push(
         const rows = await rowsOf(CHAT, firstMessageId);
         expect(rows.length === 1 && rows[0]?.emoji === '👍', 'the row hangs on the canonical id');
         expect((await rowsOf(CHAT, bodyMessageId)).length === 0, 'never on the body id');
+        expect(
+            rows[0]?.sourceMessageId === bodyMessageId && rows[0]?.part === null,
+            'the row names the body message; without a ledger row its part is unknown'
+        );
 
         const switchedFirst = takeMessageId();
         const switchedBody = takeMessageId();
@@ -461,6 +475,88 @@ results.push(
         expect(
             !imageModel.tools.definitions.some((definition) => definition.name === REACT_TO_MESSAGE_TOOL_NAME),
             'a model without client tools gets no declaration'
+        );
+    })
+);
+
+results.push(
+    await runCase('C10: "message is not modified" is a success in the single form too', async () => {
+        for (const description of [
+            'Bad Request: message is not modified: specified new message content and reply markup are exactly the same',
+            'Bad Request: MESSAGE_NOT_MODIFIED',
+        ]) {
+            const canonical = await seedUserMessage(CHAT, USER);
+            const telegram = createFakeTelegram({
+                refuse: (call) =>
+                    call.method === 'setMessageReaction' ? { error_code: 400, description } : null,
+            });
+            const tool = toolOn(CHAT, [{ number: 3, messageId: canonical, fromBot: false }], telegram);
+
+            const result = await tool.execute({ message: 3, emoji: '👍' }, signal);
+            expect(!result.isError, `"${description}" is not an error (got ${result.content})`);
+            expect(result.content === '已给 #3 设置 👍。', `the success copy (got ${result.content})`);
+            expect(json(result.trace) === json({ argument: '#3 👍', result: '已设置' }), 'the success trace');
+            const rows = await rowsOf(CHAT, canonical);
+            expect(
+                rows.length === 1 && rows[0]?.emoji === '👍' && rows[0]?.fromBotSelf === true,
+                `the row is written (got ${json(rows.map((row) => row.emoji))})`
+            );
+        }
+    })
+);
+
+results.push(
+    await runCase('C11: a pure sticker reply targets the sticker message and snapshots the part', async () => {
+        const trigger = await seedUserMessage(CHAT, USER);
+        const stickerMessageId = takeMessageId();
+        await seedBotReply({ chatId: CHAT, userMessageId: trigger, messageIds: [stickerMessageId] });
+        await registerPart(stickerMessageId, stickerMessageId, 'sticker');
+        const telegram = createFakeTelegram();
+        const tool = toolOn(CHAT, [{ number: 4, messageId: stickerMessageId, fromBot: true }], telegram);
+
+        const result = await tool.execute({ message: 4, emoji: '👍' }, signal);
+        expect(
+            !result.isError && result.content === '已给 #4 设置 👍。',
+            `the tool works on a sticker reply (got ${result.content})`
+        );
+        expect(
+            json(apiTargetsOf(telegram)) === json([stickerMessageId]),
+            `the sticker message itself is the API target (got ${json(apiTargetsOf(telegram))})`
+        );
+        const rows = await rowsOf(CHAT, stickerMessageId);
+        expect(rows.length === 1 && rows[0]?.emoji === '👍', 'the row hangs on the canonical id');
+        expect(rows[0]?.sourceMessageId === stickerMessageId, 'the source is the message reacted to');
+        expect(
+            rows[0]?.part === 'sticker' && rows[0]?.partIndex === null,
+            'the part snapshot names the sticker'
+        );
+    })
+);
+
+results.push(
+    await runCase('C12: a pure picture reply targets its first picture and numbers it', async () => {
+        const trigger = await seedUserMessage(CHAT, USER);
+        const firstPicture = takeMessageId();
+        const secondPicture = takeMessageId();
+        await seedBotReply({ chatId: CHAT, userMessageId: trigger, messageIds: [firstPicture, secondPicture] });
+        await registerPart(firstPicture, firstPicture, 'picture', 1);
+        await registerPart(firstPicture, secondPicture, 'picture', 2);
+        const telegram = createFakeTelegram();
+        const tool = toolOn(CHAT, [{ number: 5, messageId: firstPicture, fromBot: true }], telegram);
+
+        const result = await tool.execute({ message: 5, emoji: '❤' }, signal);
+        expect(!result.isError, `the tool works on a picture reply (got ${result.content})`);
+        expect(
+            json(apiTargetsOf(telegram)) === json([firstPicture]),
+            `the first picture is the API target (got ${json(apiTargetsOf(telegram))})`
+        );
+        const rows = await rowsOf(CHAT, firstPicture);
+        expect(rows.length === 1 && rows[0]?.emoji === '❤', 'one bot row on the canonical id');
+        expect(
+            rows[0]?.sourceMessageId === firstPicture &&
+                rows[0]?.part === 'picture' &&
+                rows[0]?.partIndex === 1,
+            'the picture number is snapshotted'
         );
     })
 );
@@ -1345,6 +1441,76 @@ results.push(
             !reactions.isError && reactions.content.includes('#3 🎉'),
             `a blank top-level emoji is a filler (got ${reactions.content})`
         );
+    })
+);
+
+results.push(
+    await runCase('R21: the batch writes the same row shape as the single form, part included', async () => {
+        const ask = await seedUserMessage(CHAT, USER, 'the question');
+        // Two replies laid out the same way: the CoT link first, the body second
+        const firstA = takeMessageId();
+        const bodyA = takeMessageId();
+        await seedBotReply({
+            chatId: CHAT,
+            userMessageId: ask,
+            messageIds: [firstA, bodyA],
+            thinkingLinkToken: 'cot-token',
+        });
+        await registerPart(firstA, firstA, 'cot-link');
+        await registerPart(firstA, bodyA, 'body', 1);
+        const firstB = takeMessageId();
+        const bodyB = takeMessageId();
+        await seedBotReply({
+            chatId: CHAT,
+            userMessageId: ask,
+            messageIds: [firstB, bodyB],
+            thinkingLinkToken: 'cot-token',
+        });
+        await registerPart(firstB, firstB, 'cot-link');
+        await registerPart(firstB, bodyB, 'body', 1);
+
+        const singleTelegram = createFakeTelegram();
+        const singleTool = toolOn(CHAT, [{ number: 4, messageId: firstA, fromBot: true }], singleTelegram);
+        const single = await singleTool.execute({ message: 4, emoji: '👍' }, signal);
+        expect(!single.isError, `the single form succeeds (got ${single.content})`);
+        expect(
+            json(apiTargetsOf(singleTelegram)) === json([bodyA]),
+            `the single form targets the current body (got ${json(apiTargetsOf(singleTelegram))})`
+        );
+
+        const batchTelegram = createFakeTelegram();
+        const batchTool = toolOn(
+            CHAT,
+            [
+                { number: 5, messageId: firstB, fromBot: true },
+                { number: 6, messageId: ask, fromBot: false },
+            ],
+            batchTelegram
+        );
+        const batch = await batchTool.execute({ messages: [5, 6], emoji: '👍' }, signal);
+        expect(!batch.isError, `the batch succeeds (got ${batch.content})`);
+        expect(
+            json(apiTargetsOf(batchTelegram)) === json([bodyB, ask]),
+            `the batch targets the reply body and the user message (got ${json(apiTargetsOf(batchTelegram))})`
+        );
+
+        const singleRow = (await rowsOf(CHAT, firstA))[0];
+        const batchRow = (await rowsOf(CHAT, firstB))[0];
+        expect(
+            singleRow?.sourceMessageId === bodyA && batchRow?.sourceMessageId === bodyB,
+            'each write names the message it reacted to'
+        );
+        expect(
+            singleRow?.part === 'body' &&
+                singleRow.partIndex === 1 &&
+                batchRow?.part === 'body' &&
+                batchRow.partIndex === 1,
+            'both forms snapshot the same part'
+        );
+        expect(singleRow?.emoji === '👍' && batchRow?.emoji === '👍', 'both write the emoji');
+        const userRow = (await rowsOf(CHAT, ask))[0];
+        expect(userRow?.part === null && userRow?.partIndex === null, 'a user message has no part');
+        expect(userRow?.sourceMessageId === ask && userRow?.emoji === '👍', 'but its row still names the message');
     })
 );
 

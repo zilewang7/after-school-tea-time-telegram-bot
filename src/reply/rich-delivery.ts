@@ -25,6 +25,7 @@ import { toRichHtml } from 'telegram-md-entities';
 import type { AIResponse } from '../ai/types.js';
 import type { CommandType } from '../db/index.js';
 import { beginThinkingLink } from '../panel/thinking/thinking-link-service.js';
+import { forgetReplyPart, registerReplyPart } from '../services/reply-part-registry.js';
 import type { BotMessageSession } from '../services/bot-message-service.js';
 import { liveThinkingKeyOf } from '../services/index.js';
 import {
@@ -91,7 +92,7 @@ export interface RichDeliveryHolder {
 export const initialDeliveryOf = (richReplies: boolean, commandType: CommandType): ReplyDelivery =>
     match(commandType)
         // The image commands answer with a picture and a caption
-        .with('picbanana', 'picgpt', (): ReplyDelivery => 'entities')
+        .with('picbanana', 'picgpt', 'picgrok', (): ReplyDelivery => 'entities')
         .with('chat', (): ReplyDelivery => (richReplies ? 'rich' : 'entities'))
         .exhaustive();
 
@@ -575,6 +576,19 @@ export const deliverRichFinal = async (
             },
             onRichDelivered: (delivered) => {
                 message ??= delivered;
+            },
+            // The delivery ledger: each message the layout delivered or deleted
+            onChunkDelivered: async ({ messageId, part, partIndex }) => {
+                await registerReplyPart({
+                    chatId: holder.chatId,
+                    canonicalMessageId: session.firstMessageId,
+                    messageId,
+                    part,
+                    partIndex,
+                });
+            },
+            onMessageDeleted: async (messageId) => {
+                await forgetReplyPart(holder.chatId, messageId);
             },
         });
         // Set before any outcome: the entities re-layout starts from these messages

@@ -36,11 +36,13 @@ import { toolLogPageLinkOfToken, type ToolLogPageLink } from '../shared/tool-log
 import { stripPerQueryResultCitations } from '../shared/citation-markers.js';
 import { stripContextLabel } from '../reply/context-label.js';
 import { toApiEntities } from '../telegram/api-entities.js';
-import { layOutChunks, type LayoutChunk } from '../telegram/final-message-layout.js';
+import { chunkPartsOf, layOutChunks, type LayoutChunk } from '../telegram/final-message-layout.js';
 import { buildRichLayoutOfVersion, type RichReplayMedia } from '../telegram/formatters/rich-layout-of-version.js';
 import type { ContextLinkResolver } from '../telegram/formatters/context-links.js';
 import { buildResponseButtons } from '../cmd/menus/index.js';
 import { to, isErr, type Result } from '../shared/result.js';
+import type { ReplyPartKind } from '../shared/reply-part.js';
+import { forgetReplyPart, registerBodyReplyPart, registerReplyPart } from './reply-part-registry.js';
 import {
     clearReplyResumable,
     registerBotReplyInFlight,
@@ -70,7 +72,11 @@ import {
 } from '../telegram/reply-widget-send.js';
 import { editWidgetReplyMarkup } from '../telegram/widget-api.js';
 import { sendReplyImageMessage } from '../telegram/reply-image-send.js';
-import { sendReplyImagesMessage, type ReplyImageUpload } from '../telegram/reply-images-send.js';
+import {
+    deliveryOrderOf,
+    sendReplyImagesMessage,
+    type ReplyImageUpload,
+} from '../telegram/reply-images-send.js';
 import { isWidgetRenderConfigured, renderWidgetPng } from '../widget-image/index.js';
 import { ensureSystemReplyShare, findActiveShare, previewLinkUrlOf } from '../panel/share/share-link-service.js';
 import type { ShareLinkRecord } from '../panel/share/share-types.js';
@@ -452,6 +458,11 @@ export const createSession = async (
     registerReplyInFlight(chatId, userMessageId);
     registerBotReplyInFlight(chatId, resolvedFirstMessageId);
 
+    // The delivery ledger: the reply's first message is its body's first segment.
+    // A retry reusing the message books it again; a media-only retry's new
+    // placeholder hangs on the anchored reply (firstMessageId is the anchor).
+    await bookReplyPart(chatId, resolvedFirstMessageId, processingMsgId, 'body', 1);
+
     // Initialize database record for new response (not retry)
     if (!options.isRetry) {
         const metadata: ResponseMetadata = {
@@ -497,8 +508,60 @@ const createContinuation = async (session: BotMessageSession): Promise<MessageEd
     registerContinuation(session.chatId, newMessageId, session.firstMessageId);
     // A reply can target this chunk, not just the first message
     registerBotReplyInFlight(session.chatId, newMessageId);
+    // A new body segment: the ledger numbers it after the body rows so far
+    await registerBodyReplyPart(session.chatId, session.firstMessageId, newMessageId);
 
     return session.editor;
+};
+
+/**
+ * The delivery ledger of one message the service delivers (design 2026-1123-1610
+ * §3). Every booking is best-effort: the registry catches and warns, so a
+ * bookkeeping failure costs the next turn a part label, never the delivery.
+ */
+const bookReplyPart = async (
+    chatId: number,
+    canonicalMessageId: number,
+    messageId: number,
+    part: ReplyPartKind,
+    partIndex: number | null = null
+): Promise<void> => {
+    await registerReplyPart({ chatId, canonicalMessageId, messageId, part, partIndex });
+};
+
+/**
+ * Book picture messages a sender delivered: the ids follow the sender's delivery
+ * order (stills first, then animations), and a still is a numbered picture while
+ * an animation is its own kind. A count mismatch books nothing, never a wrong part.
+ */
+const bookPictureMessages = async (
+    chatId: number,
+    canonicalMessageId: number,
+    messageIds: readonly number[],
+    uploads: readonly ReplyImageUpload[],
+    dropped: ReadonlySet<number>
+): Promise<void> => {
+    const deliveredIndexes = deliveryOrderOf(uploads).filter((index) => !dropped.has(index));
+    if (deliveredIndexes.length !== messageIds.length) {
+        console.warn(
+            '[bot-message-service] picture messages and delivered pictures disagree; ledger not written:',
+            messageIds.length,
+            deliveredIndexes.length
+        );
+        return;
+    }
+    let pictureIndex = 0;
+    for (let position = 0; position < deliveredIndexes.length; position += 1) {
+        const upload = uploads[deliveredIndexes[position] ?? -1];
+        const messageId = messageIds[position];
+        if (upload === undefined || messageId === undefined) continue;
+        if (sniffMediaMime(upload.data) === 'image/gif') {
+            await bookReplyPart(chatId, canonicalMessageId, messageId, 'gif');
+        } else {
+            pictureIndex += 1;
+            await bookReplyPart(chatId, canonicalMessageId, messageId, 'picture', pictureIndex);
+        }
+    }
 };
 
 /**
@@ -1180,7 +1243,13 @@ export const startRetry = async (
         // Delete all messages (they're all photos, can't edit to text)
         for (const msgId of currentVersion.messageIds) {
             if (msgId === undefined) continue;
-            await to(ctx.api.deleteMessage(chatId, msgId));
+            const [deleteError] = await to(ctx.api.deleteMessage(chatId, msgId));
+            // The message is gone from the chat: its ledger row describes nothing
+            // that can still be reacted to. A real failure keeps the row (a
+            // leftover message may still get a reaction).
+            if (deleteError === null || deleteError.message.includes('message to delete not found')) {
+                await forgetReplyPart(chatId, msgId);
+            }
         }
         // Send a fresh processing message, but keep DB anchor to original firstMessageId
         return createSession(ctx, response.userMessageId, {
@@ -1198,6 +1267,9 @@ export const startRetry = async (
         const [err] = await to(ctx.api.deleteMessage(chatId, msgId));
         if (err) {
             console.error('[bot-message-service] Failed to delete message:', err);
+        } else {
+            // Deleted: the ledger row would otherwise describe a message nobody can react to
+            await forgetReplyPart(chatId, msgId);
         }
     }
 
@@ -1402,6 +1474,13 @@ const switchToRichVersion = async (input: SwitchToRichVersionInput): Promise<boo
         // An inline-only rich reply keeps the live layout's last-chunk buttons;
         // trailing pictures place the keyboard after they are sent (M6 below)
         ...(hasAttachmentPictures ? {} : { replyMarkup: input.versionButtons }),
+        // The delivery ledger follows the replay exactly like the first delivery
+        onChunkDelivered: async ({ messageId, part, partIndex }) => {
+            await bookReplyPart(chatId, firstMessageId, messageId, part, partIndex);
+        },
+        onMessageDeleted: async (messageId) => {
+            await forgetReplyPart(chatId, messageId);
+        },
     });
     if (!laidOut.allDelivered || !laidOut.richDelivered) {
         console.error(
@@ -1463,6 +1542,8 @@ const switchToRichVersion = async (input: SwitchToRichVersionInput): Promise<boo
         }
         newMessageIds.push(...sentIds);
         mediaMessageIds = sentIds;
+        // The re-sent pictures are new messages: book each as its part
+        await bookPictureMessages(chatId, firstMessageId, sentIds, uploads, droppedAttachments);
 
         // The live carrier rule (response-handler.ts deliverReplyImages): one
         // picture — or a reply with no text message — puts the keyboard on the
@@ -1503,8 +1584,12 @@ const switchToRichVersion = async (input: SwitchToRichVersionInput): Promise<boo
     for (const mediaId of versionMediaMessageIdsOf(oldVersion)) {
         const [deleteError] = await to(ctx.api.deleteMessage(chatId, mediaId));
         if (deleteError !== null) {
+            // Still in the chat (design §3): keep the row, a reaction on it can
+            // still be normalized to the reply and its old part
             console.warn('[bot-message-service] rich version switch: old picture message not deleted:', deleteError.message);
+            continue;
         }
+        await forgetReplyPart(chatId, mediaId);
     }
 
     // 3) Persist only after every chat step succeeded (a failed switch leaves
@@ -1627,6 +1712,9 @@ export const switchVersion = async (
     // Format content using formatters; errored versions re-show their error line
     const contentChunks = buildVersionMessages(newVersion, resolveContextLink);
     let content: FinalMessageChunk = contentChunks[0] ?? plainText('');
+    // What each text chunk of the version is, for the delivery ledger: the same
+    // numbering the live delivery's layout produced
+    const contentChunkParts = chunkPartsOf(contentChunks);
 
     if (
         !content.text &&
@@ -1799,7 +1887,11 @@ export const switchVersion = async (
             useAlbum: single ? undefined : useAlbum,
             onDropped: (index) => droppedPictureIndexes.add(index),
         });
-        if (!isErr(sent)) sentPictureMessageIds.push(...sent[1]);
+        if (!isErr(sent)) {
+            sentPictureMessageIds.push(...sent[1]);
+            // The re-sent pictures are new messages: book each as its part
+            await bookPictureMessages(chatId, firstMessageId, sent[1], uploads, droppedPictureIndexes);
+        }
         return sent;
     };
     // The visual media of the version as message ids: a widget/file/sticker or
@@ -1807,20 +1899,34 @@ export const switchVersion = async (
     const sendVersionMediaMessages = async (useAlbum: boolean): Promise<Result<number[]>> => {
         if (storedWidget !== undefined) {
             const [error, messageId] = await sendVersionWidget();
-            return error ? [error, undefined] : [null, [messageId]];
+            if (error) return [error, undefined];
+            await bookReplyPart(
+                chatId,
+                firstMessageId,
+                messageId,
+                storedWidget.deliveredAs === 'link' ? 'widget-link' : 'widget'
+            );
+            return [null, [messageId]];
         }
         if (fileBuffer !== null) {
             const [error, messageId] = await sendVersionFile();
-            return error ? [error, undefined] : [null, [messageId]];
+            if (error) return [error, undefined];
+            await bookReplyPart(chatId, firstMessageId, messageId, 'file');
+            return [null, [messageId]];
         }
         if (sticker !== undefined) {
             const [error, messageId] = await sendVersionSticker();
-            return error ? [error, undefined] : [null, [messageId]];
+            if (error) return [error, undefined];
+            await bookReplyPart(chatId, firstMessageId, messageId, 'sticker');
+            return [null, [messageId]];
         }
         if (pictureAttachments.length > 0) return sendVersionPictures(useAlbum);
         if (imageBuffer !== null) {
             const [error, messageId] = await sendVersionImage(imageBuffer);
-            return error ? [error, undefined] : [null, [messageId]];
+            if (error) return [error, undefined];
+            const animated = sniffMediaMime(imageBuffer) === 'image/gif';
+            await bookReplyPart(chatId, firstMessageId, messageId, animated ? 'gif' : 'picture', animated ? null : 1);
+            return [null, [messageId]];
         }
         return [new Error('version has no media'), undefined];
     };
@@ -1851,7 +1957,10 @@ export const switchVersion = async (
             const [error] = await to(ctx.api.deleteMessage(chatId, messageId));
             if (error !== null && !error.message.includes('message to delete not found')) {
                 console.warn('[bot-message-service] version switch: old message not deleted:', error.message);
+                continue;
             }
+            // Gone from the chat (or already gone): nothing of it stays bookable
+            await forgetReplyPart(chatId, messageId);
         }
     };
 
@@ -1860,7 +1969,8 @@ export const switchVersion = async (
     for (let i = 1; i < oldVersion.messageIds.length; i++) {
         const msgId = oldVersion.messageIds[i];
         if (msgId === undefined || deferredOldMediaIds.has(msgId)) continue;
-        await to(ctx.api.deleteMessage(chatId, msgId));
+        const [deleteError] = await to(ctx.api.deleteMessage(chatId, msgId));
+        if (deleteError === null) await forgetReplyPart(chatId, msgId);
     }
 
     const newMessageIds: number[] = [];
@@ -1934,6 +2044,14 @@ export const switchVersion = async (
             }
             newMessageIds.push(sentMsg.message_id);
             currentMessageId = sentMsg.message_id;
+            const firstChunkPart = contentChunkParts[0];
+            await bookReplyPart(
+                chatId,
+                firstMessageId,
+                sentMsg.message_id,
+                firstChunkPart?.part ?? 'body',
+                firstChunkPart?.partIndex ?? 1
+            );
 
             // Send remaining chunks if multi-chunk
             for (let i = 1; i < contentChunks.length; i++) {
@@ -1951,6 +2069,16 @@ export const switchVersion = async (
                 if (chunkErr) break;
                 newMessageIds.push(chunkMsg.message_id);
                 currentMessageId = chunkMsg.message_id;
+                const chunkPart = contentChunkParts[i];
+                if (chunkPart !== undefined) {
+                    await bookReplyPart(
+                        chatId,
+                        firstMessageId,
+                        chunkMsg.message_id,
+                        chunkPart.part,
+                        chunkPart.partIndex
+                    );
+                }
             }
 
             // Send the version's pictures after the text (several pictures as
@@ -1988,7 +2116,17 @@ export const switchVersion = async (
 
         if (contentChunks.length > 1) {
             const editor = createMessageEditor(ctx.api, chatId, oldFirstMsgId);
-            await editMessage(editor, content);
+            const firstDelivered = await editMessage(editor, content);
+            const firstChunkPart = contentChunkParts[0];
+            if (firstDelivered && firstChunkPart !== undefined) {
+                await bookReplyPart(
+                    chatId,
+                    firstMessageId,
+                    oldFirstMsgId,
+                    firstChunkPart.part,
+                    firstChunkPart.partIndex
+                );
+            }
 
             for (let i = 1; i < contentChunks.length; i++) {
                 const chunk = contentChunks[i];
@@ -2005,14 +2143,34 @@ export const switchVersion = async (
                 if (sendErr) break;
                 newMessageIds.push(sentMsg.message_id);
                 currentMessageId = sentMsg.message_id;
+                const chunkPart = contentChunkParts[i];
+                if (chunkPart !== undefined) {
+                    await bookReplyPart(
+                        chatId,
+                        firstMessageId,
+                        sentMsg.message_id,
+                        chunkPart.part,
+                        chunkPart.partIndex
+                    );
+                }
             }
         } else {
             const editor = createMessageEditor(ctx.api, chatId, oldFirstMsgId);
-            await editMessage(
+            const delivered = await editMessage(
                 editor,
                 content.text ? content : plainText('[Empty response]'),
                 hasMedia ? undefined : versionButtons
             );
+            const chunkPart = contentChunkParts[0];
+            if (delivered && chunkPart !== undefined) {
+                await bookReplyPart(
+                    chatId,
+                    firstMessageId,
+                    oldFirstMsgId,
+                    chunkPart.part,
+                    chunkPart.partIndex
+                );
+            }
         }
 
         // Send the version's pictures after the text; an album keeps the
@@ -2267,6 +2425,14 @@ export const refreshToFinalState = async (
         messageIds: textMessageIds,
         chunks,
         replyMarkup: hasMedia ? undefined : buttons,
+        // A refresh re-delivers the same layout: the ledger follows it, and a
+        // surplus message it deletes stops being bookable
+        onChunkDelivered: async ({ messageId, part, partIndex }) => {
+            await bookReplyPart(chatId, firstMessageId, messageId, part, partIndex);
+        },
+        onMessageDeleted: async (messageId) => {
+            await forgetReplyPart(chatId, messageId);
+        },
     });
     let allDelivered = laidOut.allDelivered;
 

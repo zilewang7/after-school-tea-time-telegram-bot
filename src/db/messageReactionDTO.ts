@@ -1,13 +1,16 @@
 /**
- * One current reaction of one actor on one message.
+ * One current reaction of one actor on one Telegram message.
  *
  * The table is a state snapshot, not an event log: a user changing their
  * reaction deletes the actor's old rows and inserts the new set, so the runtime
  * block can render "what stands on this message now" without reducing a
- * timeline. `messageId` is the canonical id a context numbers by (a bot reply's
- * first message id), never a continuation chunk.
+ * timeline. State is keyed by the message the user actually reacted to
+ * (`sourceMessageId`), not by its reply: a user may react to the body and to the
+ * sticker of the same reply, and both stand. `messageId` remains the canonical
+ * id a context numbers by (a bot reply's first message id), so rendering and
+ * cleanup still group per reply.
  *
- * Rows live exactly as long as their message does: the hourly cleanup deletes
+ * Rows live exactly as long as their reply does: the hourly cleanup deletes
  * them in the same transaction as the message row, and a NOT EXISTS sweep
  * reaps the few rows whose bot response was cleaned before a message row was
  * ever written.
@@ -28,6 +31,18 @@ export class MessageReaction extends Model<
   declare chatId: number;
   /** Canonical message id (the one `#N` stands for) */
   declare messageId: number;
+  /**
+   * The Telegram message id the user actually reacted to: a reply part (body
+   * chunk, picture, sticker, widget, folded link message) or a user message.
+   * NULL on rows written before the parts model: it stands for "the canonical
+   * message / unknown", and such rows are superseded by the actor's next update
+   * (see applyUserReactionUpdate).
+   */
+  declare sourceMessageId: number | null;
+  /** Which part of the reply the source was (snapshotted from the delivery ledger) */
+  declare part: string | null;
+  /** Index within the part (body segment, picture number); null when meaningless */
+  declare partIndex: number | null;
   /** Reactor's user id; null for anonymous administrators / channels */
   declare userId: number | null;
   /** The `actor_chat` of an anonymous reaction; null for a normal user */
@@ -59,6 +74,21 @@ MessageReaction.init({
   messageId: {
     type: DataTypes.INTEGER,
     allowNull: false,
+  },
+  sourceMessageId: {
+    type: DataTypes.INTEGER,
+    allowNull: true,
+    defaultValue: null,
+  },
+  part: {
+    type: DataTypes.STRING,
+    allowNull: true,
+    defaultValue: null,
+  },
+  partIndex: {
+    type: DataTypes.INTEGER,
+    allowNull: true,
+    defaultValue: null,
   },
   userId: {
     // SQLite INTEGER is 64-bit; the sqlite dialect has no BIGINT type
@@ -106,8 +136,10 @@ MessageReaction.init({
   // Explicit createdAt (repo convention): the orphan sweep compares it.
   timestamps: false,
   indexes: [
-    // Context injection reads one batch of message ids, cleanup one batch of keys
+    // Context injection reads one batch of canonical message ids, cleanup one batch of keys
     { fields: ['chatId', 'messageId'] },
+    // An update replaces one actor's state on one source message
+    { fields: ['chatId', 'sourceMessageId'] },
     // The NOT EXISTS orphan sweep scans rows older than the cutoff
     { fields: ['createdAt'] },
   ],
