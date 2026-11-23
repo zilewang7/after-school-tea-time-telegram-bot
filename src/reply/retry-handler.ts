@@ -5,7 +5,7 @@
  */
 import type { Context } from 'grammy';
 import { match } from 'ts-pattern';
-import { GEMINI_IMAGE_MODEL, OPENAI_IMAGE_MODEL } from '../config/models.js';
+import { GEMINI_IMAGE_MODEL, GROK_IMAGE_MODEL, OPENAI_IMAGE_MODEL } from '../config/models.js';
 import { modelCatalogVersion } from '../config/model-catalog.js';
 import { getMessage, getBotResponse } from '../db/index.js';
 import type { CommandType } from '../db/index.js';
@@ -56,6 +56,7 @@ import {
     handleResponseError,
 } from './response-handler.js';
 import type { UnifiedContentPart } from '../ai/types.js';
+import { runPicgrokGeneration } from './commands/picgrok-handler.js';
 import { checkpointSinkFor } from './resume/keep-checkpoint.js';
 import { captureResumeFacts } from './resume/resume-facts.js';
 import { getContextNumbering } from '../state.js';
@@ -89,7 +90,7 @@ export const handleRetryRequest = async (
     // A retry re-generates and re-bills: the tier is whoever pressed the
     // button (design §9.3), so a trial user cannot rerun a paid image reply
     const access = await resolveAccessTier(ctx.from?.id ?? null, chatId);
-    if (access === 'trial' && commandType === 'picgpt') {
+    if (access === 'trial' && (commandType === 'picgpt' || commandType === 'picgrok')) {
         await sendBotNotice(ctx, TRIAL_COMMAND_REFUSAL_TEXT);
         return;
     }
@@ -101,6 +102,7 @@ export const handleRetryRequest = async (
     return match(commandType)
         .with('picbanana', () => handlePicbananaRetry(ctx, botResponse, access))
         .with('picgpt', () => handlePicgptRetry(ctx, botResponse, access))
+        .with('picgrok', () => handlePicgrokRetry(ctx, botResponse, access))
         .with('chat', () => handleChatRetry(ctx, botResponse, access, trialSpend))
         .exhaustive();
 };
@@ -288,6 +290,56 @@ const handlePicgptRetry = async (
     if (sendErr) {
         console.error('[retry-handler] Failed to send picgpt final response:', sendErr);
     }
+};
+
+/**
+ * Handle retry for a /picgrok reply: regenerate the same prompt through xAI and
+ * deliver it on the new version, exactly like the live command.
+ */
+const handlePicgrokRetry = async (
+    ctx: Context,
+    botResponse: Awaited<ReturnType<typeof getBotResponse>>,
+    access: AccessTier
+): Promise<void> => {
+    if (!botResponse || !ctx.chat) return;
+
+    const chatId = ctx.chat.id;
+
+    // Start retry session; the attempt records the presser's tier
+    const session = await startRetry(ctx, botResponse.messageId, {
+        model: GROK_IMAGE_MODEL,
+        accessTier: access,
+    });
+    if (!session) {
+        console.error('[retry-handler] Failed to create retry session for picgrok');
+        return;
+    }
+
+    // Create chat context for retry
+    const chatContext = createChatContextForRetry(ctx, session, 'picgrok');
+
+    // Get original user message to extract the prompt
+    const [msgErr, userMessage] = await to(getMessage(chatId, botResponse.userMessageId));
+    if (msgErr || !userMessage) {
+        console.error('[retry-handler] Failed to get user message:', msgErr);
+        await handleResponseError(chatContext, msgErr ?? new Error('Original user message not found'));
+        return;
+    }
+
+    // Extract prompt from the original command (legacy EOF / "(I send ...)" strips as elsewhere)
+    const originalText = userMessage.text
+        ?.replace(/<<EOF\s*$/, '')
+        ?.replace(/\s*\(I send [^)]+\)\s*$/, '')
+        || '';
+    const commandMatch = originalText.match(/^\/picgrok(@\S+)?\s*([\s\S]*)?$/);
+    const prompt = commandMatch?.[2]?.trim() || originalText;
+    if (prompt === '') {
+        await handleResponseError(chatContext, new Error('找不到原来的图片描述，请重新发送 /picgrok'));
+        return;
+    }
+
+    setCatalogVersion(session.metrics, modelCatalogVersion());
+    await runPicgrokGeneration(chatContext, prompt);
 };
 
 /**

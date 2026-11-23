@@ -57,7 +57,6 @@ const dbIndex = await import('../../src/db/index.js');
 const { modelConfigs, GEMINI_IMAGE_MODEL, OPENAI_IMAGE_MODEL } = await import('../../src/config/models.js');
 const { formatActionTime } = await import('../../src/cmd/model-menu-text.js');
 const { registerModelCommand } = await import('../../src/cmd/commands/model.js');
-const { registerPicCommands } = await import('../../src/cmd/commands/pic.js');
 const { menuLoad } = await import('../../src/cmd/menu.js');
 const { registerChatHandler, handleReply } = await import('../../src/reply/chat-handler.js');
 const { handleRetryRequest } = await import('../../src/reply/retry-handler.js');
@@ -121,7 +120,6 @@ const auditOf = (chatId: number) => listSettingsAudit({ scope: `chat:${chatId}`,
 
 const { bot, telegram } = createFakeBot();
 registerModelCommand(bot);
-registerPicCommands(bot);
 menuLoad(bot);
 registerChatHandler(bot);
 
@@ -1456,6 +1454,13 @@ const cases: { name: string; body: () => Promise<void> }[] = [
             );
 
             await sendText(chatId, MEMBER.userId, '/picgrok 一只猫');
+            // /picgrok routes through chat-handler now, whose reply paths run in a
+            // detached task: the pause reaction lands after handleUpdate returns
+            await waitUntil(
+                'the paused reaction for /picgrok',
+                () => telegram.callsOf('setMessageReaction').length === 1
+            );
+            await settleHandlers();
             expect(telegram.callsOf('setMessageReaction').length === 1, '/picgrok gets 😴 as well');
             expect(
                 telegram.callsOf('sendMessage').length === 0 && telegram.callsOf('sendChatAction').length === 0,

@@ -43,6 +43,7 @@ import {
 } from './response-handler.js';
 import { handlePicbananaCommand, checkPicbananaCommand } from './commands/picbanana-handler.js';
 import { handlePicgptCommand, checkPicgptCommand } from './commands/picgpt-handler.js';
+import { handlePicgrokCommand, checkPicgrokCommand } from './commands/picgrok-handler.js';
 import { handlePicCommand } from './commands/pic-command.js';
 import { isPicCommandText } from './commands/pic-command-parser.js';
 import { handleVidCommand } from './commands/vid-command.js';
@@ -101,7 +102,7 @@ const NOTICE_GRACE_MS = 500;
  */
 const willReply = (ctx: Context): boolean => {
     const text = ctx.message?.text ?? ctx.message?.caption ?? '';
-    if (/^\/(picbanana|picgpt)(@\S+)?(\s|$)/.test(text)) return true;
+    if (/^\/(picbanana|picgpt|picgrok)(@\S+)?(\s|$)/.test(text)) return true;
     if (isPicCommandText(text)) return true;
     if (isVidCommandText(text)) return true;
     if (isChatCommandText(text)) return true;
@@ -515,12 +516,12 @@ export const registerChatHandler = (bot: Bot): void => {
                 if (!tryMarkUserMessageHandling(ctx.chat.id, ctx.message.message_id)) return;
 
                 // A paused chat generates nothing on any path below (replies,
-                // /chat summons and splices, /pic, /vid, /picbanana, /picgpt)
+                // /chat summons and splices, /pic, /vid, /picbanana, /picgpt, /picgrok)
                 if (await stopIfChatPaused(ctx)) return;
 
                 const text = ctx.message.text ?? ctx.message.caption ?? '';
                 const isGenerationCommand =
-                    /^\/(picbanana|picgpt)(@\S+)?(\s|$)/.test(text) ||
+                    /^\/(picbanana|picgpt|picgrok)(@\S+)?(\s|$)/.test(text) ||
                     isPicCommandText(text) ||
                     isVidCommandText(text);
 
@@ -555,6 +556,11 @@ export const registerChatHandler = (bot: Bot): void => {
                     const [, picgptData] = await checkPicgptCommand(ctx);
                     if (picgptData) {
                         await handlePicgptCommand(ctx, picgptData, access);
+                        return;
+                    }
+                    const [, picgrokData] = await checkPicgrokCommand(ctx);
+                    if (picgrokData) {
+                        await handlePicgrokCommand(ctx, picgrokData, access);
                         return;
                     }
                     return;

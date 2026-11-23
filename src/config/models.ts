@@ -8,6 +8,8 @@ export interface ModelConfig {
 export const OPENAI_IMAGE_MODEL = "gpt-image-2.5-dev";
 /** Gemini image generation: /picbanana and generate_image */
 export const GEMINI_IMAGE_MODEL = "gemini-nano-banana-2.1";
+/** xAI image generation: /picgrok (a one-shot images API call, not a chat platform) */
+export const GROK_IMAGE_MODEL = "grok-imagine-image-quality";
 
 /**
  * Image ids the relay bills per call rather than per token: a generation is

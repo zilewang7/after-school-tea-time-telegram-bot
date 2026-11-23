@@ -35,7 +35,7 @@ export class ReplyMetric extends Model<
   declare platform: string;
   // Gemini lane (large-media | opencode-go | image); NULL elsewhere
   declare route: string | null;
-  // chat | picbanana | picgpt
+  // chat | picbanana | picgpt | picgrok
   declare commandType: string;
   declare isRetry: boolean;
   // Session created (placeholder sent); includes context building

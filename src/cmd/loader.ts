@@ -7,7 +7,6 @@ import {
     registerStartCommand,
     registerHelpCommand,
     registerReactCommand,
-    registerPicCommands,
     registerModelCommand,
     registerContextCommand,
     registerPanelCommand,
@@ -69,7 +68,6 @@ export const cmdLoad = async (bot: Bot) => {
     registerStartCommand(bot);
     registerHelpCommand(bot);
     registerReactCommand(bot);
-    registerPicCommands(bot);
     registerModelCommand(bot);
     registerContextCommand(bot);
     registerPanelCommand(bot);
