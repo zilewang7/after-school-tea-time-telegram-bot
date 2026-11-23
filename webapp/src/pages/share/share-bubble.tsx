@@ -6,6 +6,7 @@ import { unreferencedMediaIndexes } from '../../rich/rich-answer';
 import { RichAnswerFigure, RichAnswerView } from '../../rich/rich-answer-view';
 import { shareRichAnswerBlocksOf, shareRichMediaItemsOf } from '../../share/share-rich-media';
 import { ShareMediaAttachment } from './share-attachments';
+import { ShareReactions } from './share-reactions';
 import { ShareWidgetView } from './share-widget-view';
 
 const BOT_AUTHOR_NAME = 'k-on-bot';
@@ -62,6 +63,9 @@ export const ShareBubble = ({ token, bubble, widgetIndex, autoFocusWidget = fals
     const head = (
         <>
             <span className="share-bubble-author">{authorName}</span>
+            {bubble.kind === 'bot' && typeof bubble.model === 'string' && bubble.model !== '' && (
+                <span className="share-model">{bubble.model}</span>
+            )}
             {deleted && <span className="badge">已删除</span>}
             <span className="hint">{formatDateTime(bubble.createdAt)}</span>
         </>
@@ -121,6 +125,7 @@ export const ShareBubble = ({ token, bubble, widgetIndex, autoFocusWidget = fals
                     autoFocus={autoFocusWidget && !deleted}
                 />
             )}
+            <ShareReactions reactions={bubble.reactions ?? []} />
         </>
     );
 

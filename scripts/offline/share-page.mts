@@ -38,6 +38,7 @@ const store = await import('../../src/panel/share/share-store.js');
 const publicRoutes = await import('../../src/panel/share/public-routes.js');
 const exclusions = await import('../../src/db/queries/context-exclusions.js');
 const signedWidget = await import('../../src/panel/share/signed-widget.js');
+const reactionQueries = await import('../../src/db/queries/reaction-queries.js');
 const { createPanelApp } = await import('../../src/panel/app.js');
 const { signInitData } = await import('../lib/init-data.mts');
 
@@ -134,6 +135,21 @@ const replyShare = async (
     });
     if (!created.ok) throw new Error(`could not create the share: ${created.reason}`);
     return created.share;
+};
+
+const react = async (
+    chatId: number,
+    messageId: number,
+    userId: number,
+    userName: string,
+    emoji: string
+): Promise<void> => {
+    await reactionQueries.applyUserReactionUpdate({
+        chatId,
+        messageId,
+        actor: { userId, actorChatId: null, userName },
+        reactions: [{ kind: 'emoji', emoji, customEmojiId: null }],
+    });
 };
 
 const seedPreview = async (token: string, base64: string): Promise<void> => {
@@ -832,6 +848,57 @@ const cases: { name: string; body: () => Promise<void> }[] = [
             expect(!mainOf(html).includes('<figure class="rich-figure">'), 'an unmatched picture has no figure');
             expect(html.includes('仅有图注'), 'its caption stays as text');
             expect(!html.includes('![]('), 'no raw media block syntax');
+        },
+    },
+    {
+        // The SSR page is what Telegram's crawler and a plain browser get: the
+        // model chip and reaction pills show, the people behind them do not.
+        name: 'the reply page shows the model and reaction pills, without names',
+        body: async () => {
+            const messageId = takeMessageId();
+            const share = await replyShare(GROUP, messageId, [
+                versionOf(1, { model: 'gemini-4-neon', text: '一段正文' }),
+            ]);
+            await react(GROUP, messageId, 5001, 'Alice', '👍');
+            await react(GROUP, messageId, 5002, 'Bob', '👍');
+            const main = mainOf(await textOf(await app.request(`/s/${share.token}`)));
+            expect(main.includes('model-badge') && main.includes('gemini-4-neon'), 'the model chip');
+            expect(main.includes('class="reactions"'), 'the reaction block');
+            expect(main.includes('<span class="reaction-count">2</span>'), 'the count');
+            expect(!main.includes('Alice') && !main.includes('Bob'), 'no reactor names on the public page');
+        },
+    },
+    {
+        name: 'a conversation page shows the bot model and each bubble pills',
+        body: async () => {
+            const rootId = takeMessageId();
+            const botId = takeMessageId();
+            await saveMessage(GROUP, rootId, ALICE.id, '用户的问题');
+            await saveMessage(GROUP, botId, 9999, '', { replyToId: rootId });
+            const response = await db.createBotResponse(GROUP, botId, rootId, {
+                model: 'offline-model',
+                hasImage: false,
+            });
+            response.setVersions([versionOf(1, { text: 'bot 的回答', model: 'gemini-4-large' })]);
+            response.currentVersionIndex = 0;
+            await response.save();
+            await react(GROUP, botId, 5001, 'Alice', '👍');
+            await react(GROUP, rootId, 5002, 'Bob', '😂');
+            const created = await service.createUserShare({
+                kind: 'conversation',
+                chatId: GROUP,
+                rootId,
+                createdBy: ALICE.id,
+            });
+            if (!created.ok) throw new Error(`could not create the conversation share: ${created.reason}`);
+            const main = mainOf(await textOf(await app.request(`/s/${created.share.token}`)));
+            expect(main.includes('gemini-4-large'), 'the bot bubble model chip');
+            expect(main.includes('<span class="reaction-count">1</span>'), 'a pill count');
+            expect(main.includes('😂'), 'the user bubble pill');
+            // The author name stays (a conversation share shows users); the
+            // reactor who wrote nothing must not appear through a pill.
+            expect(main.includes('Alice'), 'the author name still shows');
+            expect(!main.includes('Bob'), 'reaction names stay off the page');
         },
     },
 ];

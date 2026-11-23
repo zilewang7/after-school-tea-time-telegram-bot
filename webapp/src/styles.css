@@ -1987,6 +1987,41 @@ details.share-fold[open] > .share-bubble-head::after {
     gap: 8px;
 }
 
+/* The model chip of a share page's bot bubble */
+.share-model {
+    padding: 0 8px;
+    border: 1px solid var(--color-separator);
+    border-radius: 999px;
+    color: var(--color-hint);
+    font-size: 11px;
+    line-height: 18px;
+    overflow-wrap: anywhere;
+}
+
+/* Reaction pills: emoji + count, never names (the page is public) */
+.share-reactions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+}
+
+.share-reaction {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 1px 9px;
+    border: 1px solid var(--color-separator);
+    border-radius: 999px;
+    background: var(--color-bg);
+    font-size: 14px;
+    line-height: 20px;
+}
+
+.share-reaction-count {
+    color: var(--color-hint);
+    font-size: 12px;
+}
+
 /* The message a share bubble answers */
 .share-reply-to {
     margin: 0;

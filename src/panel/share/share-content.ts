@@ -25,9 +25,11 @@ import {
     type MessageMediaItem,
 } from '../media/media-content.js';
 import { getLinkPreviewParts } from '../../services/luoxu-preview-service.js';
+import { listReactionsForMessages } from '../../db/queries/reaction-queries.js';
 import { plainExcerptOf } from '../views/excerpt.js';
 import { richAnswerSnapshotOf } from '../views/rich-snapshot.js';
 import { redactShareContent } from './share-redaction.js';
+import { groupReactionPillsByMessage, reactionPillsOf, type ShareReactionPill } from './share-reactions.js';
 import type { PreviewSnapshot } from './share-types.js';
 
 export interface ShareWidgetContent {
@@ -73,6 +75,8 @@ export interface ShareReplyContent {
      * / sticker / file; bytes via the media route, one index per picture
      */
     media: ShareMedia[];
+    /** The reaction pills of the reply (public: emoji + count, never names) */
+    reactions: ShareReactionPill[];
     /** Server-side only: the snapshot the preview image is rendered from */
     preview: PreviewSnapshot;
 }
@@ -110,6 +114,8 @@ export interface ShareUserBubble {
     media: ShareMediaItem[];
     /** Pictures / clips Telegram crawled for the message's first URL */
     previewMedia: ShareMedia[];
+    /** The reaction pills of the message (public: emoji + count) */
+    reactions: ShareReactionPill[];
 }
 
 export interface ShareBotBubble {
@@ -126,6 +132,10 @@ export interface ShareBotBubble {
     replyTo: ShareReplyTarget | null;
     /** The current version's attachment(s), when it has one */
     media: ShareMediaItem[];
+    /** The model that generated the current version; null when the version did not record one */
+    model: string | null;
+    /** The reaction pills of the message (public: emoji + count) */
+    reactions: ShareReactionPill[];
 }
 
 export type ShareBubble = ShareUserBubble | ShareBotBubble;
@@ -264,6 +274,7 @@ export const loadReplyShareContent = async (
     const chatTitle = chat?.title ?? null;
     const widget = widgetOf(version);
     const snapshot = richAnswerSnapshotOf(version);
+    const reactions = reactionPillsOf(await listReactionsForMessages(chatId, [firstMessageId]));
     return {
         kind: 'reply',
         chatId,
@@ -277,6 +288,7 @@ export const loadReplyShareContent = async (
         ...(snapshot === undefined ? {} : { richAnswerMarkdown: snapshot }),
         widget,
         media: versionMediaDescriptorsOf(version),
+        reactions,
         preview: previewSnapshotOfReply(chatTitle, version, widget),
     };
 };
@@ -292,7 +304,8 @@ const userBubbleOf = (
     media: readonly ShareMediaItem[],
     previewMedia: readonly ShareMedia[],
     previewText: string | null,
-    replyTo: ShareReplyTarget | null
+    replyTo: ShareReplyTarget | null,
+    reactions: readonly ShareReactionPill[]
 ): ShareUserBubble => ({
     kind: 'user',
     messageId: message.messageId,
@@ -306,12 +319,14 @@ const userBubbleOf = (
     mediaHint: message.mediaHint,
     media: [...media],
     previewMedia: [...previewMedia],
+    reactions: [...reactions],
 });
 
 const botBubbleOf = (
     message: ContextMessage,
     response: BotResponse | undefined,
-    replyTo: ShareReplyTarget | null
+    replyTo: ShareReplyTarget | null,
+    reactions: readonly ShareReactionPill[]
 ): ShareBotBubble => {
     const version = response?.getCurrentVersion() ?? null;
     const descriptors = version === null ? [] : versionMediaDescriptorsOf(version);
@@ -330,6 +345,8 @@ const botBubbleOf = (
             ...(index === 0 ? {} : { index }),
             ...descriptor,
         })),
+        model: version !== null && typeof version.model === 'string' && version.model !== '' ? version.model : null,
+        reactions: [...reactions],
     };
 };
 
@@ -383,6 +400,9 @@ export const loadConversationShareContent = async (
     const chatTitle = chat?.title ?? null;
     const messageById = new Map(ordered.map((message) => [message.messageId, message]));
     const previewTexts = await loadPreviewTexts(userMessages);
+    const reactionsByMessageId = groupReactionPillsByMessage(
+        await listReactionsForMessages(chatId, ordered.map((message) => message.messageId))
+    );
     return {
         kind: 'conversation',
         chatId,
@@ -390,14 +410,16 @@ export const loadConversationShareContent = async (
         rootId,
         bubbles: ordered.map((message) => {
             const replyTo = replyTargetOf(message, messageById, responseById);
+            const reactions = reactionsByMessageId.get(message.messageId) ?? [];
             return message.fromBotSelf
-                ? botBubbleOf(message, responseById.get(message.messageId), replyTo)
+                ? botBubbleOf(message, responseById.get(message.messageId), replyTo, reactions)
                 : userBubbleOf(
                     message,
                     (userAlbumMedia.get(message.messageId) ?? []).map(shareMediaItemOf),
                     userPreviewMedia.get(message.messageId) ?? [],
                     previewTexts.get(message.messageId) ?? null,
-                    replyTo
+                    replyTo,
+                    reactions
                 );
         }),
         preview: previewSnapshotOfConversation(chatTitle, ordered, responseById),

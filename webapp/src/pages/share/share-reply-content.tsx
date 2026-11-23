@@ -6,6 +6,7 @@ import { unreferencedMediaIndexes } from '../../rich/rich-answer';
 import { RichAnswerFigure, RichAnswerView } from '../../rich/rich-answer-view';
 import { shareRichAnswerBlocksOf, shareRichMediaOf } from '../../share/share-rich-media';
 import { ShareMediaAttachment } from './share-attachments';
+import { ShareReactions } from './share-reactions';
 import { ShareWidgetView } from './share-widget-view';
 
 interface ShareReplyContentProps {
@@ -68,6 +69,7 @@ export const ShareReplyContent = ({ token, reply }: ShareReplyContentProps) => {
                           showCaptions
                       />
                   ))}
+            <ShareReactions reactions={reply.reactions ?? []} />
         </section>
     );
 };

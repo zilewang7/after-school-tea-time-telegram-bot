@@ -1363,6 +1363,12 @@ export interface PublicShareMediaItem extends PublicShareMedia {
     index?: number;
 }
 
+/** One reaction pill of a share page: the emoji and how many people used it */
+export interface PublicShareReaction {
+    emoji: string;
+    count: number;
+}
+
 /** A reply share's pinned version */
 export interface PublicShareReply {
     firstMessageId: number;
@@ -1378,6 +1384,9 @@ export interface PublicShareReply {
     // The rich answer snapshot (rich/rich-text versions only): the body renders
     // with its pictures in place instead of the plain text
     richAnswerMarkdown?: string;
+    // Reactions on the reply (emoji + count; never names: the page is public).
+    // Optional so a cached/older payload still renders.
+    reactions?: PublicShareReaction[];
 }
 
 /** The message a bubble answers, when it is part of the shared conversation */
@@ -1416,6 +1425,11 @@ export interface PublicShareBubble {
     replyTo: PublicShareReplyTarget | null;
     // Bot bubbles of a rich reply only: the answer snapshot with its pictures in place
     richAnswerMarkdown?: string;
+    // Reactions on the message (emoji + count; never names: the page is public).
+    // Optional so a cached/older payload still renders.
+    reactions?: PublicShareReaction[];
+    // Bot bubbles only: the model of the version on screen; absent/current null when unknown
+    model?: string | null;
 }
 
 export interface PublicShareConversation {

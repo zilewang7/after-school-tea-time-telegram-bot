@@ -26,6 +26,7 @@ import {
     type ShareReplyTarget,
     type ShareWidgetContent,
 } from './share-content.js';
+import type { ShareReactionPill } from './share-reactions.js';
 import type { ShareRow } from './share-types.js';
 
 /** A widget's public facts; the HTML itself is served by its own route */
@@ -62,6 +63,12 @@ export interface PublicShareMediaItemView extends PublicShareMediaView {
     index?: number;
 }
 
+/** One reaction pill: the public page shows counts, never the people behind them */
+export interface PublicShareReactionView {
+    emoji: string;
+    count: number;
+}
+
 export interface PublicShareReplyView {
     firstMessageId: number;
     versionId: number;
@@ -77,6 +84,8 @@ export interface PublicShareReplyView {
     widget: PublicShareWidgetView | null;
     /** The pinned version's pictures in delivery order (empty when it has none) */
     media: PublicShareMediaView[];
+    /** Reactions on the reply, as emoji + count */
+    reactions: PublicShareReactionView[];
 }
 
 /** The message a bubble answers, when it is part of the shared conversation */
@@ -111,6 +120,10 @@ export interface PublicShareBubbleView {
     previewMedia: PublicShareMediaView[];
     /** The bubble this one answers; null when it is outside the share */
     replyTo: PublicShareReplyTargetView | null;
+    /** Reactions on the message, as emoji + count */
+    reactions: PublicShareReactionView[];
+    /** Bot bubbles only: the model of the version on screen; null when it is unknown */
+    model?: string | null;
 }
 
 export interface PublicShareConversationView {
@@ -156,6 +169,9 @@ const mediaItemViewOf = (item: ShareMediaItem): PublicShareMediaItemView => ({
     ...mediaFieldsOf(item),
 });
 
+const reactionsViewOf = (pills: readonly ShareReactionPill[]): PublicShareReactionView[] =>
+    pills.map((pill) => ({ emoji: pill.emoji, count: pill.count }));
+
 const replyViewOf = (content: ShareReplyContent): PublicShareReplyView => ({
     firstMessageId: content.firstMessageId,
     versionId: content.versionId,
@@ -166,6 +182,7 @@ const replyViewOf = (content: ShareReplyContent): PublicShareReplyView => ({
     ...(content.richAnswerMarkdown === undefined ? {} : { richAnswerMarkdown: content.richAnswerMarkdown }),
     widget: widgetViewOf(content.widget),
     media: content.media.map(mediaFieldsOf),
+    reactions: reactionsViewOf(content.reactions),
 });
 
 const replyTargetViewOf = (target: ShareReplyTarget | null): PublicShareReplyTargetView | null =>
@@ -197,6 +214,7 @@ const bubbleViewOf = (bubble: ShareBubble): PublicShareBubbleView => {
                 return view === null ? [] : [view];
             }),
             replyTo: replyTargetViewOf(bubble.replyTo),
+            reactions: reactionsViewOf(bubble.reactions),
         };
     }
     return {
@@ -211,6 +229,8 @@ const bubbleViewOf = (bubble: ShareBubble): PublicShareBubbleView => {
         media: bubble.media.map(mediaItemViewOf),
         previewMedia: [],
         replyTo: replyTargetViewOf(bubble.replyTo),
+        reactions: reactionsViewOf(bubble.reactions),
+        model: bubble.model,
     };
 };
 

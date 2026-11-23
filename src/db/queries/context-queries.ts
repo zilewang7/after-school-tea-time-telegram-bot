@@ -906,13 +906,13 @@ export const listReplyHeadsForUserMessages = async (
 };
 
 /**
- * One reply by its first message id, only when it belongs to `chatId`: the
- * table's primary key is the message id alone, so another chat's reply can
- * carry the same id and must not be served instead.
+ * One reply by its first message id, only when it belongs to `chatId`: a
+ * Telegram message id is unique only inside its chat, so another chat's reply
+ * can carry the same id and must not be served instead (the primary key is
+ * (chatId, messageId) for exactly that reason).
  */
 export const findBotResponseInChat = async (chatId: number, firstMessageId: number): Promise<BotResponse | null> => {
-    const response = await BotResponse.findByPk(firstMessageId);
-    return response !== null && response.chatId === chatId ? response : null;
+    return BotResponse.findOne({ where: { chatId, messageId: firstMessageId } });
 };
 
 /** The stored replies with these first message ids, oldest first */

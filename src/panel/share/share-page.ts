@@ -15,6 +15,7 @@
  */
 import { escapeHtml, markdownExcerpt, markdownToHtml } from '../../telegram/formatters/markdown-html.js';
 import { renderRichAnswerHtml } from '../../telegram/formatters/rich-answer-html.js';
+import type { ShareReactionPill } from './share-reactions.js';
 import type {
     ShareContent,
     ShareConversationContent,
@@ -138,6 +139,18 @@ body {
 .md blockquote.expandable { border-left-style: dashed; }
 .md .tg-spoiler { background: var(--muted); color: transparent; border-radius: 4px; padding: 0 2px; }
 .md .tg-spoiler:hover { color: inherit; background: var(--card-soft); }
+.bubble-meta { margin: 0 0 6px; display: flex; align-items: center; gap: 8px; }
+.model-badge {
+  border: 1px solid var(--line); border-radius: 999px; padding: 1px 9px;
+  color: var(--muted); font-size: 12px; line-height: 18px; white-space: nowrap;
+}
+.reactions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.reaction {
+  display: inline-flex; align-items: center; gap: 4px;
+  background: var(--card-soft); border: 1px solid var(--line); border-radius: 999px;
+  padding: 1px 9px; font-size: 14px; line-height: 20px;
+}
+.reaction-count { color: var(--muted); font-size: 12px; }
 .reply-to { margin: 0 0 6px; color: var(--muted); font-size: 13px; overflow-wrap: anywhere; }
 .reply-to-author { color: var(--text); font-weight: 600; }
 .quote { margin: 0 0 6px; padding: 2px 10px; border-left: 3px solid var(--line); color: var(--muted); white-space: pre-wrap; overflow-wrap: anywhere; }
@@ -453,6 +466,22 @@ const replyTargetBlock = (target: ShareReplyTarget | null): string => {
     ].join('');
 };
 
+/** Emoji + count pills under a message; public pages never name the reactors */
+const reactionPillsBlock = (pills: readonly ShareReactionPill[]): string => {
+    if (pills.length === 0) return '';
+    const items = pills.map(
+        (pill) =>
+            `<span class="reaction">${escapeHtml(pill.emoji)}<span class="reaction-count">${String(pill.count)}</span></span>`
+    );
+    return `<div class="reactions">${items.join('')}</div>`;
+};
+
+/** The model chip of a bot bubble; null hides it */
+const modelBadgeBlock = (model: string | null): string => {
+    if (model === null || model === '') return '';
+    return `<p class="bubble-meta"><span class="model-badge">${escapeHtml(model)}</span></p>`;
+};
+
 /** The part of another message the author quoted */
 const quoteBlock = (quote: string | null): string =>
     quote === null || quote === '' ? '' : `<blockquote class="quote">${escapeHtml(quote)}</blockquote>`;
@@ -502,6 +531,10 @@ interface BotBubbleInput {
     /** The iframe order on this page; null without a widget */
     readonly widgetIndex: number | null;
     readonly replyTo: ShareReplyTarget | null;
+    /** The model of the version on screen; null hides the chip */
+    readonly model: string | null;
+    /** The message's reactions (emoji + count) */
+    readonly reactions: readonly ShareReactionPill[];
 }
 
 /** One bot reply bubble; `widgetIndex` is the iframe order on this page */
@@ -534,9 +567,11 @@ const botBubble = (input: BotBubbleInput): string => {
     return [
         '<article class="bubble bot">',
         ...bubbleContent(bubbleHead(BOT_NAME, input.createdAt, input.deleted), input.deleted, [
+            modelBadgeBlock(input.model),
             replyTargetBlock(input.replyTo),
             body,
             ...attachments,
+            reactionPillsBlock(input.reactions),
         ]),
         '</article>',
     ].join('');
@@ -561,6 +596,7 @@ const userBubble = (token: string, bubble: ShareUserBubble): string => {
             textBlock(bubble.text, '（无正文）'),
             media,
             previewTextBlock(bubble.previewText),
+            reactionPillsBlock(bubble.reactions),
         ]),
         '</article>',
     ].join('');
@@ -584,6 +620,8 @@ const renderReplyBody = (input: SharePageInput, content: ShareReplyContent): str
         })),
         widgetIndex: content.widget === null ? null : 0,
         replyTo: null,
+        model: content.model,
+        reactions: content.reactions,
     });
 
 /** The conversation page: bubbles in message order, widgets numbered as they appear */
@@ -604,6 +642,8 @@ const renderConversationBody = (input: SharePageInput, content: ShareConversatio
                 media: bubble.media,
                 widgetIndex: index,
                 replyTo: bubble.replyTo,
+                model: bubble.model,
+                reactions: bubble.reactions,
             });
         })
         .join('');

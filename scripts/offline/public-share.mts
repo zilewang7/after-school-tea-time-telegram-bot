@@ -41,6 +41,7 @@ const store = await import('../../src/panel/share/share-store.js');
 const publicApi = await import('../../src/panel/share/public-api.js');
 const exclusions = await import('../../src/db/queries/context-exclusions.js');
 const shareUrls = await import('../../src/panel/share/share-urls.js');
+const reactionQueries = await import('../../src/db/queries/reaction-queries.js');
 const startParam = await import('../../src/panel/auth/start-param.js');
 const { createPanelApp } = await import('../../src/panel/app.js');
 const { signInitData } = await import('../lib/init-data.mts');
@@ -161,6 +162,21 @@ const initDataFor = (user: InitDataUserInput, startParamValue?: string): string 
 
 const jsonOf = async (response: Response): Promise<Record<string, unknown>> =>
     JSON.parse(await response.text()) as Record<string, unknown>;
+
+const react = async (
+    chatId: number,
+    messageId: number,
+    userId: number,
+    userName: string,
+    emoji: string
+): Promise<void> => {
+    await reactionQueries.applyUserReactionUpdate({
+        chatId,
+        messageId,
+        actor: { userId, actorChatId: null, userName },
+        reactions: [{ kind: 'emoji', emoji, customEmojiId: null }],
+    });
+};
 
 const asRecord = (value: unknown): Record<string, unknown> =>
     typeof value === 'object' && value !== null && !Array.isArray(value)
@@ -772,6 +788,77 @@ const cases: { name: string; body: () => Promise<void> }[] = [
             const media = Array.isArray(replyView.media) ? replyView.media.map(asRecord) : [];
             expect(media[0]?.placement === 'attachment', 'the stored placement still shows');
             expect(!('id' in (media[0] ?? {})), 'no id placeholder');
+        },
+    },
+    {
+        // The share page is public: reaction pills show the emoji and a count,
+        // never the people behind them; the model of the pinned version shows too.
+        name: 'a reply share shows reaction pills (counts only) and the model',
+        body: async () => {
+            const messageId = takeMessageId();
+            const share = await replyShare(GROUP, messageId, [
+                versionOf(1, { model: 'gemini-4-neon', text: '正文' }),
+            ]);
+            await react(GROUP, messageId, 5001, 'Alice', '👍');
+            await react(GROUP, messageId, 5002, 'Bob', '👍');
+            await react(GROUP, messageId, 5003, 'Cara', '🔥');
+            const body = await jsonOf(await app.request(`/api/public/shares/${share.token}`));
+            const reply = asRecord(asRecord(body.share)['reply']);
+            expect(reply.model === 'gemini-4-neon', `the model of the pinned version (got ${JSON.stringify(reply.model)})`);
+            const pills = Array.isArray(reply.reactions) ? reply.reactions.map(asRecord) : [];
+            expect(
+                JSON.stringify(pills) === JSON.stringify([{ emoji: '👍', count: 2 }, { emoji: '🔥', count: 1 }]),
+                `emoji + count, Telegram's order (got ${JSON.stringify(pills)})`
+            );
+            expect(
+                !JSON.stringify(body).includes('Alice') && !JSON.stringify(body).includes('Cara'),
+                'reactor names never leave the server'
+            );
+        },
+    },
+    {
+        name: 'a conversation share shows each bubble reaction pills and the bot model',
+        body: async () => {
+            const rootId = takeMessageId();
+            const botId = takeMessageId();
+            await saveMessage(GROUP, rootId, ALICE.id, '用户的问题');
+            await saveMessage(GROUP, botId, BOT_USER_ID, '', { replyToId: rootId });
+            const response = await db.createBotResponse(GROUP, botId, rootId, {
+                model: 'offline-model',
+                hasImage: false,
+            });
+            response.setVersions([versionOf(1, { text: 'bot 的回答', model: 'gemini-4-large' })]);
+            response.currentVersionIndex = 0;
+            await response.save();
+            await react(GROUP, botId, 5001, 'Alice', '👍');
+            await react(GROUP, rootId, 5002, 'Bob', '😂');
+            const created = await service.createUserShare({
+                kind: 'conversation',
+                chatId: GROUP,
+                rootId,
+                createdBy: ALICE.id,
+            });
+            if (!created.ok) throw new Error(`could not create the conversation share: ${created.reason}`);
+            const body = await jsonOf(await app.request(`/api/public/shares/${created.share.token}`));
+            const bubbles = bubblesOf(asRecord(body.share));
+            const botBubble = bubbles.find((bubble) => bubble.kind === 'bot');
+            const userBubble = bubbles.find((bubble) => bubble.kind === 'user');
+            expect(
+                botBubble?.model === 'gemini-4-large',
+                `the bot bubble carries the version model (got ${JSON.stringify(botBubble?.model)})`
+            );
+            const pillsOf = (value: unknown): Record<string, unknown>[] =>
+                Array.isArray(value) ? value.map(asRecord) : [];
+            const botPills = pillsOf(botBubble?.reactions);
+            expect(
+                JSON.stringify(botPills) === JSON.stringify([{ emoji: '👍', count: 1 }]),
+                `bot bubble pills (got ${JSON.stringify(botPills)})`
+            );
+            const userPills = pillsOf(userBubble?.reactions);
+            expect(
+                JSON.stringify(userPills) === JSON.stringify([{ emoji: '😂', count: 1 }]),
+                `user bubble pills (got ${JSON.stringify(userPills)})`
+            );
         },
     },
 ];
