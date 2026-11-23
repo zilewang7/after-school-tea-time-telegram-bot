@@ -41,7 +41,7 @@ export const ConversationDetailView = ({
     const [panel, setPanel] = useState<OpenPanel>('none');
     // Multi-select replaces the tree view; only members can exclude at all
     const [selecting, setSelecting] = useState(false);
-    const batch = useBatchExclusion(chatId, onChanged);
+    const batch = useBatchExclusion(chatId, tree.rootId, onChanged);
 
     const toggleLinks = useCallback(
         () => setPanel((current) => (current === 'links' ? 'none' : 'links')),

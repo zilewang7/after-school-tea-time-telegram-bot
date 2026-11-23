@@ -12,8 +12,13 @@ export interface Exclusion {
     clearFailure: () => void;
 }
 
-/** Excluding / restoring one message, then refreshing the tree (the #N of the rest shift) */
-export const useExclusion = (chatId: number, onChanged: () => void): Exclusion => {
+/**
+ * Excluding / restoring one message, then refreshing the tree (the #N of the
+ * rest shift). `rootId` is the conversation on screen: the server reports the
+ * write on that conversation's in-chat receipt, even for a message spliced in
+ * from another conversation.
+ */
+export const useExclusion = (chatId: number, rootId: number, onChanged: () => void): Exclusion => {
     const api = useApi();
     const notifySuccess = useSuccessHaptic();
     const [pendingMessageId, setPendingMessageId] = useState<number | null>(null);
@@ -24,7 +29,7 @@ export const useExclusion = (chatId: number, onChanged: () => void): Exclusion =
             if (pendingMessageId !== null) return;
             setPendingMessageId(messageId);
             setFailure(null);
-            void api.setExclusion(chatId, messageId, excluded).then((result) => {
+            void api.setExclusion(chatId, messageId, excluded, rootId).then((result) => {
                 setPendingMessageId(null);
                 if (!result.ok) {
                     setFailure(describeExclusionFailure(result.failure));
@@ -34,7 +39,7 @@ export const useExclusion = (chatId: number, onChanged: () => void): Exclusion =
                 onChanged();
             });
         },
-        [api, chatId, onChanged, notifySuccess, pendingMessageId]
+        [api, chatId, rootId, onChanged, notifySuccess, pendingMessageId]
     );
 
     const clearFailure = useCallback(() => setFailure(null), []);

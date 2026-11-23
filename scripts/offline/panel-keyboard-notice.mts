@@ -6,6 +6,11 @@
  * message, keep the buttons, keep only the five newest lines, and stay best
  * effort (a deleted message, no registration or no Bot API changes nothing).
  *
+ * The conversation on screen also shows messages spliced in from other
+ * conversations (`/chat` links, replied-to messages of another chain): those
+ * writes name the operated conversation in `rootId`, so the receipt they update
+ * is that conversation's — their own roots have no receipt (2026-11-23 fix, §14).
+ *
  * Cases drive the real grammY `/panel` handler through the fake Telegram API
  * (the share-command.mts style) and the real panel app for the writes.
  *
@@ -331,6 +336,88 @@ results.push(
         const lines = textLines(lastEditText(fixture.telegram));
         expect(lines.length === 3, `base text and two operation lines (got ${JSON.stringify(lines)})`);
         expect(lines[1]?.includes('已排除 2 条消息') === true && lines[2]?.includes('已恢复 1 条消息') === true, 'both lines in order');
+    })
+);
+
+results.push(
+    await runCase('a batch names the operated conversation for messages spliced in from elsewhere', async () => {
+        const fixture = await receiptFixture();
+        // Answering nothing: this message roots its own conversation (a /chat bystander)
+        const spliced = await seedMessage(fixture.chatId, ALICE.id, '拼接进来的旁观消息');
+        const own = await seedMessage(fixture.chatId, ALICE.id, '本会话里的消息', fixture.rootId);
+        const app = makeApp(fixture.telegram);
+        const response = await request(app, 'POST', `/api/chats/${fixture.chatId}/exclusions`, {
+            action: 'exclude',
+            messageIds: [spliced, own],
+            rootId: fixture.rootId,
+        });
+        expect(
+            response.status === 200 && response.body.changed.length === 2,
+            `both changed (got ${response.status} ${JSON.stringify(response.body)})`
+        );
+        await waitUntil('the receipt edit', () => editCalls(fixture.telegram).length > 0);
+        const payload = editCalls(fixture.telegram).at(-1)?.payload ?? {};
+        expect(
+            payload.message_id === fixture.messageId,
+            `the operated conversation's receipt is edited (got ${JSON.stringify(payload)})`
+        );
+        expect(
+            lastEditText(fixture.telegram).includes('· 已排除 2 条消息（'),
+            `one line with the whole batch (got ${JSON.stringify(lastEditText(fixture.telegram))})`
+        );
+        expect(editCalls(fixture.telegram).length === 1, 'one edit, not split by root');
+    })
+);
+
+results.push(
+    await runCase('a single write names the operated conversation in its query', async () => {
+        const fixture = await receiptFixture();
+        const spliced = await seedMessage(fixture.chatId, ALICE.id, '别的会话里的一条');
+        const app = makeApp(fixture.telegram);
+        const response = await request(
+            app,
+            'PUT',
+            `/api/chats/${fixture.chatId}/messages/${spliced}/exclusion?rootId=${fixture.rootId}`
+        );
+        expect(response.status === 200, `200 (got ${response.status} ${JSON.stringify(response.body)})`);
+        await waitUntil('the receipt edit', () => editCalls(fixture.telegram).length > 0);
+        const payload = editCalls(fixture.telegram).at(-1)?.payload ?? {};
+        expect(
+            payload.message_id === fixture.messageId && lastEditText(fixture.telegram).includes('· 已排除 1 条消息（'),
+            `the operated conversation's line (got ${JSON.stringify(payload)})`
+        );
+    })
+);
+
+results.push(
+    await runCase('without the operated conversation a spliced-in message edits nothing', async () => {
+        const fixture = await receiptFixture();
+        const spliced = await seedMessage(fixture.chatId, ALICE.id, '别的会话里的一条');
+        const app = makeApp(fixture.telegram);
+        const response = await request(app, 'PUT', `/api/chats/${fixture.chatId}/messages/${spliced}/exclusion`);
+        expect(response.status === 200, `the write itself goes through (got ${response.status})`);
+        expect(editCalls(fixture.telegram).length === 0, "the message's own root has no receipt: nothing is edited");
+    })
+);
+
+results.push(
+    await runCase('an operated conversation id that is not a positive integer is a 400', async () => {
+        const fixture = await receiptFixture();
+        const target = await seedMessage(fixture.chatId, ALICE.id, '要排除的', fixture.rootId);
+        const app = makeApp(fixture.telegram);
+        const badBatch = await request(app, 'POST', `/api/chats/${fixture.chatId}/exclusions`, {
+            action: 'exclude',
+            messageIds: [target],
+            rootId: 0,
+        });
+        expect(badBatch.status === 400, `rootId 0 is refused (got ${badBatch.status})`);
+        const badSingle = await request(
+            app,
+            'PUT',
+            `/api/chats/${fixture.chatId}/messages/${target}/exclusion?rootId=abc`
+        );
+        expect(badSingle.status === 400, `a non-numeric query rootId is refused (got ${badSingle.status})`);
+        expect(editCalls(fixture.telegram).length === 0, 'refused requests edit nothing');
     })
 );
 

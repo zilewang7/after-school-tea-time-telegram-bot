@@ -15,7 +15,7 @@ interface TreeViewProps {
 /** The conversation as an indented tree, with the member-only exclude / restore actions */
 export const TreeView = ({ chatId, tree, member, onChanged }: TreeViewProps) => {
     const rows = useMemo(() => layoutTree(tree.nodes), [tree.nodes]);
-    const { setExcluded, pendingMessageId, failure, clearFailure } = useExclusion(chatId, onChanged);
+    const { setExcluded, pendingMessageId, failure, clearFailure } = useExclusion(chatId, tree.rootId, onChanged);
 
     const exclude = useCallback((messageId: number) => setExcluded(messageId, true), [setExcluded]);
     const restore = useCallback((messageId: number) => setExcluded(messageId, false), [setExcluded]);

@@ -23,7 +23,11 @@ export interface BatchExclusion {
     clearFailure: () => void;
 }
 
-export const useBatchExclusion = (chatId: number, onChanged: () => void): BatchExclusion => {
+/**
+ * `rootId` is the conversation on screen: the server reports the whole batch on
+ * that conversation's in-chat receipt, spliced-in messages included.
+ */
+export const useBatchExclusion = (chatId: number, rootId: number, onChanged: () => void): BatchExclusion => {
     const api = useApi();
     const notifySuccess = useSuccessHaptic();
     const [pending, setPending] = useState<ExclusionBatchAction | null>(null);
@@ -36,7 +40,7 @@ export const useBatchExclusion = (chatId: number, onChanged: () => void): BatchE
             setPending(action);
             setFailure(null);
             setResult(null);
-            return api.batchExclusion(chatId, action, messageIds).then((response) => {
+            return api.batchExclusion(chatId, action, messageIds, rootId).then((response) => {
                 setPending(null);
                 if (!response.ok) {
                     setFailure(describeExclusionFailure(response.failure));
@@ -48,7 +52,7 @@ export const useBatchExclusion = (chatId: number, onChanged: () => void): BatchE
                 return true;
             });
         },
-        [api, chatId, onChanged, notifySuccess, pending]
+        [api, chatId, rootId, onChanged, notifySuccess, pending]
     );
 
     const reset = useCallback(() => {

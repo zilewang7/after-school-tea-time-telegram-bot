@@ -159,8 +159,16 @@ const modelViewPath = (chatId: number, rootId: number, { at, asModel }: ModelVie
 const replyPath = (chatId: number, firstMessageId: number): string =>
     `${chatPath(chatId)}/replies/${firstMessageId}`;
 
-const exclusionPath = (chatId: number, messageId: number): string =>
-    `${chatPath(chatId)}/messages/${messageId}/exclusion`;
+/**
+ * One message's exclusion. `rootId` names the conversation the panel was
+ * operating in: the in-chat receipt goes on that conversation, because a tree
+ * can show messages spliced in from other conversations whose own roots have no
+ * receipt.
+ */
+const exclusionPath = (chatId: number, messageId: number, rootId: number): string => {
+    const params = new URLSearchParams({ rootId: String(rootId) });
+    return `${chatPath(chatId)}/messages/${messageId}/exclusion?${params.toString()}`;
+};
 
 /** The batch endpoint: one write for a whole selection */
 const exclusionsPath = (chatId: number): string => `${chatPath(chatId)}/exclusions`;
@@ -334,23 +342,24 @@ export const createApi = (initData: string) => {
             request<ModelView>({ method: 'GET', path: modelViewPath(chatId, rootId, query), signal }),
         getReply: (chatId: number, firstMessageId: number, signal?: AbortSignal) =>
             request<ReplyDetail>({ method: 'GET', path: replyPath(chatId, firstMessageId), signal }),
-        // Members only; idempotent, so a repeat answers 200 too
-        setExclusion: (chatId: number, messageId: number, excluded: boolean) =>
+        // Members only; idempotent, so a repeat answers 200 too. rootId is the
+        // conversation the panel operates in (the receipt's target)
+        setExclusion: (chatId: number, messageId: number, excluded: boolean, rootId: number) =>
             excluded
                 ? request<ExcludedMessageResponse>({
                       method: 'PUT',
-                      path: exclusionPath(chatId, messageId),
+                      path: exclusionPath(chatId, messageId, rootId),
                   })
                 : request<IncludedMessageResponse>({
                       method: 'DELETE',
-                      path: exclusionPath(chatId, messageId),
+                      path: exclusionPath(chatId, messageId, rootId),
                   }),
         // Members only; 1–100 ids in one transaction, the answer says what each id became
-        batchExclusion: (chatId: number, action: ExclusionBatchAction, messageIds: readonly number[]) =>
+        batchExclusion: (chatId: number, action: ExclusionBatchAction, messageIds: readonly number[], rootId: number) =>
             request<ExclusionBatchResponse>({
                 method: 'POST',
                 path: exclusionsPath(chatId),
-                body: { action, messageIds },
+                body: { action, messageIds, rootId },
             }),
         // Members only; 1–20 links, a rootId that is not a root is 404
         spliceConversation: (chatId: number, rootId: number, links: readonly string[]) =>

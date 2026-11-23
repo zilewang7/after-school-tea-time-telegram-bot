@@ -77,13 +77,22 @@ export interface ExclusionReceiptInput {
     action: 'exclude' | 'restore';
     /** The bot's own Api; null (tests, no api) disables receipts */
     botApi: Api | null;
+    /**
+     * The conversation the panel was operating in. A conversation's tree also
+     * shows messages spliced in from other conversations (a `/chat` link, or a
+     * replied-to message of another chain), and those have another root: their
+     * own root has no receipt to edit. When the panel names the conversation it
+     * operated in, the whole operation goes on that conversation's receipt.
+     */
+    rootId?: number;
     /** Clock in ms; defaults to Date.now */
     now?: () => number;
 }
 
 /**
- * Report an exclusion write on the receipts of the conversations its messages
- * belong to (normally one). Never throws.
+ * Report an exclusion write on the receipt of the conversation it was made in
+ * (`rootId` from the panel), or — for callers that only pass message ids — on
+ * the receipts of the conversations the messages belong to. Never throws.
  */
 export const reportExclusionReceipt = async (input: ExclusionReceiptInput): Promise<void> => {
     if (input.botApi === null || input.messageIds.length === 0) return;
@@ -91,6 +100,11 @@ export const reportExclusionReceipt = async (input: ExclusionReceiptInput): Prom
     const botApi = input.botApi;
     const now = input.now?.() ?? Date.now();
     try {
+        if (input.rootId !== undefined) {
+            const line = lineOf(operationTextOf(input.action, input.messageIds.length), now);
+            await editReceipt(botApi, input.chatId, input.rootId, line, now);
+            return;
+        }
         const countsByRoot = new Map<number, number>();
         for (const messageId of input.messageIds) {
             const root = await findRootMessage(input.chatId, messageId, { recover: false });

@@ -17,7 +17,11 @@
  *
  * Both kinds of write report what changed on the conversation's `/panel`
  * message, when the chat has one (design 2026-1119-2016 §4.7). Fire and forget:
- * the receipt never affects the answer.
+ * the receipt never affects the answer. The optional `rootId` (a query
+ * parameter of the single write, a body key of the batch) names the
+ * conversation the panel was operating in: its tree also shows messages
+ * spliced in from other conversations, and without it those writes would find
+ * no receipt at all (their own roots are registered nowhere).
  */
 import type { Api } from 'grammy';
 import type { Hono } from 'hono';
@@ -36,7 +40,7 @@ import { reportExclusionReceipt } from '../../services/conversation-keyboard-ser
 import { requireChatAccess } from '../access/require-access.js';
 import { requireAuth, type PanelContext, type PanelEnv } from '../context.js';
 import { PanelError } from '../errors.js';
-import { checkBodyKeys, invalid, parseChatId, readJsonObject } from '../request.js';
+import { checkBodyKeys, invalid, parseChatId, parseOptionalPositiveInteger, readJsonObject } from '../request.js';
 import { CONVERSATION_MESSAGES, parseMessageIdParam, requireMember } from './conversation-params.js';
 
 /** What the route needs from outside the request: the bot's Api for in-chat receipts */
@@ -74,9 +78,18 @@ export interface ExclusionBatchView {
 
 const ACTION_KEY = 'action';
 const MESSAGE_IDS_KEY = 'messageIds';
-const ALLOWED_BATCH_KEYS: ReadonlySet<string> = new Set([ACTION_KEY, MESSAGE_IDS_KEY]);
+/** The conversation the panel operated in: the receipt's target */
+const ROOT_ID_KEY = 'rootId';
+const ALLOWED_BATCH_KEYS: ReadonlySet<string> = new Set([ACTION_KEY, MESSAGE_IDS_KEY, ROOT_ID_KEY]);
 /** One batch write, matching the webapp's selection limit */
 const MAX_BATCH_MESSAGE_IDS = 100;
+
+/** The optional operated-conversation id of a batch body */
+const parseOptionalRootId = (raw: unknown): number | undefined => {
+    if (raw === undefined) return undefined;
+    if (typeof raw !== 'number' || !Number.isSafeInteger(raw) || raw < 1) throw invalid('rootId 必须是正整数');
+    return raw;
+};
 
 /** What one requested id resolves to */
 type ExclusionTarget =
@@ -114,12 +127,13 @@ const canonicalExclusionId = async (chatId: number, messageId: number): Promise<
 /** Access, member gate and the normalized target of one exclusion request */
 const readExclusionRequest = async (
     context: PanelContext
-): Promise<{ chatId: number; messageId: number; actorId: number }> => {
+): Promise<{ chatId: number; messageId: number; actorId: number; rootId: number | undefined }> => {
     const auth = requireAuth(context);
     const chatId = parseChatId(context.req.param('chatId'));
     requireMember(await requireChatAccess(auth, chatId));
     const requestedId = parseMessageIdParam(context.req.param('messageId'), 'messageId');
-    return { chatId, messageId: await canonicalExclusionId(chatId, requestedId), actorId: auth.user.id };
+    const rootId = parseOptionalPositiveInteger(context.req.query(ROOT_ID_KEY), ROOT_ID_KEY);
+    return { chatId, messageId: await canonicalExclusionId(chatId, requestedId), actorId: auth.user.id, rootId };
 };
 
 const parseBatchAction = (raw: unknown): ExclusionBatchAction => {
@@ -189,14 +203,15 @@ const writeBatch = (
 
 export const registerExclusionRoutes = (app: Hono<PanelEnv>, deps: ExclusionRouteDeps): void => {
     app.put('/api/chats/:chatId/messages/:messageId/exclusion', async (context) => {
-        const target = await readExclusionRequest(context);
-        const { row, created } = await excludeMessage(target);
+        const { chatId, messageId, actorId, rootId } = await readExclusionRequest(context);
+        const { row, created } = await excludeMessage({ chatId, messageId, actorId });
         if (created) {
             void reportExclusionReceipt({
-                chatId: target.chatId,
+                chatId,
                 messageIds: [row.messageId],
                 action: 'exclude',
                 botApi: deps.botApi,
+                rootId,
             });
         }
         const view: ExcludedMessageView = {
@@ -209,17 +224,18 @@ export const registerExclusionRoutes = (app: Hono<PanelEnv>, deps: ExclusionRout
     });
 
     app.delete('/api/chats/:chatId/messages/:messageId/exclusion', async (context) => {
-        const target = await readExclusionRequest(context);
-        const removed = await includeMessage(target);
+        const { chatId, messageId, actorId, rootId } = await readExclusionRequest(context);
+        const removed = await includeMessage({ chatId, messageId, actorId });
         if (removed) {
             void reportExclusionReceipt({
-                chatId: target.chatId,
-                messageIds: [target.messageId],
+                chatId,
+                messageIds: [messageId],
                 action: 'restore',
                 botApi: deps.botApi,
+                rootId,
             });
         }
-        const view: IncludedMessageView = { messageId: target.messageId, excluded: false };
+        const view: IncludedMessageView = { messageId, excluded: false };
         return context.json(view);
     });
 
@@ -232,6 +248,7 @@ export const registerExclusionRoutes = (app: Hono<PanelEnv>, deps: ExclusionRout
         checkBodyKeys(body, ALLOWED_BATCH_KEYS);
         const action = parseBatchAction(body[ACTION_KEY]);
         const requestedIds = parseBatchMessageIds(body[MESSAGE_IDS_KEY]);
+        const rootId = parseOptionalRootId(body[ROOT_ID_KEY]);
 
         const targets = await resolveBatchTargets(chatId, requestedIds);
         const written = await writeBatch(action, chatId, targets.canonicalIds, auth.user.id);
@@ -241,6 +258,7 @@ export const registerExclusionRoutes = (app: Hono<PanelEnv>, deps: ExclusionRout
                 messageIds: written.changed,
                 action,
                 botApi: deps.botApi,
+                rootId,
             });
         }
         const view: ExclusionBatchView = {
