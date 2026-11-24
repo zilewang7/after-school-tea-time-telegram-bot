@@ -830,7 +830,7 @@ results.push(
             OWNER_USER_ID: String(OWNER_USER_ID),
         });
         const group = resolveToolAvailability('gemini-4-argon', GROUP_CHAT_ID, enabled);
-        expect(group.widget && group.widgetGuide, 'the whitelisted group gets both widget tools');
+        expect(group.widget && group.skills, 'the whitelisted group gets send_widget and skills');
 
         const noFallback = readToolConfig({
             WIDGET_ENABLE: '1',

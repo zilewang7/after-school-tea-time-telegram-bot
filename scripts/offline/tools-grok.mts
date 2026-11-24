@@ -139,8 +139,8 @@ const freeTool = (name: string, content: string): ToolHandler => ({
     },
 });
 const sendFileTool = freeTool('send_file', 'file sent');
-const listIssuesTool = freeTool('list_harness_issues', 'no open issues');
-const freeTurnTools = createTurnTools([weatherTool, brokenTool, sendFileTool, listIssuesTool]);
+const harnessIssueTool = freeTool('harness_issue', 'no open issues');
+const freeTurnTools = createTurnTools([weatherTool, brokenTool, sendFileTool, harnessIssueTool]);
 
 // ---- helpers ----
 
@@ -735,7 +735,7 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
                 reset(
                     scripted(
                         toolRound('resp_1', 'call_1'),
-                        toolRound('resp_2', 'call_2', 'list_harness_issues', '{}'),
+                        toolRound('resp_2', 'call_2', 'harness_issue', '{}'),
                         toolRound('resp_3', 'call_3', 'send_file', '{}'),
                         answerRound('resp_4', 'File sent, here is the answer.')
                     )
@@ -757,7 +757,7 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
                     'the no-cost rounds keep the tools on'
                 );
                 expect(
-                    json(freeExecutions) === json(['list_harness_issues', 'send_file']),
+                    json(freeExecutions) === json(['harness_issue', 'send_file']),
                     `the issue and product tools both ran (got ${json(freeExecutions)})`
                 );
                 expect(

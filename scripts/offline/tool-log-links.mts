@@ -108,7 +108,7 @@ results.push(
 
 results.push(
     await runCase('the record keeps only openable spans that are still in the line', async () => {
-        const call = { id: 'c1', name: 'read_history', argumentsJson: '{}' };
+        const call = { id: 'c1', name: 'history', argumentsJson: '{}' };
         const resultOf = (links: readonly ToolCallLink[]): ToolResult => ({
             content: 'ok',
             isError: false,
@@ -144,7 +144,7 @@ results.push(
             call,
             {
                 ...resultOf([]),
-                trace: { argument: 'h1、h2、h3、h4、h5、h6', result: '6 条全文', links: sixLinks },
+                trace: { argument: 'read · h1、h2、h3、h4、h5、h6', result: '6 条全文', links: sixLinks },
             },
             10
         );
@@ -156,8 +156,8 @@ results.push(
     await runCase('the per-reply link budget bounds the stored spans', async () => {
         const initialCalls = [
             {
-                name: 'read_history',
-                argument: 'h1',
+                name: 'history',
+                argument: 'read · h1',
                 result: '1 条全文',
                 // One record with the budget all but spent; the tally only trims new ones
                 links: Array.from({ length: TOOL_LOG_MAX_LINKS - 1 }, (_, index) => ({
@@ -168,8 +168,8 @@ results.push(
         ];
         const tally = createToolUsageTally([], initialCalls);
         tally.record({
-            name: 'read_history',
-            argument: 'h45、h46',
+            name: 'history',
+            argument: 'read · h45、h46',
             result: '2 条全文',
             links: [
                 { text: 'h45', url: 'https://t.me/c/1415974153/1' },
@@ -178,24 +178,24 @@ results.push(
         });
         const calls = tally.calls();
         expect(calls[1]?.links?.length === 1, `only the remaining budget is kept (got ${JSON.stringify(calls[1]?.links)})`);
-        expect(calls[1]?.argument === 'h45、h46', 'the line itself is untouched');
+        expect(calls[1]?.argument === 'read · h45、h46', 'the line itself is untouched');
     })
 );
 
 results.push(
     await runCase('the document carries the spans per call line, and only those still shown', async () => {
         const agentStats: AgentStats = {
-            toolUsage: [{ name: 'read_history', count: 2 }],
+            toolUsage: [{ name: 'history', count: 2 }],
             toolCalls: [
                 {
-                    name: 'read_history',
+                    name: 'history',
                     argument: 'around h45 · 10 分钟',
                     result: '39 条消息',
                     links: [{ text: 'h45', url: 'https://t.me/c/1415974153/1123456' }],
                 },
                 {
-                    name: 'read_history',
-                    argument: 'h45、h46',
+                    name: 'history',
+                    argument: 'read · h45、h46',
                     result: '2 条全文',
                     links: [
                         { text: 'h45', url: 'https://t.me/c/1415974153/1123456' },
@@ -216,7 +216,7 @@ results.push(
             'the entries and the plain lines are the same body'
         );
         // usage line first, then the calls
-        expect(entries[1]?.text === '1. read_history: around h45 · 10 分钟 → 39 条消息', 'entries keep display order');
+        expect(entries[1]?.text === '1. history: around h45 · 10 分钟 → 39 条消息', 'entries keep display order');
         expect(entries[1]?.links.length === 1, 'the call line carries its span');
         expect(entries[0]?.links.length === 0, 'the usage line carries none');
 

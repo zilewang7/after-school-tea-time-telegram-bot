@@ -43,16 +43,16 @@ const legacyStep = () => ({
 /** Ten executed calls, each line short enough that the block still fits one message */
 const tenCalls = () =>
     Array.from({ length: 10 }, (_, index) => ({
-        name: 'search_history',
-        argument: `「灭蛾 方法 ${index + 1}」`,
+        name: 'history',
+        argument: `search · 「灭蛾 方法 ${index + 1}」`,
         result: `${index + 3} 条命中`,
     }));
 
 /** A per-call log too long for one Telegram message */
 const overflowingCalls = () =>
     Array.from({ length: 160 }, (_, index) => ({
-        name: 'read_history',
-        argument: `h${index + 1}、h${index + 2}、h${index + 3}`,
+        name: 'history',
+        argument: `read · h${index + 1}、h${index + 2}、h${index + 3}`,
         result: `3 条全文 · 1.2K 字`,
     }));
 
@@ -94,12 +94,12 @@ results.push(await runCase('the per-call log renders numbered lines, usage first
     const sections = buildToolRecordSections(
         {
             toolUsage: [
-                { name: 'search_history', count: 2, failed: 1 },
+                { name: 'history', count: 2, failed: 1 },
                 { name: 'fetch_image', count: 1 },
             ],
             toolCalls: [
-                { name: 'search_history', argument: '「灭蛾 方法」', result: '10 条命中' },
-                { name: 'search_history', argument: '「户鞘谷蛾」', result: '查询语法有误', failed: true },
+                { name: 'history', argument: 'search · 「灭蛾 方法」', result: '10 条命中' },
+                { name: 'history', argument: 'search · 「户鞘谷蛾」', result: '查询语法有误', failed: true },
                 { name: 'fetch_image', argument: 'h101', result: 'img3 640×480', ms: 3_400 },
             ],
         },
@@ -108,15 +108,15 @@ results.push(await runCase('the per-call log renders numbered lines, usage first
     const tools = sections[0]?.text ?? '';
     const lines = tools.split('\n');
     expect(
-        lines[1] === 'tool usage: search_history x2（1 次失败） | fetch_image x1',
+        lines[1] === 'tool usage: history x2（1 次失败） | fetch_image x1',
         `the usage line is the first line (got ${JSON.stringify(lines[1])})`
     );
     expect(
-        lines[2] === '1. search_history: 「灭蛾 方法」 → 10 条命中',
+        lines[2] === '1. history: search · 「灭蛾 方法」 → 10 条命中',
         `numbered call line (got ${JSON.stringify(lines[2])})`
     );
     expect(
-        lines[3] === '2. search_history: 「户鞘谷蛾」 → 失败：查询语法有误',
+        lines[3] === '2. history: search · 「户鞘谷蛾」 → 失败：查询语法有误',
         `a failed call is marked (got ${JSON.stringify(lines[3])})`
     );
     expect(
@@ -125,7 +125,7 @@ results.push(await runCase('the per-call log renders numbered lines, usage first
     );
     // The legacy grounding-derived line must not be rendered a second time
     expect(
-        tools.split('search_history: 灭蛾').length - 1 === 0,
+        tools.split('searxng_web_search: 户鞘谷蛾').length - 1 === 0,
         'the old searchQueries lines are suppressed when records exist'
     );
 }));
@@ -152,8 +152,8 @@ results.push(await runCase('a fast call shows no duration and a fast duration is
 results.push(await runCase('the record cap says how many calls were dropped', async () => {
     const sections = buildToolRecordSections(
         {
-            toolUsage: [{ name: 'search_history', count: 5 }],
-            toolCalls: [{ name: 'search_history', argument: '「灭蛾」', result: '3 条命中' }],
+            toolUsage: [{ name: 'history', count: 5 }],
+            toolCalls: [{ name: 'history', argument: 'search · 「灭蛾」', result: '3 条命中' }],
             toolCallsTruncated: 4,
         },
         []
@@ -182,14 +182,14 @@ results.push(await runCase('the plan measures the whole block', async () => {
     expect(toolLogPlan(undefined, []) === 'none', 'no tools, no block');
     expect(toolLogPlan({ toolUsage: [{ name: 'web_search', count: 1 }] }, []) === 'fits', 'a small block fits');
     const overflow = toolLogPlan(
-        { toolUsage: [{ name: 'read_history', count: 160 }], toolCalls: overflowingCalls() },
+        { toolUsage: [{ name: 'history', count: 160 }], toolCalls: overflowingCalls() },
         []
     );
     expect(overflow === 'overflows', `a long block overflows (got ${overflow})`);
 
     // The document and its plan agree with the rendered section
     const parts = buildToolRecordParts(
-        { toolUsage: [{ name: 'read_history', count: 160 }], toolCalls: overflowingCalls() },
+        { toolUsage: [{ name: 'history', count: 160 }], toolCalls: overflowingCalls() },
         []
     );
     expect(parts.tools !== null && parts.document.callLines.length === 160, 'the document keeps every call');
@@ -200,7 +200,7 @@ results.push(await runCase('classic: a block that does not fit the answer tail m
     const chunks = buildFinalMessages({
         text,
         agentStats: {
-            toolUsage: [{ name: 'search_history', count: 10 }],
+            toolUsage: [{ name: 'history', count: 10 }],
             toolCalls: tenCalls(),
         },
     });
@@ -208,7 +208,7 @@ results.push(await runCase('classic: a block that does not fit the answer tail m
     expect(!chunks[0]?.text.includes('Tools'), 'the answer message carries no block');
     const tools = chunks[1]?.text ?? '';
     expect(tools.startsWith('Tools\n'), `the second message starts with the block (got ${JSON.stringify(tools.slice(0, 20))})`);
-    expect(tools.includes('10. search_history: 「灭蛾 方法 10」 → 12 条命中'), 'the whole block is on it');
+    expect(tools.includes('10. history: search · 「灭蛾 方法 10」 → 12 条命中'), 'the whole block is on it');
     expect(
         (chunks[1]?.entities ?? []).some((entity) => entity.type === 'expandable_blockquote'),
         'and it is still one collapsed blockquote'
@@ -219,7 +219,7 @@ results.push(await runCase('classic: an overflowing block folds into the link me
     const chunks = buildFinalMessages({
         text: '正文',
         agentStats: {
-            toolUsage: [{ name: 'read_history', count: 160 }],
+            toolUsage: [{ name: 'history', count: 160 }],
             toolCalls: overflowingCalls(),
         },
         toolsLink: TOOL_LOG_REF,
@@ -237,7 +237,7 @@ results.push(await runCase('classic: an overflowing block folds into the link me
         `the last message is the link (got ${JSON.stringify(link?.text.slice(0, 30))})`
     );
     expect(
-        link?.text.includes('tool usage: read_history x160'),
+        link?.text.includes('tool usage: history x160'),
         `the usage front line rides under it (got ${JSON.stringify(link?.text)})`
     );
     expect(link?.linkPreviewOptions?.url === TOOL_LOG_REF.url, 'its card points at the page');
@@ -252,17 +252,17 @@ results.push(await runCase('classic: an overflowing block folds into the link me
 results.push(await runCase('the link message renders the usage line verbatim', async () => {
     const parts = buildToolRecordParts(
         {
-            toolUsage: [{ name: 'search_history', count: 2, failed: 1 }],
+            toolUsage: [{ name: 'history', count: 2, failed: 1 }],
             toolCalls: [
-                { name: 'search_history', argument: '「灭蛾」', result: '3 条命中' },
-                { name: 'search_history', argument: '「衣蛾」', result: '查询语法有误', failed: true },
+                { name: 'history', argument: 'search · 「灭蛾」', result: '3 条命中' },
+                { name: 'history', argument: 'search · 「衣蛾」', result: '查询语法有误', failed: true },
             ],
         },
         []
     );
     const message = renderToolLogLinkMessage(TOOL_LOG_REF, parts.document);
     expect(
-        message.text === `${TOOL_LOG_LINK_LABEL}\ntool usage: search_history x2（1 次失败）`,
+        message.text === `${TOOL_LOG_LINK_LABEL}\ntool usage: history x2（1 次失败）`,
         `label then usage line (got ${JSON.stringify(message.text)})`
     );
     expect(
@@ -276,7 +276,7 @@ results.push(await runCase('rich: a folded block leaves the body and returns as 
     const version = versionOf({
         groundingData: [legacyStep()],
         agentStats: {
-            toolUsage: [{ name: 'read_history', count: 160 }],
+            toolUsage: [{ name: 'history', count: 160 }],
             toolCalls: overflowingCalls(),
         },
     });
@@ -301,17 +301,17 @@ results.push(await runCase('rich: a folded block leaves the body and returns as 
 results.push(await runCase('classic: an hN ref becomes a text_link to its archived message', async () => {
     const refUrl = 'https://t.me/c/1415974153/1123456';
     const agentStats = {
-        toolUsage: [{ name: 'read_history', count: 2 }],
+        toolUsage: [{ name: 'history', count: 2 }],
         toolCalls: [
             {
-                name: 'read_history',
+                name: 'history',
                 argument: 'around h45 · 10 分钟',
                 result: '39 条消息',
                 links: [{ text: 'h45', url: refUrl }],
             },
             {
-                name: 'read_history',
-                argument: 'h45、h46',
+                name: 'history',
+                argument: 'read · h45、h46',
                 result: '2 条全文',
                 links: [
                     { text: 'h45', url: refUrl },
@@ -388,7 +388,7 @@ results.push(await runCase('rich: the body keeps the Sources block when Tools fo
         googleSearch: buildGoogleSearchDocument([]),
         groundingData: [legacyStep()],
         agentStats: {
-            toolUsage: [{ name: 'read_history', count: 2 }],
+            toolUsage: [{ name: 'history', count: 2 }],
             toolCalls: overflowingCalls().slice(0, 2),
         },
         wasStoppedByUser: false,

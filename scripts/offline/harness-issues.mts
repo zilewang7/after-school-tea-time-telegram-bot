@@ -13,7 +13,7 @@ await setupOfflineDb();
 const { createHarnessIssue, listHarnessIssues, clearHarnessIssues } = await import(
     '../../src/services/harness-issue-service.js'
 );
-const { createCreateHarnessIssueTool, createListHarnessIssuesTool } = await import(
+const { createHarnessIssueTool } = await import(
     '../../src/reply/tools/harness-issue-tool.js'
 );
 const { createHarnessIssueState, MAX_HARNESS_ISSUES_PER_REPLY } = await import(
@@ -21,9 +21,15 @@ const { createHarnessIssueState, MAX_HARNESS_ISSUES_PER_REPLY } = await import(
 );
 const { HarnessIssue } = await import('../../src/db/harnessIssueDTO.js');
 const { readToolConfig } = await import('../../src/config/tool-config.js');
+const { HARNESS_ISSUE_TOOL_NAME, isTimeFreeToolName } = await import('../../src/reply/tools/tool-names.js');
 
 const signal = new AbortController().signal;
 const call = (handler: ToolHandler, args: Readonly<Record<string, unknown>>) => handler.execute(args, signal);
+const makeTool = () =>
+    createHarnessIssueTool({
+        state: createHarnessIssueState(),
+        chatId: -100123,
+    });
 
 const cases: { name: string; body: () => Promise<void> }[] = [
     {
@@ -82,20 +88,17 @@ const cases: { name: string; body: () => Promise<void> }[] = [
         },
     },
     {
-        name: 'the create tool rejects malformed or oversized input without writing',
+        name: 'the create action rejects malformed or oversized input without writing',
         body: async () => {
             await clearHarnessIssues();
-            const tool = createCreateHarnessIssueTool({
-                state: createHarnessIssueState(),
-                chatId: -100123,
-            });
-            const noTitle = await call(tool, { body: '正文', kind: 'bug' });
+            const tool = makeTool();
+            const noTitle = await call(tool, { action: 'create', body: '正文', kind: 'bug' });
             expect(noTitle.isError, 'a missing title is rejected');
-            const badKind = await call(tool, { title: '标题', body: '正文', kind: 'weird' });
+            const badKind = await call(tool, { action: 'create', title: '标题', body: '正文', kind: 'weird' });
             expect(badKind.isError && badKind.content.includes('bug'), 'an unknown kind is rejected');
-            const longTitle = await call(tool, { title: '长'.repeat(201), body: '正文', kind: 'bug' });
+            const longTitle = await call(tool, { action: 'create', title: '长'.repeat(201), body: '正文', kind: 'bug' });
             expect(longTitle.isError && longTitle.content.includes('200'), 'an over-long title is rejected');
-            const longBody = await call(tool, { title: '标题', body: '长'.repeat(4001), kind: 'bug' });
+            const longBody = await call(tool, { action: 'create', title: '标题', body: '长'.repeat(4001), kind: 'bug' });
             expect(longBody.isError && longBody.content.includes('4000'), 'an over-long body is rejected');
             expect((await listHarnessIssues({ status: 'all' })).records.length === 0, 'nothing was written');
         },
@@ -104,19 +107,21 @@ const cases: { name: string; body: () => Promise<void> }[] = [
         name: 'one reply records at most three issues',
         body: async () => {
             await clearHarnessIssues();
-            const tool = createCreateHarnessIssueTool({
-                state: createHarnessIssueState(),
-                chatId: -100123,
-            });
+            const tool = makeTool();
             for (let index = 0; index < MAX_HARNESS_ISSUES_PER_REPLY; index += 1) {
                 const result = await call(tool, {
+                    action: 'create',
                     title: `第 ${index + 1} 条`,
                     body: '正文',
                     kind: 'bug',
                 });
                 expect(!result.isError, `issue ${index + 1} is accepted`);
+                expect(
+                    result.trace?.argument?.startsWith('create · ') === true,
+                    `create trace prefixes with "create · " (got ${result.trace?.argument})`
+                );
             }
-            const fourth = await call(tool, { title: '第 4 条', body: '正文', kind: 'bug' });
+            const fourth = await call(tool, { action: 'create', title: '第 4 条', body: '正文', kind: 'bug' });
             expect(
                 fourth.isError && fourth.content.includes('3 条'),
                 `the fourth is refused (got ${fourth.content})`
@@ -125,7 +130,7 @@ const cases: { name: string; body: () => Promise<void> }[] = [
         },
     },
     {
-        name: 'the list tool renders id, status and kind',
+        name: 'the list action renders id, status and kind',
         body: async () => {
             await clearHarnessIssues();
             const created = await createHarnessIssue({
@@ -134,14 +139,18 @@ const cases: { name: string; body: () => Promise<void> }[] = [
                 kind: 'improvement',
                 severity: 'high',
             });
-            const tool = createListHarnessIssuesTool({ chatId: -100123 });
-            const result = await call(tool, { status: 'open' });
+            const tool = makeTool();
+            const result = await call(tool, { action: 'list', status: 'open' });
             expect(!result.isError, 'the list call succeeds');
+            expect(
+                result.trace?.argument?.startsWith('list · ') === true,
+                `list trace prefixes with "list · " (got ${result.trace?.argument})`
+            );
             expect(
                 result.content.includes(`#${created.id} [open][improvement][high]`),
                 `the row names id, status, kind and severity (got ${result.content})`
             );
-            const empty = await call(tool, { status: 'open', query: '没有这个关键词' });
+            const empty = await call(tool, { action: 'list', status: 'open', query: '没有这个关键词' });
             expect(empty.content.includes('没有匹配的 issue'), 'an empty result says so');
         },
     },
@@ -149,9 +158,9 @@ const cases: { name: string; body: () => Promise<void> }[] = [
         name: 'the list reports whole-list counts so an empty answer needs no second call',
         body: async () => {
             await clearHarnessIssues();
-            const tool = createListHarnessIssuesTool({ chatId: -100123 });
+            const tool = makeTool();
 
-            const empty = await call(tool, { status: 'open' });
+            const empty = await call(tool, { action: 'list', status: 'open' });
             expect(
                 empty.content.includes('没有匹配的 issue') &&
                     empty.content.includes('全部 0 条') &&
@@ -163,7 +172,7 @@ const cases: { name: string; body: () => Promise<void> }[] = [
             await createHarnessIssue({ title: '乙', body: '正文乙', kind: 'feature' });
             await HarnessIssue.update({ status: 'fixed' }, { where: { id: first.id } });
 
-            const openView = await call(tool, { status: 'open' });
+            const openView = await call(tool, { action: 'list', status: 'open' });
             expect(
                 openView.content.includes('共 1 条') &&
                     openView.content.includes('全部 2 条') &&
@@ -172,11 +181,29 @@ const cases: { name: string; body: () => Promise<void> }[] = [
                 `the open view still counts the closed one (got ${openView.content})`
             );
 
-            const miss = await call(tool, { status: 'open', query: '没有这个关键词' });
+            const miss = await call(tool, { action: 'list', status: 'open', query: '没有这个关键词' });
             expect(
                 miss.content.includes('没有匹配的 issue') && miss.content.includes('全部 2 条'),
                 `a filtered miss still reports the whole list (got ${miss.content})`
             );
+        },
+    },
+    {
+        name: 'merged harness_issue validates action, resolves dynamic statusText, and references harness-reporting',
+        body: async () => {
+            const tool = makeTool();
+            expect(tool.definition.name === HARNESS_ISSUE_TOOL_NAME, 'tool name is harness_issue');
+            expect(tool.definition.description.includes('harness-reporting'), 'description points to harness-reporting skill');
+            expect(typeof tool.statusText === 'function', 'statusText is a dynamic function');
+            if (typeof tool.statusText === 'function') {
+                expect(tool.statusText({ action: 'list' }) === '🔍 正在查看 harness issue…', 'list statusText matches');
+                expect(tool.statusText({ action: 'create' }) === '📝 正在记录 harness issue…', 'create statusText matches');
+                expect(tool.statusText({ action: 'other' }) === undefined, 'unknown action returns undefined');
+            }
+            const missingAction = await call(tool, {});
+            expect(missingAction.isError && missingAction.content.includes('"list" 或 "create"'), 'missing action is refused');
+            const badAction = await call(tool, { action: 'delete' });
+            expect(badAction.isError && badAction.content.includes('"list" 或 "create"'), 'invalid action is refused');
         },
     },
     {
@@ -192,6 +219,7 @@ const cases: { name: string; body: () => Promise<void> }[] = [
     {
         name: 'recording an issue does not charge the reply tool budget',
         body: async () => {
+            expect(isTimeFreeToolName(HARNESS_ISSUE_TOOL_NAME), 'harness_issue is time-free');
             const { toolTimeSpentMs } = await import('../../src/ai/tools/tool-round.js');
             const executed = (name: string, durationMs: number) => ({
                 call: { id: name, name, argumentsJson: '{}' },
@@ -199,22 +227,16 @@ const cases: { name: string; body: () => Promise<void> }[] = [
                 durationMs,
             });
             const charged = toolTimeSpentMs([
-                executed('search_history', 1200),
-                executed('list_harness_issues', 300),
-                executed('create_harness_issue', 400),
-                executed('get_ui_guide', 500),
+                executed('history', 1200),
+                executed('harness_issue', 700),
+                executed('load_skill', 500),
                 executed('send_file', 100),
                 executed('send_widget', 900),
-                executed('workspace_write', 700),
-                executed('workspace_read', 200),
-                executed('workspace_list', 100),
-                executed('workspace_find', 300),
-                executed('workspace_edit', 600),
-                executed('workspace_copy', 300),
-                executed('workspace_delete', 100),
-                executed('workspace_preview', 800),
+                executed('workspace', 3100),
+                executed('leave_handoff', 200),
+                executed('react_to_message', 50),
             ]);
-            expect(charged === 1200, `only search_history is charged (got ${charged}ms)`);
+            expect(charged === 1200, `only history is charged (got ${charged}ms)`);
         },
     },
 ];

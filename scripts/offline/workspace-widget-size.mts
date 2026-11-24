@@ -62,7 +62,8 @@ results.push(
 
         const html = '<div class="card"><b>你好</b></div>';
         const size = measureWidgetHtml(html);
-        const written = await callTool(turn.tools, 'workspace_write', {
+        const written = await callTool(turn.tools, 'workspace', {
+            action: 'write',
             path: 'widgets/card.html',
             content: html,
         });
@@ -72,7 +73,8 @@ results.push(
             `the write reports the compressed size (got ${written.content})`
         );
 
-        const edited = await callTool(turn.tools, 'workspace_edit', {
+        const edited = await callTool(turn.tools, 'workspace', {
+            action: 'edit',
             path: 'widgets/card.html',
             old_string: '你好',
             new_string: '再见',
@@ -80,7 +82,7 @@ results.push(
         expect(!edited.isError, `the edit succeeds (${edited.content})`);
         expect(edited.content.includes('zlib9 '), 'the edit reports the compressed size too');
 
-        const listed = await callTool(turn.tools, 'workspace_list', {});
+        const listed = await callTool(turn.tools, 'workspace', { action: 'list' });
         expect(listed.content.includes('HTML 草稿按 widget 计'), 'the list states the widget limits');
         expect(listed.content.includes('zlib9 '), 'the list shows the compressed size');
     })
@@ -91,7 +93,8 @@ results.push(
         const turn = createReplyTools('gemini-4-argon', contextOf(), null, 'full');
         const first = '<div class="a">一</div>';
         const second = '<div class="b">二</div>';
-        const written = await callTool(turn.tools, 'workspace_write', {
+        const written = await callTool(turn.tools, 'workspace', {
+            action: 'write',
             files: [
                 { path: 'widgets/batch-a.html', content: first },
                 { path: 'widgets/batch-b.html', content: second },
@@ -113,7 +116,8 @@ results.push(
             'the second draft line carries its compressed size'
         );
 
-        const edited = await callTool(turn.tools, 'workspace_edit', {
+        const edited = await callTool(turn.tools, 'workspace', {
+            action: 'edit',
             edits: [
                 { path: 'widgets/batch-a.html', old_string: '一', new_string: '三' },
                 { path: 'widgets/batch-b.html', old_string: '二', new_string: '四' },
