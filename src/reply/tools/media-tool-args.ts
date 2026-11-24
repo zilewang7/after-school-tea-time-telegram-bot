@@ -5,6 +5,7 @@
  * Optional fields sent as null count as absent: models fill unused optional
  * fields that way.
  */
+import type { ReverseSearchEngineChoice } from '../../services/image-reverse-search-types.js';
 import { MAX_SEARCH_CANDIDATES } from './reply-media-state.js';
 
 export type Field<T> =
@@ -704,11 +705,44 @@ export interface SearchByImageArgs {
     readonly image: number | undefined;
     readonly imageId: string | undefined;
     readonly searchId: string | undefined;
+    /** auto (default): Yandex, plus SauceNAO when the picture looks drawn or weak */
+    readonly engine: ReverseSearchEngineChoice;
+    /** true keeps only SauceNAO's Known Safe gallery results */
+    readonly safe: boolean;
 }
 
 export type ParsedSearchByImageArgs =
     | { readonly ok: true; readonly args: SearchByImageArgs }
     | { readonly ok: false; readonly error: string };
+
+const parseReverseSearchEngine = (value: unknown): Field<ReverseSearchEngineChoice> => {
+    if (isAbsent(value)) return valid('auto');
+    if (typeof value !== 'string') {
+        return invalid("engine 只能是 'auto'（默认）、'yandex'、'saucenao' 或 'tracemoe'");
+    }
+    const engine = value.trim();
+    // A blank optional field counts as absent, like null: models fill them that way
+    if (engine === '') return valid('auto');
+    if (engine === 'auto' || engine === 'yandex' || engine === 'saucenao' || engine === 'tracemoe') {
+        return valid(engine);
+    }
+    return invalid(
+        "engine 只能是 'auto'（默认，Yandex + 二次元补充 SauceNAO）、'yandex'、'saucenao' 或 'tracemoe'"
+    );
+};
+
+const parseSafeOnly = (value: unknown): Field<boolean> => {
+    if (isAbsent(value) || value === '') return valid(false);
+    if (typeof value !== 'boolean') return invalid('safe 只能是 true 或 false');
+    return valid(value);
+};
+
+const parseSearchByImageOptions = (
+    args: Readonly<Record<string, unknown>>
+): { readonly engine: Field<ReverseSearchEngineChoice>; readonly safe: Field<boolean> } => ({
+    engine: parseReverseSearchEngine(args.engine),
+    safe: parseSafeOnly(args.safe),
+});
 
 /** One picture source, and only one: a context message, a read image or a search candidate */
 export const parseSearchByImageArgs = (
@@ -718,8 +752,9 @@ export const parseSearchByImageArgs = (
     const image = parseImageIndex(args.image);
     const imageId = parseOptionalText(args.image_id, 'image_id', 16);
     const searchId = parseOptionalText(args.search_id, 'search_id', 16);
+    const { engine, safe } = parseSearchByImageOptions(args);
 
-    const problems = problemsOf([message, image, imageId, searchId]);
+    const problems = problemsOf([message, image, imageId, searchId, engine, safe]);
     if (problems.length > 0) {
         return { ok: false, error: `参数有误：\n${problems.map((problem) => `- ${problem}`).join('\n')}` };
     }
@@ -748,6 +783,8 @@ export const parseSearchByImageArgs = (
             image: messageNumber > 0 && !isAbsent(args.image) && image.ok ? image.value : undefined,
             imageId: fetchedId === '' ? undefined : fetchedId,
             searchId: searchedId === '' ? undefined : searchedId,
+            engine: engine.ok ? engine.value : 'auto',
+            safe: safe.ok ? safe.value : false,
         },
     };
 };

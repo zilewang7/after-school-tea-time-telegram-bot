@@ -1,40 +1,21 @@
 /**
- * Yandex's reverse-image result page, reduced to the four lists the tool shows.
+ * Yandex's reverse-image result page, reduced to the lists the tool shows.
  *
  * The page is server-rendered: the tags, the other sizes, the similar pictures
  * and the pages holding the image each live in a stable `Cbir*` section, so no
  * DOM library or JavaScript execution is needed. Everything here is pure
  * string work, which is also what makes it testable against saved pages.
+ *
+ * A site entry also carries the picture that page holds (`CbirSites-ItemThumb`)
+ * and is marked `[同图]` when that picture appears in the "other sizes" list (by
+ * URL or by dimensions); otherwise it stays an unverified source page.
  */
-
-export interface ReverseSearchSite {
-    readonly title: string;
-    readonly url: string;
-    readonly domain: string;
-    readonly description: string;
-}
-
-export interface ReverseSearchSize {
-    readonly url: string;
-    readonly width: number;
-    readonly height: number;
-}
-
-export interface ReverseSearchSimilar {
-    readonly title: string;
-    readonly imageUrl: string;
-}
-
-export interface ParsedReverseSearch {
-    /** Pages Yandex believes contain this picture */
-    readonly sites: readonly ReverseSearchSite[];
-    /** Same or near-identical picture at other sizes */
-    readonly sizes: readonly ReverseSearchSize[];
-    /** Pictures Yandex considers similar */
-    readonly similar: readonly ReverseSearchSimilar[];
-    /** Yandex's recognition tags (Russian) */
-    readonly tags: readonly string[];
-}
+import type {
+    ParsedReverseSearch,
+    ReverseSearchSite,
+    ReverseSearchSimilar,
+    ReverseSearchSize,
+} from './image-reverse-search-types.js';
 
 /** More than the tool ever shows; keeps a malformed page from blowing up */
 const MAX_ITEMS = 40;
@@ -127,7 +108,55 @@ const blockOf = (block: string, terminator: string): string => {
     return end < 0 ? block : block.slice(0, end);
 };
 
-const parseSites = (html: string): ReverseSearchSite[] => {
+/** host + pathname, lowercased: the same file served through different query strings still matches */
+const fileKeyOf = (rawUrl: string): string | null => {
+    try {
+        const url = new URL(rawUrl);
+        return `${url.hostname.replace(/^www\./, '').toLowerCase()}${url.pathname.toLowerCase()}`;
+    } catch {
+        return null;
+    }
+};
+
+/** The page's own picture matches a same-size copy: URL or exact dimensions */
+const holdsSameImage = (site: ReverseSearchSite, sizes: readonly ReverseSearchSize[]): boolean => {
+    const siteKey = site.imageUrl === undefined ? null : fileKeyOf(site.imageUrl);
+    if (site.imageUrl !== undefined) {
+        for (const size of sizes) {
+            const sizeKey = fileKeyOf(size.url);
+            if (siteKey !== null && sizeKey !== null) {
+                if (siteKey === sizeKey) return true;
+                continue;
+            }
+            // Unparseable URLs fall back to the raw string
+            if (site.imageUrl === size.url) return true;
+        }
+    }
+    if (site.width !== undefined && site.height !== undefined) {
+        return sizes.some((size) => size.width === site.width && size.height === site.height);
+    }
+    return false;
+};
+
+/** The picture a source page holds, with its dimensions when the page states them */
+const thumbOf = (block: string): { readonly imageUrl?: string; readonly width?: number; readonly height?: number } => {
+    const anchor = /CbirSites-ItemThumb[^>]*>[\s\S]*?<a\b([^>]*)>/.exec(block);
+    const href = anchor === null ? undefined : attrOf(anchor[1] ?? '', 'href');
+    const decoded = href === undefined ? undefined : cleanUrl(decodeHtmlEntities(href));
+    const usable = decoded !== undefined && isHttpUrl(decoded) ? decoded : undefined;
+    const imagePart: { readonly imageUrl?: string } = usable === undefined ? {} : { imageUrl: usable };
+
+    const mark = /Thumb-Mark[^>]*>([\s\S]*?)<\/div>/.exec(block);
+    const dimension = mark === null ? null : DIMENSION_PATTERN.exec(stripHtml(mark[1] ?? ''));
+    if (dimension === null) return imagePart;
+
+    const width = Number.parseInt(dimension[1] ?? '', 10);
+    const height = Number.parseInt(dimension[2] ?? '', 10);
+    if (!Number.isInteger(width) || !Number.isInteger(height) || width <= 0 || height <= 0) return imagePart;
+    return { ...imagePart, width, height };
+};
+
+const parseSites = (html: string, sizes: readonly ReverseSearchSize[]): ReverseSearchSite[] => {
     const section = sectionOf(html, 'CbirSitesList');
     if (section === '') return [];
 
@@ -148,13 +177,18 @@ const parseSites = (html: string): ReverseSearchSite[] => {
         const descriptionMatch = /CbirSites-ItemDescription[^>]*>([\s\S]*?)<\/div>/.exec(block);
         const title = stripHtml(titleMatch[2] ?? '');
         const domain = domainMatch ? stripHtml(domainMatch[1] ?? '') : '';
+        const thumb = thumbOf(block);
 
-        sites.push({
+        const site: ReverseSearchSite = {
+            engine: 'yandex',
+            match: 'unverified',
             title: title === '' ? domain || url : title,
             url,
             domain: domain === '' ? domainOf(url) : domain,
             description: descriptionMatch ? stripHtml(descriptionMatch[1] ?? '') : '',
-        });
+            ...thumb,
+        };
+        sites.push({ ...site, match: holdsSameImage(site, sizes) ? 'exact' : 'unverified' });
         if (sites.length >= MAX_ITEMS) break;
     }
     return sites;
@@ -245,9 +279,10 @@ const MARKERS = ['CbirTags', 'CbirOtherSizes', 'CbirSimilarList', 'CbirSitesList
 /** Null when this is not a result page at all (captcha, error page, redesign) */
 export const parseReverseSearchHtml = (html: string): ParsedReverseSearch | null => {
     if (!MARKERS.some((marker) => html.includes(marker))) return null;
+    const sizes = parseSizes(html);
     return {
-        sites: parseSites(html),
-        sizes: parseSizes(html),
+        sites: parseSites(html, sizes),
+        sizes,
         similar: parseSimilar(html),
         tags: parseTags(html),
     };

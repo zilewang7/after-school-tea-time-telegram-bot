@@ -572,8 +572,13 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
                     return {
                         ok: true as const,
                         cached: false,
-                        result: { sites: [], sizes: [], similar: [], tags: [] },
-                        stats: { elapsedMs: 1, uploadMs: 0, pageMs: 0 },
+                        result: {
+                            sites: [],
+                            sizes: [],
+                            similar: [],
+                            tags: [],
+                            engines: [{ engine: 'yandex' as const, status: 'ok' as const, cached: false, elapsedMs: 1 }],
+                        },
                     };
                 },
                 loadMessageImages: async () => [],

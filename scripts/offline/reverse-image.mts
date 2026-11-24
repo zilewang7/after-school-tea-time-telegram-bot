@@ -19,7 +19,7 @@ import type { ReplyToolContext } from '../../src/reply/tools/reply-tool-context.
 import type { ImageFetch } from '../../src/reply/tools/image-source-download.js';
 import type { AnimationFrameLoader } from '../../src/reply/tools/animation-frame.js';
 import type { MessageImageLoader } from '../../src/reply/tools/image-references.js';
-import type { ParsedReverseSearch } from '../../src/services/image-reverse-search-parse.js';
+import type { ParsedReverseSearch, ReverseSearchResult } from '../../src/services/image-reverse-search-types.js';
 import type { ReverseSearchOptions, ReverseSearchOutcome } from '../../src/services/image-reverse-search-service.js';
 
 // The platforms build their clients at import time; nothing here sends a request
@@ -49,6 +49,8 @@ const FIXTURE = readFileSync(new URL('./fixtures/yandex-reverse.html', import.me
 const RESULT: ParsedReverseSearch = {
     sites: [
         {
+            engine: 'yandex',
+            match: 'unverified',
             title: '来源一 & 标题',
             url: 'https://example.com/page-1',
             domain: 'example.com',
@@ -64,6 +66,9 @@ const RESULT: ParsedReverseSearch = {
 };
 
 const EMPTY_RESULT: ParsedReverseSearch = { sites: [], sizes: [], similar: [], tags: [] };
+/** The tool text reads the engine runs to say which engine answered and how long it took */
+const YANDEX_RUN = [{ engine: 'yandex' as const, status: 'ok' as const, cached: false, elapsedMs: 3200 }];
+const withRuns = (result: ParsedReverseSearch): ReverseSearchResult => ({ ...result, engines: YANDEX_RUN });
 
 const entryOf = (data: Buffer, number = 1): ContextIndexEntry => ({
     number,
@@ -114,9 +119,8 @@ const searchStub = (
             if (options.failure !== undefined) return options.failure;
             return {
                 ok: true,
-                result,
+                result: withRuns(result),
                 cached: options.cached === true,
-                stats: { uploadMs: 2000, pageMs: 1200, elapsedMs: 3200 },
             };
         },
     };
@@ -167,6 +171,10 @@ cases.push(
         expect(parsed.sites[0]?.domain === 'example.com', 'the domain is read off the favicon anchor');
         expect(parsed.sites[0]?.description === "描述一 'quoted'", 'the description is decoded');
         expect(parsed.sites[1]?.domain === 'example.org', 'the second domain is read');
+        expect(parsed.sites[0]?.engine === 'yandex', 'a site names its engine');
+        expect(parsed.sites[0]?.imageUrl === 'https://cdn.example.com/original.jpg', 'the thumb picture is read');
+        expect(parsed.sites[0]?.match === 'exact', 'a thumb URL found in the other sizes is [同图]');
+        expect(parsed.sites[1]?.match === 'exact', 'and so is the second page, same thumb in the fixture');
 
         expect(parsed.sizes.length === 2, `duplicate sizes collapse (got ${parsed.sizes.length})`);
         expect(parsed.sizes[0]?.width === 5800 && parsed.sizes[0]?.height === 4350, 'the largest size comes first');
@@ -245,9 +253,13 @@ cases.push(
         expect(stub.calls[0]?.bytes.equals(PNG), 'the message bytes are sent');
         expect(stub.calls[0]?.mimeType === 'image/png', 'the sniffed mime is sent');
 
-        expect(result.content.includes('以图搜图（Yandex，3.2s）'), `the header names the source and time (${result.content})`);
+        expect(
+            result.content.includes('以图搜图（Yandex 3.2s）'),
+            `the header names the engines and their time (${result.content})`
+        );
         expect(result.content.includes('来源页 1 条，其他尺寸 2 条，相似图 1 条'), 'the counts are shown');
         expect(result.content.includes('https://example.com/page-1'), 'the source page is shown');
+        expect(result.content.includes('[未验证] 来源一 & 标题'), 'a Yandex page without same-image evidence says so');
         expect(result.content.includes('5800×4350 — s1'), 'the largest size gets s1');
         expect(result.content.includes('相似图一 — s3'), 'the similar picture gets s3');
         expect(result.content.includes('собака'), 'the tags are shown');
@@ -441,7 +453,7 @@ cases.push(
         const emptyResult = await empty.tool.execute({ message: 1 }, new AbortController().signal);
         expect(!emptyResult.isError, 'an empty result is not a tool error');
         expect(
-            emptyResult.content.includes('没有找到来源页、其他尺寸或相似图。'),
+            emptyResult.content.includes('没有找到精确来源、来源页、其他尺寸或相似图。'),
             `the empty wording is factual (${emptyResult.content})`
         );
         expect(empty.state.candidates.size === 0, 'no candidates are registered');

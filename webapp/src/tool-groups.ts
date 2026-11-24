@@ -42,7 +42,7 @@ const TOOL_GROUP_HINTS: Partial<Record<ToolGroupKey, string>> = {
     sms: '开启后本聊天成员可让 bot 给机主发短信',
     image: '开启后本聊天可以画图并发送，会产生模型费用',
     imageSearch: '开启后本聊天可以搜索网络图片并发送',
-    imageReverseSearch: '开启后本聊天可以用图片搜索来源（Yandex）',
+    imageReverseSearch: '开启后本聊天可以用图片搜索来源（Yandex，二次元补充 SauceNAO）',
     sticker: '开启后本聊天可以发贴纸包里的贴纸',
     file: '开启后本聊天可以把长文本写成文件发出',
     history: '开启后本聊天可以检索 luoxu 的历史归档',

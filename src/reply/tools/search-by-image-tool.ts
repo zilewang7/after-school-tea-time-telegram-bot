@@ -1,10 +1,13 @@
 /**
  * search_by_image: one picture from the conversation (or from an earlier
- * search/read) goes to Yandex, and the four lists come back as text.
+ * search/read) goes to the engines, and the merged lists come back as text.
  *
- * The pictures in the answer are registered as ordinary `sN` candidates, so
- * send_image / fetch_image can use a larger version or a similar picture
- * without a second download path. The tool itself sends nothing.
+ * Yandex is the primary channel (general pages, other sizes, similar pictures);
+ * SauceNAO joins it for anime/illustrations or when Yandex finds nothing, and
+ * trace.moe only when the call names it. The pictures in the answer are
+ * registered as ordinary `sN` candidates, so send_image / fetch_image can use a
+ * larger version or a similar picture without a second download path. The tool
+ * itself sends nothing.
  */
 import { sniffMediaMime, type SniffedMediaMime } from '../../ai/image-generation/image-mime.js';
 import type { ToolHandler } from '../../ai/tools/tool-types.js';
@@ -19,7 +22,7 @@ import type {
     ParsedReverseSearch,
     ReverseSearchSimilar,
     ReverseSearchSize,
-} from '../../services/image-reverse-search-parse.js';
+} from '../../services/image-reverse-search-types.js';
 import { loadMessageImages } from '../commands/reference-images.js';
 import { loadAnimationFrame, type AnimationFrameLoader } from './animation-frame.js';
 import { imageToolError } from './image-tool-result.js';
@@ -41,7 +44,9 @@ import { SEARCH_BY_IMAGE_TOOL_NAME } from './tool-names.js';
 import { traceParts } from './tool-trace.js';
 
 const DESCRIPTION =
-    '以图搜图：将图片上传至 Yandex 图片搜索，返回包含该图的网页、其他尺寸、相似图与识别标签。' +
+    '以图搜图：将图片上传至 Yandex 图片搜索，返回包含该图的网页、其他尺寸、相似图与识别标签；' +
+    '二次元/插画会补充 SauceNAO 图库（Pixiv、X、Danbooru 等出处，带相似度百分比），也可用 engine 指定引擎。' +
+    'SauceNAO 结果可能含 R-18 标题与链接，默认不过滤；传 safe=true 只保留 Known Safe 图库结果。' +
     '支持传入上下文消息图片（message / image）、已读取图片（image_id）或搜索候选（search_id）；' +
     '动图（GIF/动态贴纸）取首帧，单图上限 8MB。';
 
@@ -60,6 +65,18 @@ const INPUT_SCHEMA = {
         },
         image_id: { type: 'string', description: "fetch_image 读过的图编号，形如 'img1'" },
         search_id: { type: 'string', description: "search_images 的候选编号，形如 's3'" },
+        engine: {
+            type: 'string',
+            enum: ['auto', 'yandex', 'saucenao', 'tracemoe'],
+            description:
+                '引擎：auto 默认（Yandex 通用来源，二次元/插画补充 SauceNAO 图库）；' +
+                'yandex 只查通用来源；saucenao 只查二次元图库（Pixiv/X/Danbooru 等出处，返回相似度）；' +
+                'tracemoe 只查动画截帧出处（哪部番、第几集、时间点）',
+        },
+        safe: {
+            type: 'boolean',
+            description: 'SauceNAO 的 R-18 过滤：false（默认）不过滤；true 只保留 Known Safe 图库结果',
+        },
     },
 };
 
@@ -264,15 +281,21 @@ export const createSearchByImageTool = (options: SearchByImageToolOptions): Tool
                 bytes: resolved.image.data,
                 mimeType: resolved.image.mimeType,
                 signal: context.signal,
+                engine: args.args.engine,
+                safe: args.args.safe,
             });
             if (!outcome.ok) return imageToolError(outcome.error);
             if (!outcome.cached) state.reverseSearchCount += 1;
 
             const registered = registerResults(state, outcome.result);
+            const engineRuns = outcome.result.engines
+                .map((run) => `${run.engine}:${run.status}${run.cached ? '(cache)' : ''}`)
+                .join(',');
             console.log(
                 `[search-by-image] source=${resolved.label} cached=${outcome.cached} ` +
                     `sites=${outcome.result.sites.length} sizes=${registered.sizes.length} ` +
-                    `similar=${registered.similar.length} tags=${outcome.result.tags.length}`
+                    `similar=${registered.similar.length} tags=${outcome.result.tags.length} ` +
+                    `engines=${engineRuns}`
             );
 
             const totalResults =
@@ -283,7 +306,9 @@ export const createSearchByImageTool = (options: SearchByImageToolOptions): Tool
                     sizes: registered.sizes,
                     similar: registered.similar,
                     cached: outcome.cached,
-                    elapsedMs: outcome.stats.elapsedMs,
+                    safe:
+                        args.args.safe &&
+                        outcome.result.engines.some((run) => run.engine === 'saucenao' && run.status === 'ok'),
                 }),
                 isError: false,
                 images: [],
