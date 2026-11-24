@@ -47,6 +47,14 @@ export interface ContextMessage {
     /** Text recognized in this message's images (models that can't see them) */
     ocrText: string | null;
     /**
+     * Machine token of a non-text Telegram message type (poll, dice, a group
+     * service event, or 'unsupported'); NULL for ordinary content and for old
+     * rows. See src/db/message-kind.ts for the tokens and the mapping.
+     */
+    messageKind: string | null;
+    /** Model-readable one-line detail of `messageKind`; NULL when the type alone says it all */
+    messageDetail: string | null;
+    /**
      * When Telegram no longer has the message. Only a `[deleted]` marker is
      * added for it — the text, media and previews stay exactly as stored.
      * NULL/undefined means the deletion watcher has not proven it deleted.
@@ -89,6 +97,8 @@ export const toContextMessage = (msg: Message): ContextMessage => ({
     forwardFromId: msg.forwardFromId,
     viaBot: msg.viaBot,
     ocrText: msg.ocrText,
+    messageKind: msg.messageKind,
+    messageDetail: msg.messageDetail,
     deletedAt: msg.deletedAt,
     mediaOmitted: false,
 });
@@ -320,6 +330,8 @@ export const getContextMessage = async (
             forwardFromId: null,
             viaBot: null,
             ocrText: null,
+            messageKind: null,
+            messageDetail: null,
             deletedAt: null,
             mediaOmitted: false,
         };
@@ -349,6 +361,8 @@ export const getContextMessage = async (
             forwardFromId: null,
             viaBot: null,
             ocrText: null,
+            messageKind: null,
+            messageDetail: null,
             deletedAt: null,
             mediaOmitted: false,
         };

@@ -51,6 +51,10 @@ export const writeBotMessageRow = async (row: BotMessageRow): Promise<void> => {
         mediaHint: row.mediaHint ?? null,
         // A cached-media reference wins over `file` when a context reads the row
         fileUniqueId: row.fileUniqueId ?? null,
+        // The bot's own turns are never a Telegram message type: written whole,
+        // these two clear whatever an abnormal earlier write left there.
+        messageKind: null,
+        messageDetail: null,
     };
 
     const existing = await Message.findOne({ where: { chatId: row.chatId, messageId: row.messageId } });

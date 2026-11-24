@@ -43,6 +43,19 @@ export class Message extends Model<InferAttributes<Message>, InferCreationAttrib
   /** Text recognized in this message's images, for models that can't see them */
   declare ocrText: string | null;
   /**
+   * Machine token of a non-text message type (a poll, a dice roll, a group
+   * service event, or 'unsupported' for a type this build cannot read); NULL
+   * for ordinary text/media rows and for every row stored before the column
+   * existed. The mapping and its tokens live in ./message-kind.ts.
+   */
+  declare messageKind: string | null;
+  /**
+   * Model-readable single-line English phrase for `messageKind`, without
+   * brackets, e.g. `removed Bot helps bot from the group`; NULL when the kind
+   * alone says it all. Never backfilled for old rows.
+   */
+  declare messageDetail: string | null;
+  /**
    * When Telegram no longer has this message (deleted by its sender or an
    * admin). The Bot API never reports deletions, so this is written by the
    * luoxu deletion watcher; NULL means "not known to be deleted", which is
@@ -137,6 +150,16 @@ Message.init({
     defaultValue: null,
   },
   ocrText: {
+    type: DataTypes.TEXT,
+    allowNull: true,
+    defaultValue: null,
+  },
+  messageKind: {
+    type: DataTypes.STRING,
+    allowNull: true,
+    defaultValue: null,
+  },
+  messageDetail: {
     type: DataTypes.TEXT,
     allowNull: true,
     defaultValue: null,

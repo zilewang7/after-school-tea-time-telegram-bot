@@ -44,6 +44,7 @@ import { contextImagesOf, type ContextImage } from './context-images.js';
 import { dedupeContextMedia, type MediaDedupeInput } from './media-dedupe.js';
 import type { ContextIndex, ContextIndexEntry } from './context-index.js';
 import type { UnifiedMessage, UnifiedContentPart, ModelCapabilities } from '../ai/types.js';
+import { messageKindAnnotationOf, messageKindMediumLabelOf } from '../db/message-kind.js';
 
 // The side-effect-free half of buildContext, shared with the panel's tree view
 export {
@@ -71,6 +72,15 @@ const A2UI_SURFACE_TRUNCATED_MARK = '…（已截断）';
 
 /** What a reply to an excluded or unknown message reads as */
 const UNSEEN_REPLY_TARGET = '[replying to a message you cannot see]';
+
+/**
+ * What a user message with no content and no stored type reads as: a row from
+ * before the messageKind column, or a Telegram type this build does not read.
+ * Telegram cannot deliver a content-free message, so the fallback cannot hide
+ * real text.
+ */
+const UNSUPPORTED_MESSAGE_ANNOTATION =
+    '[unsupported Telegram message type — content was not stored]';
 
 const isSticker = (part: UnifiedContentPart): boolean =>
     Boolean(part.mediaKind && STICKER_KINDS.has(part.mediaKind));
@@ -120,7 +130,9 @@ const mediumLabelOf = (hint: string | null): string | undefined =>
  */
 const replyMediumOf = (msg: ContextMessage): string | undefined => {
     if (msg.fromBotSelf && bodyTextOf(msg)) return undefined;
-    return mediumLabelOf(msg.mediaHint);
+    // A non-text message (poll, service event, …) answers by its type when it
+    // has no media hint that names a medium
+    return mediumLabelOf(msg.mediaHint) ?? messageKindMediumLabelOf(msg.messageKind) ?? undefined;
 };
 
 /** Audio/visual media kinds present in the parts, for a type-specific nudge */
@@ -274,7 +286,7 @@ const renderReplyTarget = async (
     if (replyMsg && replyText) {
         return `[replying to ${replyMsg.userName}: "${oneLineExcerpt(replyText, REPLY_EXCERPT_CHARS)}"]`;
     }
-    const medium = replyMsg ? mediumLabelOf(replyMsg.mediaHint) : undefined;
+    const medium = replyMsg ? replyMediumOf(replyMsg) : undefined;
     if (replyMsg && medium) {
         return `[replying to ${replyMsg.userName}: ${medium}]`;
     }
@@ -362,7 +374,9 @@ const buildReplyAnnotations = async (
 
 /**
  * The square-bracket annotations of a user message's header, in header order:
- * deletion, forward origin, inline bot, reply context, attached media.
+ * deletion, forward origin, inline bot, reply context, message type
+ * (`[service: …]` / `[sent a poll: …]`), attached media, and the content-free
+ * fallback.
  *
  * `[deleted]` is only a marker: the message keeps its body, media, previews and
  * reply edges — the model is told that whoever it answers can no longer see
@@ -384,6 +398,14 @@ const headerAnnotationsOf = (
         annotations.push(`[via inline bot ${msg.viaBot}]`);
     }
     annotations.push(...replyAnnotations);
+    // The Telegram type of a message that carries no text of its own: a group
+    // event ([service: …]) or content the model cannot read as text (a poll,
+    // a dice roll, a contact card, …). Never in the body: the body means what
+    // the user wrote.
+    const kindAnnotation = messageKindAnnotationOf(msg.messageKind, msg.messageDetail);
+    if (kindAnnotation !== null) {
+        annotations.push(kindAnnotation);
+    }
     if (msg.mediaHint) {
         // A `/chat r` video is here for its words only; a failure hint already
         // says "you cannot see it" and must not collect a second suffix
@@ -394,6 +416,21 @@ const headerAnnotationsOf = (
         // failure hints already end with "you cannot see it" — don't double up
         const invisible = !mediaVisible && !hint.includes('you cannot see it');
         annotations.push(`[sent ${hint}${invisible ? ' — not visible to you' : ''}]`);
+    }
+    // Every user message says something about itself. A header with no body, no
+    // attachment and no /chat annotation is either a row stored before the kind
+    // column existed or a type this build cannot read; Telegram never sends a
+    // content-free message, so the fallback cannot swallow real content.
+    if (
+        !msg.fromBotSelf &&
+        kindAnnotation === null &&
+        !msg.chatCommand &&
+        !msg.mediaHint &&
+        !msg.file &&
+        !msg.fileUniqueId &&
+        bodyTextOf(msg) === ''
+    ) {
+        annotations.push(UNSUPPORTED_MESSAGE_ANNOTATION);
     }
     return annotations;
 };

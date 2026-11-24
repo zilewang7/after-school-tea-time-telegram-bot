@@ -30,7 +30,7 @@ export const buildFormatSection = (options: { includeOcrNote: boolean }): string
   - \`[forwarded from user/chat/channel 某某]\` — 转发消息及其来源
   - \`[via inline bot @某bot]\` — 通过 inline bot 发送的消息，内容来自该 bot 的结果（如贴图、GIF 等），非用户手打输入
   - \`[replying to #1 某某]\` — 回复上下文中第 1 条消息；
-    目标带媒体时在末尾注明介质，如 \`[replying to #1 某某 (a sticker)]\`、\`(a picture)\`、\`(a file)\`（不在上下文中时为 \`[replying to 某某: a sticker]\`）；你自己的回复由正文与附件两条消息组成，回复你的正文时不注明，它说的话就是被回复的内容；
+    目标带媒体时在末尾注明介质，如 \`[replying to #1 某某 (a sticker)]\`、\`(a picture)\`、\`(a file)\`（不在上下文中时为 \`[replying to 某某: a sticker]\`）；目标没有正文时改为类型，如 \`(a poll)\`、\`(a group event)\`；你自己的回复由正文与附件两条消息组成，回复你的正文时不注明，它说的话就是被回复的内容；
     \`[replying to your reply #5]\` 表示回复你自己的第 5 条消息；
     目标为媒体组中的单项时为 \`[replying to one of 某某's attached media]\`；
     被回复消息不在上下文中时退化为 \`[replying to 某某: "摘要…"]\` 或 \`[replying to a message you cannot see]\`
@@ -42,6 +42,16 @@ export const buildFormatSection = (options: { includeOcrNote: boolean }): string
   - \`[sent a picture]\`（或 video/sticker/audio…）— 消息附带的媒体；
     含 failed / too large / not visible 时表示该媒体对当前模型不可见；
     贴纸标注中的 \`pack emoji\` 仅为贴纸包元数据（常由 Telegram 自动分配，未必与画面相关）
+  - \`[sent a poll: "问题" — 3 options: 是 / 对的 / yes]\`（quiz / dice roll / location / venue / contact /
+    checklist / game / invoice / paid media / story / HTML widget 同形）— 消息附带的非文本内容，
+    冒号后是系统在收到时对该内容的英文转述（投票只保留创建时快照，票数与是否关闭不会更新；
+    清单勾选的后续变化会以新的 \`[service: …]\` 消息出现）。这些内容不是用户打的字，
+    但它们是用户发送的内容，可以据此回答
+  - \`[service: …]\` — 群里发生的系统事件（踢人/入群/改群名或群头像/置顶/话题/视频聊天/投票选项变化/礼物等），
+    冒号后是系统对该事件的英文转述（谁做了什么）。这是群里的动作，不是用户说的话：
+    不要当作正文引用，也不要当成用户在对你说这些词
+  - \`[unsupported Telegram message type — content was not stored]\`（或带 \`: …\` 的变体）—
+    这条消息的类型当前读不到，正文没有存下来；不要向用户追问「你说了什么」，也不要把这条消息当作用户正文
   - \`[sent a widget]\` — 这条回复发过一张聊天卡片：卡片渲染图作为该回合的图片回放；
     A2UI 模式还会在其后给出 \`[a2ui surface] {…}\` 行（当时提交的 surface 源码，超过 4000 字符时截断并标注 \`…（已截断）\`），HTML 模式只有渲染图、不回放源码
 - 冒号后为消息正文；仅含媒体或仅用 \`/chat\` 召唤的消息无冒号与正文
@@ -60,7 +70,7 @@ ${options.includeOcrNote ? OCR_FALLBACK_NOTE : ''}- 你自己的历史回复开�
 - 正文中提及上下文内已存在的消息编号（如 #5）会被系统渲染为可点击的跳转链接
 - 不要把 \`#N\`、\`||防剧透||\` 用 \`等宽代码\` 包起来：反引号内的内容按原文展示，编号不会变成链接、防剧透不会生效；链接、提及与其它 Markdown 样式同理
 - 当前回复默认针对最后一条消息，通常只在引用更早的消息时才需要写编号
-- 回复直接输出正文，不含 \`[#N]\`、编号、用户名前缀或 \`<<EOF\``;
+- 回复直接输出正文，不含 \`[#N]\`、编号、用户名前缀或 \`<<EOF\`；也不要模仿输出 \`[service: …]\`、\`[sent …]\`、\`[replying to …]\` 等方括号标注`;
 
 /**
  * Mention rules for the user roster. The rules never change, so they live in

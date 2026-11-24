@@ -247,6 +247,19 @@ const migrateMessageDeletedAt = async (transaction: Transaction): Promise<void> 
 };
 
 /**
+ * Message kind of a non-text message and its model-readable detail (harness
+ * issue #16, design §3.2.1). Both nullable and never backfilled: the original
+ * update was never stored, so old rows stay NULL and readers fall back to an
+ * "unsupported type" annotation. No index — reads are by (chatId, messageId).
+ * A fresh database gets the columns from the DTO at sync time.
+ */
+const migrateMessageKindColumns = async (transaction: Transaction): Promise<void> => {
+  if (!(await tableExists('telegram_messages', transaction))) return;
+  await ensureColumn('telegram_messages', 'messageKind', 'VARCHAR(255)', transaction);
+  await ensureColumn('telegram_messages', 'messageDetail', 'TEXT', transaction);
+};
+
+/**
  * message_reactions gained the source/part columns (design 2026-1123-1610): the
  * actor's state is keyed by the message the user actually reacted to, and a row
  * snapshots which part of a bot reply that message was. Existing rows backfill
@@ -1215,6 +1228,7 @@ export const runSchemaMigrations = async (): Promise<void> => {
     await migrateReplyMetricsTrialQuotaColumns(transaction);
     await migrateReplyMetricsCapabilityColumns(transaction);
     await migrateMessageDeletedAt(transaction);
+    await migrateMessageKindColumns(transaction);
     await migrateMessageReactionsParts(transaction);
     await migrateBotResponsesCompositeKey(transaction);
     await migratePriceWatchRound1Columns(transaction);
@@ -1274,6 +1288,12 @@ export const runSchemaMigrations = async (): Promise<void> => {
     await sequelize.query(
       `INSERT OR IGNORE INTO schema_migrations (name, appliedAt)
        VALUES ('20261118_message_deleted_at', :appliedAt)`,
+      { replacements: { appliedAt: new Date().toISOString() }, transaction }
+    );
+    // telegram_messages gained messageKind / messageDetail (migrateMessageKindColumns)
+    await sequelize.query(
+      `INSERT OR IGNORE INTO schema_migrations (name, appliedAt)
+       VALUES ('20261124_message_kind_columns', :appliedAt)`,
       { replacements: { appliedAt: new Date().toISOString() }, transaction }
     );
     // share_links is a brand-new table, created by migrateShareLinks above

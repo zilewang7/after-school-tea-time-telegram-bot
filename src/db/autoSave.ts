@@ -56,6 +56,7 @@ import { purgeOrphanedExclusions } from './queries/context-exclusions.js';
 import { recordCleanupRun } from '../services/cleanup-status.js';
 import { entitiesToMarkdown } from 'telegram-md-entities';
 import { renderQuoteRichTexts, renderRichMessage, type RichBlocksRenderer } from './rich-message-text.js';
+import { describeMessageContent } from './message-kind.js';
 import { extractCustomEmojiOccurrences } from '../services/custom-emoji-extractor.js';
 import { acquireCustomEmojiAttachments } from '../services/custom-emoji-service.js';
 import {
@@ -208,13 +209,17 @@ export const resolveCapturedMedia = (msg: TgMessage | undefined): CapturedMedia 
     const photo = msg.photo?.at(-1);
     if (photo) {
         const isGroup = Boolean(msg.media_group_id);
+        // A live photo also carries its static picture. Only that picture is
+        // downloaded, so the hint says what it is instead of a second type
+        // annotation (design §2.3: live_photo refines the hint, no new kind).
+        const livePhoto = msg.live_photo !== undefined;
         return {
             fileId: photo.file_id,
             fileUniqueId: photo.file_unique_id,
             mime: 'image/jpeg',
             kind: 'photo',
             sizeBytes: photo.file_size,
-            hint: isGroup ? 'some pictures' : 'a picture',
+            hint: isGroup ? 'some pictures' : livePhoto ? 'a picture (live photo)' : 'a picture',
             needsTgsConversion: false,
         };
     }
@@ -780,6 +785,13 @@ export const autoUpdate = (bot: Bot, options: AutoSaveOptions = {}) => {
             if (SHARE_COMMAND_PATTERN().test(newText)) return;
             const resolvedEditedMedia = resolveCapturedMedia(editedMsg)
                 ?? resolveRichMessageMedia(editedMsg.rich_message, messageKey);
+            // An edit recomputes the type as well: a row that carried a kind
+            // must not keep its old annotation once the content is text (or the
+            // other way round). Poll/checklist progress arrives as new service
+            // messages, not as edits, so this only ever sees an ordinary edit.
+            const editedContentKind = describeMessageContent(editedMsg, {
+                hasCapturedMedia: resolvedEditedMedia !== undefined,
+            });
             const newQuoteText = renderQuoteText(editedMsg.quote, messageKey);
             const revisionToken: MessageRevisionToken = {
                 chatId,
@@ -837,6 +849,8 @@ export const autoUpdate = (bot: Bot, options: AutoSaveOptions = {}) => {
                                 chatCommand: null,
                                 modelParts: null,
                                 mediaHint: resolvedEditedMedia?.hint ?? null,
+                                messageKind: editedContentKind?.kind ?? null,
+                                messageDetail: editedContentKind?.detail ?? null,
                                 forwardOrigin: resolveForwardOrigin(editedMsg.forward_origin) ?? null,
                                 forwardFromId: editedMsg.forward_origin?.type === 'user'
                                     ? editedMsg.forward_origin.sender_user.id
@@ -853,6 +867,8 @@ export const autoUpdate = (bot: Bot, options: AutoSaveOptions = {}) => {
                             : undefined;
                         currentMessage.text = newText;
                         currentMessage.quoteText = newQuoteText ?? currentMessage.quoteText;
+                        currentMessage.messageKind = editedContentKind?.kind ?? null;
+                        currentMessage.messageDetail = editedContentKind?.detail ?? null;
                         if (shouldAcquireOcr) currentMessage.ocrText = null;
                         if (editedMedia) {
                             currentMessage.file = null;
@@ -1150,6 +1166,13 @@ export const autoSave = (bot: Bot, options: AutoSaveOptions = {}) => {
                     );
                 harvestRosterUsers(ctx.message);
                 harvestChatRegistry(ctx.message);
+                // A /chat summon is described by its chatCommand annotation: its
+                // empty text is expected, not an unsupported message type.
+                const contentKind = chatCommandSpec
+                    ? null
+                    : describeMessageContent(ctx.update.message, {
+                        hasCapturedMedia: media !== undefined,
+                    });
                 const forwardOrigin = resolveForwardOrigin(ctx.message?.forward_origin);
                 // Original sender's id (privacy-protected forwards have none);
                 // lets the context roster resolve who the forward came from
@@ -1246,6 +1269,8 @@ export const autoSave = (bot: Bot, options: AutoSaveOptions = {}) => {
                             replyToId,
                             chatCommand: chatCommandSpec ? serializeChatCommand(chatCommandSpec) : null,
                             mediaHint: media ? media.hint : undefined,
+                            messageKind: contentKind?.kind ?? null,
+                            messageDetail: contentKind?.detail ?? null,
                             forwardOrigin,
                             forwardFromId,
                             viaBot,

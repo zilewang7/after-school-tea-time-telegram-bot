@@ -101,10 +101,14 @@ const saveMessage = async (
         viaBot?: string | null,
         /** Serialized `/chat` parameters when this message is a `/chat` summon */
         chatCommand?: string | null,
+        /** Machine token of a non-text message type (see ./message-kind.ts) */
+        messageKind?: string | null,
+        /** Model-readable one-line detail of `messageKind` */
+        messageDetail?: string | null,
         transaction?: Transaction
     }
 ) => {
-    const { chatId, messageId, userId, date = new Date(), userName = '佚名', message, quoteText, fileLink, fileBuffer, fileMime, fileUniqueId, replyToId, modelParts, mediaHint, forwardOrigin, forwardFromId, viaBot, chatCommand, transaction } = info;
+    const { chatId, messageId, userId, date = new Date(), userName = '佚名', message, quoteText, fileLink, fileBuffer, fileMime, fileUniqueId, replyToId, modelParts, mediaHint, forwardOrigin, forwardFromId, viaBot, chatCommand, messageKind, messageDetail, transaction } = info;
 
     const fromBotSelf = userId === Number(process.env.BOT_USER_ID);
     // Callers pass Number(env) shapes that can be NaN; never write that
@@ -161,6 +165,14 @@ const saveMessage = async (
         if (chatCommand !== undefined) {
             existingMessage.chatCommand = chatCommand;
         }
+        // undefined keeps the stored value, null clears it: an edited message or
+        // a re-delivered update recomputes the kind from the new content
+        if (messageKind !== undefined) {
+            existingMessage.messageKind = messageKind;
+        }
+        if (messageDetail !== undefined) {
+            existingMessage.messageDetail = messageDetail;
+        }
 
         if (fileBuffer) {
             existingMessage.file = fileBuffer;
@@ -206,6 +218,8 @@ const saveMessage = async (
         forwardOrigin: forwardOrigin ?? null,
         forwardFromId: forwardFromId ?? null,
         viaBot: viaBot ?? null,
+        messageKind: messageKind ?? null,
+        messageDetail: messageDetail ?? null,
     }, { transaction });
 
     if (fileLink && !fileBuffer) {
