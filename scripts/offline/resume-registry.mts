@@ -9,7 +9,7 @@
  * - why an entry is missing (restart, expired, evicted);
  * - the resumable marks and the button rows that read them;
  * - createReplyTools with the state bundle of an earlier attempt: `g1` still
- *   resolves, search_by_image, the harness issue limit and the workspace
+ *   resolves, find_image(reverse), the harness issue limit and the workspace
  *   counters go on counting.
  *
  * Run: npx tsx scripts/offline/resume-registry.mts
@@ -35,7 +35,7 @@ const { compactJournal } = await import('../../src/reply/resume/journal-compacti
 const { canonicalJson } = await import('../../src/reply/resume/canonical-json.js');
 const { captureResumeFacts } = await import('../../src/reply/resume/resume-facts.js');
 const replyTools = await import('../../src/reply/tools/index.js');
-const { createSearchByImageTool, MAX_SEARCHES_PER_REPLY } = await import('../../src/reply/tools/search-by-image-tool.js');
+const { createFindImageTool, MAX_REVERSE_SEARCHES_PER_REPLY } = await import('../../src/reply/tools/find-image-tool.js');
 const { MAX_HARNESS_ISSUES_PER_REPLY } = await import('../../src/reply/tools/harness-issue-state.js');
 const { ensureWorkspaceToken } = await import('../../src/reply/workspace/workspace-state.js');
 
@@ -84,7 +84,7 @@ const freshToolState = (chatId: number, conversationRootIds: readonly number[] =
 const loopCheckpoint = (fields: Partial<ToolLoopCheckpoint> = {}): ToolLoopCheckpoint => ({
     platform: 'gemini',
     completedRounds: 2,
-    toolUsage: [{ name: 'search_history', count: 2 }],
+    toolUsage: [{ name: 'history', count: 2 }],
     journal: [
         { type: 'thinking', content: '想一想' },
         { type: 'text', content: '先查一下。' },
@@ -509,7 +509,7 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
 
             // What the interrupted attempt left behind
             bundle.media.generated.set('g1', { id: 'g1', data: PNG_BYTES, mimeType: 'image/png' });
-            bundle.media.reverseSearchCount = MAX_SEARCHES_PER_REPLY;
+            bundle.media.reverseSearchCount = MAX_REVERSE_SEARCHES_PER_REPLY;
             for (let index = 0; index < MAX_HARNESS_ISSUES_PER_REPLY; index += 1) bundle.harnessIssues.noteCreated();
             const splicedToken = ensureWorkspaceToken(bundle.workspace, takeMessageId(), '拼接进来的对话');
             bundle.history.remember({
@@ -538,11 +538,14 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
             expect(!sent.isError && sent.images[0]?.data === PNG_BYTES, `g1 still resolves (got ${sent.content})`);
             expect(bundle.media.hasReplyImage, 'and the attachment flag lands in the carried state');
 
-            const reverse = await run('search_by_image', { message: 1 });
-            expect(reverse.isError && reverse.content.includes(`${MAX_SEARCHES_PER_REPLY} 次以图搜图`), `search_by_image stays at its limit (got ${reverse.content})`);
-            const issue = await run('create_harness_issue', { title: '标题', body: '内容', kind: 'bug' });
+            const reverse = await run('find_image', { mode: 'reverse', message: 1 });
+            expect(
+                reverse.isError && reverse.content.includes(`${MAX_REVERSE_SEARCHES_PER_REPLY} 次以图搜图`),
+                `find_image(reverse) stays at its limit (got ${reverse.content})`
+            );
+            const issue = await run('harness_issue', { action: 'create', title: '标题', body: '内容', kind: 'bug' });
             expect(issue.isError && issue.content.includes(`${MAX_HARNESS_ISSUES_PER_REPLY} 条 issue`), `the issue limit carries on (got ${issue.content})`);
-            const read = await run('workspace_read', { path: 'notes.md', workspace: splicedToken });
+            const read = await run('workspace', { action: 'read', path: 'notes.md', workspace: splicedToken });
             expect(
                 splicedToken === 'w2' && read.content.includes('工作区里没有《notes.md》'),
                 `the workspace tokens carry on: ${splicedToken} is known and only the file is missing (got ${read.content})`
@@ -554,14 +557,14 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
             expect(fresh.toolState !== bundle && unknown.isError, 'a fresh reply does not know g1');
             const unknownToken = await fresh.tools.execute({
                 id: 'call',
-                name: 'workspace_read',
-                argumentsJson: JSON.stringify({ path: 'notes.md', workspace: splicedToken }),
+                name: 'workspace',
+                argumentsJson: JSON.stringify({ action: 'read', path: 'notes.md', workspace: splicedToken }),
             });
             expect(unknownToken.content.includes(`没有 ${splicedToken} 这个工作区`), `nor ${splicedToken} (got ${unknownToken.content})`);
         },
     },
     {
-        name: 'the search_by_image counter lives in the media state, so a new tool on the same state stays at the limit',
+        name: 'the find_image(reverse) counter lives in the media state, so a new tool on the same state stays at the limit',
         body: async () => {
             const chatId = -1007300000051;
             const toolState = freshToolState(chatId);
@@ -594,15 +597,27 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
                 imageUrl: 'https://example.invalid/a.png',
             });
             const context = toolContextFor(chatId);
-            const before = createSearchByImageTool({ state: toolState.media, context, dependencies });
-            for (let index = 0; index < MAX_SEARCHES_PER_REPLY; index += 1) {
-                const result = await quiet(() => before.execute({ image_id: 'img1' }, new AbortController().signal));
+            const before = createFindImageTool({
+                state: toolState.media,
+                webEnabled: false,
+                reverseEnabled: true,
+                context,
+                reverseDependencies: dependencies,
+            });
+            for (let index = 0; index < MAX_REVERSE_SEARCHES_PER_REPLY; index += 1) {
+                const result = await quiet(() => before.execute({ mode: 'reverse', image_id: 'img1' }, new AbortController().signal));
                 expect(!result.isError, `search ${index + 1} runs (got ${result.content})`);
             }
-            expect(toolState.media.reverseSearchCount === MAX_SEARCHES_PER_REPLY, 'counted in the state');
-            const after = createSearchByImageTool({ state: toolState.media, context, dependencies });
-            const refused = await after.execute({ image_id: 'img1' }, new AbortController().signal);
-            expect(refused.isError && searched.length === MAX_SEARCHES_PER_REPLY, `the resumed tool refuses the next one (got ${refused.content})`);
+            expect(toolState.media.reverseSearchCount === MAX_REVERSE_SEARCHES_PER_REPLY, 'counted in the state');
+            const after = createFindImageTool({
+                state: toolState.media,
+                webEnabled: false,
+                reverseEnabled: true,
+                context,
+                reverseDependencies: dependencies,
+            });
+            const refused = await after.execute({ mode: 'reverse', image_id: 'img1' }, new AbortController().signal);
+            expect(refused.isError && searched.length === MAX_REVERSE_SEARCHES_PER_REPLY, `the resumed tool refuses the next one (got ${refused.content})`);
         },
     },
 ];

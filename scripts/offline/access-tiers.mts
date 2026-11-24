@@ -384,11 +384,11 @@ const cases: { name: string; body: () => Promise<void> }[] = [
                 `a full turn keeps the connected MCP server (got ${JSON.stringify(full.mcpServers)})`
             );
 
-            expect(trial.imageSearch === true, 'search_images stays available in a whitelisted chat');
+            expect(trial.imageSearch === true, 'find_image(web) stays available in a whitelisted chat');
             expect(full.imageSearch === true, 'for the full turn too');
             expect(trial.sendImage === full.sendImage && trial.sendImage === true, 'send_image is unchanged');
             expect(trial.image === full.image && trial.image === true, 'generate_image is still offered');
-            expect(trial.harnessIssues === true, 'the free harness-issue tools are unchanged');
+            expect(trial.harnessIssues === true, 'the free harness_issue tool is unchanged');
 
             const trialOutside = resolveToolAvailability('gemini-4-argon', OTHER_CHAT_ID, config, null, 'trial');
             const fullOutside = resolveToolAvailability('gemini-4-argon', OTHER_CHAT_ID, config, null, 'full');
@@ -407,11 +407,11 @@ const cases: { name: string; body: () => Promise<void> }[] = [
             const trialModelSchema = propertyOf(trialTool, 'model');
             expect(enumJsonOf(trialModelSchema) === '["banana"]', `the schema enum is banana only (got ${enumJsonOf(trialModelSchema)})`);
             expect(
-                trialTool.definition.description.includes('只能用 banana'),
+                trialTool.definition.description.includes('仅限 banana'),
                 'the description says banana only'
             );
             expect(
-                !trialTool.definition.description.includes('model 传 gpt 则改用'),
+                !trialTool.definition.description.includes('gpt'),
                 'the description does not offer gpt'
             );
             const refused = await trialTool.execute({ prompt: '一只猫', model: 'gpt' }, new AbortController().signal);
@@ -424,7 +424,7 @@ const cases: { name: string; body: () => Promise<void> }[] = [
             const fullTool = createGenerateImageTool(context, createReplyMediaState(), { bananaOnly: false });
             const fullModelSchema = propertyOf(fullTool, 'model');
             expect(enumJsonOf(fullModelSchema) === '["banana","gpt"]', `the full turn offers both models (got ${enumJsonOf(fullModelSchema)})`);
-            expect(fullTool.definition.description.includes('model 传 gpt'), 'and its description explains gpt');
+            expect(fullTool.definition.description.includes('gpt 不支持'), 'and its description explains gpt');
         },
     },
     {

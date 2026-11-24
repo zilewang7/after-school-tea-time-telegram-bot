@@ -163,14 +163,13 @@ const metaContentOf = (html: string, property: string): string | null => {
 const AGENT_STATS: AgentStats = {
     mode: 'AUTO',
     toolUsage: [
-        { name: 'search_history', count: 2 },
-        { name: 'read_history', count: 1 },
+        { name: 'history', count: 3 },
         { name: 'fetch_image', count: 1, failed: 1 },
     ],
     toolCalls: [
-        { name: 'search_history', argument: '「灭蛾 方法」', result: '10 条命中' },
-        { name: 'search_history', argument: '「黑猫 领养」', result: '无命中' },
-        { name: 'read_history', argument: 'h101、h103', result: '2 条全文', ms: 3400 },
+        { name: 'history', argument: 'search · 「灭蛾 方法」', result: '10 条命中' },
+        { name: 'history', argument: 'search · 「黑猫 领养」', result: '无命中' },
+        { name: 'history', argument: 'read · h101、h103', result: '2 条全文', ms: 3400 },
         { name: 'fetch_image', argument: 'h101', result: '图片已失效', failed: true },
     ],
 };
@@ -178,10 +177,10 @@ const DOCUMENT = documents.buildToolLogDocument(AGENT_STATS, []);
 
 /** 30 calls: more than the card's ten-line description, all of them on the page */
 const MANY_CALLS_STATS: AgentStats = {
-    toolUsage: [{ name: 'search_history', count: 30 }],
+    toolUsage: [{ name: 'history', count: 30 }],
     toolCalls: Array.from({ length: 30 }, (_, index) => ({
-        name: 'search_history',
-        argument: `query-${index + 1}`,
+        name: 'history',
+        argument: `search · query-${index + 1}`,
         result: `hit-${index + 1}`,
     })),
 };
@@ -189,10 +188,10 @@ const MANY_CALLS_DOCUMENT = documents.buildToolLogDocument(MANY_CALLS_STATS, [])
 
 /** Ten lines long enough that the card's 500-character cap cuts them */
 const LONG_LINES_STATS: AgentStats = {
-    toolUsage: [{ name: 'search_history', count: 10 }],
+    toolUsage: [{ name: 'history', count: 10 }],
     toolCalls: Array.from({ length: 10 }, (_, index) => ({
-        name: 'search_history',
-        argument: `argument-${index + 1}-`.padEnd(56, 'x'),
+        name: 'history',
+        argument: `search · argument-${index + 1}-`.padEnd(56, 'x'),
         result: `result-${index + 1}-`.padEnd(40, 'y'),
     })),
 };
@@ -208,11 +207,11 @@ const ESCAPE_DOCUMENT = documents.buildToolLogDocument(ESCAPE_STATS, []);
 /** A capped reply: failed and slow calls shown, plus the dropped-record note */
 const TRUNCATED_STATS: AgentStats = {
     toolUsage: [
-        { name: 'search_history', count: 4 },
+        { name: 'history', count: 4 },
         { name: 'fetch_image', count: 1, failed: 1 },
     ],
     toolCalls: [
-        { name: 'search_history', argument: '「灭蛾」', result: '3 条命中', ms: 4200 },
+        { name: 'history', argument: 'search · 「灭蛾」', result: '3 条命中', ms: 4200 },
         { name: 'fetch_image', argument: 'h101', result: '图片不存在', failed: true },
     ],
     toolCallsTruncated: 3,
@@ -221,10 +220,10 @@ const TRUNCATED_DOCUMENT = documents.buildToolLogDocument(TRUNCATED_STATS, []);
 
 /** An hN ref: the page renders it as an anchor, the card keeps its plain text */
 const LINKED_STATS: AgentStats = {
-    toolUsage: [{ name: 'read_history', count: 1 }],
+    toolUsage: [{ name: 'history', count: 1 }],
     toolCalls: [
         {
-            name: 'read_history',
+            name: 'history',
             argument: 'around h45 · 10 分钟',
             result: '39 条消息',
             links: [

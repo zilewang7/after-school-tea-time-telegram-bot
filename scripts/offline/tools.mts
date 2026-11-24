@@ -928,7 +928,7 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
             );
             expect(recordOf('mcp_tool', json({ query: 'a'.repeat(48) }), 'ok').argument === '…', 'a value that looks like a key is hidden');
             expect(
-                recordOf('read_history', json({ ids: ['h101', 'h102', 'h103', 'h104'] }), 'ok').argument === 'h101、h102 +2',
+                recordOf('history', json({ action: 'read', ids: ['h101', 'h102', 'h103', 'h104'] }), 'ok').argument === 'h101、h102 +2',
                 'an array shows its first two items and how many more there were'
             );
             expect(
@@ -948,7 +948,7 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
             );
 
             // Results: the error's first sentence, an empty result, links, or the size
-            const failure = recordOf('search_history', '{}', '查询语法有误。请检查括号。', true);
+            const failure = recordOf('history', '{}', '查询语法有误。请检查括号。', true);
             expect(
                 failure.failed === true && failure.result === '查询语法有误',
                 `a failure shows its first sentence without the full stop (got ${json(failure)})`
@@ -1373,7 +1373,7 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
             const names = first.tools.definitions.map((definition) => definition.name);
             expect(
                 names.join(',') ===
-                    'resolve-library-id,generate_image_2,slow_tool,send_sms_to_owner,generate_image,search_images,search_by_image,fetch_image,send_image,send_file,list_harness_issues,create_harness_issue,react_to_message',
+                    'resolve-library-id,generate_image_2,slow_tool,send_sms_to_owner,generate_image,find_image,fetch_image,send_image,send_file,load_skill,harness_issue,react_to_message',
                 `order, and DISABLED_TOOLS applied per tool by original name (got ${names.join(',')})`
             );
             expect(
@@ -1444,7 +1444,7 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
                 widget: false,
             };
             expect(
-                buildCapabilitiesSection(smsOnly).endsWith('\n- 可以用 `send_sms_to_owner` 给机主发送短信'),
+                buildCapabilitiesSection(smsOnly).endsWith('\n- `send_sms_to_owner` 仅紧急时给机主发短信。'),
                 'and the prompt line reads the same'
             );
         },
@@ -1493,7 +1493,7 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
 
             const withSms = buildStaticSystemPrompt(model, { sms: true });
             expect(withSms === buildStaticSystemPrompt(model, { sms: true }), 'the SMS variant is byte-stable too');
-            const bullet = '- 可以用 `send_sms_to_owner` 给测试 主人（id 1234567）发送短信';
+            const bullet = '- `send_sms_to_owner` 仅紧急时给测试 主人（id 1234567）发短信。';
             const addedLines = withSms.split('\n').filter((line) => !plain.split('\n').includes(line));
             expect(json(addedLines) === json([bullet]), `exactly one bullet is added (got ${json(addedLines)})`);
             expect(withSms.replace(`\n${bullet}`, '') === plain, 'and nothing else changes');
@@ -1501,6 +1501,186 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
             const notes = withSms.indexOf('# 注意');
             const bulletAt = withSms.indexOf(bullet);
             expect(capabilities < bulletAt && bulletAt < notes, 'the bullet sits in the capabilities section');
+        },
+    },
+    {
+        name: 'static head profiles and the 16-tool declaration snapshot stay within their size caps',
+        body: async () => {
+            const { buildStaticSystemPrompt } = await import('../../src/ai/system-prompt/index.js');
+            const chars = (text: string): number => Array.from(text).length;
+
+            const allVisionOptions = {
+                sms: true,
+                imageTools: true,
+                imageFetch: true,
+                imageCrop: true,
+                imageFrames: true,
+                imageReverseSearch: true,
+                imageGenerate: true,
+                stickerTools: true,
+                fileTools: true,
+                workspace: true,
+                workspacePreview: true,
+                handoff: true,
+                historyTools: true,
+                harnessIssues: true,
+                widget: true,
+                reaction: true,
+            };
+            const allVision = buildStaticSystemPrompt('gemini-4-argon', allVisionOptions);
+            const typicalGroup = buildStaticSystemPrompt('gemini-4-argon', {
+                imageTools: true,
+                imageFetch: true,
+                imageReverseSearch: true,
+                imageGenerate: true,
+                stickerTools: true,
+                fileTools: true,
+                historyTools: true,
+                harnessIssues: true,
+                reaction: true,
+            });
+            const noTools = buildStaticSystemPrompt('gemini-4-argon', {});
+            const nonVision = buildStaticSystemPrompt('mimo-v2.5-pro', {
+                sms: true,
+                imageTools: true,
+                imageReverseSearch: true,
+                imageGenerate: true,
+                stickerTools: true,
+                fileTools: true,
+                workspace: true,
+                handoff: true,
+                historyTools: true,
+                harnessIssues: true,
+                widget: true,
+                reaction: true,
+            });
+            const trial = buildStaticSystemPrompt('gemini-4-hydrogen', {
+                ...allVisionOptions,
+                sms: false,
+                trial: true,
+            });
+
+            expect(
+                allVision === buildStaticSystemPrompt('gemini-4-argon', allVisionOptions) &&
+                    noTools === buildStaticSystemPrompt('gemini-4-argon', {}) &&
+                    nonVision === buildStaticSystemPrompt('mimo-v2.5-pro', {
+                        sms: true,
+                        imageTools: true,
+                        imageReverseSearch: true,
+                        imageGenerate: true,
+                        stickerTools: true,
+                        fileTools: true,
+                        workspace: true,
+                        handoff: true,
+                        historyTools: true,
+                        harnessIssues: true,
+                        widget: true,
+                        reaction: true,
+                    }),
+                'static head profiles are byte-identical across calls'
+            );
+            expect(chars(allVision) <= 3_500, `all-tools vision static head <= 3500 chars (got ${chars(allVision)})`);
+            expect(chars(typicalGroup) <= 3_500, `typical-group static head <= 3500 chars (got ${chars(typicalGroup)})`);
+            expect(chars(noTools) <= 3_500, `no-tools static head <= 3500 chars (got ${chars(noTools)})`);
+            expect(
+                chars(nonVision) <= 3_500 && nonVision.includes('OCR'),
+                `non-vision static head <= 3500 chars with OCR note (got ${chars(nonVision)})`
+            );
+            expect(
+                trial.includes('# 体验用户') && chars(trial) <= 4_100,
+                `trial static head includes trial rules and stays bounded (got ${chars(trial)})`
+            );
+
+            // Measure full 16-tool createReplyTools + all-tools vision static head (with a
+            // realistic 231-char preference layer) in a fresh process so cachedToolConfig
+            // and cachedPreferencePrompt reflect the full production configuration.
+            const probeScript =
+                'const { setupOfflineDb } = await import("./scripts/offline/harness.mts");' +
+                'await setupOfflineDb();' +
+                'const { createUnusedApi } = await import("./scripts/offline/fake-telegram.mts");' +
+                'const { buildReplyToolContext } = await import("./src/reply/tools/reply-tool-context.js");' +
+                'const { createReplyTools } = await import("./src/reply/tools/create-reply-tools.js");' +
+                'const { buildStaticSystemPrompt } = await import("./src/ai/system-prompt/index.js");' +
+                'const chars = (s) => Array.from(s).length;' +
+                'const head = buildStaticSystemPrompt("gemini-4-neon", {' +
+                '  sms: true, imageTools: true, imageFetch: true, imageCrop: true, imageFrames: true,' +
+                '  imageReverseSearch: true, imageGenerate: true, stickerTools: true, fileTools: true,' +
+                '  workspace: true, workspacePreview: true, handoff: true, historyTools: true,' +
+                '  harnessIssues: true, widget: true, reaction: true' +
+                '});' +
+                'const ctx = buildReplyToolContext({' +
+                '  chat: { id: -1001234567890, type: "supergroup", title: "测试群" },' +
+                '  triggerMessage: { messageId: 1, userId: 2, userName: "张三", text: null },' +
+                '  contextIndex: new Map(), signal: new AbortController().signal,' +
+                '  api: createUnusedApi(), conversationRootIds: [1]' +
+                '});' +
+                'const { tools, availableSkills } = createReplyTools("gemini-4-neon", ctx);' +
+                'const netChars = tools.definitions.reduce((sum, d) => sum + chars(d.name) + chars(d.description) + chars(JSON.stringify(d.inputSchema)), 0);' +
+                'console.log(JSON.stringify({ headChars: chars(head), names: tools.definitions.map((d) => d.name), netChars, skills: availableSkills.length }));';
+
+            const probe = spawnSync(
+                process.execPath,
+                ['--import', 'tsx', '--input-type=module', '--eval', probeScript],
+                {
+                    cwd: REPO_ROOT,
+                    encoding: 'utf8',
+                    env: {
+                        PATH: process.env.PATH ?? '',
+                        HOME: process.env.HOME ?? '',
+                        TZ: 'Asia/Shanghai',
+                        SYSTEM_PROMPT: '你是一个群聊助手，回答简洁自然。'.padEnd(231, '。'),
+                        BOT_TOKEN: '',
+                        BOT_USER_ID: '7777',
+                        BOT_USER_NAME: 'KON',
+                        BOT_NAME: 'K-ON',
+                        OWNER_USER_ID: '1',
+                        OWNER_DISPLAY_NAME: '机主',
+                        OWNER_SHORT_NAME: '老大',
+                        TOOL_CHAT_IDS: '-1001234567890',
+                        STICKER_SET_NAME: 'test-pack',
+                        HISTORY_CHAT_IDS: '-1001234567890',
+                        LUOXU_PREVIEW_URL: 'http://127.0.0.1:9/luoxu',
+                        IMAGE_SEARCH_URL: 'http://127.0.0.1:9/search',
+                        IMAGE_REVERSE_SEARCH: '1',
+                        WIDGET_ENABLE: '1',
+                        WIDGET_GROUP_FALLBACK: '1',
+                        WIDGET_ALLOW_HTML: '1',
+                        WIDGET_CHAT_IDS: '-1001234567890',
+                        WIDGET_RENDER_URL: 'http://127.0.0.1:9/render',
+                        WORKSPACE_ENABLE: '1',
+                        WORKSPACE_CHAT_IDS: '-1001234567890',
+                        TGS_CONVERTER_URL: 'http://127.0.0.1:9/tgs',
+                        OWNER_SMS_MCP_URL: 'http://127.0.0.1:9/sms',
+                        GEMINI_API_KEY: 'offline-placeholder',
+                        OPENAI_API_KEY: '',
+                        OPENAI_API_URL: '',
+                    },
+                }
+            );
+            if (probe.status !== 0) {
+                throw new Error(`16-tool snapshot probe failed (status ${probe.status}): ${probe.stderr}`);
+            }
+            const lastLine = probe.stdout.trim().split('\n').at(-1) ?? '{}';
+            const snapshot = asRecord(JSON.parse(lastLine));
+            const headChars = typeof snapshot.headChars === 'number' ? snapshot.headChars : -1;
+            const netChars = typeof snapshot.netChars === 'number' ? snapshot.netChars : -1;
+            const skills = typeof snapshot.skills === 'number' ? snapshot.skills : -1;
+            const names = asArray(snapshot.names).map(String);
+
+            expect(
+                headChars > 0 && headChars <= 3_500,
+                `full all-tools vision static head <= 3500 chars (got ${headChars})`
+            );
+            expect(
+                names.join(',') ===
+                    'send_sms_to_owner,generate_image,find_image,fetch_image,crop_image,extract_frames,send_image,send_sticker,send_file,send_widget,load_skill,workspace,leave_handoff,history,harness_issue,react_to_message',
+                `all 16 merged tools declared in fixed order (got ${names.join(',')})`
+            );
+            expect(skills === 4, `all 4 repository skills active (got ${skills})`);
+            expect(
+                netChars > 0 && netChars <= 14_276,
+                `16-tool net declaration length <= 14276 chars (got ${netChars})`
+            );
         },
     },
     {

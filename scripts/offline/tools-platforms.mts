@@ -1245,11 +1245,10 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
                 });
                 const toolsWithFree = createTurnTools([
                     weatherTool,
-                    freeTool('list_harness_issues'),
-                    freeTool('get_ui_guide'),
+                    freeTool('harness_issue'),
+                    freeTool('load_skill'),
                     freeTool('send_file'),
-                    freeTool('workspace_write'),
-                    freeTool('workspace_preview'),
+                    freeTool('workspace'),
                 ]);
                 let round = 0;
                 const finalFlags: boolean[] = [];
@@ -1272,11 +1271,11 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
                                     return {
                                         chunks: [],
                                         toolCalls: [
-                                            { id: 'c2', name: 'list_harness_issues', argumentsJson: '{}' },
-                                            { id: 'c3', name: 'get_ui_guide', argumentsJson: '{}' },
+                                            { id: 'c2', name: 'harness_issue', argumentsJson: '{"action":"list"}' },
+                                            { id: 'c3', name: 'load_skill', argumentsJson: '{"names":["widget-a2ui"]}' },
                                             { id: 'c4', name: 'send_file', argumentsJson: '{}' },
-                                            { id: 'c5', name: 'workspace_write', argumentsJson: '{}' },
-                                            { id: 'c6', name: 'workspace_preview', argumentsJson: '{}' },
+                                            { id: 'c5', name: 'workspace', argumentsJson: '{"action":"write"}' },
+                                            { id: 'c6', name: 'workspace', argumentsJson: '{"action":"preview"}' },
                                             // No longer offered: must be answered, never run
                                             { id: 'c7', name: 'lookup_weather', argumentsJson: '{"city":"Rome"}' },
                                         ],
@@ -1292,8 +1291,8 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
                 );
                 expect(
                     json(freeExecutions) ===
-                        json(['list_harness_issues', 'get_ui_guide', 'send_file', 'workspace_write', 'workspace_preview']),
-                    `the issue, guide, product and workspace tools all ran after the budget (got ${json(freeExecutions)})`
+                        json(['harness_issue', 'load_skill', 'send_file', 'workspace', 'workspace']),
+                    `the issue, skill, product and workspace tools all ran after the budget (got ${json(freeExecutions)})`
                 );
                 expect(executions.length === 1, `the charged tool did not run again (got ${json(executions)})`);
                 const freeResults = appendedResults[1] ?? [];
@@ -1330,12 +1329,12 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
                 const freeExecutions: string[] = [];
                 const draftTool: ToolHandler = {
                     definition: {
-                        name: 'workspace_write',
+                        name: 'workspace',
                         description: 'writes the draft',
                         inputSchema: { type: 'object', properties: {} },
                     },
                     execute: async () => {
-                        freeExecutions.push('workspace_write');
+                        freeExecutions.push('workspace');
                         return { content: 'draft written', isError: false, images: [], record: null };
                     },
                 };
@@ -1361,7 +1360,7 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
                                 }
                                 return {
                                     chunks: [],
-                                    toolCalls: [{ id: `w${round}`, name: 'workspace_write', argumentsJson: '{}' }],
+                                    toolCalls: [{ id: `w${round}`, name: 'workspace', argumentsJson: '{"action":"write"}' }],
                                 };
                             },
                             appendRound: () => undefined,

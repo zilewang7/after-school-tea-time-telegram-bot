@@ -334,15 +334,15 @@ const freeTool = (name: string, content: string): ToolHandler => ({
     },
 });
 const sendFileTool = freeTool('send_file', 'file sent');
-const listIssuesTool = freeTool('list_harness_issues', 'no open issues');
-const uiGuideTool = freeTool('get_ui_guide', 'the widget guide');
+const harnessIssueTool = freeTool('harness_issue', 'no open issues');
+const loadSkillTool = freeTool('load_skill', 'the widget skill');
 const turnToolsWithFree = createTurnTools([
     lookupA,
     lookupB,
     brokenTool,
     sendFileTool,
-    listIssuesTool,
-    uiGuideTool,
+    harnessIssueTool,
+    loadSkillTool,
 ]);
 
 // ---- helpers ----
@@ -1848,8 +1848,8 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
                         roundEvents([
                             [
                                 callPart('send_file', {}, 's1', 'call_s1'),
-                                callPart('list_harness_issues', {}, 's2', 'call_s2'),
-                                callPart('get_ui_guide', {}, 's3', 'call_s3'),
+                                callPart('harness_issue', {}, 's2', 'call_s2'),
+                                callPart('load_skill', {}, 's3', 'call_s3'),
                                 // A charged tool is no longer offered: it must not run
                                 callPart('lookup_a', { topic: 'again' }, 'd2', 'call_d2'),
                                 textPart(''),
@@ -1874,8 +1874,8 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
                     'the no-cost round keeps function calling on'
                 );
                 expect(
-                    json(freeExecutions) === json(['send_file', 'list_harness_issues', 'get_ui_guide']),
-                    `the product, issue and guide tools all ran (got ${json(freeExecutions)})`
+                    json(freeExecutions) === json(['send_file', 'harness_issue', 'load_skill']),
+                    `the product, issue and skill tools all ran (got ${json(freeExecutions)})`
                 );
                 expect(
                     executions.length === 1,

@@ -4081,8 +4081,8 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
                 `the in-flight answer is announced on the message being answered (got ${JSON.stringify(during.all)})`
             );
             expect(
-                during.turns[0]?.includes('another session is already replying') === true &&
-                    during.turns.at(-1)?.includes('another session is already replying') === false,
+                during.turns[0]?.includes('[system] another session is already replying to #1') === true &&
+                    during.turns.at(-1)?.includes('[system] another session is already replying to #1') === false,
                 'the note sits in that message\'s turn, not in the trigger\'s own turn'
             );
 
@@ -5499,7 +5499,7 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
                 );
                 const firstHead = systemPromptOf(stub.requests[0] ?? {});
                 const retryHead = systemPromptOf(stub.requests[firstAnswerRequests] ?? {});
-                expect(firstHead.includes('`create_harness_issue`'), 'the first answer offers harness issues in its head');
+                expect(firstHead.includes('`harness_issue`'), 'the first answer offers harness issues in its head');
                 expect(retryHead === firstHead, 'the retry sends the very same static head');
             } finally {
                 await stub.close();
