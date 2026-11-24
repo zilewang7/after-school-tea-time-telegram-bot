@@ -27,6 +27,75 @@ export const shareTokenOfUrl = (url: string): string | null => {
     return isShareToken(lastSegment) ? lastSegment : null;
 };
 
+/** One of our own share URLs found in a message, and which page variant it names */
+export interface OwnShareUrl {
+    token: string;
+    /** `/s/<token>` or the group-fallback variant `/s/<token>/preview` */
+    variant: 'page' | 'preview';
+}
+
+/** An http(s) URL inside a text; same boundaries as the preview extractor */
+const URL_IN_TEXT_PATTERN = /https?:\/\/[^\s<>"'()[\]]+/gi;
+
+/** Sentence punctuation that may follow a URL; never part of one of our share paths */
+const TRAILING_PUNCTUATION_PATTERN = /[.,;:!?。，；：！？、）】」』]+$/;
+
+const trimUrlEnd = (url: string): string => url.replace(TRAILING_PUNCTUATION_PATTERN, '');
+
+/**
+ * One of our own share links, as found in a message: strict, because the reply
+ * path uses it to decide whether to read the database. The origin must be
+ * exactly WEBAPP_PUBLIC_URL's (no userinfo, which would make `new URL` accept
+ * a lookalike), the path `/s/<token>` or `/s/<token>/preview`, the token a real
+ * share token; query and fragment are ignored. Anything else — including a
+ * path such as `/s/<token>/og.png` — is null. Returns null when no public URL
+ * is configured (fail closed).
+ */
+export const ownShareTokenOfUrl = (url: string): OwnShareUrl | null => {
+    const publicUrl = webappPublicUrl();
+    if (publicUrl === '') return null;
+    let base: URL;
+    let parsed: URL;
+    try {
+        base = new URL(publicUrl);
+        parsed = new URL(url);
+    } catch {
+        return null;
+    }
+    if (parsed.username !== '' || parsed.password !== '') return null;
+    if (parsed.origin !== base.origin) return null;
+    // A deployment behind a path prefix keeps it in its public URLs
+    const basePath = base.pathname.replace(/\/+$/, '');
+    if (!parsed.pathname.startsWith(`${basePath}/s/`)) return null;
+    const segments = parsed.pathname
+        .slice(basePath.length)
+        .split('/')
+        .filter((segment) => segment !== '');
+    const token = segments[1];
+    if (segments[0] !== 's' || token === undefined || !isShareToken(token)) return null;
+    if (segments.length === 2) return { token, variant: 'page' };
+    if (segments.length === 3 && segments[2] === 'preview') return { token, variant: 'preview' };
+    return null;
+};
+
+/**
+ * Every own-share token in a message text, in first-appearance order and
+ * deduplicated. Pure: it scans the text for http(s) URLs and applies the strict
+ * rule above, so a link that is not ours never costs a database lookup.
+ */
+export const ownShareTokensInText = (text: string): string[] => {
+    if (text === '') return [];
+    const tokens: string[] = [];
+    const seen = new Set<string>();
+    for (const match of text.matchAll(URL_IN_TEXT_PATTERN)) {
+        const own = ownShareTokenOfUrl(trimUrlEnd(match[0]));
+        if (own === null || seen.has(own.token)) continue;
+        seen.add(own.token);
+        tokens.push(own.token);
+    }
+    return tokens;
+};
+
 /** Absolute URL from a request's own origin, for the OG tags when WEBAPP_PUBLIC_URL is unset */
 export const baseUrlOfRequest = (requestUrl: string): string => {
     const configured = webappPublicUrl();

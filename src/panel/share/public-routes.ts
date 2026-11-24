@@ -88,7 +88,10 @@ const disabledResponse = (context: Context<PanelEnv>): Response => context.text(
 const rateLimitedResponse = (context: Context<PanelEnv>): Response =>
     context.text('Too Many Requests', 429, { 'Retry-After': '60' });
 
-const pageResponse = (body: string): Response =>
+/** The JSON form of the same share, advertised as an alternate representation */
+const jsonAlternateUrlOf = (baseUrl: string, token: string): string => `${baseUrl}/api/public/shares/${token}`;
+
+const pageResponse = (body: string, alternateJsonUrl?: string): Response =>
     new Response(body, {
         status: 200,
         headers: {
@@ -96,6 +99,9 @@ const pageResponse = (body: string): Response =>
             'Cache-Control': 'no-store',
             'Content-Security-Policy': SHARE_PAGE_CSP,
             'X-Robots-Tag': NOINDEX,
+            ...(alternateJsonUrl === undefined
+                ? {}
+                : { Link: `<${alternateJsonUrl}>; rel="alternate"; type="application/json"` }),
         },
     });
 
@@ -177,7 +183,8 @@ export const registerSharePublicRoutes = (app: Hono<PanelEnv>, options: SharePub
                 content: share.content,
                 preview,
                 miniAppLink,
-            })
+            }),
+            jsonAlternateUrlOf(baseUrl, share.row.token)
         );
     });
 

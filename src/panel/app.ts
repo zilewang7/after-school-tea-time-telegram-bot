@@ -27,6 +27,7 @@ import { createRateLimit } from './middleware/rate-limit.js';
 import { requestLog } from './middleware/request-log.js';
 import { securityHeaders } from './middleware/security-headers.js';
 import { createHandlerTimeout } from './middleware/timeout.js';
+import { registerPublicFileRoutes } from './public-files.js';
 import { registerAccessApplicationRoutes } from './routes/access-applications.js';
 import { registerAuditRoute } from './routes/audit.js';
 import { registerChatSettingsRoute } from './routes/chat-settings.js';
@@ -230,6 +231,10 @@ export const createPanelApp = (options: PanelAppOptions): Hono<PanelEnv> => {
     // /x/<token> is the public tool-call log page: SSR like /g, registered before
     // the static catch-all so it never serves the SPA
     registerToolLogPublicRoutes(app, { enabled: toolLogEnabled, now });
+
+    // /robots.txt and /llms.txt are real files, served before the static catch-all
+    // so a crawler never gets the SPA's index.html in their place.
+    registerPublicFileRoutes(app);
 
     registerStaticRoutes(app, options.staticRoot);
     // Methods outside HTTP_METHODS reach nothing above

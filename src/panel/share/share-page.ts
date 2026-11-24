@@ -354,6 +354,8 @@ const previewHeadOf = (ogImage: string[]): string =>
 const headOf = (input: SharePageInput, meta: PageMeta): string => {
     const shareUrl = `${input.baseUrl}/s/${input.token}`;
     const imageUrl = `${shareUrl}/og.png`;
+    // The same share as JSON: a machine-readable alternate, not another page
+    const jsonAlternateUrl = `${input.baseUrl}/api/public/shares/${input.token}`;
     const ogImage = ogImageTags(imageUrl, input.preview);
     if (input.mode === 'preview') return previewHeadOf(ogImage);
     return [
@@ -361,6 +363,7 @@ const headOf = (input: SharePageInput, meta: PageMeta): string => {
         `<title>${escapeHtml(meta.title)}</title>`,
         `<meta name="description" content="${escapeHtml(meta.description)}">`,
         '<meta name="robots" content="noindex,nofollow">',
+        `<link rel="alternate" type="application/json" href="${escapeHtml(jsonAlternateUrl)}">`,
         '<meta property="og:type" content="article">',
         `<meta property="og:title" content="${escapeHtml(meta.title)}">`,
         `<meta property="og:description" content="${escapeHtml(meta.description)}">`,
