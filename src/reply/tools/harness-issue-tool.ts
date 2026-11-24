@@ -1,12 +1,10 @@
 /**
- * The model's own issue list about the harness it is using.
+ * The model's own issue list about the harness it is using (`harness_issue`:
+ * `list` | `create`).
  *
- * `list_harness_issues` is the dedupe step, `create_harness_issue` the write.
- * Neither touches the chat: the model records friction for the maintainer, not
- * a report for the user, and the reply's own text must not mention it.
- *
- * The list also holds issues people filed from the control panel; the model
- * sees only those of the chat it replies in, marked `[user]`.
+ * Legacy `createListHarnessIssuesTool` and `createCreateHarnessIssueTool`
+ * remain exported on this branch until merge so existing callers keep passing
+ * typecheck, while sharing the underlying list/create execution helpers.
  */
 import { match } from 'ts-pattern';
 import type { ToolCallTrace, ToolHandler, ToolResult } from '../../ai/tools/tool-types.js';
@@ -27,6 +25,8 @@ import {
 import { MAX_HARNESS_ISSUES_PER_REPLY, type HarnessIssueState } from './harness-issue-state.js';
 import { CREATE_HARNESS_ISSUE_TOOL_NAME, LIST_HARNESS_ISSUES_TOOL_NAME } from './tool-names.js';
 import { traceQuote } from './tool-trace.js';
+
+export const HARNESS_ISSUE_TOOL_NAME = 'harness_issue';
 
 const ok = (content: string, trace?: ToolCallTrace): ToolResult => ({
     content,
@@ -59,11 +59,6 @@ const formatRecord = (record: HarnessIssueRecord): string => {
     return `#${record.id} [${record.status}][${record.kind}]${severity}${filedByPerson} ${record.title}`;
 };
 
-/**
- * Every call ends with the whole list's counts, not just the rows it returned.
- * A zero-row answer that also says "0 total" is final: no second call with
- * another filter can change it.
- */
 const formatStats = (stats: HarnessIssueStats): string => {
     const counts = HARNESS_ISSUE_STATUSES.map(
         (status) => `${status} ${stats.byStatus[status]}`
@@ -71,11 +66,165 @@ const formatStats = (stats: HarnessIssueStats): string => {
     return `全部 ${stats.total} 条：${counts}`;
 };
 
-const LIST_DESCRIPTION =
+const isStatusFilter = (value: string): value is HarnessIssueStatusFilter =>
+    value === 'open' || value === 'closed' || value === 'all';
+
+const inputProblemMessage = (problem: HarnessIssueInputProblem): string =>
+    match(problem)
+        .with('missing', () => 'title、body、kind 都是必填。')
+        .with('title_too_long', () => `title 超过 ${HARNESS_ISSUE_TITLE_MAX} 字，请压缩成一句话。`)
+        .with('body_too_long', () => `body 超过 ${HARNESS_ISSUE_BODY_MAX} 字，请只保留现象与建议。`)
+        .with('bad_kind', () => 'kind 必须是 bug / improvement / feature。')
+        .with('bad_severity', () => 'severity 必须是 low / medium / high。')
+        .exhaustive();
+
+const executeList = async (
+    args: Readonly<Record<string, unknown>>,
+    chatId: number,
+    tracePrefix: string
+): Promise<ToolResult> => {
+    const statusArg = trimToNull(stringOf(args, 'status')) ?? 'open';
+    if (!isStatusFilter(statusArg)) {
+        return failed('status 必须是 open / closed / all。');
+    }
+    const query = trimToNull(stringOf(args, 'query')) ?? undefined;
+    const limitArg = args['limit'];
+    const limit = typeof limitArg === 'number' && Number.isFinite(limitArg) ? Math.trunc(limitArg) : undefined;
+
+    try {
+        const { records, stats } = await listHarnessIssues({
+            status: statusArg,
+            ...(query === undefined ? {} : { query }),
+            ...(limit === undefined ? {} : { limit }),
+            visibleInChatId: chatId,
+        });
+        const filterLabel = query === undefined ? `status=${statusArg}` : `status=${statusArg}, query=${query}`;
+        const lines =
+            records.length === 0
+                ? [`没有匹配的 issue（${filterLabel}）。`]
+                : [...records.map(formatRecord), `共 ${records.length} 条（${filterLabel}）。`];
+        lines.push(formatStats(stats));
+        const argument = `${statusArg}${query === undefined ? '' : traceQuote(query, 24)}`;
+        return ok(lines.join('\n'), {
+            argument: tracePrefix === '' ? argument : `${tracePrefix}${argument}`,
+            result: `${records.length} 条（共 ${stats.total} 条）`,
+        });
+    } catch (error) {
+        return failed(`读取 issue 列表失败：${error instanceof Error ? error.message : String(error)}`);
+    }
+};
+
+const executeCreate = async (
+    args: Readonly<Record<string, unknown>>,
+    state: HarnessIssueState,
+    chatId: number,
+    tracePrefix: string
+): Promise<ToolResult> => {
+    const parsed = parseHarnessIssueInput(args);
+    if (!parsed.ok) {
+        return failed(inputProblemMessage(parsed.problem));
+    }
+    const { title, body, kind, severity } = parsed.value;
+    if (!state.canCreate()) {
+        return failed(
+            `本条回复已经记录了 ${MAX_HARNESS_ISSUES_PER_REPLY} 条 issue，请合并后再提。`
+        );
+    }
+
+    const toolName = trimToNull(stringOf(args, 'tool_name'));
+    try {
+        const record = await createHarnessIssue({
+            title,
+            body,
+            kind,
+            ...(severity === null ? {} : { severity }),
+            ...(toolName === null ? {} : { toolName: toolName.slice(0, 64) }),
+            chatId,
+        });
+        state.noteCreated();
+        console.log(
+            `[harness-issue] created #${record.id} kind=${record.kind}${record.toolName ? ` tool=${record.toolName}` : ''}`
+        );
+        const argument = `${kind}${traceQuote(title, 24)}${severity === null ? '' : ` · ${severity}`}`;
+        return ok(`已记录 #${record.id}（open, ${record.kind}）。维护者会在后续迭代里处理。`, {
+            argument: tracePrefix === '' ? argument : `${tracePrefix}${argument}`,
+            result: `#${record.id}`,
+        });
+    } catch (error) {
+        return failed(`记录失败：${error instanceof Error ? error.message : String(error)}`);
+    }
+};
+
+const MERGED_DESCRIPTION =
+    '查看或记录 harness 自身问题与改进建议（list 查重，create 提单）。' +
+    "提单规范见 load_skill(['harness-reporting'])；勿写进回复正文。";
+
+const MERGED_INPUT_SCHEMA = {
+    type: 'object',
+    properties: {
+        action: {
+            type: 'string',
+            enum: ['list', 'create'],
+            description: 'list=查重列表；create=记录新 issue',
+        },
+        status: {
+            type: 'string',
+            enum: ['open', 'closed', 'all'],
+            description: 'list 过滤，默认 open',
+        },
+        query: { type: 'string', description: 'list 关键词过滤' },
+        limit: {
+            type: 'integer',
+            minimum: 1,
+            maximum: HARNESS_ISSUE_LIST_LIMIT_MAX,
+            description: 'list 条数上限（默认20）',
+        },
+        title: { type: 'string', description: 'create 一句话标题' },
+        body: { type: 'string', description: 'create 现象/影响/建议（勿贴用户原文）' },
+        kind: {
+            type: 'string',
+            enum: [...HARNESS_ISSUE_KINDS],
+            description: 'create 类型：bug/improvement/feature',
+        },
+        severity: {
+            type: 'string',
+            enum: [...HARNESS_ISSUE_SEVERITIES],
+            description: 'create 影响程度',
+        },
+        tool_name: { type: 'string', description: 'create 相关工具名' },
+    },
+    required: ['action'],
+};
+
+export interface HarnessIssueToolOptions {
+    readonly state: HarnessIssueState;
+    /** Where the issue was reported from; stored for follow-up, never shown */
+    readonly chatId: number;
+}
+
+export const createHarnessIssueTool = (options: HarnessIssueToolOptions): ToolHandler => ({
+    definition: {
+        name: HARNESS_ISSUE_TOOL_NAME,
+        description: MERGED_DESCRIPTION,
+        inputSchema: MERGED_INPUT_SCHEMA,
+    },
+    statusText: (args) =>
+        match(args.action)
+            .with('list', () => '🔍 正在查看 harness issue…')
+            .with('create', () => '📝 正在记录 harness issue…')
+            .otherwise(() => undefined),
+    execute: async (args) =>
+        match(args.action)
+            .with('list', () => executeList(args, options.chatId, 'list · '))
+            .with('create', () => executeCreate(args, options.state, options.chatId, 'create · '))
+            .otherwise(() => failed('action 必须是 "list" 或 "create"。')),
+});
+
+const LEGACY_LIST_DESCRIPTION =
     '列出已记录的 harness 自身问题与改进建议及其状态。在提新 issue 前先用它查重；status=closed 可查已处理/已驳回的旧条目。' +
     '每次结果末尾都带全量统计（总数与各状态计数），不必换过滤条件反复确认。';
 
-const LIST_INPUT_SCHEMA = {
+const LEGACY_LIST_INPUT_SCHEMA = {
     type: 'object',
     properties: {
         status: {
@@ -96,11 +245,11 @@ const LIST_INPUT_SCHEMA = {
     },
 };
 
-const CREATE_DESCRIPTION =
+const LEGACY_CREATE_DESCRIPTION =
     '记录一条关于 harness 自身的问题或改进建议：工具描述不清、参数不够用、错误信息没帮助、上下文格式难解析、缺少能力、提示词自相矛盾等。' +
     '只写 harness 的问题，不要贴用户消息原文、个人信息或一次性任务细节。提交前先用 `list_harness_issues` 查重。';
 
-const CREATE_INPUT_SCHEMA = {
+const LEGACY_CREATE_INPUT_SCHEMA = {
     type: 'object',
     properties: {
         title: {
@@ -129,68 +278,21 @@ const CREATE_INPUT_SCHEMA = {
     required: ['title', 'body', 'kind'],
 };
 
-const isStatusFilter = (value: string): value is HarnessIssueStatusFilter =>
-    value === 'open' || value === 'closed' || value === 'all';
-
-/** The shared input check's refusals, worded for the model */
-const inputProblemMessage = (problem: HarnessIssueInputProblem): string =>
-    match(problem)
-        .with('missing', () => 'title、body、kind 都是必填。')
-        .with('title_too_long', () => `title 超过 ${HARNESS_ISSUE_TITLE_MAX} 字，请压缩成一句话。`)
-        .with('body_too_long', () => `body 超过 ${HARNESS_ISSUE_BODY_MAX} 字，请只保留现象与建议。`)
-        .with('bad_kind', () => 'kind 必须是 bug / improvement / feature。')
-        .with('bad_severity', () => 'severity 必须是 low / medium / high。')
-        .exhaustive();
-
 export interface ListHarnessIssuesToolOptions {
-    /**
-     * The chat the reply happens in: issues people filed on other chats stay
-     * invisible to the model, rows, keyword hits and counts alike
-     */
     readonly chatId: number;
 }
 
 export const createListHarnessIssuesTool = (options: ListHarnessIssuesToolOptions): ToolHandler => ({
     definition: {
         name: LIST_HARNESS_ISSUES_TOOL_NAME,
-        description: LIST_DESCRIPTION,
-        inputSchema: LIST_INPUT_SCHEMA,
+        description: LEGACY_LIST_DESCRIPTION,
+        inputSchema: LEGACY_LIST_INPUT_SCHEMA,
     },
-    execute: async (args) => {
-        const statusArg = trimToNull(stringOf(args, 'status')) ?? 'open';
-        if (!isStatusFilter(statusArg)) {
-            return failed('status 必须是 open / closed / all。');
-        }
-        const query = trimToNull(stringOf(args, 'query')) ?? undefined;
-        const limitArg = args['limit'];
-        const limit = typeof limitArg === 'number' && Number.isFinite(limitArg) ? Math.trunc(limitArg) : undefined;
-
-        try {
-            const { records, stats } = await listHarnessIssues({
-                status: statusArg,
-                ...(query === undefined ? {} : { query }),
-                ...(limit === undefined ? {} : { limit }),
-                visibleInChatId: options.chatId,
-            });
-            const filterLabel = query === undefined ? `status=${statusArg}` : `status=${statusArg}, query=${query}`;
-            const lines =
-                records.length === 0
-                    ? [`没有匹配的 issue（${filterLabel}）。`]
-                    : [...records.map(formatRecord), `共 ${records.length} 条（${filterLabel}）。`];
-            lines.push(formatStats(stats));
-            return ok(lines.join('\n'), {
-                argument: `${statusArg}${query === undefined ? '' : traceQuote(query, 24)}`,
-                result: `${records.length} 条（共 ${stats.total} 条）`,
-            });
-        } catch (error) {
-            return failed(`读取 issue 列表失败：${error instanceof Error ? error.message : String(error)}`);
-        }
-    },
+    execute: async (args) => executeList(args, options.chatId, ''),
 });
 
 export interface CreateHarnessIssueToolOptions {
     readonly state: HarnessIssueState;
-    /** Where the issue was reported from; stored for follow-up, never shown */
     readonly chatId: number;
 }
 
@@ -199,41 +301,8 @@ export const createCreateHarnessIssueTool = (
 ): ToolHandler => ({
     definition: {
         name: CREATE_HARNESS_ISSUE_TOOL_NAME,
-        description: CREATE_DESCRIPTION,
-        inputSchema: CREATE_INPUT_SCHEMA,
+        description: LEGACY_CREATE_DESCRIPTION,
+        inputSchema: LEGACY_CREATE_INPUT_SCHEMA,
     },
-    execute: async (args) => {
-        const parsed = parseHarnessIssueInput(args);
-        if (!parsed.ok) {
-            return failed(inputProblemMessage(parsed.problem));
-        }
-        const { title, body, kind, severity } = parsed.value;
-        if (!options.state.canCreate()) {
-            return failed(
-                `本条回复已经记录了 ${MAX_HARNESS_ISSUES_PER_REPLY} 条 issue，请合并后再提。`
-            );
-        }
-
-        const toolName = trimToNull(stringOf(args, 'tool_name'));
-        try {
-            const record = await createHarnessIssue({
-                title,
-                body,
-                kind,
-                ...(severity === null ? {} : { severity }),
-                ...(toolName === null ? {} : { toolName: toolName.slice(0, 64) }),
-                chatId: options.chatId,
-            });
-            options.state.noteCreated();
-            console.log(
-                `[harness-issue] created #${record.id} kind=${record.kind}${record.toolName ? ` tool=${record.toolName}` : ''}`
-            );
-            return ok(`已记录 #${record.id}（open, ${record.kind}）。维护者会在后续迭代里处理。`, {
-                argument: `${kind}${traceQuote(title, 24)}${severity === null ? '' : ` · ${severity}`}`,
-                result: `#${record.id}`,
-            });
-        } catch (error) {
-            return failed(`记录失败：${error instanceof Error ? error.message : String(error)}`);
-        }
-    },
+    execute: async (args) => executeCreate(args, options.state, options.chatId, ''),
 });

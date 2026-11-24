@@ -66,31 +66,23 @@ import { GENERATE_IMAGE_TOOL_NAME } from './tool-names.js';
 export { IMAGE_ASPECT_RATIOS } from './image-tool-args.js';
 
 const descriptionOf = (hasSticker: boolean, bananaOnly: boolean): string =>
-    '生成新图片或基于现有图片进行修改。生成结果不会自动发出：每次生成得到一个编号（g1、g2…），' +
-    `用 send_image(image_id='g1') 发出满意的那张（可以多次 send_image，本条回复最多 10 张图片，多张作为一条相册发出）；` +
-    `同一条回复最多生成 ${MAX_GENERATED_IMAGES} 张。` +
-    '参考或修改上下文已有图片（含消息附件、链接预览图片及历史生成图）时，在 references 中指定消息编号；' +
-    '动图（GIF/动态贴纸）取首帧；同条消息含多张图片时用 image 指定序号（从 1 开始，消息附件在前，链接预览图片在后）。' +
-    '参考本次已生成的图片（继续修改）、搜索候选或已读取图片时，在 web_references 中填入 image_id（g1 或 img1）或 search_id。' +
-    (hasSticker ? '参考贴纸包内贴纸时，在 web_references 中填入 sticker（st1、包内序号或画面名称）。' : '') +
+    `生图或改图，返回 g1/g2…（不自动发出，用 send_image 发送，每回复最多10张；最多生成 ${MAX_GENERATED_IMAGES} 张）。` +
+    `上下文图（含预览/历史，GIF取首帧）用 references；本回复图用 web_references（g1/img1/sN${hasSticker ? '/贴纸' : ''}）。` +
     (bananaOnly
-        ? '只能用 banana 模型（Gemini nano-banana）出图；gpt 生图需要申请完整功能后才能使用。'
-        : '默认用 banana 模型（Gemini nano-banana）出图；model 传 gpt 则改用 gpt-image-2.5-dev。') +
-    'banana 按 aspect_ratio 出图，并支持自动调用 Google 图片搜索获取真实视觉参考（可在 prompt 中注明所需参考对象，参考来源附于回复末尾）' +
-    (bananaOnly ? '。' : '；gpt 不支持这两项。');
+        ? '仅限 banana 模型（支持 aspect_ratio 与 Google 图片参考）。'
+        : '默认 banana（支持 aspect_ratio 与 Google 图片参考）；gpt 不支持这两项。');
 
 const modelSchemaOf = (bananaOnly: boolean) =>
     bananaOnly
         ? {
               type: 'string',
               enum: ['banana'],
-              description: '生图模型：只能用 banana（Gemini nano-banana；体验用户限制）。',
+              description: '仅 banana（体验限制）',
           }
         : {
               type: 'string',
               enum: IMAGE_MODEL_CHOICES,
-              description:
-                  '生图模型：banana（默认，Gemini nano-banana）或 gpt（gpt-image-2.5-dev）。gpt 不支持 aspect_ratio 与 Google 图片搜索参考。',
+              description: 'banana（默认）/ gpt（不支持比例与搜图参考）',
           };
 
 const inputSchemaOf = (hasSticker: boolean, bananaOnly: boolean) => ({
@@ -98,49 +90,31 @@ const inputSchemaOf = (hasSticker: boolean, bananaOnly: boolean) => ({
     properties: {
         prompt: {
             type: 'string',
-            description:
-                '画面描述（中英文均可）。参考多张图时按画面特征指代各图（如“穿红衣的人像”），勿用“第一张图”等序号；需呈现在画面中的文字请原样写出。',
+            description: '画面描述（中英文）；多图按特征指代，画面文字原样写出',
         },
         references: {
             type: 'array',
-            description: '要参考或修改的上下文图片（含消息附件与链接预览图片）；省略则从零生成。',
+            description: '上下文参考图（含链接预览）',
             items: {
                 type: 'object',
                 properties: {
-                    message: {
-                        type: 'integer',
-                        minimum: 1,
-                        description: '图片所在消息的编号（#N 里的数字）',
-                    },
-                    image: {
-                        type: 'integer',
-                        minimum: 1,
-                        description:
-                            '这条消息里的第几张图，从 1 开始（附件在前，链接预览的图在后）；省略就取这条消息的全部图',
-                    },
+                    message: { type: 'integer', minimum: 1, description: '消息编号 #N' },
+                    image: { type: 'integer', minimum: 1, description: '第几张图（默认全取）' },
                 },
                 required: ['message'],
             },
         },
         web_references: {
             type: 'array',
-            description: hasSticker
-                ? '要参考的额外图片（本次生成的图、search_images 的候选、fetch_image 读过的图、贴纸包里的贴纸）。'
-                : '要参考的额外图片（本次生成的图、search_images 的候选、fetch_image 读过的图）。',
+            description: hasSticker ? '额外参考图（gN/sN/imgN/贴纸）' : '额外参考图（gN/sN/imgN）',
             items: {
                 type: 'object',
                 properties: {
-                    search_id: { type: 'string', description: "搜索结果候选编号，形如 's2'" },
-                    image_id: {
-                        type: 'string',
-                        description: "图片编号：本次生成的 g1，或 fetch_image 读过的 img1",
-                    },
+                    search_id: { type: 'string', description: '候选 sN' },
+                    image_id: { type: 'string', description: 'gN 或 imgN' },
                     ...(hasSticker
                         ? {
-                              sticker: {
-                                  type: 'string',
-                                  description: "贴纸：st1（fetch_image 预览过的）、包内序号 07、实际画面名或目录整行，如 '吃冰棒'",
-                              },
+                              sticker: { type: 'string', description: 'stN/序号/画面名' },
                           }
                         : {}),
                 },
@@ -150,7 +124,7 @@ const inputSchemaOf = (hasSticker: boolean, bananaOnly: boolean) => ({
         aspect_ratio: {
             type: 'string',
             enum: IMAGE_ASPECT_RATIOS,
-            description: '画面比例（仅 banana 模型生效）；改图时省略就沿用原图比例。',
+            description: '画面比例（仅 banana）',
         },
     },
     required: ['prompt'],

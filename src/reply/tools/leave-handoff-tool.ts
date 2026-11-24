@@ -20,25 +20,20 @@ import { workspaceToolError, workspaceToolSuccess } from './workspace-tool-resul
 import { LEAVE_HANDOFF_TOOL_NAME } from './tool-names.js';
 
 const DESCRIPTION_HEAD =
-    '把没做完的工作写成交接文档，留给下一轮回复接手。当本次回复必须收尾（工具预算/墙钟用尽、免费轮次用完）' +
-    '而事情没做完时调用。文档写进本会话工作区的 handoff.md（整体覆盖，最多 8000 字符，超出会被截断并注明）。' +
-    '同一会话的下一轮回复会自动看到正文前 2000 字符（其余用 workspace_read 读）。' +
-    '第一行写一句话进度/下一步；正文写：用户要什么、已经完成什么（产物路径、`#N` 与说话人/关键词，' +
-    '编号每轮会重排）、还剩什么与下一步具体做什么、关键决定/限制/失败原因；不要复述对话。' +
-    '写完在最终回答里告诉用户进度。';
+    `写交接文档到 handoff.md（覆盖，≤${HANDOFF_TOOL_MAX_CHARS}字，下轮见前2000字；` +
+    "结构见 load_skill(['workspace-usage'])）。";
 
 /** Gemini runs a hand-off round after the budgets are gone; the other platforms do not */
-const DESCRIPTION_FINAL_ROUND = `${DESCRIPTION_HEAD}在 Gemini 的收尾轮里它是唯一还能执行的工具。`;
+const DESCRIPTION_FINAL_ROUND = `${DESCRIPTION_HEAD}Gemini 收尾轮唯一可用工具。`;
 
-const DESCRIPTION_NEUTRAL = `${DESCRIPTION_HEAD}在还有工具可用的收尾阶段提前调用（预算彻底耗尽后的最终回答轮无法调用工具）。`;
+const DESCRIPTION_NEUTRAL = `${DESCRIPTION_HEAD}请在收尾前提前调用。`;
 
 const INPUT_SCHEMA = {
     type: 'object',
     properties: {
         content: {
             type: 'string',
-            description:
-                '交接正文（Markdown）。第一行写一句话进度/下一步；最多 8000 字符，超出会截断保存。',
+            description: `交接 Markdown（首行一句话进度，≤${HANDOFF_TOOL_MAX_CHARS}字）`,
         },
     },
     required: ['content'],
@@ -97,7 +92,7 @@ export const createLeaveHandoffTool = (options: LeaveHandoffToolOptions): ToolHa
             });
             if (!result.ok) {
                 return reject(
-                    `${result.error}\n本轮已无法补救（收尾轮调不到 workspace_list / workspace_delete）；` +
+                    `${result.error}\n本轮已无法补救（收尾轮调不到 workspace list/delete）；` +
                         '下一条回复先清理工作区再写。',
                     traceArgument
                 );
@@ -116,7 +111,7 @@ export const createLeaveHandoffTool = (options: LeaveHandoffToolOptions): ToolHa
                 ? `已写入交接文档 handoff.md（${label}）：${chars.length} 字符（${size}；${usage}）。`
                 : `已覆盖交接文档 handoff.md（${label}）：原 ${formatBytes(result.replacedBytes ?? 0)} → ${size}（${usage}）。`;
             const truncation = truncated
-                ? `\n原文 ${chars.length} 字符，只保存了前 ${HANDOFF_TOOL_MAX_CHARS} 字符（注入只取前 2000，其余可 workspace_read）。`
+                ? `\n原文 ${chars.length} 字符，只保存了前 ${HANDOFF_TOOL_MAX_CHARS} 字符（注入只取前 2000，其余可 workspace(action="read")）。`
                 : '';
             return workspaceToolSuccess(
                 `${base}同一会话的下一轮回复会看到全文（上限 2000 字符）。${truncation}`,

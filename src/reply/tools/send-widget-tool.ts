@@ -25,16 +25,12 @@ import { resolveWorkspaceRef, type WorkspaceState } from '../workspace/workspace
 import { traceBytes, traceParts } from './tool-trace.js';
 
 const BASE_DESCRIPTION =
-    '把一张聊天内 UI 卡片作为这条回复的附件发到聊天（每条回复最多一个附件）。' +
-    '先用 get_ui_guide 取对应模式的完整规范。' +
-    'mode="a2ui"：日常信息卡（卡片/文本/列表/表格/图表/按钮视觉），surface 传 A2UI 子集 surface 的 minified JSON 字符串；服务端编译成卡片，体积小、样式稳定。' +
-    'mode="html"：声明式组件表达不了的自定义视觉/动效，传一份自包含 HTML（需服务端开启 HTML 模式）。' +
-    '可选 caption 显示在卡片下方。卡片发出后不可修改。';
+    '发送 UI 卡片（1附件/回复，不可改）。' +
+    "先 load_skill(['widget-a2ui']) 或 load_skill(['widget-html']) 读规范；a2ui 传 JSON，html 需开启。";
 
 const WORKSPACE_DESCRIPTION =
     BASE_DESCRIPTION +
-    '也可以用 workspace_path 从本会话工作区取 HTML（mode="html"）或 A2UI surface JSON（mode="a2ui"）；' +
-    '先用 workspace_preview 看过效果再发。';
+    '支持 workspace_path（发前先 workspace(action="preview")）。';
 
 const inputSchemaOf = (workspace: boolean): Readonly<Record<string, unknown>> => ({
     type: 'object',
@@ -42,34 +38,31 @@ const inputSchemaOf = (workspace: boolean): Readonly<Record<string, unknown>> =>
         mode: {
             type: 'string',
             enum: ['a2ui', 'html'],
-            description: 'a2ui=组件 JSON（推荐）；html=自包含 HTML（需开启）',
+            description: 'a2ui（推荐）/ html（需开启）',
         },
         surface: {
             // A JSON object argument loses its nested fields on some platforms
             // (harness issue #5); the tool takes the surface as a JSON string.
             type: 'string',
-            description:
-                'mode=a2ui 时必填：A2UI surface 的 minified JSON 字符串（形状见 get_ui_guide(kind="a2ui")）',
+            description: 'a2ui 必填：minified JSON（见 widget-a2ui）',
         },
         html: {
             type: 'string',
-            description: 'mode=html 时必填：一份自包含 HTML（inline CSS/JS，无外链）',
+            description: 'html 必填：自包含 HTML（无外链）',
         },
         caption: {
             type: 'string',
-            description: '显示在卡片下方的说明文字；不需要就省略',
+            description: '卡片配文',
         },
         ...(workspace
             ? {
                   workspace_path: {
                       type: 'string',
-                      description:
-                          '本会话工作区里的文件路径：mode="html" 时读 HTML，mode="a2ui" 时读 surface JSON；传了它就不要传 html/surface。',
+                      description: '工作区路径（与 html/surface 互斥）',
                   },
                   workspace: {
                       type: 'string',
-                      description:
-                          '要操作哪个会话的工作区：省略=当前会话（w1）；w2、w3… 见运行时工作区清单。',
+                      description: '工作区（省=w1）',
                   },
               }
             : {}),
@@ -159,7 +152,7 @@ export const createSendWidgetTool = (options: SendWidgetToolOptions): ToolHandle
                 const file = await readWorkspaceFile(workspace.chatId, ref.ref.rootId, normalized.path);
                 if (file === null) {
                     return reject(
-                        `工作区里没有《${normalized.path}》。用 workspace_list 看看现有文件，或先 workspace_write 创建。`
+                        `工作区里没有《${normalized.path}》。用 workspace(action="list") 看看现有文件，或先 workspace(action="write") 创建。`
                     );
                 }
                 await touchWorkspaceFile(file.id).catch((error: unknown) => {
@@ -173,7 +166,7 @@ export const createSendWidgetTool = (options: SendWidgetToolOptions): ToolHandle
 
             if (mode === 'a2ui') {
                 if (surfaceArg === undefined || surfaceArg === null) {
-                    return reject('mode="a2ui" 需要 surface（A2UI surface JSON）；先 get_ui_guide(kind="a2ui") 查看形状。');
+                    return reject("mode=\"a2ui\" 需要 surface（A2UI surface JSON）；先 load_skill(['widget-a2ui']) 查看形状。");
                 }
                 const compiled = compileA2uiSurface(surfaceArg, {
                     maxHtmlBytes: limits.maxHtmlBytes,

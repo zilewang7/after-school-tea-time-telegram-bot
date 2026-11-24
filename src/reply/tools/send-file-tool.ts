@@ -29,15 +29,11 @@ import { SEND_FILE_TOOL_NAME } from './tool-names.js';
 import { traceBytes, traceText } from './tool-trace.js';
 
 const BASE_DESCRIPTION =
-    '把你写的文本内容作为文件发到聊天（附在当前回复末尾，每条回复最多一个附件）。' +
-    '适合装不进一条消息的成品长文：完整的 SKILL.md、代码文件、CSV/JSON 数据、报告等。' +
-    '文件名由你决定，保留扩展名；内容是 UTF-8 文本；单份上限 10 MB，' +
-    '可分多次调用用 append=true 追加。';
+    '发送 UTF-8 文本文件（1附件/回复，≤10MB，可 append=true）。';
 
 const WORKSPACE_DESCRIPTION =
     BASE_DESCRIPTION +
-    '也可以给 workspace_path（本会话工作区里的文件），直接把工作区文件发出，不必重复内容；' +
-    '长文或需要反复修改的产物，建议先用 workspace_write 落盘再发送。';
+    '或传 workspace_path 发工作区文件（草稿用 workspace）。';
 
 /** The delivery name of a workspace path: its basename, sanitized like a normal file name */
 const deliveryNameOf = (workspacePath: string): string => {
@@ -50,31 +46,29 @@ const inputSchemaOf = (workspace: boolean): Readonly<Record<string, unknown>> =>
     properties: {
         file_name: {
             type: 'string',
-            description: '文件名，含扩展名，如 SKILL.md、data.csv、main.ts；workspace_path 模式可省略（用工作区文件名）。',
+            description: '文件名含扩展名',
         },
         content: {
             type: 'string',
-            description: '文件的 UTF-8 文本内容；append=true 时是追加的一段；workspace_path 模式不要传。',
+            description: 'UTF-8 正文（与 workspace_path 互斥）',
         },
         append: {
             type: 'boolean',
-            description: 'true=追加到本次回复已写的文件末尾；省略或 false=新建。',
+            description: '追加到文件末尾',
         },
         caption: {
             type: 'string',
-            description: '随文件发出的配文；不需要就省略。',
+            description: '配文',
         },
         ...(workspace
             ? {
                   workspace_path: {
                       type: 'string',
-                      description:
-                          '本会话工作区里的文件路径（如 reports/q3.md）；传了它就不要传 content。',
+                      description: '工作区路径（与 content 互斥）',
                   },
                   workspace: {
                       type: 'string',
-                      description:
-                          '要操作哪个会话的工作区：省略=当前会话（w1）；w2、w3… 见运行时工作区清单。',
+                      description: '工作区（省=w1）',
                   },
               }
             : {}),
@@ -136,7 +130,7 @@ export const createSendFileTool = (options: SendFileToolOptions): ToolHandler =>
                 const file = await readWorkspaceFile(workspace.chatId, ref.ref.rootId, args.workspacePath);
                 if (file === null) {
                     return reject(
-                        `工作区里没有《${args.workspacePath}》。用 workspace_list 看看现有文件，或先 workspace_write 创建。`
+                        `工作区里没有《${args.workspacePath}》。用 workspace(action="list") 看看现有文件，或先 workspace(action="write") 创建。`
                     );
                 }
                 await touchWorkspaceFile(file.id).catch((error: unknown) => {

@@ -62,59 +62,36 @@ import { SEND_IMAGE_TOOL_NAME } from './tool-names.js';
 import { traceParts, traceUrl } from './tool-trace.js';
 
 const DESCRIPTION =
-    '将一张已有图片发送到聊天（附在当前回复末尾，可与其它图片一起发出）。' +
-    `支持传入 image_id（generate_image 本次生成的 g1、fetch_image 已读的 img1）、` +
-    'search_id（搜索候选编号）、message（上下文消息编号 #N）或 url（http(s) 图片直链）。' +
-    `一次发多张时把同类来源写成数组（search_ids=['s1','s2']、image_ids=['img1','g1']、` +
-    `urls=[…]、messages=[3,5]），一次最多 ${SEND_IMAGE_BATCH_MAX} 张、只能一种来源；` +
-    `每条回复最多 ${MAX_REPLY_IMAGES} 张，多张会作为一条相册发出；GIF 候选将作为动图单独发送。`;
+    `发送图片到聊天（每回复最多 ${MAX_REPLY_IMAGES} 张，多张成相册，GIF 作动图）。` +
+    `来源任选其一（批量用同类复数数组，≤${SEND_IMAGE_BATCH_MAX} 张、不可混类）。`;
 
-const pluralSchema = (label: string, description: string) => ({
+const pluralSchema = (label: string) => ({
     type: 'array',
     items: { type: 'string' },
     minItems: 1,
     maxItems: SEND_IMAGE_BATCH_MAX,
-    description: `一次发多张：${label}数组，最多 ${SEND_IMAGE_BATCH_MAX} 个；${description}与单数参数二选一。`,
+    description: `批量${label}（≤${SEND_IMAGE_BATCH_MAX}，与单数互斥）`,
 });
 
 const INPUT_SCHEMA = {
     type: 'object',
     properties: {
-        search_id: { type: 'string', description: "搜索结果里的候选编号，形如 's3'" },
-        search_ids: pluralSchema('搜索结果里的候选编号', "如 ['s1','s2','s3']。"),
-        image_id: {
-            type: 'string',
-            description: "图片编号：generate_image 本次生成的 g1，或 fetch_image 读过的 img1",
-        },
-        image_ids: pluralSchema(
-            '图片编号',
-            "generate_image 本次生成的 g1 或 fetch_image 读过的 img1，如 ['img1','g2']。"
-        ),
-        message: {
-            type: 'integer',
-            minimum: 1,
-            description: '上下文里的消息编号（#N 里的数字），发这条消息里的图（含链接预览里的图）',
-        },
-        image: {
-            type: 'integer',
-            minimum: 1,
-            description: '这条消息里的第几张图，从 1 开始（附件在前，链接预览里的图在后）；省略=第一张',
-        },
+        search_id: { type: 'string', description: "图搜候选（如 's3'）" },
+        search_ids: pluralSchema('候选编号'),
+        image_id: { type: 'string', description: '生成的 gN 或已读的 imgN' },
+        image_ids: pluralSchema('gN/imgN'),
+        message: { type: 'integer', minimum: 1, description: '上下文消息编号 #N' },
+        image: { type: 'integer', minimum: 1, description: 'message 第几张图，默认1' },
         messages: {
             type: 'array',
             items: { type: 'integer', minimum: 1 },
             minItems: 1,
             maxItems: SEND_IMAGE_BATCH_MAX,
-            description:
-                `一次发多张消息里的图：上下文编号数组，最多 ${SEND_IMAGE_BATCH_MAX} 个，每条取第 1 张；` +
-                '与单数参数二选一。',
+            description: `批量消息编号（≤${SEND_IMAGE_BATCH_MAX}，各取第1张）`,
         },
-        url: { type: 'string', description: 'http(s) 图片直链，可以是任意公开地址' },
-        urls: pluralSchema('http(s) 图片直链', '可以是任意公开地址。'),
-        caption: {
-            type: 'string',
-            description: '随这张图发出的配文；不需要就省略。一次发多张时只配在这一批的第一张上。',
-        },
+        url: { type: 'string', description: 'http(s) 图片直链' },
+        urls: pluralSchema('图片直链'),
+        caption: { type: 'string', description: '配文（批量时挂第1张）' },
     },
 };
 

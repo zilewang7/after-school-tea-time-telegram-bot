@@ -252,7 +252,8 @@ export type ToolGroupKey =
     | 'harnessIssues'
     | 'widget'
     | 'workspace'
-    | 'reaction';
+    | 'reaction'
+    | 'skills';
 
 /** Per-chat tool switches: true = on, false = off, missing key = follow the env whitelist */
 export type ToolOverrides = Partial<Record<ToolGroupKey, boolean>>;

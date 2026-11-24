@@ -37,6 +37,8 @@ export interface SearchTextInput {
     readonly canSeeImages: boolean;
     /** A repeated query reused this set instead of hitting SearXNG */
     readonly reused: boolean;
+    /** Tool name shown in next-step hints; defaults to legacy `search_images` until merge */
+    readonly toolName?: 'search_images' | 'find_image';
 }
 
 /**
@@ -66,14 +68,15 @@ const attachLines = (input: SearchTextInput): string[] => {
 const nextStepLines = (input: SearchTextInput, unseen: readonly SearchCandidate[]): string[] => {
     const lines: string[] = [];
     const { set } = input;
+    const callPrefix = input.toolName === 'find_image' ? "find_image(mode='web', " : 'search_images(';
 
     // Paging and fetching only exist for a model that can look at the pictures
     if (input.canSeeImages) {
         if (input.view === 'thumbnails' && unseen.length > 0) {
-            lines.push(`- 想看剩下的 ${unseen.length} 张：search_images(search='${set.id}')`);
+            lines.push(`- 想看剩下的 ${unseen.length} 张：${callPrefix}search='${set.id}')`);
         }
         if (input.view === 'thumbnails') {
-            lines.push(`- 只要文字清单：search_images(search='${set.id}', view='details')`);
+            lines.push(`- 只要文字清单：${callPrefix}search='${set.id}', view='details')`);
         }
         if (unseen.length > 0) {
             const firstId = unseen[0]?.id ?? 's1';
@@ -307,7 +310,7 @@ export const mediaToolErrors = {
         return `没有搜索集合 ${setId}。本次可用：${known || '还没有搜索过'}`;
     },
     unknownCandidate: (candidateId: string) =>
-        `没有候选 ${candidateId}。候选编号形如 s1，先 search_images 或看工具结果里的编号。`,
+        `没有候选 ${candidateId}。候选编号形如 s1，先 find_image 或看工具结果里的编号。`,
     unknownFetched: (imageId: string) =>
         `没有图片 ${imageId}。编号可以是 generate_image 本次生成的 g1，或 fetch_image 读过的 img1。`,
     noImageSource: '要发哪张图？传 search_id、image_id、message（上下文编号）或 url 之一。',

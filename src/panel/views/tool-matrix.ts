@@ -83,6 +83,7 @@ const GROUP_TOOLS: Record<ToolGroupKey, readonly string[]> = {
         LEAVE_HANDOFF_TOOL_NAME,
     ],
     reaction: [REACT_TO_MESSAGE_TOOL_NAME],
+    skills: ['load_skill'],
 };
 
 const ENABLED_OF: Record<ToolGroupKey, (availability: ToolAvailability) => boolean> = {
@@ -99,6 +100,7 @@ const ENABLED_OF: Record<ToolGroupKey, (availability: ToolAvailability) => boole
     widget: (availability) => availability.widget,
     workspace: (availability) => availability.workspace,
     reaction: (availability) => availability.reaction,
+    skills: (availability) => availability.widget || availability.workspace || availability.harnessIssues,
 };
 
 /** Facts every reason check reads */
@@ -202,6 +204,8 @@ const HARD_REASONS: Record<ToolGroupKey, readonly ReasonCheck[]> = {
     // No chat whitelist: free, one-emoji and visible only in this chat, so it
     // is on by default; the panel's own switch is the only chat-level control.
     reaction: [disabledByName(REACT_TO_MESSAGE_TOOL_NAME)],
+    // Wired to availability.skills / SKILLS_ENABLE at merge time
+    skills: [disabledByName('load_skill')],
 };
 
 /** Why the env whitelist keeps a group off; the panel switch may turn it on */
