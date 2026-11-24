@@ -4,7 +4,7 @@
  *   - test container up: docker compose --profile test up -d k-on-bot-test
  *     (and ~/dockers/watch-first-bot NOT running — same token)
  *
- * Run: pnpm test:e2e:bot         — quick suite (reply/markdown/store//model/panel)
+ * Run: pnpm test:e2e:bot         — quick suite (reply/markdown/store//model/panel/kinds)
  *      pnpm test:e2e:bot:full    — quick + slow edit-flow cases
  *      pnpm test:e2e:bot:tools   — quick + client tool cases (tool-cases.mts:
  *                                  Gemini tool loops, two real pictures)
@@ -47,6 +47,7 @@ import { panelCases } from './panel-cases.mts';
 import { panelPhase2Cases } from './panel-phase2-cases.mts';
 import { panelPhase3Cases } from './panel-phase3-cases.mts';
 import { panelPhase4Cases } from './panel-phase4-cases.mts';
+import { messageKindCases } from './message-kind-cases.mts';
 import { toolCases } from './tool-cases.mts';
 
 /** Fixture image whose only content is this exact string */
@@ -565,6 +566,8 @@ const cases: E2eCase[] = [
     ...panelPhase2Cases,
     ...panelPhase3Cases,
     ...panelPhase4Cases,
+    // What autoSave writes about non-text messages (#16); no model turn
+    ...messageKindCases,
     {
         name: '/model default puts the group back on the global default',
         body: async () => {

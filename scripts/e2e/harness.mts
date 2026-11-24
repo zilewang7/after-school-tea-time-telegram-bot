@@ -46,6 +46,16 @@ export const BOT_USER_ID = Number(readEnvValue('BOT_USER_ID'));
 /** The /pic backend. Absent (or offline) makes the pic case skip, not fail. */
 export const COMFY_FORWARD_URL = readOptionalEnvValue('COMFY_FORWARD_URL');
 
+/** `{message_id}` of a test-driver post, without trusting the response shape */
+const postedMessageId = (payload: unknown): number => {
+    if (typeof payload !== 'object' || payload === null || !('message_id' in payload)) {
+        throw new Error('the test driver answered without a message_id');
+    }
+    const messageId = payload.message_id;
+    if (typeof messageId !== 'number') throw new Error('the test driver answered with a non-numeric message_id');
+    return messageId;
+};
+
 export interface DriverMessage {
     id: number;
     sender_id: number;
@@ -103,6 +113,82 @@ export const editAsUser = async (messageId: number, text: string): Promise<void>
         body: JSON.stringify({ g: TEST_GROUP, message_id: messageId, text }),
     });
     if (!res.ok) throw new Error(`/test/edit HTTP ${res.status}`);
+};
+
+/** A poll as the userbot posts it; a quiz needs the 0-based correct option */
+export interface PollSpec {
+    question: string;
+    options: string[];
+    multiple?: boolean;
+    quiz?: boolean;
+    correctOption?: number;
+}
+
+/**
+ * Post a real poll into the test group as the userbot; returns its message id.
+ * The Bot API cannot make a user account create one, so the driver endpoint does
+ * it on the userbot's behalf.
+ */
+export const sendPollAsUser = async (poll: PollSpec, replyTo?: number): Promise<number> => {
+    const res = await fetch(`${LUOXU_BASE}/test/send-poll`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+            g: TEST_GROUP,
+            question: poll.question,
+            options: poll.options,
+            multiple: poll.multiple ?? false,
+            quiz: poll.quiz ?? false,
+            correct_option: poll.correctOption,
+            reply_to: replyTo,
+        }),
+    });
+    if (!res.ok) throw new Error(`/test/send-poll HTTP ${res.status}: ${await res.text()}`);
+    return postedMessageId(await res.json());
+};
+
+/** Post a real contact card into the test group as the userbot; returns its message id */
+export const sendContactAsUser = async (contact: {
+    firstName: string;
+    phone: string;
+    lastName?: string;
+}): Promise<number> => {
+    const res = await fetch(`${LUOXU_BASE}/test/send-contact`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+            g: TEST_GROUP,
+            first_name: contact.firstName,
+            last_name: contact.lastName ?? '',
+            phone: contact.phone,
+        }),
+    });
+    if (!res.ok) throw new Error(`/test/send-contact HTTP ${res.status}: ${await res.text()}`);
+    return postedMessageId(await res.json());
+};
+
+/**
+ * Pin a message in the test group as the userbot, WITH a notification: that is
+ * what makes Telegram emit the "pinned a message" service event. The userbot
+ * must be an admin with pin rights there.
+ */
+export const pinAsUser = async (messageId: number): Promise<void> => {
+    const res = await fetch(`${LUOXU_BASE}/test/send-service`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ g: TEST_GROUP, action: 'pin', message_id: messageId }),
+    });
+    if (!res.ok) throw new Error(`/test/send-service pin HTTP ${res.status}: ${await res.text()}`);
+};
+
+/** Take a pin down again (no service event is expected from an unpin) */
+export const unpinAsUser = async (messageId: number): Promise<void> => {
+    const res = await fetch(`${LUOXU_BASE}/test/send-service`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ g: TEST_GROUP, action: 'unpin', message_id: messageId }),
+    });
+    if (!res.ok) throw new Error(`/test/send-service unpin HTTP ${res.status}: ${await res.text()}`);
 };
 
 /** Read messages from the test group (ascending), newer than minId */
@@ -330,6 +416,56 @@ export const waitForStoredMessage = async (
         await new Promise((resolve) => setTimeout(resolve, 1000));
     }
     throw new Error(`Timed out waiting for stored message ${messageId}`);
+};
+
+/** What the bot stores about a message's kind (src/db/message-kind.ts) */
+export interface StoredMessageKind {
+    kind: string | null;
+    detail: string | null;
+}
+
+/** Poll until autoSave stored a message-kind annotation; throws on timeout */
+export const waitForStoredMessageKind = async (
+    messageId: number,
+    timeoutMs = 20_000
+): Promise<StoredMessageKind> => {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+        const row = await queryOne<{ messageKind: string | null; messageDetail: string | null }>(
+            'SELECT messageKind, messageDetail FROM telegram_messages WHERE chatId = ? AND messageId = ?',
+            [TEST_CHAT_ID, messageId]
+        );
+        if (row && row.messageKind !== null) {
+            return { kind: row.messageKind, detail: row.messageDetail };
+        }
+        await new Promise((resolve) => setTimeout(resolve, 1000));
+    }
+    throw new Error(`Timed out waiting for a stored message kind of message ${messageId}`);
+};
+
+/**
+ * Poll until a service event newer than `minId` is stored whose annotation
+ * contains `detailIncludes`. A service event's own message id is only visible in
+ * the group read-back, so the case finds it through the stored annotation.
+ */
+export const waitForStoredServiceMessage = async (
+    minId: number,
+    detailIncludes: string,
+    timeoutMs = 30_000
+): Promise<{ messageId: number; detail: string }> => {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+        const row = await queryOne<{ messageId: number; messageDetail: string }>(
+            `SELECT messageId, messageDetail FROM telegram_messages
+             WHERE chatId = ? AND messageKind = 'service' AND messageId > ?
+               AND messageDetail LIKE '%' || ? || '%'
+             ORDER BY messageId DESC LIMIT 1`,
+            [TEST_CHAT_ID, minId, detailIncludes]
+        );
+        if (row) return { messageId: row.messageId, detail: row.messageDetail };
+        await new Promise((resolve) => setTimeout(resolve, 1000));
+    }
+    throw new Error(`Timed out waiting for a stored service message mentioning "${detailIncludes}"`);
 };
 
 /** Whether the bot started a response to this message at all (a row exists in any state) */
