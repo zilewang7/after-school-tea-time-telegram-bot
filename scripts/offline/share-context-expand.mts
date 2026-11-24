@@ -37,9 +37,25 @@ const shareService = await import('../../src/panel/share/share-link-service.js')
 const shareUrls = await import('../../src/panel/share/share-urls.js');
 const shareBlock = await import('../../src/panel/share/share-context-block.js');
 const { sequelize } = await import('../../src/db/config.js');
+// The real context builder: the hook lives in its buildUserMessage
+const { buildContext } = await import('../../src/reply/context-builder.js');
+const { LinkPreviewCache } = await import('../../src/db/linkPreviewCacheDTO.js');
+const { putCachedMedia } = offlineDb;
 
 type ShareLinkRecord = import('../../src/panel/share/share-types.js').ShareLinkRecord;
 type ResponseVersion = import('../../src/db/index.js').ResponseVersion;
+type ModelCapabilities = import('../../src/ai/types.js').ModelCapabilities;
+type UnifiedMessage = import('../../src/ai/types.js').UnifiedMessage;
+
+/** Capabilities of a model that can see pictures (the blocking only needs this) */
+const VISION: ModelCapabilities = {
+    supportsImageInput: true,
+    supportsImageOutput: false,
+    supportsSystemPrompt: true,
+    requiresMessageMerge: false,
+    supportsThinking: false,
+    supportsMediaInput: true,
+};
 
 const PNG_1PX =
     'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
@@ -157,6 +173,83 @@ const expand = async (
 
 /** Load one share through the module's read path */
 const loadBlock = (token: string) => shareBlock.loadShareContextBlock(token);
+
+/** The stored Message row buildContext takes as its trigger */
+const messageRowOf = async (messageId: number) => {
+    const row = await offlineDb.Message.findOne({ where: { chatId: GROUP, messageId } });
+    if (row === null) throw new Error(`message ${messageId} not found`);
+    return row;
+};
+
+/** Build the model context of one message, as a reply (or the panel's view) does */
+const contextOf = async (
+    messageId: number,
+    options: { dryRun?: boolean } = {}
+): Promise<UnifiedMessage[]> => {
+    const row = await messageRowOf(messageId);
+    const { messages } = await buildContext(row, {
+        capabilities: VISION,
+        model: 'gemini-3.8-flash',
+        ...(options.dryRun === true ? { dryRun: true } : {}),
+    });
+    return messages;
+};
+
+/** The non-empty text parts of a built context */
+const contextTextPartsOf = (messages: readonly UnifiedMessage[]): string[] =>
+    messages.flatMap((message) =>
+        message.content.flatMap((part) =>
+            part.type === 'text' && part.text !== undefined ? [part.text] : []
+        )
+    );
+
+/** Every text part of a built context, joined */
+const contextTextOf = (messages: readonly UnifiedMessage[]): string => contextTextPartsOf(messages).join('\n');
+
+/** Text parts of a built context that contain `marker` */
+const contextTextsWith = (messages: readonly UnifiedMessage[], marker: string): string[] =>
+    contextTextPartsOf(messages).filter((text) => text.includes(marker));
+
+const contextPartsOfType = (messages: readonly UnifiedMessage[], type: 'image' | 'media'): number =>
+    messages.reduce((count, message) => count + message.content.filter((part) => part.type === type).length, 0);
+
+/**
+ * Seed a ready luoxu preview for `url`, with one picture, so the context would
+ * normally inject the preview text and the picture. Mirrors the media-key shape
+ * of luoxu-preview-service (the hash value itself only has to be stable).
+ */
+const seedPreviewWithPicture = async (url: string, title: string): Promise<void> => {
+    const urlHash = (value: string): string => {
+        let hash = 0;
+        for (const char of value) hash = (hash * 31 + char.charCodeAt(0)) >>> 0;
+        return hash.toString(16);
+    };
+    const mediaKey = `luoxu-preview:${urlHash(url)}:photo`;
+    const picture = Buffer.from('offline-share-preview-picture');
+    await putCachedMedia({
+        fileUniqueId: mediaKey,
+        data: picture,
+        sizeBytes: picture.length,
+        mime: 'image/jpeg',
+        kind: 'photo',
+    });
+    await LinkPreviewCache.upsert({
+        url,
+        status: 'ready',
+        siteName: 'k-on-bot',
+        title,
+        description: 'N 条消息 · 预览卡摘要',
+        previewType: 'article',
+        author: null,
+        embedUrl: null,
+        fullText: null,
+        mediaItems: JSON.stringify([{ which: 'photo', kind: 'photo', mime: 'image/jpeg', mediaKey, sizeBytes: picture.length }]),
+        ocrText: null,
+        ocrSourceTimestamp: null,
+        ocrSourceUpdateId: null,
+        lastUsedAt: new Date(),
+    });
+};
 
 const cases: { name: string; body: () => Promise<void> }[] = [
     {
@@ -594,6 +687,93 @@ const cases: { name: string; body: () => Promise<void> }[] = [
         },
     },
 ];
+
+cases.push(
+    {
+        name: 'buildContext injects the expanded share, once, also in dryRun',
+        body: async () => {
+            const rootId = takeMessageId();
+            await saveMessage(rootId, ALICE, '上下文问题');
+            const botId = takeMessageId();
+            await saveBotReply(botId, rootId, [versionOf(1, { text: '上下文回答', model: 'gemini-4-neon' })]);
+            const share = await createConversationShare(rootId);
+            const url = ownShareUrlOf(share.token);
+            // Two messages carrying the same link: one expansion plus a pointer
+            const firstId = takeMessageId();
+            await saveMessage(firstId, ALICE, `先看这个 ${url}`, { replyToId: rootId });
+            const triggerId = takeMessageId();
+            await saveMessage(triggerId, ALICE, `再看一次 ${url}`, { replyToId: firstId });
+
+            const messages = await contextOf(triggerId);
+            const headers = contextTextsWith(messages, '分享内容：用户分享的 k-on-bot 会话记录');
+            expect(headers.length === 1, `one expanded share block in the context (got ${headers.length})`);
+            expect(contextTextOf(messages).includes('上下文回答'), 'the block carries the shared content');
+            expect(
+                contextTextsWith(messages, '不再重复').some((text) => text.includes('分享内容与 #')),
+                'the second message gets the share dedupe pointer'
+            );
+
+            // The panel model view builds through the same path with dryRun
+            const dryMessages = await contextOf(triggerId, { dryRun: true });
+            expect(
+                contextTextsWith(dryMessages, '分享内容：用户分享的 k-on-bot 会话记录').length === 1,
+                'dryRun shows the same expansion'
+            );
+            expect(contextTextOf(dryMessages).includes('上下文回答'), 'and the same shared content');
+        },
+    },
+    {
+        name: 'an expanded first-URL share keeps the preview picture and drops its text',
+        body: async () => {
+            // The share lives in its own conversation so the trigger's own link
+            // card cannot appear inside the block and blur the assertion
+            const share = await smallConversationShare('分享里的问题', '分享里的回答');
+            const url = ownShareUrlOf(share.token);
+            await seedPreviewWithPicture(url, '主群 · 对话分享');
+            const triggerId = takeMessageId();
+            await saveMessage(triggerId, ALICE, `你看看 ${url} 谢谢`);
+
+            const messages = await contextOf(triggerId);
+            const text = contextTextOf(messages);
+            expect(
+                contextTextsWith(messages, '分享内容：用户分享的 k-on-bot 会话记录').length === 1,
+                'the share expands in the real context'
+            );
+            expect(contextTextsWith(messages, '[system] 链接预览：').length === 0, 'the preview text is suppressed');
+            expect(!text.includes('站点: k-on-bot'), 'no site line of the link card');
+            expect(contextPartsOfType(messages, 'image') === 1, `the preview picture stays (got ${contextPartsOfType(messages, 'image')})`);
+            expect(!text.includes('链接预览与 #'), 'no preview pointer for the expanded message');
+
+            // A "no preview" status would also be redundant once the share expanded
+            await LinkPreviewCache.update({ status: 'none' }, { where: { url } });
+            const noPreview = await contextOf(triggerId);
+            expect(
+                contextTextsWith(noPreview, '[system] 链接预览：Telegram 没有为该链接生成网页预览。').length === 0,
+                'no preview status next to an expanded share'
+            );
+            expect(
+                contextTextsWith(noPreview, '分享内容：用户分享的 k-on-bot 会话记录').length === 1,
+                'the share still expands'
+            );
+
+            // With the feature off the message is exactly what it was before
+            await LinkPreviewCache.update({ status: 'ready' }, { where: { url } });
+            process.env.SHARE_CONTEXT_EXPAND = '0';
+            try {
+                const plain = await contextOf(triggerId);
+                expect(
+                    contextTextsWith(plain, '分享内容：用户分享的 k-on-bot 会话记录').length === 0,
+                    'SHARE_CONTEXT_EXPAND=0 injects no share block'
+                );
+                expect(contextTextsWith(plain, '[system] 链接预览：').length === 1, 'the preview text is back');
+                expect(contextTextOf(plain).includes('站点: k-on-bot'), 'the link card summary is back');
+                expect(contextPartsOfType(plain, 'image') === 1, 'and its picture');
+            } finally {
+                process.env.SHARE_CONTEXT_EXPAND = '';
+            }
+        },
+    }
+);
 
 const results: CaseResult[] = [];
 for (const testCase of cases) results.push(await runCase(testCase.name, testCase.body));

@@ -19,6 +19,7 @@ import { listReactionsForMessages } from '../db/queries/reaction-queries.js';
 import type { StoredMessageMedia } from '../db/messageMediaDTO.js';
 import { assembleContextMessages, isSubImage, type ContextNumbering } from './context-assembly.js';
 import {
+    extractFirstUrl,
     getLinkPreviewOutcome,
     type LinkPreviewUnavailableReason,
 } from '../services/luoxu-preview-service.js';
@@ -28,6 +29,13 @@ import {
     type TgMessageLinkPlan,
 } from '../services/tg-message-link-service.js';
 import { getBilibiliDanmakuPart } from '../services/bilibili-danmaku-service.js';
+import {
+    createShareContextBudget,
+    expandShareLinksInMessage,
+    shareContextExpansionEnabled,
+    type ShareContextBudget,
+} from '../panel/share/share-context-block.js';
+import { ownShareTokenOfUrl } from '../panel/share/share-urls.js';
 import { readStoredChatCommand } from './commands/chat-command-parser.js';
 import { buildOcrFallbackPart } from '../services/luoxu-ocr-service.js';
 import { applyModelCapabilities } from '../ai/message-transformer.js';
@@ -739,6 +747,11 @@ interface TurnInputs {
      * preview repeated by several messages is paid for once.
      */
     seenLinkPreviews: Map<string, number>;
+    /**
+     * Own share links (`/s/<token>`) expanded in this build, when the feature is
+     * on; undefined turns both the expansion and the preview suppression off.
+     */
+    shareExpansion?: ShareContextBudget;
     /** The widget each bot message of the context carried, by message id */
     widgetSurfaces: ReadonlyMap<number, WidgetSurfaceInfo>;
     chatTitle: string | null;
@@ -820,6 +833,28 @@ const buildUserMessage = async (
         parts.push({ type: 'text', text: buildOcrFallbackPart(msg.ocrText) });
     }
 
+    // Own share links: the server reads the shared conversation itself, so the
+    // model sees its content instead of the preview card's one-line summary.
+    // The budget is the build's (one share expands once), and reading is local.
+    const shareExpansion =
+        inputs.shareExpansion === undefined
+            ? undefined
+            : await expandShareLinksInMessage(
+                  msg.text ?? '',
+                  index.numberOf.get(msg.messageId) ?? 0,
+                  inputs.shareExpansion
+              );
+    // When the message's own share link did expand, its luoxu preview would
+    // only repeat a link card next to the content: keep the preview's pictures,
+    // drop its text (design §4.1.6). A link that failed to expand keeps the
+    // preview exactly as before.
+    const firstUrl = extractFirstUrl(msg.text);
+    const firstOwnShare = firstUrl === null ? null : ownShareTokenOfUrl(firstUrl);
+    const firstShareExpanded =
+        firstOwnShare !== null &&
+        shareExpansion !== undefined &&
+        shareExpansion.expandedTokens.includes(firstOwnShare.token);
+
     // Link preview (text + media) for the first URL, served from the
     // URL-addressed cache filled by autoSave via luoxu. The same preview
     // content reached through several messages (a link re-posted, or the
@@ -835,25 +870,40 @@ const buildUserMessage = async (
         const linkPreview = previewOutcome.content;
         const keptAt = seenLinkPreviews.get(linkPreview.identity);
         if (keptAt !== undefined) {
-            parts.push({
-                type: 'text',
-                text: `[system] 链接预览与 #${keptAt} 相同，不再重复。`,
-            });
+            // An expanded share already reports its own duplicate; a second
+            // pointer line would say the same thing twice.
+            if (!firstShareExpanded) {
+                parts.push({
+                    type: 'text',
+                    text: `[system] 链接预览与 #${keptAt} 相同，不再重复。`,
+                });
+            }
         } else {
             const contextNumber = index.numberOf.get(msg.messageId);
             if (contextNumber !== undefined) {
                 seenLinkPreviews.set(linkPreview.identity, contextNumber);
             }
-            previewParts = linkPreview.parts;
+            // Keep the preview's pictures: they are what the message came with,
+            // not a copy of the share's text block.
+            previewParts = firstShareExpanded
+                ? linkPreview.parts.filter((part) => part.type !== 'text')
+                : linkPreview.parts;
             parts.push(...previewParts);
         }
     } else {
         // The model must know whether Telegram has no preview or the fetch
         // failed, instead of guessing from the bare URL (harness issue #12).
-        const notice = linkPreviewStatusNoticeOf(previewOutcome.reason);
+        // An expanded share already carries the content, so its preview status
+        // would only be a stale line about the card (design §4.1.6).
+        const notice = firstShareExpanded ? null : linkPreviewStatusNoticeOf(previewOutcome.reason);
         if (notice !== null) {
             parts.push({ type: 'text', text: notice });
         }
+    }
+
+    // The expanded share content follows the preview card of the same message
+    if (shareExpansion !== undefined && shareExpansion.text !== null) {
+        parts.push({ type: 'text', text: shareExpansion.text });
     }
 
     // t.me message links: the linked message (+ the one it replies to) and its
@@ -1132,6 +1182,11 @@ export const buildContext = async (
     // buildUserMessage): the first message that carries it keeps the parts,
     // every later one gets a pointer line.
     const seenLinkPreviews = new Map<string, number>();
+    // One expansion budget for the whole build: a share linked from several
+    // messages is injected once, and the context's share ceiling is shared.
+    // Undefined when SHARE_CONTEXT_EXPAND=0 (or the feature is off): no
+    // expansion and no preview suppression at all.
+    const shareExpansion = shareContextExpansionEnabled() ? createShareContextBudget() : undefined;
     for (const contextMsg of contextMessages) {
         // Loaded once: the turn is built from these parts, and the tool index
         // keeps the pictures among them before any capability filtering
@@ -1148,6 +1203,7 @@ export const buildContext = async (
             answeredElsewhereNumber: repliesInFlightElsewhere.get(contextMsg.messageId),
             messageLinkPlan: messageLinkPlan.get(contextMsg.messageId),
             seenLinkPreviews,
+            ...(shareExpansion === undefined ? {} : { shareExpansion }),
             widgetSurfaces,
             chatTitle: opts.chatTitle ?? null,
             dryRun,
