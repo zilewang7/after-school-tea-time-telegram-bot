@@ -35,8 +35,7 @@ for (const key of ['GEMINI_API_KEY', 'OPENAI_API_KEY', 'DEEPSEEK_API_KEY', 'GROK
 const args = await import('../../src/reply/tools/history-args.js');
 const textKit = await import('../../src/reply/tools/history-text.js');
 const { createHistoryState } = await import('../../src/reply/tools/history-state.js');
-const { createSearchHistoryTool } = await import('../../src/reply/tools/search-history-tool.js');
-const { createReadHistoryTool } = await import('../../src/reply/tools/read-history-tool.js');
+const { createHistoryTool } = await import('../../src/reply/tools/history-tool.js');
 const { HistoryRequestError } = await import('../../src/services/luoxu-history-service.js');
 const { buildReplyToolContext } = await import('../../src/reply/tools/reply-tool-context.js');
 const { toLuoxuChannelId } = await import('../../src/services/luoxu-channel-id.js');
@@ -231,28 +230,24 @@ cases.push(
 );
 
 cases.push(
-    await runCase('the search_history query description states its length ceiling', async () => {
-        const tool = createSearchHistoryTool(buildOptions(fakeService({})));
+    await runCase('the history query description states its length ceiling', async () => {
+        const tool = createHistoryTool(buildOptions(fakeService({})));
         const description = propertyDescriptionOf(tool.definition.inputSchema, 'query');
         expect(
-            description.includes(`上限 ${args.HISTORY_MAX_QUERY_CHARS} 字符`),
-            'the query description names the 100-character ceiling'
+            description.includes(`≤${args.HISTORY_MAX_QUERY_CHARS}字`),
+            `the query description names the 100-character ceiling (got ${description})`
         );
     })
 );
 
 cases.push(
-    await runCase('the search_history description explains whole-word matching and prefix search', async () => {
-        const tool = createSearchHistoryTool(buildOptions(fakeService({})));
+    await runCase('the history description explains whole-word matching and prefix search', async () => {
+        const tool = createHistoryTool(buildOptions(fakeService({})));
         const description = tool.definition.description;
-        expect(description.includes('整词索引'), 'it says Latin words are indexed whole');
+        expect(description.includes('整词'), 'it says Latin words are matched whole');
         expect(description.includes('docker*'), 'it shows the word-tail prefix form');
-        expect(description.includes('*ocker'), 'it says a mid-word fragment cannot be searched');
-        expect(description.includes('纯单词'), 'it says the marker only works on a bare word');
-        expect(description.includes('#FooBar*'), 'it shows the symbol pitfall of issue #11');
-        expect(description.includes('时有时无'), 'it says the implicit prefix fallback is unreliable');
-        const queryDescription = propertyDescriptionOf(tool.definition.inputSchema, 'query');
-        expect(queryDescription.includes('docker*'), 'the query parameter repeats the prefix form');
+        expect(description.includes('无 *mid'), 'it says a mid-word fragment cannot be searched');
+        expect(description.includes('勿对 #tag 加 *'), 'it warns against putting * on #tag');
     })
 );
 
@@ -359,13 +354,27 @@ cases.push(
 );
 
 cases.push(
-    await runCase('the status line matches the other tools', async () => {
+    await runCase('the status line switches by action and merged tool rejects mixed params', async () => {
         const fake = fakeService({});
-        const search = createSearchHistoryTool(buildOptions(fake));
-        const read = createReadHistoryTool(buildOptions(fake));
-        expect(search.statusText === '🔍 正在翻聊天记录…', 'searching says what it is doing, with an emoji');
-        expect(read.statusText === '📖 正在读聊天记录…', 'reading does the same');
-        expect(search.chatAction === 'typing' && read.chatAction === 'typing', 'both keep the typing action');
+        const tool = createHistoryTool(buildOptions(fake));
+        expect(typeof tool.statusText === 'function', 'statusText is a dynamic function');
+        if (typeof tool.statusText === 'function') {
+            expect(tool.statusText({ action: 'search' }) === '🔍 正在翻聊天记录…', 'search status matches');
+            expect(tool.statusText({ action: 'read' }) === '📖 正在读聊天记录…', 'read status matches');
+            expect(tool.statusText({ action: 'invalid' }) === undefined, 'unknown action returns undefined');
+        }
+        expect(tool.chatAction === 'typing', 'keeps the typing action');
+
+        const missingAction = await execute(tool, { query: 'test' });
+        expect(missingAction.isError && missingAction.content.includes('"search" 或 "read"'), 'missing action is refused');
+        const mixedSearch = await execute(tool, { action: 'search', query: 'x', ids: ['h1'] });
+        expect(mixedSearch.isError && mixedSearch.content.includes('不能与 ids 混传'), 'search rejects ids');
+        const mixedSearchAround = await execute(tool, { action: 'search', query: 'x', around: 'h1' });
+        expect(mixedSearchAround.isError && mixedSearchAround.content.includes('不能与 around 混传'), 'search rejects around');
+        const mixedRead = await execute(tool, { action: 'read', ids: ['h1'], query: 'x' });
+        expect(mixedRead.isError && mixedRead.content.includes('不能与 query 混传'), 'read rejects query');
+        const mixedReadRange = await execute(tool, { action: 'read', around: 'h1', from: '2026-11-01' });
+        expect(mixedReadRange.isError && mixedReadRange.content.includes('不能与 from 混传'), 'read rejects from');
     })
 );
 
@@ -416,8 +425,8 @@ cases.push(
                 }),
             ],
         });
-        const tool = createSearchHistoryTool(buildOptions(fake));
-        const result = await execute(tool, { query: 'fixupx' });
+        const tool = createHistoryTool(buildOptions(fake));
+        const result = await execute(tool, { action: 'search', query: 'fixupx' });
         expect(
             result.content.includes('[forwarded from channel 在花科技圈] [sent a sticker image (pack emoji: 🌟)]'),
             'the list carries the same annotations as the live context'
@@ -435,10 +444,10 @@ cases.push(
 );
 
 cases.push(
-    await runCase('search_history renders a compact list', async () => {
+    await runCase('history(action=search) renders a compact list', async () => {
         const fake = fakeService({});
-        const tool = createSearchHistoryTool(buildOptions(fake));
-        const result = await execute(tool, { query: 'fixupx' });
+        const tool = createHistoryTool(buildOptions(fake));
+        const result = await execute(tool, { action: 'search', query: 'fixupx' });
         expect(!result.isError, 'the call succeeds');
         expect(result.content.includes('h1 ·'), 'the hit is numbered h1');
         expect(result.content.includes('#12'), 'a message in this turn keeps its #N anchor');
@@ -516,8 +525,8 @@ cases.push(
                 ],
             }),
         });
-        const tool = createSearchHistoryTool(buildOptions(fake));
-        const result = await execute(tool, { query: 'fixupx' });
+        const tool = createHistoryTool(buildOptions(fake));
+        const result = await execute(tool, { action: 'search', query: 'fixupx' });
         expect(!result.isError, 'the call succeeds');
         expect(
             result.content.includes('本群归档：1509 条消息，2025-02-14 06:19 至 2026-11-04 11:07'),
@@ -543,8 +552,8 @@ cases.push(
                 ],
             }),
         });
-        const tool = createSearchHistoryTool(buildOptions(fake));
-        const result = await execute(tool, { query: '不存在的东西' });
+        const tool = createHistoryTool(buildOptions(fake));
+        const result = await execute(tool, { action: 'search', query: '不存在的东西' });
         expect(!result.isError, 'no hits is not an error');
         expect(result.content.includes('没有找到匹配的历史消息'), 'it says there is no match');
         expect(
@@ -552,12 +561,12 @@ cases.push(
             'and how far back the archive goes'
         );
         expect(!result.content.includes('词尾加 *'), 'a Chinese miss gets no prefix hint');
-        const latin = await execute(tool, { query: 'FooBar' });
+        const latin = await execute(tool, { action: 'search', query: 'FooBar' });
         expect(latin.content.includes('词尾加 *'), 'a Latin miss explains the word-tail prefix form');
         expect(!latin.content.includes('放宽时间'), 'an unfiltered miss suggests no filter change');
-        const starred = await execute(tool, { query: 'FooBar*' });
+        const starred = await execute(tool, { action: 'search', query: 'FooBar*' });
         expect(!starred.content.includes('词尾加 *'), 'a query that already uses the marker gets no advice');
-        const narrowed = await execute(tool, { query: 'FooBar', sender: '123456' });
+        const narrowed = await execute(tool, { action: 'search', query: 'FooBar', sender: '123456' });
         expect(narrowed.content.includes('放宽时间'), 'a narrowed miss also suggests loosening the filter');
     })
 );
@@ -569,8 +578,8 @@ cases.push(
                 throw new HistoryRequestError('unavailable', 'offline');
             },
         });
-        const tool = createSearchHistoryTool(buildOptions(fake));
-        const result = await execute(tool, { query: 'fixupx' });
+        const tool = createHistoryTool(buildOptions(fake));
+        const result = await execute(tool, { action: 'search', query: 'fixupx' });
         expect(!result.isError, 'the search still succeeds');
         expect(result.content.includes('h1 ·'), 'the hits are still listed');
         expect(!result.content.includes('本群归档'), 'the missing line is simply absent');
@@ -580,8 +589,8 @@ cases.push(
 cases.push(
     await runCase('the requested limit reaches luoxu and grows the budget', async () => {
         const fake = fakeService({});
-        const tool = createSearchHistoryTool(buildOptions(fake));
-        await execute(tool, { limit: 200 });
+        const tool = createHistoryTool(buildOptions(fake));
+        await execute(tool, { action: 'search', limit: 200 });
         expect(fake.searches[0]?.limit === 200, 'the limit is forwarded');
         expect(textKit.searchListBudget(200) > textKit.searchListBudget(50), 'more hits means more room');
         expect(textKit.searchListBudget(1) === 6000, 'a small list keeps the old floor');
@@ -593,8 +602,8 @@ cases.push(
     await runCase('the list counts the pictures fetch_image can actually serve', async () => {
         // The fixture's index marks two images; luoxu says the manifest holds three
         const fake = fakeService({ raw: [rawMessage({ imageCount: 3 })] });
-        const tool = createSearchHistoryTool(buildOptions(fake));
-        const result = await execute(tool, { query: 'fixupx' });
+        const tool = createHistoryTool(buildOptions(fake));
+        const result = await execute(tool, { action: 'search', query: 'fixupx' });
         expect(
             result.content.includes('附：图×3、网页预览、IV 正文'),
             `luoxu's count wins over the index markers (got ${result.content.split('\n').find((line) => line.includes('附：'))})`
@@ -606,9 +615,9 @@ cases.push(
     await runCase('a message keeps its hN across searches', async () => {
         const fake = fakeService({});
         const state = createHistoryState();
-        const tool = createSearchHistoryTool(buildOptions(fake, { state }));
-        const first = await execute(tool, { query: 'fixupx' });
-        const second = await execute(tool, { query: 'Agent' });
+        const tool = createHistoryTool(buildOptions(fake, { state }));
+        const first = await execute(tool, { action: 'search', query: 'fixupx' });
+        const second = await execute(tool, { action: 'search', query: 'Agent' });
         expect(first.content.includes('h1 ·'), 'the first search numbers it h1');
         expect(second.content.includes('h1 ·') && !second.content.includes('h2 ·'), 'the second search reuses h1');
         expect(state.size() === 1, 'the state holds one message');
@@ -619,9 +628,9 @@ cases.push(
     await runCase('before=hN becomes the luoxu end parameter', async () => {
         const fake = fakeService({});
         const state = createHistoryState();
-        const tool = createSearchHistoryTool(buildOptions(fake, { state }));
-        await execute(tool, { query: 'fixupx' });
-        await execute(tool, { query: 'fixupx', before: 'h1' });
+        const tool = createHistoryTool(buildOptions(fake, { state }));
+        await execute(tool, { action: 'search', query: 'fixupx' });
+        await execute(tool, { action: 'search', query: 'fixupx', before: 'h1' });
         const second = fake.searches[1];
         expect(second?.end === fixtureMessage().t, 'the second page ends where h1 starts');
     })
@@ -635,15 +644,15 @@ cases.push(
                 { uid: BOT_ID, name: 'K-ON' },
             ],
         });
-        const tool = createSearchHistoryTool(buildOptions(ambiguous));
-        const result = await execute(tool, { query: 'x', sender: 'K-ON' });
+        const tool = createHistoryTool(buildOptions(ambiguous));
+        const result = await execute(tool, { action: 'search', query: 'x', sender: 'K-ON' });
         expect(result.isError, 'the call is refused');
         expect(result.content.includes('505132118') && result.content.includes(String(BOT_ID)), 'both uids are listed');
         expect(ambiguous.searches.length === 0, 'no search is sent with an unresolved sender');
 
         const single = fakeService({ senders: [{ uid: OWNER_ID, name: '黑猫 生一推' }] });
-        const tool2 = createSearchHistoryTool(buildOptions(single));
-        await execute(tool2, { query: 'x', sender: '黑猫' });
+        const tool2 = createHistoryTool(buildOptions(single));
+        await execute(tool2, { action: 'search', query: 'x', sender: '黑猫' });
         expect(single.searches[0]?.senderId === OWNER_ID, 'a unique name becomes a uid');
     })
 );
@@ -659,8 +668,8 @@ cases.push(
                 { uid: 505132118, name: 'Azusa🐱(fake account)' },
             ],
         });
-        const tool = createSearchHistoryTool(buildOptions(renamed));
-        const result = await execute(tool, { query: 'x', sender: 'Azusa' });
+        const tool = createHistoryTool(buildOptions(renamed));
+        const result = await execute(tool, { action: 'search', query: 'x', sender: 'Azusa' });
         expect(!result.isError, `one person under many names resolves (got ${result.content})`);
         expect(renamed.searches[0]?.senderId === 505132118, 'the shared uid is used');
     })
@@ -669,19 +678,19 @@ cases.push(
 cases.push(
     await runCase('scope=all is owner-only', async () => {
         const fake = fakeService({});
-        const tool = createSearchHistoryTool(buildOptions(fake, { requesterId: 4242 }));
-        const refused = await execute(tool, { query: 'x', scope: 'all' });
+        const tool = createHistoryTool(buildOptions(fake, { requesterId: 4242 }));
+        const refused = await execute(tool, { action: 'search', query: 'x', scope: 'all' });
         expect(refused.isError && refused.content.includes('仅机主'), 'a stranger is refused');
         expect(fake.searches.length === 0, 'nothing is queried');
 
-        const ownerTool = createSearchHistoryTool(buildOptions(fake));
-        await execute(ownerTool, { query: 'x', scope: 'all' });
+        const ownerTool = createHistoryTool(buildOptions(fake));
+        await execute(ownerTool, { action: 'search', query: 'x', scope: 'all' });
         expect(fake.searches[0]?.channelId === null, 'the owner searches every indexed group');
     })
 );
 
 cases.push(
-    await runCase('read_history keeps folded blocks to one line unless asked', async () => {
+    await runCase('history(action=read) keeps folded blocks to one line unless asked', async () => {
         const raw =
             '**Analyzing Current Sticker**\n\nI am working through the sticker choice.\n\n**答复**\n\n这是答案正文。';
         const cut = raw.indexOf('**答复**');
@@ -696,15 +705,15 @@ cases.push(
             raw: [rawMessage({ messageId: 2006, text: raw, entities, senderId: BOT_ID, senderIsBot: true })],
         });
         const state = createHistoryState();
-        const tool = createReadHistoryTool(buildOptions(fake, { state }));
-        const stripped = await execute(tool, { ids: ['#12'] });
+        const tool = createHistoryTool(buildOptions(fake, { state }));
+        const stripped = await execute(tool, { action: 'read', ids: ['#12'] });
         expect(!stripped.isError, 'the read succeeds');
         expect(stripped.content.includes('折叠块已省略'), 'the folded block is collapsed');
         expect(stripped.content.includes('Analyzing Current Sticker'), 'its first line is kept');
         expect(!stripped.content.includes('working through'), 'its body is not');
         expect(stripped.content.includes('这是答案正文'), 'the answer is readable');
 
-        const full = await execute(tool, { ids: ['#12'], folded: true });
+        const full = await execute(tool, { action: 'read', ids: ['#12'], folded: true });
         expect(full.content.includes('working through'), 'folded=true returns the reasoning');
     })
 );
@@ -743,8 +752,8 @@ cases.push(
             fromIsBot: false,
             indexedHtml: center.html,
         });
-        const tool = createReadHistoryTool(buildOptions(fake, { state }));
-        const result = await execute(tool, { around: 'h1', minutes: 10 });
+        const tool = createHistoryTool(buildOptions(fake, { state }));
+        const result = await execute(tool, { action: 'read', around: 'h1', minutes: 10 });
         expect(!result.isError, 'the window is readable');
         const earlierAt = result.content.indexOf('早一点的消息');
         const centerAt = result.content.indexOf('← 中心');
@@ -762,16 +771,16 @@ cases.push(
                     throw new HistoryRequestError(kind, 'offline');
                 },
             });
-        const badQuery = await execute(createSearchHistoryTool(buildOptions(failing('bad-query'))), { query: '(' });
+        const badQuery = await execute(createHistoryTool(buildOptions(failing('bad-query'))), { action: 'search', query: '(' });
         expect(badQuery.isError && badQuery.content.includes('查询语法有误'), 'a bad query is explained');
         const notIndexed = await execute(
-            createSearchHistoryTool(buildOptions(failing('not-indexed'))),
-            { query: 'x' }
+            createHistoryTool(buildOptions(failing('not-indexed'))),
+            { action: 'search', query: 'x' }
         );
         expect(notIndexed.isError && notIndexed.content.includes('没有归档索引'), 'an unindexed chat is explained');
         const unavailable = await execute(
-            createSearchHistoryTool(buildOptions(failing('unavailable'))),
-            { query: 'x' }
+            createHistoryTool(buildOptions(failing('unavailable'))),
+            { action: 'search', query: 'x' }
         );
         expect(unavailable.isError && unavailable.content.includes('暂时不可用'), 'an outage is explained');
     })
@@ -794,8 +803,8 @@ cases.push(
             search: async () => outcomeOf(hits),
             raw: hits.map((hit) => rawMessage({ messageId: hit.messageId, text: longHtml, senderId: 42 })),
         });
-        const tool = createSearchHistoryTool(buildOptions(fake));
-        const result = await execute(tool, { query: 'Agent', limit: 20 });
+        const tool = createHistoryTool(buildOptions(fake));
+        const result = await execute(tool, { action: 'search', query: 'Agent', limit: 20 });
         expect(result.content.length <= 6000, `the list is ${result.content.length} chars`);
 
         const rows = hits.slice(0, 3).map((hit) => ({
@@ -885,20 +894,20 @@ cases.push(
             channelId: null,
             requesterId: OWNER_ID,
         });
-        const tool = createSearchHistoryTool(options);
-        const result = await execute(tool, { query: 'Agent' });
+        const tool = createHistoryTool(options);
+        const result = await execute(tool, { action: 'search', query: 'Agent' });
 
         expect(!result.isError, 'the search runs without an explicit scope');
         expect(fake.searches.at(-1)?.channelId === null, 'luoxu is asked for every group');
         expect(fake.statsCalls.at(-1) === null, 'the coverage line counts every group');
         expect(result.content.includes('全部归档群'), 'the answer names the cross-group scope');
         expect(
-            tool.definition.description.includes('机主私聊'),
+            tool.definition.description.includes('私聊无本群归档'),
             'the description states the private-chat scope'
         );
         const scopeDescription = propertyDescriptionOf(tool.definition.inputSchema, 'scope');
         expect(
-            scopeDescription.includes('全部归档群'),
+            scopeDescription.includes('私聊跨群'),
             'the scope property says what all means here'
         );
     })
@@ -912,8 +921,8 @@ cases.push(
             channelId: null,
             requesterId: OWNER_ID,
         });
-        const search = createSearchHistoryTool(ownerOptions);
-        const explicitChat = await execute(search, { scope: 'chat' });
+        const search = createHistoryTool(ownerOptions);
+        const explicitChat = await execute(search, { action: 'search', scope: 'chat' });
         expect(explicitChat.isError, 'the chat scope is refused without an archive');
         expect(explicitChat.content.includes('私聊'), 'the error explains the private chat');
 
@@ -922,8 +931,8 @@ cases.push(
             channelId: null,
             requesterId: 111222333,
         });
-        const stranger = createSearchHistoryTool(strangerOptions);
-        const all = await execute(stranger, { scope: 'all' });
+        const stranger = createHistoryTool(strangerOptions);
+        const all = await execute(stranger, { action: 'search', scope: 'all' });
         expect(all.isError && all.content.includes('仅机主'), 'cross-group search stays owner-only');
     })
 );
@@ -936,17 +945,16 @@ cases.push(
             channelId: null,
             requesterId: OWNER_ID,
         });
-        const search = createSearchHistoryTool(options);
-        const read = createReadHistoryTool(options);
+        const tool = createHistoryTool(options);
 
-        const listed = await execute(search, { query: 'Agent' });
+        const listed = await execute(tool, { action: 'search', query: 'Agent' });
         expect(!listed.isError, 'the search registers h1');
-        const full = await execute(read, { ids: ['h1'] });
+        const full = await execute(tool, { action: 'read', ids: ['h1'] });
         expect(!full.isError, `h1 reads in the private chat: ${full.content.slice(0, 80)}`);
         expect(fake.messages.length > 0, 'the raw text is fetched from the hit channel');
         expect(fake.messages.at(-1)?.channelId === CHANNEL_ID, 'from the group that owns h1');
 
-        const hashReference = await execute(read, { ids: ['#12'] });
+        const hashReference = await execute(tool, { action: 'read', ids: ['#12'] });
         expect(hashReference.isError, '#N has no archive in a private chat');
         expect(
             hashReference.content.includes('私聊'),
@@ -993,8 +1001,8 @@ cases.push(
             raw: [raw],
         });
         const state = createHistoryState();
-        const search = createSearchHistoryTool(buildOptions(fake, { state }));
-        const listed = await execute(search, { query: '拿到手了' });
+        const tool = createHistoryTool(buildOptions(fake, { state }));
+        const listed = await execute(tool, { action: 'search', query: '拿到手了' });
         expect(!listed.isError, 'the search succeeds');
         expect(
             listed.content.includes('[sent a picture] （图片 OCR 文字）CNN：美国情报界仍在调查'),
@@ -1006,8 +1014,7 @@ cases.push(
             'the keyword window is marked as an OCR hit'
         );
 
-        const read = createReadHistoryTool(buildOptions(fake, { state }));
-        const full = await execute(read, { ids: ['h1'] });
+        const full = await execute(tool, { action: 'read', ids: ['h1'] });
         expect(!full.isError, 'the full read succeeds');
         const start = full.content.indexOf('（图片 OCR 文字，自动识别，不是消息正文）');
         const bodyAt = full.content.indexOf('CNN：美国情报界仍在调查');
@@ -1037,9 +1044,9 @@ cases.push(
             raw: [raw],
         });
         const state = createHistoryState();
-        const search = createSearchHistoryTool(buildOptions(fake, { state }));
+        const tool = createHistoryTool(buildOptions(fake, { state }));
 
-        const ocrHit = await execute(search, { query: 'LSPosed' });
+        const ocrHit = await execute(tool, { action: 'search', query: 'LSPosed' });
         expect(!ocrHit.isError, 'the OCR search succeeds');
         expect(
             ocrHit.content.includes('（命中在图片 OCR 文字中）'),
@@ -1050,12 +1057,11 @@ cases.push(
             'the caption is the first line and is not labeled OCR'
         );
 
-        const bodyHit = await execute(search, { query: '有点阴了' });
+        const bodyHit = await execute(tool, { action: 'search', query: '有点阴了' });
         expect(!bodyHit.isError, 'the caption search succeeds');
         expect(!bodyHit.content.includes('命中在图片 OCR 文字中'), 'a hit in the caption is not called OCR');
 
-        const read = createReadHistoryTool(buildOptions(fake, { state }));
-        const full = await execute(read, { ids: ['h1'] });
+        const full = await execute(tool, { action: 'read', ids: ['h1'] });
         const end = full.content.indexOf('（图片 OCR 文字结束）');
         const caption = full.content.lastIndexOf('有点阴了');
         expect(end >= 0 && caption > end, 'the caption follows the closed OCR block');
@@ -1072,8 +1078,8 @@ cases.push(
             search: async () => outcomeOf([hitWith(2300, html)]),
             raw: [rawMessage({ messageId: 2300, text: '有点阴了', media: photoMedia })],
         });
-        const read = createReadHistoryTool(buildOptions(fake));
-        const full = await execute(read, { ids: ['https://t.me/c/2311128579/2300'] });
+        const read = createHistoryTool(buildOptions(fake));
+        const full = await execute(read, { action: 'read', ids: ['https://t.me/c/2311128579/2300'] });
         expect(
             full.content.includes('有点阴了\n其他文字\n（图片 OCR 文字结束）\n有点阴了'),
             `the last occurrence is the body (got ${full.content})`
@@ -1091,8 +1097,8 @@ cases.push(
             raw: [],
         });
         const state = createHistoryState();
-        const search = createSearchHistoryTool(buildOptions(fake, { state }));
-        const listed = await execute(search, { query: '家電修理' });
+        const tool = createHistoryTool(buildOptions(fake, { state }));
+        const listed = await execute(tool, { action: 'search', query: '家電修理' });
         expect(!listed.isError, 'the search still succeeds');
         const listedLines = listed.content.split('\n');
         const rowAt = listedLines.findIndex((line) => line.startsWith('h1 ·'));
@@ -1103,13 +1109,12 @@ cases.push(
         );
         expect(!listed.content.includes('（图片 OCR 文字）'), 'no OCR claim without the original message');
 
-        const read = createReadHistoryTool(buildOptions(fake, { state }));
-        const full = await execute(read, { ids: ['h1'] });
+        const full = await execute(tool, { action: 'read', ids: ['h1'] });
         expect(!full.isError, 'the read still succeeds');
         expect(full.content.includes('未能读取原消息'), 'the read names the unreadable original');
         expect(!full.content.includes('不是消息正文'), 'and makes no OCR claim');
 
-        const window = await execute(read, { around: 'h1', minutes: 10 });
+        const window = await execute(tool, { action: 'read', around: 'h1', minutes: 10 });
         expect(
             window.content.includes('（未能读取原文，文本来自索引）'),
             `the window row carries the same caveat (got ${window.content})`
@@ -1126,8 +1131,8 @@ cases.push(
             search: async () => outcomeOf([hitWith(2450, html)]),
             raw: [rawMessage({ messageId: 2450, text: 'https://example.com/x', media: null })],
         });
-        const read = createReadHistoryTool(buildOptions(fake));
-        const full = await execute(read, { ids: ['https://t.me/c/2311128579/2450'] });
+        const read = createHistoryTool(buildOptions(fake));
+        const full = await execute(read, { action: 'read', ids: ['https://t.me/c/2311128579/2450'] });
         expect(!full.isError, 'the read succeeds');
         expect(!full.content.includes('图片 OCR 文字'), 'nothing is labeled when the body is not in the index');
     })
@@ -1140,8 +1145,8 @@ cases.push(
             search: async () => outcomeOf([hitWith(2460, html)]),
             raw: [rawMessage({ messageId: 2460, text: '有点阴了\n', media: photoMedia })],
         });
-        const read = createReadHistoryTool(buildOptions(fake));
-        const full = await execute(read, { ids: ['https://t.me/c/2311128579/2460'] });
+        const read = createHistoryTool(buildOptions(fake));
+        const full = await execute(read, { action: 'read', ids: ['https://t.me/c/2311128579/2460'] });
         expect(
             full.content.includes('有点阴了\n其他文字\n（图片 OCR 文字结束）\n有点阴了'),
             `trailing newline does not lose the boundary (got ${full.content})`
@@ -1167,7 +1172,9 @@ cases.push(
             raw: [raw],
         });
         const state = createHistoryState();
-        const listed = await execute(createSearchHistoryTool(buildOptions(fake, { state })), {
+        const tool = createHistoryTool(buildOptions(fake, { state }));
+        const listed = await execute(tool, {
+            action: 'search',
             query: '预览图上的字',
         });
         expect(
@@ -1176,7 +1183,7 @@ cases.push(
         );
         expect(listed.content.includes('https://example.com/x'), 'the URL line stays the first line');
 
-        const full = await execute(createReadHistoryTool(buildOptions(fake, { state })), { ids: ['h1'] });
+        const full = await execute(tool, { action: 'read', ids: ['h1'] });
         expect(full.content.includes('（网页预览图 OCR 文字，自动识别，不是消息正文）'), 'the block carries its source');
         expect(full.content.includes('（网页预览图 OCR 文字结束）\nhttps://example.com/x'), 'the body follows the block');
     })
@@ -1191,8 +1198,8 @@ cases.push(
             search: async () => outcomeOf([hitWith(2600, html)]),
             raw: [rawMessage({ messageId: 2600, text: '', media: null })],
         });
-        const read = createReadHistoryTool(buildOptions(fake));
-        const full = await execute(read, { ids: ['https://t.me/c/2311128579/2600'] });
+        const read = createHistoryTool(buildOptions(fake));
+        const full = await execute(read, { action: 'read', ids: ['https://t.me/c/2311128579/2600'] });
         expect(!full.isError, 'the read succeeds');
         expect(!full.content.includes('不是消息正文'), 'no label without a known image medium');
     })
@@ -1226,8 +1233,8 @@ cases.push(
             fromIsBot: false,
             indexedHtml: center.html,
         });
-        const read = createReadHistoryTool(buildOptions(fake, { state }));
-        const window = await execute(read, { around: 'h1', minutes: 10 });
+        const read = createHistoryTool(buildOptions(fake, { state }));
+        const window = await execute(read, { action: 'read', around: 'h1', minutes: 10 });
         expect(!window.isError, 'the window read succeeds');
         expect(
             window.content.includes('（图片 OCR 文字，自动识别，不是消息正文） 窗口里的 OCR 文字'),
@@ -1240,21 +1247,15 @@ cases.push(
 cases.push(
     await runCase('the tool descriptions say OCR text is labeled', async () => {
         const fake = fakeService({});
-        const search = createSearchHistoryTool(buildOptions(fake));
-        const read = createReadHistoryTool(buildOptions(fake));
-        expect(search.definition.description.includes('会被标注'), 'search_history states the label rule');
-        expect(
-            search.definition.description.includes('不是消息正文'),
-            'search_history says OCR text is not the message body'
-        );
-        expect(read.definition.description.includes('不是消息正文'), 'read_history states the label rule');
+        const tool = createHistoryTool(buildOptions(fake));
+        expect(tool.definition.description.includes('OCR 非正文'), 'history states OCR is not the message body');
         const firstContent = textKit.firstContentLineOf('[image]\n第一行内容');
         expect(firstContent.line === 1 && firstContent.text === '第一行内容', 'markers are skipped for the first line');
     })
 );
 
 cases.push(
-    await runCase('read_history links the hN refs it displays', async () => {
+    await runCase('history(action=read) links the hN refs it displays', async () => {
         const fake = fakeService({
             search: async (request) =>
                 outcomeOf([
@@ -1263,13 +1264,12 @@ cases.push(
             raw: [rawMessage({ messageId: 2800, text: '被读的消息' })],
         });
         const state = createHistoryState();
-        const search = createSearchHistoryTool(buildOptions(fake, { state }));
-        await execute(search, { query: '被读的消息' });
-        const read = createReadHistoryTool(buildOptions(fake, { state }));
+        const tool = createHistoryTool(buildOptions(fake, { state }));
+        await execute(tool, { action: 'search', query: '被读的消息' });
 
-        const full = await execute(read, { ids: ['h1'] });
+        const full = await execute(tool, { action: 'read', ids: ['h1'] });
         expect(!full.isError, `the full read succeeds (got ${full.content})`);
-        expect(full.trace?.argument === 'h1', `the trace names the ref (got ${JSON.stringify(full.trace?.argument)})`);
+        expect(full.trace?.argument === 'read · h1', `the trace names the ref (got ${JSON.stringify(full.trace?.argument)})`);
         expect(
             JSON.stringify(full.trace?.links) ===
                 JSON.stringify([{ text: 'h1', url: `https://t.me/c/${CHANNEL_ID}/2800` }]),
@@ -1277,14 +1277,14 @@ cases.push(
         );
 
         // A failed read has no link to offer; a #N ref is linked by the render pass instead
-        const missing = await execute(read, { ids: ['h12'] });
+        const missing = await execute(tool, { action: 'read', ids: ['h12'] });
         expect(missing.isError && missing.trace === undefined, 'an unknown hN carries no link');
-        const contextRef = await execute(read, { ids: ['#12'] });
+        const contextRef = await execute(tool, { action: 'read', ids: ['#12'] });
         expect(!contextRef.isError, 'the #12 ref reads through the context index');
         expect(contextRef.trace?.links === undefined, 'a #N ref adds no stored link');
 
         // The around form links its anchor the same way
-        const window = await execute(read, { around: 'h1', minutes: 10 });
+        const window = await execute(tool, { action: 'read', around: 'h1', minutes: 10 });
         expect(!window.isError, `the window read succeeds (got ${window.content})`);
         expect(
             window.trace?.argument === 'around h1 · 10 分钟',
@@ -1303,11 +1303,11 @@ cases.push(
  *
  * A message's index text can predate its link preview (it is just the URL),
  * while /messages is the only report of how many pictures fetch_image can
- * actually serve. read_history must show the same `附：` line as
- * search_history, in both the full read and the time window.
+ * actually serve. history(action="read") must show the same `附：` line as
+ * history(action="search"), in both the full read and the time window.
  */
 cases.push(
-    await runCase('read_history shows the picture count /messages reports', async () => {
+    await runCase('history(action=read) shows the picture count /messages reports', async () => {
         // Production #1124588: the index holds only the URL, /messages says 5 pictures
         const url = 'https://fixupx.com/example/status/42';
         const center = { ...fixtureHit(), messageId: 3200, html: url };
@@ -1321,9 +1321,9 @@ cases.push(
             },
             raw: [rawMessage({ messageId: 3200, text: url, imageCount: 5 })],
         });
-        const read = createReadHistoryTool(buildOptions(fake));
+        const read = createHistoryTool(buildOptions(fake));
 
-        const full = await execute(read, { ids: ['https://t.me/c/2311128579/3200'] });
+        const full = await execute(read, { action: 'read', ids: ['https://t.me/c/2311128579/3200'] });
         expect(!full.isError, `the full read succeeds (got ${full.content})`);
         expect(
             full.content.includes('附：图×5'),
@@ -1331,7 +1331,7 @@ cases.push(
         );
         expect(!full.content.includes('网页预览'), 'the URL-only index carries no preview labels');
 
-        const window = await execute(read, { around: 'h1', minutes: 10 });
+        const window = await execute(read, { action: 'read', around: 'h1', minutes: 10 });
         expect(!window.isError, `the around read succeeds (got ${window.content})`);
         expect(
             window.content.includes('（附：图×5）'),
@@ -1341,7 +1341,7 @@ cases.push(
 );
 
 cases.push(
-    await runCase('read_history falls back to the index markers without a manifest count', async () => {
+    await runCase('history(action=read) falls back to the index markers without a manifest count', async () => {
         // /messages did not report the manifest; the fixture index marks two images
         const center = { ...fixtureHit(), messageId: 3300 };
         const earlierHit = { ...fixtureHit(), messageId: 3290, timestamp: center.timestamp - 300, html: '前一条' };
@@ -1354,16 +1354,16 @@ cases.push(
             },
             raw: [rawMessage({ messageId: 3300, imageCount: null })],
         });
-        const read = createReadHistoryTool(buildOptions(fake));
+        const read = createHistoryTool(buildOptions(fake));
 
-        const full = await execute(read, { ids: ['https://t.me/c/2311128579/3300'] });
+        const full = await execute(read, { action: 'read', ids: ['https://t.me/c/2311128579/3300'] });
         expect(!full.isError, `the full read succeeds (got ${full.content})`);
         expect(
             full.content.includes('附：图×2、网页预览、IV 正文'),
             `the index marker count is the fallback (got ${full.content})`
         );
 
-        const window = await execute(read, { around: 'h1', minutes: 10 });
+        const window = await execute(read, { action: 'read', around: 'h1', minutes: 10 });
         expect(!window.isError, `the around read succeeds (got ${window.content})`);
         expect(
             window.content.includes('（附：图×2、网页预览、IV 正文）'),
@@ -1373,19 +1373,19 @@ cases.push(
 );
 
 cases.push(
-    await runCase('read_history prints no attachment line when nothing is attached', async () => {
+    await runCase('history(action=read) prints no attachment line when nothing is attached', async () => {
         const plain = { ...fixtureHit(), messageId: 3400, html: '一点普通的消息' };
         const fake = fakeService({
             search: async () => outcomeOf([plain]),
             raw: [rawMessage({ messageId: 3400, text: '一点普通的消息', imageCount: null })],
         });
-        const read = createReadHistoryTool(buildOptions(fake));
+        const read = createHistoryTool(buildOptions(fake));
 
-        const full = await execute(read, { ids: ['https://t.me/c/2311128579/3400'] });
+        const full = await execute(read, { action: 'read', ids: ['https://t.me/c/2311128579/3400'] });
         expect(!full.isError, `the full read succeeds (got ${full.content})`);
         expect(!full.content.includes('附：'), `no picture count means no 附 line (got ${full.content})`);
 
-        const window = await execute(read, { around: 'h1', minutes: 10 });
+        const window = await execute(read, { action: 'read', around: 'h1', minutes: 10 });
         expect(!window.isError, `the around read succeeds (got ${window.content})`);
         expect(!window.content.includes('附：'), `the window row adds none either (got ${window.content})`);
     })

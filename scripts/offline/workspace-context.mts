@@ -403,14 +403,13 @@ const cases: { name: string; body: () => Promise<void> }[] = [
                 fileTools: true,
                 widget: true,
             });
-            expect(withWorkspace.includes('workspace_write'), 'the workspace tools are named');
-            expect(withWorkspace.includes('workspace_find'), 'the find tool is named');
-            expect(withWorkspace.includes('workspace_copy'), 'the copy tool is named');
-            expect(withWorkspace.includes('workspace_preview'), 'the preview tool is named');
+            expect(withWorkspace.includes('`workspace`'), 'the workspace tool is named');
+            expect(withWorkspace.includes('预览'), 'the preview action is named');
+            expect(withWorkspace.includes('workspace-usage'), 'the workspace skill is referenced');
             expect(withWorkspace.includes('workspace_path'), 'send_file names the workspace source');
 
             const withoutWorkspace = buildStaticSystemPrompt('gemini-3.8-flash', { fileTools: true, widget: true });
-            expect(!withoutWorkspace.includes('workspace_write'), 'no workspace line without the tools');
+            expect(!withoutWorkspace.includes('`workspace`'), 'no workspace line without the tool');
             expect(!withoutWorkspace.includes('workspace_path'), 'send_file does not name workspace_path');
 
             const workspaceOnly = buildStaticSystemPrompt('gemini-3.8-flash', {
@@ -418,12 +417,12 @@ const cases: { name: string; body: () => Promise<void> }[] = [
                 fileTools: false,
                 widget: false,
             });
-            expect(workspaceOnly.includes('workspace_write'), 'the workspace line still appears');
+            expect(workspaceOnly.includes('`workspace`'), 'the workspace line still appears');
             expect(!workspaceOnly.includes('`send_file`'), 'a disabled send_file is not named');
             expect(!workspaceOnly.includes('`send_widget`'), 'a disabled send_widget is not named');
 
             const noPreview = buildStaticSystemPrompt('gemini-3.8-flash', { workspace: true, workspacePreview: false });
-            expect(!noPreview.includes('workspace_preview'), 'preview is not named without the tool');
+            expect(noPreview.includes('`workspace`') && !noPreview.includes('与预览'), 'preview is not named without the action');
         },
     },
     {

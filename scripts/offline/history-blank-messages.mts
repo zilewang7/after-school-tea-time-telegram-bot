@@ -45,8 +45,7 @@ const db = await setupOfflineDb();
 const { Message, saveMessage } = db;
 const textKit = await import('../../src/reply/tools/history-text.js');
 const { createHistoryState } = await import('../../src/reply/tools/history-state.js');
-const { createReadHistoryTool } = await import('../../src/reply/tools/read-history-tool.js');
-const { createSearchHistoryTool } = await import('../../src/reply/tools/search-history-tool.js');
+const { createHistoryTool } = await import('../../src/reply/tools/history-tool.js');
 const { buildReplyToolContext } = await import('../../src/reply/tools/reply-tool-context.js');
 const { backfillMessages } = await import('../../src/services/message-backfill-service.js');
 const { loadConversationShareContent } = await import('../../src/panel/share/share-content.js');
@@ -202,8 +201,8 @@ cases.push(
             search: async () => outcomeOf([]),
             raw: [rawMessage({ messageId: 5001 })],
         });
-        const read = createReadHistoryTool(buildOptions(fake));
-        const result = await execute(read, { ids: [linkOf(5001)] });
+        const read = createHistoryTool(buildOptions(fake));
+        const result = await execute(read, { action: 'read', ids: [linkOf(5001)] });
         expect(!result.isError, `the read succeeds (got ${result.content})`);
         expect(fake.messageCalls.length === 1, 'Telegram is asked for the missing id');
         expect(fake.messageCalls[0]?.ids.join(',') === '5001', 'exactly the requested id');
@@ -225,8 +224,8 @@ cases.push(
             search: async () => outcomeOf([]),
             raw: [rawMessage({ messageId: 5002, text: '[service] removed Bot helps bot from the group' })],
         });
-        const read = createReadHistoryTool(buildOptions(fake));
-        const result = await execute(read, { ids: [linkOf(5002)] });
+        const read = createHistoryTool(buildOptions(fake));
+        const result = await execute(read, { action: 'read', ids: [linkOf(5002)] });
         expect(!result.isError, 'the read succeeds');
         expect(
             result.content.includes('（未收录全文索引，以下为 Telegram 原文）'),
@@ -246,8 +245,8 @@ cases.push(
 cases.push(
     await runCase('a message neither the index nor Telegram has says so', async () => {
         const fake = fakeService({ search: async () => outcomeOf([]), raw: [] });
-        const read = createReadHistoryTool(buildOptions(fake));
-        const result = await execute(read, { ids: [linkOf(5003)] });
+        const read = createHistoryTool(buildOptions(fake));
+        const result = await execute(read, { action: 'read', ids: [linkOf(5003)] });
         expect(result.isError, 'the read fails');
         expect(
             result.content.includes('归档和 Telegram 都读不到'),
@@ -323,20 +322,20 @@ cases.push(
 );
 
 cases.push(
-    await runCase('search_history says a blank row is blank', async () => {
+    await runCase('history(action=search) says a blank row is blank', async () => {
         const fake = fakeService({
             search: async () => outcomeOf([hitOf(5010, ' ')]),
             raw: [rawMessage({ messageId: 5010, text: '' })],
         });
-        const search = createSearchHistoryTool(buildOptions(fake));
-        const result = await execute(search, { limit: 5 });
+        const search = createHistoryTool(buildOptions(fake));
+        const result = await execute(search, { action: 'search', limit: 5 });
         expect(!result.isError, 'the search succeeds');
         expect(result.content.includes('（无正文）'), `the row says it has no body (got ${result.content})`);
     })
 );
 
 cases.push(
-    await runCase('search_history words a raw media type instead of a blank row', async () => {
+    await runCase('history(action=search) words a raw media type instead of a blank row', async () => {
         const fake = fakeService({
             search: async () => outcomeOf([hitOf(5011, ' ')]),
             raw: [
@@ -347,8 +346,8 @@ cases.push(
                 }),
             ],
         });
-        const search = createSearchHistoryTool(buildOptions(fake));
-        const result = await execute(search, { limit: 5 });
+        const search = createHistoryTool(buildOptions(fake));
+        const result = await execute(search, { action: 'search', limit: 5 });
         expect(!result.isError, 'the search succeeds');
         expect(
             result.content.includes('[sent a contact card]'),

@@ -214,7 +214,7 @@ const cases: { name: string; body: () => Promise<void> }[] = [
             expect(section !== null, 'the section exists');
             const text = section ?? '';
             expect(text.includes('只显示前 2000 字符'), 'the cut is explained');
-            expect(text.includes('workspace_read path="handoff.md"'), 'the rest has a way to be read');
+            expect(text.includes('workspace(action="read", path="handoff.md")'), 'the rest has a way to be read');
             expect(Array.from(text).length <= HANDOFF_SECTION_MAX_CHARS, 'the section stays under the cap');
         },
     },

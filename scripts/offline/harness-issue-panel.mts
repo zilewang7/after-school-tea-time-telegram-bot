@@ -61,7 +61,7 @@ const { isChatPaused, loadChatSettingsCache, updateChatSettings } = await import
 const service = await import('../../src/services/harness-issue-service.js');
 const { parseHarnessIssueInput } = await import('../../src/services/harness-issue-input.js');
 const { notifyGroupOfUserIssue } = await import('../../src/services/harness-issue-notify.js');
-const { createCreateHarnessIssueTool, createListHarnessIssuesTool } = await import(
+const { createHarnessIssueTool } = await import(
     '../../src/reply/tools/harness-issue-tool.js'
 );
 const { createHarnessIssueState } = await import('../../src/reply/tools/harness-issue-state.js');
@@ -357,8 +357,8 @@ const cases: { name: string; body: () => Promise<void> }[] = [
             for (const [label, input, expected] of inputs) {
                 const parsed = parseHarnessIssueInput(input);
                 const verdict = parsed.ok ? 'ok' : parsed.problem;
-                const tool = createCreateHarnessIssueTool({ state: createHarnessIssueState(), chatId: GROUP_A });
-                const toolResult = await tool.execute(input, new AbortController().signal);
+                const tool = createHarnessIssueTool({ state: createHarnessIssueState(), chatId: GROUP_A });
+                const toolResult = await tool.execute({ action: 'create', ...input }, new AbortController().signal);
                 const response = await postIssue(quietApp, ALICE, { chatId: GROUP_A, ...input });
                 const body = await jsonOf(response);
                 const httpVerdict = response.status === 201 ? 'ok' : body?.error?.code;
@@ -829,8 +829,8 @@ const cases: { name: string; body: () => Promise<void> }[] = [
             expect(fromGroupB.records.length === 1 && fromGroupB.records[0]?.id === b1.id, 'group B finds its own');
 
             const signal = new AbortController().signal;
-            const tool = createListHarnessIssuesTool({ chatId: GROUP_A });
-            const all = await tool.execute({ status: 'all', limit: 50 }, signal);
+            const tool = createHarnessIssueTool({ state: createHarnessIssueState(), chatId: GROUP_A });
+            const all = await tool.execute({ action: 'list', status: 'all', limit: 50 }, signal);
             expect(!all.isError && !all.content.includes('机密标题') && !all.content.includes('白名单外的群'), 'the tool shows no other chat\'s people\'s titles');
             expect(
                 all.content.includes(`#${a3.id} [open][bug][user] 进度 100%_完成 显示不对`),
@@ -838,9 +838,12 @@ const cases: { name: string; body: () => Promise<void> }[] = [
             );
             expect(all.content.includes(`#${b2.id} [open][improvement] 乙群 模型问题`), "the model's issues stay unmarked, from any chat");
             expect(all.content.includes(`全部 ${expectedIds.length} 条`), 'the totals leave other chats\' people\'s issues out');
-            const miss = await tool.execute({ status: 'all', query: 'secret_word' }, signal);
+            const miss = await tool.execute({ action: 'list', status: 'all', query: 'secret_word' }, signal);
             expect(miss.content.includes('没有匹配的 issue'), `the keyword cannot reach them (got ${miss.content})`);
-            const own = await createListHarnessIssuesTool({ chatId: GROUP_B }).execute({ status: 'all', query: 'secret_word' }, signal);
+            const own = await createHarnessIssueTool({ state: createHarnessIssueState(), chatId: GROUP_B }).execute(
+                { action: 'list', status: 'all', query: 'secret_word' },
+                signal
+            );
             expect(own.content.includes(`#${b1.id} [open][bug][user] 乙群 机密标题 secret_word`), 'replying in group B, it is listed');
         },
     },

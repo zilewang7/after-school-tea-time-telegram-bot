@@ -1,11 +1,11 @@
 /**
- * Offline cases for the two widget tools — send_widget and get_ui_guide
- * (no containers, no network).
+ * Offline cases for send_widget and its paired load_skill specs (`widget-a2ui`
+ * and `widget-html`, no containers, no network).
  *
  * The tools are pure: send_widget compiles/prechecks a payload into the reply's
- * media state, get_ui_guide returns a version-fixed document. Delivery is not
- * exercised here (that needs Telegram); the point is the state machine, the
- * one-attachment guard and the model-facing error messages.
+ * media state, load_skill loads version-fixed widget skill specs. Delivery is
+ * not exercised here (that needs Telegram); the point is the state machine, the
+ * one-attachment guard, availability gating, and model-facing error messages.
  *
  * Run: npx tsx scripts/offline/widget-tools.mts
  */
@@ -19,7 +19,12 @@ for (const key of ['GEMINI_API_KEY', 'OPENAI_API_KEY', 'DEEPSEEK_API_KEY', 'GROK
 }
 
 const { createSendWidgetTool } = await import('../../src/reply/tools/send-widget-tool.js');
-const { createUiGuideTool } = await import('../../src/reply/tools/ui-guide-tool.js');
+const { createLoadSkillTool, createSkillToolState } = await import('../../src/reply/tools/load-skill-tool.js');
+const {
+    filterAvailableSkills,
+    getSkillRegistry,
+    WIDGET_ALLOW_HTML_FLAG,
+} = await import('../../src/reply/skills/skill-registry.js');
 const { createReplyMediaState, ONE_ATTACHMENT_PER_REPLY } = await import(
     '../../src/reply/tools/reply-media-state.js'
 );
@@ -143,25 +148,53 @@ results.push(
 );
 
 results.push(
-    await runCase('get_ui_guide returns the version-fixed documents', async () => {
-        const tool = createUiGuideTool();
-        const a2ui = await run(tool, { kind: 'a2ui' });
-        expect(!a2ui.isError && a2ui.content.length > 2000, 'the A2UI guide is long enough to be useful');
-        expect(a2ui.content.includes('tg-card-v1'), 'the A2UI guide names the catalog');
-        expect(a2ui.content.includes('version 4'), 'the guide version is announced');
+    await runCase('load_skill returns widget-a2ui / widget-html specs and gates widget-html on WIDGET_ALLOW_HTML', async () => {
+        const allSkills = getSkillRegistry();
+        const a2uiOnly = filterAvailableSkills({
+            skills: allSkills,
+            declaredToolNames: new Set(['send_widget']),
+            activeFlags: new Set(),
+            scope: 'private',
+            isOwner: false,
+        });
+        expect(
+            a2uiOnly.map((skill) => skill.name).join(',') === 'widget-a2ui',
+            `without widget-allow-html only widget-a2ui is available (got ${a2uiOnly.map((s) => s.name).join(',')})`
+        );
 
-        const htmlGuide = await run(tool, { kind: 'html' });
-        expect(!htmlGuide.isError && htmlGuide.content.length > 5000, 'the HTML guide is long enough');
-        expect(htmlGuide.content.includes('32768'), 'the HTML guide states the raw limit');
-        expect(htmlGuide.content.includes('4096'), 'the HTML guide states the compressed limit');
+        const a2uiTool = createLoadSkillTool({ state: createSkillToolState(), availableSkills: a2uiOnly });
+        const a2ui = await run(a2uiTool, { names: ['widget-a2ui'] });
+        expect(!a2ui.isError && a2ui.content.length > 2000, 'the A2UI spec is long enough to be useful');
+        expect(a2ui.content.includes('tg-card-v1'), 'the A2UI spec names the catalog');
+        expect(a2ui.content.includes('version 4'), 'the spec version is announced');
 
-        const invalid = await run(tool, { kind: 'markdown' });
-        expect(invalid.isError, 'an unknown kind is refused');
+        const blockedHtml = await run(a2uiTool, { names: ['widget-html'] });
+        expect(blockedHtml.isError, 'widget-html is refused when widget-allow-html flag is off');
+
+        const withHtmlSkills = filterAvailableSkills({
+            skills: allSkills,
+            declaredToolNames: new Set(['send_widget']),
+            activeFlags: new Set([WIDGET_ALLOW_HTML_FLAG]),
+            scope: 'private',
+            isOwner: false,
+        });
+        expect(
+            withHtmlSkills.some((skill) => skill.name === 'widget-html'),
+            'with widget-allow-html flag, widget-html is available'
+        );
+        const htmlTool = createLoadSkillTool({ state: createSkillToolState(), availableSkills: withHtmlSkills });
+        const htmlGuide = await run(htmlTool, { names: ['widget-html'] });
+        expect(!htmlGuide.isError && htmlGuide.content.length > 5000, 'the HTML spec is long enough');
+        expect(htmlGuide.content.includes('32768'), 'the HTML spec states the raw limit');
+        expect(htmlGuide.content.includes('4096'), 'the HTML spec states the compressed limit');
+
+        const invalid = await run(htmlTool, { names: ['markdown'] });
+        expect(invalid.isError, 'an unknown skill name is refused');
     })
 );
 
 results.push(
-    await runCase('the panel switch turns the widget pair on and off, but never opens groups', async () => {
+    await runCase('the panel switch turns widget on and off, load_skill disable turns widget off, and groups stay gated', async () => {
         const config = readToolConfig({
             WIDGET_ENABLE: '1',
             WIDGET_CHAT_IDS: '603421700',
@@ -169,7 +202,7 @@ results.push(
             OWNER_USER_ID: '603421700',
         });
         const enabled = resolveToolAvailability('gemini-4-argon', 603421700, config);
-        expect(enabled.widget && enabled.widgetGuide, 'the whitelisted private chat gets both tools');
+        expect(enabled.widget && enabled.skills, 'the whitelisted private chat gets send_widget and skills');
 
         const normalized = normalizeToolOverrides({ widget: false });
         expect(normalized.ok && normalized.value?.widget === false, 'widget is a known panel group');
@@ -179,7 +212,17 @@ results.push(
             config,
             normalized.ok ? normalized.value : null
         );
-        expect(!disabled.widget && !disabled.widgetGuide, 'the panel switch can turn both off');
+        expect(!disabled.widget, 'the panel switch can turn widget off');
+
+        const loadSkillOffConfig = readToolConfig({
+            WIDGET_ENABLE: '1',
+            WIDGET_CHAT_IDS: '603421700',
+            TOOL_CHAT_IDS: '603421700',
+            OWNER_USER_ID: '603421700',
+            DISABLED_TOOLS: 'load_skill',
+        });
+        const loadSkillOff = resolveToolAvailability('gemini-4-argon', 603421700, loadSkillOffConfig);
+        expect(!loadSkillOff.widget && !loadSkillOff.skills, 'DISABLED_TOOLS=load_skill disables widget too');
 
         const groupOverride = normalizeToolOverrides({ widget: true });
         const group = resolveToolAvailability(
@@ -189,6 +232,17 @@ results.push(
             groupOverride.ok ? groupOverride.value : null
         );
         expect(!group.widget, 'a group chat stays off even when the panel asks for it');
+    })
+);
+
+results.push(
+    await runCase('send_widget description points to load_skill instead of get_ui_guide', async () => {
+        const tool = createSendWidgetTool({ state: createReplyMediaState(), limits: LIMITS });
+        expect(
+            tool.definition.description.includes("load_skill(['widget-a2ui'])") &&
+                !tool.definition.description.includes('get_ui_guide'),
+            `send_widget directs to load_skill (got ${tool.definition.description})`
+        );
     })
 );
 

@@ -37,19 +37,13 @@ const { createWorkspaceState, ensureWorkspaceToken, resolveWorkspaceRef } = awai
     '../../src/reply/workspace/workspace-state.js'
 );
 const { buildWorkspaceManifest } = await import('../../src/reply/workspace/workspace-manifest.js');
-const { createWorkspaceWriteTool } = await import('../../src/reply/tools/workspace-write-tool.js');
-const { createWorkspaceReadTool } = await import('../../src/reply/tools/workspace-read-tool.js');
-const { createWorkspaceListTool } = await import('../../src/reply/tools/workspace-list-tool.js');
-const { createWorkspaceFindTool } = await import('../../src/reply/tools/workspace-find-tool.js');
-const { createWorkspaceEditTool } = await import('../../src/reply/tools/workspace-edit-tool.js');
-const { createWorkspaceCopyTool } = await import('../../src/reply/tools/workspace-copy-tool.js');
-const { createWorkspaceDeleteTool } = await import('../../src/reply/tools/workspace-delete-tool.js');
-const { createWorkspacePreviewTool } = await import('../../src/reply/tools/workspace-preview-tool.js');
+const { createWorkspaceTool } = await import('../../src/reply/tools/workspace-tool.js');
 const { createSendFileTool } = await import('../../src/reply/tools/send-file-tool.js');
 const { createSendWidgetTool } = await import('../../src/reply/tools/send-widget-tool.js');
 const { createReplyMediaState } = await import('../../src/reply/tools/reply-media-state.js');
 const { measureWidgetHtml } = await import('../../src/ai/widget/widget-size.js');
 const { clearExpiredData } = await import('../../src/db/autoSave.js');
+const { WORKSPACE_TOOL_NAME } = await import('../../src/reply/tools/tool-names.js');
 
 const CHAT = -1009999999999;
 const OTHER_CHAT = -1008888888888;
@@ -170,17 +164,17 @@ const cases: { name: string; body: () => Promise<void> }[] = [
             expect(file?.content === content, 'the content reads back byte for byte');
             expect(file?.mimeType === 'text/markdown', 'the mime type comes from the extension');
 
-            const tool = createWorkspaceReadTool({ state: stateOf() });
-            const page = await call(tool, { path: 'notes/plan.md', limit: 2 });
+            const tool = createWorkspaceTool({ state: stateOf() });
+            const page = await call(tool, { action: 'read', path: 'notes/plan.md', limit: 2 });
             expect(!page.isError, `the read tool succeeds (${page.content})`);
             expect(page.content.includes('共 5 行'), 'the header states the total line count');
             expect(page.content.includes('1| # 计划'), 'lines are numbered from 1');
             expect(page.content.includes('显示第 1–2 行'), 'the shown range is stated');
             expect(page.content.includes('还有 3 行，用 offset=3 继续'), 'the remainder is stated explicitly');
 
-            const tail = await call(tool, { path: 'notes/plan.md', offset: 4, limit: 2 });
+            const tail = await call(tool, { action: 'read', path: 'notes/plan.md', offset: 4, limit: 2 });
             expect(tail.content.includes('4| 第二段') && tail.content.includes('5| 第三段'), 'offset pages correctly');
-            const beyond = await call(tool, { path: 'notes/plan.md', offset: 99 });
+            const beyond = await call(tool, { action: 'read', path: 'notes/plan.md', offset: 99 });
             expect(beyond.isError && beyond.content.includes('超过文件行数'), 'an out-of-range offset is an actionable error');
         },
     },
@@ -324,16 +318,16 @@ const cases: { name: string; body: () => Promise<void> }[] = [
             await write('widgets/a.html', 'a');
             await write('widgets/b.html', 'b');
             await write('notes/c.md', 'c');
-            const tool = createWorkspaceListTool({ state: stateOf() });
-            const all = await call(tool, {});
+            const tool = createWorkspaceTool({ state: stateOf() });
+            const all = await call(tool, { action: 'list' });
             expect(all.content.includes('共 3 个文件'), 'the whole workspace count is shown');
             expect(all.content.includes('widgets/a.html') && all.content.includes('notes/c.md'), 'all files are listed');
-            const widgets = await call(tool, { prefix: 'widgets/' });
+            const widgets = await call(tool, { action: 'list', prefix: 'widgets/' });
             expect(widgets.content.includes('widgets/a.html') && !widgets.content.includes('notes/c.md'), 'the prefix filters the list');
-            const badPrefix = await call(tool, { prefix: 42 });
+            const badPrefix = await call(tool, { action: 'list', prefix: 42 });
             expect(badPrefix.isError && badPrefix.content.includes('prefix'), 'a non-string prefix is an argument error');
             await clearWorkspace();
-            const empty = await call(tool, {});
+            const empty = await call(tool, { action: 'list' });
             expect(empty.content.includes('工作区是空的'), 'an empty workspace says so');
             const usage = await workspaceUsageOf(CHAT, ROOT);
             expect(usage.fileCount === 0 && usage.totalBytes === 0, 'usage of an empty workspace is zero');
@@ -345,13 +339,12 @@ const cases: { name: string; body: () => Promise<void> }[] = [
             await clearWorkspace();
             const limits = { maxHtmlBytes: 32768, maxGzipBytes: 4096 };
             const state = stateOf();
-            const writeTool = createWorkspaceWriteTool({ state, widgetLimits: limits });
-            const editTool = createWorkspaceEditTool({ state, widgetLimits: limits });
-            const listTool = createWorkspaceListTool({ state, widgetLimits: limits });
+            const tool = createWorkspaceTool({ state, widgetLimits: limits });
+            const plainTool = createWorkspaceTool({ state });
 
             const small = '<div class="card">你好</div>';
             const size = measureWidgetHtml(small);
-            const written = await call(writeTool, { path: 'widgets/card.html', content: small });
+            const written = await call(tool, { action: 'write', path: 'widgets/card.html', content: small });
             expect(
                 written.content.includes(`原文 ${size.rawBytes} B / 32768 B`),
                 `the write reports the raw size (got ${written.content})`
@@ -362,16 +355,18 @@ const cases: { name: string; body: () => Promise<void> }[] = [
             );
             expect(written.content.includes('余 '), 'a draft under the limit shows the remaining room');
 
-            const note = await call(writeTool, { path: 'notes/plan.md', content: '# 计划' });
+            const note = await call(tool, { action: 'write', path: 'notes/plan.md', content: '# 计划' });
             expect(!note.content.includes('widget 体积'), 'a non-HTML file gets no widget line');
 
-            const plain = await call(createWorkspaceWriteTool({ state }), {
+            const plain = await call(plainTool, {
+                action: 'write',
                 path: 'widgets/plain.html',
                 content: small,
             });
             expect(!plain.content.includes('widget 体积'), 'without widget tools the write stays plain');
 
-            const edited = await call(editTool, {
+            const edited = await call(tool, {
+                action: 'edit',
                 path: 'widgets/card.html',
                 old_string: '你好',
                 new_string: '再见',
@@ -382,11 +377,11 @@ const cases: { name: string; body: () => Promise<void> }[] = [
                 `the edit reports the new compressed size (got ${edited.content})`
             );
 
-            const listed = await call(listTool, {});
+            const listed = await call(tool, { action: 'list' });
             expect(listed.content.includes('HTML 草稿按 widget 计'), 'the list states the widget limits');
             expect(listed.content.includes('zlib9'), 'the list shows the compressed size of the draft');
             expect(listed.content.includes('widgets/plain.html'), 'the plain draft is listed too');
-            const plainList = await call(createWorkspaceListTool({ state }), {});
+            const plainList = await call(plainTool, { action: 'list' });
             expect(!plainList.content.includes('zlib9'), 'without widget tools the list stays plain');
 
             // A draft over the compressed limit says how much has to go
@@ -401,11 +396,11 @@ const cases: { name: string; body: () => Promise<void> }[] = [
                 conversationRootIds: [ROOT],
                 quota: bigQuota,
             });
-            const bigWrite = createWorkspaceWriteTool({ state: bigState, widgetLimits: limits });
+            const bigTool = createWorkspaceTool({ state: bigState, widgetLimits: limits });
             const bigContent = randomHtmlOf(6000);
             const bigSize = measureWidgetHtml(bigContent);
             expect(bigSize.zlibBytes > limits.maxGzipBytes, 'the fixture is over the zlib limit');
-            const big = await call(bigWrite, { path: 'widgets/big.html', content: bigContent });
+            const big = await call(bigTool, { action: 'write', path: 'widgets/big.html', content: bigContent });
             expect(
                 big.content.includes(`超 ${bigSize.zlibBytes - limits.maxGzipBytes} B`),
                 `the write names the gap to close (got ${big.content})`
@@ -415,9 +410,9 @@ const cases: { name: string; body: () => Promise<void> }[] = [
             // A draft over the raw cap cannot be a widget: the list says so and
             // does not read the file to measure it
             const huge = randomHtmlOf(40_000);
-            const hugeWritten = await call(bigWrite, { path: 'widgets/huge.html', content: huge });
+            const hugeWritten = await call(bigTool, { action: 'write', path: 'widgets/huge.html', content: huge });
             expect(!hugeWritten.isError, `a big draft still writes (${hugeWritten.content})`);
-            const bigList = await call(createWorkspaceListTool({ state: bigState, widgetLimits: limits }), {});
+            const bigList = await call(createWorkspaceTool({ state: bigState, widgetLimits: limits }), { action: 'list' });
             expect(bigList.content.includes('已超 widget 原文上限 32768 B'), 'an over-cap draft is named as such');
             expect(bigList.content.includes('widgets/big.html'), 'the other draft is still listed');
         },
@@ -482,8 +477,8 @@ const cases: { name: string; body: () => Promise<void> }[] = [
                 widgetTools: false,
             });
             expect(
-                readOnly?.includes('用 workspace_read 读取文件内容。') && !readOnly?.includes('send_file'),
-                'without delivery tools the footer only names workspace_read'
+                readOnly?.includes('用 workspace(action="read") 读取文件内容。') && !readOnly?.includes('send_file'),
+                'without delivery tools the footer only names workspace(action="read")'
             );
             const sanitized = summarizeWorkspaceContent('第一行\r\n第二行');
             expect(sanitized === '第一行', 'a summary never carries a line break');
@@ -499,28 +494,24 @@ const cases: { name: string; body: () => Promise<void> }[] = [
                 quota: QUOTA,
             });
             ensureWorkspaceToken(state, OTHER_ROOT, '拼接的会话');
-            const writeTool = createWorkspaceWriteTool({ state });
-            const listTool = createWorkspaceListTool({ state });
-            const readTool = createWorkspaceReadTool({ state });
-            const editTool = createWorkspaceEditTool({ state });
-            const deleteTool = createWorkspaceDeleteTool({ state });
+            const tool = createWorkspaceTool({ state });
 
-            const first = await call(writeTool, { path: 'notes/a.md', content: '# A' });
+            const first = await call(tool, { action: 'write', path: 'notes/a.md', content: '# A' });
             expect(!first.isError && first.content.includes('已写入'), 'write succeeds');
-            const toOther = await call(writeTool, { path: 'notes/b.md', content: '# B', workspace: 'w2' });
+            const toOther = await call(tool, { action: 'write', path: 'notes/b.md', content: '# B', workspace: 'w2' });
             expect(!toOther.isError && toOther.content.includes('w2'), 'write can target the spliced conversation');
-            const listed = await call(listTool, { workspace: 'w2' });
+            const listed = await call(tool, { action: 'list', workspace: 'w2' });
             expect(listed.content.includes('notes/b.md'), 'the spliced workspace lists its own file');
-            const read = await call(readTool, { path: 'notes/a.md' });
+            const read = await call(tool, { action: 'read', path: 'notes/a.md' });
             expect(read.content.includes('1| # A'), 'read returns numbered lines');
-            const edited = await call(editTool, { path: 'notes/a.md', old_string: '# A', new_string: '# A 改' });
+            const edited = await call(tool, { action: 'edit', path: 'notes/a.md', old_string: '# A', new_string: '# A 改' });
             expect(!edited.isError && edited.content.includes('替换 1 处'), 'edit succeeds');
-            const appended = await call(writeTool, { path: 'notes/a.md', content: '\n追加', append: true });
+            const appended = await call(tool, { action: 'write', path: 'notes/a.md', content: '\n追加', append: true });
             expect(
                 !appended.isError && appended.content.includes('已追加到') && !appended.content.includes('已覆盖'),
                 'append is reported as an append'
             );
-            const overwritten = await call(writeTool, { path: 'notes/a.md', content: '# 重写', overwrite: true });
+            const overwritten = await call(tool, { action: 'write', path: 'notes/a.md', content: '# 重写', overwrite: true });
             expect(
                 !overwritten.isError &&
                     overwritten.content.includes('已覆盖') &&
@@ -529,12 +520,12 @@ const cases: { name: string; body: () => Promise<void> }[] = [
             );
 
             // No per-reply call counters: a later write is not refused
-            const extra = await call(writeTool, { path: 'notes/c.md', content: '# C' });
+            const extra = await call(tool, { action: 'write', path: 'notes/c.md', content: '# C' });
             expect(!extra.isError && extra.content.includes('已写入'), 'a later write is not refused by a count');
-            const deleted = await call(deleteTool, { path: 'notes/a.md' });
+            const deleted = await call(tool, { action: 'delete', path: 'notes/a.md' });
             expect(!deleted.isError && deleted.content.includes('已删除'), 'delete succeeds');
-            const missing = await call(readTool, { path: 'notes/a.md' });
-            expect(missing.isError && missing.content.includes('workspace_list'), 'a missing file points at list');
+            const missing = await call(tool, { action: 'read', path: 'notes/a.md' });
+            expect(missing.isError && missing.content.includes('workspace(action="list")'), 'a missing file points at list');
         },
     },
     {
@@ -611,21 +602,21 @@ const cases: { name: string; body: () => Promise<void> }[] = [
             );
 
             const state = createWorkspaceState({ chatId: CHAT, conversationRootIds: [ROOT], quota: QUOTA });
-            const findTool = createWorkspaceFindTool({ state });
-            const toolResult = await call(findTool, { query: 'neon' });
+            const tool = createWorkspaceTool({ state });
+            const toolResult = await call(tool, { action: 'find', query: 'neon' });
             expect(
                 !toolResult.isError && toolResult.content.includes('找到 2 处') && toolResult.content.includes('notes/plan.md:2| neon 参考'),
                 `the tool renders path:line hits (got ${toolResult.content})`
             );
-            const scoped = await call(findTool, { query: 'neon', path: 'notes/plan.md', prefix: 'notes/' });
+            const scoped = await call(tool, { action: 'find', query: 'neon', path: 'notes/plan.md', prefix: 'notes/' });
             expect(scoped.isError && scoped.content.includes('只能给一个'), 'path and prefix are exclusive');
-            const empty = await call(findTool, { query: '  ' });
+            const empty = await call(tool, { action: 'find', query: '  ' });
             expect(empty.isError && empty.content.includes('query 不能为空'), 'an empty query is rejected');
-            const miss = await call(findTool, { query: 'zzz' });
+            const miss = await call(tool, { action: 'find', query: 'zzz' });
             expect(!miss.isError && miss.content.includes('没有找到'), 'a miss tells the model what it scanned');
 
             // No per-reply call counters: a repeated find is not refused
-            const again = await call(findTool, { query: 'neon' });
+            const again = await call(tool, { action: 'find', query: 'neon' });
             expect(!again.isError && again.content.includes('找到 2 处'), 'a repeated find is not refused');
         },
     },
@@ -634,11 +625,10 @@ const cases: { name: string; body: () => Promise<void> }[] = [
         body: async () => {
             await clearWorkspace();
             const state = createWorkspaceState({ chatId: CHAT, conversationRootIds: [ROOT], quota: QUOTA });
-            const writeTool = createWorkspaceWriteTool({ state });
-            const copyTool = createWorkspaceCopyTool({ state });
-            await call(writeTool, { path: 'widgets/game.html', content: '<div>v1</div>' });
+            const tool = createWorkspaceTool({ state });
+            await call(tool, { action: 'write', path: 'widgets/game.html', content: '<div>v1</div>' });
 
-            const copied = await call(copyTool, { path: 'widgets/game.html', new_path: 'widgets/game-v1.html' });
+            const copied = await call(tool, { action: 'copy', path: 'widgets/game.html', new_path: 'widgets/game-v1.html' });
             expect(!copied.isError && copied.content.includes('已复制'), `copy succeeds (got ${copied.content})`);
             const readBack = await readWorkspaceFile(CHAT, ROOT, 'widgets/game-v1.html');
             expect(readBack?.content === '<div>v1</div>', 'the copy carries the same bytes');
@@ -662,32 +652,32 @@ const cases: { name: string; body: () => Promise<void> }[] = [
                 `the service reports the copy's size and the new usage (got ${JSON.stringify(serviceCopy)})`
             );
 
-            const again = await call(copyTool, { path: 'widgets/game.html', new_path: 'widgets/game-v1.html' });
+            const again = await call(tool, { action: 'copy', path: 'widgets/game.html', new_path: 'widgets/game-v1.html' });
             expect(
                 again.isError && again.content.includes('已经有') && again.content.includes('new_path'),
                 'a copy never overwrites the target'
             );
-            const missing = await call(copyTool, { path: 'widgets/nope.html', new_path: 'widgets/x.html' });
-            expect(missing.isError && missing.content.includes('workspace_list'), 'a missing source points at list');
-            const same = await call(copyTool, { path: 'widgets/game.html', new_path: 'widgets/game.html' });
+            const missing = await call(tool, { action: 'copy', path: 'widgets/nope.html', new_path: 'widgets/x.html' });
+            expect(missing.isError && missing.content.includes('workspace(action="list")'), 'a missing source points at list');
+            const same = await call(tool, { action: 'copy', path: 'widgets/game.html', new_path: 'widgets/game.html' });
             expect(same.isError && same.content.includes('相同'), 'source and target must differ');
 
             // The file-count quota stops the next copy, and the source is untouched
-            await call(copyTool, { path: 'widgets/game.html', new_path: 'widgets/game-v2.html' });
-            await call(copyTool, { path: 'widgets/game.html', new_path: 'widgets/game-v3.html' });
-            const overQuota = await call(copyTool, { path: 'widgets/game.html', new_path: 'widgets/game-v4.html' });
+            await call(tool, { action: 'copy', path: 'widgets/game.html', new_path: 'widgets/game-v2.html' });
+            await call(tool, { action: 'copy', path: 'widgets/game.html', new_path: 'widgets/game-v3.html' });
+            const overQuota = await call(tool, { action: 'copy', path: 'widgets/game.html', new_path: 'widgets/game-v4.html' });
             expect(overQuota.isError && overQuota.content.includes('配额'), 'the file-count quota applies to copies');
             const source = await readWorkspaceFile(CHAT, ROOT, 'widgets/game.html');
             expect(source?.content === '<div>v1</div>', 'failed copies leave the source alone');
 
             // No per-reply call counters: several copies in one reply are fine
             await clearWorkspace();
-            const repeatCopyTool = createWorkspaceCopyTool({
+            const repeatTool = createWorkspaceTool({
                 state: createWorkspaceState({ chatId: CHAT, conversationRootIds: [ROOT], quota: QUOTA }),
             });
             await write('a.txt', 'hello');
-            const firstCopy = await call(repeatCopyTool, { path: 'a.txt', new_path: 'b.txt' });
-            const secondCopy = await call(repeatCopyTool, { path: 'a.txt', new_path: 'c.txt' });
+            const firstCopy = await call(repeatTool, { action: 'copy', path: 'a.txt', new_path: 'b.txt' });
+            const secondCopy = await call(repeatTool, { action: 'copy', path: 'a.txt', new_path: 'c.txt' });
             expect(
                 !firstCopy.isError && !secondCopy.isError,
                 `copies are not refused by a per-reply count (${firstCopy.content} / ${secondCopy.content})`
@@ -759,28 +749,30 @@ const cases: { name: string; body: () => Promise<void> }[] = [
             await write('notes/plain.md', '# 不是 HTML');
             await write('widgets/broken.json', '{ not json');
             const limits = { allowHtml: true, maxHtmlBytes: 32768, maxGzipBytes: 4096 };
-            const tool = createWorkspacePreviewTool({
+            const tool = createWorkspaceTool({
                 state,
-                limits,
-                dependencies: { renderPng: async () => ({ png: PNG, width: 600, height: 320 }) },
+                workspacePreview: true,
+                previewLimits: limits,
+                previewDependencies: { renderPng: async () => ({ png: PNG, width: 600, height: 320 }) },
             });
-            const rendered = await call(tool, { path: 'widgets/card.html' });
+            const rendered = await call(tool, { action: 'preview', path: 'widgets/card.html' });
             expect(!rendered.isError, `the preview renders (${rendered.content})`);
             expect(rendered.modelImages?.length === 1 && rendered.modelImages[0]?.mimeType === 'image/png', 'the PNG rides the tool result');
             expect(rendered.content.includes('600×320'), 'the rendered size is reported');
             expect(rendered.content.includes('widget 预检：通过'), 'the precheck result is reported');
             expect(rendered.content.includes('zlib9'), 'the size budget is reported');
 
-            const text = await call(tool, { path: 'notes/plain.md' });
+            const text = await call(tool, { action: 'preview', path: 'notes/plain.md' });
             expect(text.isError && text.content.includes('只支持 .html'), 'a non-renderable type is refused');
-            const broken = await call(tool, { path: 'widgets/broken.json' });
+            const broken = await call(tool, { action: 'preview', path: 'widgets/broken.json' });
             expect(broken.isError && broken.content.includes('JSON'), 'invalid A2UI json is refused');
-            const noRenderer = createWorkspacePreviewTool({
+            const noRenderer = createWorkspaceTool({
                 state,
-                limits,
-                dependencies: { renderPng: async () => null },
+                workspacePreview: true,
+                previewLimits: limits,
+                previewDependencies: { renderPng: async () => null },
             });
-            const failed = await call(noRenderer, { path: 'widgets/card.html' });
+            const failed = await call(noRenderer, { action: 'preview', path: 'widgets/card.html' });
             expect(failed.isError && failed.content.includes('渲染不可用'), 'a failed render is an actionable error');
 
             // A2UI drafts must be judged in a2ui mode: with HTML mode off (the
@@ -795,15 +787,16 @@ const cases: { name: string; body: () => Promise<void> }[] = [
                 })
             );
             const htmlOff = { allowHtml: false, maxHtmlBytes: 32768, maxGzipBytes: 4096 };
-            const a2uiTool = createWorkspacePreviewTool({
+            const a2uiTool = createWorkspaceTool({
                 state,
-                limits: htmlOff,
-                dependencies: { renderPng: async () => ({ png: PNG, width: 600, height: 320 }) },
+                workspacePreview: true,
+                previewLimits: htmlOff,
+                previewDependencies: { renderPng: async () => ({ png: PNG, width: 600, height: 320 }) },
             });
-            const a2ui = await call(a2uiTool, { path: 'widgets/card.json' });
+            const a2ui = await call(a2uiTool, { action: 'preview', path: 'widgets/card.json' });
             expect(!a2ui.isError, `an A2UI draft previews with HTML mode off (${a2ui.content})`);
             expect(a2ui.content.includes('widget 预检：通过'), 'the A2UI precheck does not demand HTML mode');
-            const htmlDraft = await call(a2uiTool, { path: 'widgets/card.html' });
+            const htmlDraft = await call(a2uiTool, { action: 'preview', path: 'widgets/card.html' });
             expect(
                 htmlDraft.content.includes('widget 预检：不通过') && htmlDraft.content.includes('mode="a2ui"'),
                 `an HTML draft is still reported as failing the precheck (${htmlDraft.content})`
@@ -865,14 +858,14 @@ const cases: { name: string; body: () => Promise<void> }[] = [
                     quota: bigQuota,
                 });
             await writeBig('notes/long.md', 'x'.repeat(2500));
-            const tool = createWorkspaceReadTool({ state: stateOf() });
-            const long = await call(tool, { path: 'notes/long.md' });
+            const tool = createWorkspaceTool({ state: stateOf() });
+            const long = await call(tool, { action: 'read', path: 'notes/long.md' });
             expect(!long.isError && long.content.includes('本行过长已截断'), 'an over-long line is cut and labelled');
 
             const lines = Array.from({ length: 20 }, (_, index) => `${index + 1} ${'y'.repeat(1500)}`);
             const written = await writeBig('notes/many.md', lines.join('\n'));
             expect(written.ok, 'the big file fits its own quota');
-            const capped = await call(tool, { path: 'notes/many.md' });
+            const capped = await call(tool, { action: 'read', path: 'notes/many.md' });
             expect(!capped.isError && capped.content.includes('共 20 行'), 'the header still states the total');
             expect(!capped.content.includes('20| 20 '), 'the call stops before the last line');
             expect(capped.content.includes('用 offset='), 'the rest is paged with offset');
@@ -987,7 +980,7 @@ const cases: { name: string; body: () => Promise<void> }[] = [
             });
             expect(wide !== null && (wide?.length ?? 0) <= 1200, `the section stays within its budget (${wide?.length})`);
             expect(
-                /还有 \d+ 个拼接会话没列出（w\d+–w\d+）；用 workspace_list\(workspace="w\d+"\) 逐个查看/.test(wide ?? ''),
+                /还有 \d+ 个拼接会话没列出（w\d+–w\d+）；用 workspace\(action="list", workspace="w\d+"\) 逐个查看/.test(wide ?? ''),
                 `the conversations that did not fit are counted with their tokens (${wide})`
             );
         },
@@ -1032,9 +1025,10 @@ const cases: { name: string; body: () => Promise<void> }[] = [
             await clearWorkspace();
             const state = createWorkspaceState({ chatId: CHAT, conversationRootIds: [ROOT, OTHER_ROOT], quota: QUOTA });
             ensureWorkspaceToken(state, OTHER_ROOT, '拼接的会话');
-            const tool = createWorkspaceWriteTool({ state });
+            const tool = createWorkspaceTool({ state });
 
             const result = await call(tool, {
+                action: 'write',
                 files: [
                     { path: 'notes/plan.md', content: '# 计划' },
                     { path: 'src/main.ts', content: 'export const a = 1;' },
@@ -1066,10 +1060,11 @@ const cases: { name: string; body: () => Promise<void> }[] = [
         body: async () => {
             await clearWorkspace();
             const state = createWorkspaceState({ chatId: CHAT, conversationRootIds: [ROOT], quota: QUOTA });
-            const tool = createWorkspaceWriteTool({ state });
+            const tool = createWorkspaceTool({ state });
             await write('notes/taken.md', 'old');
 
             const result = await call(tool, {
+                action: 'write',
                 files: [
                     { path: 'notes/ok.md', content: 'fine' },
                     { path: '../escape.md', content: 'nope' },
@@ -1097,10 +1092,11 @@ const cases: { name: string; body: () => Promise<void> }[] = [
         name: 'a write batch applies its items in order, so the last write of a file wins',
         body: async () => {
             await clearWorkspace();
-            const tool = createWorkspaceWriteTool({
+            const tool = createWorkspaceTool({
                 state: createWorkspaceState({ chatId: CHAT, conversationRootIds: [ROOT], quota: QUOTA }),
             });
             const result = await call(tool, {
+                action: 'write',
                 files: [
                     { path: 'notes/draft.md', content: '第一版' },
                     { path: 'notes/draft.md', content: '第二版', overwrite: true },
@@ -1123,21 +1119,22 @@ const cases: { name: string; body: () => Promise<void> }[] = [
         name: 'a write batch rejects a mixed form, an empty list, too many files and too much text',
         body: async () => {
             await clearWorkspace();
-            const tool = createWorkspaceWriteTool({ state: stateOf() });
-            const mixed = await call(tool, { path: 'a.md', content: 'x', files: [{ path: 'b.md', content: 'y' }] });
+            const tool = createWorkspaceTool({ state: stateOf() });
+            const mixed = await call(tool, { action: 'write', path: 'a.md', content: 'x', files: [{ path: 'b.md', content: 'y' }] });
             expect(
                 mixed.isError && mixed.content.includes('参数有误') && mixed.content.includes('files 和 path 只能给一个'),
                 `the two forms are exclusive (${mixed.content})`
             );
-            const empty = await call(tool, { files: [] });
+            const empty = await call(tool, { action: 'write', files: [] });
             expect(empty.isError && empty.content.includes('files 是空的'), 'an empty files array is an argument error');
             const tooMany = await call(tool, {
+                action: 'write',
                 files: Array.from({ length: WRITE_BATCH_MAX + 1 }, (_, index) => ({ path: `f${index}.md`, content: 'x' })),
             });
             expect(tooMany.isError && tooMany.content.includes(`最多 ${WRITE_BATCH_MAX} 项`), 'the item cap is enforced');
-            const tooLong = await call(tool, { files: [{ path: 'big.md', content: 'x'.repeat(32_001) }] });
+            const tooLong = await call(tool, { action: 'write', files: [{ path: 'big.md', content: 'x'.repeat(32_001) }] });
             expect(tooLong.isError && tooLong.content.includes('合计最多 32000 字符'), 'the whole text budget is enforced');
-            const topLevelFlag = await call(tool, { files: [{ path: 'a.md', content: 'x' }], append: true });
+            const topLevelFlag = await call(tool, { action: 'write', files: [{ path: 'a.md', content: 'x' }], append: true });
             expect(
                 topLevelFlag.isError && topLevelFlag.content.includes('写在每一项里'),
                 'a batch field at the top level is refused, not silently ignored'
@@ -1162,9 +1159,9 @@ const cases: { name: string; body: () => Promise<void> }[] = [
                 overwrite: false,
                 quota: QUOTA,
             });
-            const tool = createWorkspaceReadTool({ state });
+            const tool = createWorkspaceTool({ state });
 
-            const result = await call(tool, { paths: ['notes/a.md', 'notes/b.md'], offset: 2, limit: 1 });
+            const result = await call(tool, { action: 'read', paths: ['notes/a.md', 'notes/b.md'], offset: 2, limit: 1 });
             expect(!result.isError, `the batch reads (${result.content})`);
             expect(result.content.includes('已读取 2 个文件：'), 'the header counts the files');
             expect(
@@ -1178,7 +1175,7 @@ const cases: { name: string; body: () => Promise<void> }[] = [
             expect(!result.content.includes('1| a1') && !result.content.includes('1| b1'), 'lines before the offset are not shown');
             expect(result.content.includes('2| b2'), 'the second file is read at the same offset');
 
-            const spliced = await call(tool, { paths: ['other.md'], workspace: 'w2' });
+            const spliced = await call(tool, { action: 'read', paths: ['other.md'], workspace: 'w2' });
             expect(
                 !spliced.isError && spliced.content.includes('拼接的会话 w2'),
                 `the shared workspace token is used (${spliced.content})`
@@ -1207,8 +1204,8 @@ const cases: { name: string; body: () => Promise<void> }[] = [
             expect((await writeBig('notes/long1.md', first)).ok, 'the first big file fits');
             expect((await writeBig('notes/long2.md', second)).ok, 'the second big file fits');
 
-            const tool = createWorkspaceReadTool({ state: stateOf() });
-            const result = await call(tool, { paths: ['notes/long1.md', 'notes/long2.md'] });
+            const tool = createWorkspaceTool({ state: stateOf() });
+            const result = await call(tool, { action: 'read', paths: ['notes/long1.md', 'notes/long2.md'] });
             expect(!result.isError, `the batch still succeeds (${result.content.slice(0, 200)})`);
             expect(result.content.includes('已读取 1 个文件：'), 'only the first file fits the budget');
             expect(result.content.includes('还有 '), 'the first file is cut and states the rest');
@@ -1225,9 +1222,9 @@ const cases: { name: string; body: () => Promise<void> }[] = [
         body: async () => {
             await clearWorkspace();
             await write('notes/a.md', 'one\ntwo');
-            const tool = createWorkspaceReadTool({ state: stateOf() });
+            const tool = createWorkspaceTool({ state: stateOf() });
 
-            const result = await call(tool, { paths: ['notes/a.md', 'notes/nope.md', 'one/two/three/four.md'] });
+            const result = await call(tool, { action: 'read', paths: ['notes/a.md', 'notes/nope.md', 'one/two/three/four.md'] });
             expect(!result.isError, `one readable file keeps the call a success (${result.content})`);
             expect(result.content.includes('已读取 1 个文件：'), 'the readable file is read');
             expect(result.content.includes('有 2 个没读成：'), 'both misses are counted');
@@ -1240,10 +1237,10 @@ const cases: { name: string; body: () => Promise<void> }[] = [
                 'the illegal path is named'
             );
 
-            const none = await call(tool, { paths: ['notes/missing1.md', 'notes/missing2.md'] });
+            const none = await call(tool, { action: 'read', paths: ['notes/missing1.md', 'notes/missing2.md'] });
             expect(none.isError && none.content.includes('这 2 个文件都没读成：'), 'a fully failed batch is an error');
 
-            const badOffset = await call(tool, { paths: ['notes/a.md'], offset: 9 });
+            const badOffset = await call(tool, { action: 'read', paths: ['notes/a.md'], offset: 9 });
             expect(
                 badOffset.isError && badOffset.content.includes('offset=9 超过文件行数'),
                 'an out-of-range offset is a per-item failure'
@@ -1253,21 +1250,22 @@ const cases: { name: string; body: () => Promise<void> }[] = [
     {
         name: 'a read batch rejects a mixed form, an empty list, too many paths and a bad item',
         body: async () => {
-            const tool = createWorkspaceReadTool({ state: stateOf() });
-            const mixed = await call(tool, { path: 'a.md', paths: ['b.md'] });
+            const tool = createWorkspaceTool({ state: stateOf() });
+            const mixed = await call(tool, { action: 'read', path: 'a.md', paths: ['b.md'] });
             expect(mixed.isError && mixed.content.includes('paths 和 path 只能给一个'), 'the two forms are exclusive');
-            const empty = await call(tool, { paths: [] });
+            const empty = await call(tool, { action: 'read', paths: [] });
             expect(empty.isError && empty.content.includes('paths 是空的'), 'an empty paths array is an argument error');
             const tooMany = await call(tool, {
+                action: 'read',
                 paths: Array.from({ length: READ_BATCH_MAX + 1 }, (_, index) => `f${index}.md`),
             });
             expect(tooMany.isError && tooMany.content.includes(`最多 ${READ_BATCH_MAX} 项`), 'the path cap is enforced');
-            const notString = await call(tool, { paths: ['a.md', 42] });
+            const notString = await call(tool, { action: 'read', paths: ['a.md', 42] });
             expect(
                 notString.isError && notString.content.includes('第 2 项要传字符串'),
                 'a non-string path is an argument error'
             );
-            const badOffset = await call(tool, { paths: ['a.md'], offset: 0 });
+            const badOffset = await call(tool, { action: 'read', paths: ['a.md'], offset: 0 });
             expect(badOffset.isError && badOffset.content.includes('offset 从 1 开始'), 'the shared offset is validated');
         },
     },
@@ -1276,8 +1274,9 @@ const cases: { name: string; body: () => Promise<void> }[] = [
         body: async () => {
             await clearWorkspace();
             await write('notes/plan.md', 'one\ntwo\n');
-            const tool = createWorkspaceEditTool({ state: stateOf() });
+            const tool = createWorkspaceTool({ state: stateOf() });
             const result = await call(tool, {
+                action: 'edit',
                 edits: [
                     { path: 'notes/plan.md', old_string: 'one', new_string: 'ONE' },
                     // Only exists after the first edit: proves the items run in order
@@ -1303,8 +1302,9 @@ const cases: { name: string; body: () => Promise<void> }[] = [
         name: 'an edit batch rejects a mixed form, an empty list and too many items',
         body: async () => {
             await clearWorkspace();
-            const tool = createWorkspaceEditTool({ state: stateOf() });
+            const tool = createWorkspaceTool({ state: stateOf() });
             const mixed = await call(tool, {
+                action: 'edit',
                 path: 'a.md',
                 old_string: 'x',
                 new_string: 'y',
@@ -1314,9 +1314,10 @@ const cases: { name: string; body: () => Promise<void> }[] = [
                 mixed.isError && mixed.content.includes('edits 和 path 只能给一个'),
                 'the single form and edits are exclusive'
             );
-            const empty = await call(tool, { edits: [] });
+            const empty = await call(tool, { action: 'edit', edits: [] });
             expect(empty.isError && empty.content.includes('edits 是空的'), 'an empty edits array is an argument error');
             const tooMany = await call(tool, {
+                action: 'edit',
                 edits: Array.from({ length: EDIT_BATCH_MAX + 1 }, (_, index) => ({
                     path: `f${index}.md`,
                     old_string: 'x',
@@ -1325,6 +1326,7 @@ const cases: { name: string; body: () => Promise<void> }[] = [
             });
             expect(tooMany.isError && tooMany.content.includes(`最多 ${EDIT_BATCH_MAX} 项`), 'the item cap is enforced');
             const topLevelFlag = await call(tool, {
+                action: 'edit',
                 edits: [{ path: 'a.md', old_string: 'x', new_string: 'y' }],
                 replace_all: true,
             });
@@ -1342,11 +1344,12 @@ const cases: { name: string; body: () => Promise<void> }[] = [
             await write('widgets/two.html', '<div class="b">two</div>');
             await write('widgets/bad.json', '{ not json');
             const documents: string[] = [];
-            const tool = createWorkspacePreviewTool({
+            const tool = createWorkspaceTool({
                 state: stateOf(),
-                limits: { allowHtml: true, maxHtmlBytes: 32768, maxGzipBytes: 4096 },
-                dependencies: {
-                    renderPng: async (document) => {
+                workspacePreview: true,
+                previewLimits: { allowHtml: true, maxHtmlBytes: 32768, maxGzipBytes: 4096 },
+                previewDependencies: {
+                    renderPng: async (document: string) => {
                         documents.push(document);
                         // The second draft renders, then the sidecar fails on the third
                         return documents.length === 2 ? null : { png: PNG, width: 600, height: 300 };
@@ -1355,6 +1358,7 @@ const cases: { name: string; body: () => Promise<void> }[] = [
             });
 
             const result = await call(tool, {
+                action: 'preview',
                 paths: ['widgets/one.html', 'widgets/two.html', 'widgets/bad.json'],
             });
             expect(!result.isError, `a partly failed batch is not a call error (${result.content})`);
@@ -1374,45 +1378,54 @@ const cases: { name: string; body: () => Promise<void> }[] = [
     {
         name: 'a preview batch rejects a mixed form, an empty list and too many paths',
         body: async () => {
-            const tool = createWorkspacePreviewTool({
+            const tool = createWorkspaceTool({
                 state: stateOf(),
-                limits: { allowHtml: true, maxHtmlBytes: 32768, maxGzipBytes: 4096 },
-                dependencies: { renderPng: async () => ({ png: PNG, width: 600, height: 300 }) },
+                workspacePreview: true,
+                previewLimits: { allowHtml: true, maxHtmlBytes: 32768, maxGzipBytes: 4096 },
+                previewDependencies: { renderPng: async () => ({ png: PNG, width: 600, height: 300 }) },
             });
-            const mixed = await call(tool, { path: 'a.html', paths: ['b.html'] });
+            const mixed = await call(tool, { action: 'preview', path: 'a.html', paths: ['b.html'] });
             expect(mixed.isError && mixed.content.includes('paths 和 path 只能给一个'), 'the two forms are exclusive');
-            const empty = await call(tool, { paths: [] });
+            const empty = await call(tool, { action: 'preview', paths: [] });
             expect(empty.isError && empty.content.includes('paths 是空的'), 'an empty paths array is an argument error');
             const tooMany = await call(tool, {
+                action: 'preview',
                 paths: Array.from({ length: PREVIEW_BATCH_MAX + 1 }, (_, index) => `f${index}.html`),
             });
             expect(tooMany.isError && tooMany.content.includes(`最多 ${PREVIEW_BATCH_MAX} 项`), 'the path cap is enforced');
-            const badTheme = await call(tool, { paths: ['a.html'], theme: 'dim' });
+            const badTheme = await call(tool, { action: 'preview', paths: ['a.html'], theme: 'dim' });
             expect(badTheme.isError && badTheme.content.includes('theme 只能是'), 'the shared theme is validated');
         },
     },
     {
-        name: 'the single-file wording of the four tools is unchanged',
+        name: 'the single-file wording of the merged actions is preserved and trace prefixes the action',
         body: async () => {
             await clearWorkspace();
             const state = createWorkspaceState({ chatId: CHAT, conversationRootIds: [ROOT], quota: QUOTA });
-            const written = await call(createWorkspaceWriteTool({ state }), { path: 'exact/a.md', content: 'abc' });
+            const tool = createWorkspaceTool({
+                state,
+                workspacePreview: true,
+                previewLimits: { allowHtml: true, maxHtmlBytes: 32768, maxGzipBytes: 4096 },
+                previewDependencies: { renderPng: async () => ({ png: PNG, width: 600, height: 320 }) },
+            });
+            const written = await call(tool, { action: 'write', path: 'exact/a.md', content: 'abc' });
             expect(
                 written.content ===
                     `已写入《exact/a.md》（本会话 w1）：${formatBytes(3)}（工作区 1 个文件，已用 ` +
                         `${formatBytes(3)} / ${formatBytes(QUOTA.maxConversationBytes)}）。`,
                 `the single write keeps its wording (got ${written.content})`
             );
-            expect(written.trace?.argument === 'exact/a.md', 'the single write trace keeps its argument');
+            expect(written.trace?.argument === 'write · exact/a.md', `the single write trace prefixes action (got ${written.trace?.argument})`);
             expect(written.trace?.result === '3B（新建）', 'the single write trace keeps its result');
 
-            const read = await call(createWorkspaceReadTool({ state }), { path: 'exact/a.md' });
+            const read = await call(tool, { action: 'read', path: 'exact/a.md' });
             expect(
                 read.content === `《exact/a.md》（本会话 w1）：共 1 行 / ${formatBytes(3)}；显示第 1–1 行。\n1| abc`,
                 `the single read keeps its wording (got ${read.content})`
             );
 
-            const edited = await call(createWorkspaceEditTool({ state }), {
+            const edited = await call(tool, {
+                action: 'edit',
                 path: 'exact/a.md',
                 old_string: 'abc',
                 new_string: 'abcd',
@@ -1424,14 +1437,7 @@ const cases: { name: string; body: () => Promise<void> }[] = [
 
             await write('widgets/exact.html', '<div>x</div>');
             const limits = { allowHtml: true, maxHtmlBytes: 32768, maxGzipBytes: 4096 };
-            const previewed = await call(
-                createWorkspacePreviewTool({
-                    state,
-                    limits,
-                    dependencies: { renderPng: async () => ({ png: PNG, width: 600, height: 320 }) },
-                }),
-                { path: 'widgets/exact.html' }
-            );
+            const previewed = await call(tool, { action: 'preview', path: 'widgets/exact.html' });
             const size = measureWidgetHtml('<div>x</div>');
             expect(
                 previewed.content ===
@@ -1448,7 +1454,14 @@ const cases: { name: string; body: () => Promise<void> }[] = [
         body: async () => {
             await clearWorkspace();
             const state = createWorkspaceState({ chatId: CHAT, conversationRootIds: [ROOT], quota: QUOTA });
-            const written = await call(createWorkspaceWriteTool({ state }), {
+            const tool = createWorkspaceTool({
+                state,
+                workspacePreview: true,
+                previewLimits: { allowHtml: true, maxHtmlBytes: 32768, maxGzipBytes: 4096 },
+                previewDependencies: { renderPng: async () => ({ png: PNG, width: 600, height: 300 }) },
+            });
+            const written = await call(tool, {
+                action: 'write',
                 files: [
                     { path: '../a.md', content: 'x' },
                     { path: '/abs.md', content: 'y' },
@@ -1457,7 +1470,8 @@ const cases: { name: string; body: () => Promise<void> }[] = [
             expect(written.isError, 'a write batch with no success is an error');
             expect(written.content.includes('这 2 个文件都没写成：'), `the header says so (${written.content})`);
 
-            const edited = await call(createWorkspaceEditTool({ state }), {
+            const edited = await call(tool, {
+                action: 'edit',
                 edits: [
                     { path: 'notes/missing.md', old_string: 'x', new_string: 'y' },
                     { path: 'notes/missing.md', old_string: 'z', new_string: 'w' },
@@ -1466,53 +1480,78 @@ const cases: { name: string; body: () => Promise<void> }[] = [
             expect(edited.isError, 'an edit batch with no success is an error');
             expect(edited.content.includes('这 2 处都没改成：'), `the header says so (${edited.content})`);
 
-            const previewed = await call(
-                createWorkspacePreviewTool({
-                    state,
-                    limits: { allowHtml: true, maxHtmlBytes: 32768, maxGzipBytes: 4096 },
-                    dependencies: { renderPng: async () => ({ png: PNG, width: 600, height: 300 }) },
-                }),
-                { paths: ['widgets/nope.html', 'widgets/bad.json'] }
-            );
+            const previewed = await call(tool, {
+                action: 'preview',
+                paths: ['widgets/nope.html', 'widgets/bad.json'],
+            });
             expect(previewed.isError, 'a preview batch with no rendered draft is an error');
             expect(previewed.content.includes('这 2 个草稿都没渲染成：'), `the header says so (${previewed.content})`);
             expect(previewed.modelImages === undefined, 'no picture rides the result');
         },
     },
     {
-        name: 'the batch schemas declare their arrays, caps and the single-file fields',
+        name: 'merged workspace schema prunes preview/theme when preview is off, checks action, and switches statusText',
         body: async () => {
-            const writeTool = createWorkspaceWriteTool({ state: stateOf() });
-            expect(writeTool.definition.description.includes('files'), 'the write description explains the batch');
-            const writeProperties = propertiesOf(writeTool);
-            const files = recordOf(writeProperties['files']);
+            const withPreview = createWorkspaceTool({
+                state: stateOf(),
+                workspacePreview: true,
+                previewLimits: { allowHtml: true, maxHtmlBytes: 32768, maxGzipBytes: 4096 },
+            });
+            expect(withPreview.definition.name === WORKSPACE_TOOL_NAME, 'tool name is workspace');
+            expect(withPreview.definition.description.includes('workspace-usage'), 'description references workspace-usage skill');
+            const withProps = propertiesOf(withPreview);
+            const withActionEnum = recordOf(withProps['action'])['enum'];
+            expect(
+                Array.isArray(withActionEnum) && withActionEnum.includes('preview') && withActionEnum.length === 8,
+                `with preview on, action enum has 8 actions (${JSON.stringify(withActionEnum)})`
+            );
+            expect('theme' in withProps, 'with preview on, theme property is present');
+
+            const files = recordOf(withProps['files']);
             expect(files.minItems === 1 && files.maxItems === WRITE_BATCH_MAX, 'files is a 1–10 array');
             expect(Array.isArray(recordOf(files['items'])['required']), 'a file item declares its own required fields');
             expect(
-                recordOf(writeProperties['path']).type === 'string' && recordOf(writeProperties['content']).type === 'string',
-                'the single-file fields are still declared'
+                recordOf(withProps['path']).type === 'string' && recordOf(withProps['content']).type === 'string',
+                'the single-file fields are declared'
+            );
+            const edits = recordOf(withProps['edits']);
+            expect(edits.minItems === 1 && edits.maxItems === EDIT_BATCH_MAX, 'edits is a 1–5 array');
+            const paths = recordOf(withProps['paths']);
+            expect(paths.minItems === 1 && paths.maxItems === READ_BATCH_MAX, 'paths caps at READ_BATCH_MAX (10)');
+            expect(
+                String(paths.description ?? '').includes(`preview≤${PREVIEW_BATCH_MAX}`),
+                'paths description mentions preview cap when preview is on'
             );
 
-            const readTool = createWorkspaceReadTool({ state: stateOf() });
-            expect(readTool.definition.description.includes('paths'), 'the read description explains the batch');
-            const readProperties = propertiesOf(readTool);
-            const readPaths = recordOf(readProperties['paths']);
-            expect(readPaths.minItems === 1 && readPaths.maxItems === READ_BATCH_MAX, 'paths is a 1–10 array for read');
+            const withoutPreview = createWorkspaceTool({ state: stateOf(), workspacePreview: false });
+            const withoutProps = propertiesOf(withoutPreview);
+            const withoutActionEnum = recordOf(withoutProps['action'])['enum'];
+            expect(
+                Array.isArray(withoutActionEnum) && !withoutActionEnum.includes('preview') && withoutActionEnum.length === 7,
+                `with preview off, action enum has 7 actions (${JSON.stringify(withoutActionEnum)})`
+            );
+            expect(!('theme' in withoutProps), 'with preview off, theme property is omitted');
 
-            const editTool = createWorkspaceEditTool({ state: stateOf() });
-            expect(editTool.definition.description.includes('edits'), 'the edit description explains the batch');
-            const editProperties = propertiesOf(editTool);
-            const edits = recordOf(editProperties['edits']);
-            expect(edits.minItems === 1 && edits.maxItems === EDIT_BATCH_MAX, 'edits is a 1–5 array');
+            const refusedPreview = await call(withoutPreview, { action: 'preview', path: 'widgets/card.html' });
+            expect(
+                refusedPreview.isError && refusedPreview.content.includes('未开启工作区预览'),
+                `preview action is rejected when disabled (got ${refusedPreview.content})`
+            );
+            const badAction = await call(withoutPreview, { action: 'unknown' });
+            expect(badAction.isError && badAction.content.includes('action 必须是'), 'unknown action is rejected');
 
-            const previewTool = createWorkspacePreviewTool({
-                state: stateOf(),
-                limits: { allowHtml: true, maxHtmlBytes: 32768, maxGzipBytes: 4096 },
-            });
-            expect(previewTool.definition.description.includes('paths'), 'the preview description explains the batch');
-            const previewProperties = propertiesOf(previewTool);
-            const previewPaths = recordOf(previewProperties['paths']);
-            expect(previewPaths.minItems === 1 && previewPaths.maxItems === PREVIEW_BATCH_MAX, 'paths is a 1–3 array for preview');
+            expect(typeof withPreview.statusText === 'function', 'statusText is a dynamic function');
+            if (typeof withPreview.statusText === 'function') {
+                expect(withPreview.statusText({ action: 'list' }) === '📂 正在列工作区…', 'list statusText');
+                expect(withPreview.statusText({ action: 'read' }) === '📖 正在读工作区文件…', 'read statusText');
+                expect(withPreview.statusText({ action: 'write' }) === '📝 正在写工作区文件…', 'write statusText');
+                expect(withPreview.statusText({ action: 'edit' }) === '✏️ 正在修改工作区文件…', 'edit statusText');
+                expect(withPreview.statusText({ action: 'copy' }) === '📋 正在复制工作区文件…', 'copy statusText');
+                expect(withPreview.statusText({ action: 'delete' }) === '🗑️ 正在删除工作区文件…', 'delete statusText');
+                expect(withPreview.statusText({ action: 'find' }) === '🔍 正在搜索工作区…', 'find statusText');
+                expect(withPreview.statusText({ action: 'preview' }) === '🖼️ 正在渲染工作区预览…', 'preview statusText');
+                expect(withPreview.statusText({ action: 'other' }) === '⚙️ 正在操作工作区…', 'fallback statusText');
+            }
         },
     },
     {
@@ -1520,23 +1559,27 @@ const cases: { name: string; body: () => Promise<void> }[] = [
         body: async () => {
             const state = stateOf([ROOT]);
 
-            const writeTool = createWorkspaceWriteTool({ state });
-            const written = await call(writeTool, {
+            const tool = createWorkspaceTool({
+                state,
+                workspacePreview: true,
+                previewLimits: { allowHtml: true, maxHtmlBytes: 32768, maxGzipBytes: 4096 },
+            });
+            const written = await call(tool, {
+                action: 'write',
                 files: [{ path: 'notes/a.md', content: 'A' }],
                 path: '',
                 content: '',
             });
             expect(!written.isError, `blank fillers do not fail the write batch (${written.content})`);
 
-            const readTool = createWorkspaceReadTool({ state });
-            const read = await call(readTool, { paths: ['notes/a.md'], path: '' });
+            const read = await call(tool, { action: 'read', paths: ['notes/a.md'], path: '' });
             expect(
                 !read.isError && read.content.includes('notes/a.md'),
                 `a blank path filler does not fail the read batch (${read.content})`
             );
 
-            const editTool = createWorkspaceEditTool({ state });
-            const edited = await call(editTool, {
+            const edited = await call(tool, {
+                action: 'edit',
                 edits: [{ path: 'notes/a.md', old_string: 'A', new_string: 'B' }],
                 path: '',
                 old_string: '',
@@ -1544,24 +1587,21 @@ const cases: { name: string; body: () => Promise<void> }[] = [
             });
             expect(!edited.isError, `blank fillers do not fail the edit batch (${edited.content})`);
 
-            const previewTool = createWorkspacePreviewTool({
-                state,
-                limits: { allowHtml: true, maxHtmlBytes: 32768, maxGzipBytes: 4096 },
-            });
-            const previewed = await call(previewTool, { paths: ['notes/a.md'], path: '' });
+            const previewed = await call(tool, { action: 'preview', paths: ['notes/a.md'], path: '' });
             expect(
                 !previewed.content.includes('只能给一个'),
                 `a blank path filler does not look like a second form (${previewed.content})`
             );
 
             // An empty batch array next to a valid single form is a filler too
-            const singleWrite = await call(writeTool, {
+            const singleWrite = await call(tool, {
+                action: 'write',
                 path: 'notes/b.md',
                 content: 'B',
                 files: [],
             });
             expect(!singleWrite.isError, `an empty files array does not hijack the single write (${singleWrite.content})`);
-            const singleRead = await call(readTool, { path: 'notes/b.md', paths: [] });
+            const singleRead = await call(tool, { action: 'read', path: 'notes/b.md', paths: [] });
             expect(
                 !singleRead.isError && singleRead.content.includes('notes/b.md'),
                 `an empty paths array does not hijack the single read (${singleRead.content})`
