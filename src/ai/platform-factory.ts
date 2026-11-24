@@ -72,8 +72,9 @@ export const sendMessage = async (
     }
     const capabilities = capabilitiesOf(traits);
 
-    // Apply model capabilities (filter images, merge messages, etc.)
-    const processedMessages = applyModelCapabilities(messages, capabilities);
+    // `vision` is a chat-facing capability: reading images in a conversation,
+    // not what images.edit accepts. An image model keeps its reference images.
+    const processedMessages = imageModel ? messages : applyModelCapabilities(messages, capabilities);
 
     // Add isImageModel and pre-resolved traits to config
     const fullConfig: PlatformConfig = {

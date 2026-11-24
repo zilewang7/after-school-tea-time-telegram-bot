@@ -1136,6 +1136,7 @@ const cases: { name: string; body: () => Promise<void> }[] = [
         name: 'the real /picgpt handler: reference images as the context, a call-billed picture and no token usage',
         body: async () => {
             const chatId = -1005100000011;
+            const requestsBefore = stubRequests.length;
             const ctx = contextOf(
                 messageUpdate({ chatId, messageId: takeMessageId(), userId: USER_ID, text: '/picgpt 一只猫' }),
                 createFakeTelegram()
@@ -1164,6 +1165,14 @@ const cases: { name: string; body: () => Promise<void> }[] = [
                     row.imageOutputTokens === null &&
                     row.imageGenerationUsage.length === 0,
                 `the relay bills the call, so only the picture is recorded (got ${json(row)})`
+            );
+            // The reference image must make the platform use images.edit (#17):
+            // images.generate silently ignores it and the command degrades to
+            // text-to-image (the stub accepts both paths, only the path is read)
+            const imageRequest = stubRequests[requestsBefore];
+            expect(
+                stubRequests.length === requestsBefore + 1 && imageRequest?.path === '/v1/images/edits',
+                `the reference image makes it images.edit (got ${json(stubRequests.slice(requestsBefore).map((entry) => entry.path))})`
             );
         },
     },

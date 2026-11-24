@@ -15,6 +15,7 @@ import { BasePlatform } from './base-platform.js';
 import { attemptRequestOptions } from './attempt-request-options.js';
 import type { ModelEffort } from '../../config/model-capabilities.js';
 import { toVisionImageMimeType } from '../supported-mime.js';
+import { sniffImageMime, type SniffedImageMime } from '../image-generation/image-mime.js';
 import { imageModelChatError, isChatShapedRequest } from '../image-model-guard.js';
 import { capabilitiesOf, resolveRuntimeTraits } from '../model-traits.js';
 import { codePolicyDefaultEffortOf } from '../thinking-effort.js';
@@ -71,6 +72,39 @@ const FINAL_ROUND_NOTE: EasyInputMessage = {
     type: 'message',
     role: 'developer',
     content: 'Tool call budget is exhausted. Answer the user now based on the tool results above; do not request any more tools.',
+};
+
+/** A reference image of an image-model request: base64 bytes and their MIME type */
+interface ReferenceImage {
+    readonly data: string;
+    readonly mimeType: string;
+}
+
+/** The media type and upload name images.edit gets for one reference image */
+interface ReferenceUpload {
+    readonly extension: string;
+    readonly type: SniffedImageMime;
+}
+
+const REFERENCE_MIME_TYPES: readonly SniffedImageMime[] = ['image/png', 'image/jpeg', 'image/webp'];
+
+const REFERENCE_UPLOADS: Readonly<Record<SniffedImageMime, ReferenceUpload>> = {
+    'image/png': { extension: 'png', type: 'image/png' },
+    'image/jpeg': { extension: 'jpg', type: 'image/jpeg' },
+    'image/webp': { extension: 'webp', type: 'image/webp' },
+};
+
+/** One image part as images.edit takes it; legacy inline parts carry no MIME, so the bytes decide */
+const referenceImageOf = (imageData: string, mimeType: string | undefined): ReferenceImage => ({
+    data: imageData,
+    mimeType: mimeType ?? sniffImageMime(Buffer.from(imageData, 'base64')) ?? 'image/png',
+});
+
+/** What images.edit uploads for one reference: the declared MIME, else its bytes, else PNG */
+const referenceUploadOf = (reference: ReferenceImage): ReferenceUpload => {
+    const declared = REFERENCE_MIME_TYPES.find((mime) => mime === reference.mimeType);
+    const mimeType = declared ?? sniffImageMime(Buffer.from(reference.data, 'base64')) ?? 'image/png';
+    return REFERENCE_UPLOADS[mimeType];
 };
 
 export class OpenAIPlatform extends BasePlatform {
@@ -490,24 +524,31 @@ export class OpenAIPlatform extends BasePlatform {
     private async executeImageGeneration(
         imageModel: string,
         prompt: string,
-        referenceImages: string[],
+        referenceImages: readonly ReferenceImage[],
         signal?: AbortSignal,
         usageSink?: UsageSink
     ): Promise<Buffer> {
-        const imageFiles = await Promise.all(
-            referenceImages.map((img, i) => {
-                const buffer = Buffer.from(img, 'base64');
-                return toFile(buffer, `reference_${i}.png`, { type: 'image/png' });
+        const uploads = await Promise.all(
+            referenceImages.map(async (reference, index) => {
+                const upload = referenceUploadOf(reference);
+                const file = await toFile(
+                    Buffer.from(reference.data, 'base64'),
+                    `reference_${index}.${upload.extension}`,
+                    { type: upload.type }
+                );
+                return { file, type: upload.type };
             })
         );
+        const imageFiles = uploads.map((upload) => upload.file);
 
         // The attempt signal reaches the SDK, so a stop or a deadline cancels the
         // request instead of leaving it to bill in the background of its retry;
         // the retries are sendWithRetry's alone
         const generateFn = async (attemptSignal: AbortSignal) => {
-            if (imageFiles.length > 0) {
-                console.log(`[openai] Tool: images.edit with ${imageFiles.length} reference image(s):`,
-                    imageFiles.map((f, i) => `[${i}] ${f.name} ${Math.round(f.size / 1024)}KB`));
+            if (uploads.length > 0) {
+                console.log(`[openai] Tool: images.edit with ${uploads.length} reference image(s):`,
+                    uploads.map((upload, index) =>
+                        `[${index}] ${upload.file.name} ${upload.type} ${Math.round(upload.file.size / 1024)}KB`));
                 return this.client.images.edit({
                     model: imageModel,
                     image: imageFiles,
@@ -571,14 +612,14 @@ export class OpenAIPlatform extends BasePlatform {
         console.log('[openai] Generating image with model:', model);
 
         let prompt = '';
-        const referenceImages: string[] = [];
+        const referenceImages: ReferenceImage[] = [];
 
         for (const message of messages) {
             for (const part of message.content) {
                 if (part.type === 'text') {
                     prompt += part.text ?? '';
                 } else if (part.type === 'image' && part.imageData) {
-                    referenceImages.push(part.imageData);
+                    referenceImages.push(referenceImageOf(part.imageData, part.mimeType));
                 }
             }
         }
