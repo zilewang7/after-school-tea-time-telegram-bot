@@ -99,6 +99,10 @@ export interface CapabilityOptions {
     readonly imageTools: boolean;
     /** fetch_image is offered (the model can see what it reads) */
     readonly imageFetch: boolean;
+    /** crop_image is offered (a magnified region comes back to the model) */
+    readonly imageCrop?: boolean;
+    /** extract_frames is offered (stills of a video/animation message) */
+    readonly imageFrames?: boolean;
     /** search_by_image is offered */
     readonly imageReverseSearch: boolean;
     /** generate_image is offered; the drawing fallback is only named when it exists */
@@ -136,6 +140,14 @@ const IMAGE_REVERSE_LINE =
 
 const IMAGE_FETCH_LINE =
     '- 可以用 `fetch_image` 读取上下文中的图片原图、贴纸或已搜到的候选图以查看细节，一次可读多张（同类来源传数组，如 `fetch_image(search_ids=[\'s1\',\'s2\'])`），也可以用 `fetch_image(avatar=…)` 取群聊、用户、频道或自己（`me`）的头像。';
+
+const IMAGE_CROP_LINE =
+    '- 可以用 `crop_image` 从上下文图片（`#N`/`imgN`/`sN`/`gN`）裁出一块区域得到新图 `imgN`（`region` 3×3 宫格或 `bbox`+`unit`），' +
+    '之后可以再裁、当生图参考图、以图搜图或发送；每条回复最多裁 4 次。';
+
+const IMAGE_FRAMES_LINE =
+    '- 可以用 `extract_frames` 从视频/GIF/动图/动态贴纸按时刻取静帧（`times`/`count`/`first`/`last`）得到新图 `imgN`，' +
+    '之后可以当生图参考图、以图搜图或发送；每条回复最多取 6 帧。';
 
 /** Editing a picture the conversation already shows: reference it, never redraw it from memory */
 const IMAGE_EDIT_LINE =
@@ -186,6 +198,8 @@ export const buildCapabilitiesSection = (options: CapabilityOptions): string => 
     if (options.imageTools) lines.push(...searchImageLines(options.imageGenerate));
     if (options.imageReverseSearch) lines.push(IMAGE_REVERSE_LINE);
     if (options.imageFetch) lines.push(IMAGE_FETCH_LINE);
+    if (options.imageCrop === true) lines.push(IMAGE_CROP_LINE);
+    if (options.imageFrames === true) lines.push(IMAGE_FRAMES_LINE);
     if (options.imageGenerate) lines.push(IMAGE_EDIT_LINE);
     if (options.stickerTools) lines.push(stickerLine(options.imageFetch));
     if (options.fileTools) lines.push(fileLine(options.workspace === true));

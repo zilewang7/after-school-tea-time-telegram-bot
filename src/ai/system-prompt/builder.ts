@@ -36,6 +36,10 @@ export interface StaticPromptOptions {
     readonly imageTools?: boolean;
     /** fetch_image is offered this turn */
     readonly imageFetch?: boolean;
+    /** crop_image is offered this turn */
+    readonly imageCrop?: boolean;
+    /** extract_frames is offered this turn */
+    readonly imageFrames?: boolean;
     /** search_by_image is offered this turn */
     readonly imageReverseSearch?: boolean;
     /** generate_image is offered this turn */
@@ -76,6 +80,8 @@ export const buildStaticSystemPrompt = (
             smsOwner: options.sms === true ? getToolConfig().owner : null,
             imageTools: options.imageTools === true,
             imageFetch: options.imageFetch === true,
+            imageCrop: options.imageCrop === true,
+            imageFrames: options.imageFrames === true,
             imageReverseSearch: options.imageReverseSearch === true,
             imageGenerate: options.imageGenerate === true,
             stickerTools: options.stickerTools === true,

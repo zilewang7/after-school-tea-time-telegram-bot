@@ -17,6 +17,19 @@
  *                          ?mime=video/mp4|video/webm  input container hint
  *                          First frame of an animation, used as a still when
  *                          a tool needs a picture instead of a clip.
+ *   POST /crop             body = raw image bytes           -> image/jpeg|image/png
+ *                          ?x1&y1&x2&y2&unit=norm1000|px  region to crop
+ *                          ?format=jpeg|png&max_edge=<256-1536>&scale=<1-4>
+ *                          Crop one region and hand it back magnified; the
+ *                          source dimensions and the box actually used ride
+ *                          the response headers.
+ *   POST /frames           body = raw video bytes OR ?url=<signed https URL>
+ *                          ?mime=&mode=times|uniform|first|last
+ *                          ?times=<comma seconds> / ?count=&start=&end=
+ *                          ?size=512|768|960|1280&format=jpeg|png
+ *                          Several stills of a clip as JSON {duration, frames:[…]};
+ *                          a signed GCS URL lets ffmpeg read a >20MB video
+ *                          remotely, so the bot never downloads it.
  *   POST /emoji-preview    body = raw emoji media bytes   -> image/png
  *   POST /emoji-atlas      body = JSON image items        -> image/png
  *   GET  /health                                          -> text/plain
@@ -67,6 +80,34 @@ const FRAME_MAX_OUTPUT_BYTES = positiveIntegerEnv('FRAME_MAX_OUTPUT_BYTES', 6 * 
 const MAX_FRAME_DIMENSION = 1280;
 const FRAME_VIDEO_MIMES = new Set(['video/mp4', 'video/webm']);
 
+/** Crop one region of a picture; the bot sends the bytes it already holds */
+const CROP_MAX_INPUT_BYTES = positiveIntegerEnv('CROP_MAX_INPUT_BYTES', 20 * 1024 * 1024, 32 * 1024 * 1024);
+const CROP_TIMEOUT_MS = positiveIntegerEnv('CROP_TIMEOUT_MS', 15000, 30000);
+const CROP_MAX_OUTPUT_BYTES = positiveIntegerEnv('CROP_MAX_OUTPUT_BYTES', 2 * 1024 * 1024, 4 * 1024 * 1024);
+const CROP_MIN_SHORT_EDGE = 48;
+const CROP_MIN_MAX_EDGE = 256;
+const CROP_MAX_MAX_EDGE = 1536;
+const CROP_DEFAULT_MAX_EDGE = 1536;
+/** A crop smaller than this is scaled up to fill the model's image budget */
+const CROP_UPSCALE_LONG_EDGE = 1024;
+/** Guard against a decompression bomb, not against a normal 20MP photo */
+const CROP_MAX_PIXELS = 64 * 1024 * 1024;
+
+/** Several stills of a clip; a signed URL lets ffmpeg read a large video remotely */
+const FRAMES_MAX_INPUT_BYTES = positiveIntegerEnv('FRAMES_MAX_INPUT_BYTES', 20 * 1024 * 1024, 32 * 1024 * 1024);
+const FRAMES_TIMEOUT_MS = positiveIntegerEnv('FRAMES_TIMEOUT_MS', 30000, 60000);
+const FRAMES_REMOTE_TIMEOUT_MS = positiveIntegerEnv('FRAMES_REMOTE_TIMEOUT_MS', 60000, 120000);
+const FRAMES_MAX_OUTPUT_BYTES = positiveIntegerEnv('FRAMES_MAX_OUTPUT_BYTES', 8 * 1024 * 1024, 16 * 1024 * 1024);
+const FRAMES_SINGLE_MAX_BYTES = positiveIntegerEnv('FRAMES_SINGLE_MAX_BYTES', 2 * 1024 * 1024, 4 * 1024 * 1024);
+const FRAMES_SINGLE_TIMEOUT_MS = positiveIntegerEnv('FRAMES_SINGLE_TIMEOUT_MS', 8000, 20000);
+const FRAMES_REMOTE_SINGLE_TIMEOUT_MS = positiveIntegerEnv('FRAMES_REMOTE_SINGLE_TIMEOUT_MS', 20000, 30000);
+const FRAMES_MAX_COUNT = 6;
+const FRAMES_MAX_REMOTE_INPUT_BYTES = positiveIntegerEnv('FRAMES_REMOTE_MAX_INPUT_BYTES', 300 * 1024 * 1024, 320 * 1024 * 1024);
+const FRAMES_DEFAULT_SIZE = 960;
+const FRAMES_SIZES = new Set([512, 768, 960, 1280]);
+const FRAMES_REMOTE_HOSTS = new Set(['storage.googleapis.com']);
+const FRAMES_MAX_REDIRECTS = positiveIntegerEnv('FRAMES_MAX_REDIRECTS', 1, 4);
+
 const EMOJI_MAX_INPUT_BYTES = positiveIntegerEnv('EMOJI_MAX_INPUT_BYTES', 10 * 1024 * 1024, 12 * 1024 * 1024);
 const EMOJI_TIMEOUT_MS = positiveIntegerEnv('EMOJI_TIMEOUT_MS', 30000, 60000);
 const EMOJI_PREVIEW_SIZE = 512;
@@ -109,9 +150,10 @@ const MAX_EXPENSIVE_QUEUE = nonNegativeIntegerEnv('MAX_EXPENSIVE_QUEUE', 32, 128
 const gunzipAsync = promisify(gunzip);
 
 class HttpError extends Error {
-    constructor(statusCode, message) {
+    constructor(statusCode, message, details) {
         super(message);
         this.statusCode = statusCode;
+        this.details = details;
     }
 }
 
@@ -588,6 +630,546 @@ const extractFirstFrame = async (videoBuffer, inputMime, format, signal) => {
     }
 };
 
+/**
+ * The still format the bytes actually are; the bot sends the same bytes the
+ * model saw, so the MIME it carries is not trusted here.
+ */
+const sniffStillByteFormat = (buffer) => {
+    if (hasMagic(buffer, [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])) return 'png';
+    if (hasMagic(buffer, [0xff, 0xd8, 0xff])) return 'jpeg';
+    if (buffer.length >= 12
+        && buffer.subarray(0, 4).toString('ascii') === 'RIFF'
+        && buffer.subarray(8, 12).toString('ascii') === 'WEBP') return 'webp';
+    return null;
+};
+
+/** Width/height of a JPEG or PNG we just encoded, without another decoder */
+const stillImageSizeOf = (buffer) => {
+    const png = hasMagic(buffer, [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+    if (png && buffer.length >= 24) {
+        const width = buffer.readUInt32BE(16);
+        const height = buffer.readUInt32BE(20);
+        return width > 0 && height > 0 ? { width, height } : null;
+    }
+    if (hasMagic(buffer, [0xff, 0xd8, 0xff])) {
+        let offset = 2;
+        while (offset + 9 < buffer.length) {
+            if (buffer[offset] !== 0xff) { offset += 1; continue; }
+            const marker = buffer[offset + 1];
+            if (marker === 0xd8 || marker === 0x01 || marker === 0xda) break;
+            const length = buffer.readUInt16BE(offset + 2);
+            if (length < 2) break;
+            const isSof = marker >= 0xc0 && marker <= 0xcf && marker !== 0xc4 && marker !== 0xc8 && marker !== 0xcc;
+            if (isSof) {
+                const height = buffer.readUInt16BE(offset + 5);
+                const width = buffer.readUInt16BE(offset + 7);
+                return width > 0 && height > 0 ? { width, height } : null;
+            }
+            offset += 2 + length;
+        }
+    }
+    return null;
+};
+
+/**
+ * Crop + magnify one region with Pillow. The picture comes from the model's
+ * context, so this is local work: no queue slot, only the process timeout.
+ * The script answers JSON on stdout (ok/error + the box it actually used), and
+ * Node turns a validation failure into a 422 the model can fix by itself.
+ */
+const CROP_PYTHON = String.raw`
+import json
+import sys
+import warnings
+from PIL import Image, ImageOps
+
+Image.MAX_IMAGE_PIXELS = 64 * 1024 * 1024
+warnings.simplefilter('error', Image.DecompressionBombWarning)
+
+(in_path, out_path, unit, x1_text, y1_text, x2_text, y2_text,
+ requested_format, max_edge_text, scale_text, max_bytes_text) = sys.argv[1:12]
+
+max_edge = int(max_edge_text)
+max_bytes = int(max_bytes_text)
+scale = None if scale_text == '' else float(scale_text)
+
+def answer(payload):
+    print(json.dumps(payload, ensure_ascii=False, separators=(',', ':')))
+    sys.exit(0)
+
+def fail(message, width=None, height=None):
+    payload = {'ok': False, 'error': message}
+    if width is not None and height is not None:
+        payload['width'] = width
+        payload['height'] = height
+    answer(payload)
+
+try:
+    with Image.open(in_path) as source:
+        source_format = (source.format or '').upper()
+        raw_width, raw_height = source.size
+        if raw_width <= 0 or raw_height <= 0:
+            fail('image has no usable size')
+        if raw_width * raw_height > Image.MAX_IMAGE_PIXELS:
+            fail('image is too large to crop', raw_width, raw_height)
+        # Coordinates refer to the picture as a viewer sees it: rotate by EXIF first
+        image = ImageOps.exif_transpose(source)
+        image.load()
+        if image.mode in ('RGBA', 'LA') or (image.mode == 'P' and 'transparency' in image.info):
+            rgba = image.convert('RGBA')
+            background = Image.new('RGB', rgba.size, 'white')
+            background.paste(rgba, mask=rgba.getchannel('A'))
+            image = background
+        else:
+            image = image.convert('RGB')
+        width, height = image.size
+        if width <= 0 or height <= 0:
+            fail('image has no usable size')
+        if width * height > Image.MAX_IMAGE_PIXELS:
+            fail('image is too large to crop', width, height)
+except Exception as error:
+    fail('cannot read the image: ' + str(error))
+    raise SystemExit(0)
+
+flags = []
+try:
+    x1 = float(x1_text)
+    y1 = float(y1_text)
+    x2 = float(x2_text)
+    y2 = float(y2_text)
+except ValueError:
+    fail('crop box must be four numbers', width, height)
+
+if unit == 'norm1000':
+    px1 = x1 / 1000.0 * width
+    py1 = y1 / 1000.0 * height
+    px2 = x2 / 1000.0 * width
+    py2 = y2 / 1000.0 * height
+else:
+    px1, py1, px2, py2 = x1, y1, x2, y2
+
+if px2 <= px1 or py2 <= py1:
+    if px2 < px1:
+        px1, px2 = px2, px1
+    if py2 < py1:
+        py1, py2 = py2, py1
+    flags.append('swapped')
+
+clamped_x1 = max(0, min(width, int(round(px1))))
+clamped_y1 = max(0, min(height, int(round(py1))))
+clamped_x2 = max(0, min(width, int(round(px2))))
+clamped_y2 = max(0, min(height, int(round(py2))))
+if (clamped_x1, clamped_y1, clamped_x2, clamped_y2) != (int(round(px1)), int(round(py1)), int(round(px2)), int(round(py2))):
+    flags.append('clamped')
+
+crop_width = clamped_x2 - clamped_x1
+crop_height = clamped_y2 - clamped_y1
+if crop_width < 48 or crop_height < 48:
+    fail('crop is too small', width, height)
+
+cropped = image.crop((clamped_x1, clamped_y1, clamped_x2, clamped_y2))
+long_edge = max(crop_width, crop_height)
+if scale is not None:
+    desired = int(round(long_edge * scale))
+else:
+    desired = max(1024, long_edge)
+target_long_edge = min(max_edge, max(256, desired))
+if target_long_edge != long_edge:
+    ratio = target_long_edge / long_edge
+    resized = (max(1, int(round(crop_width * ratio))), max(1, int(round(crop_height * ratio))))
+    cropped = cropped.resize(resized, getattr(Image, 'Resampling', Image).LANCZOS)
+    flags.append('upscaled' if ratio > 1 else 'downscaled')
+
+if requested_format == 'auto':
+    final_format = 'jpeg' if source_format not in ('PNG', 'WEBP') else 'png'
+else:
+    final_format = requested_format
+
+def save_as(fmt, path, quality=None):
+    if fmt == 'png':
+        cropped.save(path, 'PNG', optimize=True)
+    else:
+        cropped.save(path, 'JPEG', quality=quality or 90, subsampling=0, optimize=True)
+
+save_as(final_format, out_path)
+import os
+if os.path.getsize(out_path) > max_bytes and final_format == 'png':
+    final_format = 'jpeg'
+    flags.append('jpeg-fallback')
+    save_as('jpeg', out_path, 90)
+if os.path.getsize(out_path) > max_bytes:
+    for quality in (82, 74, 66):
+        final_format = 'jpeg'
+        save_as('jpeg', out_path, quality)
+        if os.path.getsize(out_path) <= max_bytes:
+            break
+if os.path.getsize(out_path) > max_bytes:
+    fail('cropped output is too large')
+
+answer({
+    'ok': True,
+    'width': width,
+    'height': height,
+    'x1': clamped_x1,
+    'y1': clamped_y1,
+    'x2': clamped_x2,
+    'y2': clamped_y2,
+    'outputWidth': cropped.width,
+    'outputHeight': cropped.height,
+    'format': final_format,
+    'flags': flags,
+})
+`;
+
+const parseCropQuery = (searchParams) => {
+    const parseNumber = (name) => {
+        const raw = searchParams.get(name);
+        const value = raw === null ? Number.NaN : Number(raw);
+        if (!Number.isFinite(value)) throw new HttpError(400, `${name} must be a number`);
+        return value;
+    };
+    const unit = searchParams.get('unit') ?? 'norm1000';
+    if (unit !== 'norm1000' && unit !== 'px') throw new HttpError(400, 'unit must be norm1000 or px');
+    const requestedFormat = searchParams.get('format');
+    if (requestedFormat !== null && requestedFormat !== 'jpeg' && requestedFormat !== 'png') {
+        throw new HttpError(400, 'format must be jpeg or png');
+    }
+    const maxEdgeRaw = searchParams.get('max_edge');
+    const maxEdge = maxEdgeRaw === null ? CROP_DEFAULT_MAX_EDGE : Number(maxEdgeRaw);
+    if (!Number.isSafeInteger(maxEdge) || maxEdge < CROP_MIN_MAX_EDGE || maxEdge > CROP_MAX_MAX_EDGE) {
+        throw new HttpError(400, `max_edge must be within ${CROP_MIN_MAX_EDGE}-${CROP_MAX_MAX_EDGE}`);
+    }
+    const scaleRaw = searchParams.get('scale');
+    let scale;
+    if (scaleRaw !== null && scaleRaw !== '') {
+        scale = Number(scaleRaw);
+        if (!Number.isFinite(scale) || scale < 1 || scale > 4) throw new HttpError(400, 'scale must be within 1-4');
+    }
+    return {
+        unit,
+        x1: parseNumber('x1'),
+        y1: parseNumber('y1'),
+        x2: parseNumber('x2'),
+        y2: parseNumber('y2'),
+        format: requestedFormat ?? 'auto',
+        maxEdge,
+        ...(scale === undefined ? {} : { scale }),
+    };
+};
+
+const cropStillImage = async (inputBuffer, options, signal) => {
+    const inputFormat = sniffStillByteFormat(inputBuffer);
+    if (inputFormat === null) throw new HttpError(415, 'input is not PNG/JPEG/WebP');
+    const dir = await mkdtemp(join(tmpdir(), 'crop-'));
+    const inPath = join(dir, `input.${inputFormat === 'jpeg' ? 'jpg' : inputFormat}`);
+    const outPath = join(dir, options.format === 'png' ? 'out.png' : 'out.jpg');
+    try {
+        await writeFile(inPath, inputBuffer);
+        const { stdout } = await runProcess(
+            process.env.PYTHON_BIN || 'python3',
+            [
+                '-c', CROP_PYTHON,
+                inPath, outPath, options.unit,
+                String(options.x1), String(options.y1), String(options.x2), String(options.y2),
+                options.format, String(options.maxEdge),
+                options.scale === undefined ? '' : String(options.scale),
+                String(CROP_MAX_OUTPUT_BYTES),
+            ],
+            CROP_TIMEOUT_MS,
+            'crop timed out',
+            { jobDirectory: dir, maxFileBytes: CROP_MAX_OUTPUT_BYTES, signal }
+        );
+        let parsed;
+        try {
+            parsed = JSON.parse(stdout.trim());
+        } catch {
+            throw new HttpError(500, 'crop returned unreadable metadata');
+        }
+        if (parsed.ok !== true) {
+            if (Number.isFinite(parsed.width) && Number.isFinite(parsed.height)) {
+                throw new HttpError(422, parsed.error || 'invalid crop box', {
+                    width: parsed.width,
+                    height: parsed.height,
+                });
+            }
+            throw new HttpError(500, parsed.error || 'crop failed');
+        }
+        const outputInfo = await stat(outPath);
+        if (outputInfo.size === 0) throw new HttpError(500, 'crop produced no data');
+        if (outputInfo.size > CROP_MAX_OUTPUT_BYTES) throw new HttpError(500, 'crop output exceeds the limit');
+        const data = await readFile(outPath);
+        return {
+            data,
+            mime: parsed.format === 'png' ? 'image/png' : 'image/jpeg',
+            meta: {
+                sourceWidth: parsed.width,
+                sourceHeight: parsed.height,
+                x1: parsed.x1,
+                y1: parsed.y1,
+                x2: parsed.x2,
+                y2: parsed.y2,
+                outputWidth: parsed.outputWidth,
+                outputHeight: parsed.outputHeight,
+                flags: Array.isArray(parsed.flags) ? parsed.flags : [],
+            },
+        };
+    } finally {
+        await rm(dir, { recursive: true, force: true }).catch(() => {});
+    }
+};
+
+/** Only a signed URL for the media bucket may be read remotely: no SSRF */
+const resolveRemoteVideoUrl = (searchParams) => {
+    const raw = searchParams.get('url');
+    if (raw === null || raw === '') return null;
+    let parsed;
+    try {
+        parsed = new URL(raw);
+    } catch {
+        throw new HttpError(400, 'url is not a valid absolute URL');
+    }
+    if (parsed.protocol !== 'https:') throw new HttpError(400, 'url must use https');
+    if (!FRAMES_REMOTE_HOSTS.has(parsed.hostname)) throw new HttpError(400, 'url host is not allowed');
+    return raw;
+};
+
+/**
+ * Validate the /frames query into the options the extraction uses. `times`
+ * and `count` are mutually exclusive; first/last override both.
+ */
+const parseFramesQuery = (searchParams, inputMime) => {
+    if (inputMime !== 'image/gif' && !inputMime.startsWith('video/')) {
+        throw new HttpError(415, `unsupported video MIME: ${inputMime || '(empty)'}`);
+    }
+    const modeRaw = searchParams.get('mode');
+    if (modeRaw !== null && !['times', 'uniform', 'first', 'last'].includes(modeRaw)) {
+        throw new HttpError(400, 'mode must be times, uniform, first or last');
+    }
+    const timesRaw = searchParams.get('times');
+    let times = [];
+    if (timesRaw !== null && timesRaw !== '') {
+        times = timesRaw.split(',').map((value) => Number(value.trim()));
+        if (times.length === 0 || times.length > FRAMES_MAX_COUNT) {
+            throw new HttpError(400, `times must contain 1-${FRAMES_MAX_COUNT} entries`);
+        }
+        if (times.some((value) => !Number.isFinite(value) || value < 0)) {
+            throw new HttpError(400, 'times must be non-negative numbers');
+        }
+    }
+    const countRaw = searchParams.get('count');
+    let count;
+    if (countRaw !== null && countRaw !== '') {
+        count = Number(countRaw);
+        if (!Number.isSafeInteger(count) || count < 1 || count > FRAMES_MAX_COUNT) {
+            throw new HttpError(400, `count must be within 1-${FRAMES_MAX_COUNT}`);
+        }
+    }
+    if (times.length > 0 && count !== undefined) {
+        throw new HttpError(400, 'times and count are mutually exclusive');
+    }
+    const mode = modeRaw ?? (times.length > 0 ? 'times' : 'uniform');
+    if (mode === 'times' && times.length === 0) {
+        throw new HttpError(400, 'mode=times needs times');
+    }
+    const startRaw = searchParams.get('start');
+    const endRaw = searchParams.get('end');
+    const start = startRaw === null || startRaw === '' ? undefined : Number(startRaw);
+    const end = endRaw === null || endRaw === '' ? undefined : Number(endRaw);
+    if (start !== undefined && (!Number.isFinite(start) || start < 0)) {
+        throw new HttpError(400, 'start must be a non-negative number');
+    }
+    if (end !== undefined && (!Number.isFinite(end) || end < 0)) {
+        throw new HttpError(400, 'end must be a non-negative number');
+    }
+    if (start !== undefined && end !== undefined && end <= start) {
+        throw new HttpError(400, 'end must be greater than start');
+    }
+    const sizeRaw = searchParams.get('size');
+    const size = sizeRaw === null || sizeRaw === '' ? FRAMES_DEFAULT_SIZE : Number(sizeRaw);
+    if (!FRAMES_SIZES.has(size)) throw new HttpError(400, `size must be one of ${[...FRAMES_SIZES].join('/')}`);
+    const formatRaw = searchParams.get('format');
+    if (formatRaw !== null && formatRaw !== 'jpeg' && formatRaw !== 'png') {
+        throw new HttpError(400, 'format must be jpeg or png');
+    }
+    return {
+        mode,
+        ...(times.length === 0 ? {} : { times }),
+        ...(count === undefined ? {} : { count }),
+        ...(start === undefined ? {} : { start }),
+        ...(end === undefined ? {} : { end }),
+        size,
+        format: formatRaw ?? (inputMime === 'video/webm' ? 'png' : 'jpeg'),
+    };
+};
+
+/** One remote read timeout for both ffprobe and each ffmpeg call */
+const REMOTE_IO_TIMEOUT_US = '15000000';
+
+const probeVideoSource = async (input, isRemote, jobDirectory, signal) => {
+    const args = ['-v', 'error'];
+    if (isRemote) args.push('-rw_timeout', REMOTE_IO_TIMEOUT_US);
+    args.push('-show_streams', '-show_format', '-of', 'json', input);
+    const { stdout } = await runProcess(
+        'ffprobe',
+        args,
+        isRemote ? FRAMES_REMOTE_TIMEOUT_MS : FRAME_TIMEOUT_MS,
+        'ffprobe timed out',
+        { jobDirectory, maxFileBytes: MAX_PROCESS_OUTPUT_BYTES, signal }
+    );
+    let probe;
+    try {
+        probe = JSON.parse(stdout);
+    } catch {
+        throw new HttpError(422, 'invalid video: ffprobe returned unreadable output');
+    }
+    const streams = Array.isArray(probe.streams) ? probe.streams : [];
+    const video = streams.find((stream) => stream && stream.codec_type === 'video');
+    if (video === undefined) throw new HttpError(415, 'input has no video stream');
+    const width = Number(video.width);
+    const height = Number(video.height);
+    const duration = Number(video.duration ?? probe.format?.duration);
+    if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0
+        || width * height > 100 * 1024 * 1024) {
+        throw new HttpError(422, 'video dimensions are unusable');
+    }
+    if (!Number.isFinite(duration) || duration <= 0) {
+        throw new HttpError(422, 'video duration is unknown or empty', { duration: null });
+    }
+    let rotation = 0;
+    const sideData = Array.isArray(video.side_data_list) ? video.side_data_list : [];
+    for (const item of sideData) {
+        const value = item && item.rotation !== undefined ? Number(item.rotation) : Number.NaN;
+        if (Number.isFinite(value)) rotation = value;
+    }
+    if (rotation === 0 && video.tags !== undefined && video.tags.rotate !== undefined) {
+        const value = Number(video.tags.rotate);
+        if (Number.isFinite(value)) rotation = value;
+    }
+    const rotated = Math.abs(Math.round(rotation)) % 180 === 90;
+    return {
+        duration,
+        width: rotated ? height : width,
+        height: rotated ? width : height,
+        fps: parseFrameRate(video.avg_frame_rate || video.r_frame_rate),
+        rotation,
+    };
+};
+
+const frameTimesOf = (options, duration) => {
+    const clamp = (value) => Math.min(Math.max(0, value), duration);
+    if (options.mode === 'times') {
+        for (const time of options.times) {
+            if (!(time >= 0 && time < duration)) {
+                throw new HttpError(422, `time ${time}s is outside the video (0-${duration}s)`, { duration });
+            }
+        }
+        return [...options.times];
+    }
+    if (options.mode === 'first') return [0];
+    if (options.mode === 'last') return [Math.max(0, duration - 0.15)];
+    const start = clamp(options.start ?? 0);
+    const end = clamp(options.end ?? duration);
+    if (end - start <= 0.001) throw new HttpError(422, 'start and end leave no room for a frame', { duration });
+    const count = options.count ?? 3;
+    const step = (end - start) / count;
+    return Array.from({ length: count }, (_, index) => start + step * (index + 0.5));
+};
+
+/**
+ * The frame actually shown, relative to the requested second. Input seek
+ * resets output timestamps to ~0, so `showinfo`'s pts_time is the offset past
+ * the seek target, not a wall-clock position; add the request back.
+ */
+const actualTimeOf = (stderr, requestedT, duration) => {
+    const matches = [...stderr.matchAll(/pts_time:\s*([0-9]+(?:\.[0-9]+)?)/g)];
+    const last = matches[matches.length - 1];
+    const offset = last === undefined ? Number.NaN : Number(last[1]);
+    if (!Number.isFinite(offset)) return requestedT;
+    return Math.min(duration, requestedT + offset);
+};
+
+/**
+ * Extract stills of one clip. `source` is either bytes (the media cache inline
+ * path) or a signed https URL (the >20MB GCS path, where ffmpeg reads remotely
+ * and the bot never downloads the file).
+ */
+const extractFrames = async (source, options, signal) => {
+    const isRemote = source.kind === 'url';
+    const dir = await mkdtemp(join(tmpdir(), 'frames-'));
+    try {
+        let input = source.url;
+        if (source.kind === 'bytes') {
+            input = join(dir, 'input.bin');
+            await writeFile(input, source.data);
+        }
+        const probe = await probeVideoSource(input, isRemote, dir, signal);
+        const times = frameTimesOf(options, probe.duration);
+        const extension = options.format === 'png' ? 'png' : 'jpg';
+        const mime = options.format === 'png' ? 'image/png' : 'image/jpeg';
+        const frames = [];
+        let totalBytes = 0;
+        const startedAt = Date.now();
+        for (const [index, requestedT] of times.entries()) {
+            if (isRemote && Date.now() - startedAt > FRAMES_REMOTE_TIMEOUT_MS * 0.8) {
+                throw new HttpError(504, 'remote video did not answer in time');
+            }
+            const outPath = join(dir, `frame-${index}.${extension}`);
+            const args = ['-hide_banner', '-nostdin', '-y', '-threads', '2'];
+            if (isRemote) args.push('-rw_timeout', REMOTE_IO_TIMEOUT_US);
+            args.push(
+                '-ss', requestedT.toFixed(3),
+                '-i', input,
+                '-frames:v', '1',
+                '-an', '-sn',
+                '-vf', `showinfo,scale='min(${options.size},iw)':-2`
+            );
+            if (options.format === 'jpeg') args.push('-q:v', '2');
+            args.push(outPath);
+            const singleTimeout = isRemote ? FRAMES_REMOTE_SINGLE_TIMEOUT_MS : FRAMES_SINGLE_TIMEOUT_MS;
+            const { stderr } = await runProcess(
+                'ffmpeg',
+                args,
+                singleTimeout,
+                'frame extraction timed out',
+                { jobDirectory: dir, maxFileBytes: FRAMES_SINGLE_MAX_BYTES, signal }
+            );
+            const outputInfo = await stat(outPath).catch(() => null);
+            if (outputInfo === null || outputInfo.size === 0) {
+                throw new HttpError(500, `frame at ${requestedT}s produced no data`);
+            }
+            if (outputInfo.size > FRAMES_SINGLE_MAX_BYTES) {
+                throw new HttpError(500, `frame at ${requestedT}s exceeds the single frame limit`);
+            }
+            totalBytes += outputInfo.size;
+            if (totalBytes > FRAMES_MAX_OUTPUT_BYTES) {
+                throw new HttpError(500, 'frames exceed the output limit');
+            }
+            const data = await readFile(outPath);
+            const size = stillImageSizeOf(data);
+            frames.push({
+                requestedT,
+                actualT: actualTimeOf(stderr, requestedT, probe.duration),
+                mime,
+                width: size === null ? null : size.width,
+                height: size === null ? null : size.height,
+                data: data.toString('base64'),
+            });
+        }
+        return {
+            duration: probe.duration,
+            width: probe.width,
+            height: probe.height,
+            fps: Number.isFinite(probe.fps) ? probe.fps : null,
+            rotation: probe.rotation,
+            frames,
+            notes: [],
+        };
+    } finally {
+        await rm(dir, { recursive: true, force: true }).catch(() => {});
+    }
+};
+
+
 const hasMagic = (buffer, magic) =>
     buffer.length >= magic.length && magic.every((value, index) => buffer[index] === value);
 
@@ -994,6 +1576,30 @@ const sendError = (res, context, error) => {
     sendBuffer(res, statusCode, { 'Content-Type': 'text/plain' }, `${context} failed: ${message}`);
 };
 
+/** A signed read URL's query is a credential: never let it reach a log line */
+const redactUrlSecrets = (text) =>
+    text.replace(/(https:\/\/storage\.googleapis\.com\/[^\s"']*)\?[^\s"']*/g, '$1?…');
+
+/**
+ * A validation failure that carries values the caller needs to correct itself
+ * (source dimensions, the clip duration) answers JSON; everything else keeps
+ * the plain-text shape the existing endpoints have.
+ */
+const sendJsonAwareError = (res, context, error) => {
+    if (error instanceof HttpError && error.details !== undefined) {
+        const statusCode = error.statusCode;
+        if (statusCode !== 499) console.error(`[tgs-converter] ${context} failed:`, error.message);
+        sendBuffer(
+            res,
+            statusCode,
+            { 'Content-Type': 'application/json' },
+            Buffer.from(JSON.stringify({ error: error.message, ...error.details }))
+        );
+        return;
+    }
+    sendError(res, context, error);
+};
+
 const server = http.createServer(async (req, res) => {
     if (req.method === 'GET' && req.url === '/health') {
         res.writeHead(200, { 'Content-Type': 'text/plain' });
@@ -1141,6 +1747,104 @@ const server = http.createServer(async (req, res) => {
             }, frame);
         } catch (error) {
             sendError(res, 'frame', error);
+        }
+        return;
+    }
+
+    if (req.method === 'POST' && req.url.split('?')[0] === '/crop') {
+        try {
+            const parsed = new URL(req.url, 'http://localhost');
+            const options = parseCropQuery(parsed.searchParams);
+            const body = await readBody(req, CROP_MAX_INPUT_BYTES);
+            if (body.length === 0) throw new HttpError(400, 'empty body');
+            const key = createHash('sha256')
+                .update('crop\0')
+                .update(JSON.stringify(options))
+                .update('\0')
+                .update(body)
+                .digest('hex');
+            let cropped = cacheGet(key);
+            if (cropped !== undefined && Buffer.isBuffer(cropped) === false) {
+                console.log(`[tgs-converter] crop cache hit for ${key.slice(0, 12)}`);
+            } else {
+                cropped = await cropStillImage(body, options);
+                cacheSet(key, cropped);
+                console.log(`[tgs-converter] crop ${body.length}B box=${cropped.meta.x1},${cropped.meta.y1},${cropped.meta.x2},${cropped.meta.y2} -> ${cropped.data.length}B ${cropped.mime} (cache miss)`);
+            }
+            sendBuffer(res, 200, {
+                'Content-Type': cropped.mime,
+                'Content-Length': cropped.data.length,
+                'X-Source-Width': String(cropped.meta.sourceWidth),
+                'X-Source-Height': String(cropped.meta.sourceHeight),
+                'X-Crop-X1': String(cropped.meta.x1),
+                'X-Crop-Y1': String(cropped.meta.y1),
+                'X-Crop-X2': String(cropped.meta.x2),
+                'X-Crop-Y2': String(cropped.meta.y2),
+                'X-Output-Width': String(cropped.meta.outputWidth),
+                'X-Output-Height': String(cropped.meta.outputHeight),
+                'X-Crop-Flags': cropped.meta.flags.join(','),
+            }, cropped.data);
+        } catch (error) {
+            sendJsonAwareError(res, 'crop', error);
+        }
+        return;
+    }
+
+    if (req.method === 'POST' && req.url.split('?')[0] === '/frames') {
+        let remoteUrl = null;
+        try {
+            const parsed = new URL(req.url, 'http://localhost');
+            remoteUrl = resolveRemoteVideoUrl(parsed.searchParams);
+            const inputMime = parsed.searchParams.get('mime') ?? '';
+            const options = parseFramesQuery(parsed.searchParams, inputMime);
+            const declaredSourceBytes = Number(parsed.searchParams.get('sourceBytes'));
+            if (remoteUrl !== null && Number.isFinite(declaredSourceBytes)
+                && declaredSourceBytes > FRAMES_MAX_REMOTE_INPUT_BYTES) {
+                throw new HttpError(413, 'remote input exceeds the size limit');
+            }
+            const result = await withExpensiveRequest(req, res, async (signal) => {
+                if (remoteUrl !== null) {
+                    console.log(`[tgs-converter] frames remote ${inputMime} mode=${options.mode} (no cache)`);
+                    return extractFrames({ kind: 'url', url: remoteUrl }, options, signal);
+                }
+                const body = await readBody(req, FRAMES_MAX_INPUT_BYTES, signal);
+                if (body.length === 0) throw new HttpError(400, 'empty body');
+                const key = createHash('sha256')
+                    .update('frames\0')
+                    .update(inputMime)
+                    .update('\0')
+                    .update(JSON.stringify(options))
+                    .update('\0')
+                    .update(body)
+                    .digest('hex');
+                const cached = cacheGet(key);
+                if (Buffer.isBuffer(cached)) {
+                    console.log(`[tgs-converter] frames cache hit for ${key.slice(0, 12)}`);
+                    try {
+                        return JSON.parse(cached.toString('utf8'));
+                    } catch {
+                        // A corrupted cache entry is not worth failing over
+                    }
+                }
+                const extracted = await extractFrames({ kind: 'bytes', data: body }, options, signal);
+                cacheSet(key, Buffer.from(JSON.stringify(extracted)));
+                console.log(`[tgs-converter] frames ${body.length}B ${inputMime} mode=${options.mode} -> ${extracted.frames.length} frame(s) (cache miss)`);
+                return extracted;
+            });
+            sendBuffer(res, 200, {
+                'Content-Type': 'application/json',
+                'Content-Length': Buffer.byteLength(JSON.stringify(result)),
+            }, Buffer.from(JSON.stringify(result)));
+        } catch (error) {
+            if (remoteUrl !== null && error instanceof Error) {
+                // ffprobe/ffmpeg quote the URL in their errors; its query is a signature
+                const message = redactUrlSecrets(error.message);
+                const statusCode = error instanceof HttpError ? error.statusCode : 500;
+                const details = error instanceof HttpError ? error.details : undefined;
+                sendJsonAwareError(res, 'frames', new HttpError(statusCode, message, details));
+                return;
+            }
+            sendJsonAwareError(res, 'frames', error);
         }
         return;
     }

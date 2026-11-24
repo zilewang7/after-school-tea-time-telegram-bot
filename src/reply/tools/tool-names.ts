@@ -6,6 +6,8 @@ export const SEND_SMS_TOOL_NAME = 'send_sms_to_owner';
 export const GENERATE_IMAGE_TOOL_NAME = 'generate_image';
 export const SEARCH_IMAGES_TOOL_NAME = 'search_images';
 export const FETCH_IMAGE_TOOL_NAME = 'fetch_image';
+export const CROP_IMAGE_TOOL_NAME = 'crop_image';
+export const EXTRACT_FRAMES_TOOL_NAME = 'extract_frames';
 export const SEND_IMAGE_TOOL_NAME = 'send_image';
 export const SEARCH_BY_IMAGE_TOOL_NAME = 'search_by_image';
 export const SEND_STICKER_TOOL_NAME = 'send_sticker';
@@ -101,6 +103,8 @@ export const RESERVED_TOOL_NAMES: readonly string[] = [
     FETCH_IMAGE_TOOL_NAME,
     SEND_IMAGE_TOOL_NAME,
     SEARCH_BY_IMAGE_TOOL_NAME,
+    CROP_IMAGE_TOOL_NAME,
+    EXTRACT_FRAMES_TOOL_NAME,
     SEND_STICKER_TOOL_NAME,
     SEND_FILE_TOOL_NAME,
     SEND_WIDGET_TOOL_NAME,

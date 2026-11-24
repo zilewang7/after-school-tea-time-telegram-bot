@@ -385,3 +385,362 @@ export const createCustomEmojiAtlas = async (
         request.dispose();
     }
 };
+
+// ---------------------------------------------------------------------------
+// Crop and multi-frame extraction (design 2026-1124-2230)
+//
+// Both are local media operations on bytes the reply already holds (or on a
+// short-lived signed URL for a >20MB video). They answer structured outcomes
+// instead of null: the tool has to tell the model what to fix (the box unit,
+// the clip duration) without guessing from an HTTP status.
+// ---------------------------------------------------------------------------
+
+const CROP_TIMEOUT_MS = 15000;
+/** The sidecar caps the image at 2MB; a little slack covers headers */
+const CROP_MAX_RESPONSE_BYTES = 2 * 1024 * 1024 + 64 * 1024;
+const FRAMES_BODY_TIMEOUT_MS = 35000;
+const FRAMES_REMOTE_TIMEOUT_MS = 90000;
+/** Base64 inflates by 4/3; the sidecar caps raw frames at 8MB */
+const FRAMES_MAX_RESPONSE_BYTES = 12 * 1024 * 1024;
+const FRAMES_MAX_COUNT = 6;
+
+export const isTgsConverterConfigured = (): boolean => Boolean(TGS_CONVERTER_URL);
+
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+    typeof value === 'object' && value !== null && !Array.isArray(value);
+
+const numberField = (record: Record<string, unknown>, key: string): number | null => {
+    const value = record[key];
+    return typeof value === 'number' && Number.isFinite(value) ? value : null;
+};
+
+const textField = (record: Record<string, unknown>, key: string): string | null => {
+    const value = record[key];
+    return typeof value === 'string' ? value : null;
+};
+
+const parseRecord = (text: string): Record<string, unknown> | null => {
+    try {
+        const parsed: unknown = JSON.parse(text);
+        return isRecord(parsed) ? parsed : null;
+    } catch {
+        return null;
+    }
+};
+
+const isStillMime = (value: string | null): value is 'image/jpeg' | 'image/png' =>
+    value === 'image/jpeg' || value === 'image/png';
+
+const isStillMagic = (data: Buffer, mimeType: 'image/jpeg' | 'image/png'): boolean =>
+    mimeType === 'image/png'
+        ? data.length >= 4 && data[0] === 0x89 && data[1] === 0x50 && data[2] === 0x4e && data[3] === 0x47
+        : data.length >= 3 && data[0] === 0xff && data[1] === 0xd8 && data[2] === 0xff;
+
+export interface CropImageInput {
+    readonly data: Buffer;
+    readonly x1: number;
+    readonly y1: number;
+    readonly x2: number;
+    readonly y2: number;
+    readonly unit: 'norm1000' | 'px';
+    readonly maxEdge?: number;
+    readonly scale?: number;
+}
+
+export interface CropImageSuccess {
+    readonly ok: true;
+    readonly data: Buffer;
+    readonly mimeType: 'image/jpeg' | 'image/png';
+    readonly sourceWidth: number;
+    readonly sourceHeight: number;
+    readonly box: { readonly x1: number; readonly y1: number; readonly x2: number; readonly y2: number };
+    readonly outputWidth: number;
+    readonly outputHeight: number;
+    readonly flags: readonly string[];
+}
+
+export type CropImageOutcome =
+    | CropImageSuccess
+    | {
+          readonly ok: false;
+          readonly reason: 'invalid-box' | 'too-large' | 'unsupported' | 'failed';
+          readonly message?: string;
+          readonly sourceWidth?: number;
+          readonly sourceHeight?: number;
+      };
+
+/**
+ * Crop one region and let the sidecar magnify it. `reason: 'invalid-box'`
+ * comes with the source dimensions so the tool can tell the model what it got
+ * wrong (a norm1000 box sent as pixels, a box that is too small).
+ */
+export const cropImage = async (
+    input: CropImageInput,
+    signal?: AbortSignal
+): Promise<CropImageOutcome> => {
+    if (!TGS_CONVERTER_URL || input.data.length === 0) return { ok: false, reason: 'failed' };
+    const query = new URLSearchParams({
+        x1: String(input.x1),
+        y1: String(input.y1),
+        x2: String(input.x2),
+        y2: String(input.y2),
+        unit: input.unit,
+        ...(input.maxEdge === undefined ? {} : { max_edge: String(input.maxEdge) }),
+        ...(input.scale === undefined ? {} : { scale: String(input.scale) }),
+    });
+    const request = createTimedController(CROP_TIMEOUT_MS, signal);
+    try {
+        const res = await fetch(`${TGS_CONVERTER_URL}/crop?${query.toString()}`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/octet-stream' },
+            body: input.data,
+            signal: request.signal,
+        });
+        if (!res.ok) {
+            const body = await res.text().catch(() => '');
+            if (res.status === 413) return { ok: false, reason: 'too-large' };
+            if (res.status === 415) return { ok: false, reason: 'unsupported' };
+            if (res.status === 422) {
+                const detail = parseRecord(body);
+                const message = detail === null ? undefined : textField(detail, 'error') ?? undefined;
+                const sourceWidth = detail === null ? null : numberField(detail, 'width');
+                const sourceHeight = detail === null ? null : numberField(detail, 'height');
+                return {
+                    ok: false,
+                    reason: 'invalid-box',
+                    ...(message === undefined ? {} : { message }),
+                    ...(sourceWidth === null ? {} : { sourceWidth }),
+                    ...(sourceHeight === null ? {} : { sourceHeight }),
+                };
+            }
+            console.error(`[tgs-client] crop failed: HTTP ${res.status}`);
+            return { ok: false, reason: 'failed' };
+        }
+        const mimeType = res.headers.get('content-type')?.split(';')[0] ?? null;
+        if (!isStillMime(mimeType)) {
+            console.error('[tgs-client] crop returned an unexpected content type');
+            return { ok: false, reason: 'failed' };
+        }
+        const sourceWidth = Number(res.headers.get('x-source-width'));
+        const sourceHeight = Number(res.headers.get('x-source-height'));
+        const box = {
+            x1: Number(res.headers.get('x-crop-x1')),
+            y1: Number(res.headers.get('x-crop-y1')),
+            x2: Number(res.headers.get('x-crop-x2')),
+            y2: Number(res.headers.get('x-crop-y2')),
+        };
+        const outputWidth = Number(res.headers.get('x-output-width'));
+        const outputHeight = Number(res.headers.get('x-output-height'));
+        if (![sourceWidth, sourceHeight, box.x1, box.y1, box.x2, box.y2, outputWidth, outputHeight].every(
+            (value) => Number.isSafeInteger(value) && value > 0
+        )) {
+            console.error('[tgs-client] crop returned unusable metadata');
+            return { ok: false, reason: 'failed' };
+        }
+        const arrayBuffer = await res.arrayBuffer();
+        if (arrayBuffer.byteLength === 0 || arrayBuffer.byteLength > CROP_MAX_RESPONSE_BYTES) {
+            console.error('[tgs-client] crop returned an empty or oversized body');
+            return { ok: false, reason: 'failed' };
+        }
+        const data = Buffer.from(arrayBuffer);
+        if (!isStillMagic(data, mimeType)) {
+            console.error('[tgs-client] crop returned bytes that are not the announced format');
+            return { ok: false, reason: 'failed' };
+        }
+        return {
+            ok: true,
+            data,
+            mimeType,
+            sourceWidth,
+            sourceHeight,
+            box,
+            outputWidth,
+            outputHeight,
+            flags: (res.headers.get('x-crop-flags') ?? '').split(',').filter((flag) => flag !== ''),
+        };
+    } catch (error) {
+        console.error('[tgs-client] crop request error:', error instanceof Error ? error.message : error);
+        return { ok: false, reason: 'failed' };
+    } finally {
+        request.dispose();
+    }
+};
+
+export type FrameSize = 512 | 768 | 960 | 1280;
+
+export interface ExtractVideoFramesInput {
+    /**
+     * Inline bytes (≤20MB, the media cache path) or a signed https URL for a
+     * >20MB video that only exists in GCS. The bot never downloads the latter.
+     */
+    readonly source:
+        | { readonly kind: 'bytes'; readonly data: Buffer; readonly mimeType: string }
+        | { readonly kind: 'url'; readonly url: string; readonly mimeType: string; readonly sourceBytes?: number };
+    readonly mode: 'times' | 'uniform' | 'first' | 'last';
+    readonly times?: readonly number[];
+    readonly count?: number;
+    readonly start?: number;
+    readonly end?: number;
+    readonly size?: FrameSize;
+}
+
+export interface ExtractedVideoFrame {
+    readonly requestedT: number;
+    readonly actualT: number;
+    readonly mimeType: 'image/jpeg' | 'image/png';
+    readonly width: number | null;
+    readonly height: number | null;
+    readonly data: Buffer;
+}
+
+export interface ExtractVideoFramesSuccess {
+    readonly ok: true;
+    readonly duration: number;
+    readonly width: number;
+    readonly height: number;
+    readonly fps: number | null;
+    readonly rotation: number;
+    readonly frames: readonly ExtractedVideoFrame[];
+    readonly notes: readonly string[];
+}
+
+export type ExtractVideoFramesOutcome =
+    | ExtractVideoFramesSuccess
+    | {
+          readonly ok: false;
+          readonly reason: 'invalid-time' | 'too-large' | 'unsupported' | 'failed';
+          readonly message?: string;
+          readonly duration?: number;
+      };
+
+/**
+ * Extract stills of a clip through the converter. The remote form hands the
+ * sidecar a signed URL, so a >20MB GCS video is read by ffmpeg in place and
+ * only the bytes it seeks over ever leave storage.
+ */
+export const extractVideoFrames = async (
+    input: ExtractVideoFramesInput,
+    signal?: AbortSignal
+): Promise<ExtractVideoFramesOutcome> => {
+    if (!TGS_CONVERTER_URL) return { ok: false, reason: 'failed' };
+    const query = new URLSearchParams({
+        mime: input.source.mimeType,
+        mode: input.mode,
+        size: String(input.size ?? 960),
+        ...(input.times === undefined ? {} : { times: input.times.map((time) => String(time)).join(',') }),
+        ...(input.count === undefined ? {} : { count: String(input.count) }),
+        ...(input.start === undefined ? {} : { start: String(input.start) }),
+        ...(input.end === undefined ? {} : { end: String(input.end) }),
+        ...(input.source.kind === 'url' ? { url: input.source.url } : {}),
+        ...(input.source.kind === 'url' && input.source.sourceBytes !== undefined
+            ? { sourceBytes: String(input.source.sourceBytes) }
+            : {}),
+    });
+    const timeoutMs = input.source.kind === 'url' ? FRAMES_REMOTE_TIMEOUT_MS : FRAMES_BODY_TIMEOUT_MS;
+    const request = createTimedController(timeoutMs, signal);
+    try {
+        const res = await fetch(`${TGS_CONVERTER_URL}/frames?${query.toString()}`, {
+            method: 'POST',
+            ...(input.source.kind === 'bytes'
+                ? {
+                      headers: { 'Content-Type': 'application/octet-stream' },
+                      body: input.source.data,
+                  }
+                : {}),
+            signal: request.signal,
+        });
+        if (!res.ok) {
+            const body = await res.text().catch(() => '');
+            if (res.status === 413) return { ok: false, reason: 'too-large' };
+            if (res.status === 415) return { ok: false, reason: 'unsupported' };
+            if (res.status === 422) {
+                const detail = parseRecord(body);
+                const message = detail === null ? undefined : textField(detail, 'error') ?? undefined;
+                const duration = detail === null ? null : numberField(detail, 'duration');
+                return {
+                    ok: false,
+                    reason: 'invalid-time',
+                    ...(message === undefined ? {} : { message }),
+                    ...(duration === null ? {} : { duration }),
+                };
+            }
+            console.error(`[tgs-client] frames failed: HTTP ${res.status}`);
+            return { ok: false, reason: 'failed' };
+        }
+        const arrayBuffer = await res.arrayBuffer();
+        if (arrayBuffer.byteLength === 0 || arrayBuffer.byteLength > FRAMES_MAX_RESPONSE_BYTES) {
+            console.error('[tgs-client] frames returned an empty or oversized body');
+            return { ok: false, reason: 'failed' };
+        }
+        const parsed = parseRecord(Buffer.from(arrayBuffer).toString('utf8'));
+        if (parsed === null) {
+            console.error('[tgs-client] frames returned unreadable JSON');
+            return { ok: false, reason: 'failed' };
+        }
+        const duration = numberField(parsed, 'duration');
+        const width = numberField(parsed, 'width');
+        const height = numberField(parsed, 'height');
+        const rawFrames = parsed.frames;
+        if (
+            duration === null
+            || width === null
+            || height === null
+            || !Array.isArray(rawFrames)
+            || rawFrames.length === 0
+            || rawFrames.length > FRAMES_MAX_COUNT
+        ) {
+            console.error('[tgs-client] frames returned unusable metadata');
+            return { ok: false, reason: 'failed' };
+        }
+        const frames: ExtractedVideoFrame[] = [];
+        let totalBytes = 0;
+        for (const rawFrame of rawFrames) {
+            if (!isRecord(rawFrame)) return { ok: false, reason: 'failed' };
+            const requestedT = numberField(rawFrame, 'requestedT');
+            const actualT = numberField(rawFrame, 'actualT');
+            const mimeType = textField(rawFrame, 'mime');
+            const base64 = textField(rawFrame, 'data');
+            if (requestedT === null || actualT === null || !isStillMime(mimeType) || base64 === null) {
+                console.error('[tgs-client] frames returned a malformed frame');
+                return { ok: false, reason: 'failed' };
+            }
+            const data = Buffer.from(base64, 'base64');
+            if (data.length === 0 || !isStillMagic(data, mimeType)) {
+                console.error('[tgs-client] frames returned bytes that are not the announced format');
+                return { ok: false, reason: 'failed' };
+            }
+            totalBytes += data.length;
+            frames.push({
+                requestedT,
+                actualT,
+                mimeType,
+                width: numberField(rawFrame, 'width'),
+                height: numberField(rawFrame, 'height'),
+                data,
+            });
+        }
+        if (totalBytes > FRAMES_MAX_RESPONSE_BYTES) {
+            console.error('[tgs-client] frames exceed the response size limit');
+            return { ok: false, reason: 'failed' };
+        }
+        const rotation = numberField(parsed, 'rotation');
+        const notes = Array.isArray(parsed.notes)
+            ? parsed.notes.filter((note): note is string => typeof note === 'string')
+            : [];
+        return {
+            ok: true,
+            duration,
+            width,
+            height,
+            fps: numberField(parsed, 'fps'),
+            rotation: rotation ?? 0,
+            frames,
+            notes,
+        };
+    } catch (error) {
+        console.error('[tgs-client] frames request error:', error instanceof Error ? error.message : error);
+        return { ok: false, reason: 'failed' };
+    } finally {
+        request.dispose();
+    }
+};

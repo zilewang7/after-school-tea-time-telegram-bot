@@ -17,6 +17,8 @@ import type { AccessTier } from '../../services/access-tier.js';
 import { TOOL_GROUP_KEYS, toolOverrideOf, type ToolGroupKey, type ToolOverrides } from '../../services/tool-overrides.js';
 import {
     CREATE_HARNESS_ISSUE_TOOL_NAME,
+    CROP_IMAGE_TOOL_NAME,
+    EXTRACT_FRAMES_TOOL_NAME,
     FETCH_IMAGE_TOOL_NAME,
     GENERATE_IMAGE_TOOL_NAME,
     LIST_HARNESS_ISSUES_TOOL_NAME,
@@ -62,7 +64,7 @@ const GROUP_TOOLS: Record<ToolGroupKey, readonly string[]> = {
     sms: [SEND_SMS_TOOL_NAME],
     image: [GENERATE_IMAGE_TOOL_NAME, SEND_IMAGE_TOOL_NAME],
     imageSearch: [SEARCH_IMAGES_TOOL_NAME, SEND_IMAGE_TOOL_NAME],
-    imageFetch: [FETCH_IMAGE_TOOL_NAME],
+    imageFetch: [FETCH_IMAGE_TOOL_NAME, CROP_IMAGE_TOOL_NAME, EXTRACT_FRAMES_TOOL_NAME],
     imageReverseSearch: [SEARCH_BY_IMAGE_TOOL_NAME],
     sticker: [SEND_STICKER_TOOL_NAME],
     file: [SEND_FILE_TOOL_NAME],
@@ -87,7 +89,8 @@ const ENABLED_OF: Record<ToolGroupKey, (availability: ToolAvailability) => boole
     sms: (availability) => availability.sms,
     image: (availability) => availability.image,
     imageSearch: (availability) => availability.imageSearch,
-    imageFetch: (availability) => availability.imageFetch,
+    imageFetch: (availability) =>
+        availability.imageFetch || availability.imageCrop || availability.imageFrames,
     imageReverseSearch: (availability) => availability.imageReverseSearch,
     sticker: (availability) => availability.sticker,
     file: (availability) => availability.file,
@@ -144,8 +147,16 @@ const HARD_REASONS: Record<ToolGroupKey, readonly ReasonCheck[]> = {
     ],
     imageFetch: [
         ({ supportsImageInput }) => (supportsImageInput ? null : '当前模型不支持图片输入'),
-        ({ availability }) => (availability.imageSearch ? null : '依赖搜索网络图片，后者未启用'),
-        disabledByName(FETCH_IMAGE_TOOL_NAME),
+        ({ availability }) =>
+            availability.imageFetch || availability.imageCrop || availability.imageFrames
+                ? null
+                : '依赖搜索网络图片，后者未启用',
+        ({ config }) =>
+            [FETCH_IMAGE_TOOL_NAME, CROP_IMAGE_TOOL_NAME, EXTRACT_FRAMES_TOOL_NAME].every((name) =>
+                config.disabledTools.has(name)
+            )
+                ? '读取图片相关工具都已在 DISABLED_TOOLS 中关闭'
+                : null,
     ],
     imageReverseSearch: [
         IMAGE_TOOLS_OFF,

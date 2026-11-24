@@ -17,8 +17,11 @@ import { listMcpServers } from '../../ai/mcp/index.js';
 import { isTestInstance } from '../../config/instance.js';
 import { getToolConfig, type ToolConfig } from '../../config/tool-config.js';
 import type { AccessTier } from '../../services/access-tier.js';
+import { isTgsConverterConfigured } from '../../services/tgs-client.js';
 import { toolOverrideOf, type ToolGroupKey, type ToolOverrides } from '../../services/tool-overrides.js';
 import {
+    CROP_IMAGE_TOOL_NAME,
+    EXTRACT_FRAMES_TOOL_NAME,
     FETCH_IMAGE_TOOL_NAME,
     GENERATE_IMAGE_TOOL_NAME,
     SEARCH_IMAGES_TOOL_NAME,
@@ -58,6 +61,10 @@ export interface ToolAvailability {
     readonly imageReverseSearch: boolean;
     /** fetch_image is offered: only models that can see what they read */
     readonly imageFetch: boolean;
+    /** crop_image is offered: it hands a magnified region back to the model */
+    readonly imageCrop: boolean;
+    /** extract_frames is offered: stills of a video/GIF/animation message */
+    readonly imageFrames: boolean;
     /** send_sticker is offered */
     readonly sticker: boolean;
     /** send_file is offered */
@@ -90,6 +97,8 @@ const NO_TOOLS: ToolAvailability = {
     sendImage: false,
     imageReverseSearch: false,
     imageFetch: false,
+    imageCrop: false,
+    imageFrames: false,
     sticker: false,
     file: false,
     history: false,
@@ -201,6 +210,7 @@ export const resolveToolAvailability = (
     const wantsGenerateImage = sideEffectGate('image') && isEnabled(GENERATE_IMAGE_TOOL_NAME);
     const imageSearch = wantsSearchImages && sendImageEnabled;
     const image = wantsGenerateImage && sendImageEnabled;
+    const tgsConverterReady = isTgsConverterConfigured();
 
     return {
         trial,
@@ -227,6 +237,21 @@ export const resolveToolAvailability = (
             toolOverrideOf(overrides, 'imageFetch') !== false &&
             capabilities.supportsImageInput &&
             isEnabled(FETCH_IMAGE_TOOL_NAME),
+        // Crop/frames share the "读取图片" panel group but don't need
+        // fetch_image itself: they are offered whenever the group is on, the
+        // model can see pictures and the media sidecar is configured.
+        imageCrop:
+            imageSearch &&
+            toolOverrideOf(overrides, 'imageFetch') !== false &&
+            capabilities.supportsImageInput &&
+            tgsConverterReady &&
+            isEnabled(CROP_IMAGE_TOOL_NAME),
+        imageFrames:
+            imageSearch &&
+            toolOverrideOf(overrides, 'imageFetch') !== false &&
+            capabilities.supportsImageInput &&
+            tgsConverterReady &&
+            isEnabled(EXTRACT_FRAMES_TOOL_NAME),
         sticker:
             sideEffectGate('sticker') &&
             config.stickerTools &&

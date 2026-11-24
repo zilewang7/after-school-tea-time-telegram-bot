@@ -21,6 +21,8 @@ import { searchImages } from '../../services/image-search-service.js';
 import { createHistoryService } from '../../services/luoxu-history-service.js';
 import type { ToolOverrides } from '../../services/tool-overrides.js';
 import { toLuoxuChannelId } from '../../services/luoxu-preview-service.js';
+import { createCropImageTool } from './crop-image-tool.js';
+import { createExtractFramesTool } from './video-frames-tool.js';
 import { createFetchImageTool, PRODUCTION_FETCH_DEPENDENCIES } from './fetch-image-tool.js';
 import { createGenerateImageTool } from './generate-image-tool.js';
 import type { HistoryState } from './history-state.js';
@@ -192,6 +194,8 @@ export const createReplyTools = (
                   }),
               ]
             : []),
+        ...(availability.imageCrop ? [createCropImageTool({ state: mediaState, context })] : []),
+        ...(availability.imageFrames ? [createExtractFramesTool({ state: mediaState, context })] : []),
         ...(availability.sendImage ? [createSendImageTool({ state: mediaState, context })] : []),
         ...(availability.sticker
             ? [

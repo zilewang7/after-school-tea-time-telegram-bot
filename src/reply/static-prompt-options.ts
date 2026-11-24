@@ -11,6 +11,8 @@ export const buildStaticPromptOptions = (availability: ToolAvailability): Static
     sms: availability.sms,
     imageTools: availability.imageSearch,
     imageFetch: availability.imageFetch,
+    imageCrop: availability.imageCrop,
+    imageFrames: availability.imageFrames,
     imageReverseSearch: availability.imageReverseSearch,
     imageGenerate: availability.image,
     stickerTools: availability.sticker,
