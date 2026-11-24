@@ -99,6 +99,7 @@ cases.push(
                     previewText: 'URL: https://t.me/c/1415974153/2',
                     replyTo: { messageId: 0, authorName: '某人', snippet: 'tg://user?id=7', mediaHint: null },
                     mediaHint: null,
+                    messageKind: null,
                     media: [],
                     previewMedia: [],
                     reactions: [],

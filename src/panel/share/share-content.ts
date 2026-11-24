@@ -108,6 +108,12 @@ export interface ShareUserBubble {
     replyTo: ShareReplyTarget | null;
     mediaHint: string | null;
     /**
+     * Machine token of a non-text Telegram type (`service`, `poll`, …), when the
+     * message carries no words. The public page shows one neutral category and
+     * never the stored detail (a contact card's phone number must not leak).
+     */
+    messageKind: string | null;
+    /**
      * Every attachment of this bubble in display order (own media first, then
      * the rest of its Telegram media group), when the retention still has it
      */
@@ -317,6 +323,7 @@ const userBubbleOf = (
     previewText,
     replyTo,
     mediaHint: message.mediaHint,
+    messageKind: message.messageKind,
     media: [...media],
     previewMedia: [...previewMedia],
     reactions: [...reactions],

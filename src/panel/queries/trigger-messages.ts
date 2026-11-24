@@ -4,6 +4,7 @@
  * carry media bytes).
  */
 import { Message } from '../../db/messageDTO.js';
+import { messageSummaryTextOf } from '../../shared/message-kind-category.js';
 import { displayNameOf, lookupDisplayNames } from '../views/display-names.js';
 
 export const TRIGGER_EXCERPT_CHARS = 40;
@@ -26,7 +27,7 @@ const excerptOf = (text: string): string => {
 export const findTriggerSummary = async (chatId: number, messageId: number): Promise<TriggerSummary | null> => {
     const message = await Message.findOne({
         where: { chatId, messageId },
-        attributes: ['userId', 'userName', 'text', 'mediaHint'],
+        attributes: ['userId', 'userName', 'text', 'mediaHint', 'messageKind'],
     });
     if (message === null) return null;
 
@@ -35,6 +36,11 @@ export const findTriggerSummary = async (chatId: number, messageId: number): Pro
         message.userId !== null && names.has(message.userId)
             ? displayNameOf(names, message.userId)
             : message.userName;
-    const text = message.text ?? (message.mediaHint ? `[${message.mediaHint}]` : '');
+    // A message without words shows a neutral category (never the stored detail)
+    const text = messageSummaryTextOf({
+        text: message.text,
+        mediaHint: message.mediaHint,
+        messageKind: message.messageKind,
+    });
     return { messageId, authorName, text: excerptOf(text) };
 };

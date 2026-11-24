@@ -22,6 +22,7 @@ import {
 } from '../../db/queries/context-queries.js';
 import { findTelegramUsersByIds } from '../../db/queries/user-queries.js';
 import { isBotReplyInFlight } from '../../state.js';
+import { messageSummaryTextOf } from '../../shared/message-kind-category.js';
 import type { VisibleAccess } from '../types.js';
 import { loadConversationMessages } from './conversation-tree.js';
 import { modelOfVersion } from './reply-view.js';
@@ -158,15 +159,19 @@ const hasErrorIn = (replies: readonly BotResponse[]): boolean =>
 
 /** One line, at most 40 characters; a message without words shows what it is */
 const excerptOf = (message: ContextMessage): string => {
-    const words = (message.text ?? '').replace(LEGACY_EOF_MARKER, '').replace(/\s+/g, ' ').trim();
-    if (words === '') {
-        if (message.chatCommand) return '[/chat]';
-        return message.mediaHint ? `[${message.mediaHint}]` : '';
-    }
-    const characters = Array.from(words);
+    // A non-text Telegram type shows its neutral category (never the stored
+    // detail: this list is a summary, and a contact card's phone number is not
+    // something a list needs)
+    const summary = messageSummaryTextOf({
+        text: message.text === null ? null : message.text.replace(LEGACY_EOF_MARKER, ''),
+        chatCommand: message.chatCommand,
+        mediaHint: message.mediaHint,
+        messageKind: message.messageKind,
+    }).replace(/\s+/g, ' ').trim();
+    const characters = Array.from(summary);
     return characters.length > ROOT_EXCERPT_CHARS
         ? `${characters.slice(0, ROOT_EXCERPT_CHARS).join('')}…`
-        : words;
+        : summary;
 };
 
 const usernameOf = async (userId: number | null): Promise<string | null> => {

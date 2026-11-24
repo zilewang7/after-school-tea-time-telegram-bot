@@ -17,6 +17,7 @@
 import { saveMessage } from '../db/index.js';
 import { entitiesToMarkdown } from 'telegram-md-entities';
 import type { MessageEntity } from 'grammy/types';
+import { luoxuRawMediaOf } from '../shared/luoxu-media-kind.js';
 
 const luoxuBaseUrl = process.env.LUOXU_PREVIEW_URL;
 
@@ -81,13 +82,51 @@ interface LuoxuHistoricalMessage {
 }
 
 /**
- * The bytes are gone, so the model is told what kind of media it cannot see —
- * same wording as the live path's failure hints.
+ * What a recovered row should say about a message that could not be stored
+ * whole.
+ *
+ * A type luoxu names by its raw MTProto class (`MessageMediaPoll`,
+ * `MessageMediaContact`, …) becomes a `messageKind` the context renders as
+ * `[sent a poll]` / `[sent a contact]`, so a recovered hole is labelled instead
+ * of blank. A service event (no text, no media) has nothing left but the fact
+ * that it happened: it is stored as `unsupported`, the same fallback an old
+ * blank row gets. Ordinary media keep the "recovered from history" hint — the
+ * bytes are gone and the model must know it cannot look at them.
+ *
+ * When luoxu already gives the type a readable text (a poll's question after
+ * its index change), that text is stored as the body and no kind is added, so
+ * the same content is not labelled twice.
  */
-const describeMedia = (media: LuoxuMediaDescriptor | null): string | undefined => {
-    if (!media) return undefined;
-    const article = /^[aeiou]/i.test(media.type) ? 'an' : 'a';
-    return `${article} ${media.type} — recovered from history, the file itself is no longer available`;
+const recoveredFieldsOf = (
+    message: LuoxuHistoricalMessage,
+    text: string
+): { readonly mediaHint: string | null; readonly messageKind: string | null; readonly messageDetail: string | null } => {
+    const empty = text.trim() === '';
+    const rawKind = message.media === null ? null : luoxuRawMediaOf(message.media.type);
+    if (rawKind !== null && empty) {
+        return {
+            mediaHint: null,
+            messageKind: rawKind.kind,
+            // A type this build has no kind for still says what luoxu called it
+            messageDetail: rawKind.kind === 'unsupported' ? rawKind.label : null,
+        };
+    }
+    if (rawKind !== null) {
+        // The recovered text is the content; adding the kind would label it twice
+        return { mediaHint: null, messageKind: null, messageDetail: null };
+    }
+    if (message.media === null) {
+        return empty
+            ? { mediaHint: null, messageKind: 'unsupported', messageDetail: null }
+            : { mediaHint: null, messageKind: null, messageDetail: null };
+    }
+    // Ordinary media: the type is one the live path knows, the bytes are not
+    const article = /^[aeiou]/i.test(message.media.type) ? 'an' : 'a';
+    return {
+        mediaHint: `${article} ${message.media.type} — recovered from history, the file itself is no longer available`,
+        messageKind: null,
+        messageDetail: null,
+    };
 };
 
 const fetchHistoricalMessages = async (
@@ -133,6 +172,7 @@ export const backfillMessages = async (
             const text = message.entities.length
                 ? entitiesToMarkdown({ text: message.text, entities: message.entities })
                 : message.text;
+            const fields = recoveredFieldsOf(message, text);
 
             await saveMessage({
                 chatId,
@@ -142,7 +182,9 @@ export const backfillMessages = async (
                 userName: message.sender_name || '佚名',
                 message: text,
                 replyToId: message.reply_to ?? undefined,
-                mediaHint: describeMedia(message.media) ?? null,
+                mediaHint: fields.mediaHint,
+                messageKind: fields.messageKind,
+                messageDetail: fields.messageDetail,
             });
             stored.push(message.id);
         }

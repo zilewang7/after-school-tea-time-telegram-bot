@@ -20,6 +20,7 @@ import type {
     HistoryMedia,
     HistoryRawEntity,
 } from '../../services/luoxu-history-service.js';
+import { luoxuRawMediaOf } from '../../shared/luoxu-media-kind.js';
 
 /** Keyword highlight luoxu wraps matches in */
 const KEYWORD_OPEN = '<span class="keyword">';
@@ -273,6 +274,11 @@ export const isInsideFolded = (
  * The medium, worded the way the bot's own context words it (`[sent a sticker
  * image (pack emoji: 🌟)]`), so a message read from the archive looks like the
  * same message seen live.
+ *
+ * Types the archive names by their raw MTProto class (`MessageMediaPoll`,
+ * `MessageMediaContact`, …) are worded from the same table the missing-row
+ * backfill uses for `messageKind`; without it a contact card or a dice roll
+ * was a blank line in every history surface.
  */
 export const mediumHintOf = (media: HistoryMedia | null | undefined): string => {
     if (!media) return '';
@@ -285,7 +291,7 @@ export const mediumHintOf = (media: HistoryMedia | null | undefined): string => 
     if (media.type === 'animation') return 'an animation';
     if (media.type === 'audio') return media.voice ? 'a voice message' : 'an audio file';
     if (media.type === 'document') return media.fileName ? `a file: ${media.fileName}` : 'a file';
-    return '';
+    return luoxuRawMediaOf(media.type)?.label ?? '';
 };
 
 /** `[forwarded from channel X]`, the same annotation the live context uses */
@@ -615,6 +621,10 @@ const formatRow = (row: SearchListRow, timeZone: string, showGroup: boolean): st
         : row.firstLine;
     const body = [annotation, firstLine].filter((part) => part.length > 0).join(' ');
     if (body) lines.push(`   ${neutralizeWireFormat(body)}`);
+    // A row the index has nothing for (a service event, or a type luoxu does
+    // not read) still says it is empty instead of showing a bare header. A row
+    // with attachments is explained by the `附：` line below.
+    else if (row.attachments === undefined) lines.push('   （无正文）');
     // An image-only message's first line is its OCR text, which is often also
     // the line the keyword matched: showing it twice under two labels is noise.
     const core = (text: string): string => collapse(text.split('…').join(''));
@@ -697,39 +707,69 @@ export const renderFullMessage = (
     // Same `附：` wording as search_history: the count is what fetch_image can
     // serve, not the index marker count, so the two surfaces cannot disagree.
     const attachments = attachmentLine(entry.indexedHtml, entry.imageCount ?? null);
-    const body = indexedBodyOf(entry);
-    let stripped: { readonly text: string; readonly removed: number } = { text: body, removed: 0 };
-    if (!options.folded && entry.rawText && entry.entities) {
-        // Entities are offsets into the raw text; the index text may carry
-        // marker/OCR/preview lines before it, so shift them by its position.
-        const at = rawBodyOffsetOf(body, entry.rawText);
-        if (at !== null) {
-            stripped = stripFoldedBlocks(
-                body,
-                entry.entities.map((entity) => ({ ...entity, offset: entity.offset + at })),
-                50
-            );
-        } else {
-            stripped = stripFoldedBlocks(entry.rawText, entry.entities, 50);
+    const indexBody = indexedBodyOf(entry);
+    const rawText = entry.rawText;
+    // The index text is the archive's body; when it has none (a service event
+    // luoxu never indexed, or a row whose text was lost) the live message is the
+    // only readable source. Without either, the read says why instead of
+    // printing an empty quote line.
+    const hasIndexBody = indexBody.trim() !== '';
+    const hasRawBody = rawText !== undefined && rawText.trim() !== '';
+    const bodySource: 'index' | 'raw' | 'none' = hasIndexBody ? 'index' : hasRawBody ? 'raw' : 'none';
+
+    let displayed = '';
+    if (bodySource === 'index') {
+        let stripped: { readonly text: string; readonly removed: number } = { text: indexBody, removed: 0 };
+        if (!options.folded && entry.rawText && entry.entities) {
+            // Entities are offsets into the raw text; the index text may carry
+            // marker/OCR/preview lines before it, so shift them by its position.
+            const at = rawBodyOffsetOf(indexBody, entry.rawText);
+            if (at !== null) {
+                stripped = stripFoldedBlocks(
+                    indexBody,
+                    entry.entities.map((entity) => ({ ...entity, offset: entity.offset + at })),
+                    50
+                );
+            } else {
+                stripped = stripFoldedBlocks(entry.rawText, entry.entities, 50);
+            }
         }
+        // OCR sits before the body, so folding (which happens later in the text)
+        // has not moved its lines: the spans are still valid here.
+        displayed = annotateOcrText(stripped.text, ocrBlocksOf(entry));
+    } else if (bodySource === 'raw') {
+        // No index text means no OCR marker lines and no offsets to shift: the
+        // live text is shown as it is, with folded blocks collapsed as usual.
+        displayed = options.folded
+            ? (rawText ?? '')
+            : stripFoldedBlocks(rawText ?? '', entry.entities, 50).text;
     }
-    // OCR sits before the body, so folding (which happens later in the text)
-    // has not moved its lines: the spans are still valid here.
-    const annotated = annotateOcrText(stripped.text, ocrBlocksOf(entry));
     const budget = options.maxChars ?? 4000;
-    const cut = truncateChars(annotated, budget);
+    const cut = truncateChars(displayed, budget);
     const note = cut.truncated ? `\n（已截断，共 ${cut.total} 字）` : '';
-    // Without the original message the index text cannot be split into body vs
-    // OCR, so say that instead of presenting the whole index as the message.
-    const unreadable =
-        entry.rawText === undefined
-            ? '\n（未能读取原消息：以下为归档索引文本，可能含图片 OCR 或预览内容，不能当作原文引用）'
-            : '';
+    // Where the body came from, said only when it is not the ordinary case
+    const caveats: string[] = [];
+    if (bodySource === 'raw') {
+        caveats.push('（未收录全文索引，以下为 Telegram 原文）');
+    } else if (bodySource === 'none' && rawText !== undefined) {
+        // The live read succeeded but the message has no words: a service event,
+        // so both sources are named rather than one vague "empty".
+        caveats.push('（未收录全文索引，Telegram 上也没有可读正文：可能是系统消息或未接入的消息类型）');
+    } else if (bodySource === 'none' && attachments === null) {
+        caveats.push('（归档里没有可读正文：可能是 Telegram 系统消息或未接入的消息类型）');
+    } else if (bodySource === 'index' && entry.rawText === undefined) {
+        // Without the original message the index text cannot be split into body
+        // vs OCR, so say that instead of presenting the whole index as the message.
+        caveats.push('（未能读取原消息：以下为归档索引文本，可能含图片 OCR 或预览内容，不能当作原文引用）');
+    }
     const headLines = [header];
     if (annotation) headLines.push(annotation);
     if (attachments) headLines.push(`附：${attachments}`);
     const head = headLines.join('\n');
-    return `${head}${unreadable}\n${neutralizeWireFormat(cut.text)}${note}`;
+    const caveatBlock = caveats.map((line) => `\n${line}`).join('');
+    // A body-sourceless message ends after its caveat: no empty quote line.
+    const bodyBlock = bodySource === 'none' ? '' : `\n${neutralizeWireFormat(cut.text)}`;
+    return `${head}${caveatBlock}${bodyBlock}${note}`;
 };
 
 export interface WindowRow {
@@ -763,13 +803,27 @@ export const renderWindow = (
     let used = head.length;
     for (const row of rows) {
         const time = formatHistoryTime(row.entry.timestamp, timeZone).slice(11);
-        const annotated = annotateOcrText(indexedBodyOf(row.entry), ocrBlocksOf(row.entry));
-        const body = truncateChars(annotated.replace(/\n+/g, ' '), header.perMessageChars);
+        const indexBody = indexedBodyOf(row.entry);
+        const fromIndex = indexBody.trim() !== '';
+        const rawText = row.entry.rawText;
+        let framed: { readonly text: string; readonly unreadable: boolean };
+        if (fromIndex) {
+            // OCR labels sit before the body, so the index text is used here.
+            const annotated = annotateOcrText(indexBody, ocrBlocksOf(row.entry));
+            framed = { text: annotated, unreadable: rawText === undefined };
+        } else {
+            // A row with no index text still reads: the live message when
+            // luoxu has it, otherwise an explicit note that nothing is there.
+            framed = rawText !== undefined && rawText.trim() !== ''
+                ? { text: stripFoldedBlocks(rawText, row.entry.entities, 50).text, unreadable: false }
+                : { text: '（无正文：可能是系统消息）', unreadable: false };
+        }
+        const body = truncateChars(framed.text.replace(/\n+/g, ' '), header.perMessageChars);
         const annotation = annotationsOf(row.entry);
         const prefix = annotation ? ` ${annotation}` : '';
         // Same caveat as the full read: an unreadable message's text is index
         // text of unknown origin, not the message as it was.
-        const unreadable = row.entry.rawText === undefined ? '（未能读取原文，文本来自索引）' : '';
+        const unreadable = framed.unreadable ? '（未能读取原文，文本来自索引）' : '';
         const line = `h${row.entry.h} · ${time} · ${senderLabelOf(row.entry)}${prefix}: ${neutralizeWireFormat(body.text)}` +
             unreadable +
             (row.attachments ? `（附：${row.attachments}）` : '') +

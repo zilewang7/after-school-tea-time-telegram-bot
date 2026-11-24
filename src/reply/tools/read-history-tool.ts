@@ -91,6 +91,59 @@ const WINDOW_MAX_PER_SIDE = 20;
 
 type ResolveResult = { readonly entry: HistoryEntry } | { readonly error: string };
 
+/**
+ * A message the full-text index has no row for — a Telegram service event, a
+ * type luoxu does not index, or a row an old indexing bug dropped. luoxu's
+ * `/messages` reads Telegram live, so the referenced message can still be
+ * shown: the entry is remembered with no index text and the full render names
+ * that source. When Telegram does not have it either, the message really is
+ * gone and the caller gets the one honest dead end left.
+ */
+const recoverFromTelegram = async (
+    options: HistoryToolOptions,
+    channelId: number,
+    messageId: number,
+    signal: AbortSignal,
+    groupName: string | undefined
+): Promise<ResolveResult> => {
+    let raws;
+    try {
+        raws = await options.service.messages(channelId, [messageId], {
+            signal,
+            timeoutMs: HISTORY_MESSAGES_TIMEOUT_MS,
+        });
+    } catch (error) {
+        return { error: describeFailure(error) };
+    }
+    const raw = raws.find((message) => message.messageId === messageId);
+    if (raw === undefined) {
+        return {
+            error: `归档和 Telegram 都读不到 ${messageLink(channelId, messageId)}（可能已删除）。`,
+        };
+    }
+    return {
+        entry: options.state.remember({
+            channelId,
+            messageId,
+            // Telegram always reports a date; the fallback only satisfies the type
+            timestamp: raw.date ?? Math.floor(Date.now() / 1000),
+            fromId: raw.senderId,
+            fromName: raw.senderName || '佚名',
+            fromIsBot: raw.senderIsBot,
+            fromSelf: raw.senderId !== null && raw.senderId === options.botUserId,
+            // No index text: the live message is all there is to read
+            indexedHtml: '',
+            rawText: raw.text,
+            entities: raw.entities,
+            replyToId: raw.replyToId,
+            media: raw.media,
+            forward: raw.forward,
+            imageCount: raw.imageCount,
+            ...(groupName ? { groupName } : {}),
+        }),
+    };
+};
+
 const ensureEntry = async (
     options: HistoryToolOptions,
     channelId: number,
@@ -102,10 +155,9 @@ const ensureEntry = async (
     try {
         const outcome = await options.service.search({ channelId, ids: [messageId], signal });
         const hit = outcome.hits.find((candidate) => candidate.messageId === messageId);
-        if (!hit) {
-            return { error: `没有找到 ${messageLink(channelId, messageId)}（可能已删除，或不在归档里）。` };
-        }
         const groupName = outcome.groups.get(channelId);
+        // Service events are deliberately not in the index; read them live
+        if (!hit) return recoverFromTelegram(options, channelId, messageId, signal, groupName);
         return {
             entry: options.state.remember({
                 channelId: hit.channelId,

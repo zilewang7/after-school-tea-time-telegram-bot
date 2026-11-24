@@ -1,5 +1,6 @@
 import type { Bot } from "grammy";
 import { getRepliesHistory } from "../../reply/index.js";
+import { messageSummaryTextOf } from "../../shared/message-kind-category.js";
 
 /**
  * Text that goes inside a MarkdownV2 code span: a backtick would end the span
@@ -41,11 +42,16 @@ export const registerContextCommand = (bot: Bot) => {
                     "\n\n**";
 
                 originalMessages.forEach((msg, index) => {
-                    // A /chat summon and a media-only message carry no text of
-                    // their own; show what they are instead of a blank line
-                    let shortMsg =
-                        msg.text?.trim() ||
-                        (msg.chatCommand ? "[/chat]" : msg.mediaHint ? `[${msg.mediaHint}]` : "");
+                    // A /chat summon, a media-only message and a non-text
+                    // Telegram type carry no words of their own; show what they
+                    // are instead of a blank line. The stored detail stays out of
+                    // this public-ish summary: a neutral category is enough.
+                    let shortMsg = messageSummaryTextOf({
+                        text: msg.text,
+                        chatCommand: msg.chatCommand,
+                        mediaHint: msg.mediaHint,
+                        messageKind: msg.messageKind,
+                    });
                     if (shortMsg.length > 12) {
                         shortMsg = Array.from(shortMsg).slice(0, 10).join("") + "...";
                     }

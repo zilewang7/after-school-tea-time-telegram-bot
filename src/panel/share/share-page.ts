@@ -15,6 +15,7 @@
  */
 import { escapeHtml, markdownExcerpt, markdownToHtml } from '../../telegram/formatters/markdown-html.js';
 import { renderRichAnswerHtml } from '../../telegram/formatters/rich-answer-html.js';
+import { messageKindCategoryLabelOf } from '../../shared/message-kind-category.js';
 import type { ShareReactionPill } from './share-reactions.js';
 import type {
     ShareContent,
@@ -441,6 +442,17 @@ const mediaFigure = (
 const textBlock = (markdown: string, emptyLabel: string): string =>
     markdown === '' ? `<div class="md empty">${escapeHtml(emptyLabel)}</div>` : `<div class="md">${markdownToHtml(markdown)}</div>`;
 
+/**
+ * What an empty user bubble says. A message with no words of its own is a
+ * non-text Telegram type (a service event, a poll, a contact card); the public
+ * page names only its neutral category and never the stored detail, which may
+ * carry a phone number or coordinates.
+ */
+const emptyUserBubbleLabel = (messageKind: string | null): string => {
+    const category = messageKindCategoryLabelOf(messageKind);
+    return category === null ? '（无正文）' : `（${category}）`;
+};
+
 /** The bubble head: author, time, and the flag when the message was deleted */
 const bubbleHead = (authorName: string, createdAt: string, deleted: boolean): string => {
     const author = `<span class="author">${escapeHtml(authorName)}</span>`;
@@ -596,7 +608,7 @@ const userBubble = (token: string, bubble: ShareUserBubble): string => {
         ...bubbleContent(bubbleHead(bubble.authorName, bubble.createdAt, bubble.deleted), bubble.deleted, [
             replyTargetBlock(bubble.replyTo),
             quoteBlock(bubble.quote),
-            textBlock(bubble.text, '（无正文）'),
+            textBlock(bubble.text, emptyUserBubbleLabel(bubble.messageKind)),
             media,
             previewTextBlock(bubble.previewText),
             reactionPillsBlock(bubble.reactions),
