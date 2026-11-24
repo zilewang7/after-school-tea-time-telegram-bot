@@ -255,7 +255,7 @@ export async function* runToolRound(
         const counted = offeredNames.has(call.name);
         if (counted) {
             tally.count(call.name);
-            yield { type: 'status', status: tools.statusOf(call.name) };
+            yield { type: 'status', status: tools.statusOf(call.name, call.argumentsJson) };
             statusShown = true;
         }
 

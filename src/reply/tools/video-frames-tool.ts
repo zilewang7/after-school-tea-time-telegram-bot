@@ -41,47 +41,37 @@ const FRAME_MEDIA_KINDS = new Set([
 ]);
 
 const DESCRIPTION =
-    '从视频/GIF/动图/动态贴纸消息中取出静帧，得到新的图片（不会自动发给用户）。' +
-    'message 是上下文消息编号（#N 里的数字）。取帧方式：times=[3.5, 12] 按时刻精确取；' +
-    '或 count=3（可配 start/end）均匀取；或 mode="first"/"last" 取首/末帧。' +
-    'size 是长边像素（512/768/960/1280，默认 960）。' +
-    '结果会告诉你视频时长与每帧的实际时间；每帧登记为新的 image_id（如 img7）：' +
-    '发给用户用 send_image(image_id="img7")；以图搜图用 search_by_image(image_id="img7")；' +
-    '也可当 generate_image 的参考图。' +
-    `每条回复最多取 ${MAX_FRAMES_PER_REPLY} 帧，单次最多 6 帧。视频较大（>20MB）也能取（直连云端），但会慢一些。`;
+    '从视频/GIF/动图抽静帧为 imgN（不发给用户；可 send_image/find_image/生图参考）。' +
+    `每回复最多 ${MAX_FRAMES_PER_REPLY} 帧（>20MB 可取）。`;
 
 const INPUT_SCHEMA = {
     type: 'object',
     properties: {
-        message: {
-            type: 'integer',
-            minimum: 1,
-            description: '视频/GIF/动态贴纸所在消息的编号（#N 里的数字）',
-        },
+        message: { type: 'integer', minimum: 1, description: '消息 #N' },
         times: {
             type: 'array',
             items: { type: 'number', minimum: 0 },
             minItems: 1,
             maxItems: 6,
-            description: '要取的时刻（秒，支持一位小数，如 3.5）；与 count 互斥',
+            description: '精确时刻秒（与 count 互斥）',
         },
         count: {
             type: 'integer',
             minimum: 1,
             maximum: 6,
-            description: '均匀取几帧（默认 3）；与 times 互斥',
+            description: '均匀帧数（默认3，与 times 互斥）',
         },
         mode: {
             type: 'string',
             enum: ['uniform', 'first', 'last'],
-            description: '取帧方式：uniform 均匀（默认）、first 首帧、last 末帧；给了 times 时按 times',
+            description: 'uniform（默认）/ first / last',
         },
-        start: { type: 'number', minimum: 0, description: 'uniform 的起点（秒），省略=0' },
-        end: { type: 'number', minimum: 0, description: 'uniform 的终点（秒），省略=视频末尾' },
+        start: { type: 'number', minimum: 0, description: '起点秒' },
+        end: { type: 'number', minimum: 0, description: '终点秒' },
         size: {
             type: 'integer',
             enum: [512, 768, 960, 1280],
-            description: '图片长边像素；省略=960。读字幕/小字用 1280，只需要看大概用 512/768',
+            description: '长边像素，默认960（小字用1280）',
         },
     },
     required: ['message'],
@@ -329,7 +319,7 @@ export const createExtractFramesTool = (options: ExtractFramesToolOptions): Tool
                     `已从 #${args.message} 的视频（${formatSeconds(outcome.duration)}，${outcome.width}×${outcome.height}）` +
                         `取出 ${ids.length} 帧（${args.size}px 长边）${notes}：`,
                     ...lines,
-                    `图片按上述顺序附在本结果后。可 send_image(image_id='${ids[0]}')、search_by_image(image_id='${ids[0]}')` +
+                    `图片按上述顺序附在本结果后。可 send_image(image_id='${ids[0]}')、find_image(mode='reverse', image_id='${ids[0]}')` +
                         `或当 generate_image 的参考图；本条回复最多 ${MAX_FRAMES_PER_REPLY} 帧，还剩 ${remainingAfter} 帧。`,
                 ].join('\n'),
                 isError: false,

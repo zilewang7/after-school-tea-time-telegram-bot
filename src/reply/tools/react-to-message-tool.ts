@@ -61,46 +61,30 @@ import { REACT_TO_MESSAGE_TOOL_NAME } from './tool-names.js';
 import { traceText } from './tool-trace.js';
 
 const DESCRIPTION =
-    '给本段对话中的一条消息加一个 Telegram emoji reaction（轻量回应：收到、赞同、🤣 等），而不是发一条消息。' +
-    'message 用该消息的 #N；emoji 必须是 Telegram 标准 reaction 表情之一（👍 ❤ 🔥 🎉 🤣 😢 🤔 👀 💯 …）。' +
-    '省略 emoji 表示取消你自己此前加的 reaction。每条消息你只能有一个 reaction，再设会替换。' +
-    '一次给多条消息点同一个 emoji 用 messages=[3,4,5]（最多 6 条，省略 emoji 即批量取消）；' +
-    "每条点不同的用 reactions=[{message:3,emoji:'👍'},{message:5}]（最多 6 条，省略 emoji 的那条取消）。" +
-    'message、messages、reactions 三选一。';
+    '给消息加/换/取消 Telegram emoji reaction（不发消息；每消息1个，再设替换，省 emoji 取消）。' +
+    'message（单条）、messages（同表情≤6）、reactions（各别表情≤6）三选一。';
 
 const INPUT_SCHEMA = {
     type: 'object',
     properties: {
-        message: {
-            type: 'integer',
-            description: '单条：消息在本次上下文中的编号 #N（不带 #）',
-        },
+        message: { type: 'integer', description: '单条消息 #N（不带 #）' },
         messages: {
             type: 'array',
             items: { type: 'integer' },
             minItems: 1,
             maxItems: REACTION_BATCH_MAX,
-            description:
-                `一次给多条消息点同一个 emoji：消息编号数组，如 [3,4,5]（最多 ${REACTION_BATCH_MAX} 条）；` +
-                'emoji 由顶层 emoji 指定，省略 emoji = 批量取消',
+            description: `同表情批量 #N（≤${REACTION_BATCH_MAX}，用顶层 emoji）`,
         },
         reactions: {
             type: 'array',
             minItems: 1,
             maxItems: REACTION_BATCH_MAX,
-            description: `一次给多条消息分别点不同的 emoji（最多 ${REACTION_BATCH_MAX} 条）`,
+            description: `分别设置（≤${REACTION_BATCH_MAX}，每项 {message, emoji?}）`,
             items: {
                 type: 'object',
                 properties: {
-                    message: {
-                        type: 'integer',
-                        description: '消息在本次上下文中的编号 #N（不带 #）',
-                    },
-                    emoji: {
-                        type: 'string',
-                        enum: REACTION_EMOJIS,
-                        description: '要设置的 reaction；省略此参数 = 取消这条消息的 reaction',
-                    },
+                    message: { type: 'integer' },
+                    emoji: { type: 'string' },
                 },
                 required: ['message'],
             },
@@ -108,7 +92,7 @@ const INPUT_SCHEMA = {
         emoji: {
             type: 'string',
             enum: REACTION_EMOJIS,
-            description: '单数或 messages 形态要设置的 reaction；省略此参数 = 取消',
+            description: '标准 reaction emoji（单数/messages 用，省=取消）',
         },
     },
 };

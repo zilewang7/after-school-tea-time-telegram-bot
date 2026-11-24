@@ -39,10 +39,7 @@ import { traceRef, traceText, traceUrl } from './tool-trace.js';
 export type { FetchImageDependencies } from './fetch-image-lane-types.js';
 
 const DESCRIPTION =
-    '将一张图片加载到当前上下文中（仅模型可见，不发送给用户），用于查看细节、识别文字或作为生图参考。' +
-    '支持传入 search_id（搜索候选编号，如 s3）、image_id（已读取图片编号，如 img1）或 url（http(s) 图片直链）。' +
-    "默认读取原图；传 view='thumbnail' 则读取缩略图。GIF 动图会转换为视频以展示完整动作。" +
-    '读取后返回编号 imgN，可用于 send_image 或 generate_image 的 web_references。';
+    '将图片加载到本轮上下文（仅模型可见）用于看细节/OCR/生图参考；返回 imgN（贴纸 stN），GIF 转视频。';
 
 /** The batch sentence only names the plural arguments this turn actually offers */
 const batchDescriptionOf = (hasSticker: boolean, hasHistory: boolean, hasAvatar: boolean): string => {
@@ -53,32 +50,21 @@ const batchDescriptionOf = (hasSticker: boolean, hasHistory: boolean, hasAvatar:
         ...(hasSticker ? ['stickers'] : []),
         ...(hasAvatar ? ['avatars'] : []),
     ];
-    return (
-        `一次读多张时把同类来源写成数组（${names.join('、')}），一次最多 ${FETCH_BATCH_MAX} 张；` +
-        '不同类的来源分两次调用。'
-    );
+    return `批量同类传数组（${names.join('/')}，≤${FETCH_BATCH_MAX}）。`;
 };
 
-const HISTORY_DESCRIPTION =
-    '也可传入 history（历史检索结果里的编号，如 h3，或 t.me 消息链接）读取归档消息里的图：' +
-    '消息自己的照片与贴纸、网页预览图、Instant View 配图都算，动图与视频给的是首帧；' +
-    '用 image 选这条消息的第几张（从 1 开始，省略=第一张）；多条消息用 histories。';
+const HISTORY_DESCRIPTION = 'history/histories 读归档图（image 选第几张）；';
 
-const STICKER_DESCRIPTION =
-    '也可传入 sticker（贴纸包内序号 01–72、画面名称，或 send_sticker 目录里的整行如 \'30刘海遮眼低落\'）预览贴纸；' +
-    '返回编号 stN，之后可用 send_sticker(sticker=…) 发出，或作为 generate_image 的 web_references；' +
-    '一次预览多张用 stickers。';
+const STICKER_DESCRIPTION = 'sticker/stickers 预览贴纸；';
 
-const AVATAR_DESCRIPTION =
-    "也可传入 avatar 读取头像：'me'（我自己）、'chat'（当前聊天）、'#N'（上下文 #N 的作者，含其它 bot）、" +
-    "'@username'、数字 id（正数=用户，负数=群/频道）或 t.me 链接；view='thumbnail' 取小尺寸；一次读多个用 avatars。";
+const AVATAR_DESCRIPTION = 'avatar/avatars 读头像（me/chat/#N/@user/uid/t.me）。';
 
-const pluralSchema = (label: string, description: string) => ({
+const pluralSchema = (label: string) => ({
     type: 'array',
     items: { type: 'string' },
     minItems: 1,
     maxItems: FETCH_BATCH_MAX,
-    description: `一次读多张：${label}数组，最多 ${FETCH_BATCH_MAX} 个；${description}与单数参数二选一。`,
+    description: `批量${label}（≤${FETCH_BATCH_MAX}）`,
 });
 
 const inputSchemaOf = (hasSticker: boolean, hasHistory: boolean, hasAvatar: boolean) => ({
@@ -86,53 +72,56 @@ const inputSchemaOf = (hasSticker: boolean, hasHistory: boolean, hasAvatar: bool
     properties: {
         ...(hasHistory
             ? {
-                  history: {
-                      type: 'string',
-                      description:
-                          "历史检索结果里的编号（如 'h3'）或 https://t.me/c/... 消息链接，读那条归档消息的图",
-                  },
+                  history: { type: 'string', description: '归档 hN 或 t.me 链接' },
                   image: {
                       type: 'integer',
                       minimum: 1,
-                      description:
-                          '这条消息的第几张图，从 1 开始（消息附件在前，网页预览图与 Instant View 配图在后）；省略=第一张，只能和 history 一起用',
+                      description: 'history 第几张图（默认1）',
                   },
-                  histories: pluralSchema('归档消息引用', 'hN 或 t.me 消息链接；每条读第 1 张，要读某条的其它图用 history + image。'),
+                  histories: pluralSchema('归档引用'),
               }
             : {}),
-        search_id: { type: 'string', description: "搜索结果里的候选编号，形如 's3'" },
-        search_ids: pluralSchema('图搜候选编号', "如 ['s1','s2','s3']。"),
-        image_id: { type: 'string', description: "已经读取过的图编号，形如 'img1'" },
-        url: { type: 'string', description: 'http(s) 图片直链，可以是任意公开地址' },
-        urls: pluralSchema('http(s) 图片直链', '任意公开地址。'),
+        search_id: { type: 'string', description: '候选 sN' },
+        search_ids: pluralSchema('候选'),
+        image_id: { type: 'string', description: '已读 imgN' },
+        url: { type: 'string', description: 'http(s) 图片直链' },
+        urls: pluralSchema('图片直链'),
         ...(hasSticker
             ? {
-                  sticker: {
-                      type: 'string',
-                      description:
-                          "贴纸包内序号（01–72）、画面名称，或 send_sticker 目录里的整行，如 '07'、'吃冰棒'、'30刘海遮眼低落'",
-                  },
-                  stickers: pluralSchema('贴纸', '包内序号或画面名称。'),
+                  sticker: { type: 'string', description: '贴纸序号 01–72/画面名/目录行' },
+                  stickers: pluralSchema('贴纸'),
               }
             : {}),
         ...(hasAvatar
             ? {
-                  avatar: {
-                      type: 'string',
-                      description:
-                          "头像目标：'me'（我自己）、'chat'（当前聊天）、'#3'（上下文编号）、'@username'、" +
-                          '数字 id（正数=用户，负数=群/频道）或 t.me 链接',
-                  },
-                  avatars: pluralSchema('头像目标', "'me'、'chat'、'#N'、'@username'、数字 id 或 t.me 链接。"),
+                  avatar: { type: 'string', description: 'me/chat/#N/@user/uid/t.me' },
+                  avatars: pluralSchema('头像'),
               }
             : {}),
         view: {
             type: 'string',
             enum: ['original', 'thumbnail'],
-            description: 'original（默认）= 原图；thumbnail = 缩略图，快且省 token。',
+            description: 'original（默认）/ thumbnail',
         },
     },
 });
+
+const hasNonEmptyString = (value: unknown): boolean =>
+    typeof value === 'string' && value.trim() !== '';
+
+const hasNonEmptyStringArray = (value: unknown): boolean =>
+    Array.isArray(value) && value.some((item) => typeof item === 'string' && item.trim() !== '');
+
+const NON_STICKER_SINGULAR_KEYS = ['search_id', 'image_id', 'url', 'history', 'avatar'] as const;
+const NON_STICKER_PLURAL_KEYS = ['search_ids', 'urls', 'histories', 'avatars'] as const;
+
+const isStickerOnlyFetch = (args: Readonly<Record<string, unknown>>): boolean => {
+    const hasSticker = hasNonEmptyString(args.sticker) || hasNonEmptyStringArray(args.stickers);
+    if (!hasSticker) return false;
+    const hasOtherSingular = NON_STICKER_SINGULAR_KEYS.some((key) => hasNonEmptyString(args[key]));
+    const hasOtherPlural = NON_STICKER_PLURAL_KEYS.some((key) => hasNonEmptyStringArray(args[key]));
+    return !hasOtherSingular && !hasOtherPlural;
+};
 
 /** GIF → mp4, the only shape in which a model sees an animation move */
 const transcodeGifToMp4 = async (gif: Buffer): Promise<Buffer | null> => {
@@ -319,7 +308,7 @@ export const createFetchImageTool = (options: FetchImageToolOptions): ToolHandle
                 options.avatar !== undefined
             ),
         },
-        statusText: '🖼 正在读图…',
+        statusText: (args) => (isStickerOnlyFetch(args) ? '🩷 正在挑选贴纸…' : '🖼 正在读图…'),
         chatAction: 'typing',
         execute: async (rawArgs, signal) => {
             const request = describeFetchImageRequest(rawArgs);

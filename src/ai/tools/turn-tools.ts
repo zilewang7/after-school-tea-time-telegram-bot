@@ -81,6 +81,25 @@ export const filterTurnTools = (tools: TurnTools, predicate: (name: string) => b
     };
 };
 
+const resolveStatusText = (
+    handler: ToolHandler | undefined,
+    name: string,
+    argumentsJson?: string
+): string => {
+    const fallback = `⚙ 正在调用 ${name}…`;
+    if (handler === undefined) return fallback;
+    const { statusText } = handler;
+    if (typeof statusText === 'string') return statusText;
+    if (typeof statusText !== 'function') return fallback;
+    const args = parseToolArguments(argumentsJson ?? '');
+    if (args === null) return fallback;
+    try {
+        return statusText(args) ?? fallback;
+    } catch {
+        return fallback;
+    }
+};
+
 export const createTurnTools = (handlers: readonly ToolHandler[]): TurnTools => {
     const handlersByName = indexHandlersByName(handlers);
 
@@ -95,10 +114,10 @@ export const createTurnTools = (handlers: readonly ToolHandler[]): TurnTools => 
             );
             return result;
         },
-        statusOf: (name): ToolStatus => {
+        statusOf: (name, argumentsJson): ToolStatus => {
             const handler = handlersByName.get(name);
             return {
-                text: handler?.statusText ?? `⚙ 正在调用 ${name}…`,
+                text: resolveStatusText(handler, name, argumentsJson),
                 chatAction: handler?.chatAction ?? 'typing',
             };
         },

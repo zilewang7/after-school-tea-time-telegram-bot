@@ -96,8 +96,8 @@ export interface ToolResult {
 
 export interface ToolHandler {
     readonly definition: ToolDefinition;
-    /** Status line while this tool runs; a generic line when absent */
-    readonly statusText?: string;
+    /** Status line while this tool runs; a function derives it from the parsed arguments */
+    readonly statusText?: string | ((args: Readonly<Record<string, unknown>>) => string | undefined);
     /** Chat action while this tool runs; 'typing' when absent */
     readonly chatAction?: ToolChatAction;
     /** Should not throw; the dispatcher converts throws into error results anyway */
@@ -109,5 +109,5 @@ export interface TurnTools {
     /** Never throws: unknown names, bad JSON and handler failures come back as error results */
     readonly execute: (call: ToolCall, signal?: AbortSignal) => Promise<ToolResult>;
     /** What to show while the named tool runs */
-    readonly statusOf: (name: string) => ToolStatus;
+    readonly statusOf: (name: string, argumentsJson?: string) => ToolStatus;
 }

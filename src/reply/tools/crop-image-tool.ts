@@ -39,24 +39,13 @@ const MAX_OUTPUT_EDGE = 1536;
 const MAX_SOURCE_BYTES = 20 * 1024 * 1024;
 
 const DESCRIPTION =
-    '裁出图片的一块区域，得到一张新图片（不会自动发给用户）。' +
-    '图片来源用上下文引用：#12（第12条消息的图）、#12:2（该消息第2张）、img3（fetch_image 读过的图）、' +
-    's2（搜索候选）、g1（generate_image 画出的图）。' +
-    '区域二选一：region 是 3×3 宫格代号（top-left/top/.../bottom-right），用于“右下角那块”这类说法；' +
-    'bbox 是 {x1,y1,x2,y2} 加 unit。unit 默认 norm1000（把图片看作 0-1000 相对坐标），' +
-    '也可以 unit="px" 按源图原始像素给。本工具会在结果里告诉你原图尺寸、实际使用的框、输出尺寸；' +
-    '框越界会被夹到图内，短边小于 48px 会报错。可选 scale=1-4 指定放大倍数（省略=自动把长边放到约 1024，最多 1536；' +
-    '放大不会增加真实细节）。产物是新的 image_id（如 img3）：要发给用户用 send_image(image_id="img3")，' +
-    '要以图搜图用 search_by_image(image_id="img3")，要裁得更近就再 crop_image(source="img3", …)。' +
-    `每条回复最多裁 ${MAX_CROPS_PER_REPLY} 次。`;
+    '裁出图片一块区域为新 imgN（不自动发出；用 send_image 发送，find_image(mode="reverse") 搜图）。' +
+    `短边至少 48px，每回复最多裁 ${MAX_CROPS_PER_REPLY} 次。`;
 
 const INPUT_SCHEMA = {
     type: 'object',
     properties: {
-        source: {
-            type: 'string',
-            description: "#12（第12条消息的图）、#12:2（其第2张）、img3（fetch_image 读过的图）、s2（搜索候选）、g1（本次画的图）",
-        },
+        source: { type: 'string', description: '图片来源：#N/#N:k/imgN/sN/gN' },
         region: {
             type: 'string',
             enum: [
@@ -70,16 +59,16 @@ const INPUT_SCHEMA = {
                 'bottom',
                 'bottom-right',
             ],
-            description: '3×3 宫格代号（与 bbox 二选一）。适合“右下角那块”这类描述',
+            description: '3×3 宫格（与 bbox 互斥）',
         },
         bbox: {
             type: 'object',
-            description: '裁剪框（与 region 二选一）',
+            description: '裁剪框（与 region 互斥）',
             properties: {
-                x1: { type: 'number', description: '左边界' },
-                y1: { type: 'number', description: '上边界' },
-                x2: { type: 'number', description: '右边界（应大于 x1）' },
-                y2: { type: 'number', description: '下边界（应大于 y1）' },
+                x1: { type: 'number' },
+                y1: { type: 'number' },
+                x2: { type: 'number' },
+                y2: { type: 'number' },
             },
             required: ['x1', 'y1', 'x2', 'y2'],
             additionalProperties: false,
@@ -87,18 +76,15 @@ const INPUT_SCHEMA = {
         unit: {
             type: 'string',
             enum: ['norm1000', 'px'],
-            description: 'bbox 的单位：norm1000=把图看作 0-1000 相对坐标（默认）；px=源图原始像素（结果里会回显原图尺寸）',
+            description: 'norm1000（默认 0–1000）/ px（源像素）',
         },
         scale: {
             type: 'number',
             minimum: 1,
             maximum: 4,
-            description: '放大倍数 1-4；省略=自动（长边约 1024，最多 1536）',
+            description: '放大 1–4 倍，默认自动（≤1536）',
         },
-        label: {
-            type: 'string',
-            description: '要裁的目标名（如“右下角的招牌”），写进工具日志，便于核对',
-        },
+        label: { type: 'string', description: '日志目标名' },
     },
     required: ['source'],
     additionalProperties: false,
@@ -226,7 +212,7 @@ export const createCropImageTool = (options: CropImageToolOptions): ToolHandler 
             };
             if (crops >= MAX_CROPS_PER_REPLY) {
                 return rejected(
-                    `本条回复已经裁了 ${MAX_CROPS_PER_REPLY} 次，到上限了；直接用 send_image 或 search_by_image 处理现有的图。`
+                    `本条回复已经裁了 ${MAX_CROPS_PER_REPLY} 次，到上限了；直接用 send_image 或 find_image(mode='reverse') 处理现有的图。`
                 );
             }
             const box: CropImageBox =
@@ -311,7 +297,7 @@ export const createCropImageTool = (options: CropImageToolOptions): ToolHandler 
                     `已从 ${args.source} 裁出 [x ${actualBox.x1}-${actualBox.x2}, y ${actualBox.y1}-${actualBox.y2}]` +
                         `（原图 ${outcome.sourceWidth}×${outcome.sourceHeight}）→ 新图 ${id}` +
                         `（${outcome.outputWidth}×${outcome.outputHeight}，${format} ${kilobytes}KB）${flags}，本条回复还没发出图片。`,
-                    `要发给用户：send_image(image_id='${id}', caption='…')；要以图搜图：search_by_image(image_id='${id}')；` +
+                    `要发给用户：send_image(image_id='${id}', caption='…')；要以图搜图：find_image(mode='reverse', image_id='${id}')；` +
                         `再近一点：crop_image(source='${id}', …)。本条回复最多裁 ${MAX_CROPS_PER_REPLY} 次，还剩 ${remaining} 次。`,
                 ].join('\n'),
                 isError: false,
