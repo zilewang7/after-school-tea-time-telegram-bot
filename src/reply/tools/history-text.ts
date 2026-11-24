@@ -796,7 +796,7 @@ export const renderWindow = (
     maxChars = 10000
 ): string => {
     const head = withNotice(
-        `时间窗：目标前后 ±${header.minutes} 分钟（${header.fromTime}–${header.toTime}），范围=${header.scopeLabel}，共 ${header.total} 条，按时间正序；每条最多 ${header.perMessageChars} 字，整条可用 read_history(ids=["hN"]) 读。` +
+        `时间窗：目标前后 ±${header.minutes} 分钟（${header.fromTime}–${header.toTime}），范围=${header.scopeLabel}，共 ${header.total} 条，按时间正序；每条最多 ${header.perMessageChars} 字，整条可用 history(action="read", ids=["hN"]) 读。` +
             (header.note ? ` ${header.note}` : '')
     );
     const lines: string[] = [head];

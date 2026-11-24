@@ -163,7 +163,7 @@ export const parseSendFileArgs = (
     if (!isAbsent(rawArgs.workspace) && rawArgs.workspace !== '') {
         return {
             ok: false,
-            error: 'workspace 只用于 workspace_path 模式；内联 content 不会写进工作区，要落草稿请先 workspace_write。',
+            error: 'workspace 只用于 workspace_path 模式；内联 content 不会写进工作区，要落草稿请先 workspace(action="write")。',
         };
     }
 
