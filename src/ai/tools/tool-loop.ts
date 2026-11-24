@@ -14,7 +14,7 @@
  * FREE_TOOL_ROUNDS_MAX no-cost rounds are allowed: only the tools that cost
  * the reply nothing run — the product tools (generate_image / send_image /
  * send_sticker / send_file / send_widget), the workspace tools (so it can
- * finish a draft it already has), the harness issue tools and get_ui_guide —
+ * finish a draft it already has), `harness_issue` and `load_skill` —
  * so a reply never ends unable to hand over what it made or to report a tool
  * that wasted its time. Then the final, tool-less round answers.
  */

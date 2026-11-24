@@ -32,8 +32,8 @@ import {
 import {
     createLoadSkillTool,
     createSkillToolState,
-    LOAD_SKILL_TOOL_NAME,
 } from '../../src/reply/tools/load-skill-tool.js';
+import { LOAD_SKILL_TOOL_NAME } from '../../src/reply/tools/tool-names.js';
 import { TOOL_GROUP_KEYS } from '../../src/services/tool-overrides.js';
 import { expect, reportResults, runCase, type CaseResult } from './harness.mts';
 

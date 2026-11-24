@@ -16,32 +16,22 @@ import { resolveToolAvailability, type ToolAvailability } from '../../reply/tool
 import type { AccessTier } from '../../services/access-tier.js';
 import { TOOL_GROUP_KEYS, toolOverrideOf, type ToolGroupKey, type ToolOverrides } from '../../services/tool-overrides.js';
 import {
-    CREATE_HARNESS_ISSUE_TOOL_NAME,
     CROP_IMAGE_TOOL_NAME,
     EXTRACT_FRAMES_TOOL_NAME,
     FETCH_IMAGE_TOOL_NAME,
+    FIND_IMAGE_TOOL_NAME,
     GENERATE_IMAGE_TOOL_NAME,
-    LIST_HARNESS_ISSUES_TOOL_NAME,
-    READ_HISTORY_TOOL_NAME,
-    SEARCH_BY_IMAGE_TOOL_NAME,
-    SEARCH_HISTORY_TOOL_NAME,
-    SEARCH_IMAGES_TOOL_NAME,
+    HARNESS_ISSUE_TOOL_NAME,
+    HISTORY_TOOL_NAME,
+    LEAVE_HANDOFF_TOOL_NAME,
+    LOAD_SKILL_TOOL_NAME,
+    REACT_TO_MESSAGE_TOOL_NAME,
     SEND_FILE_TOOL_NAME,
     SEND_IMAGE_TOOL_NAME,
     SEND_SMS_TOOL_NAME,
     SEND_STICKER_TOOL_NAME,
     SEND_WIDGET_TOOL_NAME,
-    GET_UI_GUIDE_TOOL_NAME,
-    WORKSPACE_WRITE_TOOL_NAME,
-    WORKSPACE_READ_TOOL_NAME,
-    WORKSPACE_LIST_TOOL_NAME,
-    WORKSPACE_FIND_TOOL_NAME,
-    WORKSPACE_EDIT_TOOL_NAME,
-    WORKSPACE_COPY_TOOL_NAME,
-    WORKSPACE_DELETE_TOOL_NAME,
-    WORKSPACE_PREVIEW_TOOL_NAME,
-    LEAVE_HANDOFF_TOOL_NAME,
-    REACT_TO_MESSAGE_TOOL_NAME,
+    WORKSPACE_TOOL_NAME,
 } from '../../reply/tools/tool-names.js';
 
 export interface ToolGroupEntry {
@@ -63,27 +53,17 @@ export interface ToolGroupEntry {
 const GROUP_TOOLS: Record<ToolGroupKey, readonly string[]> = {
     sms: [SEND_SMS_TOOL_NAME],
     image: [GENERATE_IMAGE_TOOL_NAME, SEND_IMAGE_TOOL_NAME],
-    imageSearch: [SEARCH_IMAGES_TOOL_NAME, SEND_IMAGE_TOOL_NAME],
+    imageSearch: ['find_image(web)', SEND_IMAGE_TOOL_NAME],
     imageFetch: [FETCH_IMAGE_TOOL_NAME, CROP_IMAGE_TOOL_NAME, EXTRACT_FRAMES_TOOL_NAME],
-    imageReverseSearch: [SEARCH_BY_IMAGE_TOOL_NAME],
+    imageReverseSearch: ['find_image(reverse)'],
     sticker: [SEND_STICKER_TOOL_NAME],
     file: [SEND_FILE_TOOL_NAME],
-    history: [SEARCH_HISTORY_TOOL_NAME, READ_HISTORY_TOOL_NAME],
-    harnessIssues: [LIST_HARNESS_ISSUES_TOOL_NAME, CREATE_HARNESS_ISSUE_TOOL_NAME],
-    widget: [SEND_WIDGET_TOOL_NAME, GET_UI_GUIDE_TOOL_NAME],
-    workspace: [
-        WORKSPACE_WRITE_TOOL_NAME,
-        WORKSPACE_READ_TOOL_NAME,
-        WORKSPACE_LIST_TOOL_NAME,
-        WORKSPACE_FIND_TOOL_NAME,
-        WORKSPACE_EDIT_TOOL_NAME,
-        WORKSPACE_COPY_TOOL_NAME,
-        WORKSPACE_DELETE_TOOL_NAME,
-        WORKSPACE_PREVIEW_TOOL_NAME,
-        LEAVE_HANDOFF_TOOL_NAME,
-    ],
+    history: [HISTORY_TOOL_NAME],
+    harnessIssues: [HARNESS_ISSUE_TOOL_NAME],
+    widget: [SEND_WIDGET_TOOL_NAME],
+    workspace: [WORKSPACE_TOOL_NAME, LEAVE_HANDOFF_TOOL_NAME],
     reaction: [REACT_TO_MESSAGE_TOOL_NAME],
-    skills: ['load_skill'],
+    skills: [LOAD_SKILL_TOOL_NAME],
 };
 
 const ENABLED_OF: Record<ToolGroupKey, (availability: ToolAvailability) => boolean> = {
@@ -100,7 +80,7 @@ const ENABLED_OF: Record<ToolGroupKey, (availability: ToolAvailability) => boole
     widget: (availability) => availability.widget,
     workspace: (availability) => availability.workspace,
     reaction: (availability) => availability.reaction,
-    skills: (availability) => availability.widget || availability.workspace || availability.harnessIssues,
+    skills: (availability) => availability.skills,
 };
 
 /** Facts every reason check reads */
@@ -144,7 +124,7 @@ const HARD_REASONS: Record<ToolGroupKey, readonly ReasonCheck[]> = {
     imageSearch: [
         IMAGE_TOOLS_OFF,
         ({ config }) => (config.imageSearchUrl === '' ? 'IMAGE_SEARCH_URL 未配置' : null),
-        disabledByName(SEARCH_IMAGES_TOOL_NAME),
+        disabledByName(FIND_IMAGE_TOOL_NAME),
         disabledByName(SEND_IMAGE_TOOL_NAME),
     ],
     imageFetch: [
@@ -163,7 +143,7 @@ const HARD_REASONS: Record<ToolGroupKey, readonly ReasonCheck[]> = {
     imageReverseSearch: [
         IMAGE_TOOLS_OFF,
         ({ config }) => (config.imageReverseSearch ? null : 'IMAGE_REVERSE_SEARCH 为 0'),
-        disabledByName(SEARCH_BY_IMAGE_TOOL_NAME),
+        disabledByName(FIND_IMAGE_TOOL_NAME),
     ],
     sticker: [
         ({ config }) => (config.stickerTools ? null : 'STICKER_TOOLS 为 0'),
@@ -177,35 +157,29 @@ const HARD_REASONS: Record<ToolGroupKey, readonly ReasonCheck[]> = {
     history: [
         ({ config }) => (config.historyTools ? null : 'HISTORY_TOOLS 为 0'),
         ({ config }) => (config.historyBaseUrl === '' ? 'LUOXU_PREVIEW_URL 未配置' : null),
-        disabledByName(SEARCH_HISTORY_TOOL_NAME),
-        disabledByName(READ_HISTORY_TOOL_NAME),
+        disabledByName(HISTORY_TOOL_NAME),
     ],
     harnessIssues: [
         ({ config }) => (config.harnessIssues ? null : 'HARNESS_ISSUES 为 0'),
-        disabledByName(LIST_HARNESS_ISSUES_TOOL_NAME),
-        disabledByName(CREATE_HARNESS_ISSUE_TOOL_NAME),
+        disabledByName(HARNESS_ISSUE_TOOL_NAME),
     ],
     widget: [
         ({ chatId }) => (chatId > 0 ? null : '群聊暂不支持聊天卡片（Telegram 服务端限制）'),
         ({ config }) => (config.widgetEnabled ? null : 'WIDGET_ENABLE 为 0'),
         disabledByName(SEND_WIDGET_TOOL_NAME),
-        disabledByName(GET_UI_GUIDE_TOOL_NAME),
+        disabledByName(LOAD_SKILL_TOOL_NAME),
     ],
     workspace: [
         ({ config }) => (config.workspaceEnabled ? null : 'WORKSPACE_ENABLE 为 0'),
-        disabledByName(WORKSPACE_WRITE_TOOL_NAME),
-        disabledByName(WORKSPACE_READ_TOOL_NAME),
-        disabledByName(WORKSPACE_LIST_TOOL_NAME),
-        disabledByName(WORKSPACE_FIND_TOOL_NAME),
-        disabledByName(WORKSPACE_EDIT_TOOL_NAME),
-        disabledByName(WORKSPACE_COPY_TOOL_NAME),
-        disabledByName(WORKSPACE_DELETE_TOOL_NAME),
+        disabledByName(WORKSPACE_TOOL_NAME),
     ],
     // No chat whitelist: free, one-emoji and visible only in this chat, so it
     // is on by default; the panel's own switch is the only chat-level control.
     reaction: [disabledByName(REACT_TO_MESSAGE_TOOL_NAME)],
-    // Wired to availability.skills / SKILLS_ENABLE at merge time
-    skills: [disabledByName('load_skill')],
+    skills: [
+        ({ config }) => (config.skillsEnabled ? null : 'SKILLS_ENABLE 为 0'),
+        disabledByName(LOAD_SKILL_TOOL_NAME),
+    ],
 };
 
 /** Why the env whitelist keeps a group off; the panel switch may turn it on */
@@ -213,6 +187,7 @@ const whitelistReasonOf = (key: ToolGroupKey): string => {
     if (key === 'history') return '本聊天不在 HISTORY_CHAT_IDS 中';
     if (key === 'widget') return '本聊天不在 WIDGET_CHAT_IDS / TOOL_CHAT_IDS 中';
     if (key === 'workspace') return '本聊天不在 WORKSPACE_CHAT_IDS / TOOL_CHAT_IDS 中';
+    if (key === 'skills') return '本聊天不在 SKILLS_CHAT_IDS 中';
     return '本聊天不在 TOOL_CHAT_IDS 中';
 };
 

@@ -4,7 +4,7 @@
  * for the same model and chat.
  *
  * All media tools of one reply share a single ReplyMediaState: the ids
- * search_images hands out are the ones fetch_image, send_image and
+ * find_image hands out are the ones fetch_image, send_image and
  * generate_image read, the drawn pictures wait there as g1…, and the
  * one-attachment-per-reply flag lives there too.
  */
@@ -21,37 +21,34 @@ import { searchImages } from '../../services/image-search-service.js';
 import { createHistoryService } from '../../services/luoxu-history-service.js';
 import type { ToolOverrides } from '../../services/tool-overrides.js';
 import { toLuoxuChannelId } from '../../services/luoxu-preview-service.js';
+import {
+    filterAvailableSkills,
+    getSkillRegistry,
+    WIDGET_ALLOW_HTML_FLAG,
+    type SkillEntry,
+} from '../skills/skill-registry.js';
+import type { WorkspaceState } from '../workspace/workspace-state.js';
 import { createCropImageTool } from './crop-image-tool.js';
-import { createExtractFramesTool } from './video-frames-tool.js';
 import { createFetchImageTool, PRODUCTION_FETCH_DEPENDENCIES } from './fetch-image-tool.js';
+import { createFindImageTool, THUMBNAIL_LIMITS } from './find-image-tool.js';
 import { createGenerateImageTool } from './generate-image-tool.js';
+import { createHarnessIssueTool } from './harness-issue-tool.js';
 import type { HistoryState } from './history-state.js';
-import { createCreateHarnessIssueTool, createListHarnessIssuesTool } from './harness-issue-tool.js';
+import { createHistoryTool } from './history-tool.js';
+import { createLeaveHandoffTool } from './leave-handoff-tool.js';
+import { createLoadSkillTool } from './load-skill-tool.js';
 import { createReactToMessageTool } from './react-to-message-tool.js';
-import { createReadHistoryTool } from './read-history-tool.js';
+import type { ReplyToolContext } from './reply-tool-context.js';
 import { createReplyToolState, type ReplyToolState } from './reply-tool-state.js';
-import { createSearchByImageTool } from './search-by-image-tool.js';
-import { createSearchHistoryTool } from './search-history-tool.js';
-import { createSearchImagesTool, THUMBNAIL_LIMITS } from './search-images-tool.js';
 import { createSendFileTool } from './send-file-tool.js';
 import { createSendImageTool } from './send-image-tool.js';
+import { createSendSmsTool } from './send-sms-tool.js';
 import { createSendStickerTool } from './send-sticker-tool.js';
 import { createSendWidgetTool } from './send-widget-tool.js';
-import { createWorkspaceCopyTool } from './workspace-copy-tool.js';
-import { createWorkspaceDeleteTool } from './workspace-delete-tool.js';
-import { createWorkspaceEditTool } from './workspace-edit-tool.js';
-import { createWorkspaceFindTool } from './workspace-find-tool.js';
-import { createWorkspaceListTool } from './workspace-list-tool.js';
-import { createWorkspacePreviewTool } from './workspace-preview-tool.js';
-import { createWorkspaceReadTool } from './workspace-read-tool.js';
-import { createWorkspaceWriteTool } from './workspace-write-tool.js';
-import { createLeaveHandoffTool } from './leave-handoff-tool.js';
-import type { WorkspaceState } from '../workspace/workspace-state.js';
-import { createUiGuideTool } from './ui-guide-tool.js';
-import { createSendSmsTool } from './send-sms-tool.js';
-import type { ReplyToolContext } from './reply-tool-context.js';
 import { resolveToolAvailability, type ToolAvailability } from './tool-availability.js';
 import { RESERVED_TOOL_NAMES } from './tool-names.js';
+import { createWorkspaceTool } from './workspace-tool.js';
+import { createExtractFramesTool } from './video-frames-tool.js';
 
 export interface ReplyTools {
     readonly tools: TurnTools;
@@ -67,6 +64,11 @@ export interface ReplyTools {
      * checkpoint, so a continue can hand it back.
      */
     readonly toolState: ReplyToolState;
+    /**
+     * Repository skills gated and available for this reply; the volatile tail
+     * renders the catalog from this exact list so declaration and tail match.
+     */
+    readonly availableSkills: readonly SkillEntry[];
 }
 
 export const createReplyTools = (
@@ -115,7 +117,7 @@ export const createReplyTools = (
         botUserId: numericId(process.env.BOT_USER_ID),
     };
 
-    const handlers: ToolHandler[] = [
+    const beforeSkillHandlers: ToolHandler[] = [
         ...buildMcpToolHandlers(availability.mcpServers, RESERVED_TOOL_NAMES, availability.isMcpToolEnabled),
         ...(availability.sms ? [createSendSmsTool(context)] : []),
         ...(availability.image
@@ -133,28 +135,32 @@ export const createReplyTools = (
                   }),
               ]
             : []),
-        ...(availability.imageSearch
+        ...(availability.imageSearch || availability.imageReverseSearch
             ? [
-                  createSearchImagesTool({
+                  createFindImageTool({
                       state: mediaState,
-                      dependencies: {
-                          search: searchImages,
-                          fetchThumbnail: (url) =>
-                              fetchImageBytes(url, {
-                                  maxBytes: THUMBNAIL_LIMITS.maxBytes,
-                                  timeoutMs: THUMBNAIL_LIMITS.timeoutMs,
-                                  signal: context.signal,
-                              }),
-                          baseUrl: config.imageSearchUrl,
-                          engines: config.imageSearchEngines,
-                          safesearch: config.imageSearchSafesearch,
-                          canSeeImages: capabilities.supportsImageInput,
-                      },
+                      webEnabled: availability.imageSearch,
+                      reverseEnabled: availability.imageReverseSearch,
+                      ...(availability.imageSearch
+                          ? {
+                                webDependencies: {
+                                    search: searchImages,
+                                    fetchThumbnail: (url) =>
+                                        fetchImageBytes(url, {
+                                            maxBytes: THUMBNAIL_LIMITS.maxBytes,
+                                            timeoutMs: THUMBNAIL_LIMITS.timeoutMs,
+                                            signal: context.signal,
+                                        }),
+                                    baseUrl: config.imageSearchUrl,
+                                    engines: config.imageSearchEngines,
+                                    safesearch: config.imageSearchSafesearch,
+                                    canSeeImages: capabilities.supportsImageInput,
+                                },
+                            }
+                          : {}),
+                      ...(availability.imageReverseSearch ? { context } : {}),
                   }),
               ]
-            : []),
-        ...(availability.imageReverseSearch
-            ? [createSearchByImageTool({ state: mediaState, context })]
             : []),
         ...(availability.imageFetch
             ? [
@@ -228,16 +234,25 @@ export const createReplyTools = (
                   }),
               ]
             : []),
-        ...(availability.widgetGuide ? [createUiGuideTool()] : []),
+    ];
+
+    const afterSkillHandlers: ToolHandler[] = [
         ...(availability.workspace
             ? [
-                  createWorkspaceWriteTool({ state: workspaceState, widgetLimits: widgetDraftLimits }),
-                  createWorkspaceReadTool({ state: workspaceState }),
-                  createWorkspaceListTool({ state: workspaceState, widgetLimits: widgetDraftLimits }),
-                  createWorkspaceFindTool({ state: workspaceState }),
-                  createWorkspaceEditTool({ state: workspaceState, widgetLimits: widgetDraftLimits }),
-                  createWorkspaceCopyTool({ state: workspaceState }),
-                  createWorkspaceDeleteTool({ state: workspaceState }),
+                  createWorkspaceTool({
+                      state: workspaceState,
+                      widgetLimits: widgetDraftLimits,
+                      workspacePreview: availability.workspacePreview,
+                      ...(availability.workspacePreview
+                          ? {
+                                previewLimits: {
+                                    allowHtml: config.widgetAllowHtml,
+                                    maxHtmlBytes: config.widgetMaxHtmlBytes,
+                                    maxGzipBytes: config.widgetMaxGzipBytes,
+                                },
+                            }
+                          : {}),
+                  }),
               ]
             : []),
         ...(availability.handoff
@@ -248,36 +263,50 @@ export const createReplyTools = (
                   }),
               ]
             : []),
-        ...(availability.workspacePreview
-            ? [
-                  createWorkspacePreviewTool({
-                      state: workspaceState,
-                      limits: {
-                          allowHtml: config.widgetAllowHtml,
-                          maxHtmlBytes: config.widgetMaxHtmlBytes,
-                          maxGzipBytes: config.widgetMaxGzipBytes,
-                      },
-                  }),
-              ]
-            : []),
         ...(availability.history
-            ? [
-                  createSearchHistoryTool(historyOptions(historyState, context, historyWiring)),
-                  createReadHistoryTool(historyOptions(historyState, context, historyWiring)),
-              ]
+            ? [createHistoryTool(historyOptions(historyState, context, historyWiring))]
             : []),
         ...(availability.harnessIssues
-            ? [
-                  createListHarnessIssuesTool({ chatId: context.chatId }),
-                  createCreateHarnessIssueTool({ state: harnessIssueState, chatId: context.chatId }),
-              ]
+            ? [createHarnessIssueTool({ state: harnessIssueState, chatId: context.chatId })]
             : []),
         // Appended last on purpose: the built-in declaration prefix stays put,
         // so only the tail of the snapshot grows.
         ...(availability.reaction ? [createReactToMessageTool(context)] : []),
     ];
 
-    return { tools: createTurnTools(handlers), availability, workspaceState, toolState };
+    const baseDeclaredToolNames = new Set(
+        [...beforeSkillHandlers, ...afterSkillHandlers].map((handler) => handler.definition.name)
+    );
+    const activeFlags = new Set<string>();
+    if (config.widgetAllowHtml) activeFlags.add(WIDGET_ALLOW_HTML_FLAG);
+    const isOwner =
+        historyWiring.ownerUserId !== null && context.requester.userId === historyWiring.ownerUserId;
+    const scope = context.chatId > 0 ? 'private' : 'group';
+    const availableSkills: readonly SkillEntry[] = availability.skills
+        ? filterAvailableSkills({
+              skills: getSkillRegistry(config.skillsDir || undefined),
+              declaredToolNames: baseDeclaredToolNames,
+              activeFlags,
+              scope,
+              isOwner,
+          })
+        : [];
+
+    const handlers: ToolHandler[] = [
+        ...beforeSkillHandlers,
+        ...(availableSkills.length > 0
+            ? [createLoadSkillTool({ state: toolState.skills, availableSkills })]
+            : []),
+        ...afterSkillHandlers,
+    ];
+
+    return {
+        tools: createTurnTools(handlers),
+        availability,
+        workspaceState,
+        toolState,
+        availableSkills,
+    };
 };
 
 /** Telegram ids arrive as strings in the env; a malformed one is simply absent */
@@ -305,7 +334,7 @@ const historyOptions = (
     state: HistoryState,
     context: ReplyToolContext,
     wiring: HistoryWiring
-): Parameters<typeof createSearchHistoryTool>[0] => ({
+): Parameters<typeof createHistoryTool>[0] => ({
     state,
     context,
     service: wiring.service,

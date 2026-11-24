@@ -39,12 +39,16 @@ const { createHistoryState } = await import('../../src/reply/tools/history-state
 const { createHarnessIssueState, MAX_HARNESS_ISSUES_PER_REPLY } = await import(
     '../../src/reply/tools/harness-issue-state.js'
 );
-const { createWorkspaceTool, WORKSPACE_MERGED_TOOL_NAME } = await import('../../src/reply/tools/workspace-tool.js');
-const { createHarnessIssueTool, HARNESS_ISSUE_TOOL_NAME } = await import(
-    '../../src/reply/tools/harness-issue-tool.js'
-);
-const { createHistoryTool, HISTORY_TOOL_NAME } = await import('../../src/reply/tools/history-tool.js');
-const { createFindImageTool, FIND_IMAGE_TOOL_NAME } = await import('../../src/reply/tools/find-image-tool.js');
+const {
+    FIND_IMAGE_TOOL_NAME,
+    HARNESS_ISSUE_TOOL_NAME,
+    HISTORY_TOOL_NAME,
+    WORKSPACE_TOOL_NAME,
+} = await import('../../src/reply/tools/tool-names.js');
+const { createWorkspaceTool } = await import('../../src/reply/tools/workspace-tool.js');
+const { createHarnessIssueTool } = await import('../../src/reply/tools/harness-issue-tool.js');
+const { createHistoryTool } = await import('../../src/reply/tools/history-tool.js');
+const { createFindImageTool } = await import('../../src/reply/tools/find-image-tool.js');
 const { createFetchImageTool, PRODUCTION_FETCH_DEPENDENCIES } = await import(
     '../../src/reply/tools/fetch-image-tool.js'
 );
@@ -283,7 +287,7 @@ results.push(
             workspacePreview: false,
         });
 
-        expect(toolWithPreview.definition.name === WORKSPACE_MERGED_TOOL_NAME, 'tool name is workspace');
+        expect(toolWithPreview.definition.name === WORKSPACE_TOOL_NAME, 'tool name is workspace');
         const propsWith = propertiesOf(toolWithPreview.definition.inputSchema);
         const actionPropWith = isRecord(propsWith.action) ? propsWith.action : {};
         expect(stringArrayOf(actionPropWith.enum).includes('preview'), 'preview in action.enum when enabled');

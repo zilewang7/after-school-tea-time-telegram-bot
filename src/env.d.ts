@@ -29,13 +29,13 @@ declare global {
             TOOL_CHAT_IDS?: string
             /** Comma-separated tool names or MCP server keys to switch off */
             DISABLED_TOOLS?: string
-            /** '0' turns off search_history / read_history */
+            /** '0' turns off history tool */
             HISTORY_TOOLS?: string
             /** Comma-separated chat ids whose history luoxu archives */
             HISTORY_CHAT_IDS?: string
-            /** '0' turns off list_harness_issues / create_harness_issue */
+            /** '0' turns off harness_issue tool */
             HARNESS_ISSUES?: string
-            /** '1' offers send_widget / get_ui_guide (Phase 0 default off) */
+            /** '1' offers send_widget (Phase 0 default off) */
             WIDGET_ENABLE?: string
             /** Comma-separated chat ids offered the widget tools; empty = TOOL_CHAT_IDS */
             WIDGET_CHAT_IDS?: string
@@ -109,7 +109,7 @@ declare global {
             WIDGET_GROUP_FALLBACK?: string
             /** '0' turns off the public share pages and the share API */
             SHARE_ENABLED?: string
-            /** '1' offers the workspace_* draft tools (default off) */
+            /** '1' offers the workspace draft tools (default off) */
             WORKSPACE_ENABLE?: string
             /** Comma-separated chat ids offered the workspace tools; empty = TOOL_CHAT_IDS */
             WORKSPACE_CHAT_IDS?: string
@@ -117,6 +117,14 @@ declare global {
             WORKSPACE_MAX_CONVERSATION_BYTES?: string
             WORKSPACE_MAX_FILES?: string
             WORKSPACE_MAX_GLOBAL_BYTES?: string
+            /** '0' falls back to the legacy full static format section without L1 legends */
+            PROMPT_FORMAT_LEGEND?: string
+            /** '0' turns off the repository skill system (load_skill + catalog tail) */
+            SKILLS_ENABLE?: string
+            /** Comma-separated chat ids allowed skills; empty = all chats allowed by default */
+            SKILLS_CHAT_IDS?: string
+            /** Override repository skills directory (tests) */
+            SKILLS_DIR?: string
             /** '0' turns off the /share and /shareone commands */
             SHARE_COMMAND?: string
             /** '0' turns off the price watcher (daily catalog run + the owner's /pricing) */

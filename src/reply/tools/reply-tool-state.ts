@@ -10,6 +10,7 @@
 import { getToolConfig, type ToolConfig } from '../../config/tool-config.js';
 import { createHarnessIssueState, type HarnessIssueState } from './harness-issue-state.js';
 import { createHistoryState, type HistoryState } from './history-state.js';
+import { createSkillToolState, type SkillToolState } from './load-skill-tool.js';
 import { createReplyMediaState, type ReplyMediaState } from './reply-media-state.js';
 import { createWorkspaceState, type WorkspaceState } from '../workspace/workspace-state.js';
 
@@ -18,6 +19,7 @@ export interface ReplyToolState {
     readonly history: HistoryState;
     readonly harnessIssues: HarnessIssueState;
     readonly workspace: WorkspaceState;
+    readonly skills: SkillToolState;
 }
 
 export interface ReplyToolStateInput {
@@ -34,6 +36,7 @@ export const createReplyToolState = (
     media: createReplyMediaState(),
     history: createHistoryState(),
     harnessIssues: createHarnessIssueState(),
+    skills: createSkillToolState(),
     workspace: createWorkspaceState({
         chatId: input.chatId,
         conversationRootIds: input.conversationRootIds,

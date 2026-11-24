@@ -16,8 +16,7 @@ import {
 import { executeHistoryRead, executeHistorySearch, summarizeHistoryArgs } from './history-tool-actions.js';
 import { historyToolError } from './history-tool-result.js';
 import { withHistoryLogging, type HistoryToolOptions } from './history-tool-shared.js';
-
-export const HISTORY_TOOL_NAME = 'history';
+import { HISTORY_TOOL_NAME } from './tool-names.js';
 
 const SEARCH_ONLY_KEYS = ['query', 'sender', 'from', 'to', 'before', 'limit', 'scope'] as const;
 const READ_ONLY_KEYS = ['ids', 'around', 'minutes', 'folded'] as const;

@@ -9,9 +9,9 @@
 import type { ToolHandler, ToolResult } from '../../ai/tools/tool-types.js';
 import type { SkillEntry } from '../skills/skill-types.js';
 import { SKILL_NAME_PATTERN } from '../skills/skill-types.js';
+import { LOAD_SKILL_TOOL_NAME } from './tool-names.js';
 import { traceChars, traceParts } from './tool-trace.js';
 
-export const LOAD_SKILL_TOOL_NAME = 'load_skill';
 export const MAX_SKILLS_PER_REPLY = 4;
 
 const DESCRIPTION = '按名批量加载可用技能的完整规范正文（仅对本次回复有效）；需要规范时再调。';

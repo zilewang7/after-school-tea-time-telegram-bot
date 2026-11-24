@@ -1,10 +1,6 @@
 /**
  * The model's own issue list about the harness it is using (`harness_issue`:
  * `list` | `create`).
- *
- * Legacy `createListHarnessIssuesTool` and `createCreateHarnessIssueTool`
- * remain exported on this branch until merge so existing callers keep passing
- * typecheck, while sharing the underlying list/create execution helpers.
  */
 import { match } from 'ts-pattern';
 import type { ToolCallTrace, ToolHandler, ToolResult } from '../../ai/tools/tool-types.js';
@@ -23,10 +19,8 @@ import {
     type HarnessIssueStatusFilter,
 } from '../../services/harness-issue-service.js';
 import { MAX_HARNESS_ISSUES_PER_REPLY, type HarnessIssueState } from './harness-issue-state.js';
-import { CREATE_HARNESS_ISSUE_TOOL_NAME, LIST_HARNESS_ISSUES_TOOL_NAME } from './tool-names.js';
+import { HARNESS_ISSUE_TOOL_NAME } from './tool-names.js';
 import { traceQuote } from './tool-trace.js';
-
-export const HARNESS_ISSUE_TOOL_NAME = 'harness_issue';
 
 const ok = (content: string, trace?: ToolCallTrace): ToolResult => ({
     content,
@@ -218,91 +212,4 @@ export const createHarnessIssueTool = (options: HarnessIssueToolOptions): ToolHa
             .with('list', () => executeList(args, options.chatId, 'list · '))
             .with('create', () => executeCreate(args, options.state, options.chatId, 'create · '))
             .otherwise(() => failed('action 必须是 "list" 或 "create"。')),
-});
-
-const LEGACY_LIST_DESCRIPTION =
-    '列出已记录的 harness 自身问题与改进建议及其状态。在提新 issue 前先用它查重；status=closed 可查已处理/已驳回的旧条目。' +
-    '每次结果末尾都带全量统计（总数与各状态计数），不必换过滤条件反复确认。';
-
-const LEGACY_LIST_INPUT_SCHEMA = {
-    type: 'object',
-    properties: {
-        status: {
-            type: 'string',
-            enum: ['open', 'closed', 'all'],
-            description: 'open（默认）= 待处理；closed = 已处理、已驳回或重复；all = 全部。',
-        },
-        query: {
-            type: 'string',
-            description: '按关键词过滤标题与正文。',
-        },
-        limit: {
-            type: 'integer',
-            minimum: 1,
-            maximum: HARNESS_ISSUE_LIST_LIMIT_MAX,
-            description: `最多返回几条，默认 20，上限 ${HARNESS_ISSUE_LIST_LIMIT_MAX}。`,
-        },
-    },
-};
-
-const LEGACY_CREATE_DESCRIPTION =
-    '记录一条关于 harness 自身的问题或改进建议：工具描述不清、参数不够用、错误信息没帮助、上下文格式难解析、缺少能力、提示词自相矛盾等。' +
-    '只写 harness 的问题，不要贴用户消息原文、个人信息或一次性任务细节。提交前先用 `list_harness_issues` 查重。';
-
-const LEGACY_CREATE_INPUT_SCHEMA = {
-    type: 'object',
-    properties: {
-        title: {
-            type: 'string',
-            description: '一句话说清问题，例如「send_sticker 的描述没写可以整行照抄目录」。',
-        },
-        body: {
-            type: 'string',
-            description: '哪个工具/环节、现象、影响、建议怎么改；不要包含用户消息原文或个人信息。',
-        },
-        kind: {
-            type: 'string',
-            enum: [...HARNESS_ISSUE_KINDS],
-            description: 'bug = 行为不对；improvement = 能用但别扭；feature = 缺能力。',
-        },
-        severity: {
-            type: 'string',
-            enum: [...HARNESS_ISSUE_SEVERITIES],
-            description: '对干活的影响程度，可省略。',
-        },
-        tool_name: {
-            type: 'string',
-            description: '相关工具名（如 send_sticker），可省略。',
-        },
-    },
-    required: ['title', 'body', 'kind'],
-};
-
-export interface ListHarnessIssuesToolOptions {
-    readonly chatId: number;
-}
-
-export const createListHarnessIssuesTool = (options: ListHarnessIssuesToolOptions): ToolHandler => ({
-    definition: {
-        name: LIST_HARNESS_ISSUES_TOOL_NAME,
-        description: LEGACY_LIST_DESCRIPTION,
-        inputSchema: LEGACY_LIST_INPUT_SCHEMA,
-    },
-    execute: async (args) => executeList(args, options.chatId, ''),
-});
-
-export interface CreateHarnessIssueToolOptions {
-    readonly state: HarnessIssueState;
-    readonly chatId: number;
-}
-
-export const createCreateHarnessIssueTool = (
-    options: CreateHarnessIssueToolOptions
-): ToolHandler => ({
-    definition: {
-        name: CREATE_HARNESS_ISSUE_TOOL_NAME,
-        description: LEGACY_CREATE_DESCRIPTION,
-        inputSchema: LEGACY_CREATE_INPUT_SCHEMA,
-    },
-    execute: async (args) => executeCreate(args, options.state, options.chatId, ''),
 });

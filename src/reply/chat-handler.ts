@@ -3,6 +3,7 @@
  * Handles incoming messages and coordinates AI responses
  */
 import type { Bot, Context } from 'grammy';
+import { countCodePoints } from '../shared/code-points.js';
 import { to, isErr } from '../shared/result.js';
 import { getMessage } from '../db/index.js';
 import {
@@ -390,7 +391,7 @@ export const handleReply = async (
         : null;
 
     const signal = chatContext.session.streamController.signal;
-    const { tools, availability, workspaceState, toolState } = createReplyTools(
+    const { tools, availability, workspaceState, toolState, availableSkills } = createReplyTools(
         model,
         buildReplyToolContext({
             chat: ctx.chat,
@@ -412,9 +413,10 @@ export const handleReply = async (
     // and the context numbering the request just used (#N)
     chatContext.mediaState = toolState.media;
     chatContext.contextIndex = contextIndex;
-    // The workspace manifest is volatile, so it rides the trigger message after
-    // the tool snapshot is known (the static prompt stays byte-identical).
-    await appendWorkspaceTailForReply({
+    // The skill catalog, workspace manifest and rich-reply notes are volatile,
+    // so they ride the trigger message after the tool snapshot is known (the
+    // static prompt stays byte-identical).
+    const tail = await appendWorkspaceTailForReply({
         messages: chatContents,
         triggerTurnIndex: built.triggerTurnIndex,
         workspaceState,
@@ -426,9 +428,16 @@ export const handleReply = async (
         widgetTools: availability.widget,
         // A rich reply may embed pictures; the note is volatile, like the manifest
         richInlineImages: settings.richReplies === true && availability.sendImage,
+        richReplies: settings.richReplies,
+        availableSkills,
     });
 
     const systemPrompt = buildStaticSystemPrompt(model, buildStaticPromptOptions(availability), capabilities);
+    console.log(
+        `[prompt] model=${model} head=${countCodePoints(systemPrompt)} ` +
+            `legend=${built.legendChars} catalog=${tail.catalogChars} ` +
+            `tools=${countCodePoints(JSON.stringify(tools.definitions))}`
+    );
     // The chat's thinking level against this attempt's model: an empty fragment
     // for a model without data (the platform keeps its current request shape)
     const thinking = thinkingRequestOf(model, settings.thinkingEffort, traits);

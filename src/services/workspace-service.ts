@@ -297,7 +297,7 @@ const quotaError = (
                 `${formatBytes(quota.maxGlobalBytes)}，删掉本会话的草稿不一定能腾出空间。`
         );
     }
-    lines.push('先用 workspace_list 看看，再用 workspace_delete 删掉不用的草稿。');
+    lines.push('先用 workspace(action="list") 看看，再用 workspace(action="delete") 删掉不用的草稿。');
     return lines.join('');
 };
 
@@ -343,7 +343,7 @@ export const writeWorkspaceFile = async (
                         ok: false,
                         error:
                             `工作区里已经有《${path}》（${formatBytes(existing.sizeBytes)}）。` +
-                            '要整体替换传 overwrite=true，要追加传 append=true，要局部修改用 workspace_edit。',
+                            '要整体替换传 overwrite=true，要追加传 append=true，要局部修改用 workspace(action="edit")。',
                     };
                 }
 
@@ -494,7 +494,7 @@ export const editWorkspaceFile = async (
 ): Promise<WorkspaceResult<WorkspaceEditOk>> => {
     const { chatId, conversationRootId, path, oldString, newString, replaceAll, quota } = input;
     if (oldString === '') {
-        return { ok: false, error: 'old_string 不能为空；要整体重写用 workspace_write(overwrite=true)。' };
+        return { ok: false, error: 'old_string 不能为空；要整体重写用 workspace(action="write", overwrite=true)。' };
     }
 
     return withBusyRetry(
@@ -507,7 +507,7 @@ export const editWorkspaceFile = async (
                 if (existing === null) {
                     return {
                         ok: false,
-                        error: `工作区里没有《${path}》；用 workspace_list 看看现有文件，或先 workspace_write 创建。`,
+                        error: `工作区里没有《${path}》；用 workspace(action="list") 看看现有文件，或先 workspace(action="write") 创建。`,
                     };
                 }
 
@@ -522,7 +522,7 @@ export const editWorkspaceFile = async (
                             (closest === null
                                 ? ''
                                 : `最接近的内容在第 ${closest.lineNumber} 行附近：\n${closest.block}\n`) +
-                            '先 workspace_read 读一遍原文，再拿完全一致（含缩进）的片段重试。',
+                            '先 workspace(action="read") 读一遍原文，再拿完全一致（含缩进）的片段重试。',
                     };
                 }
                 if (occurrences > 1 && !replaceAll) {
@@ -599,7 +599,7 @@ export const deleteWorkspaceFile = async (
                 if (existing === null) {
                     return {
                         ok: false,
-                        error: `工作区里没有《${path}》；用 workspace_list 看看现有文件。`,
+                        error: `工作区里没有《${path}》；用 workspace(action="list") 看看现有文件。`,
                     };
                 }
                 const freedBytes = existing.sizeBytes;
@@ -745,7 +745,7 @@ export const copyWorkspaceFile = async (
                 if (source === null) {
                     return {
                         ok: false,
-                        error: `工作区里没有《${from}》；用 workspace_list 看看现有文件，或用 workspace_find 搜内容。`,
+                        error: `工作区里没有《${from}》；用 workspace(action="list") 看看现有文件，或用 workspace(action="find") 搜内容。`,
                     };
                 }
                 const existing = await WorkspaceFile.findOne({
@@ -757,7 +757,7 @@ export const copyWorkspaceFile = async (
                         ok: false,
                         error:
                             `工作区里已经有《${to}》（${formatBytes(existing.sizeBytes)}）。` +
-                            '换一个 new_path，或先 workspace_delete 目标，或直接改源文件。',
+                            '换一个 new_path，或先 workspace(action="delete") 删除目标，或直接改源文件。',
                     };
                 }
                 const usage = await usageExcluding(chatId, conversationRootId, null, transaction);

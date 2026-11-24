@@ -4,8 +4,8 @@
  * It is a small, deterministic index — never file content: the current
  * conversation's newest files (path, size, time, first-line summary) plus one
  * line per other conversation spliced into this context. The full list and the
- * content are one tool call away (`workspace_list` / `workspace_read`), which
- * is what keeps the manifest cheap and never stale for long.
+ * content are one tool call away (`workspace(action="list")` / `workspace(action="read")`),
+ * which is what keeps the manifest cheap and never stale for long.
  *
  * It rides the trigger message's runtime block, after the tool snapshot is
  * known, so it never touches the byte-stable static prompt (prefix caching).
@@ -21,7 +21,7 @@ import {
 import { CURRENT_WORKSPACE_TOKEN, ensureWorkspaceToken, type WorkspaceState } from './workspace-state.js';
 import { appendVolatileSection } from './volatile-section.js';
 
-/** Files one manifest lists; the rest is one `workspace_list` away */
+/** Files one manifest lists; the rest is one `workspace(action="list")` away */
 const MAX_MANIFEST_FILES = 20;
 /** Hard character budget of the whole section */
 const MAX_MANIFEST_CHARS = 1200;
@@ -73,8 +73,8 @@ const footerOf = (fileTools: boolean, widgetTools: boolean): string => {
         widgetTools ? 'send_widget' : null,
     ].filter((name): name is string => name !== null);
     return senders.length === 0
-        ? '用 workspace_read 读取文件内容。'
-        : `用 workspace_read 读取；${senders.join(' / ')} 可以给 workspace_path 直接从工作区发出。`;
+        ? '用 workspace(action="read") 读取文件内容。'
+        : `用 workspace(action="read") 读取；${senders.join(' / ')} 可以给 workspace_path 直接从工作区发出。`;
 };
 
 /**
@@ -125,14 +125,14 @@ export const buildWorkspaceManifest = async (
             // model learns the token exists (the selector covers every
             // conversation this context holds, not only the ones with files).
             const line = isCurrent
-                ? `${usageLine}（空）。用 workspace_write 创建草稿。`
-                : `${usageLine}（空）。用 workspace_list(workspace="${token}") 查看。`;
+                ? `${usageLine}（空）。用 workspace(action="write") 创建草稿。`
+                : `${usageLine}（空）。用 workspace(action="list", workspace="${token}") 查看。`;
             if (!pushLine(line, MANIFEST_CLOSING_RESERVE)) unlistedConversationTokens.push(token);
             continue;
         }
 
         if (!isCurrent) {
-            const line = `${usageLine}。用 workspace_list(workspace="${token}") 查看。`;
+            const line = `${usageLine}。用 workspace(action="list", workspace="${token}") 查看。`;
             if (!pushLine(line, MANIFEST_CLOSING_RESERVE)) unlistedConversationTokens.push(token);
             continue;
         }
@@ -150,17 +150,17 @@ export const buildWorkspaceManifest = async (
 
     if (unlistedConversationTokens.length > 0) {
         // The tokens are registered but not in the section, so name them: a model
-        // told to "use workspace_list" without a token could not act on it.
+        // told to "use workspace list" without a token could not act on it.
         const first = unlistedConversationTokens[0] ?? '';
         const last = unlistedConversationTokens[unlistedConversationTokens.length - 1] ?? '';
         const range = unlistedConversationTokens.length === 1 ? first : `${first}–${last}`;
         pushLine(
             `- 还有 ${unlistedConversationTokens.length} 个拼接会话没列出（${range}）；` +
-                `用 workspace_list(workspace="${first}") 逐个查看。`
+                `用 workspace(action="list", workspace="${first}") 逐个查看。`
         );
     }
     if (remainingFiles > 0) {
-        pushLine(`- 还有 ${remainingFiles} 个文件没列出，用 workspace_list 查看。`);
+        pushLine(`- 还有 ${remainingFiles} 个文件没列出，用 workspace(action="list") 查看。`);
     }
     if (listedFiles > 0 || conversationRootIds.length > 1) {
         pushLine(footerOf(fileTools, widgetTools));

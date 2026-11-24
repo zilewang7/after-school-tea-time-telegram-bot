@@ -92,4 +92,5 @@ export const estimateCheckpointBytes = (checkpoint: ReplyCheckpoint): number =>
         checkpoint.toolState.workspace,
         // The history state keeps its entries behind functions
         checkpoint.toolState.history.entries(),
+        checkpoint.toolState.skills.loadedNames,
     ]);

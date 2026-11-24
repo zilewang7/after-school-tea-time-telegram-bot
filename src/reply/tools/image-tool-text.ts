@@ -37,7 +37,7 @@ export interface SearchTextInput {
     readonly canSeeImages: boolean;
     /** A repeated query reused this set instead of hitting SearXNG */
     readonly reused: boolean;
-    /** Tool name shown in next-step hints; defaults to legacy `search_images` until merge */
+    /** Tool name shown in next-step hints; defaults to `find_image` */
     readonly toolName?: 'search_images' | 'find_image';
 }
 
@@ -68,7 +68,7 @@ const attachLines = (input: SearchTextInput): string[] => {
 const nextStepLines = (input: SearchTextInput, unseen: readonly SearchCandidate[]): string[] => {
     const lines: string[] = [];
     const { set } = input;
-    const callPrefix = input.toolName === 'find_image' ? "find_image(mode='web', " : 'search_images(';
+    const callPrefix = input.toolName === 'search_images' ? 'search_images(' : "find_image(mode='web', ";
 
     // Paging and fetching only exist for a model that can look at the pictures
     if (input.canSeeImages) {

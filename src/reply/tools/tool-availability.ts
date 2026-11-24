@@ -15,7 +15,11 @@ import { getModelCapabilities, getPlatform } from '../../ai/platform-factory.js'
 import type { ModelCapabilities } from '../../ai/types.js';
 import { listMcpServers } from '../../ai/mcp/index.js';
 import { isTestInstance } from '../../config/instance.js';
-import { getToolConfig, type ToolConfig } from '../../config/tool-config.js';
+import {
+    getToolConfig,
+    WORKSPACE_PREVIEW_DISABLE_KEY,
+    type ToolConfig,
+} from '../../config/tool-config.js';
 import type { AccessTier } from '../../services/access-tier.js';
 import { isTgsConverterConfigured } from '../../services/tgs-client.js';
 import { toolOverrideOf, type ToolGroupKey, type ToolOverrides } from '../../services/tool-overrides.js';
@@ -23,23 +27,19 @@ import {
     CROP_IMAGE_TOOL_NAME,
     EXTRACT_FRAMES_TOOL_NAME,
     FETCH_IMAGE_TOOL_NAME,
+    FIND_IMAGE_TOOL_NAME,
     GENERATE_IMAGE_TOOL_NAME,
-    SEARCH_IMAGES_TOOL_NAME,
-    SEARCH_BY_IMAGE_TOOL_NAME,
+    HARNESS_ISSUE_TOOL_NAME,
+    HISTORY_TOOL_NAME,
+    LEAVE_HANDOFF_TOOL_NAME,
+    LOAD_SKILL_TOOL_NAME,
+    REACT_TO_MESSAGE_TOOL_NAME,
     SEND_FILE_TOOL_NAME,
     SEND_IMAGE_TOOL_NAME,
     SEND_SMS_TOOL_NAME,
     SEND_STICKER_TOOL_NAME,
-    SEARCH_HISTORY_TOOL_NAME,
-    READ_HISTORY_TOOL_NAME,
-    LIST_HARNESS_ISSUES_TOOL_NAME,
-    CREATE_HARNESS_ISSUE_TOOL_NAME,
     SEND_WIDGET_TOOL_NAME,
-    GET_UI_GUIDE_TOOL_NAME,
-    WORKSPACE_FILE_TOOL_NAMES,
-    WORKSPACE_PREVIEW_TOOL_NAME,
-    LEAVE_HANDOFF_TOOL_NAME,
-    REACT_TO_MESSAGE_TOOL_NAME,
+    WORKSPACE_TOOL_NAME,
 } from './tool-names.js';
 
 export interface ToolAvailability {
@@ -53,11 +53,11 @@ export interface ToolAvailability {
     readonly sms: boolean;
     /** generate_image is offered (it delivers through send_image) */
     readonly image: boolean;
-    /** search_images is offered (text-only models may still pick and send) */
+    /** find_image(web) is offered (text-only models may still pick and send) */
     readonly imageSearch: boolean;
     /** send_image is offered: the delivery path of a searched or drawn picture */
     readonly sendImage: boolean;
-    /** search_by_image is offered */
+    /** find_image(reverse) is offered */
     readonly imageReverseSearch: boolean;
     /** fetch_image is offered: only models that can see what they read */
     readonly imageFetch: boolean;
@@ -69,22 +69,22 @@ export interface ToolAvailability {
     readonly sticker: boolean;
     /** send_file is offered */
     readonly file: boolean;
-    /** search_history / read_history are offered (this chat is archived by luoxu) */
+    /** history is offered (this chat is archived by luoxu) */
     readonly history: boolean;
-    /** list_harness_issues / create_harness_issue are offered */
+    /** harness_issue is offered */
     readonly harnessIssues: boolean;
-    /** send_widget is offered (WIDGET_ENABLE + widget chat whitelist) */
+    /** send_widget is offered (WIDGET_ENABLE + widget chat whitelist + load_skill enabled) */
     readonly widget: boolean;
-    /** get_ui_guide is offered (only together with send_widget) */
-    readonly widgetGuide: boolean;
-    /** workspace_write / read / list / find / edit / copy / delete are offered */
+    /** workspace is offered */
     readonly workspace: boolean;
-    /** workspace_preview is offered (workspace + a vision model + the render sidecar) */
+    /** workspace(action="preview") is offered (workspace + a vision model + the render sidecar) */
     readonly workspacePreview: boolean;
     /** leave_handoff is offered (the workspace is on and the tool is not disabled) */
     readonly handoff: boolean;
     /** react_to_message is offered (free, one emoji, visible only in this chat) */
     readonly reaction: boolean;
+    /** Repository skills and load_skill are permitted for this chat (actual declaration still requires >=1 available skill) */
+    readonly skills: boolean;
 }
 
 const NO_TOOLS: ToolAvailability = {
@@ -104,11 +104,11 @@ const NO_TOOLS: ToolAvailability = {
     history: false,
     harnessIssues: false,
     widget: false,
-    widgetGuide: false,
     workspace: false,
     workspacePreview: false,
     handoff: false,
     reaction: false,
+    skills: false,
 };
 
 /** No client tools this turn; `trial` still rides along so the prompt stays honest */
@@ -143,7 +143,7 @@ export const resolveToolAvailability = (
         chatCanReceiveWidget &&
         (toolOverrideOf(overrides, 'widget') ?? widgetChats.has(chatId)) &&
         isEnabled(SEND_WIDGET_TOOL_NAME) &&
-        isEnabled(GET_UI_GUIDE_TOOL_NAME);
+        isEnabled(LOAD_SKILL_TOOL_NAME);
 
     // The model workspace (per-conversation draft files) follows WIDGET_ENABLE's
     // pattern: off by default, then a chat whitelist the panel may override.
@@ -154,12 +154,12 @@ export const resolveToolAvailability = (
     const workspace =
         config.workspaceEnabled &&
         (toolOverrideOf(overrides, 'workspace') ?? workspaceChats.has(chatId)) &&
-        WORKSPACE_FILE_TOOL_NAMES.every(isEnabled);
+        isEnabled(WORKSPACE_TOOL_NAME);
     const workspacePreview =
         workspace &&
         capabilities.supportsImageInput === true &&
         config.widgetRenderUrl !== '' &&
-        isEnabled(WORKSPACE_PREVIEW_TOOL_NAME);
+        isEnabled(WORKSPACE_PREVIEW_DISABLE_KEY);
     // Offered with the workspace, killable on its own: turning it off must not
     // turn the whole workspace group off.
     const handoff = workspace && isEnabled(LEAVE_HANDOFF_TOOL_NAME);
@@ -195,8 +195,7 @@ export const resolveToolAvailability = (
             (config.historyChatIds.has(chatId) || ownerDmChat)) &&
         config.historyTools &&
         config.historyBaseUrl !== '' &&
-        isEnabled(SEARCH_HISTORY_TOOL_NAME) &&
-        isEnabled(READ_HISTORY_TOOL_NAME);
+        isEnabled(HISTORY_TOOL_NAME);
 
     // Media tools follow generate_image's scope: same chats, same switch.
     // send_image is the only way a picture reaches the chat — a drawn one
@@ -206,11 +205,20 @@ export const resolveToolAvailability = (
         sideEffectGate('imageSearch') &&
         config.imageTools &&
         config.imageSearchUrl !== '' &&
-        isEnabled(SEARCH_IMAGES_TOOL_NAME);
+        isEnabled(FIND_IMAGE_TOOL_NAME);
     const wantsGenerateImage = sideEffectGate('image') && isEnabled(GENERATE_IMAGE_TOOL_NAME);
     const imageSearch = wantsSearchImages && sendImageEnabled;
     const image = wantsGenerateImage && sendImageEnabled;
     const tgsConverterReady = isTgsConverterConfigured();
+
+    // Repository skills are on by default across all chats (SKILLS_CHAT_IDS
+    // empty = null = no whitelist restriction), unless turned off by env, panel
+    // override, or DISABLED_TOOLS=load_skill.
+    const skills =
+        config.skillsEnabled &&
+        (toolOverrideOf(overrides, 'skills') ??
+            (config.skillsChatIds === null || config.skillsChatIds.has(chatId))) &&
+        isEnabled(LOAD_SKILL_TOOL_NAME);
 
     return {
         trial,
@@ -229,9 +237,9 @@ export const resolveToolAvailability = (
             sideEffectGate('imageReverseSearch') &&
             config.imageTools &&
             config.imageReverseSearch &&
-            isEnabled(SEARCH_BY_IMAGE_TOOL_NAME),
+            isEnabled(FIND_IMAGE_TOOL_NAME),
         // Reading a picture is only useful to a model that can see it; the panel
-        // may switch it off, but cannot switch it on without search_images
+        // may switch it off, but cannot switch it on without find_image(web)
         imageFetch:
             imageSearch &&
             toolOverrideOf(overrides, 'imageFetch') !== false &&
@@ -264,10 +272,8 @@ export const resolveToolAvailability = (
         harnessIssues:
             sideEffectGate('harnessIssues') &&
             config.harnessIssues &&
-            isEnabled(LIST_HARNESS_ISSUES_TOOL_NAME) &&
-            isEnabled(CREATE_HARNESS_ISSUE_TOOL_NAME),
+            isEnabled(HARNESS_ISSUE_TOOL_NAME),
         widget,
-        widgetGuide: widget,
         workspace,
         workspacePreview,
         handoff,
@@ -278,5 +284,6 @@ export const resolveToolAvailability = (
         reaction:
             isEnabled(REACT_TO_MESSAGE_TOOL_NAME) &&
             toolOverrideOf(overrides, 'reaction') !== false,
+        skills,
     };
 };

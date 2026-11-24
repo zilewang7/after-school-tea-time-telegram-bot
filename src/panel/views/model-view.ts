@@ -98,7 +98,7 @@ export const buildModelView = async (request: ModelViewRequest): Promise<ModelVi
         excludeMessageIds: target.excludedReplyId === null ? [] : [target.excludedReplyId],
         dryRun: true,
     });
-    const { tools, availability, workspaceState } = createReplyTools(
+    const { tools, availability, workspaceState, availableSkills } = createReplyTools(
         model,
         toolContextOf(chat, target.userMessage, built, request.toolApi),
         settings.toolOverrides,
@@ -106,8 +106,9 @@ export const buildModelView = async (request: ModelViewRequest): Promise<ModelVi
         undefined,
         capabilities
     );
-    // Mirror the real request: the workspace manifest is part of the volatile
-    // tail the model would see, so the panel must show it too.
+    // Mirror the real request: the skill catalog, workspace manifest and
+    // rich-reply notes are part of the volatile tail the model would see, so
+    // the panel must show them too.
     await appendWorkspaceTailForReply({
         messages: built.messages,
         triggerTurnIndex: built.triggerTurnIndex,
@@ -119,6 +120,8 @@ export const buildModelView = async (request: ModelViewRequest): Promise<ModelVi
         fileTools: availability.file,
         widgetTools: availability.widget,
         richInlineImages: settings.richReplies === true && availability.sendImage,
+        richReplies: settings.richReplies,
+        availableSkills,
     });
 
     return {

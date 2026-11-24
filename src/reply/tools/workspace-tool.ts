@@ -25,6 +25,7 @@ import {
     type WorkspacePreviewDependencies,
     type WorkspacePreviewRenderResult,
 } from './workspace-tool-actions.js';
+import { WORKSPACE_TOOL_NAME } from './tool-names.js';
 import { workspaceToolError } from './workspace-tool-result.js';
 import {
     isWorkspaceAction,
@@ -34,8 +35,6 @@ import {
 } from './workspace-tool-schema.js';
 
 export type { WorkspacePreviewDependencies, WorkspacePreviewRenderResult };
-
-export const WORKSPACE_MERGED_TOOL_NAME = 'workspace';
 
 export interface WorkspaceToolOptions {
     readonly state: WorkspaceState;
@@ -63,7 +62,7 @@ export const createWorkspaceTool = (options: WorkspaceToolOptions): ToolHandler 
 
     return {
         definition: {
-            name: WORKSPACE_MERGED_TOOL_NAME,
+            name: WORKSPACE_TOOL_NAME,
             description: workspaceDescriptionOf(previewEnabled),
             inputSchema: workspaceInputSchemaOf(previewEnabled),
         },

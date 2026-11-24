@@ -71,7 +71,7 @@ export const precheckWidgetHtml = (
             ok: false,
             code: 'html-mode-disabled',
             message:
-                '当前只接受 A2UI 子集（组件 JSON），不接受直接写 HTML；请改用 mode="a2ui" 并通过 get_ui_guide(kind="a2ui") 查看组件规范。',
+                '当前只接受 A2UI 子集（组件 JSON），不接受直接写 HTML；请改用 mode="a2ui" 并先 load_skill([\'widget-a2ui\']) 查看组件规范。',
         };
     }
     const trimmed = html.trim();

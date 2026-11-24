@@ -144,7 +144,7 @@ const CAPABILITIES_SECTION = `# 能力与输出
  */
 export interface CapabilityOptions {
     readonly smsOwner: OwnerIdentity | null;
-    /** search_images + send_image are offered */
+    /** find_image(web) + send_image are offered */
     readonly imageTools: boolean;
     /** fetch_image is offered (the model can see what it reads) */
     readonly imageFetch: boolean;
@@ -152,7 +152,7 @@ export interface CapabilityOptions {
     readonly imageCrop?: boolean;
     /** extract_frames is offered (stills of a video/animation message) */
     readonly imageFrames?: boolean;
-    /** search_by_image is offered */
+    /** find_image(reverse) is offered */
     readonly imageReverseSearch: boolean;
     /** generate_image is offered; the drawing fallback is only named when it exists */
     readonly imageGenerate: boolean;
@@ -160,100 +160,83 @@ export interface CapabilityOptions {
     readonly stickerTools: boolean;
     /** send_file is offered */
     readonly fileTools: boolean;
-    /** the workspace file tools are offered this turn */
+    /** the workspace tool is offered this turn */
     readonly workspace?: boolean;
-    /** workspace_preview is offered (workspace + vision model + render sidecar) */
+    /** workspace(action="preview") is offered (workspace + vision model + render sidecar) */
     readonly workspacePreview?: boolean;
     /** leave_handoff is offered (a hand-off note can be left for the next reply) */
     readonly workspaceHandoff?: boolean;
-    /** search_history / read_history are offered */
+    /** history is offered */
     readonly historyTools: boolean;
-    /** list_harness_issues / create_harness_issue are offered */
+    /** harness_issue is offered */
     readonly harnessIssues: boolean;
-    /** send_widget / get_ui_guide are offered */
+    /** send_widget is offered */
     readonly widget: boolean;
     /** react_to_message is offered (a free per-chat tool, on by default) */
     readonly reactionTools?: boolean;
 }
 
-const searchImageLines = (canDraw: boolean): string[] => [
-    '- `search_images` 可检索网络图片（首次返回 3 张缩略图，可通过 `search=\'q1\'` 翻页或更换 `query`）；' +
-        '`send_image` 可把候选图发到聊天，也能多次调用，或一次传多个同类来源（如 `send_image(search_ids=[\'s1\',\'s2\'])`，一次最多 6 张）：' +
-        '一条回复最多 10 张图片，多张会作为一条相册发出' +
-        (canDraw ? '；`generate_image` 用于生成新图或编辑现有图片，生成结果用 `send_image` 发出。' : '。'),
-];
+const searchImageLine = (canDraw: boolean): string =>
+    '- `find_image`（`mode="web"`）搜网图；`send_image` 是发图唯一出口（每回复 ≤10 张，多张成相册）' +
+    (canDraw ? '；`generate_image` 生图，改上下文图用 `references`。' : '。');
 
-const IMAGE_REVERSE_LINE =
-    '- 可以用 `search_by_image` 以图搜图：将图片上传至 Yandex，返回包含该图的网页、其他尺寸、相似图与识别标签；' +
-    '二次元/插画会补充 SauceNAO 图库（Pixiv、X、Danbooru 等出处，带相似度），引擎可用 engine 指定（动图取首帧，单图上限 8MB）。';
+const GENERATE_ONLY_LINE =
+    '- `generate_image` 生图（改上下文图用 `references`），由 `send_image` 发出（每回复 ≤10 张，多张成相册）。';
 
-const IMAGE_FETCH_LINE =
-    '- 可以用 `fetch_image` 读取上下文中的图片原图、贴纸或已搜到的候选图以查看细节，一次可读多张（同类来源传数组，如 `fetch_image(search_ids=[\'s1\',\'s2\'])`），也可以用 `fetch_image(avatar=…)` 取群聊、用户、频道或自己（`me`）的头像。';
+const IMAGE_REVERSE_LINE = '- `find_image(mode="reverse")` 以图搜图（≤8MB）。';
 
-const IMAGE_CROP_LINE =
-    '- 可以用 `crop_image` 从上下文图片（`#N`/`imgN`/`sN`/`gN`）裁出一块区域得到新图 `imgN`（`region` 3×3 宫格或 `bbox`+`unit`），' +
-    '之后可以再裁、当生图参考图、以图搜图或发送；每条回复最多裁 4 次。';
+const IMAGE_FETCH_LINE = '- `fetch_image` 读原图、贴纸、候选图或 `avatar` 头像。';
 
-const IMAGE_FRAMES_LINE =
-    '- 可以用 `extract_frames` 从视频/GIF/动图/动态贴纸按时刻取静帧（`times`/`count`/`first`/`last`）得到新图 `imgN`，' +
-    '之后可以当生图参考图、以图搜图或发送；每条回复最多取 6 帧。';
+const IMAGE_CROP_LINE = '- `crop_image` 裁图得 `imgN`（每回复 ≤4 次）。';
 
-/** Editing a picture the conversation already shows: reference it, never redraw it from memory */
-const IMAGE_EDIT_LINE =
-    '- 修改或参考上下文已有图片（含消息附件与链接预览图片）时，可通过 `generate_image` 的 `references` 传入原图。';
+const IMAGE_FRAMES_LINE = '- `extract_frames` 从视频/动图抽静帧得 `imgN`（每回复 ≤6 帧）。';
 
 const stickerLine = (canPreview: boolean): string =>
-    '- 可以用 `send_sticker` 发送贴纸包中的贴纸（编号与名称见工具描述）' +
-    (canPreview ? "，或用 `fetch_image(sticker='…')` 预览贴纸画面。" : '。');
+    '- `send_sticker` 发贴纸' +
+    (canPreview ? '（可用 `fetch_image(sticker=…)` 预览）。' : '。');
 
 const fileLine = (workspace: boolean): string =>
-    '- 可以用 `send_file` 把长文本（Markdown、代码、CSV 等）写成文件发到聊天（单份上限 10 MB）' +
-    (workspace ? '；也可以从本会话工作区的文件直接发出（workspace_path）' : '');
+    `- \`send_file\` 发文本文件（≤10 MB${workspace ? '，支持 `workspace_path`' : ''}）。`;
 
-const workspaceLine = (handoff: boolean): string =>
-    '- 可以用 `workspace_write` / `workspace_read` / `workspace_list` / `workspace_find` / `workspace_edit` / `workspace_copy` / `workspace_delete` 在按会话保留的「工作区」里写、读、搜、改、复制、删草稿文件（7 天未使用自动清理）' +
-    '；这些工具都能一次处理多个文件（`workspace_write(files=[…])`、`workspace_read(paths=[…])`、`workspace_edit(edits=[…])`）' +
-    (handoff ? '；工作没做完需要交给下一轮回复时，可以用 `leave_handoff` 写下交接' : '') +
-    '。';
-
-const WORKSPACE_PREVIEW_LINE =
-    '- `workspace_preview` 可以把工作区的 HTML/A2UI 草稿渲染成图查看；一次看多个用 `paths=[…]`（最多 3 个）。';
+const workspaceLine = (preview: boolean, handoff: boolean): string =>
+    `- \`workspace\` 读写改查复制删除搜索${preview ? '与预览' : ''}草稿（7 天清理` +
+    (handoff ? '；`leave_handoff` 交接' : '') +
+    "），规范先 `load_skill(['workspace-usage'])`。";
 
 const historyLine = (canFetchImages: boolean): string =>
-    '- 可以用 `search_history` 检索历史归档（本聊天；机主私聊时为全部归档群）中的消息（关键词 / 时间 / 发言人；含链接预览、Instant View 与图片 OCR 文本；图片 OCR 文字会被标注，不是消息正文），用 `read_history` 读整条原文或某条消息前后的对话' +
-    (canFetchImages ? "；归档消息里的图可以用 `fetch_image(history='hN')` 读取。" : '。');
+    '- `history`（`search`/`read`）检索并读归档原文（OCR 会标出非正文' +
+    (canFetchImages ? "；图片用 `fetch_image(history='hN')`" : '') +
+    '）。';
 
 const widgetLine = (workspace: boolean): string =>
-    '- 可以用 `send_widget` 把一张聊天内 UI 卡片作为这条回复的附件发出（组件 JSON 用 mode="a2ui"，完整 HTML 用 mode="html"）；第一次使用前先调 `get_ui_guide` 取对应模式的完整规范' +
-    (workspace ? '；也可以从工作区取 HTML/A2UI 内容（workspace_path）' : '') +
-    '。';
+    `- \`send_widget\` 发 UI 卡片（${workspace ? '支持 `workspace_path`，' : ''}首次先 \`load_skill(['widget-a2ui'])\` 或 \`widget-html\`）。`;
 
 const HARNESS_ISSUE_LINE =
-    '- 当你准备结束思考时才调用 issue 工具：如果本轮使用 harness 时遇到工具不好用、描述不清、缺能力或格式别扭，先 `list_harness_issues` 查重，再用 `create_harness_issue` 记录；没有就跳过。记录本身不要出现在回复正文里。';
+    '- 结束思考前遇到工具/harness 问题可用 `harness_issue`（`list`/`create`，规范见 `harness-reporting` 技能，勿写进正文）。';
 
-const REACTION_LINE =
-    '- 可以用 `react_to_message` 给本段对话中的消息加一个 emoji reaction：`message` 写该消息的 `#N`，' +
-    '`emoji` 用 Telegram 标准 reaction 表情（如 👍 ❤ 🤣 🤔 🎉）；省略 `emoji` 即取消你自己加的 reaction。' +
-    '一次点多条时用 `messages=[3,4,5]`（同一个 `emoji`），每条不同 emoji 用 `reactions=[{message:3,emoji:"👍"},{message:5,emoji:"🤣"}]`，一次最多 6 条。' +
-    '一条消息同时只有一个 reaction（再设会替换）。reaction 是轻量回应（收到、赞同、🤣），不要用它代替正文回答。';
+const REACTION_LINE = '- `react_to_message` 轻量加/改/删 reaction（≤6 条，不代替正文）。';
 
 export const buildCapabilitiesSection = (options: CapabilityOptions): string => {
     const lines: string[] = [CAPABILITIES_SECTION];
     const owner = options.smsOwner;
     if (owner) {
         const ownerLabel = formatOwnerLabel(owner, { idLabel: 'id', withShortName: false });
-        lines.push(`- 可以用 \`send_sms_to_owner\` 给${ownerLabel}发送短信`);
+        lines.push(`- \`send_sms_to_owner\` 仅紧急时给${ownerLabel}发短信。`);
     }
-    if (options.imageTools) lines.push(...searchImageLines(options.imageGenerate));
+    if (options.imageTools) {
+        lines.push(searchImageLine(options.imageGenerate));
+    } else if (options.imageGenerate) {
+        lines.push(GENERATE_ONLY_LINE);
+    }
     if (options.imageReverseSearch) lines.push(IMAGE_REVERSE_LINE);
     if (options.imageFetch) lines.push(IMAGE_FETCH_LINE);
     if (options.imageCrop === true) lines.push(IMAGE_CROP_LINE);
     if (options.imageFrames === true) lines.push(IMAGE_FRAMES_LINE);
-    if (options.imageGenerate) lines.push(IMAGE_EDIT_LINE);
     if (options.stickerTools) lines.push(stickerLine(options.imageFetch));
     if (options.fileTools) lines.push(fileLine(options.workspace === true));
-    if (options.workspace === true) lines.push(workspaceLine(options.workspaceHandoff === true));
-    if (options.workspacePreview === true) lines.push(WORKSPACE_PREVIEW_LINE);
+    if (options.workspace === true) {
+        lines.push(workspaceLine(options.workspacePreview === true, options.workspaceHandoff === true));
+    }
     if (options.historyTools) lines.push(historyLine(options.imageFetch));
     if (options.harnessIssues) lines.push(HARNESS_ISSUE_LINE);
     if (options.widget) lines.push(widgetLine(options.workspace === true));

@@ -39,6 +39,7 @@ import { TRIAL_COMMAND_REFUSAL_TEXT, refuseTrialQuota } from './commands/trial-r
 import { refuseImageChatModel } from './image-model-refusal.js';
 import { triggerAccessNoteOf } from './trigger-access-note.js';
 import { buildStaticPromptOptions } from './static-prompt-options.js';
+import { countCodePoints } from '../shared/code-points.js';
 import { to } from '../shared/result.js';
 import {
     markRequestStarted,
@@ -434,7 +435,7 @@ const handleChatRetry = async (
     // The context still answers the original message's author; the tier (and
     // therefore the model and tool set) is the one who pressed retry
     const signal = session.streamController.signal;
-    const { tools, availability, workspaceState, toolState } = createReplyTools(
+    const { tools, availability, workspaceState, toolState, availableSkills } = createReplyTools(
         model,
         buildReplyToolContext({
             chat: ctx.chat,
@@ -455,9 +456,9 @@ const handleChatRetry = async (
     // Picture references and context numbers resolve as in the first answer
     chatContext.mediaState = toolState.media;
     chatContext.contextIndex = contextIndex;
-    // Same manifest injection as the first answer: the panel and a retry must
-    // send the same volatile tail.
-    await appendWorkspaceTailForReply({
+    // Same volatile tail as the first answer: the panel and a retry must
+    // send the same skill catalog, manifest and rich-reply notes.
+    const tail = await appendWorkspaceTailForReply({
         messages: chatContents,
         triggerTurnIndex: builtContext.triggerTurnIndex,
         workspaceState,
@@ -468,9 +469,16 @@ const handleChatRetry = async (
         fileTools: availability.file,
         widgetTools: availability.widget,
         richInlineImages: settings.richReplies === true && availability.sendImage,
+        richReplies: settings.richReplies,
+        availableSkills,
     });
 
     const systemPrompt = buildStaticSystemPrompt(model, buildStaticPromptOptions(availability), capabilities);
+    console.log(
+        `[prompt] model=${model} head=${countCodePoints(systemPrompt)} ` +
+            `legend=${builtContext.legendChars} catalog=${tail.catalogChars} ` +
+            `tools=${countCodePoints(JSON.stringify(tools.definitions))}`
+    );
     // The retry sends the chat's current thinking level against the model it reuses
     const thinking = thinkingRequestOf(model, settings.thinkingEffort, traits);
     // A retry starts from nothing, so it keeps its own checkpoints like a first answer

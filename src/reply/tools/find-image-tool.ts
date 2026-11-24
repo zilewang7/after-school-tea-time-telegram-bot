@@ -44,11 +44,14 @@ import {
 } from './reply-media-state.js';
 import type { ReplyToolContext } from './reply-tool-context.js';
 import { formatReverseSearchResult } from './reverse-image-text.js';
+import { FIND_IMAGE_TOOL_NAME } from './tool-names.js';
 import { traceParts, traceQuote } from './tool-trace.js';
 
-export const FIND_IMAGE_TOOL_NAME = 'find_image';
-
 export const MAX_REVERSE_SEARCHES_PER_REPLY = 3;
+export const THUMBNAIL_LIMITS = {
+    maxBytes: 512 * 1024,
+    timeoutMs: 3000,
+} as const;
 const MAX_SIZES_PER_REPLY = 4;
 const MAX_SIMILAR_PER_REPLY = 4;
 

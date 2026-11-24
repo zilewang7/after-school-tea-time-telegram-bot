@@ -33,7 +33,7 @@ export interface StaticPromptOptions {
      * so the prompt stays byte-identical across requests of one conversation.
      */
     readonly sms?: boolean;
-    /** search_images / send_image are offered this turn */
+    /** find_image(web) / send_image are offered this turn */
     readonly imageTools?: boolean;
     /** fetch_image is offered this turn */
     readonly imageFetch?: boolean;
@@ -41,7 +41,7 @@ export interface StaticPromptOptions {
     readonly imageCrop?: boolean;
     /** extract_frames is offered this turn */
     readonly imageFrames?: boolean;
-    /** search_by_image is offered this turn */
+    /** find_image(reverse) is offered this turn */
     readonly imageReverseSearch?: boolean;
     /** generate_image is offered this turn */
     readonly imageGenerate?: boolean;
@@ -49,17 +49,17 @@ export interface StaticPromptOptions {
     readonly stickerTools?: boolean;
     /** send_file is offered this turn */
     readonly fileTools?: boolean;
-    /** the workspace file tools are offered this turn */
+    /** the workspace tool is offered this turn */
     readonly workspace?: boolean;
-    /** workspace_preview is offered this turn */
+    /** workspace(action="preview") is offered this turn */
     readonly workspacePreview?: boolean;
     /** leave_handoff is offered this turn */
     readonly handoff?: boolean;
-    /** search_history / read_history are offered this turn */
+    /** history is offered this turn */
     readonly historyTools?: boolean;
-    /** list_harness_issues / create_harness_issue are offered this turn */
+    /** harness_issue is offered this turn */
     readonly harnessIssues?: boolean;
-    /** send_widget / get_ui_guide are offered this turn */
+    /** send_widget is offered this turn */
     readonly widget?: boolean;
     /** react_to_message is offered this turn */
     readonly reaction?: boolean;

@@ -6,12 +6,12 @@
  * - DISABLED_TOOLS: tool names (MCP tools by their original name) or MCP server
  *   keys switched off, comma-separated
  * - GEMINI_CLIENT_TOOLS=0: Gemini keeps its built-in search tools only
- * - IMAGE_TOOLS=0: no search_images / fetch_image / send_image
+ * - IMAGE_TOOLS=0: no find_image(web) / fetch_image / send_image
  * - IMAGE_SEARCH_URL: the SearXNG base URL (default http://searxng:8080)
  * - IMAGE_SEARCH_ENGINES: comma-separated SearXNG engines; empty = its defaults
  * - IMAGE_SEARCH_SAFESEARCH: 0 / 1 / 2, fixed for the model (default 1)
  * - IMAGE_SEARCH_GROUNDING=0: image generation does not declare imageSearch
- * - IMAGE_REVERSE_SEARCH=0: no search_by_image (Yandex reverse image search)
+ * - IMAGE_REVERSE_SEARCH=0: no find_image(reverse) (Yandex reverse image search)
  * - OWNER_SMS_MCP_URL: the owner SMS endpoint; empty = no SMS tool
  * - OWNER_SMS_ALLOW_TEST=1: the test instance may send SMS too (off by default:
  *   it inherits the production env)
@@ -22,12 +22,12 @@
  *   empty = no sticker tools
  * - STICKER_TOOLS=0: no send_sticker / fetch_image(sticker)
  * - FILE_TOOLS=0: no send_file (the model writing a text file into the chat)
- * - HISTORY_TOOLS=0: no search_history / read_history (luoxu's archive)
+ * - HISTORY_TOOLS=0: no history tool (luoxu's archive)
  * - HISTORY_CHAT_IDS: chats whose history luoxu archives, comma-separated
- * - HARNESS_ISSUES=0: no list_harness_issues / create_harness_issue
- * - WIDGET_ENABLE=1: offer send_widget / get_ui_guide (Phase 0 default off; the
- *   readiness probe and the switch make it safe to turn on when Telegram
- *   opens widgets for group chats and the self-hosted Bot API is 10.4)
+ * - HARNESS_ISSUES=0: no harness_issue tool
+ * - WIDGET_ENABLE=1: offer send_widget (Phase 0 default off; the readiness
+ *   probe and the switch make it safe to turn on when Telegram opens widgets
+ *   for group chats and the self-hosted Bot API is 10.4)
  * - WIDGET_CHAT_IDS: chats offered the widget tools (empty = TOOL_CHAT_IDS)
  * - WIDGET_ALLOW_HTML=1: additionally allow the model to write full widget
  *   HTML; default only the A2UI subset is accepted
@@ -37,11 +37,14 @@
  * - WIDGET_MAX_HTML_BYTES / WIDGET_MAX_GZIP_BYTES: server limits, kept as
  *   configuration so a future Telegram change only touches .env
  * - WIDGET_PROBE_CHAT_ID: chat the owner /widget_probe sends a throwaway widget to
- * - WORKSPACE_ENABLE=1: offer the workspace_* draft tools (default off, the
+ * - WORKSPACE_ENABLE=1: offer the workspace draft tools (default off, the
  *   WIDGET_ENABLE pattern: enable it for the chats in WORKSPACE_CHAT_IDS first)
  * - WORKSPACE_CHAT_IDS: chats offered the workspace tools (empty = TOOL_CHAT_IDS)
  * - WORKSPACE_MAX_FILE_BYTES / WORKSPACE_MAX_CONVERSATION_BYTES /
  *   WORKSPACE_MAX_FILES / WORKSPACE_MAX_GLOBAL_BYTES: workspace quotas
+ * - SKILLS_ENABLE=0: disables load_skill and the skill catalog tail (default on)
+ * - SKILLS_CHAT_IDS: chats allowed skills; empty = all chats allowed by default
+ * - SKILLS_DIR: override repository skills directory (tests)
  */
 import { parseChatIdList } from './chat-id-list.js';
 import type { EnvSource } from './env-source.js';
@@ -58,7 +61,7 @@ export interface ToolConfig {
     readonly toolChatIds: ReadonlySet<number>;
     readonly disabledTools: ReadonlySet<string>;
     readonly geminiClientTools: boolean;
-    /** search_images / send_image / fetch_image are on */
+    /** find_image(web) / send_image / fetch_image are on */
     readonly imageTools: boolean;
     readonly imageSearchUrl: string;
     /** Comma-joined SearXNG engines; empty = the instance's own default */
@@ -66,7 +69,7 @@ export interface ToolConfig {
     readonly imageSearchSafesearch: 0 | 1 | 2;
     /** Image generation declares searchTypes.imageSearch (supported models only) */
     readonly imageSearchGrounding: boolean;
-    /** search_by_image is offered */
+    /** find_image(reverse) is offered */
     readonly imageReverseSearch: boolean;
     /** Empty when not configured */
     readonly ownerSmsUrl: string;
@@ -86,7 +89,7 @@ export interface ToolConfig {
     readonly historyBaseUrl: string;
     readonly ownerSmsAllowTest: boolean;
     readonly owner: OwnerIdentity;
-    /** WIDGET_ENABLE is 1: send_widget / get_ui_guide may be offered */
+    /** WIDGET_ENABLE is 1: send_widget may be offered */
     readonly widgetEnabled: boolean;
     /** Chats offered the widget tools; empty = toolChatIds */
     readonly widgetChatIds: ReadonlySet<number>;
@@ -123,7 +126,33 @@ export interface ToolConfig {
     readonly workspaceMaxFiles: number;
     /** All workspaces together may not exceed this many bytes */
     readonly workspaceMaxGlobalBytes: number;
+    /** SKILLS_ENABLE is not 0: load_skill and the skill catalog tail may be offered */
+    readonly skillsEnabled: boolean;
+    /** Chats allowed skills; null = SKILLS_CHAT_IDS empty (all chats allowed by default) */
+    readonly skillsChatIds: ReadonlySet<number> | null;
+    /** Override skills directory; empty = <cwd>/skills */
+    readonly skillsDir: string;
 }
+
+/** Special DISABLED_TOOLS entry that disables only `workspace(action="preview")` */
+export const WORKSPACE_PREVIEW_DISABLE_KEY = 'workspace_preview';
+
+const LEGACY_DISABLED_TOOL_NAMES: ReadonlySet<string> = new Set([
+    'get_ui_guide',
+    'search_images',
+    'search_by_image',
+    'search_history',
+    'read_history',
+    'list_harness_issues',
+    'create_harness_issue',
+    'workspace_write',
+    'workspace_read',
+    'workspace_list',
+    'workspace_find',
+    'workspace_edit',
+    'workspace_copy',
+    'workspace_delete',
+]);
 
 /** Stands in for OWNER_DISPLAY_NAME when it is not set */
 const DEFAULT_OWNER_NAME = '机主';
@@ -169,9 +198,16 @@ const readOwner = (env: EnvSource): OwnerIdentity => {
 };
 
 /** The settings in `env`; exported for tests, the app goes through getToolConfig */
-export const readToolConfig = (env: EnvSource = process.env): ToolConfig => ({
+export const readToolConfig = (env: EnvSource = process.env): ToolConfig => {
+    const disabledTools = new Set(splitList(env.DISABLED_TOOLS));
+    const legacyDisabled = [...disabledTools].filter((name) => LEGACY_DISABLED_TOOL_NAMES.has(name));
+    if (legacyDisabled.length > 0) {
+        console.warn(`[config] legacy DISABLED_TOOLS name ignored: ${legacyDisabled.join(', ')}`);
+    }
+    const skillsChatList = parseChatIdList(env.SKILLS_CHAT_IDS);
+    return {
     toolChatIds: new Set(parseChatIdList(env.TOOL_CHAT_IDS)),
-    disabledTools: new Set(splitList(env.DISABLED_TOOLS)),
+    disabledTools,
     geminiClientTools: env.GEMINI_CLIENT_TOOLS !== '0',
     imageTools: env.IMAGE_TOOLS !== '0',
     imageSearchUrl: optionalValue(env.IMAGE_SEARCH_URL) ?? DEFAULT_IMAGE_SEARCH_URL,
@@ -215,8 +251,12 @@ export const readToolConfig = (env: EnvSource = process.env): ToolConfig => ({
         env.WORKSPACE_MAX_GLOBAL_BYTES,
         1024 * 1024 * 1024
     ),
+    skillsEnabled: env.SKILLS_ENABLE !== '0',
+    skillsChatIds: skillsChatList.length > 0 ? new Set(skillsChatList) : null,
+    skillsDir: optionalValue(env.SKILLS_DIR) ?? '',
     owner: readOwner(env),
-});
+    };
+};
 
 let cachedToolConfig: ToolConfig | undefined;
 
