@@ -27,6 +27,8 @@ export const TOOL_GROUP_KEYS = [
     'workspace',
     // Free per-chat reaction tool: on everywhere unless the panel turns it off
     'reaction',
+    // On-demand repository skill catalog and load_skill tool
+    'skills',
 ] as const;
 
 export type ToolGroupKey = (typeof TOOL_GROUP_KEYS)[number];
