@@ -123,7 +123,7 @@ export const buildHandoffSection = async (input: HandoffSectionInput): Promise<s
     const note = charsOf(neutralized) > HANDOFF_INJECT_MAX_CHARS ? `${truncatedLine()}\n` : '';
     const start = charsOf(neutralized) > HANDOFF_INJECT_MAX_CHARS ? BODY_START_TRUNCATED : BODY_START;
     // The body budget fits the section cap; the head never eats the body whole.
-    const fixed = charsOf(header) + charsOf(note) + charsOf(start) + charsOf(BODY_END) + 2;
+    const fixed = charsOf(header) + charsOf(note) + charsOf(start) + charsOf(BODY_END) + 3;
     const bodyBudget = Math.max(0, Math.min(HANDOFF_INJECT_MAX_CHARS, HANDOFF_SECTION_MAX_CHARS - fixed));
     const body = cutToChars(neutralized, bodyBudget);
     return `${header}\n${note}${start}\n${body.text}\n${BODY_END}`;

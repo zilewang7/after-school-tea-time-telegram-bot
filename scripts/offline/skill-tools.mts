@@ -9,7 +9,6 @@
  */
 import { mkdtempSync, rmSync } from 'node:fs';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
-import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { expect, reportResults, runCase, type CaseResult } from './harness.mts';
@@ -96,7 +95,11 @@ const clashMcpServer = createServer((request, response: ServerResponse) => {
     });
 });
 await new Promise<void>((ready) => clashMcpServer.listen(0, '127.0.0.1', ready));
-const clashPort = (clashMcpServer.address() as AddressInfo).port;
+const clashAddress = clashMcpServer.address();
+if (clashAddress === null || typeof clashAddress === 'string') {
+    throw new Error('clashMcpServer did not bind to an IP port');
+}
+const clashPort = clashAddress.port;
 process.env.MCP_SERVERS = JSON.stringify({ clash: { serverUrl: `http://127.0.0.1:${clashPort}/mcp` } });
 
 // Initialize the resume bench first (which sets DB_PATH/env, sets up offline DB,

@@ -31,6 +31,7 @@ const dbIndex = await import('../../src/db/index.js');
 const { buildContext, renderA2uiSurfaceNote } = await import('../../src/reply/context-builder.js');
 const { loadWidgetSurfaces } = await import('../../src/db/queries/context-queries.js');
 const { buildStaticSystemPrompt } = await import('../../src/ai/system-prompt/index.js');
+const { FORMAT_LEGEND_ENTRIES } = await import('../../src/ai/system-prompt/format-legend.js');
 
 // ---------------------------------------------------------------------------
 // Fixtures and helpers
@@ -520,17 +521,20 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
         },
     },
     {
-        name: 'the format section documents how a sent card is replayed',
+        name: 'the format legend and legacy format section document how a sent card is replayed',
         body: async () => {
-            const prompt = buildStaticSystemPrompt('gemini-4-argon');
-            expect(prompt.includes('[sent a widget]'), 'the fact line is documented');
-            expect(prompt.includes('[a2ui surface] {…}'), 'the A2UI replay line is documented');
-            expect(prompt.includes('…（已截断）'), 'the truncation mark is documented');
-            expect(
-                prompt.includes('[sent a widget]') &&
-                    prompt.indexOf('[sent a widget]') < prompt.indexOf('[a2ui surface] {…}'),
-                'the two are documented together in wire order'
-            );
+            const legend = FORMAT_LEGEND_ENTRIES.widget;
+            const legacyPrompt = buildStaticSystemPrompt('gemini-4-argon', { formatLegend: false });
+            for (const doc of [legend, legacyPrompt]) {
+                expect(doc.includes('[sent a widget]'), 'the fact line is documented');
+                expect(doc.includes('[a2ui surface] {…}'), 'the A2UI replay line is documented');
+                expect(doc.includes('…（已截断）'), 'the truncation mark is documented');
+                expect(
+                    doc.includes('[sent a widget]') &&
+                        doc.indexOf('[sent a widget]') < doc.indexOf('[a2ui surface] {…}'),
+                    'the two are documented together in wire order'
+                );
+            }
         },
     },
 ];

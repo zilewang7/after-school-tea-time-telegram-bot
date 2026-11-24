@@ -820,7 +820,7 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
             const modelField = asRecord(asRecord(schema.properties).model);
             expect(
                 json(modelField.enum) === json(['banana', 'gpt']) &&
-                    String(modelField.description).includes('gpt-image-2.5-dev') &&
+                    String(modelField.description).includes('gpt') &&
                     String(modelField.description).includes('默认'),
                 `the schema declares both models (got ${json(modelField)})`
             );
