@@ -13,6 +13,14 @@
  * presence with the `in` operator rather than by a cast.
  */
 import type { Chat, ChecklistTask, Giveaway, Message as TgMessage, User } from 'grammy/types';
+import {
+    SENT_ANNOTATION_PREFIX,
+    SERVICE_ANNOTATION_PREFIX,
+    SERVICE_UNSUPPORTED_EVENT_ANNOTATION,
+    UNSUPPORTED_MESSAGE_ANNOTATION,
+    UNSUPPORTED_MESSAGE_PREFIX,
+    type LegendKey,
+} from '../shared/context-markers.js';
 import { formatUserDisplayName } from '../shared/user-display-name.js';
 
 /** Message types that carry user content other than text */
@@ -128,17 +136,28 @@ export const messageKindAnnotationOf = (
     const detail = storedDetail === null ? null : sanitizeMessageDetail(storedDetail);
     if (kind === null) {
         // A token this build does not know: still tell the model something
-        return `[unsupported Telegram message type: ${collapseOneLine(storedKind)}]`;
+        return `${UNSUPPORTED_MESSAGE_PREFIX}${collapseOneLine(storedKind)}]`;
     }
     if (kind === 'unsupported') {
         return detail === null
-            ? '[unsupported Telegram message type — content was not stored]'
-            : `[unsupported Telegram message type: ${detail}]`;
+            ? UNSUPPORTED_MESSAGE_ANNOTATION
+            : `${UNSUPPORTED_MESSAGE_PREFIX}${detail}]`;
     }
     if (kind === 'service') {
-        return detail === null ? '[service: unsupported group event]' : `[service: ${detail}]`;
+        return detail === null ? SERVICE_UNSUPPORTED_EVENT_ANNOTATION : `${SERVICE_ANNOTATION_PREFIX}${detail}]`;
     }
-    return detail === null ? `[sent ${CONTENT_KIND_LABELS[kind]}]` : `[sent ${CONTENT_KIND_LABELS[kind]}: ${detail}]`;
+    return detail === null
+        ? `${SENT_ANNOTATION_PREFIX}${CONTENT_KIND_LABELS[kind]}]`
+        : `${SENT_ANNOTATION_PREFIX}${CONTENT_KIND_LABELS[kind]}: ${detail}]`;
+};
+
+/** Legend key for a stored `messageKind` whenever `messageKindAnnotationOf` emits one */
+export const messageKindLegendKeyOf = (storedKind: string | null): LegendKey | null => {
+    if (storedKind === null) return null;
+    const kind = parseMessageKind(storedKind);
+    if (kind === null || kind === 'unsupported') return 'unsupported';
+    if (kind === 'service') return 'service';
+    return 'message-kind';
 };
 
 /**

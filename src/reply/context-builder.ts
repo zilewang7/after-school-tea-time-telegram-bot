@@ -39,10 +39,22 @@ import { ownShareTokenOfUrl } from '../panel/share/share-urls.js';
 import { readStoredChatCommand } from './commands/chat-command-parser.js';
 import { buildOcrFallbackPart } from '../services/luoxu-ocr-service.js';
 import { applyModelCapabilities } from '../ai/message-transformer.js';
+import { renderFormatLegend } from '../ai/system-prompt/format-legend.js';
 import { buildRuntimeContext, type TriggerAccessNote } from '../ai/system-prompt/runtime-context.js';
+import { isFormatLegendEnabled } from '../config/prompt-disclosure.js';
 import { getRepliesInFlight, isBotReplyInFlight, setContextNumbering } from '../state.js';
 import { getGlobalDefaultModel } from '../services/chat-settings-service.js';
 import { stripPerQueryResultCitations } from '../shared/citation-markers.js';
+import { countCodePoints } from '../shared/code-points.js';
+import {
+    A2UI_SURFACE_PREFIX,
+    FORMAT_LEGEND_ORDER,
+    LINK_PREVIEW_ERROR_NOTICE,
+    LINK_PREVIEW_NONE_NOTICE,
+    UNSUPPORTED_MESSAGE_ANNOTATION,
+    WIDGET_SENT_ANNOTATION,
+    type LegendKey,
+} from '../shared/context-markers.js';
 import { buildInFlightOwnReplyNote, buildInFlightReplyNote, buildInterruptedOwnReplyNote } from './inflight-reply-note.js';
 import { collectContextUsers, type ContextUser } from './context-users.js';
 import { buildRuntimeReactionView, reactionParticipantsOf } from './reaction-context-view.js';
@@ -52,7 +64,7 @@ import { contextImagesOf, type ContextImage } from './context-images.js';
 import { dedupeContextMedia, type MediaDedupeInput } from './media-dedupe.js';
 import type { ContextIndex, ContextIndexEntry } from './context-index.js';
 import type { UnifiedMessage, UnifiedContentPart, ModelCapabilities } from '../ai/types.js';
-import { messageKindAnnotationOf, messageKindMediumLabelOf } from '../db/message-kind.js';
+import { messageKindAnnotationOf, messageKindLegendKeyOf, messageKindMediumLabelOf } from '../db/message-kind.js';
 
 // The side-effect-free half of buildContext, shared with the panel's tree view
 export {
@@ -80,15 +92,6 @@ const A2UI_SURFACE_TRUNCATED_MARK = '…（已截断）';
 
 /** What a reply to an excluded or unknown message reads as */
 const UNSEEN_REPLY_TARGET = '[replying to a message you cannot see]';
-
-/**
- * What a user message with no content and no stored type reads as: a row from
- * before the messageKind column, or a Telegram type this build does not read.
- * Telegram cannot deliver a content-free message, so the fallback cannot hide
- * real text.
- */
-const UNSUPPORTED_MESSAGE_ANNOTATION =
-    '[unsupported Telegram message type — content was not stored]';
 
 const isSticker = (part: UnifiedContentPart): boolean =>
     Boolean(part.mediaKind && STICKER_KINDS.has(part.mediaKind));
@@ -393,7 +396,8 @@ const buildReplyAnnotations = async (
 const headerAnnotationsOf = (
     msg: ContextMessage,
     replyAnnotations: string[],
-    mediaVisible: boolean
+    mediaVisible: boolean,
+    legends?: Set<LegendKey>
 ): string[] => {
     const annotations: string[] = [];
     if (msg.deletedAt) {
@@ -413,6 +417,8 @@ const headerAnnotationsOf = (
     const kindAnnotation = messageKindAnnotationOf(msg.messageKind, msg.messageDetail);
     if (kindAnnotation !== null) {
         annotations.push(kindAnnotation);
+        const legendKey = messageKindLegendKeyOf(msg.messageKind);
+        if (legendKey !== null) legends?.add(legendKey);
     }
     if (msg.mediaHint) {
         // A `/chat r` video is here for its words only; a failure hint already
@@ -439,6 +445,7 @@ const headerAnnotationsOf = (
         bodyTextOf(msg) === ''
     ) {
         annotations.push(UNSUPPORTED_MESSAGE_ANNOTATION);
+        legends?.add('unsupported');
     }
     return annotations;
 };
@@ -453,9 +460,10 @@ const renderMessageHeader = (
     msg: ContextMessage,
     contextNumber: number | undefined,
     replyAnnotations: string[],
-    mediaVisible: boolean
+    mediaVisible: boolean,
+    legends?: Set<LegendKey>
 ): string => {
-    const annotations = headerAnnotationsOf(msg, replyAnnotations, mediaVisible);
+    const annotations = headerAnnotationsOf(msg, replyAnnotations, mediaVisible, legends);
     const numberPrefix = contextNumber === undefined ? '' : `#${contextNumber} `;
     return `${numberPrefix}${msg.userName}${annotations.length ? ' ' + annotations.join(' ') : ''}`;
 };
@@ -573,9 +581,11 @@ interface BuiltTurn {
  */
 const missingAssistantText = (
     msg: ContextMessage,
-    contextNumber: number | undefined
+    contextNumber: number | undefined,
+    legends: Set<LegendKey>
 ): string => {
     if (contextNumber === undefined) return '[system] message lost';
+    legends.add('in-flight');
     return isBotReplyInFlight(msg.chatId, msg.messageId)
         ? buildInFlightOwnReplyNote(contextNumber)
         : buildInterruptedOwnReplyNote(contextNumber);
@@ -624,7 +634,7 @@ export const renderA2uiSurfaceNote = (widget: WidgetSurfaceInfo | undefined): st
         chars.length > A2UI_SURFACE_MAX_CHARS
             ? `${chars.slice(0, A2UI_SURFACE_MAX_CHARS).join('')}${A2UI_SURFACE_TRUNCATED_MARK}`
             : json;
-    return `[a2ui surface] ${body}\n`;
+    return `${A2UI_SURFACE_PREFIX}${body}\n`;
 };
 
 /**
@@ -662,17 +672,20 @@ const buildAssistantTextTurn = (
     // rendered PNG (the row's file, replayed by the attachment turn), the
     // caption (stored as text), this fact line and, for A2UI mode, the source
     // surface it was built from.
-    const widgetNote = msg.mediaHint?.startsWith('a widget') ? '[sent a widget]\n' : '';
+    const widgetNote = msg.mediaHint?.startsWith('a widget') ? `${WIDGET_SENT_ANNOTATION}\n` : '';
     const surfaceNote = widgetNote
         ? renderA2uiSurfaceNote(inputs.widgetSurfaces.get(msg.messageId))
         : '';
+    if (widgetNote) {
+        inputs.legends.add('widget');
+    }
 
     const parts: UnifiedContentPart[] = [];
 
     // An attachment-only reply still needs the label, so the model can refer to it
     const body =
         stripLeakedWireFormat(msg.text ?? '') ||
-        (carriesAttachments || fileNote || widgetNote ? '' : missingAssistantText(msg, contextNumber));
+        (carriesAttachments || fileNote || widgetNote ? '' : missingAssistantText(msg, contextNumber, inputs.legends));
     if (numberLabel || fileNote || widgetNote || body) {
         parts.push({ type: 'text', text: `${numberLabel}${fileNote}${widgetNote}${surfaceNote}${body}` });
     }
@@ -757,6 +770,8 @@ interface TurnInputs {
     chatTitle: string | null;
     /** Panel model view: previews come from caches only, never the network */
     dryRun: boolean;
+    /** Server-generated marker families actually emitted in this context */
+    legends: Set<LegendKey>;
 }
 
 /**
@@ -767,8 +782,8 @@ interface TurnInputs {
  */
 const linkPreviewStatusNoticeOf = (reason: LinkPreviewUnavailableReason): string | null =>
     match(reason)
-        .with('none', () => '[system] 链接预览：Telegram 没有为该链接生成网页预览。')
-        .with('error', () => '[system] 链接预览抓取失败（可重试或换用网页读取工具）。')
+        .with('none', () => LINK_PREVIEW_NONE_NOTICE)
+        .with('error', () => LINK_PREVIEW_ERROR_NOTICE)
         .with('unknown', 'disabled', () => null)
         .exhaustive();
 
@@ -799,7 +814,8 @@ const buildUserMessage = async (
         msg,
         index.numberOf.get(msg.messageId),
         replyAnnotations,
-        mediaVisible
+        mediaVisible,
+        inputs.legends
     );
 
     // Every part that carries bytes the model looks at (the message's own
@@ -898,12 +914,14 @@ const buildUserMessage = async (
         const notice = firstShareExpanded ? null : linkPreviewStatusNoticeOf(previewOutcome.reason);
         if (notice !== null) {
             parts.push({ type: 'text', text: notice });
+            inputs.legends.add('link-preview-status');
         }
     }
 
     // The expanded share content follows the preview card of the same message
     if (shareExpansion !== undefined && shareExpansion.text !== null) {
         parts.push({ type: 'text', text: shareExpansion.text });
+        inputs.legends.add('share-link');
     }
 
     // t.me message links: the linked message (+ the one it replies to) and its
@@ -914,6 +932,9 @@ const buildUserMessage = async (
         index.numberOf,
         { chatTitle }
     );
+    if (messageLinkParts.length > 0) {
+        inputs.legends.add('tg-message-link');
+    }
     parts.push(...messageLinkParts);
 
     // Viewer danmaku for a bilibili video shared through @bilifeedbot.
@@ -934,6 +955,7 @@ const buildUserMessage = async (
     // Another session is generating the reply this message asks for
     if (answeredElsewhereNumber !== undefined) {
         parts.push({ type: 'text', text: buildInFlightReplyNote(answeredElsewhereNumber) });
+        inputs.legends.add('in-flight');
     }
 
     return {
@@ -1035,6 +1057,11 @@ export interface BuiltContext {
      * first: the workspace tools address one of these.
      */
     conversationRootIds: number[];
+    /**
+     * Character count (code points) of the conditional format legend block
+     * injected into the runtime block; 0 when no legend was triggered or off.
+     */
+    legendChars: number;
 }
 
 /** The numbering as tools see it: keyed by `#N`, with each message's pictures */
@@ -1187,6 +1214,7 @@ export const buildContext = async (
     // Undefined when SHARE_CONTEXT_EXPAND=0 (or the feature is off): no
     // expansion and no preview suppression at all.
     const shareExpansion = shareContextExpansionEnabled() ? createShareContextBudget() : undefined;
+    const legends = new Set<LegendKey>();
     for (const contextMsg of contextMessages) {
         // Loaded once: the turn is built from these parts, and the tool index
         // keeps the pictures among them before any capability filtering
@@ -1207,6 +1235,7 @@ export const buildContext = async (
             widgetSurfaces,
             chatTitle: opts.chatTitle ?? null,
             dryRun,
+            legends,
         });
         // One message can build two turns (a bot reply's text, then its
         // attachments in a user-role carrier); both belong to the same message
@@ -1223,6 +1252,7 @@ export const buildContext = async (
         contextNumbers: index.numberOf,
     });
     if (deduped.removed > 0) {
+        legends.add('media-dedupe');
         console.log(`[context-builder] ${deduped.removed} duplicate media part(s) replaced by a note`);
     }
 
@@ -1246,6 +1276,11 @@ export const buildContext = async (
     // keeping it last leaves the cacheable prefix byte-identical. The next
     // request in this tree diverges at this very message and no earlier.
     const chatAddendum = opts.chatAddendum ?? null;
+    const legendKeys = isFormatLegendEnabled()
+        ? FORMAT_LEGEND_ORDER.filter((key) => legends.has(key))
+        : [];
+    const renderedLegend = legendKeys.length > 0 ? renderFormatLegend(legendKeys) : null;
+    const legendChars = renderedLegend === null ? 0 : countCodePoints(renderedLegend);
     const runtimeBlock: UnifiedContentPart = {
         type: 'text',
         text: buildRuntimeContext(
@@ -1254,7 +1289,8 @@ export const buildContext = async (
             opts.chatTitle ?? null,
             chatAddendum,
             opts.triggerAccess ?? null,
-            runtimeReactions
+            runtimeReactions,
+            legendKeys
         ),
     };
     const newestIndex = Math.max(0, turnMessageIds.indexOf(messageId));
@@ -1275,6 +1311,7 @@ export const buildContext = async (
         contextIndex: buildToolContextIndex(index, imagesByMessageId),
         triggerTurnIndex: findTriggerTurnIndex(finalMessages, runtimeBlock.text ?? ''),
         conversationRootIds: assembled.conversationRootIds,
+        legendChars,
     };
 };
 

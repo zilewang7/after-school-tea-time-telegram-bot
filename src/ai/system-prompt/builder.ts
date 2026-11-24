@@ -8,9 +8,10 @@
  * newest message instead. One changing line in here would invalidate the whole
  * cached prefix for every reply.
  */
+import { isFormatLegendEnabled } from '../../config/prompt-disclosure.js';
+import { getToolConfig } from '../../config/tool-config.js';
 import { getModelCapabilities } from '../platform-factory.js';
 import type { ModelCapabilities } from '../types.js';
-import { getToolConfig } from '../../config/tool-config.js';
 import { getPreferencePrompt } from './preference.js';
 import {
     buildCapabilitiesSection,
@@ -62,6 +63,11 @@ export interface StaticPromptOptions {
     readonly widget?: boolean;
     /** react_to_message is offered this turn */
     readonly reaction?: boolean;
+    /**
+     * Use the slim static format section and defer low-frequency legends to
+     * runtime-context.ts; defaults to `isFormatLegendEnabled()`.
+     */
+    readonly formatLegend?: boolean;
 }
 
 export const buildStaticSystemPrompt = (
@@ -70,12 +76,16 @@ export const buildStaticSystemPrompt = (
     resolvedCapabilities?: ModelCapabilities
 ): string => {
     const capabilities = resolvedCapabilities ?? getModelCapabilities(model);
+    const formatLegend = options.formatLegend ?? isFormatLegendEnabled();
 
     return [
         getPreferencePrompt(),
         ROSTER_SECTION,
         options.trial === true ? TRIAL_SECTION : '',
-        buildFormatSection({ includeOcrNote: !capabilities.supportsImageInput }),
+        buildFormatSection({
+            includeOcrNote: !capabilities.supportsImageInput,
+            formatLegend,
+        }),
         buildCapabilitiesSection({
             smsOwner: options.sms === true ? getToolConfig().owner : null,
             imageTools: options.imageTools === true,

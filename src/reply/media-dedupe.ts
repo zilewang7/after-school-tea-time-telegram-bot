@@ -18,6 +18,12 @@
  */
 import { createHash } from 'node:crypto';
 import type { UnifiedContentPart, UnifiedMessage } from '../ai/types.js';
+import {
+    MEDIA_DEDUPE_EARLIER,
+    MEDIA_DEDUPE_PREFIX,
+    MEDIA_DEDUPE_SELF,
+    MEDIA_DEDUPE_SUFFIX,
+} from '../shared/context-markers.js';
 import type { ContextImage } from './context-images.js';
 
 export interface MediaDedupeCapabilities {
@@ -76,12 +82,12 @@ const noteFor = (
     contextNumbers: ReadonlyMap<number, number>
 ): string => {
     if (keptMessageId === currentMessageId) {
-        return '[system] the same media as an earlier part of this message — not attached again';
+        return MEDIA_DEDUPE_SELF;
     }
     const number = contextNumbers.get(keptMessageId);
     return number === undefined
-        ? '[system] the same media as an earlier message — not attached again'
-        : `[system] the same media as #${number} — not attached again`;
+        ? MEDIA_DEDUPE_EARLIER
+        : `${MEDIA_DEDUPE_PREFIX}#${number}${MEDIA_DEDUPE_SUFFIX}`;
 };
 
 interface KeptCopy {

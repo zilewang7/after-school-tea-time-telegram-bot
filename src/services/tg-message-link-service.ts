@@ -28,6 +28,10 @@ import {
 } from '../reply/commands/telegram-message-link.js';
 import type { ContextMessage } from '../db/queries/context-queries.js';
 import type { UnifiedContentPart } from '../ai/types.js';
+import {
+    TG_MESSAGE_LINK_PREVIEW_PREFIX,
+    TG_MESSAGE_LINK_STATUS_PREFIX,
+} from '../shared/context-markers.js';
 
 const luoxuBaseUrl = process.env.LUOXU_PREVIEW_URL;
 
@@ -781,8 +785,8 @@ const buildReadyText = (
     mediaIncluded: boolean
 ): string => {
     const titleLine = snapshot.chatTitle
-        ? `[system] 消息链接预览：${url}（来自「${snapshot.chatTitle}」）`
-        : `[system] 消息链接预览：${url}`;
+        ? `${TG_MESSAGE_LINK_PREVIEW_PREFIX}${url}（来自「${snapshot.chatTitle}」）`
+        : `${TG_MESSAGE_LINK_PREVIEW_PREFIX}${url}`;
     const lines = [
         titleLine,
         `--- 被链接的消息 · ${snapshot.senderName} · ${formatMessageDate(snapshot.messageDate)} ---`,
@@ -809,7 +813,7 @@ const buildReadyText = (
 
 const buildInContextNote = (url: string, contextNumber: number): UnifiedContentPart => ({
     type: 'text',
-    text: `[system] 消息链接：${url} → 该消息已在本次上下文中，见 #${contextNumber}。`,
+    text: `${TG_MESSAGE_LINK_STATUS_PREFIX}${url} → 该消息已在本次上下文中，见 #${contextNumber}。`,
 });
 
 const describeUnavailable = (reason: string | null): string => {
@@ -826,7 +830,7 @@ const renderCachedRow = async (
     if (row.status !== 'ready' || row.chatId === null || row.messageId === null) {
         return [{
             type: 'text',
-            text: `[system] 消息链接：${url}（读不到：${describeUnavailable(row.unavailableReason)}）`,
+            text: `${TG_MESSAGE_LINK_STATUS_PREFIX}${url}（读不到：${describeUnavailable(row.unavailableReason)}）`,
         }];
     }
 
@@ -927,8 +931,8 @@ const buildDuplicateSnapshotNote = (
     return {
         type: 'text',
         text: number === undefined
-            ? `[system] 消息链接：${url} → 同一链接的快照已在本上下文中注入，不重复。`
-            : `[system] 消息链接：${url} → 同一链接的快照已在 #${number} 注入，不重复。`,
+            ? `${TG_MESSAGE_LINK_STATUS_PREFIX}${url} → 同一链接的快照已在本上下文中注入，不重复。`
+            : `${TG_MESSAGE_LINK_STATUS_PREFIX}${url} → 同一链接的快照已在 #${number} 注入，不重复。`,
     };
 };
 

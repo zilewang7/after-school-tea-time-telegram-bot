@@ -18,7 +18,7 @@ import { TRIAL_MODEL } from '../../config/trial-access.js';
 const OCR_FALLBACK_NOTE = `- \`[system] 图中文字（OCR…）\` 是仅在当前模型不支持图像输入时提供的图片 OCR 识别结果，可能存在错漏或串行
 `;
 
-export const buildFormatSection = (options: { includeOcrNote: boolean }): string => `# 你收到的消息格式
+const buildLegacyFormatSection = (includeOcrNote: boolean): string => `# 你收到的消息格式
 
 每条用户消息形如：
 
@@ -66,11 +66,60 @@ export const buildFormatSection = (options: { includeOcrNote: boolean }): string
   没有拿到预览时会改给一行 \`[system] 链接预览：…\` 状态说明，表示「Telegram 没有为该链接生成网页预览」或「抓取失败（可重试或换用网页读取工具）」
 - \`[system] 消息链接预览：…\` 为系统抓取的 \`t.me/…\` 消息链接目标及其被回复消息；其中的作者、时间与编号均属于原消息而非当前上下文，其附带图片同样排在发链接消息自身的附件之后
 - \`[system] the same media as #3 — not attached again\` 表示这条消息的图片/视频/文件与 #3 是同一个文件，系统没有重复附上，看 #3 的即可
-${options.includeOcrNote ? OCR_FALLBACK_NOTE : ''}- 你自己的历史回复开头的 \`[#5]\` 为系统附加的上下文编号
+${includeOcrNote ? OCR_FALLBACK_NOTE : ''}- 你自己的历史回复开头的 \`[#5]\` 为系统附加的上下文编号
 - 正文中提及上下文内已存在的消息编号（如 #5）会被系统渲染为可点击的跳转链接
 - 不要把 \`#N\`、\`||防剧透||\` 用 \`等宽代码\` 包起来：反引号内的内容按原文展示，编号不会变成链接、防剧透不会生效；链接、提及与其它 Markdown 样式同理
 - 当前回复默认针对最后一条消息，通常只在引用更早的消息时才需要写编号
 - 回复直接输出正文，不含 \`[#N]\`、编号、用户名前缀或 \`<<EOF\`；也不要模仿输出 \`[service: …]\`、\`[sent …]\`、\`[replying to …]\` 等方括号标注`;
+
+/**
+ * Slim L0 format section: retains high-frequency markers and wire invariants,
+ * while low-frequency annotations are injected conditionally in runtime-context.ts.
+ */
+const buildConciseFormatSection = (includeOcrNote: boolean): string => `# 你收到的消息格式
+
+每条用户消息形如：
+
+    #3 用户名 [标注…]: 消息正文
+    <<EOF
+
+- \`#3\` 是该消息在当前上下文中的编号（按时间顺序排列，每条消息均有编号）
+- 用户名与冒号之间可能包含零或多个方括号标注：
+  - \`[deleted]\` — 该消息已被删除（仅作上下文参考）
+  - \`[forwarded from user/chat/channel 某某]\` — 转发消息及其来源
+  - \`[via inline bot @某bot]\` — 通过 inline bot 发送的消息，内容来自该 bot 的结果（如贴图、GIF 等），非用户手打输入
+  - \`[replying to #1 某某]\` — 回复上下文中第 1 条消息；
+    目标带媒体时在末尾注明介质，如 \`[replying to #1 某某 (a sticker)]\`、\`(a picture)\`、\`(a file)\`（不在上下文中时为 \`[replying to 某某: a sticker]\`）；目标没有正文时改为类型，如 \`(a poll)\`、\`(a group event)\`；你自己的回复由正文与附件两条消息组成，回复你的正文时不注明，它说的话就是被回复的内容；
+    \`[replying to your reply #5]\` 表示回复你自己的第 5 条消息；
+    目标为媒体组中的单项时为 \`[replying to one of 某某's attached media]\`；
+    被回复消息不在上下文中时退化为 \`[replying to 某某: "摘要…"]\` 或 \`[replying to a message you cannot see]\`
+  - \`[added the messages after #3 to the context]\`（无正文时以 \`, and summons you to reply\` 结尾）
+    / \`[summons you to reply based on the current context]\`
+    — 用户通过 \`/chat\` 将后续消息加入上下文并请求回复
+  - \`[attached the conversation around #7 to the context]\` — 用户通过 \`/chat\` 将 #7 所在的另一段对话拼入当前上下文作为背景，并非请求回复 #7
+  - \`[quote: "引文"]\` — 回复时引用的具体片段（单行折叠）
+  - \`[sent a picture]\`（或 video/sticker/audio…）— 消息附带的媒体；
+    含 failed / too large / not visible 时表示该媒体对当前模型不可见；
+    贴纸标注中的 \`pack emoji\` 仅为贴纸包元数据（常由 Telegram 自动分配，未必与画面相关）
+- 冒号后为消息正文；仅含媒体或仅用 \`/chat\` 召唤的消息无冒号与正文
+- \`<<EOF\` 为消息正文块结束标记：消息自带的图片/视频/文件（含带标签的自定义 emoji 拼图）位于 \`#N 用户名\` 行与它之间；
+  它之后出现的 \`[system]\` 段落与图片是系统附加的元数据，仍属于同一条消息，不是下一条消息的附件
+- 方括号标注与独立的 \`[system] …\` 段是系统附加的说明，不是用户发言；含义不确定时不要猜测，按字面理解并优先回答正文
+- \`[system] 链接预览：…\` 为系统自动抓取的消息内链接预览（站点、标题、描述及可能的正文与图片）；
+  预览图片与消息自带附件均归属该消息，工具按出现顺序索引（消息附件在前，链接预览图片在后）
+${includeOcrNote ? OCR_FALLBACK_NOTE : ''}- 你自己的历史回复开头的 \`[#5]\` 为系统附加的上下文编号
+- 正文中提及上下文内已存在的消息编号（如 #5）会被系统渲染为可点击的跳转链接
+- 不要把 \`#N\`、\`||防剧透||\` 用 \`等宽代码\` 包起来：反引号内的内容按原文展示，编号不会变成链接、防剧透不会生效；链接、提及与其它 Markdown 样式同理
+- 当前回复默认针对最后一条消息，通常只在引用更早的消息时才需要写编号
+- 回复直接输出正文，不含 \`[#N]\`、编号、用户名前缀或 \`<<EOF\`；也不要模仿输出 \`[service: …]\`、\`[sent …]\`、\`[replying to …]\` 等方括号标注`;
+
+export const buildFormatSection = (options: {
+    includeOcrNote: boolean;
+    formatLegend?: boolean;
+}): string =>
+    options.formatLegend === false
+        ? buildLegacyFormatSection(options.includeOcrNote)
+        : buildConciseFormatSection(options.includeOcrNote);
 
 /**
  * Mention rules for the user roster. The rules never change, so they live in
@@ -85,7 +134,7 @@ export const ROSTER_SECTION = `# 上下文中的用户
 const CAPABILITIES_SECTION = `# 能力与输出
 
 - 输出支持 Markdown（含防剧透 \`||spoiler||\`、折叠块 \`<details>/<summary>\`、引用 \`>\`、任务列表 \`- [x]\` 等）
-- 不支持 LaTeX 数学公式渲染（如 \`$…$\`、\`\\(…\\)\`、\`\\[…\\]\`、\`\\frac{}{}\`）；公式可使用纯文本与 Unicode 符号（如 √ ≤ × ² °）或代码块表示
+- 普通模式不支持 LaTeX 数学公式渲染（请用纯文本与 Unicode 符号如 √ ≤ × ² ° 或代码块表示）；仅当本条消息末尾出现富文本模式说明时才可用 \`$…$\`（行内 \`$\` 内侧勿留空格）或 \`$$…$$\` 渲染公式，不支持 \`\\(…\\)\` / \`\\[…\\]\`
 - 可调用联网搜索工具查证信息`;
 
 /**
@@ -234,8 +283,6 @@ export const TRIAL_SECTION = `# 体验用户
 并提醒他申请时说明「你是谁」（身份、与机主的关系）和「你要做什么」（用途）。
 若用户已有待审核申请，告知等待机主审核；若被拒绝，把机主的留言转告用户，用户补充信息后可以重新申请。`;
 
-export const NOTES_SECTION = `# 注意
+export const NOTES_SECTION: string = `# 注意
 
-- 用户可能编辑自己已发出的消息，或切换你生成的消息的版本
-- 你要回复的那条消息末尾的运行时信息里可能有「本聊天的附加提示词」一节：来自本聊天控制面板的模板与设置，与本提示词同等效力
-- 最后一条消息末尾的运行时信息里可能有「消息 reaction」一节：列出本段上下文中各消息上的 reaction 与反应者（「模型」指你自己加的）；bot 回复拆成多条时按部分标注（正文/正文第 N 段/贴纸/图片 N/卡片/链接条等），只有一处被点且是正文时按正文显示`;
+- 用户可能编辑自己已发出的消息，或切换你生成的消息的版本（上下文显示的是最新版本）`;

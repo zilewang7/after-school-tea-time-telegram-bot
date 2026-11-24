@@ -9,8 +9,10 @@
  * changes between requests in here, never in builder.ts.
  */
 import { countCodePoints } from '../../shared/code-points.js';
+import type { LegendKey } from '../../shared/context-markers.js';
 import { formatUserDisplayName } from '../../shared/user-display-name.js';
 import type { ContextUser } from '../types.js';
+import { renderFormatLegend } from './format-legend.js';
 
 const formatCurrentTime = (): string => {
     const timeZone = process.env.TZ || 'Asia/Shanghai';
@@ -86,6 +88,8 @@ const REACTION_MAX_PART_LINES = 16;
 /** Cap of the whole section in code points, heading included */
 const REACTION_SECTION_MAX_CHARS = 800;
 const REACTION_SECTION_TITLE = '# 消息 reaction';
+const REACTION_SECTION_NOTE =
+    '以下列出本段上下文中各消息上的 reaction 与反应者（「模型」指你自己加的）；bot 回复拆成多条时按部分标注（正文/正文第 N 段/贴纸/图片 N/卡片/链接条等），只有一处被点且是正文时按正文显示。';
 
 const reactionEntryText = (entry: RuntimeReactionEntry): string => {
     if (entry.actors.length === 0) return entry.emoji;
@@ -106,6 +110,7 @@ const reactionGroupLines = (group: RuntimeReactionGroup): string[] =>
 /** The section as it reads with `lines` kept and `dropped` older messages left out */
 const reactionSectionOf = (lines: readonly string[], dropped: number): string[] => [
     REACTION_SECTION_TITLE,
+    REACTION_SECTION_NOTE,
     ...lines,
     ...(dropped > 0 ? [`- 还有 ${dropped} 条消息的 reaction 未显示`] : []),
 ];
@@ -200,9 +205,11 @@ const triggerAccessLine = (trigger: TriggerAccessNote): string => {
  * `chatTitle` names the group/channel this reply happens in; private chats have
  * none and are reported as such. `chatAddendum` is appended verbatim as its
  * own section; empty or blank leaves the block exactly as without it.
- * `triggerAccess` is present on trial turns only. `reactions` adds the message
- * reaction section before the addendum; it is a trailing optional argument, and
- * absent/empty leaves the block byte-identical to what it was before reactions.
+ * `triggerAccess` is present on trial turns only. `legends` adds conditional
+ * format explanations for markers emitted in this context (before reactions and
+ * addendum). `reactions` adds the message reaction section before the addendum;
+ * absent/empty `legends` and `reactions` leave the block byte-identical to
+ * before.
  */
 export const buildRuntimeContext = (
     model: string,
@@ -210,7 +217,8 @@ export const buildRuntimeContext = (
     chatTitle?: string | null,
     chatAddendum?: string | null,
     triggerAccess?: TriggerAccessNote | null,
-    reactions?: readonly RuntimeReactionGroup[] | null
+    reactions?: readonly RuntimeReactionGroup[] | null,
+    legends?: readonly LegendKey[] | null
 ): string => {
     const lines = [
         '[system] 运行时信息：',
@@ -227,6 +235,11 @@ export const buildRuntimeContext = (
 
     if (triggerAccess !== null && triggerAccess !== undefined) {
         lines.push(triggerAccessLine(triggerAccess));
+    }
+
+    const legendBlock = legends && legends.length > 0 ? renderFormatLegend(legends) : null;
+    if (legendBlock !== null) {
+        lines.push('', legendBlock);
     }
 
     // The addendum keeps its place at the very end of the block

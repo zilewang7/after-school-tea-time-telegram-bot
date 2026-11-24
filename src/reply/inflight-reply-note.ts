@@ -1,3 +1,10 @@
+import {
+    INFLIGHT_OTHER_REPLY_PREFIX,
+    INFLIGHT_OWN_INTERRUPTED_PHRASE,
+    INFLIGHT_OWN_REPLY_PREFIX,
+    INFLIGHT_OWN_STREAMING_PHRASE,
+} from '../shared/context-markers.js';
+
 /**
  * Note attached to a message that another session is already answering.
  *
@@ -8,7 +15,7 @@
  * so the second reply does not answer A again.
  */
 export const buildInFlightReplyNote = (contextNumber: number): string =>
-    `[system] another session is already replying to #${contextNumber}.`;
+    `${INFLIGHT_OTHER_REPLY_PREFIX}${contextNumber}.`;
 
 /**
  * Note on the bot's own turn while that reply is still being written.
@@ -21,7 +28,7 @@ export const buildInFlightReplyNote = (contextNumber: number): string =>
  * corrupted. Say what is actually happening instead.
  */
 export const buildInFlightOwnReplyNote = (contextNumber: number): string =>
-    `[system] your reply #${contextNumber} is still being generated in another session; its text is not stored yet.`;
+    `${INFLIGHT_OWN_REPLY_PREFIX}${contextNumber} ${INFLIGHT_OWN_STREAMING_PHRASE}`;
 
 /**
  * Note on a bot turn that ended without storing any text.
@@ -33,4 +40,4 @@ export const buildInFlightOwnReplyNote = (contextNumber: number): string =>
  * happened, and that a retry exists.
  */
 export const buildInterruptedOwnReplyNote = (contextNumber: number): string =>
-    `[system] your reply #${contextNumber} ended without producing any text (interrupted or empty); nothing of it was stored, and the user can retry it.`;
+    `${INFLIGHT_OWN_REPLY_PREFIX}${contextNumber} ${INFLIGHT_OWN_INTERRUPTED_PHRASE}`;
