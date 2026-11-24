@@ -220,7 +220,8 @@ const cases: { name: string; body: () => Promise<void> }[] = [
                 turn.parts.some((part: any) => part.text.startsWith('[system] 运行时信息'))
             );
             expect(runtimeTurns.length === 1 && runtimeTurns[0].role === 'user', 'the runtime block rides exactly one user turn');
-            expect(runtimeTurns[0].parts.at(-1).text.includes(`# 本聊天的附加提示词\n以下内容来自本聊天控制面板的模板与附加提示词（模板由面板用户维护，会话启用或按模型自动加载），效力等同系统提示词，回复时须遵循：\n${ADDENDUM}`), 'the chat addendum closes the runtime block');
+            const runtimePart = runtimeTurns[0].parts.find((part: any) => part.text.startsWith('[system] 运行时信息'));
+            expect(runtimePart?.text.trimEnd().endsWith(`# 本聊天的附加提示词\n以下内容来自本聊天控制面板的模板与附加提示词（模板由面板用户维护，会话启用或按模型自动加载），效力等同系统提示词，回复时须遵循：\n${ADDENDUM}`), 'the chat addendum closes the runtime block');
             expect(Array.isArray(view.addendumTemplates) && view.addendumCustom === true, 'the view states the templates and the custom addendum');
             expect(view.model === 'gemini-4-argon' && view.asModel === false, 'the chat model');
             expect(typeof view.computedAt === 'string', 'the recomputation time is stated');

@@ -565,13 +565,13 @@ results.push(
     await runCase('the static head and the free-round notice name the tool when it is offered', async () => {
         const plain = buildStaticSystemPrompt('gemini-4-argon');
         expect(!plain.includes('react_to_message'), 'not offered: the capability section does not name it');
-        expect(plain.includes('「消息 reaction」'), 'the notes always mention the runtime section that may appear');
+        expect(!plain.includes('「消息 reaction」'), 'the static notes do not duplicate the runtime reaction note');
 
         const withTool = buildStaticSystemPrompt('gemini-4-argon', { reaction: true });
         const addedLines = withTool.split('\n').filter((line) => !plain.split('\n').includes(line));
         expect(addedLines.length === 1, `exactly one line is added (got ${json(addedLines)})`);
         expect(
-            addedLines[0]?.startsWith('- 可以用 `react_to_message` 给本段对话中的消息加一个 emoji reaction'),
+            addedLines[0]?.startsWith('- `react_to_message` 轻量加/改/删 reaction'),
             'the capability line opens with its purpose'
         );
         const trialHead = buildStaticSystemPrompt(TRIAL_MODEL, { trial: true });
@@ -1280,8 +1280,9 @@ results.push(
             'each reaction names its message by number'
         );
         expect(
-            json(asArray(asRecord(reactionProperties.emoji).enum)) === json([...REACTION_EMOJIS]),
-            'each reaction takes a standard emoji'
+            asRecord(reactionProperties.emoji).type === 'string' &&
+                asRecord(reactionProperties.emoji).enum === undefined,
+            'each reaction takes an emoji string without duplicating the 73-emoji enum'
         );
         expect(json(reactionItem.required) === json(['message']), 'each reaction needs its message');
         expect(
@@ -1291,19 +1292,17 @@ results.push(
 
         const description = tool.definition.description;
         expect(
-            description.includes('messages=[3,4,5]') && description.includes("reactions=[{message:3,emoji:'👍'}"),
-            `the description shows both batch examples (got ${description})`
+            description.includes('messages') && description.includes('reactions') && description.includes('≤6'),
+            `the description names both batch forms (got ${description})`
         );
 
         const prompt = buildStaticSystemPrompt('gemini-4-argon', { reaction: true });
         const reactionLine = prompt
             .split('\n')
-            .find((line) => line.startsWith('- 可以用 `react_to_message`'));
+            .find((line) => line.startsWith('- `react_to_message`'));
         expect(
-            reactionLine !== undefined &&
-                reactionLine.includes('messages') &&
-                reactionLine.includes('reactions'),
-            `the static prompt names both forms (got ${json(reactionLine)})`
+            reactionLine !== undefined && reactionLine.includes('≤6 条'),
+            `the static prompt names the reaction tool and its cap (got ${json(reactionLine)})`
         );
     })
 );

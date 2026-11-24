@@ -84,7 +84,7 @@ const toolOf = (
 const runTool = (tool: ToolHandler, args: Record<string, unknown>): Promise<ToolResult> =>
     tool.execute(args, new AbortController().signal);
 
-/** A candidate as search_images would have registered it */
+/** A candidate as find_image(web) would have registered it */
 const candidateOf = (id: string, overrides: Partial<SearchCandidate> = {}): SearchCandidate => ({
     id,
     searchId: 'q1',
@@ -402,8 +402,8 @@ results.push(
         expect(propertyFieldOf(tool, 'messages', 'minItems') === 1, 'messages needs at least one item');
         expect(propertyFieldOf(tool, 'messages', 'maxItems') === 6, 'messages is capped at six');
         expect(
-            tool.definition.description.includes("search_ids=['s1','s2']") &&
-                tool.definition.description.includes('一次最多 6 张'),
+            tool.definition.description.includes('批量用同类复数数组') &&
+                tool.definition.description.includes('≤6 张'),
             `the description teaches the batch form (got ${json(tool.definition.description)})`
         );
     })

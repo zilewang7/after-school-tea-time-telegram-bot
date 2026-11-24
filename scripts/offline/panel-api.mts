@@ -502,7 +502,7 @@ const cases: { name: string; body: () => Promise<void> }[] = [
             );
             expect(body.globalDefaultModel === 'env-default-model', 'global default from the env');
             expect(body.summary === null, 'summary is null until reply_metrics exists');
-            expect(Array.isArray(body.tools) && body.tools.length === 12, `12 tool groups (got ${body.tools?.length})`);
+            expect(Array.isArray(body.tools) && body.tools.length === 13, `13 tool groups (got ${body.tools?.length})`);
             expect(
                 body.tools.every(
                     (tool: any) =>
@@ -519,8 +519,17 @@ const cases: { name: string; body: () => Promise<void> }[] = [
             );
             expect(
                 JSON.stringify(body.tools.map((tool: any) => tool.key)) ===
-                    JSON.stringify(['sms', 'image', 'imageSearch', 'imageFetch', 'imageReverseSearch', 'sticker', 'file', 'history', 'harnessIssues', 'widget', 'workspace', 'reaction']),
+                    JSON.stringify(['sms', 'image', 'imageSearch', 'imageFetch', 'imageReverseSearch', 'sticker', 'file', 'history', 'harnessIssues', 'widget', 'workspace', 'reaction', 'skills']),
                 'groups come in the fixed order'
+            );
+            const skillsGroup = body.tools.find((tool: any) => tool.key === 'skills');
+            const imageSearchGroup = body.tools.find((tool: any) => tool.key === 'imageSearch');
+            const imageReverseGroup = body.tools.find((tool: any) => tool.key === 'imageReverseSearch');
+            expect(
+                JSON.stringify(skillsGroup?.tools) === JSON.stringify(['load_skill']) &&
+                    JSON.stringify(imageSearchGroup?.tools) === JSON.stringify(['find_image(web)', 'send_image']) &&
+                    JSON.stringify(imageReverseGroup?.tools) === JSON.stringify(['find_image(reverse)']),
+                `merged and skills group tools match the 16-tool matrix (got skills=${JSON.stringify(skillsGroup?.tools)}, imageSearch=${JSON.stringify(imageSearchGroup?.tools)}, imageReverse=${JSON.stringify(imageReverseGroup?.tools)})`
             );
             expect(
                 body.tools.every((tool: any) => tool.override === null),

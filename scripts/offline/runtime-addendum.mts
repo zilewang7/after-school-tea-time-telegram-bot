@@ -173,7 +173,7 @@ const cases: { name: string; body: () => Promise<void> }[] = [
         body: async () => {
             expect(
                 NOTES_SECTION ===
-                    '# 注意\n\n- 用户可能编辑自己已发出的消息，或切换你生成的消息的版本\n- 你要回复的那条消息末尾的运行时信息里可能有「本聊天的附加提示词」一节：来自本聊天控制面板的模板与设置，与本提示词同等效力\n- 最后一条消息末尾的运行时信息里可能有「消息 reaction」一节：列出本段上下文中各消息上的 reaction 与反应者（「模型」指你自己加的）；bot 回复拆成多条时按部分标注（正文/正文第 N 段/贴纸/图片 N/卡片/链接条等），只有一处被点且是正文时按正文显示',
+                    '# 注意\n\n- 用户可能编辑自己已发出的消息，或切换你生成的消息的版本（上下文显示的是最新版本）',
                 `the notes section is exactly the design text (got ${JSON.stringify(NOTES_SECTION)})`
             );
         },

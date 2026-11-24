@@ -42,6 +42,8 @@ const ALICE_ID = 1001;
 const GROUP = -1009999999991;
 const RUNTIME_MARKER = '[system] 运行时信息';
 const REACTION_HEADING = '# 消息 reaction';
+const REACTION_SECTION_NOTE =
+    '以下列出本段上下文中各消息上的 reaction 与反应者（「模型」指你自己加的）；bot 回复拆成多条时按部分标注（正文/正文第 N 段/贴纸/图片 N/卡片/链接条等），只有一处被点且是正文时按正文显示。';
 const ADDENDUM_HEADING = '# 本聊天的附加提示词';
 
 const CAPABILITIES: ModelCapabilities = {
@@ -189,8 +191,9 @@ const sectionOfContext = async (
 
 const sectionLines = (section: string): string[] => section.split('\n');
 
-/** The section as the exact text the design asks for, heading included */
-const expectedSection = (lines: readonly string[]): string => `${REACTION_HEADING}\n${lines.join('\n')}`;
+/** The section as the exact text the design asks for, heading and note included */
+const expectedSection = (lines: readonly string[]): string =>
+    `${REACTION_HEADING}\n${REACTION_SECTION_NOTE}\n${lines.join('\n')}`;
 
 /** Every part line of the section, in the rendered order */
 const partLines = (section: string): string[] => sectionLines(section).filter((line) => /^- #\d+/.test(line));

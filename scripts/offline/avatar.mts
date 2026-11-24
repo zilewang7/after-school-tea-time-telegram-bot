@@ -388,7 +388,7 @@ results.push(
             widget: false,
         };
         const withFetch = sections.buildCapabilitiesSection({ ...base, imageFetch: true });
-        expect(withFetch.includes('fetch_image(avatar=…)'), 'the capability line mentions avatar');
+        expect(withFetch.includes('`fetch_image`') && withFetch.includes('avatar'), 'the capability line mentions avatar');
         const withoutFetch = sections.buildCapabilitiesSection({ ...base, imageFetch: false });
         expect(!withoutFetch.includes('avatar'), 'and disappears with the tool');
     })

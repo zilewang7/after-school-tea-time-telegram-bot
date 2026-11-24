@@ -1,5 +1,5 @@
 /**
- * Offline cases for search_by_image: the Yandex result page parser, the
+ * Offline cases for find_image(mode="reverse"): the Yandex result page parser, the
  * argument contract, the three picture sources, candidate registration and the
  * failure wording. No network: the service and the image downloads are stubs.
  *
@@ -28,7 +28,7 @@ for (const key of ['GEMINI_API_KEY', 'OPENAI_API_KEY', 'DEEPSEEK_API_KEY', 'GROK
 }
 await setupOfflineDb();
 
-const { createSearchByImageTool } = await import('../../src/reply/tools/search-by-image-tool.js');
+const { createFindImageTool } = await import('../../src/reply/tools/find-image-tool.js');
 const { createReplyMediaState } = await import('../../src/reply/tools/reply-media-state.js');
 const { parseSearchByImageArgs } = await import('../../src/reply/tools/media-tool-args.js');
 const { decodeHtmlEntities, parseReverseSearchHtml } = await import(
@@ -93,7 +93,7 @@ const contextOf = (contextIndex: ContextIndex): ReplyToolContext => ({
     requester: { userId: 1, name: 'tester' },
     contextIndex,
     signal: new AbortController().signal,
-    // search_by_image never calls the Bot API; this client fails any call
+    // find_image(mode="reverse") never calls the Bot API; this client fails any call
     api: createUnusedApi(),
 });
 
@@ -142,10 +142,12 @@ const toolOf = (
 ) => ({
     state,
     stub,
-    tool: createSearchByImageTool({
+    tool: createFindImageTool({
         state,
+        webEnabled: false,
+        reverseEnabled: true,
         context: contextOf(index),
-        dependencies: {
+        reverseDependencies: {
             search: stub.search,
             loadMessageImages: loadNothing,
             loadAnimationFrame,
@@ -215,15 +217,15 @@ cases.push(
             widget: false,
         };
         const on = buildCapabilitiesSection({ ...capabilities, imageReverseSearch: true });
-        expect(on.includes('可以用 `search_by_image` 以图搜图'), 'the prompt line names the capability');
+        expect(on.includes('`find_image(mode="reverse")` 以图搜图'), 'the prompt line names the capability');
         expect(!on.includes('用户问') && !on.includes('不要主动'), 'the prompt line gives no usage instruction');
         const off = buildCapabilitiesSection({ ...capabilities, imageReverseSearch: false });
-        expect(!off.includes('search_by_image'), 'the line disappears with the switch');
+        expect(!off.includes('find_image'), 'the line disappears with the switch');
     })
 );
 
 cases.push(
-    await runCase('search_by_image takes exactly one picture source', async () => {
+    await runCase('find_image(reverse) takes exactly one picture source', async () => {
         const bad = (args: Record<string, unknown>): boolean => !parseSearchByImageArgs(args).ok;
         expect(bad({}), 'no source is an error');
         expect(bad({ message: 1, image_id: 'img1' }), 'two sources are an error');

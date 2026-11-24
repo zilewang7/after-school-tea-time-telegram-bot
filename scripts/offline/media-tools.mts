@@ -47,12 +47,13 @@ const mediaFetch = (url: string) =>
         : { ok: true as const, image: { data: JPEG, mimeType: 'image/jpeg' as const, finalUrl: url } };
 
 const replyTools = await import('../../src/reply/tools/index.js');
+const { createTurnTools } = await import('../../src/ai/tools/turn-tools.js');
 const searchService = await import('../../src/services/image-search-service.js');
 const fetchService = await import('../../src/services/image-fetch-service.js');
 
 const {
     createReplyMediaState,
-    createSearchImagesTool,
+    createFindImageTool,
     createFetchImageTool,
     createSendImageTool,
 } = replyTools;
@@ -107,9 +108,11 @@ const searchToolWith = (
     stub: SearchStub,
     options: { canSeeImages?: boolean } = {}
 ) =>
-    createSearchImagesTool({
+    createFindImageTool({
         state,
-        dependencies: {
+        webEnabled: true,
+        reverseEnabled: false,
+        webDependencies: {
             search: stub.search,
             fetchThumbnail: async () => thumbnailStub(),
             baseUrl: 'http://searxng:8080',
@@ -134,14 +137,14 @@ const modelImageResult = (): ToolResult => ({
 });
 
 const executedWithModelImage = (): ExecutedToolCall => ({
-    call: toolCall('search_images', { query: '狗头' }),
+    call: toolCall('find_image', { mode: 'web', query: '狗头' }),
     result: modelImageResult(),
     durationMs: 120,
 });
 
 const cases = [
     {
-        name: 'search_images shows three first, then everything that is left',
+        name: 'find_image(web) shows three first, then everything that is left',
         body: async (): Promise<void> => {
             const state = createReplyMediaState();
             const stub = searchStub();
@@ -151,7 +154,7 @@ const cases = [
             expect(!first.isError, `the first search succeeds (got ${first.content})`);
             expect(first.modelImages?.length === 3, `three thumbnails (got ${first.modelImages?.length ?? 0})`);
             expect(first.content.includes('还没看：s4 s5 s6 s7 s8'), 'the text names what is unseen');
-            expect(first.content.includes("search_images(search='q1')"), 'and how to see it');
+            expect(first.content.includes("find_image(mode='web', search='q1')"), 'and how to see it');
             expect(
                 first.content.includes('第1张=s1、第2张=s2、第3张=s3'),
                 `the pictures are bound to their ids by position (got ${first.content})`
@@ -411,13 +414,11 @@ const cases = [
             );
             expect(
                 toolRoundNotice(7, true, true).includes('只能再调用不产生开销的工具') &&
-                    toolRoundNotice(7, true, true).includes('list_harness_issues') &&
-                    toolRoundNotice(7, true, true).includes('get_ui_guide') &&
-                    toolRoundNotice(7, true, true).includes('workspace_write') &&
-                    toolRoundNotice(7, true, true).includes('workspace_find') &&
-                    toolRoundNotice(7, true, true).includes('workspace_copy') &&
-                    toolRoundNotice(7, true, true).includes('workspace_preview') &&
-                    toolRoundNotice(7, true, true).includes('leave_handoff'),
+                    toolRoundNotice(7, true, true).includes('harness_issue') &&
+                    toolRoundNotice(7, true, true).includes('load_skill') &&
+                    toolRoundNotice(7, true, true).includes('workspace') &&
+                    toolRoundNotice(7, true, true).includes('leave_handoff') &&
+                    toolRoundNotice(7, true, true).includes('react_to_message'),
                 'the no-cost round says which tools can still run'
             );
             expect(
@@ -663,6 +664,33 @@ const cases = [
                 failed.result.modelImages?.[0]?.mimeType === 'image/jpeg' &&
                     failed.result.content.includes('第一帧'),
                 'a failed transcode falls back to the still and says so'
+            );
+        },
+    },
+    {
+        name: 'fetch_image shows a sticker-picking status line only for sticker-only reads',
+        body: async (): Promise<void> => {
+            const fetch = createFetchImageTool({
+                state: createReplyMediaState(),
+                dependencies: { fetchImage: async () => ({ ok: false, error: 'offline' }) },
+            });
+            const turnTools = createTurnTools([fetch]);
+            expect(
+                turnTools.statusOf('fetch_image', JSON.stringify({ sticker: '07' })).text === '🩷 正在挑选贴纸…',
+                'single sticker gets the sticker status line'
+            );
+            expect(
+                turnTools.statusOf('fetch_image', JSON.stringify({ stickers: ['07', '08'] })).text === '🩷 正在挑选贴纸…',
+                'batch stickers get the sticker status line'
+            );
+            expect(
+                turnTools.statusOf('fetch_image', JSON.stringify({ search_id: 's1' })).text === '🖼 正在读图…',
+                'ordinary image read keeps the image status line'
+            );
+            expect(
+                turnTools.statusOf('fetch_image', JSON.stringify({ sticker: '07', url: 'https://example.com/a.png' })).text ===
+                    '🖼 正在读图…',
+                'mixed arguments fall back to the image status line'
             );
         },
     },

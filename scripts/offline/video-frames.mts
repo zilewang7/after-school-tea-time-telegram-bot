@@ -378,7 +378,7 @@ cases.push(
                 },
             }
         );
-        expect(resolved.ok && resolved.data.equals(JPEG), 'send_image/search_by_image resolve the frame bytes');
+        expect(resolved.ok && resolved.data.equals(JPEG), 'send_image/find_image resolve the frame bytes');
     })
 );
 

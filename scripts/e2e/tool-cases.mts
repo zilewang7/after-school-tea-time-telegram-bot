@@ -36,7 +36,7 @@ const TOOL_REPLY_TIMEOUT_MS = 300_000;
 /** context7's MCP tools (get-library-docs is the name before context7 v2) */
 const CONTEXT7_TOOL_NAMES: readonly string[] = ['resolve-library-id', 'query-docs', 'get-library-docs'];
 const GENERATE_IMAGE = 'generate_image';
-const SEARCH_IMAGES = 'search_images';
+const FIND_IMAGE = 'find_image';
 const SEND_IMAGE = 'send_image';
 const SEND_SMS = 'send_sms_to_owner';
 
@@ -362,7 +362,7 @@ export const toolCases: E2eCase[] = [
                 `the reply did not fall back to ${GENERATE_IMAGE} (tool usage: ${describeToolUsage(response)})`
             );
             expect(
-                response.toolUsage.some((entry) => entry.name === SEARCH_IMAGES) &&
+                response.toolUsage.some((entry) => entry.name === FIND_IMAGE) &&
                     response.toolUsage.some((entry) => entry.name === SEND_IMAGE),
                 `it searched and sent a real picture (tool usage: ${describeToolUsage(response)})`
             );
@@ -397,7 +397,7 @@ export const toolCases: E2eCase[] = [
             );
             const response = await waitForToolReply(trigger);
             expect(!response.errorMessage, `no errorMessage recorded (got: ${response.errorMessage ?? ''})`);
-            const searches = response.toolUsage.find((entry) => entry.name === SEARCH_IMAGES)?.count ?? 0;
+            const searches = response.toolUsage.find((entry) => entry.name === FIND_IMAGE)?.count ?? 0;
             if (searches < 2) {
                 console.log(`    ↷ the model did not page (${describeToolUsage(response)}); paging is optional here`);
             } else {

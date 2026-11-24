@@ -154,7 +154,7 @@ cases.push(
         expect(result.images.length === 0, 'nothing is delivered to the chat');
         expect(result.modelImages?.length === 1 && result.modelImages[0]?.data.equals(CROPPED) === true, 'the model sees the crop');
         expect(result.content.includes("send_image(image_id='img1'"), 'the result says how to deliver it');
-        expect(result.content.includes("search_by_image(image_id='img1'"), 'and how to reverse-search it');
+        expect(result.content.includes("find_image(mode='reverse', image_id='img1'"), 'and how to reverse-search it');
         const registered = state.fetched.get('img1');
         expect(registered !== undefined && registered.data.equals(CROPPED), 'img1 is registered for the reply');
         expect(registered?.title === '#3 裁剪', `the title names the source (got ${registered?.title})`);
@@ -285,7 +285,7 @@ cases.push(
                 dependencies: mediaRefsStub,
             }
         );
-        expect(resolved.ok && resolved.data.equals(CROPPED), 'send_image/search_by_image resolve img1 to the crop bytes');
+        expect(resolved.ok && resolved.data.equals(CROPPED), 'send_image/find_image resolve img1 to the crop bytes');
     })
 );
 

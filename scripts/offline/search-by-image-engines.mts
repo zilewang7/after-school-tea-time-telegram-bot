@@ -1,5 +1,5 @@
 /**
- * Offline cases for search_by_image's engines (harness issue #14, design
+ * Offline cases for find_image(mode="reverse")'s engines (harness issue #14, design
  * 2026-1124-0608 sections 5 / 6): the SauceNAO JSON API, the Yandex `[同图]`
  * marks, trace.moe, the engine choice and every degrade path.
  *
@@ -36,7 +36,7 @@ for (const key of ['GEMINI_API_KEY', 'OPENAI_API_KEY', 'DEEPSEEK_API_KEY', 'GROK
 }
 await setupOfflineDb();
 
-const { createSearchByImageTool } = await import('../../src/reply/tools/search-by-image-tool.js');
+const { createFindImageTool } = await import('../../src/reply/tools/find-image-tool.js');
 const { createReplyMediaState } = await import('../../src/reply/tools/reply-media-state.js');
 const { parseSearchByImageArgs } = await import('../../src/reply/tools/media-tool-args.js');
 const { createReverseSearchService } = await import('../../src/services/image-reverse-search-service.js');
@@ -428,12 +428,12 @@ const contextOf = (contextIndex: ContextIndex): ReplyToolContext => ({
     requester: { userId: 1, name: 'tester' },
     contextIndex,
     signal: new AbortController().signal,
-    // search_by_image never calls the Bot API; this client fails any call
+    // find_image(mode="reverse") never calls the Bot API; this client fails any call
     api: createUnusedApi(),
 });
 
 interface ToolFixture {
-    readonly tool: ReturnType<typeof createSearchByImageTool>;
+    readonly tool: ReturnType<typeof createFindImageTool>;
     readonly state: ReturnType<typeof createReplyMediaState>;
     readonly searchOptions: ReverseSearchOptions[];
 }
@@ -447,10 +447,12 @@ const toolOf = (
     return {
         state,
         searchOptions,
-        tool: createSearchByImageTool({
+        tool: createFindImageTool({
             state,
+            webEnabled: false,
+            reverseEnabled: true,
             context: contextOf(index),
-            dependencies: {
+            reverseDependencies: {
                 search: (options) => {
                     searchOptions.push(options);
                     return service.search(options);
@@ -510,12 +512,16 @@ cases.push(
             Array.isArray(engineEnum) && engineEnum.join('|') === 'auto|yandex|saucenao|tracemoe',
             `the schema lists the engines (got ${JSON.stringify(engineEnum)})`
         );
+        const safeSchema = schemaPropertyOf(tool.definition.inputSchema, 'safe');
         expect(
-            schemaPropertyOf(tool.definition.inputSchema, 'safe')?.type === 'boolean',
+            safeSchema?.type === 'boolean',
             'the schema declares safe as a boolean'
         );
         expect(tool.definition.description.includes('SauceNAO'), 'the description names the supplement');
-        expect(tool.definition.description.includes('safe=true'), 'the description names the filter switch');
+        expect(
+            typeof safeSchema?.description === 'string' && safeSchema.description.includes('R-18'),
+            'the safe field description names the filter switch'
+        );
     })
 );
 

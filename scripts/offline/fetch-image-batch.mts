@@ -849,7 +849,7 @@ cases.push(
             harnessIssues: false,
             widget: false,
         });
-        expect(capability.includes('search_ids'), 'the capability line mentions the batch form');
+        expect(capability.includes('`fetch_image`'), 'the capability line mentions fetch_image');
 
         const searchText = replayTools.formatSearchResult({
             set: {
