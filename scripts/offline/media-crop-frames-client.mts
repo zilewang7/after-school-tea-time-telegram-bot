@@ -150,6 +150,122 @@ cases.push(
 );
 
 cases.push(
+    await runCase('cropImage accepts x1=0, y1=0, and full-frame edge boxes', async () => {
+        for (const scenario of [
+            {
+                name: 'x1=0 full-width norm1000',
+                input: { data: PNG, x1: 0, y1: 102, x2: 1000, y2: 920, unit: 'norm1000' as const },
+                headers: {
+                    'X-Source-Width': '1280',
+                    'X-Source-Height': '854',
+                    'X-Crop-X1': '0',
+                    'X-Crop-Y1': '87',
+                    'X-Crop-X2': '1280',
+                    'X-Crop-Y2': '786',
+                    'X-Output-Width': '1280',
+                    'X-Output-Height': '699',
+                },
+                expectedBox: { x1: 0, y1: 87, x2: 1280, y2: 786 },
+            },
+            {
+                name: 'x1=0 and y1=0 full-frame px',
+                input: { data: PNG, x1: 0, y1: 0, x2: 1280, y2: 854, unit: 'px' as const },
+                headers: {
+                    'X-Source-Width': '1280',
+                    'X-Source-Height': '854',
+                    'X-Crop-X1': '0',
+                    'X-Crop-Y1': '0',
+                    'X-Crop-X2': '1280',
+                    'X-Crop-Y2': '854',
+                    'X-Output-Width': '1280',
+                    'X-Output-Height': '854',
+                },
+                expectedBox: { x1: 0, y1: 0, x2: 1280, y2: 854 },
+            },
+        ]) {
+            await withConverter(
+                (_request, response) => {
+                    response.writeHead(200, {
+                        'Content-Type': 'image/png',
+                        'Content-Length': PNG.length,
+                        'X-Crop-Flags': '',
+                        ...scenario.headers,
+                    });
+                    response.end(PNG);
+                },
+                async (captured) => {
+                    const outcome = await cropImage(scenario.input);
+                    const request = captured[0];
+                    expect(
+                        request?.query.get('x1') === String(scenario.input.x1)
+                            && request?.query.get('y1') === String(scenario.input.y1)
+                            && request?.query.get('unit') === scenario.input.unit,
+                        `${scenario.name}: query carries 0 coords and unit`
+                    );
+                    expect(outcome.ok, `${scenario.name}: succeeds (got ${JSON.stringify(outcome)})`);
+                    if (!outcome.ok) return;
+                    expect(
+                        outcome.box.x1 === scenario.expectedBox.x1
+                            && outcome.box.y1 === scenario.expectedBox.y1
+                            && outcome.box.x2 === scenario.expectedBox.x2
+                            && outcome.box.y2 === scenario.expectedBox.y2,
+                        `${scenario.name}: keeps 0-based crop box`
+                    );
+                }
+            );
+        }
+    })
+);
+
+cases.push(
+    await runCase('cropImage rejects missing or out-of-range crop metadata headers', async () => {
+        await withConverter(
+            (_request, response) => {
+                response.writeHead(200, {
+                    'Content-Type': 'image/png',
+                    'Content-Length': PNG.length,
+                    'X-Source-Width': '1280',
+                    'X-Source-Height': '854',
+                    // X-Crop-X1 intentionally omitted: Number(null) === 0 must not slip through
+                    'X-Crop-Y1': '0',
+                    'X-Crop-X2': '1280',
+                    'X-Crop-Y2': '854',
+                    'X-Output-Width': '1280',
+                    'X-Output-Height': '854',
+                });
+                response.end(PNG);
+            },
+            async () => {
+                const outcome = await cropImage({ data: PNG, x1: 0, y1: 0, x2: 1000, y2: 1000, unit: 'norm1000' });
+                expect(!outcome.ok && outcome.reason === 'failed', 'missing x-crop-x1 fails instead of coercing to 0');
+            }
+        );
+
+        await withConverter(
+            (_request, response) => {
+                response.writeHead(200, {
+                    'Content-Type': 'image/png',
+                    'Content-Length': PNG.length,
+                    'X-Source-Width': '1280',
+                    'X-Source-Height': '854',
+                    'X-Crop-X1': '500',
+                    'X-Crop-Y1': '0',
+                    'X-Crop-X2': '500',
+                    'X-Crop-Y2': '854',
+                    'X-Output-Width': '1280',
+                    'X-Output-Height': '854',
+                });
+                response.end(PNG);
+            },
+            async () => {
+                const outcome = await cropImage({ data: PNG, x1: 0, y1: 0, x2: 1000, y2: 1000, unit: 'norm1000' });
+                expect(!outcome.ok && outcome.reason === 'failed', 'empty width box (x2 <= x1) is rejected');
+            }
+        );
+    })
+);
+
+cases.push(
     await runCase('a converter error is a plain failed outcome', async () => {
         await withConverter(
             (_request, response) => {
@@ -159,6 +275,86 @@ cases.push(
             async () => {
                 const outcome = await cropImage({ data: PNG, x1: 0, y1: 0, x2: 900, y2: 900, unit: 'norm1000' });
                 expect(!outcome.ok && outcome.reason === 'failed', 'the failure is failed');
+            }
+        );
+    })
+);
+
+cases.push(
+    await runCase('cropImage distinguishes timeouts from 400 validation errors and aborts', async () => {
+        await withConverter(
+            (_request, response) => {
+                response.writeHead(400, { 'Content-Type': 'text/plain' });
+                response.end('crop failed: x1 must be a number');
+            },
+            async () => {
+                const outcome = await cropImage({ data: PNG, x1: 0, y1: 0, x2: 900, y2: 900, unit: 'norm1000' });
+                expect(
+                    !outcome.ok && outcome.reason === 'invalid-args' && outcome.message?.includes('x1 must be a number') === true,
+                    `400 maps to invalid-args (got ${JSON.stringify(outcome)})`
+                );
+            }
+        );
+
+        await withConverter(
+            (_request, response) => {
+                response.writeHead(500, { 'Content-Type': 'text/plain' });
+                response.end('crop failed: crop timed out');
+            },
+            async () => {
+                const outcome = await cropImage({ data: PNG, x1: 0, y1: 0, x2: 900, y2: 900, unit: 'norm1000' });
+                expect(!outcome.ok && outcome.reason === 'timeout', `sidecar timeout maps to timeout (got ${JSON.stringify(outcome)})`);
+            }
+        );
+
+        await withConverter(
+            (_request, response) => {
+                response.writeHead(408, { 'Content-Type': 'text/plain' });
+                response.end('crop failed: request body timed out');
+            },
+            async () => {
+                const outcome = await cropImage({ data: PNG, x1: 0, y1: 0, x2: 900, y2: 900, unit: 'norm1000' });
+                expect(!outcome.ok && outcome.reason === 'timeout', 'HTTP 408 maps to timeout');
+            }
+        );
+
+        await withConverter(
+            (_request, response) => {
+                const timer = setTimeout(() => {
+                    if (!response.writableEnded) {
+                        response.writeHead(200, { 'Content-Type': 'image/png' });
+                        response.end(PNG);
+                    }
+                }, 500);
+                response.on('close', () => clearTimeout(timer));
+            },
+            async () => {
+                const outcome = await cropImage(
+                    { data: PNG, x1: 0, y1: 0, x2: 900, y2: 900, unit: 'norm1000' },
+                    AbortSignal.timeout(30)
+                );
+                expect(!outcome.ok && outcome.reason === 'timeout', `client timeout signal maps to timeout (got ${JSON.stringify(outcome)})`);
+            }
+        );
+
+        await withConverter(
+            (_request, response) => {
+                const timer = setTimeout(() => {
+                    if (!response.writableEnded) {
+                        response.writeHead(200, { 'Content-Type': 'image/png' });
+                        response.end(PNG);
+                    }
+                }, 500);
+                response.on('close', () => clearTimeout(timer));
+            },
+            async () => {
+                const controller = new AbortController();
+                setTimeout(() => controller.abort(new Error('cancelled by reply stop')), 20);
+                const outcome = await cropImage(
+                    { data: PNG, x1: 0, y1: 0, x2: 900, y2: 900, unit: 'norm1000' },
+                    controller.signal
+                );
+                expect(!outcome.ok && outcome.reason === 'failed', `manual abort is failed, not timeout (got ${JSON.stringify(outcome)})`);
             }
         );
     })

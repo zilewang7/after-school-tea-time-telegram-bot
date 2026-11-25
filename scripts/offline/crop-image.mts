@@ -257,14 +257,166 @@ cases.push(
 );
 
 cases.push(
-    await runCase('a failed converter call registers nothing', async () => {
+    await runCase('0-coordinate edge boxes and full-frame boundaries succeed in norm1000 and px', async () => {
+        for (const scenario of [
+            {
+                name: 'issue #18 default norm1000 x1=0',
+                args: { source: '#3', bbox: { x1: 0, y1: 102, x2: 1000, y2: 920 } },
+                expectedUnit: 'norm1000' as const,
+                expectedBox: { x1: 0, y1: 87, x2: 1280, y2: 786 },
+            },
+            {
+                name: 'issue #18 explicit norm1000 x1=0',
+                args: { source: '#3', unit: 'norm1000', bbox: { x1: 0, y1: 102, x2: 1000, y2: 920 } },
+                expectedUnit: 'norm1000' as const,
+                expectedBox: { x1: 0, y1: 87, x2: 1280, y2: 786 },
+            },
+            {
+                name: 'issue #18 px x1=0',
+                args: { source: '#3', unit: 'px', bbox: { x1: 0, y1: 88, x2: 1280, y2: 786 } },
+                expectedUnit: 'px' as const,
+                expectedBox: { x1: 0, y1: 88, x2: 1280, y2: 786 },
+            },
+            {
+                name: 'y1=0 top-edge norm1000',
+                args: { source: '#3', unit: 'norm1000', bbox: { x1: 100, y1: 0, x2: 900, y2: 500 } },
+                expectedUnit: 'norm1000' as const,
+                expectedBox: { x1: 128, y1: 0, x2: 1152, y2: 427 },
+            },
+            {
+                name: 'full-frame norm1000 (0,0,1000,1000)',
+                args: { source: '#3', unit: 'norm1000', bbox: { x1: 0, y1: 0, x2: 1000, y2: 1000 } },
+                expectedUnit: 'norm1000' as const,
+                expectedBox: { x1: 0, y1: 0, x2: 1280, y2: 854 },
+            },
+            {
+                name: 'full-frame px (0,0,1280,854)',
+                args: { source: '#3', unit: 'px', bbox: { x1: 0, y1: 0, x2: 1280, y2: 854 } },
+                expectedUnit: 'px' as const,
+                expectedBox: { x1: 0, y1: 0, x2: 1280, y2: 854 },
+            },
+        ]) {
+            const state = createReplyMediaState();
+            const stub = cropStub(() =>
+                cropSuccess({
+                    sourceWidth: 1280,
+                    sourceHeight: 854,
+                    box: scenario.expectedBox,
+                    outputWidth: scenario.expectedBox.x2 - scenario.expectedBox.x1,
+                    outputHeight: scenario.expectedBox.y2 - scenario.expectedBox.y1,
+                })
+            );
+            const tool = toolWith(state, [imageEntry(3)], stub);
+            const result = await tool.execute(scenario.args, AbortSignal.abort());
+            expect(!result.isError, `${scenario.name}: succeeds (got ${result.content})`);
+            const call = stub.calls[0];
+            expect(
+                call !== undefined
+                    && call.unit === scenario.expectedUnit
+                    && call.x1 === scenario.args.bbox.x1
+                    && call.y1 === scenario.args.bbox.y1
+                    && call.x2 === scenario.args.bbox.x2
+                    && call.y2 === scenario.args.bbox.y2,
+                `${scenario.name}: forwards exact box and unit`
+            );
+            expect(
+                result.content.includes(
+                    `[x ${scenario.expectedBox.x1}-${scenario.expectedBox.x2}, y ${scenario.expectedBox.y1}-${scenario.expectedBox.y2}]`
+                ),
+                `${scenario.name}: reports exact crop coordinates`
+            );
+        }
+    })
+);
+
+cases.push(
+    await runCase('invalid or out-of-range norm1000 bbox coordinates are rejected locally', async () => {
         const state = createReplyMediaState();
-        const stub = cropStub(() => ({ ok: false, reason: 'failed' }));
+        const stub = cropStub(() => cropSuccess());
         const tool = toolWith(state, [imageEntry(3)], stub);
 
-        const result = await tool.execute({ source: '#3', region: 'center' }, AbortSignal.abort());
-        expect(result.isError && result.content.includes('重试'), `the failure is explained (got ${result.content})`);
-        expect(state.fetched.size === 0, 'no imgN was spent');
+        const negative = await tool.execute(
+            { source: '#3', unit: 'norm1000', bbox: { x1: -1, y1: 0, x2: 500, y2: 500 } },
+            AbortSignal.abort()
+        );
+        expect(negative.isError && negative.content.includes('0-1000'), 'negative norm1000 rejected locally');
+
+        const over = await tool.execute(
+            { source: '#3', unit: 'norm1000', bbox: { x1: 0, y1: 0, x2: 1001, y2: 500 } },
+            AbortSignal.abort()
+        );
+        expect(over.isError && over.content.includes('0-1000'), 'over-1000 norm1000 rejected locally');
+
+        const missingField = await tool.execute(
+            { source: '#3', bbox: { x1: 0, y1: 0, x2: 500 } },
+            AbortSignal.abort()
+        );
+        expect(missingField.isError && missingField.content.includes('bbox.y2'), 'missing bbox field is named');
+        expect(stub.calls.length === 0, 'invalid coordinates never hit the converter');
+    })
+);
+
+cases.push(
+    await runCase('a negative px invalid-box does not trigger the norm1000 misuse hint', async () => {
+        const state = createReplyMediaState();
+        const stub = cropStub(() => ({
+            ok: false,
+            reason: 'invalid-box',
+            message: 'crop is too small',
+            sourceWidth: 3024,
+            sourceHeight: 4032,
+        }));
+        const tool = toolWith(state, [imageEntry(3)], stub);
+
+        const result = await tool.execute(
+            { source: '#3', bbox: { x1: -50, y1: 0, x2: 20, y2: 100 }, unit: 'px' },
+            AbortSignal.abort()
+        );
+        expect(result.isError, 'fails cleanly');
+        expect(!result.content.includes('归一化'), 'negative px does not claim norm1000');
+        expect(result.content.includes('3024×4032'), 'includes source dimensions');
+    })
+);
+
+cases.push(
+    await runCase('real timeouts vs non-timeout failures produce distinct guidance and register nothing', async () => {
+        const state = createReplyMediaState();
+
+        const timeoutTool = toolWith(state, [imageEntry(3)], cropStub(() => ({ ok: false, reason: 'timeout' })));
+        const timeoutResult = await timeoutTool.execute({ source: '#3', region: 'center' }, AbortSignal.abort());
+        expect(
+            timeoutResult.isError && timeoutResult.content.includes('超时') && timeoutResult.content.includes('重试'),
+            `real timeout suggests retry (got ${timeoutResult.content})`
+        );
+
+        const failedTool = toolWith(
+            state,
+            [imageEntry(3)],
+            cropStub(() => ({ ok: false, reason: 'failed', message: 'unusable metadata' }))
+        );
+        const failedResult = await failedTool.execute({ source: '#3', region: 'center' }, AbortSignal.abort());
+        expect(
+            failedResult.isError
+                && !failedResult.content.includes('超时')
+                && !failedResult.content.includes('可以重试一次')
+                && failedResult.content.includes('unusable metadata'),
+            `non-timeout failure must not masquerade as timeout (got ${failedResult.content})`
+        );
+
+        const badArgsTool = toolWith(
+            state,
+            [imageEntry(3)],
+            cropStub(() => ({ ok: false, reason: 'invalid-args', message: 'scale must be within 1-4' }))
+        );
+        const badArgsResult = await badArgsTool.execute({ source: '#3', region: 'center' }, AbortSignal.abort());
+        expect(
+            badArgsResult.isError
+                && !badArgsResult.content.includes('超时')
+                && badArgsResult.content.includes('参数无效'),
+            `invalid-args surfaces parameter error without timeout (got ${badArgsResult.content})`
+        );
+
+        expect(state.fetched.size === 0, 'no imgN was spent on any failure');
     })
 );
 

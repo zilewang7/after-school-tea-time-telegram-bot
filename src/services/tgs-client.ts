@@ -18,18 +18,23 @@ const MAX_EMOJI_ATLAS_BYTES = 512 * 1024;
 const createTimedController = (
     timeoutMs: number,
     parentSignal?: AbortSignal
-): { signal: AbortSignal; dispose: () => void } => {
+): { signal: AbortSignal; dispose: () => void; timedOut: () => boolean } => {
     const controller = new AbortController();
+    let didTimeout = false;
     const abortFromParent = (): void => controller.abort(parentSignal?.reason);
     if (parentSignal?.aborted) abortFromParent();
     else parentSignal?.addEventListener('abort', abortFromParent, { once: true });
-    const timer = setTimeout(() => controller.abort(new Error('request timed out')), timeoutMs);
+    const timer = setTimeout(() => {
+        didTimeout = true;
+        controller.abort(new Error('request timed out'));
+    }, timeoutMs);
     return {
         signal: controller.signal,
         dispose: () => {
             clearTimeout(timer);
             parentSignal?.removeEventListener('abort', abortFromParent);
         },
+        timedOut: () => didTimeout,
     };
 };
 
@@ -459,11 +464,24 @@ export interface CropImageSuccess {
     readonly flags: readonly string[];
 }
 
+/** Parse a non-negative integer header; null/empty must fail rather than coerce to 0 */
+const parseNonNegativeHeaderInt = (headers: Headers, name: string): number | null => {
+    const raw = headers.get(name);
+    if (raw === null) return null;
+    const trimmed = raw.trim();
+    if (!/^\d+$/.test(trimmed)) return null;
+    const value = Number(trimmed);
+    return Number.isSafeInteger(value) ? value : null;
+};
+
+const isTimeoutError = (error: unknown): boolean =>
+    error instanceof Error && (error.name === 'TimeoutError' || /\btimed out\b/i.test(error.message));
+
 export type CropImageOutcome =
     | CropImageSuccess
     | {
           readonly ok: false;
-          readonly reason: 'invalid-box' | 'too-large' | 'unsupported' | 'failed';
+          readonly reason: 'invalid-box' | 'invalid-args' | 'too-large' | 'unsupported' | 'timeout' | 'failed';
           readonly message?: string;
           readonly sourceWidth?: number;
           readonly sourceHeight?: number;
@@ -478,7 +496,8 @@ export const cropImage = async (
     input: CropImageInput,
     signal?: AbortSignal
 ): Promise<CropImageOutcome> => {
-    if (!TGS_CONVERTER_URL || input.data.length === 0) return { ok: false, reason: 'failed' };
+    if (!TGS_CONVERTER_URL) return { ok: false, reason: 'failed', message: 'TGS_CONVERTER_URL is not configured' };
+    if (input.data.length === 0) return { ok: false, reason: 'failed', message: 'empty input image' };
     const query = new URLSearchParams({
         x1: String(input.x1),
         y1: String(input.y1),
@@ -498,6 +517,23 @@ export const cropImage = async (
         });
         if (!res.ok) {
             const body = await res.text().catch(() => '');
+            const trimmedBody = body.trim();
+            if (res.status === 400) {
+                const detail = parseRecord(body);
+                const message = detail === null ? trimmedBody || undefined : textField(detail, 'error') ?? undefined;
+                return {
+                    ok: false,
+                    reason: 'invalid-args',
+                    ...(message === undefined ? {} : { message }),
+                };
+            }
+            if (res.status === 408 || res.status === 504) {
+                return {
+                    ok: false,
+                    reason: 'timeout',
+                    message: trimmedBody || `HTTP ${res.status}`,
+                };
+            }
             if (res.status === 413) return { ok: false, reason: 'too-large' };
             if (res.status === 415) return { ok: false, reason: 'unsupported' };
             if (res.status === 422) {
@@ -513,39 +549,50 @@ export const cropImage = async (
                     ...(sourceHeight === null ? {} : { sourceHeight }),
                 };
             }
+            if ((res.status === 500 || res.status === 503) && /\btimed out\b/i.test(trimmedBody)) {
+                console.error(`[tgs-client] crop timed out: HTTP ${res.status} ${trimmedBody}`);
+                return { ok: false, reason: 'timeout', message: trimmedBody };
+            }
             console.error(`[tgs-client] crop failed: HTTP ${res.status}`);
-            return { ok: false, reason: 'failed' };
+            return { ok: false, reason: 'failed', message: trimmedBody || `HTTP ${res.status}` };
         }
         const mimeType = res.headers.get('content-type')?.split(';')[0] ?? null;
         if (!isStillMime(mimeType)) {
             console.error('[tgs-client] crop returned an unexpected content type');
-            return { ok: false, reason: 'failed' };
+            return { ok: false, reason: 'failed', message: 'unexpected content type' };
         }
-        const sourceWidth = Number(res.headers.get('x-source-width'));
-        const sourceHeight = Number(res.headers.get('x-source-height'));
-        const box = {
-            x1: Number(res.headers.get('x-crop-x1')),
-            y1: Number(res.headers.get('x-crop-y1')),
-            x2: Number(res.headers.get('x-crop-x2')),
-            y2: Number(res.headers.get('x-crop-y2')),
-        };
-        const outputWidth = Number(res.headers.get('x-output-width'));
-        const outputHeight = Number(res.headers.get('x-output-height'));
-        if (![sourceWidth, sourceHeight, box.x1, box.y1, box.x2, box.y2, outputWidth, outputHeight].every(
-            (value) => Number.isSafeInteger(value) && value > 0
-        )) {
+        const sourceWidth = parseNonNegativeHeaderInt(res.headers, 'x-source-width');
+        const sourceHeight = parseNonNegativeHeaderInt(res.headers, 'x-source-height');
+        const boxX1 = parseNonNegativeHeaderInt(res.headers, 'x-crop-x1');
+        const boxY1 = parseNonNegativeHeaderInt(res.headers, 'x-crop-y1');
+        const boxX2 = parseNonNegativeHeaderInt(res.headers, 'x-crop-x2');
+        const boxY2 = parseNonNegativeHeaderInt(res.headers, 'x-crop-y2');
+        const outputWidth = parseNonNegativeHeaderInt(res.headers, 'x-output-width');
+        const outputHeight = parseNonNegativeHeaderInt(res.headers, 'x-output-height');
+        // x1/y1 are 0-based coordinates and legitimately 0 on left/top edge crops
+        if (
+            sourceWidth === null || sourceWidth <= 0
+            || sourceHeight === null || sourceHeight <= 0
+            || boxX1 === null
+            || boxY1 === null
+            || boxX2 === null || boxX2 <= boxX1 || boxX2 > sourceWidth
+            || boxY2 === null || boxY2 <= boxY1 || boxY2 > sourceHeight
+            || outputWidth === null || outputWidth <= 0
+            || outputHeight === null || outputHeight <= 0
+        ) {
             console.error('[tgs-client] crop returned unusable metadata');
-            return { ok: false, reason: 'failed' };
+            return { ok: false, reason: 'failed', message: 'unusable metadata' };
         }
+        const box = { x1: boxX1, y1: boxY1, x2: boxX2, y2: boxY2 };
         const arrayBuffer = await res.arrayBuffer();
         if (arrayBuffer.byteLength === 0 || arrayBuffer.byteLength > CROP_MAX_RESPONSE_BYTES) {
             console.error('[tgs-client] crop returned an empty or oversized body');
-            return { ok: false, reason: 'failed' };
+            return { ok: false, reason: 'failed', message: 'empty or oversized response' };
         }
         const data = Buffer.from(arrayBuffer);
         if (!isStillMagic(data, mimeType)) {
             console.error('[tgs-client] crop returned bytes that are not the announced format');
-            return { ok: false, reason: 'failed' };
+            return { ok: false, reason: 'failed', message: 'invalid image magic bytes' };
         }
         return {
             ok: true,
@@ -559,8 +606,11 @@ export const cropImage = async (
             flags: (res.headers.get('x-crop-flags') ?? '').split(',').filter((flag) => flag !== ''),
         };
     } catch (error) {
-        console.error('[tgs-client] crop request error:', error instanceof Error ? error.message : error);
-        return { ok: false, reason: 'failed' };
+        const message = error instanceof Error ? error.message : String(error);
+        console.error('[tgs-client] crop request error:', message);
+        return request.timedOut() || isTimeoutError(error)
+            ? { ok: false, reason: 'timeout', message }
+            : { ok: false, reason: 'failed', message };
     } finally {
         request.dispose();
     }

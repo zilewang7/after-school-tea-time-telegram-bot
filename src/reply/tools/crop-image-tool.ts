@@ -12,6 +12,7 @@
  * the box it actually used, and a too-small or out-of-range box comes back as
  * a 422 the model can fix by itself.
  */
+import { match } from 'ts-pattern';
 import type { ToolHandler, ToolResult } from '../../ai/tools/tool-types.js';
 import { sniffImageMime } from '../../ai/image-generation/image-mime.js';
 import { cropImage as productionCropImage } from '../../services/tgs-client.js';
@@ -245,31 +246,43 @@ export const createCropImageTool = (options: CropImageToolOptions): ToolHandler 
                     : traceText(args.region)
             );
             if (!outcome.ok) {
-                if (outcome.reason === 'invalid-box') {
-                    const dimensions =
-                        outcome.sourceWidth !== undefined && outcome.sourceHeight !== undefined
-                            ? `原图是 ${outcome.sourceWidth}×${outcome.sourceHeight}。`
-                            : '';
-                    const misuse =
-                        unit === 'px'
-                        && outcome.sourceWidth !== undefined
-                        && outcome.sourceHeight !== undefined
-                        && [box.x1, box.y1, box.x2, box.y2].every((value) => value <= 1000)
-                        && (outcome.sourceWidth > 1000 || outcome.sourceHeight > 1000)
-                            ? 'bbox 看起来是 0-1000 归一化，但按 unit="px" 解释了；按相对位置请用 unit="norm1000"，按像素请按原图尺寸给值。'
-                            : outcome.message ?? '框无效或太小。';
-                    return rejected(
-                        `裁剪失败：${misuse}${dimensions}短边至少 48px；可以用 region 取整块再试。`,
-                        argumentTrace
-                    );
-                }
-                if (outcome.reason === 'unsupported') {
-                    return rejected('裁剪失败：这张图的格式不支持（只支持 PNG/JPEG/WebP）；换一张图再试。', argumentTrace);
-                }
-                if (outcome.reason === 'too-large') {
-                    return rejected('裁剪失败：图片太大，没法裁剪；可以让用户重发一张小一点的图片。', argumentTrace);
-                }
-                return rejected('裁剪服务暂时失败（超时），可以重试一次；仍失败就先用原图，别卡在这里。', argumentTrace);
+                const failureMessage = match(outcome)
+                    .with({ reason: 'invalid-box' }, (detail) => {
+                        const dimensions =
+                            detail.sourceWidth !== undefined && detail.sourceHeight !== undefined
+                                ? `原图是 ${detail.sourceWidth}×${detail.sourceHeight}。`
+                                : '';
+                        const misuse =
+                            unit === 'px'
+                            && detail.sourceWidth !== undefined
+                            && detail.sourceHeight !== undefined
+                            && [box.x1, box.y1, box.x2, box.y2].every((value) => value >= 0 && value <= 1000)
+                            && (detail.sourceWidth > 1000 || detail.sourceHeight > 1000)
+                                ? 'bbox 看起来是 0-1000 归一化，但按 unit="px" 解释了；按相对位置请用 unit="norm1000"，按像素请按原图尺寸给值。'
+                                : detail.message ?? '框无效或太小。';
+                        return `裁剪失败：${misuse}${dimensions}短边至少 48px；可以用 region 取整块再试。`;
+                    })
+                    .with({ reason: 'invalid-args' }, (detail) =>
+                        detail.message === undefined
+                            ? '裁剪失败：参数无效，请检查坐标和参数后再试。'
+                            : `裁剪失败：参数无效（${detail.message}），请检查坐标和参数后再试。`
+                    )
+                    .with({ reason: 'unsupported' }, () =>
+                        '裁剪失败：这张图的格式不支持（只支持 PNG/JPEG/WebP）；换一张图再试。'
+                    )
+                    .with({ reason: 'too-large' }, () =>
+                        '裁剪失败：图片太大，没法裁剪；可以让用户重发一张小一点的图片。'
+                    )
+                    .with({ reason: 'timeout' }, () =>
+                        '裁剪服务暂时失败（超时），可以重试一次；仍失败就先用原图，别卡在这里。'
+                    )
+                    .with({ reason: 'failed' }, (detail) =>
+                        detail.message === undefined
+                            ? '裁剪失败：裁剪服务处理异常，无法完成本次裁剪；先用原图继续，别卡在这里。'
+                            : `裁剪失败：裁剪服务处理异常（${detail.message}），无法完成本次裁剪；先用原图继续，别卡在这里。`
+                    )
+                    .exhaustive();
+                return rejected(failureMessage, argumentTrace);
             }
 
             const id = nextFetchedImageId(state);

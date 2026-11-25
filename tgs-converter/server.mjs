@@ -824,7 +824,8 @@ answer({
 const parseCropQuery = (searchParams) => {
     const parseNumber = (name) => {
         const raw = searchParams.get(name);
-        const value = raw === null ? Number.NaN : Number(raw);
+        // Reject empty string explicitly because Number('') coerces to 0
+        const value = raw === null || raw.trim() === '' ? Number.NaN : Number(raw);
         if (!Number.isFinite(value)) throw new HttpError(400, `${name} must be a number`);
         return value;
     };
