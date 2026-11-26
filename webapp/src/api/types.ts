@@ -1,4 +1,9 @@
 // Mirrors the panel HTTP API contract (phases 1–4). Paths live under /api.
+import type { ChatSettingKey } from '../../../src/shared/contracts/chat-settings.js';
+import type { GradedThinkingEffort, ThinkingEffort } from '../../../src/shared/contracts/thinking-effort.js';
+import type { ToolGroupKey, ToolOverrides } from '../../../src/shared/contracts/tool-groups.js';
+
+export type { ChatSettingKey, GradedThinkingEffort, ThinkingEffort, ToolGroupKey, ToolOverrides };
 
 export type ChatType = 'private' | 'group' | 'supergroup' | 'channel';
 export type ChatAccess = 'member' | 'observer';
@@ -238,25 +243,6 @@ export interface ThinkingEffortView {
     // false = the current model has no graded efforts
     supported: boolean;
 }
-
-/** A panel tool switch group, the same keys the server uses */
-export type ToolGroupKey =
-    | 'sms'
-    | 'image'
-    | 'imageSearch'
-    | 'imageFetch'
-    | 'imageReverseSearch'
-    | 'sticker'
-    | 'file'
-    | 'history'
-    | 'harnessIssues'
-    | 'widget'
-    | 'workspace'
-    | 'reaction'
-    | 'skills';
-
-/** Per-chat tool switches: true = on, false = off, missing key = follow the env whitelist */
-export type ToolOverrides = Partial<Record<ToolGroupKey, boolean>>;
 
 export interface ToolGroupEntry {
     key: ToolGroupKey;

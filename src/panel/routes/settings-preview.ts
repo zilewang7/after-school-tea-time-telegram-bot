@@ -13,7 +13,7 @@
 import type { Hono } from 'hono';
 import { buildRuntimeContext } from '../../ai/system-prompt/runtime-context.js';
 import type { ContextUser } from '../../ai/types.js';
-import { resolveChatModel } from '../../config/chat-model.js';
+import { resolveChatModel } from '../../services/chat-model.js';
 import { effectiveReplyModel } from '../../services/access-tier.js';
 import { normalizePromptAddendum } from '../../services/chat-settings-service.js';
 import { normalizeTemplateIdList } from '../../services/prompt-template-ids.js';

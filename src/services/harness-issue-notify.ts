@@ -20,14 +20,13 @@ import type { Api } from 'grammy';
 import { concatMessages, type RenderedMessage } from 'telegram-md-entities';
 import { isChatAllowed } from '../config/instance.js';
 import { findChat } from '../db/queries/panel-registry.js';
+import { encodeStartParam } from '../shared/contracts/start-param.js';
+import { miniAppDirectLink } from '../shared/public-url.js';
 import { formatUserDisplayName, type UserNameParts } from '../shared/user-display-name.js';
 import { toApiEntities } from '../telegram/api-entities.js';
 import { runApiCall } from '../telegram/edit-coordinator.js';
 import { boldText, linkText, plainText } from '../telegram/formatters/entity-text.js';
 import type { HarnessIssueRecord } from './harness-issue-service.js';
-
-/** BotFather short name of the Mini App when WEBAPP_BOT_SHORT_NAME is unset (as /panel) */
-const DEFAULT_SHORT_NAME = 'panel';
 
 const VIEW_IN_PANEL_LABEL = '在面板中查看';
 
@@ -43,12 +42,8 @@ export type IssueNoticeOutcome =
     | 'failed';
 
 /** The Direct Link that opens the panel on this issue; null without a bot username */
-export const issuePanelLink = (issueId: number): string | null => {
-    const botUserName = process.env.BOT_USER_NAME?.trim();
-    if (!botUserName) return null;
-    const shortName = process.env.WEBAPP_BOT_SHORT_NAME?.trim() || DEFAULT_SHORT_NAME;
-    return `https://t.me/${botUserName}/${shortName}?startapp=i${issueId}`;
-};
+export const issuePanelLink = (issueId: number): string | null =>
+    miniAppDirectLink(encodeStartParam({ kind: 'issue', issueId }));
 
 /**
  * 📌 <first last> 通过控制面板提交了 issue #<id>（<kind>）：<title>

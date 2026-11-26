@@ -1,4 +1,4 @@
-import type { ChatSettings, ChatSettingsPatch } from '../../api';
+import type { ChatSettingKey, ChatSettings, ChatSettingsPatch } from '../../api';
 import type { ResolvedModel } from '../../model-draft';
 
 /** The chat settings form's values, ready to compare with the saved settings */
@@ -34,21 +34,38 @@ const sameTemplateIds = (draftIds: readonly number[] | null, savedIds: readonly 
     return draft.length === saved.length && draft.every((id, index) => id === saved[index]);
 };
 
+/** Every per-chat setting except toolOverrides (managed in its own tab) is diffed here */
+type FormChatSettingKey = Exclude<ChatSettingKey, 'toolOverrides'>;
+
+const FORM_SETTING_DIFFERS: Readonly<
+    Record<FormChatSettingKey, (settings: ChatSettings, draft: ChatSettingsDraft) => boolean>
+> = {
+    model: (settings, draft) => draft.model.ok && draft.model.value !== settings.model,
+    promptAddendum: (settings, draft) => draft.addendumValue !== settings.promptAddendum,
+    promptTemplateIds: (settings, draft) => !sameTemplateIds(draft.templateIds, settings.promptTemplateIds),
+    promptTemplatesAuto: (settings, draft) => draft.templatesAuto !== settings.promptTemplatesAuto,
+    paused: (settings, draft) => draft.paused !== settings.paused,
+    settingsLocked: (settings, draft) => draft.settingsLocked !== settings.settingsLocked,
+    // Owner only: members cannot move the choice, so it never enters their patches
+    geminiPriority: (settings, draft) => draft.geminiPriority !== settings.geminiPriority,
+    // An explicit null goes out too: it is how the chat goes back to the model default
+    thinkingEffort: (settings, draft) => draft.thinkingEffort !== settings.thinkingEffort,
+    richReplies: (settings, draft) => draft.richReplies !== settings.richReplies,
+};
+
 /** Only the keys that differ from the saved settings; an invalid model is left out */
 export const changedSettingsOf = (settings: ChatSettings, draft: ChatSettingsDraft): ChatSettingsPatch => {
     const changes: ChatSettingsPatch = {};
-    if (draft.model.ok && draft.model.value !== settings.model) changes.model = draft.model.value;
-    if (draft.addendumValue !== settings.promptAddendum) changes.promptAddendum = draft.addendumValue;
-    if (!sameTemplateIds(draft.templateIds, settings.promptTemplateIds)) {
+    if (FORM_SETTING_DIFFERS.model(settings, draft) && draft.model.ok) changes.model = draft.model.value;
+    if (FORM_SETTING_DIFFERS.promptAddendum(settings, draft)) changes.promptAddendum = draft.addendumValue;
+    if (FORM_SETTING_DIFFERS.promptTemplateIds(settings, draft)) {
         changes.promptTemplateIds = templateIdsValueOf(draft.templateIds ?? []);
     }
-    if (draft.templatesAuto !== settings.promptTemplatesAuto) changes.promptTemplatesAuto = draft.templatesAuto;
-    if (draft.paused !== settings.paused) changes.paused = draft.paused;
-    if (draft.settingsLocked !== settings.settingsLocked) changes.settingsLocked = draft.settingsLocked;
-    // Owner only: members cannot move the choice, so it never enters their patches
-    if (draft.geminiPriority !== settings.geminiPriority) changes.geminiPriority = draft.geminiPriority;
-    // An explicit null goes out too: it is how the chat goes back to the model default
-    if (draft.thinkingEffort !== settings.thinkingEffort) changes.thinkingEffort = draft.thinkingEffort;
-    if (draft.richReplies !== settings.richReplies) changes.richReplies = draft.richReplies;
+    if (FORM_SETTING_DIFFERS.promptTemplatesAuto(settings, draft)) changes.promptTemplatesAuto = draft.templatesAuto;
+    if (FORM_SETTING_DIFFERS.paused(settings, draft)) changes.paused = draft.paused;
+    if (FORM_SETTING_DIFFERS.settingsLocked(settings, draft)) changes.settingsLocked = draft.settingsLocked;
+    if (FORM_SETTING_DIFFERS.geminiPriority(settings, draft)) changes.geminiPriority = draft.geminiPriority;
+    if (FORM_SETTING_DIFFERS.thinkingEffort(settings, draft)) changes.thinkingEffort = draft.thinkingEffort;
+    if (FORM_SETTING_DIFFERS.richReplies(settings, draft)) changes.richReplies = draft.richReplies;
     return changes;
 };

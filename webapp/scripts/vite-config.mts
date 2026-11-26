@@ -9,6 +9,7 @@ import react from '@vitejs/plugin-react';
 import type { InlineConfig } from 'vite';
 
 export const webappRoot = fileURLToPath(new URL('..', import.meta.url));
+const repoRoot = fileURLToPath(new URL('../..', import.meta.url));
 
 export const createBaseConfig = (): InlineConfig => ({
     root: webappRoot,
@@ -17,4 +18,9 @@ export const createBaseConfig = (): InlineConfig => ({
     configFile: false,
     clearScreen: false,
     plugins: [react()],
+    server: {
+        fs: {
+            allow: [repoRoot],
+        },
+    },
 });

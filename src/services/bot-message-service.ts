@@ -86,7 +86,7 @@ import {
     miniAppShortName,
     widgetMiniAppLink,
 } from '../reply/widget-link-fallback.js';
-import { resolveChatModel } from '../config/chat-model.js';
+import { resolveChatModel } from './chat-model.js';
 import type { AgentStats, FileDelivery, StickerDelivery, WidgetDelivery } from '../ai/types.js';
 import { classifyErrorKind, summarizeErrorMessage, type ErrorKind } from '../shared/error-kind.js';
 import type { AccessTier } from './access-tier.js';

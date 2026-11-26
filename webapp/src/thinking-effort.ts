@@ -1,47 +1,45 @@
 /**
  * Thinking-level texts and option rules shared by the chat settings page and the
- * audit list. The server decides; these only mirror it for display.
+ * audit list. Canonical effort values, labels, and normalization come from
+ * `src/shared/contracts/thinking-effort.ts`.
  */
+import {
+    THINKING_EFFORT_DEFAULT_LABEL,
+    THINKING_EFFORT_LABEL,
+    THINKING_EFFORT_LABELS as SHARED_THINKING_EFFORT_LABELS,
+    THINKING_EFFORT_OFF,
+    THINKING_EFFORT_OFF_LABEL,
+    THINKING_EFFORT_ORDER,
+    THINKING_EFFORT_VALUES,
+    isThinkingEffort,
+    normalizeThinkingEffort,
+    thinkingEffortLabel,
+    type GradedThinkingEffort,
+    type ThinkingEffort,
+} from '../../src/shared/contracts/thinking-effort.js';
 import type { ThinkingEffortView } from './api';
 
-/** The field's label, also the audit key's label */
-export const THINKING_EFFORT_LABEL = '思考等级';
-
-/** Graded efforts, lowest first: the server's closed set */
-export const THINKING_EFFORT_ORDER = [
-    'none',
-    'minimal',
-    'low',
-    'medium',
-    'high',
-    'xhigh',
-    'max',
-    'ultra',
-] as const;
-
-/** Chinese label of every graded effort */
-export const THINKING_EFFORT_LABELS: Readonly<Record<string, string>> = {
-    none: '无',
-    minimal: '极低',
-    low: '低',
-    medium: '中',
-    high: '高',
-    xhigh: '极高',
-    max: '最大',
-    ultra: '极限',
+export {
+    THINKING_EFFORT_DEFAULT_LABEL,
+    THINKING_EFFORT_LABEL,
+    THINKING_EFFORT_OFF,
+    THINKING_EFFORT_OFF_LABEL,
+    THINKING_EFFORT_ORDER,
+    THINKING_EFFORT_VALUES,
+    isThinkingEffort,
+    normalizeThinkingEffort,
+    thinkingEffortLabel,
+    type GradedThinkingEffort,
+    type ThinkingEffort,
 };
 
-/** A toggle model's "thinking off" value, as chat_settings stores it */
-export const THINKING_EFFORT_OFF = 'off';
-export const THINKING_EFFORT_OFF_LABEL = '关闭思考';
-/** The chip that stores null: the model's own default */
-export const THINKING_EFFORT_DEFAULT_LABEL = '模型默认';
+/** Chinese label lookup accepting arbitrary display strings */
+export const THINKING_EFFORT_LABELS: Readonly<Partial<Record<string, string>>> = SHARED_THINKING_EFFORT_LABELS;
+
 /** Shown when the current model offers neither graded efforts nor a toggle */
 export const THINKING_EFFORT_UNSUPPORTED_HINT = '当前模型不支持思考档位';
 /** What picking a level trades: one line, no page behaviour */
 export const THINKING_EFFORT_TRADEOFF_HINT = '档位越高，思考越久、回复越慢。';
-
-export const thinkingEffortLabel = (value: string): string => THINKING_EFFORT_LABELS[value] ?? value;
 
 /** What the audit list shows for a stored value; null = the model default */
 export const thinkingEffortAuditValue = (value: string | null): string => {

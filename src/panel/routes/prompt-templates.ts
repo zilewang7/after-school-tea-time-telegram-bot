@@ -12,7 +12,7 @@
  *   owner. The service re-checks ownership under its write queue.
  */
 import type { Hono } from 'hono';
-import { resolveChatModel } from '../../config/chat-model.js';
+import { resolveChatModel } from '../../services/chat-model.js';
 import { getOwnerUserId } from '../../config/owner.js';
 import { effectiveReplyModel } from '../../services/access-tier.js';
 import { defaultChatSettings, getChatSettings } from '../../services/chat-settings-service.js';

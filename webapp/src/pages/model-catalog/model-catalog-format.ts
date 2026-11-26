@@ -20,7 +20,7 @@ import type {
     ReconciledTraitField,
 } from '../../api';
 import { formatCount, formatTokens, platformLabel } from '../../format-metrics';
-import { THINKING_EFFORT_LABELS } from '../../thinking-effort';
+import { thinkingEffortLabel } from '../../thinking-effort';
 
 /** Where a capability value came from */
 export const MODEL_CATALOG_SOURCE_LABELS: Readonly<Record<string, string>> = {
@@ -100,7 +100,7 @@ export const modelKindLabelOf = (kind: ModelCatalogKind): string => MODEL_KIND_L
 export const reconciledFieldLabelOf = (field: ReconciledTraitField): string => RECONCILED_FIELD_LABELS[field] ?? field;
 
 /** One effort value in Chinese; an unknown word is shown as-is */
-export const effortLabelOf = (effort: string): string => THINKING_EFFORT_LABELS[effort] ?? effort;
+export const effortLabelOf = (effort: string): string => thinkingEffortLabel(effort);
 
 /** Participation of the row's reasoning data in one line, e.g. "低/中/高/极高" */
 export const effortsTextOf = (efforts: readonly string[] | undefined): string => {

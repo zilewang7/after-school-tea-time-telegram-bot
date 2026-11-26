@@ -14,6 +14,7 @@
  * loses that effort, not the whole reasoning section) and explains each drop in
  * `warnings`. It never throws.
  */
+import { THINKING_EFFORT_ORDER, type GradedThinkingEffort } from '../shared/contracts/thinking-effort.js';
 import { isJsonObject } from '../shared/json-object.js';
 import type { PlatformType } from './platform-routing.js';
 
@@ -44,8 +45,8 @@ export type CapabilityProvenanceMap = Partial<Record<string, CapabilityFieldProv
 export type PlatformLaneFingerprints = Partial<Record<PlatformType, string>>;
 
 /** The effort ladder, ascending: a user selection may be clamped down within it */
-export const MODEL_EFFORTS = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'] as const;
-export type ModelEffort = (typeof MODEL_EFFORTS)[number];
+export const MODEL_EFFORTS = THINKING_EFFORT_ORDER;
+export type ModelEffort = GradedThinkingEffort;
 
 /** Coarse modality classes, the order the panel lists them in */
 export const MODEL_MODALITIES = ['text', 'image', 'audio', 'video', 'pdf'] as const;

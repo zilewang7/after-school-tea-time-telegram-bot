@@ -6,7 +6,7 @@
  * (`summary`, null when there were none) and the latest settings changes.
  */
 import type { Hono } from 'hono';
-import { resolveChatModel } from '../../config/chat-model.js';
+import { resolveChatModel } from '../../services/chat-model.js';
 import { chatAuditScope, listSettingsAudit } from '../../db/queries/settings-audit.js';
 import { getGlobalDefaultModel } from '../../services/chat-settings-service.js';
 import { resolvePanelAccessTier } from '../access/panel-tier.js';

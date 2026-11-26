@@ -5,6 +5,7 @@ import { webLoginEnabled } from "../../config/web-login.js";
 import { findConversationRootId } from "../../db/queries/context-queries.js";
 import { upsertChatNow } from "../../db/queries/panel-registry.js";
 import { isPanelRunning } from "../../panel/panel-state.js";
+import { encodeStartParam } from "../../shared/contracts/start-param.js";
 import { webappPublicUrl } from "../../shared/public-url.js";
 import { registerConversationKeyboardMessage } from "../../state.js";
 import { miniAppConversationKeyboardForChat, miniAppDirectLink, miniAppKeyboardForChat } from "./mini-app-link.js";
@@ -61,7 +62,7 @@ const chatPanelReplyFor = (chat: Chat): PanelReply => {
     if (chat.type !== 'private' && chat.type !== 'group' && chat.type !== 'supergroup') {
         return unsupportedReply;
     }
-    const startParam = chat.type === 'private' ? undefined : `c${chat.id}`;
+    const startParam = chat.type === 'private' ? undefined : encodeStartParam({ kind: 'chat', chatId: chat.id });
     const keyboard = miniAppKeyboardForChat(chat, OPEN_PANEL_LABEL, startParam);
     if (keyboard === null) return disabledReply;
     return {
@@ -82,7 +83,7 @@ const chatPanelReplyFor = (chat: Chat): PanelReply => {
 const conversationPanelReplyFor = async (chat: Chat, repliedMessageId: number): Promise<PanelReply | null> => {
     const rootId = await findConversationRootId(chat.id, repliedMessageId);
     if (rootId === null) return null;
-    const startParam = `c${chat.id}_${rootId}`;
+    const startParam = encodeStartParam({ kind: 'conversation', chatId: chat.id, rootId });
     // Only a Direct Link carries the target: without BOT_USER_NAME the chat-level
     // reply below is what the chat gets, exactly as before this feature
     if (miniAppDirectLink(startParam) === null) return null;

@@ -12,13 +12,14 @@ import {
 import { normalizeThinkingEffort, type ThinkingEffortValue } from './thinking-effort-values.js';
 import { isImageOutputModel } from '../ai/model-kinds.js';
 import { countCodePoints } from '../shared/code-points.js';
+import { CHAT_SETTING_KEYS, type ChatSettingKey } from '../shared/contracts/chat-settings.js';
 import {
     canonicalTemplateIdListJson,
     normalizeTemplateIdList,
     templateIdListEqual,
 } from './prompt-template-ids.js';
 
-export { countCodePoints };
+export { CHAT_SETTING_KEYS, countCodePoints, type ChatSettingKey };
 
 export const MODEL_ID_MAX_LENGTH = 64;
 /** A chat's own addendum text, stored in `promptAddendum` */
@@ -70,22 +71,6 @@ export interface ChatSettingsPatch {
      */
     richReplies?: boolean;
 }
-
-export type ChatSettingKey = keyof ChatSettingsPatch;
-
-/** Fixed order of keys in results and audit rows */
-const CHAT_SETTING_KEYS: readonly ChatSettingKey[] = [
-    'model',
-    'promptAddendum',
-    'promptTemplateIds',
-    'promptTemplatesAuto',
-    'paused',
-    'settingsLocked',
-    'toolOverrides',
-    'geminiPriority',
-    'thinkingEffort',
-    'richReplies',
-];
 
 /** `conflict`: the caller edited a version that someone else has since replaced */
 export type ChatSettingsErrorCode = 'invalid' | 'forbidden' | 'locked' | 'conflict' | 'trial' | 'not_found';

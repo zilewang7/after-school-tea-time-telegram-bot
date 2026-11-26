@@ -12,7 +12,7 @@ import { sequelize } from '../db/config.js';
 import { withBusyRetry } from '../db/busy-retry.js';
 import { ChatSettingsRecord } from '../db/chatSettingsDTO.js';
 import { chatAuditScope, writeSettingsAudit } from '../db/queries/settings-audit.js';
-import { resolveChatModel } from '../config/chat-model.js';
+import { resolveChatModel } from './chat-model.js';
 import { resolveAccessTier } from './access-tier.js';
 import {
     canEnableGeminiPriority,

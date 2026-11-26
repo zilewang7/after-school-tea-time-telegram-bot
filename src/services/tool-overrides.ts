@@ -10,38 +10,17 @@
  * below, only the keys the owner actually set, an empty object normalized to
  * NULL (nothing overridden). Unknown keys and non-boolean values are rejected.
  */
-export const TOOL_GROUP_KEYS = [
-    'sms',
-    'image',
-    'imageSearch',
-    'imageFetch',
-    'imageReverseSearch',
-    'sticker',
-    'file',
-    'history',
-    'harnessIssues',
-    // Phase 0 gray: the whole widget pair is one switch
-    'widget',
-    // New groups are appended, never inserted: this order is the canonical
-    // JSON/audit order, and stored overrides of older key sets stay valid
-    'workspace',
-    // Free per-chat reaction tool: on everywhere unless the panel turns it off
-    'reaction',
-    // On-demand repository skill catalog and load_skill tool
-    'skills',
-] as const;
+import {
+    TOOL_GROUP_KEYS,
+    isToolGroupKey,
+    type ToolGroupKey,
+    type ToolOverrides,
+} from '../shared/contracts/tool-groups.js';
 
-export type ToolGroupKey = (typeof TOOL_GROUP_KEYS)[number];
-
-/** true = on for this chat, false = off, missing key = follow the env whitelist */
-export type ToolOverrides = Partial<Record<ToolGroupKey, boolean>>;
+export { TOOL_GROUP_KEYS, isToolGroupKey, type ToolGroupKey, type ToolOverrides };
 
 /** No overrides at all: every group follows the env */
 export const NO_TOOL_OVERRIDES: ToolOverrides = Object.freeze({});
-
-const TOOL_GROUP_KEY_SET: ReadonlySet<string> = new Set(TOOL_GROUP_KEYS);
-
-export const isToolGroupKey = (key: string): key is ToolGroupKey => TOOL_GROUP_KEY_SET.has(key);
 
 export type ToolOverridesNormalization =
     | { ok: true; value: ToolOverrides | null }

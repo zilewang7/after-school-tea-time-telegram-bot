@@ -39,7 +39,7 @@ await setupOfflineDb();
 const service = await import('../../src/services/chat-settings-service.js');
 const { modelConfigs } = await import('../../src/config/models.js');
 const { listModelCatalog, setModelCatalog } = await import('../../src/config/model-catalog.js');
-const { resolveChatModel } = await import('../../src/config/chat-model.js');
+const { resolveChatModel } = await import('../../src/services/chat-model.js');
 const { registerModelCommand } = await import('../../src/cmd/commands/model.js');
 const { menuLoad } = await import('../../src/cmd/menu.js');
 const { createPanelApp } = await import('../../src/panel/app.js');

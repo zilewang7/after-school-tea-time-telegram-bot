@@ -13,7 +13,13 @@ import { match } from 'ts-pattern';
 import { concatMessages, type RenderedMessage } from 'telegram-md-entities';
 import type { ModelEffort } from '../config/model-capabilities.js';
 import { codePolicyDefaultEffortOf } from '../ai/thinking-effort.js';
-import { THINKING_EFFORT_LABELS, type ThinkingEffortValue } from '../services/thinking-effort-values.js';
+import {
+    THINKING_EFFORT_DEFAULT_LABEL,
+    THINKING_EFFORT_LABELS,
+    THINKING_EFFORT_OFF,
+    THINKING_EFFORT_OFF_LABEL,
+    type ThinkingEffort,
+} from '../shared/contracts/thinking-effort.js';
 import { codeText, plainText } from '../telegram/formatters/entity-text.js';
 
 export { codePolicyDefaultEffortOf };
@@ -35,7 +41,7 @@ export interface ChatModelView {
  */
 export interface ChatThinkingView {
     /** Stored setting: null = model default, 'off', or a graded effort */
-    readonly value: ThinkingEffortValue | null;
+    readonly value: ThinkingEffort | null;
     /** The graded efforts the current model offers, in catalog order */
     readonly efforts: readonly ModelEffort[];
     /** Vendor default effort; null = unknown or a toggle-only model */
@@ -103,12 +109,12 @@ const defaultThinkingTextOf = (thinking: ChatThinkingView): string => {
  * (design §4.3: switching models never clears the stored value).
  */
 export const thinkingSummaryOf = (thinking: ChatThinkingView): string => {
-    if (thinking.value === null) return `模型默认（${defaultThinkingTextOf(thinking)}）`;
-    if (thinking.value === 'off') {
+    if (thinking.value === null) return `${THINKING_EFFORT_DEFAULT_LABEL}（${defaultThinkingTextOf(thinking)}）`;
+    if (thinking.value === THINKING_EFFORT_OFF) {
         if (!thinking.toggle) {
-            return '关闭思考（本聊天设置；当前模型不支持该档位，将按厂商默认生效）';
+            return `${THINKING_EFFORT_OFF_LABEL}（本聊天设置；当前模型不支持该档位，将按厂商默认生效）`;
         }
-        return '关闭思考（本聊天设置）';
+        return `${THINKING_EFFORT_OFF_LABEL}（本聊天设置）`;
     }
     const label = THINKING_EFFORT_LABELS[thinking.value];
     // Toggle-only model: a graded value cannot apply, so the vendor default wins.
@@ -128,8 +134,8 @@ export const thinkingSummaryOf = (thinking: ChatThinkingView): string => {
  * or the applicability notes — the record tells what changed, not how it applies.
  */
 const thinkingChoiceLabelOf = (thinking: ChatThinkingView): string => {
-    if (thinking.value === null) return `模型默认（${defaultThinkingTextOf(thinking)}）`;
-    if (thinking.value === 'off') return '关闭思考';
+    if (thinking.value === null) return `${THINKING_EFFORT_DEFAULT_LABEL}（${defaultThinkingTextOf(thinking)}）`;
+    if (thinking.value === THINKING_EFFORT_OFF) return THINKING_EFFORT_OFF_LABEL;
     return THINKING_EFFORT_LABELS[thinking.value];
 };
 

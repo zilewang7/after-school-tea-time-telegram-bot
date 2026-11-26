@@ -9,7 +9,11 @@
  */
 import { GrammyError } from 'grammy';
 import type { LinkPreviewOptions, MessageEntity } from 'grammy/types';
+import { encodeStartParam } from '../shared/contracts/start-param.js';
+import { miniAppShortName } from '../shared/public-url.js';
 import type { ImageCaptionFields } from './tools/image-message.js';
+
+export { miniAppShortName };
 
 /** The visible text of a caption-less Mini App link; the emoji is part of the link */
 export const WIDGET_LINK_LABEL = '🧩 查看卡片';
@@ -70,16 +74,10 @@ export interface MiniAppReplyLinkInput {
     readonly firstMessageId: number;
 }
 
-/**
- * WEBAPP_BOT_SHORT_NAME: the Mini App direct link's short name. Production and
- * the test instance both use `panel`; unset falls back to it.
- */
-export const miniAppShortName = (): string => process.env.WEBAPP_BOT_SHORT_NAME?.trim() || 'panel';
-
 /** `https://t.me/<bot>/<short>?startapp=r<chatId>_<firstMessageId>`: this reply, in the Mini App */
 export const miniAppReplyLink = (input: MiniAppReplyLinkInput): string =>
     `https://t.me/${input.botUsername}/${input.shortName}` +
-    `?startapp=r${input.chatId}_${input.firstMessageId}`;
+    `?startapp=${encodeStartParam({ kind: 'reply', chatId: input.chatId, firstMessageId: input.firstMessageId })}`;
 
 export interface MiniAppShareLinkInput {
     readonly botUsername: string;
@@ -89,7 +87,8 @@ export interface MiniAppShareLinkInput {
 
 /** `https://t.me/<bot>/<short>?startapp=s<token>`: the public share, in the Mini App */
 export const miniAppShareLink = (input: MiniAppShareLinkInput): string =>
-    `https://t.me/${input.botUsername}/${input.shortName}?startapp=s${input.token}`;
+    `https://t.me/${input.botUsername}/${input.shortName}` +
+    `?startapp=${encodeStartParam({ kind: 'share', token: input.token })}`;
 
 export interface WidgetMiniAppLinkInput extends MiniAppReplyLinkInput {
     /** The reply's share page token; when present the link opens the public share */

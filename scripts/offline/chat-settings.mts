@@ -46,7 +46,7 @@ await setupOfflineDb();
 const service = await import('../../src/services/chat-settings-service.js');
 const promptTemplates = await import('../../src/services/prompt-templates-service.js');
 const { normalizeTemplateIdList } = await import('../../src/services/prompt-template-ids.js');
-const { resolveChatModel } = await import('../../src/config/chat-model.js');
+const { resolveChatModel } = await import('../../src/services/chat-model.js');
 const { isOwnerUser } = await import('../../src/config/owner.js');
 const { listSettingsAudit } = await import('../../src/db/queries/settings-audit.js');
 const { SettingsAudit } = await import('../../src/db/settingsAuditDTO.js');

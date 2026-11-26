@@ -15,7 +15,7 @@ import type { Bot, Context } from 'grammy';
 import { match } from 'ts-pattern';
 import type { RenderedMessage } from 'telegram-md-entities';
 import { listModelCatalog } from '../config/model-catalog.js';
-import { resolveChatModel } from '../config/chat-model.js';
+import { resolveChatModel } from '../services/chat-model.js';
 import { isOwnerUser } from '../config/owner.js';
 import { resolveAccessTier } from '../services/access-tier.js';
 import { resolveRuntimeTraits } from '../ai/model-traits.js';

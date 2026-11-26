@@ -4,7 +4,7 @@
  * Read per call rather than frozen at import: offline cases set the env after
  * loading modules, and the bot command and the panel must agree on one answer.
  */
-import { miniAppPanelLink, webappPublicUrl } from '../panel/share/share-urls.js';
+import { miniAppPanelLink, webappPublicUrl } from '../shared/public-url.js';
 
 /** WEB_LOGIN is not 0: `/web` and the browser login exist */
 export const webLoginEnabled = (): boolean => process.env.WEB_LOGIN !== '0';

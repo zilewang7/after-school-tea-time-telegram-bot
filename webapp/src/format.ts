@@ -1,7 +1,8 @@
 import { match, P } from 'ts-pattern';
+import { CHAT_SETTING_LABELS } from '../../src/shared/contracts/chat-settings.js';
 import type { ChatAccess, ChatSummary, ChatType, PanelUser } from './api';
 import { issueStatusLabel } from './issues/issue-labels';
-import { THINKING_EFFORT_LABEL, thinkingEffortAuditValue } from './thinking-effort';
+import { thinkingEffortAuditValue } from './thinking-effort';
 import { parseToolOverridesJson, TOOL_GROUP_ORDER, toolGroupLabelOf } from './tool-groups';
 
 const CHAT_TYPE_LABELS: Record<ChatType, string> = {
@@ -17,18 +18,9 @@ const ACCESS_LABELS: Record<ChatAccess, string> = {
 };
 
 const AUDIT_KEY_LABELS: Partial<Record<string, string>> = {
-    model: '模型',
-    promptAddendum: '附加提示词',
-    promptTemplateIds: '模板启用',
-    promptTemplatesAuto: '自动加载模板',
-    paused: '暂停',
-    settingsLocked: '锁定设置',
+    ...CHAT_SETTING_LABELS,
     defaultModel: '全局默认模型',
-    geminiPriority: 'Priority PayGo',
     defaultGeminiPriority: '全局 Priority PayGo',
-    toolOverrides: '工具开关',
-    thinkingEffort: THINKING_EFFORT_LABEL,
-    richReplies: '富文本回复',
     exclude: '排除消息',
     include: '恢复消息',
     link: '拼接对话',

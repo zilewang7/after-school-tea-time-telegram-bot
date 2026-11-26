@@ -8,28 +8,16 @@ import { match } from 'ts-pattern';
 import {
     normalizeNullableFlag,
     normalizeThinkingEffort,
-    type ChatSettingKey,
     type ChatSettingsPatch,
 } from '../../services/chat-settings-service.js';
 import { normalizeToolOverrides } from '../../services/tool-overrides.js';
 import { normalizeTemplateIdList } from '../../services/prompt-template-ids.js';
+import { CHAT_SETTING_KEYS, type ChatSettingKey } from '../../shared/contracts/chat-settings.js';
 import type { JsonRecord } from '../json.js';
 import { checkBodyKeys, invalid } from '../request.js';
 
-const SETTING_KEYS: readonly ChatSettingKey[] = [
-    'model',
-    'promptAddendum',
-    'promptTemplateIds',
-    'promptTemplatesAuto',
-    'paused',
-    'settingsLocked',
-    'toolOverrides',
-    'geminiPriority',
-    'thinkingEffort',
-    'richReplies',
-];
 const EXPECTED_UPDATED_AT_KEY = 'expectedUpdatedAt';
-const ALLOWED_KEYS: ReadonlySet<string> = new Set<string>([...SETTING_KEYS, EXPECTED_UPDATED_AT_KEY]);
+const ALLOWED_KEYS: ReadonlySet<string> = new Set<string>([...CHAT_SETTING_KEYS, EXPECTED_UPDATED_AT_KEY]);
 
 export interface SettingsPatchShape {
     /** The setting keys present, in the service's order */
@@ -47,9 +35,9 @@ const parseExpectedUpdatedAt = (value: unknown): Date | null => {
 };
 
 export const parseSettingsPatchShape = (body: JsonRecord): SettingsPatchShape => {
-    checkBodyKeys(body, ALLOWED_KEYS, SETTING_KEYS);
+    checkBodyKeys(body, ALLOWED_KEYS, CHAT_SETTING_KEYS);
     return {
-        keys: SETTING_KEYS.filter((key) => Object.hasOwn(body, key)),
+        keys: CHAT_SETTING_KEYS.filter((key) => Object.hasOwn(body, key)),
         expectedUpdatedAt: parseExpectedUpdatedAt(body[EXPECTED_UPDATED_AT_KEY]),
     };
 };

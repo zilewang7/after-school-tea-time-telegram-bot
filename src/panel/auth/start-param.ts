@@ -12,65 +12,12 @@
  * goes through resolveChatAccess.
  */
 import { match } from 'ts-pattern';
+import { decodeStartParam, encodeStartParam, type StartParamTarget } from '../../shared/contracts/start-param.js';
 
-export type StartParamTarget =
-    | { kind: 'chat'; chatId: number }
-    | { kind: 'conversation'; chatId: number; rootId: number }
-    | { kind: 'issue'; issueId: number }
-    | { kind: 'reply'; chatId: number; firstMessageId: number }
-    | { kind: 'share'; token: string }
-    | { kind: 'thinking'; token: string };
+export { decodeStartParam, encodeStartParam, type StartParamTarget };
 
-const CHAT_PATTERN = /^c(-?\d{1,20})$/;
-/** Tried before the chat form: a two-part id is never a chat id */
-const CONVERSATION_PATTERN = /^c(-?\d{1,20})_(\d{1,12})$/;
-const ISSUE_PATTERN = /^i(\d{1,10})$/;
-/** Group ids are negative and `-` is allowed in a start_param; reply ids are positive */
-const REPLY_PATTERN = /^r(-?\d{1,20})_(\d{1,12})$/;
-/** Share and thinking tokens are base64url; the pages accept 16–64 characters */
-const SHARE_PATTERN = /^s([A-Za-z0-9_-]{16,64})$/;
-const THINKING_PATTERN = /^t([A-Za-z0-9_-]{16,64})$/;
-
-/** A safe integer from a digit string; null when it overflows */
-const safeIntegerOf = (digits: string): number | null => {
-    const value = Number(digits);
-    return Number.isSafeInteger(value) ? value : null;
-};
-
-export const parseStartParam = (raw: string | null | undefined): StartParamTarget | null => {
-    if (raw === null || raw === undefined) return null;
-    const conversationMatch = CONVERSATION_PATTERN.exec(raw);
-    if (conversationMatch?.[1] !== undefined && conversationMatch[2] !== undefined) {
-        const chatId = safeIntegerOf(conversationMatch[1]);
-        const rootId = safeIntegerOf(conversationMatch[2]);
-        if (chatId === null || chatId === 0) return null;
-        if (rootId === null || rootId < 1) return null;
-        return { kind: 'conversation', chatId, rootId };
-    }
-    const chatMatch = CHAT_PATTERN.exec(raw);
-    if (chatMatch?.[1] !== undefined) {
-        const chatId = safeIntegerOf(chatMatch[1]);
-        return chatId === null || chatId === 0 ? null : { kind: 'chat', chatId };
-    }
-    const issueMatch = ISSUE_PATTERN.exec(raw);
-    if (issueMatch?.[1] !== undefined) {
-        const issueId = safeIntegerOf(issueMatch[1]);
-        return issueId === null ? null : { kind: 'issue', issueId };
-    }
-    const replyMatch = REPLY_PATTERN.exec(raw);
-    if (replyMatch?.[1] !== undefined && replyMatch[2] !== undefined) {
-        const chatId = safeIntegerOf(replyMatch[1]);
-        const firstMessageId = safeIntegerOf(replyMatch[2]);
-        if (chatId === null || chatId === 0) return null;
-        if (firstMessageId === null || firstMessageId < 1) return null;
-        return { kind: 'reply', chatId, firstMessageId };
-    }
-    const shareMatch = SHARE_PATTERN.exec(raw);
-    if (shareMatch?.[1] !== undefined) return { kind: 'share', token: shareMatch[1] };
-    const thinkingMatch = THINKING_PATTERN.exec(raw);
-    if (thinkingMatch?.[1] !== undefined) return { kind: 'thinking', token: thinkingMatch[1] };
-    return null;
-};
+/** Alias for `decodeStartParam` kept for existing panel callers */
+export const parseStartParam = decodeStartParam;
 
 /** Where an issue lives: its chatId, null when the issue is missing or has no chat */
 export type IssueChatLookup = (issueId: number) => Promise<number | null>;
