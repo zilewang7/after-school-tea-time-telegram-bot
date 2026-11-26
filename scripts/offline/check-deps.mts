@@ -208,8 +208,8 @@ results.push(
 
 results.push(
     await runCase('a src entry without a layer is reported and no baseline covers it', () => {
-        const findings = analyzeSources(sourcesOf({ ...CLEAN_TREE, 'src/ingest/pipeline.ts': `export const run = 1;\n` }));
-        expect(keysOf(findings.unlistedEntries).join('|') === 'src/ingest', 'the new directory');
+        const findings = analyzeSources(sourcesOf({ ...CLEAN_TREE, 'src/unlisted-feature/pipeline.ts': `export const run = 1;\n` }));
+        expect(keysOf(findings.unlistedEntries).join('|') === 'src/unlisted-feature', 'the new directory');
         const accepted = baselineOf(findings);
         const newViolations = findNewViolations(findings, accepted);
         expect(newViolations.length === 1, 'still new after accepting everything');
