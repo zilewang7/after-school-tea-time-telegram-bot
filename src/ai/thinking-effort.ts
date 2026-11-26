@@ -23,7 +23,7 @@
 import { match } from 'ts-pattern';
 import type { ModelCatalogReasoning, ModelEffort } from '../config/model-capabilities.js';
 import { isModelEffort, MODEL_EFFORTS } from '../config/model-capabilities.js';
-import { THINKING_EFFORT_OFF } from '../services/thinking-effort-values.js';
+import { THINKING_EFFORT_OFF } from '../shared/contracts/thinking-effort.js';
 import type { RuntimeTraits, ThinkingEffortRequest } from './types.js';
 import { resolveRuntimeTraits } from './model-traits.js';
 import { platformTypeOf } from './platform-routing.js';
