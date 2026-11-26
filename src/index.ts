@@ -5,7 +5,7 @@ import { autoRetry } from "@grammyjs/auto-retry";
 import { SocksProxyAgent } from "socks-proxy-agent";
 import { cmdLoad } from './cmd/index.js';
 import { replyLoad } from './reply/index.js';
-import { autoClear, autoSave, autoUpdate } from './db/autoSave.js';
+import { autoClear, autoSave, autoUpdate, stopAutoClear } from './ingest/index.js';
 import { autoReaction } from './db/message-reaction-save.js';
 import { dbReady } from './db/index.js';
 import { closeDatabase } from './db/config.js';
@@ -22,6 +22,7 @@ import { getGlobalDefaultModel, loadChatSettingsCache } from './services/chat-se
 import { loadPromptTemplatesCache } from './services/prompt-templates-cache.js';
 import { loadUserAccessCache } from './services/user-access-cache.js';
 import { configureAccessMembership } from './services/access-membership.js';
+import { installMimoMediaHooks } from './services/mimo-media-hooks.js';
 import { startPanel, stopPanel } from './panel/index.js';
 import { loadModelPrices } from './services/model-price-service.js';
 import { loadModelCatalog } from './services/model-catalog-service.js';
@@ -61,6 +62,9 @@ const bot = new Bot(process.env.BOT_TOKEN, botConfig);
 // Access-tier membership lookups (design D1-C): a separate client without
 // autoRetry, so a rate limit fails fast instead of being slept on inside a reply
 configureAccessMembership(new Api(process.env.BOT_TOKEN, botConfig?.client));
+
+// Wire GCS signing and MP4 transcoding services into MiMo media preparation
+installMimoMediaHooks();
 
 // Flood-wait safety net: retry any API call on 429 per retry_after.
 // Pacing (edit coalescing, per-chat budget) stays in edit-coordinator.
@@ -134,6 +138,8 @@ const shutdown = async (signal: string): Promise<void> => {
     if (shuttingDown) return;
     shuttingDown = true;
     console.log(`[process] ${signal} received, shutting down...`);
+    // Stop hourly cleanup before draining so an active sweep releases the SQLite write lock
+    stopAutoClear();
     if (isTestInstance()) {
         const allowed = getAllowedChatIds();
         await bot.api.deleteMyCommands().catch(() => undefined);

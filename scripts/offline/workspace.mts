@@ -42,7 +42,7 @@ const { createSendFileTool } = await import('../../src/reply/tools/send-file-too
 const { createSendWidgetTool } = await import('../../src/reply/tools/send-widget-tool.js');
 const { createReplyMediaState } = await import('../../src/reply/tools/reply-media-state.js');
 const { measureWidgetHtml } = await import('../../src/ai/widget/widget-size.js');
-const { clearExpiredData } = await import('../../src/db/autoSave.js');
+const { clearExpiredData } = await import('../../src/ingest/auto-save.js');
 const { WORKSPACE_TOOL_NAME } = await import('../../src/reply/tools/tool-names.js');
 
 const CHAT = -1009999999999;

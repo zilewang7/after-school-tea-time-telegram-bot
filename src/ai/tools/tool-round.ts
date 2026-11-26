@@ -2,7 +2,7 @@
  * One round of client tool calls, shared by every platform's tool loop.
  */
 import type { AgentToolCallRecord, AgentToolUsage, StreamChunk } from '../types.js';
-import { isTimeFreeToolName } from '../../reply/tools/tool-names.js';
+import { isTimeFreeToolName } from './tool-names.js';
 import { TOOL_LOG_MAX_LINKS, TOOL_LOG_MAX_RECORDS } from '../../shared/tool-log.js';
 import { buildToolCallRecord } from './tool-call-record.js';
 import type { ToolCall, ToolResult, TurnTools } from './tool-types.js';

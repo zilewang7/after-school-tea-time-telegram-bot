@@ -21,7 +21,7 @@ import type { StoredMessageMedia } from '../../src/db/index.js';
 
 const db = await setupOfflineDb();
 const dbIndex = await import('../../src/db/index.js');
-const { clearExpiredData } = await import('../../src/db/autoSave.js');
+const { clearExpiredData } = await import('../../src/ingest/auto-save.js');
 const { MessageMedia } = await import('../../src/db/messageMediaDTO.js');
 
 const CHAT = -1009200000001;

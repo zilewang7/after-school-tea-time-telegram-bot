@@ -57,7 +57,7 @@ import type { ToolLoopCheckpointSink } from '../../tools/tool-loop-checkpoint.js
 import { TOOL_LOOP_DEADLINE_MS, TOOL_LOOP_WALL_MS } from '../../tools/tool-loop.js';
 import { createToolUsageTally, type ToolUsageTally } from '../../tools/tool-round.js';
 import { filterTurnTools } from '../../tools/turn-tools.js';
-import { isTimeFreeToolName, LEAVE_HANDOFF_TOOL_NAME } from '../../../reply/tools/tool-names.js';
+import { isTimeFreeToolName, LEAVE_HANDOFF_TOOL_NAME } from '../../tools/tool-names.js';
 import type { TurnTools } from '../../tools/tool-types.js';
 import { toGeminiCheckpoint, type GeminiSnapshot } from './gemini-checkpoint.js';
 import { mergeGroundingData } from './gemini-grounding.js';

@@ -130,7 +130,7 @@ process.env.BOT_USER_ID = '7777';
 delete process.env.ALLOWED_CHAT_IDS;
 
 await setupOfflineDb();
-const { autoSave } = await import('../../src/db/autoSave.js');
+const { autoSave } = await import('../../src/ingest/auto-save.js');
 const { getMessage } = await import('../../src/db/index.js');
 const { LinkPreviewCache } = await import('../../src/db/linkPreviewCacheDTO.js');
 const { acquireLinkPreview, getLinkPreviewOutcome } = await import('../../src/services/luoxu-preview-service.js');

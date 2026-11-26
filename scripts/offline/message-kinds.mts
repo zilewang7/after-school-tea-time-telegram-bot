@@ -35,7 +35,7 @@ delete process.env.LUOXU_PREVIEW_URL;
 
 const db = await setupOfflineDb();
 const { Message: MessageRow } = db;
-const { autoSave, autoUpdate } = await import('../../src/db/autoSave.js');
+const { autoSave, autoUpdate } = await import('../../src/ingest/auto-save.js');
 const { buildContext, describeMessageAnnotations } = await import('../../src/reply/context-builder.js');
 const { assembleContextMessages } = await import('../../src/reply/context-assembly.js');
 const { sanitizeMessageDetail } = await import('../../src/db/message-kind.js');

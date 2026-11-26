@@ -34,12 +34,12 @@ import { formatErrorForUser } from '../shared/errors.js';
 import { searchPageLinkOfToken, type SearchPageLink } from '../shared/search-page.js';
 import { toolLogPageLinkOfToken, type ToolLogPageLink } from '../shared/tool-log-page.js';
 import { stripPerQueryResultCitations } from '../shared/citation-markers.js';
-import { stripContextLabel } from '../reply/context-label.js';
+import { stripContextLabel } from '../shared/context-label.js';
 import { toApiEntities } from '../telegram/api-entities.js';
 import { chunkPartsOf, layOutChunks, type LayoutChunk } from '../telegram/final-message-layout.js';
 import { buildRichLayoutOfVersion, type RichReplayMedia } from '../telegram/formatters/rich-layout-of-version.js';
 import type { ContextLinkResolver } from '../telegram/formatters/context-links.js';
-import { buildResponseButtons } from '../cmd/menus/index.js';
+import { buildResponseButtons } from '../telegram/response-buttons.js';
 import { to, isErr, type Result } from '../shared/result.js';
 import type { ReplyPartKind } from '../shared/reply-part.js';
 import { forgetReplyPart, registerBodyReplyPart, registerReplyPart } from './reply-part-registry.js';
@@ -64,7 +64,7 @@ import {
 import { getCachedMedia, putCachedMedia } from './media-cache-service.js';
 import { decideFinalButtonState } from './final-button-state.js';
 import { sniffMediaMime } from '../ai/image-generation/image-mime.js';
-import { buildImageCaption } from '../reply/tools/image-message.js';
+import { buildImageCaption } from '../telegram/image-message.js';
 import { sendReplyFileMessage } from '../telegram/reply-file-send.js';
 import {
     sendReplyWidgetLinkMessage,

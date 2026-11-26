@@ -33,7 +33,7 @@ const {
     resolveReactionTargetId,
 } = await import('../../src/db/queries/reaction-queries.js');
 const { deleteOrphanReplyParts } = await import('../../src/db/queries/reply-part-queries.js');
-const { clearExpiredData } = await import('../../src/db/autoSave.js');
+const { clearExpiredData } = await import('../../src/ingest/auto-save.js');
 const { registerReactCommand } = await import('../../src/cmd/commands/react.js');
 const { POLLING_ALLOWED_UPDATES } = await import('../../src/config/polling-updates.js');
 const { Message } = await import('../../src/db/messageDTO.js');

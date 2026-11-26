@@ -19,7 +19,7 @@
  * that wasted its time. Then the final, tool-less round answers.
  */
 import type { StreamChunk } from '../types.js';
-import { isTimeFreeToolName } from '../../reply/tools/tool-names.js';
+import { isTimeFreeToolName } from './tool-names.js';
 import { createRoundTextSeparator } from './round-text-separator.js';
 import {
     createToolUsageTally,

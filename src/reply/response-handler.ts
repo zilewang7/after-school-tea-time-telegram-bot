@@ -13,7 +13,7 @@ import {
     liveThinkingKeyOf,
     type BotMessageSession,
 } from '../services/index.js';
-import { buildResponseButtons } from '../cmd/menus/index.js';
+import { buildResponseButtons } from '../telegram/response-buttons.js';
 import { ButtonState, type BotResponse, type CommandType } from '../db/index.js';
 
 import {

@@ -29,7 +29,7 @@ const db = await setupOfflineDb();
 const { Message } = db;
 
 const { materializeTgsMedia, mediaHintForAcquireResult, resolveCapturedMedia } = await import(
-    '../../src/db/autoSave.js'
+    '../../src/ingest/auto-save.js'
 );
 const { getCachedMedia } = await import('../../src/services/media-cache-service.js');
 const { buildContext } = await import('../../src/reply/context-builder.js');

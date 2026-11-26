@@ -4400,7 +4400,7 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
         // this case has to stay last.
         name: 'the hourly cleanup deletes expired rows in batches and spares fresh ones',
         body: async () => {
-            const { clearExpiredData } = await import('../../src/db/autoSave.js');
+            const { clearExpiredData } = await import('../../src/ingest/auto-save.js');
 
             // More than one batch worth (CLEANUP_BATCH_SIZE is 50)
             const expiredIds: number[] = [];
@@ -4449,7 +4449,9 @@ const cases: Array<{ name: string; body: () => Promise<void> }> = [
         name: 'mimo gets real media parts, with webm re-encoded and documents dropped',
         body: async () => {
             const { prepareMimoMedia } = await import('../../src/ai/platforms/mimo-media.js');
+            const { installMimoMediaHooks } = await import('../../src/services/mimo-media-hooks.js');
             const { transformToMimo } = await import('../../src/ai/message-transformer.js');
+            installMimoMediaHooks();
 
             const mp4Stub = Buffer.from('mimo-transcoded-mp4');
             let converterReply: 'ok' | 'reject' = 'ok';

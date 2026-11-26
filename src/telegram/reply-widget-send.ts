@@ -17,7 +17,7 @@ import type { Api } from 'grammy';
 import type { InlineKeyboardMarkup } from 'grammy/types';
 import { GrammyError } from 'grammy';
 import type { WidgetDelivery } from '../ai/types.js';
-import { sendWithCaptionFallback, type ImageCaptionFields } from '../reply/tools/image-message.js';
+import { sendWithCaptionFallback, type ImageCaptionFields } from './image-message.js';
 import type { WidgetLinkMessage } from '../reply/widget-link-fallback.js';
 import { isErr, to, type Result } from '../shared/result.js';
 import { runApiCall } from './edit-coordinator.js';

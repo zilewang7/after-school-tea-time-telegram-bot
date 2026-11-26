@@ -27,7 +27,7 @@ import {
     type TurnTools,
 } from '../../tools/index.js';
 import { filterTurnTools } from '../../tools/turn-tools.js';
-import { isTimeFreeToolName } from '../../../reply/tools/tool-names.js';
+import { isTimeFreeToolName } from '../../tools/tool-names.js';
 import type { StreamChunk } from '../../types.js';
 import { normalizeResponsesUsage } from '../../usage/normalize-responses.js';
 import type { UsageSink } from '../../usage/usage-types.js';

@@ -14,8 +14,6 @@
  * hint in place: one bad part 400s the entire request, which would break every
  * reply in that context chain.
  */
-import { createSignedReadUrl } from '../../services/gcs-service.js';
-import { transcodeVideoToMp4 } from '../../services/tgs-client.js';
 import {
     isMimoIngestibleMime,
     isMimoSupportedImageMime,
@@ -23,6 +21,25 @@ import {
     isMimoTranscodableVideoMime,
 } from '../supported-mime.js';
 import type { UnifiedContentPart, UnifiedMessage } from '../types.js';
+
+/** Result shape returned by the injected MP4 transcoder hook */
+export interface MimoTranscodedVideo {
+    readonly data: Buffer;
+    readonly mimeType: string;
+}
+
+/** External service ports injected from the services layer at startup */
+export interface MimoMediaHooks {
+    readonly createSignedReadUrl?: (gsUri: string, ttlSeconds: number) => Promise<string | null>;
+    readonly transcodeVideoToMp4?: (video: Buffer, mimeType: string) => Promise<MimoTranscodedVideo | null>;
+}
+
+let registeredHooks: MimoMediaHooks = {};
+
+/** Register service implementations for MiMo media signing and transcoding. */
+export const registerMimoMediaHooks = (hooks: MimoMediaHooks): void => {
+    registeredHooks = { ...registeredHooks, ...hooks };
+};
 
 /** MiMo takes base64 payloads up to 50MB, i.e. ~37MB of raw bytes. */
 const MAX_INLINE_BYTES = 37 * 1024 * 1024;
@@ -74,14 +91,15 @@ const readSignedUrlTtlSeconds = (): number => {
 /** Re-encode a webm/other-container clip into MP4 in place. */
 const toMp4Part = async (
     part: UnifiedContentPart,
-    logContext: string
+    logContext: string,
+    hooks: MimoMediaHooks
 ): Promise<UnifiedContentPart | null> => {
-    if (!part.mediaData) return null;
+    if (!part.mediaData || !hooks.transcodeVideoToMp4) return null;
 
     const source = Buffer.from(part.mediaData, 'base64');
     if (source.length === 0 || source.length > MAX_INLINE_BYTES) return null;
 
-    const transcoded = await transcodeVideoToMp4(source, part.mimeType ?? 'video/webm');
+    const transcoded = await hooks.transcodeVideoToMp4(source, part.mimeType ?? 'video/webm');
     // A converter that predates `format=mp4` answers with the input container
     // unchanged; treat that as a failure instead of forwarding a webm part the
     // request builder would only drop.
@@ -103,10 +121,13 @@ const toMp4Part = async (
  * Returns null (dropped) when signing is unavailable or the file is over the
  * per-kind cap.
  */
-const toRemotePart = async (part: UnifiedContentPart): Promise<UnifiedContentPart | null> => {
-    if (!part.fileUri || !withinRemoteSizeCap(part)) return null;
+const toRemotePart = async (
+    part: UnifiedContentPart,
+    hooks: MimoMediaHooks
+): Promise<UnifiedContentPart | null> => {
+    if (!part.fileUri || !withinRemoteSizeCap(part) || !hooks.createSignedReadUrl) return null;
 
-    const remoteUrl = await createSignedReadUrl(part.fileUri, readSignedUrlTtlSeconds());
+    const remoteUrl = await hooks.createSignedReadUrl(part.fileUri, readSignedUrlTtlSeconds());
     if (!remoteUrl) return null;
 
     return { ...part, remoteUrl };
@@ -115,7 +136,8 @@ const toRemotePart = async (part: UnifiedContentPart): Promise<UnifiedContentPar
 /** Prepare one part for the request: keep, transcode, sign, or drop. */
 const preparePart = async (
     part: UnifiedContentPart,
-    logContext: string
+    logContext: string,
+    hooks: MimoMediaHooks
 ): Promise<UnifiedContentPart | null> => {
     if (part.type === 'text') return part;
 
@@ -127,9 +149,9 @@ const preparePart = async (
     }
 
     const prepared = plan === 'remote'
-        ? await toRemotePart(part)
+        ? await toRemotePart(part, hooks)
         : plan === 'transcode'
-            ? await toMp4Part(part, logContext)
+            ? await toMp4Part(part, logContext, hooks)
             : null;
 
     if (!prepared) {
@@ -144,8 +166,10 @@ const preparePart = async (
  * place.
  */
 export const prepareMimoMedia = async (
-    messages: UnifiedMessage[]
+    messages: UnifiedMessage[],
+    hooks: MimoMediaHooks = {}
 ): Promise<UnifiedMessage[]> => {
+    const resolvedHooks: MimoMediaHooks = { ...registeredHooks, ...hooks };
     const prepared: UnifiedMessage[] = [];
 
     for (const [index, message] of messages.entries()) {
@@ -157,7 +181,7 @@ export const prepareMimoMedia = async (
         const logContext = `message#${index}`;
         const parts: UnifiedContentPart[] = [];
         for (const part of message.content) {
-            const result = await preparePart(part, logContext);
+            const result = await preparePart(part, logContext, resolvedHooks);
             if (result) parts.push(result);
         }
         prepared.push({ ...message, content: parts });

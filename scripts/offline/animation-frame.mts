@@ -24,8 +24,8 @@ for (const key of ['GEMINI_API_KEY', 'OPENAI_API_KEY', 'DEEPSEEK_API_KEY', 'GROK
 const db = await setupOfflineDb();
 const { Message, putCachedMedia } = db;
 
-const { resolveCapturedMedia, verifiedMediaMime } = await import('../../src/db/autoSave.js');
-type CapturedMedia = import('../../src/db/autoSave.js').CapturedMedia;
+const { resolveCapturedMedia, verifiedMediaMime } = await import('../../src/ingest/auto-save.js');
+type CapturedMedia = import('../../src/ingest/auto-save.js').CapturedMedia;
 const { createAnimationFrameLoader } = await import('../../src/reply/tools/animation-frame.js');
 const { loadContextImages } = await import('../../src/reply/tools/image-references.js');
 const { getCachedMedia } = await import('../../src/services/media-cache-service.js');

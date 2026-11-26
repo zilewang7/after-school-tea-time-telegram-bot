@@ -25,7 +25,7 @@ import {
     extractTelegramMessageLinks,
     type ParsedTelegramMessageLink,
     type TelegramMessageLink,
-} from '../reply/commands/telegram-message-link.js';
+} from '../shared/telegram-message-link.js';
 import type { ContextMessage } from '../db/queries/context-queries.js';
 import type { UnifiedContentPart } from '../ai/types.js';
 import {

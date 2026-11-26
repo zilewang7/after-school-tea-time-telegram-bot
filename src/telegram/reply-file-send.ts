@@ -13,7 +13,7 @@
 import { InputFile, type Api } from 'grammy';
 import type { InlineKeyboardMarkup } from 'grammy/types';
 import type { FileDelivery } from '../ai/types.js';
-import { sendWithCaptionFallback, type ImageCaptionFields } from '../reply/tools/image-message.js';
+import { sendWithCaptionFallback, type ImageCaptionFields } from './image-message.js';
 import { isErr, to, type Result } from '../shared/result.js';
 
 export interface ReplyFileTarget {

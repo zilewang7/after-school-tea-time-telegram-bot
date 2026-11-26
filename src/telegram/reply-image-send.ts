@@ -11,7 +11,7 @@
 import { GrammyError, type Api } from 'grammy';
 import type { InlineKeyboardMarkup } from 'grammy/types';
 import { sniffMediaMime } from '../ai/image-generation/image-mime.js';
-import { imageInputFile, sendWithCaptionFallback, type ImageCaptionFields } from '../reply/tools/image-message.js';
+import { imageInputFile, sendWithCaptionFallback, type ImageCaptionFields } from './image-message.js';
 import { isErr, to, type Result } from '../shared/result.js';
 
 export interface ReplyImageTarget {

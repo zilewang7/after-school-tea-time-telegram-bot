@@ -112,7 +112,7 @@ const { aggregateUsageByModelRoute, findReplyMetricsByReply, findReplyMetricsInW
 );
 const { listReplyMetricsByReply } = await import('../../src/panel/views/reply-metrics-view.js');
 const { countPriorityHits } = await import('../../src/panel/stats/priority-hits.js');
-const { clearExpiredData } = await import('../../src/db/autoSave.js');
+const { clearExpiredData } = await import('../../src/ingest/auto-save.js');
 const { handleReply } = await import('../../src/reply/chat-handler.js');
 const { handleRetryRequest } = await import('../../src/reply/retry-handler.js');
 const { handlePicgptCommand } = await import('../../src/reply/commands/picgpt-handler.js');

@@ -35,7 +35,7 @@ const { QueryTypes } = await import('@sequelize/core');
 const { isJsonRecord } = await import('../../src/panel/json.js');
 const { findShareRowByToken } = await import('../../src/panel/share/share-store.js');
 const { setPanelRunning } = await import('../../src/panel/panel-state.js');
-const { autoSave } = await import('../../src/db/autoSave.js');
+const { autoSave } = await import('../../src/ingest/auto-save.js');
 const shareCommand = await import('../../src/cmd/commands/share.js');
 const { registerShareCommand, createShareCommandLimiter, USAGE_TEXT, OFF_TEXT, PERSONAL_ACCOUNT_TEXT } =
     shareCommand;

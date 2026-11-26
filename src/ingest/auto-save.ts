@@ -1,21 +1,21 @@
 import type { Bot } from "grammy";
 import type { Api } from "grammy";
 import { match } from "ts-pattern";
-import { saveMessage, findBotResponseByMessageId, BotResponse, MediaCache, LinkPreviewCache, MessageLink, ButtonState } from "./index.js";
-import { MessageAttachment } from './messageAttachmentDTO.js';
-import { CustomEmojiAsset } from './customEmojiAssetDTO.js';
-import { MessageRevision } from './messageRevisionDTO.js';
-import { deleteMessageMediaForKeys } from './queries/message-media-queries.js';
-import { deleteOrphanReactions, deleteReactionsForMessageKeys } from './queries/reaction-queries.js';
+import { saveMessage, findBotResponseByMessageId, BotResponse, MediaCache, LinkPreviewCache, MessageLink, ButtonState } from "../db/index.js";
+import { MessageAttachment } from '../db/messageAttachmentDTO.js';
+import { CustomEmojiAsset } from '../db/customEmojiAssetDTO.js';
+import { MessageRevision } from '../db/messageRevisionDTO.js';
+import { deleteMessageMediaForKeys } from '../db/queries/message-media-queries.js';
+import { deleteOrphanReactions, deleteReactionsForMessageKeys } from '../db/queries/reaction-queries.js';
 import {
     deleteOrphanReplyParts,
     deleteReplyPartsForCanonical,
     deleteReplyPartsForMessageKeys,
-} from './queries/reply-part-queries.js';
-import { sequelize } from './config.js';
+} from '../db/queries/reply-part-queries.js';
+import { sequelize } from '../db/config.js';
 import { parseChatCommand, serializeChatCommand } from "../reply/commands/chat-command-parser.js";
-import { withBusyRetry } from "./busy-retry.js";
-import { Message } from "./messageDTO.js";
+import { withBusyRetry } from "../db/busy-retry.js";
+import { Message } from "../db/messageDTO.js";
 import { Op } from "@sequelize/core";
 import {
     getMediaGroupIdTemp,
@@ -32,42 +32,42 @@ import {
     markPendingEditWhileProcessing,
     showsResumableVersion,
 } from '../state.js';
-import { buildResponseButtons } from '../cmd/menus/index.js';
+import { buildResponseButtons } from '../telegram/response-buttons.js';
 import { getCachedMedia, putCachedMedia } from '../services/media-cache-service.js';
 import { isGeminiSupportedMimeType } from '../ai/supported-mime.js';
 import { sniffMediaMime } from '../ai/image-generation/image-mime.js';
 import { uploadFileToGcs, uploadBytesToGcs, deleteGcsObject, isGcsEnabled } from '../services/gcs-service.js';
 import { acquireLinkPreview, extractFirstUrl, isLuoxuPreviewEnabled } from '../services/luoxu-preview-service.js';
 import { acquireTgMessageLinkPreviews, type TgChatLookup } from '../services/tg-message-link-service.js';
-import { extractTelegramMessageLinks } from '../reply/commands/telegram-message-link.js';
+import { extractTelegramMessageLinks } from '../shared/telegram-message-link.js';
 import { chatTitleOf } from '../telegram/chat-title.js';
-import { TgMessageLinkCache } from './tgMessageLinkCacheDTO.js';
+import { TgMessageLinkCache } from '../db/tgMessageLinkCacheDTO.js';
 import { primeDanmakuSnapshot } from '../services/bilibili-danmaku-service.js';
 import { acquireOcr, isLuoxuOcrEnabled } from '../services/luoxu-ocr-service.js';
 import { convertTgsToWebm, normalizeShortVideo, renderTgsStill } from '../services/tgs-client.js';
 import { to } from 'await-to-js';
 import { readFile, unlink } from 'node:fs/promises';
 import type { Document, Message as TgMessage, MessageEntity, MessageOrigin, RichBlock, RichMessage, TextQuote, User } from 'grammy/types';
-import { upsertTelegramUser } from './queries/user-queries.js';
-import { harvestChatRegistry } from './queries/panel-registry.js';
-import { SettingsAudit } from './settingsAuditDTO.js';
-import { WorkspaceFile } from './workspaceFileDTO.js';
-import { purgeOrphanedExclusions } from './queries/context-exclusions.js';
+import { upsertTelegramUser } from '../db/queries/user-queries.js';
+import { harvestChatRegistry } from '../db/queries/panel-registry.js';
+import { SettingsAudit } from '../db/settingsAuditDTO.js';
+import { WorkspaceFile } from '../db/workspaceFileDTO.js';
+import { purgeOrphanedExclusions } from '../db/queries/context-exclusions.js';
 import { recordCleanupRun } from '../services/cleanup-status.js';
 import { entitiesToMarkdown } from 'telegram-md-entities';
-import { renderQuoteRichTexts, renderRichMessage, type RichBlocksRenderer } from './rich-message-text.js';
-import { describeMessageContent } from './message-kind.js';
+import { renderQuoteRichTexts, renderRichMessage, type RichBlocksRenderer } from '../db/rich-message-text.js';
+import { describeMessageContent } from '../db/message-kind.js';
 import { extractCustomEmojiOccurrences } from '../services/custom-emoji-extractor.js';
 import { acquireCustomEmojiAttachments } from '../services/custom-emoji-service.js';
 import {
     failPendingCustomEmojiAttachments,
     replaceCustomEmojiAttachments,
-} from './queries/message-attachment-queries.js';
+} from '../db/queries/message-attachment-queries.js';
 import {
     claimMessageRevision,
     updateMessageMediaForRevision,
     type MessageRevisionToken,
-} from './queries/message-revision-queries.js';
+} from '../db/queries/message-revision-queries.js';
 import { downloadTelegramFileBytes, resolveTelegramFile } from '../services/telegram-file-service.js';
 
 // Parse sizes like "300M", "1G", "500K", "12345" (bare bytes); undefined on bad input
@@ -1506,17 +1506,24 @@ const messageKeyOf = (row: Message): MessageKey => ({
 
 /**
  * Apply `mutateChunk` to the keys in small batches, yielding to the event loop
- * between them so a pending write gets its turn at the lock.
+ * between them so a pending write gets its turn at the lock. Stops cleanly
+ * between batches when `signal` aborts.
  */
 const mutateInChunks = async <T>(
     ids: T[],
-    mutateChunk: (chunk: T[]) => Promise<unknown>
+    mutateChunk: (chunk: T[]) => Promise<unknown>,
+    signal?: AbortSignal
 ): Promise<number> => {
+    let mutated = 0;
     for (let start = 0; start < ids.length; start += CLEANUP_BATCH_SIZE) {
-        await mutateChunk(ids.slice(start, start + CLEANUP_BATCH_SIZE));
+        if (signal?.aborted) return mutated;
+        const chunk = ids.slice(start, start + CLEANUP_BATCH_SIZE);
+        await mutateChunk(chunk);
+        mutated += chunk.length;
+        if (signal?.aborted) return mutated;
         await new Promise((resolve) => setImmediate(resolve));
     }
-    return ids.length;
+    return mutated;
 };
 
 interface StaleMessageDeleteCounts {
@@ -1531,7 +1538,8 @@ interface StaleMessageDeleteCounts {
 
 const deleteStaleMessagesInChunks = async (
     candidateKeys: MessageKey[],
-    cutoff: Date
+    cutoff: Date,
+    signal?: AbortSignal
 ): Promise<StaleMessageDeleteCounts> => {
     const counts: StaleMessageDeleteCounts = {
         attachments: 0,
@@ -1542,6 +1550,7 @@ const deleteStaleMessagesInChunks = async (
         messages: 0,
     };
     for (let start = 0; start < candidateKeys.length; start += CLEANUP_BATCH_SIZE) {
+        if (signal?.aborted) return counts;
         const candidates = candidateKeys.slice(start, start + CLEANUP_BATCH_SIZE);
         const deleted = await sequelize.transaction(async (transaction) => {
             const stillStale = await Message.findAll({
@@ -1590,17 +1599,27 @@ const deleteStaleMessagesInChunks = async (
         counts.replyParts += deleted.replyParts;
         counts.media += deleted.media;
         counts.messages += deleted.messages;
+        if (signal?.aborted) return counts;
         await new Promise((resolve) => setImmediate(resolve));
     }
     return counts;
 };
 
+const logCleanupAborted = (startedAt: number): void => {
+    console.log(`[autoClear] cleanup aborted during shutdown after ${Date.now() - startedAt}ms`);
+};
+
 /**
  * One cleanup pass. Exported so the offline suite can run it directly instead of
- * waiting an hour for the timer.
+ * waiting an hour for the timer. Pass an AbortSignal so shutdown stops the sweep
+ * cleanly between batches and releases the SQLite write lock.
  */
-export const clearExpiredData = async (): Promise<void> => {
+export const clearExpiredData = async (signal?: AbortSignal): Promise<void> => {
     const startedAt = Date.now();
+    if (signal?.aborted) {
+        logCleanupAborted(startedAt);
+        return;
+    }
     try {
         const now = new Date();
         const oneWeekAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
@@ -1612,11 +1631,20 @@ export const clearExpiredData = async (): Promise<void> => {
             where: { date: { [Op.lt]: oneWeekAgo.toISOString() } },
             attributes: ['chatId', 'messageId'],
         });
+        if (signal?.aborted) {
+            logCleanupAborted(startedAt);
+            return;
+        }
         const staleMessageKeys = staleMessages.map(messageKeyOf);
         const staleMessageDeleteCounts = await deleteStaleMessagesInChunks(
             staleMessageKeys,
-            oneWeekAgo
+            oneWeekAgo,
+            signal
         );
+        if (signal?.aborted) {
+            logCleanupAborted(startedAt);
+            return;
+        }
         const attachmentResult = staleMessageDeleteCounts.attachments;
         const revisionResult = staleMessageDeleteCounts.revisions;
         const reactionResult = staleMessageDeleteCounts.reactions;
@@ -1630,8 +1658,13 @@ export const clearExpiredData = async (): Promise<void> => {
         });
         const messageLinkResult = await mutateInChunks(
             staleLinks.map((row) => row.id),
-            (chunk) => MessageLink.destroy({ where: { id: { [Op.in]: chunk } } })
+            (chunk) => MessageLink.destroy({ where: { id: { [Op.in]: chunk } } }),
+            signal
         );
+        if (signal?.aborted) {
+            logCleanupAborted(startedAt);
+            return;
+        }
 
         // 清理 BotResponse 表
         const staleResponses = await BotResponse.findAll({
@@ -1640,16 +1673,33 @@ export const clearExpiredData = async (): Promise<void> => {
         });
         const botResponseResult = await mutateInChunks(
             staleResponses.map((row) => row.messageId),
-            (chunk) => BotResponse.destroy({ where: { messageId: { [Op.in]: chunk } } })
+            (chunk) => BotResponse.destroy({ where: { messageId: { [Op.in]: chunk } } }),
+            signal
         );
+        if (signal?.aborted) {
+            logCleanupAborted(startedAt);
+            return;
+        }
 
         // The delivery ledger hangs on the reply, not on a message row of its
         // own: once the response is gone, its parts go with it. The message
         // cascade above saw only the ids that had a message row.
         let replyPartResult = staleMessageDeleteCounts.replyParts;
         for (let start = 0; start < staleResponses.length; start += CLEANUP_BATCH_SIZE) {
+            if (signal?.aborted) {
+                logCleanupAborted(startedAt);
+                return;
+            }
             for (const row of staleResponses.slice(start, start + CLEANUP_BATCH_SIZE)) {
+                if (signal?.aborted) {
+                    logCleanupAborted(startedAt);
+                    return;
+                }
                 replyPartResult += await deleteReplyPartsForCanonical(row.chatId, row.messageId);
+            }
+            if (signal?.aborted) {
+                logCleanupAborted(startedAt);
+                return;
             }
             await new Promise((resolve) => setImmediate(resolve));
         }
@@ -1658,17 +1708,33 @@ export const clearExpiredData = async (): Promise<void> => {
         // cleaned up before a message row was ever written, or the tiny window a
         // cleanup committed in. Run after bot_responses, or those rows look
         // orphaned. The cascade above already deleted the common case.
+        if (signal?.aborted) {
+            logCleanupAborted(startedAt);
+            return;
+        }
         const orphanReactionResult = await deleteOrphanReactions(oneWeekAgo);
 
         // Ledger rows the cascades could not see: the reply's response row was
         // already gone when this pass started (a crashed reply, or a version
         // switch that deleted the message), so neither cleanup key matched it.
         // Run after bot_responses, or those rows look orphaned too.
+        if (signal?.aborted) {
+            logCleanupAborted(startedAt);
+            return;
+        }
         const orphanReplyPartResult = await deleteOrphanReplyParts(oneWeekAgo);
 
         // 面板排除记录随所属消息失效：超过 7 天且消息行与回复行都已删除才清理
         // （bot 行的 date 每次收尾 / 切换版本都会重置，单独按 7 天过期会让被排除的回复溜回上下文）
+        if (signal?.aborted) {
+            logCleanupAborted(startedAt);
+            return;
+        }
         const exclusionResult = await purgeOrphanedExclusions(oneWeekAgo);
+        if (signal?.aborted) {
+            logCleanupAborted(startedAt);
+            return;
+        }
 
         // 媒体字节跟随消息行保留 7 天：面板/分享要能展示，上下文也还能回放
         const messagesWithStaleBytes = await Message.findAll({
@@ -1683,20 +1749,34 @@ export const clearExpiredData = async (): Promise<void> => {
             (chunk) => Message.update(
                 { file: null, fileMime: null },
                 { where: { [Op.or]: chunk } }
-            )
+            ),
+            signal
         );
+        if (signal?.aborted) {
+            logCleanupAborted(startedAt);
+            return;
+        }
 
         // GCS 大文件引用保留 7 天：删 GCS 对象 + 删缓存行（与消息行/媒体字节同周期）
         const staleGcsRows = await MediaCache.findAll({
             where: { fileUri: { [Op.ne]: null }, createdAt: { [Op.lt]: oneWeekAgo } },
         });
         for (const row of staleGcsRows) {
+            if (signal?.aborted) {
+                logCleanupAborted(startedAt);
+                return;
+            }
             if (row.fileUri) await deleteGcsObject(row.fileUri);
         }
         await mutateInChunks(
             staleGcsRows.map((row) => row.fileUniqueId),
-            (chunk) => MediaCache.destroy({ where: { fileUniqueId: { [Op.in]: chunk } } })
+            (chunk) => MediaCache.destroy({ where: { fileUniqueId: { [Op.in]: chunk } } }),
+            signal
         );
+        if (signal?.aborted) {
+            logCleanupAborted(startedAt);
+            return;
+        }
 
         // 共享媒体缓存按 LRU 清理：超 7 天未被命中续期的删除
         const staleMediaCache = await MediaCache.findAll({
@@ -1705,8 +1785,13 @@ export const clearExpiredData = async (): Promise<void> => {
         });
         const mediaCacheResult = await mutateInChunks(
             staleMediaCache.map((row) => row.fileUniqueId),
-            (chunk) => MediaCache.destroy({ where: { fileUniqueId: { [Op.in]: chunk } } })
+            (chunk) => MediaCache.destroy({ where: { fileUniqueId: { [Op.in]: chunk } } }),
+            signal
         );
+        if (signal?.aborted) {
+            logCleanupAborted(startedAt);
+            return;
+        }
 
         const staleEmojiAssets = await CustomEmojiAsset.findAll({
             where: { lastUsedAt: { [Op.lt]: oneWeekAgo } },
@@ -1714,8 +1799,13 @@ export const clearExpiredData = async (): Promise<void> => {
         });
         const emojiAssetResult = await mutateInChunks(
             staleEmojiAssets.map((row) => row.customEmojiId),
-            (chunk) => CustomEmojiAsset.destroy({ where: { customEmojiId: { [Op.in]: chunk } } })
+            (chunk) => CustomEmojiAsset.destroy({ where: { customEmojiId: { [Op.in]: chunk } } }),
+            signal
         );
+        if (signal?.aborted) {
+            logCleanupAborted(startedAt);
+            return;
+        }
 
         // 链接预览缓存同节奏 LRU 清理（其媒体行已由上面的 MediaCache 清理覆盖）
         const stalePreviews = await LinkPreviewCache.findAll({
@@ -1724,8 +1814,13 @@ export const clearExpiredData = async (): Promise<void> => {
         });
         const linkPreviewResult = await mutateInChunks(
             stalePreviews.map((row) => row.url),
-            (chunk) => LinkPreviewCache.destroy({ where: { url: { [Op.in]: chunk } } })
+            (chunk) => LinkPreviewCache.destroy({ where: { url: { [Op.in]: chunk } } }),
+            signal
         );
+        if (signal?.aborted) {
+            logCleanupAborted(startedAt);
+            return;
+        }
 
         // TG 消息链接快照同节奏 LRU 清理（媒体行同样由上面的 MediaCache 清理覆盖）
         const staleTgLinks = await TgMessageLinkCache.findAll({
@@ -1734,8 +1829,13 @@ export const clearExpiredData = async (): Promise<void> => {
         });
         const tgLinkResult = await mutateInChunks(
             staleTgLinks.map((row) => row.url),
-            (chunk) => TgMessageLinkCache.destroy({ where: { url: { [Op.in]: chunk } } })
+            (chunk) => TgMessageLinkCache.destroy({ where: { url: { [Op.in]: chunk } } }),
+            signal
         );
+        if (signal?.aborted) {
+            logCleanupAborted(startedAt);
+            return;
+        }
 
         // 模型工作区文件同节奏 LRU 清理。删除条件里再带一次 cutoff：select 与
         // delete 之间被读/写续期的行不能被误删（与消息清理的重查同一思路）。
@@ -1747,10 +1847,18 @@ export const clearExpiredData = async (): Promise<void> => {
         // between the select and the delete survives and must not be reported.
         let workspaceResult = 0;
         for (let start = 0; start < staleWorkspaceFiles.length; start += CLEANUP_BATCH_SIZE) {
+            if (signal?.aborted) {
+                logCleanupAborted(startedAt);
+                return;
+            }
             const chunk = staleWorkspaceFiles.slice(start, start + CLEANUP_BATCH_SIZE).map((row) => row.id);
             workspaceResult += await WorkspaceFile.destroy({
                 where: { id: { [Op.in]: chunk }, lastUsedAt: { [Op.lt]: oneWeekAgo } },
             });
+            if (signal?.aborted) {
+                logCleanupAborted(startedAt);
+                return;
+            }
             await new Promise((resolve) => setImmediate(resolve));
         }
 
@@ -1761,8 +1869,13 @@ export const clearExpiredData = async (): Promise<void> => {
         });
         const settingsAuditResult = await mutateInChunks(
             staleAuditRows.map((row) => row.id),
-            (chunk) => SettingsAudit.destroy({ where: { id: { [Op.in]: chunk } } })
+            (chunk) => SettingsAudit.destroy({ where: { id: { [Op.in]: chunk } } }),
+            signal
         );
+        if (signal?.aborted) {
+            logCleanupAborted(startedAt);
+            return;
+        }
 
         const elapsedMs = Date.now() - startedAt;
         const summary = `Cleared ${messageResult} messages, ${attachmentResult} attachments, ${revisionResult} revisions, ${reactionResult} message reactions, ${orphanReactionResult} orphaned message reactions, ${replyPartResult} reply part rows, ${orphanReplyPartResult} orphaned reply part rows, ${mediaResult} reply media rows, ${messageLinkResult} message links, ${botResponseResult} bot responses before ${oneWeekAgo.toISOString()}; dropped ${exclusionResult} orphaned context exclusions; cleared media bytes of ${mediaClearedCount} messages before ${oneWeekAgo.toISOString()}; deleted ${staleGcsRows.length} GCS refs; evicted ${mediaCacheResult} media cache entries, ${emojiAssetResult} emoji assets, ${linkPreviewResult} link previews, ${tgLinkResult} tg message link snapshots, ${workspaceResult} workspace files; cleared ${settingsAuditResult} settings audit rows before ${oneYearAgo.toISOString()} (${elapsedMs}ms)`;
@@ -1777,7 +1890,25 @@ export const clearExpiredData = async (): Promise<void> => {
     }
 };
 
-// 自动清除一周前的消息
-export const autoClear = () => {
-    setInterval(() => void clearExpiredData(), 1000 * 60 * 60); // 每小时运行一次
-}
+let autoClearTimer: ReturnType<typeof setInterval> | null = null;
+let autoClearController: AbortController | null = null;
+
+/** Start the hourly cleanup timer; subsequent calls are no-ops until stopped. */
+export const autoClear = (): void => {
+    if (autoClearTimer !== null) return;
+    const controller = new AbortController();
+    autoClearController = controller;
+    autoClearTimer = setInterval(() => void clearExpiredData(controller.signal), 1000 * 60 * 60);
+};
+
+/** Stop the hourly cleanup timer and abort any in-flight sweep. Safe to call repeatedly. */
+export const stopAutoClear = (): void => {
+    if (autoClearTimer !== null) {
+        clearInterval(autoClearTimer);
+        autoClearTimer = null;
+    }
+    if (autoClearController !== null) {
+        autoClearController.abort();
+        autoClearController = null;
+    }
+};

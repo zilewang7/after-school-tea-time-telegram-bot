@@ -68,7 +68,7 @@ const { createReplyToolState } = await import('../../src/reply/tools/reply-tool-
 const { findReplyMetricsByReply } = await import('../../src/db/queries/reply-metrics.js');
 const { registerResponseCallbacks } = await import('../../src/cmd/menus/response-menu.js');
 const { registerHealthRoute } = await import('../../src/panel/routes/health.js');
-const { autoUpdate } = await import('../../src/db/autoSave.js');
+const { autoUpdate } = await import('../../src/ingest/auto-save.js');
 const state = await import('../../src/state.js');
 
 type BotMessageSession = import('../../src/services/bot-message-service.js').BotMessageSession;

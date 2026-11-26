@@ -5,7 +5,7 @@
  *   0  shared, types, config, util.ts, state.ts   small helpers and config readers
  *   1  db                                          models and queries
  *   2  services, telegram, ai, widget-image        talk to the outside world
- *   3  reply, cmd, panel                           features built on the above
+ *   3  ingest, reply, cmd, panel                   features built on the above
  *   4  index.ts                                    the entry point
  *
  * The key is the first path segment below src/: a directory, or a file that
@@ -22,6 +22,7 @@ const LAYER_BY_ENTRY: ReadonlyMap<string, number> = new Map([
     ['telegram', 2],
     ['ai', 2],
     ['widget-image', 2],
+    ['ingest', 3],
     ['reply', 3],
     ['cmd', 3],
     ['panel', 3],

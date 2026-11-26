@@ -359,7 +359,7 @@ export const createResumeBench = async () => {
     const { handleReply } = await import('../../../src/reply/chat-handler.js');
     const { menuLoad } = await import('../../../src/cmd/menu.js');
     const { replyLoad } = await import('../../../src/reply/loader.js');
-    const { autoUpdate } = await import('../../../src/db/autoSave.js');
+    const { autoUpdate } = await import('../../../src/ingest/auto-save.js');
     const mcp = await import('../../../src/ai/mcp/index.js');
     const { STICKER_CATALOG } = await import('../../../src/services/sticker-catalog.js');
     const { checkpointRegistry } = await import('../../../src/reply/resume/checkpoint-registry.js');

@@ -5,7 +5,6 @@
  * Uses raw callback_query handling instead of Grammy Menu
  * because Menu's callback_data format is too complex for manual InlineKeyboard
  */
-import { InlineKeyboard } from 'grammy';
 import type { Bot, Context } from 'grammy';
 import { match } from 'ts-pattern';
 import { to } from '../../shared/result.js';
@@ -26,9 +25,16 @@ import {
     showsResumableVersion,
     tryClaimReplyRerun,
 } from '../../state.js';
+import {
+    buildResponseButtons,
+    RESPONSE_CALLBACK_PREFIX,
+    type ResponseButtonOptions,
+} from '../../telegram/response-buttons.js';
+
+export { buildResponseButtons, type ResponseButtonOptions };
 
 // Callback data prefix for our buttons
-const CALLBACK_PREFIX = 'resp:';
+const CALLBACK_PREFIX = RESPONSE_CALLBACK_PREFIX;
 
 /** A retry or continue click while a retry, a continue or a version switch holds the claim */
 const RERUN_CLAIMED_NOTICE = '正在处理';
@@ -484,63 +490,4 @@ const handleSwitch = async (ctx: Context, direction: 'prev' | 'next'): Promise<v
     } finally {
         if (!switchDetached) releaseReplyRerun(chatId, firstMessageId);
     }
-};
-
-export interface ResponseButtonOptions {
-    /**
-     * The version on screen is a failed or stopped latest version whose
-     * checkpoint is kept: offer "继续" next to "重试"
-     */
-    readonly resumable?: boolean;
-}
-
-/** "继续" in front of the rest of the row, when the version can be continued */
-const keyboardStartingWithContinue = (resumable: boolean): InlineKeyboard => {
-    const keyboard = new InlineKeyboard();
-    if (resumable) keyboard.text('继续', `${CALLBACK_PREFIX}continue`);
-    return keyboard;
-};
-
-/**
- * Build InlineKeyboard based on button state
- * Uses simple callback_data format: resp:action
- */
-export const buildResponseButtons = (
-    buttonState: ButtonState,
-    currentVersionIndex: number = 0,
-    totalVersions: number = 1,
-    options: ResponseButtonOptions = {}
-): InlineKeyboard | undefined => {
-    const resumable = options.resumable === true;
-    return match(buttonState)
-        .with(ButtonState.PROCESSING, () =>
-            new InlineKeyboard().text('停止', `${CALLBACK_PREFIX}stop`)
-        )
-        .with(ButtonState.RETRY_ONLY, () =>
-            keyboardStartingWithContinue(resumable).text('重试', `${CALLBACK_PREFIX}retry`)
-        )
-        // An edit does not block continuing (D11): the user picks either
-        .with(ButtonState.EDIT_DETECTED, () =>
-            keyboardStartingWithContinue(resumable).text('检测到用户编辑，是否重试', `${CALLBACK_PREFIX}retry`)
-        )
-        .with(ButtonState.HAS_VERSIONS, () => {
-            const kb = new InlineKeyboard();
-
-            if (currentVersionIndex > 0) {
-                kb.text('<', `${CALLBACK_PREFIX}prev`);
-            }
-
-            if (resumable) {
-                kb.text('继续', `${CALLBACK_PREFIX}continue`);
-            }
-
-            kb.text('重试', `${CALLBACK_PREFIX}retry`);
-
-            if (currentVersionIndex < totalVersions - 1) {
-                kb.text('>', `${CALLBACK_PREFIX}next`);
-            }
-
-            return kb;
-        })
-        .otherwise(() => undefined);
 };
