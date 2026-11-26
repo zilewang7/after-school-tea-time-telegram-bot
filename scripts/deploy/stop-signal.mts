@@ -4,9 +4,9 @@
  * It does when pm2 is the process the container's init passes signals to: pm2
  * then asks the bot to shut down, and the bot closes the database, which
  * merges the write-ahead log into the file. It does not when a shell sits in
- * between or is PID 1 itself: the signal is dropped, docker kills everything
- * after the grace period, and the log stays where it is, in the container's
- * own layer. A restart keeps that layer; a recreate (`up -d`) deletes it.
+ * between or is PID 1 itself: the signal is dropped and docker kills everything
+ * after the grace period, skipping graceful shutdown and WAL checkpointing
+ * (which also loses uncheckpointed WAL on recreate if only a single file is mounted).
  */
 import { spawnSync } from 'node:child_process';
 import { PRODUCTION_CONTAINER } from '../lib/production.mts';

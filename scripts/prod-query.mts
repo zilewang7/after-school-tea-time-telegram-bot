@@ -1,6 +1,6 @@
 /**
  * Read-only query against the production database, run inside its container
- * (never open ./database.sqlite on the host; scripts/lib/production.mts says why).
+ * (never open production SQLite files on the host; scripts/lib/production.mts says why).
  *
  *   npx tsx scripts/prod-query.mts --tables
  *   npx tsx scripts/prod-query.mts --schema telegram_messages

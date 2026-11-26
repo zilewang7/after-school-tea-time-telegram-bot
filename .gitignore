@@ -6,6 +6,7 @@ dist
 *.sqlite-journal
 *.sqlite-wal
 *.sqlite-shm
+db-data/
 gcp-sa.json
 tmp/
 .pnpm-store/

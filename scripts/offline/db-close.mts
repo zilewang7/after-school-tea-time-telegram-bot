@@ -2,10 +2,10 @@
  * The shutdown ends with closeDatabase (src/db/config.ts), which leaves nothing
  * in the write-ahead log.
  *
- * Production mounts the database file alone; the log sits in the container's
- * own layer and is gone when the container is recreated. These cases look at
- * the file the way such a container finds it: a copy of the file, without the
- * log next to it.
+ * Even with production mounting the ./db-data/ directory so WAL sidecars
+ * persist across container recreates, a clean shutdown should still leave the
+ * main database file self-contained. These cases look at a copy of the file
+ * taken without its -wal sidecar next to it.
  */
 import { copyFileSync, existsSync, statSync } from 'node:fs';
 import { dirname, join } from 'node:path';

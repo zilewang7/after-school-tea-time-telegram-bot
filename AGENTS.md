@@ -9,11 +9,13 @@ runs from the same directory. Most rules below exist because of that.
 
 ## Hard rules
 
-1. **Never open `database.sqlite` on the host.** Not with sqlite3, not through
-   a script, not a copy of it. Production mounts that single file and keeps
-   its write-ahead log inside the container; a host process sees stale data
-   and can corrupt the file. To look at production data use
-   `npx tsx scripts/prod-query.mts` (read-only, runs inside the container).
+1. **Never open the production SQLite database (`./db-data/database.sqlite`,
+   or legacy `./database.sqlite`) on the host.** Not with sqlite3, not through
+   a script, not a copy of it. Production mounts `./db-data/` so `-wal` and
+   `-shm` persist alongside the database file, but a host process opening the
+   live files still contends with the container and risks corruption or stale
+   reads. To look at production data use `npx tsx scripts/prod-query.mts`
+   (read-only, runs inside the container).
 2. **A script that imports anything from `src/` imports
    `scripts/offline/harness.mts` first** (and awaits `setupOfflineDb()` when it
    needs the database). The harness points the database at a scratch file.
@@ -174,11 +176,13 @@ re-read them, and recreating costs about a minute. A change to the
 `docker compose up -d --build k-on-bot`, after
 `bash scripts/deploy/rehearse.sh --from-production` passed.
 
-Recreating throws away the container's own files. The database's write-ahead
-log is one of them (only `database.sqlite` is mounted): the bot merges it into
-the file when a stop reaches it, so never end the container with `docker kill`
-or `docker rm -f`. `pnpm deploy:check` says whether a stop reaches the bot; if
-it does not, a restart is still safe, a recreate is not.
+Production mounts `./db-data/` as a directory (with
+`DB_PATH=/app/k-on-bot/db-data/database.sqlite`), so SQLite's `-wal` and `-shm`
+sidecars persist on the host alongside `database.sqlite` across container
+recreates. Still, never end the container with `docker kill` or `docker rm -f`:
+letting `docker stop` reach the bot flushes in-flight work and checkpoints the
+WAL cleanly via `closeDatabase()`. `pnpm deploy:check` says whether a stop
+reaches the bot.
 
 1. `pnpm verify`, push, then `pnpm deploy:check`. It must say READY: the
    restart kills the process, so wait while a reply is being generated. Its

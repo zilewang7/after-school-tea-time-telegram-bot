@@ -2,10 +2,9 @@
  * Read-only access to the production container, shared by the query command
  * and the release checks. Everything here runs through `docker exec`.
  *
- * Why not the database file on the host: production mounts the single file
- * ./database.sqlite and keeps its write-ahead log on the container's own
- * filesystem. A host process sees a stale file without the log, and opening
- * it there can corrupt it.
+ * Why not open the database directly on the host: `prod-query` runs read-only
+ * inside the container (respecting `DB_PATH`) so host processes never contend
+ * on the live SQLite files or risk corrupting them across mount boundaries.
  */
 import { spawnSync } from 'node:child_process';
 
@@ -29,6 +28,7 @@ const TEXT_PREVIEW_LENGTH = 300;
  * opened read-only with query_only on; one JSON object per row goes to stdout.
  */
 const IN_CONTAINER_PROGRAM = `
+const path = require('node:path');
 const sqlite3 = require('/app/k-on-bot/node_modules/sqlite3');
 const request = JSON.parse(Buffer.from(process.argv[1], 'base64').toString('utf8'));
 const fail = (message) => { console.error(message); process.exit(1); };
@@ -39,7 +39,11 @@ const printable = (value) => {
     }
     return value;
 };
-const database = new sqlite3.Database('/app/k-on-bot/database.sqlite', sqlite3.OPEN_READONLY, (openError) => {
+const configuredDbPath = (process.env.DB_PATH || '').trim();
+const databasePath = configuredDbPath
+    ? (path.isAbsolute(configuredDbPath) ? configuredDbPath : path.resolve('/app/k-on-bot', configuredDbPath))
+    : '/app/k-on-bot/database.sqlite';
+const database = new sqlite3.Database(databasePath, sqlite3.OPEN_READONLY, (openError) => {
     if (openError) fail(openError.message);
     database.configure('busyTimeout', 5000);
     setTimeout(() => { database.interrupt(); fail('query timed out'); }, request.timeoutMs);

@@ -13,6 +13,7 @@ services:
       - BOT_PROXY=socks5h://warp:1080
       - TZ=Asia/Shanghai
       - TGS_CONVERTER_URL=http://tgs-converter:8080
+      - DB_PATH=/app/k-on-bot/db-data/database.sqlite
       # --- Large media (all optional; empty → current behavior, see .env) ---
       # Local Bot API server: raises getFile to 200MB. Set in .env to
       # http://telegram-bot-api:8081, then: docker compose --profile bigfile up -d
@@ -39,7 +40,10 @@ services:
       - "traefik.http.routers.k-on-bot-panel.service=k-on-bot-panel"
       - "traefik.http.services.k-on-bot-panel.loadbalancer.server.port=8080"
     volumes:
-      - ./database.sqlite:/app/k-on-bot/database.sqlite
+      # Mount the directory rather than the single file so SQLite's -wal and -shm
+      # sidecars stay on the host alongside database.sqlite and container recreates
+      # never lose uncheckpointed WAL pages.
+      - ./db-data:/app/k-on-bot/db-data
       - ./.env:/app/k-on-bot/.env:ro
       # Multi-line system prompt, referenced by SYSTEM_PROMPT_FILE in .env
       - ./system-prompt.md:/app/k-on-bot/system-prompt.md:ro

@@ -121,7 +121,7 @@ const checkBefore = (target: string): string[] => {
         console.log('stop     reaches the bot: it shuts down and closes the database');
     } else {
         console.log(`stop     does NOT reach the bot: ${stopProblem}`);
-        console.log('         a restart is safe; a recreate (up -d) would lose what is in the write-ahead log');
+        console.log('         a stop will hit SIGKILL after the grace period instead of checkpointing WAL cleanly; verify ./db-data/ mount before recreating');
     }
     return reasons;
 };

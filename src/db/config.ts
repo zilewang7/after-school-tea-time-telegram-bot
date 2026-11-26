@@ -13,14 +13,14 @@ const BUSY_TIMEOUT_MS = 30_000;
 const PRODUCTION_DB_FILE = 'database.sqlite';
 
 /**
- * Where the database lives. DB_PATH wins; without it the production file is
- * used, and only inside the production container.
+ * Where the database lives. DB_PATH wins (production sets it to
+ * /app/k-on-bot/db-data/database.sqlite in compose); without it the legacy
+ * production filename is used, and only inside the production container.
  *
- * Anywhere else an unset DB_PATH is a mistake that used to open the production
- * file from the host: the container keeps its write-ahead log on its own
- * filesystem, so a second process on the host sees a stale file and can corrupt
- * it. Scripts get a scratch database by importing scripts/offline/harness.mts
- * first; the test instance sets DB_PATH in compose.
+ * Anywhere else an unset DB_PATH is a mistake that could open a live
+ * database from the host and contend with or corrupt the running container's
+ * SQLite files. Scripts get a scratch database by importing
+ * scripts/offline/harness.mts first; the test instance sets DB_PATH in compose.
  */
 const resolveStoragePath = (): string => {
     const configured = process.env.DB_PATH;
@@ -60,12 +60,12 @@ const CLOSE_TIMEOUT_MS = 5_000;
 
 /**
  * Closes every connection. SQLite then merges the write-ahead log into the
- * database file and deletes the log.
+ * database file and deletes the -wal/-shm sidecars.
  *
- * Production mounts the database file alone, so the log lives in the
- * container's own layer. A recreated container (every .env change, every image
- * rebuild) starts without it, and a write that was only in the log is gone. A
- * shutdown that ends with this call leaves nothing in the log.
+ * Production mounts the ./db-data/ directory so the WAL sidecars already
+ * survive container recreates on the host, and ending shutdown with this call
+ * still checkpoints pending WAL frames cleanly so the database file is
+ * self-contained on stop.
  *
  * Resolves to whether the database closed in time.
  */
