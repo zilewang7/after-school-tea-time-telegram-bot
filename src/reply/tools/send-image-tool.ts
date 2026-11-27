@@ -92,6 +92,10 @@ const INPUT_SCHEMA = {
         url: { type: 'string', description: 'http(s) 图片直链' },
         urls: pluralSchema('图片直链'),
         caption: { type: 'string', description: '配文（批量时挂第1张）' },
+        spoiler: {
+            type: 'boolean',
+            description: '给图片加 Telegram 剧透遮罩：聊天里先显示模糊，点开才看清',
+        },
     },
 };
 
@@ -230,7 +234,8 @@ const absorbBatchPicture = (
     state: ReplyMediaState,
     source: SendImageSource,
     resolved: ResolvedMediaBytes,
-    caption: string
+    caption: string,
+    spoiler: boolean
 ): void => {
     const position = state.imageCount + 1;
     state.imageCount = position;
@@ -248,6 +253,7 @@ const absorbBatchPicture = (
         data: resolved.data,
         mimeType: resolved.mimeType,
         ...(pictureCaption === '' ? {} : { caption: pictureCaption }),
+        ...(spoiler ? { spoiler: true } : {}),
     });
     if (
         resolved.imageId === undefined &&
@@ -335,7 +341,7 @@ const runSendImageBatch = async (
             );
             continue;
         }
-        absorbBatchPicture(tally, state, source, resolved, batch.caption);
+        absorbBatchPicture(tally, state, source, resolved, batch.caption, batch.spoiler);
     }
 
     const content = formatSendBatchResult({
@@ -467,6 +473,7 @@ export const createSendImageTool = (options: SendImageToolOptions): ToolHandler 
                         data: resolved.data,
                         mimeType: resolved.mimeType,
                         ...(args.caption ? { caption: args.caption } : {}),
+                        ...(args.spoiler ? { spoiler: true } : {}),
                     },
                 ],
                 ...(resolved.imageId === undefined &&

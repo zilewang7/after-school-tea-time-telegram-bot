@@ -1199,6 +1199,34 @@ export const migrateOpusDefaultEffort = async (transaction: Transaction): Promis
   );
 };
 
+/**
+ * Reply-tree jailbreak sessions (design 2026-1128-0045): one row per tree that
+ * runs under a policy template, with the expiry the read path enforces.
+ *
+ * The Sequelize model in jailbreakSessionDTO.ts carries the same shape; this
+ * migration exists so a database whose schema sync happened before the service
+ * was imported still gets the table (the offline cases rely on it).
+ */
+const migrateJailbreakSessions = async (transaction: Transaction): Promise<void> => {
+  await sequelize.query(
+    `CREATE TABLE IF NOT EXISTS jailbreak_sessions (
+      chatId INTEGER NOT NULL,
+      rootMessageId INTEGER NOT NULL,
+      profileId INTEGER NOT NULL,
+      model VARCHAR(255),
+      createdBy INTEGER NOT NULL,
+      createdAt DATETIME NOT NULL,
+      expiresAt DATETIME NOT NULL,
+      PRIMARY KEY (chatId, rootMessageId)
+    )`,
+    { transaction }
+  );
+  await sequelize.query(
+    'CREATE INDEX IF NOT EXISTS jailbreak_sessions_expires ON jailbreak_sessions (expiresAt)',
+    { transaction }
+  );
+};
+
 export const runSchemaMigrations = async (): Promise<void> => {
   await sequelize.query(`
     CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -1225,6 +1253,7 @@ export const runSchemaMigrations = async (): Promise<void> => {
     await migrateThinkingEffortColumns(transaction);
     await migrateRichRepliesColumn(transaction);
     await migrateChatSettingsPromptTemplates(transaction);
+    await migrateJailbreakSessions(transaction);
     await migrateReplyMetricsTrialQuotaColumns(transaction);
     await migrateReplyMetricsCapabilityColumns(transaction);
     await migrateMessageDeletedAt(transaction);

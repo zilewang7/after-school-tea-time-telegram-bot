@@ -23,6 +23,7 @@ import {
 import { buildContext, buildContextFromParts } from './context-builder.js';
 import { appendWorkspaceTailForReply } from './workspace/workspace-tail.js';
 import { chatTitleOf } from '../telegram/chat-title.js';
+import { jailbreakPolicyText, readJailbreakSession } from '../services/jailbreak-session-service.js';
 import { resolveContextRoot } from './context-root.js';
 import { buildReplyToolContext, createReplyTools } from './tools/index.js';
 import { snapshotReplySettings } from '../services/chat-settings-service.js';
@@ -361,7 +362,14 @@ const handleChatRetry = async (
     // original version used is never carried over. A trial presser gets the
     // cheap model whatever the chat says (design D2).
     const settings = snapshotReplySettings(chatId);
-    const model = effectiveReplyModel(access, settings.model);
+    // A retry inside a `/jb` tree keeps that tree's policy and model override
+    const rootId = await resolveContextRoot(chatId, botResponse.userMessageId);
+    const jbSession = access === 'trial' ? null : await readJailbreakSession(chatId, rootId);
+    const jbPolicy = jbSession === null ? null : await jailbreakPolicyText(jbSession);
+    const model =
+        jbSession?.model !== null && jbSession?.model !== undefined && jbPolicy !== null
+            ? jbSession.model
+            : effectiveReplyModel(access, settings.model);
     // The presser's tier can swap the model, and the combination follows the model
     const addendum = await resolveReplyAddendum(
         chatId,
@@ -473,7 +481,8 @@ const handleChatRetry = async (
         availableSkills,
     });
 
-    const systemPrompt = buildStaticSystemPrompt(model, buildStaticPromptOptions(availability), capabilities);
+    const staticPrompt = buildStaticSystemPrompt(model, buildStaticPromptOptions(availability), capabilities);
+    const systemPrompt = jbPolicy === null ? staticPrompt : `${jbPolicy}\n\n${staticPrompt}`;
     console.log(
         `[prompt] model=${model} head=${countCodePoints(systemPrompt)} ` +
             `legend=${builtContext.legendChars} catalog=${tail.catalogChars} ` +

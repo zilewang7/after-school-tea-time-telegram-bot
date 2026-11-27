@@ -668,6 +668,30 @@ const cases = [
         },
     },
     {
+        name: 'send_image carries the Telegram spoiler flag per picture',
+        body: async (): Promise<void> => {
+            const send = createSendImageTool({
+                state: createReplyMediaState(),
+                context: { chatId: -100, contextIndex: new Map(), signal: AbortSignal.abort() },
+                dependencies: {
+                    fetchImage: async () => ({
+                        ok: true,
+                        image: { data: PNG, mimeType: 'image/png', finalUrl: 'https://cdn.example.com/a.png' },
+                    }),
+                    loadMessageImages: async () => [],
+                },
+            });
+            const plain = await send.execute({ url: 'https://cdn.example.com/a.png' }, AbortSignal.abort());
+            expect(plain.images[0]?.spoiler === undefined, 'a plain send stays unblurred');
+
+            const blurred = await send.execute(
+                { url: 'https://cdn.example.com/a.png', spoiler: true },
+                AbortSignal.abort()
+            );
+            expect(blurred.images[0]?.spoiler === true, 'spoiler:true rides with the picture');
+        },
+    },
+    {
         name: 'fetch_image shows a sticker-picking status line only for sticker-only reads',
         body: async (): Promise<void> => {
             const fetch = createFetchImageTool({

@@ -407,6 +407,8 @@ export interface SendImageBatchArgs {
     readonly skippedDuplicates: readonly string[];
     /** The caption goes on the first picture that joins the reply */
     readonly caption: string;
+    /** Telegram spoiler overlay for every picture of the batch */
+    readonly spoiler: boolean;
 }
 
 export interface SendImageArgs {
@@ -416,6 +418,8 @@ export interface SendImageArgs {
     readonly image: number | undefined;
     readonly url: string | undefined;
     readonly caption: string;
+    /** Telegram spoiler overlay for the pictures of this call */
+    readonly spoiler: boolean;
     /** Present only when a plural argument carried the pictures */
     readonly batch: SendImageBatchArgs | undefined;
 }
@@ -558,6 +562,7 @@ export const parseSendImageArgs = (
     const message = fillerAware(args.message, parseMessage(args.message), 0, batchGiven);
     const image = fillerAware(args.image, parseImageIndex(args.image), 1, batchGiven);
     const caption = parseOptionalText(args.caption, 'caption', 1000);
+    const spoiler = args.spoiler === true;
     const searches = parseSendTextArray(args.search_ids, 'search_ids', 16);
     const imageIds = parseSendTextArray(args.image_ids, 'image_ids', 16);
     const urls = parseSendTextArray(args.urls, 'urls', 2048);
@@ -648,6 +653,7 @@ export const parseSendImageArgs = (
                 message: messageNumber > 0 ? messageNumber : undefined,
                 image: image.ok ? image.value : 1,
                 url: urlText === '' ? undefined : urlText,
+                spoiler,
                 caption: captionText,
                 batch: undefined,
             },
@@ -694,8 +700,9 @@ export const parseSendImageArgs = (
             message: undefined,
             image: undefined,
             url: undefined,
+            spoiler,
             caption: captionText,
-            batch: { kind: chosen.kind, sources, skippedDuplicates, caption: captionText },
+            batch: { kind: chosen.kind, sources, skippedDuplicates, caption: captionText, spoiler },
         },
     };
 };

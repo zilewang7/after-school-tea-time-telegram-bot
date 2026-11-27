@@ -37,6 +37,8 @@ export interface ToolImage {
     readonly data: Buffer;
     readonly mimeType: string;
     readonly caption?: string;
+    /** Telegram spoiler overlay: the chat shows the picture blurred until tapped */
+    readonly spoiler?: boolean;
 }
 
 /**

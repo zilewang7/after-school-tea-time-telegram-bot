@@ -51,10 +51,19 @@ import { handleVidCommand } from './commands/vid-command.js';
 import { isVidCommandText } from './commands/vid-command-parser.js';
 import { dealChatCommand } from './commands/chat-command.js';
 import { isChatCommandText } from './commands/chat-command-parser.js';
+import { isJbCommandText, parseJbCommand, resolveJbPolicyTemplate, type JbCommand } from './commands/jb-command.js';
+import {
+    clearJailbreakSession,
+    jailbreakPolicyText,
+    listJailbreakSessions,
+    readJailbreakSession,
+    registerJailbreakSession,
+} from '../services/jailbreak-session-service.js';
+import { findCatalogRow } from '../services/model-catalog-service.js';
 import { chatTitleOf } from '../telegram/chat-title.js';
 import { snapshotReplySettings } from '../services/chat-settings-service.js';
 import { resolveReplyAddendum } from '../services/prompt-templates-service.js';
-import { effectiveReplyModel, resolveAccessTier, resolveTriggerAccess } from '../services/access-tier.js';
+import { effectiveReplyModel, resolveAccessTier, resolveTriggerAccess, type AccessTier } from '../services/access-tier.js';
 import { checkTrialQuota } from '../services/trial-quota.js';
 import { formatUserDisplayName } from '../shared/user-display-name.js';
 import { buildStaticPromptOptions } from './static-prompt-options.js';
@@ -107,6 +116,9 @@ const willReply = (ctx: Context): boolean => {
     if (isPicCommandText(text)) return true;
     if (isVidCommandText(text)) return true;
     if (isChatCommandText(text)) return true;
+    // `/jb` starts a jailbreak tree: it must run even without a mention, or a
+    // group would need to mention the bot in the command line
+    if (isJbCommandText(text)) return true;
     return checkIfMentioned(ctx, undefined);
 };
 
@@ -279,7 +291,7 @@ const shouldSkipMessage = (ctx: Context): boolean => {
  */
 export const handleReply = async (
     ctx: Context,
-    options?: { mention?: boolean }
+    options?: { mention?: boolean; jbPrompt?: string }
 ): Promise<void> => {
     if (!ctx.message || !ctx.chat) return;
 
@@ -301,7 +313,17 @@ export const handleReply = async (
         chatId
     );
     const access = triggerAccess.tier;
-    const model = effectiveReplyModel(access, settings.model);
+    // The reply tree this turn belongs to; a `/jb` root makes the tree run under
+    // its policy (design 2026-1128-0045). Trial users never get it: the command
+    // itself is refused for them, and a session is re-checked here so a tier
+    // change cannot leak a policy into their turns.
+    const rootId = await resolveContextRoot(chatId, userMessageId);
+    const jbSession = access === 'trial' ? null : await readJailbreakSession(chatId, rootId);
+    const jbPolicy = jbSession === null ? null : await jailbreakPolicyText(jbSession);
+    const model =
+        jbSession?.model !== null && jbSession?.model !== undefined && jbPolicy !== null
+            ? jbSession.model
+            : effectiveReplyModel(access, settings.model);
     // The addendum is frozen here with the other settings: templates can change
     // mid-reply (and the session auto switch can pull more of them in), but this
     // attempt keeps the combination it started with.
@@ -374,6 +396,7 @@ export const handleReply = async (
         chatTitle: chatTitleOf(ctx.chat),
         chatAddendum: addendum.text,
         triggerAccess: triggerAccessNoteOf(triggerAccess, trialSpend),
+        ...(options?.jbPrompt === undefined ? {} : { triggerText: options.jbPrompt }),
     }));
     if (isErr(ctxResult)) {
         await handleResponseError(chatContext, ctxResult[0]);
@@ -387,7 +410,7 @@ export const handleReply = async (
     // Argon rides the OpenCode Go subscription, which wants one stable session id
     // per conversation: the reply-tree root identifies exactly that.
     const openCodeGoSession = isOpenCodeGoModel(model)
-        ? openCodeGoSessionId(chatId, await resolveContextRoot(chatId, userMessageId))
+        ? openCodeGoSessionId(chatId, rootId)
         : null;
 
     const signal = chatContext.session.streamController.signal;
@@ -432,7 +455,10 @@ export const handleReply = async (
         availableSkills,
     });
 
-    const systemPrompt = buildStaticSystemPrompt(model, buildStaticPromptOptions(availability), capabilities);
+    const staticPrompt = buildStaticSystemPrompt(model, buildStaticPromptOptions(availability), capabilities);
+    // The jailbreak policy leads the system instruction: it states the operating
+    // policy this tree runs under, and the bot's own rules follow as usual
+    const systemPrompt = jbPolicy === null ? staticPrompt : `${jbPolicy}\n\n${staticPrompt}`;
     console.log(
         `[prompt] model=${model} head=${countCodePoints(systemPrompt)} ` +
             `legend=${built.legendChars} catalog=${tail.catalogChars} ` +
@@ -501,6 +527,86 @@ export const handleReply = async (
     }
 };
 
+const JB_USAGE_TEXT =
+    '用法：\n' +
+    '/jb [policy:<名称>] [model:<模型>] <提示词> — 把这条消息所在的会话树切成破甲会话\n' +
+    '/jb off — 在当前树内撤销\n' +
+    '/jb list — 列出本聊天里还在生效的破甲会话';
+
+const JB_NO_PERMISSION_TEXT = '破甲会话只对 owner 与完整权限用户开放。';
+
+const replyToTrigger = async (ctx: Context, text: string): Promise<void> => {
+    const messageId = ctx.message?.message_id;
+    await ctx.reply(text, messageId === undefined ? {} : { reply_parameters: { message_id: messageId } });
+};
+
+/** `/jb …`: register (or clear) this message's tree and, for a start, run the reply */
+const handleJbCommand = async (ctx: Context, command: JbCommand, access: AccessTier): Promise<void> => {
+    if (!ctx.chat || !ctx.message) return;
+    const chatId = ctx.chat.id;
+    const messageId = ctx.message.message_id;
+    const userId = ctx.from?.id ?? 0;
+    // A `/jb` sent as a reply lands in the existing tree: the scope is the tree's
+    // root, not this message, or the lookup would never match that tree
+    const rootId = await resolveContextRoot(chatId, messageId);
+
+    if (command.kind === 'help') {
+        await replyToTrigger(ctx, JB_USAGE_TEXT);
+        return;
+    }
+    if (access === 'trial') {
+        await replyToTrigger(ctx, JB_NO_PERMISSION_TEXT);
+        return;
+    }
+    if (command.kind === 'off') {
+        const removed = await clearJailbreakSession(chatId, rootId);
+        await replyToTrigger(ctx, removed ? '已撤销这棵树的破甲策略。' : '这条消息不是破甲会话的根。');
+        return;
+    }
+    if (command.kind === 'list') {
+        const sessions = await listJailbreakSessions(chatId);
+        if (sessions.length === 0) {
+            await replyToTrigger(ctx, '本聊天没有生效中的破甲会话。');
+            return;
+        }
+        const lines = sessions.map((session) => {
+            const expires = new Date(session.expiresAt).toLocaleString('zh-CN', { hour12: false });
+            return `#${session.rootMessageId} · 策略 ${session.profileId}${session.model ? ` · ${session.model}` : ''} · 到期 ${expires}`;
+        });
+        await replyToTrigger(ctx, lines.join('\n'));
+        return;
+    }
+
+    const template = await resolveJbPolicyTemplate(command.policyName, userId);
+    if (template === null) {
+        await replyToTrigger(
+            ctx,
+            command.policyName === null
+                ? '面板里还没有名字以 policy: 开头的策略模板，先建一个再用 /jb。'
+                : `没有找到可用的策略模板：${command.policyName}`
+        );
+        return;
+    }
+    if (command.model !== null) {
+        const entry = await findCatalogRow(command.model);
+        if (entry === null || !entry.enabled) {
+            await replyToTrigger(ctx, `目录里没有启用中的模型：${command.model}`);
+            return;
+        }
+    }
+    await registerJailbreakSession({
+        chatId,
+        rootMessageId: rootId,
+        profileId: template.id,
+        model: command.model,
+        createdBy: userId,
+    });
+    console.log(`[jb] chat=${chatId} root=${rootId} profile=${template.id} model=${command.model ?? 'chat'}`);
+    // The command message itself is the tree root; the reply runs on the prompt
+    // that followed the options, with the command line left out of the context
+    await handleReply(ctx, { mention: true, jbPrompt: command.prompt });
+};
+
 /**
  * Register chat handler on bot
  */
@@ -529,6 +635,15 @@ export const registerChatHandler = (bot: Bot): void => {
                 if (await stopIfChatPaused(ctx)) return;
 
                 const text = ctx.message.text ?? ctx.message.caption ?? '';
+
+                // `/jb` is a command that produces an AI reply, so it runs on the
+                // reply path (like /chat) rather than as a grammy command
+                const jbCommand = parseJbCommand(text);
+                if (jbCommand !== null) {
+                    const jbAccess = await resolveAccessTier(ctx.from?.id ?? null, ctx.chat?.id ?? null);
+                    await handleJbCommand(ctx, jbCommand, jbAccess);
+                    return;
+                }
                 const isGenerationCommand =
                     /^\/(picbanana|picgpt|picgrok)(@\S+)?(\s|$)/.test(text) ||
                     isPicCommandText(text) ||

@@ -1022,6 +1022,12 @@ export interface BuildContextOptions {
      * Passed in by the handler so the builder never reads the access cache.
      */
     triggerAccess?: TriggerAccessNote | null;
+    /**
+     * Text the trigger turn is built from instead of the stored message text.
+     * `/jb` uses it: the command line (policy/model options) must not reach the
+     * model, only the prompt that followed it.
+     */
+    triggerText?: string;
 }
 
 /** Distinguish the options object from a bare ModelCapabilities argument. */
@@ -1151,8 +1157,9 @@ export const buildContext = async (
     // messages the tree misses. Resolved fresh here (not reused from a caller
     // snapshot) so any media that finished downloading during an upstream wait
     // is reflected — fileUniqueId is read up to date.
+    const triggerMessage = toContextMessage(msg);
     const assembled = await assembleContextMessages(chatId, messageId, {
-        trigger: toContextMessage(msg),
+        trigger: opts.triggerText === undefined ? triggerMessage : { ...triggerMessage, text: opts.triggerText },
         excludeMessageIds: opts.excludeMessageIds ?? [],
         recover: !dryRun,
     });

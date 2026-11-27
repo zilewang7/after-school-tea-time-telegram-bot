@@ -216,6 +216,7 @@ const productsOf = (result: ToolResult): StreamChunk[] => {
                 imageData: image.data,
                 imageMimeType: image.mimeType,
                 imageCaption: image.caption,
+                ...(image.spoiler === true ? { imageSpoiler: true } : {}),
             })
         ),
         ...(result.stickers ?? []).map((sticker): StreamChunk => ({ type: 'sticker', sticker })),

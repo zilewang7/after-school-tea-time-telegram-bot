@@ -378,7 +378,7 @@ export const processChunk = (
                 thinkingTruncatedChars: truncatedChars,
             };
         })
-        .with({ type: 'image' }, ({ imageData, imageCaption }) => ({
+        .with({ type: 'image' }, ({ imageData, imageCaption, imageSpoiler }) => ({
             ...state,
             images: imageData ? [...state.images, imageData] : state.images,
             // One caption per picture, same order; a picture without one keeps an
@@ -386,6 +386,9 @@ export const processChunk = (
             imageCaptions: imageData
                 ? [...(state.imageCaptions ?? []), imageCaption]
                 : state.imageCaptions,
+            imageSpoilers: imageData
+                ? [...(state.imageSpoilers ?? []), imageSpoiler === true ? true : undefined]
+                : state.imageSpoilers,
             // Only the first image is delivered, so only its caption is kept here
             imageCaption:
                 imageData && state.images.length === 0 ? imageCaption : state.imageCaption,
@@ -1162,6 +1165,7 @@ export const processStream = async (
         images: state.images,
         imageCaption: state.imageCaption,
         imageCaptions: state.imageCaptions ?? [],
+        imageSpoilers: state.imageSpoilers ?? [],
         stickers: state.stickers,
         files: state.files,
         widgets: state.widgets,
@@ -1379,6 +1383,7 @@ const replyImagePlanOf = (response: AIResponse, resolveContextLink?: ContextLink
         uploads: response.images.map((data, index) => ({
             data,
             captionFields: buildImageCaption(captions[index], resolveContextLink),
+            ...(response.imageSpoilers?.[index] === true ? { spoiler: true } : {}),
         })),
     };
 };

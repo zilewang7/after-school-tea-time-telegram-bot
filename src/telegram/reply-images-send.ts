@@ -32,6 +32,8 @@ export interface ReplyImageUpload {
     readonly data: Buffer;
     /** Rendered already; an absent caption sends the picture bare */
     readonly captionFields?: ReplyImageCaption;
+    /** Telegram spoiler overlay; albums take it per media, single sends per message */
+    readonly spoiler?: boolean;
 }
 
 export interface SendReplyImagesInput {
@@ -112,13 +114,15 @@ const sendAlbum = async (
 ): Promise<Result<number[]>> => {
     const media = stills.map((image) => {
         const caption = image.captionFields;
+        const spoiler = image.spoiler === true ? { has_spoiler: true } : {};
         return caption === undefined
-            ? InputMediaBuilder.photo(uploadOf(image))
+            ? InputMediaBuilder.photo(uploadOf(image), spoiler)
             : InputMediaBuilder.photo(uploadOf(image), {
                   ...(caption.caption === undefined ? {} : { caption: caption.caption }),
                   ...(caption.caption_entities === undefined
                       ? {}
                       : { caption_entities: caption.caption_entities }),
+                  ...spoiler,
               });
     });
 
@@ -148,6 +152,7 @@ const sendOne = async (
         chatId: input.chatId,
         image: image.data,
         captionFields: image.captionFields ?? {},
+        ...(image.spoiler === true ? { spoiler: true } : {}),
         // The keyboard still rides the only picture when the reply has one;
         // with several the caller edits it onto the first returned message
         target: input.target,

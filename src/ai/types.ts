@@ -295,6 +295,8 @@ export interface StreamChunk {
     imageMimeType?: string;
     /** Caption to send with the image */
     imageCaption?: string;
+    /** The picture goes out under a Telegram spoiler (blurred until tapped) */
+    imageSpoiler?: boolean;
     /** A sticker this reply will send (one per reply) */
     sticker?: StickerDelivery;
     /** The file this reply will send (one per reply, replaces an earlier one) */
@@ -325,6 +327,8 @@ export interface AIResponse {
      * keeps an `undefined` slot so the two arrays stay aligned.
      */
     imageCaptions?: (string | undefined)[];
+    /** One spoiler flag per image in `images`, same order; absent = none */
+    imageSpoilers?: (boolean | undefined)[];
     /** Stickers this reply sends (delivery keeps the first) */
     stickers?: StickerDelivery[];
     /** Files this reply sends (delivery keeps the last) */
@@ -461,6 +465,8 @@ export interface ResponseState {
     imageCaption?: string;
     /** One caption per image in `images`, same order (`undefined` when absent) */
     imageCaptions?: (string | undefined)[];
+    /** One spoiler flag per image in `images`, same order */
+    imageSpoilers?: (boolean | undefined)[];
     /** Stickers collected so far; only the first is delivered */
     stickers: StickerDelivery[];
     /** Files collected so far; only the last (newest content) is delivered */

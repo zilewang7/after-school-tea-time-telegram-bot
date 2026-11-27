@@ -28,6 +28,8 @@ export interface SendReplyImageInput {
     readonly target: ReplyImageTarget;
     /** The chat's rate limiter; 429s are absorbed here, not by the caller */
     readonly runApiCall: <T>(operation: () => Promise<T>) => Promise<T>;
+    /** Telegram spoiler overlay (blurred until tapped) */
+    readonly spoiler?: boolean;
 }
 
 export const sendReplyImageMessage = async (input: SendReplyImageInput): Promise<Result<number>> => {
@@ -43,7 +45,7 @@ export const sendReplyImageMessage = async (input: SendReplyImageInput): Promise
         error instanceof GrammyError && error.error_code === 400 && fields.caption_entities !== undefined;
 
     const sendAs = async (fields: ImageCaptionFields): Promise<Result<number>> => {
-        const options = { ...target, ...fields };
+        const options = { ...target, ...fields, ...(input.spoiler ? { has_spoiler: true } : {}) };
 
         // A fresh InputFile per attempt: a fallback must not reuse a consumed one
         if (animated) {
