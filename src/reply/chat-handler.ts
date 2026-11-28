@@ -5,7 +5,7 @@
 import type { Bot, Context } from 'grammy';
 import { countCodePoints } from '../shared/code-points.js';
 import { to, isErr } from '../shared/result.js';
-import { getMessage } from '../db/index.js';
+import { getMessage, rewriteMessageText } from '../db/index.js';
 import {
     getRepliesHistory,
     findChildMessageIds,
@@ -541,7 +541,7 @@ const replyToTrigger = async (ctx: Context, text: string): Promise<void> => {
 };
 
 /** `/jb …`: register (or clear) this message's tree and, for a start, run the reply */
-const handleJbCommand = async (ctx: Context, command: JbCommand, access: AccessTier): Promise<void> => {
+export const handleJbCommand = async (ctx: Context, command: JbCommand, access: AccessTier): Promise<void> => {
     if (!ctx.chat || !ctx.message) return;
     const chatId = ctx.chat.id;
     const messageId = ctx.message.message_id;
@@ -594,6 +594,9 @@ const handleJbCommand = async (ctx: Context, command: JbCommand, access: AccessT
             return;
         }
     }
+    // The command line leaves the stored message: the prompt is what the tree's
+    // history should carry, and the immediate reply builds from that same row
+    await rewriteMessageText(chatId, messageId, command.prompt);
     await registerJailbreakSession({
         chatId,
         rootMessageId: rootId,

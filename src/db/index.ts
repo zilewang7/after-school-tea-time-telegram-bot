@@ -228,6 +228,15 @@ const saveMessage = async (
     }
 }
 
+/**
+ * Replace one stored message's text in place. `/jb` uses it: the command line
+ * (`/jb policy:… model:…`) must not stay in the history, or every later turn of
+ * that tree reads it as part of the conversation.
+ */
+const rewriteMessageText = async (chatId: number, messageId: number, text: string): Promise<void> => {
+    await Message.update({ text }, { where: { chatId, messageId } });
+};
+
 const getMessage = async (chatId: number, messageId: number) => {
     const message = await Message.findOne({ where: { chatId, messageId } });
     return message;
@@ -348,6 +357,7 @@ export { writeBotMessageRow, type BotMessageRow } from './bot-message-row.js';
 export {
     saveMessage,
     getMessage,
+    rewriteMessageText,
     getBotResponse,
     findBotResponseByMessageId,
     findProcessingResponses,
